@@ -103,3 +103,27 @@ def open_access(monkeypatch, *, caller_if_none: str = "") -> FakeEgeria:
         stand_in = CallerIdentity(user_id=caller_if_none, egeria_token="t", auth_source="app-jwt")
         monkeypatch.setattr(wc, "_caller_identity", lambda: real() or stand_in)
     return fake
+
+
+#: pyegeria's real by-name miss.
+NO_ELEMENTS_FOUND = "No elements found"
+
+
+def real_lookup(found: dict | None = None):
+    """The REAL `EgeriaPublisher._find_element_guid`, over an autospec'd pyegeria `AutomatedCuration` (bound to the
+    real signature): pyegeria's real miss ("No elements found") for every name, or the GUID `found` maps it to.
+
+    For tests that hand the outbox drain its clients: never a stand-in that answers "" or None, since a look-up that
+    could not be made must not read as "absent"."""
+    from unittest.mock import create_autospec
+
+    from pyegeria import AutomatedCuration
+
+    from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
+
+    ac = create_autospec(AutomatedCuration, instance=True, spec_set=True)
+    ac.get_guid_for_name.side_effect = (
+        lambda name, property_name=None, type_name=None: (found or {}).get(name, NO_ELEMENTS_FOUND))
+    publisher = EgeriaPublisher()
+    publisher._automated_curation = ac
+    return publisher._find_element_guid

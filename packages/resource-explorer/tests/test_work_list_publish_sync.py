@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from test_zone_access_investigations_worklists import (  # noqa: E402,F401  (fixtures and helpers are shared)
     SECURED, USER, FakeCollections, _Clients, _install, _real, _zone, registry, web,
 )
+from tests.zone_fakes import real_lookup  # noqa: E402
 
 pytestmark = pytest.mark.usefixtures("mock_egeria_client_connections")
 
@@ -91,7 +92,7 @@ def world(web, registry, monkeypatch):
     registry.set_egeria_asset_guid("r", "g-r")
     fake = _install(monkeypatch)
     cm = SyncCollections()
-    monkeypatch.setattr("resource_explorer.egeria_outbox._default_clients", lambda who=None: (_Clients(cm), None))
+    monkeypatch.setattr("resource_explorer.egeria_outbox._default_clients", lambda who=None: (_Clients(cm), real_lookup()))
     monkeypatch.setenv("RE_PUBLIC_URL", BASE)
     from resource_explorer.work_lists import WorkLists
 
@@ -153,9 +154,15 @@ def test_a_re_publish_detaches_exactly_the_removed_member_and_carries_the_link_b
     assert out["removals"]["detached"] == [] and len(_detach_rows(world)) == 1
 
 
-def test_a_removed_member_whose_add_was_never_sent_is_withdrawn_not_detached(world):
+def test_a_removed_member_whose_add_was_never_sent_is_withdrawn_not_detached(world, monkeypatch):
+    from resource_explorer import work_lists
+
     cm = world["cm"]
+    cap = work_lists.INLINE_ATTACH_LIMIT
+    monkeypatch.setattr(work_lists, "INLINE_ATTACH_LIMIT", 0)                 # adds drain inline: hold them back
     out = _publish(world)                                                      # queued, not drained
+    assert {a["state"] for a in out["attach"]} == {"left to the background drain"}
+    monkeypatch.setattr(work_lists, "INLINE_ATTACH_LIMIT", cap)
     _remove(world, "r")
     out = _publish(world)
     assert out["removals"]["withdrawn_before_sent"] == ["r"] and out["removals"]["detached"] == []

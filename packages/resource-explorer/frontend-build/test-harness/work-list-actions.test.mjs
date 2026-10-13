@@ -34,9 +34,12 @@ const wlRow = (slug, over = {}) => ({
 let WORK_LISTS; let SCOPE; let CALLS;
 //: Brief Z3: how the publish route answers ('' = as before; 'refused' = 403; 'one-member' = one member refused).
 let PUBLISH_MODE = '';
+//: The publish answer's `attach_error` in 'attach' mode ('' = every inline drain ran).
+let PUBLISH_MODE_ERR = '';
 
 function reset() {
   PUBLISH_MODE = '';
+  PUBLISH_MODE_ERR = '';
   WORK_LISTS = [
     wlRow('sales-databases', { display_name: 'Sales databases', investigation: 'c360' }),
     wlRow('old-postgres', { display_name: 'Old Postgres', description: 'Legacy boxes to look at', member_count: 4 }),
@@ -105,6 +108,30 @@ function stubBackend() {
           failed: [{ entity_slug: 'old-d', words: 'not retried: destructive write · Egeria said no' }],
           waiting: [], withdrawn_before_sent: [] },
         link_back: { url: 'https://re.example.org/next?worklist=x', state: 'failed', words: 'could not be set · RuntimeError: no' } });
+    }
+    if (m && method === 'POST' && PUBLISH_MODE === 'db-members') {
+      WORK_LISTS.find((w) => w.slug === m[1]).egeria_guid = 'ccccdddd-1111-2222-3333-444455556666';
+      return ok({ type_name: 'WorkingSet', egeria_guid: 'ccccdddd-1111-2222-3333-444455556666', queued_members: 2,
+        queued_to_attach: ['laz_local_usda', 'laz_local_adventureworks'],
+        members_without_an_egeria_asset: ['treasury'],
+        not_published: [{ entity_slug: 'treasury', entity_type: 'database', words: 'not published to Egeria yet · database' }],
+        not_resolved: [{ entity_slug: 'gone', entity_type: 'database', words: "could not resolve · no database 'gone' in RE's registry" }],
+        not_permitted: [] });
+    }
+    if (m && method === 'POST' && PUBLISH_MODE === 'attach') {
+      WORK_LISTS.find((w) => w.slug === m[1]).egeria_guid = 'ccccdddd-1111-2222-3333-444455556666';
+      return ok({ type_name: 'WorkingSet', egeria_guid: 'ccccdddd-1111-2222-3333-444455556666', queued_members: 4,
+        queued_to_attach: ['usda', 'aw', 'treasury', 'hr'], not_permitted: [], members_without_an_egeria_asset: [],
+        attach: [
+          { entity_slug: 'usda', state: 'attached', status: 'done', words: 'attached' },
+          { entity_slug: 'aw', state: 'not permitted', status: 'dead',
+            words: 'not permitted · zone sales-zone does not grant garygeeke attach in Egeria' },
+          { entity_slug: 'treasury', state: 'could not attach', status: 'failed', will_retry: true,
+            words: 'could not attach · RuntimeError: Egeria answered 500' },
+          { entity_slug: 'hr', state: 'left to the background drain', status: 'pending',
+            words: 'left to the background drain · over 50 in one publish' },
+        ],
+        attach_error: PUBLISH_MODE_ERR });
     }
     if (m && method === 'POST' && PUBLISH_MODE === 'one-member') {
       WORK_LISTS.find((w) => w.slug === m[1]).egeria_guid = 'ccccdddd-1111-2222-3333-444455556666';
@@ -483,4 +510,65 @@ test('a link back that could not be set is said, with the error cue', async () =
   assert.ok(lb);
   assert.match(text(lb), /link back to RE not set · could not be set · RuntimeError: no/);
   assert.ok(lb.querySelector('[data-cue="error"]'));
+});
+
+/* ── Adds applied inside the publish (owner's ruling 2026-10-13) ─────────── */
+
+test('a publish shows each member by its add\'s own outcome: a cue plus a short word, the why on hover', async () => {
+  const { document } = await setUp({ open: 'sales-databases' });
+  PUBLISH_MODE = 'attach';
+  act(document, 'publish').click();
+  await tick(200);
+  const line = document.querySelector('#wl-note [data-attach]');
+  assert.ok(line && line.classList.contains('block'), 'its own line');
+  const member = (s) => document.querySelector(`#wl-note [data-member-attach="${s}"]`);
+  const want = {
+    usda: ['attached', 'measured', 'attached'],
+    aw: ['not permitted', 'no_access', 'zone sales-zone does not grant garygeeke attach in Egeria'],
+    treasury: ['could not attach', 'error', 'RuntimeError: Egeria answered 500 · the background drain sends it again'],
+    hr: ['left to the background drain', 'queued', 'over 50 in one publish'],
+  };
+  for (const [slug, [state, key, title]] of Object.entries(want)) {
+    const el = member(slug);
+    assert.ok(el, slug);
+    assert.equal(el.getAttribute('data-attach-state'), state);
+    const c = el.querySelector(`[data-cue="${key}"]`);
+    assert.ok(c, `${slug} carries the ${key} cue`);
+    assert.match(text(c), new RegExp(state));
+    assert.equal(c.getAttribute('title'), title);
+  }
+  assert.doesNotMatch(note(document), /membership\(s\) queued|applied by the worker/, 'not "queued" when it was applied');
+  assert.equal(document.querySelector('#wl-note [data-publish-queued]'), null);
+});
+
+test('an inline send that failed is said with the error cue, the words on hover; none drawn when it ran', async () => {
+  const { document } = await setUp({ open: 'sales-databases' });
+  PUBLISH_MODE = 'attach';
+  act(document, 'publish').click();
+  await tick(200);
+  assert.equal(document.querySelector('#wl-note [data-attach-error]'), null);
+  PUBLISH_MODE_ERR = 'the inline send failed for 1 member(s) · left to the background drain · hr: RuntimeError: boom';
+  act(document, 'publish').click();
+  await tick(200);
+  const c = document.querySelector('#wl-note [data-attach-error] [data-cue="error"]');
+  assert.ok(c);
+  assert.match(text(c), /inline send failed/);
+  assert.equal(c.getAttribute('title'), PUBLISH_MODE_ERR);
+});
+
+/* ── A database list's members by group (wl-0c09fe4404, 2026-10-13) ───────── */
+
+test('a database publish names what was queued, what has no element (with its type), and what was not checked', async () => {
+  const { document } = await setUp({ open: 'sales-databases' });
+  PUBLISH_MODE = 'db-members';
+  act(document, 'publish').click();
+  await tick(200);
+  assert.match(text(document.querySelector('#wl-note [data-publish-queued]')),
+    /queued to attach: laz_local_usda, laz_local_adventureworks/);
+  assert.match(text(document.querySelector('#wl-note [data-publish-unpublished]')),
+    /1 not attached: treasury · not published to Egeria yet · database/);
+  const unresolved = document.querySelector('#wl-note [data-publish-unresolved]');
+  assert.match(text(unresolved), /1 not checked: gone · could not resolve · no database 'gone' in RE's registry/);
+  assert.doesNotMatch(text(document.querySelector('#wl-note [data-publish-unpublished]')), /gone/,
+    'not resolved is never folded into not published');
 });

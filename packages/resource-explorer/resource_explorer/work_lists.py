@@ -59,6 +59,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from resource_explorer.resource_types import SURVEYED_RESOURCE_TYPES
+
 log = logging.getLogger(__name__)
 
 #: The Egeria Collection subtype. See the module docstring for why this is not
@@ -102,6 +104,14 @@ _SENDING = ("running",)
 #: At most this many removals are applied inside one publish request; the rest are left to the background drain.
 INLINE_DETACH_LIMIT = 50
 
+#: At most this many adds are applied inside one publish request (owner's ruling 2026-10-13: adds drain inline, as
+#: removals do); the rest are left to the background drain and said so.
+INLINE_ATTACH_LIMIT = INLINE_DETACH_LIMIT
+
+#: The per-member states a publish's adds come back in, read from each outbox row AFTER the inline drain.
+ATTACHED, ATTACH_NOT_PERMITTED, ATTACH_FAILED, ATTACH_LEFT = (
+    "attached", "not permitted", "could not attach", "left to the background drain")
+
 
 def public_base_url() -> str:
     """`RE_PUBLIC_URL`, checked: an http(s) URL with a host, without a trailing slash. Anything else is treated as
@@ -144,6 +154,40 @@ def _additional_properties(element) -> dict:
     props = element.get("properties") if isinstance(element.get("properties"), dict) else element
     found = props.get("additionalProperties") or props.get("additional_properties") or {}
     return dict(found) if isinstance(found, dict) else {}
+
+
+#: The resource types a work list's members can be, and so the ones `member_egeria_guid` knows how to read.
+MEMBER_ENTITY_TYPES = SURVEYED_RESOURCE_TYPES
+
+
+class MemberUnresolved(Exception):
+    """RE could not say whether a work-list member has an Egeria element: an unsupported type, a member that is
+    not in RE's registry, or a registry read that failed. Never the same answer as "not published to Egeria yet"."""
+
+
+def member_egeria_guid(registry, entity_type: str, slug: str) -> str:
+    """A work-list member's own Egeria asset GUID, by its type; "" means RE holds the resource and it has no
+    Egeria element yet. The ONE lookup every work-list path uses (publish's attach split, the removals' map).
+
+    The getters are `curation_egeria._entity`'s, the per-type read the curation paths already use
+    (`registry.get` / `get_database` / `get_filesystem`). Raises `MemberUnresolved` when the answer is not known:
+    a type with no getter, a slug RE does not hold, or a read that failed. A bare `registry.get(slug)` answered
+    None for every database and file-system member, which read as "never published" (wl-0c09fe4404, 2026-10-13)."""
+    from resource_explorer.curation_egeria import _entity
+
+    if entity_type not in MEMBER_ENTITY_TYPES:
+        raise MemberUnresolved(f"members of type '{entity_type or '(none)'}' are not supported")
+    try:
+        entity = _entity(registry, entity_type, slug)
+    except Exception as exc:  # noqa: BLE001 - a failed read is "could not resolve", never "not published"
+        raise MemberUnresolved(f"could not read RE's record · {type(exc).__name__}: {exc}"[:300]) from exc
+    if entity is None:
+        raise MemberUnresolved(f"no {entity_type} '{slug}' in RE's registry")
+    return str(getattr(entity, "egeria_asset_guid", "") or "").strip()
+
+
+def not_published_words(entity_type: str) -> str:
+    return f"not published to Egeria yet · {entity_type}"
 
 
 def _refused(row: dict) -> bool:
@@ -270,10 +314,10 @@ class WorkLists:
                 (slug,)).fetchall()
         out = dict(row)
         out["members"] = [dict(m) for m in members]
-        self._attach_dispositions(out["members"])
+        self._attach_dispositions(out["members"], out.get("entity_type") or "repo")
         return out
 
-    def _attach_dispositions(self, members: list[dict]) -> None:
+    def _attach_dispositions(self, members: list[dict], entity_type: str = "repo") -> None:
         """Add each member's current disposition, for grouping in the matrix.
 
         Dispositions are keyed by github_url, not by slug, so this is a
@@ -288,6 +332,10 @@ class WorkLists:
         for m in members:
             m.setdefault("disposition", "")
             m.setdefault("github_url", "")
+            if entity_type != "repo":
+                # Dispositions are keyed by a repo's github_url; `registry.get` reads repos only, so a database or
+                # file-system slug that happens to name a repo would borrow that repo's verdict.
+                continue
             try:
                 # registry.get() returns a Project DATACLASS, not a dict —
                 # a .get() call on it raises rather than returning None, and
@@ -535,8 +583,11 @@ class WorkLists:
           has published nothing it can find again. Same reasoning as the
           investigation publisher, which is where `_create_typed_collection`
           comes from.
-        * the memberships are ENQUEUED to the outbox and applied by whichever
-          worker drains it, each carrying its `membershipRationale`.
+        * the memberships are ENQUEUED to the outbox, each carrying its
+          `membershipRationale`, and then applied here and now by the same
+          drain the scheduler runs (`_apply_adds`, up to INLINE_ATTACH_LIMIT;
+          owner's ruling 2026-10-13). `attach` reports each by its row's own
+          state afterwards; whatever is left stays for the background drain.
 
         A member whose resource was never published to Egeria has no GUID to
         attach and is REPORTED, not retried — that is a fact about the
@@ -584,10 +635,14 @@ class WorkLists:
         if refused_collection:
             raise CurationDenied(refused_collection.removeprefix("not permitted · "))
 
-        attachable, unpublished = [], []
+        attachable, unpublished, unresolved = [], [], []
         for m in wl["members"]:
-            project = self.registry.get(m["entity_slug"])
-            member_guid = (getattr(project, "egeria_asset_guid", "") or "") if project else ""
+            try:
+                member_guid = member_egeria_guid(self.registry, wl["entity_type"], m["entity_slug"])
+            except MemberUnresolved as exc:
+                unresolved.append({"entity_slug": m["entity_slug"], "entity_type": wl["entity_type"],
+                                   "words": f"could not resolve · {exc}"})
+                continue
             if member_guid:
                 attachable.append({
                     "member_guid": member_guid,
@@ -609,7 +664,8 @@ class WorkLists:
         # cleared, a cache emptied) is NOT removed: only one that now resolves to a DIFFERENT GUID leaves its old
         # GUID behind as a removal.
         current_guids = {m["member_guid"] for m in attachable} | {m["member_guid"] for m, _ in refused}
-        resolved = {**{s_: "" for s_ in unpublished},
+        # An unresolved member (unknown type, unreadable) is held like an unpublished one: never removed on a guess.
+        resolved = {**{s_: "" for s_ in unpublished}, **{u["entity_slug"]: "" for u in unresolved},
                     **{m["entity_slug"]: m["member_guid"] for m in attachable + [m for m, _ in refused]}}
         recorded = recorded_memberships(self.registry, slug, existing) if existing else {}
         removed = {g: r for g, r in recorded.items()
@@ -640,6 +696,10 @@ class WorkLists:
         # The person who pressed publish (Brief I), not the outbox daemon.
         who = current_principal()
         clients, _find_element_guid = _default_clients(who)
+        if not callable(_find_element_guid):
+            # Every add is looked up by name before it is created; a drain handed no look-up cannot tell "absent"
+            # from "could not check". Said before anything is written, never passed on as None.
+            raise RuntimeError("publish has no Egeria look-up to check what already exists, so nothing was sent")
         cm = clients.require("collection_manager")
 
         # The link back to RE's work-list page (the Portal's Resource Browser reads it). Written on create, and
@@ -667,6 +727,8 @@ class WorkLists:
 
         row_ids = enqueue_work_list_members(
             self.registry, slug, guid, attachable, run_id=run_id)
+        attached, attach_error = self._apply_adds(list(zip(row_ids, (m["entity_slug"] for m in attachable))),
+                                    clients, _find_element_guid, who)
         removals = self._apply_removals(slug, guid, wl["entity_type"], removed, detachable, detach_refused,
                                         clients, _find_element_guid, who, run_id=run_id)
 
@@ -679,6 +741,18 @@ class WorkLists:
             # Named, not counted: "3 could not be attached" is not actionable
             # and "3 could not be attached: a, b, c" is.
             "members_without_an_egeria_asset": unpublished,
+            # The groups, by name: queued to attach; held in RE with no Egeria element (with its type); and ones
+            # whose element RE could not establish (never folded into "not published").
+            "queued_to_attach": [m["entity_slug"] for m in attachable],
+            # Each queued member's add, applied here and now (owner's ruling 2026-10-13), by its outbox row's own
+            # state after the inline drain: attached / not permitted / could not attach / left to the background
+            # drain. One entry per queued member, in order.
+            "attach": attached,
+            # "" when every inline drain ran; else what raised, in words (the rows stay for the background drain).
+            "attach_error": attach_error,
+            "not_published": [{"entity_slug": s_, "entity_type": wl["entity_type"],
+                               "words": not_published_words(wl["entity_type"])} for s_ in unpublished],
+            "not_resolved": unresolved,
             # Brief Z3: each member the caller may not attach, with its words; the rest were queued.
             "not_permitted": not_permitted,
             # Members removed in RE since the last publish, each by its outbox row's own outcome.
@@ -714,6 +788,66 @@ class WorkLists:
             log.warning("work list link back not set on %s: %s", guid, exc)
             return {"state": "failed", "words": f"could not be set · {type(exc).__name__}: {exc}"[:300]}
         return {"state": "set", "words": ""}
+
+    def _apply_adds(self, rows: list[tuple[int, str]], clients, find_element_guid, who) -> tuple[list[dict], str]:
+        """Apply this publish's queued `collection_membership` rows now, one scoped drain per row, as the person
+        who pressed publish (owner's ruling 2026-10-13: adds drain inline, as removals already do; before it the
+        person waited up to 15 minutes for the scheduler).
+
+        The SAME drain the scheduler runs (`drain_outbox(..., element_id=row_id)`), only earlier: the Z3 re-check
+        as the row's requester, the membership's confidence/rationale properties, `verify_membership_landed`,
+        `OutboxNotKept`, retry with backoff for a failed add, and `mark_outbox_done(note=)` are all its own.
+
+        `find_element_guid` is the publisher's real look-up, checked callable by `publish` before anything is
+        written, and passed as given: never None, never a stand-in that answers "" (a look-up that cannot run must
+        not read as "absent").
+
+        Each member's words come from its row as it stands afterwards (the proof row), never from the branch
+        taken here: "attached" (done; the read-back note, if any, follows), "not permitted · <why>" (refused at
+        the re-check or by Egeria's security), "could not attach · <why>" (`will_retry` says whether the
+        background drain sends it again), or "left to the background drain" (over the cap, still pending, or
+        being sent by the background drain). A drain that raises fails no publish: its rows stay in the outbox,
+        and the second value says so in words ("" when every inline drain ran), shown on the page as `attach_error`.
+        """
+        from resource_explorer.egeria_outbox import NOT_RETRIED, REFUSED_BY_SECURITY, drain_outbox
+
+        failures: list[str] = []
+        for row_id, member in rows[:INLINE_ATTACH_LIMIT]:
+            try:
+                drain_outbox(self.registry, clients, find_element_guid, element_id=row_id, identity=who)
+            except Exception as exc:  # drain_outbox never raises by contract; whatever does is said, not hidden
+                log.exception("work list publish: inline drain of outbox row %s failed; left to the background",
+                              row_id)
+                failures.append(f"{member}: {type(exc).__name__}: {exc}")
+        error = (f"the inline send failed for {len(failures)} member(s) · left to the background drain · "
+                 + "; ".join(failures))[:500] if failures else ""
+        out: list[dict] = []
+        for n, (row_id, member) in enumerate(rows):
+            row = self.registry.get_outbox_element(row_id) or {}
+            status, said = row.get("status") or "", (row.get("last_error") or "").strip()
+            entry: dict[str, Any] = {"entity_slug": member, "outbox_row_id": row_id, "status": status}
+            if status == "done":
+                entry.update(state=ATTACHED, words=f"{ATTACHED} · {said}" if said else ATTACHED)
+            elif status in ("dead", "failed") and said.startswith((ATTACH_NOT_PERMITTED, REFUSED_BY_SECURITY)):
+                entry.update(state=ATTACH_NOT_PERMITTED,
+                             words=said if said.startswith(ATTACH_NOT_PERMITTED)
+                             else f"{ATTACH_NOT_PERMITTED} · {said}")
+            elif status in ("dead", "failed"):
+                entry.update(state=ATTACH_FAILED, words=f"{ATTACH_FAILED} · {said or 'Egeria gave no sentence'}",
+                             will_retry=status == "failed" and not said.startswith(NOT_RETRIED))
+            elif status == "running":
+                entry.update(state=ATTACH_LEFT, words=f"{ATTACH_LEFT} · being sent by it now")
+            elif status == "pending" and n >= INLINE_ATTACH_LIMIT:
+                entry.update(state=ATTACH_LEFT,
+                             words=f"{ATTACH_LEFT} · over {INLINE_ATTACH_LIMIT} in one publish")
+            elif status == "pending":
+                entry.update(state=ATTACH_LEFT, words=f"{ATTACH_LEFT} · {said}" if said else ATTACH_LEFT)
+            else:                                      # withdrawn or superseded meanwhile, or a row not found
+                entry.update(state=ATTACH_FAILED, will_retry=False,
+                             words=f"{ATTACH_FAILED} · {status or 'its outbox row was not found'}"
+                                   + (f": {said}" if said else ""))
+            out.append(entry)
+        return out, error
 
     def _apply_removals(self, slug: str, guid: str, entity_type: str, removed: dict, detachable: list,
                         detach_refused: list, clients, find_element_guid, who, *, run_id: str = "") -> dict:
@@ -776,7 +910,7 @@ class WorkLists:
             rows.append((self.registry.enqueue_outbox_element_once(
                 "work_list", slug, COLLECTION_MEMBERSHIP_DETACH, key, payload, run_id=run_id), m["entity_slug"]))
         for row_id, _ in rows[:INLINE_DETACH_LIMIT]:
-            drain_outbox(self.registry, clients, find_element_guid or (lambda qn: ""), element_id=row_id,
+            drain_outbox(self.registry, clients, find_element_guid, element_id=row_id,
                          identity=who)
         for n, (row_id, member) in enumerate(rows):
             row = self.registry.get_outbox_element(row_id) or {}

@@ -28,7 +28,7 @@ from resource_explorer.registry import Project, ProjectRegistry
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from tests.zone_fakes import permit_publish_routes, signed_in  # noqa: E402
+from tests.zone_fakes import permit_publish_routes, real_lookup, signed_in  # noqa: E402
 
 pytestmark = pytest.mark.usefixtures("mock_egeria_client_connections")
 
@@ -348,7 +348,7 @@ def test_work_list_publish_lands_the_members_confidence_on_the_relationship(regi
 
     permit_publish_routes(monkeypatch, USER)
     cm = EgeriaCollections()
-    monkeypatch.setattr("resource_explorer.egeria_outbox._default_clients", lambda who=None: (_Clients(cm), None))
+    monkeypatch.setattr("resource_explorer.egeria_outbox._default_clients", lambda who=None: (_Clients(cm), real_lookup()))
     wls = WorkLists(registry)
     slug = wls.create("W", ["p", "q"], entity_type="repo", created_by=USER)["slug"]
     wls.set_member(slug, "q", rationale="the system of record", confidence=80)
@@ -366,12 +366,18 @@ def test_work_list_publish_lands_the_members_confidence_on_the_relationship(regi
               for r in registry.list_outbox_elements(entity_slug=slug, limit=10)}
     assert queued["g-q"]["expected_confidence"] == 80 and "expected_confidence" not in queued["g-p"]
 
-    summary = _drain(registry, cm)
-    assert summary["done"] == 2, summary
+    # Applied inside the publish (owner's ruling 2026-10-13): each add's row is done and read back before it returns,
+    # so the background drain finds nothing left.
+    assert {a["entity_slug"]: (a["state"], a["status"]) for a in out["attach"]} == {
+        "p": ("attached", "done"), "q": ("attached", "done")}
+    assert out["attach_error"] == ""
+    assert _drain(registry, cm)["claimed"] == 0
     assert cm.relationships[("ws-guid", "g-q")] == {
         "class": "CollectionMembershipProperties", "typeName": "CollectionMembership",
         "confidence": 80, "membershipRationale": "the system of record"}
     assert cm.relationships[("ws-guid", "g-p")]["confidence"] == 0              # Egeria's default, not RE's
+    sent_p = [b for b in cm.sent if b and b["properties"].get("membershipRationale") == "a candidate"]
+    assert len(sent_p) == 1 and "confidence" not in sent_p[0]["properties"]   # RE sent none for p
     assert all("expectedConfidence" not in (b or {}).get("properties", {}) for b in cm.sent)
 
 
