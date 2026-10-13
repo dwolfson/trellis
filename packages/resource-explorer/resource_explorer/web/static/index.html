@@ -11026,6 +11026,11 @@ async function _promoteInvestigation(slug) {
       showToast('error', `⊘ not permitted · ${_esc(r.detail || '')}`, 8000);
       return;
     }
+    if (r.not_published) {
+      // A private investigation with no owner: refused before anything was sent (ruling 2026-10-13).
+      showToast('error', `⊘ ${_esc(r.not_published)}`, 8000);
+      return;
+    }
     if (!r.ok && !r.project_guid) {
       showToast('error', `Could not create: ${(r.errors || ['unknown']).join('; ')}`, 8000);
       return;

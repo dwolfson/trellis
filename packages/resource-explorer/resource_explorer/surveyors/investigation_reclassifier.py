@@ -424,10 +424,32 @@ class InvestigationReclassifier:
                 "being recorded), so there is nobody to make it private to. "
                 "Recreate it, or set an owner, before classifying it as "
                 f"{to_classification}.")
+            from resource_explorer.surveyors.egeria_investigation_publisher import (
+                record_ownerless_refusal,
+            )
+
+            record_ownerless_refusal(self._registry, inv, res.errors[-1], f"reclassify to {to_classification}")
             return res
 
         project_guid = (inv.get("egeria_project_guid") or "").strip()
         res.project_guid = project_guid
+
+        # A BOUND private investigation with no owner (design ruling 2026-10-13): its Project is already in
+        # Egeria, and it was published unzoned because there was nobody to zone it to. Any reclassify moves
+        # that Project's zones or kind — to `[PRIVATE_ZONE]` alone (nobody can read it) or onward as if it had
+        # been private. Refused in every direction; the owner decides what happens to the element. A local-only
+        # one has nothing in Egeria, so a loosening or lateral change there is still a local edit.
+        if project_guid:
+            from resource_explorer.surveyors.egeria_investigation_publisher import (
+                ownerless_private_words,
+                record_ownerless_refusal,
+            )
+
+            words = ownerless_private_words(inv, verb="reclassified")
+            if words:
+                res.errors.append(words)
+                record_ownerless_refusal(self._registry, inv, words, f"reclassify to {to_classification}")
+                return res
 
         # A purely local investigation has no Egeria elements to move, so the
         # classification change is the whole operation.
