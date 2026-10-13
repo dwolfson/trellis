@@ -495,6 +495,33 @@ def test_the_mining_read_excludes_another_user_s_private_investigation(registry)
         assert registry.purpose_free_text()["investigation_purposes"][0]["text"] == "my private reason"
 
 
+def test_a_cache_write_that_fails_is_said_on_the_list(egeria, registry, monkeypatch):
+    """Not a silent success: Egeria's list is still shown, and the words say RE's copy did not move."""
+    rm, mx = _live_clients()
+    ip.ensure_purposes(rm, mx, still_leader=lambda: True)
+
+    def broken(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ip, "write_cache", broken)
+    pl = ip.current_purposes(registry, lambda: ip.read_purposes_from_egeria(rm, mx), use_memo=False)
+    assert pl.source == "egeria" and pl.cache_error == "disk full"
+    assert pl.words == "Egeria's list · read just now · RE's cached copy not updated (disk full)"
+    assert pl.as_dict()["cache_error"] == "disk full"
+
+
+def test_a_cache_refresh_that_fails_after_the_heal_is_on_the_outcome(egeria, registry, monkeypatch):
+    def broken(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ip, "write_cache", broken)
+    out = _start(registry)
+    assert out.status == ip.CREATED and out.cache_error == "disk full"
+    assert out.line.endswith(" · cached copy not refreshed: disk full")
+    assert _rows(registry)[0]["summary"] == out.line
+    assert ip.status()["cache_error"] == "disk full"
+
+
 # ── suggestive everywhere: warn, never reject ─────────────────────────────────
 
 def test_an_unknown_purpose_warns_and_is_kept(registry, caplog):

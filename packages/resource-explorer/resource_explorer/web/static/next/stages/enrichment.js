@@ -138,10 +138,11 @@ function purposeControlHtml(def, field, size) {
   const opts = (vocab?.values || []).map((p) => `<option value="${esc(p.name)}" title="${esc(p.description || '')}" ${
     picked && isListed(picked, [p.name]) ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
   const kept = picked && !isListed(picked, names) ? `<option value="${esc(picked)}" selected>${esc(picked)}</option>` : '';
-  return `<select data-purpose-pick="${def.key}" class="rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] ${size} text-ink">
+  // Literal branches, not `${size}`: Tailwind (and its coverage test) must see every class it compiles.
+  return `<select data-purpose-pick="${def.key}" class="rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] ${size === 'text-answer' ? 'text-answer' : 'text-provenance'} text-ink">
       <option value="">—</option>${opts}${kept}</select>
     <input data-field="${def.key}" type="text" value="${esc(free)}" placeholder="${esc(def.placeholder || '')}"
-      class="min-w-0 flex-1 rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] ${size} text-ink placeholder:text-ink-muted">
+      class="min-w-0 flex-1 rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] ${size === 'text-answer' ? 'text-answer' : 'text-provenance'} text-ink placeholder:text-ink-muted">
     <span data-purpose-cue-slot="${def.key}" class="shrink-0">${purposeCueHtml(picked, free, names)}</span>`;
 }
 

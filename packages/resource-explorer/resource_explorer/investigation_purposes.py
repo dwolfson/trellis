@@ -250,6 +250,8 @@ class PurposeSeedOutcome:
     canary: str = ""
     #: Seed values Egeria does not hold and the heal did NOT recreate (a person removed them there?).
     missing: list[str] = field(default_factory=list)
+    #: Why the reader's cache was not refreshed from Egeria after this pass ("" when it was, or not tried).
+    cache_error: str = ""
 
     @property
     def elements_created(self) -> list[dict]:
@@ -272,6 +274,10 @@ class PurposeSeedOutcome:
 
     @property
     def line(self) -> str:
+        return self._line + (f" · cached copy not refreshed: {self.cache_error}" if self.cache_error else "")
+
+    @property
+    def _line(self) -> str:
         if self.status == PRESENT:
             if self.missing:
                 return (f"investigation purposes: present, {self.values - len(self.missing)} of {self.values} "
@@ -295,11 +301,13 @@ class PurposeSeedOutcome:
 
     def change_key(self) -> tuple:
         return (self.status, _normalise(self.reason),
-                frozenset(c["guid"] for c in self.created if c.get("guid")), tuple(self.missing))
+                frozenset(c["guid"] for c in self.created if c.get("guid")), tuple(self.missing),
+                _normalise(self.cache_error))
 
     def as_dict(self) -> dict:
         return {"status": self.status, "values": self.values, "created": self.created,
-                "reason": self.reason, "canary": self.canary, "missing": self.missing, "line": self.line}
+                "reason": self.reason, "canary": self.canary, "missing": self.missing,
+                "cache_error": self.cache_error, "line": self.line}
 
 
 class _Stop(Exception):
@@ -528,6 +536,7 @@ class PurposeList:
     stale: bool = False
     words: str = ""          # what the screen says about where the list came from
     reason: str = ""         # why Egeria was not read (cache / seed only)
+    cache_error: str = ""    # Egeria was read but RE's cached copy could not be updated: said in `words`
 
     @property
     def names(self) -> list[str]:
@@ -539,7 +548,8 @@ class PurposeList:
 
     def as_dict(self) -> dict:
         return {"purposes": self.names, "values": self.values, "source": self.source, "as_of": self.as_of,
-                "stale": self.stale, "words": self.words, "reason": self.reason, "default": self.default}
+                "stale": self.stale, "words": self.words, "reason": self.reason, "default": self.default,
+                "cache_error": self.cache_error}
 
 
 def _age_words(seconds: float) -> str:
@@ -656,7 +666,8 @@ def _egeria_list(answer: PurposeList, now: float) -> PurposeList:
         age = now - datetime.fromisoformat(answer.as_of).timestamp()
     except ValueError:
         age = 0
-    return replace(answer, words=f"Egeria's list · read {_age_words(age)}")
+    note = f" · RE's cached copy not updated ({answer.cache_error})" if answer.cache_error else ""
+    return replace(answer, words=f"Egeria's list · read {_age_words(age)}{note}")
 
 
 def current_purposes(registry=None, fetch: Callable[[], list[dict]] | None = None, *,
@@ -682,11 +693,12 @@ def current_purposes(registry=None, fetch: Callable[[], list[dict]] | None = Non
         try:
             values = _run_fetch(fetch, timeout)
             read_at = datetime.fromtimestamp(now, UTC).isoformat()
+            cache_error = ""
             try:
                 write_cache(_registry(registry), values, read_at)
-            except Exception as exc:  # noqa: BLE001 - the list is still Egeria's; the cache just did not move
-                log.warning("investigation purposes: could not write the cache: %s", exc)
-            answer = _egeria_list(PurposeList(values, SOURCE_EGERIA, as_of=read_at), now)
+            except Exception as exc:  # noqa: BLE001 - the list is still Egeria's; the words say the copy did not move
+                cache_error = _sentence(exc)
+            answer = _egeria_list(PurposeList(values, SOURCE_EGERIA, as_of=read_at, cache_error=cache_error), now)
         except EgeriaHoldsNone as exc:
             holds_none = str(exc)
         except Exception as exc:  # noqa: BLE001 - every failure falls back, with its words
@@ -819,8 +831,8 @@ def check_and_heal_purposes(registry=None) -> PurposeSeedOutcome:
         try:
             write_cache(_registry(registry), read_purposes_from_egeria(ref_manager, expert))
             reset_memo()
-        except Exception as exc:  # noqa: BLE001 - the cache keeps its last copy, labelled with its age
-            log.warning("investigation purposes: cache not refreshed: %s", exc)
+        except Exception as exc:  # noqa: BLE001 - said on the outcome; the cache keeps its last copy, labelled
+            outcome.cache_error = _sentence(exc)
     key = outcome.change_key()
     with _state_lock:
         changed = key != _last_key

@@ -49,7 +49,7 @@ test('the investigation picker: listed boxes, a kept unknown value checked with 
   const host = document.createElement('div');
   document.body.appendChild(host);
   host.innerHTML = purposes.purposePickerHtml({ prefix: 'inv-edit', vocab: purposes.purposesNow(), selected: ['Find', 'Wander'] });
-  const boxes = [...host.querySelectorAll('.inv-edit-purpose')];
+  const boxes = [...host.querySelectorAll('[data-purpose-box="inv-edit"]')];
   assert.deepEqual(boxes.map((b) => b.value), ['Explore', 'Find', 'Integrate', 'Wander']);
   assert.deepEqual(boxes.filter((b) => b.checked).map((b) => b.value), ['Find', 'Wander']);
   assert.match(boxes[3].parentElement.innerHTML, /not in the list/);

@@ -72,9 +72,9 @@ export function purposesSummaryHtml(inv, names) {
 }
 
 /** Where the list came from, said only when it is NOT Egeria's list read now (a cache, its age, or the
- *  shipped seed). '' for Egeria's own list. */
+ *  shipped seed), or when RE's cached copy could not be updated. '' otherwise. */
 export function purposeSourceHtml(vocab) {
-  if (!vocab || vocab.source === 'egeria') return '';
+  if (!vocab || (vocab.source === 'egeria' && !vocab.cache_error)) return '';
   return `<div data-purpose-source="${escHtml(vocab.source || 'none')}" class="text-provenance text-ink-muted">${
     escHtml(vocab.words || '')}${vocab.stale ? ' <span class="text-state-warn">· stale</span>' : ''}</div>`;
 }
@@ -85,7 +85,7 @@ export function purposePickerHtml({ prefix, vocab, selected = [], text = '' }) {
   const names = vocab?.purposes || [];
   const box = (name, title, checked, unlisted) => `<label class="inline-flex cursor-pointer items-center gap-[4px] text-caveat text-ink" ${
     title ? `title="${escHtml(title)}"` : ''}>
-      <input type="checkbox" class="${prefix}-purpose" value="${escHtml(name)}" ${checked ? 'checked' : ''}> ${escHtml(name)}${
+      <input type="checkbox" data-purpose-box="${prefix}" value="${escHtml(name)}" ${checked ? 'checked' : ''}> ${escHtml(name)}${
       unlisted ? ` ${notInListCueHtml()}` : ''}</label>`;
   const listed = (vocab?.values || []).map((v) => box(v.name, v.description, selected.some((s) => fold(s) === fold(v.name)), false));
   const kept = selected.filter((s) => !isListed(s, names)).map((s) => box(s, '', true, names.length > 0));
@@ -110,7 +110,7 @@ export function wirePurposePicker(root, prefix) {
 
 export function readPurposePicker(root, prefix) {
   return {
-    purposes: [...root.querySelectorAll(`.${prefix}-purpose:checked`)].map((c) => c.value),
+    purposes: [...root.querySelectorAll(`[data-purpose-box="${prefix}"]:checked`)].map((c) => c.value),
     purpose_text: (root.querySelector(`#${prefix}-purpose-text`)?.value || '').trim(),
   };
 }
