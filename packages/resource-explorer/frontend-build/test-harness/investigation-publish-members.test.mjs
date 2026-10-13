@@ -25,7 +25,7 @@ const LINK_STATUS = {
     { entity_type: 'repo', entity_slug: 'new2', state: 'not_linked', not_published: true, reason: REASON },
   ],
 };
-const PLAN = { count: 2, words: 'will publish 2 repos: new1, new2', publish: [{ entity_type: 'repo', entity_slug: 'new1' }, { entity_type: 'repo', entity_slug: 'new2' }], waiting: [], running: '' };
+const PLAN = { count: 2, slugs: ['new1', 'new2'], words: 'will publish 2 repos: new1, new2', publish: [{ entity_type: 'repo', entity_slug: 'new1' }, { entity_type: 'repo', entity_slug: 'new2' }], waiting: [], running: '' };
 const RUNNING = { batch_id: 'mp-1', running: true, words: ['1 published', '1 publishing'], relink_next: false,
   members: [{ entity_type: 'repo', entity_slug: 'new1', state: 'published', words: '' },
     { entity_type: 'repo', entity_slug: 'new2', state: 'publishing', words: '' }] };
@@ -33,16 +33,24 @@ const DONE = { batch_id: 'mp-1', running: false, words: ['1 published', '1 faile
   members: [{ entity_type: 'repo', entity_slug: 'new1', state: 'published', words: '' },
     { entity_type: 'repo', entity_slug: 'new2', state: 'failed', words: 'Egeria went away' }] };
 
-async function setUp({ linkStatus = LINK_STATUS, relinkResult } = {}) {
+async function setUp({ linkStatus = LINK_STATUS, relinkResult, pressConflict = false } = {}) {
   const { document, window } = makeDomEnvironment();
   const calls = [];
+  const bodies = [];
   let reads = 0;
   globalThis.fetch = async (url, options = {}) => {
     const u = String(url); const method = (options.method || 'GET').toUpperCase();
     calls.push(`${method} ${u}`);
     const ok = (b) => ({ ok: true, status: 200, json: async () => b });
     if (/\/publish-members\/mp-1$/.test(u)) { reads += 1; return ok(reads >= 1 ? DONE : RUNNING); }
-    if (/\/publish-members$/.test(u)) return ok(method === 'POST' ? RUNNING : PLAN);
+    if (/\/publish-members$/.test(u)) {
+      if (method === 'POST') {
+        bodies.push(JSON.parse(options.body || 'null'));
+        if (pressConflict) return { ok: false, status: 409, json: async () => ({ detail: 'the list changed, confirm again' }), text: async () => 'the list changed, confirm again' };
+        return ok(RUNNING);
+      }
+      return ok(PLAN);
+    }
     if (/\/relink-members$/.test(u)) return ok(relinkResult || { ok: true, members_linked: [], members_unlinkable: [], errors: [], link_status: linkStatus });
     if (/\/link-status$/.test(u)) return ok(linkStatus);
     if (/\/members$/.test(u)) return ok(linkStatus.members.map((m) => ({ entity_type: m.entity_type, entity_slug: m.entity_slug })));
@@ -70,7 +78,7 @@ async function setUp({ linkStatus = LINK_STATUS, relinkResult } = {}) {
   inv.openInvestigationDetail('proof');
   await inv.renderInvestigation();
   await tick();
-  return { document, calls, inv };
+  return { document, calls, bodies, inv };
 }
 
 test('each unpublished member row shows the cue and "not published", the reason on hover', async () => {
@@ -124,6 +132,7 @@ test('plan, confirm, one press, per-member results, then Relink offered', async 
   yes.click();
   await tick(300);
   assert.equal(t.calls.filter((c) => c === 'POST /api/investigations/proof/publish-members').length, 1);
+  assert.deepEqual(t.bodies, [{ slugs: ['new1', 'new2'] }], 'the press names exactly the confirmed list');
   const result = t.document.querySelector('[data-inv-members-publish-result]');
   assert.equal(text(result.querySelector('[data-inv-members-publish-words]')), '1 published · 1 failed');
   const lines = Object.fromEntries([...result.querySelectorAll('[data-inv-member-publish]')].map((li) => [text(li).split(' ').pop(), li]));
@@ -157,4 +166,16 @@ test('the new markup uses literal class strings only (no interpolated class name
     const body = INV_SRC.slice(start, INV_SRC.indexOf('\n}\n', start));
     assert.doesNotMatch(body, /class="[^"]*\$\{/, `${fn} interpolates a class name`);
   }
+});
+
+test('a press whose list changed since the confirmation says so and sends nothing more', async () => {
+  const t = await setUp({ pressConflict: true });
+  t.document.querySelector('[data-act="inv-publish-members"]').click();
+  await tick(120);
+  const dialog = t.document.querySelector('[role="alertdialog"]');
+  [...dialog.querySelectorAll('button')].find((b) => /Publish 2 to Egeria/.test(b.textContent)).click();
+  await tick(200);
+  assert.match(text(t.document.querySelector('[data-inv-members-plan-changed]')), /the list changed, confirm again/);
+  assert.equal(t.calls.filter((c) => /publish-members\/mp-/.test(c)).length, 0);
+  assert.equal(t.document.querySelector('[data-act="inv-publish-members"]').disabled, false);
 });

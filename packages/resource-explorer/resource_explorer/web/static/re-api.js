@@ -838,8 +838,9 @@ export const getInvestigationLinkStatus = (slug) =>
 export const planInvestigationMemberPublish = (slug) =>
   get(`/api/investigations/${encodeURIComponent(slug)}/publish-members`);
 
-export const publishInvestigationMembers = (slug) =>
-  post(`/api/investigations/${encodeURIComponent(slug)}/publish-members`);
+/** The press names the slugs the confirmation showed; the server answers 409 when its plan is no longer that list. */
+export const publishInvestigationMembers = (slug, slugs) =>
+  post(`/api/investigations/${encodeURIComponent(slug)}/publish-members`, { slugs });
 
 export const getInvestigationMemberPublish = (slug, batchId) =>
   get(`/api/investigations/${encodeURIComponent(slug)}/publish-members/${encodeURIComponent(batchId)}`);

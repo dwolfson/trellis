@@ -22,6 +22,11 @@ on the page offered the way forward. This is that way forward, built only from p
   published) is its own activity row under the investigation, with its words. One failure never stops the rest.
 * **A cap**: at most `MEMBER_PUBLISH_CAP` members a press, one at a time; the rest are named as waiting for the
   next press. There was no cap on any bulk publish before this.
+* **What is sent is what was confirmed**: the press carries the plan's `slugs`; a plan that no longer matches is
+  `PlanChanged` (409, "the list changed, confirm again") and nothing is sent.
+* **Bounded**: each member waits at most `MEMBER_TIMEOUT_SECONDS` (its words say it timed out and may still finish);
+  a lost sign-in stops the batch and the rest read "not reached · sign in again". The in-memory lock is released
+  whatever happens, and a batch whose process went away reads "not reached".
 
 Relink is NOT chained: publishing and linking are two writes with two checks, and every existing flow keeps them
 apart (promote links what exists; relink is its own press). The result offers [Relink members] next.
@@ -59,6 +64,20 @@ class BatchRunning(RuntimeError):
     """A members publish for this investigation is already running (a second press is refused, not queued)."""
 
 
+class PlanChanged(RuntimeError):
+    """The press named a list that is not the one the plan gives now: nothing is sent; confirm again."""
+
+
+#: How long one member's publish may take before the batch stops waiting for it and goes on (a pyegeria call that
+#: hangs must not hold the investigation's lock until a restart). The member's own publish may still finish.
+MEMBER_TIMEOUT_SECONDS = 600
+
+PLAN_CHANGED_WORDS = "the list changed, confirm again"
+SIGN_IN_AGAIN = "sign in again"
+NOT_REACHED = "not_reached"
+COULD_NOT_TELL = "could_not_tell"
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -71,13 +90,15 @@ def _names(members: list[dict]) -> str:
     return ", ".join(m["entity_slug"] for m in members)
 
 
-def member_publish_plan(registry, slug: str, cap: int = MEMBER_PUBLISH_CAP) -> dict:
+def member_publish_plan(registry, slug: str, cap: int | None = None) -> dict:
     """THE list: which of this investigation's members a press of [Publish the N unpublished members] publishes.
 
     The confirmation shows it and the press runs it (the press calls this again, never the page's copy).
     `publish` is the first `cap` repositories with no asset GUID (`member_asset_guid`), in scope order;
     `waiting` the rest of them; `already_published` those with one; `not_publishable` members of a kind this
-    press does not publish, with the reason."""
+    press does not publish, with the reason. `slugs` is the list the confirmation names and the press must send
+    back unchanged (`PlanChanged` otherwise)."""
+    cap = MEMBER_PUBLISH_CAP if cap is None else cap
     from resource_explorer.surveyors.egeria_investigation_publisher import (
         KIND_NOT_LINKED_REASON, LINKABLE_MEMBER_TYPES, member_asset_guid,
     )
@@ -103,11 +124,16 @@ def member_publish_plan(registry, slug: str, cap: int = MEMBER_PUBLISH_CAP) -> d
     else:
         words = "nothing to publish · every repository in scope is already in Egeria"
     return {"slug": slug, "cap": cap, "count": n, "words": words, "publish": publish, "waiting": waiting,
+            "slugs": [m["entity_slug"] for m in publish],
             "already_published": already, "not_publishable": other,
             "running": _running.get(slug, "")}
 
 
 # ── one member, through the existing publish ─────────────────────────────────────────────────────────────
+
+class SignInLost(RuntimeError):
+    """The presser's sign-in is gone (no caller, or the token expired): the batch stops; nothing more is sent."""
+
 
 def _newest_report_proof(registry, member_slug: str, after_id: int) -> dict | None:
     from resource_explorer import repo_publish as rp
@@ -124,8 +150,19 @@ def _last_proof_id(registry, member_slug: str) -> int:
     return max((p["id"] for p in rows), default=0)
 
 
+def _require_sign_in() -> None:
+    """Raise `SignInLost` when the caller this batch runs as can no longer act (asked before every member)."""
+    from resource_explorer.egeria_clients import Caller
+
+    try:
+        Caller()
+    except PermissionError as exc:          # NoCallerIdentity / CallerTokenExpired
+        raise SignInLost(str(exc) or type(exc).__name__) from exc
+
+
 def _publish_one(registry, member: dict, author: str) -> dict:
-    """Publish one member with `repo_publish.publish_report` and say what happened: {outcome, words, proof_id}."""
+    """Publish one member with `repo_publish.publish_report` and say what happened: {outcome, words, proof_id}.
+    Raises `SignInLost` when the presser can no longer act."""
     from resource_explorer import repo_publish as rp
     from resource_explorer.catalogue_commit import P_READ_FAILED
     from resource_explorer.surveyors.egeria_investigation_publisher import member_asset_guid
@@ -135,6 +172,7 @@ def _publish_one(registry, member: dict, author: str) -> dict:
     # The plan was read before the batch started; another press may have published it since.
     if member_asset_guid(registry, et, s):
         return {"outcome": SKIPPED, "words": "already published"}
+    _require_sign_in()
     # The same check the per-repository publish route makes first (`authorize_resource_write(..., "publish")`).
     try:
         d = resource_access(registry, et, s, "publish")
@@ -147,6 +185,8 @@ def _publish_one(registry, member: dict, author: str) -> dict:
         out = rp.publish_report(registry, s, author)
     except rp.AlreadyRunning as exc:
         return {"outcome": SKIPPED, "words": str(exc)}
+    except PermissionError as exc:          # the sign-in went away mid-publish
+        raise SignInLost(str(exc) or type(exc).__name__) from exc
     except Exception as exc:  # noqa: BLE001 - one member's failure is its own row; the rest still publish
         log.warning("investigation member publish: %s failed: %s", s, exc)
         return {"outcome": FAILED, "words": f"{type(exc).__name__}: {exc}"[:300]}
@@ -157,13 +197,54 @@ def _publish_one(registry, member: dict, author: str) -> dict:
     if proof is None:
         return {"outcome": FAILED, "words": "the publish returned, but wrote no proof row"}
     if proof["proof"] == P_READ_FAILED:
+        # A failed publish, including a private report whose zones could not be confirmed: never "published".
         detail = proof.get("detail") or {}
-        return {"outcome": FAILED, "words": str(detail.get("error") or "Egeria refused the publish")[:300],
+        return {"outcome": FAILED, "words": str(detail.get("error") or out.get("error")
+                                                or "Egeria refused the publish")[:300],
+                "proof_id": proof["id"]}
+    if out.get("ok") is False:
+        return {"outcome": FAILED, "words": str(out.get("error") or "the publish said it failed")[:300],
                 "proof_id": proof["id"]}
     return {"outcome": PUBLISHED if proof["proof"] != rp.P_SENT else SENT, "words": "", "proof_id": proof["id"]}
 
 
+def _publish_one_bounded(registry, member: dict, author: str) -> dict:
+    """`_publish_one` in its own thread (with this context), waited for at most `MEMBER_TIMEOUT_SECONDS`. A member
+    that hangs is reported with its words and the batch goes on; its publish may still finish in the background."""
+    box: dict = {}
+
+    def work():
+        import asyncio
+
+        # pyegeria's sync wrappers want an event loop in the thread that calls them (the legacy publish route
+        # does the same).
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            box["r"] = _publish_one(registry, member, author)
+        except BaseException as exc:  # noqa: BLE001 - handed back to the batch thread below
+            box["exc"] = exc
+        finally:
+            loop.close()
+            asyncio.set_event_loop(None)
+
+    ctx = contextvars.copy_context()
+    t = threading.Thread(target=ctx.run, args=(work,), name=f"member-publish-{member['entity_slug']}", daemon=True)
+    t.start()
+    t.join(MEMBER_TIMEOUT_SECONDS)
+    if t.is_alive():
+        return {"outcome": FAILED,
+                "words": (f"timed out after {MEMBER_TIMEOUT_SECONDS}s · it may still finish in Egeria; "
+                          "press again later to see")}
+    if "exc" in box:
+        raise box["exc"]
+    return box["r"]
+
+
 # ── the batch ───────────────────────────────────────────────────────────────────────────────────────────
+
+_SUCCESS = (PUBLISHED, SENT, SKIPPED)
+
 
 def _write_row(registry, row_id: str, inv: dict, status: str, summary: str, detail: dict) -> None:
     from resource_explorer.registry import ActivityEntry
@@ -174,47 +255,58 @@ def _write_row(registry, row_id: str, inv: dict, status: str, summary: str, deta
         summary=summary, detail=json.dumps(detail), items=[]))
 
 
-def _run(registry, inv: dict, batch_id: str, members: list[dict], author: str, waiting: list[dict]) -> None:
-    import asyncio
-
-    # pyegeria's sync wrappers want an event loop in this thread (the legacy publish route does the same).
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    done = 0
+def _record(registry, inv: dict, batch_id: str, m: dict, r: dict) -> None:
+    words = r.get("words") or ""
     try:
-        for m in members:
+        _write_row(registry, str(uuid.uuid4()), inv, "ok" if r["outcome"] in _SUCCESS else "error",
+                   f"{m['entity_slug']}: {r['outcome'].replace('_', ' ')}" + (f" · {words}" if words else ""),
+                   {MEMBER_KEY: batch_id, **m, **r})
+    except Exception:  # the row is the record; losing one is logged (and reads "could not tell"), the batch goes on
+        log.exception("could not record member publish result for %s", m["entity_slug"])
+
+
+def _run(registry, inv: dict, batch_id: str, members: list[dict], author: str, waiting: list[dict]) -> None:
+    outcomes: list[str] = []
+    stopped = ""
+    try:
+        for i, m in enumerate(members):
             try:
-                r = _publish_one(registry, m, author)
+                r = _publish_one_bounded(registry, m, author)
+            except SignInLost as exc:
+                # Nothing more can be sent as this person: the rest are not reached, and say why.
+                stopped = f"{SIGN_IN_AGAIN} ({exc})"[:300]
+                for rest in members[i:]:
+                    _record(registry, inv, batch_id, rest, {"outcome": NOT_REACHED, "words": stopped})
+                break
             except Exception as exc:  # noqa: BLE001 - never let one member end the batch
                 r = {"outcome": FAILED, "words": f"{type(exc).__name__}: {exc}"[:300]}
-            done += 1
-            words = r.get("words") or ""
-            try:
-                _write_row(registry, str(uuid.uuid4()), inv,
-                           "ok" if r["outcome"] in (PUBLISHED, SENT, SKIPPED) else "error",
-                           f"{m['entity_slug']}: {r['outcome'].replace('_', ' ')}" + (f" · {words}" if words else ""),
-                           {MEMBER_KEY: batch_id, **m, **r})
-            except Exception:  # the row is the record; losing one is logged, the batch goes on
-                log.exception("could not record member publish result for %s", m["entity_slug"])
+            outcomes.append(r["outcome"])
+            _record(registry, inv, batch_id, m, r)
     finally:
+        tried = len(outcomes)
+        ok = bool(outcomes) and all(o in _SUCCESS for o in outcomes) and tried == len(members)
+        summary = f"finished: {tried} of {len(members)} tried" + (f" · stopped: {stopped}" if stopped else "")
         try:
-            _write_row(registry, batch_id, inv, "ok", f"published members: {done} of {len(members)} done",
-                       {BATCH_KEY: batch_id, "members": members, "waiting": waiting, "by": author, "finished": True})
+            _write_row(registry, batch_id, inv, "ok" if ok else "error", summary,
+                       {BATCH_KEY: batch_id, "members": members, "waiting": waiting, "by": author,
+                        "finished": True})
         except Exception:
             log.exception("could not close member publish batch %s", batch_id)
         with _lock:
             if _running.get(inv.get("slug") or "") == batch_id:
                 _running.pop(inv.get("slug") or "", None)
-        loop.close()
-        asyncio.set_event_loop(None)
 
 
-def start_member_publish(registry, inv: dict, author: str, *, background: bool = True) -> dict:
-    """Plan (the same function the confirmation showed), record the batch, and publish its members one at a time
+def start_member_publish(registry, inv: dict, author: str, *, confirmed: list[str] | None = None,
+                         background: bool = True) -> dict:
+    """Plan (the same function the confirmation showed), check the press names exactly that list (`confirmed`, the
+    slugs the confirmation showed; `PlanChanged` otherwise), record the batch, and publish its members one at a time
     in a background thread that carries the caller's context. Returns the batch's first progress read."""
     slug = inv["slug"]
     plan = member_publish_plan(registry, slug)
     members = plan["publish"]
+    if confirmed is None or list(confirmed) != plan["slugs"]:
+        raise PlanChanged(PLAN_CHANGED_WORDS)
     batch_id = f"mp-{uuid.uuid4().hex[:12]}"
     with _lock:
         if slug in _running:
@@ -262,8 +354,10 @@ def latest_batch_id(registry, slug: str) -> str:
 
 def progress_of(registry, slug: str, batch_id: str) -> dict:
     """Each planned member's state from the rows: published / sent · waiting for Egeria (a proof row by its id),
-    not permitted · why, not published · why, failed · why, skipped · why; while running, the next member is
-    "publishing" and the rest "waiting"; once stopped, a member with no row is "not reached"."""
+    not permitted · why, not published · why, failed · why, skipped · why, not reached · sign in again.
+    A member with no row: while running, the next is "publishing" and the rest "waiting"; once the batch row says
+    it finished, "could not tell" (its result row was lost); a batch that stopped without finishing (the process
+    went away), "not reached"."""
     if not batch_id:
         return {"running": False, "members": [], "counts": {}, "words": []}
     rows = _batch_rows(registry, slug)
@@ -271,6 +365,7 @@ def progress_of(registry, slug: str, batch_id: str) -> dict:
     if batch is None:
         return {"running": False, "members": [], "counts": {}, "words": [], "unknown": True}
     planned = batch["_detail"].get("members") or []
+    finished = bool(batch["_detail"].get("finished"))
     results = {}
     for r in reversed(rows):                                      # oldest first: the newest row per member wins
         d = r["_detail"]
@@ -281,11 +376,15 @@ def progress_of(registry, slug: str, batch_id: str) -> dict:
     for m in planned:
         d = results.get((m["entity_type"], m["entity_slug"]))
         if d is None:
-            if running and not publishing_shown:
-                state, publishing_shown = "publishing", True
+            if running:
+                state = "waiting" if publishing_shown else "publishing"
+                publishing_shown = True
+                words = ""
+            elif finished:
+                state, words = COULD_NOT_TELL, "no result was recorded for this member"
             else:
-                state = "waiting" if running else "not_reached"
-            out.append({**m, "state": state, "words": ""})
+                state, words = NOT_REACHED, "the batch stopped before this member"
+            out.append({**m, "state": state, "words": words})
             continue
         state, words = d.get("outcome") or FAILED, d.get("words") or ""
         if state in (PUBLISHED, SENT):
@@ -293,15 +392,15 @@ def progress_of(registry, slug: str, batch_id: str) -> dict:
             proof_id = d.get("proof_id")
             proofs = {p["id"]: p for p in registry.list_catalogue_commit_proofs(m["entity_slug"])}
             if proof_id not in proofs:
-                state, words = "could_not_tell", "no proof row for this publish"
+                state, words = COULD_NOT_TELL, "no proof row for this publish"
         out.append({**m, "state": state, "words": words})
     counts: dict[str, int] = {}
     for o in out:
         counts[o["state"]] = counts.get(o["state"], 0) + 1
     order = [(PUBLISHED, "published"), (SENT, "sent · waiting for Egeria"), (NOT_PERMITTED, "not permitted"),
              (NOT_PUBLISHED, "not published"), (FAILED, "failed"), (SKIPPED, "skipped"),
-             ("could_not_tell", "could not tell"), ("publishing", "publishing"), ("waiting", "waiting"),
-             ("not_reached", "not reached")]
+             (COULD_NOT_TELL, "could not tell"), ("publishing", "publishing"), ("waiting", "waiting"),
+             (NOT_REACHED, "not reached")]
     words = [f"{counts[k]} {w}" for k, w in order if counts.get(k)]
     return {"batch_id": batch_id, "running": running, "members": out, "counts": counts, "words": words,
             "waiting_next_press": batch["_detail"].get("waiting") or [],

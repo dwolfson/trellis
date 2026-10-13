@@ -671,8 +671,15 @@ async function publishMembersFlow(inv, el) {
   btn.innerHTML = cue('running', 'publishing…');
   let p;
   try {
-    p = await publishInvestigationMembers(inv.slug);
+    // The press names exactly the list the confirmation showed; the server refuses (409) if its plan moved.
+    p = await publishInvestigationMembers(inv.slug, Array.isArray(plan.slugs) ? plan.slugs : (plan.publish || []).map((m) => m.entity_slug));
   } catch (err) {
+    if (err.status === 409) {
+      // The list changed (or a publish is already running): nothing was sent; say so on the plan line.
+      host.innerHTML = `<div data-inv-members-plan-changed class="mt-s2 text-caveat">${cue('not_established', err.message)}</div>`;
+      reset();
+      return;
+    }
     reset(err.status === 403 ? cue('no_access', 'not permitted', err.message) : `${esc(label)} ${cue('error', 'not published', err.message)}`);
     if (err.status !== 403) failurePopup('Not published', err.message);
     return;

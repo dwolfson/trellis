@@ -116,10 +116,14 @@ async def _link_status_after(reg, slug: str) -> dict:
 
 def _nothing_permitted(res) -> str:
     """Brief Z3: the 403 words when a members pass permitted nothing: at least one member refused, none linked,
-    and no other member even tried (a member with no asset is a fact, not a permitted write). "" otherwise."""
+    and no other member even tried (a member with no asset, or of a kind not linked from here, is a fact, not a
+    permitted write). "" otherwise."""
+    from resource_explorer.surveyors.egeria_investigation_publisher import KIND_NOT_LINKED_REASON
+
     refused = [m for m in res.members_unlinkable if str(m.get("reason", "")).startswith("not permitted")]
     tried = [m for m in res.members_unlinkable
-             if m not in refused and not str(m.get("reason", "")).startswith("not published")]
+             if m not in refused and not str(m.get("reason", "")).startswith("not published")
+             and m.get("reason") != KIND_NOT_LINKED_REASON]
     if not refused or res.members_linked or tried:
         return ""
     reasons = sorted({str(m["reason"]).removeprefix("not permitted · ") for m in refused})
@@ -593,8 +597,14 @@ async def plan_member_publish(slug: str) -> dict:
     return {**plan, "latest": imp.progress_of(reg, slug, batch)}
 
 
+class MemberPublishPress(BaseModel):
+    #: The member slugs the confirmation showed (`plan.slugs`). The press re-plans and refuses (409) unless the
+    #: plan is still exactly this list: what is sent is what was confirmed.
+    slugs: list[str] | None = None
+
+
 @router.post("/{slug}/publish-members")
-async def publish_members(slug: str) -> dict:
+async def publish_members(slug: str, req: MemberPublishPress | None = None) -> dict:
     """Publish the investigation's unpublished members to Egeria, each through RE's existing per-repository publish
     (`repo_publish.publish_report`), as the signed-in caller, in the background. The list is re-planned here, never
     taken from the page. Answers the batch id and its first progress; 409 while one is running."""
@@ -607,9 +617,14 @@ async def publish_members(slug: str) -> dict:
     author = (getattr(who, "user_id", "") or "") if who else ""
     if not author:
         raise HTTPException(status_code=401, detail="Sign in to publish to Egeria: the record needs an author.")
+    import asyncio
+
+    # Off the event loop (it reads the registry and starts the batch); `to_thread` copies the context, and the
+    # batch copies it again, so the signed-in caller travels with every member's publish.
     try:
-        return imp.start_member_publish(reg, inv, author)
-    except imp.BatchRunning as exc:
+        return await asyncio.to_thread(imp.start_member_publish, reg, inv, author,
+                                       confirmed=(req.slugs if req else None))
+    except (imp.BatchRunning, imp.PlanChanged) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 

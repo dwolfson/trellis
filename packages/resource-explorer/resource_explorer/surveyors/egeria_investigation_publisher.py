@@ -868,6 +868,10 @@ class EgeriaInvestigationPublisher:
 
         linkable: list[dict] = []
         for m in members:
+            if m["entity_type"] not in LINKABLE_MEMBER_TYPES:
+                # Not linked from here whatever Egeria holds: never called "not published" (as link-status says).
+                res.members_unlinkable.append({**m, "reason": KIND_NOT_LINKED_REASON})
+                continue
             asset_guid = self._asset_guid(m["entity_type"], m["entity_slug"])
             if not asset_guid:
                 res.members_unlinkable.append({
