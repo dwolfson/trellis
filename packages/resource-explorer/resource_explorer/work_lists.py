@@ -723,7 +723,7 @@ class WorkLists:
 
         row_ids = enqueue_work_list_members(
             self.registry, slug, guid, attachable, run_id=run_id)
-        attached = self._apply_adds(list(zip(row_ids, (m["entity_slug"] for m in attachable))),
+        attached, attach_error = self._apply_adds(list(zip(row_ids, (m["entity_slug"] for m in attachable))),
                                     clients, _find_element_guid, who)
         removals = self._apply_removals(slug, guid, wl["entity_type"], removed, detachable, detach_refused,
                                         clients, _find_element_guid, who, run_id=run_id)
@@ -744,6 +744,8 @@ class WorkLists:
             # state after the inline drain: attached / not permitted / could not attach / left to the background
             # drain. One entry per queued member, in order.
             "attach": attached,
+            # "" when every inline drain ran; else what raised, in words (the rows stay for the background drain).
+            "attach_error": attach_error,
             "not_published": [{"entity_slug": s_, "entity_type": wl["entity_type"],
                                "words": not_published_words(wl["entity_type"])} for s_ in unpublished],
             "not_resolved": unresolved,
@@ -783,7 +785,7 @@ class WorkLists:
             return {"state": "failed", "words": f"could not be set · {type(exc).__name__}: {exc}"[:300]}
         return {"state": "set", "words": ""}
 
-    def _apply_adds(self, rows: list[tuple[int, str]], clients, find_element_guid, who) -> list[dict]:
+    def _apply_adds(self, rows: list[tuple[int, str]], clients, find_element_guid, who) -> tuple[list[dict], str]:
         """Apply this publish's queued `collection_membership` rows now, one scoped drain per row, as the person
         who pressed publish (owner's ruling 2026-10-13: adds drain inline, as removals already do; before it the
         person waited up to 15 minutes for the scheduler).
@@ -799,16 +801,21 @@ class WorkLists:
         taken here: "attached" (done; the read-back note, if any, follows), "not permitted · <why>" (refused at
         the re-check or by Egeria's security), "could not attach · <why>" (`will_retry` says whether the
         background drain sends it again), or "left to the background drain" (over the cap, still pending, or
-        being sent by the background drain). A drain that raises fails no publish: its rows stay in the outbox.
+        being sent by the background drain). A drain that raises fails no publish: its rows stay in the outbox,
+        and the second value says so in words ("" when every inline drain ran), shown on the page as `attach_error`.
         """
         from resource_explorer.egeria_outbox import NOT_RETRIED, REFUSED_BY_SECURITY, drain_outbox
 
-        for row_id, _ in rows[:INLINE_ATTACH_LIMIT]:
+        failures: list[str] = []
+        for row_id, member in rows[:INLINE_ATTACH_LIMIT]:
             try:
                 drain_outbox(self.registry, clients, find_element_guid, element_id=row_id, identity=who)
-            except Exception:  # drain_outbox never raises by contract; a publish never fails here regardless
+            except Exception as exc:  # drain_outbox never raises by contract; whatever does is said, not hidden
                 log.exception("work list publish: inline drain of outbox row %s failed; left to the background",
                               row_id)
+                failures.append(f"{member}: {type(exc).__name__}: {exc}")
+        error = (f"the inline send failed for {len(failures)} member(s) · left to the background drain · "
+                 + "; ".join(failures))[:500] if failures else ""
         out: list[dict] = []
         for n, (row_id, member) in enumerate(rows):
             row = self.registry.get_outbox_element(row_id) or {}
@@ -835,7 +842,7 @@ class WorkLists:
                              words=f"{ATTACH_FAILED} · {status or 'its outbox row was not found'}"
                                    + (f": {said}" if said else ""))
             out.append(entry)
-        return out
+        return out, error
 
     def _apply_removals(self, slug: str, guid: str, entity_type: str, removed: dict, detachable: list,
                         detach_refused: list, clients, find_element_guid, who, *, run_id: str = "") -> dict:

@@ -2138,6 +2138,10 @@ async function publish(ctx) {
     if (Array.isArray(res.attach)) {
       // Each member by its own outbox row after the inline drain, never by what was asked for.
       if (res.attach.length) bits.push(attachHtml(res.attach));
+      // The inline send itself failed (not a member's write): said, with the error cue; the rows wait for the drain.
+      if (res.attach_error) {
+        bits.push(`<span data-attach-error class="block">${cue('error', 'inline send failed', res.attach_error)}</span>`);
+      }
     } else {
       // An answer without `attach` (an older server): the adds were only queued.
       bits.push(`<span class="tnum">${res.queued_members}</span> membership(s) queued —

@@ -34,9 +34,12 @@ const wlRow = (slug, over = {}) => ({
 let WORK_LISTS; let SCOPE; let CALLS;
 //: Brief Z3: how the publish route answers ('' = as before; 'refused' = 403; 'one-member' = one member refused).
 let PUBLISH_MODE = '';
+//: The publish answer's `attach_error` in 'attach' mode ('' = every inline drain ran).
+let PUBLISH_MODE_ERR = '';
 
 function reset() {
   PUBLISH_MODE = '';
+  PUBLISH_MODE_ERR = '';
   WORK_LISTS = [
     wlRow('sales-databases', { display_name: 'Sales databases', investigation: 'c360' }),
     wlRow('old-postgres', { display_name: 'Old Postgres', description: 'Legacy boxes to look at', member_count: 4 }),
@@ -127,7 +130,8 @@ function stubBackend() {
             words: 'could not attach · RuntimeError: Egeria answered 500' },
           { entity_slug: 'hr', state: 'left to the background drain', status: 'pending',
             words: 'left to the background drain · over 50 in one publish' },
-        ] });
+        ],
+        attach_error: PUBLISH_MODE_ERR });
     }
     if (m && method === 'POST' && PUBLISH_MODE === 'one-member') {
       WORK_LISTS.find((w) => w.slug === m[1]).egeria_guid = 'ccccdddd-1111-2222-3333-444455556666';
@@ -535,6 +539,21 @@ test('a publish shows each member by its add\'s own outcome: a cue plus a short 
   }
   assert.doesNotMatch(note(document), /membership\(s\) queued|applied by the worker/, 'not "queued" when it was applied');
   assert.equal(document.querySelector('#wl-note [data-publish-queued]'), null);
+});
+
+test('an inline send that failed is said with the error cue, the words on hover; none drawn when it ran', async () => {
+  const { document } = await setUp({ open: 'sales-databases' });
+  PUBLISH_MODE = 'attach';
+  act(document, 'publish').click();
+  await tick(200);
+  assert.equal(document.querySelector('#wl-note [data-attach-error]'), null);
+  PUBLISH_MODE_ERR = 'the inline send failed for 1 member(s) · left to the background drain · hr: RuntimeError: boom';
+  act(document, 'publish').click();
+  await tick(200);
+  const c = document.querySelector('#wl-note [data-attach-error] [data-cue="error"]');
+  assert.ok(c);
+  assert.match(text(c), /inline send failed/);
+  assert.equal(c.getAttribute('title'), PUBLISH_MODE_ERR);
 });
 
 /* ── A database list's members by group (wl-0c09fe4404, 2026-10-13) ───────── */

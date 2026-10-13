@@ -231,3 +231,9 @@ def test_a_drain_that_raises_fails_no_publish_and_leaves_the_rows_pending(world,
     out = _publish(world)
     assert {a["state"] for a in out["attach"]} == {"left to the background drain"}
     assert {r["status"] for r in _adds(world).values()} == {"pending"}
+    assert out["attach_error"].startswith("the inline send failed for 2 member(s) · left to the background drain · ")
+    assert "usda: RuntimeError: drain blew up" in out["attach_error"]
+
+
+def test_a_publish_whose_inline_drains_all_ran_says_no_attach_error(world):
+    assert _publish(world)["attach_error"] == ""
