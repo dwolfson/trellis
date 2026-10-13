@@ -170,3 +170,70 @@ check under ISSUE-129: on a note log at end 1, `starting_at_end=2` returned 0.
 - **The two siblings.** Neither is called anywhere in trellis. The `grep` covered `packages/*`, excluding
   `data/repos`.
 - **Other packages.** egeria-advisor and trellis-analytics do not call any of the three methods.
+
+## 3. Notes for the branch
+
+- **136 (the note reads now default to `Note`).** RE has one note reader:
+  `feedback_egeria.py:494` (`find_note`). It already passes `metadata_element_type_name="Note"`, so its
+  request is byte-identical on 6.2.2. RE never calls `get_note_by_guid` or `find_notes`. Note creation
+  (`create_note`) is unchanged in 6.2.2. Brief F's publish passes the type explicitly. Nothing to do.
+- **114 (`pyegeria.guid_or_none`).** It has the same semantics as RE's
+  `surveyors/survey_definition_reader._as_guid`: a str, stripped, non-empty, with no whitespace. There are
+  7 call sites. They are left alone; replacing them would be churn without a behaviour change.
+- **132/127 (cascade delete still never cascades).** Nothing in RE relies on a cascade.
+  - Every RE delete passes `cascade_delete=False` explicitly: `catalogue_gateway.py:887`, with its
+    BEFORE/AFTER log flags at `catalogue_commit.py:1129`. These are pinned by
+    `test_catalogue_commit.py:836,845` and `test_destructive_calls_logged.py`.
+  - `grep` finds no `cascade=True`, `cascadeDelete` or `cascadedDelete` in `resource_explorer/`,
+    trellis-analytics or egeria-advisor.
+  - The one `cascade_delete=True` is `scripts/arch-spike/measure_wire_multi_link.py:151`. It is a throwaway
+    spike's cleanup of the two components it created. Under ISSUE-132 the flag does not reach Egeria. The
+    script is not on any runtime path.
+- **137/141 (the trellis-analytics tile).** Both workarounds are gone.
+  - `trellis_analytics/portal.py` builds the FormatSet with `ActionParameter(analytic_function=...)` and no
+    `function`.
+  - `tests/test_portal_tile.py` no longer fakes an `EgeriaTech`. It installs one whose constructor fails the
+    test. That makes the test stronger: it proves that `exec_report_spec` builds no client for this routine.
+  - trellis-analytics now pins `pyegeria>=6.2.2`, because it depends on both fixes.
+  - The Advisor follow-up is done, in `packages/egeria-advisor/advisor/report_spec_parser.py`.
+    `parse_report_spec_markdown` leaves `function` unset for an analytic-only spec, which keeps
+    `examples/curation_coverage_tile.md` equal to `report_specs()`. `validate_report_spec` returns no
+    warning when `analytic_function` is set, and still warns "No Action Function defined." when neither
+    is set. Both are pinned in `tests/unit/test_report_spec_parser.py`.
+- **135 (released in 6.2.2 too; the `*_by_name` first argument is optional).**
+  `tests/test_actor_graph.py::test_round4_the_fake_rejects_what_real_pyegeria_rejects` pinned 6.2.1's
+  required `name`. The guard now reads the real signature: under 6.2.2 the fake accepts a body-only call,
+  and it still rejects a call the real method rejects. RE's by-name searches pass the name positionally,
+  so their requests are unchanged.
+
+## 4. Live read-only probe (2026-10-12/13 UTC)
+
+The probe was a scratchpad script, run in two venvs:
+- this worktree's venv, on pyegeria 6.2.2
+- the 8813 worktree's venv, on pyegeria 6.2.1, used only to run the same raw reads and nothing else
+
+In both, `dotenv -f packages/resource-explorer/.env run --` supplied the environment, and the environment was
+never printed. The clients came from RE's `egeria_client(Daemon(SCHEDULER))`, the identity the native-survey
+sweep uses. Every call was a read. There were no Egeria, registry or DDL writes. The engine-action and
+process GUIDs came from `step_runs` through a read-only psycopg2 session.
+
+| Read | 6.2.1 | 6.2.2 | RE on 6.2.2 |
+|---|---|---|---|
+| `ReportOriginator` from coco_pharma `f22c59f0` (in progress) | `startingAtEnd` 0/1/2 each return report `3717ed40` (argument ignored) | 0 and 1 return `3717ed40`; 2 returns "No elements found" | `report_guid_for_action` gives `3717ed40-d64b-...`, status IN_PROGRESS |
+| `ReportOriginator` from coco_pharma `3ecb5dba` (finished) | 0/1/2 each return `c9104585` | 0 and 1 return `c9104585`; 2 returns none | gives `c9104585-fdbf-...`, COMPLETED |
+| `ReportOriginator` from AdventureWorks `2660bbe6` | 0/1/2 each return `44153eed` | 0 and 1 return `44153eed`; 2 returns none | gives `44153eed-6c2c-...`, COMPLETED |
+| `ActionRequester` from Catalog-and-Survey process `11429026` (laz_local_egeria_observations) | 0/1/2 each return engine action `705230b4` | 0 and 1 return `705230b4`; 2 returns none | `read_process` gives COMPLETED (from the process instance's own status, so the ActionRequester branch was not needed); the raw read that branch makes (`starting_at_end=1`) returns the one engine action |
+| `ActionRequester` from process `06994d5d` (laz_local_usda) | 0/1/2 each return `eda20b32` | 0 and 1 return `eda20b32`; 2 returns none | `read_process` gives COMPLETED |
+| `SolutionComposition` on egeria_git's 15 components (`SolutionComponent::repo::egeria_git*`) | 7 have relationships: six are children (n=1, related element at end 1) and `5ba8f5a9` is the parent (n=6, all at end 2) | identical | `_composition_children`: `5ba8f5a9` has 6 children (known); the six children have 0 children (known); total 6 |
+
+What the probe shows:
+- 6.2.2 really does send `startingAtEnd`, and Egeria honours it with "the starting element is at end N".
+- At the end RE asks for (0 for ReportOriginator, 1 for ActionRequester), 6.2.2 returns exactly what 6.2.1
+  returned. No result RE reads changed.
+- The blueprint read is unchanged: the body's paging wins, and the end-1 filter still separates the parent
+  from its children.
+
+One probe artefact, kept here so nobody chases it. A raw `MetadataExpert` client used after a `port_session`
+had closed its event loop failed, with "bound to a different event loop" or a connect-level
+`CLIENT_ERROR_400`. This is ISSUE-96 (a client is bound to the loop that first drives it). The probe was
+reordered to do the raw reads first. RE builds one client per port, so it is not affected.
