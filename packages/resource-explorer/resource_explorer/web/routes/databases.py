@@ -1047,7 +1047,8 @@ async def get_database_views(slug: str) -> dict:
         return {"state": "not_measured", "run": run, "views": [],
                 "reason": "this survey did not run the sql_analysis step, so views were not analyzed"}
     return {"state": "measured", "run": run, "reason": "", "views": [
-        {"schema": v.get("schema") or v.get("schema_name") or "",
+        {"kind": v.get("kind") or "view",
+         "schema": v.get("schema") or v.get("schema_name") or "",
          "name": v.get("name") or v.get("view_name") or "",
          "definition": v.get("definition") or v.get("view_definition") or "",
          "dependencies": v.get("dependencies") or v.get("depends_on") or [],
