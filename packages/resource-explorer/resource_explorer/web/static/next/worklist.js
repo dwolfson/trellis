@@ -2116,13 +2116,24 @@ async function publish(ctx) {
       `<span class="tnum">${res.queued_members}</span> membership(s) queued —
        they are applied by the worker that drains the outbox, not here.`,
     ];
-    if (res.members_without_an_egeria_asset?.length) {
-      // Named, not counted. These are not failed writes to retry: the repo
-      // has never been published, so there is no asset to attach to.
-      bits.push(`<span class="text-accent-ink">
-        <span class="tnum">${res.members_without_an_egeria_asset.length}</span>
-        member(s) have no Egeria asset and were not attached:
-        ${esc(res.members_without_an_egeria_asset.join(', '))}</span>`);
+    if (res.queued_to_attach?.length) {
+      bits.push(`<span data-publish-queued>queued to attach: ${esc(res.queued_to_attach.join(', '))}.</span>`);
+    }
+    // Named, not counted, with the member's type. These are not failed writes to retry: the resource has no
+    // Egeria element yet, so there is nothing to attach.
+    const unpublished = res.not_published
+      || (res.members_without_an_egeria_asset || []).map((s) => ({ entity_slug: s, words: 'not published to Egeria yet' }));
+    if (unpublished.length) {
+      bits.push(`<span class="text-accent-ink" data-publish-unpublished>
+        <span class="tnum">${unpublished.length}</span> not attached:
+        ${unpublished.map((m) => `${esc(m.entity_slug)} · ${esc(m.words)}`).join('; ')}</span>`);
+    }
+    // RE could not establish whether these have an element (unsupported type, not held, unreadable): never
+    // folded into "not published".
+    if (res.not_resolved?.length) {
+      bits.push(`<span class="text-state-warn" data-publish-unresolved>
+        <span class="tnum">${res.not_resolved.length}</span> not checked:
+        ${res.not_resolved.map((m) => `${esc(m.entity_slug)} · ${esc(m.words)}`).join('; ')}</span>`);
     }
     if (res.not_permitted?.length) bits.push(notPermittedHtml(res.not_permitted));
     const removals = removalsHtml(res.removals);

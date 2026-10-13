@@ -106,6 +106,15 @@ function stubBackend() {
           waiting: [], withdrawn_before_sent: [] },
         link_back: { url: 'https://re.example.org/next?worklist=x', state: 'failed', words: 'could not be set · RuntimeError: no' } });
     }
+    if (m && method === 'POST' && PUBLISH_MODE === 'db-members') {
+      WORK_LISTS.find((w) => w.slug === m[1]).egeria_guid = 'ccccdddd-1111-2222-3333-444455556666';
+      return ok({ type_name: 'WorkingSet', egeria_guid: 'ccccdddd-1111-2222-3333-444455556666', queued_members: 2,
+        queued_to_attach: ['laz_local_usda', 'laz_local_adventureworks'],
+        members_without_an_egeria_asset: ['treasury'],
+        not_published: [{ entity_slug: 'treasury', entity_type: 'database', words: 'not published to Egeria yet · database' }],
+        not_resolved: [{ entity_slug: 'gone', entity_type: 'database', words: "could not resolve · no database 'gone' in RE's registry" }],
+        not_permitted: [] });
+    }
     if (m && method === 'POST' && PUBLISH_MODE === 'one-member') {
       WORK_LISTS.find((w) => w.slug === m[1]).egeria_guid = 'ccccdddd-1111-2222-3333-444455556666';
       return ok({ type_name: 'WorkingSet', egeria_guid: 'ccccdddd-1111-2222-3333-444455556666', queued_members: 1,
@@ -483,4 +492,21 @@ test('a link back that could not be set is said, with the error cue', async () =
   assert.ok(lb);
   assert.match(text(lb), /link back to RE not set · could not be set · RuntimeError: no/);
   assert.ok(lb.querySelector('[data-cue="error"]'));
+});
+
+/* ── A database list's members by group (wl-0c09fe4404, 2026-10-13) ───────── */
+
+test('a database publish names what was queued, what has no element (with its type), and what was not checked', async () => {
+  const { document } = await setUp({ open: 'sales-databases' });
+  PUBLISH_MODE = 'db-members';
+  act(document, 'publish').click();
+  await tick(200);
+  assert.match(text(document.querySelector('#wl-note [data-publish-queued]')),
+    /queued to attach: laz_local_usda, laz_local_adventureworks/);
+  assert.match(text(document.querySelector('#wl-note [data-publish-unpublished]')),
+    /1 not attached: treasury · not published to Egeria yet · database/);
+  const unresolved = document.querySelector('#wl-note [data-publish-unresolved]');
+  assert.match(text(unresolved), /1 not checked: gone · could not resolve · no database 'gone' in RE's registry/);
+  assert.doesNotMatch(text(document.querySelector('#wl-note [data-publish-unpublished]')), /gone/,
+    'not resolved is never folded into not published');
 });

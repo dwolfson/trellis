@@ -146,6 +146,40 @@ def _additional_properties(element) -> dict:
     return dict(found) if isinstance(found, dict) else {}
 
 
+#: The resource types a work list's members can be, and so the ones `member_egeria_guid` knows how to read.
+MEMBER_ENTITY_TYPES = ("repo", "database", "filesystem")
+
+
+class MemberUnresolved(Exception):
+    """RE could not say whether a work-list member has an Egeria element: an unsupported type, a member that is
+    not in RE's registry, or a registry read that failed. Never the same answer as "not published to Egeria yet"."""
+
+
+def member_egeria_guid(registry, entity_type: str, slug: str) -> str:
+    """A work-list member's own Egeria asset GUID, by its type; "" means RE holds the resource and it has no
+    Egeria element yet. The ONE lookup every work-list path uses (publish's attach split, the removals' map).
+
+    The getters are `curation_egeria._entity`'s, the per-type read the curation paths already use
+    (`registry.get` / `get_database` / `get_filesystem`). Raises `MemberUnresolved` when the answer is not known:
+    a type with no getter, a slug RE does not hold, or a read that failed. A bare `registry.get(slug)` answered
+    None for every database and file-system member, which read as "never published" (wl-0c09fe4404, 2026-10-13)."""
+    from resource_explorer.curation_egeria import _entity
+
+    if entity_type not in MEMBER_ENTITY_TYPES:
+        raise MemberUnresolved(f"members of type '{entity_type or '(none)'}' are not supported")
+    try:
+        entity = _entity(registry, entity_type, slug)
+    except Exception as exc:  # noqa: BLE001 - a failed read is "could not resolve", never "not published"
+        raise MemberUnresolved(f"could not read RE's record · {type(exc).__name__}: {exc}"[:300]) from exc
+    if entity is None:
+        raise MemberUnresolved(f"no {entity_type} '{slug}' in RE's registry")
+    return str(getattr(entity, "egeria_asset_guid", "") or "").strip()
+
+
+def not_published_words(entity_type: str) -> str:
+    return f"not published to Egeria yet · {entity_type}"
+
+
 def _refused(row: dict) -> bool:
     """An add that was REFUSED (the drain's zone re-check, or Egeria's security) was never applied: it cannot have
     landed, so it is not "maybe attached"."""
@@ -270,10 +304,10 @@ class WorkLists:
                 (slug,)).fetchall()
         out = dict(row)
         out["members"] = [dict(m) for m in members]
-        self._attach_dispositions(out["members"])
+        self._attach_dispositions(out["members"], out.get("entity_type") or "repo")
         return out
 
-    def _attach_dispositions(self, members: list[dict]) -> None:
+    def _attach_dispositions(self, members: list[dict], entity_type: str = "repo") -> None:
         """Add each member's current disposition, for grouping in the matrix.
 
         Dispositions are keyed by github_url, not by slug, so this is a
@@ -288,6 +322,10 @@ class WorkLists:
         for m in members:
             m.setdefault("disposition", "")
             m.setdefault("github_url", "")
+            if entity_type != "repo":
+                # Dispositions are keyed by a repo's github_url; `registry.get` reads repos only, so a database or
+                # file-system slug that happens to name a repo would borrow that repo's verdict.
+                continue
             try:
                 # registry.get() returns a Project DATACLASS, not a dict —
                 # a .get() call on it raises rather than returning None, and
@@ -584,10 +622,14 @@ class WorkLists:
         if refused_collection:
             raise CurationDenied(refused_collection.removeprefix("not permitted · "))
 
-        attachable, unpublished = [], []
+        attachable, unpublished, unresolved = [], [], []
         for m in wl["members"]:
-            project = self.registry.get(m["entity_slug"])
-            member_guid = (getattr(project, "egeria_asset_guid", "") or "") if project else ""
+            try:
+                member_guid = member_egeria_guid(self.registry, wl["entity_type"], m["entity_slug"])
+            except MemberUnresolved as exc:
+                unresolved.append({"entity_slug": m["entity_slug"], "entity_type": wl["entity_type"],
+                                   "words": f"could not resolve · {exc}"})
+                continue
             if member_guid:
                 attachable.append({
                     "member_guid": member_guid,
@@ -609,7 +651,8 @@ class WorkLists:
         # cleared, a cache emptied) is NOT removed: only one that now resolves to a DIFFERENT GUID leaves its old
         # GUID behind as a removal.
         current_guids = {m["member_guid"] for m in attachable} | {m["member_guid"] for m, _ in refused}
-        resolved = {**{s_: "" for s_ in unpublished},
+        # An unresolved member (unknown type, unreadable) is held like an unpublished one: never removed on a guess.
+        resolved = {**{s_: "" for s_ in unpublished}, **{u["entity_slug"]: "" for u in unresolved},
                     **{m["entity_slug"]: m["member_guid"] for m in attachable + [m for m, _ in refused]}}
         recorded = recorded_memberships(self.registry, slug, existing) if existing else {}
         removed = {g: r for g, r in recorded.items()
@@ -679,6 +722,12 @@ class WorkLists:
             # Named, not counted: "3 could not be attached" is not actionable
             # and "3 could not be attached: a, b, c" is.
             "members_without_an_egeria_asset": unpublished,
+            # The groups, by name: queued to attach; held in RE with no Egeria element (with its type); and ones
+            # whose element RE could not establish (never folded into "not published").
+            "queued_to_attach": [m["entity_slug"] for m in attachable],
+            "not_published": [{"entity_slug": s_, "entity_type": wl["entity_type"],
+                               "words": not_published_words(wl["entity_type"])} for s_ in unpublished],
+            "not_resolved": unresolved,
             # Brief Z3: each member the caller may not attach, with its words; the rest were queued.
             "not_permitted": not_permitted,
             # Members removed in RE since the last publish, each by its outbox row's own outcome.
