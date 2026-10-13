@@ -22,9 +22,12 @@ const CUES = {
 
 export function stateCueHtml(state, reason = '') {
   const c = CUES[state] || { entry: STATES.not_established, word: 'could not read' };
-  const tone = c.entry.tone === 'text-state-ok' ? 'text-state-ok' : 'text-ink-muted';
-  return `<span class="${tone}" data-cue="${esc(state)}" title="${esc(reason || c.word)}">`
-    + `<span class="font-glyph" aria-hidden="true">${c.entry.glyph}</span> ${esc(c.word)}</span>`;
+  const attrs = `data-cue="${esc(state)}" title="${esc(reason || c.word)}"`;
+  const inner = `<span class="font-glyph" aria-hidden="true">${c.entry.glyph}</span> ${esc(c.word)}</span>`;
+  // Two literal class strings, never an interpolated one, so the CSS build and its coverage test can read them.
+  return c.entry.tone === 'text-state-ok'
+    ? `<span class="text-state-ok" ${attrs}>${inner}`
+    : `<span class="text-ink-muted" ${attrs}>${inner}`;
 }
 
 function lineHtml(l) {
@@ -32,7 +35,7 @@ function lineHtml(l) {
     ? `<details class="inline ml-s2"><summary class="inline cursor-pointer text-ink-muted">which</summary>`
       + `<span class="block text-caveat text-ink-muted">${l.names.map(esc).join(', ')}</span></details>` : '';
   return `<li data-coverage-line="${esc(l.key)}" data-count="${esc(l.count)}">`
-    + `<span class="tabular-nums">${esc(l.count)}</span> ${esc(l.label)}${names}</li>`;
+    + `<span>${esc(l.count)}</span> ${esc(l.label)}${names}</li>`;
 }
 
 function groupHtml(g) {
