@@ -211,13 +211,28 @@ class WorkLists:
                          (investigation, slug))
 
     def set_member(self, slug: str, entity_slug: str, *,
-                   rationale: str = "", confidence: int | None = None) -> None:
-        """Add a member, or update the reason it is there."""
+                   rationale: str = "", confidence=None) -> None:
+        """Add a member, or update the reason it is there.
+
+        `confidence` is checked by the same function the outbox sends it with
+        (`egeria_outbox.membership_confidence`: an int 0-100; ValueError otherwise), so a value stored here
+        is one Egeria can hold. None leaves an existing member's confidence as it is (a rationale-only
+        update, e.g. the journal's, must not wipe it). Clearing a confidence is not offered: Egeria merges
+        relationship properties, so a cleared value would need its own write (follow-up)."""
+        from resource_explorer.egeria_outbox import membership_confidence
+
+        if confidence is not None:
+            confidence = membership_confidence(confidence)
         with self._conn() as conn:
             existing = conn.execute(
                 "SELECT 1 FROM work_list_members WHERE work_list_slug = ? AND entity_slug = ?",
                 (slug, entity_slug)).fetchone()
-            if existing:
+            if existing and confidence is None:
+                conn.execute(
+                    "UPDATE work_list_members SET rationale = ?"
+                    " WHERE work_list_slug = ? AND entity_slug = ?",
+                    (rationale, slug, entity_slug))
+            elif existing:
                 conn.execute(
                     "UPDATE work_list_members SET rationale = ?, confidence = ?"
                     " WHERE work_list_slug = ? AND entity_slug = ?",

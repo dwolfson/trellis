@@ -70,8 +70,13 @@ def list_outbox(
         status=status, run_id=run_id, entity_slug=entity_slug, limit=limit,
     )
     # `destructive` tells the panel to draw no Retry on this row, so the control is absent rather than refused.
+    # `not_retryable` (the words) likewise: a dead row a retry would fail the same way, e.g. a membership
+    # confidence RE refused to send.
+    from resource_explorer.egeria_outbox import retry_refusal
+
     for r in rows:
         r["destructive"] = is_destructive_kind(r.get("element_kind", ""))
+        r["not_retryable"] = retry_refusal(r)
     return OutboxListResponse(
         counts=registry.outbox_counts(),
         rows=rows,
@@ -100,6 +105,12 @@ def retry_outbox_element(row_id: int, request: Request) -> dict:
                 "detaches in Egeria, so it is never retried from here. Press the original control again."
             ),
         )
+    if existing is not None:
+        from resource_explorer.egeria_outbox import retry_refusal
+
+        why = retry_refusal(existing)
+        if why:
+            raise HTTPException(status_code=409, detail=f"Element {row_id} is not retried from here: {why}.")
     if registry.retry_outbox_element(row_id):
         return {"retried": True, "id": row_id}
     rows = registry.list_outbox_elements(limit=1000)

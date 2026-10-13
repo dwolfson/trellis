@@ -448,7 +448,6 @@ def _create_collection_membership(clients: "OutboxClients", payload: dict) -> st
             "class": "NewRelationshipRequestBody",
             "properties": dict(props, **{"class": "CollectionMembershipProperties"}),
         })
-        _check_membership_landed(cm, payload["collection_guid"], payload["member_guid"], props)
     else:
         cm.add_to_collection(payload["collection_guid"], payload["member_guid"])
     return ""
@@ -512,34 +511,80 @@ def collection_membership_properties(payload: dict) -> dict:
     return props
 
 
-def _check_membership_landed(cm, collection_guid: str, member_guid: str, sent: dict) -> None:
-    """Read the membership back and refuse a 'done' for a property Egeria did not keep.
+#: The start of a dead membership row's words when RE refused the confidence it would have sent. A Retry
+#: would send the same stored value, so the outbox pane draws none on it (`retry_refusal`).
+NOT_SENT_CONFIDENCE = "not sent: confidence"
 
-    Egeria drops a property name it does not know and still answers success, so the write's own answer
-    cannot show the drop: only the relationship as it reads back can. A property that did not land
-    raises OutboxNotKept naming it: the row goes dead at once with those words (a resend would carry the
-    same body and be dropped the same way).
+#: Members are read from the MEMBER's side: the collections one element belongs to, not every member of
+#: the collection, so one read is small whatever the collection's size.
+MEMBERSHIP_READ_BACK_PAGE = 100
 
-    A read that fails, or that cannot find the member, cannot tell either way: logged, and the row is
-    done as it was before this check (the write itself succeeded)."""
+
+def _relationship_property(props, name: str):
+    """One property of a relationship as MetadataExpert returns it: `propertyValueMap.<name>.primitiveValue`
+    (or an enum's `symbolicName`); a flat `{name: value}` shape is read too. None when absent."""
+    props = props if isinstance(props, dict) else {}
+    value = (props.get("propertyValueMap") or {}).get(name)
+    if isinstance(value, dict):
+        for key in ("primitiveValue", "symbolicName"):
+            if key in value:
+                return value[key]
+    return props.get(name)
+
+
+def verify_membership_landed(row: dict, clients: "OutboxClients") -> str:
+    """After a `collection_membership` write: read the relationship back and compare what was sent.
+
+    Egeria drops a property name it does not know and still answers success, so only the relationship as
+    it reads back can show a drop. Returns the note for the done row ('' when every sent property is
+    there, or when nothing was sent: then no read at all). Raises OutboxNotKept naming each property that
+    did not land: the row goes dead at once (a resend carries the same body).
+
+    The read is ONE call from the member's side, `MetadataExpert.get_related_metadata_elements(member,
+    "CollectionMembership", ...)` (measured read-only on 6.2, 2026-10-13: direction-blind, each item's
+    `element` is the collection, `type.typeName` the relationship, `relationshipProperties.propertyValueMap`
+    the values). A read that fails, or that does not show this collection, cannot tell either way: the
+    row is done, and the note says the properties were not confirmed."""
     try:
-        members = cm.get_collection_members(collection_guid=collection_guid, output_format="JSON")
-    except Exception as exc:
-        log.warning("Membership %s -> %s written; read-back failed (%s: %s), properties not confirmed",
-                    collection_guid, member_guid, type(exc).__name__, exc)
-        return
+        payload = json.loads(row.get("payload_json") or "{}")
+    except (TypeError, ValueError):
+        return ""
+    sent = collection_membership_properties(payload)
+    if not sent:
+        return ""
+    collection_guid, member_guid = payload.get("collection_guid", ""), payload.get("member_guid", "")
+    try:
+        answer = clients.require("metadata_expert").get_related_metadata_elements(
+            member_guid, "CollectionMembership", {"class": "ResultsRequestBody"},
+            page_size=MEMBERSHIP_READ_BACK_PAGE)
+    except Exception as exc:  # noqa: BLE001 — any failure means "could not tell", said on the row
+        return f"written; properties not confirmed: read-back failed ({type(exc).__name__}: {str(exc)[:200]})"
+    items = (answer.get("elementList") or []) if isinstance(answer, dict) else []
     rel = None
-    for m in members if isinstance(members, list) else []:
-        if ((m or {}).get("elementHeader") or {}).get("guid") == member_guid:
-            rel = ((m.get("relatedBy") or {}).get("relationshipProperties")) or {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if ((item.get("type") or {}).get("typeName") == "CollectionMembership"
+                and (item.get("element") or {}).get("elementGUID") == collection_guid):
+            rel = item.get("relationshipProperties") or {}
             break
     if rel is None:
-        log.warning("Membership %s -> %s written; the member is not in the read-back, properties not "
-                    "confirmed", collection_guid, member_guid)
-        return
-    dropped = [f"{k} (sent {v!r}, read back {rel.get(k)!r})" for k, v in sent.items() if rel.get(k) != v]
+        return "written; properties not confirmed: the membership is not in the read-back"
+    dropped = [f"{k} (sent {v!r}, read back {_relationship_property(rel, k)!r})"
+               for k, v in sent.items() if _relationship_property(rel, k) != v]
     if dropped:
         raise OutboxNotKept("Egeria accepted the membership but did not keep: " + "; ".join(dropped))
+    return ""
+
+
+def retry_refusal(row: dict) -> str:
+    """Why a dead row is not offered a Retry (beyond a destructive kind), or ''. A membership whose stored
+    confidence RE refused would be refused again: the value has to be corrected on the work list first."""
+    if (row.get("element_kind") == "collection_membership"
+            and str(row.get("last_error") or "").startswith(NOT_SENT_CONFIDENCE)):
+        return ("the stored confidence is not a number from 0 to 100, so a retry would refuse it again: "
+                "correct it on the work list and publish again")
+    return ""
 
 
 def _create_resource_list(clients: "OutboxClients", payload: dict) -> str:
@@ -1202,6 +1247,12 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
                     _row_identity(row, identity):
                 guid = apply_element(row, clients, find_element_guid,
                                      resolve_row_guids=registry.get_outbox_guids)
+            done_note = ""
+            if row.get("element_kind") == "collection_membership":
+                # Timed apart from the write: the read-back is a query, not part of the write's latency.
+                with time_egeria_call(registry, "outbox:collection_membership:read_back", "query"), \
+                        _row_identity(row, identity):
+                    done_note = verify_membership_landed(row, clients)
         except OutboxNotReadyError as exc:
             # Not a failure: this link's referent annotation(s) have not
             # landed yet. Hand it back to 'pending' with no attempt burned —
@@ -1255,7 +1306,7 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
             log_at("Outbox row %s (%s %s) -> %s: %s",
                    row["id"], row["element_kind"], row["qualified_name"], status, exc)
             continue
-        registry.mark_outbox_done(row["id"], guid)
+        registry.mark_outbox_done(row["id"], guid, note=done_note)
         summary["done"] += 1
 
     if summary["dead"]:

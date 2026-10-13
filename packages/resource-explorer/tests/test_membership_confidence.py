@@ -6,9 +6,11 @@ The bug: RE sent `expectedConfidence`, which is not a field of Egeria 6.2's `Col
 `notes`). The class is `@JsonIgnoreProperties(ignoreUnknown=true)`, so Egeria dropped the name, answered
 success, and the relationship read `confidence: 0`. The outbox row said done.
 
-No Egeria here. `EgeriaCollections` is the only fake: the CollectionManager boundary, every call bound to the
-installed pyegeria signature first, and it keeps a relationship property the way Egeria does (known names
-only, `confidence` 0 when not sent). Zone access reads are faked at their own client boundary (`zone_fakes`),
+No Egeria here. `EgeriaCollections` is the only fake: the CollectionManager write and the MetadataExpert
+member-side read, every call bound to the installed pyegeria signature first. It keeps a relationship
+property the way Egeria does (known names only, `confidence` 0 when not sent) and answers the read in the
+shape measured read-only on 6.2 (2026-10-13): `elementList[].element.elementGUID` is the collection,
+`type.typeName` the relationship, `relationshipProperties.propertyValueMap.<name>.primitiveValue` the value. Zone access reads are faked at their own client boundary (`zone_fakes`),
 with no zone in use.
 """
 from __future__ import annotations
@@ -41,16 +43,27 @@ EGERIA_MEMBERSHIP_FIELDS = frozenset({
 
 def _sig(name: str) -> inspect.Signature:
     from pyegeria.omvs.collection_manager import CollectionManager
+    from pyegeria.omvs.metadata_expert import MetadataExpert
 
-    return inspect.signature(getattr(CollectionManager, name))
+    cls = MetadataExpert if name == "get_related_metadata_elements" else CollectionManager
+    return inspect.signature(getattr(cls, name))
+
+
+def _value(v):
+    kind = "int" if isinstance(v, int) else "string"
+    return {"class": "PrimitiveTypePropertyValue", "typeName": kind, "primitiveValue": v}
 
 
 class EgeriaCollections:
     """The CollectionManager boundary, as Egeria 6.2 behaves for these three calls."""
 
-    def __init__(self, *, keep=EGERIA_MEMBERSHIP_FIELDS, fail_read: bool = False):
+    def __init__(self, *, keep=EGERIA_MEMBERSHIP_FIELDS, fail_read: bool = False, hide: bool = False,
+                 relationship_type: str = "CollectionMembership"):
         self.keep = keep
         self.fail_read = fail_read
+        self.hide = hide                                  # the read does not show the membership
+        self.relationship_type = relationship_type        # what the read says the relationship is
+        self.reads = 0
         self.sent: list[dict | None] = []                 # every add_to_collection body, as sent
         self.relationships: dict[tuple[str, str], dict] = {}
 
@@ -69,14 +82,20 @@ class EgeriaCollections:
         self.relationships[(coll, member)] = {"class": "CollectionMembershipProperties",
                                              "typeName": "CollectionMembership", "confidence": 0, **kept}
 
-    def get_collection_members(self, *a, **kw):
-        bound = _sig("get_collection_members").bind(self, *a, **kw)
+    def get_related_metadata_elements(self, *a, **kw):
+        bound = _sig("get_related_metadata_elements").bind(self, *a, **kw)
+        self.reads += 1
         if self.fail_read:
             raise ConnectionError("platform went away")
-        coll = bound.arguments.get("collection_guid")
-        return [{"elementHeader": {"guid": m}, "properties": {"qualifiedName": f"Asset::{m}"},
-                 "relatedBy": {"relationshipProperties": dict(p)}}
-                for (c, m), p in self.relationships.items() if c == coll]
+        member = bound.arguments["guid"]
+        assert bound.arguments["relationship_type"] == "CollectionMembership"
+        items = [{"relationshipGUID": f"rel-{c}-{m}", "type": {"typeName": self.relationship_type},
+                  "element": {"elementGUID": c},
+                  "relationshipProperties": {
+                      "propertyValueMap": {k: _value(v) for k, v in p.items() if k not in ("class", "typeName")},
+                      "propertyNames": sorted(k for k in p if k not in ("class", "typeName"))}}
+                 for (c, m), p in self.relationships.items() if m == member and not self.hide]
+        return {"startingElement": {"elementGUID": member}, "elementList": items, "mermaidGraph": ""}
 
 
 class _Clients:
@@ -84,7 +103,7 @@ class _Clients:
         self.cm = cm
 
     def require(self, name):
-        assert name == "collection_manager"
+        assert name in ("collection_manager", "metadata_expert")
         return self.cm
 
 
@@ -93,6 +112,8 @@ def test_the_fake_rejects_what_real_pyegeria_rejects():
         EgeriaCollections().add_to_collection("c")                       # element_guid is required
     with pytest.raises(TypeError):
         EgeriaCollections().add_to_collection("c", "m", body={}, nonsense=1)
+    with pytest.raises(TypeError):
+        EgeriaCollections().get_related_metadata_elements("m", "CollectionMembership")   # body is required
 
 
 @pytest.fixture
@@ -116,7 +137,8 @@ def _queue(registry, **extra) -> int:
 def _drain(registry, cm):
     from resource_explorer.egeria_outbox import OutboxClients, drain_outbox
 
-    return drain_outbox(registry, OutboxClients(collection_manager=cm), lambda qn: "", limit=10)
+    return drain_outbox(registry, OutboxClients(collection_manager=cm, metadata_expert=cm), lambda qn: "",
+                        limit=10)
 
 
 def _row(registry, slug="w"):
@@ -147,12 +169,13 @@ class TestTheBody:
         assert "confidence" not in cm.sent[0]["properties"]
         assert cm.sent[0]["properties"]["membershipRationale"] == "why"
 
-    def test_neither_sends_no_body(self, registry, monkeypatch):
+    def test_neither_sends_no_body_and_reads_nothing_back(self, registry, monkeypatch):
         permit_publish_routes(monkeypatch, USER)
         _queue(registry)
         cm = EgeriaCollections()
         _drain(registry, cm)
-        assert cm.sent == [None]
+        assert cm.sent == [None] and cm.reads == 0
+        assert (_row(registry)["status"], _row(registry)["last_error"]) == ("done", "")
 
     @pytest.mark.parametrize("raw, sent", [(80, 80), ("80", 80), (79.6, 80), (0, 0), (100, 100)])
     def test_a_number_is_coerced_to_an_int(self, registry, monkeypatch, raw, sent):
@@ -207,12 +230,50 @@ class TestTheReadBack:
         _drain(registry, cm)
         assert len(cm.sent) == 1
 
-    def test_a_failed_read_leaves_the_write_done(self, registry, monkeypatch):
+    def test_every_property_kept_is_done_with_no_note_after_one_read(self, registry, monkeypatch):
+        permit_publish_routes(monkeypatch, USER)
+        _queue(registry, membership_rationale="why", expected_confidence=80)
+        cm = EgeriaCollections()
+        _drain(registry, cm)
+        assert (_row(registry)["status"], _row(registry)["last_error"]) == ("done", "")
+        assert cm.reads == 1
+
+    def test_a_dropped_rationale_is_named(self, registry, monkeypatch):
+        permit_publish_routes(monkeypatch, USER)
+        _queue(registry, membership_rationale="why", expected_confidence=80)
+        cm = EgeriaCollections(keep=frozenset({"confidence"}))
+        _drain(registry, cm)
+        row = _row(registry)
+        assert row["status"] == "dead"
+        assert row["last_error"] == ("Egeria accepted the membership but did not keep: "
+                                     "membershipRationale (sent 'why', read back None)")
+
+    def test_a_membership_missing_from_the_read_back_is_done_and_says_so(self, registry, monkeypatch):
+        permit_publish_routes(monkeypatch, USER)
+        _queue(registry, expected_confidence=80)
+        cm = EgeriaCollections(hide=True)
+        _drain(registry, cm)
+        row = _row(registry)
+        assert row["status"] == "done"
+        assert row["last_error"] == "written; properties not confirmed: the membership is not in the read-back"
+
+    def test_another_relationship_to_the_collection_is_not_taken_for_the_membership(self, registry, monkeypatch):
+        permit_publish_routes(monkeypatch, USER)
+        _queue(registry, expected_confidence=80)
+        cm = EgeriaCollections(relationship_type="ResourceList")
+        _drain(registry, cm)
+        assert _row(registry)["last_error"] == ("written; properties not confirmed: "
+                                                "the membership is not in the read-back")
+
+    def test_a_failed_read_leaves_the_write_done_and_says_so(self, registry, monkeypatch):
         permit_publish_routes(monkeypatch, USER)
         _queue(registry, expected_confidence=80)
         cm = EgeriaCollections(fail_read=True)
         _drain(registry, cm)
-        assert _row(registry)["status"] == "done"
+        row = _row(registry)
+        assert row["status"] == "done"
+        assert row["last_error"] == ("written; properties not confirmed: read-back failed "
+                                     "(ConnectionError: platform went away)")
         assert cm.relationships[("wg", "g-q")]["confidence"] == 80
 
 
@@ -250,7 +311,9 @@ def test_work_list_publish_lands_the_members_confidence_on_the_relationship(regi
     assert all("expectedConfidence" not in (b or {}).get("properties", {}) for b in cm.sent)
 
 
-def test_the_route_refuses_a_confidence_egeria_cannot_hold(registry, monkeypatch):
+def test_the_route_checks_confidence_with_the_outboxs_own_rule(registry, monkeypatch):
+    """One source: the route's 422 comes from `membership_confidence`, the function the outbox sends with.
+    (Pydantic's int had it backwards: it took `true` and refused 79.6.)"""
     from fastapi.testclient import TestClient
 
     from resource_explorer.work_lists import WorkLists
@@ -264,7 +327,41 @@ def test_the_route_refuses_a_confidence_egeria_cannot_hold(registry, monkeypatch
 
     slug = WorkLists(registry).create("W", ["q"], entity_type="repo", created_by=USER)["slug"]
     client = TestClient(app)
-    assert client.post(f"/api/work-lists/{slug}/members",
-                       json={"entity_slug": "q", "confidence": 150}).status_code == 422
-    r = client.post(f"/api/work-lists/{slug}/members", json={"entity_slug": "q", "confidence": 70})
+    for bad, words in ((150, "outside Egeria's 0-100"), (True, "is not a number"), ("high", "is not a number")):
+        r = client.post(f"/api/work-lists/{slug}/members", json={"entity_slug": "q", "confidence": bad})
+        assert r.status_code == 422 and words in r.json()["detail"], (bad, r.text)
+    r = client.post(f"/api/work-lists/{slug}/members", json={"entity_slug": "q", "confidence": 79.6})
     assert r.status_code == 200, r.text
+    assert [m["confidence"] for m in r.json()["members"]] == [80]
+
+
+class TestSetMember:
+    def test_a_rationale_only_update_keeps_the_confidence(self, registry):
+        """journal.py's `set_member(slug, entity, rationale=body)` used to write confidence = NULL."""
+        from resource_explorer.work_lists import WorkLists
+
+        wls = WorkLists(registry)
+        slug = wls.create("W", ["q"], entity_type="repo", created_by=USER)["slug"]
+        wls.set_member(slug, "q", rationale="first", confidence=70)
+        wls.set_member(slug, "q", rationale="a journal entry")
+        assert [(m["rationale"], m["confidence"]) for m in wls.get(slug)["members"]] == [("a journal entry", 70)]
+
+    def test_a_second_journal_suggestion_keeps_the_confidence(self, registry):
+        from resource_explorer.journal import Journal
+        from resource_explorer.work_lists import WorkLists
+
+        j = Journal(registry)
+        slug = j.write("repo", "q", author=USER, body="first", suggest_to=["dbas"])["work_lists"][0]["work_list"]
+        WorkLists(registry).set_member(slug, "q", rationale="first", confidence=70)
+        j.write("repo", "q", author=USER, body="written again", suggest_to=["dbas"])   # journal.py:125
+        m = WorkLists(registry).get(slug)["members"][0]
+        assert (m["rationale"], m["confidence"]) == ("written again", 70)
+
+    def test_a_value_egeria_cannot_hold_is_not_stored(self, registry):
+        from resource_explorer.work_lists import WorkLists
+
+        wls = WorkLists(registry)
+        slug = wls.create("W", ["q"], entity_type="repo", created_by=USER)["slug"]
+        with pytest.raises(ValueError):
+            wls.set_member(slug, "q", confidence=101)
+        assert wls.get(slug)["members"][0]["confidence"] is None

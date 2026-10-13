@@ -156,3 +156,30 @@ class TestRetryIsAdminOnly:
         res = c.post(f"/api/outbox/{row}/retry")
         assert res.status_code == 403
         assert reg.outbox_counts() == {"dead": 1}
+
+
+class TestRefusedConfidenceIsNotRetried:
+    """re/membership-confidence: a membership RE refused to send ("not sent: confidence …") would be refused again
+    on a retry; it needs the value corrected first. A "did not keep" row keeps its Retry."""
+
+    def _dead(self, reg, words):
+        row = reg.enqueue_outbox_element("work_list", "w", "collection_membership", f"CollectionMembership::c::{words[:8]}",
+                                         {"collection_guid": "c", "member_guid": "m"}, run_id="r")
+        reg.mark_outbox_failed(row, words, max_attempts=1)
+        return row
+
+    def test_the_listing_marks_it_and_the_retry_is_refused(self, client):
+        c, reg = client
+        row = self._dead(reg, "not sent: confidence 'high' is not a number")
+        listed = {r["id"]: r for r in c.get("/api/outbox/").json()["rows"]}
+        assert "correct it on the work list" in listed[row]["not_retryable"]
+        res = c.post(f"/api/outbox/{row}/retry")
+        assert res.status_code == 409 and "correct it on the work list" in res.json()["detail"]
+        assert reg.outbox_counts() == {"dead": 1}
+
+    def test_a_property_not_kept_row_keeps_its_retry(self, client):
+        c, reg = client
+        row = self._dead(reg, "Egeria accepted the membership but did not keep: confidence (sent 80, read back 0)")
+        listed = {r["id"]: r for r in c.get("/api/outbox/").json()["rows"]}
+        assert listed[row]["not_retryable"] == ""
+        assert c.post(f"/api/outbox/{row}/retry").status_code == 200

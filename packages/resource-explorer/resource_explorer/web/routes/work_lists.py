@@ -11,6 +11,7 @@ creating or editing a list — see `work_lists.WorkLists.publish`.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -44,8 +45,9 @@ class WorkListCreate(BaseModel):
 class MemberUpdate(BaseModel):
     entity_slug: str
     rationale: str = ""
-    #: Published as CollectionMembership `confidence`, which Egeria documents as 0-100.
-    confidence: int | None = Field(default=None, ge=0, le=100)
+    #: Published as CollectionMembership `confidence` (0-100). Taken as sent and checked by
+    #: `WorkLists.set_member` with the outbox's own `membership_confidence`: one rule, a 422 with its words.
+    confidence: Any = None
 
 
 class LinkInvestigation(BaseModel):
@@ -228,8 +230,11 @@ async def set_member(slug: str, body: MemberUpdate) -> dict:
     wls = WorkLists()
     if not wls.get(slug):
         raise HTTPException(status_code=404, detail=f"work list {slug!r} not found")
-    wls.set_member(slug, body.entity_slug,
-                   rationale=body.rationale, confidence=body.confidence)
+    try:
+        wls.set_member(slug, body.entity_slug,
+                       rationale=body.rationale, confidence=body.confidence)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     return wls.get(slug)
 
 

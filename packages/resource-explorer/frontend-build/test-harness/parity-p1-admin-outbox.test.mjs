@@ -156,3 +156,18 @@ test('no admin configured: Retry is enabled for a signed-in non-admin (nothing s
   assert.equal(btn.disabled, false);
   assert.doesNotMatch(btn.parentElement.textContent, /admin only/);
 });
+
+test('a dead membership whose confidence RE refused has no Retry and says to fix the value', async () => {
+  const why = 'the stored confidence is not a number from 0 to 100, so a retry would refuse it again: correct it on the work list and publish again';
+  const { host, mod } = await setUp({ rows: [
+    R(7, 'dead', { element_kind: 'collection_membership', last_error: "not sent: confidence 'high' is not a number", not_retryable: why }),
+    R(8, 'dead', { element_kind: 'collection_membership', last_error: 'Egeria accepted the membership but did not keep: confidence (sent 80, read back 0)', not_retryable: '' }),
+  ] });
+  const refused = host.querySelector('[data-outbox-row="7"]');
+  assert.equal(refused.querySelector('[data-outbox-retry]'), null);
+  const note = refused.querySelector('[data-outbox-no-retry]');
+  assert.match(note.textContent, /not retried · fix the value/);
+  assert.equal(note.getAttribute('title'), why);
+  assert.ok(host.querySelector('[data-outbox-row="8"] [data-outbox-retry]'), 'a "did not keep" row keeps its Retry');
+  assert.equal(mod.canRetry(R(7, 'dead', { not_retryable: why })), false);
+});
