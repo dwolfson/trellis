@@ -10,23 +10,26 @@ GROUP = "trellis.analytics"
 log = logging.getLogger(__name__)
 
 
-def known_purposes() -> list[str] | None:
-    """The investigation-purposes list as Resource Explorer holds it (Egeria's list through RE's cache, else
-    RE's shipped seed), or None when RE is not installed. Never calls Egeria."""
+def known_purposes(registry=None) -> list[str] | None:
+    """The investigation-purposes list as Resource Explorer holds it, or None when RE is not installed. With
+    a `registry` (an RE ProjectRegistry the caller already holds): Egeria's list through RE's cache. Without
+    one: RE's shipped seed. Never calls Egeria, and never opens a registry itself (constructing one connects
+    to the shared registry and migrates it)."""
     try:
         from resource_explorer.investigation_purposes import known_purpose_names
     except ImportError:
         return None
-    return known_purpose_names()
+    return known_purpose_names(registry)
 
 
-def check_purposes(manifests: dict[str, _TrellisManifest], known: list[str] | None = None) -> list[str]:
+def check_purposes(manifests: dict[str, _TrellisManifest], known: list[str] | None = None,
+                   registry=None) -> list[str]:
     """Owner ruling 2026-10-13, "warn only - suggestive everywhere": every declared purpose outside the list is
     logged as a warning naming it; nothing is refused. Returns the warnings. With nothing declared, the list
     is not read at all."""
     if not any(m.purposes for m in manifests.values()):
         return []
-    known = known if known is not None else known_purposes()
+    known = known if known is not None else known_purposes(registry)
     if known is None:
         log.warning("manifest purposes not checked: Resource Explorer (which holds the purposes list) is not "
                     "installed")
@@ -37,7 +40,7 @@ def check_purposes(manifests: dict[str, _TrellisManifest], known: list[str] | No
     return out
 
 
-def discover(known_purposes: list[str] | None = None) -> dict[str, _TrellisManifest]:
+def discover(known_purposes: list[str] | None = None, registry=None) -> dict[str, _TrellisManifest]:
     """name -> manifest for every entry point. An entry point may name a manifest, or a callable returning
     one manifest or a list of them. A broken entry point raises, naming it: a silent skip would be absence
     shown as 'nothing installed'. Declared purposes are checked against the list and warned about, never
@@ -55,7 +58,7 @@ def discover(known_purposes: list[str] | None = None) -> dict[str, _TrellisManif
                 found[m.name] = m
         except Exception as exc:  # noqa: BLE001 - re-raised with the entry point named
             raise RuntimeError(f"entry point {GROUP}:{ep.name} ({ep.value}) failed to load: {exc}") from exc
-    check_purposes(found, known_purposes)
+    check_purposes(found, known_purposes, registry)
     return found
 
 

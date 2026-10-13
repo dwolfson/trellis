@@ -113,3 +113,37 @@ test('Save sends the picked value and the typed text apart', async () => {
   assert.equal(sent[0].body.free_text, 'nightly feed');
   assert.equal(sent[0].body.value, 'Integrate — nightly feed');
 });
+
+test('the investigations list draws without waiting for the purposes list, then fills the cues', async () => {
+  makeDomEnvironment();
+  await loadAppModule();
+  const app = await import('/static/next/app.js');
+  const purposes = await import('/static/next/purposes.js');
+  const { renderInvestigation } = await import('/static/next/stages/investigation.js');
+  purposes.setPurposes(null);
+  app.state.investigations = [];
+  const host = document.createElement('div');
+  host.id = 'content';
+  document.body.appendChild(host);
+  let releasePurposes;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('/api/investigations/purposes')) {
+      await new Promise((r) => { releasePurposes = r; });
+      return { ok: true, status: 200, json: async () => VOCAB };
+    }
+    if (u.includes('/api/investigations/?')) {
+      return { ok: true, status: 200, json: async () => ([
+        { slug: 'a', display_name: 'A', purposes: ['Find', 'Wander'], purpose_text: '', status: 'open', member_count: 0 }]) };
+    }
+    throw new Error(`unstubbed fetch ${u}`);
+  };
+  await renderInvestigation();
+  const cell = host.querySelector('[data-inv-purposes-cell="a"]');
+  assert.ok(cell, 'the row is drawn while the purposes list is still loading');
+  assert.match(cell.textContent, /Find, Wander/);
+  assert.doesNotMatch(cell.innerHTML, /not in the list/, 'no list yet, so no claim');
+  releasePurposes();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.match(host.querySelector('[data-inv-purposes-cell="a"]').innerHTML, /data-purpose="Wander" data-purpose-unlisted/);
+});

@@ -278,23 +278,17 @@ def _referenced_registered_ids(note: str) -> list[str]:
     return sorted(tokens & KNOWN_REGISTERED_IDS)
 
 
-# Purpose vocabulary — the controlled kinds from
-# docs/investigation-framing-design.md §2. Mirrors Egeria's ProjectCharter
-# `purposes`, which is a valid metadata set: controlled so dispatch can key on
-# it, extensible without a rebuild. Extend here when the charter vocabulary
-# does.
-KNOWN_PURPOSES = [
-    "Explore",
-    "Select",
-    "Assess",
-    "Maintain",
-    "Share",
-    "Learn",
-    "Certify",
-    "Remediate",
-    "Attest",
-    "Deploy",
-]
+# Purpose vocabulary: NOT a list held here. Decision (project owner, 2026-10-13): "Egeria holds the set of
+# record" (resource_explorer/investigation_purposes.py) and "warn only - suggestive everywhere". A Purposes
+# value outside the list is kept as written and warned about, never refused. The generator checks against
+# RE's list as `known_purpose_names` gives it: the shipped seed here (no registry is opened from a build
+# script), or a caller's list via `generate(rows, known_purposes=...)`.
+
+
+def _known_purposes() -> list[str]:
+    from resource_explorer.investigation_purposes import known_purpose_names
+
+    return known_purpose_names()
 
 # Level vocabulary — the resource granularity at which a question's answer is a
 # single value (docs/multi-resource-questions-design.md §18.3, 2026-09-25).
@@ -382,22 +376,23 @@ def _parse_checks(note: str, known: set[str]) -> tuple[list[str], list[str]]:
     return valid, unknown
 
 
-def _parse_purposes(raw: str) -> list[str]:
+def _parse_purposes(raw: str, known: list[str] | None = None,
+                    warnings: list[str] | None = None) -> list[str]:
     """Parse the semicolon-separated Purposes column.
 
     Purposes get one shared column rather than a column each (the shape the
     Perspective columns use) precisely because of the by-elimination problem
     above: ten more columns would be ten more chances for a typo'd header to
-    become a phantom Perspective. One column, validated, fails loudly instead."""
-    values = [v.strip() for v in (raw or "").split(";") if v.strip()]
-    unknown = [v for v in values if v not in KNOWN_PURPOSES]
-    if unknown:
-        raise ValueError(
-            f"unknown Purpose(s) {unknown}; valid values are {KNOWN_PURPOSES}. "
-            f"Fix the CSV, or add the purpose to KNOWN_PURPOSES if the "
-            f"ProjectCharter vocabulary genuinely gained one."
-        )
-    return list(dict.fromkeys(values))
+    become a phantom Perspective. One column, checked: a value outside the
+    purposes list is KEPT and named in `warnings` (and on stderr), never
+    refused (owner ruling 2026-10-13, suggestive everywhere)."""
+    from resource_explorer.investigation_purposes import unknown_purpose_warnings
+
+    values = list(dict.fromkeys(v.strip() for v in (raw or "").split(";") if v.strip()))
+    said = unknown_purpose_warnings(values, known if known is not None else _known_purposes())
+    if warnings is not None:
+        warnings.extend(w for w in said if w not in warnings)
+    return values
 
 
 def _parse_levels(raw: str) -> list[str]:
@@ -679,8 +674,13 @@ def _apply_type_override(entry: dict, resource_type: str, known_checks: set[str]
     entry["catalog_history"] = override["Catalog History"]
 
 
-def generate(rows: list[dict]) -> str:
+def generate(rows: list[dict], known_purposes: list[str] | None = None,
+             warnings: list[str] | None = None) -> str:
+    """The YAML for `rows`. Purposes outside the list are kept; each is named once in `warnings` (when
+    given) and on stderr."""
     known_checks = _load_known_checks()
+    known_purposes = known_purposes if known_purposes is not None else _known_purposes()
+    purpose_warnings: list[str] = []
     # resource_type -> entries, in first-seen order. A type appears as a key
     # ONLY if a CSV row named it: question_catalog_reader treats a missing key
     # as "not authored for this type", which is the distinction design §1.1
@@ -699,7 +699,7 @@ def generate(rows: list[dict]) -> str:
             "question": question,
             "stage": (row.get("Funnel Stage") or "").strip(),
             "perspectives": perspectives,
-            "purposes": _parse_purposes(row.get("Purposes", "")),
+            "purposes": _parse_purposes(row.get("Purposes", ""), known_purposes, purpose_warnings),
             "levels": _parse_levels(row.get("Level", "")),
             "answering": _parse_answering(row.get("Answering Analysis", ""), known_checks),
             "answering_mechanism": (row.get("Answering Mechanism") or "").strip(),
@@ -819,6 +819,10 @@ def generate(rows: list[dict]) -> str:
         f"the RESOURCE_TYPES vocabulary and would be dropped from the catalog"
     )
     body = yaml.safe_dump(ordered, sort_keys=False, allow_unicode=True, width=100)
+    for w in purpose_warnings:
+        print(f"question catalog: {w}", file=sys.stderr)
+    if warnings is not None:
+        warnings.extend(purpose_warnings)
     return header + body
 
 

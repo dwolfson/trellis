@@ -39,7 +39,7 @@ import {
   ensureResourceListLoaded,
 } from '/static/next/app.js';
 import {
-  loadPurposes, purposePickerHtml, readPurposePicker, wirePurposePicker, purposesSummaryHtml,
+  loadPurposes, purposesNow, purposePickerHtml, readPurposePicker, wirePurposePicker, purposesSummaryHtml,
 } from '/static/next/purposes.js';
 import { openDialog, closeCellDetail } from '/static/next/worklist.js';
 import { saveCsv } from '/static/next/download.js';
@@ -145,10 +145,11 @@ async function renderList() {
   bindListHeader();
 
   let rows;
-  let purposeNames = [];
+  // The list is drawn without waiting for the purposes list (a slow Egeria read must not hold the page);
+  // the cells are filled with their cues once it arrives. Until then no cue is drawn: no list, no claim.
+  const purposeNames = purposesNow()?.purposes || [];
   try {
     rows = await listInvestigations({ includeClosed: _includeClosed });
-    purposeNames = (await loadPurposes()).purposes;
   } catch (err) {
     el.innerHTML = listHeaderHtml()
       + `<p class="max-w-[70ch] text-answer text-state-warn">Could not load investigations: ${esc(err.message)}</p>`;
@@ -171,7 +172,7 @@ async function renderList() {
             ${esc(inv.display_name || inv.slug)}
             ${inv.visibility === 'private' ? `<span class="ml-[4px] text-caveat text-ink-muted" title="${esc(inv.visibility_note || 'visible only to its creator')}">🔒</span>` : ''}
           </td>
-          <td class="py-s2 pr-s3 text-caveat text-ink-muted">${purposesSummaryHtml(inv, purposeNames) || '—'}</td>
+          <td class="py-s2 pr-s3 text-caveat text-ink-muted" data-inv-purposes-cell="${esc(inv.slug)}">${purposesSummaryHtml(inv, purposeNames) || '—'}</td>
           <td class="py-s2 pr-s3 text-caveat">${statusGlyph(inv.status)}</td>
           <td class="py-s2 pr-s3 text-caveat tnum text-ink-muted">${inv.member_count ?? 0}</td>
           <td class="py-s2 text-caveat">${bindingGlyph(inv)}</td>
@@ -185,6 +186,15 @@ async function renderList() {
     _detailSlug = tr.dataset.openInv;
     renderInvestigation();
   }));
+  if (!purposeNames.length) {
+    loadPurposes().then((vocab) => {
+      const bySlug = new Map(rows.map((inv) => [inv.slug, inv]));
+      el.querySelectorAll('[data-inv-purposes-cell]').forEach((cell) => {
+        const inv = bySlug.get(cell.dataset.invPurposesCell);
+        if (inv) cell.innerHTML = purposesSummaryHtml(inv, vocab.purposes) || '—';
+      });
+    });
+  }
 }
 
 function listHeaderHtml() {

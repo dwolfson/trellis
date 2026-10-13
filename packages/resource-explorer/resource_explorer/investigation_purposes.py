@@ -30,7 +30,6 @@ anything shown or counted comes from the same function as the write). By hand:
 """
 from __future__ import annotations
 
-import concurrent.futures
 import contextvars
 import hashlib
 import json
@@ -41,7 +40,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -175,10 +174,52 @@ def _value_body(value: dict) -> dict:
                      preferredValue=value["name"])
 
 
-def _canary_body(canary: str) -> dict:
+#: The canary's additionalProperties key that records the seed's value names, so a later seed change can tell
+#: which values are NEW to it (and never recreate one a person removed). Egeria holds it, so an Egeria wipe
+#: forgets it together with the list itself.
+SEED_VALUES_KEY = "seedValues"
+
+
+def _canary_body(canary: str, seed: dict) -> dict:
+    names = [v["name"] for v in seed["values"]]
     return _vvd_body(canary, "RE investigation-purpose seed",
                      description="Present when Resource Explorer's investigation-purpose seed with this "
-                                 "fingerprint ran to completion. Created by RE; do not edit.")
+                                 "fingerprint ran to completion. Created by RE; do not edit. Seed values: "
+                                 + ", ".join(names) + ".",
+                     additionalProperties={SEED_VALUES_KEY: ",".join(names),
+                                           "seedFingerprint": seed_fingerprint(seed)})
+
+
+def _earlier_canaries(ref_manager) -> list[dict]:
+    """[{"qualified_name", "seed_values": [names] | None}] for every purpose-seed canary Egeria holds. One typed
+    find on the canary prefix; pyegeria's miss sentence is []; anything unreadable is `CouldNotCheck`."""
+    try:
+        raw = ref_manager.find_valid_value_definitions(search_string=CANARY_PREFIX, starts_with=True,
+                                                       output_format="JSON", metadata_element_type=VVD_TYPE)
+    except Exception as exc:
+        if is_absent(exc) == ABSENT:
+            return []
+        raise CouldNotCheck(lookup_could_not_be_made(CANARY_PREFIX + "*", exc)) from exc
+    if isinstance(raw, str) and is_absent(raw) == ABSENT:
+        return []
+    if isinstance(raw, dict) and isinstance(raw.get("elementHeader"), dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        raise CouldNotCheck(lookup_could_not_be_made(CANARY_PREFIX + "*", ValueError(f"unexpected answer {raw!r:.80}")))
+    out = []
+    for el in raw:
+        props = (el.get("properties") or {}) if isinstance(el, dict) else {}
+        qn = props.get("qualifiedName")
+        if not isinstance(qn, str):
+            raise CouldNotCheck(f"could not check the earlier purpose-seed canaries: an element without a "
+                                f"qualifiedName ({str(el)[:80]!r})")
+        if not qn.startswith(CANARY_PREFIX):
+            continue
+        extra = props.get("additionalProperties") or {}
+        names = extra.get(SEED_VALUES_KEY) if isinstance(extra, dict) else None
+        out.append({"qualified_name": qn,
+                    "seed_values": [n for n in str(names).split(",") if n] if names is not None else None})
+    return out
 
 
 def _member_body(ordinal: int, is_default: bool) -> dict:
@@ -207,10 +248,13 @@ class PurposeSeedOutcome:
     created: list[dict] = field(default_factory=list)  # {"kind", "qualified_name", "guid" | "would_create" | "egeria_said"}
     reason: str = ""
     canary: str = ""
+    #: Seed values Egeria does not hold and the heal did NOT recreate (a person removed them there?).
+    missing: list[str] = field(default_factory=list)
 
     @property
     def elements_created(self) -> list[dict]:
-        return [c for c in self.created if c.get("guid") and c["kind"] not in ("canary", "link")]
+        """Every element created, the canary included (so a dry run's count and the write's agree)."""
+        return [c for c in self.created if c.get("guid") and c["kind"] != "link"]
 
     @property
     def links_made(self) -> list[dict]:
@@ -222,8 +266,16 @@ class PurposeSeedOutcome:
         return [c for c in self.created if c.get("would_create")]
 
     @property
+    def _missing_words(self) -> str:
+        return (" · missing in Egeria, not recreated (removed there?): " + ", ".join(self.missing)
+                if self.missing else "")
+
+    @property
     def line(self) -> str:
         if self.status == PRESENT:
+            if self.missing:
+                return (f"investigation purposes: present, {self.values - len(self.missing)} of {self.values} "
+                        f"values{self._missing_words}")
             return f"investigation purposes: present, {self.values} values"
         if self.status == DRY_RUN:
             els = [c for c in self.would_create if c["kind"] != "link"]
@@ -231,21 +283,23 @@ class PurposeSeedOutcome:
             if not els and not links:
                 return f"investigation purposes: dry run · nothing to create, {self.values} values present"
             return (f"investigation purposes: dry run · would create {len(els)} element"
-                    f"{'' if len(els) == 1 else 's'} and {len(links)} link{'' if len(links) == 1 else 's'}")
+                    f"{'' if len(els) == 1 else 's'} and {len(links)} link{'' if len(links) == 1 else 's'}"
+                    f"{self._missing_words}")
         if self.status == CREATED:
             n, k = len(self.elements_created), len(self.links_made)
             what = [f"{n} element{'' if n == 1 else 's'} created"] if n else []
             what += [f"{k} link{'' if k == 1 else 's'} made"] if k else []
-            return f"investigation purposes: created, {self.values} values ({', '.join(what) or 'nothing new'})"
+            return (f"investigation purposes: created, {self.values} values ({', '.join(what)})"
+                    f"{self._missing_words}")
         return f"investigation purposes: {self.status} · {self.reason}"
 
     def change_key(self) -> tuple:
         return (self.status, _normalise(self.reason),
-                frozenset(c["guid"] for c in self.created if c.get("guid")))
+                frozenset(c["guid"] for c in self.created if c.get("guid")), tuple(self.missing))
 
     def as_dict(self) -> dict:
         return {"status": self.status, "values": self.values, "created": self.created,
-                "reason": self.reason, "canary": self.canary, "line": self.line}
+                "reason": self.reason, "canary": self.canary, "missing": self.missing, "line": self.line}
 
 
 class _Stop(Exception):
@@ -299,9 +353,22 @@ class _Writer:
         self.created.append({"kind": "link", "qualified_name": what, "made": True})
 
 
-def _heal(ref_manager, expert, seed: dict, canary: str, canary_present: bool, writer: _Writer) -> int:
+def _heal(ref_manager, expert, seed: dict, canary: str, writer: _Writer, *, only: set[str] | None,
+          missing: list[str]) -> None:
+    """Create and link the seed's values, then the canary.
+
+    `only` is None on the FIRST heal (no purpose-seed canary in Egeria at all): the set and every value are
+    created when missing and linked when unlinked. After a seed change `only` is the names NEW to this seed:
+    those alone are created and linked. A value an earlier seed already placed is never recreated or relinked,
+    because Egeria holds the list and a person may have removed it there (it is reported in `missing`).
+    """
     set_guid = _lookup(ref_manager, SET_QN)
     set_new = not set_guid
+    if set_new and only is not None:
+        # The set itself is gone after an earlier seed made it: a person (or a wipe that kept the canary)
+        # removed it. Not recreated; said.
+        missing.append(SET_QN)
+        return
     if set_new:
         set_guid = writer.create(ref_manager.create_valid_value_definition, "purpose set", SET_QN, _set_body())
     # The set's member links are READ before any link is made, so a value whose link failed on an earlier
@@ -309,49 +376,67 @@ def _heal(ref_manager, expert, seed: dict, canary: str, canary_present: bool, wr
     members = set() if set_new else _related_guids(expert, set_guid, MEMBER_REL)
     for ordinal, value in enumerate(seed["values"]):
         qn = value_qn(value["name"])
+        if only is not None and value["name"] not in only:
+            if not _lookup(ref_manager, qn):
+                missing.append(value["name"])
+            continue
         guid = _lookup(ref_manager, qn)
         if not guid:
             guid = writer.create(ref_manager.create_valid_value_definition, "purpose", qn, _value_body(value))
         if guid not in members:
             writer.link(ref_manager.link_valid_value_definition, f"'{value['name']}' into {SET_QN}",
                         set_guid, guid, body=_member_body(ordinal, value["name"] == seed["default"]))
-    # Last, and only when every element and link above is present: the canary.
-    if not canary_present:
-        writer.create(ref_manager.create_valid_value_definition, "canary", canary, _canary_body(canary))
-    return len(seed["values"])
+    # Last, and only when every element and link above is present: the canary, carrying the seed's names.
+    writer.create(ref_manager.create_valid_value_definition, "canary", canary, _canary_body(canary, seed))
+
+
+def _status_from_rows(created: list[dict]) -> str:
+    return CREATED if any(c.get("guid") or c.get("made") for c in created) else PRESENT
 
 
 def ensure_purposes(ref_manager, expert=None, seed: dict | None = None, still_leader=None,
                     dry_run: bool = False) -> PurposeSeedOutcome:
-    """The one code path, for the start-up heal, the manual run and the dry run. Never raises.
+    """The one code path, for the start-up heal and the dry run. Never raises.
 
-    Canary present: the set and each value are verified by typed look-up; all there is PRESENT, nothing is
-    created. Canary absent (or something missing): the heal looks up each element, creates only what is
-    missing, links what is unlinked (after reading the set's member links), and creates the canary last.
+    Egeria holds the set of record (owner ruling 2026-10-13), so the heal never undoes a person's edit there:
+
+    * **This seed's canary present:** the set and each value are verified by typed look-up and NOTHING is
+      created. A value Egeria no longer holds is reported ("missing in Egeria, not recreated (removed
+      there?)"), recorded once per change of that state.
+    * **No purpose-seed canary at all** (the first heal, or Egeria was wiped): the set and every value are
+      created when missing and linked when unlinked; the canary last.
+    * **An earlier seed's canary only** (the seed file changed): only the values NEW to this seed (not named by
+      any earlier canary's `seedValues`) are created and linked, then this seed's canary. An earlier canary
+      that does not say what it seeded means nothing new is created: it cannot be told apart from a removal.
     """
     created: list[dict] = []
+    missing: list[str] = []
     canary = ""
     try:
         seed = seed if seed is not None else load_seed()
         canary = canary_qualified_name(seed)
-        canary_present = bool(_lookup(ref_manager, canary))
-        if canary_present:
-            missing = [qn for qn in [SET_QN] + [value_qn(v["name"]) for v in seed["values"]]
-                       if not _lookup(ref_manager, qn)]
-            if not missing:
-                return PurposeSeedOutcome(DRY_RUN if dry_run else PRESENT, values=len(seed["values"]),
-                                          canary=canary)
-            log.warning("investigation purposes: canary present but %d missing (%s) — healing",
-                        len(missing), ", ".join(missing))
+        n = len(seed["values"])
+        if _lookup(ref_manager, canary):
+            if not _lookup(ref_manager, SET_QN):
+                missing.append(SET_QN)
+            missing += [v["name"] for v in seed["values"] if not _lookup(ref_manager, value_qn(v["name"]))]
+            return PurposeSeedOutcome(DRY_RUN if dry_run else PRESENT, values=n, canary=canary, missing=missing)
+        earlier = _earlier_canaries(ref_manager)
+        only: set[str] | None = None
+        if earlier:
+            if any(c["seed_values"] is None for c in earlier):
+                raise CouldNotCheck("an earlier purpose-seed canary does not record its values, so a value new "
+                                    "to this seed cannot be told from one removed in Egeria; nothing created")
+            before = {name for c in earlier for name in c["seed_values"]}
+            only = {v["name"] for v in seed["values"]} - before
         if expert is None:
             raise CouldNotCheck("could not check the member links: no MetadataExpert client")
-        n = _heal(ref_manager, expert, seed, canary, canary_present, _Writer(created, dry_run, still_leader))
-        if dry_run:
-            return PurposeSeedOutcome(DRY_RUN, values=n, created=created, canary=canary)
-        outcome = PurposeSeedOutcome(CREATED, values=n, created=created, canary=canary)
-        if not outcome.elements_created and not outcome.links_made:
-            outcome.status = PRESENT
-        return outcome
+        _heal(ref_manager, expert, seed, canary, _Writer(created, dry_run, still_leader), only=only,
+              missing=missing)
+        if SET_QN in missing:
+            return PurposeSeedOutcome(DRY_RUN if dry_run else PRESENT, values=n, canary=canary, missing=missing)
+        status = DRY_RUN if dry_run else _status_from_rows(created)
+        return PurposeSeedOutcome(status, values=n, created=created, canary=canary, missing=missing)
     except CouldNotCheck as exc:
         status = FAILED if any(c.get("guid") for c in created) else COULD_NOT_CHECK
         return PurposeSeedOutcome(status, created=created, reason=str(exc), canary=canary)
@@ -367,7 +452,12 @@ def ensure_purposes(ref_manager, expert=None, seed: dict | None = None, still_le
 # ── reading the list back from Egeria ─────────────────────────────────────────
 
 class PurposesUnavailable(RuntimeError):
-    """Egeria's list could not be read (or holds no set yet); the message says why."""
+    """Egeria's list could not be read; the message says why."""
+
+
+class EgeriaHoldsNone(PurposesUnavailable):
+    """Egeria ANSWERED: it holds no purposes set yet, or the set has no values. A real answer, not a read
+    failure, so the reader says so in its own words."""
 
 
 def _props(element: dict) -> dict:
@@ -387,13 +477,13 @@ def read_purposes_from_egeria(ref_manager, expert) -> list[dict]:
     except CouldNotCheck as exc:
         raise PurposesUnavailable(str(exc)) from exc
     if not set_guid:
-        raise PurposesUnavailable(f"Egeria holds no '{SET_QN}' yet (RE's start-up heal creates it)")
+        raise EgeriaHoldsNone(f"Egeria holds no '{SET_QN}' yet (RE's start-up heal creates it)")
     try:
         raw = expert.get_related_metadata_elements(set_guid, MEMBER_REL, body={"class": "ResultsRequestBody"})
     except Exception as exc:
         raise PurposesUnavailable(f"could not read the members of '{SET_QN}': {_sentence(exc)}") from exc
     if isinstance(raw, str) and is_absent(raw) == ABSENT:
-        raise PurposesUnavailable(f"'{SET_QN}' has no values in Egeria")
+        raise EgeriaHoldsNone(f"'{SET_QN}' has no values in Egeria")
     items = raw.get("elementList") if isinstance(raw, dict) else None
     if not isinstance(items, list):
         raise PurposesUnavailable(f"could not read the members of '{SET_QN}': unreadable answer {str(raw)[:80]!r}")
@@ -415,7 +505,7 @@ def read_purposes_from_egeria(ref_manager, expert) -> list[dict]:
         out.append({"name": name, "description": str(p.get("description") or ""),
                     "is_default": str(rel.get("isDefaultValue", "")).lower() == "true", "ordinal": ordinal})
     if not out:
-        raise PurposesUnavailable(f"'{SET_QN}' has no values in Egeria")
+        raise EgeriaHoldsNone(f"'{SET_QN}' has no values in Egeria")
     out.sort(key=lambda v: (v["ordinal"], v["name"].lower()))
     return out
 
@@ -425,12 +515,15 @@ def read_purposes_from_egeria(ref_manager, expert) -> list[dict]:
 SOURCE_EGERIA = "egeria"
 SOURCE_CACHE = "cache"
 SOURCE_SEED = "seed"
+#: Egeria answered and holds no purposes (no set, or no values): the cached copy or the seed is shown, and the
+#: words say Egeria holds none rather than that it could not be read.
+SOURCE_EGERIA_EMPTY = "egeria-empty"
 
 
 @dataclass
 class PurposeList:
     values: list[dict]
-    source: str              # egeria | cache | seed
+    source: str              # egeria | cache | seed | egeria-empty
     as_of: str = ""          # when the list was read from Egeria ("" for the seed)
     stale: bool = False
     words: str = ""          # what the screen says about where the list came from
@@ -506,7 +599,10 @@ def _cache_list(cache: dict, reason: str, now: float) -> PurposeList:
 
 _memo: tuple[float, float, PurposeList] | None = None      # (stamped at, ttl, answer)
 _memo_lock = threading.Lock()
-_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="purposes-read")
+#: The read of Egeria still running, if any. A read that timed out keeps running on its own daemon thread; a
+#: later request does not start another behind it, and never waits for it (it answers from the cache).
+_inflight: threading.Thread | None = None
+_inflight_lock = threading.Lock()
 
 
 def _registry(registry):
@@ -523,35 +619,76 @@ def reset_memo() -> None:
         _memo = None
 
 
+def _run_fetch(fetch: Callable[[], list[dict]], timeout: float) -> list[dict]:
+    """`fetch()` on its own daemon thread, waited on for `timeout`. Raises what it raised, `TimeoutError` when
+    it did not answer, or `_Busy` when an earlier read is still running."""
+    global _inflight
+    box: dict = {}
+    ctx = contextvars.copy_context()
+
+    def run():
+        try:
+            box["values"] = ctx.run(fetch)
+        except BaseException as exc:  # noqa: BLE001 - handed back to the caller
+            box["error"] = exc
+
+    with _inflight_lock:
+        if _inflight is not None and _inflight.is_alive():
+            raise _Busy("an earlier read of Egeria has not answered yet")
+        t = threading.Thread(target=run, name="purposes-read", daemon=True)
+        _inflight = t
+        t.start()
+    t.join(timeout)
+    if t.is_alive():
+        raise TimeoutError(f"Egeria did not answer in {timeout:g}s")
+    if "error" in box:
+        raise box["error"]
+    return box["values"]
+
+
+class _Busy(RuntimeError):
+    pass
+
+
+def _egeria_list(answer: PurposeList, now: float) -> PurposeList:
+    """Egeria's list, its words from WHEN it was read (a memoised answer ages)."""
+    try:
+        age = now - datetime.fromisoformat(answer.as_of).timestamp()
+    except ValueError:
+        age = 0
+    return replace(answer, words=f"Egeria's list · read {_age_words(age)}")
+
+
 def current_purposes(registry=None, fetch: Callable[[], list[dict]] | None = None, *,
                      timeout: float = FETCH_TIMEOUT_SECONDS, use_memo: bool = True) -> PurposeList:
     """The purposes list for a screen or a check. Never raises.
 
     `fetch()` reads Egeria (`read_purposes_from_egeria` with some identity's clients); on success the cache
-    is rewritten and the list is Egeria's. With no `fetch`, or when it fails or times out: the cache, labelled
-    with its age (stale after a day); with no cache, the shipped seed, labelled as not Egeria's.
+    is rewritten and the list is Egeria's. Egeria answering that it holds no purposes is its own answer
+    (`egeria-empty`), shown with the cache or the seed. With no `fetch`, or when it fails or times out: the
+    cache, labelled with its age (stale after a day); with no cache, the shipped seed, labelled as not Egeria's.
     """
     global _memo
     now = time.time()
     if use_memo:
         with _memo_lock:
             if _memo and now - _memo[0] < _memo[1]:
-                return _memo[2]
+                hit = _memo[2]
+                return _egeria_list(hit, now) if hit.source == SOURCE_EGERIA else hit
     reason = "" if fetch else "not read from Egeria here"
     answer: PurposeList | None = None
+    holds_none = ""
     if fetch is not None:
-        ctx = contextvars.copy_context()
-        future = _pool.submit(ctx.run, fetch)
         try:
-            values = future.result(timeout=timeout)
-            read_at = datetime.now(UTC).isoformat()
+            values = _run_fetch(fetch, timeout)
+            read_at = datetime.fromtimestamp(now, UTC).isoformat()
             try:
                 write_cache(_registry(registry), values, read_at)
             except Exception as exc:  # noqa: BLE001 - the list is still Egeria's; the cache just did not move
                 log.warning("investigation purposes: could not write the cache: %s", exc)
-            answer = PurposeList(values, SOURCE_EGERIA, as_of=read_at, words="Egeria's list · read just now")
-        except concurrent.futures.TimeoutError:
-            reason = f"Egeria did not answer in {int(timeout)}s"
+            answer = _egeria_list(PurposeList(values, SOURCE_EGERIA, as_of=read_at), now)
+        except EgeriaHoldsNone as exc:
+            holds_none = str(exc)
         except Exception as exc:  # noqa: BLE001 - every failure falls back, with its words
             reason = _sentence(exc)
     if answer is None:
@@ -559,7 +696,14 @@ def current_purposes(registry=None, fetch: Callable[[], list[dict]] | None = Non
             cache = read_cache(_registry(registry))
         except Exception as exc:  # noqa: BLE001
             cache, reason = None, reason or _sentence(exc)
-        answer = _cache_list(cache, reason, now) if cache else _seed_list(reason)
+        if holds_none:
+            shown = _cache_list(cache, "", now) if cache else _seed_list("")
+            what = (f"the cached copy (read from Egeria {_age_words(now - datetime.fromisoformat(shown.as_of).timestamp())})"
+                    if cache and shown.as_of else "RE's shipped list")
+            answer = replace(shown, source=SOURCE_EGERIA_EMPTY, reason=holds_none,
+                             words=f"Egeria holds no purposes yet; showing {what}")
+        else:
+            answer = _cache_list(cache, reason, now) if cache else _seed_list(reason)
     if use_memo:
         with _memo_lock:
             _memo = (now, MEMO_SECONDS if answer.source == SOURCE_EGERIA else MEMO_FAILURE_SECONDS, answer)
@@ -567,7 +711,11 @@ def current_purposes(registry=None, fetch: Callable[[], list[dict]] | None = Non
 
 
 def known_purpose_names(registry=None) -> list[str]:
-    """The names a check compares against WITHOUT calling Egeria: the cache, else the shipped seed."""
+    """The names a check compares against WITHOUT calling Egeria: the cache in `registry`, else the shipped
+    seed. With no registry passed, the shipped seed: this never constructs a ProjectRegistry (which would
+    connect to the shared registry and migrate it) on a caller's behalf."""
+    if registry is None:
+        return _seed_list("").names
     try:
         return current_purposes(registry, fetch=None, use_memo=False).names
     except Exception:  # noqa: BLE001 - a check never fails on its vocabulary
@@ -691,10 +839,15 @@ def status() -> dict:
 # ── by hand ───────────────────────────────────────────────────────────────────
 
 def main(argv: list[str] | None = None) -> int:
-    """`python -m resource_explorer.investigation_purposes [--dry-run]`. The dry run reads only, writes
-    nothing to Egeria and records nothing: it prints each element and link the heal would create."""
+    """`python -m resource_explorer.investigation_purposes --dry-run`. DRY-RUN ONLY: it reads, writes nothing
+    to Egeria and records nothing, and prints each element and link the heal would create. The heal itself
+    runs only in the worker's bootstrap pass, which holds LOCK_BOOTSTRAP; a by-hand write would race it."""
     argv = sys.argv[1:] if argv is None else argv
-    dry_run = "--dry-run" in argv
+    if "--dry-run" not in argv:
+        print("investigation purposes: this command is dry-run only (pass --dry-run). The heal runs in the "
+              "worker's bootstrap pass, which holds the bootstrap lock.", file=sys.stderr)
+        return 2
+    dry_run = True
     if not egeria_platform_url():
         log.error("EGERIA_PLATFORM_URL is not set. Cannot connect to Egeria.")
         return 1
@@ -706,8 +859,6 @@ def main(argv: list[str] | None = None) -> int:
     for c in outcome.created:
         print(f"  {c['kind']:12s} {c['qualified_name']}"
               + ("  (would create)" if c.get("would_create") else f"  {c.get('guid') or c.get('egeria_said', '')}"))
-    if not dry_run:
-        record_outcome(outcome)
     return 0 if outcome.status in (PRESENT, CREATED, DRY_RUN) else 1
 
 

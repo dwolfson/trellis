@@ -32,7 +32,7 @@ TEN = ["Assess", "Certify", "Deploy", "Explore", "Find", "Integrate", "Learn", "
 #: The properties Egeria 6.2 accepts on the bodies RE sends (ValidValueDefinitionProperties and
 #: ValidValueMemberProperties, as read live).
 VVD_PROPS = {"class", "qualifiedName", "displayName", "description", "dataType", "scope", "preferredValue",
-             "category", "isCaseSensitive", "isDeprecated", "usage"}
+             "category", "isCaseSensitive", "isDeprecated", "usage", "additionalProperties"}
 MEMBER_PROPS = {"class", "isDefaultValue", "ordinal"}
 
 
@@ -49,6 +49,8 @@ class FakeEgeria:
         self.writes: list[tuple] = []
         self.fail_lookups = False
         self.lookup_answer = None                      # a non-miss, non-GUID answer to return instead
+        self.lookup_raises = None                      # an exception every look-up raises instead
+        self.fail_after_creates = 0                    # refuse every create after the first N
 
     def guid_of(self, qn):
         return self.elements[qn]["guid"]
@@ -71,7 +73,12 @@ class FakeEgeria:
 
     def create(self, body):
         props = self._check_vvd_body(body)
+        if isinstance(props.get("additionalProperties"), dict):
+            assert all(isinstance(v, str) for v in props["additionalProperties"].values()), "a string map"
         qn = props["qualifiedName"]
+        creates = len([w for w in self.writes if w[0] == "create"])
+        if self.fail_after_creates and creates >= self.fail_after_creates:
+            raise EgeriaRefused("OMAG-REPOSITORY-HANDLER-500-001 the repository is not answering")
         if qn in self.elements:
             raise AssertionError(f"created twice: {qn}")
         guid = f"0000{len(self.elements) + 1:04d}-0000-4000-8000-000000000000"
@@ -93,6 +100,8 @@ class FakeEgeria:
         self.writes.append(("link", set_guid, member_guid))
 
     def lookup(self, name, property_name, type_name):
+        if self.lookup_raises is not None:
+            raise self.lookup_raises
         if self.fail_lookups:
             raise RuntimeError("Egeria is not answering")
         if self.lookup_answer is not None:
@@ -101,6 +110,22 @@ class FakeEgeria:
         assert property_name == ["qualifiedName"]
         found = self.elements.get(name)
         return found["guid"] if found else NONE_FOUND
+
+    def find(self, search_string, starts_with=True, metadata_element_type=None, **k):
+        """`find_valid_value_definitions`, typed, by qualifiedName prefix: Egeria's element shape."""
+        if self.fail_lookups:
+            raise RuntimeError("Egeria is not answering")
+        assert metadata_element_type == VVD and starts_with
+        hits = [{"elementHeader": {"guid": e["guid"]}, "properties": dict(e["props"])}
+                for qn, e in self.elements.items() if qn.startswith(search_string)]
+        return hits or NONE_FOUND
+
+    def unlink(self, set_qn, member_qn):
+        del self.links[(self.guid_of(set_qn), self.guid_of(member_qn))]
+
+    def remove(self, qn):
+        g = self.elements.pop(qn)["guid"]
+        self.links = {k: v for k, v in self.links.items() if g not in k}
 
     def related(self, guid, relationship_type, body, *a, **k):
         if self.fail_lookups:
@@ -129,6 +154,9 @@ def _fake_classes(eg: FakeEgeria):
         rm.create_valid_value_definition.side_effect = lambda body: eg.create(body)
         rm.link_valid_value_definition.side_effect = lambda vv_set_guid, vv_member_guid, body=None: eg.link(
             vv_set_guid, vv_member_guid, body)
+        rm.find_valid_value_definitions.side_effect = (
+            lambda search_string, starts_with=True, output_format="JSON", metadata_element_type=None, **k:
+            eg.find(search_string, starts_with, metadata_element_type))
         return rm
 
     def mx_factory(*_a, **_k):
@@ -171,6 +199,13 @@ def _rows(registry):
     return registry.list_activity(entity_type="egeria", entity_slug="investigation-purposes")
 
 
+def _live_clients():
+    from pyegeria.omvs.metadata_expert import MetadataExpert
+    from pyegeria.omvs.reference_data import ReferenceDataManager
+
+    return ReferenceDataManager(), MetadataExpert()
+
+
 # ── the seed ──────────────────────────────────────────────────────────────────
 
 def test_the_seed_is_the_eight_plus_find_and_integrate_each_described():
@@ -193,7 +228,8 @@ def test_first_start_creates_the_set_values_links_and_canary(egeria, registry):
     assert out.status == ip.CREATED
     assert creates == ([ip.SET_QN] + [ip.value_qn(n["name"]) for n in seed["values"]]
                        + [ip.canary_qualified_name(seed)]), "the canary is created last"
-    assert out.line == "investigation purposes: created, 10 values (11 elements created, 10 links made)"
+    assert out.line == "investigation purposes: created, 10 values (12 elements created, 10 links made)"
+    assert len(out.elements_created) == 12, "the canary counts, so the dry run and the write agree"
     set_guid = egeria.guid_of(ip.SET_QN)
     members = {m: p for (s, m), p in egeria.links.items() if s == set_guid}
     assert len(members) == 10
@@ -221,17 +257,77 @@ def test_the_heal_is_idempotent_a_second_start_creates_nothing(egeria, registry)
     assert out.status == ip.PRESENT and out.line == "investigation purposes: present, 10 values"
 
 
-def test_a_value_missing_after_the_canary_is_healed_alone(egeria, registry):
+def test_a_value_removed_in_egeria_is_reported_never_recreated(egeria, registry):
+    """Egeria holds the set of record: with the canary present, a value a person removed stays removed."""
     _start(registry)
-    gone = ip.value_qn("Integrate")
-    g = egeria.elements.pop(gone)["guid"]
-    egeria.links = {k: v for k, v in egeria.links.items() if k[1] != g}
+    egeria.remove(ip.value_qn("Integrate"))
     ip._last_key = None
     n = len(egeria.writes)
     out = _start(registry)
-    assert [w[1] for w in egeria.writes[n:] if w[0] == "create"] == [gone]
-    assert len([w for w in egeria.writes[n:] if w[0] == "link"]) == 1
+    assert egeria.writes[n:] == [], "the heal recreated or relinked something a person removed"
+    assert out.status == ip.PRESENT and out.missing == ["Integrate"]
+    assert out.line == ("investigation purposes: present, 9 of 10 values · missing in Egeria, not recreated "
+                        "(removed there?): Integrate")
+    rows = _rows(registry)
+    _start(registry)
+    _start(registry)
+    assert len(_rows(registry)) == len(rows), "the same state is recorded once"
+    assert _rows(registry)[0]["summary"] == out.line
+
+
+def test_a_seed_change_adds_only_the_new_value_and_a_new_canary(egeria, registry):
+    _start(registry)
+    egeria.unlink(ip.SET_QN, ip.value_qn("Learn"))      # a person took Learn out of the list
+    egeria.remove(ip.value_qn("Share"))                 # and removed Share
+    seed = ip.load_seed()
+    seed["values"].append({"name": "Plan", "description": "Plan the work."})
+    ip._last_key = None
+    n = len(egeria.writes)
+    out = ip.ensure_purposes(*_live_clients(), seed=seed, still_leader=lambda: True)
+    new = egeria.writes[n:]
+    assert [w[1] for w in new if w[0] == "create"] == [ip.value_qn("Plan"), ip.canary_qualified_name(seed)]
+    assert [w for w in new if w[0] == "link"] == [("link", egeria.guid_of(ip.SET_QN),
+                                                  egeria.guid_of(ip.value_qn("Plan")))]
     assert out.status == ip.CREATED
+    assert egeria.elements[ip.canary_qualified_name(seed)]["props"]["additionalProperties"]["seedValues"] \
+        .split(",")[-1] == "Plan"
+
+
+def test_a_create_failing_mid_run_leaves_no_canary_and_the_next_start_finishes(egeria, registry):
+    egeria.fail_after_creates = 5
+    out = _start(registry)
+    assert out.status == ip.FAILED and "OMAG-REPOSITORY-HANDLER-500-001" in out.reason
+    assert not any(qn.startswith(ip.CANARY_PREFIX) for qn in egeria.elements)
+    egeria.fail_after_creates = 0
+    ip._last_key = None
+    again = _start(registry)                            # the fake fails the test on any duplicate create
+    assert again.status == ip.CREATED
+    assert len(egeria.elements) == 12 and len(egeria.links) == 10
+
+
+def test_a_typed_not_found_is_absent(egeria, registry):
+    from pyegeria.core._exceptions import PyegeriaNotFoundException
+
+    egeria.lookup_raises = PyegeriaNotFoundException.__new__(PyegeriaNotFoundException)
+    rm, mx = _live_clients()
+    plan = ip.ensure_purposes(rm, mx, dry_run=True)
+    assert plan.status == ip.DRY_RUN and len(plan.would_create) == 22
+
+
+def test_a_canary_only_write_is_counted_not_nothing_new(egeria, registry):
+    _start(registry)
+    egeria.remove(ip.canary_qualified_name(ip.load_seed()))
+    ip._last_key = None
+    out = _start(registry)
+    assert out.status == ip.CREATED and out.line.endswith("(1 element created)")
+
+
+def test_the_manual_run_only_dry_runs(egeria, capsys):
+    assert ip.main([]) == 2
+    assert "dry-run only" in capsys.readouterr().err
+    assert egeria.writes == []
+    assert ip.main(["--dry-run"]) == 0
+    assert egeria.writes == []
 
 
 def test_a_failed_look_up_creates_nothing(egeria, registry):
@@ -317,6 +413,86 @@ def test_with_no_cache_the_seed_answers_and_says_so(registry):
     pl = ip.current_purposes(registry, lambda: (_ for _ in ()).throw(RuntimeError("down")), use_memo=False)
     assert pl.source == "seed" and sorted(pl.names) == TEN
     assert pl.words.startswith("RE's shipped list, not Egeria's") and "down" in pl.words
+
+
+def test_egeria_holding_no_set_is_an_answer_not_a_read_failure(egeria, registry):
+    rm, mx = _live_clients()
+    ip.write_cache(registry, [{"name": "Assess", "description": "", "is_default": False, "ordinal": 0}])
+    pl = ip.current_purposes(registry, lambda: ip.read_purposes_from_egeria(rm, mx), use_memo=False)
+    assert pl.source == "egeria-empty" and pl.names == ["Assess"]
+    assert pl.words.startswith("Egeria holds no purposes yet; showing the cached copy")
+    assert "could not be read" not in pl.words
+    registry.set_setting(ip.CACHE_KEY, "")
+    pl = ip.current_purposes(registry, lambda: ip.read_purposes_from_egeria(rm, mx), use_memo=False)
+    assert pl.source == "egeria-empty" and pl.words.startswith("Egeria holds no purposes yet; showing RE's shipped list")
+
+
+def test_the_memo_s_words_age_with_the_read(egeria, registry, monkeypatch):
+    rm, mx = _live_clients()
+    ip.ensure_purposes(rm, mx, still_leader=lambda: True)
+    ip.reset_memo()
+    clock = [1_000_000.0]
+    monkeypatch.setattr(ip.time, "time", lambda: clock[0])
+    first = ip.current_purposes(registry, lambda: ip.read_purposes_from_egeria(rm, mx))
+    assert first.words == "Egeria's list · read just now"
+    clock[0] += 240
+    later = ip.current_purposes(registry, lambda: ip.read_purposes_from_egeria(rm, mx))
+    assert later.words == "Egeria's list · read 4 minutes ago"
+    ip.reset_memo()
+
+
+def test_a_hung_read_does_not_hold_up_the_next_request(registry):
+    import threading
+    import time as _time
+
+    release = threading.Event()
+    hung = ip.current_purposes(registry, lambda: release.wait(5) and [], timeout=0.2, use_memo=False)
+    assert hung.source == "seed" and "did not answer" in hung.reason
+    t0 = _time.monotonic()
+    nxt = ip.current_purposes(registry, lambda: release.wait(5) and [], timeout=3, use_memo=False)
+    assert _time.monotonic() - t0 < 1, "a later request waited behind the hung read"
+    assert "has not answered yet" in nxt.reason
+    release.set()
+
+
+def test_known_names_never_open_a_registry_on_their_own(monkeypatch):
+    """Constructing ProjectRegistry connects to the shared registry and migrates it; a manifest load must not."""
+    attempts = []
+
+    def refuse(*a, **k):
+        attempts.append(1)
+        raise AssertionError("constructed ProjectRegistry implicitly")
+
+    monkeypatch.setattr(ProjectRegistry, "__init__", refuse)
+    assert sorted(ip.known_purpose_names()) == TEN
+    from trellis_analytics.discovery import check_purposes
+    from trellis_analytics.manifest import StepManifest
+
+    m = StepManifest(name="s", function="a.b", source="ods", version="1", purposes=["Find", "Wander"])
+    assert len(check_purposes({"s": m})) == 1
+    assert attempts == [], "a registry was constructed implicitly"
+
+
+def test_the_mining_read_excludes_another_user_s_private_investigation(registry):
+    from contextlib import contextmanager
+
+    from resource_explorer.a2a_auth import CallerIdentity, current_caller
+
+    @contextmanager
+    def as_user(uid):
+        tok = current_caller.set(CallerIdentity(user_id=uid, egeria_token=None, auth_source="app-jwt"))
+        try:
+            yield
+        finally:
+            current_caller.reset(tok)
+
+    with as_user("alice"):
+        registry.create_investigation("Alice's own", project_classification="PersonalProject",
+                                      purpose_text="my private reason")
+    with as_user("bob"):
+        assert registry.purpose_free_text()["investigation_purposes"] == []
+    with as_user("alice"):
+        assert registry.purpose_free_text()["investigation_purposes"][0]["text"] == "my private reason"
 
 
 # ── suggestive everywhere: warn, never reject ─────────────────────────────────
