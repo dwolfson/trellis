@@ -230,6 +230,9 @@ class EgeriaResync:
             if "NotFound" in name or "404" in str(exc):
                 return False
             return None
+        if found is None:
+            # No answer is not "gone" (pyegeria ISSUE-134: up to 6.2.1 a swallowed failure returned None).
+            return None
         if isinstance(found, str):
             return "No elements" not in found and bool(found.strip())
         return bool(found)
@@ -291,6 +294,11 @@ class EgeriaResync:
                     "kind": "asset", "ref": r["slug"],
                     "reason": f"{type(exc).__name__}: {str(exc)[:80]}",
                 })
+                continue
+            if check is None:
+                # No answer is not "not live" (pyegeria ISSUE-134): undetermined, never cleared.
+                res.undetermined.append({"kind": "asset", "ref": r["slug"],
+                                         "reason": "Egeria gave no answer (the client returned nothing)"})
                 continue
             live = isinstance(check, list) and any(
                 (e.get("elementHeader") or {}).get("guid") == r["egeria_asset_guid"]

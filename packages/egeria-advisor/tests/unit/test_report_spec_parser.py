@@ -260,6 +260,14 @@ resource_type=database, limit=30
 DICT, BAR
 """
     spec = parse_report_spec_markdown(rsd)
-    assert spec.action.function == "" and spec.action.analytic_function == "pkg.mod.func"
+    # pyegeria 6.2.2 (ISSUE-141): no action function at all, not ""
+    assert spec.action.function is None and spec.action.analytic_function == "pkg.mod.func"
     assert spec.action.analytic_spec_params == {"resource_type": "database", "limit": 30}
     assert [f.types for f in spec.formats] == [["DICT", "BAR"]]
+    # and the validator does not warn "No Action Function" for an analytic-only spec
+    assert validate_report_spec(spec) == []
+
+
+def test_validator_still_warns_when_a_spec_has_no_function_of_either_kind():
+    spec = FormatSet(heading="h", description="d", formats=[], action=None)
+    assert validate_report_spec(spec) == ["No Action Function defined."]

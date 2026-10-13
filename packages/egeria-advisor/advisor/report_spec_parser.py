@@ -125,7 +125,8 @@ def parse_report_spec_markdown(content: str) -> FormatSet:
     analytic_spec_params = _parse_spec_params(attrs.get("Analytic Spec Params", ""))
     if analytic_function and not action_function:
         # an analytic-only spec (no find method), as pyegeria's analytic demo specs are
-        action_obj = ActionParameter(function="", analytic_function=analytic_function,
+        # (pyegeria 6.2.2, ISSUE-141: `function` is optional when `analytic_function` is set)
+        action_obj = ActionParameter(analytic_function=analytic_function,
                                      analytic_spec_params=analytic_spec_params)
     elif action_function:
         required_params = [p.strip() for p in attrs.get("Required Params", "").split(",") if p.strip()]
@@ -221,6 +222,9 @@ def parse_report_spec_markdown(content: str) -> FormatSet:
 def validate_report_spec(spec: FormatSet) -> List[str]:
     """Validate a parsed FormatSet against Egeria class/method conventions."""
     warnings = []
+    if spec.action and not spec.action.function and spec.action.analytic_function:
+        # An analytic-only spec has no find method by design (pyegeria ISSUE-141): nothing to warn about.
+        return warnings
     if not spec.action or not spec.action.function:
         warnings.append("No Action Function defined.")
         return warnings

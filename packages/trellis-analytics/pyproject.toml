@@ -6,8 +6,10 @@ readme = "README.md"
 authors = [{ name = "Dan Wolfson" }]
 requires-python = ">=3.12,<4.0"
 dependencies = [
-    # Manifests subclass pyegeria's AnalyticFunctionSpec (brief 2a).
-    "pyegeria",
+    # Manifests subclass pyegeria's AnalyticFunctionSpec (brief 2a). 6.2.2: an analytic-only FormatSet needs no
+    # action function (ISSUE-141) and exec_report_spec builds no Egeria client for a routine with no client
+    # parameter (ISSUE-137); the Portal tile relies on both.
+    "pyegeria>=6.2.2",
 ]
 
 [project.optional-dependencies]

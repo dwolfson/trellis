@@ -396,6 +396,10 @@ class PyegeriaSurveyPort:
         result = self._get_expert().get_related_metadata_elements(
             engine_action_guid, "ReportOriginator",
             body={"class": "GetRequestBody"}, starting_at_end=0)
+        if result is None:
+            # No answer is not "no report yet" (pyegeria ISSUE-134: up to 6.2.1 a swallowed failure was None).
+            raise NativeSurveyError(
+                f"Egeria gave no answer for engine action {engine_action_guid}'s report (the client returned nothing)")
         if not isinstance(result, dict):
             return None  # pyegeria's "No element found" string: no report yet
         guids = [

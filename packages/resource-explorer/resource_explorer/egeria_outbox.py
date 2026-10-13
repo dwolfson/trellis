@@ -396,8 +396,13 @@ def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callab
         # the honest question is whether it can be found at all.
         try:
             found = find_element_guid(qualified_name)
-        except Exception:
-            found = ""
+        except Exception as lookup_exc:
+            # The look-again failed: that is "could not read", not "cannot be found". Raised with its own
+            # words (an ordinary failed attempt, retried later), never the inconsistency below.
+            raise OutboxApplyError(
+                f"Egeria rejected {qualified_name!r} as a duplicate qualifiedName and the look-up "
+                f"for it then failed ({type(lookup_exc).__name__}: {str(lookup_exc)[:200]}); "
+                f"no GUID can be recorded yet.") from exc
         if found:
             log.info("Outbox row %s: %s already existed (GUID %s) — adopted after a "
                      "duplicate-name rejection the pre-create lookup missed",

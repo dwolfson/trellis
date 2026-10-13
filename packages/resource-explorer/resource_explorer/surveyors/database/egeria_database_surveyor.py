@@ -963,6 +963,10 @@ class EgeriaDatabaseSurveyor:
         return base
 
     def _guid_from_lookup(self, result) -> str:
+        if result is None:
+            # Not a miss (a miss is pyegeria's "No elements found" string): up to 6.2.1 a failure swallowed by
+            # `@dynamic_catch` came back as None (ISSUE-134). '' would mean "create it", so this raises.
+            raise RuntimeError("Egeria gave no answer to the by-name lookup (the client returned nothing)")
         if isinstance(result, list) and result:
             candidate = result[0] if isinstance(result[0], str) else result[0].get("guid", "")
             return candidate if self._UUID_RE.match(candidate or "") else ""

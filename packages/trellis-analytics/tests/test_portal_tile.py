@@ -1,7 +1,8 @@
 """Host 3: the Portal tile, a FormatSet run by pyegeria's real exec_report_spec (brief 2b, 2d).
 
-Only the Egeria client boundary is faked: exec_report_spec builds an EgeriaTech and mints a token before
-it calls the analytic function, and curation_coverage needs neither (see the handoff: proposed pyegeria issue).
+Nothing is faked. Since pyegeria 6.2.2 (ISSUE-137) exec_report_spec builds an EgeriaTech only for a routine whose
+leading parameters name a client; the tile's routine names none, so the fixture makes any EgeriaTech construction
+fail the test instead of faking one.
 """
 import json
 import subprocess
@@ -17,22 +18,17 @@ fse = pytest.importorskip("pyegeria.view.format_set_executor")
 LABEL = "Trellis - Curation Coverage"
 
 
-class FakeEgeria:
+class NoEgeria:
+    """The tile reads only RE's store: building an Egeria client at all is the regression (ISSUE-137)."""
     def __init__(self, *a, **k):
-        pass
-
-    def create_egeria_bearer_token(self):
-        pass
-
-    def set_bearer_token(self, _t):
-        pass
+        raise AssertionError("exec_report_spec built an EgeriaTech for a routine that takes no client")
 
 
 @pytest.fixture
 def tile(monkeypatch):
     from pyegeria.view import base_report_formats as brf
     from trellis_analytics.portal import report_specs
-    monkeypatch.setattr(fse, "EgeriaTech", FakeEgeria)
+    monkeypatch.setattr(fse, "EgeriaTech", NoEgeria)
     brf.register_report_specs(report_specs(), source="test")
     yield lambda url, fmt="DICT", **p: fse.exec_report_spec(
         LABEL, output_format=fmt, params={"slug": SLUG, "ods_url": url, **p})
