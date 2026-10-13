@@ -100,6 +100,15 @@ class OutboxApplyError(RuntimeError):
     attempt or a dead letter."""
 
 
+class OutboxNotKept(OutboxApplyError):
+    """A write a resend cannot fix: the same row carries the same body, so the result would be the same.
+
+    Raised for a membership property Egeria did not keep (it drops a name it does not know and answers
+    success) and for a membership confidence RE refuses to send. The drain marks the row dead on the
+    FIRST failure, with these words, through the same `max_attempts=1` terminal path a destructive or
+    person-only row takes. Gate decision 2026-10-13: no retry with backoff."""
+
+
 class OutboxIdentityError(RuntimeError):
     """The drain has no usable Egeria identity to call as: a configuration error.
 
@@ -438,17 +447,7 @@ def _create_collection_membership(clients: "OutboxClients", payload: dict) -> st
     with no error anywhere. Re-measure if pyegeria changes these signatures.
     """
     cm = clients.require("collection_manager")
-    # `membershipRationale` is a real CollectionMembership property and
-    # `add_to_collection` takes an optional relationship body, so a member's
-    # REASON for being in the collection travels with it instead of staying
-    # local. Sent only when a caller supplied one: the investigation path
-    # does not, and adding an empty body to its writes would change what
-    # every already-queued row means.
-    props = {}
-    if payload.get("membership_rationale"):
-        props["membershipRationale"] = payload["membership_rationale"]
-    if payload.get("expected_confidence") is not None:
-        props["expectedConfidence"] = payload["expected_confidence"]
+    props = collection_membership_properties(payload)
     if props:
         cm.add_to_collection(payload["collection_guid"], payload["member_guid"], body={
             "class": "NewRelationshipRequestBody",
@@ -456,6 +455,161 @@ def _create_collection_membership(clients: "OutboxClients", payload: dict) -> st
         })
     else:
         cm.add_to_collection(payload["collection_guid"], payload["member_guid"])
+    return ""
+
+
+#: `CollectionMembershipProperties.confidence` (Egeria 6.2): "the confidence level (0-100) that the matching
+#: is correct". An int, default 0.
+MEMBERSHIP_CONFIDENCE_MIN, MEMBERSHIP_CONFIDENCE_MAX = 0, 100
+
+
+def membership_confidence(value) -> int:
+    """A member's confidence as Egeria's `confidence` takes it: an int in 0-100.
+
+    A float or a numeric string is coerced (a stored "80" is 80; 79.6 rounds to 80). Refused with
+    ValueError: None, a bool, a non-number, and a value outside 0-100 (refused, never clamped: clamping
+    would publish a number nobody chose)."""
+    if value is None or isinstance(value, bool):
+        raise ValueError(f"confidence {value!r} is not a number")
+    if isinstance(value, str):
+        try:
+            value = float(value.strip())
+        except ValueError:
+            raise ValueError(f"confidence {value!r} is not a number") from None
+    if not isinstance(value, (int, float)) or value != value or value in (float("inf"), float("-inf")):
+        raise ValueError(f"confidence {value!r} is not a number")
+    whole = int(round(value))
+    if not MEMBERSHIP_CONFIDENCE_MIN <= whole <= MEMBERSHIP_CONFIDENCE_MAX:
+        raise ValueError(f"confidence {value!r} is outside Egeria's "
+                         f"{MEMBERSHIP_CONFIDENCE_MIN}-{MEMBERSHIP_CONFIDENCE_MAX}")
+    return whole
+
+
+def collection_membership_properties(payload: dict) -> dict:
+    """The `CollectionMembershipProperties` fields one queued membership sends, by Egeria's own names.
+
+    Every name here is a field of Egeria 6.2's `CollectionMembershipProperties`. That class is
+    `@JsonIgnoreProperties(ignoreUnknown=true)`, so a wrong name is not refused: Egeria drops it and the
+    write still succeeds. That is how `expectedConfidence` (not an Egeria property) published every
+    work-list confidence as `confidence: 0` until 2026-10-13.
+
+    * `membershipRationale` — the member's REASON for being in the collection travels with it.
+    * `confidence` — sent only when RE recorded one. Egeria's `confidence` is an int defaulting to 0,
+      so on a read-back "not recorded" and "recorded as 0" look the same; RE's own row
+      (`work_list_members.confidence` NULL vs 0) is the only place they differ.
+
+    The payload key stays `expected_confidence` (what queued rows already carry); `confidence` is also
+    read. Sent only when a caller supplied a value: the investigation path supplies neither, and adding
+    an empty body to its writes would change what every already-queued row means.
+
+    Raises OutboxNotKept (dead at once) for a confidence that is not a number in 0-100: refused, not
+    guessed at."""
+    props: dict = {}
+    if payload.get("membership_rationale"):
+        props["membershipRationale"] = payload["membership_rationale"]
+    raw = payload.get("expected_confidence", payload.get("confidence"))
+    if raw is not None:
+        try:
+            props["confidence"] = membership_confidence(raw)
+        except ValueError as exc:
+            raise OutboxNotKept(f"not sent: {exc}") from None
+    return props
+
+
+#: The start of a dead membership row's words when RE refused the confidence it would have sent. A Retry
+#: would send the same stored value, so the outbox pane draws none on it (`retry_refusal`).
+NOT_SENT_CONFIDENCE = "not sent: confidence"
+
+#: Members are read from the MEMBER's side: the collections one element belongs to, not every member of
+#: the collection, so a read is small whatever the collection's size. Paged in the BODY (`startFrom`,
+#: `pageSize`): pyegeria 6.2.1 ignores the `page_size`/`starting_at_end` keywords of
+#: `get_related_metadata_elements` (fixed in 6.2.2, ISSUE-129); a body field works on both.
+MEMBERSHIP_READ_BACK_PAGE = 100
+#: A guard, not a rule: pages read before the read-back gives up and says so on the row.
+MEMBERSHIP_READ_BACK_MAX_PAGES = 50
+
+
+def _relationship_property(props, name: str):
+    """One property of a relationship as MetadataExpert returns it: `propertyValueMap.<name>.primitiveValue`
+    (or an enum's `symbolicName`); a flat `{name: value}` shape is read too. None when absent."""
+    props = props if isinstance(props, dict) else {}
+    value = (props.get("propertyValueMap") or {}).get(name)
+    if isinstance(value, dict):
+        for key in ("primitiveValue", "symbolicName"):
+            if key in value:
+                return value[key]
+    return props.get(name)
+
+
+def verify_membership_landed(row: dict, clients: "OutboxClients") -> str:
+    """After a `collection_membership` write: read the relationship back and compare what was sent.
+
+    Egeria drops a property name it does not know and still answers success, so only the relationship as
+    it reads back can show a drop. Returns the note for the done row ('' when every sent property is
+    there, or when nothing was sent: then no read at all). Raises OutboxNotKept naming each property that
+    did not land: the row goes dead at once (a resend carries the same body).
+
+    The read is from the member's side, `MetadataExpert.get_related_metadata_elements(member,
+    "CollectionMembership", body, starting_at_end=2)`, paged in the body until this collection is found
+    or a page comes back empty (a short page does not end it). The member is at end 2 of
+    CollectionMembership and the collection at end 1, so a match must have `element.elementGUID` equal
+    to the collection, `elementAtEnd1` True and `type.typeName` "CollectionMembership"; the values are
+    `relationshipProperties.propertyValueMap`. Measured read-only on 6.2, 2026-10-13, member egeria_git:
+    with pyegeria 6.2.2, starting_at_end=2 (or omitted) returns its 3 collections and 1 returns none;
+    6.2.1 ignores the keyword and returns the 3 either way. Body paging (pageSize=1) works on both.
+
+    A read that fails, or that does not show this collection, cannot tell either way: the row is done,
+    and the note says the properties were not confirmed."""
+    try:
+        payload = json.loads(row.get("payload_json") or "{}")
+    except (TypeError, ValueError):
+        return ""
+    sent = collection_membership_properties(payload)
+    if not sent:
+        return ""
+    collection_guid, member_guid = payload.get("collection_guid", ""), payload.get("member_guid", "")
+    rel = None
+    try:
+        me = clients.require("metadata_expert")
+        for page in range(MEMBERSHIP_READ_BACK_MAX_PAGES):
+            answer = me.get_related_metadata_elements(
+                member_guid, "CollectionMembership",
+                {"class": "ResultsRequestBody", "startFrom": page * MEMBERSHIP_READ_BACK_PAGE,
+                 "pageSize": MEMBERSHIP_READ_BACK_PAGE},
+                starting_at_end=2)
+            items = (answer.get("elementList") or []) if isinstance(answer, dict) else []
+            if not items:                                 # "No elements found" or an empty list: the end
+                break
+            for item in items:
+                if (isinstance(item, dict)
+                        and (item.get("type") or {}).get("typeName") == "CollectionMembership"
+                        and item.get("elementAtEnd1") is True
+                        and (item.get("element") or {}).get("elementGUID") == collection_guid):
+                    rel = item.get("relationshipProperties") or {}
+                    break
+            if rel is not None:
+                break
+        else:
+            return (f"written; properties not confirmed: the read-back stopped after "
+                    f"{MEMBERSHIP_READ_BACK_MAX_PAGES} pages")
+    except Exception as exc:  # noqa: BLE001 — any failure means "could not tell", said on the row
+        return f"written; properties not confirmed: read-back failed ({type(exc).__name__}: {str(exc)[:200]})"
+    if rel is None:
+        return "written; properties not confirmed: the membership is not in the read-back"
+    dropped = [f"{k} (sent {v!r}, read back {_relationship_property(rel, k)!r})"
+               for k, v in sent.items() if _relationship_property(rel, k) != v]
+    if dropped:
+        raise OutboxNotKept("Egeria accepted the membership but did not keep: " + "; ".join(dropped))
+    return ""
+
+
+def retry_refusal(row: dict) -> str:
+    """Why a dead row is not offered a Retry (beyond a destructive kind), or ''. A membership whose stored
+    confidence RE refused would be refused again: the value has to be corrected on the work list first."""
+    if (row.get("element_kind") == "collection_membership"
+            and str(row.get("last_error") or "").startswith(NOT_SENT_CONFIDENCE)):
+        return ("the stored confidence is not a number from 0 to 100, so a retry would refuse it again: "
+                "correct it on the work list and publish again")
     return ""
 
 
@@ -1119,6 +1273,12 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
                     _row_identity(row, identity):
                 guid = apply_element(row, clients, find_element_guid,
                                      resolve_row_guids=registry.get_outbox_guids)
+            done_note = ""
+            if row.get("element_kind") == "collection_membership":
+                # Timed apart from the write: the read-back is a query, not part of the write's latency.
+                with time_egeria_call(registry, "outbox:collection_membership:read_back", "query"), \
+                        _row_identity(row, identity):
+                    done_note = verify_membership_landed(row, clients)
         except OutboxNotReadyError as exc:
             # Not a failure: this link's referent annotation(s) have not
             # landed yet. Hand it back to 'pending' with no attempt burned —
@@ -1155,6 +1315,10 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
                     max_attempts=1)
                 summary["dead" if status == "dead" else "failed"] += 1
                 summary["security_refused"] = summary.get("security_refused", 0) + 1
+            elif isinstance(exc, OutboxNotKept):
+                # A resend carries the same body and meets the same answer: dead on the first failure, its words.
+                status = registry.mark_outbox_failed(row["id"], str(exc), max_attempts=1)
+                summary["dead" if status == "dead" else "failed"] += 1
             elif is_person_only_kind(row.get("element_kind") or ""):
                 # Brief F: never re-sent on its own (a retry would be the drain choosing when to write as the
                 # person): dead at once with Egeria's words; the person's next Publish queues a new row.
@@ -1168,7 +1332,7 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
             log_at("Outbox row %s (%s %s) -> %s: %s",
                    row["id"], row["element_kind"], row["qualified_name"], status, exc)
             continue
-        registry.mark_outbox_done(row["id"], guid)
+        registry.mark_outbox_done(row["id"], guid, note=done_note)
         summary["done"] += 1
 
     if summary["dead"]:

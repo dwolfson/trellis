@@ -40,7 +40,10 @@ qualifiedName: work lists are namespaced `WorkingSet::resource-explorer::<slug>`
 `CollectionMembership` genuinely does carry `membershipRationale` — it is a
 real `OpenMetadataProperty` — and pyegeria's `add_to_collection` takes an
 optional relationship body, so a member's reason travels with it rather than
-being local-only.
+being local-only. So does its confidence, as Egeria's `confidence` (an int,
+0-100). Until 2026-10-13 it was sent as `expectedConfidence`, which is not an
+Egeria property: Egeria dropped it and the membership read `confidence: 0`.
+The names are built in one place, `egeria_outbox.collection_membership_properties`.
 
 **Publishing is explicit, never automatic.** Creating a work list writes
 locally and nothing else. `publish_work_list()` is what enqueues the Egeria
@@ -208,13 +211,28 @@ class WorkLists:
                          (investigation, slug))
 
     def set_member(self, slug: str, entity_slug: str, *,
-                   rationale: str = "", confidence: int | None = None) -> None:
-        """Add a member, or update the reason it is there."""
+                   rationale: str = "", confidence=None) -> None:
+        """Add a member, or update the reason it is there.
+
+        `confidence` is checked by the same function the outbox sends it with
+        (`egeria_outbox.membership_confidence`: an int 0-100; ValueError otherwise), so a value stored here
+        is one Egeria can hold. None leaves an existing member's confidence as it is (a rationale-only
+        update, e.g. the journal's, must not wipe it). Clearing a confidence is not offered: Egeria merges
+        relationship properties, so a cleared value would need its own write (follow-up)."""
+        from resource_explorer.egeria_outbox import membership_confidence
+
+        if confidence is not None:
+            confidence = membership_confidence(confidence)
         with self._conn() as conn:
             existing = conn.execute(
                 "SELECT 1 FROM work_list_members WHERE work_list_slug = ? AND entity_slug = ?",
                 (slug, entity_slug)).fetchone()
-            if existing:
+            if existing and confidence is None:
+                conn.execute(
+                    "UPDATE work_list_members SET rationale = ?"
+                    " WHERE work_list_slug = ? AND entity_slug = ?",
+                    (rationale, slug, entity_slug))
+            elif existing:
                 conn.execute(
                     "UPDATE work_list_members SET rationale = ?, confidence = ?"
                     " WHERE work_list_slug = ? AND entity_slug = ?",
@@ -512,6 +530,7 @@ def enqueue_work_list_members(registry, work_list_slug: str, collection_guid: st
         if m.get("rationale"):
             payload["membership_rationale"] = m["rationale"]
         if m.get("confidence") is not None:
+            # The payload key queued rows already carry; the creator sends it as Egeria's `confidence`.
             payload["expected_confidence"] = m["confidence"]
         payload.update(requester_fields())       # Brief Z3: the drain re-checks the person who pressed publish
         row_ids.append(registry.enqueue_outbox_element(

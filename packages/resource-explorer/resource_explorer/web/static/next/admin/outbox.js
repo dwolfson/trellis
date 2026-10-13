@@ -26,9 +26,10 @@ let _data = null;
 let _locked = false;
 let _lockRead = false;
 
-/** A Retry is drawn only for a dead row of a kind that does not archive, delete or detach. Exported for the tests. */
+/** A Retry is drawn only for a dead row of a kind that does not archive, delete or detach, and that the server
+ *  does not mark `not_retryable` (a retry would fail the same way). Exported for the tests. */
 export function canRetry(row) {
-  return row.status === 'dead' && !row.destructive;
+  return row.status === 'dead' && !row.destructive && !row.not_retryable;
 }
 
 function stateCell(r, max) {
@@ -58,6 +59,10 @@ function actionCell(r) {
   if (r.destructive && r.status === 'dead') {
     return `<span data-outbox-no-retry title="This write archives, deletes or detaches in Egeria. A retry of it is itself a destructive write, so it is never retried from here. Press the original control again."
       class="text-provenance text-ink-muted">not retried · destructive</span>`;
+  }
+  if (r.not_retryable && r.status === 'dead') {
+    return `<span data-outbox-no-retry title="${esc(r.not_retryable)}"
+      class="text-provenance text-ink-muted">not retried · fix the value</span>`;
   }
   return '';
 }

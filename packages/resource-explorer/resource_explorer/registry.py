@@ -8307,19 +8307,23 @@ class ProjectRegistry:
                 tuple(row_ids),
             )
 
-    def mark_outbox_done(self, row_id: int, egeria_guid: str = "") -> None:
+    def mark_outbox_done(self, row_id: int, egeria_guid: str = "", *, note: str = "") -> None:
         """Record the element as written, with the GUID it resolved to.
 
         Once egeria_guid is set, a later retry of this row needs no
         qualifiedName search at all — the GUID is Egeria's primary identity,
         and the search is only how a row that never recorded one discovers it
         nonetheless landed.
+
+        `note` is kept in last_error on the done row (as `mark_outbox_superseded` keeps its words), for a
+        write that succeeded with something still to say, e.g. "written; properties not confirmed: …".
+        Without one, last_error is cleared as before.
         """
         with self._conn() as conn:
             conn.execute(
                 "UPDATE egeria_outbox SET status='done', claimed_at='', egeria_guid=?, "
-                "completed_at=?, last_error='' WHERE id=?",
-                (egeria_guid, datetime.utcnow().isoformat(), row_id),
+                "completed_at=?, last_error=? WHERE id=?",
+                (egeria_guid, datetime.utcnow().isoformat(), (note or "")[:2000], row_id),
             )
 
     def mark_outbox_superseded(self, row_id: int, by_ids: "list[int]", note: str) -> bool:
