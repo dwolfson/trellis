@@ -6585,7 +6585,7 @@ export async function openRunsList(slug) {
   const body = el.querySelector('#wl-detail-body');
   let rows;
   try {
-    rows = await getResourceRuns(slug);
+    rows = await getResourceRuns(slug, 40, apiEntityType(state.resourceType));
   } catch (err) {
     body.innerHTML = `<p class="text-state-warn">The runs could not be read: ${esc(err.message)}</p>`;
     return;

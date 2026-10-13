@@ -86,6 +86,7 @@ def _acting_user(request: Request, supplied: str = "") -> str:
 @router.get("/")
 def list_activity(
     entity_type: str | None = Query(None),
+    entity_slug: str | None = Query(None),
     intent: str | None = Query(None),
     operation: str | None = Query(None),
     status: str | None = Query(None),
@@ -94,6 +95,7 @@ def list_activity(
 ) -> list[dict]:
     return _registry().list_activity(
         entity_type=entity_type,
+        entity_slug=entity_slug,
         intent=intent,
         operation=operation,
         status=status,

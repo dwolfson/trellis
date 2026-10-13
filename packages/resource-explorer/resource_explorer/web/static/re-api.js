@@ -1380,8 +1380,9 @@ export const getMemberChildren = (slug, analysisId, key, { scope = 'public', lim
   get(`/api/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(analysisId)}/children?${
     new URLSearchParams({ key, scope, limit: String(limit), entity_type: requireKind('getMemberChildren', entityType) })}`);
 
-export const getResourceRuns = (slug, limit = 40) =>
-  get(`/api/activity/?entity_slug=${encodeURIComponent(slug)}&limit=${limit}`);
+export const getResourceRuns = (slug, limit = 40, entityType) =>
+  get(`/api/activity/?entity_slug=${encodeURIComponent(slug)}${
+    entityType ? `&entity_type=${encodeURIComponent(entityType)}` : ''}&limit=${limit}`);
 
 /** One run's declared-vs-received reconciliation: what each step promised vs what the report actually got. */
 export const getDeclaredVsReceived = (entryId) =>
