@@ -288,6 +288,10 @@ class DataClassRule(BaseModel):
     description: str
     keywords: list[str]
     source: str
+    #: Which keyword source this read used, the same words on every rule ("keywords: Egeria, N
+    #: sets" / "keywords: built-in list · Egeria had none" / "... · could not read Egeria"), from
+    #: `egeria_reference_catalog.KeywordLoad.label`.
+    keyword_source: str = ""
 
 
 @router.get("/private-zone")
@@ -325,20 +329,29 @@ _DATACLASS_GUID_TIMEOUT_SECONDS = 15
 async def get_dataclass_rules() -> list[DataClassRule]:
     """Fetch the active PII Data Classes and their corresponding keyword matching rules.
 
-    Queries Egeria's Valid Value sets if online; falls back to local rules if offline.
+    Queries Egeria's Valid Value sets if online; falls back to local rules if offline. Every rule
+    carries `keyword_source`, the one label for which source this read used.
     """
+    # The built-in rules are the data-class seed (configdata/data_classes.yaml), the same entries
+    # the start-up bootstrap creates in Egeria.
+    from resource_explorer.surveyors.database.bootstrap_data_classes import current_seed
+
     fallback_rules = [
-        {"name": "EmailAddress", "display_name": "Email Address", "description": "Electronic mail address identifier.", "keywords": ["email", "email_address", "mail_addr", "emailaddr"], "source": "Local Fallback"},
-        {"name": "PhoneNumber", "display_name": "Phone Number", "description": "Telephone contact number.", "keywords": ["phone", "phone_number", "telephone", "mobile", "tel_num"], "source": "Local Fallback"},
-        {"name": "SocialSecurityNumber", "display_name": "Social Security Number", "description": "Government issued social security identification number.", "keywords": ["ssn", "socialsec", "social_security", "ssn_num"], "source": "Local Fallback"},
-        {"name": "CreditCardNumber", "display_name": "Credit Card Number", "description": "Financial credit or debit card identifier.", "keywords": ["creditcard", "credit_card", "cc_num", "card_number"], "source": "Local Fallback"},
-        {"name": "Password", "display_name": "Password", "description": "Credential or secret authentication passkey.", "keywords": ["password", "passkey", "passwd", "pwd"], "source": "Local Fallback"},
-        {"name": "DateOfBirth", "display_name": "Date of Birth", "description": "Individual date or anniversary of birth.", "keywords": ["dob", "dateofbirth", "birth_date", "birthdate"], "source": "Local Fallback"},
+        {"name": dc["name"], "display_name": dc["displayName"], "description": dc["description"],
+         "keywords": list(dc["dataPatterns"]), "source": "Local Fallback"}
+        for dc in current_seed()
     ]
+
+    from resource_explorer.surveyors.database.egeria_reference_catalog import (
+        KEYWORDS_NOT_CONFIGURED, KEYWORDS_UNREADABLE, KeywordLoad,
+    )
+
+    def _built_in(load: KeywordLoad) -> list[DataClassRule]:
+        return [DataClassRule(**r, keyword_source=load.label) for r in fallback_rules]
 
     platform_url = egeria_platform_url()
     if not platform_url:
-        return [DataClassRule(**r) for r in fallback_rules]
+        return _built_in(KeywordLoad(KEYWORDS_NOT_CONFIGURED))
 
     try:
         from pyegeria.omvs.reference_data import ReferenceDataManager
@@ -354,7 +367,7 @@ async def get_dataclass_rules() -> list[DataClassRule]:
         try:
             reader = Caller()
         except NoCallerIdentity:
-            return [DataClassRule(**r) for r in fallback_rules]
+            return _built_in(KeywordLoad(KEYWORDS_UNREADABLE, reason="not signed in"))
         clients = egeria_client(reader, purpose="data class rules",
                                 view_server=view_server, platform_url=platform_url)
 
@@ -376,60 +389,31 @@ async def get_dataclass_rules() -> list[DataClassRule]:
             return run_sync(_lookup, timeout=_DATACLASS_GUID_TIMEOUT_SECONDS)
 
         def _fetch():
+            from resource_explorer.surveyors.database.egeria_reference_catalog import (
+                load_data_class_keywords,
+            )
+            from resource_explorer.surveyors.survey_definition_reader import _as_guid
+
             ref_manager = clients.of(ReferenceDataManager)
-
-            from concurrent.futures import TimeoutError as _LookupTimeout
-
-            rules = []
-            timed_out = False
-            for dc in fallback_rules:
-                name = dc["name"]
-                qname = f"DataClass::{name}"
-                keywords = []
-                if timed_out:
-                    # Round 6: after the first timed-out lookup, the rest answer the local rules
-                    # rather than each waiting out the bound on a platform that is not answering.
-                    rules.append(DataClassRule(**dc))
-                    continue
-                try:
-                    try:
-                        guid = _guid_for(qname)
-                    except _LookupTimeout:
-                        timed_out = True
-                        rules.append(DataClassRule(**dc))
-                        continue
-                    if guid:
-                        results = ref_manager.find_valid_value_definitions(
-                            search_string=f"ValidValueDefinition::{name}Keyword::",
-                            starts_with=True,
-                            output_format="JSON"
-                        )
-                        if isinstance(results, list):
-                            for item in results:
-                                if isinstance(item, dict):
-                                    props = item.get("properties", {})
-                                    val = props.get("preferredValue") or props.get("displayName")
-                                    if val:
-                                        keywords.append(val.strip().lower())
-                except Exception:
-                    pass
-
-                rules.append(
-                    DataClassRule(
-                        name=name,
-                        display_name=dc["display_name"],
-                        description=dc["description"],
-                        keywords=list(set(keywords)) if keywords else dc["keywords"],
-                        source="Egeria (Active)" if keywords else "Local Fallback"
-                    )
-                )
-            return rules
+            # A DataClass Egeria does not hold has no keywords there. `_as_guid` rejects pyegeria's
+            # truthy "No elements found" miss sentinel; a timed-out lookup (`TimeoutError`) stops
+            # every later one inside the loader (round 6).
+            load = load_data_class_keywords(
+                ref_manager, [dc["name"] for dc in fallback_rules],
+                data_class_exists=lambda name: bool(_as_guid(_guid_for(f"DataClass::{name}"))),
+            )
+            return [
+                DataClassRule(**{**dc, "keywords": load.by_class.get(dc["name"]) or dc["keywords"],
+                                 "source": "Egeria (Active)" if dc["name"] in load.by_class else "Local Fallback",
+                                 "keyword_source": load.label})
+                for dc in fallback_rules
+            ]
 
         return await asyncio.to_thread(_fetch)
     except PermissionError:
         raise      # no caller / expired sign-in: 401, never the local fallback rules
-    except Exception:
-        return [DataClassRule(**r) for r in fallback_rules]
+    except Exception as exc:  # noqa: BLE001 - the built-in rules, labelled as "could not read"
+        return _built_in(KeywordLoad(KEYWORDS_UNREADABLE, reason=str(exc)[:200]))
 
 
 @router.get("/{slug}/status", response_model=EgeriaStatus)

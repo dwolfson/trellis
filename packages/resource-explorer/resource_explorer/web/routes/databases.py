@@ -1046,7 +1046,11 @@ async def get_database_views(slug: str) -> dict:
     if not isinstance(views, list):
         return {"state": "not_measured", "run": run, "views": [],
                 "reason": "this survey did not run the sql_analysis step, so views were not analyzed"}
-    return {"state": "measured", "run": run, "reason": "", "views": [
+    # The PII keyword source of the run these views came from (`DatabaseSurveyor._store_results`);
+    # "" for a survey stored before it was recorded.
+    kw = blob.get("pii_keyword_source") if isinstance(blob.get("pii_keyword_source"), dict) else {}
+    return {"state": "measured", "run": run, "reason": "", "keyword_source": kw.get("label") or "",
+            "views": [
         {"kind": v.get("kind") or "view",
          "schema": v.get("schema") or v.get("schema_name") or "",
          "name": v.get("name") or v.get("view_name") or "",

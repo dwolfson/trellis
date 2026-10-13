@@ -347,3 +347,21 @@ test('PI-041: an empty answer and a failed route both say "no reader yet" in wor
   const failed = await setUp({ stage: 'curate', over: { rules: Object.assign([], { __http: 500 }) } });
   assert.match(text(failed.document.querySelector('[data-curate-rules]')), /no reader yet.*could not be read/);
 });
+
+/* ── keyword source (re/vvd-typed-finds) ─────────────────────────────────── */
+
+test('the rules block names the keyword source the read used', async () => {
+  const eg = await setUp({ stage: 'curate', over: { rules: [{ ...RULE_EG, keyword_source: 'keywords: Egeria, 1 set' }, { ...RULE_LOCAL, keyword_source: 'keywords: Egeria, 1 set' }] } });
+  assert.equal(text(eg.document.querySelector('[data-curate-rules] [data-rules-keyword-source]')), 'keywords: Egeria, 1 set');
+  const none = await setUp({ stage: 'curate', over: { rules: [{ ...RULE_LOCAL, keyword_source: 'keywords: built-in list · Egeria had none' }] } });
+  assert.equal(text(none.document.querySelector('[data-rules-keyword-source]')), 'keywords: built-in list · Egeria had none');
+  const old = await setUp({ stage: 'curate', over: { rules: [RULE_LOCAL] } });
+  assert.equal(old.document.querySelector('[data-rules-keyword-source]'), null, 'no label when the server gave none');
+});
+
+test('the Views section names the PII keyword source of the survey it came from', async () => {
+  const { document } = await setUp({ over: { views: { state: 'measured', run: RUN, reason: '', views: [VIEW], keyword_source: 'keywords: built-in list · could not read Egeria' } } });
+  assert.equal(text(document.querySelector('[data-section-views] [data-views-keyword-source]')), 'keywords: built-in list · could not read Egeria');
+  const old = await setUp({});
+  assert.equal(old.document.querySelector('[data-views-keyword-source]'), null);
+});
