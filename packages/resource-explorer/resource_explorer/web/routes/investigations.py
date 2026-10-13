@@ -466,7 +466,12 @@ async def reclassify_investigation(slug: str, req: ReclassifyRequest) -> dict:
 
     # One press: controls and accounts read once, elements fresh per check; a private investigation's elements
     # are read as its signed-in owner (the service account cannot see them).
-    reader = investigation_reader(reg, slug)
+    from resource_explorer.zone_access import AccessUnreadable
+
+    try:
+        reader = investigation_reader(reg, slug)
+    except AccessUnreadable as exc:
+        raise HTTPException(status_code=403, detail=f"could not check access in Egeria ({exc})")
     result = await asyncio.to_thread(
         InvestigationReclassifier(reg).reclassify, slug,
         req.project_classification, req.hypothesis,

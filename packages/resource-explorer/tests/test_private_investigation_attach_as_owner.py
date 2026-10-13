@@ -63,6 +63,8 @@ class ZonedEgeria:
         self.requests: list[tuple[str, str, str]] = []
         self.fail_attach: list[Exception] = []              # raised (once each) by attach_collection
         self.drop_attach = False                            # accept attach_collection and keep nothing
+        self.fail_read_back: list[Exception] = []           # raised (once each) by get_attached_collections
+        self.fail_project_reads = 0                         # element reads of a Project that time out (count)
         self._n = 0
 
     # ── zoning, as Egeria's access connector answers it ─────────────────────
@@ -128,6 +130,9 @@ class ZonedEgeria:
 
     def _element(self, user, guid):
         self._gate(user, "get_metadata_element_by_guid", guid)
+        if self.fail_project_reads and str(guid).startswith("p"):
+            self.fail_project_reads -= 1
+            raise TimeoutError("the read timed out")
         from tests.zone_fakes import element
         el = self.elements.get(guid) or {"zones": [], "anchor": ""}
         return element(guid, zones=el["zones"], anchor=el["anchor"])
@@ -154,6 +159,8 @@ class ZonedEgeria:
 
     def _attached(self, user, parent):
         self._gate(user, "get_attached_collections", parent)
+        if self.fail_read_back:
+            raise self.fail_read_back.pop(0)
         held = self.attached.get(parent) or []
         return [{"elementHeader": {"guid": c}} for c in held] if held else "No elements found"
 
@@ -382,8 +389,8 @@ def test_a_daemon_relink_of_a_private_investigation_sends_nothing(world):
     assert eg.requests[n:] == []
     words = f"waiting for the owner, {OWNER}, to retry: the service account cannot see a private investigation"
     assert res.errors == [words], res.errors
-    assert others[1:] == [[words], [words]], others
-    # ensure_working_set: a working set is recorded already, so it answers from the registry and sends nothing.
+    # ensure_working_set refuses before anything (its recorded working set included) is looked at.
+    assert others == [[words], [words], [words]], others
     assert eg.sent_by(world["service"], out["project_guid"]) == []
 
 
@@ -397,4 +404,232 @@ def test_attached_only_from_a_read_back_as_the_owner(world):
 
     assert out["resource_list_linked"] is False, out
     assert any("does not show it attached to the Project (read back as peterprofile)" in e
+               for e in out["errors"]), out["errors"]
+
+
+# ── review round 1 (1841e4a8) ────────────────────────────────────────────────────────────────────────
+
+WAITING = f"waiting for the owner, {OWNER}, to retry: the service account cannot see a private investigation"
+
+
+def _bind_private(world, *, record_folio: str = ""):
+    """A private investigation bound to an existing private Project (zoned to the owner), optionally with a Folio
+    already recorded in the registry."""
+    eg, reg = world["eg"], world["registry"]
+    slug = _create(world)
+    project = eg._new("p")
+    eg.elements[project] = {"zones": [PRIVATE, OWNER], "anchor": "", "kinds": ["PersonalProject"]}
+    if record_folio:
+        eg.elements[record_folio] = {"zones": [], "anchor": project, "kinds": []}
+        ws = reg.get_or_create_working_set(slug)
+        reg.set_working_set_egeria_collection(ws["slug"], record_folio)
+    return slug, project
+
+
+def test_bind_attaches_a_new_working_set_through_the_owners_check_and_read_back(world):
+    eg, reg = world["eg"], world["registry"]
+    slug, project = _bind_private(world)
+
+    r = world["client"].put(f"/api/investigations/{slug}/egeria-project",
+                            json={"status": "linked", "egeria_project_guid": project})
+
+    assert r.status_code == 200, r.text
+    ws = r.json()["working_set"]
+    assert ws["resource_list_linked"] is True, ws
+    folio = ws["collection_guid"]
+    assert eg.attached.get(project) == [folio]
+    assert (OWNER, "get_attached_collections", project) in eg.requests
+    (row,) = _rows(world, slug, "resource_list")
+    assert row["status"] == "done", row
+    assert eg.sent_by(world["service"], project) == []
+
+
+def test_bind_does_not_say_linked_when_the_read_back_shows_nothing(world):
+    eg = world["eg"]
+    slug, project = _bind_private(world)
+    eg.drop_attach = True
+
+    r = world["client"].put(f"/api/investigations/{slug}/egeria-project",
+                            json={"status": "linked", "egeria_project_guid": project})
+
+    ws = r.json()["working_set"]
+    assert ws["resource_list_linked"] is False, ws
+    assert any("does not show it attached" in e for e in ws["errors"]), ws["errors"]
+
+
+def test_ensure_working_set_with_a_recorded_folio_reads_back_before_saying_linked(world):
+    """The Folio is recorded in RE but not attached in Egeria: the owner's ensure re-attaches it and says linked
+    only after the read-back; it never answers 'linked' from the registry alone."""
+    from resource_explorer.surveyors.egeria_investigation_publisher import EgeriaInvestigationPublisher
+    from tests.zone_fakes import signed_in
+    from resource_explorer.a2a_auth import current_caller
+
+    eg, reg = world["eg"], world["registry"]
+    folio = "c9999-0000-4000-8000-000000000000"
+    slug, project = _bind_private(world, record_folio=folio)
+    reg.set_investigation_egeria_project(slug, {"status": "linked", "egeria_project_guid": project})
+    eg.drop_attach = True
+    reset = current_caller.set(None)
+    signed = signed_in(OWNER)
+    try:
+        res = EgeriaInvestigationPublisher(reg).ensure_working_set(slug)
+        assert res.resource_list_linked is False, res
+        assert any("does not show it attached" in e for e in res.errors), res.errors
+        eg.drop_attach = False
+        res = EgeriaInvestigationPublisher(reg).ensure_working_set(slug)
+    finally:
+        current_caller.reset(signed)
+        current_caller.reset(reset)
+    assert res.resource_list_linked is True, res.errors
+    assert eg.attached.get(project) == [folio]
+    assert (OWNER, "get_attached_collections", project) in eg.requests
+
+
+def test_an_owner_check_that_times_out_defers_the_row_not_kills_it(world):
+    eg = world["eg"]
+    slug = _create(world)
+    eg.fail_project_reads = 1
+
+    out = _promote(world, slug)
+
+    assert out["resource_list_linked"] is False
+    (row,) = _rows(world, slug, "resource_list")
+    assert row["status"] == "pending", (row["status"], row["last_error"])
+    assert row["last_error"].startswith("waiting to re-check access"), row["last_error"]
+    assert row["attempts"] == 0
+    # The owner's Relink then applies it.
+    r = world["client"].post(f"/api/investigations/{slug}/relink-members")
+    assert r.status_code == 200, r.text
+    assert r.json()["resource_list_linked"] is True, r.json()
+
+
+def test_a_registry_error_reading_the_investigation_fails_closed_in_the_drain(world, monkeypatch):
+    """Whether the row is private cannot be read: the drain must not take it for shared and check it as the
+    service account; it waits, unsent."""
+    from resource_explorer.egeria_clients import Daemon, DaemonReason
+    from resource_explorer.egeria_outbox import drain_outbox
+
+    eg, reg = world["eg"], world["registry"]
+    slug = _create(world)
+    eg.fail_attach.append(ConnectionError("blip"))
+    out = _promote(world, slug)
+    (row,) = _rows(world, slug, "resource_list")
+    with reg._conn() as conn:
+        conn.execute("UPDATE egeria_outbox SET next_attempt_at = '' WHERE id = ?", (row["id"],))
+    real = type(reg).get_investigation
+
+    def broken(self, slug_, *a, **k):
+        if "user_id" in k:
+            raise RuntimeError("registry unreachable")
+        return real(self, slug_, *a, **k)
+    monkeypatch.setattr(type(reg), "get_investigation", broken)
+    n = len(eg.requests)
+
+    drain_outbox(reg, identity=Daemon(DaemonReason.OUTBOX))
+
+    after = reg.get_outbox_element(row["id"])
+    assert after["status"] == "pending", (after["status"], after["last_error"])
+    assert after["last_error"].startswith("waiting to re-check access"), after["last_error"]
+    assert eg.requests[n:] == []
+    assert eg.sent_by(world["service"], out["project_guid"]) == []
+
+
+def test_relink_repairs_a_resource_list_detached_after_its_row_was_done(world):
+    eg, reg = world["eg"], world["registry"]
+    slug = _create(world)
+    out = _promote(world, slug)
+    project, folio = out["project_guid"], out["collection_guid"]
+    (done,) = _rows(world, slug, "resource_list")
+    assert done["status"] == "done"
+    eg.attached[project] = []                        # someone detached it in Egeria
+
+    r = world["client"].post(f"/api/investigations/{slug}/relink-members")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["resource_list_linked"] is True, r.json()
+    assert eg.attached.get(project) == [folio]
+    rows = _rows(world, slug, "resource_list")
+    assert [x["status"] for x in rows] == ["done", "done"] and rows[1]["id"] == done["id"], rows
+
+
+def test_relink_takes_the_newest_dead_row_over_an_older_done_one(world):
+    eg, reg = world["eg"], world["registry"]
+    slug = _create(world)
+    out = _promote(world, slug)
+    project, folio = out["project_guid"], out["collection_guid"]
+    eg.attached[project] = []
+    newer = reg.enqueue_outbox_element("investigation", slug, "resource_list",
+                                       f"ResourceList::{project}::{folio}",
+                                       {"parent_guid": project, "collection_guid": folio, "by": OWNER})
+    reg.mark_outbox_failed(newer, "not permitted · could not check access in Egeria (old refusal)", max_attempts=1)
+
+    r = world["client"].post(f"/api/investigations/{slug}/relink-members")
+
+    assert r.json()["resource_list_linked"] is True, r.json()
+    assert reg.get_outbox_element(newer)["status"] == "done"
+    assert len(_rows(world, slug, "resource_list")) == 2          # revived, not a third row
+
+
+def test_a_non_owner_callers_drain_defers_a_private_row(world):
+    from resource_explorer.a2a_auth import current_caller
+    from resource_explorer.egeria_clients import Caller
+    from resource_explorer.egeria_outbox import drain_outbox
+    from tests.zone_fakes import signed_in
+
+    eg, reg = world["eg"], world["registry"]
+    slug = _create(world)
+    eg.fail_attach.append(ConnectionError("blip"))
+    out = _promote(world, slug)
+    (row,) = _rows(world, slug, "resource_list")
+    with reg._conn() as conn:
+        conn.execute("UPDATE egeria_outbox SET next_attempt_at = '' WHERE id = ?", (row["id"],))
+    n = len(eg.requests)
+    reset = signed_in("garygeeke")
+    try:
+        drain_outbox(reg, identity=Caller(), element_id=row["id"])
+    finally:
+        current_caller.reset(reset)
+    after = reg.get_outbox_element(row["id"])
+    assert after["status"] == "pending" and after["last_error"] == WAITING, after
+    assert eg.requests[n:] == []
+    assert eg.sent_by("garygeeke", out["project_guid"]) == []
+
+
+def test_a_drain_with_no_identity_and_handed_clients_defers_a_private_row(world):
+    from unittest.mock import create_autospec
+
+    from pyegeria import CollectionManager
+
+    from resource_explorer.a2a_auth import current_caller
+    from resource_explorer.egeria_outbox import OutboxClients, drain_outbox
+
+    eg, reg = world["eg"], world["registry"]
+    slug = _create(world)
+    eg.fail_attach.append(ConnectionError("blip"))
+    _promote(world, slug)
+    (row,) = _rows(world, slug, "resource_list")
+    with reg._conn() as conn:
+        conn.execute("UPDATE egeria_outbox SET next_attempt_at = '' WHERE id = ?", (row["id"],))
+    cm = create_autospec(CollectionManager, instance=True, spec_set=True)
+    n = len(eg.requests)
+    reset = current_caller.set(None)
+    try:
+        drain_outbox(reg, OutboxClients(collection_manager=cm), lambda qn: "", element_id=row["id"])
+    finally:
+        current_caller.reset(reset)
+    after = reg.get_outbox_element(row["id"])
+    assert after["status"] == "pending" and after["last_error"] == WAITING, after
+    assert cm.mock_calls == [] and eg.requests[n:] == []
+
+
+def test_the_words_when_the_read_back_raises(world):
+    eg = world["eg"]
+    slug = _create(world)
+    eg.fail_read_back.append(ConnectionError("read-back went away"))
+
+    out = _promote(world, slug)
+
+    assert out["resource_list_linked"] is False
+    assert any(e.startswith("the working set was sent, but it could not be read back as peterprofile "
+                            "(ConnectionError: read-back went away), so it is not confirmed attached")
                for e in out["errors"]), out["errors"]

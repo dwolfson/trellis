@@ -749,24 +749,36 @@ class EgeriaInvestigationPublisher:
     def _reattach_private_resource_list(self, cm, res: "PromotionResult", slug: str, owner: str) -> None:
         """Relink by a private investigation's owner: make sure the Folio is attached to the Project, as them.
 
-        Read back first; when it is attached and no row of it is left waiting, nothing is sent. Otherwise the ONE
-        row for this key is reused (a waiting one made due, a dead one revived under the owner:
-        `enqueue_outbox_element_once`), drained now as the owner, and settled from a read-back as them. This is
+        Read back first; when it is attached and the newest row for it is not waiting, nothing is sent. Otherwise
+        the newest row for this key carries the retry (a waiting one made due, a dead one revived; a done one gets
+        a fresh row beside it), drained now as the owner, and settled from a read-back as them. This is
         the retry a private row waits for (`egeria_outbox.OutboxAwaitsOwner`), and how a row the old drain killed
         (live row 76009, 2026-10-13) is applied."""
         from resource_explorer.egeria_outbox import OutboxClients, drain_outbox, enqueue_resource_list
 
         key = f"ResourceList::{res.project_guid}::{res.collection_guid}"
-        waiting = [r for r in self._registry.list_outbox_rows_for_kinds("investigation", slug, ("resource_list",))
-                   if r.get("qualified_name") == key and r.get("status") in ("pending", "failed", "dead")]
+        rows = [r for r in self._registry.list_outbox_rows_for_kinds("investigation", slug, ("resource_list",))
+                if r.get("qualified_name") == key]          # newest first
+        newest = rows[0] if rows else None
+        waiting = newest is not None and newest.get("status") in ("pending", "failed", "dead")
         landed, _ = resource_list_landed(cm, res.project_guid, res.collection_guid)
         if landed and not waiting:
             res.resource_list_linked = True
             return
-        row_id = enqueue_resource_list(
-            self._registry, slug, res.project_guid, res.collection_guid,
-            run_id=f"Investigation::{slug}::{res.collection_guid}::resource-list", once=True,
-        )
+        # Which row carries the retry is decided here, from the NEWEST row for the key (review of 1841e4a8): a
+        # waiting one is made due, a dead one revived; a done (or retired) one cannot be re-sent, so a ResourceList
+        # detached in Egeria after its row was done gets a fresh row. `enqueue_outbox_element_once` would return an
+        # older done row ahead of a newer dead one, and never re-attach a detached one.
+        if newest is not None and newest.get("status") == "dead":
+            row_id = int(newest["id"])
+            self._registry.retry_outbox_element(row_id)
+        elif waiting:
+            row_id = int(newest["id"])
+        else:
+            row_id = enqueue_resource_list(
+                self._registry, slug, res.project_guid, res.collection_guid,
+                run_id=f"Investigation::{slug}::{res.collection_guid}::resource-list",
+            )
         self._registry.make_outbox_row_due(row_id)
         drain_outbox(self._registry, OutboxClients(collection_manager=cm), lambda qn: "", element_id=row_id)
         self._settle_private_resource_list(cm, res, self._registry.get_outbox_element(row_id), owner)
@@ -1020,16 +1032,23 @@ class EgeriaInvestigationPublisher:
         if self._refuse_without_owner(inv, res):
             return res
 
+        # A private investigation's ResourceList is "linked" only from a read-back as its owner (review of
+        # 1841e4a8): never from the registry's record, nor from a direct attach that returned.
+        owner = (inv.get("created_by") or "").strip() if self._is_private(inv) else ""
         ws = self._registry.get_or_create_working_set(investigation_slug)
         if ws and ws.get("egeria_collection_guid"):
             res.collection_guid = ws["egeria_collection_guid"]
-            res.resource_list_linked = True
-            return res
+            if not owner:
+                res.resource_list_linked = True
+                return res
 
         try:
             _, cm = self._managers()
         except Exception as exc:
             res.errors.append(f"could not reach Egeria: {type(exc).__name__}: {exc}")
+            return res
+        if owner and res.collection_guid:
+            self._reattach_private_resource_list(cm, res, investigation_slug, owner)
             return res
 
         # Idempotent against EGERIA, not just against our own record. An
@@ -1068,6 +1087,12 @@ class EgeriaInvestigationPublisher:
             )
         except Exception as exc:
             res.errors.append(f"create_collection failed: {type(exc).__name__}: {exc}")
+            return res
+        if owner:
+            # Recorded first, so a ResourceList that does not land now is retried against THIS Folio, then attached
+            # through the outbox (the owner's check) and settled from a read-back as the owner.
+            self._registry.set_working_set_egeria_collection(ws["slug"], res.collection_guid)
+            self._reattach_private_resource_list(cm, res, investigation_slug, owner)
             return res
         try:
             cm.attach_collection(project_guid, res.collection_guid)

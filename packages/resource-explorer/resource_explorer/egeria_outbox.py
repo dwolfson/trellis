@@ -988,6 +988,10 @@ def _curation_refusal(registry, row: dict) -> str:
     return "" if d.allowed else f"not permitted · {d.reason}"
 
 
+#: How `writes_refusal` words a check it could not make ("could not check access in Egeria (...)" or
+#: "could not check access (<error>)"), as opposed to a refusal.
+CHECK_FAILED_PREFIX = "not permitted · could not check access"
+
 #: Brief Z3: the membership and ResourceList rows of an investigation's working set and a work list's WorkingSet,
 #: re-checked at drain time as the person they were queued for.
 COLLECTION_ENTITY_TYPES = ("investigation", "work_list")
@@ -1013,9 +1017,14 @@ def _private_investigation_reader(registry, row: dict, identity):
     from resource_explorer.workflows.egeria_work_access import (
         investigation_unscoped, owner_identity, owner_waiting_words, private_owner,
     )
-    from resource_explorer.zone_access import EgeriaAccessReader
+    from resource_explorer.zone_access import AccessUnreadable, EgeriaAccessReader
 
-    inv = investigation_unscoped(registry, row.get("entity_slug") or "")
+    try:
+        inv = investigation_unscoped(registry, row.get("entity_slug") or "")
+    except AccessUnreadable as exc:
+        # Whether it is private cannot be read: never taken for shared (and checked as the service account). The
+        # row waits unsent, as an outage does (review of 1841e4a8).
+        raise OutboxAccessUnreadable(f"{ACCESS_WAIT_WORDS}: {exc}") from exc
     owner = private_owner(inv)
     if not owner:
         return None
@@ -1059,11 +1068,17 @@ def _collection_refusal(registry, row: dict, identity=None) -> str:
     reset = current_caller.set(CallerIdentity(user_id=by, egeria_token=None, auth_source="queued-run",
                                               role=role)) if by else None
     try:
-        return writes_refusal(registry, writes, entity_type=row.get("entity_type") or "",
-                              slug=row.get("entity_slug") or "", reader=reader)
+        why = writes_refusal(registry, writes, entity_type=row.get("entity_type") or "",
+                             slug=row.get("entity_slug") or "", reader=reader)
     finally:
         if reset is not None:
             current_caller.reset(reset)
+    if reader is not None and why.startswith(CHECK_FAILED_PREFIX):
+        # A private investigation's owner check that could not be MADE (a timeout, an expired sign-in, a blip) is
+        # not a refusal: the row waits unsent, no attempt burned, as `_curation_refusal` does (review of 1841e4a8).
+        # Shared rows keep their path.
+        raise OutboxAccessUnreadable(f"{ACCESS_WAIT_WORDS}: {why[len('not permitted · '):]}")
+    return why
 
 
 def _queued_write_refusal(registry, row: dict, identity=None) -> str:
@@ -1711,7 +1726,7 @@ def enqueue_annotation_links(
 
 
 def enqueue_resource_list(
-    registry, entity_slug: str, parent_guid: str, collection_guid: str, *, run_id: str = "", once: bool = False,
+    registry, entity_slug: str, parent_guid: str, collection_guid: str, *, run_id: str = "",
 ) -> int:
     """Record the Project -> Collection ResourceList attach as a queued write.
 
@@ -1723,12 +1738,8 @@ def enqueue_resource_list(
     This one element is queued rather than written directly because its failure
     was previously appended to `PromotionResult.errors` and then forgotten: the
     Project and Collection both existed, unlinked, and nothing ever tried again.
-
-    `once` (a private investigation's owner retrying with Relink): the existing row for this key is reused, and a
-    dead one revived under the reviver (`enqueue_outbox_element_once`), rather than a second row added.
     """
-    enqueue = registry.enqueue_outbox_element_once if once else registry.enqueue_outbox_element
-    return enqueue(
+    return registry.enqueue_outbox_element(
         "investigation", entity_slug, "resource_list",
         f"ResourceList::{parent_guid}::{collection_guid}",
         {"parent_guid": parent_guid, "collection_guid": collection_guid, **requester_fields()},
