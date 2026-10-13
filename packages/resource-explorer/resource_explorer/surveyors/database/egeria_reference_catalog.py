@@ -67,6 +67,12 @@ DATA_CLASS_TYPE_NAME = "DataClass"
 #: through `create_valid_value_definition` (see `bootstrap_data_classes.py`).
 VALID_VALUE_SET_TYPE_NAMES = ("ValidValueSet", "ValidValuesSet", "ValidValueDefinition")
 
+#: The type every RE `find_valid_value_definitions` passes as `metadata_element_type`. Egeria's
+#: Reference Data view defaults an untyped find to `ReferenceDataValue` (egeria
+#: `ReferenceDataInstance.java:65-69`), so without it the plain `ValidValueDefinition`s RE's
+#: bootstrap creates (keyword sets and keywords) are never returned.
+VALID_VALUE_DEFINITION_TYPE_NAME = "ValidValueDefinition"
+
 #: qualifiedName prefixes for the elements this module proposes. Distinct
 #: prefixes so a proposal is identifiable as RE's own, and so the idempotency
 #: lookup (`get_guid_for_name`) cannot collide with a curator's own element.
@@ -286,6 +292,9 @@ def list_known_valid_value_sets(
         raw = ref_manager.find_valid_value_definitions(
             "*", starts_with=False, page_size=page_size,
             graph_query_depth=graph_query_depth, output_format="JSON",
+            # Typed: the Reference Data view defaults the type to ReferenceDataValue, which hides
+            # plain ValidValueDefinitions (RE's keyword sets) from an untyped find.
+            metadata_element_type=VALID_VALUE_DEFINITION_TYPE_NAME,
         )
     except Exception as exc:
         log.warning("Could not list Valid Value Sets from Egeria: %s", exc)
@@ -334,6 +343,112 @@ def load_reference_catalog(
         available=classes.available and sets.available,
         unavailable_reason="; ".join(reasons),
     )
+
+
+# ── Data-class keywords: one loader, one source label ─────────────────────────
+
+def keyword_prefix(data_class_name: str) -> str:
+    """qualifiedName prefix of one data class's keyword definitions (`bootstrap_data_classes.py`)."""
+    return f"ValidValueDefinition::{data_class_name}Keyword::"
+
+
+#: KeywordLoad.state values. `egeria` = at least one keyword set read; `egeria_none` = Egeria was
+#: read and holds none; `unreadable` = Egeria could not be read (never "had none");
+#: `not_configured` = no platform to ask.
+KEYWORDS_FROM_EGERIA = "egeria"
+KEYWORDS_EGERIA_NONE = "egeria_none"
+KEYWORDS_UNREADABLE = "unreadable"
+KEYWORDS_NOT_CONFIGURED = "not_configured"
+
+
+@dataclass
+class KeywordLoad:
+    """The data-class keywords Egeria gave, and which source the reader therefore uses.
+
+    `label` is the words a screen shows; it comes from this object only, so a reader's label can never
+    disagree with what it loaded.
+    """
+
+    state: str
+    by_class: dict[str, list[str]] = field(default_factory=dict)
+    reason: str = ""
+
+    @property
+    def sets(self) -> int:
+        return len(self.by_class)
+
+    @property
+    def label(self) -> str:
+        if self.state == KEYWORDS_FROM_EGERIA:
+            return f"keywords: Egeria, {self.sets} set{'' if self.sets == 1 else 's'}"
+        if self.state == KEYWORDS_EGERIA_NONE:
+            return "keywords: built-in list · Egeria had none"
+        if self.state == KEYWORDS_NOT_CONFIGURED:
+            return "keywords: built-in list · Egeria not configured"
+        why = f" ({self.reason})" if self.reason == "not signed in" else ""
+        return f"keywords: built-in list · could not read Egeria{why}"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"source": "egeria" if self.state == KEYWORDS_FROM_EGERIA else "built_in",
+                "state": self.state, "sets": self.sets, "label": self.label, "reason": self.reason}
+
+
+def _keyword_values(elements: list[dict]) -> list[str]:
+    out = []
+    for item in elements:
+        props = item.get("properties") or {}
+        val = props.get("preferredValue") or props.get("displayName")
+        if isinstance(val, str) and val.strip():
+            out.append(val.strip().lower())
+    return sorted(set(out))
+
+
+def load_data_class_keywords(ref_manager, data_class_names: Sequence[str],
+                             data_class_exists=None) -> KeywordLoad:
+    """Each data class's keywords from Egeria, by a TYPED find on its keyword prefix.
+
+    `data_class_exists(name)`, when given, is asked first: False skips that class (Egeria holds no
+    such DataClass, so it has no keywords there); raising marks the read failed. A `TimeoutError`
+    from it stops every later lookup (the platform is not answering; round 6 of Brief I).
+
+    A failed read is never "Egeria had none": with no keywords read and any failure, the state is
+    `unreadable`.
+    """
+    by_class: dict[str, list[str]] = {}
+    failures: list[str] = []
+    timed_out = False
+    for name in data_class_names:
+        if timed_out:
+            failures.append(f"{name}: skipped after a timed-out lookup")
+            continue
+        try:
+            if data_class_exists is not None and not data_class_exists(name):
+                continue
+            raw = ref_manager.find_valid_value_definitions(
+                search_string=keyword_prefix(name), starts_with=True, output_format="JSON",
+                metadata_element_type=VALID_VALUE_DEFINITION_TYPE_NAME,
+            )
+        except TimeoutError:
+            timed_out = True
+            failures.append(f"{name}: timed out")
+            continue
+        except Exception as exc:  # noqa: BLE001 - recorded as "could not read", never as "none"
+            failures.append(f"{name}: {exc}")
+            continue
+        if isinstance(raw, (list, dict)):
+            values = _keyword_values(_results(raw))
+            if values:
+                by_class[name] = values
+        elif not (isinstance(raw, str) and "no " in raw.lower() and "found" in raw.lower()):
+            failures.append(f"{name}: unreadable answer {str(raw)[:80]!r}")
+    if failures:
+        log.warning("Data-class keywords: could not read %d of %d: %s",
+                    len(failures), len(data_class_names), "; ".join(failures)[:500])
+    if by_class:
+        return KeywordLoad(KEYWORDS_FROM_EGERIA, by_class, "; ".join(failures))
+    if failures:
+        return KeywordLoad(KEYWORDS_UNREADABLE, {}, "; ".join(failures))
+    return KeywordLoad(KEYWORDS_EGERIA_NONE)
 
 
 # ── Proposing: `contentStatus: DRAFT` element creation ────────────────────────

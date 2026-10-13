@@ -529,8 +529,12 @@ class DatabaseSurveyor:
                         views_info = self._survey_views(conn, schema_info)
                         results["views"] = views_info
                         results["views_not_read"] = dict(self.last_views_not_read)
+                        # Which PII keyword source this run used, stored with the views it
+                        # describes and shown by the survey report (one load, one label).
+                        keyword_load = self._load_pii_keywords()
+                        results["pii_keyword_source"] = keyword_load.as_dict()
                         results["annotations"].extend(
-                            self._create_views_annotations(views_info)
+                            self._create_views_annotations(views_info, keywords=keyword_load)
                         )
                     except Exception as views_err:
                         results["errors"].append(f"SQL view static analysis failed (non-fatal): {views_err}")
@@ -1951,6 +1955,7 @@ class DatabaseSurveyor:
         prior_operations: dict = {}
         prior_credential_capability: dict = {}
         prior_database_owner: dict = {}
+        prior_pii_keyword_source: dict = {}
         try:
             prior_survey = self.registry.get_latest_database_survey(self.db_entity.slug)
             if prior_survey:
@@ -1960,6 +1965,7 @@ class DatabaseSurveyor:
                 prior_operations = prior_data.get("operations") or {}
                 prior_credential_capability = prior_data.get("credential_capability") or {}
                 prior_database_owner = prior_data.get("database_owner") or {}
+                prior_pii_keyword_source = prior_data.get("pii_keyword_source") or {}
         except Exception:
             pass
 
@@ -1998,6 +2004,12 @@ class DatabaseSurveyor:
                 #: empty list is never mistaken for "no materialized views".
                 #: Only this run's own answer; empty when the step did not run.
                 "views_not_read": results.get("views_not_read") or {},
+                #: The PII keyword source of the run whose `views` are stored above, so the
+                #: label always describes the views shown beside it.
+                "pii_keyword_source": (
+                    results.get("pii_keyword_source") if results.get("views")
+                    else prior_pii_keyword_source or results.get("pii_keyword_source")
+                ) or {},
                 #: postgres_operations (Phase 1 slice 8) — falls back to the
                 #: prior stored value when THIS run's own results have none,
                 #: same "don't manufacture an empty answer" rule row_count/
@@ -2192,9 +2204,47 @@ class DatabaseSurveyor:
             })
         return out, None
 
-    def _create_views_annotations(self, views_info: list[dict]) -> list:
-        """Create annotations for parsed view dependencies, complexity, and lineage."""
-        import os
+    #: The survey's own built-in PII keyword list, used when Egeria gives none. A flat list, shorter
+    #: than `bootstrap_data_classes.STANDARD_DATA_CLASSES`' `dataPatterns`.
+    BUILT_IN_PII_KEYWORDS = ("email", "phone", "ssn", "socialsec", "creditcard", "password", "dob",
+                             "dateofbirth")
+    #: The data classes whose Egeria keyword sets replace the built-in list.
+    PII_DATA_CLASS_NAMES = ("EmailAddress", "PhoneNumber", "SocialSecurityNumber", "CreditCardNumber",
+                            "Password", "DateOfBirth")
+
+    def _load_pii_keywords(self):
+        """The PII keywords for this run and their source, as one `KeywordLoad`.
+
+        Egeria's keyword sets (a typed find per data class) when the platform holds any; otherwise
+        the built-in list, and the load says whether Egeria had none or could not be read.
+        """
+        from resource_explorer.surveyors.database.egeria_reference_catalog import (
+            KEYWORDS_NOT_CONFIGURED, KEYWORDS_UNREADABLE, KeywordLoad, load_data_class_keywords,
+        )
+
+        platform_url = egeria_platform_url()
+        if not platform_url:
+            return KeywordLoad(KEYWORDS_NOT_CONFIGURED)
+        try:
+            from pyegeria.omvs.reference_data import ReferenceDataManager
+            from resource_explorer.egeria_clients import current_principal, egeria_client
+
+            # The survey's own identity (Brief I): Caller on a route, the daemon in a run.
+            ref_manager = egeria_client(current_principal(), purpose="PII keywords",
+                                        view_server=egeria_view_server(),
+                                        platform_url=platform_url).of(ReferenceDataManager)
+        except Exception as exc:  # noqa: BLE001 - recorded on the load, never "Egeria had none"
+            from resource_explorer.egeria_clients import NoCallerIdentity
+
+            why = "not signed in" if isinstance(exc, NoCallerIdentity) else str(exc)[:200]
+            return KeywordLoad(KEYWORDS_UNREADABLE, reason=why)
+        return load_data_class_keywords(ref_manager, self.PII_DATA_CLASS_NAMES)
+
+    def _create_views_annotations(self, views_info: list[dict], keywords=None) -> list:
+        """Create annotations for parsed view dependencies, complexity, and lineage.
+
+        `keywords` is the run's `KeywordLoad` (`_load_pii_keywords`); loaded here when not given.
+        """
         from resource_explorer.surveyors.survey_report import (
             SchemaAnalysisAnnotation,
             RelationshipAnnotation,
@@ -2204,45 +2254,10 @@ class DatabaseSurveyor:
         )
         annotations = []
 
-        # Default fallback PII classification keywords
-        pii_keywords = ["email", "phone", "ssn", "socialsec", "creditcard", "password", "dob", "dateofbirth"]
-
-        # Dynamically load PII keywords from Egeria Valid Value Sets if platform connection is configured
-        platform_url = egeria_platform_url()
-        if platform_url:
-            try:
-                from pyegeria.omvs.reference_data import ReferenceDataManager
-                from resource_explorer.egeria_clients import current_principal, egeria_client
-
-                view_server = egeria_view_server()
-                # The survey's own identity (Brief I): Caller on a route, the daemon in a run.
-                ref_manager = egeria_client(current_principal(), purpose="PII keywords",
-                                            view_server=view_server,
-                                            platform_url=platform_url).of(ReferenceDataManager)
-
-                egeria_keywords = []
-                for dc_name in ["EmailAddress", "PhoneNumber", "SocialSecurityNumber", "CreditCardNumber", "Password", "DateOfBirth"]:
-                    try:
-                        # Find all ValidValueDefinitions starting with the data class's keyword prefix
-                        results = ref_manager.find_valid_value_definitions(
-                            search_string=f"ValidValueDefinition::{dc_name}Keyword::",
-                            starts_with=True,
-                            output_format="JSON"
-                        )
-                        if isinstance(results, list):
-                            for item in results:
-                                if isinstance(item, dict):
-                                    props = item.get("properties", {})
-                                    val = props.get("preferredValue") or props.get("displayName")
-                                    if val:
-                                        egeria_keywords.append(val.strip().lower())
-                    except Exception:
-                        pass
-
-                if egeria_keywords:
-                    pii_keywords = list(set(egeria_keywords))
-            except Exception:
-                pass
+        if keywords is None:
+            keywords = self._load_pii_keywords()
+        egeria_keywords = sorted({kw for kws in keywords.by_class.values() for kw in kws})
+        pii_keywords = egeria_keywords or list(self.BUILT_IN_PII_KEYWORDS)
 
         def is_pii_column(col_name: str) -> bool:
             name_clean = col_name.lower().replace("_", "").replace("-", "")
@@ -2380,7 +2395,8 @@ class DatabaseSurveyor:
                             f"Static analysis of column-level lineage traced PII/sensitive attributes "
                             f"flowing from physical tables to the view's output attributes."
                         ),
-                        json_properties={"pii_propagations": pii_propagations}
+                        json_properties={"pii_propagations": pii_propagations,
+                                         "keyword_source": keywords.label}
                     )
                 )
 

@@ -15,11 +15,18 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import inspect
+
 import pytest
+from pyegeria.core._server_client import ServerClient
 
 from resource_explorer.surveyors.database import bootstrap_data_classes as bdc
 
 NO_ELEMENTS_FOUND = "No elements found"
+
+#: pyegeria's real `get_guid_for_name` (both DataDesigner and ReferenceDataManager inherit it).
+_GUID_SIG = inspect.signature(ServerClient.get_guid_for_name)
+_DEFAULT_PROPS = _GUID_SIG.parameters["property_name"].default
 
 
 class _FakeDesigner:
@@ -40,9 +47,10 @@ class _FakeDesigner:
     def set_bearer_token(self, *_args, **_kwargs):   # the factory shares one token (Brief I)
         pass
 
-    def get_guid_for_name(self, qualified_name):
-        if qualified_name in self.existing_names:
-            return f"guid-for-{qualified_name}"
+    def get_guid_for_name(self, name, property_name=_DEFAULT_PROPS, type_name=None):
+        _GUID_SIG.bind(self, name, property_name, type_name)
+        if name in self.existing_names:
+            return f"guid-for-{name}"
         return NO_ELEMENTS_FOUND
 
     def create_data_class(self, body):
@@ -60,6 +68,7 @@ class _FakeReferenceDataManager:
         self.existing_names = existing_names or set()
         self.created: list[dict] = []
         self.links: list[tuple[str, str]] = []
+        self.lookups: list[tuple[str, str | None]] = []
 
     def create_egeria_bearer_token(self, *_args, **_kwargs):
         return "fake-token"
@@ -67,9 +76,13 @@ class _FakeReferenceDataManager:
     def set_bearer_token(self, *_args, **_kwargs):   # the factory shares one token (Brief I)
         pass
 
-    def get_guid_for_name(self, qualified_name):
-        if qualified_name in self.existing_names:
-            return f"guid-for-{qualified_name}"
+    def get_guid_for_name(self, name, property_name=_DEFAULT_PROPS, type_name=None):
+        """Answers TYPED lookups only: an untyped one misses even an existing plain
+        ValidValueDefinition, the way the Reference Data view's default type hides it."""
+        _GUID_SIG.bind(self, name, property_name, type_name)
+        self.lookups.append((name, type_name))
+        if type_name == "ValidValueDefinition" and name in self.existing_names:
+            return f"guid-for-{name}"
         return NO_ELEMENTS_FOUND
 
     def create_valid_value_definition(self, body):
@@ -214,3 +227,52 @@ class TestPreFixBehaviourWouldHaveSkippedEverything:
         assert guid == NO_ELEMENTS_FOUND
         assert bool(guid) is True  # the bug: a miss reads as truthy
         assert bdc._as_guid(guid) is None  # the fix: rejected as not a real GUID
+
+
+def _all_vvd_names() -> set[str]:
+    names = set()
+    for spec in bdc.STANDARD_DATA_CLASSES:
+        names.add(f"ValidValuesSet::{spec['name']}Keywords")
+        names.update(f"ValidValueDefinition::{spec['name']}Keyword::{kw}" for kw in spec["dataPatterns"])
+    return names
+
+
+class TestPlainValidValueDefinitionsAreLookedUpTyped:
+    """The keyword sets and keywords are plain ValidValueDefinitions. Found 2026-10-13: Egeria's
+    Reference Data view defaults its type to ReferenceDataValue; the existence check looks them up
+    typed so an existing one is never created twice."""
+
+    def test_existing_sets_and_keywords_are_found_and_not_recreated(self):
+        designer = _FakeDesigner(existing_names={f"DataClass::{s['name']}" for s in bdc.STANDARD_DATA_CLASSES})
+        ref_manager = _FakeReferenceDataManager(existing_names=_all_vvd_names())
+
+        assert _run_bootstrap(designer, ref_manager) == 0
+
+        assert ref_manager.created == [], "an existing plain ValidValueDefinition was created again"
+        assert designer.created == []
+        assert {t for _n, t in ref_manager.lookups} == {"ValidValueDefinition"}
+
+
+class TestALookupThatRaisesCreatesNothing:
+    """6.2.2 audit: a lookup that RAISES is "could not check", never "absent, so create"."""
+
+    def test_a_raising_set_lookup_stops_and_creates_nothing(self, caplog):
+        class Raising(_FakeReferenceDataManager):
+            def get_guid_for_name(self, name, property_name=_DEFAULT_PROPS, type_name=None):
+                raise RuntimeError("platform not answering")
+
+        designer = _FakeDesigner(existing_names={f"DataClass::{s['name']}" for s in bdc.STANDARD_DATA_CLASSES})
+        ref_manager = Raising()
+
+        assert _run_bootstrap(designer, ref_manager) == 1
+        assert ref_manager.created == [] and ref_manager.links == []
+        assert "could not check 'ValidValuesSet::EmailAddressKeywords'" in caplog.text
+
+    def test_a_raising_data_class_lookup_stops_and_creates_nothing(self):
+        class Raising(_FakeDesigner):
+            def get_guid_for_name(self, name, property_name=_DEFAULT_PROPS, type_name=None):
+                raise RuntimeError("Multiple elements found for supplied name!")
+
+        designer, ref_manager = Raising(), _FakeReferenceDataManager()
+        assert _run_bootstrap(designer, ref_manager) == 1
+        assert designer.created == [] and ref_manager.created == []

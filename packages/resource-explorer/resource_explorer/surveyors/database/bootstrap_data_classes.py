@@ -12,6 +12,35 @@ from resource_explorer.config import egeria_platform_url, egeria_view_server  # 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
+#: The type the keyword sets and keywords are created as, and looked up by. Egeria's Reference Data
+#: view defaults its type to ReferenceDataValue, so a plain ValidValueDefinition is looked up TYPED.
+VVD_TYPE = "ValidValueDefinition"
+
+
+class CouldNotCheck(RuntimeError):
+    """An existence lookup raised. Never read as "absent": nothing is created on a failed check."""
+
+
+def _existing_guid(client, qualified_name: str, type_name: str | None = None) -> str | None:
+    """The element's GUID, None when Egeria answers that it holds none, `CouldNotCheck` when the
+    lookup itself failed.
+
+    Exact qualifiedName only. With `type_name`, the lookup is restricted to that type (a plain
+    ValidValueDefinition is not resolved through the Reference Data view's default type).
+    pyegeria's "No elements found" miss sentinel goes through `_as_guid` (a truthy string, not a
+    GUID); a raise (including pyegeria's "Multiple elements found") is `CouldNotCheck`.
+    """
+    try:
+        if type_name:
+            raw = client.get_guid_for_name(qualified_name, property_name=["qualifiedName"],
+                                           type_name=type_name)
+        else:
+            raw = client.get_guid_for_name(qualified_name)
+    except Exception as exc:  # noqa: BLE001 - re-raised as the one "could not check" outcome
+        raise CouldNotCheck(f"could not check '{qualified_name}': {exc}") from exc
+    return _as_guid(raw)
+
+
 # Standard PII Data Classes and keywords to register
 STANDARD_DATA_CLASSES = [
     {
@@ -89,15 +118,14 @@ def bootstrap_data_classes() -> int:
         qualified_name = f"DataClass::{dc_spec['name']}"
         log.info(f"Checking if DataClass '{qualified_name}' exists...")
         
-        data_class_guid = None
+        # pyegeria's get_guid_for_name returns the literal string "No elements found" (not
+        # None/""/an exception) on a miss; _existing_guid rejects it. A lookup that RAISES is
+        # "could not check": stop, never create (the 6.2.2 audit's finding).
         try:
-            # pyegeria's get_guid_for_name returns the literal string
-            # "No elements found" (not None/""/an exception) on a miss —
-            # _as_guid rejects that sentinel (it contains whitespace, unlike
-            # a real GUID) so a miss is not mistaken for "already exists".
-            data_class_guid = _as_guid(designer.get_guid_for_name(qualified_name))
-        except Exception as e:
-            log.debug(f"Lookup failed for '{qualified_name}': {e}")
+            data_class_guid = _existing_guid(designer, qualified_name)
+        except CouldNotCheck as e:
+            log.error(f"{e}. Nothing created for it; stopping.")
+            return 1
 
         # 1. Create DataClass if it does not exist
         if not data_class_guid:
@@ -135,11 +163,11 @@ def bootstrap_data_classes() -> int:
 
         # 2. Check and Create ValidValuesSet for match keywords
         set_qname = f"ValidValuesSet::{dc_spec['name']}Keywords"
-        set_guid = None
         try:
-            set_guid = _as_guid(ref_manager.get_guid_for_name(set_qname))
-        except Exception as e:
-            log.debug(f"Lookup failed for ValidValuesSet '{set_qname}': {e}")
+            set_guid = _existing_guid(ref_manager, set_qname, type_name=VVD_TYPE)
+        except CouldNotCheck as e:
+            log.error(f"{e}. Nothing created for it; stopping.")
+            return 1
 
         if not set_guid:
             log.info(f"Creating ValidValuesSet '{set_qname}'...")
@@ -167,11 +195,11 @@ def bootstrap_data_classes() -> int:
         # 3. Create individual keyword ValidValueDefinitions and link them
         for kw in dc_spec["dataPatterns"]:
             kw_qname = f"ValidValueDefinition::{dc_spec['name']}Keyword::{kw}"
-            kw_guid = None
             try:
-                kw_guid = _as_guid(ref_manager.get_guid_for_name(kw_qname))
-            except Exception as e:
-                log.debug(f"Lookup failed for ValidValueDefinition '{kw_qname}': {e}")
+                kw_guid = _existing_guid(ref_manager, kw_qname, type_name=VVD_TYPE)
+            except CouldNotCheck as e:
+                log.error(f"{e}. Nothing created for it; stopping.")
+                return 1
 
             if not kw_guid:
                 log.info(f"Creating ValidValueDefinition '{kw_qname}'...")

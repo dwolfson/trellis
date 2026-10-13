@@ -197,7 +197,9 @@ export function viewsSectionHtml(resp, { heading = true } = {}) {
     return `${head('')}<div data-views-state="never_surveyed" class="mt-s1 text-answer text-ink">○ not run: needs a database survey</div>`;
   }
   const run = resp.run || {};
-  const from = `<span class="text-caveat text-ink-muted">from the survey of <span class="tnum" title="${esc(run.surveyed_at)}">${esc(stamp(run.surveyed_at))}</span> · ${esc(surveySourceWord(run.source) || 'unknown source')}</span>`;
+  // Which PII keyword source that survey used (the server's one label; absent on older surveys).
+  const kw = resp.keyword_source ? ` · <span data-views-keyword-source>${esc(resp.keyword_source)}</span>` : '';
+  const from = `<span class="text-caveat text-ink-muted">from the survey of <span class="tnum" title="${esc(run.surveyed_at)}">${esc(stamp(run.surveyed_at))}</span> · ${esc(surveySourceWord(run.source) || 'unknown source')}${kw}</span>`;
   if (resp.state !== 'measured') {
     return `${head(from)}<div data-views-state="not_measured" class="mt-s1 text-answer text-ink">○ not measured — ${esc(resp.reason || 'the server did not say why')}</div>`;
   }

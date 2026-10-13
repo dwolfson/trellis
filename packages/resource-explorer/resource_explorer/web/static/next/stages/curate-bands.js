@@ -135,16 +135,21 @@ export function rulesBodyHtml(rules, error = '') {
     return `<div data-rules-state="no_reader" class="text-caveat text-ink">no reader yet — the data-class rules could not be read: ${esc(error)}</div>`;
   }
   const list = Array.isArray(rules) ? rules : [];
+  // The read's one keyword-source label ("keywords: Egeria, N sets" / "keywords: built-in list ·
+  // Egeria had none" / "… · could not read Egeria"), the same on every rule.
+  const kwSource = (list.find((r) => r.keyword_source) || {}).keyword_source;
+  const sourceLine = kwSource
+    ? `<div data-rules-keyword-source class="text-provenance text-ink-muted">${esc(kwSource)}</div>` : '';
   const fromEgeria = list.filter((r) => /^egeria/i.test(String(r.source || '')));
   const builtIn = list.filter((r) => !/^egeria/i.test(String(r.source || '')));
   const local = builtIn.length
     ? `<details data-rules-local class="mt-[2px]"><summary class="cursor-pointer text-provenance text-accent-ink underline">RE's built-in data-class keyword list, not read from Egeria (${builtIn.length})</summary>${builtIn.map(ruleRow).join('')}</details>`
     : '';
   if (!fromEgeria.length) {
-    return `<div data-rules-state="no_reader" class="text-caveat text-ink">no reader yet — Egeria's own data-class rules were not read${
+    return `${sourceLine}<div data-rules-state="no_reader" class="text-caveat text-ink">no reader yet — Egeria's own data-class rules were not read${
       list.length ? `; the server answered only RE's built-in data-class keyword list (${list.length} data-class rules)` : '; the server answered no data-class rules'}.</div>${local}`;
   }
-  return `<div data-rules-state="read" data-rules-egeria>${fromEgeria.map(ruleRow).join('')}</div>${local}`;
+  return `${sourceLine}<div data-rules-state="read" data-rules-egeria>${fromEgeria.map(ruleRow).join('')}</div>${local}`;
 }
 
 /** Fill the block. A failure says so in the block; it never throws into the pane. */
