@@ -171,7 +171,7 @@ class TestTheBody:
         _drain(registry, cm)
         assert cm.sent == []
         row = _row(registry)
-        assert row["status"] in ("failed", "dead") and "confidence" in row["last_error"]
+        assert row["status"] == "dead" and row["last_error"].startswith("not sent: confidence")
 
     def test_a_payload_carrying_confidence_by_its_egeria_name_is_read_too(self, registry, monkeypatch):
         permit_publish_routes(monkeypatch, USER)
@@ -191,9 +191,21 @@ class TestTheReadBack:
         cm = EgeriaCollections(keep=frozenset({"membershipRationale"}))
         _drain(registry, cm)
         row = _row(registry)
-        assert row["status"] in ("failed", "dead")
-        assert "did not keep: confidence (sent 80, read back 0)" in row["last_error"]
-        assert "membershipRationale" not in row["last_error"]
+        assert row["status"] == "dead"
+        assert row["last_error"] == ("Egeria accepted the membership but did not keep: "
+                                     "confidence (sent 80, read back 0)")
+
+    def test_a_property_not_kept_is_dead_on_the_first_failure_and_never_resent(self, registry, monkeypatch):
+        """Gate decision 2026-10-13: no retry with backoff. A second drain sends nothing more."""
+        permit_publish_routes(monkeypatch, USER)
+        _queue(registry, expected_confidence=80)
+        cm = EgeriaCollections(keep=frozenset())
+        summary = _drain(registry, cm)
+        assert summary["dead"] == 1 and summary["failed"] == 0
+        row = _row(registry)
+        assert (row["status"], row["attempts"]) == ("dead", 1)
+        _drain(registry, cm)
+        assert len(cm.sent) == 1
 
     def test_a_failed_read_leaves_the_write_done(self, registry, monkeypatch):
         permit_publish_routes(monkeypatch, USER)

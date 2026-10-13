@@ -100,6 +100,15 @@ class OutboxApplyError(RuntimeError):
     attempt or a dead letter."""
 
 
+class OutboxNotKept(OutboxApplyError):
+    """A write a resend cannot fix: the same row carries the same body, so the result would be the same.
+
+    Raised for a membership property Egeria did not keep (it drops a name it does not know and answers
+    success) and for a membership confidence RE refuses to send. The drain marks the row dead on the
+    FIRST failure, with these words, through the same `max_attempts=1` terminal path a destructive or
+    person-only row takes. Gate decision 2026-10-13: no retry with backoff."""
+
+
 class OutboxIdentityError(RuntimeError):
     """The drain has no usable Egeria identity to call as: a configuration error.
 
@@ -489,7 +498,8 @@ def collection_membership_properties(payload: dict) -> dict:
     read. Sent only when a caller supplied a value: the investigation path supplies neither, and adding
     an empty body to its writes would change what every already-queued row means.
 
-    Raises OutboxApplyError for a confidence that is not a number in 0-100: refused, not guessed at."""
+    Raises OutboxNotKept (dead at once) for a confidence that is not a number in 0-100: refused, not
+    guessed at."""
     props: dict = {}
     if payload.get("membership_rationale"):
         props["membershipRationale"] = payload["membership_rationale"]
@@ -498,7 +508,7 @@ def collection_membership_properties(payload: dict) -> dict:
         try:
             props["confidence"] = membership_confidence(raw)
         except ValueError as exc:
-            raise OutboxApplyError(f"not sent: {exc}") from None
+            raise OutboxNotKept(f"not sent: {exc}") from None
     return props
 
 
@@ -507,8 +517,8 @@ def _check_membership_landed(cm, collection_guid: str, member_guid: str, sent: d
 
     Egeria drops a property name it does not know and still answers success, so the write's own answer
     cannot show the drop: only the relationship as it reads back can. A property that did not land
-    raises OutboxApplyError naming it, so the row's last_error says which one (a retry re-sends the same
-    body, which is safe: CollectionMembership is uni-link).
+    raises OutboxNotKept naming it: the row goes dead at once with those words (a resend would carry the
+    same body and be dropped the same way).
 
     A read that fails, or that cannot find the member, cannot tell either way: logged, and the row is
     done as it was before this check (the write itself succeeded)."""
@@ -529,7 +539,7 @@ def _check_membership_landed(cm, collection_guid: str, member_guid: str, sent: d
         return
     dropped = [f"{k} (sent {v!r}, read back {rel.get(k)!r})" for k, v in sent.items() if rel.get(k) != v]
     if dropped:
-        raise OutboxApplyError("Egeria accepted the membership but did not keep: " + "; ".join(dropped))
+        raise OutboxNotKept("Egeria accepted the membership but did not keep: " + "; ".join(dropped))
 
 
 def _create_resource_list(clients: "OutboxClients", payload: dict) -> str:
@@ -1228,6 +1238,10 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
                     max_attempts=1)
                 summary["dead" if status == "dead" else "failed"] += 1
                 summary["security_refused"] = summary.get("security_refused", 0) + 1
+            elif isinstance(exc, OutboxNotKept):
+                # A resend carries the same body and meets the same answer: dead on the first failure, its words.
+                status = registry.mark_outbox_failed(row["id"], str(exc), max_attempts=1)
+                summary["dead" if status == "dead" else "failed"] += 1
             elif is_person_only_kind(row.get("element_kind") or ""):
                 # Brief F: never re-sent on its own (a retry would be the drain choosing when to write as the
                 # person): dead at once with Egeria's words; the person's next Publish queues a new row.
