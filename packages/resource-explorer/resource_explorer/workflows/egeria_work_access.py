@@ -208,6 +208,17 @@ def collection_write(collection_guid: str, label: str = "") -> ElementWrite:
     return ElementWrite(collection_guid, (_ops().ATTACH_OPERATION,), label=label)
 
 
+def member_detach_write(member_guid: str) -> ElementWrite:
+    """A member's end of a CollectionMembership being removed: DETACH (`validateUserForElementDetach`
+    :1639-1694, on both ends)."""
+    return ElementWrite(member_guid, (_ops().DETACH_OPERATION,))
+
+
+def collection_detach_write(collection_guid: str, label: str = "") -> ElementWrite:
+    """A collection's end of a CollectionMembership being removed: DETACH."""
+    return ElementWrite(collection_guid, (_ops().DETACH_OPERATION,), label=label)
+
+
 def _working_set_guid(registry, slug: str) -> str:
     """The investigation's recorded Folio GUID, read-only (a check must not create the working-set row)."""
     ws_slug = registry.investigation_working_set_slug(slug)
@@ -280,6 +291,11 @@ def work_list_collection_write(collection_guid: str) -> ElementWrite:
     if collection_guid:
         return ElementWrite(collection_guid, (z.ATTACH_OPERATION,))
     return ElementWrite("", (z.CREATE_OPERATION, z.ATTACH_OPERATION), creation_zones=())
+
+
+def work_list_link_back_write(collection_guid: str) -> ElementWrite:
+    """A re-publish setting the link back to RE on an existing WorkingSet: UPDATE_PROPERTIES."""
+    return ElementWrite(collection_guid, (_ops().UPDATE_OPERATION,))
 
 
 def batch_refusal(registry, entity_type: str, slug: str, *, reader=None) -> str:

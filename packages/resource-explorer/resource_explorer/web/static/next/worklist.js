@@ -58,6 +58,51 @@ function notPermittedHtml(rows) {
     cue('no_access', 'not permitted', String(r.words || '').replace(/^not permitted · /, ''))} ${esc(r.entity_slug)}</span>`).join('; ')}</span>`;
 }
 
+/** A re-publish's removals (members dropped in RE, taken out of the WorkingSet), on their own line, each count from
+ *  its outbox row's outcome: "N detached", "N removal(s) not permitted", "N could not be detached · why", plus the
+ *  ones still waiting and the adds withdrawn before they were sent. '' when nothing was removed. */
+function removalsHtml(rm) {
+  if (!rm) return '';
+  const names = (rows) => rows.map((r) => esc(r.entity_slug)).join(', ');
+  const bits = [];
+  if (rm.detached?.length) {
+    bits.push(cue('measured', `${rm.detached.length} detached`, rm.detached.join(', ')));
+  }
+  if (rm.not_permitted?.length) {
+    bits.push(`${cue('no_access', `${rm.not_permitted.length} removal(s) not permitted`,
+      rm.not_permitted.map((r) => `${r.entity_slug}: ${String(r.words || '').replace(/^not permitted · /, '')}`).join('; '))}
+      ${names(rm.not_permitted)}`);
+  }
+  if (rm.failed?.length) {
+    bits.push(`${cue('error', `${rm.failed.length} could not be detached · ${rm.failed[0].words || 'Egeria gave no sentence'}`,
+      rm.failed.map((r) => `${r.entity_slug}: ${r.words}`).join('; '))} ${names(rm.failed)}`);
+  }
+  if (rm.waiting?.length) {
+    bits.push(`${cue('queued', `${rm.waiting.length} removal(s) waiting`,
+      rm.waiting.map((r) => `${r.entity_slug}: ${r.words}`).join('; '))} ${names(rm.waiting)}`);
+  }
+  if (rm.withdrawn_before_sent?.length) {
+    bits.push(cue('unrun', `${rm.withdrawn_before_sent.length} add(s) withdrawn before they were sent`,
+      rm.withdrawn_before_sent.join(', ')));
+  }
+  return bits.length ? `<span data-removals class="block">${bits.join(' · ')}</span>` : '';
+}
+
+/** The link back to RE written on the WorkingSet (`additionalProperties.resourceExplorerUrl`): visible when it was
+ *  refused or failed, quiet when it was set, unchanged or not configured. */
+function linkBackHtml(lb) {
+  if (!lb) return '';
+  if (lb.state === 'not permitted') {
+    return `<span data-link-back="not-permitted" class="block">${cue('no_access', 'link back to RE not permitted',
+      String(lb.words || '').replace(/^not permitted · /, ''))}</span>`;
+  }
+  if (lb.state === 'failed') {
+    return `<span data-link-back="failed" class="block">${cue('error', `link back to RE not set · ${lb.words || 'Egeria gave no sentence'}`,
+      lb.url || '')}</span>`;
+  }
+  return '';
+}
+
 /** A whole refusal (403: nothing was permitted) as the cue, the reason on hover. */
 const refusedCue = (err) => cue('no_access', 'not permitted', err.message);
 
@@ -2080,6 +2125,10 @@ async function publish(ctx) {
         ${esc(res.members_without_an_egeria_asset.join(', '))}</span>`);
     }
     if (res.not_permitted?.length) bits.push(notPermittedHtml(res.not_permitted));
+    const removals = removalsHtml(res.removals);
+    if (removals) bits.push(removals);
+    const linkBack = linkBackHtml(res.link_back);
+    if (linkBack) bits.push(linkBack);
     note(bits.join(' '));
     renderActions(ctx);
   } catch (err) {

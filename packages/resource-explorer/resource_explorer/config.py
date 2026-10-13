@@ -464,6 +464,12 @@ class WebUIConfig(BaseSettings):
     always serve their own UI regardless of this setting.
     """
     default_ui: str = Field(default="next", alias="RE_DEFAULT_UI")
+    #: The URL a browser elsewhere uses to reach this RE web app (e.g. `http://<box-hostname>:8810`), the same
+    #: value the Portal's tile uses (EGERIA_RESOURCE_EXPLORER_URL). Read by a work list's publish to write
+    #: `additionalProperties.resourceExplorerUrl` on its WorkingSet, so the Portal can link back. Empty (the
+    #: default): no link is written. There is deliberately no localhost default: a reader on another machine
+    #: following it would reach its own localhost.
+    public_url: str = Field(default="", alias="RE_PUBLIC_URL")
 
     model_config = _ENV_FILE_CONFIG
 

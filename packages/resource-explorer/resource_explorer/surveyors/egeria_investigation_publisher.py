@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 
 def _create_typed_collection(cm, type_name: str, display_name: str,
                              description: str, qualified_name: str = "",
-                             anchor_guid: str = "") -> str:
+                             anchor_guid: str = "", additional_properties: dict | None = None) -> str:
     """Create a Collection SUBTYPE (Folio, WorkingSet, ...).
 
     `create_collection`'s convenience parameters build a plain Collection, so the
@@ -48,6 +48,9 @@ def _create_typed_collection(cm, type_name: str, display_name: str,
             "description": description,
         },
     }
+    if additional_properties:
+        # Sent only when given (a work list's link back to RE), so every other caller's body is unchanged.
+        body["properties"]["additionalProperties"] = dict(additional_properties)
     if anchor_guid:
         # Anchored to the investigation's Project, which is what makes the
         # collection inherit the Project's governance zones instead of carrying

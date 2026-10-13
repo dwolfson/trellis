@@ -212,6 +212,8 @@ _SELF_RESOLVING_KINDS = {"doc_source_publish", "doc_source_unpublish",
                          # Brief T: a synthetic relationship key; each creator finds its tag / Folio itself.
                          "informal_tag_link", "informal_tag_detach",
                          "group_folio_membership", "group_folio_membership_detach",
+                         # A work list's removal: no qualifiedName of its own to adopt; a hit would skip the detach.
+                         "collection_membership_detach",
                          # Brief F: a person's Rating (keyed by element and person) and a journal entry's Note
                          # (found by its own qualifiedName in the asset's NoteLog by its creator).
                          "feedback_rating", "feedback_note"}
@@ -229,6 +231,8 @@ DESTRUCTIVE_OUTBOX_KINDS = frozenset({
     # neither ever deletes the InformalTag or the Folio (curation_egeria's module docstring).
     "informal_tag_detach",
     "group_folio_membership_detach",
+    # A member removed from a work list: its CollectionMembership to the WorkingSet. Never the collection or the asset.
+    "collection_membership_detach",
 })
 NOT_RETRIED = "not retried: destructive write"
 
@@ -372,6 +376,11 @@ def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callab
         # The proof rows name the outbox row that produced them. Only these kinds
         # take the extra key: the annotation creators pass the payload on as a body.
         payload = dict(payload, _outbox_id=row.get("id"))
+    elif kind in ("collection_membership", COLLECTION_MEMBERSHIP_DETACH):
+        # An add and a removal of one member of one collection apply in queue order (`_wait_for_earlier_membership`),
+        # which needs the row's id and owner. Underscored keys: no creator sends them on.
+        payload = dict(payload, _outbox_id=row.get("id"), _entity_type=row.get("entity_type") or "",
+                       _entity_slug=row.get("entity_slug") or "")
     elif kind in ("informal_tag_link", "informal_tag_detach", "group_folio_membership",
                   "group_folio_membership_detach"):
         # Brief T round 2: a link and an unlink of one key apply in queue order (curation_egeria
@@ -446,6 +455,7 @@ def _create_collection_membership(clients: "OutboxClients", payload: dict) -> st
     multi-link relationship would silently accumulate one duplicate per retry
     with no error anywhere. Re-measure if pyegeria changes these signatures.
     """
+    _wait_for_earlier_membership(clients, payload, COLLECTION_MEMBERSHIP_DETACH)
     cm = clients.require("collection_manager")
     props = collection_membership_properties(payload)
     if props:
@@ -936,7 +946,9 @@ def _curation_refusal(registry, row: dict) -> str:
 #: Brief Z3: the membership and ResourceList rows of an investigation's working set and a work list's WorkingSet,
 #: re-checked at drain time as the person they were queued for.
 COLLECTION_ENTITY_TYPES = ("investigation", "work_list")
-COLLECTION_KINDS = ("collection_membership", "resource_list")
+#: A work list's re-publish removing a member (`work_lists.WorkLists.publish`): DETACH on both ends.
+COLLECTION_MEMBERSHIP_DETACH = "collection_membership_detach"
+COLLECTION_KINDS = ("collection_membership", "resource_list", COLLECTION_MEMBERSHIP_DETACH)
 
 
 def _row_payload(row: dict) -> dict:
@@ -959,10 +971,15 @@ def _collection_refusal(registry, row: dict) -> str:
     if kind not in COLLECTION_KINDS or row.get("entity_type") not in COLLECTION_ENTITY_TYPES:
         return ""
     from resource_explorer.a2a_auth import CallerIdentity, current_caller
-    from resource_explorer.workflows.egeria_work_access import collection_write, member_write, writes_refusal
+    from resource_explorer.workflows.egeria_work_access import (
+        collection_detach_write, collection_write, member_detach_write, member_write, writes_refusal,
+    )
 
     payload = _row_payload(row)
-    if kind == "collection_membership":
+    if kind == COLLECTION_MEMBERSHIP_DETACH:
+        writes = [collection_detach_write(str(payload.get("collection_guid") or ""), "the collection"),
+                  member_detach_write(str(payload.get("member_guid") or ""))]
+    elif kind == "collection_membership":
         writes = [collection_write(str(payload.get("collection_guid") or ""), "the collection"),
                   member_write(str(payload.get("member_guid") or ""))]
     else:
@@ -1094,6 +1111,39 @@ def _create_group_folio_membership_detach(clients: "OutboxClients", payload: dic
     return create_group_membership_detach(clients, payload)
 
 
+def _wait_for_earlier_membership(clients, payload: dict, opposite_kind: str) -> None:
+    """An add and a removal of the same member of the same collection apply in the order they were queued (the
+    work-list re-publish; `curation_egeria._wait_for_earlier_opposite` is the tag/Folio twin). While an EARLIER
+    row of the opposite kind for this pair is pending, being sent or backing off, this row is not attempted:
+    `OutboxNotReadyError` hands it back with no attempt burned. Matched by the pair's `collection_membership_qn`
+    (a removal's key carries a `::after-add-<id>` suffix after it)."""
+    registry, row_id = getattr(clients, "registry", None), payload.get("_outbox_id")
+    if registry is None or row_id is None or not payload.get("_entity_slug"):
+        return
+    key = collection_membership_qn(str(payload.get("collection_guid") or ""), str(payload.get("member_guid") or ""))
+    for r in registry.list_outbox_rows_for_kinds(payload.get("_entity_type", ""), payload["_entity_slug"],
+                                                 (opposite_kind,)):
+        qn = r.get("qualified_name") or ""
+        if (qn == key or qn.startswith(key + "::")) and int(r["id"]) < int(row_id) \
+                and r["status"] in ("pending", "running", "failed"):
+            raise OutboxNotReadyError(f"waiting for earlier {opposite_kind} row {r['id']} ({r['status']}) on {key}")
+
+
+def _create_collection_membership_detach(clients: "OutboxClients", payload: dict) -> str:
+    """Remove ONE member from a work list's WorkingSet (`remove_from_collection`, which detaches the
+    CollectionMembership only: the collection and the member's asset are untouched).
+
+    Destructive, so never re-sent (`DESTRUCTIVE_OUTBOX_KINDS`). Applied in queue order against the add of the same
+    member (`_wait_for_earlier_membership`): while an earlier add of this member is unsettled the removal waits, so
+    an add that lands late cannot leave the member in after RE removed it (and an add waits for an earlier removal
+    the same way). Not the ISSUE-117 block's: that guards archive/delete of a database's elements, and this deletes
+    one relationship, never an element."""
+    _wait_for_earlier_membership(clients, payload, "collection_membership")
+    cm = clients.require("collection_manager")
+    cm.remove_from_collection(payload["collection_guid"], payload["member_guid"])
+    return ""
+
+
 def _guid_of(result) -> str:
     """pyegeria create_* calls variously return a GUID string, a dict, or
     nothing useful. An empty string is not an error here — the row is still
@@ -1126,6 +1176,7 @@ _CREATORS: dict[str, Callable[["OutboxClients", dict], str]] = {
     "informal_tag_detach": _create_informal_tag_detach,
     "group_folio_membership": _create_group_folio_membership,
     "group_folio_membership_detach": _create_group_folio_membership_detach,
+    COLLECTION_MEMBERSHIP_DETACH: _create_collection_membership_detach,
     "feedback_rating": _create_feedback_rating,
     "feedback_note": _create_feedback_note,
 }
@@ -1302,7 +1353,14 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
             continue
         except Exception as exc:
             exc_text = _describe_refusal(exc, clients)
-            if is_destructive_outbox_kind(row.get("element_kind") or ""):
+            if row.get("element_kind") == COLLECTION_MEMBERSHIP_DETACH and is_security_refusal(exc):
+                # A work list's removal Egeria's security refused: "not permitted", in Egeria's words, dead at once
+                # (destructive: never re-sent either way); the publish line counts it with the press-time refusals.
+                status = registry.mark_outbox_failed(
+                    row["id"], f"not permitted · {REFUSED_BY_SECURITY}: {_refusal_sentence(exc)}", max_attempts=1)
+                summary["dead" if status == "dead" else "failed"] += 1
+                summary["not_permitted"] = summary.get("not_permitted", 0) + 1
+            elif is_destructive_outbox_kind(row.get("element_kind") or ""):
                 # max_attempts=1: this failure is the last attempt. 'dead' is the existing terminal state.
                 status = registry.mark_outbox_failed(row["id"], f"{NOT_RETRIED} · {exc_text}", max_attempts=1)
                 summary["not_retried"] = summary.get("not_retried", 0) + 1

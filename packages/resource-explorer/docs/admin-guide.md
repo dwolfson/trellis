@@ -73,6 +73,14 @@ RE_DEFAULT_UI=next
 
 An unrecognised value falls back to `next` with a warning in the log.
 
+```bash
+# Optional. The URL a browser on another machine uses to reach this RE (the same value as the
+# Portal's EGERIA_RESOURCE_EXPLORER_URL). A published work list's WorkingSet carries
+# additionalProperties.resourceExplorerUrl = <this>/next?worklist=<slug>, so the Portal can link back.
+# Unset: no link is written (there is no localhost default).
+RE_PUBLIC_URL=http://<box-hostname>:8810
+```
+
 ### pgvector / registry
 
 ```bash
