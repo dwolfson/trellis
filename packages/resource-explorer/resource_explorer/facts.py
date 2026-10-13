@@ -191,6 +191,11 @@ class Envelope:
     level_mismatch: bool = False
     #: Why, in words, when `level_mismatch` is true. Empty otherwise.
     level_note: str = ""
+    #: The analyses the catalog lists behind this question, each read by the SAME function every other
+    #: consumer uses (`FactLayer.fact`), as {analysis_id, state, is_known, last_run_at}. Filled only when the
+    #: answer came from the resource's own state, so `facts` holds the one state fact and says nothing about
+    #: the analyses behind the question (walk 2026-10-12: "not run" in the chat beside "Health 85/100 · 4d ago").
+    analyses_behind: list = field(default_factory=list)
 
     @property
     def answerable(self) -> bool:
@@ -215,6 +220,7 @@ class Envelope:
             "level_mismatch": self.level_mismatch,
             "level_note": self.level_note,
             "facts": [f.as_dict() for f in self.facts],
+            "analyses_behind": list(self.analyses_behind),
             "can_run": self.can_run,
             # Counted here rather than left to each caller, so two agents
             # cannot disagree about whether the same envelope had an answer.
@@ -1568,6 +1574,13 @@ class FactLayer:
         declared = (self._map("state_sources") or {}).get(question.get("question", ""))
         if declared:
             env.facts = [self._resource_state_fact(slug, *declared)]
+            level = self._primary_level(question)
+            for aid in answering.get("analysis_ids") or []:
+                f = self.fact(slug, aid, level)
+                env.analyses_behind.append({
+                    "analysis_id": aid, "state": f.state, "is_known": f.is_known,
+                    "last_run_at": f.last_run_at,
+                })
             if not env.answerable:
                 env.blocked_reason = (
                     "Nothing is recorded for this on this resource yet."

@@ -541,6 +541,7 @@ function evidenceStateHtml() {
   const { compiled, gapRuns } = compileView;
   const m = compiled.manifest && typeof compiled.manifest === 'object' ? compiled.manifest : {};
   const gaps = compileGaps(compiled);
+  const deferredKeys = (Array.isArray(m.deferred) ? m.deferred : []).map((x) => x && x.key).filter(Boolean);
   const packed = Array.isArray(m.packed) ? m.packed : null;
   const storedLine = packed
     ? `<div data-compile-stored class="mb-s1 text-chip"><span class="tnum">${packed.length}</span> stored result${packed.length === 1 ? '' : 's'} used${
@@ -551,7 +552,10 @@ function evidenceStateHtml() {
   const gapBlock = gaps === null
     ? `<div data-compile-gaps class="mb-s2 text-chip">${cue('not_established', 'gaps not reported', 'This compile did not say which analyses are missing, which is not the same as none missing.', 'chrome')}</div>`
     : gaps.length === 0
-      ? `<div data-compile-gaps class="mb-s2 text-chip">${cue('measured', 'nothing missing', 'Every analysis that answers this has a stored result.', 'chrome')} <span class="text-chrome-muted">every analysis that answers this has a stored result</span></div>`
+      ? (deferredKeys.length
+        // Ranked below the section cap: never read, so neither stored nor missing. Said, not folded into "nothing missing".
+        ? `<div data-compile-gaps data-compile-deferred class="mb-s2 text-chip">${cue('partial', `${deferredKeys.length} not read`, 'These ranked below the compile\'s section cap, so the compile did not look for a stored result.', 'chrome')} <span class="text-chrome-muted">nothing missing among the ones read; not read, below the section cap:</span> <span class="font-mono">${deferredKeys.map(esc).join(', ')}</span></div>`
+        : `<div data-compile-gaps class="mb-s2 text-chip">${cue('measured', 'nothing missing', 'Every analysis that answers this has a stored result.', 'chrome')} <span class="text-chrome-muted">every analysis that answers this has a stored result</span></div>`)
       : `<div data-compile-gaps class="mb-s2 border border-chrome-line p-s2 text-chip">
           <div class="mb-s1">${cue('unrun', `${gaps.length} not run`, 'Analyses that would answer this and have no stored result.', 'chrome')} <span class="text-chrome-muted">would answer this, with no stored result</span></div>
           ${gaps.map(gapRowHtml).join('')}

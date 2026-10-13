@@ -202,7 +202,9 @@ class FileTypeSummary(BaseModel):
 class DependencySummary(BaseModel):
     ecosystem: str
     count: int
-    direct: int
+    # None = direct-ness was not determined for this ecosystem (absence is not 0). Only go.mod records the
+    # transitive marker ("// indirect"); no other parser says whether a row is direct, and dep_type is scope.
+    direct: int | None = None
 
 
 class DataProfileSummary(BaseModel):
@@ -214,6 +216,24 @@ class DataProfileSummary(BaseModel):
     null_summary: str = ""
     file_size_bytes: int = 0
     profiled_at: str | None = None
+
+
+#: Ecosystems whose parser marks transitive rows (dep_type "indirect"), so "direct" can be derived there.
+_DIRECT_DETERMINED = frozenset({"go"})
+
+
+def summarise_dependencies(deps: list[dict]) -> list[dict]:
+    """Group dependency rows by ecosystem. `direct` is count minus "indirect" where the ecosystem's parser
+    records that marker; elsewhere it is None (not determined), never 0."""
+    dep_map: dict[str, dict] = {}
+    for d in deps:
+        eco = d.get("ecosystem") or "unknown"
+        row = dep_map.setdefault(eco, {"ecosystem": eco, "count": 0, "direct": 0 if eco in _DIRECT_DETERMINED else None})
+        row["count"] += 1
+        if row["direct"] is not None and d.get("dep_type") != "indirect":
+            row["direct"] += 1
+    return sorted(dep_map.values(), key=lambda x: -x["count"])
+
 
 
 class SurveyReportData(BaseModel):
@@ -1219,18 +1239,7 @@ async def get_survey_report(slug: str) -> SurveyReportData:
 
     # Dependencies grouped by ecosystem
     deps = registry.query_dependencies(slug)
-    dep_map: dict[str, dict] = {}
-    for d in deps:
-        eco = d.get("ecosystem") or "unknown"
-        if eco not in dep_map:
-            dep_map[eco] = {"ecosystem": eco, "count": 0, "direct": 0}
-        dep_map[eco]["count"] += 1
-        if d.get("dep_type") == "direct":
-            dep_map[eco]["direct"] += 1
-    dep_summary = [
-        DependencySummary(**v)
-        for v in sorted(dep_map.values(), key=lambda x: -x["count"])
-    ]
+    dep_summary = [DependencySummary(**v) for v in summarise_dependencies(deps)]
 
     # Data profiles from project_data_profiles
     raw_profiles = registry.get_data_profiles(slug)

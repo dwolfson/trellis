@@ -9935,7 +9935,10 @@ function rowChatTurn(entry) {
   // sibling analysis behind the same question has run.
   const env = state.answers.get(entry.question);
   const facts = (env && env !== 'loading' && !env.__error && env.facts) || [];
-  const hasRun = (id) => facts.some((f) => f.analysis_id === id && (f.is_known || f.last_run_at));
+  // `analyses_behind` is the server's read of the analyses the catalog lists behind a question answered from the
+  // resource's own state, where `facts` holds only that one state fact.
+  const behind = (env && env !== 'loading' && !env.__error && env.analyses_behind) || [];
+  const hasRun = (id) => [...facts, ...behind].some((f) => f.analysis_id === id && (f.is_known || f.last_run_at));
   const text = p.caveat ? `${p.answer}\n\n${p.caveat}` : p.answer;
   return {
     answer: text,

@@ -82,7 +82,7 @@ export function repoReportHtml(d) {
   const deps = d.dependencies || [];
   const dependencies = deps.length
     ? `<table data-report-dependencies="rows" class="mt-s2 w-full"><thead><tr><th class="px-s2 py-[2px] text-left text-provenance font-normal uppercase text-ink-muted">Ecosystem</th><th class="px-s2 py-[2px] text-left text-provenance font-normal uppercase text-ink-muted">Dependencies</th><th class="px-s2 py-[2px] text-left text-provenance font-normal uppercase text-ink-muted">Direct</th></tr></thead><tbody>${
-      deps.map((e) => `<tr data-ecosystem="${esc(e.ecosystem)}"><td class="px-s2 py-[2px] text-caveat text-ink">${esc(e.ecosystem)}</td><td class="px-s2 py-[2px] text-caveat text-ink tnum">${esc(e.count)}</td><td class="px-s2 py-[2px] text-caveat text-ink tnum">${esc(e.direct)}</td></tr>`).join('')}</tbody></table>`
+      deps.map((e) => `<tr data-ecosystem="${esc(e.ecosystem)}"><td class="px-s2 py-[2px] text-caveat text-ink">${esc(e.ecosystem)}</td><td class="px-s2 py-[2px] text-caveat text-ink tnum">${esc(e.count)}</td><td class="px-s2 py-[2px] text-caveat text-ink tnum">${e.direct == null ? unread('Which dependencies are direct was not determined for this ecosystem.').replace('not read', 'not determined') : esc(e.direct)}</td></tr>`).join('')}</tbody></table>`
     : '<p data-report-dependencies="none" class="mt-s2 text-caveat text-ink-muted">no dependencies recorded</p>';
 
   const h4 = (t) => `<h4 class="mb-0 mt-s3 font-heading text-caps uppercase tracking-caps text-ink-muted">${esc(t)}</h4>`;
