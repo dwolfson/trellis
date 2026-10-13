@@ -256,17 +256,42 @@ def ownerless_private_words(inv: dict, verb: str = "published") -> str:
     return f"not {verb} · this {label} investigation has no owner, so it cannot be made private"
 
 
+def _latest_ownerless_refusal(registry, slug: str, action: str) -> dict | None:
+    """The newest refusal row for this investigation and action, as its decoded `detail` plus `summary`."""
+    import json
+
+    for row in registry.list_activity(entity_type="investigation", entity_slug=slug, operation="publish",
+                                      limit=50):
+        try:
+            detail = json.loads(row.get("detail") or "{}")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(detail, dict) and detail.get("refused") == OWNERLESS_PRIVATE_REFUSAL \
+                and detail.get("action") == action:
+            return {**detail, "summary": row.get("summary") or ""}
+    return None
+
+
 def record_ownerless_refusal(registry, inv: dict, words: str, action: str) -> None:
-    """Log the refusal and record it as its own proof row (activity_log, operation `publish`, status `error`,
-    kind `private_without_owner`). A failure to record is logged, never raised: the refusal stands either way."""
+    """Record the refusal as its own proof row (activity_log, operation `publish`, status `error`, kind
+    `private_without_owner`), ONCE per state: when the newest refusal row for this investigation + action already
+    says the same words about the same Project, nothing is written (resync's relink walks every bound
+    investigation each pass, and a row per pass would grow forever). The caller's words are returned to it every
+    time regardless; only the record is shared. The warning is logged when a row is written, at debug otherwise.
+    A failure to record is logged, never raised: the refusal stands either way."""
     import json
     import uuid
     from datetime import UTC, datetime
 
     slug = inv.get("slug") or ""
-    log.warning("investigation %s (%s, owner %r): %s [%s]", slug, inv.get("project_classification"),
-                inv.get("created_by") or "", words, action)
+    guid = inv.get("egeria_project_guid") or ""
     try:
+        latest = _latest_ownerless_refusal(registry, slug, action)
+        if latest and latest.get("summary") == words and (latest.get("egeria_project_guid") or "") == guid:
+            log.debug("investigation %s: %s [%s] (already recorded)", slug, words, action)
+            return
+        log.warning("investigation %s (%s, owner %r): %s [%s]", slug, inv.get("project_classification"),
+                    inv.get("created_by") or "", words, action)
         from resource_explorer.registry import ActivityEntry
 
         registry.write_activity(ActivityEntry(
@@ -275,11 +300,11 @@ def record_ownerless_refusal(registry, inv: dict, words: str, action: str) -> No
             entity_name=inv.get("display_name") or "", status="error", summary=words,
             detail=json.dumps({"refused": OWNERLESS_PRIVATE_REFUSAL, "action": action,
                                "classification": inv.get("project_classification") or "",
-                               "egeria_project_guid": inv.get("egeria_project_guid") or ""}),
+                               "egeria_project_guid": guid}),
             items=[{"refused": OWNERLESS_PRIVATE_REFUSAL, "action": action}],
         ))
     except Exception:  # the refusal is the safety property; the row is its record
-        log.exception("could not record the ownerless-private refusal for %s", slug)
+        log.exception("could not record the ownerless-private refusal for %s (%s): %s", slug, action, words)
 
 
 def _unattached_reason(row: dict, unknown: str = "unknown error") -> str:

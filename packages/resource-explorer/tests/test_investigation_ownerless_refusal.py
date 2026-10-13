@@ -200,3 +200,46 @@ def test_an_investigation_cannot_be_created_private_with_no_signed_in_owner(tmp_
             reg.create_investigation("Anon Personal", project_classification="PersonalProject")
         # A shared kind needs no owner and is still created.
         assert reg.create_investigation("Anon Task", project_classification="Task")["created_by"] == ""
+
+
+def test_repeated_resync_relink_passes_leave_one_refusal_row(tmp_path):
+    """Resync's relink step walks every bound investigation each pass. An ownerless private one is refused every
+    time, and the proof row must not grow by one per pass: the latest refusal for this investigation + action with
+    the same words is the record, so a second identical pass writes nothing."""
+    from resource_explorer.egeria_resync import EgeriaResync
+
+    reg = ProjectRegistry(db_path=str(tmp_path / "t.db"))
+    inv = _ownerless(reg, "Looping Legacy")
+    with reg._conn() as conn:
+        conn.execute("UPDATE investigations SET egeria_project_guid = 'proj-live' WHERE slug = ?",
+                     (inv["slug"],))
+    words = "not published · this personal investigation has no owner, so it cannot be made private"
+
+    for _ in range(2):
+        out = EgeriaResync(registry=reg)._do_relink_investigation_members()
+        assert words in out["per_investigation"][inv["slug"]]["errors"]
+
+    rows = reg.list_activity(entity_type="investigation", entity_slug=inv["slug"])
+    assert [r["summary"] for r in rows] == [words], rows
+
+
+def test_a_press_after_a_loop_refusal_still_gets_its_words_and_shares_the_row(tmp_path):
+    """A person's press always answers with the words; a repeat of the same refusal for the same action shares
+    the one row, and a different action gets its own."""
+    from resource_explorer.surveyors.egeria_investigation_publisher import (
+        EgeriaInvestigationPublisher,
+    )
+
+    reg = ProjectRegistry(db_path=str(tmp_path / "t.db"))
+    inv = _ownerless(reg, "Pressed Legacy")
+    pm, cm = _clients()
+    pub = EgeriaInvestigationPublisher(reg, project_manager=pm, collection_manager=cm)
+    first, second = pub.promote(inv["slug"]), pub.promote(inv["slug"])
+    assert first.not_published and second.not_published == first.not_published
+    with reg._conn() as conn:
+        conn.execute("UPDATE investigations SET egeria_project_guid = 'proj-live' WHERE slug = ?",
+                     (inv["slug"],))
+    assert pub.relink_members(inv["slug"]).not_published
+    rows = reg.list_activity(entity_type="investigation", entity_slug=inv["slug"])
+    assert len(rows) == 2, [r["detail"] for r in rows]     # one for promote, one for relink_members
+    assert _sent(pm) == [] and _sent(cm) == []
