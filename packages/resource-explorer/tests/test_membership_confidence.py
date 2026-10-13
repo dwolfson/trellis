@@ -9,8 +9,10 @@ success, and the relationship read `confidence: 0`. The outbox row said done.
 No Egeria here. `EgeriaCollections` is the only fake: the CollectionManager write and the MetadataExpert
 member-side read, every call bound to the installed pyegeria signature first. It keeps a relationship
 property the way Egeria does (known names only, `confidence` 0 when not sent) and answers the read in the
-shape measured read-only on 6.2 (2026-10-13): `elementList[].element.elementGUID` is the collection,
-`type.typeName` the relationship, `relationshipProperties.propertyValueMap.<name>.primitiveValue` the value. Zone access reads are faked at their own client boundary (`zone_fakes`),
+shape measured read-only on 6.2 (2026-10-13): `elementList[].element.elementGUID` is the collection (at end 1,
+`elementAtEnd1` True), `type.typeName` the relationship, `relationshipProperties.propertyValueMap.<name>.
+primitiveValue` the value. It pages by the BODY's `startFrom`/`pageSize` and answers `starting_at_end` as
+pyegeria 6.2.2 does (the member is at end 2: 1 finds nothing). 6.2.1 ignores both keywords. Zone access reads are faked at their own client boundary (`zone_fakes`),
 with no zone in use.
 """
 from __future__ import annotations
@@ -64,6 +66,9 @@ class EgeriaCollections:
         self.hide = hide                                  # the read does not show the membership
         self.relationship_type = relationship_type        # what the read says the relationship is
         self.reads = 0
+        self.read_calls: list[dict] = []                  # each read's body and keywords
+        self.extra_collections: list[str] = []            # other collections the member is in, listed first
+        self.at_end1 = True
         self.sent: list[dict | None] = []                 # every add_to_collection body, as sent
         self.relationships: dict[tuple[str, str], dict] = {}
 
@@ -85,16 +90,28 @@ class EgeriaCollections:
     def get_related_metadata_elements(self, *a, **kw):
         bound = _sig("get_related_metadata_elements").bind(self, *a, **kw)
         self.reads += 1
+        body = bound.arguments["body"]
+        self.read_calls.append({"body": dict(body), "kwargs": dict(bound.arguments.get("kwargs") or {}),
+                                **{k: bound.arguments[k] for k in ("starting_at_end", "start_from", "page_size")
+                                   if k in bound.arguments}})
         if self.fail_read:
             raise ConnectionError("platform went away")
         member = bound.arguments["guid"]
         assert bound.arguments["relationship_type"] == "CollectionMembership"
-        items = [{"relationshipGUID": f"rel-{c}-{m}", "type": {"typeName": self.relationship_type},
-                  "element": {"elementGUID": c},
+        if bound.arguments.get("starting_at_end", 0) == 1:
+            return "No elements found"                    # the member is never at end 1
+        rels = [(c, {"confidence": 0}) for c in self.extra_collections]
+        rels += [(c, p) for (c, m), p in self.relationships.items() if m == member and not self.hide]
+        start, size = body.get("startFrom", 0), body.get("pageSize", 1000)
+        page = rels[start:start + size]
+        if not page:
+            return "No elements found"
+        items = [{"relationshipGUID": f"rel-{c}-{member}", "type": {"typeName": self.relationship_type},
+                  "element": {"elementGUID": c}, "elementAtEnd1": self.at_end1,
                   "relationshipProperties": {
                       "propertyValueMap": {k: _value(v) for k, v in p.items() if k not in ("class", "typeName")},
                       "propertyNames": sorted(k for k in p if k not in ("class", "typeName"))}}
-                 for (c, m), p in self.relationships.items() if m == member and not self.hide]
+                 for c, p in page]
         return {"startingElement": {"elementGUID": member}, "elementList": items, "mermaidGraph": ""}
 
 
@@ -264,6 +281,53 @@ class TestTheReadBack:
         _drain(registry, cm)
         assert _row(registry)["last_error"] == ("written; properties not confirmed: "
                                                 "the membership is not in the read-back")
+
+    def test_the_read_pages_in_the_body_from_the_members_end(self, registry, monkeypatch):
+        """pyegeria 6.2.1 ignores page_size/starting_at_end keywords; a body startFrom/pageSize works on both."""
+        permit_publish_routes(monkeypatch, USER)
+        monkeypatch.setattr("resource_explorer.egeria_outbox.MEMBERSHIP_READ_BACK_PAGE", 2)
+        _queue(registry, expected_confidence=80)
+        cm = EgeriaCollections()
+        cm.extra_collections = ["other-1", "other-2", "other-3"]      # pages: [o1, o2] [o3, wg]
+        _drain(registry, cm)
+        assert (_row(registry)["status"], _row(registry)["last_error"]) == ("done", "")
+        assert [c["body"] for c in cm.read_calls] == [
+            {"class": "ResultsRequestBody", "startFrom": 0, "pageSize": 2},
+            {"class": "ResultsRequestBody", "startFrom": 2, "pageSize": 2}]
+        assert all(c["starting_at_end"] == 2 and "page_size" not in c and "start_from" not in c
+                   for c in cm.read_calls)
+
+    def test_a_short_page_does_not_end_the_read_only_an_empty_one_does(self, registry, monkeypatch):
+        permit_publish_routes(monkeypatch, USER)
+        monkeypatch.setattr("resource_explorer.egeria_outbox.MEMBERSHIP_READ_BACK_PAGE", 2)
+        _queue(registry, expected_confidence=80)
+        cm = EgeriaCollections(hide=True)
+        cm.extra_collections = ["other-1", "other-2", "other-3"]      # pages: [o1, o2] [o3] []
+        _drain(registry, cm)
+        assert cm.reads == 3
+        assert _row(registry)["last_error"] == ("written; properties not confirmed: "
+                                                "the membership is not in the read-back")
+
+    def test_an_item_with_the_collection_not_at_end_1_is_not_the_membership(self, registry, monkeypatch):
+        permit_publish_routes(monkeypatch, USER)
+        _queue(registry, expected_confidence=80)
+        cm = EgeriaCollections()
+        cm.at_end1 = False
+        _drain(registry, cm)
+        assert _row(registry)["last_error"] == ("written; properties not confirmed: "
+                                                "the membership is not in the read-back")
+
+    def test_a_read_that_never_ends_stops_and_says_so(self, registry, monkeypatch):
+        permit_publish_routes(monkeypatch, USER)
+        monkeypatch.setattr("resource_explorer.egeria_outbox.MEMBERSHIP_READ_BACK_PAGE", 1)
+        monkeypatch.setattr("resource_explorer.egeria_outbox.MEMBERSHIP_READ_BACK_MAX_PAGES", 3)
+        _queue(registry, expected_confidence=80)
+        cm = EgeriaCollections(hide=True)
+        cm.extra_collections = [f"other-{i}" for i in range(10)]
+        _drain(registry, cm)
+        assert cm.reads == 3
+        assert _row(registry)["last_error"] == ("written; properties not confirmed: "
+                                                "the read-back stopped after 3 pages")
 
     def test_a_failed_read_leaves_the_write_done_and_says_so(self, registry, monkeypatch):
         permit_publish_routes(monkeypatch, USER)

@@ -516,8 +516,12 @@ def collection_membership_properties(payload: dict) -> dict:
 NOT_SENT_CONFIDENCE = "not sent: confidence"
 
 #: Members are read from the MEMBER's side: the collections one element belongs to, not every member of
-#: the collection, so one read is small whatever the collection's size.
+#: the collection, so a read is small whatever the collection's size. Paged in the BODY (`startFrom`,
+#: `pageSize`): pyegeria 6.2.1 ignores the `page_size`/`starting_at_end` keywords of
+#: `get_related_metadata_elements` (fixed in 6.2.2, ISSUE-129); a body field works on both.
 MEMBERSHIP_READ_BACK_PAGE = 100
+#: A guard, not a rule: pages read before the read-back gives up and says so on the row.
+MEMBERSHIP_READ_BACK_MAX_PAGES = 50
 
 
 def _relationship_property(props, name: str):
@@ -540,11 +544,17 @@ def verify_membership_landed(row: dict, clients: "OutboxClients") -> str:
     there, or when nothing was sent: then no read at all). Raises OutboxNotKept naming each property that
     did not land: the row goes dead at once (a resend carries the same body).
 
-    The read is ONE call from the member's side, `MetadataExpert.get_related_metadata_elements(member,
-    "CollectionMembership", ...)` (measured read-only on 6.2, 2026-10-13: direction-blind, each item's
-    `element` is the collection, `type.typeName` the relationship, `relationshipProperties.propertyValueMap`
-    the values). A read that fails, or that does not show this collection, cannot tell either way: the
-    row is done, and the note says the properties were not confirmed."""
+    The read is from the member's side, `MetadataExpert.get_related_metadata_elements(member,
+    "CollectionMembership", body, starting_at_end=2)`, paged in the body until this collection is found
+    or a page comes back empty (a short page does not end it). The member is at end 2 of
+    CollectionMembership and the collection at end 1, so a match must have `element.elementGUID` equal
+    to the collection, `elementAtEnd1` True and `type.typeName` "CollectionMembership"; the values are
+    `relationshipProperties.propertyValueMap`. Measured read-only on 6.2, 2026-10-13, member egeria_git:
+    with pyegeria 6.2.2, starting_at_end=2 (or omitted) returns its 3 collections and 1 returns none;
+    6.2.1 ignores the keyword and returns the 3 either way. Body paging (pageSize=1) works on both.
+
+    A read that fails, or that does not show this collection, cannot tell either way: the row is done,
+    and the note says the properties were not confirmed."""
     try:
         payload = json.loads(row.get("payload_json") or "{}")
     except (TypeError, ValueError):
@@ -553,21 +563,32 @@ def verify_membership_landed(row: dict, clients: "OutboxClients") -> str:
     if not sent:
         return ""
     collection_guid, member_guid = payload.get("collection_guid", ""), payload.get("member_guid", "")
+    rel = None
     try:
-        answer = clients.require("metadata_expert").get_related_metadata_elements(
-            member_guid, "CollectionMembership", {"class": "ResultsRequestBody"},
-            page_size=MEMBERSHIP_READ_BACK_PAGE)
+        me = clients.require("metadata_expert")
+        for page in range(MEMBERSHIP_READ_BACK_MAX_PAGES):
+            answer = me.get_related_metadata_elements(
+                member_guid, "CollectionMembership",
+                {"class": "ResultsRequestBody", "startFrom": page * MEMBERSHIP_READ_BACK_PAGE,
+                 "pageSize": MEMBERSHIP_READ_BACK_PAGE},
+                starting_at_end=2)
+            items = (answer.get("elementList") or []) if isinstance(answer, dict) else []
+            if not items:                                 # "No elements found" or an empty list: the end
+                break
+            for item in items:
+                if (isinstance(item, dict)
+                        and (item.get("type") or {}).get("typeName") == "CollectionMembership"
+                        and item.get("elementAtEnd1") is True
+                        and (item.get("element") or {}).get("elementGUID") == collection_guid):
+                    rel = item.get("relationshipProperties") or {}
+                    break
+            if rel is not None:
+                break
+        else:
+            return (f"written; properties not confirmed: the read-back stopped after "
+                    f"{MEMBERSHIP_READ_BACK_MAX_PAGES} pages")
     except Exception as exc:  # noqa: BLE001 — any failure means "could not tell", said on the row
         return f"written; properties not confirmed: read-back failed ({type(exc).__name__}: {str(exc)[:200]})"
-    items = (answer.get("elementList") or []) if isinstance(answer, dict) else []
-    rel = None
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        if ((item.get("type") or {}).get("typeName") == "CollectionMembership"
-                and (item.get("element") or {}).get("elementGUID") == collection_guid):
-            rel = item.get("relationshipProperties") or {}
-            break
     if rel is None:
         return "written; properties not confirmed: the membership is not in the read-back"
     dropped = [f"{k} (sent {v!r}, read back {_relationship_property(rel, k)!r})"
