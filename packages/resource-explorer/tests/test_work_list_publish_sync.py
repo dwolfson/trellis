@@ -56,6 +56,7 @@ class SyncCollections(FakeCollections):
 
     def get_collection_by_guid(self, *a, **kw):
         GET.bind(self, *a, **kw)
+        self.calls.append(("get_collection_by_guid", kw.get("graph_query_depth")))
         guid = a[0] if a else kw["guid"]
         return {"elementHeader": {"guid": guid}, "properties": {"additionalProperties": dict(self.props[guid])}}
 
@@ -209,6 +210,24 @@ def test_an_attempted_add_that_died_may_have_landed_so_its_member_is_detached(wo
         ("remove_from_collection", out["egeria_guid"], "g-r")]
 
 
+@pytest.mark.parametrize("words", [
+    f"not permitted · zone {SECURED} does not grant {USER} attach in Egeria",
+    "refused by Egeria's security: OPEN-METADATA-SECURITY-403-007 User x is not authorized · "
+    "needs a permission or zone change, not a retry",
+])
+def test_a_refused_add_was_never_applied_so_its_member_is_not_detached(world, words):
+    _publish(world)
+    registry = world["registry"]
+    [row] = _add_row(world, "g-r")
+    registry.mark_outbox_failed(row["id"], words, max_attempts=1)            # dead, attempts 1, refused
+    _drain(world)
+    _remove(world, "r")
+    for _ in range(2):                                                         # nothing to remove, then or later
+        out = _publish(world)
+        assert out["removals"]["detached"] == [] and out["removals"]["not_permitted"] == []
+    assert _detach_rows(world) == []
+
+
 def test_an_attempted_add_backing_off_is_cancelled_and_its_member_detached(world):
     _publish(world)
     registry = world["registry"]
@@ -320,6 +339,7 @@ def test_an_existing_collection_gains_the_link_merged_with_keys_others_added(wor
     assert cm.updates[-1][1]["properties"]["additionalProperties"] == {"portalNote": "kept",
                                                                        "resourceExplorerUrl": want}
     assert cm.updates[-1][1]["mergeUpdate"] is True
+    assert ("get_collection_by_guid", 0) in cm.calls                          # the collection alone, no graph
 
 
 def test_a_malformed_public_url_is_treated_as_none(monkeypatch, caplog):

@@ -143,6 +143,15 @@ def _additional_properties(element) -> dict:
     return dict(found) if isinstance(found, dict) else {}
 
 
+def _refused(row: dict) -> bool:
+    """An add that was REFUSED (the drain's zone re-check, or Egeria's security) was never applied: it cannot have
+    landed, so it is not "maybe attached"."""
+    from resource_explorer.egeria_outbox import REFUSED_BY_SECURITY, SECURITY_REFUSAL_MARKER
+
+    words = (row.get("last_error") or "").strip()
+    return words.startswith("not permitted") or SECURITY_REFUSAL_MARKER in words or REFUSED_BY_SECURITY in words
+
+
 def recorded_memberships(registry, slug: str, collection_guid: str) -> dict[str, dict]:
     """What RE's OWN outbox says about each member it has written to this WorkingSet, by member GUID. The one
     source both the publish's removals and their counts are taken from (never a fresh Egeria read).
@@ -151,7 +160,8 @@ def recorded_memberships(registry, slug: str, collection_guid: str) -> dict[str,
 
     * `attached`: the last settled write was a done add (a done removal clears it);
     * `maybe`: an add was ATTEMPTED and not confirmed (failed, dead or cancelled with attempts > 0): a timed-out add
-      may have landed, so it counts as possibly attached (a done removal clears it);
+      may have landed, so it counts as possibly attached (a done removal clears it). Not for a REFUSED add (the
+      drain's "not permitted", or Egeria's security refusal): it was never applied;
     * `unsent_adds`: add rows not yet applied (pending, or failed and backing off): cancellable;
     * `never_sent_adds`: those of them with no attempt at all;
     * `adding`: an add row is being sent right now;
@@ -188,7 +198,8 @@ def recorded_memberships(registry, slug: str, collection_guid: str) -> dict[str,
                 rec["unsent_adds"].append(row_id)
                 if not attempted:
                     rec["never_sent_adds"].append(row_id)
-            if status in ("failed", "dead", "cancelled") and attempted:   # tried at least once: may have landed
+            if status in ("failed", "dead", "cancelled") and attempted and not _refused(row):
+                # tried at least once and not refused: may have landed
                 rec["maybe"] = True
         elif status == "done":
             rec["attached"] = rec["maybe"] = False
@@ -665,7 +676,9 @@ class WorkLists:
         if refused:
             return {"state": "not permitted", "words": refused}
         try:
-            current = _additional_properties(cm.get_collection_by_guid(guid, output_format="JSON"))
+            # depth 0: the collection alone, not its members and their graph (the default depth is 3).
+            current = _additional_properties(cm.get_collection_by_guid(guid, graph_query_depth=0,
+                                                                       output_format="JSON"))
         except Exception as exc:  # noqa: BLE001 - said on the result, the publish goes on
             log.warning("work list link back: could not read %s: %s", guid, exc)
             return {"state": "failed",
