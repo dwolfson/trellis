@@ -332,13 +332,14 @@ async def get_dataclass_rules() -> list[DataClassRule]:
     Queries Egeria's Valid Value sets if online; falls back to local rules if offline. Every rule
     carries `keyword_source`, the one label for which source this read used.
     """
+    # The built-in rules are the data-class seed (configdata/data_classes.yaml), the same entries
+    # the start-up bootstrap creates in Egeria.
+    from resource_explorer.surveyors.database.bootstrap_data_classes import current_seed
+
     fallback_rules = [
-        {"name": "EmailAddress", "display_name": "Email Address", "description": "Electronic mail address identifier.", "keywords": ["email", "email_address", "mail_addr", "emailaddr"], "source": "Local Fallback"},
-        {"name": "PhoneNumber", "display_name": "Phone Number", "description": "Telephone contact number.", "keywords": ["phone", "phone_number", "telephone", "mobile", "tel_num"], "source": "Local Fallback"},
-        {"name": "SocialSecurityNumber", "display_name": "Social Security Number", "description": "Government issued social security identification number.", "keywords": ["ssn", "socialsec", "social_security", "ssn_num"], "source": "Local Fallback"},
-        {"name": "CreditCardNumber", "display_name": "Credit Card Number", "description": "Financial credit or debit card identifier.", "keywords": ["creditcard", "credit_card", "cc_num", "card_number"], "source": "Local Fallback"},
-        {"name": "Password", "display_name": "Password", "description": "Credential or secret authentication passkey.", "keywords": ["password", "passkey", "passwd", "pwd"], "source": "Local Fallback"},
-        {"name": "DateOfBirth", "display_name": "Date of Birth", "description": "Individual date or anniversary of birth.", "keywords": ["dob", "dateofbirth", "birth_date", "birthdate"], "source": "Local Fallback"},
+        {"name": dc["name"], "display_name": dc["displayName"], "description": dc["description"],
+         "keywords": list(dc["dataPatterns"]), "source": "Local Fallback"}
+        for dc in current_seed()
     ]
 
     from resource_explorer.surveyors.database.egeria_reference_catalog import (

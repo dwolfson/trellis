@@ -711,10 +711,15 @@ def get_status(docs_dir: Path = DOCS_DIR) -> dict:
     with _prefect_pool_status_lock:
         pool_st = _prefect_pool_status
 
+    from resource_explorer.surveyors.database.bootstrap_data_classes import status as _dc_status
+
     return {
         "reinitializing": _reinitializing,
         "egeria_reachable": not any_unreachable,
         "batches": out,
+        # The data-class seed's last outcome ("data classes: present, 6 sets" / "created, …" /
+        # "could not check · why").
+        "data_classes": _dc_status(),
         # 2026-09-28 — resource-explorer-pool worker liveness, reported
         # alongside the Dr.Egeria batch status the admin banner already
         # reads, so a missing/offline Prefect worker is a monitored
@@ -730,6 +735,23 @@ def get_status(docs_dir: Path = DOCS_DIR) -> dict:
     }
 
 
+# ── data classes ────────────────────────────────────────────────────────────
+
+def _data_class_pass(registry=None):
+    """RE's data-class seed (`surveyors/database/bootstrap_data_classes.py`): its own canary (one
+    typed read), healed only when absent, outcome logged and recorded as an activity row when it
+    changes. Never raises."""
+    try:
+        from resource_explorer.surveyors.database.bootstrap_data_classes import (
+            check_and_heal_data_classes,
+        )
+
+        return check_and_heal_data_classes(registry=registry)
+    except Exception:  # pragma: no cover - check_and_heal_data_classes never raises
+        log.exception("bootstrap: data-class pass failed")
+        return None
+
+
 # ── scheduler ───────────────────────────────────────────────────────────────
 
 def _loop(docs_dir: Path, interval: int, stop: threading.Event) -> None:
@@ -743,6 +765,9 @@ def _loop(docs_dir: Path, interval: int, stop: threading.Event) -> None:
             # Never let a bad pass kill the loop — the next tick should still
             # get a chance to notice and repair a reset.
             log.exception("bootstrap: check pass failed")
+        # After the Dr.Egeria batches: the data-class seed. Leader-elected with this loop
+        # (LOCK_BOOTSTRAP), so it runs at start and after every Egeria reset, once per deployment.
+        _data_class_pass()
         try:
             check_prefect_pool_workers()
         except Exception:

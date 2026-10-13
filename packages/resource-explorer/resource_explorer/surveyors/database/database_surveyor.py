@@ -2208,12 +2208,10 @@ class DatabaseSurveyor:
     #: than `bootstrap_data_classes.STANDARD_DATA_CLASSES`' `dataPatterns`.
     BUILT_IN_PII_KEYWORDS = ("email", "phone", "ssn", "socialsec", "creditcard", "password", "dob",
                              "dateofbirth")
-    #: The data classes whose Egeria keyword sets replace the built-in list.
-    PII_DATA_CLASS_NAMES = ("EmailAddress", "PhoneNumber", "SocialSecurityNumber", "CreditCardNumber",
-                            "Password", "DateOfBirth")
-
     def _load_pii_keywords(self):
         """The PII keywords for this run and their source, as one `KeywordLoad`.
+
+        The data classes asked for are the data-class seed (configdata/data_classes.yaml).
 
         Egeria's keyword sets (a typed find per data class) when the platform holds any; otherwise
         the built-in list, and the load says whether Egeria had none or could not be read.
@@ -2238,7 +2236,9 @@ class DatabaseSurveyor:
 
             why = "not signed in" if isinstance(exc, NoCallerIdentity) else str(exc)[:200]
             return KeywordLoad(KEYWORDS_UNREADABLE, reason=why)
-        return load_data_class_keywords(ref_manager, self.PII_DATA_CLASS_NAMES)
+        from resource_explorer.surveyors.database.bootstrap_data_classes import current_seed
+
+        return load_data_class_keywords(ref_manager, [dc["name"] for dc in current_seed()])
 
     def _create_views_annotations(self, views_info: list[dict], keywords=None) -> list:
         """Create annotations for parsed view dependencies, complexity, and lineage.

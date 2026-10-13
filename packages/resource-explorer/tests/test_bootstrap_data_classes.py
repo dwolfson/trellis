@@ -19,6 +19,7 @@ import inspect
 
 import pytest
 from pyegeria.core._server_client import ServerClient
+from pyegeria.omvs.reference_data import ReferenceDataManager as _RealRef
 
 from resource_explorer.surveyors.database import bootstrap_data_classes as bdc
 
@@ -27,6 +28,7 @@ NO_ELEMENTS_FOUND = "No elements found"
 #: pyegeria's real `get_guid_for_name` (both DataDesigner and ReferenceDataManager inherit it).
 _GUID_SIG = inspect.signature(ServerClient.get_guid_for_name)
 _DEFAULT_PROPS = _GUID_SIG.parameters["property_name"].default
+_FIND_SIG = inspect.signature(_RealRef.find_valid_value_definitions)
 
 
 class _FakeDesigner:
@@ -84,6 +86,17 @@ class _FakeReferenceDataManager:
         if type_name == "ValidValueDefinition" and name in self.existing_names:
             return f"guid-for-{name}"
         return NO_ELEMENTS_FOUND
+
+    def find_valid_value_definitions(self, *args, **kwargs):
+        """Typed finds only (the keyword reconcile of an existing set)."""
+        b = _FIND_SIG.bind(self, *args, **kwargs)
+        b.apply_defaults()
+        if b.arguments["kwargs"].get("metadata_element_type") != "ValidValueDefinition":
+            raise AssertionError("untyped find")
+        prefix = b.arguments["search_string"]
+        hits = [{"elementHeader": {"guid": f"guid-for-{n}"}, "properties": {"qualifiedName": n}}
+                for n in sorted(self.existing_names) if n.startswith(prefix)]
+        return hits or NO_ELEMENTS_FOUND
 
     def create_valid_value_definition(self, body):
         qn = body["properties"]["qualifiedName"]
@@ -248,7 +261,9 @@ class TestPlainValidValueDefinitionsAreLookedUpTyped:
 
         assert _run_bootstrap(designer, ref_manager) == 0
 
-        assert ref_manager.created == [], "an existing plain ValidValueDefinition was created again"
+        created = [b["properties"]["qualifiedName"] for b in ref_manager.created]
+        assert created == [bdc.canary_qualified_name(bdc.STANDARD_DATA_CLASSES)], (
+            "an existing plain ValidValueDefinition was created again")
         assert designer.created == []
         assert {t for _n, t in ref_manager.lookups} == {"ValidValueDefinition"}
 
@@ -259,7 +274,9 @@ class TestALookupThatRaisesCreatesNothing:
     def test_a_raising_set_lookup_stops_and_creates_nothing(self, caplog):
         class Raising(_FakeReferenceDataManager):
             def get_guid_for_name(self, name, property_name=_DEFAULT_PROPS, type_name=None):
-                raise RuntimeError("platform not answering")
+                if name.startswith("ValidValuesSet::"):
+                    raise RuntimeError("platform not answering")
+                return super().get_guid_for_name(name, property_name, type_name)
 
         designer = _FakeDesigner(existing_names={f"DataClass::{s['name']}" for s in bdc.STANDARD_DATA_CLASSES})
         ref_manager = Raising()
