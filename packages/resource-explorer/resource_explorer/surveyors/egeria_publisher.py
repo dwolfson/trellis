@@ -1758,6 +1758,10 @@ class EgeriaPublisher:
             r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", _re.IGNORECASE
         )
         result = self._automated_curation.get_guid_for_name(qualified_name)
+        if result is None:
+            # Not a miss (a miss is pyegeria's "No elements found" string): up to 6.2.1 a failure swallowed by
+            # `@dynamic_catch` came back as None (ISSUE-134). '' would mean "create it", so this raises.
+            raise RuntimeError(f"Egeria gave no answer to the by-name lookup for {qualified_name!r}")
         if isinstance(result, list) and result:
             candidate = result[0] if isinstance(result[0], str) else result[0].get("guid", "")
             return candidate if uuid_re.match(candidate or "") else ""

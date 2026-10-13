@@ -963,8 +963,10 @@ class BlueprintMaterializer:
         if self._metadata_expert is None:
             return set(), False
         try:
-            # pyegeria's get_related_metadata_elements sends only the body (its page_size/start_from/
-            # starting_at_end arguments are dropped), so the page is asked for IN the body.
+            # The page is asked for IN the body. Up to pyegeria 6.2.1 the page_size/start_from/starting_at_end
+            # arguments were dropped (ISSUE-129); from 6.2.2 they are sent, but a field the body sets always
+            # wins, so this one page of _COMPOSITION_PAGE is what Egeria gets. starting_at_end stays 0 (either
+            # end) and the elementAtEnd1 filter below keeps the children, as it did before.
             res = self._metadata_expert.get_related_metadata_elements(
                 container_guid, "SolutionComposition",
                 {"class": "ResultsRequestBody", "startFrom": 0, "pageSize": self._COMPOSITION_PAGE})

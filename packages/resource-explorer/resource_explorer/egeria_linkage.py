@@ -385,6 +385,9 @@ def recheck_all_linkages(registry, *, entity_types=None, progress=None,
         detail = {"entity_type": entity_type, "slug": slug, "guid": guid}
         try:
             element = element_client.get_metadata_element_by_guid(guid)
+            if element is None:
+                # No answer is not "not found" (pyegeria ISSUE-134): an error, never a stale verdict.
+                raise RuntimeError(f"Egeria gave no answer for {guid} (the client returned nothing)")
             # A string result is this client's "not found" sentinel rather than an
             # exception, so an absent element must be turned into one — otherwise
             # a missing GUID reads as a successful check.

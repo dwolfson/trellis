@@ -432,13 +432,22 @@ def _no_elements(res: Any) -> bool:
     return isinstance(res, str) and ("no element" in res.lower() or "not found" in res.lower())
 
 
+def _no_answer(res: Any, what: str) -> None:
+    """A None from a pyegeria read is never "none there". Up to pyegeria 6.2.1, `@dynamic_catch` with
+    PYEGERIA_ENABLE_LOGGER_CATCH on turned every failure into None (ISSUE-134); no read RE calls returns None
+    for a miss (a miss is Egeria's "No elements found" string). So None is "could not read": it raises."""
+    if res is None:
+        raise GatewayError(f"Egeria gave no {what} answer (the client returned nothing): unreadable, not absent")
+
+
 def parse_element_answer(res: Any) -> ElementRead | None:
     """One raw element -> `ElementRead`, or None when Egeria says there is none.
 
     An answer this does not recognise RAISES: parsing a shape it does not know into "nothing
     there" is how D2 made every element look absent (and would have made every leave-out a soft
     delete)."""
-    if res is None or _no_elements(res):
+    _no_answer(res, "element")
+    if _no_elements(res):
         return None
     if isinstance(res, dict) and _guid_of(res):
         return _element_read(res)
@@ -448,7 +457,8 @@ def parse_element_answer(res: Any) -> ElementRead | None:
 
 def parse_elements_answer(res: Any) -> list[ElementRead]:
     """A list of raw elements -> `[ElementRead]`; "No elements found" -> []; anything else raises."""
-    if res is None or _no_elements(res):
+    _no_answer(res, "elements")
+    if _no_elements(res):
         return []
     if isinstance(res, list):
         out = []
@@ -465,7 +475,8 @@ def parse_related_answer(res: Any) -> list[Relationship]:
     `[Relationship]`. LIVE item keys: `type` (the relationship type), `relationshipGUID`,
     `element`, `elementAtEnd1`. "No elements found" -> []; anything else raises, because an
     empty list here means "nothing hangs off it"."""
-    if res is None or _no_elements(res):
+    _no_answer(res, "related-elements")
+    if _no_elements(res):
         return []
     if isinstance(res, dict) and isinstance(res.get("elementList"), list):
         out = []
