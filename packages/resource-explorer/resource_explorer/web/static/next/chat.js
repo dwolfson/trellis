@@ -149,13 +149,15 @@ export function renderRail() {
  *  and an answer retrieved from embeddings must not look alike. When the
  *  response does not say which, this says THAT — it never guesses, and it
  *  never quietly implies retrieval. */
-function sourceLine(body) {
+export function sourceLine(body) {
   const manifest = body.compiled && body.compiled.manifest;
   if (manifest && typeof manifest === 'object') {
-    const parts = Object.keys(manifest).filter((k) => {
-      const v = manifest[k];
-      return Array.isArray(v) ? v.length : v != null && v !== '';
-    });
+    // What the answer was compiled FROM is the manifest's `packed` list (one
+    // entry per stored result used). The manifest's own FIELD NAMES
+    // (compile_id, budget, headroom ...) are bookkeeping, not sources; they
+    // were listed here once and read as if they were the answer.
+    const packed = Array.isArray(manifest.packed) ? manifest.packed : null;
+    const keys = packed ? [...new Set(packed.map((p) => p && p.key).filter(Boolean))] : [];
     // The absence fact `evidenceFooterListsHtml` deliberately does not
     // enumerate belongs here instead, as one clause on the answer's own
     // sentence -- not a footer line per key, and not one combined line
@@ -167,8 +169,9 @@ function sourceLine(body) {
     const lists = listSentences(body);
     const noListsAvailable = lists.length > 0 && !lists.some((l) => l.members);
     const suffix = noListsAvailable ? ' · no evidence lists were available for this question' : '';
-    return (parts.length
-      ? `From compiled evidence · ${parts.join(', ')}`
+    if (!packed) return `Compiled evidence is on file · its sources are not listed${suffix}`;
+    return (keys.length
+      ? `From ${keys.length} stored result${keys.length === 1 ? '' : 's'} · ${keys.join(', ')}`
       : 'Compiled evidence was empty · answered from retrieval') + suffix;
   }
   return 'No compiled evidence on this answer · source not reported';
@@ -313,9 +316,15 @@ function evidenceFooterListsHtml(lists, slug) {
 function renderTurnList() {
   const log = $('chat-log');
   if (!log) return;
-  log.innerHTML = state.chat.map((t, i) => {
-    const offScope = t.slug && t.slug !== state.selectedSlug;
+  // Turns for the resource in scope show as they come. A turn asked about
+  // ANOTHER resource stays in the transcript (it outlives the selection, and
+  // is still copyable) but is folded into one closed group below, so the rail
+  // never opens on a different resource's conversation.
+  const turnHtml = (t, i) => {
+    const offScope = Boolean(t.slug) && t.slug !== state.selectedSlug;
     const isOpen = state.promoted === t;
+    // A done turn with neither text nor error says so; it never falls back to listing fields.
+    const noAnswer = !t.pending && !t.answer && !t.error;
     return `
     <button data-open-turn="${i}"
       class="block w-full cursor-pointer border-l-2 ${isOpen ? 'border-accent bg-chrome-line/20' : offScope ? 'border-chrome-line' : 'border-accent'}
@@ -325,10 +334,22 @@ function renderTurnList() {
       </div>
       <div class="mb-s1 text-subtab text-chrome-ink">${esc(t.question)}</div>
       ${t.pending ? `<div class="text-chip text-chrome-muted">${t.streaming ? 'Answering…' : 'Asking…'}</div>` : ''}
-      ${t.error ? `<div class="text-chip text-accent-on-dark">${esc(t.error)}</div>` : ''}
+      ${t.error ? `<div data-turn-failed class="text-chip text-accent-on-dark">failed · ${esc(t.error)}</div>` : ''}
+      ${noAnswer ? '<div data-turn-no-answer class="text-chip text-chrome-muted">no answer recorded</div>' : ''}
       ${t.answer && !t.pending ? `<div class="text-caps text-chrome-muted">${esc(t.source || '')}${isOpen ? ' · open in pane' : ' · tap to open'}</div>` : ''}
     </button>`;
-  }).join('');
+  };
+  const here = [];
+  const elsewhere = [];
+  state.chat.forEach((t, i) => {
+    (t.slug && t.slug !== state.selectedSlug ? elsewhere : here).push(turnHtml(t, i));
+  });
+  const holdsPromoted = state.chat.some((t) => state.promoted === t && t.slug && t.slug !== state.selectedSlug);
+  log.innerHTML = here.join('') + (elsewhere.length
+    ? `<details data-other-resources class="text-caps text-chrome-muted"${holdsPromoted ? ' open' : ''}>
+        <summary class="cursor-pointer">${elsewhere.length} turn${elsewhere.length === 1 ? '' : 's'} on other resources</summary>
+        <div class="mt-s2 flex flex-col gap-s3">${elsewhere.join('')}</div>
+      </details>` : '');
 
   log.querySelectorAll('[data-open-turn]').forEach((b) => b.addEventListener('click', () => {
     const t = state.chat[Number(b.dataset.openTurn)];

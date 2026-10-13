@@ -1207,6 +1207,7 @@ def build_survey_results(
                 # the persisted copy's publish flags are corrected the same way: from the linkage row, now
                 _board["publish_stale"] = bool(_board.get("last_published_at")) and _status == "stale"
                 _board["publish_uncatalogued"] = _status == "uncatalogued"
+                _stamp_own_run(registry, entity_type, slug, _board)
             return fast
 
     from resource_explorer.catalogue_commit import _ts
@@ -1266,6 +1267,8 @@ def build_survey_results(
                 "publish_uncatalogued": publish_uncatalogued,
                 "last_surveyed_at": last_surveyed_at,
             })
+        for _d in dashboards:
+            _stamp_own_run(registry, entity_type, slug, _d)
         if board_id and dashboards:
             _persist_board_summary(registry, entity_type, slug, board_id, dashboards[0])
         return {"slug": slug, "stage": stage, "dashboards": dashboards}
@@ -1318,6 +1321,8 @@ def build_survey_results(
             "publish_uncatalogued": publish_uncatalogued,
             "last_surveyed_at": last_surveyed_at,
         })
+    for _d in dashboards:
+        _stamp_own_run(registry, entity_type, slug, _d)
     if board_id and dashboards:
         _persist_board_summary(registry, entity_type, slug, board_id, dashboards[0])
     return {"slug": slug, "stage": stage, "dashboards": dashboards}
@@ -1346,6 +1351,18 @@ def _latest_run_at(registry, entity_type: str, slug: str, analysis_ids: list[str
         (last_run.get(aid, {}).get("last_run_at") or "" for aid in analysis_ids),
         default="",
     )
+
+
+def _stamp_own_run(registry, entity_type: str, slug: str, board: dict) -> None:
+    """`board["last_run_at"]`: when THIS board's own analysis_id(s) last ran
+    (the attributed activity time), "" when none did. `last_surveyed_at` on
+    the same board is the whole resource's survey time and says nothing about
+    this card; the header must not present it as the card's own run."""
+    try:
+        ids = _board_analysis_ids(entity_type, board.get("id", "")) or [board.get("id", "")]
+        board["last_run_at"] = _latest_run_at(registry, entity_type, slug, [i for i in ids if i])
+    except Exception:
+        board["last_run_at"] = ""
 
 
 def _reset_fields(registry, slug: str, published_at: str) -> dict:

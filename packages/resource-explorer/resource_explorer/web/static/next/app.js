@@ -7656,10 +7656,27 @@ function bindGraphvizCard(root, boardId, gv) {
   });
 }
 
+/** The header time of a By-analysis card, from the analysis's OWN run.
+ *  "run <when>" only when this card has a result row; otherwise "not run",
+ *  or -- when the resource's survey ran but this step produced nothing --
+ *  "survey ran <when> · no result for this step". The resource-wide survey
+ *  time is never shown as this card's run (it contradicted the body's
+ *  "Not run yet." cue). */
+export function boardRunWords(board) {
+  if (!board) return '';
+  if (board.has_results) {
+    const when = board.last_run_at || board.last_surveyed_at;
+    return when ? `run ${ago(when)}` : 'run';
+  }
+  return board.last_surveyed_at
+    ? `survey ran ${ago(board.last_surveyed_at)} · no result for this step`
+    : 'not run';
+}
+
 /** One card's body -- headline first, description collapsed, findings,
  *  grouped COUNTS, and (REPLY §2's card-anatomy) a band boundary rather
  *  than a box: space above, a strong top rule, name-size heading. */
-function byAnalysisCardHtml(slug, boardId, catalogTitle, catalogDescription, entry, disagreeing, defaultOpen) {
+export function byAnalysisCardHtml(slug, boardId, catalogTitle, catalogDescription, entry, disagreeing, defaultOpen) {
   const board = entry.status === 'done' ? entry.board : null;
   const open = byAnalysisCardOpen(slug, boardId, defaultOpen);
   const glyphKey = boardStateKey(entry);
@@ -7675,7 +7692,7 @@ function byAnalysisCardHtml(slug, boardId, catalogTitle, catalogDescription, ent
       : (boardHeadlineHtml(board) || (board && board.has_results
           ? '<span class="text-ink-muted">ran; no summary reader yet.</span>'
           : '<span class="text-ink-muted">Not run yet.</span>'));
-  const runWhen = board && board.last_surveyed_at ? `run ${esc(ago(board.last_surveyed_at))}` : '';
+  const runWhen = boardRunWords(board);
   const overall = board && (board.analyses || []).find((a) => typeof (a.results || {}).overall === 'number');
   const { html: diagramHtml } = board ? boardDiagramHtml(board) : { html: '' };
   return `
@@ -7759,10 +7776,9 @@ export function renderByAnalysisContents(slug, boards, boardState, settled, tota
       ? boardHeadlineText(entry.board)
       : envelopeHeadlineText(boardQuestions.get(b.id), state.answers);
     const board = entry.status === 'done' ? entry.board : null;
-    const runWhen = board && board.last_surveyed_at ? `run ${esc(ago(board.last_surveyed_at))}`
+    const runWhen = board ? boardRunWords(board)
       : entry.status === 'loading' ? 'reading…'
-      : entry.status === 'timeout' ? 'still reading — open to load'
-      : board && !board.has_results ? 'never run' : '';
+      : entry.status === 'timeout' ? 'still reading — open to load' : '';
     return `<button type="button" data-jump-board="${esc(b.id)}"
       class="flex w-full items-baseline gap-s2 border-0 border-b border-rule bg-transparent px-0 py-[3px] text-left">
       <span class="w-[16px] shrink-0 ${glyph.tone} font-glyph" title="${esc(glyph.word)}" aria-label="${esc(glyph.word)}">${glyph.glyph}</span>
