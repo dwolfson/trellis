@@ -4814,14 +4814,16 @@ function onePurpose(text) {
  *  and their message(s) — the tooltip (this function's own `title`) already
  *  named the bare status word, which stays as the fallback when there is
  *  nothing more specific to show. */
-function lastRunHtml(c) {
+export function lastRunHtml(c) {
   const when = c.last_run_at || '';
   if (!when) return '<span class="text-ink-muted">never run</span>';
   const days = (Date.now() - Date.parse(when)) / 86400000;
   const stale = Number.isFinite(days) && days >= SURVEY_STALE_DAYS;
   const ok = (c.last_run_status || '') === 'ok';
   const errors = c.last_run_errors || [];
-  const warn = !ok && c.last_run_status
+  // "recorded" = a step_runs row proves it ran, not that it succeeded: no
+  // success cue, but not a failure either, so no warning glyph.
+  const warn = !ok && c.last_run_status && c.last_run_status !== 'recorded'
     ? (errors.length
         ? `<button type="button" data-run-errors="${esc(c.qualified_name || '')}"
              class="cursor-pointer bg-transparent text-state-warn underline decoration-dotted"
@@ -5564,11 +5566,12 @@ function analysesIndexSort() {
 /** State glyph from last_run_status/last_run_at -- the same vocabulary as
  *  factGlyph, not re-derived: `success` -> measured, an explicit failure ->
  *  error, nothing recorded -> unrun. */
-function analysisRowGlyph(row) {
+export function analysisRowGlyph(row) {
   if (!row.last_run_at) return factGlyph('unrun');
   const s = String(row.last_run_status || '').toLowerCase();
   if (s === 'success' || s === 'ok' || s === '') return factGlyph('measured');
   if (s === 'failure' || s === 'error' || s === 'failed') return factGlyph('error');
+  if (s === 'recorded') return factGlyph('unclassified');   // ran; outcome not on record
   return factGlyph('measured');
 }
 
