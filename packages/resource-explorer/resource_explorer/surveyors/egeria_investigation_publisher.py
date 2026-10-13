@@ -315,7 +315,52 @@ def _unattached_reason(row: dict, unknown: str = "unknown error") -> str:
     error = str(row.get("last_error") or "")
     if row.get("status") == "dead":
         return error or "not attached (no error recorded) — not retried"
+    if error.startswith("waiting for the owner, "):
+        # A private investigation's row the background drain left for its owner (`OutboxAwaitsOwner`): the queue
+        # will not retry it, the owner's Relink will. Its own words, no "queued for retry".
+        return error
     return f"attach failed ({error or unknown}) — queued for retry, see Admin → Publish Queue"
+
+
+def owner_absent_words(inv: dict) -> str:
+    """The words when `inv` is a PRIVATE investigation and whoever this runs as is not its signed-in owner (RE's
+    service account in the resync loop, or another person); "" otherwise (a shared one, or the owner is here).
+
+    Egeria refuses the service account a private investigation's elements by design (OPEN-METADATA-SECURITY-
+    403-020), so a write or a check made as it can only fail; nothing is sent and the owner's next press does it
+    as them (found live 2026-10-13: the outbox's access check read the owner's Project as the service account)."""
+    from resource_explorer.workflows.egeria_work_access import owner_identity, owner_waiting_words, private_owner
+
+    owner = private_owner(inv)
+    if not owner:
+        return ""
+    from resource_explorer.egeria_clients import current_principal
+
+    try:
+        who = current_principal()
+    except PermissionError:
+        who = None
+    if who is not None and owner_identity(inv, who) is not None:
+        return ""
+    return owner_waiting_words(owner)
+
+
+def resource_list_landed(cm, project_guid: str, collection_guid: str) -> "tuple[bool | None, str]":
+    """Is `collection_guid` attached to `project_guid` (a ResourceList), read back on `cm` (the owner's client for
+    a private investigation)? (True, "") / (False, "") from Egeria's answer; (None, why) when it could not be
+    read or the answer is not one RE knows: never "attached" from a write that only returned."""
+    from resource_explorer.egeria_absence import ABSENT, is_absent
+
+    try:
+        attached = cm.get_attached_collections(project_guid)
+    except Exception as exc:  # noqa: BLE001 - could not tell, said in its words
+        return None, f"{type(exc).__name__}: {str(exc)[:200]}"
+    if isinstance(attached, str):
+        return (False, "") if is_absent(attached) == ABSENT else (None, f"unexpected answer {attached[:80]!r}")
+    if not isinstance(attached, list):
+        return None, f"unexpected answer of type {type(attached).__name__}"
+    guids = {((e or {}).get("elementHeader") or {}).get("guid", "") for e in attached if isinstance(e, dict)}
+    return collection_guid in guids, ""
 
 
 @dataclass
@@ -401,6 +446,17 @@ class EgeriaInvestigationPublisher:
         res.not_published = words
         res.errors.append(words)
         record_ownerless_refusal(self._registry, inv, words, action)
+        return True
+
+    def _refuse_without_owner(self, inv: dict, res: "PromotionResult") -> bool:
+        """True (and `res` carries the words) when `inv` is private and this does not run as its signed-in owner
+        (`owner_absent_words`). Asked before any Egeria client is built, so nothing is sent as the service
+        account, which cannot see a private investigation's elements."""
+        words = owner_absent_words(inv)
+        if not words:
+            return False
+        res.errors.append(words)
+        log.info("investigation %s: %s", inv.get("slug") or "", words)
         return True
 
     def _managers(self):
@@ -644,22 +700,79 @@ class EgeriaInvestigationPublisher:
             limit=1, run_id=rl_run_id,
         )
         rl_rows = self._registry.list_outbox_elements(run_id=rl_run_id, limit=1)
-        res.resource_list_linked = bool(rl_rows) and rl_rows[0]["status"] == "done"
-        if not res.resource_list_linked:
-            err = rl_rows[0]["last_error"] if rl_rows else "row disappeared"
-            res.errors.append(
-                f"attach_collection failed ({err}) — queued for retry, "
-                f"see Admin → Publish Queue"
-            )
+        if private_owner:
+            # A private investigation (2026-10-13): the inline drain above ran as the person who pressed promote
+            # (its owner: their client `cm`, and its access check read the Project and Folio as them). "Attached"
+            # only from a read-back as the owner; a row that did not land waits for the owner, never for the
+            # service account, which cannot see a private investigation.
+            self._settle_private_resource_list(cm, res, rl_rows[0] if rl_rows else None, private_owner)
+        else:
+            res.resource_list_linked = bool(rl_rows) and rl_rows[0]["status"] == "done"
+            if not res.resource_list_linked:
+                err = rl_rows[0]["last_error"] if rl_rows else "row disappeared"
+                res.errors.append(
+                    f"attach_collection failed ({err}) — queued for retry, "
+                    f"see Admin → Publish Queue"
+                )
 
         # 4. CollectionMembership per member, where the resource actually exists
         #    in Egeria. A member whose repo was never published has no asset to
         #    link — reported, never invented.
-        self._link_members(cm, res, members, investigation_slug, refusal=refusal)
+        self._link_members(cm, res, members, investigation_slug, refusal=refusal, private=bool(private_owner))
         return res
 
+    def _settle_private_resource_list(self, cm, res: "PromotionResult", row: "dict | None", owner: str) -> None:
+        """A private investigation's ResourceList, from proof: `resource_list_linked` only when a read-back as the
+        owner (`cm` is their client) shows the Folio attached to the Project; otherwise the words of what did not
+        happen, and the owner's Relink is the retry (the background drain will not attempt it)."""
+        from resource_explorer.workflows.egeria_work_access import owner_waiting_words
+
+        if row is not None and row.get("status") == "done":
+            landed, why = resource_list_landed(cm, res.project_guid, res.collection_guid)
+            if landed:
+                res.resource_list_linked = True
+            elif landed is False:
+                res.errors.append(f"the working set was sent, but Egeria does not show it attached to the "
+                                  f"Project (read back as {owner})")
+            else:
+                res.errors.append(f"the working set was sent, but it could not be read back as {owner} ({why}), "
+                                  "so it is not confirmed attached")
+            return
+        err = str((row or {}).get("last_error") or "row disappeared")
+        if (row or {}).get("status") == "dead":
+            res.errors.append(f"attach_collection failed ({err}) — not retried")
+            return
+        waiting = owner_waiting_words(owner)
+        res.errors.append(err if err.startswith(waiting) else
+                          f"attach_collection failed ({err}) — {waiting}; press Relink to retry")
+
+    def _reattach_private_resource_list(self, cm, res: "PromotionResult", slug: str, owner: str) -> None:
+        """Relink by a private investigation's owner: make sure the Folio is attached to the Project, as them.
+
+        Read back first; when it is attached and no row of it is left waiting, nothing is sent. Otherwise the ONE
+        row for this key is reused (a waiting one made due, a dead one revived under the owner:
+        `enqueue_outbox_element_once`), drained now as the owner, and settled from a read-back as them. This is
+        the retry a private row waits for (`egeria_outbox.OutboxAwaitsOwner`), and how a row the old drain killed
+        (live row 76009, 2026-10-13) is applied."""
+        from resource_explorer.egeria_outbox import OutboxClients, drain_outbox, enqueue_resource_list
+
+        key = f"ResourceList::{res.project_guid}::{res.collection_guid}"
+        waiting = [r for r in self._registry.list_outbox_rows_for_kinds("investigation", slug, ("resource_list",))
+                   if r.get("qualified_name") == key and r.get("status") in ("pending", "failed", "dead")]
+        landed, _ = resource_list_landed(cm, res.project_guid, res.collection_guid)
+        if landed and not waiting:
+            res.resource_list_linked = True
+            return
+        row_id = enqueue_resource_list(
+            self._registry, slug, res.project_guid, res.collection_guid,
+            run_id=f"Investigation::{slug}::{res.collection_guid}::resource-list", once=True,
+        )
+        self._registry.make_outbox_row_due(row_id)
+        drain_outbox(self._registry, OutboxClients(collection_manager=cm), lambda qn: "", element_id=row_id)
+        self._settle_private_resource_list(cm, res, self._registry.get_outbox_element(row_id), owner)
+
     def _link_members(self, cm, res: "PromotionResult", members: list,
-                      investigation_slug: str, *, refusal=None) -> None:
+                      investigation_slug: str, *, refusal=None, private: bool = False) -> None:
         """Attach every member that HAS an asset to the working set, via the outbox.
 
         CollectionMembership is uni-link, so add_to_collection is an upsert:
@@ -715,10 +828,15 @@ class EgeriaInvestigationPublisher:
             return
 
         run_id = f"Investigation::{investigation_slug}::{res.collection_guid}"
-        enqueue_collection_members(
+        row_ids = enqueue_collection_members(
             self._registry, investigation_slug, res.collection_guid, linkable,
             run_id=run_id,
         )
+        if private:
+            # The owner's own press is the retry a private row waits for (`OutboxAwaitsOwner` parks it out of the
+            # background drain's way): make the ones already queued due now, so this drain takes them.
+            for row_id in row_ids:
+                self._registry.make_outbox_row_due(row_id)
         summary = drain_outbox(
             self._registry, OutboxClients(collection_manager=cm), lambda qn: "",
             limit=max(len(linkable), 1), run_id=run_id,
@@ -779,6 +897,8 @@ class EgeriaInvestigationPublisher:
             return res
         if self._refuse_ownerless(inv, res, "relink_members"):
             return res
+        if self._refuse_without_owner(inv, res):
+            return res
 
         ws = self._registry.get_or_create_working_set(investigation_slug)
         res.collection_guid = (ws or {}).get("egeria_collection_guid") or ""
@@ -787,7 +907,9 @@ class EgeriaInvestigationPublisher:
                 "no working set Collection — run ensure_working_set first"
             )
             return res
-        res.resource_list_linked = True
+        owner = (inv.get("created_by") or "").strip() if self._is_private(inv) else ""
+        if not owner:
+            res.resource_list_linked = True
 
         try:
             _, cm = self._managers()
@@ -795,8 +917,11 @@ class EgeriaInvestigationPublisher:
             res.errors.append(f"could not reach Egeria: {type(exc).__name__}: {exc}")
             return res
 
+        if owner:
+            # A private investigation: the owner's Relink is also the retry of its ResourceList (2026-10-13).
+            self._reattach_private_resource_list(cm, res, investigation_slug, owner)
         members = self._registry.list_investigation_members(investigation_slug)
-        self._link_members(cm, res, members, investigation_slug, refusal=refusal)
+        self._link_members(cm, res, members, investigation_slug, refusal=refusal, private=bool(owner))
         return res
 
     def link_status(self, investigation_slug: str) -> dict:
@@ -892,6 +1017,8 @@ class EgeriaInvestigationPublisher:
         res.project_guid = project_guid
         if self._refuse_ownerless(inv, res, "ensure_working_set"):
             return res
+        if self._refuse_without_owner(inv, res):
+            return res
 
         ws = self._registry.get_or_create_working_set(investigation_slug)
         if ws and ws.get("egeria_collection_guid"):
@@ -974,6 +1101,8 @@ class EgeriaInvestigationPublisher:
         res.project_guid = guid
         if self._refuse_ownerless(inv, res, "sync_project_properties"):
             return res
+        if self._refuse_without_owner(inv, res):
+            return res
         try:
             pm, _ = self._managers()
         except Exception as exc:
@@ -1037,6 +1166,10 @@ class EgeriaInvestigationPublisher:
             out["errors"].append(words)
             out["not_published"] = words
             record_ownerless_refusal(self._registry, inv, words, "sync_disposition_sets")
+            return out
+        waiting = owner_absent_words(inv)
+        if waiting:
+            out["errors"].append(waiting)
             return out
         try:
             _, cm = self._managers()

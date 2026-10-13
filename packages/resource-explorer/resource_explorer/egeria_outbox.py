@@ -155,6 +155,20 @@ class OutboxAccessUnreadable(OutboxNotReadyError):
 ACCESS_WAIT_WORDS = "waiting to re-check access"
 
 
+class OutboxAwaitsOwner(OutboxNotReadyError):
+    """A PRIVATE investigation's row (its ResourceList or a member's CollectionMembership) claimed by a drain that
+    is not its signed-in owner: the background drain (RE's service account) or another person's request.
+
+    Egeria refuses the service account a private investigation's elements by design (OPEN-METADATA-SECURITY-
+    403-020 on the Project), so a drain-time access check or write as that account can only fail, and it used to
+    make the row dead with a misleading "not permitted · could not check access ... user ``" (live row 76009,
+    2026-10-13). Not a refusal and not a failure: nothing is sent, no attempt is burned, the row stays pending
+    with `egeria_work_access.owner_waiting_words(owner)`, and its owner's next Relink applies it inline as them.
+    Not re-claimed for `DELAY_SECONDS`, so each background pass does not take it again."""
+
+    DELAY_SECONDS = 3600
+
+
 #: Egeria's signature for "this qualifiedName is already taken".
 #:
 #: Matched on the message rather than a status code because the client
@@ -990,7 +1004,28 @@ def _row_payload(row: dict) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
-def _collection_refusal(registry, row: dict) -> str:
+def _private_investigation_reader(registry, row: dict, identity):
+    """For an investigation's row whose investigation is PRIVATE: the access reader that reads its elements as the
+    signed-in owner (`identity`, the inline drain's Caller). Raises `OutboxAwaitsOwner` when the drain is not
+    that owner (nothing is read or sent). None for every other row: the check reads as before."""
+    if row.get("entity_type") != "investigation":
+        return None
+    from resource_explorer.workflows.egeria_work_access import (
+        investigation_unscoped, owner_identity, owner_waiting_words, private_owner,
+    )
+    from resource_explorer.zone_access import EgeriaAccessReader
+
+    inv = investigation_unscoped(registry, row.get("entity_slug") or "")
+    owner = private_owner(inv)
+    if not owner:
+        return None
+    read_as = owner_identity(inv, identity) if identity is not None else None
+    if read_as is None:
+        raise OutboxAwaitsOwner(owner_waiting_words(owner))
+    return EgeriaAccessReader(read_as=read_as)
+
+
+def _collection_refusal(registry, row: dict, identity=None) -> str:
     """Brief Z3: the drain-time re-check for an investigation's or a work list's link (a CollectionMembership,
     or the ResourceList from the Project to its Folio): ATTACH on BOTH ends (`validateUserForElementAttach`
     :1582-1620; an anchored end on its anchor), as the person the row was queued for (`by`, with the Portal
@@ -1017,22 +1052,25 @@ def _collection_refusal(registry, row: dict) -> str:
         writes = [collection_write(str(payload.get("parent_guid") or "")),
                   collection_write(str(payload.get("collection_guid") or ""), "the working set")]
     writes = [w for w in writes if w.guid]
+    # A private investigation's row: checked (and later written) only by its signed-in owner, reading as them.
+    reader = _private_investigation_reader(registry, row, identity)
     by = _row_requester(row) or _run_requester(registry, row)
     role = "curator" if by and payload.get("portal_role") is True else "user"
     reset = current_caller.set(CallerIdentity(user_id=by, egeria_token=None, auth_source="queued-run",
                                               role=role)) if by else None
     try:
         return writes_refusal(registry, writes, entity_type=row.get("entity_type") or "",
-                              slug=row.get("entity_slug") or "")
+                              slug=row.get("entity_slug") or "", reader=reader)
     finally:
         if reset is not None:
             current_caller.reset(reset)
 
 
-def _queued_write_refusal(registry, row: dict) -> str:
+def _queued_write_refusal(registry, row: dict, identity=None) -> str:
     """Every drain-time re-check (Brief Z2 round 2's documentation sources, Brief Z3's collections, Brief F's tag
-    and group rows)."""
-    return _doc_source_refusal(registry, row) or _collection_refusal(registry, row) or _curation_refusal(registry, row)
+    and group rows). `identity`: who this drain runs as (a private investigation's rows need its owner)."""
+    return (_doc_source_refusal(registry, row) or _collection_refusal(registry, row, identity)
+            or _curation_refusal(registry, row))
 
 
 def _row_identity(row: dict, drain_identity):
@@ -1348,7 +1386,7 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
             # (annotation/collection_membership/resource_list/annotation_
             # link), the same per-call-name granularity the layer-2
             # catalogue-depth offer needs and nothing before this recorded.
-            refused = _queued_write_refusal(registry, row)
+            refused = _queued_write_refusal(registry, row, identity)
             if refused:
                 raise OutboxNotPermitted(refused)
             with time_egeria_call(registry, f"outbox:{row.get('element_kind', 'unknown')}", "write"), \
@@ -1673,7 +1711,7 @@ def enqueue_annotation_links(
 
 
 def enqueue_resource_list(
-    registry, entity_slug: str, parent_guid: str, collection_guid: str, *, run_id: str = "",
+    registry, entity_slug: str, parent_guid: str, collection_guid: str, *, run_id: str = "", once: bool = False,
 ) -> int:
     """Record the Project -> Collection ResourceList attach as a queued write.
 
@@ -1685,8 +1723,12 @@ def enqueue_resource_list(
     This one element is queued rather than written directly because its failure
     was previously appended to `PromotionResult.errors` and then forgotten: the
     Project and Collection both existed, unlinked, and nothing ever tried again.
+
+    `once` (a private investigation's owner retrying with Relink): the existing row for this key is reused, and a
+    dead one revived under the reviver (`enqueue_outbox_element_once`), rather than a second row added.
     """
-    return registry.enqueue_outbox_element(
+    enqueue = registry.enqueue_outbox_element_once if once else registry.enqueue_outbox_element
+    return enqueue(
         "investigation", entity_slug, "resource_list",
         f"ResourceList::{parent_guid}::{collection_guid}",
         {"parent_guid": parent_guid, "collection_guid": collection_guid, **requester_fields()},

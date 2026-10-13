@@ -462,10 +462,11 @@ async def reclassify_investigation(slug: str, req: ReclassifyRequest) -> dict:
     # Brief Z3: every element the reclassify moves is checked as the caller before it moves (the Project:
     # PUBLISH, CLASSIFY, DECLASSIFY; each SurveyReport: PUBLISH), inside the reclassifier so the check and
     # the write read the same list. A refused Project is a 403 and nothing changes.
-    from resource_explorer.workflows.egeria_work_access import access_words
-    from resource_explorer.zone_access import EgeriaAccessReader
+    from resource_explorer.workflows.egeria_work_access import access_words, investigation_reader
 
-    reader = EgeriaAccessReader()      # one press: controls and accounts read once, elements fresh per check
+    # One press: controls and accounts read once, elements fresh per check; a private investigation's elements
+    # are read as its signed-in owner (the service account cannot see them).
+    reader = investigation_reader(reg, slug)
     result = await asyncio.to_thread(
         InvestigationReclassifier(reg).reclassify, slug,
         req.project_classification, req.hypothesis,

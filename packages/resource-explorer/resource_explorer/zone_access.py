@@ -367,6 +367,21 @@ def _metadata_expert():
                          shared=False).of(MetadataExpert)
 
 
+def _metadata_expert_as(identity):
+    """The read client for an element, as `identity` (a signed-in Caller), never the daemon.
+
+    For a PRIVATE investigation's elements (zoned `[private zone, owner]`): Egeria refuses RE's service account
+    those by design (OPEN-METADATA-SECURITY-403-020), so an access check that read them as the daemon could only
+    ever answer "could not check" (found live 2026-10-13, the owner's privacy proof). The identity is handed in
+    explicitly by the thread that holds it, never read from a ContextVar here: these reads run on pool threads."""
+    from pyegeria.omvs.metadata_expert import MetadataExpert
+
+    from resource_explorer.egeria_clients import egeria_client
+
+    return egeria_client(identity, purpose="curation access: element (as its owner)",
+                         shared=False).of(MetadataExpert)
+
+
 def _security_officer():
     """The Security Officer client that reads controls and accounts (the same store the connector reads)."""
     from pyegeria.omvs.security_officer import SecurityOfficer
@@ -424,12 +439,13 @@ def _catch_wrapped(client: Any, *names: str) -> bool:
 ACCESS_READ_CONCURRENCY = 4
 
 
-def _read_elements_on_one_client(guids: list[str]) -> dict[str, Any]:
+def _read_elements_on_one_client(guids: list[str], read_as=None) -> dict[str, Any]:
     """Read `guids` one after another on ONE client built, driven and closed in this thread (pyegeria ISSUE-96
     binds a client to the thread that first drives it). {guid: (zones, owners, maintainers) | AccessUnreadable}:
-    a failed read is that element's answer, never the batch's, and never "no zones"."""
+    a failed read is that element's answer, never the batch's, and never "no zones". `read_as`: the identity
+    to read as (`_metadata_expert_as`); None reads as RE's daemon (`_metadata_expert`)."""
     out: dict[str, Any] = {}
-    client = _metadata_expert()
+    client = _metadata_expert() if read_as is None else _metadata_expert_as(read_as)
     try:
         for guid in guids:
             try:
@@ -443,14 +459,15 @@ def _read_elements_on_one_client(guids: list[str]) -> dict[str, Any]:
     return out
 
 
-def read_elements(guids: Iterable[str]) -> dict[str, Any]:
+def read_elements(guids: Iterable[str], read_as=None) -> dict[str, Any]:
     """Read several elements' (zones, owners, maintainers) at once: up to `ACCESS_READ_CONCURRENCY` clients on
     the shared pool, each reading its share in turn, so a blueprint's members cost one client per lane rather
     than one per element (pyegeria's constructor handshake + a token mint + the read was three Egeria calls per
     element). The reads run as RE's daemon (`Daemon(ACCESS_CHECK)`, named in `_metadata_expert`), so no caller
     ContextVar has to reach the pool threads. Bounded: a lane with no answer within
     `ACCESS_READ_TIMEOUT_SECONDS` per element it holds makes each of its elements unreadable. From a pool
-    thread (the run) the lanes run inline, one after another (concurrency's re-entrancy rule)."""
+    thread (the run) the lanes run inline, one after another (concurrency's re-entrancy rule). `read_as` (a
+    private investigation's owner, signed in) is captured here and handed to each lane, never re-read there."""
     from concurrent.futures import TimeoutError as _Timeout
 
     from resource_explorer.concurrency import in_pool_thread, run_sync_all
@@ -461,7 +478,7 @@ def read_elements(guids: Iterable[str]) -> dict[str, Any]:
     lanes = 1 if in_pool_thread() else min(ACCESS_READ_CONCURRENCY, len(todo))
     shares = [todo[i::lanes] for i in range(lanes)]
     longest = max(len(s) for s in shares)
-    results = run_sync_all([lambda s=s: _read_elements_on_one_client(s) for s in shares],
+    results = run_sync_all([lambda s=s: _read_elements_on_one_client(s, read_as) for s in shares],
                            timeout=ACCESS_READ_TIMEOUT_SECONDS * longest)
     out: dict[str, Any] = {}
     for share, (ok, value) in zip(shares, results):
@@ -494,7 +511,11 @@ class EgeriaAccessReader:
       them when the check ends, so the next check reads again.
     """
 
-    def __init__(self, *, cache_elements: bool = False) -> None:
+    def __init__(self, *, cache_elements: bool = False, read_as=None) -> None:
+        #: Who the ELEMENT reads are made as: None = RE's daemon (`Daemon(ACCESS_CHECK)`); a Caller identity for a
+        #: private investigation's checks made by its signed-in owner (`egeria_work_access.investigation_reader`).
+        #: Controls and accounts are always read as the daemon (they are not the private elements).
+        self.read_as = read_as
         self._controls: dict[str, Optional[dict]] = {}
         self._accounts: dict[str, Optional[dict]] = {}
         self._platform: Optional[tuple[str, Optional[str]]] = None
@@ -507,12 +528,12 @@ class EgeriaAccessReader:
         reader's life with `cache_elements`."""
         todo = [g for g in dict.fromkeys(guids) if g and g not in self._elements]
         if todo:
-            self._elements.update(read_elements(todo))
+            self._elements.update(read_elements(todo, self.read_as))
             # Brief Z2 round 2: an anchored member is judged on its anchor, so the anchors are read too, together.
             anchors = [f.anchor for g in todo if isinstance(f := self._elements.get(g), ElementFacts) and f.anchor
                        and f.anchor not in self._elements]
             if anchors:
-                self._elements.update(read_elements(anchors))
+                self._elements.update(read_elements(anchors, self.read_as))
 
     @contextmanager
     def check(self, guids: Iterable[str] = ()):
@@ -530,7 +551,7 @@ class EgeriaAccessReader:
     def element(self, guid: str) -> ElementFacts:
         got = self._elements.get(guid)
         if got is None:
-            got = read_elements([guid]).get(guid) or AccessUnreadable(f"the element {guid[:8]}: no answer")
+            got = read_elements([guid], self.read_as).get(guid) or AccessUnreadable(f"the element {guid[:8]}: no answer")
             if self._cache_elements or self._checks:
                 self._elements[guid] = got
         if isinstance(got, BaseException):
