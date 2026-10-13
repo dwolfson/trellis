@@ -104,6 +104,14 @@ _SENDING = ("running",)
 #: At most this many removals are applied inside one publish request; the rest are left to the background drain.
 INLINE_DETACH_LIMIT = 50
 
+#: At most this many adds are applied inside one publish request (owner's ruling 2026-10-13: adds drain inline, as
+#: removals do); the rest are left to the background drain and said so.
+INLINE_ATTACH_LIMIT = INLINE_DETACH_LIMIT
+
+#: The per-member states a publish's adds come back in, read from each outbox row AFTER the inline drain.
+ATTACHED, ATTACH_NOT_PERMITTED, ATTACH_FAILED, ATTACH_LEFT = (
+    "attached", "not permitted", "could not attach", "left to the background drain")
+
 
 def public_base_url() -> str:
     """`RE_PUBLIC_URL`, checked: an http(s) URL with a host, without a trailing slash. Anything else is treated as
@@ -575,8 +583,11 @@ class WorkLists:
           has published nothing it can find again. Same reasoning as the
           investigation publisher, which is where `_create_typed_collection`
           comes from.
-        * the memberships are ENQUEUED to the outbox and applied by whichever
-          worker drains it, each carrying its `membershipRationale`.
+        * the memberships are ENQUEUED to the outbox, each carrying its
+          `membershipRationale`, and then applied here and now by the same
+          drain the scheduler runs (`_apply_adds`, up to INLINE_ATTACH_LIMIT;
+          owner's ruling 2026-10-13). `attach` reports each by its row's own
+          state afterwards; whatever is left stays for the background drain.
 
         A member whose resource was never published to Egeria has no GUID to
         attach and is REPORTED, not retried — that is a fact about the
@@ -712,6 +723,8 @@ class WorkLists:
 
         row_ids = enqueue_work_list_members(
             self.registry, slug, guid, attachable, run_id=run_id)
+        attached = self._apply_adds(list(zip(row_ids, (m["entity_slug"] for m in attachable))),
+                                    clients, _find_element_guid, who)
         removals = self._apply_removals(slug, guid, wl["entity_type"], removed, detachable, detach_refused,
                                         clients, _find_element_guid, who, run_id=run_id)
 
@@ -727,6 +740,10 @@ class WorkLists:
             # The groups, by name: queued to attach; held in RE with no Egeria element (with its type); and ones
             # whose element RE could not establish (never folded into "not published").
             "queued_to_attach": [m["entity_slug"] for m in attachable],
+            # Each queued member's add, applied here and now (owner's ruling 2026-10-13), by its outbox row's own
+            # state after the inline drain: attached / not permitted / could not attach / left to the background
+            # drain. One entry per queued member, in order.
+            "attach": attached,
             "not_published": [{"entity_slug": s_, "entity_type": wl["entity_type"],
                                "words": not_published_words(wl["entity_type"])} for s_ in unpublished],
             "not_resolved": unresolved,
@@ -765,6 +782,60 @@ class WorkLists:
             log.warning("work list link back not set on %s: %s", guid, exc)
             return {"state": "failed", "words": f"could not be set · {type(exc).__name__}: {exc}"[:300]}
         return {"state": "set", "words": ""}
+
+    def _apply_adds(self, rows: list[tuple[int, str]], clients, find_element_guid, who) -> list[dict]:
+        """Apply this publish's queued `collection_membership` rows now, one scoped drain per row, as the person
+        who pressed publish (owner's ruling 2026-10-13: adds drain inline, as removals already do; before it the
+        person waited up to 15 minutes for the scheduler).
+
+        The SAME drain the scheduler runs (`drain_outbox(..., element_id=row_id)`), only earlier: the Z3 re-check
+        as the row's requester, the membership's confidence/rationale properties, `verify_membership_landed`,
+        `OutboxNotKept`, retry with backoff for a failed add, and `mark_outbox_done(note=)` are all its own.
+
+        `find_element_guid` is passed as given, never replaced with a lookup that answers "" (a lookup that cannot
+        run must not read as "absent"); when it is None the drain builds its own clients and lookup.
+
+        Each member's words come from its row as it stands afterwards (the proof row), never from the branch
+        taken here: "attached" (done; the read-back note, if any, follows), "not permitted · <why>" (refused at
+        the re-check or by Egeria's security), "could not attach · <why>" (`will_retry` says whether the
+        background drain sends it again), or "left to the background drain" (over the cap, still pending, or
+        being sent by the background drain). A drain that raises fails no publish: its rows stay in the outbox.
+        """
+        from resource_explorer.egeria_outbox import NOT_RETRIED, REFUSED_BY_SECURITY, drain_outbox
+
+        for row_id, _ in rows[:INLINE_ATTACH_LIMIT]:
+            try:
+                drain_outbox(self.registry, clients, find_element_guid, element_id=row_id, identity=who)
+            except Exception:  # drain_outbox never raises by contract; a publish never fails here regardless
+                log.exception("work list publish: inline drain of outbox row %s failed; left to the background",
+                              row_id)
+        out: list[dict] = []
+        for n, (row_id, member) in enumerate(rows):
+            row = self.registry.get_outbox_element(row_id) or {}
+            status, said = row.get("status") or "", (row.get("last_error") or "").strip()
+            entry: dict[str, Any] = {"entity_slug": member, "outbox_row_id": row_id, "status": status}
+            if status == "done":
+                entry.update(state=ATTACHED, words=f"{ATTACHED} · {said}" if said else ATTACHED)
+            elif status in ("dead", "failed") and said.startswith((ATTACH_NOT_PERMITTED, REFUSED_BY_SECURITY)):
+                entry.update(state=ATTACH_NOT_PERMITTED,
+                             words=said if said.startswith(ATTACH_NOT_PERMITTED)
+                             else f"{ATTACH_NOT_PERMITTED} · {said}")
+            elif status in ("dead", "failed"):
+                entry.update(state=ATTACH_FAILED, words=f"{ATTACH_FAILED} · {said or 'Egeria gave no sentence'}",
+                             will_retry=status == "failed" and not said.startswith(NOT_RETRIED))
+            elif status == "running":
+                entry.update(state=ATTACH_LEFT, words=f"{ATTACH_LEFT} · being sent by it now")
+            elif status == "pending" and n >= INLINE_ATTACH_LIMIT:
+                entry.update(state=ATTACH_LEFT,
+                             words=f"{ATTACH_LEFT} · over {INLINE_ATTACH_LIMIT} in one publish")
+            elif status == "pending":
+                entry.update(state=ATTACH_LEFT, words=f"{ATTACH_LEFT} · {said}" if said else ATTACH_LEFT)
+            else:                                      # withdrawn or superseded meanwhile, or a row not found
+                entry.update(state=ATTACH_FAILED, will_retry=False,
+                             words=f"{ATTACH_FAILED} · {status or 'its outbox row was not found'}"
+                                   + (f": {said}" if said else ""))
+            out.append(entry)
+        return out
 
     def _apply_removals(self, slug: str, guid: str, entity_type: str, removed: dict, detachable: list,
                         detach_refused: list, clients, find_element_guid, who, *, run_id: str = "") -> dict:

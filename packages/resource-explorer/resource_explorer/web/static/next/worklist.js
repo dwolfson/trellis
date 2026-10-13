@@ -58,6 +58,27 @@ function notPermittedHtml(rows) {
     cue('no_access', 'not permitted', String(r.words || '').replace(/^not permitted · /, ''))} ${esc(r.entity_slug)}</span>`).join('; ')}</span>`;
 }
 
+/** Each queued member's add, applied inside the publish (owner's ruling 2026-10-13), by its outbox row's state
+ *  afterwards: one cue plus a short word per member, the why on hover. "attached", "not permitted", "could not
+ *  attach" (hover says whether the background drain retries it), "left to the background drain". '' when none. */
+const ATTACH_CUE = {
+  attached: 'measured',
+  'not permitted': 'no_access',
+  'could not attach': 'error',
+  'left to the background drain': 'queued',
+};
+function attachHtml(rows) {
+  if (!rows?.length) return '';
+  return `<span data-attach class="block">${rows.map((r) => {
+    const state = ATTACH_CUE[r.state] ? r.state : 'left to the background drain';
+    const why = String(r.words || '').startsWith(`${state} · `) ? String(r.words).slice(state.length + 3) : '';
+    const hover = [why, r.state === 'could not attach' ? (r.will_retry ? 'the background drain sends it again'
+      : 'not sent again') : ''].filter(Boolean).join(' · ');
+    return `<span data-member-attach="${esc(r.entity_slug)}" data-attach-state="${esc(state)}">${
+      cue(ATTACH_CUE[state], state, hover || state)} ${esc(r.entity_slug)}</span>`;
+  }).join('; ')}</span>`;
+}
+
 /** A re-publish's removals (members dropped in RE, taken out of the WorkingSet), on their own line, each count from
  *  its outbox row's outcome: "N detached", "N removal(s) not permitted", "N could not be detached · why", plus the
  *  ones still waiting and the adds withdrawn before they were sent. '' when nothing was removed. */
@@ -2113,11 +2134,17 @@ async function publish(ctx) {
     const bits = [
       `${proven ? `published · ${readBackAt()}` : 'sent · waiting for Egeria'}: a <strong>${esc(res.type_name)}</strong> collection
        (<span class="font-mono">${esc(res.egeria_guid)}</span>).`,
-      `<span class="tnum">${res.queued_members}</span> membership(s) queued —
-       they are applied by the worker that drains the outbox, not here.`,
     ];
-    if (res.queued_to_attach?.length) {
-      bits.push(`<span data-publish-queued>queued to attach: ${esc(res.queued_to_attach.join(', '))}.</span>`);
+    if (Array.isArray(res.attach)) {
+      // Each member by its own outbox row after the inline drain, never by what was asked for.
+      if (res.attach.length) bits.push(attachHtml(res.attach));
+    } else {
+      // An answer without `attach` (an older server): the adds were only queued.
+      bits.push(`<span class="tnum">${res.queued_members}</span> membership(s) queued —
+       they are applied by the worker that drains the outbox, not here.`);
+      if (res.queued_to_attach?.length) {
+        bits.push(`<span data-publish-queued>queued to attach: ${esc(res.queued_to_attach.join(', '))}.</span>`);
+      }
     }
     // Named, not counted, with the member's type. These are not failed writes to retry: the resource has no
     // Egeria element yet, so there is nothing to attach.

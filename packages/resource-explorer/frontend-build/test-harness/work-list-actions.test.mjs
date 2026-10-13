@@ -115,6 +115,20 @@ function stubBackend() {
         not_resolved: [{ entity_slug: 'gone', entity_type: 'database', words: "could not resolve · no database 'gone' in RE's registry" }],
         not_permitted: [] });
     }
+    if (m && method === 'POST' && PUBLISH_MODE === 'attach') {
+      WORK_LISTS.find((w) => w.slug === m[1]).egeria_guid = 'ccccdddd-1111-2222-3333-444455556666';
+      return ok({ type_name: 'WorkingSet', egeria_guid: 'ccccdddd-1111-2222-3333-444455556666', queued_members: 4,
+        queued_to_attach: ['usda', 'aw', 'treasury', 'hr'], not_permitted: [], members_without_an_egeria_asset: [],
+        attach: [
+          { entity_slug: 'usda', state: 'attached', status: 'done', words: 'attached' },
+          { entity_slug: 'aw', state: 'not permitted', status: 'dead',
+            words: 'not permitted · zone sales-zone does not grant garygeeke attach in Egeria' },
+          { entity_slug: 'treasury', state: 'could not attach', status: 'failed', will_retry: true,
+            words: 'could not attach · RuntimeError: Egeria answered 500' },
+          { entity_slug: 'hr', state: 'left to the background drain', status: 'pending',
+            words: 'left to the background drain · over 50 in one publish' },
+        ] });
+    }
     if (m && method === 'POST' && PUBLISH_MODE === 'one-member') {
       WORK_LISTS.find((w) => w.slug === m[1]).egeria_guid = 'ccccdddd-1111-2222-3333-444455556666';
       return ok({ type_name: 'WorkingSet', egeria_guid: 'ccccdddd-1111-2222-3333-444455556666', queued_members: 1,
@@ -492,6 +506,35 @@ test('a link back that could not be set is said, with the error cue', async () =
   assert.ok(lb);
   assert.match(text(lb), /link back to RE not set · could not be set · RuntimeError: no/);
   assert.ok(lb.querySelector('[data-cue="error"]'));
+});
+
+/* ── Adds applied inside the publish (owner's ruling 2026-10-13) ─────────── */
+
+test('a publish shows each member by its add\'s own outcome: a cue plus a short word, the why on hover', async () => {
+  const { document } = await setUp({ open: 'sales-databases' });
+  PUBLISH_MODE = 'attach';
+  act(document, 'publish').click();
+  await tick(200);
+  const line = document.querySelector('#wl-note [data-attach]');
+  assert.ok(line && line.classList.contains('block'), 'its own line');
+  const member = (s) => document.querySelector(`#wl-note [data-member-attach="${s}"]`);
+  const want = {
+    usda: ['attached', 'measured', 'attached'],
+    aw: ['not permitted', 'no_access', 'zone sales-zone does not grant garygeeke attach in Egeria'],
+    treasury: ['could not attach', 'error', 'RuntimeError: Egeria answered 500 · the background drain sends it again'],
+    hr: ['left to the background drain', 'queued', 'over 50 in one publish'],
+  };
+  for (const [slug, [state, key, title]] of Object.entries(want)) {
+    const el = member(slug);
+    assert.ok(el, slug);
+    assert.equal(el.getAttribute('data-attach-state'), state);
+    const c = el.querySelector(`[data-cue="${key}"]`);
+    assert.ok(c, `${slug} carries the ${key} cue`);
+    assert.match(text(c), new RegExp(state));
+    assert.equal(c.getAttribute('title'), title);
+  }
+  assert.doesNotMatch(note(document), /membership\(s\) queued|applied by the worker/, 'not "queued" when it was applied');
+  assert.equal(document.querySelector('#wl-note [data-publish-queued]'), null);
 });
 
 /* ── A database list's members by group (wl-0c09fe4404, 2026-10-13) ───────── */
