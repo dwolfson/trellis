@@ -640,6 +640,8 @@ def cannot_run_reason(process: NativeProcess, entity, *, registry=None, technolo
         return _missing_credentials_reason(entity)
     if not (getattr(entity, "egeria_asset_guid", "") or "").strip():
         return cas.NOT_REGISTERED_WORDS if hasattr(entity, "db_type") else _NEEDS_CATALOGUING
+    if not process.needs_credentials:
+        return ""
     return _missing_credentials_reason(entity)
 
 
@@ -736,7 +738,9 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
         gone = pointers.get(gone_key) == "gone"
         if gone:
             reason = cas.STALE_WORDS
-        creds = credentials_state(entity) if (process.kind == KIND_SURVEY_EXISTING and entity is not None) else PRESENT
+        creds = (credentials_state(entity)
+                 if (process.kind == KIND_SURVEY_EXISTING and entity is not None and process.needs_credentials)
+                 else PRESENT)
         stored = None
         if latest and latest.get("survey_report_guid"):
             stored = registry.count_native_survey_annotations(latest["survey_report_guid"])

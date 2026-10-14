@@ -6,8 +6,11 @@ Egeria creates an engine action for that engine; RE discovers it, claims it, and
 queue runs it with `run_engine_action` (E4): IN_PROGRESS, the step through the synthetic-step executor, a
 native-shaped SurveyReport (`ReportSubject` + `ReportOriginator`) through the database survey publisher, the
 outcome stored on the run row, then `record_completion_status` with a `SurveyActionGuard` guard and a
-`surveyReport` action target. At start, `EngineHost.restart_pass` (E5) queues RE's claimed actions that have
-no run and completes, from the stored outcome, those whose run ended without telling Egeria.
+`surveyReport` action target. The run also writes the native-survey row the Understanding pane lists
+(`ResourceExplorerSurvey::re-db-derived`, read back like a PostgreSQLSurvey run). At start, and then every
+`COMPLETION_RETRY_SECONDS`, `EngineHost.restart_pass` (E5) queues RE's claimed actions that have no run and
+completes, from the stored outcome, those whose run ended without telling Egeria. An action not yet due
+(`requestedStartTime` in the future) is left unclaimed until it is.
 
 **Discovery is option A (§3.1).** The View Server has no per-engine "approved" listing yet (Q-M1: Mandy will
 add one), so the sweep reads the whole server's active list, `AutomatedCuration.get_active_engine_actions`,
@@ -29,8 +32,11 @@ exactly as native leaves it:
   private context (§3.5).
 
 An action with no target, or with a target that is not a database RE has registered
-(`registry.database_slug_for_asset_guid`) and no private one, IS claimed, and then completed `survey-failed`
-with the reason (owner ruling, 2026-10-14; native claims such an action too, NO_TARGET_ASSET).
+(`registry.database_slug_for_asset_guid`) and no private one, IS claimed, and then completed `survey-invalid`
+with the reason: "not a database registered in Resource Explorer" for a target RE knows as a repo or file
+system, else "not registered in Resource Explorer" (owner rulings, 2026-10-14; native claims such an action
+too, NO_TARGET_ASSET). An action RE already holds whose target has since gone private is completed once,
+survey-invalid, "target is now private to its owner".
 
 **Who RE acts as.** Owner, 2026-10-14: "when RE accepts an action or process for execution, it is acting as a
 daemon - there is no relationship to logged in users." Every Egeria call here runs under RE's existing
@@ -85,9 +91,20 @@ GUARD_STATUS = {SURVEY_COMPLETED: "ACTIONED", SURVEY_INVALID: "INVALID", SURVEY_
 #: `SurveyActionServiceHandler.java`): native always adds it; RE adds it whenever a report exists.
 SURVEY_REPORT_TARGET = "surveyReport"
 
-#: Owner ruling, 2026-10-14: an action whose target is not a database RE has registered is claimed and
-#: completed with this reason, as native claims and then fails a survey with no usable target.
+#: Owner rulings, 2026-10-14: an action whose target is not a database RE has registered is claimed and
+#: completed `survey-invalid` with this reason ("the supplied information (such as the asset) is invalid for
+#: this type of survey", `SurveyActionGuard.SURVEY_INVALID`). A target RE knows as another kind of resource
+#: says so instead.
 NOT_REGISTERED_SENTENCE = "not registered in Resource Explorer"
+NOT_A_DATABASE_SENTENCE = "not a database registered in Resource Explorer"
+
+#: An action RE already claimed whose target has since joined a private investigation: completed once,
+#: survey-invalid, never run as the service account (owner, Q-O3).
+NOW_PRIVATE_SENTENCE = "target is now private to its owner"
+
+#: How often the running engine host repeats the completion pass (`restart_pass`, idempotent): a completion
+#: that timed out, or a run whose worker died, is told to Egeria within this long, not only at the next start.
+COMPLETION_RETRY_SECONDS = 60
 
 #: Native's words for an action with no asset target (`SurveyActionErrorCode.NO_TARGET_ASSET`,
 #: OMES-SURVEY-ACTION-400-003). Native claims such an action and then only writes its audit log, leaving
@@ -233,7 +250,8 @@ class RestartResult:
 
 #: Skip reasons that are not RE's business (another engine's work, not yet approved, claimed by someone
 #: else, or already queued here): silent. The rest are logged once per action.
-_SILENT = frozenset({"other_engine", "not_approved", "already_claimed", "already_queued"})
+_SILENT = frozenset({"other_engine", "not_approved", "already_claimed", "already_queued", "not_due",
+                     "completed_now_private"})
 
 #: The `_screen` verdict for an action RE's own user already claimed in Egeria but RE has no runs row for:
 #: queue it without claiming again.
@@ -367,6 +385,10 @@ class EngineHost:
             adopt = True
         elif _status(action) != "APPROVED":
             return "not_approved", {}
+        elif _not_yet_due(action):
+            # Left unclaimed until its requested start time (native claims and then waits, C6; RE does not
+            # hold a claimed action it cannot start yet).
+            return "not_due", {}
         request_type = str(action.get("requestType") or "")
         step_key = supported.get(request_type)
         if not step_key:
@@ -378,18 +400,26 @@ class EngineHost:
         # private context, §3.5).
         for slug in slugs:
             if slug and self.registry.private_owner_for_entity(ENTITY_TYPE, slug):
-                return "private_target", {"slug": slug}
+                # `ours`: RE already holds the claim (it was claimed before the target went private).
+                return "private_target", {"slug": slug, "ours": adopt}
         facts = {"request_type": request_type, "step_key": step_key, "targets": targets, "slug": "",
-                 "asset_guid": "", "refusal": ""}
+                 "asset_guid": "", "refusal": "", "other_targets": []}
         if not targets:
             facts["refusal"] = NO_TARGET_SENTENCE
         elif not all(slugs):
-            # Owner ruling, 2026-10-14: claimed, then completed with the reason (step 1 left it unclaimed). An
-            # unregistered target cannot be private in RE (privacy is a registered resource's investigation).
-            unknown = [t["guid"] for t, slug in zip(targets, slugs) if not slug]
-            facts["refusal"] = f"{', '.join(unknown)}: {NOT_REGISTERED_SENTENCE}"
+            # Owner rulings, 2026-10-14: claimed, then completed survey-invalid with the reason (step 1 left it
+            # unclaimed). An unregistered target cannot be private in RE (privacy is a registered resource's).
+            words = []
+            for t, slug in zip(targets, slugs):
+                if not slug:
+                    kind = self.registry.resource_kind_for_asset_guid(t["guid"])
+                    words.append(f"{t['guid']}: " + (f"{NOT_A_DATABASE_SENTENCE} (it is registered as a {kind})"
+                                                     if kind else NOT_REGISTERED_SENTENCE))
+            facts["refusal"] = "; ".join(words)
         else:
             facts["slug"], facts["asset_guid"] = slugs[0], targets[0]["guid"]
+            # Several database targets: the first is surveyed and the completion message names the rest.
+            facts["other_targets"] = [t["guid"] for t in targets[1:]]
         return (ADOPT if adopt else ""), facts
 
     def sweep_once(self) -> SweepResult:
@@ -419,6 +449,10 @@ class EngineHost:
                 reason, facts = "screen_failed", {"error": f"{type(exc).__name__}: {exc}"}
             if reason == ADOPT:
                 self._enqueue(action, guid, facts, engine_guid, result, adopted=True)
+                continue
+            if reason == "private_target" and facts.get("ours"):
+                recorded, _error = self._complete_now_private(action, guid)
+                result.skip("completed_now_private" if recorded else "private_target", guid)
                 continue
             if reason:
                 result.skip(reason, guid)
@@ -453,17 +487,39 @@ class EngineHost:
                 return out
             start += PAGE_SIZE
 
+    def _complete_now_private(self, action: dict, guid: str) -> tuple[bool, str]:
+        """An action RE already claimed whose target is now in a private investigation: completed once,
+        survey-invalid, as the engine host for its requester; nothing is run. Egeria then stops listing it."""
+        from pyegeria import AutomatedCuration
+
+        from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
+
+        requester = str(action.get("requesterUserId") or "").strip()
+        outcome = _outcome(SURVEY_INVALID, f"Resource Explorer did not run {action.get('requestType')}: "
+                           f"{NOW_PRIVATE_SENTENCE}")
+        with acting_as(Daemon(DaemonReason.ENGINE_HOST, requested_by=requester or None)):
+            recorded, error = _record_completion(self._client(AutomatedCuration), guid, outcome)
+        if recorded:
+            log.info("engine host: completed engine action %s survey-invalid (%s)", guid, NOW_PRIVATE_SENTENCE)
+        else:
+            self._report_once("now_private_unrecorded", guid, "engine host: engine action %s (%s) could not be "
+                              "completed yet: %s", guid, NOW_PRIVATE_SENTENCE, error, level=logging.WARNING)
+        return recorded, error
+
     def restart_pass(self) -> RestartResult:
-        """Once, at engine-host start, before the first sweep (§3.4). For each action RE's user still holds:
+        """At engine-host start, before the first sweep (§3.4), and then every `COMPLETION_RETRY_SECONDS`
+        while it runs (idempotent). For each action RE's user still holds:
 
-        * no runs row: queue it once (the sweep's own adoption, `_screen` -> ADOPT -> `_enqueue`);
+        * no runs row: queue it once (the sweep's own adoption, `_screen` -> ADOPT -> `_enqueue`), or, when its
+          target is now private, complete it once survey-invalid;
         * a row queued or claimed: leave it, the queue runs it;
-        * a row running under a live process: leave it;
+        * a row running (under a live process, or awaiting the queue reconciler): leave it;
+        * a row that cannot be read: leave it, and say so;
         * a terminal row whose completion was never recorded in Egeria: complete it from the row's stored
-          outcome, never by running the step again.
+          outcome, never by running the step again. A row that stored no outcome completes survey-failed with
+          the row's own words (a departure from §3.4's "re-run": see `_outcome_from_ended_row`).
 
-        A running row whose process is gone is left for the queue reconciler (the worker fails such rows before
-        this loop starts); recording a completion for it here would race a run that may still be writing."""
+        Each action is handled on its own: one that raises is counted in `errors` and the pass goes on."""
         result = RestartResult()
         if not engine_host_enabled():
             result.note = f"{ENABLE_ENV} is off"
@@ -484,74 +540,92 @@ class EngineHost:
             if not guid:
                 continue
             try:
-                rows = self.registry.engine_action_runs(guid)
-            except Exception as exc:  # noqa: BLE001 -- cannot tell: touch nothing for this action
+                self._restart_one(action, guid, engine_guid, supported, result)
+            except Exception as exc:  # noqa: BLE001 -- one action, never the whole pass
                 result.errors.append(guid)
-                log.warning("engine host restart: could not read the runs rows of engine action %s (%s: %s); "
-                            "left as it is", guid, type(exc).__name__, exc)
-                continue
-            if not rows:
-                sweep = SweepResult()
-                try:
-                    reason, facts = self._screen(action, engine_guid, supported)
-                except Exception as exc:  # noqa: BLE001 -- fail closed
-                    reason, facts = "screen_failed", {"error": f"{type(exc).__name__}: {exc}"}
-                if reason == ADOPT:
-                    self._enqueue(action, guid, facts, engine_guid, sweep, adopted=True)
-                    result.adopted.extend(sweep.adopted)
-                    result.errors.extend(sweep.errors)
-                else:
-                    result.errors.append(guid)
-                    log.warning("engine host restart: engine action %s is claimed by RE in Egeria with no run, "
-                                "and was not queued (%s: %s)", guid, reason, facts)
-                continue
-            row = rows[0]
-            state = row.get("state") or ""
-            if state in ("queued", "claimed"):
-                result.pending.append(guid)
-                continue
-            if state == "running":
-                from resource_explorer.run_reconciler import _is_alive
+                log.warning("engine host restart: engine action %s left as it is: %s", guid, _short(exc))
+        return result
 
-                try:
-                    runner = json.loads(row.get("runner") or "{}") or {}
-                except (TypeError, ValueError):
-                    runner = {}
-                if _is_alive(runner) is True:
-                    result.left_running.append(guid)
-                else:
-                    result.pending.append(guid)
-                    log.info("engine host restart: run %s of engine action %s is 'running' with no live process; "
-                             "left for the queue reconciler", row["id"], guid)
-                continue
-            target = _row_target_json(row)
-            if target.get("completion_recorded_at"):
-                result.pending.append(guid)
-                log.warning("engine host restart: engine action %s is still active in Egeria although run %s "
-                            "recorded its completion at %s; left alone", guid, row["id"],
-                            target["completion_recorded_at"])
-                continue
-            outcome = target.get("outcome") or _outcome_from_ended_row(row)
-            with acting_as(Daemon(DaemonReason.ENGINE_HOST, requested_by=(row.get("requested_by") or None))):
-                from pyegeria import AutomatedCuration
+    def _restart_one(self, action: dict, guid: str, engine_guid: str, supported: dict, result: RestartResult) -> None:
+        from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
 
-                recorded, error = _record_completion(self._client(AutomatedCuration), guid, outcome)
-            if recorded:
-                try:
-                    self.registry.merge_run_target(row["id"], {"outcome": outcome,
-                                                               "completion_recorded_at": _now_iso()})
-                except Exception as exc:  # noqa: BLE001 -- Egeria has it; a second send is ignored by Egeria
-                    result.unmarked.append(guid)
-                    log.warning("engine host restart: completed engine action %s but could not mark run %s "
-                                "(%s: %s)", guid, row["id"], type(exc).__name__, exc)
-                result.completed.append(guid)
-                log.info("engine host restart: completed engine action %s from run %s (%s)", guid, row["id"],
-                         outcome.get("guard"))
+        rows = self.registry.engine_action_runs(guid)
+        if not rows:
+            sweep = SweepResult()
+            try:
+                reason, facts = self._screen(action, engine_guid, supported)
+            except Exception as exc:  # noqa: BLE001 -- fail closed
+                reason, facts = "screen_failed", {"error": _short(exc)}
+            if reason == ADOPT:
+                self._enqueue(action, guid, facts, engine_guid, sweep, adopted=True)
+                result.adopted.extend(sweep.adopted)
+                result.errors.extend(sweep.errors)
+            elif reason == "private_target" and facts.get("ours"):
+                recorded, _error = self._complete_now_private(action, guid)
+                (result.completed if recorded else result.errors).append(guid)
             else:
                 result.errors.append(guid)
-                log.warning("engine host restart: completion of engine action %s from run %s not recorded: %s",
-                            guid, row["id"], error)
-        return result
+                self._report_once("restart_not_queued", guid, "engine host restart: engine action %s is claimed "
+                                  "by RE in Egeria with no run, and was not queued (%s: %s)", guid, reason, facts,
+                                  level=logging.WARNING)
+            return
+        row = rows[0]
+        if row.get("target_unreadable"):
+            result.errors.append(guid)
+            self._report_once("unreadable_row", guid, "engine host restart: run %s of engine action %s has an "
+                              "unreadable target; left alone", row["id"], guid, level=logging.WARNING)
+            return
+        state = row.get("state") or ""
+        if state in ("queued", "claimed"):
+            result.pending.append(guid)
+            return
+        if state == "running":
+            from resource_explorer.run_reconciler import _is_alive
+
+            try:
+                runner = json.loads(row.get("runner") or "{}") or {}
+            except (TypeError, ValueError):
+                runner = {}
+            if _is_alive(runner) is True:
+                result.left_running.append(guid)
+            else:
+                result.pending.append(guid)
+                log.info("engine host restart: run %s of engine action %s is 'running' with no live process; "
+                         "left for the queue reconciler", row["id"], guid)
+            return
+        target = _row_target_json(row)
+        if target.get("completion_recorded_at"):
+            result.pending.append(guid)
+            self._report_once("recorded_still_active", guid, "engine host restart: engine action %s is still "
+                              "active in Egeria although run %s recorded its completion at %s; left alone", guid,
+                              row["id"], target["completion_recorded_at"], level=logging.WARNING)
+            return
+        stored = target.get("outcome")
+        if stored is not None and not (isinstance(stored, dict) and stored.get("guard") in GUARD_STATUS):
+            result.errors.append(guid)
+            self._report_once("bad_outcome", guid, "engine host restart: run %s of engine action %s stores an "
+                              "outcome that is not one RE writes (%r); left alone", row["id"], guid,
+                              str(stored)[:120], level=logging.WARNING)
+            return
+        outcome = stored or _outcome_from_ended_row(row)
+        with acting_as(Daemon(DaemonReason.ENGINE_HOST, requested_by=(row.get("requested_by") or None))):
+            from pyegeria import AutomatedCuration
+
+            recorded, error = _record_completion(self._client(AutomatedCuration), guid, outcome)
+        if not recorded:
+            result.errors.append(guid)
+            log.warning("engine host restart: completion of engine action %s from run %s not recorded: %s",
+                        guid, row["id"], error)
+            return
+        try:
+            self.registry.merge_run_target(row["id"], {"outcome": outcome, "completion_recorded_at": _now_iso()})
+        except Exception as exc:  # noqa: BLE001 -- Egeria has it, and stops listing the action
+            result.unmarked.append(guid)
+            log.warning("engine host restart: completed engine action %s but could not mark run %s (%s)",
+                        guid, row["id"], _short(exc))
+        result.completed.append(guid)
+        log.info("engine host restart: completed engine action %s from run %s (%s)", guid, row["id"],
+                 outcome.get("guard"))
 
     def _claim(self, action: dict, guid: str, facts: dict, engine_guid: str, result: SweepResult) -> None:
         from pyegeria import AutomatedCuration
@@ -597,6 +671,22 @@ class EngineHost:
                  f" (to be completed: {facts['refusal']})" if facts.get("refusal") else "")
 
 
+def _not_yet_due(action: dict) -> bool:
+    """The action's `requestedStartTime` (epoch ms) is still in the future. Missing or unreadable is due."""
+    import time
+
+    value = action.get("requestedStartTime")
+    if isinstance(value, dict):
+        value = value.get("primitiveValue")
+    if isinstance(value, bool) or value in (None, ""):
+        return False
+    try:
+        ms = float(value)
+    except (TypeError, ValueError):
+        return False
+    return ms > time.time() * 1000
+
+
 def _row_target(action: dict, guid: str, facts: dict, engine_guid: str) -> dict:
     """The `runs.target` of an `engine_action` row: what E4 needs, read once from the claimed action."""
     return {
@@ -611,8 +701,11 @@ def _row_target(action: dict, guid: str, facts: dict, engine_guid: str) -> dict:
         # Set when the action is claimed only to be completed with a reason (no target, or not registered).
         "refusal": facts.get("refusal", ""),
         "action_targets": facts["targets"],
+        # Database targets after the first: not surveyed, named in the completion message.
+        "other_targets": facts.get("other_targets", []),
         "requester_user_id": str(action.get("requesterUserId") or ""),
-        # Epoch ms as Egeria sent it; a future start is honoured by E4 (claim first, then wait: C6, Q-O4).
+        # Epoch ms as Egeria sent it. Recorded only: the sweep leaves an action unclaimed until it is due
+        # (`_not_yet_due`), so a queued row never waits for its start time.
         "requested_start_time": action.get("requestedStartTime"),
         "request_parameters": action.get("requestParameters") or {},
     }
@@ -672,33 +765,57 @@ def _record_completion(curation, guid: str, outcome: dict) -> tuple[bool, str]:
     return True, ""
 
 
+class EngineHostPublishFailed(RuntimeError):
+    """Raised by the engine host's publisher to the synthetic-step executor when the report did not land as a
+    complete, linked report: the executor's run words then say "publish failed · <these words>"."""
+
+
 def _decide(registry, target: dict) -> dict:
     """Run the step and publish its report; return the outcome to store. Never raises for a step or Egeria
     answer: each becomes a guard with its words. Runs as the current principal (the engine host daemon)."""
+    outcome = _decide_one(registry, target)
+    others = [g for g in target.get("other_targets") or [] if g]
+    if others:
+        outcome["message"] = (f"{outcome['message'].rstrip('.')}. Only the first database target was surveyed; "
+                              f"{len(others)} other target(s) not surveyed: {', '.join(others)}.")
+    return outcome
+
+
+def _decide_one(registry, target: dict) -> dict:
     refusal = (target.get("refusal") or "").strip()
     if refusal:
-        return _outcome(SURVEY_FAILED, f"Resource Explorer did not run {target.get('request_type')}: {refusal}")
+        # Owner ruling, 2026-10-14: survey-invalid ("the supplied information (such as the asset) is invalid").
+        return _outcome(SURVEY_INVALID, f"Resource Explorer did not run {target.get('request_type')}: {refusal}")
     slug, step_key = target.get("slug") or "", target.get("step_key") or ""
     request_type = target.get("request_type") or ""
     if step_key not in declared_steps():
         return _outcome(SURVEY_FAILED, f"step {step_key!r} is not one Resource Explorer's engine runs")
 
     from resource_explorer.surveyors import result_status
-    from resource_explorer.surveyors.survey_definition_executor import (
-        PUBLISH_BY_CALLER,
-        SurveyDefinitionExecutor,
-    )
+    from resource_explorer.surveyors.survey_definition_executor import SurveyDefinitionExecutor
 
-    outputs: list = []
+    published: dict = {}
+
+    def publisher(entity, step_outputs, surveyed_at, _registry):
+        """The executor's publish step for this run: ONE native-shaped report, linked to the action. The
+        executor records what this returns (the report GUID) or raises as the run's publish words."""
+        annotations = [a for out in step_outputs if isinstance(out, dict) for a in (out.get("annotations") or [])]
+        published["outcome"] = _publish(registry, target, annotations)
+        if published["outcome"]["guard"] != SURVEY_COMPLETED:
+            raise EngineHostPublishFailed(published["outcome"]["message"])
+        return published["outcome"]["report_guid"]
+
     try:
         ran = SurveyDefinitionExecutor(registry).run_synthetic_step(
             entity_type=ENTITY_TYPE, slug=slug, re_analysis_step=step_key, executes_at="resource-explorer",
-            # In this process, never Prefect (Prefect-only steps are not in the slice, §5.4), and the caller
-            # publishes: one native-shaped report, linked to the action.
-            engine_override="resource-explorer", publish=PUBLISH_BY_CALLER, step_outputs=outputs,
+            # In this process, never Prefect (Prefect-only steps are not in the slice, §5.4).
+            engine_override="resource-explorer", publisher=publisher,
             display_name=f"{request_type} (engine action {target.get('engine_action_guid')})")
     except Exception as exc:  # noqa: BLE001 -- the step could not run: survey-failed with its words
-        return _outcome(SURVEY_FAILED, f"{step_key} on {slug} could not run: {_short(exc)}")
+        return published.get("outcome") or _outcome(SURVEY_FAILED, f"{step_key} on {slug} could not run: "
+                                                    f"{_short(exc)}")
+    if "outcome" in published:
+        return published["outcome"]
     report = next((r for r in ran.get("steps") or [] if r.get("re_analysis_step") == step_key), {})
     status = report.get("status") or ""
     if status == result_status.SKIPPED_BY_DESIGN:
@@ -707,11 +824,10 @@ def _decide(registry, target: dict) -> dict:
         return _outcome(SURVEY_INVALID, f"{step_key} did not run on {slug}: "
                         f"{report.get('detail') or 'its precondition is not met'} (no stored schema inventory "
                         "to derive from: an absence, not a finding)")
-    if status != "ok":
-        errors = "; ".join(str(e) for e in ran.get("errors") or []) or f"step status {status or 'unknown'}"
-        return _outcome(SURVEY_FAILED, f"{step_key} failed on {slug}: {errors}"[:1500])
-    annotations = [a for out in outputs if isinstance(out, dict) for a in (out.get("annotations") or [])]
-    return _publish(registry, target, annotations)
+    errors = "; ".join(str(e) for e in ran.get("errors") or []) or f"step status {status or 'unknown'}"
+    if status == "ok":
+        errors = f"the step produced no output to publish ({errors})"
+    return _outcome(SURVEY_FAILED, f"{step_key} failed on {slug}: {errors}"[:1500])
 
 
 def _publish(registry, target: dict, annotations: list) -> dict:
@@ -787,8 +903,50 @@ def _run_engine_action(registry, run_id: str, target: dict) -> tuple[str, str]:
 
     from resource_explorer.egeria_clients import current_principal, egeria_client
 
+    principal = current_principal()
+    # Not scope-shared: this client is closed when the run ends (it is bound to this run's event loop).
+    curation = egeria_client(principal, purpose="engine host", shared=False).of(AutomatedCuration)
+    try:
+        return _run_with(curation, registry, run_id, target, principal)
+    finally:
+        _close_quietly(curation)
+
+
+def _close_quietly(client) -> None:
+    """pyegeria's own close (`close_session`) of a client this run built. Tidy-up, never the answer."""
+    close = getattr(client, "close_session", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:  # noqa: BLE001 - tidy-up, never the answer
+            pass
+
+
+def _record_submission(registry, target: dict, principal) -> str:
+    """The native-survey row the Understanding pane lists (`native_survey_run.native_survey_rows`), written
+    once per engine action: the existing read-back then fills Egeria's status and the report through
+    `report_guid_for_action`, as for a PostgreSQLSurvey run. "" when written or already there, else why not."""
+    slug, guid = target.get("slug") or "", target["engine_action_guid"]
+    if not slug:
+        return ""
+    process_qn = governance_action_type_qn(target.get("step_key") or "")
+    try:
+        if any(r.get("engine_action_guid") == guid
+               for r in registry.list_native_survey_runs(ENTITY_TYPE, slug, process_qn)):
+            return ""
+        registry.record_native_survey_submission(ENTITY_TYPE, slug, process_qn, _now_iso(),
+                                                 engine_action_guid=guid,
+                                                 submitted_by=(principal.requested_by or "").strip(),
+                                                 started_as="engine-host")
+    except Exception as exc:  # noqa: BLE001 -- the listing row, not the work: recorded on the outcome
+        why = _short(exc)
+        log.warning("engine host: no native-survey row for engine action %s (%s)", guid, why)
+        return why
+    return ""
+
+
+def _run_with(curation, registry, run_id: str, target: dict, principal) -> tuple[str, str]:
     guid = target["engine_action_guid"]
-    curation = egeria_client(current_principal(), purpose="engine host").of(AutomatedCuration)
     status_error = ""
     try:
         curation.update_engine_action_status(guid, "IN_PROGRESS")
@@ -796,21 +954,30 @@ def _run_engine_action(registry, run_id: str, target: dict) -> tuple[str, str]:
         status_error = _short(exc)
         log.warning("engine host: could not set engine action %s IN_PROGRESS (%s); running it anyway",
                     guid, status_error)
+    listing_error = _record_submission(registry, target, principal)
     outcome = _decide(registry, target)
     if status_error:
         outcome["in_progress_error"] = status_error
+    if listing_error:
+        outcome["listing_error"] = listing_error
     registry.merge_run_target(run_id, {"outcome": outcome})      # raises: nothing is sent unstored
     recorded, error = _record_completion(curation, guid, outcome)
-    if recorded:
-        registry.merge_run_target(run_id, {"completion_recorded_at": _now_iso()})
     log.info("engine host: engine action %s ran: %s (%s)%s", guid, outcome["guard"], outcome["message"],
              "" if recorded else f"; completion NOT recorded in Egeria: {error}")
     if not recorded:
         return "failed", (f"{outcome['guard']}: {outcome['message']} · completion not recorded in Egeria "
-                          f"({error}); the engine host sends it at its next start")[:1500]
+                          f"({error}); the engine host sends it within {COMPLETION_RETRY_SECONDS}s")[:1500]
+    marker_note = ""
+    try:
+        registry.merge_run_target(run_id, {"completion_recorded_at": _now_iso()})
+    except Exception as exc:  # noqa: BLE001 -- Egeria has the completion: the run says so, never "failed" for it
+        marker_note = (f"completion recorded in Egeria; RE's completion marker on this run was not written "
+                       f"({_short(exc, 200)})")
+        log.warning("engine host: engine action %s completed in Egeria, but run %s's marker was not written: %s",
+                    guid, run_id, marker_note)
     if outcome["guard"] == SURVEY_COMPLETED:
-        return "succeeded", ""
-    return "failed", f"{outcome['guard']}: {outcome['message']}"[:1500]
+        return "succeeded", marker_note
+    return "failed", " · ".join(x for x in (f"{outcome['guard']}: {outcome['message']}", marker_note) if x)[:1500]
 
 
 # ── the worker loop ────────────────────────────────────────────────────────────
@@ -819,35 +986,41 @@ class EngineHostLoop:
     """The worker's engine-host thread: one `EngineHost`, swept every SWEEP_INTERVAL_SECONDS. Started by the
     worker's leader-elected supervisor only when RE_ENGINE_HOST_ENABLED is on (worker.loop_specs)."""
 
-    def __init__(self, interval: float = SWEEP_INTERVAL_SECONDS) -> None:
+    def __init__(self, interval: float = SWEEP_INTERVAL_SECONDS,
+                 completion_retry_interval: float = COMPLETION_RETRY_SECONDS) -> None:
         self.interval = interval
+        self.completion_retry_interval = completion_retry_interval
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
     def _run(self) -> None:
+        import time
+
         host = EngineHost()
         try:
-            try:
-                host.restart_pass()          # E5, once, before the first sweep (§3.4)
-            except Exception:  # noqa: BLE001 -- the sweep still starts; the next restart retries
-                import traceback
-
-                from resource_explorer.secret_redaction import scrub_text
-
-                log.error("engine host: restart pass failed; sweeping anyway\n%s", scrub_text(traceback.format_exc()))
+            last_pass = None
             while not self._stop.is_set():
-                try:
-                    host.sweep_once()
-                except Exception:  # noqa: BLE001 -- one bad pass must not end the loop
-                    import traceback
-
-                    from resource_explorer.secret_redaction import scrub_text
-
-                    log.error("engine host: sweep failed; continuing\n%s", scrub_text(traceback.format_exc()))
+                if last_pass is None or time.monotonic() - last_pass >= self.completion_retry_interval:
+                    # E5: before the first sweep (§3.4), then every completion_retry_interval: a completion that
+                    # timed out, or a run whose worker died, reaches Egeria without waiting for a restart.
+                    last_pass = time.monotonic()
+                    self._guarded(lambda: host.restart_pass(), "completion pass")
+                self._guarded(lambda: host.sweep_once(), "sweep")
                 if self._stop.wait(self.interval):
                     return
         finally:
             host.close()
+
+    @staticmethod
+    def _guarded(fn, what: str) -> None:
+        try:
+            fn()
+        except Exception:  # noqa: BLE001 -- one bad pass must not end the loop
+            import traceback
+
+            from resource_explorer.secret_redaction import scrub_text
+
+            log.error("engine host: %s failed; continuing\n%s", what, scrub_text(traceback.format_exc()))
 
     def start(self) -> None:
         if self._thread is not None:

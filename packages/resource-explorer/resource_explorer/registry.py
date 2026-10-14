@@ -455,6 +455,9 @@ class PostgresCursorWrapper:
 #: A distinct namespace so no RE analysis step key can ever collide with one.
 NATIVE_SURVEY_STEP_PREFIX = "egeria-native:"
 
+#: runs ids already warned about as an unreadable engine_action target (once per process, not every sweep).
+_UNREADABLE_ENGINE_ROWS_WARNED: set = set()
+
 
 #: What a schedule row's `analysis_id` refers to. Running always goes through a
 #: survey type by preference (a single analysis gets a single-step survey type,
@@ -11244,11 +11247,34 @@ class ProjectRegistry:
         out = []
         for row in rows:
             try:
-                if (json.loads(row["target"] or "{}") or {}).get("engine_action_guid") == guid:
-                    out.append(dict(row))
+                target = json.loads(row["target"] or "{}")
             except (TypeError, ValueError):
-                continue
+                target = None
+            if not isinstance(target, dict):
+                # It names the GUID (the prefilter) but cannot be read: it counts as existing, so the action is
+                # never adopted a second time (and given a second report); the caller leaves it alone.
+                if row["id"] not in _UNREADABLE_ENGINE_ROWS_WARNED:
+                    _UNREADABLE_ENGINE_ROWS_WARNED.add(row["id"])
+                    log.warning("runs row %s names engine action %s but its target is not readable JSON; it "
+                                "counts as that action's run and is left alone", row["id"], guid)
+                out.append({**dict(row), "target_unreadable": True})
+            elif target.get("engine_action_guid") == guid:
+                out.append(dict(row))
         return out
+
+    def resource_kind_for_asset_guid(self, guid: str) -> str:
+        """`"repo"` or `"filesystem"` when a resource of that kind is registered with this Egeria Asset GUID,
+        else `""`. Unscoped, like `database_slug_for_asset_guid`: the engine host says which kind of thing an
+        action's target is when it is not a database."""
+        guid = (guid or "").strip()
+        if not guid:
+            return ""
+        with self._conn() as conn:
+            for kind, table in (("repo", "projects"), ("filesystem", "file_systems")):
+                if conn.execute(f"SELECT 1 FROM {table} WHERE egeria_asset_guid = ? LIMIT 1",  # noqa: S608
+                                (guid,)).fetchone():
+                    return kind
+        return ""
 
     def engine_action_run_exists(self, engine_action_guid: str) -> bool:
         """Any `engine_action` runs row (in any state) whose target names this Egeria engine action."""

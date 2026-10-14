@@ -559,7 +559,7 @@ def test_the_existing_native_reader_finds_the_report_and_says_complete(reg, eger
     assert state["state"] == COMPLETE, state
 
 
-# ── owner ruling: an unregistered target is claimed and failed ─────────────────
+# ── owner rulings: an unregistered target is claimed and completed survey-invalid ──
 
 def test_an_unregistered_target_is_claimed_and_completed_with_the_reason(reg, egeria, no_connection):
     egeria.add_action("ea-stranger", target=UNKNOWN_GUID)
@@ -568,8 +568,9 @@ def test_an_unregistered_target_is_claimed_and_completed_with_the_reason(reg, eg
     _run_queue_once(reg)
 
     done = egeria.actions["ea-stranger"]["completion"]
-    assert done["status"] == "FAILED" and done["guards"] == ["survey-failed"], done
+    assert done["status"] == "INVALID" and done["guards"] == ["survey-invalid"], done
     assert "not registered in Resource Explorer" in done["message"]
+    assert "not a database" not in done["message"]
     assert egeria.reports() == []
     assert egeria.method_calls("create_asset") == []
 
@@ -579,7 +580,7 @@ def test_an_action_with_no_target_is_claimed_and_failed_like_native_no_target_as
     assert _sweep(reg).claimed == ["ea-none"]
     _run_queue_once(reg)
     done = egeria.actions["ea-none"]["completion"]
-    assert done["guards"] == ["survey-failed"]
+    assert done["guards"] == ["survey-invalid"] and done["status"] == "INVALID"
     assert "no asset action target" in done["message"]
 
 
@@ -601,7 +602,7 @@ def test_a_mixed_target_with_a_private_resource_is_left_unclaimed(reg, egeria):
     assert egeria.actions["ea-mixed-private"]["processingEngineUserId"] is None
     _run_queue_once(reg)
     done = egeria.actions["ea-mixed-public"]["completion"]
-    assert done["guards"] == ["survey-failed"] and "not registered in Resource Explorer" in done["message"]
+    assert done["guards"] == ["survey-invalid"] and "not registered in Resource Explorer" in done["message"]
 
 
 # ── a failed status update does not crash the run ──────────────────────────────
@@ -855,6 +856,9 @@ def test_a_report_not_linked_to_the_action_is_survey_failed_and_still_named(reg,
     _sweep(reg)
     egeria.of("MetadataExpert").create_related_elements.side_effect = lambda body=None: ""
     _run_queue_once(reg)
+    detail = _engine_activity(reg)
+    assert detail["publish_state"].startswith("publish failed") and "ReportOriginator" in detail["publish_state"]
+    assert detail["published"] is False
     done = egeria.actions["ea-unlinked"]["completion"]
     assert done["guards"] == ["survey-failed"], done
     assert "ReportOriginator" in done["message"]
@@ -870,3 +874,278 @@ def test_annotations_that_did_not_all_land_are_survey_failed(reg, egeria, no_con
     done = egeria.actions["ea-partial"]["completion"]
     assert done["guards"] == ["survey-failed"], done
     assert "incomplete" in done["message"]
+
+
+# ── fix round 1 (review + owner ruling) ────────────────────────────────────────
+
+FS_GUID = "0a1b2c3d-0000-4000-8000-0000000000f5"
+
+
+def test_a_target_registered_as_another_kind_says_not_a_database(reg, egeria, no_connection):
+    from resource_explorer.registry import FileSystemEntity
+
+    reg.register_filesystem(FileSystemEntity(slug="share", display_name="share", local_mount_point="/tmp",
+                                             egeria_asset_guid=FS_GUID))
+    egeria.add_action("ea-fs", target=FS_GUID)
+    assert _sweep(reg).claimed == ["ea-fs"]
+    _run_queue_once(reg)
+    done = egeria.actions["ea-fs"]["completion"]
+    assert done["guards"] == ["survey-invalid"], done
+    assert "not a database registered in Resource Explorer" in done["message"]
+
+
+def test_the_loop_repeats_the_completion_pass_while_running(monkeypatch):
+    import threading
+
+    from resource_explorer import engine_host
+
+    passes = []
+    enough = threading.Event()
+
+    class Recording:
+        def __init__(self, *a, **k):
+            pass
+
+        def restart_pass(self):
+            passes.append(1)
+            if len(passes) >= 3:
+                enough.set()
+
+        def sweep_once(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(engine_host, "EngineHost", Recording)
+    loop = engine_host.EngineHostLoop(interval=0.02, completion_retry_interval=0.05)
+    loop.start()
+    assert enough.wait(5), f"only {len(passes)} completion pass(es) ran"
+    loop.stop()
+
+
+def test_a_completion_that_timed_out_while_running_is_sent_by_the_next_pass(reg, egeria, no_connection):
+    egeria.add_action("ea-timeout")
+    _sweep(reg)
+    egeria.fail["record_completion_status"] = RuntimeError("read timeout")
+    _run_queue_once(reg)
+    assert _row(reg)["state"] == "failed" and egeria.actions["ea-timeout"]["completion"] is None
+    assert _restart(reg).completed == ["ea-timeout"]
+    assert egeria.actions["ea-timeout"]["completion"]["guards"] == ["survey-completed"]
+
+
+def test_a_marker_that_could_not_be_written_does_not_turn_a_completed_run_failed(reg, egeria, no_connection,
+                                                                               monkeypatch):
+    real = reg.merge_run_target
+
+    def no_marker(run_id, patch):
+        if "completion_recorded_at" in patch:
+            raise RuntimeError("registry unavailable")
+        return real(run_id, patch)
+
+    monkeypatch.setattr(reg, "merge_run_target", no_marker)
+    egeria.add_action("ea-nomark")
+    _sweep(reg)
+    _run_queue_once(reg)
+    assert egeria.actions["ea-nomark"]["actionStatus"] == "COMPLETED"
+    row = _row(reg)
+    assert row["state"] == "succeeded", row
+    assert "marker" in row["error"]
+
+
+def _engine_activity(reg) -> dict:
+    with reg._conn() as conn:
+        rows = conn.execute("SELECT detail FROM activity_log").fetchall()
+    found = [json.loads(r["detail"]) for r in rows
+             if '"survey_definition_ref": "synthetic::database::coco_pharma::db_derived"' in (r["detail"] or "")]
+    assert len(found) == 1, found
+    return found[0]
+
+
+def test_the_runs_activity_entry_says_published_with_the_report_guid(reg, egeria, no_connection):
+    egeria.add_action("ea-words")
+    _sweep(reg)
+    _run_queue_once(reg)
+    detail = _engine_activity(reg)
+    report_guid = _row(reg)["target"]["outcome"]["report_guid"]
+    assert detail["published"] is True
+    assert detail["egeria_report_guid"] == report_guid
+    assert detail["publish_state"].startswith("published to Egeria"), detail["publish_state"]
+
+
+def test_the_runs_activity_entry_says_failed_when_the_publish_failed(reg, egeria, no_connection):
+    egeria.add_action("ea-words-fail")
+    _sweep(reg)
+    egeria.fail["create_asset"] = RuntimeError("the repository is unavailable")
+    _run_queue_once(reg)
+    detail = _engine_activity(reg)
+    assert detail["published"] is False and detail["egeria_report_guid"] == ""
+    assert detail["publish_state"].startswith("publish failed"), detail["publish_state"]
+
+
+def test_understanding_lists_the_engine_host_run_like_a_native_one(reg, egeria, no_connection, monkeypatch,
+                                                                   tmp_path):
+    import resource_explorer.config as config_module
+    from resource_explorer.egeria_clients import Daemon, DaemonReason
+    from resource_explorer.native_survey_run import (
+        COMPLETE,
+        PyegeriaSurveyPort,
+        native_survey_rows,
+        port_session,
+        refresh_resource,
+    )
+
+    # A secrets file with no collection for coco_pharma: Egeria's own survey would be refused for want of
+    # credentials; RE's step opens no connection, so its row is not.
+    (tmp_path / "om.omsecrets").write_text("{}")
+    monkeypatch.setenv("EGERIA_SECRETS_STORE_LOCAL_PATH", str(tmp_path / "om.omsecrets"))
+    config_module._config = None
+    egeria.add_action("ea-und")
+    _sweep(reg)
+    _run_queue_once(reg)
+    with port_session(PyegeriaSurveyPort(identity=Daemon(DaemonReason.SCHEDULER))) as port:
+        assert refresh_resource(reg, port, "database", "coco_pharma") == 1
+    rows = {r["qualified_name"]: r for r in native_survey_rows(reg, "database", "coco_pharma",
+                                                                "PostgreSQL Relational Database")}
+    mine = rows["ResourceExplorerSurvey::re-db-derived"]
+    assert mine["run"]["state"] == COMPLETE, mine["run"]
+    assert mine["run"]["engine_action_guid"] == "ea-und"
+    assert mine["run"]["report_guid"] == _row(reg)["target"]["outcome"]["report_guid"]
+    assert mine["credentials"] == "present" and not mine["cannot_run_reason"], mine
+    assert rows["PostgreSQLSurvey::survey-postgres-database"]["credentials"] == "absent"
+    [step] = reg.query_step_runs(slug="coco_pharma", step_key="db_derived", entity_type="database")
+    assert mine["run"]["annotation_count"] == step["metrics"]["annotations"]
+
+
+def test_a_completed_postgres_survey_gets_the_same_words(reg, egeria, no_connection):
+    """The same derivation, the same words: a PostgreSQLSurvey run and the engine-host run, both complete."""
+    from resource_explorer.native_survey_run import native_survey_rows
+
+    egeria.add_action("ea-same")
+    _sweep(reg)
+    _run_queue_once(reg)
+    mine_guid = _row(reg)["target"]["outcome"]["report_guid"]
+    reg.record_native_survey_submission("database", "coco_pharma", "PostgreSQLSurvey::survey-postgres-database",
+                                        NOW, engine_action_guid="pg-1", submitted_by=REQUESTER)
+    for guid, report in (("pg-1", "rep-pg"), ("ea-same", mine_guid)):
+        reg.record_native_survey_readback(guid, read_at=NOW, status="COMPLETED", message="")
+        reg.record_native_survey_report(guid, entity_type="database", slug="coco_pharma",
+                                        process_qualified_name="x", report_guid=report, report_at=NOW,
+                                        read_at=NOW, annotations=[])
+    rows = {r["qualified_name"]: r for r in native_survey_rows(reg, "database", "coco_pharma",
+                                                                "PostgreSQL Relational Database")}
+    a, b = rows["PostgreSQLSurvey::survey-postgres-database"], rows["ResourceExplorerSurvey::re-db-derived"]
+    assert a["run"]["state"] == b["run"]["state"] == "complete"
+    assert a["reach_note"] == b["reach_note"]
+
+
+def test_a_non_dict_outcome_does_not_stop_the_pass_for_other_actions(reg, egeria, caplog):
+    import logging
+
+    egeria.add_action("ea-bad", status="IN_PROGRESS", claimed_by=_daemon_user())
+    egeria.add_action("ea-good-row", status="IN_PROGRESS", claimed_by=_daemon_user())
+    bad = reg.enqueue_run("engine_action", {"engine_action_guid": "ea-bad", "outcome": "nonsense"})
+    good = reg.enqueue_run("engine_action", {"engine_action_guid": "ea-good-row", "outcome": {
+        "guard": "survey-completed", "status": "ACTIONED", "message": "m", "report_guid": "r",
+        "annotation_count": 1}})
+    reg.finish_run(bad, "failed")
+    reg.finish_run(good, "succeeded")
+    with caplog.at_level(logging.WARNING):
+        result = _restart(reg)
+    assert "ea-bad" in result.errors
+    assert result.completed == ["ea-good-row"]
+    assert any("not one RE writes" in r.getMessage() for r in caplog.records), "the bad outcome is named"
+    assert egeria.actions["ea-bad"]["completion"] is None
+
+
+def test_an_unparseable_row_naming_the_action_counts_as_existing(reg, egeria, caplog):
+    import logging
+
+    egeria.add_action("ea-garbled", status="ACTIVATING", claimed_by=_daemon_user())
+    run_id = reg.enqueue_run("engine_action", {"engine_action_guid": "ea-garbled"})
+    with reg._conn() as conn:
+        conn.execute("UPDATE runs SET target = ? WHERE id = ?", ('{"engine_action_guid": "ea-garbled", ', run_id))
+    reg.finish_run(run_id, "failed", error="interrupted")
+    assert reg.engine_action_run_exists("ea-garbled")
+    with caplog.at_level(logging.WARNING):
+        result = _restart(reg)
+        _sweep(reg)
+    assert result.adopted == [] and len(_rows_raw(reg)) == 1
+    assert egeria.method_calls("record_completion_status") == []
+    assert any("ea-garbled" in r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
+
+
+def _rows_raw(reg) -> list[dict]:
+    return reg.list_runs(kind="engine_action")
+
+
+def test_an_action_not_yet_due_is_left_unclaimed(reg, egeria):
+    import time
+
+    action = egeria.add_action("ea-later")
+    action["requestedStartTime"] = int((time.time() + 3600) * 1000)
+    egeria.add_action("ea-now")
+    result = _sweep(reg)
+    assert result.claimed == ["ea-now"]
+    assert "ea-later" in result.skipped.get("not_due", [])
+    assert egeria.actions["ea-later"]["processingEngineUserId"] is None
+
+
+def test_an_adopted_action_whose_target_became_private_is_completed_once(reg, egeria, caplog):
+    import logging
+
+    from resource_explorer.a2a_auth import CallerIdentity, current_caller
+
+    reset = current_caller.set(CallerIdentity(user_id="alice", egeria_token=None, auth_source="app-jwt"))
+    try:
+        inv = reg.create_investigation("Alice Private", project_classification="PersonalProject")
+        ws = reg.get_or_create_working_set(inv["slug"])
+        reg.add_working_set_member(ws["slug"], "database", "alice_db")
+    finally:
+        current_caller.reset(reset)
+    egeria.add_action("ea-went-private", status="ACTIVATING", claimed_by=_daemon_user(), target=PRIVATE_DB_GUID)
+    first = _restart(reg)
+    done = egeria.actions["ea-went-private"]["completion"]
+    assert done["guards"] == ["survey-invalid"] and "now private to its owner" in done["message"], done
+    assert first.completed == ["ea-went-private"] and _rows_raw(reg) == []
+    with caplog.at_level(logging.WARNING):
+        second = _restart(reg)
+        _sweep(reg)
+    assert second.completed == [] and second.errors == []
+    assert len(egeria.method_calls("record_completion_status")) == 1
+
+
+def test_several_database_targets_survey_the_first_and_say_so(reg, egeria, no_connection):
+    egeria.add_action("ea-two", target=[DB_GUID, EMPTY_DB_GUID])
+    assert _sweep(reg).claimed == ["ea-two"]
+    _run_queue_once(reg)
+    done = egeria.actions["ea-two"]["completion"]
+    assert done["guards"] == ["survey-completed"], done
+    assert EMPTY_DB_GUID in done["message"] and "not surveyed" in done["message"]
+
+
+def test_the_run_closes_the_client_it_built(reg, egeria, no_connection):
+    egeria.add_action("ea-close")
+    _sweep(reg)
+    egeria.of("AutomatedCuration").close_session.reset_mock()
+    _run_queue_once(reg)
+    egeria.of("AutomatedCuration").close_session.assert_called()
+
+
+def test_a_registry_read_that_raises_for_one_action_does_not_stop_the_pass(reg, egeria, monkeypatch):
+    egeria.add_action("ea-boom", status="IN_PROGRESS", claimed_by=_daemon_user())
+    egeria.add_action("ea-fine", status="IN_PROGRESS", claimed_by=_daemon_user())
+    good = reg.enqueue_run("engine_action", {"engine_action_guid": "ea-fine", "outcome": {
+        "guard": "survey-completed", "status": "ACTIONED", "message": "m", "report_guid": "r",
+        "annotation_count": 1}})
+    reg.finish_run(good, "succeeded")
+    real = reg.engine_action_runs
+
+    def boom(guid):
+        if guid == "ea-boom":
+            raise RuntimeError("registry read failed")
+        return real(guid)
+
+    monkeypatch.setattr(reg, "engine_action_runs", boom)
+    result = _restart(reg)
+    assert result.errors == ["ea-boom"] and result.completed == ["ea-fine"]

@@ -37,6 +37,10 @@ class NativeProcess:
     #: element the resource's server pointer holds. Only a kind with a
     #: separate server element (see `server_has_separate_element`) has any.
     target: str = "asset"
+    #: Whether Egeria's engine needs this database's credentials to run it (the projected `.omsecrets`
+    #: collection). False for a process RE runs as an engine host from rows it already stores
+    #: (`ResourceExplorerSurvey::re-db-derived`): no connection is opened, so no credential is checked.
+    needs_credentials: bool = True
 
 
 @dataclass(frozen=True)
@@ -97,6 +101,7 @@ def _load(config_path: Path = _DEFAULT_CONFIG_PATH) -> dict[tuple[str, str], lis
                 description=(p.get("description") or "").strip(),
                 action_target_name=p.get("action_target_name") or "serverToSurvey",
                 target=p.get("target") or "asset",
+                needs_credentials=p.get("needs_credentials", True) is not False,
             )
             for p in tt.get("processes") or []
         ]

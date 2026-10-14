@@ -449,7 +449,10 @@ class TestRows:
     def test_lists_runnable_and_unrunnable_with_reasons_and_never_the_delete(self, registry):
         rows = nsr.native_survey_rows(registry, "database", "adventureworks", TECH)
         by = {r["qualified_name"]: r for r in rows}
-        assert set(by) == {SURVEY_QN, CATALOG_QN, "PostgreSQLSurvey::survey-postgres-server"}
+        # ResourceExplorerSurvey::re-db-derived: RE's engine-host step (engine host step 2, 2026-10-14), listed so
+        # its Egeria-dispatched runs read back here like a PostgreSQLSurvey run.
+        assert set(by) == {SURVEY_QN, CATALOG_QN, "PostgreSQLSurvey::survey-postgres-server",
+                           "ResourceExplorerSurvey::re-db-derived"}
         assert by[SURVEY_QN]["runnable"] and by[SURVEY_QN]["cannot_run_reason"] == ""
         # the registration row never runs through the survey Run button; the fixture has no stored user
         assert not by[CATALOG_QN]["runnable"] and by[CATALOG_QN]["cannot_run_reason"]
