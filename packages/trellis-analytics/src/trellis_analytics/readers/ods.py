@@ -95,6 +95,32 @@ class OdsReader:
             out.setdefault(r["status"], []).append(r["id"])
         return out
 
+    # ── row_count_snapshot results, as RE stores them ──
+
+    def row_count_snapshots(self, slug: str, limit: int = 2) -> list[dict]:
+        """The latest `limit` row_count_snapshot results for a database, newest first:
+        `[{"surveyed_at", "source", "tables": [{schema_name, table_name, table_type, row_count, state}]}]`.
+
+        A snapshot is one survey's `database_tables` rows (the rows RE's `row_count_snapshot` analysis reads),
+        keyed by (surveyed_at, source). A survey RE marked invalid (`database_surveys.invalid_at`, the false-zero
+        rule) is not a snapshot. A survey that stored no table rows measured no row counts, so it is not one either.
+        """
+        s = normalize_slug(slug)
+        runs = self.query(
+            "SELECT t.surveyed_at AS surveyed_at, t.source AS source FROM database_tables t "
+            "WHERE t.database_slug = ? AND NOT EXISTS (SELECT 1 FROM database_surveys d "
+            "  WHERE d.database_slug = t.database_slug AND d.surveyed_at = t.surveyed_at "
+            "  AND d.source = t.source AND d.invalid_at IS NOT NULL) "
+            "GROUP BY t.surveyed_at, t.source ORDER BY t.surveyed_at DESC, t.source LIMIT ?", (s, int(limit)))
+        out = []
+        for run in runs:
+            tables = self.query(
+                "SELECT schema_name, table_name, table_type, row_count, state FROM database_tables "
+                "WHERE database_slug = ? AND surveyed_at = ? AND source = ? ORDER BY schema_name, table_name",
+                (s, run["surveyed_at"], run["source"]))
+            out.append({"surveyed_at": run["surveyed_at"], "source": run["source"], "tables": tables})
+        return out
+
     def registry_view(self):
         """A read-only stand-in for ProjectRegistry (needs the optional `re` extra; see registry_view.py)."""
         from trellis_analytics.readers.registry_view import RegistryReadView

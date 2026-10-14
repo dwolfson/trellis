@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 from pyegeria.view.analytic_registry import AnalyticFunctionSpec
 
 Kind = Literal["routine", "step"]
@@ -50,8 +50,56 @@ class RoutineManifest(_TrellisManifest):
     kind: Kind = "routine"
 
 
+#: What a step may ask of the resource it measures (owner ruling 2026-10-07): nothing, or read-only. Anything
+#: higher is refused, with a sentence naming the tier, until a publication-style profile says otherwise.
+CREDENTIAL_TIERS = ("none", "read_only")
+
+#: What the wrapper can hand a step's code. A step gets the inputs it declares and nothing else.
+#:   resource   - the resource's type and slug (always handed; declaring it alone hands nothing more)
+#:   ods        - a read-only reader of RE's registry (the ODS)
+#:   connection - a connection to the resource opened at the declared tier, never a password
+STEP_INPUTS = ("resource", "ods", "connection")
+
+
+def tier_refusal(tier: str) -> str:
+    """The sentence for a tier above read-only, or "" for an allowed one."""
+    if tier in CREDENTIAL_TIERS:
+        return ""
+    return (f"credential tier '{tier}' refused: a user step may ask for read-only on the resource and nothing "
+            "more (owner ruling 2026-10-07)")
+
+
 class StepManifest(_TrellisManifest):
+    """Level 2's declaration (brief 2c'): what the wrapper needs to run a user's code as a survey step."""
     kind: Kind = "step"
     annotation_type: str = "ResourceMeasureAnnotation"
-    # Owner ruling 2026-10-07: a user step may ask for read-only on the resource, nothing higher.
-    credential_tier: Literal["read_only"] = "read_only"
+    credential_tier: str = "none"
+    inputs: list[str] = Field(default_factory=lambda: ["ods"])
+    #: Shown as the analysis's name in Resource Explorer and as the Egeria element's display name.
+    display_name: str = ""
+    #: The stage this step's results belong to (RE's catalog calls it `intent`: scouting, analysis, ...).
+    stage: str = "analysis"
+    perspectives: list[str] = Field(default_factory=lambda: ["all"])
+
+    @field_validator("credential_tier")
+    @classmethod
+    def _tier(cls, v: str) -> str:
+        if refusal := tier_refusal(v):
+            raise ValueError(refusal)
+        return v
+
+    @field_validator("inputs")
+    @classmethod
+    def _inputs(cls, v: list[str]) -> list[str]:
+        unknown = [i for i in v if i not in STEP_INPUTS]
+        if unknown:
+            raise ValueError(f"input {', '.join(repr(u) for u in unknown)} is not one the wrapper hands a step "
+                             f"(known: {', '.join(STEP_INPUTS)})")
+        return v
+
+    @model_validator(mode="after")
+    def _connection_needs_a_tier(self) -> "StepManifest":
+        if "connection" in self.inputs and self.credential_tier == "none":
+            raise ValueError("a step that declares the 'connection' input must declare credential_tier "
+                             "'read_only'; with 'none' there is no connection to hand it")
+        return self

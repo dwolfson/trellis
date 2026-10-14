@@ -95,7 +95,11 @@ class TestDatabaseResultsMapCoverage:
         # same shared reader as the others.
         # Twenty-one: `db_statistics_freshness` (2026-10-10, backlog 7i), same
         # shared reader.
-        assert len(DATABASE_ANALYSIS_RESULTS_MAP) == 21
+        # Twenty-two: `database_staleness` (2026-10-13, extensibility brief
+        # 2c), the first user step: its catalog entry is generated from its
+        # manifest and `survey_step_host` attaches the generic
+        # ResourceMeasureAnnotation reader for it, installed or not.
+        assert len(DATABASE_ANALYSIS_RESULTS_MAP) == 22
 
     def test_every_entry_is_a_reader_pair(self):
         from resource_explorer.surveyors.database.survey_definition_adapter import (

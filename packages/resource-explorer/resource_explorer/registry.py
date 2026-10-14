@@ -418,6 +418,11 @@ class PostgresCursorWrapper:
 #: A distinct namespace so no RE analysis step key can ever collide with one.
 NATIVE_SURVEY_STEP_PREFIX = "egeria-native:"
 
+#: The report key of a user step's run (extensibility brief 2c), stored in
+#: `native_survey_annotations` beside, never among, Egeria's read-back: see
+#: `ProjectRegistry.record_step_annotations`.
+STEP_ANNOTATION_REPORT_PREFIX = "re-step:"
+
 
 #: What a schedule row's `analysis_id` refers to. Running always goes through a
 #: survey type by preference (a single analysis gets a single-step survey type,
@@ -7419,6 +7424,79 @@ class ProjectRegistry:
                 "SELECT COUNT(*) FROM native_survey_annotations WHERE report_guid = ?",
                 (report_guid,),
             ).fetchone()[0])
+
+    # ── annotations of a user step run by RE (extensibility brief 2c) ────────
+    #
+    # Stored in `native_survey_annotations`, whose columns are already an
+    # annotation store keyed by resource, type and run, with no new DDL. Kept
+    # apart from Egeria's read-back by the report key: a step run's
+    # `report_guid` is `STEP_ANNOTATION_REPORT_PREFIX + <step> + ":" + <run>`,
+    # which no Egeria GUID can be, `engine_action_guid` stays '' (so no
+    # step_runs row is ever stamped by it), and every native-survey reader
+    # starts from a native step_runs row's `survey_report_guid`, which never
+    # names one of these. `detail_json` holds `resourceProperties` and
+    # `additionalProperties` (the envelope, the interim carrier).
+
+    def record_step_annotations(self, entity_type: str, slug: str, analysis_step: str, *,
+                                run: str, measured_at: str, annotations: list[dict]) -> int:
+        """Keep one run's annotations of one step, idempotently (a rerun of the
+        same run writes nothing new). Each annotation is `StepAnnotation.
+        to_record()`'s shape. Returns how many rows the run has."""
+        slug = self._normalize_slug(slug)
+        report = f"{STEP_ANNOTATION_REPORT_PREFIX}{analysis_step}:{run}"
+        stored_at = datetime.utcnow().isoformat()
+        with self._conn() as conn:
+            for a in annotations:
+                scope = a.get("scope") or ""
+                conn.execute(
+                    "INSERT INTO native_survey_annotations (entity_type, slug, "
+                    "process_qualified_name, engine_action_guid, report_guid, "
+                    "report_at, annotation_guid, annotation_type, analysis_step, "
+                    "summary, explanation, confidence, detail_json, read_at) "
+                    "VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?) "
+                    "ON CONFLICT(report_guid, annotation_guid) DO NOTHING",
+                    (entity_type, slug, f"{STEP_ANNOTATION_REPORT_PREFIX}{analysis_step}", report,
+                     measured_at, f"{analysis_step}:{scope}", a.get("annotation_type") or "",
+                     analysis_step, a.get("summary") or "", a.get("explanation") or "",
+                     json.dumps({"scope": scope,
+                                 "resourceProperties": a.get("resourceProperties") or {},
+                                 "additionalProperties": a.get("additionalProperties") or {}},
+                                default=str),
+                     stored_at),
+                )
+            return int(conn.execute(
+                "SELECT COUNT(*) FROM native_survey_annotations WHERE report_guid = ?",
+                (report,)).fetchone()[0])
+
+    def query_step_annotations(self, entity_type: str, slug: str,
+                               analysis_step: str) -> tuple[str, list[dict]]:
+        """(run, rows) for the latest stored run of one step on one resource;
+        ("", []) when it has never stored one. Rows are decoded, in scope order."""
+        with self._conn() as conn:
+            latest = conn.execute(
+                "SELECT report_guid, report_at FROM native_survey_annotations "
+                "WHERE entity_type = ? AND slug = ? AND analysis_step = ? AND report_guid LIKE ? "
+                "ORDER BY report_at DESC, id DESC LIMIT 1",
+                (entity_type, self._normalize_slug(slug), analysis_step,
+                 f"{STEP_ANNOTATION_REPORT_PREFIX}{analysis_step}:%"),
+            ).fetchone()
+            if latest is None:
+                return "", []
+            report = dict(latest)["report_guid"]
+            rows = conn.execute(
+                "SELECT annotation_guid, annotation_type, analysis_step, summary, explanation, "
+                "detail_json, report_at, read_at FROM native_survey_annotations "
+                "WHERE report_guid = ? ORDER BY annotation_guid", (report,),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["detail"] = json.loads(d.pop("detail_json") or "{}")
+            except (ValueError, TypeError):
+                d["detail"] = {}
+            out.append(d)
+        return report[len(f"{STEP_ANNOTATION_REPORT_PREFIX}{analysis_step}:"):], out
 
     def median_step_wall_ms(self, step_key: str) -> float | None:
         """Median observed `wall_ms` for a step across every resource, or None

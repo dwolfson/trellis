@@ -91,6 +91,23 @@ def discover(known_purposes: list[str] | None = None, registry=None) -> dict[str
     return found
 
 
+def origin(name: str) -> dict[str, str]:
+    """Which installed package provides the manifest named `name`, and under which entry point:
+    {"package": <distribution name>, "entry_point": <entry point name>}. Raises LookupError when no installed
+    entry point provides it (the sentence names it), since a declaration must name a real package."""
+    for ep in entry_points(group=GROUP):
+        try:
+            obj = ep.load()
+            if callable(obj) and not isinstance(obj, _TrellisManifest):
+                obj = obj()
+        except Exception:  # noqa: BLE001 - discover() is the place that reports a broken entry point
+            continue
+        items = obj if isinstance(obj, (list, tuple)) else [obj]
+        if any(getattr(m, "name", None) == name for m in items):
+            return {"package": ep.dist.name if ep.dist else "", "entry_point": ep.name}
+    raise LookupError(f"no installed package provides '{name}' through the {GROUP} entry point")
+
+
 def register() -> list[str]:
     """Register discovered manifests into pyegeria's analytic registry; names already present are skipped
     (so calling it twice is harmless) and returned names are the ones added."""

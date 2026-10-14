@@ -393,11 +393,17 @@ def _build_measurements_via_results_reader(
         }
 
     raw = reader(registry, slug) or {}
-    measurements = [
-        {"name": name, "value": value, "opens": None, "note": ""}
-        for name, value in raw.items()
-        if not isinstance(value, (list, dict))
-    ]
+    if isinstance(raw.get("measurement_rows"), list):
+        # A generic annotation reader (`surveyors/annotation_readers.py`,
+        # R7) returns rows already shaped, each carrying the state words its
+        # envelope states; flattening would drop them.
+        measurements = raw["measurement_rows"]
+    else:
+        measurements = [
+            {"name": name, "value": value, "opens": None, "note": ""}
+            for name, value in raw.items()
+            if not isinstance(value, (list, dict))
+        ]
 
     if not measurements:
         return {
