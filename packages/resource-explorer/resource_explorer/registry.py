@@ -11222,6 +11222,22 @@ class ProjectRegistry:
             ).fetchone()
         return row["slug"] if row else ""
 
+    def engine_action_run_exists(self, engine_action_guid: str) -> bool:
+        """Any `engine_action` runs row (in any state) whose target names this Egeria engine action.
+        Parsed, not matched as text: the target is JSON."""
+        guid = (engine_action_guid or "").strip()
+        if not guid:
+            return False
+        with self._conn() as conn:
+            rows = conn.execute("SELECT target FROM runs WHERE kind = 'engine_action'").fetchall()
+        for row in rows:
+            try:
+                if (json.loads(row["target"] or "{}") or {}).get("engine_action_guid") == guid:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+
     def set_database_egeria_guid(self, slug: str, guid: str) -> None:
         """Set the Egeria asset GUID for a database."""
         slug = self._normalize_slug(slug)

@@ -77,6 +77,9 @@ ENABLE_ENV = "RE_ENGINE_HOST_ENABLED"
 #: The native engine host's sweep interval (`EngineConfigurationRefreshThread.java:51`, 5000 ms).
 SWEEP_INTERVAL_SECONDS = 5
 
+#: How long `EngineHostLoop.stop()` waits for an in-flight sweep.
+STOP_JOIN_SECONDS = 10.0
+
 #: Page size for the active-actions listing (native pages 10 at a time; a larger page is fewer round trips).
 PAGE_SIZE = 100
 
@@ -137,6 +140,13 @@ def is_claim_refused(exc: BaseException) -> bool:
 
 # ── reading one EngineActionElement ────────────────────────────────────────────
 
+def _daemon_user() -> str:
+    """RE's service-account userId: the processingEngineUserId Egeria records on RE's claims."""
+    from resource_explorer.egeria_clients import _daemon_credential
+
+    return (_daemon_credential()[0] or "").strip()
+
+
 def _guid(action: dict) -> str:
     return str(((action or {}).get("elementHeader") or {}).get("guid") or "")
 
@@ -161,6 +171,7 @@ class SweepResult:
     """What one sweep did. `skipped` maps a reason to the action GUIDs left unclaimed for it."""
 
     claimed: list[str] = field(default_factory=list)
+    adopted: list[str] = field(default_factory=list)
     refused: list[str] = field(default_factory=list)
     skipped: dict[str, list[str]] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
@@ -171,9 +182,13 @@ class SweepResult:
         self.skipped.setdefault(reason, []).append(guid)
 
 
-#: Skip reasons that are not RE's business (another engine's work, not yet approved, already claimed):
-#: silent. The rest are logged once per action.
-_SILENT = frozenset({"other_engine", "not_approved", "already_claimed"})
+#: Skip reasons that are not RE's business (another engine's work, not yet approved, claimed by someone
+#: else, or already queued here): silent. The rest are logged once per action.
+_SILENT = frozenset({"other_engine", "not_approved", "already_claimed", "already_queued"})
+
+#: The `_screen` verdict for an action RE's own user already claimed in Egeria but RE has no runs row for:
+#: queue it without claiming again.
+ADOPT = "adopt"
 
 
 class EngineHost:
@@ -211,6 +226,17 @@ class EngineHost:
     def close(self) -> None:
         import asyncio
 
+        if self._loop is not None:
+            asyncio.set_event_loop(self._loop)
+        for clients in self._clients.values():
+            # pyegeria's own close (`close_session`, base server client), on this host's loop, before it closes.
+            for client in list(getattr(clients, "_clients", {}).values()):
+                close = getattr(client, "close_session", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:  # noqa: BLE001 - tidy-up, never the answer
+                        pass
         self._clients.clear()
         if self._loop is not None:
             self._loop.close()
@@ -280,22 +306,33 @@ class EngineHost:
         """(reason, facts): reason "" means claim it. Facts carry what the runs row needs."""
         if str(action.get("governanceEngineGUID") or "") != engine_guid:
             return "other_engine", {}
-        if _status(action) != "APPROVED":
+        claimant = str(action.get("processingEngineUserId") or "").strip()
+        adopt = False
+        if claimant:
+            # Ours with no row: a claim that raised after Egeria committed it, or whose row could not be
+            # written. Anyone else's claim (another engine host, a person) is never ours to take.
+            if claimant.casefold() != _daemon_user().casefold():
+                return "already_claimed", {}
+            if self.registry.engine_action_run_exists(_guid(action)):
+                return "already_queued", {}
+            adopt = True
+        elif _status(action) != "APPROVED":
             return "not_approved", {}
-        if (action.get("processingEngineUserId") or "").strip():
-            return "already_claimed", {}
         request_type = str(action.get("requestType") or "")
         step_key = supported.get(request_type)
         if not step_key:
             return "unknown_request_type", {"request_type": request_type}
         targets = _targets(action)
-        slugs = [s for s in (self.registry.database_slug_for_asset_guid(t["guid"]) for t in targets) if s]
-        if not slugs:
+        slugs = [self.registry.database_slug_for_asset_guid(t["guid"]) for t in targets]
+        if not slugs or not all(slugs):
+            # Fail closed: every target must be a database RE has registered, or RE cannot say the action
+            # touches nothing private.
             return "unknown_target", {"targets": targets}
         for slug in slugs:
             if self.registry.private_owner_for_entity(ENTITY_TYPE, slug):
                 return "private_target", {"slug": slug}
-        return "", {"request_type": request_type, "step_key": step_key, "slug": slugs[0], "targets": targets}
+        return (ADOPT if adopt else ""), {"request_type": request_type, "step_key": step_key,
+                                          "slug": slugs[0], "targets": targets}
 
     def sweep_once(self) -> SweepResult:
         """One pass: list, filter, claim, enqueue. Never raises for an Egeria answer; returns what it did."""
@@ -318,13 +355,19 @@ class EngineHost:
             guid = _guid(action)
             if not guid:
                 continue
-            reason, facts = self._screen(action, engine_guid, supported)
+            try:
+                reason, facts = self._screen(action, engine_guid, supported)
+            except Exception as exc:  # noqa: BLE001 -- fail closed: an unreadable check claims nothing
+                reason, facts = "screen_failed", {"error": f"{type(exc).__name__}: {exc}"}
+            if reason == ADOPT:
+                self._enqueue(action, guid, facts, engine_guid, result, adopted=True)
+                continue
             if reason:
                 result.skip(reason, guid)
                 if reason not in _SILENT:
                     self._report_once(reason, guid, "engine host: left engine action %s unclaimed (%s: %s)",
                                       guid, reason, facts, level=logging.WARNING
-                                      if reason == "unknown_request_type" else logging.INFO)
+                                      if reason in ("unknown_request_type", "screen_failed") else logging.INFO)
                 continue
             self._claim(action, guid, facts, engine_guid, result)
         return result
@@ -346,21 +389,30 @@ class EngineHost:
                 from resource_explorer.secret_redaction import scrub_text
 
                 result.errors.append(guid)
-                log.warning("engine host: claiming engine action %s failed; left for the next sweep: %s",
+                log.warning("engine host: claim of engine action %s raised; outcome unknown (Egeria may have "
+                            "recorded it: if so the next sweep adopts it, if not it claims again): %s",
                             guid, scrub_text(" ".join(str(exc).split()))[:400])
                 return
         result.claimed.append(guid)
+        self._enqueue(action, guid, facts, engine_guid, result, adopted=False)
+
+    def _enqueue(self, action: dict, guid: str, facts: dict, engine_guid: str, result: SweepResult, *,
+                 adopted: bool) -> None:
+        requester = str(action.get("requesterUserId") or "").strip()
         try:
             run_id = self.registry.enqueue_run(RUN_KIND, _row_target(action, guid, facts, engine_guid),
                                                requested_by=requester)
         except Exception as exc:  # noqa: BLE001 -- the action is RE's in Egeria with no row; say so loudly
-            log.error("engine host: claimed engine action %s in Egeria but could not queue it (%s: %s); the "
-                      "restart pass must find it (claimed, no runs row)", guid, type(exc).__name__, exc)
+            log.error("engine host: engine action %s is claimed by RE in Egeria but could not be queued "
+                      "(%s: %s); the next sweep adopts it", guid, type(exc).__name__, exc)
             result.errors.append(guid)
             return
+        if adopted:
+            result.adopted.append(guid)
         result.run_ids.append(run_id)
-        log.info("engine host: claimed engine action %s (%s on %s %s) for %s; queued run %s", guid,
-                 facts["request_type"], ENTITY_TYPE, facts["slug"], requester or "nobody recorded", run_id)
+        log.info("engine host: %s engine action %s (%s on %s %s) for %s; queued run %s",
+                 "adopted RE's own earlier claim of" if adopted else "claimed", guid, facts["request_type"],
+                 ENTITY_TYPE, facts["slug"], requester or "nobody recorded", run_id)
 
 
 def _row_target(action: dict, guid: str, facts: dict, engine_guid: str) -> dict:
@@ -417,9 +469,14 @@ class EngineHostLoop:
         log.info("engine host: sweep started every %ss for engine %s (request types %s)", self.interval,
                  ENGINE_QUALIFIED_NAME, sorted(supported_request_types()))
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = STOP_JOIN_SECONDS) -> None:
         self._stop.set()
-        self._thread = None
+        thread, self._thread = self._thread, None
+        if thread is not None:
+            # Bounded: a sweep blocked in an Egeria call must not hold shutdown open. It is a daemon thread.
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                log.warning("engine host: sweep thread still running after %ss; it goes with the process", timeout)
 
 
 _loop = EngineHostLoop()

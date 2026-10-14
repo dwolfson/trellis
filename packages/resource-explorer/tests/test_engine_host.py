@@ -318,3 +318,154 @@ def test_a_claimed_row_is_held_queued_until_its_handler_exists(reg, enabled, mon
         host.close()
     assert run_queue.claim_and_execute_once(reg) is None
     assert [r["state"] for r in _engine_rows(reg)] == ["queued"]
+
+
+# ── review fixes: adopt RE's own orphaned claims; fail closed on targets ──────
+
+def _daemon_user() -> str:
+    from resource_explorer.egeria_clients import _daemon_credential
+
+    return _daemon_credential()[0]
+
+
+def test_a_claim_that_errored_but_was_committed_is_adopted_once(reg, enabled, monkeypatch):
+    """A timeout or 5xx after Egeria committed the claim leaves the action ACTIVATING under RE's user and no
+    runs row. The next sweep adopts it: exactly one row, and no second claim attempt."""
+    fakes = Fakes(monkeypatch, [_action("a-orphan")])
+    commit_then_fail = fakes.curation.claim_engine_action.side_effect
+
+    def timeout_after_commit(engine_action_guid):
+        commit_then_fail(engine_action_guid)
+        raise RuntimeError("read timeout")
+
+    fakes.curation.claim_engine_action.side_effect = timeout_after_commit
+    host = _host(reg)
+    try:
+        first = host.sweep_once()
+        assert first.errors == ["a-orphan"] and _engine_rows(reg) == []
+        second = host.sweep_once()
+        third = host.sweep_once()
+    finally:
+        host.close()
+    assert second.adopted == ["a-orphan"]
+    assert third.adopted == []
+    assert [r["target"]["engine_action_guid"] for r in _engine_rows(reg)] == ["a-orphan"]
+    assert fakes.curation.claim_engine_action.call_count == 1
+
+
+def test_a_claim_whose_row_could_not_be_written_is_adopted_by_the_next_sweep(reg, enabled, monkeypatch):
+    fakes = Fakes(monkeypatch, [_action("a-norow")])
+    real_enqueue = reg.enqueue_run
+    calls = {"n": 0}
+
+    def fail_first(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("registry unavailable")
+        return real_enqueue(*args, **kwargs)
+
+    monkeypatch.setattr(reg, "enqueue_run", fail_first)
+    host = _host(reg)
+    try:
+        first = host.sweep_once()
+        assert first.claimed == ["a-norow"] and _engine_rows(reg) == []
+        second = host.sweep_once()
+        host.sweep_once()
+    finally:
+        host.close()
+    assert second.adopted == ["a-norow"]
+    rows = _engine_rows(reg)
+    assert [r["target"]["engine_action_guid"] for r in rows] == ["a-norow"]
+    assert rows[0]["requested_by"] == REQUESTER
+    assert fakes.curation.claim_engine_action.call_count == 1
+
+
+def test_an_action_another_engine_user_claimed_is_never_adopted(reg, enabled, monkeypatch):
+    action = _action("a-theirs", status="ACTIVATING", claimed_by="postgresqlsurveyengine")
+    fakes = Fakes(monkeypatch, [action])
+    host = _host(reg)
+    try:
+        result = host.sweep_once()
+        host.sweep_once()
+    finally:
+        host.close()
+    assert result.adopted == [] and "a-theirs" in result.skipped.get("already_claimed", [])
+    assert _engine_rows(reg) == []
+    fakes.curation.claim_engine_action.assert_not_called()
+
+
+def test_an_own_claim_that_already_has_a_row_is_not_adopted_again(reg, enabled, monkeypatch):
+    reg.enqueue_run("engine_action", {"engine_action_guid": "a-mine"}, requested_by=REQUESTER)
+    Fakes(monkeypatch, [_action("a-mine", status="ACTIVATING", claimed_by=_daemon_user())])
+    host = _host(reg)
+    try:
+        result = host.sweep_once()
+    finally:
+        host.close()
+    assert result.adopted == []
+    assert len(_engine_rows(reg)) == 1
+
+
+def test_an_action_with_any_unregistered_target_is_not_claimed(reg, enabled, monkeypatch):
+    action = _action("a-mixed")
+    action["actionTargetElements"].append(
+        {"actionTargetName": "other", "actionTargetGUID": "0a1b2c3d-0000-4000-8000-0000000000ff"})
+    fakes = Fakes(monkeypatch, [action])
+    host = _host(reg)
+    try:
+        result = host.sweep_once()
+    finally:
+        host.close()
+    fakes.curation.claim_engine_action.assert_not_called()
+    assert "a-mixed" in result.skipped.get("unknown_target", [])
+    assert _engine_rows(reg) == []
+
+
+def test_a_failing_private_owner_check_claims_nothing(reg, enabled, monkeypatch):
+    def boom(entity_type, slug):
+        raise RuntimeError("registry read failed")
+
+    monkeypatch.setattr(reg, "private_owner_for_entity", boom)
+    fakes = Fakes(monkeypatch, [_action("a-good")])
+    host = _host(reg)
+    try:
+        host.sweep_once()
+    finally:
+        host.close()
+    fakes.curation.claim_engine_action.assert_not_called()
+    assert _engine_rows(reg) == []
+
+
+def test_close_closes_the_clients_http_sessions(reg, enabled, monkeypatch):
+    fakes = Fakes(monkeypatch, [])
+    host = _host(reg)
+    host.sweep_once()
+    host.close()
+    fakes.curation.close_session.assert_called()
+    fakes.expert.close_session.assert_called()
+
+
+def test_stopping_the_loop_joins_its_thread(monkeypatch):
+    import threading
+
+    from resource_explorer import engine_host
+
+    started = threading.Event()
+
+    class Idle:
+        def __init__(self, *a, **k):
+            pass
+
+        def sweep_once(self):
+            started.set()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(engine_host, "EngineHost", Idle)
+    loop = engine_host.EngineHostLoop(interval=0.05)
+    loop.start()
+    assert started.wait(5)
+    thread = loop._thread
+    loop.stop()
+    assert not thread.is_alive()

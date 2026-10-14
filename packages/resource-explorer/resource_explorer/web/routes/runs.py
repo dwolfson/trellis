@@ -80,6 +80,14 @@ def cancel_run(run_id: str) -> RunRow:
     row = registry.get_run(run_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    from resource_explorer.run_queue import HELD_KINDS
+
+    if row.get("kind") in HELD_KINDS:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"Run '{run_id}' is a held {row['kind']} run: RE has claimed its Egeria engine action, "
+                    "and cancelling it here would leave that action claimed with nothing to complete it."),
+        )
     if not registry.cancel_queued_run(run_id):
         raise HTTPException(
             status_code=409,
