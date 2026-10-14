@@ -22,6 +22,7 @@ dev = ["pytest>=8.3.0", "papermill", "ipykernel", "nbformat"]   # the notebook h
 # Installation is registration: every manifest the library ships is an entry point.
 [project.entry-points."trellis.analytics"]
 curation_coverage = "trellis_analytics.manifests:CURATION_COVERAGE"
+context_pack = "trellis_analytics.manifests:CONTEXT_PACK"
 
 [tool.uv.sources]
 resource-explorer = { workspace = true }
