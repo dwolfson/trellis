@@ -11,6 +11,11 @@ Routines and steps with a result envelope, discovered through the
 - `trellis_analytics.readers.ods`: read-only access to RE's registry (SQLite file or Postgres).
 - `trellis_analytics.routines.curation_coverage`: published / not yet / blocked.
 
+- `trellis_analytics.routines.context_pack`: `context_pack(reader, subject, consumer_kind, identity)`, the first context
+  pack (P12 build step 1): reads Egeria only through `readers.egeria.PackReader` (`EgeriaPackReader` is the real one),
+  returns a tabular shape, a document shape and a manifest; every fact has a state word and provenance, and a fact RE
+  holds but never published (`ReHeld`, names only) reads "not published", never a value. `answer_scoring` is the P12
+  rubric. The measurement notebook is `docs/experiments/p12-context-pack-coco-pharma.ipynb`.
 - `trellis_analytics.portal`: host 3, the Portal tile. `curation_coverage_tile` reshapes the routine's result (no
   computing of its own) and `report_specs()` is the tile's `FormatSet`; load it with
   `PYEGERIA_REPORT_SPEC_MODULES=trellis_analytics.portal:report_specs`.

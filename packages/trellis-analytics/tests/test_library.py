@@ -61,7 +61,7 @@ def test_register_adds_to_pyegeria_registry_once(entry_point_dist):
     from pyegeria.view.analytic_registry import clear_runtime_analytic_functions, get_analytic_registry
     clear_runtime_analytic_functions()
     try:
-        assert register() == ["curation_coverage"]
+        assert register() == ["context_pack", "curation_coverage"]
         assert register() == []          # idempotent
         assert get_analytic_registry()["curation_coverage"].kind == "routine"
     finally:
