@@ -1149,3 +1149,18 @@ def test_a_registry_read_that_raises_for_one_action_does_not_stop_the_pass(reg, 
     monkeypatch.setattr(reg, "engine_action_runs", boom)
     result = _restart(reg)
     assert result.errors == ["ea-boom"] and result.completed == ["ea-fine"]
+
+
+def test_the_engine_host_row_is_runnable_only_when_the_engine_host_is_on(reg, monkeypatch):
+    from resource_explorer.native_survey_run import native_survey_rows
+
+    def row():
+        rows = native_survey_rows(reg, "database", "coco_pharma", "PostgreSQL Relational Database")
+        return next(r for r in rows if r["qualified_name"] == "ResourceExplorerSurvey::re-db-derived")
+
+    monkeypatch.delenv("RE_ENGINE_HOST_ENABLED", raising=False)
+    off = row()
+    assert not off["runnable"] and off["cannot_run_reason"] == "engine host off", off
+    monkeypatch.setenv("RE_ENGINE_HOST_ENABLED", "true")
+    on = row()
+    assert on["runnable"] and on["cannot_run_reason"] == "", on

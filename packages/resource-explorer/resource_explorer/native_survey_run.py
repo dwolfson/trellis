@@ -632,6 +632,13 @@ def cannot_run_reason(process: NativeProcess, entity, *, registry=None, technolo
                                  technology_type, entity) if entity is not None else "This resource is not registered."
     if process.kind != KIND_SURVEY_EXISTING:
         return f"RE does not run processes of kind {process.kind!r}."
+    from resource_explorer import engine_host
+
+    if process.qualified_name.startswith(engine_host.ENGINE_QUALIFIED_NAME + "::") \
+            and not engine_host.engine_host_enabled():
+        # RE's own engine serves this action; with the engine host off nothing would, and the action would sit
+        # APPROVED while the row polls. Still shown, not runnable.
+        return ENGINE_HOST_OFF
     if entity is None:
         return "This resource is not registered."
     if process.target == "server":
@@ -643,6 +650,10 @@ def cannot_run_reason(process: NativeProcess, entity, *, registry=None, technolo
     if not process.needs_credentials:
         return ""
     return _missing_credentials_reason(entity)
+
+
+#: Why an RE engine-host process (`ResourceExplorerSurvey::...`) cannot run: RE_ENGINE_HOST_ENABLED is off.
+ENGINE_HOST_OFF = "engine host off"
 
 
 def row_is_neutral(reason: str) -> bool:
