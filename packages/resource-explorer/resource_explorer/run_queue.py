@@ -355,6 +355,14 @@ HANDLERS: dict[str, Callable[[dict, str], RunOutcome]] = {
 }
 
 
+#: Kinds whose rows are enqueued before their handler exists, and so are held QUEUED rather than claimed
+#: and failed with "no handler". `engine_action` rows are written by the engine-host sweep (engine_host.py,
+#: E3); their handler is E4 of DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE §5.1, which registers it in HANDLERS
+#: and removes the kind from here. A held row is still visible in `runs`; failing it would leave the Egeria
+#: action RE claimed with no completion, which only the restart pass (E5) could recover.
+HELD_KINDS = frozenset({"engine_action"})
+
+
 # ── executing one claimed row ────────────────────────────────────────────────
 
 
@@ -623,6 +631,9 @@ def claim_and_execute_once(registry=None, *, kinds: list[str] | None = None) -> 
 
     registry = registry or ProjectRegistry()
     identity = worker_identity()
+    if kinds is None and HELD_KINDS:
+        # "All kinds" means all kinds this worker can run: a held kind waits for its handler (see HELD_KINDS).
+        kinds = [k for k in registry.RUN_KINDS if k not in HELD_KINDS]
     row = registry.claim_next_run(identity, process_identity(), kinds=kinds)
     if row is None:
         return None

@@ -4416,6 +4416,10 @@ class ProjectRegistry:
         "materialize_components",
         "publish_architecture",
         "catalogue_commit",
+        # An Egeria engine action RE claimed as an engine host (engine_host.py). Its handler is E4 of
+        # DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE §5.1; until it exists run_queue.HELD_KINDS keeps such a row
+        # queued rather than failing it for want of a handler.
+        "engine_action",
     )
 
     #: States that occupy a user's one fairness slot.
@@ -4607,14 +4611,22 @@ class ProjectRegistry:
         answer-shaped-non-answer `run_reconciler.py` exists to remove. If that
         worker dies, reconciliation resolves the row as failed with the reason;
         if it lives, the run finishes normally.
+
+        A row of a held kind (`run_queue.HELD_KINDS`, e.g. `engine_action`) is refused too (False), whatever
+        its state: it stands for an Egeria engine action RE has already claimed, and cancelling it here would
+        leave that action claimed with nothing to complete it. Refused HERE so every caller (web, CLI) gets it.
         """
+        from resource_explorer.run_queue import HELD_KINDS
+
         now = now or datetime.now(timezone.utc).isoformat()
+        held = sorted(HELD_KINDS)
+        held_clause = f" AND kind NOT IN ({','.join('?' * len(held))})" if held else ""
         with self._conn() as conn:
             cur = conn.execute(
                 "UPDATE runs SET state='cancelled', finished_at=?, "
                 "error='cancelled before it was claimed' "
-                "WHERE id=? AND state='queued'",
-                (now, run_id),
+                "WHERE id=? AND state='queued'" + held_clause,
+                (now, run_id, *held),
             )
             return bool(getattr(cur, "rowcount", 0))
 
@@ -11203,6 +11215,38 @@ class ProjectRegistry:
                 "UPDATE databases SET last_surveyed_at = ? WHERE slug = ?",
                 (datetime.utcnow().isoformat(), slug),
             )
+
+    def database_slug_for_asset_guid(self, guid: str) -> str:
+        """The slug of the registered database whose Egeria Asset is `guid`, or `""` for none.
+
+        Unscoped, like `private_owner_for_entity`: the engine host asks it as a daemon, before it may
+        claim an action, to find the resource the action targets and whether it is privately owned."""
+        guid = (guid or "").strip()
+        if not guid:
+            return ""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT slug FROM databases WHERE egeria_asset_guid = ? ORDER BY slug LIMIT 1", (guid,)
+            ).fetchone()
+        return row["slug"] if row else ""
+
+    def engine_action_run_exists(self, engine_action_guid: str) -> bool:
+        """Any `engine_action` runs row (in any state) whose target names this Egeria engine action.
+        Parsed, not matched as text: the target is JSON."""
+        guid = (engine_action_guid or "").strip()
+        if not guid:
+            return False
+        with self._conn() as conn:
+            # Text prefilter (parameterised), then the exact JSON compare below decides.
+            rows = conn.execute("SELECT target FROM runs WHERE kind = 'engine_action' AND target LIKE ?",
+                                (f"%{guid}%",)).fetchall()
+        for row in rows:
+            try:
+                if (json.loads(row["target"] or "{}") or {}).get("engine_action_guid") == guid:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
 
     def set_database_egeria_guid(self, slug: str, guid: str) -> None:
         """Set the Egeria asset GUID for a database."""

@@ -302,6 +302,13 @@ class TestRunsCommands:
         assert "nothing was" in result.output
         assert registry.get_run(run_id)["state"] == "claimed"
 
+    def test_cancel_refuses_a_held_engine_action_row(self, runner, registry):
+        run_id = registry.enqueue_run("engine_action", {"engine_action_guid": "a-1"})
+        result = runner.invoke(app, ["runs", "cancel", run_id])
+        assert result.exit_code == 1
+        assert "held" in result.output
+        assert registry.get_run(run_id)["state"] == "queued"
+
     def test_enqueue_queues_arbitrary_work(self, runner, registry, monkeypatch):
         # Brief Z2 round 2: a run that may publish (analysis_run) is attributed to the signed-in person only.
         from unittest.mock import MagicMock
