@@ -12,6 +12,7 @@
  * change needs to trigger the evidence rail from outside this file.
  */
 import { ago, whenMs } from '/static/next/format.js';
+import { inPageConfirm } from '/static/next/confirm-dialog.js';
 import { getBulkFacts, listAnalyses, saveEnrichmentField, getDocSources, addDocSource, recheckDocSource, removeDocSource } from '/static/re-api.js';
 import { state, esc, $, tnum, factGlyph, ensureRailShowing, railClaim, railTag, apiEntityType } from '/static/next/app.js';
 // The row anatomy (who + when + "⚠ review — evidence moved: X") shared with
@@ -802,7 +803,7 @@ function renderDocSourcesFromData(slug, entityType, data, deadline) {
     // exactly as they were -- no request, no state change.
     const row = b.closest('[data-source-row]');
     const name = row?.querySelector('a')?.textContent || 'this source';
-    if (!window.confirm(`Remove documentation source "${name}"?`)) return;
+    if (!(await inPageConfirm({ title: 'Remove documentation source?', message: `Remove documentation source "${name}"?`, confirmLabel: 'Remove' }))) return;
     b.disabled = true; b.textContent = 'removing…';
     try {
       await removeDocSource(entityType, slug, b.dataset.docRemove);

@@ -42,6 +42,7 @@ import { listRfas, updateRfaAction, dismissRfa, restoreRfaDismissal, saveRfaNote
 import { ago } from '/static/next/format.js';
 import { stateEntry } from '/static/next/glyphs.js';
 import { cue } from '/static/next/stages/repo-manifest.js';
+import { inPagePrompt } from '/static/next/confirm-dialog.js';
 
 function esc(s) {
   return String(s ?? '')
@@ -331,15 +332,15 @@ async function _onListClick(e) {
   let resolutionNote = row.resolution_note || '';
 
   if (status === 'reassigned') {
-    const typed = window.prompt('Assign to (name or email):', assignee);
+    const typed = await inPagePrompt({ title: 'Assign', message: 'Assign to (name or email):', label: 'Assign to', defaultValue: assignee, confirmLabel: 'Assign' });
     if (typed === null) return;      // cancelled — nothing recorded
     assignee = typed.trim();
   } else if (status === 'deferred') {
-    const typed = window.prompt('Defer until (any text — a date, "next survey", etc.):', deferUntil);
+    const typed = await inPagePrompt({ title: 'Defer', message: 'Defer until (any text — a date, "next survey", etc.):', label: 'Defer until', defaultValue: deferUntil, confirmLabel: 'Defer' });
     if (typed === null) return;
     deferUntil = typed.trim();
   } else if (status === 'completed') {
-    const typed = window.prompt('Resolution note (optional):', resolutionNote);
+    const typed = await inPagePrompt({ title: 'Complete', message: 'Resolution note (optional):', label: 'Resolution note', defaultValue: resolutionNote, confirmLabel: 'Complete' });
     if (typed === null) return;
     resolutionNote = typed.trim();
   }

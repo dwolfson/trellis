@@ -10,6 +10,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { makeDomEnvironment, ensureLoaderRegistered, loadAppModule } from './dom-harness.mjs';
+import { autoAnswerConfirm } from './confirm-kit.mjs';
 
 function src(over = {}) {
   return {
@@ -166,8 +167,7 @@ test('gate 5: remove is an ordinary control (no state colour), asks once, and th
     if (opts && opts.method === 'DELETE') { removed = true; deletes += 1; return { ok: true }; }
     return payload(removed ? [] : [src()]);
   });
-  let asked = 0; let answer = false;
-  window.confirm = () => { asked += 1; return answer; };
+  const kit = autoAnswerConfirm(document, { answer: false });
   await enrichment.renderDocSources('amundsen');
   const btn = () => host.querySelector('[data-doc-remove="s1"]');
   assert.ok(btn().className.includes('text-accent-ink'));
@@ -176,12 +176,15 @@ test('gate 5: remove is an ordinary control (no state colour), asks once, and th
 
   btn().click();                                   // decline
   await new Promise((r) => setTimeout(r, 10));
-  assert.equal(asked, 1); assert.equal(deletes, 0, 'declined confirm must not delete');
+  assert.equal(kit.asked.length, 1); assert.equal(deletes, 0, 'declined confirm must not delete');
   assert.ok(host.querySelector('[data-source-row="s1"]'));
 
-  answer = true; btn().click();                    // accept
+  kit.stop();
+  const yes = autoAnswerConfirm(document, { answer: true, asked: kit.asked });
+  btn().click();                                   // accept
   await new Promise((r) => setTimeout(r, 30));
-  assert.equal(asked, 2); assert.equal(deletes, 1, 'exactly one delete request');
+  yes.stop();
+  assert.equal(kit.asked.length, 2); assert.equal(deletes, 1, 'exactly one delete request');
   assert.equal(host.querySelector('[data-source-row="s1"]'), null, 'row must be gone after removal');
 });
 

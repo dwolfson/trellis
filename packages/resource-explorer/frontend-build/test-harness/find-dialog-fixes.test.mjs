@@ -12,6 +12,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { makeDomEnvironment, ensureLoaderRegistered } from './dom-harness.mjs';
+import { autoAnswerConfirm } from './confirm-kit.mjs';
 
 const SERVER = () => ({
   slug: 'regional_pg', display_name: 'Regional PG', db_type: 'postgresql', host: 'pg.regional', port: 5432,
@@ -91,12 +92,12 @@ const text = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 async function setUp(backendOpts = {}, { investigation = 'c360' } = {}) {
   const { document, window } = makeDomEnvironment();
   const calls = makeBackend(backendOpts);
+  autoAnswerConfirm(document, { answer: true });   // the in-page confirm, answered yes
   ensureLoaderRegistered();
   globalThis.location = window.location;
   globalThis.getComputedStyle = window.getComputedStyle.bind(window);
   globalThis.history = window.history;
   window.matchMedia = window.matchMedia || (() => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
-  window.confirm = () => true;
   const api = await import('/static/re-api.js');
   api.clearCache();
   const app = await import('/static/next/app.js');

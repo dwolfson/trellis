@@ -262,7 +262,7 @@ class TestPrefectPane:
 
     def test_cancel_is_confirmed_before_the_write(self):
         src = _admin_module("prefect.js")
-        assert "window.confirm(" in src
+        assert "inPageConfirm(" in src
 
 
 class TestGroupsPane:
@@ -287,7 +287,7 @@ class TestGroupsPane:
 
     def test_delete_has_no_confirmation_flag_on_the_route_itself(self):
         # Mirrors removeProject's own comment: the DELETE route takes no
-        # confirm parameter, so the caller's window.confirm is the only
+        # confirm parameter, so the caller's inPageConfirm is the only
         # confirmation that will ever exist.
         api = _reapi_src()
         i = api.index("export const deleteGroup = (")
@@ -303,7 +303,7 @@ class TestGroupsPane:
         src = _admin_module("groups.js")
         i = src.index("async function onDeleteGroup(")
         body = src[i:src.index("\n}\n", i)]
-        assert "window.confirm(" in body
+        assert "inPageConfirm(" in body
         assert "return to Ungrouped" in body
         assert "nothing is deleted" in body
 
@@ -390,7 +390,7 @@ class TestResyncPane:
 
     def test_apply_selected_confirms_before_writing(self):
         src = _admin_module("resync.js")
-        assert "window.confirm(" in src
+        assert "inPageConfirm(" in src
         assert "async function applySelected" in src
 
     def test_scheduled_flag_comes_from_finding_data_not_a_hardcoded_list(self):
@@ -454,7 +454,7 @@ class TestRepairPane:
 
     def test_destructive_actions_are_confirmed(self):
         src = _admin_module("repair.js")
-        assert src.count("window.confirm(") >= 3  # rename, github-url change, drop membership
+        assert src.count("inPageConfirm(") >= 3  # rename, github-url change, drop membership
 
     def test_names_what_it_does_not_do(self):
         """SPEC-ADMIN-THE-FOUR-GAPS.md §0's sharpest example -- classic's
@@ -509,7 +509,7 @@ class TestDiscoverySourcesPane:
         src = _admin_module("discovery_sources.js")
         i = src.index("async function doImportSelected(")
         body = src[i:src.index("\n}", i)]
-        assert "window.confirm(" in body
+        assert "inPageConfirm(" in body
         assert "picked.length" in body
         assert "dest" in body  # names the destination group (or "no group")
 
@@ -518,8 +518,8 @@ class TestDiscoverySourcesPane:
         i = src.index("async function doRefresh(")
         body = src[i:src.index("\n}", i)]
         assert "previewSourceRefresh(" in body
-        assert "window.confirm(" in body
-        confirm_pos = body.index("window.confirm(")
+        assert "inPageConfirm(" in body
+        confirm_pos = body.index("inPageConfirm(")
         apply_pos = body.index("applySourceRefresh(")
         assert confirm_pos < apply_pos
 
@@ -531,7 +531,7 @@ class TestDiscoverySourcesPane:
         src = _admin_module("discovery_sources.js")
         i = src.index("async function doDelete(")
         body = src[i:src.index("\n}", i)]
-        assert "window.confirm(" in body
+        assert "inPageConfirm(" in body
         assert "does not affect any repositories already imported" in body
 
     def test_three_add_paths_are_present(self):

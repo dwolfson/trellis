@@ -24,6 +24,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { makeDomEnvironment, ensureLoaderRegistered } from './dom-harness.mjs';
+import { autoAnswerConfirm } from './confirm-kit.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const NEXT_DIR = path.resolve(HERE, '../../resource_explorer/web/static/next');
@@ -88,8 +89,8 @@ async function setUp(kind = 'db', { slugs = ['alpha', 'beta', 'gamma'], rows = n
   globalThis.history = window.history;
   globalThis.getComputedStyle = window.getComputedStyle.bind(window);
   window.matchMedia = window.matchMedia || (() => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
-  window.confirm = () => true;
   window.history.replaceState(null, '', '/next');
+  autoAnswerConfirm(document, { answer: true });   // the in-page confirm (confirm-dialog.js), answered yes
   // The shipped page: its real top bar, nav, sidebar and content pane.
   document.body.innerHTML = INDEX_HTML.match(/<body[^>]*>([\s\S]*)<\/body>/)[1].replace(/<script[\s\S]*?<\/script>/g, '');
   const rail = document.createElement('div');

@@ -29,6 +29,7 @@
  * keys on `github_url`, not on a registered project.
  */
 import { openDialog } from '/static/next/worklist.js';
+import { inPagePrompt } from '/static/next/confirm-dialog.js';
 import {
   searchDiscoveryRepos, discoverFromList, fetchInventoryCsv, importDiscoveredRepos,
   setDisposition, listGroups, listFoundations,
@@ -390,7 +391,14 @@ async function setRowDisposition(el, i, disposition) {
   if (!r) return;
   let reason = '';
   if (HIDDEN_DISPOSITIONS.has(disposition)) {
-    reason = window.prompt(`Why ${disposition === 'abandoned' ? 'abandon' : 'ignore'} ${r.full_name}? (optional)`, '') || '';
+    const typed = await inPagePrompt({
+      title: disposition === 'abandoned' ? 'Abandon' : 'Ignore',
+      message: `Why ${disposition === 'abandoned' ? 'abandon' : 'ignore'} ${r.full_name}? (optional)`,
+      label: 'Reason (optional)',
+      confirmLabel: disposition === 'abandoned' ? 'Abandon' : 'Ignore',
+    });
+    if (typed === null) return;      // cancelled -- not marked
+    reason = typed;
   }
   try {
     await setDisposition(r.html_url, disposition, reason);

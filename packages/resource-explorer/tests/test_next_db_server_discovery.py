@@ -166,7 +166,7 @@ class TestServerListAndRegistration:
         src = _db_discovery_src()
         fn = src[src.index("async function removeServerRow"):]
         fn = fn[:fn.index("\n}\n")]
-        assert "window.confirm" in fn
+        assert "inPageConfirm" in fn
         assert "deleteDbServer(slug)" in fn
 
 

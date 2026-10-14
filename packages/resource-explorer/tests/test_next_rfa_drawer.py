@@ -133,10 +133,10 @@ class TestTheThreeResponseActionsAreWired:
 class TestReAssignAndDeferAskBeforeActing:
     def test_reassign_prompts_for_an_assignee(self):
         rfa = _rfa_js()
-        assert "window.prompt('Assign to" in rfa
+        assert "inPagePrompt({ title: 'Assign', message: 'Assign to" in rfa
     def test_defer_prompts_for_a_defer_until_value(self):
         rfa = _rfa_js()
-        assert "window.prompt('Defer until" in rfa
+        assert "inPagePrompt({ title: 'Defer', message: 'Defer until" in rfa
     def test_cancelling_a_prompt_records_nothing(self):
         rfa = _rfa_js()
         # Every prompt call is followed by a `null` cancel-guard before use.

@@ -81,7 +81,6 @@ async function setUp(backendOpts = {}, { investigation = '', investigations = []
   globalThis.getComputedStyle = window.getComputedStyle.bind(window);
   globalThis.history = window.history;
   window.matchMedia = window.matchMedia || (() => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
-  window.confirm = () => true;
   const api = await import('/static/re-api.js');
   api.clearCache();   // listGroups() is memoised at module level; each test brings its own groups
   const app = await import('/static/next/app.js');

@@ -39,6 +39,7 @@
  * `find-repos` action for `state.resourceType === 'db'`.
  */
 import { openDialog } from '/static/next/worklist.js';
+import { inPageConfirm } from '/static/next/confirm-dialog.js';
 import {
   listDbServers, registerDbServer, deleteDbServer, testDbServer, testDbServerInline,
   runDatabaseSource, discoverDatabasesInline, addDiscoveredDatabase, assignGroup,
@@ -358,7 +359,11 @@ async function runServerTest(el, slug) {
 }
 
 async function removeServerRow(el, slug) {
-  if (!window.confirm(`Remove server "${slug}" and its linked database registrations?\nThis does not touch the actual database server.`)) return;
+  if (!(await inPageConfirm({
+    title: 'Remove server?',
+    message: `Remove server "${slug}" and its linked database registrations?\nThis does not touch the actual database server.`,
+    confirmLabel: 'Remove',
+  }))) return;
   try {
     await deleteDbServer(slug);
     view.status = `Removed server "${slug}".`;

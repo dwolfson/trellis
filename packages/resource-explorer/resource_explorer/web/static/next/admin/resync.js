@@ -42,6 +42,7 @@
  */
 import { getPrivateZone, getResyncScan, getResyncStatus, applyResyncSteps } from '/static/re-api.js';
 import { esc } from '/static/next/app.js';
+import { inPageConfirm, inPageNotice } from '/static/next/confirm-dialog.js';
 
 const SCHEDULE_INTERVAL_TEXT = 'every ~600s';
 
@@ -359,7 +360,7 @@ async function runNow(step, finding) {
     const data = await applyResyncSteps([step]);
     await showApplyResult(data);
   } catch (err) {
-    window.alert(`Run failed: ${err.message}`);
+    await inPageNotice({ message: `Run failed: ${err.message}` });
   } finally {
     _busy = false;
   }
@@ -368,7 +369,7 @@ async function runNow(step, finding) {
 async function applySelected() {
   if (_busy) return;
   const steps = [..._host.querySelectorAll('[data-resync-step]:checked')].map((c) => c.dataset.resyncStep);
-  if (!steps.length) { window.alert('Nothing selected.'); return; }
+  if (!steps.length) { await inPageNotice({ title: 'Nothing to do', message: 'Nothing selected.' }); return; }
 
   const findingByStep = new Map((_scan.findings || []).map((f) => [f.repair_step, f]));
   const lines = steps.map((s) => {
@@ -376,8 +377,7 @@ async function applySelected() {
     const describe = BLAST_RADIUS[s];
     return describe && f ? `• ${describe(f.count)}` : `• ${s}`;
   });
-  const confirmed = window.confirm(
-    `Apply ${steps.length} repair step(s)?\n\n${steps.join(', ')}\n\n${lines.join('\n\n')}`);
+  const confirmed = (await inPageConfirm({ message: `Apply ${steps.length} repair step(s)?\n\n${steps.join(', ')}\n\n${lines.join('\n\n')}`, confirmLabel: 'Confirm' }));
   if (!confirmed) return;
 
   _busy = true;
@@ -390,7 +390,7 @@ async function applySelected() {
     const b = _host.querySelector('[data-apply-selected]');
     if (b) { b.disabled = false; b.textContent = 'Apply selected'; }
   } catch (err) {
-    window.alert(`Resync failed: ${err.message}`);
+    await inPageNotice({ message: `Resync failed: ${err.message}` });
     _busy = false;
     if (btn) { btn.disabled = false; btn.textContent = 'Apply selected'; }
   }

@@ -64,6 +64,7 @@
  * would offer four tabs that mean nothing for this stage.
  */
 import { ago } from '/static/next/format.js';
+import { inPageConfirm } from '/static/next/confirm-dialog.js';
 import {
   listSubscriptions, setSubscriptionActive, listAllSchedules, deleteSchedule, runScheduleNow,
   saveSchedule, getActivityEntry, listAnalyses, listSurveyDefinitions,
@@ -317,7 +318,7 @@ async function renderSchedules() {
   }));
   el.querySelectorAll('[data-delete-sched]').forEach((b) => b.addEventListener('click', async () => {
     const [entityType, entitySlug, analysisId] = b.dataset.deleteSched.split('|');
-    if (!window.confirm(`Remove the ${analysisId} schedule for ${entitySlug}?`)) return;
+    if (!(await inPageConfirm({ title: 'Remove schedule?', message: `Remove the ${analysisId} schedule for ${entitySlug}?`, confirmLabel: 'Remove' }))) return;
     b.disabled = true;
     try {
       await deleteSchedule(entityType, entitySlug, analysisId);
