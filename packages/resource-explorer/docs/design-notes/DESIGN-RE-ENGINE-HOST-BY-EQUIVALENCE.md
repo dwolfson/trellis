@@ -481,8 +481,9 @@ with `Ownership` stamped to the requester (`egeria_identity.py:30-47`).
 - One Egeria user is the claimant, and must be, since completion is checked
   against the claimant (`EngineActionHandler.java:2743`).
 
-Which user that is belongs to the owner and Mandy (Q-O2, Q-M3). The two
-candidates:
+Which user that is belongs to the owner and Mandy (Q-O2, Q-M3). *Settled
+2026-10-14: (i), as a daemon with no relationship to signed-in users; see the
+Q-M3 decisions below.* The two candidates were:
 
 - **(i)** RE's existing daemon account. No new account, but the engine's
   actions and RE's other daemon writes share an identity.
@@ -844,7 +845,17 @@ Recorded from a discussion with the owner. These are the Mandy-note items 19–2
     - It restates an earlier owner decision and agrees with Mandy.
     - Q-O2's "service account" applies only to truly automated work with no known person.
     - Private-investigation work runs as its owner.
-    - **Open mechanism:** an Egeria-dispatched action started by a person, whose `requesterUserId` is known, when RE holds no live token for that person. How RE acts as them is to be settled in the slice. Options to explore: the requester's session if one is active; otherwise wait for the person, as #640's `OutboxAwaitsOwner` does; or an Egeria-supported on-behalf-of mechanism. Ask Mandy whether one exists.
+    - **Superseded for the engine host, same day.** The mechanism question above no longer arises.
+  - **Decision (project owner, 2026-10-14):** "when RE accepts an action or process for execution, it is acting as a daemon - there is no relationship to logged in users."
+    - The end-user rule covers work started *inside* RE by a signed-in person (a press, the drain of their write): it runs as that person.
+    - Work RE *accepts* from Egeria as an engine host runs as `Daemon(ENGINE_HOST, requested_by=requesterUserId)` under RE's service account (Q-O2). `requesterUserId` is recorded, shown, and stamped as `Ownership`; it is never used as a credential.
+    - Private resources: unchanged from Q-O3. The engine host leaves such actions unclaimed; the owner runs attended work from RE.
+  - **Native does the same (source check, Egeria main `003f6f65`, 2026-10-14).** Paths under `open-metadata-implementation/`:
+    - `GovernanceEngineHandler.java:98-101` sets `engineUserId` from the engine config; `:706-720` claims with it; `:736`, `:814` pass `requesterUserId` only into `runGovernanceService(...)`.
+    - `SurveyActionEngineHandler.java:302`, `:316`, `:331`: the AnnotationStore, SurveyAssetStore and SurveyContext (its `connectorUserId`, "userId to use when issuing open metadata requests") are all built with `engineUserId`; `requesterUserId` is a stored field with a getter (`SurveyContext.java:33,112,165`), used nowhere else.
+    - `GovernanceServiceHandler.java:155,173,245`: status and completion are written as the engine host.
+    - No token or credential for the requester travels with the engine action (`EngineActionElement` carries only the `requesterUserId` string), and there is no on-behalf-of mechanism.
+    - Consequence: Egeria's zone and element checks are evaluated against the engine user, so RE's service account needs read/write on the zones, assets and annotation types it touches. Not yet traced: the server-side security connector's call path (expected to use the REST caller's userId).
 - **Q-M4 / item 22, being "native":** whatever makes sense. Telling Egeria status and completion of engine actions is what makes RE visible. Refresh-config may make sense. Record where the engine host executes in a description field on the engine element.
 - **Q-M5 / item 23, guards:** not mandatory, but best practice is to use the standard guards for consistency. Look for an existing valid-value set for "nothing to derive from"-style outcomes before inventing one.
 - **Q-M6 / item 24, lineage:** nothing explicit is needed now. Updating engine-action status is enough, and Egeria reports the lineage. RE's own R21 OpenLineage events stay off for Egeria-dispatched work, with no join for now.
