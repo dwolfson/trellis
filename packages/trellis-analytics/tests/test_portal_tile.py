@@ -70,9 +70,17 @@ def test_tile_bar_chart_carries_the_two_counts(tile, measured_url):
     assert '"Published"' in text and '"Not yet published"' in text
     vals = {v["category"]: v["count"] for v in out["data"]["data"]["values"]}
     assert vals == {"Published": 2, "Not yet published": 4}
-    # GAP (proposed pyegeria issue): the executor's Vega chart has no subtitle, so the envelope's state word
-    # cannot ride on the BAR itself; it rides on the DICT output beside it.
-    assert "subtitle" not in out["data"] and "subtitle" not in json.dumps(out["data"]["encoding"])
+    # pyegeria 6.2.3 (ISSUE-139): the envelope's state rides on the chart itself, as its subtitle.
+    assert out["data"]["title"]["subtitle"] == out["envelope"]["subtitle"] == "measured"
+    assert out["envelope"]["state"] == "measured"
+    assert "measured" in json.dumps(out["data"]["title"])
+
+
+def test_dict_output_carries_the_envelope_beside_the_tile(tile, measured_url):
+    """ISSUE-139: the executor reads the state off the tile's own state/state_reason/subtitle keys."""
+    out = tile(measured_url)
+    assert out["envelope"] == {"state": "measured", "reason": out["data"]["state_reason"],
+                               "subtitle": out["data"]["subtitle"]}
 
 
 @pytest.mark.parametrize("fmt", ["DICT", "BAR"])

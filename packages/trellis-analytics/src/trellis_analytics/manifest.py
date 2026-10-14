@@ -1,8 +1,19 @@
-"""Manifests: subclasses of pyegeria's AnalyticFunctionSpec carrying the five additive fields.
+"""Manifests: subclasses of pyegeria's AnalyticFunctionSpec carrying what trellis adds or narrows.
 
-The egeria-python change that would add these fields to the base class is NOT made
-(brief section 7), so the subclasses carry them. Defaults on the base keep every
-existing spec valid; here `kind`, `source` and `version` are required.
+Since pyegeria 6.2.3 (ISSUE-149) the base class carries `kind`, `source`, `version`, `envelope`,
+`annotation_type`, `resource_types`, `family` and `tags` itself, all optional. This module no longer redeclares the
+ones it would only repeat (`annotation_type`, `resource_types`, `family`, `tags`). It keeps only the overrides
+trellis wants stricter than the base:
+
+- `source` is a closed `Literal["ods", "egeria", "resource"]` and required. The base is an open string that warns on
+  an unknown value and keeps it ("suggestive"); a trellis manifest is checked at construction instead.
+- `version` is required. The base defaults it to "", which would stamp an unversioned result.
+- `envelope` defaults to True. Every trellis routine returns an Envelope; the base default is False.
+- `kind` is one word per subclass (`Literal["routine"]` / `Literal["step"]`), so a RoutineManifest cannot be
+  built as a step. The base allows either on either.
+
+and what the base does not have: `purposes` and `questions` (qualifiers checked at load) and a step's
+`credential_tier`, `inputs`, `display_name`, `stage` and `perspectives`.
 """
 from __future__ import annotations
 
@@ -11,19 +22,13 @@ from typing import Literal
 from pydantic import Field, field_validator, model_validator
 from pyegeria.view.analytic_registry import AnalyticFunctionSpec
 
-Kind = Literal["routine", "step"]
 Source = Literal["ods", "egeria", "resource"]
 
 
 class _TrellisManifest(AnalyticFunctionSpec):
-    kind: Kind
     source: Source
     version: str
     envelope: bool = True
-    annotation_type: str = ""           # a step's result type; empty for a routine
-    resource_types: list[str] = Field(default_factory=list)
-    family: str = ""
-    tags: list[str] = Field(default_factory=list)
     #: Which investigation purposes this serves (a qualifier). Checked at load against Egeria's purposes list
     #: (`discovery.discover`); suggestive, so an unknown value warns, naming it, and is kept.
     purposes: list[str] = Field(default_factory=list)
@@ -47,7 +52,7 @@ def purpose_warnings(manifest: _TrellisManifest, known: list[str]) -> list[str]:
 
 
 class RoutineManifest(_TrellisManifest):
-    kind: Kind = "routine"
+    kind: Literal["routine"] = "routine"
 
 
 #: What a step may ask of the resource it measures (owner ruling 2026-10-07): nothing, or read-only. Anything
@@ -71,7 +76,7 @@ def tier_refusal(tier: str) -> str:
 
 class StepManifest(_TrellisManifest):
     """Level 2's declaration (brief 2c'): what the wrapper needs to run a user's code as a survey step."""
-    kind: Kind = "step"
+    kind: Literal["step"] = "step"
     annotation_type: str = "ResourceMeasureAnnotation"
     credential_tier: str = "none"
     inputs: list[str] = Field(default_factory=lambda: ["ods"])
