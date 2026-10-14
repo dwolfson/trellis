@@ -2835,3 +2835,15 @@ DATABASE_ANALYSIS_KINDS: dict[str, AnalysisKind] = {
     for analysis_id, step_keys in DATABASE_ANALYSIS_RE_STEP_MAP.items()
     if analysis_id in DATABASE_ANALYSIS_RESULTS_MAP
 }
+
+
+# ── user steps (extensibility brief 2c) ─────────────────────────────────────
+#
+# Installable steps found through the `trellis.analytics` entry point, attached
+# BESIDE the registry above by `survey_step_host`, from the catalog entries the
+# generator writes from their manifests. Last, so every map it fills exists.
+from resource_explorer.surveyors import survey_step_host as _survey_step_host  # noqa: E402
+
+_survey_step_host.attach(
+    "database", _ADAPTER, DATABASE_STEP_REGISTRY, DATABASE_ANALYSIS_RE_STEP_MAP,
+    DATABASE_ANALYSIS_RESULTS_MAP, DATABASE_ANALYSIS_KINDS, DATABASE_ANALYSIS_HEADLINE_MAP)

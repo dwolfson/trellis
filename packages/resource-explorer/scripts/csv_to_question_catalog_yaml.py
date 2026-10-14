@@ -305,7 +305,9 @@ KNOWN_LEVELS = ["resource", "container", "member", "field"]
 # on every row — keep in sync with csv_to_dr_egeria_questions.py's
 # OPTIONAL_LEAD_COLUMNS, which does the same by-elimination trick.
 NON_PERSPECTIVE_COLUMNS = (
-    "Question", "Funnel Stage", "Why is this important?", "Rationale/Source",
+    # "Question ID" (2026-10-13): the stable id, assigned once and never derived from the text. Must stay
+    # here for the by-elimination reason below, or it becomes a phantom Perspective on every question.
+    "Question ID", "Question", "Funnel Stage", "Why is this important?", "Rationale/Source",
     "Answering Analysis", "Answering Mechanism", "Purposes", "Catalog History",
     # "Level" (added 2026-09-25, design §18.3): the granularity the answer is a
     # single value at — one or more of KNOWN_LEVELS, `;`-separated, blank means
@@ -674,10 +676,56 @@ def _apply_type_override(entry: dict, resource_type: str, known_checks: set[str]
     entry["catalog_history"] = override["Catalog History"]
 
 
+#: A question id is `Q-` and at least four digits, assigned ONCE and stored in the CSV's `Question ID`
+#: column. It is deliberately opaque: it names no resource type and no wording, because both change (a
+#: shared question gains a type; the text is edited) and an id that encoded either would stop being true.
+#: A manifest names the question it answers by this id, so it must never be derived from the text at
+#: generation time and never reused (retired rows keep theirs, so "max + 1" cannot collide).
+QUESTION_ID_RE = re.compile(r"^Q-\d{4,}$")
+
+
+def validate_question_ids(rows: list[dict]) -> None:
+    """Refuse a catalog whose questions do not each carry one well-formed, unique id. Raises ValueError
+    naming every offending question, so one run shows the whole problem."""
+    problems: list[str] = []
+    seen: dict[str, str] = {}
+    for row in rows:
+        question = (row.get("Question") or "").strip()
+        if not question:
+            continue
+        qid = (row.get("Question ID") or "").strip()
+        if not qid:
+            problems.append(f"missing Question ID: {question!r}")
+        elif not QUESTION_ID_RE.match(qid):
+            problems.append(f"malformed Question ID {qid!r} (want Q-0001 style) for {question!r}")
+        elif qid in seen:
+            problems.append(f"duplicate Question ID {qid!r}: {seen[qid]!r} and {question!r}")
+        else:
+            seen[qid] = question
+    if problems:
+        raise ValueError(
+            "the question catalog CSV needs one stable, unique `Question ID` per question:\n  - "
+            + "\n  - ".join(problems)
+            + "\nAssign an id once and keep it when the text changes; never derive it from the text."
+        )
+
+
+def next_question_id(rows: list[dict]) -> str:
+    """The next free id: one past the highest numeric id in `rows` (retired rows count, so an id is never
+    reused)."""
+    top = 0
+    for row in rows:
+        m = QUESTION_ID_RE.match((row.get("Question ID") or "").strip())
+        if m:
+            top = max(top, int(m.group(0)[2:]))
+    return f"Q-{top + 1:04d}"
+
+
 def generate(rows: list[dict], known_purposes: list[str] | None = None,
              warnings: list[str] | None = None) -> str:
     """The YAML for `rows`. Purposes outside the list are kept; each is named once in `warnings` (when
     given) and on stderr."""
+    validate_question_ids(rows)
     known_checks = _load_known_checks()
     known_purposes = known_purposes if known_purposes is not None else _known_purposes()
     purpose_warnings: list[str] = []
@@ -696,6 +744,7 @@ def generate(rows: list[dict], known_purposes: list[str] | None = None,
         resource_types = parse_resource_types(row.get("Resource Types", ""))
 
         entry = {
+            "id": (row.get("Question ID") or "").strip(),
             "question": question,
             "stage": (row.get("Funnel Stage") or "").strip(),
             "perspectives": perspectives,
@@ -739,6 +788,11 @@ def generate(rows: list[dict], known_purposes: list[str] | None = None,
         "# answers. Do not add empty sections to make the file look complete.\n"
         "#\n"
         "# Each entry:\n"
+        "#   id            - the question's stable id (`Q-0001`), stored in the CSV's\n"
+        "#                   `Question ID` column. Assigned once, never derived from the\n"
+        "#                   text, never reused; a shared question carries ONE id in every\n"
+        "#                   type's section. A manifest names a question by this id, so\n"
+        "#                   editing the wording does not orphan it.\n"
         "#   question      - display text; matches the Egeria GlossaryTerm Display\n"
         "#                   Name exactly (case+punctuation-sensitive) since it's\n"
         "#                   also the join key back to Egeria's own Question\n"

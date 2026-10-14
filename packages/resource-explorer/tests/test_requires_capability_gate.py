@@ -419,11 +419,19 @@ def test_the_database_declarations_match_the_audit():
     """`DATABASE-STEP-CAPABILITY-AUDIT.md` is the source of truth for these,
     not this session's reading of the SQL. Changing one should mean arguing
     with that document — which is what this assertion makes you do."""
+    from resource_explorer.surveyors.analysis_catalog_reader import _load
     from resource_explorer.surveyors.database.survey_definition_adapter import (
         DATABASE_STEP_REGISTRY,
     )
 
-    assert {k: v.requires_capability for k, v in DATABASE_STEP_REGISTRY.items()} == {
+    # User steps (extensibility brief 2c) are not the audit's: each declares its
+    # tier in its own manifest, and the generated catalog entry carries it.
+    user_steps = {e.provided_by.get("step") or e.id: e.provided_by.get("credential_tier", "")
+                  for e in _load()["database"] if e.provided_by}
+    for step, tier in user_steps.items():
+        assert DATABASE_STEP_REGISTRY[step].requires_capability == ("" if tier in ("", "none") else "read"), step
+    assert {k: v.requires_capability for k, v in DATABASE_STEP_REGISTRY.items()
+            if k not in user_steps} == {
         # audit §1 — CORRECTED 2026-09-24/25: `pg_stat_user_tables`/`pg_stat_
         # user_indexes` were live-verified NOT gated by `pg_monitor` (see the
         # audit's "Correction" section). The strongest tier this step's own

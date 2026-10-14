@@ -222,6 +222,7 @@ def build_question_checklist(
         if has_data is None and answering["kind"] in ("partial", "mixed"):
             has_data = _mixed_has_data(registry, slug, entity_type, e["question"])
         questions.append({
+            "id": e.get("id", ""),
             "question": e["question"],
             "stage": e["stage"],
             "perspectives": e["perspectives"],

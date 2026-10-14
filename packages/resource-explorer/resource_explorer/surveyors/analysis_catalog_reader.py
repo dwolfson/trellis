@@ -120,6 +120,14 @@ class AnalysisCatalogEntry:
     #: resolver says HOW to check it).
     requires_input: str = ""
 
+    #: Extensibility brief 2c: set only on an entry GENERATED from an
+    #: installable step's manifest (scripts/generate_external_step_entries.py)
+    #: — the package, entry point, step key, version and the manifest's
+    #: declarations. Empty for every built-in analysis. RE's host
+    #: (`survey_step_host`) reads it to attach the step beside the step
+    #: registry, installed or not, so a card whose package is absent says so.
+    provided_by: dict = field(default_factory=dict)
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -137,6 +145,7 @@ class AnalysisCatalogEntry:
             "egeria_registration": self.egeria_registration,
             "target_shape": self.target_shape,
             "requires_input": self.requires_input,
+            **({"provided_by": self.provided_by} if self.provided_by else {}),
             # The orchestrator step keys this analysis actually runs. Present so
             # a card can offer a scoped Publish: _publishScopedSteps needs the
             # step keys, not the analysis id, and without them the local
@@ -190,6 +199,7 @@ def _entry_from_yaml(raw: dict) -> AnalysisCatalogEntry:
         # path by staying silent.
         availability=raw.get("availability", "queued"),
         requires_input=raw.get("requires_input", ""),
+        provided_by=dict(raw.get("provided_by") or {}),
     )
 
 

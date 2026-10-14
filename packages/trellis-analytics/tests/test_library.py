@@ -89,3 +89,45 @@ def test_ods_reader_is_select_only_and_read_only(make_ods):
         ods.query("DELETE FROM egeria_outbox")
     with pytest.raises(OdsUnreadable):
         OdsReader("sqlite:////nonexistent/dir/x.sqlite").query("SELECT 1")
+
+
+def test_manifest_questions_are_checked_by_stable_id_and_warn_never_reject(caplog):
+    """Owner ruling, "suggestive everywhere": a manifest names the questions it answers by catalog id; an id
+    the catalog does not hold is named in a warning and the manifest still loads, ids kept as written."""
+    import logging
+
+    from trellis_analytics.discovery import check_questions
+
+    m = StepManifest(name="staleness", function="a.b", source="ods", version="1", questions=["Q-0001", "Q-9999"])
+    with caplog.at_level(logging.WARNING):
+        warnings = check_questions({"staleness": m}, {"Q-0001", "Q-0002"})
+    assert warnings == ["manifest 'staleness': question 'Q-9999' is not an id in the question catalog; "
+                        "kept as written"]
+    assert "'Q-9999'" in caplog.text
+    assert m.questions == ["Q-0001", "Q-9999"]
+
+
+def test_manifest_questions_default_to_resource_explorer_s_catalog_without_a_registry():
+    """With RE installed the ids are the shipped catalog's, read without constructing a ProjectRegistry (which
+    would connect to the shared registry and migrate it)."""
+    from resource_explorer.registry import ProjectRegistry
+    from trellis_analytics.discovery import check_questions, known_question_ids
+
+    ids = known_question_ids()
+    assert ids and "Q-0001" in ids
+    m = StepManifest(name="s", function="a.b", source="ods", version="1", questions=["Q-0001", "Q-0002"])
+    original = ProjectRegistry.__init__
+    ProjectRegistry.__init__ = lambda *a, **k: (_ for _ in ()).throw(AssertionError("constructed a registry"))
+    try:
+        assert check_questions({"s": m}) == []
+        assert check_questions({"s": StepManifest(name="t", function="a.b", source="ods", version="1",
+                                                 questions=["Q-8888"])}) != []
+    finally:
+        ProjectRegistry.__init__ = original
+
+
+def test_manifest_with_no_questions_does_not_read_the_catalog():
+    from trellis_analytics.discovery import check_questions
+
+    assert check_questions({"c": CURATION_COVERAGE}, known=None) == []
+    assert CURATION_COVERAGE.questions == []

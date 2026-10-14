@@ -23,6 +23,13 @@ Routines and steps with a result envelope, discovered through the
   and `curation_coverage_tile.md`, the tile's spec as a Dr.Egeria report-spec document (the Advisor's parser reads it to
   the same `FormatSet`).
 
+- `trellis_analytics.step`: `SurveyStep`, level 2 of a step (brief 2c'): declared inputs only, never a password,
+  read-only on the resource at most, the envelope on every result, the host's store.
+- `trellis_analytics.declare`: the Dr.Egeria declaration of a step, generated from its manifest (never run here).
+- `examples/steps/database_staleness/`: piece 2c, a user step as its own installable package (`run(inputs)` plus
+  a `StepManifest` entry point). Resource Explorer runs it through `survey_step_host`; its catalog entry and
+  Dr.Egeria document come from `packages/resource-explorer/scripts/generate_external_step_entries.py`.
+
 No executor: a routine is called directly; a step is run by a host.
 
 ```python

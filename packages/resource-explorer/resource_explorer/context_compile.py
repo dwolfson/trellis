@@ -1025,6 +1025,7 @@ def compile_context(
         for analysis_id in ids:
             weights[analysis_id] = max(weights.get(analysis_id, 0.0), weight)
         derivation.append({
+            "question_id": entry.get("id", ""),
             "question": entry["question"],
             "matched_purposes": d.get("matched_purposes", []),
             "matched_perspectives": d.get("matched_perspectives", []),

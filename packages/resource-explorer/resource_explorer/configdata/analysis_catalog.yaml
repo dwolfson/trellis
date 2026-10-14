@@ -1492,6 +1492,43 @@ database_analyses:
       candidate: true
       native_process_ref: ["database", "PostgreSQL Relational Database"]
 
+  # BEGIN GENERATED user steps (database): scripts/generate_external_step_entries.py. Do not hand-edit.
+  - id: database_staleness
+    name: Database Staleness
+    description: 'Rows changed per table since the last survey: compares the latest two row-count snapshots
+      Resource Explorer stored for the database. Reads only what RE already stored; opens no connection
+      to the database.'
+    resource_types:
+    - database
+    intent: analysis
+    perspectives:
+    - Steward
+    - Data Expert
+    annotation_types:
+    - ResourceMeasureAnnotation
+    source: local
+    run_time: fast
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: true
+      native_process_ref: null
+    provided_by:
+      package: trellis-step-database-staleness
+      entry_point: database_staleness
+      step: database_staleness
+      version: 0.1.0
+      kind: step
+      source: ods
+      credential_tier: none
+      questions:
+      - Q-0041
+      purposes:
+      - Maintain
+  # END GENERATED user steps (database)
+
 filesystem_analyses:
   - id: filesystem_inventory
     name: "File System Inventory"

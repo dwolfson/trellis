@@ -9602,6 +9602,10 @@ async function toggleMeasurementsInPlace(i, analysisId, btn, level) {
             ? `<button data-numbers-open="${esc(m.opens.analysis_id || analysisId)}" data-numbers-metric="${esc(m.opens.metric || m.name)}"
                  data-numbers-title="${esc(String(m.name || '').replace(/_/g, ' '))}"
                  class="cursor-pointer bg-transparent text-accent-ink underline">the ${tnum(esc(String(m.value)))} ${esc(String(m.name || '').replace(/_/g, ' '))} ›</button>`
+            // A row read from an annotation carries its envelope's state words (the reader derives them from
+            // the envelope, never from the value): the word, then why when it is not a measurement.
+            : m.state_words ? `<span class="text-ink">${esc(m.state_words)}</span>${
+              m.reason ? `<span class="text-ink-muted"> · ${esc(m.reason)}</span>` : ''}`
             : m.note ? `<span class="text-ink-muted">${esc(m.note)}</span>` : ''
         }</td>
       </tr>`).join('')}

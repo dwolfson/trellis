@@ -27,18 +27,17 @@ _CRITICAL_FIELDS: dict[str, str] = {
 class QuestionAnswer(BaseModel):
     """One human answer to one catalog question.
 
-    The question TEXT is stored alongside the answer, not just used as the
-    key. The catalog has no stable question id — `question_catalog.yaml`
-    entries carry question/stage/perspectives/purposes/answering and nothing
-    identifying — so the key here is a slug derived from the wording. Reword
-    the CSV and the slug changes, which would orphan the answer.
-
-    Storing the text makes that orphaning visible and recoverable rather than
-    silent: the answer is still there, still readable, and still says which
-    question it was given for. A stable id in the catalog would be the real
-    fix; this records why it is wanted.
+    The dict key is a slug derived from the wording (the client computes the
+    same slug to read it back), so rewording the CSV changes the slug the
+    client looks up. Two fields keep that from orphaning the answer: the
+    question TEXT is stored alongside it, and `question_id` is the catalog's
+    stable id, stamped when the answer is saved. `get_context` re-keys each
+    answer that has an id under the question's CURRENT slug (see
+    `realias_answers`), so the answer is found after the reword; an answer
+    saved before ids existed has no id and is found by its slug as always.
     """
     question: str = ""
+    question_id: str = ""
     answer: str = ""
     answered_at: str = ""
     # ENRICHMENT-E0-ROW-ANATOMY (REPLY-DESIGNER-ENRICHMENT-STAGE-IA.md §0.3):
@@ -129,8 +128,12 @@ def split_purpose_field(write: FieldWrite, names: list[str]) -> tuple[str, str, 
 
 
 class AnswerWrite(BaseModel):
-    question: str
+    question: str = ""
+    #: The question's stable id; names the question when `question` is blank, and wins when they disagree.
+    question_id: str = ""
     answer: str = ""
+    #: Resource type, so the id/text resolves against that type's section (a text can be authored under two).
+    entity_type: str = ""
 
 
 def question_key(text: str) -> str:
@@ -180,10 +183,48 @@ class ContextData(BaseModel):
     enrichment: dict[str, EnrichmentField] = {}
 
 
+def realias_answers(answers: dict, resource_type: str | None = None) -> dict:
+    """The stored answers, plus each id-carrying one under the slug of its question's CURRENT wording.
+
+    Read-time only: nothing is rewritten. When the CSV rewords a question its slug changes and a client
+    looking the answer up by the new slug would miss it; the answer's `question_id` finds the question
+    in today's catalog and the same answer is offered under today's slug. An answer with no id (saved
+    before ids existed) or whose id the catalog no longer has is returned as it was."""
+    from resource_explorer.surveyors.question_catalog_reader import find_question_by_id
+
+    out = dict(answers or {})
+    for old_key, ans in list((answers or {}).items()):
+        qid = (ans or {}).get("question_id") or ""
+        if not qid:
+            continue
+        current = find_question_by_id(qid, resource_type) or find_question_by_id(qid)
+        if current is None:
+            continue
+        new_key = question_key(current["question"])
+        if new_key != old_key and new_key not in out:
+            out[new_key] = ans
+    return out
+
+
+def collapse_aliased_answers(answers: dict) -> dict:
+    """Undo `realias_answers` on a document a client sends back: of the entries sharing one `question_id`,
+    keep only the latest-answered, so an alias is never persisted as a second answer to the same question."""
+    best: dict[str, str] = {}
+    for key, ans in (answers or {}).items():
+        qid = (ans or {}).get("question_id") or ""
+        if qid and (qid not in best or (ans.get("answered_at") or "") >= (answers[best[qid]].get("answered_at") or "")):
+            best[qid] = key
+    return {k: a for k, a in (answers or {}).items()
+            if not (a or {}).get("question_id") or best[a["question_id"]] == k}
+
+
 @router.get("/{entity_type}/{slug}")
 def get_context(entity_type: str, slug: str) -> dict:
     """Return stored context for a resource. Returns {} if none saved yet."""
-    return ProjectRegistry().get_context(entity_type, slug) or {}
+    context = ProjectRegistry().get_context(entity_type, slug) or {}
+    if context.get("question_answers"):
+        context = {**context, "question_answers": realias_answers(context["question_answers"], entity_type)}
+    return context
 
 
 @router.get("/{entity_type}/{slug}/enrichment-analyses")
@@ -288,6 +329,8 @@ async def save_context(entity_type: str, slug: str, data: ContextData, request: 
         context["enrichment"] = existing.get("enrichment", {})
     if "question_answers" not in raw:
         context["question_answers"] = existing.get("question_answers", {})
+    else:
+        context["question_answers"] = collapse_aliased_answers(context["question_answers"])
     context["updated_at"] = datetime.now(timezone.utc).isoformat()
     registry.save_context(entity_type, slug, context)
 
@@ -448,16 +491,32 @@ def save_answer(entity_type: str, slug: str, write: AnswerWrite, request: Reques
     author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
     if not author:
         raise HTTPException(status_code=401, detail="Sign in to answer — an answer needs an author.")
+    from resource_explorer.surveyors.question_catalog_reader import find_question, find_question_by_id
+
+    resource_type = (write.entity_type or entity_type).strip()
     question = write.question.strip()
+    question_id = write.question_id.strip()
+    if question_id:
+        found = find_question_by_id(question_id, resource_type) or find_question_by_id(question_id)
+        if found is None:
+            raise HTTPException(status_code=422, detail=f"question_id {question_id!r} is not in the catalog")
+        question = found["question"]
+    elif question:
+        question_id = (find_question(question, resource_type) or find_question(question) or {}).get("id", "")
     if not question:
-        raise HTTPException(status_code=422, detail="question is required")
+        raise HTTPException(status_code=422, detail="question or question_id is required")
 
     registry = ProjectRegistry()
     context = registry.get_context(entity_type, slug) or {}
     answers = dict(context.get("question_answers") or {})
     key = question_key(question)
+    if question_id:
+        # An answer given under the question's earlier wording is replaced, not left beside the new one.
+        for old_key in [k for k, a in answers.items()
+                        if k != key and (a or {}).get("question_id") == question_id]:
+            del answers[old_key]
     answers[key] = QuestionAnswer(
-        question=question, answer=write.answer.strip(),
+        question=question, question_id=question_id, answer=write.answer.strip(),
         answered_at=datetime.now(timezone.utc).isoformat(), answered_by=author,
     ).model_dump()
     context["question_answers"] = answers

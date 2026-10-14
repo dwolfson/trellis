@@ -23,12 +23,13 @@ import yaml
 from resource_explorer.surveyors import question_catalog_writer as qcw
 
 _HEADER = [
-    "Question", "Funnel Stage", "Why is this important?", "Rationale/Source",
+    "Question ID", "Question", "Funnel Stage", "Why is this important?", "Rationale/Source",
     "Answering Analysis", "Answering Mechanism", "Steward", "Consumer",
     "Purposes", "Catalog History", "Status",
 ]
 
 _EXISTING_ROW = {
+    "Question ID": "Q-0001",
     "Question": "Is this repository actively maintained?",
     "Funnel Stage": "Scouting",
     "Why is this important?": "So it is not a dead end.",
