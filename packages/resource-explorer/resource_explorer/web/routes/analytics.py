@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 
 router = APIRouter()
 
@@ -45,40 +45,21 @@ async def read_curation_coverage(resource_type: str, slug: str) -> dict:
 KNOWN_ENTITY_TYPES = ("database", "file_system", "document_source")
 
 
-def require_caller(request: Request) -> dict:
-    """Authenticate a tile read: RE's session JWT, or the Portal's SSO JWT. Never anonymous.
+def require_caller() -> None:
+    """The tile is never anonymous, even under TRELLIS_ANONYMOUS_READ (which lets a GET past the login gate).
 
-    `Authorization: Bearer <jwt>` either way. The Portal's token is HS256 under the shared portal secret
-    (`TRELLIS_PORTAL_SECRET` here, `EGERIA_ADVISOR_SSO_SECRET` in the Portal) with claims
-    `{sub, role, display_name, egeria_token, iat, exp}`; an expired or forged one is 401.
+    The route is an ordinary authenticated route: `LoginRequiredMiddleware` gates it and `_identity_middleware`
+    publishes RE's own session JWT's subject as `a2a_auth.current_caller`. A request that arrives with no
+    caller, whatever let it through the gate, is 401.
+
+    The Portal's flow (server-to-server, no cookies):
+      1. `POST /api/auth/portal` body `{"portal_token": "<per-user SSO JWT>"}` -> `{"access_token": ...}`
+      2. `GET /api/analytics/curation-coverage-tile/{entity_type}/{slug}` with `Authorization: Bearer <access_token>`
     """
-    import jwt
-    from resource_explorer.auth import exchange_portal_token, get_current_user
-    from resource_explorer.egeria_clients import DaemonSignInRefused, refuse_daemon_sign_in
+    from resource_explorer.a2a_auth import current_caller
 
-    claims = get_current_user(request)
-    if claims is None:
-        header = request.headers.get("authorization", "")
-        token = header[7:].strip() if header.startswith("Bearer ") else ""
-        if not token:
-            raise HTTPException(status_code=401, detail="Authentication required: send Authorization: Bearer <jwt>.")
-        try:
-            claims = exchange_portal_token(token)
-        except HTTPException as exc:
-            if exc.status_code == 503:
-                raise HTTPException(status_code=401, detail="Authentication required: not a valid session token, "
-                                    "and Portal SSO is not configured on this server.") from None
-            raise
-        except jwt.PyJWTError as exc:       # pragma: no cover - exchange maps these already
-            raise HTTPException(status_code=401, detail=str(exc)) from None
-    user = claims.get("user_id") or claims.get("sub") or ""
-    if not user:
-        raise HTTPException(status_code=401, detail="Token carries no subject.")
-    try:
-        refuse_daemon_sign_in(user)
-    except DaemonSignInRefused as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from None
-    return claims
+    if current_caller.get() is None:
+        raise HTTPException(status_code=401, detail="Authentication required: send Authorization: Bearer <RE session token>.")
 
 
 def curation_coverage_tile_for(entity_type: str, slug: str, url: str | None = None) -> dict:
@@ -86,15 +67,18 @@ def curation_coverage_tile_for(entity_type: str, slug: str, url: str | None = No
     try:
         from trellis_analytics.portal import curation_coverage_tile
     except ImportError as exc:
-        reason = f"the Analytic Library (trellis-analytics) is not installed: {exc}"
-        return {"state": "not_applicable", "state_reason": reason, "subtitle": f"Not applicable \u00b7 {reason}",
+        # Only "the library itself is absent" is a state; a transitive ImportError is a bug and must surface.
+        if (exc.name or "").split(".")[0] != "trellis_analytics":
+            raise
+        reason = "the Analytic Library is not installed on this RE"
+        return {"state": "not_established", "state_reason": reason, "subtitle": f"Not established \u00b7 {reason}",
                 "summary": "", "groups": [], "kpis": []}
     return curation_coverage_tile(slug, url or registry_url(), entity_type)
 
 
 @router.get("/curation-coverage-tile/{entity_type}/{slug}")
-async def read_curation_coverage_tile(entity_type: str, slug: str, request: Request) -> dict:
-    require_caller(request)
+async def read_curation_coverage_tile(entity_type: str, slug: str) -> dict:
+    require_caller()
     if entity_type not in KNOWN_ENTITY_TYPES:
         raise HTTPException(status_code=404, detail=f"unknown entity type {entity_type!r}; known: {', '.join(KNOWN_ENTITY_TYPES)}")
     return await asyncio.to_thread(curation_coverage_tile_for, entity_type, slug)

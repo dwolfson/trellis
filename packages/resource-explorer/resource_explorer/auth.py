@@ -114,11 +114,6 @@ RE_PUBLIC_PATHS = (
     "/api/auth/me",
     "/api/auth/defaults",
     "/api/auth/policy",
-    # The Portal's server-to-server tile read. Public to the MIDDLEWARE only, because the middleware
-    # verifies RE's own session JWT and this route must also accept the Portal's SSO JWT (signed with the
-    # shared portal secret). The route authenticates for itself and is never anonymous
-    # (web/routes/analytics.py::require_caller), including under TRELLIS_ANONYMOUS_READ.
-    "/api/analytics/curation-coverage-tile/",
 )
 
 
