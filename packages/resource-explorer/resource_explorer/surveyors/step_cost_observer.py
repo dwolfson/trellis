@@ -162,6 +162,11 @@ class Observation:
     #: different, unremarkable case this field must not conflate with a
     #: failure.
     dispatch_failed: str = ""
+    #: R21: the OpenLineage run id and how delivery went
+    #: (`openlineage.RunState.summary()`), so a run's event can be found from
+    #: its `step_runs` row and a lost event is visible, not inferred. Empty
+    #: only for an Observation built by hand.
+    openlineage: dict = field(default_factory=dict)
 
     def vector(self) -> dict:
         """The cost vector as it is stored, one key per §17.2 axis.
@@ -189,6 +194,7 @@ class Observation:
             "questions_answered": self.questions_answered,
             "outcomes": list(self.outcomes),
             "interpretable": self.interpretable,
+            **({"openlineage": dict(self.openlineage)} if self.openlineage else {}),
         }
 
     def declared_vector(self) -> dict:
@@ -234,7 +240,9 @@ def _cpu_seconds() -> float:
 @contextmanager
 def observe(step_key: str, declared_fetch: str, declared_compute: str,
             *, executor: str = "local", source: str = "local",
-            executor_ref: str = "", demanded_by: str = ""):
+            executor_ref: str = "", demanded_by: str = "",
+            entity_type: str = "", slug: str = "", resource=None,
+            job_family: str = "analysis"):
     """Measure a step's whole cost vector, then compare it with what it declared.
 
     Yields a one-element list that receives the Observation on exit, so a
@@ -250,6 +258,12 @@ def observe(step_key: str, declared_fetch: str, declared_compute: str,
     """
     global _connect_count, _patched
     from resource_explorer.observability import acquisition, external_calls, llm_usage
+    from resource_explorer.observability import openlineage
+
+    # R21: every step passes through here, so this is the one place a run
+    # event is emitted -- START now, COMPLETE/FAIL in the finally below.
+    ol_state, ol_token = openlineage.begin(job_family, step_key, entity_type, slug, resource)
+    raised: BaseException | None = None
 
     out: list[Observation] = []
     with _counter_lock:
@@ -266,6 +280,9 @@ def observe(step_key: str, declared_fetch: str, declared_compute: str,
         tokens = stack.enter_context(llm_usage.usage_scope())
         try:
             yield out
+        except BaseException as exc:
+            raised = exc
+            raise
         finally:
             elapsed = time.perf_counter() - t0
             cpu = _cpu_seconds() - cpu0
@@ -288,6 +305,8 @@ def observe(step_key: str, declared_fetch: str, declared_compute: str,
             obs.executor_ref = executor_ref
             obs.demanded_by = demanded_by
             obs.disagreement = _disagreement(obs)
+            openlineage.finish(ol_state, ol_token, raised=raised)
+            obs.openlineage = ol_state.summary()
             out.append(obs)
             if obs.disagreement:
                 log.warning("step cost: %s — %s", step_key, obs.disagreement)

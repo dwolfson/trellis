@@ -885,6 +885,7 @@ class SurveyDefinitionExecutor:
                         getattr(_pf_info, "fetch_cost", ""),
                         getattr(_pf_info, "compute_cost", ""),
                         executor="local", source="local",
+                        entity_type=entity_type, slug=getattr(entity, "slug", ""), resource=entity,
                     ) as _pf_observed:
                         try:
                             output = run_prefect_step(
@@ -1003,6 +1004,7 @@ class SurveyDefinitionExecutor:
                         # trace of the question that caused it, which is the
                         # one thing `demanded_by` exists to prevent.
                         demanded_by=demanded_by,
+                        entity_type=entity_type, slug=getattr(entity, "slug", ""), resource=entity,
                     ) as observed:
                         output = runner(entity, self.registry, **runner_kwargs)
                     self._record_cost(observed, entity_type, slug, output, surveyed_at)
@@ -1459,6 +1461,7 @@ class SurveyDefinitionExecutor:
                 producer, getattr(info, "fetch_cost", ""),
                 getattr(info, "compute_cost", ""),
                 executor="local", source="local", demanded_by=demanding_step,
+                entity_type=entity_type, slug=getattr(entity, "slug", ""), resource=entity,
             ) as observed:
                 output = runner(entity, self.registry, **runner_kwargs)
             self._record_cost(observed, entity_type, entity.slug, output, surveyed_at)

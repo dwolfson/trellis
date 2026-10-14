@@ -363,6 +363,7 @@ def run_planned_step_task(
         with step_cost_observer.observe(
             step_key, getattr(info, "fetch_cost", ""), getattr(info, "compute_cost", ""),
             executor="prefect", source="prefect",
+            entity_type=entity_type, slug=slug,
         ) as observed:
             output = run_surveyor_step_task.fn(
                 entity_type=entity_type, slug=slug, step_name=step_key,
