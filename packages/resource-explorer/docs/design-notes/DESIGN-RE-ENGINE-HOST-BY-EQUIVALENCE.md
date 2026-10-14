@@ -816,3 +816,13 @@ Each question is marked with whose it is. None is decided here.
   administrator? Separately, claim arbitration is JVM-local (C5): is a
   multi-instance metadata server a supported topology for engine-action
   claiming?
+
+## Owner decisions (2026-10-13)
+
+**Decision (project owner, 2026-10-13):** Q-O1: the 2026-08-17 hold is lifted. The hold was Egeria's "connector is null" failure on template-created assets (egeria-python ISSUE-51). It no longer affects databases (10 native database surveys have completed). Folder surveys are not yet re-verified.
+
+**Decision (project owner, 2026-10-13):** Q-O2: the engine runs as RE's **existing service account** (the `EGERIA_USER_ID` daemon), not a dedicated engine user.
+
+**Decision (project owner, 2026-10-13):** Q-O3: "run as yourself if in private mode". An action on a resource in a private investigation is left unclaimed by the unattended host, and the owner is offered an attended run under their own identity.
+
+**Decision (project owner, 2026-10-13):** Q-O4: yes. RE may claim an action whose start time is in the future and hold it, visibly as RE's in Egeria.
