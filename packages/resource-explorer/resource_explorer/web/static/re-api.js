@@ -938,7 +938,7 @@ export const listFoundations = () => cached('discovery-foundations', () => get('
  * old browser, a proxy that buffers SSE) should catch and retry with the
  * plain `ask()` above rather than this function pretending to stream.
  */
-export async function* askStream(query, { resourceSlug, entityType, perspectives = [], sessionId } = {}) {
+export async function* askStream(query, { resourceSlug, entityType, perspectives = [], sessionId, skipResourceCheck = false } = {}) {
   requireKind('askStream', entityType);
   const res = await fetch('/api/query/stream', {
     method: 'POST',
@@ -949,6 +949,8 @@ export async function* askStream(query, { resourceSlug, entityType, perspectives
       entity_type: entityType,
       perspectives: [...perspectives],
       session_id: sessionId || null,
+      // The person already chose "keep this resource" for a question that named another one.
+      skip_resource_check: Boolean(skipResourceCheck),
     }),
   });
   if (!res.ok || !res.body) throw await apiErrorFrom(res, '/api/query/stream');

@@ -6476,29 +6476,44 @@ class ProjectRegistry:
                 ).fetchall()
         return [dict(r) for r in rows]
 
-    def fuzzy_candidate(self, query: str) -> tuple[str, str] | None:
+    def fuzzy_candidate(self, query: str, *, exclude_slug: str | None = None,
+                        min_term_len: int = 0) -> tuple[str, str] | None:
         """
-        Return (display_term, project_slug) if a phrase in the query fuzzy-matches a project.
-        Uses difflib at 0.70 cutoff. Tries 1–4-word ngrams ordered longest-first.
-        Returns None when no confident match exists.
+        Return (display_term, resource_slug) if a phrase in the query fuzzy-matches a resource
+        (repo, database or file system). Uses difflib at 0.70 cutoff. Tries 1–4-word ngrams
+        ordered longest-first. Returns None when no confident match exists.
+
+        exclude_slug: a phrase whose best match is this resource is skipped (a chat scoped to
+        that resource is not told it meant itself). min_term_len: ignore shorter phrases.
         """
         import difflib
         q = query.lower()
-        projects = self.list_all()
         candidates: dict[str, str] = {}  # normalized_name → slug
-        for p in projects:
-            candidates[p.slug.lower()] = p.slug
-            if p.display_name:
-                key = p.display_name.lower().replace("-", "_").replace(" ", "_")
-                candidates[key] = p.slug
+
+        def _add(slug: str, display_name: str) -> None:
+            candidates[slug.lower()] = slug
+            if display_name:
+                key = display_name.lower().replace("-", "_").replace(" ", "_")
+                candidates[key] = slug
+
+        for p in self.list_all():
+            _add(p.slug, p.display_name)
+        for d in self.list_databases():
+            _add(d.slug, d.display_name)
+        for f in self.list_filesystems():
+            _add(f.slug, f.display_name)
         if not candidates:
             return None
         words = q.split()
         for n in range(min(4, len(words)), 0, -1):
             for i in range(len(words) - n + 1):
                 term = "_".join(words[i:i + n])
+                if len(term) < min_term_len:
+                    continue
                 matches = difflib.get_close_matches(term, list(candidates.keys()), n=1, cutoff=0.70)
                 if matches:
+                    if exclude_slug and candidates[matches[0]] == exclude_slug:
+                        continue
                     display_term = " ".join(words[i:i + n])
                     return display_term, candidates[matches[0]]
         return None

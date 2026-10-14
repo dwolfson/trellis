@@ -2284,6 +2284,23 @@ export function renderSidebar() {
   bindSidebar();
 }
 
+/** Select ONE resource of a given type from outside the sidebar (chat's "Ask about <other resource>").
+ *  Switches the type first when it differs, then selects the slug, and returns whether the selection
+ *  is now what was asked for -- read back from `state`, so the caller never assumes the switch took. */
+export async function selectResourceFromChat(type, slug) {
+  if (state.resourceType !== type) await switchResourceType(type);
+  const rows = currentResourceRows();
+  if (!rows.some((r) => r.slug === slug)) return false;
+  state.workListSlug = null;
+  state.selectedSlug = slug;
+  renderSidebar();
+  writeUrl();
+  renderTopBar();
+  renderRailScope();
+  loadPane();
+  return state.selectedSlug === slug && state.resourceType === type;
+}
+
 /** Switch the sidebar's resource-type chip: fetches that type's list on
  *  first visit (`ensureResourceListLoaded`), then re-selects a resource of
  *  the NEW type -- `state.selectedSlug` otherwise keeps pointing at a
