@@ -150,3 +150,22 @@ class TestRouteAndStatus:
         with patch.object(GitHubClient, "search_repos", fake):
             out = client.post("/api/discovery/search", json={"keyword": "DataKitchen"}).json()
         assert {o["html_url"]: o["already_registered"] for o in out} == {URLS[0]: True, URLS[1]: False, URLS[2]: False}
+
+
+class TestRowsAreReconcilable:
+    def test_dead_owner_resolves_batch_and_repo_rows(self, registry):
+        from unittest.mock import patch as _p
+        from resource_explorer import run_reconciler as rr
+        batch = oi.begin_import_batch(registry, "search: x", _repos())
+        ids = [batch.batch_id, *batch.repo_ids.values()]
+        assert all(registry.get_activity(i)["status"] == "running" for i in ids)
+        with _p.object(rr, "_is_alive", return_value=False):
+            out = rr.reconcile(registry)
+        assert sorted(out["resolved_ids"]) == sorted(ids)
+        assert all(registry.get_activity(i)["status"] != "running" for i in ids)
+
+    def test_terminal_row_keeps_its_reason(self, registry):
+        registry.add(Project(slug="repo0", display_name="x", github_url=URLS[0]))
+        batch = _run(registry, _repos(URLS[:1]))
+        r = registry.get_activity(batch.repo_ids[URLS[0]])
+        assert "already registered" in r["detail"] and "_runner" not in r["detail"]

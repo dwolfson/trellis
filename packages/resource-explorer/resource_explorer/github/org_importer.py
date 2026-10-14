@@ -141,6 +141,13 @@ def begin_import_batch(registry, source_label: str, repos: list[dict]) -> Import
 
     Called from the route, so the rows exist before the HTTP response and the
     Activity window can show the batch in progress from the moment of the press."""
+    import json
+
+    from resource_explorer.run_reconciler import process_identity
+
+    # The thread that does the work lives in this process, so a restart or crash
+    # leaves these rows for run_reconciler.reconcile() to resolve by pid liveness.
+    owner = json.dumps({"_runner": process_identity()})
     batch = ImportBatch(batch_id=str(uuid.uuid4()), source_label=source_label)
     for r in repos:
         batch.repo_ids[r["github_url"]] = str(uuid.uuid4())
@@ -148,11 +155,11 @@ def begin_import_batch(registry, source_label: str, repos: list[dict]) -> Import
         url = r["github_url"]
         name = r.get("display_name") or url
         _safe(registry, entry_id=batch.repo_ids[url], entity_type="repo", entity_slug=_url_to_slug(url),
-              entity_name=name, entity_location=url, status="running",
+              entity_name=name, entity_location=url, status="running", detail=owner,
               summary=f"Importing '{name}' from {source_label}")
     _safe(registry, entry_id=batch.batch_id, entity_type="repo",
           entity_slug=_slugify_source_label(source_label), entity_name=source_label,
-          entity_location=source_label, status="running", items=batch.items(),
+          entity_location=source_label, status="running", detail=owner, items=batch.items(),
           summary=f"Import batch running ({source_label}): {len(repos)} repo(s)")
     return batch
 
