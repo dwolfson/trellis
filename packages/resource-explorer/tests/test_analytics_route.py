@@ -74,3 +74,73 @@ def test_unreadable_registry_is_not_established(client, monkeypatch):
     r = client.get("/api/analytics/curation-coverage/database/demo")
     assert r.status_code == 200
     assert r.json()["envelope"]["result_state"] == "not_established"
+
+
+# --- the Portal tile route -------------------------------------------------------------------------------
+
+import time
+
+import jwt as _jwt
+
+TILE = "/api/analytics/curation-coverage-tile"
+
+
+@pytest.fixture
+def tclient(reg, monkeypatch):
+    """No anonymous-read: the tile route must refuse an anonymous caller even where reads are open."""
+    monkeypatch.setattr(analytics, "registry_url", lambda: reg.database_url)
+    monkeypatch.delenv("TRELLIS_ANONYMOUS_READ", raising=False)
+    monkeypatch.setenv("TRELLIS_PORTAL_SECRET", "portal-test-secret")
+    from resource_explorer import auth
+    auth.reset_auth_secrets_cache()
+    auth.reset_policy_cache()
+    from resource_explorer.web.app import app
+    yield TestClient(app)
+    auth.reset_auth_secrets_cache()
+    auth.reset_policy_cache()
+
+
+def _portal_jwt(secret="portal-test-secret", exp=3600, **over):
+    claims = {"sub": "erin", "role": "user", "display_name": "Erin", "egeria_token": "tok",
+              "iat": int(time.time()), "exp": int(time.time()) + exp, **over}
+    return _jwt.encode(claims, secret, algorithm="HS256")
+
+
+def _bearer(t):
+    return {"Authorization": f"Bearer {t}"}
+
+
+def test_tile_route_equals_the_library_function(tclient, reg):
+    from trellis_analytics.portal import curation_coverage_tile
+    r = tclient.get(f"{TILE}/database/demo", headers=_bearer(_portal_jwt()))
+    assert r.status_code == 200
+    assert r.json() == curation_coverage_tile("demo", reg.database_url, "database")
+    assert r.json()["state"] in ("measured", "nothing_found")
+
+
+def test_tile_route_accepts_the_portals_service_jwt_and_our_session_jwt(tclient):
+    from resource_explorer.auth import create_access_token
+    assert tclient.get(f"{TILE}/database/demo", headers=_bearer(_portal_jwt())).status_code == 200
+    session = create_access_token("erin", "tok")
+    assert tclient.get(f"{TILE}/database/demo", headers=_bearer(session)).status_code == 200
+
+
+def test_tile_route_without_auth_is_401(tclient):
+    assert tclient.get(f"{TILE}/database/demo").status_code == 401
+
+
+def test_tile_route_refuses_a_forged_or_expired_token(tclient):
+    assert tclient.get(f"{TILE}/database/demo", headers=_bearer(_portal_jwt(secret="wrong"))).status_code == 401
+    assert tclient.get(f"{TILE}/database/demo", headers=_bearer(_portal_jwt(exp=-60))).status_code == 401
+
+
+def test_tile_route_unsurveyed_slug_is_not_established_not_zeros(tclient):
+    r = tclient.get(f"{TILE}/database/never-surveyed", headers=_bearer(_portal_jwt()))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["state"] == "not_established" and body["state_reason"]
+    assert "Published" not in body            # no chart of zeros
+
+
+def test_tile_route_unknown_entity_type_is_404(tclient):
+    assert tclient.get(f"{TILE}/spreadsheet/demo", headers=_bearer(_portal_jwt())).status_code == 404
