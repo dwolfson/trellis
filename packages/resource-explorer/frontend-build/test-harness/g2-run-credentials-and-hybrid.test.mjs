@@ -52,7 +52,6 @@ async function setUp(opts = {}, { published = true } = {}) {
   globalThis.getComputedStyle = window.getComputedStyle.bind(window);
   globalThis.history = window.history;
   window.matchMedia = window.matchMedia || (() => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
-  window.confirm = () => true;
   const api = await import('/static/re-api.js');
   api.clearCache();
   const app = await import('/static/next/app.js');

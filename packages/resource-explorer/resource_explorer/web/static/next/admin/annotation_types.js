@@ -25,6 +25,7 @@ import {
   deleteAnnotationType, getAnnotationTypeUsage,
 } from '/static/re-api.js';
 import { esc } from '/static/next/app.js';
+import { inPageConfirm, inPageNotice } from '/static/next/confirm-dialog.js';
 
 let _types = null;
 let _selected = null;
@@ -206,13 +207,13 @@ async function confirmDelete(typeName) {
     message += 'Its usage could not be checked just now (lookup failed), so '
       + 'how many recorded annotations reference it is UNKNOWN, not zero.';
   }
-  if (!window.confirm(message)) return;
+  if (!(await inPageConfirm({ message: message, confirmLabel: 'Confirm' }))) return;
   try {
     await deleteAnnotationType(typeName);
     _selected = null;
     await refresh(null);
   } catch (err) {
-    window.alert(err.message || 'Failed to delete annotation type.');
+    await inPageNotice({ message: err.message || 'Failed to delete annotation type.' });
   }
 }
 

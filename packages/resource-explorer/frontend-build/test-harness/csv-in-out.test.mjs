@@ -112,7 +112,6 @@ async function setUp(backendOpts = {}, { investigation = '' } = {}) {
   globalThis.getComputedStyle = window.getComputedStyle.bind(window);
   globalThis.history = window.history;
   window.matchMedia = window.matchMedia || (() => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
-  window.confirm = () => true;
   const downloads = [];
   window.HTMLAnchorElement.prototype.click = function click() { downloads.push({ name: this.download, href: this.href }); };
   const api = await import('/static/re-api.js');

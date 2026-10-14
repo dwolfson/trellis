@@ -103,10 +103,11 @@ test('a refused RFA status change shows the cue on the row and records nothing',
   const mod = await import(`/static/next/rfa.js?t=${Math.random()}`);
   mod.openRfaDrawer('');
   await tick();
-  window.prompt = () => '';
   // jsdom has no CSS.escape (the drawer finds the row by it).
   globalThis.CSS = globalThis.CSS || { escape: (v) => String(v).replace(/([^\w-])/g, '\\$1') };
   document.querySelector('[data-rfa-act="completed"]').click();
+  await tick(5);
+  document.querySelector('[data-prompt-yes]').click();   // the in-page resolution-note box: leave it blank
   await tick(150);
   const cue = document.querySelector('[data-rfa-not-permitted] [data-cue="no_access"]');
   assert.ok(cue);

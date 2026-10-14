@@ -305,7 +305,7 @@ class TestLifecycle:
         src = _inv_src()
         fn = src[src.index("'[data-act=\"inv-close\"]'"):]
         fn = fn[:fn.index("'[data-act=\"inv-suspend\"]'")]
-        assert "window.confirm" in fn
+        assert "inPageConfirm" in fn
         assert "Nothing is deleted" in fn
 
     def test_suspend_and_reopen_do_not_require_confirmation(self):
@@ -314,7 +314,7 @@ class TestLifecycle:
         src = _inv_src()
         suspend_fn = src[src.index("'[data-act=\"inv-suspend\"]'"):]
         suspend_fn = suspend_fn[:suspend_fn.index("'[data-act=\"inv-reopen\"]'")]
-        assert "window.confirm" not in suspend_fn
+        assert "inPageConfirm" not in suspend_fn
 
 
 class TestOpenInvestigationLinkFromResourceHeader:

@@ -52,6 +52,7 @@
  *     DISCOVERY-SOURCES-ADMIN-IMPLEMENTED.md, not invented here.
  */
 import { esc } from '/static/next/app.js';
+import { inPageConfirm, inPageNotice } from '/static/next/confirm-dialog.js';
 import {
   listDiscoverySources, createDiscoverySource, deleteDiscoverySource,
   runDiscoverySource, previewSourceRefresh, applySourceRefresh,
@@ -374,8 +375,8 @@ async function doCreateList() {
 async function doQuickAdd(fetchKind, label) {
   const displayName = label || fetchKind;
   const slug = slugify(displayName);
-  if (!window.confirm(`Add "${displayName}"? This creates a discovery source and immediately fetches its `
-    + 'current project list from its own index — no import happens yet, this only populates the saved list.')) return;
+  if (!(await inPageConfirm({ message: `Add "${displayName}"? This creates a discovery source and immediately fetches its `
+    + 'current project list from its own index — no import happens yet, this only populates the saved list.', confirmLabel: 'Confirm' }))) return;
   add.message = `Adding ${displayName}…`;
   render();
   try {
@@ -422,7 +423,7 @@ async function doImportSelected() {
   }
   const group = _groups.find((g) => g.slug === run.groupSlug);
   const dest = group ? `group "${group.display_name}"` : 'no group';
-  if (!window.confirm(`Import ${picked.length} repo${picked.length === 1 ? '' : 's'} into ${dest}?`)) return;
+  if (!(await inPageConfirm({ message: `Import ${picked.length} repo${picked.length === 1 ? '' : 's'} into ${dest}?`, confirmLabel: 'Confirm' }))) return;
   run.busy = true;
   run.message = 'Queuing import…';
   render();
@@ -442,35 +443,35 @@ async function doRefresh(slug) {
   try {
     preview = await previewSourceRefresh(slug);
   } catch (err) {
-    window.alert(`Could not preview refresh: ${err.message}`);
+    await inPageNotice({ message: `Could not preview refresh: ${err.message}` });
     return;
   }
   if (!preview.added.length && !preview.removed.length) {
-    window.alert(`Already up to date (${preview.fetched_count} URLs).`);
+    await inPageNotice({ title: 'Nothing to do', message: `Already up to date (${preview.fetched_count} URLs).` });
     return;
   }
   const msg = `Fetched ${preview.fetched_count} URL(s) (currently ${preview.current_count} saved):\n`
     + `+ ${preview.added.length} added\n- ${preview.removed.length} removed\n\nApply these changes?`;
-  if (!window.confirm(msg)) return;
+  if (!(await inPageConfirm({ message: msg, confirmLabel: 'Confirm' }))) return;
   try {
     await applySourceRefresh(slug);
   } catch (err) {
-    window.alert(`Refresh failed: ${err.message}`);
+    await inPageNotice({ message: `Refresh failed: ${err.message}` });
     return;
   }
   await reload();
 }
 
 async function doDelete(slug, name) {
-  if (!window.confirm(`Remove discovery source "${name}"? This only deletes the saved search/list config — `
+  if (!(await inPageConfirm({ message: `Remove discovery source "${name}"? This only deletes the saved search/list config — `
     + 'it does not affect any repositories already imported from it (they live in the registry independently '
-    + 'of the source that found them).')) return;
+    + 'of the source that found them).', confirmLabel: 'Confirm' }))) return;
   try {
     await deleteDiscoverySource(slug);
     if (run.slug === slug) { run.slug = ''; run.repos = null; }
     await reload();
   } catch (err) {
-    window.alert(`Failed to delete: ${err.message}`);
+    await inPageNotice({ message: `Failed to delete: ${err.message}` });
   }
 }
 

@@ -66,7 +66,7 @@ import {
 // (still called from within it, via `context.js`'s shared pieces) even
 // though app.js itself no longer calls `renderEnrichment` directly.
 import { renderContext } from '/static/next/stages/context.js';
-import { inPageConfirm, inPageNotice } from '/static/next/confirm-dialog.js';
+import { inPageConfirm, inPageNotice, inPagePrompt } from '/static/next/confirm-dialog.js';
 import { scoutingTilesHtml, scoutingSignalHtml, staleLinkBannerHtml, bindStaleLinkBanner } from '/static/next/stages/repo-header.js';
 import { contextRecordedSpec, contextRecordedState } from '/static/next/context-recorded.js';
 import { nativeSurveysSectionHtml, nativeSurveysUnreadableHtml, bindNativeSurveys } from '/static/next/stages/native-surveys.js';
@@ -2859,9 +2859,13 @@ async function bulkRemove(slugs) {
 async function saveSelectionAsWorkList() {
   const slugs = [...state.selected];
   if (!slugs.length) return;
-  const name = window.prompt(
-    `Name for a work list of ${slugs.length} resource(s):`,
-    state.investigation ? `${state.investigation} candidates` : 'Candidates');
+  const name = await inPagePrompt({
+    title: 'Save as work list',
+    message: `Name for a work list of ${slugs.length} resource(s):`,
+    label: 'Work list name',
+    defaultValue: state.investigation ? `${state.investigation} candidates` : 'Candidates',
+    confirmLabel: 'Save',
+  });
   if (name === null) return;
   sidebarNote('Saving…');
   try {

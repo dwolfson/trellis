@@ -232,7 +232,7 @@ class TestDispositionCanBeSetBeforeImport:
         fn = src[src.index("async function setRowDisposition"):]
         fn = fn[:fn.index("\n}\n")]
         assert "HIDDEN_DISPOSITIONS.has(disposition)" in fn
-        assert "window.prompt" in fn
+        assert "inPagePrompt" in fn
 
     def test_disposition_write_goes_through_the_shared_endpoint(self):
         src = _discovery_import_src()

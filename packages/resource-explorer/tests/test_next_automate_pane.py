@@ -114,7 +114,7 @@ class TestSchedulesAreReal:
 
         src = _automate_src()
         body = src[src.index("[data-delete-sched]"):]
-        assert "window.confirm(" in body
+        assert "inPageConfirm(" in body
         assert "deleteSchedule(entityType, entitySlug, analysisId)" in body
 
 

@@ -24,6 +24,20 @@
  * investigation" toggle always have.
  */
 import { ago, readBackAt } from '/static/next/format.js';
+
+/** A sentence on the element it is about (the owner's rule: state on the element, not a pop-up): a small
+ *  warning span right after `el`, replaced by the next one. */
+function inlineNote(el, text) {
+  let n = el.nextElementSibling;
+  if (!n || !n.hasAttribute('data-inline-note')) {
+    n = document.createElement('span');
+    n.setAttribute('data-inline-note', '1');
+    n.setAttribute('role', 'status');
+    n.className = 'ml-s1 text-provenance text-state-warn';
+    el.insertAdjacentElement('afterend', n);
+  }
+  n.textContent = text;
+}
 import {
   listInvestigations, getInvestigationClassifications,
   getInvestigation, createInvestigation, updateInvestigation,
@@ -43,6 +57,7 @@ import {
 } from '/static/next/purposes.js';
 import { openDialog, closeCellDetail } from '/static/next/worklist.js';
 import { saveCsv } from '/static/next/download.js';
+import { inPageConfirm } from '/static/next/confirm-dialog.js';
 import { cue } from '/static/next/stages/repo-manifest.js';
 
 /** Brief Z3: a refusal by the zone check (403) is the no_access cue plus "not permitted", the reason on hover;
@@ -729,7 +744,7 @@ function bindDetail(inv, members) {
   });
 
   el.querySelector('[data-act="inv-close"]')?.addEventListener('click', async () => {
-    if (!window.confirm(`Close '${inv.display_name || inv.slug}'? Its findings stay queryable; it just drops out of the default scope. Nothing is deleted.`)) return;
+    if (!(await inPageConfirm({ title: 'Close investigation?', message: `Close '${inv.display_name || inv.slug}'? Its findings stay queryable; it just drops out of the default scope. Nothing is deleted.`, confirmLabel: 'Close' }))) return;
     await closeInvestigation(inv.slug);
     await refreshInvestigationsAndSidebar();
     renderDetail(inv.slug);
@@ -779,7 +794,7 @@ function bindDetail(inv, members) {
   });
 
   el.querySelector('[data-act="inv-unbind"]')?.addEventListener('click', async () => {
-    if (!window.confirm('Unbind this investigation from its Egeria Project? The Egeria Project itself is not deleted.')) return;
+    if (!(await inPageConfirm({ title: 'Unbind?', message: 'Unbind this investigation from its Egeria Project? The Egeria Project itself is not deleted.', confirmLabel: 'Unbind' }))) return;
     await bindInvestigationEgeriaProject(inv.slug, { status: 'unset' });
     await refreshInvestigationsAndSidebar();
     renderDetail(inv.slug);
@@ -917,13 +932,13 @@ function bindDetail(inv, members) {
 
   el.querySelectorAll('[data-remove-member]').forEach((b) => b.addEventListener('click', async () => {
     const [entityType, entitySlug] = b.dataset.removeMember.split('|');
-    if (!window.confirm(`Remove ${entitySlug} from this investigation's scope?`)) return;
+    if (!(await inPageConfirm({ title: 'Remove from scope?', message: `Remove ${entitySlug} from this investigation's scope?`, confirmLabel: 'Remove' }))) return;
     try {
       await removeInvestigationMember(inv.slug, entityType, entitySlug);
       if (inv.slug === state.investigation) await refreshInvestigationsAndSidebar();
       renderDetail(inv.slug);
     } catch (err) {
-      window.alert(`Not removed: ${err.message}`);
+      inlineNote(b, `not removed: ${err.message}`);
     }
   }));
 
@@ -934,7 +949,7 @@ function bindDetail(inv, members) {
     try {
       await setInvestigationDisposition(inv.slug, entityType, entitySlug, disposition);
     } catch (err) {
-      window.alert(`Not saved: ${err.message}`);
+      inlineNote(sel, `not saved: ${err.message}`);
     } finally {
       sel.disabled = false;
     }
@@ -947,6 +962,6 @@ function bindDetail(inv, members) {
     if (action === 'edit') { el.querySelector('[data-act="inv-edit"]')?.click(); return; }
     // 'scouting' -- and anything else unrecognised -- has no in-pane target;
     // naming it beats a button that silently does nothing.
-    window.alert(`This step points at ${action}, which this pane does not deep-link to yet.`);
+    inlineNote(b, `This step points at ${action}, which this pane does not deep-link to yet.`);
   }));
 }

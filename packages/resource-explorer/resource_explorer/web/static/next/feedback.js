@@ -18,6 +18,7 @@
 // FeedbackSubmission model — verify there before changing any key.
 
 import { feedbackVotesHtml } from '/static/next/app.js';
+import { inPagePrompt } from '/static/next/confirm-dialog.js';
 
 const CATEGORIES = [
   { value: '', label: 'Category (optional)' },
@@ -343,7 +344,7 @@ async function _sendAnswerVerdict(bar, vote) {
   // "wrong" what they know is the one case where the words are the point.
   let comment = '';
   if (verdict === 'disagree') {
-    const typed = window.prompt('What is wrong with this answer? (optional)', '');
+    const typed = await inPagePrompt({ title: 'What is wrong?', message: 'What is wrong with this answer? (optional)', label: 'What is wrong', confirmLabel: 'Record' });
     if (typed === null) {
       // Cancelled. This function's own design principle (see `_said`'s doc
       // comment above) is that every path through it ends in a visible,

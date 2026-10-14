@@ -49,6 +49,7 @@ import { addActWording, addListToInvestigation, openStartFromList, START_LABEL }
 import { shortName } from '/static/next/investigation-picker.js';
 import { contextRecordedSpec, contextRecordedState } from '/static/next/context-recorded.js';
 import { cue } from '/static/next/stages/repo-manifest.js';
+import { inPagePrompt } from '/static/next/confirm-dialog.js';
 
 /** Brief Z3: the members the zone check refused (a publish or a batch), each with the no_access cue, the reason
  *  on hover; the rest went ahead. '' when none. */
@@ -2043,10 +2044,16 @@ function renderProgress(html) {
 
 async function bulkDisposition(ctx, disposition) {
   const slugs = [...grid.selected];
-  const reason = window.prompt(
-    `Why are these ${slugs.length} being marked "${disposition}"?\n\n`
-    + 'The reason is stored with the verdict and is what the trail is for. '
-    + 'Leave blank to record none.', '') ?? '';
+  const asked = await inPagePrompt({
+    title: `Mark ${slugs.length} as ${disposition}`,
+    message: `Why are these ${slugs.length} being marked "${disposition}"?\n\n`
+      + 'The reason is stored with the verdict and is what the trail is for. '
+      + 'Leave blank to record none.',
+    label: 'Reason (optional)',
+    confirmLabel: 'Mark',
+  });
+  if (asked === null) return;      // cancelled -- nothing marked
+  const reason = asked;
   const failed = [];
   const noUrl = [];
   for (const slug of slugs) {
@@ -2067,9 +2074,13 @@ async function bulkDisposition(ctx, disposition) {
 
 async function promote(ctx) {
   const survivors = [...grid.selected];
-  const name = window.prompt(
-    `Name for the shortlist of ${survivors.length}:`,
-    `${grid.workList.display_name} — shortlist`);
+  const name = await inPagePrompt({
+    title: 'Promote to a shortlist',
+    message: `Name for the shortlist of ${survivors.length}:`,
+    label: 'Shortlist name',
+    defaultValue: `${grid.workList.display_name} — shortlist`,
+    confirmLabel: 'Promote',
+  });
   if (name === null) return;
   try {
     const next = await promoteWorkList(grid.workList.slug, survivors, name);

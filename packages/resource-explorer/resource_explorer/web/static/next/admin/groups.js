@@ -33,6 +33,7 @@
  * delete your files on disk").
  */
 import { state, esc, refreshGroupsAndSidebar } from '/static/next/app.js';
+import { inPageConfirm, inPageNotice } from '/static/next/confirm-dialog.js';
 import {
   listGroups, groupSuggestions, createGroup, deleteGroup, assignGroup,
   listProjects, listDatabases, listFilesystems,
@@ -238,7 +239,7 @@ async function onApplySuggestion(index) {
     }
     await reload();
   } catch (err) {
-    window.alert(`Failed to apply suggestion: ${err.message}`);
+    await inPageNotice({ message: `Failed to apply suggestion: ${err.message}` });
   }
 }
 
@@ -253,12 +254,12 @@ async function onDeleteGroup(slug) {
   const msg = n > 0
     ? `Delete group "${name}"? ${n} resource${n === 1 ? '' : 's'} return to Ungrouped — nothing is deleted.`
     : `Delete group "${name}"? It has no members.`;
-  if (!window.confirm(msg)) return;
+  if (!(await inPageConfirm({ message: msg, confirmLabel: 'Confirm' }))) return;
   try {
     await deleteGroup(slug);
     await reload();
   } catch (err) {
-    window.alert(`Failed to delete group: ${err.message}`);
+    await inPageNotice({ message: `Failed to delete group: ${err.message}` });
   }
 }
 
