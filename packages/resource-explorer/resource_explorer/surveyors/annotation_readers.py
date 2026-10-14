@@ -41,7 +41,7 @@ def read_resource_measure_rows(registry, entity_type: str, slug: str, analysis_s
         detail = a.get("detail") or {}
         state, words, reason = _envelope_state(detail)
         rows.append({
-            "name": detail.get("scope") or a.get("annotation_guid", ""),
+            "name": a.get("scope") or detail.get("scope") or "",
             # The step's own sentence for what it measured; empty when it did not measure (the reason is
             # shown beside the state words instead, once).
             "value": a.get("summary") or "",

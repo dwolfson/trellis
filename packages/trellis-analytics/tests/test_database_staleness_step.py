@@ -248,8 +248,12 @@ def test_re_runs_the_step_end_to_end_and_the_analysis_pane_reads_the_envelope(
 
     run, rows = reg.query_step_annotations("database", "shop", "database_staleness")
     assert len(rows) == 4 and run
+    # the run id is the step_runs row's surveyed_at: the link between the two
+    assert reg.query_step_runs(slug="shop", step_key="database_staleness", surveyed_at=run, entity_type="database")
     for r in rows:
         assert r["annotation_type"] == "ResourceMeasureAnnotation"
+        assert (r["package"], r["producer_version"]) == ("trellis-step-database-staleness", staleness_installed)
+        assert r["result_state"] == r["detail"]["additionalProperties"]["resultState"]
         env = Envelope.from_additional_properties(r["detail"]["additionalProperties"])
         assert env.producer_version == staleness_installed and env.producing_run == run
 

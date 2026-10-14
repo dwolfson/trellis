@@ -67,24 +67,65 @@ def test_a_step_not_installed_here_says_so_with_the_package_name(reg, not_instal
     assert any("step not installed here" in e and "trellis-step-database-staleness" in e for e in out["errors"])
 
 
-def test_step_annotations_are_stored_by_type_and_the_latest_run_is_read(reg):
+def test_the_step_annotations_table_is_created_by_schema_init(reg):
+    with reg._conn() as conn:
+        cols = reg._get_table_columns(conn, "step_annotations")
+    assert {"entity_type", "slug", "step_key", "package", "producer_version", "run_id", "annotation_type",
+            "scope", "result_state", "detail_json", "created_at"} <= set(cols)
+    # a second schema init over the same file is a no-op (IF NOT EXISTS)
+    ProjectRegistry(db_path=reg.database_url.removeprefix("sqlite:///"))
+
+
+def test_step_annotations_round_trip_and_the_latest_run_is_read(reg):
     reg.record_step_annotations("database", "shop", "database_staleness", run="run-1",
-                                measured_at="2026-10-01T00:00:00Z",
+                                measured_at="2026-10-01T00:00:00Z", package="pkg", producer_version="0.1.0",
                                 annotations=[_ann("public.orders", "measured", rows_changed=3, run="run-1")])
     reg.record_step_annotations("database", "shop", "database_staleness", run="run-2",
-                                measured_at="2026-10-08T00:00:00Z",
+                                measured_at="2026-10-08T00:00:00Z", package="pkg", producer_version="0.1.0",
                                 annotations=[_ann("public.orders", "nothing_found", rows_changed=0, run="run-2"),
                                              _ann("public.v", "not_applicable", reason="a view", run="run-2")])
     run, rows = reg.query_step_annotations("database", "shop", "database_staleness")
-    assert run == "run-2" and [r["summary"] for r in rows] == ["public.orders: nothing_found", "public.v: not_applicable"]
-    assert rows[0]["detail"]["additionalProperties"]["resultState"] == "nothing_found"
-    # rerunning the same run is idempotent
-    reg.record_step_annotations("database", "shop", "database_staleness", run="run-2",
-                                measured_at="2026-10-08T00:00:00Z",
-                                annotations=[_ann("public.orders", "nothing_found", rows_changed=0, run="run-2")])
-    assert len(reg.query_step_annotations("database", "shop", "database_staleness")[1]) == 2
-    # Egeria's native-survey readers never see a local step's rows
+    assert run == "run-2" and [r["scope"] for r in rows] == ["public.orders", "public.v"]
+    first = rows[0]
+    assert (first["package"], first["producer_version"], first["run_id"]) == ("pkg", "0.1.0", "run-2")
+    assert first["result_state"] == "nothing_found"
+    assert first["detail"]["additionalProperties"]["resultState"] == "nothing_found"
+    assert first["detail"]["resourceProperties"] == {"rowsChanged": "0"}
+
+
+def test_a_rerun_of_the_same_run_writes_no_duplicates(reg):
+    args = dict(run="run-2", measured_at="2026-10-08T00:00:00Z")
+    anns = [_ann("public.orders", "nothing_found", rows_changed=0, run="run-2"),
+            _ann("public.v", "not_applicable", reason="a view", run="run-2")]
+    assert reg.record_step_annotations("database", "shop", "s", annotations=anns, **args) == 2
+    assert reg.record_step_annotations("database", "shop", "s", annotations=anns[:1], **args) == 2
+    assert len(reg.query_step_annotations("database", "shop", "s")[1]) == 2
+
+
+def test_step_annotations_filter_by_state(reg):
+    reg.record_step_annotations("database", "shop", "s", run="r1", measured_at="2026-10-01T00:00:00Z", annotations=[
+        _ann("a.t1", "measured", rows_changed=1), _ann("a.t2", "nothing_found", rows_changed=0),
+        _ann("a.t3", "measured", rows_changed=9)])
+    assert [r["scope"] for r in reg.query_step_annotations("database", "shop", "s", state="measured")[1]] == [
+        "a.t1", "a.t3"]
+    assert reg.query_step_annotations("database", "shop", "s", state="not_applicable") == ("r1", [])
+
+
+def test_native_survey_readers_never_see_step_rows(reg):
+    reg.record_step_annotations("database", "shop", "s", run="r1", measured_at="2026-10-01T00:00:00Z",
+                                annotations=[_ann("a.t1", "measured", rows_changed=1)])
     assert reg.list_native_survey_runs("database", "shop") == []
+    with reg._conn() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM native_survey_annotations").fetchone()[0] == 0
+
+
+def test_the_run_id_is_the_link_to_the_step_runs_row(reg):
+    """The step_runs row is written after the step returns; its surveyed_at is the run id the rows carry."""
+    reg.record_step_run("shop", "s", "2026-10-08T00:00:00", entity_type="database", metrics={"wall_ms": 1})
+    reg.record_step_annotations("database", "shop", "s", run="2026-10-08T00:00:00",
+                                measured_at="2026-10-08T00:00:01Z", annotations=[_ann("a.t1", "measured")])
+    run, _ = reg.query_step_annotations("database", "shop", "s")
+    assert reg.query_step_runs(slug="shop", step_key="s", surveyed_at=run, entity_type="database")
 
 
 def test_the_reader_derives_the_state_word_from_the_envelope_never_from_the_value(reg):

@@ -18,7 +18,8 @@ This module puts such steps BESIDE a resource type's step registry, never in it 
 
 What the host gives the wrapper: the resource, an ODS reader that can only read (the registry's own connection,
 read-only at the database: Postgres `SET TRANSACTION READ ONLY`, SQLite `PRAGMA query_only`), and a store that
-keeps the annotations with their envelope in `additionalProperties` (`ProjectRegistry.record_step_annotations`).
+keeps the annotations with their envelope in `additionalProperties`, in their own table `step_annotations`
+(`ProjectRegistry.record_step_annotations`).
 It never gives a password: the runner kwargs (`db_user`, `db_pwd`) stop here. It opens no connection to the
 resource yet, so a step declaring the `connection` input is refused by the wrapper with that sentence.
 
@@ -88,7 +89,8 @@ class SurveyStepHost:
             measured_at = annotations[0].envelope.measured_at if annotations else run
             return registry.record_step_annotations(
                 self.entity_type, entity.slug, step, run=run, measured_at=measured_at,
-                annotations=[a.to_record() for a in annotations])
+                annotations=[a.to_record() for a in annotations],
+                package=self.provided_by.get("package", ""), producer_version=self.manifest.version)
 
         host = HostContext(resource_type=self.entity_type, slug=entity.slug, producing_run=run,
                            ods=_registry_ods(registry), connect=None, store=store)
