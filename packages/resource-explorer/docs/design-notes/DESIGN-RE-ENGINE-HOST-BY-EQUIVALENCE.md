@@ -840,7 +840,11 @@ Recorded from a discussion with the owner. These are the Mandy-note items 19–2
   - **requestType:** what the engine advertises, and what the engine is passed to execute. RE dispatches on the request type to choose the action to invoke.
   - **Consequence:** the provisional 2c declaration (`docs/dr-egeria/analytic-functions/database_staleness.md`) and egeria-python ISSUE-150 move from "provisional" to this shape.
 - **Q-M3 / item 21, zones and identity: up to us.** "Generally a GovernanceProcess or Action would execute as the end user who initiated it. If peterprofile initiates a survey, he is the user." Whether results land in a default (public) zone or not is RE's choice.
-  - **OPEN, owner decision needed.** This sits against the owner's 2026-10-13 Q-O2 decision ("the engine runs as RE's existing service account"). Running unattended "as the initiator" needs a way to act as that user without their live session token.
+  - **Decision (project owner, 2026-10-14):** "run as the end user unless this was an automated action and didn't know who the end user was".
+    - It restates an earlier owner decision and agrees with Mandy.
+    - Q-O2's "service account" applies only to truly automated work with no known person.
+    - Private-investigation work runs as its owner.
+    - **Open mechanism:** an Egeria-dispatched action started by a person, whose `requesterUserId` is known, when RE holds no live token for that person. How RE acts as them is to be settled in the slice. Options to explore: the requester's session if one is active; otherwise wait for the person, as #640's `OutboxAwaitsOwner` does; or an Egeria-supported on-behalf-of mechanism. Ask Mandy whether one exists.
 - **Q-M4 / item 22, being "native":** whatever makes sense. Telling Egeria status and completion of engine actions is what makes RE visible. Refresh-config may make sense. Record where the engine host executes in a description field on the engine element.
 - **Q-M5 / item 23, guards:** not mandatory, but best practice is to use the standard guards for consistency. Look for an existing valid-value set for "nothing to derive from"-style outcomes before inventing one.
 - **Q-M6 / item 24, lineage:** nothing explicit is needed now. Updating engine-action status is enough, and Egeria reports the lineage. RE's own R21 OpenLineage events stay off for Egeria-dispatched work, with no join for now.
