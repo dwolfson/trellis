@@ -1390,6 +1390,7 @@ class EgeriaResync:
         import asyncio as _aio
         loop = _aio.new_event_loop()
         _aio.set_event_loop(loop)
+        from resource_explorer.private_publish import PrivateAwaitsOwner, record_waiting
         from resource_explorer.workflows.curate import WriteNotPermitted
 
         try:
@@ -1397,6 +1398,10 @@ class EgeriaResync:
         except WriteNotPermitted as exc:
             # Round 3: an adopted asset the caller may not change is a refusal, reported with its words.
             return {"slug": slug, "ok": False, "not_permitted": str(exc)}
+        except PrivateAwaitsOwner as exc:
+            # Waiting, not failed (2026-10-13 review): only the private investigation's owner can publish it.
+            record_waiting(reg, exc, run_key=survey.surveyed_at.isoformat(), source="resync")
+            return {"slug": slug, "ok": False, "awaits_owner": str(exc)}
         except Exception as exc:
             return {"slug": slug, "ok": False, "error": f"publish failed: {exc}"}
         finally:
@@ -1414,7 +1419,7 @@ class EgeriaResync:
         only what actually succeeded — a repair that says it did 27 when it did
         9 is the exact class of claim this module exists to stop making.
         """
-        results, skipped = [], []
+        results, skipped, waiting = [], [], []
         for s in slugs:
             why = self._refusal("repo", s)
             if why:                       # Brief Z2 round 2: skipped with its own words, the rest proceed
@@ -1424,6 +1429,9 @@ class EgeriaResync:
             if out.get("not_permitted"):
                 skipped.append({"slug": s, "words": out["not_permitted"]})
                 continue
+            if out.get("awaits_owner"):
+                waiting.append({"slug": s, "words": out["awaits_owner"]})
+                continue
             results.append(out)
         failed = [r for r in results if not r["ok"]]
         return {
@@ -1431,6 +1439,7 @@ class EgeriaResync:
             "published": len(results) - len(failed),
             "failed": len(failed),
             "not_permitted": skipped,
+            "awaits_owner": waiting,
             "steps": list(steps) if steps else "full survey",
             "errors": [{"slug": r["slug"], "error": r["error"]} for r in failed][:20],
         }

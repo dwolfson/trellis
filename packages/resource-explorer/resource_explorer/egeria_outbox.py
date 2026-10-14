@@ -1034,6 +1034,30 @@ def _private_investigation_reader(registry, row: dict, identity):
     return EgeriaAccessReader(read_as=read_as)
 
 
+#: The kinds a private member's survey writes beneath its private report (anchored to it, so judged by its zones).
+PRIVATE_FINDING_KINDS = ("annotation", "annotation_link")
+
+
+def _private_findings_await_owner(registry, row: dict, identity) -> None:
+    """Belt and braces for a private member's findings (2026-10-13 review): an annotation row of a resource in a
+    PRIVATE investigation is written only by a drain running as that owner, signed in. Any other drain (the
+    background service account, another person) raises `OutboxAwaitsOwner`: nothing sent, no attempt burned, the row
+    stays pending with the owner's words, never dead. `EgeriaPublisher` drains a private publish inline as the owner,
+    so this fires only for rows that reached the background drain anyway. Whether the resource is private cannot be
+    read: the row waits (`OutboxAccessUnreadable`), never taken for public."""
+    if row.get("element_kind") not in PRIVATE_FINDING_KINDS:
+        return
+    from resource_explorer import private_publish as pp
+    from resource_explorer.workflows.egeria_work_access import owner_waiting_words
+
+    try:
+        owner = pp.resolve_private_owner(registry, row.get("entity_type") or "", row.get("entity_slug") or "")
+    except pp.PrivateOwnerUnknown as exc:
+        raise OutboxAccessUnreadable(f"{ACCESS_WAIT_WORDS}: {exc}") from exc
+    if owner and not pp.is_owner(identity, owner):
+        raise OutboxAwaitsOwner(owner_waiting_words(owner))
+
+
 def _collection_refusal(registry, row: dict, identity=None) -> str:
     """Brief Z3: the drain-time re-check for an investigation's or a work list's link (a CollectionMembership,
     or the ResourceList from the Project to its Folio): ATTACH on BOTH ends (`validateUserForElementAttach`
@@ -1401,6 +1425,7 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
             # (annotation/collection_membership/resource_list/annotation_
             # link), the same per-call-name granularity the layer-2
             # catalogue-depth offer needs and nothing before this recorded.
+            _private_findings_await_owner(registry, row, identity)
             refused = _queued_write_refusal(registry, row, identity)
             if refused:
                 raise OutboxNotPermitted(refused)

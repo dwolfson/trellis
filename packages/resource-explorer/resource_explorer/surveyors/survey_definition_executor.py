@@ -1137,6 +1137,9 @@ class SurveyDefinitionExecutor:
         # to catalog an unassigned resource explicitly, or to re-publish.
         report_guid = ""
         published: bool | str = False
+        publish_waiting = ""
+        from resource_explorer.private_publish import PrivateAwaitsOwner, record_waiting
+
         refusal = ""
         publish_error = ""
         not_recorded = ""
@@ -1181,6 +1184,11 @@ class SurveyDefinitionExecutor:
                     entity, step_outputs, surveyed_at, self.registry, **publish_kwargs,
                 )
                 published = "queued" if (defer_drain and publish_kwargs) else True
+            except PrivateAwaitsOwner as exc:
+                # Waiting, not failed (2026-10-13 review): only the private investigation's owner can publish it.
+                # Nothing was written; said in `publish_waiting`, recorded once per (resource, run), not an error.
+                publish_waiting = str(exc)
+                record_waiting(self.registry, exc, run_key=f"{process_qn} · {surveyed_at}", source="survey definition")
             except PublishedNotRecorded as exc:
                 # Egeria has the report; only RE's own record of it failed.
                 report_guid, published = exc.report_guid, True
@@ -1256,6 +1264,7 @@ class SurveyDefinitionExecutor:
                     "steps": steps_report,
                     "errors": errors,
                     "published": published,
+                    **({"publish_waiting": publish_waiting} if publish_waiting else {}),
                     "egeria_report_guid": report_guid,
                     **({"publish_state": publish_state} if publish_state else {}),
                     # Whole-definition Prefect default (2026-09-28) — the
@@ -1293,6 +1302,7 @@ class SurveyDefinitionExecutor:
             "egeria_report_guid": report_guid,
             "engine_note": engine_note,
             "published": published,
+            **({"publish_waiting": publish_waiting} if publish_waiting else {}),
             **({"publish_state": publish_state} if publish_state else {}),
             # False when the run happened but could not be written to the
             # activity log — the card will say "Never run" and be wrong.

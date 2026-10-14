@@ -769,6 +769,12 @@ class EgeriaDatabaseSurveyor:
         """
         from resource_explorer.catalogue_gateway import database_qualified_name, server_name_for
 
+        # Interim (2026-10-13 review): no private (born-private) publish exists for databases yet, so a database in a
+        # private investigation is refused here, before anything is written, recorded once per state.
+        from resource_explorer.private_publish import refuse_unsupported_private
+
+        refuse_unsupported_private(registry, "database", db_entity.slug,
+                                   name=getattr(db_entity, "display_name", "") or db_entity.slug)
         self.connect()
         expected_qn = database_qualified_name(server_name_for(db_entity), db_entity.database_name)
         db_guid = self._find_by_qualified_name(expected_qn)
@@ -1196,6 +1202,12 @@ class EgeriaDatabaseSurveyor:
         scoped to the chosen schemas, and an unscoped one here would measure
         every schema the steward left out.
         """
+        # Interim (2026-10-13 review): no private (born-private) publish exists for databases yet, so a database in a
+        # private investigation is refused here, before anything is written, recorded once per state.
+        from resource_explorer.private_publish import refuse_unsupported_private
+
+        refuse_unsupported_private(registry, "database", db_entity.slug,
+                                   name=getattr(db_entity, "display_name", "") or db_entity.slug)
         result = self.catalog_and_survey(
             db_entity=db_entity,
             db_user=db_user,

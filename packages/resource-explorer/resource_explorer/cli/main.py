@@ -1349,10 +1349,17 @@ def survey(
         if refused:                       # Brief Z2: this repository is skipped, the rest proceed
             console.print(f"  [yellow]{refused}[/yellow]")
         if publisher and not refused:
+            from resource_explorer.private_publish import PrivateAwaitsOwner, record_waiting
+
             try:
                 console.print(f"  [dim]Publishing to Egeria…[/dim]")
                 report_guid = publisher.publish(result)
                 console.print(f"  [green]SurveyReport GUID: {report_guid}[/green]")
+            except PrivateAwaitsOwner as exc:
+                # Waiting, not failed (2026-10-13 review): only the private investigation's owner can publish it.
+                console.print(f"  [yellow]{exc}[/yellow]")
+                record_waiting(registry, exc, run_key=result.surveyed_at.isoformat(), source="cli survey",
+                               name=project.display_name, location=project.github_url)
             except Exception as exc:
                 console.print(f"  [red]Egeria publish failed: {exc}[/red]")
                 try:

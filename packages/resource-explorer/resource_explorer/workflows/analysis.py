@@ -276,6 +276,8 @@ def run_analysis(
             defer_drain = not get_config().runs.publish_inline
         publish_mode = "enqueued" if defer_drain else "inline"
         publish_start = time.perf_counter()
+        from resource_explorer.private_publish import PrivateAwaitsOwner, record_waiting
+
         try:
             from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
 
@@ -314,6 +316,13 @@ def run_analysis(
                 )
             else:
                 published = True
+        except PrivateAwaitsOwner as exc:
+            # Waiting, not failed (2026-10-13 review): only the private investigation's owner can publish it.
+            # Nothing was written, so `published` stays None ("not attempted"), and the wait is recorded once.
+            publish_mode = "awaits-owner"
+            summary = summary.rstrip(".") + f"; {exc}."
+            record_waiting(registry, exc, run_key=f"{analysis_id} · {result.surveyed_at.isoformat()}",
+                           source="analysis")
         except Exception as exc:
             published = False
             summary += f" (⚠ auto-publish to Egeria failed: {exc})"

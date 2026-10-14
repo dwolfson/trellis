@@ -64,16 +64,21 @@ _DEFAULT_USER = "erinoverview"
 _DEFAULT_TIMEOUT = 30
 
 
-def governance_summary(outcomes: dict) -> str:
+def governance_summary(outcomes: dict, *, private: bool = False) -> str:
     """The governance sentence of the publish summary, each part from its OWN recorded outcome.
 
     `outcomes` is `{guid: {"ownership": bool, "zone_membership": bool, "zones": [...], ...}}`
     as `stamp_published` returns it. Ownership and zone membership are reported separately, and
     "no zone configured" is a deployment choice (zones are left to Egeria), never a failure: only
     a classification that was attempted and did not land gets the warning.
+
+    `private`: the publish was for a member of a private investigation. "Zones left to Egeria" is
+    then never true of it (its report was made private, or the publish raised before saying
+    anything), so an outcome set with no zone attempted, or no outcome at all, is said as the gap
+    it is rather than as a deployment choice (2026-10-13 review).
     """
     if not outcomes:
-        return ""
+        return " (⚠ private publish: no governance outcome recorded)" if private else ""
     n = len(outcomes)
     owned = sum(1 for o in outcomes.values() if o.get("ownership"))
     parts: list[str] = []
@@ -83,7 +88,8 @@ def governance_summary(outcomes: dict) -> str:
         parts.append(f"Ownership set on {n} element(s)")
     attempted = [o for o in outcomes.values() if o.get("zones")]
     if not attempted:
-        parts.append("zones left to Egeria")
+        parts.append("⚠ private publish but NO zone was set on any element" if private
+                     else "zones left to Egeria")
     else:
         zoned = sum(1 for o in attempted if o.get("zone_membership"))
         if zoned < len(attempted):
@@ -96,6 +102,24 @@ def governance_summary(outcomes: dict) -> str:
 
 class EgeriaConnectionError(RuntimeError):
     """Raised when Egeria credentials are absent or the platform is unreachable."""
+
+
+class PrivateReportNotConfirmed(RuntimeError):
+    """A private investigation's SurveyReport could not be confirmed to be in its private zones.
+
+    Raised BEFORE any annotation is written beneath it, so a member of a private investigation
+    reads as FAILED rather than "published" with its findings world-readable (2026-10-13 review).
+    """
+
+    def __init__(self, report_guid: str, owner: str, reason: str):
+        self.report_guid, self.owner, self.reason = report_guid, owner, reason
+        super().__init__(
+            f"Not published: this resource belongs to {owner}'s private investigation, and its "
+            f"survey report {report_guid[:8] or '(none)'} could not be confirmed private — {reason}. "
+            "No findings were written to Egeria. The report element itself may exist; nothing "
+            "beneath it was published. Publish again as the investigation's owner once Egeria "
+            "can classify and read it."
+        )
 
 
 def sub_resource_display_name(path: str, kind: str, repository: str) -> str:
@@ -289,14 +313,17 @@ class EgeriaPublisher:
             from resource_explorer.egeria_identity import private_zones
 
             self.zone_names = private_zones(self._private_owner)
+            # Only the signed-in OWNER can write a private report and the findings beneath it: Egeria judges a
+            # create by the zones it is born with, and an annotation by its anchor's. Anyone else (a daemon, a
+            # queued run, another person) is refused here, BEFORE the asset, homepage, documentation-source or
+            # GitHub-library writes, rather than by a raw 403 at the report create after them (2026-10-13 review).
+            self._require_owner_identity(result.resource_slug)
         self._connect()
 
         # Everything below depends on the asset GUID RE cached for this project,
         # directly or through the report created against it. If Egeria no longer
         # knows that GUID, this raises a named error and records the divergence
         # instead of surfacing a 500-word server stack — see egeria_linkage.py.
-        from resource_explorer.egeria_linkage import guard_linkage
-
         cached_guid = ""
         if self._registry:
             try:
@@ -304,41 +331,53 @@ class EgeriaPublisher:
             except Exception:
                 cached_guid = ""
 
-        with guard_linkage(self._registry, "repo", result.resource_slug,
-                           result.project_display_name, cached_guid):
-            asset_guid = self._find_or_create_asset(result)
-            # Best-effort and deliberately not fatal — see the method's docstring.
-            self._publish_homepage_reference(result, asset_guid)
-            # E2: declared documentation sources for a repo, same hook the
-            # database/filesystem publish routes already have. Best-effort.
-            self._publish_local_doc_sources(result.resource_slug, asset_guid)
-            # Brief F round 2: tags and the group are NOT sent here any more. This publish also runs for analysis
-            # auto-publish, bulk ops, resync and the CLI (as the Daemon); the owner's rule is ONE Publish per page,
-            # so only a person's press sends them (single_publish.send_with_publish, the db/fs publish routes).
-            report_guid = self._create_survey_report(result, asset_guid)
-            # Ownership + draft zone, on both elements this publish is
-            # responsible for, before the annotations are written. Ordered
-            # this way deliberately: the classification is what makes the
-            # element *this person's draft*, and a reader who catches the
-            # catalogue mid-publish should see an owned draft rather than an
-            # unowned element in the deployment's normal zones.
-            # The asset and the report are stamped DIFFERENTLY when the
-            # resource is private, and conflating them is a real bug this
-            # nearly shipped with.
-            #
-            # The asset is `GitHubRepository::<github_url>` — ONE per repo,
-            # shared by every investigation that references it. Zoning it
-            # private would hide a public repository from everyone else in the
-            # catalog because one person put it in a personal investigation:
-            # design §3.6, "an investigation zones what it produced, never what
-            # it references". A privacy feature that deletes other people's
-            # access is a data-loss feature.
-            #
-            # The report IS produced by this investigation, so it takes the
-            # private zones, and its annotations inherit them by anchor.
-            self._stamp_governance(report_guid)
-            self._stamp_governance(asset_guid, produced=False)
-            link_counts = self._create_annotations(result, report_guid)
+        from resource_explorer.egeria_linkage import guard_linkage
+
+        try:
+            with guard_linkage(self._registry, "repo", result.resource_slug,
+                               result.project_display_name, cached_guid):
+                asset_guid = self._find_or_create_asset(result)
+                # Best-effort and deliberately not fatal — see the method's docstring.
+                self._publish_homepage_reference(result, asset_guid)
+                # E2: declared documentation sources for a repo, same hook the
+                # database/filesystem publish routes already have. Best-effort.
+                self._publish_local_doc_sources(result.resource_slug, asset_guid)
+                # Brief F round 2: tags and the group are NOT sent here any more. This publish also runs for analysis
+                # auto-publish, bulk ops, resync and the CLI (as the Daemon); the owner's rule is ONE Publish per page,
+                # so only a person's press sends them (single_publish.send_with_publish, the db/fs publish routes).
+                report_guid = self._create_survey_report(result, asset_guid)
+                # Ownership + draft zone, on both elements this publish is
+                # responsible for, before the annotations are written. Ordered
+                # this way deliberately: the classification is what makes the
+                # element *this person's draft*, and a reader who catches the
+                # catalogue mid-publish should see an owned draft rather than an
+                # unowned element in the deployment's normal zones.
+                # The asset and the report are stamped DIFFERENTLY when the
+                # resource is private, and conflating them is a real bug this
+                # nearly shipped with.
+                #
+                # The asset is `GitHubRepository::<github_url>` — ONE per repo,
+                # shared by every investigation that references it. Zoning it
+                # private would hide a public repository from everyone else in the
+                # catalog because one person put it in a personal investigation:
+                # design §3.6, "an investigation zones what it produced, never what
+                # it references". A privacy feature that deletes other people's
+                # access is a data-loss feature.
+                #
+                # The report IS produced by this investigation, so it takes the
+                # private zones, and its annotations inherit them by anchor.
+                self._stamp_governance(report_guid)
+                self._stamp_governance(asset_guid, produced=False)
+                if self._private_owner:
+                    # Fail closed: the findings go beneath the report only once Egeria SHOWS the
+                    # report in its private zones. Raises otherwise; `publish()` records why.
+                    self._confirm_report_private(result, report_guid)
+                link_counts = self._create_annotations(result, report_guid)
+        except PrivateReportNotConfirmed as exc:
+            # The ONE place a refused private publish is recorded, whichever guard refused it (the reused-report
+            # check, a classification client that could not be built, or the read-back).
+            self._record_private_refusal(result, exc.report_guid, exc.reason)
+            raise
         # Best-effort, deliberately outside the guard_linkage block above —
         # this is local bookkeeping for the Survey Results dashboards'
         # per-card "last published" badge (get_last_published_annotation_
@@ -422,7 +461,8 @@ class EgeriaPublisher:
         # about that would be the "we never measured this looks like we
         # measured nothing" failure, so it gets its own sentence in the same
         # summary the counts appear in.
-        governance_warning = governance_summary(getattr(self, "last_governance", {}) or {})
+        governance_warning = governance_summary(getattr(self, "last_governance", {}) or {},
+                                                private=bool(self._private_owner))
 
         link_warning = ""
         failed_or_skipped = link_counts.get("links_failed", 0) + link_counts.get("links_skipped", 0)
@@ -777,8 +817,11 @@ class EgeriaPublisher:
                             "this catalog holds is an asset of.",
             "url": "https://github.com",
         }
-        if self.zone_names:
-            props["zoneMembership"] = self.zone_names
+        # A REFERENCED element, deployment-wide (§3.6): never this publish's zones, which are the
+        # private ones when the resource belongs to a private investigation.
+        zones = self._referenced_zones()
+        if zones:
+            props["zoneMembership"] = zones
         with time_egeria_call(self._registry, "create_software_capability", "write"):
             guid = self._asset_maker.create_software_capability(
                 body={"class": "NewElementRequestBody", "properties": props})
@@ -922,8 +965,15 @@ class EgeriaPublisher:
                 "deployed_implementation_type": "GitHub Repository",
             },
         }
-        if self.zone_names:
-            props["zoneMembership"] = self.zone_names
+        # The repository's Asset is REFERENCED by every investigation that names it, never produced
+        # by one (§3.6), so it is created with the referenced-element zones whatever `zone_names`
+        # this publish carries. Until 2026-10-13 this sent `self.zone_names`, which for a member of
+        # a private investigation is `[private, owner]`. It never reached Egeria only because
+        # `AssetProperties` has no `zoneMembership` field (unknown keys are ignored); the zones that
+        # take effect are the referenced-element stamp below, `_stamp_governance(produced=False)`.
+        zones = self._referenced_zones()
+        if zones:
+            props["zoneMembership"] = zones
         body = {"class": "NewElementRequestBody", "properties": props}
         with time_egeria_call(self._registry, "create_asset", "write", params={"typeName": "Asset"}):
             guid = self._asset_maker.create_asset(body=body)
@@ -953,25 +1003,31 @@ class EgeriaPublisher:
     def _resolve_private_owner(self, resource_slug: str) -> str:
         """The userId this resource's artifacts belong to, or `""`.
 
-        Unscoped by design — see `ProjectRegistry.private_owner_for_entity`.
-        A registry that cannot answer returns `""`, which means "publish
-        normally"; that is the one place here where a failure defaults to the
-        less protective answer, and it is bounded by the fact that a resource
-        with no private investigation is the overwhelmingly common case. A
-        registry outage that made everything look private would stop every
-        publish in the deployment.
+        Unscoped by design — see `ProjectRegistry.private_owner_for_entity`. No registry means no investigation
+        can exist: `""`. A registry that cannot ANSWER fails CLOSED (2026-10-13 review): it raises
+        `private_publish.PrivateOwnerUnknown`, recorded once per state, and nothing is written. It used to answer
+        `""` ("publish normally"), which published a private member's findings publicly, in silence.
         """
-        if not self._registry:
-            return ""
+        from resource_explorer.private_publish import PrivateOwnerUnknown, record_once, resolve_private_owner
+
         try:
-            owner = self._registry.private_owner_for_entity("repo", resource_slug)
-            # See the same check in `arch_recovery/materializer._privacy_for`:
-            # the value becomes a zone name, so only a real userId string counts.
-            return owner.strip() if isinstance(owner, str) else ""
-        except Exception as exc:
-            log.warning("could not determine private ownership for %s — publishing "
-                        "normally: %s: %s", resource_slug, type(exc).__name__, exc)
-            return ""
+            return resolve_private_owner(self._registry, "repo", resource_slug)
+        except PrivateOwnerUnknown as exc:
+            log.warning("%s", exc)
+            record_once(self._registry, entity_type="repo", slug=resource_slug, status="error", summary=str(exc),
+                        marker="private-owner-unknown · repo", per="state")
+            raise
+
+    def _require_owner_identity(self, resource_slug: str) -> None:
+        """Raise `private_publish.PrivateAwaitsOwner` unless this publish runs as the private owner, signed in."""
+        from resource_explorer.private_publish import PrivateAwaitsOwner, acting_user, is_owner
+
+        try:
+            identity = self.resolve_identity()
+        except PermissionError:            # nobody signed in, or an expired sign-in: nobody here is the owner
+            identity = None
+        if not is_owner(identity, self._private_owner):
+            raise PrivateAwaitsOwner("repo", resource_slug, self._private_owner, acting_user(identity))
 
     def _require_enforced_private_zone(self, resource_slug: str) -> None:
         """Refuse the publish unless the private zone is known to deny.
@@ -1017,6 +1073,93 @@ class EgeriaPublisher:
             + (status.get("remedy") or "See Admin → Egeria for the zone's status.")
         )
 
+    @staticmethod
+    def _referenced_zones() -> list[str]:
+        """Zones for an element this publish REFERENCES (the repo's Asset, the GitHub library).
+
+        §3.6: never `self.zone_names`, which is `[private, owner]` for a private investigation's
+        member. One helper (`egeria_identity.referenced_element_zones`) for the creates and the
+        referenced-element stamp alike."""
+        from resource_explorer.egeria_identity import referenced_element_zones
+
+        return referenced_element_zones()
+
+    def _confirm_report_private(self, result: SurveyResult, report_guid: str) -> None:
+        """Raise `PrivateReportNotConfirmed` unless Egeria shows the report in its private zones.
+
+        The deciding guard is a READ of the report's `ZoneMembership` as the publishing identity,
+        after the born-private create and the stamp: a returned GUID or an accepted classify call
+        proves the call worked, not what Egeria holds. The stamp's own answer is recorded but not
+        decisive either way — a stamp that said False on a report the read shows private is fine
+        (it was born private), and a stamp that said True is not trusted without the read.
+
+        Every refusal is recorded (an activity entry with status `error`, and the publish raises,
+        so `repo_publish` writes its failure proof) before anything is written beneath the report.
+        """
+        from resource_explorer.egeria_identity import ZoneReadError, read_zones
+
+        expected = list(self.zone_names)
+        stamped = (self.last_governance or {}).get(report_guid) or {}
+        reason = ""
+        if not report_guid:
+            reason = "Egeria returned no report GUID"
+        elif not stamped:
+            reason = "no governance stamp was recorded for the report"
+        else:
+            try:
+                held = read_zones(report_guid, self.resolve_identity())
+            except ZoneReadError as exc:
+                held = None
+                reason = f"its zones could not be read back ({exc})"
+            if held is not None and sorted(held) != sorted(expected):
+                reason = (f"Egeria holds zones {held or '(none)'} on it, not {expected}"
+                          + ("" if stamped.get("zone_membership") else
+                             "; the ZoneMembership stamp did not land either"))
+            if held is not None and not reason:
+                stamped = {**stamped, "zone_membership": True, "zones_read_back": list(held)}
+                self.last_governance = {**(self.last_governance or {}), report_guid: stamped}
+                return
+        raise PrivateReportNotConfirmed(report_guid, self._private_owner, reason)
+
+    def _require_reused_report_private(self, report_guid: str) -> None:
+        """A 409 reuse for a PRIVATE member: the report Egeria already holds under this run's name must already be in
+        exactly `[private, owner]`. A report that is public (published before the resource joined a private
+        investigation) is never made private after the fact and never has private findings attached beneath it:
+        anyone may already have read it, and re-zoning is not un-reading (2026-10-13 review)."""
+        from resource_explorer.egeria_identity import ZoneReadError, read_zones
+
+        try:
+            held = read_zones(report_guid, self.resolve_identity())
+        except ZoneReadError as exc:
+            raise PrivateReportNotConfirmed(
+                report_guid, self._private_owner,
+                f"a report with this run's name already exists in Egeria and its zones could not be read ({exc})")
+        if sorted(held) != sorted(self.zone_names):
+            raise PrivateReportNotConfirmed(
+                report_guid, self._private_owner,
+                f"a report with this run's name already exists in Egeria in zones {held or '(none)'}, not "
+                f"{list(self.zone_names)}; private findings are never attached beneath a report that was public")
+
+    def _record_private_refusal(self, result: SurveyResult, report_guid: str, reason: str) -> None:
+        """The activity entry a refused private publish leaves, in words (status `error`)."""
+        if not self._registry:
+            return
+        try:
+            from resource_explorer.activity_logger import log_catalog
+
+            log_catalog(
+                self._registry, entity_type="repo", entity_slug=result.resource_slug,
+                entity_name=result.project_display_name, entity_location=result.github_url,
+                status="error",
+                summary=(f"NOT published: private investigation's report "
+                         f"{(report_guid or 'no-guid')[:12]}… could not be confirmed private "
+                         f"({reason}); no findings were written"),
+                detail=reason,
+            )
+        except Exception as exc:  # noqa: BLE001 - the raise that follows is the signal
+            log.warning("Could not record the refused private publish of %s: %s",
+                        result.resource_slug, exc)
+
     def _stamp_governance(self, *element_guids: str, produced: bool = True) -> dict:
         """`Ownership` and `ZoneMembership` on everything this publish created.
 
@@ -1032,6 +1175,11 @@ class EgeriaPublisher:
         user their publish failed. The result is folded into the publish
         summary the same way `annotation_types_warning` is, so it is visible in
         the Activity tab rather than only in a log line.
+
+        One exception (2026-10-13): a PRODUCED element of a private investigation whose
+        classification client cannot be built raises `PrivateReportNotConfirmed` — private work is
+        never published on a best-effort basis. Any other client-build failure is recorded per
+        element as not stamped, with its reason, and never returned as a silent `{}`.
         """
         from resource_explorer.egeria_identity import stamp_published
 
@@ -1053,10 +1201,8 @@ class EgeriaPublisher:
             # investigation's to hide or to own, however private the
             # investigation is, so it gets the ordinary treatment: the
             # deployment's draft zone and the publishing identity.
-            from resource_explorer.egeria_identity import draft_zones
-
             owner = on_behalf_of(identity).owner          # the requester; never the service account
-            zones = draft_zones()
+            zones = self._referenced_zones()
         results: dict[str, dict] = {}
         client = None
         for guid in element_guids:
@@ -1070,12 +1216,21 @@ class EgeriaPublisher:
                 except PermissionError:
                     raise   # no caller / expired / platform not allowed: never a silent unowned publish
                 except Exception as exc:
-                    log.warning(
-                        "Could not build a classification client — Ownership/"
-                        "ZoneMembership not set for this publish: %s: %s",
-                        type(exc).__name__, exc,
-                    )
-                    return {}
+                    reason = (f"the classification client could not be built "
+                              f"({type(exc).__name__}: {str(exc)[:160]})")
+                    log.warning("Could not build a classification client — Ownership/"
+                                "ZoneMembership not set for this publish: %s", reason)
+                    if produced and getattr(self, "_private_owner", ""):
+                        # A private investigation's report with no way to classify it: refused
+                        # here, before a single finding is written beneath it (fail closed).
+                        raise PrivateReportNotConfirmed(guid, self._private_owner, reason) from exc
+                    # Never `{}`: an empty outcome makes the publish summary say nothing at all,
+                    # which reads as "governed". Each element is recorded as NOT stamped, with why.
+                    results = {g: {"ownership": False, "zone_membership": False, "owner": owner,
+                                   "zones": list(zones), "reason": reason}
+                               for g in element_guids if g}
+                    self.last_governance = {**(self.last_governance or {}), **results}
+                    return results
             results[guid] = stamp_published(
                 guid, owner, identity=identity, client=client, zones=zones,
             )
@@ -1205,6 +1360,15 @@ class EgeriaPublisher:
                 },
             },
         }
+        if getattr(self, "_private_owner", ""):
+            # PRODUCED by a private investigation: the report is BORN in `[private, owner]`, so
+            # there is no moment at which it, or a finding anchored to it, is world-readable
+            # (2026-10-13 review). `initialClassifications` is the create-time shape Egeria
+            # honours; a `zoneMembership` key in the properties would be ignored. The post-create
+            # stamp and the read-back in `_confirm_report_private` stay as the second guard.
+            from resource_explorer.egeria_identity import zone_membership_initial_classification
+
+            body["initialClassifications"] = zone_membership_initial_classification(self.zone_names)
         try:
             with time_egeria_call(self._registry, "create_asset", "write", params={"typeName": "SurveyReport"}):
                 report_guid = self._asset_maker.create_asset(body=body)
@@ -1221,6 +1385,8 @@ class EgeriaPublisher:
                     f"could be read ({qualified_name})") from exc
             self.report_reused = True
             log.info("SurveyReport %s already in Egeria (same survey run): reusing it", report_guid)
+            if getattr(self, "_private_owner", ""):
+                self._require_reused_report_private(report_guid)
 
         # Persist so the pull path (EgeriaReader) and CLI can reference it
         if self._registry:
@@ -1345,6 +1511,11 @@ class EgeriaPublisher:
 
         defer = (not get_config().runs.publish_inline if self._defer_drain_override is None
                 else self._defer_drain_override)
+        if getattr(self, "_private_owner", ""):
+            # A private member's findings are drained NOW, as the signed-in owner. Deferred, they would wait for the
+            # background drain, which runs as the service account Egeria refuses beneath a private report: every
+            # row would go dead (2026-10-13 review). `egeria_outbox` parks any that still reach it.
+            defer = False
         if defer:
             # Enqueue-only: leave draining to the scheduler's existing
             # periodic `_drain_egeria_outbox` cycle (<=15 min). See this
