@@ -127,6 +127,14 @@ def test_no_analytics_path_is_on_the_public_allowlist():
     assert not get_policy().is_public(f"{TILE}/database/demo")
 
 
+def _without_as_of(tile: dict) -> dict:
+    """A tile minus the per-call timestamp: `manifest.as_of` and the `provenance` sentence that quotes it."""
+    out = dict(tile)
+    out["manifest"] = {k: v for k, v in (tile.get("manifest") or {}).items() if k != "as_of"}
+    out["provenance"] = (tile.get("provenance") or "").split(" · as of ")[0]
+    return out
+
+
 def test_portal_flow_end_to_end_runs_as_the_token_subject(tclient, reg, monkeypatch):
     from resource_explorer.a2a_auth import current_caller
     from trellis_analytics.portal import curation_coverage_tile
@@ -142,7 +150,9 @@ def test_portal_flow_end_to_end_runs_as_the_token_subject(tclient, reg, monkeypa
     session = _session(tclient)                                   # step 1: exchange
     r = tclient.get(f"{TILE}/database/demo", headers=_bearer(session))   # step 2: read
     assert r.status_code == 200
-    assert r.json() == curation_coverage_tile("demo", reg.database_url, "database")
+    # Same tile, one source -- but `as_of` is stamped per call, so two calls can straddle a second boundary
+    # (CI flake on #651: 13:10:21Z vs 13:10:22Z). Compare everything except the per-call timestamp.
+    assert _without_as_of(r.json()) == _without_as_of(curation_coverage_tile("demo", reg.database_url, "database"))
     assert r.json()["state"] in ("measured", "nothing_found")
     assert seen == [("erin", "tok")]                              # the route ran as the Portal user
 
