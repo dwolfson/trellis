@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from importlib.metadata import entry_points
 
-from trellis_analytics.manifest import _TrellisManifest, purpose_warnings
+from trellis_analytics.manifest import _TrellisManifest, purpose_warnings, question_warnings
 
 GROUP = "trellis.analytics"
 log = logging.getLogger(__name__)
@@ -40,6 +40,34 @@ def check_purposes(manifests: dict[str, _TrellisManifest], known: list[str] | No
     return out
 
 
+def known_question_ids() -> set[str] | None:
+    """Every question id in Resource Explorer's catalog, or None when RE is not installed. Read from the
+    shipped YAML through the catalog reader; no registry is constructed, so nothing connects to the shared
+    registry or migrates it."""
+    try:
+        from resource_explorer.surveyors.question_catalog_reader import all_question_ids
+    except ImportError:
+        return None
+    return all_question_ids()
+
+
+def check_questions(manifests: dict[str, _TrellisManifest], known: set[str] | None = None) -> list[str]:
+    """Same rule as `check_purposes` (owner: suggestive, never reject): every declared question id the catalog
+    does not hold is logged as a warning naming it; nothing is refused. Returns the warnings. With nothing
+    declared, the catalog is not read at all."""
+    if not any(m.questions for m in manifests.values()):
+        return []
+    known = known if known is not None else known_question_ids()
+    if known is None:
+        log.warning("manifest questions not checked: Resource Explorer (which holds the question catalog) is "
+                    "not installed")
+        return []
+    out = [w for m in manifests.values() for w in question_warnings(m, known)]
+    for w in out:
+        log.warning(w)
+    return out
+
+
 def discover(known_purposes: list[str] | None = None, registry=None) -> dict[str, _TrellisManifest]:
     """name -> manifest for every entry point. An entry point may name a manifest, or a callable returning
     one manifest or a list of them. A broken entry point raises, naming it: a silent skip would be absence
@@ -59,6 +87,7 @@ def discover(known_purposes: list[str] | None = None, registry=None) -> dict[str
         except Exception as exc:  # noqa: BLE001 - re-raised with the entry point named
             raise RuntimeError(f"entry point {GROUP}:{ep.name} ({ep.value}) failed to load: {exc}") from exc
     check_purposes(found, known_purposes, registry)
+    check_questions(found)
     return found
 
 

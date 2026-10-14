@@ -27,6 +27,16 @@ class _TrellisManifest(AnalyticFunctionSpec):
     #: Which investigation purposes this serves (a qualifier). Checked at load against Egeria's purposes list
     #: (`discovery.discover`); suggestive, so an unknown value warns, naming it, and is kept.
     purposes: list[str] = Field(default_factory=list)
+    #: The questions this answers, BY STABLE ID (`Q-0001`, the `id` of an entry in Resource Explorer's question
+    #: catalog), never by wording: the wording is edited, the id is not. Checked at load against the catalog
+    #: (`discovery.check_questions`); suggestive, so an unknown id warns, naming it, and is kept.
+    questions: list[str] = Field(default_factory=list)
+
+
+def question_warnings(manifest: _TrellisManifest, known: set[str]) -> list[str]:
+    """One sentence per declared question id outside `known`, naming the manifest and the id. Never raises."""
+    return [f"manifest '{manifest.name}': question '{q}' is not an id in the question catalog; kept as written"
+            for q in manifest.questions if q and q.strip() not in known]
 
 
 def purpose_warnings(manifest: _TrellisManifest, known: list[str]) -> list[str]:

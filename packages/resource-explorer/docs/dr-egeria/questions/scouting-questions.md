@@ -26,6 +26,11 @@ I don't want to start using something that is a dead-end burden.
 ### Usage
 Typically asked and answerable during Scouting.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0001 |
+
 ___
 
 ## Classify Term as Question
@@ -94,6 +99,11 @@ Need to understand it to use it appropriately.
 
 ### Usage
 Typically asked and answerable during Scouting.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0002 |
 
 ___
 
@@ -164,6 +174,11 @@ Are they reputable?
 ### Usage
 Typically asked and answerable during Scouting.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0003 |
+
 ___
 
 ## Classify Term as Question
@@ -233,6 +248,11 @@ Reduces adoption risk, provides a health proxy, and ensures community support an
 ### Usage
 Typically asked and answerable during Scouting.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0004 |
+
 ___
 
 ## Classify Term as Question
@@ -291,6 +311,11 @@ Has someone already done this analysis? What did they learn?
 
 ### Usage
 Typically asked and answerable during Discovery.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0005 |
 
 ___
 
@@ -351,6 +376,11 @@ Understand the risk.
 ### Usage
 Typically asked and answerable during Analysis.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0006 |
+
 ___
 
 ## Classify Term as Question
@@ -409,6 +439,11 @@ Other experts, reduces risk if successful. Dependencies already in place, etc.
 
 ### Usage
 Typically asked and answerable during Discovery.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0007 |
 
 ___
 
@@ -529,6 +564,11 @@ Other experts, reduces risk if positive.
 ### Usage
 Typically asked and answerable during Discovery.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0008 |
+
 ___
 
 ## Classify Term as Question
@@ -638,6 +678,11 @@ Duplication can be costly - needs to be factored in.
 ### Usage
 Typically asked and answerable during Discovery.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0009 |
+
 ___
 
 ## Classify Term as Question
@@ -706,6 +751,11 @@ Finds candidates by what they contain, including resources whose scope and purpo
 
 ### Usage
 Typically asked and answerable during Analysis.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0010 |
 
 ___
 
@@ -776,6 +826,11 @@ Whether a resource can substitute for another is a question of scope — subject
 ### Usage
 Typically asked and answerable during Discovery.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0011 |
+
 ___
 
 ## Classify Term as Question
@@ -845,6 +900,11 @@ Is this appropriate?
 ### Usage
 Typically asked and answerable during Scouting.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0012 |
+
 ___
 
 ## Classify Term as Question
@@ -913,6 +973,11 @@ Influences deployment cost and exposes additional transitive risks.
 
 ### Usage
 Typically asked and answerable during Analysis.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0013 |
 
 ___
 
@@ -992,6 +1057,11 @@ Reduces risk.
 
 ### Usage
 Typically relevant during Analysis and Enrichment.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0014 |
 
 ___
 
@@ -1075,6 +1145,11 @@ Need to understand if we can deploy it?
 ### Usage
 Typically asked and answerable during Analysis.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0015 |
+
 ___
 
 ## Classify Term as Question
@@ -1144,6 +1219,11 @@ Cost is part of the decision process.
 ### Usage
 Typically asked and answerable during Enrichment.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0016 |
+
 ___
 
 ## Classify Term as Question
@@ -1203,6 +1283,11 @@ How do we know if it is working properly once deployed?
 ### Usage
 Typically asked and answerable during Analysis.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0017 |
+
 ___
 
 ## Classify Term as Question
@@ -1261,6 +1346,11 @@ Is it deployable and maintainable? Are upgrades disruptive?
 
 ### Usage
 Typically asked and answerable during Analysis.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0018 |
 
 ___
 
@@ -1341,6 +1431,11 @@ Cost, Skills and manageability.
 ### Usage
 Typically asked and answerable during Enrichment.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0019 |
+
 ___
 
 ## Classify Term as Question
@@ -1419,6 +1514,11 @@ Will it be allowed in? What are the risks?
 
 ### Usage
 Typically asked and answerable during Enrichment.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0020 |
 
 ___
 
@@ -1529,6 +1629,11 @@ Is it production ready?
 ### Usage
 Typically asked and answerable during Analysis.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0021 |
+
 ___
 
 ## Classify Term as Question
@@ -1597,6 +1702,11 @@ Can we connect it to our ecosystem?
 
 ### Usage
 Typically asked and answerable during Analysis.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0022 |
 
 ___
 
@@ -1687,6 +1797,11 @@ Impact on existing architecture and operations.
 ### Usage
 Typically asked and answerable during Enrichment.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0023 |
+
 ___
 
 ## Classify Term as Question
@@ -1765,6 +1880,11 @@ Stability vs innovation trade-off.
 
 ### Usage
 Typically asked and answerable during Assessment.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0024 |
 
 ___
 
@@ -1845,6 +1965,11 @@ Operational readiness and skill gaps.
 ### Usage
 Typically asked and answerable during Enrichment.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0025 |
+
 ___
 
 ## Classify Term as Question
@@ -1913,6 +2038,11 @@ Ease of adoption and maintenance.
 
 ### Usage
 Typically asked and answerable during Analysis.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0026 |
 
 ___
 
@@ -2003,6 +2133,11 @@ Enterprise fallback and support options.
 ### Usage
 Typically asked and answerable during Analysis.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0027 |
+
 ___
 
 ## Classify Term as Question
@@ -2092,6 +2227,11 @@ Third-party audit and security posture.
 ### Usage
 Typically asked and answerable during Analysis.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0028 |
+
 ___
 
 ## Classify Term as Question
@@ -2170,6 +2310,11 @@ Compliance and regulatory alignment.
 
 ### Usage
 Typically asked and answerable during Enrichment.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0029 |
 
 ___
 
@@ -2250,6 +2395,11 @@ Identifies strict copyleft (GPL/AGPL), source-available shifts (BSL/SSPL), or du
 ### Usage
 Typically asked and answerable during Assessment.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0030 |
+
 ___
 
 ## Classify Term as Question
@@ -2328,6 +2478,11 @@ Protects the organization from copyright infringement claims from unauthorized t
 
 ### Usage
 Typically asked and answerable during Analysis.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0031 |
 
 ___
 
@@ -2418,6 +2573,11 @@ Prevents unauthorized leakage of internal network metadata, system details, or u
 ### Usage
 Typically asked and answerable during Analysis.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0032 |
+
 ___
 
 ## Classify Term as Question
@@ -2496,6 +2656,11 @@ Open-source software licenses (e.g., Apache 2.0) often differ from model weights
 
 ### Usage
 Typically asked and answerable during Analysis.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0033 |
 
 ___
 
@@ -2576,6 +2741,11 @@ Prevents hardcoded secrets or unencrypted credential passing in containerized an
 ### Usage
 Typically asked and answerable during Analysis.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0034 |
+
 ___
 
 ## Classify Term as Question
@@ -2645,6 +2815,11 @@ Knowing how to responsibly disclose a finding — and whether maintainers take s
 ### Usage
 Typically asked and answerable during Analysis.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0035 |
+
 ___
 
 ## Classify Term as Question
@@ -2704,6 +2879,11 @@ Independent of CI wiring — a Makefile/build.gradle/pyproject build-system tabl
 ### Usage
 Typically asked and answerable during Analysis.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0036 |
+
 ___
 
 ## Classify Term as Question
@@ -2762,6 +2942,11 @@ A strong, cheap signal that this repo is already integrated into some enterprise
 
 ### Usage
 Typically asked and answerable during Assessment.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0037 |
 
 ___
 
@@ -2832,6 +3017,11 @@ Avoid re-deriving what's already known; ground the decision in prior signal inst
 ### Usage
 Typically asked and answerable during Discovery.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0038 |
+
 ___
 
 ## Classify Term as Question
@@ -2900,6 +3090,11 @@ Running the wrong tier wastes time (full survey when a coarse check would do) or
 
 ### Usage
 Typically asked and answerable during Discovery.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0039 |
 
 ___
 
@@ -2980,6 +3175,11 @@ Discovery-tier signal (license risk, maturity, conventions) is exactly the point
 ### Usage
 Typically asked and answerable during Discovery.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0040 |
+
 ___
 
 ## Classify Term as Question
@@ -3049,6 +3249,11 @@ Re-surveying on a blind schedule wastes cycles; knowing whether anything materia
 ### Usage
 Typically asked and answerable during Discovery.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0041 |
+
 ___
 
 ## Classify Term as Question
@@ -3108,6 +3313,11 @@ A resource type with no Survey Definition authored yet is itself a real, actiona
 ### Usage
 Typically asked and answerable during Discovery.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0042 |
+
 ___
 
 ## Classify Term as Question
@@ -3166,6 +3376,11 @@ The same signal means different things depending on what the repo is; a tutorial
 
 ### Usage
 Typically asked and answerable during Discovery.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0043 |
 
 ___
 
@@ -3236,6 +3451,11 @@ I need to know what I would be taking on before committing to it, and whether it
 ### Usage
 Typically asked and answerable during Discovery.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0044 |
+
 ___
 
 ## Classify Term as Question
@@ -3304,6 +3524,11 @@ I need to know what I would be taking on before committing to it, and whether it
 
 ### Usage
 Typically asked and answerable during Discovery.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0045 |
 
 ___
 
@@ -3374,6 +3599,11 @@ Language mix is the cheapest signal of whether this is something we can maintain
 ### Usage
 Typically asked and answerable during Scouting.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0046 |
+
 ___
 
 ## Classify Term as Question
@@ -3443,6 +3673,11 @@ Bundled data can carry licensing and privacy obligations that the repo's own lic
 ### Usage
 Typically asked and answerable during Analysis.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0047 |
+
 ___
 
 ## Classify Term as Question
@@ -3511,6 +3746,11 @@ The published surface is what we would actually be coupling to, and what breaks 
 
 ### Usage
 Typically asked and answerable during Analysis.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0048 |
 
 ___
 
@@ -3591,6 +3831,11 @@ A named, comparable rubric is what lets me weigh several candidates against each
 ### Usage
 Typically asked and answerable during Assessment.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0049 |
+
 ___
 
 ## Classify Term as Question
@@ -3659,6 +3904,11 @@ A badge is a public claim by the project about itself; its age tells me how much
 
 ### Usage
 Typically asked and answerable during Assessment.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0050 |
 
 ___
 
@@ -3739,6 +3989,11 @@ A healthy commit rate produced by one person is a different risk from the same r
 ### Usage
 Typically asked and answerable during Assessment.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0051 |
+
 ___
 
 ## Classify Term as Question
@@ -3807,6 +4062,11 @@ Gives an estimate on cost to maintain.
 
 ### Usage
 Typically asked and answerable during Assessment.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0052 |
 
 ___
 
@@ -3886,6 +4146,11 @@ How do we use this - does it look like it does what we want?
 
 ### Usage
 Typically asked and answerable during Discovery.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0053 |
 
 ___
 
@@ -3976,6 +4241,11 @@ Whether a survey can run at all, and where it runs, decides the cost and the pro
 ### Usage
 Typically asked and answerable during Discovery.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0054 |
+
 ___
 
 ## Classify Term as Question
@@ -4044,6 +4314,11 @@ Data sovereignty decides whether we may hold or process this at all, independent
 
 ### Usage
 Typically asked and answerable during Discovery.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0055 |
 
 ___
 
@@ -4124,6 +4399,11 @@ A consumer needs to know which period the data actually covers before trusting a
 ### Usage
 Typically asked and answerable during Analysis.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0056 |
+
 ___
 
 ## Classify Term as Question
@@ -4192,6 +4472,11 @@ A permissive license does not mean an internal classification, a governance zone
 
 ### Usage
 Typically asked and answerable during Analysis.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0057 |
 
 ___
 
@@ -4272,6 +4557,11 @@ The supply half of a data product: one with no accountable owner, no license and
 ### Usage
 Typically asked and answerable during Assessment.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0058 |
+
 ___
 
 ## Classify Term as Question
@@ -4350,6 +4640,11 @@ The demand half: building a data product nobody asked for costs more than it ret
 
 ### Usage
 Typically asked and answerable during Assessment.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0059 |
 
 ___
 
@@ -4430,6 +4725,11 @@ Size sets the cost of every later tier, and is the first thing that says whether
 ### Usage
 Typically asked and answerable during Scouting.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0060 |
+
 ___
 
 ## Classify Term as Question
@@ -4499,6 +4799,11 @@ Knowing which schemas matter stops every later analysis from paying to profile s
 ### Usage
 Typically asked and answerable during Scouting.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0061 |
+
 ___
 
 ## Classify Term as Question
@@ -4557,6 +4862,11 @@ A database nobody writes to and nobody reads is a retirement candidate, not a su
 
 ### Usage
 Typically asked and answerable during Scouting.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0062 |
 
 ___
 
@@ -4627,6 +4937,11 @@ Undocumented tables are the single biggest obstacle to anyone reusing a database
 ### Usage
 Typically asked and answerable during Scouting.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0063 |
+
 ___
 
 ## Classify Term as Question
@@ -4685,6 +5000,11 @@ An unsupported engine version is a security and upgrade liability before anythin
 
 ### Usage
 Typically asked and answerable during Scouting.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0064 |
 
 ___
 
@@ -4755,6 +5075,11 @@ Whether the data survives a failure is a property of the deployment, not of the 
 ### Usage
 Typically asked and answerable during Scouting.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0065 |
+
 ___
 
 ## Classify Term as Question
@@ -4813,6 +5138,11 @@ These are the two resilience questions a data owner actually asks, and the two t
 
 ### Usage
 Typically asked and answerable during Enrichment.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0066 |
 
 ___
 
@@ -4883,6 +5213,11 @@ The kind of database decides which later analyses are worth paying for at all.
 ### Usage
 Typically asked and answerable during Discovery.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0067 |
+
 ___
 
 ## Classify Term as Question
@@ -4942,6 +5277,11 @@ A database with no declared relationships needs a very different kind of attenti
 ### Usage
 Typically asked and answerable during Discovery.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0068 |
+
 ___
 
 ## Classify Term as Question
@@ -5000,6 +5340,11 @@ Grain is the first thing a consumer has to know and the last thing most database
 
 ### Usage
 Typically asked and answerable during Discovery.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0069 |
 
 ___
 
@@ -5070,6 +5415,11 @@ Paying to survey, host and govern the third copy of the same database is a cost 
 ### Usage
 Typically asked and answerable during Discovery.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0070 |
+
 ___
 
 ## Classify Term as Question
@@ -5138,6 +5488,11 @@ Logic hidden in views and triggers is logic no application-level survey will eve
 
 ### Usage
 Typically asked and answerable during Discovery.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0071 |
 
 ___
 
@@ -5208,6 +5563,11 @@ A hundred-table database with no entry point is functionally undiscoverable, how
 ### Usage
 Typically asked and answerable during Discovery.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0072 |
+
 ___
 
 ## Classify Term as Question
@@ -5276,6 +5636,11 @@ Stale or missing planner statistics make the query planner choose slow plans, an
 
 ### Usage
 Typically asked and answerable during Analysis.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0073 |
 
 ___
 
@@ -5346,6 +5711,11 @@ Data hidden inside JSON columns is invisible to every schema-level question, and
 ### Usage
 Typically asked and answerable during Discovery.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0074 |
+
 ___
 
 ## Classify Term as Question
@@ -5404,6 +5774,11 @@ A consumer shopping for data searches by subject, not by table name; a resource 
 
 ### Usage
 Typically asked and answerable during Discovery.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0075 |
 
 ___
 
@@ -5474,6 +5849,11 @@ Data that does not cover the period or the places being asked about is out of sc
 ### Usage
 Typically asked and answerable during Discovery.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0076 |
+
 ___
 
 ## Classify Term as Question
@@ -5532,6 +5912,11 @@ This is the gate: it decides whether the Analysis-tier aggregate pass is worth p
 
 ### Usage
 Typically asked and answerable during Discovery.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0077 |
 
 ___
 
@@ -5592,6 +5977,11 @@ The schema is the contract, and every structural question downstream is asked ag
 ### Usage
 Typically asked and answerable during Analysis.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0078 |
+
 ___
 
 ## Classify Term as Question
@@ -5651,6 +6041,11 @@ Types say what a column may hold; only the values say what it does hold.
 ### Usage
 Typically asked and answerable during Analysis.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0079 |
+
 ___
 
 ## Classify Term as Question
@@ -5709,6 +6104,11 @@ Knowing where the sensitive data actually sits is the precondition for every pri
 
 ### Usage
 Typically asked and answerable during Analysis.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0080 |
 
 ___
 
@@ -5789,6 +6189,11 @@ Uncontrolled code columns are where data quality quietly fails, and they are che
 ### Usage
 Typically asked and answerable during Analysis.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0081 |
+
 ___
 
 ## Classify Term as Question
@@ -5858,6 +6263,11 @@ A schema that stops at "jsonb" describes the column and says nothing about the d
 ### Usage
 Typically asked and answerable during Analysis.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0082 |
+
 ___
 
 ## Classify Term as Question
@@ -5916,6 +6326,11 @@ These are the specific, fixable defects behind a vague sense that a database is 
 
 ### Usage
 Typically asked and answerable during Analysis.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0083 |
 
 ___
 
@@ -5986,6 +6401,11 @@ An external dependency is a reachability, security and upgrade constraint that t
 ### Usage
 Typically asked and answerable during Analysis.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0084 |
+
 ___
 
 ## Classify Term as Question
@@ -6054,6 +6474,11 @@ Access is only half an answer; access crossed with sensitivity is the half anyon
 
 ### Usage
 Typically asked and answerable during Analysis.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0085 |
 
 ___
 
@@ -6134,6 +6559,11 @@ A point-in-time survey cannot distinguish a busy table from an abandoned one; th
 ### Usage
 Typically asked and answerable during Analysis.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0086 |
+
 ___
 
 ## Classify Term as Question
@@ -6202,6 +6632,11 @@ Columns bound to agreed terms are the difference between a catalogued database a
 
 ### Usage
 Typically asked and answerable during Analysis.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0087 |
 
 ___
 
@@ -6272,6 +6707,11 @@ Documentation coverage is the scored version of the Scouting comment question, a
 ### Usage
 Typically asked and answerable during Assessment.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0088 |
+
 ___
 
 ## Classify Term as Question
@@ -6330,6 +6770,11 @@ This is the question a privacy review actually asks, and it is a cross of two an
 
 ### Usage
 Typically asked and answerable during Assessment.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0089 |
 
 ___
 
@@ -6400,6 +6845,11 @@ Modelling quality predicts how expensive this database will be to integrate with
 ### Usage
 Typically asked and answerable during Assessment.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0090 |
+
 ___
 
 ## Classify Term as Question
@@ -6469,6 +6919,11 @@ Reference-data governance is measurable as a share, which makes it one of the fe
 ### Usage
 Typically asked and answerable during Assessment.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0091 |
+
 ___
 
 ## Classify Term as Question
@@ -6528,6 +6983,11 @@ Operational neglect shows up in the statistics long before it shows up as an out
 ### Usage
 Typically asked and answerable during Assessment.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0092 |
+
 ___
 
 ## Classify Term as Question
@@ -6586,6 +7046,11 @@ A data owner signing off on a database is signing off on its recovery, not its s
 
 ### Usage
 Typically asked and answerable during Assessment.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0093 |
 
 ___
 
@@ -6656,6 +7121,11 @@ Need a basic inventory before deciding whether deeper analysis of this filesyste
 ### Usage
 Typically asked and answerable during Scouting.
 
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0094 |
+
 ___
 
 ## Classify Term as Question
@@ -6724,6 +7194,11 @@ Whether a filesystem holds usable structured data determines whether it's worth 
 
 ### Usage
 Typically asked and answerable during Discovery.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0095 |
 
 ___
 

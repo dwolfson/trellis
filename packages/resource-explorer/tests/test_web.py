@@ -1321,10 +1321,10 @@ class TestQuestionCatalogWriteRoutes:
         import csv as csv_mod
         from resource_explorer.surveyors import question_catalog_writer as qcw
 
-        header = ["Question", "Funnel Stage", "Why is this important?", "Rationale/Source",
+        header = ["Question ID", "Question", "Funnel Stage", "Why is this important?", "Rationale/Source",
                   "Answering Analysis", "Answering Mechanism", "Steward", "Purposes",
                   "Catalog History", "Status"]
-        row = {"Question": "Is this repository actively maintained?", "Funnel Stage": "Scouting",
+        row = {"Question ID": "Q-0001", "Question": "Is this repository actively maintained?", "Funnel Stage": "Scouting",
                "Why is this important?": "", "Rationale/Source": "", "Answering Analysis": "",
                "Answering Mechanism": "", "Steward": "X", "Purposes": "Select",
                "Catalog History": "", "Status": ""}
@@ -1346,7 +1346,7 @@ class TestQuestionCatalogWriteRoutes:
             "purposes": ["Select"],
         })
         assert resp.status_code == 200
-        assert resp.json() == {"status": "success", "warnings": []}
+        assert resp.json() == {"status": "success", "warnings": [], "question_id": "Q-0002"}
 
     def test_add_question_route_accepts_find(self, client):
         """Find is a purpose now (owner ruling 2026-10-13); the old hard-coded list 400'd it."""

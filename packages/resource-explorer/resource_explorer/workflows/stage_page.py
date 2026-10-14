@@ -642,7 +642,7 @@ def build_analyses_index(registry, slug: str, entity_type: str = "repo", *,
     for entry in entries:
         aid = entry["id"]
         matched_questions = [
-            {"question": q["question"], "stage": q["stage"]}
+            {"id": q.get("id", ""), "question": q["question"], "stage": q["stage"]}
             for q in questions if aid in (q["answering"]["analysis_ids"] or [])
         ]
 

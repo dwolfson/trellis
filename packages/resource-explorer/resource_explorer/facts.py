@@ -1566,7 +1566,7 @@ class FactLayer:
         kind = answering.get("kind") or "unknown"
         env = Envelope(
             subject=slug, question=question.get("question", ""),
-            question_id=question.get("question", ""), kind=kind,
+            question_id=question.get("id", ""), kind=kind,
         )
         # A declared resource-state source answers before the kind is
         # consulted: `direct` describes where the answer lives, and once that
