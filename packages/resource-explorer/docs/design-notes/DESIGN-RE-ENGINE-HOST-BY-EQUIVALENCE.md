@@ -826,3 +826,5 @@ Each question is marked with whose it is. None is decided here.
 **Decision (project owner, 2026-10-13):** Q-O3: "run as yourself if in private mode". An action on a resource in a private investigation is left unclaimed by the unattended host, and the owner is offered an attended run under their own identity.
 
 **Decision (project owner, 2026-10-13):** Q-O4: yes. RE may claim an action whose start time is in the future and hold it, visibly as RE's in Egeria.
+
+**Q-O5 resolved (2026-10-13):** logged and fixed in egeria-python as ISSUE-151 (d73b162f, PR odpi/egeria-python#452, not yet merged or released). The View Server has no list-all engine-actions endpoint, so `AutomatedCuration.get_engine_actions` is removed in 6.2.3. The slice uses `find_engine_actions("*")` for a list-all (EngineAction is an Asset in 6.2) and `get_active_engine_actions()` for live actions; never `get_engine_actions`.
