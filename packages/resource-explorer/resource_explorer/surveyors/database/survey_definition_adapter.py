@@ -126,6 +126,10 @@ def _run_db_derived(db_entity, registry, **_) -> dict:
     return {
         "derived": result.get("derived", {}),
         "read_snapshot": result.get("read_snapshot"),
+        # The annotations this run built (2026-10-14, engine host E4): the step_runs row now counts what the
+        # step produced (it recorded none before, as if the step yielded nothing), and the engine host
+        # publishes exactly these, never a re-derivation. The adapter's own publish does not read this key.
+        "annotations": result.get("annotations") or [],
     }
 
 

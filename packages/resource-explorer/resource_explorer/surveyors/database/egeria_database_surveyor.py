@@ -1302,6 +1302,103 @@ class EgeriaDatabaseSurveyor:
             "survey_submissions": result.get("survey_submissions", []),
         }
 
+    def publish_engine_action_report(
+        self,
+        db_entity: "DatabaseEntity",
+        annotations: list,
+        *,
+        asset_guid: str,
+        request_type: str,
+        engine_action_guid: str,
+        engine_user: str,
+        requester: str,
+        registry=None,
+    ) -> dict:
+        """Publish the SurveyReport of an Egeria engine action RE ran as an engine host (engine_host.py, E4),
+        shaped like a native survey action service's report (DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE C9):
+
+        * `ReportSubject` from the database asset (the action's target) and a `ReportOriginator` from the
+          engine action, which is how Egeria's own readers and RE's `native_survey_run` find it;
+        * qualifiedName `SurveyReport::<requestType>::<assetGUID>::<time>`, purpose = the request type,
+          authors = [the engine user], anchored on the asset (`AnnotationStore.java:67-150`);
+        * `Ownership` stamped to the requester, with the draft zones every RE publish gets.
+
+        The report and its annotations go through the same path as every database SurveyReport
+        (`_publish_survey_report`: create, annotations via `annotation_props.publish_annotations`, a 409 on the
+        same name reuses the report). Returns what happened, never raises for an Egeria answer: `report_error`
+        is set when the report could not be written (then `report_guid` is ""), `originator_error` when the
+        report exists but could not be linked to the action. The caller decides the completion from these.
+        Everything runs as the current principal (the engine host's `Daemon(ENGINE_HOST, requested_by)`)."""
+        from datetime import timezone
+
+        from resource_explorer.private_publish import refuse_unsupported_private
+
+        # The sweep already left private resources unclaimed; this is the same guard every database publish has.
+        refuse_unsupported_private(registry, "database", db_entity.slug,
+                                   name=getattr(db_entity, "display_name", "") or db_entity.slug)
+        self.connect()
+        created = datetime.now(timezone.utc)
+        stamp = created.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        egeria_time = created.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "+00:00"
+        qualified_name = f"SurveyReport::{request_type}::{asset_guid}::{stamp}"
+        additional = {"annotation_count": str(len(annotations)), "engineActionGUID": engine_action_guid}
+        if requester:
+            additional["requestedBy"] = requester
+        body = {
+            "class": "NewElementRequestBody",
+            "anchorGUID": asset_guid,
+            "isOwnAnchor": False,
+            "parentGUID": asset_guid,
+            "parentAtEnd1": True,
+            "parentRelationshipTypeName": "ReportSubject",
+            "properties": {
+                "class": "SurveyReportProperties",
+                "typeName": "SurveyReport",
+                "qualifiedName": qualified_name,
+                "displayName": f"Survey Report for {asset_guid}",
+                "description": (f"This is the {request_type} survey report for asset {asset_guid} "
+                                f"({db_entity.display_name}) generated at {stamp} by Resource Explorer's engine "
+                                f"host for engine action {engine_action_guid}."),
+                "purpose": request_type,
+                "authors": [engine_user] if engine_user else [],
+                "startTime": egeria_time,
+                "createdTime": egeria_time,
+                "additionalProperties": additional,
+            },
+        }
+        out = self._publish_survey_report(body, qualified_name, annotations, db_entity.slug, stamp)
+        out.update(qualified_name=qualified_name, annotation_count=len(annotations), originator_guid="",
+                   originator_error="", governance={})
+        report_guid = out["report_guid"]
+        if not report_guid:
+            return out
+        from pyegeria import MetadataExpert
+
+        try:
+            expert = self._clients().of(MetadataExpert)
+            out["originator_guid"] = expert.create_related_elements(body={
+                "class": "NewRelatedElementsRequestBody",
+                "typeName": "ReportOriginator",
+                "metadataElement1GUID": engine_action_guid,
+                "metadataElement2GUID": report_guid,
+            }) or ""
+            if not out["originator_guid"]:
+                out["originator_error"] = "Egeria gave no relationship GUID for the ReportOriginator link"
+        except Exception as exc:  # noqa: BLE001 - returned for the caller to complete survey-failed with
+            out["originator_error"] = f"{type(exc).__name__}: {exc}"[:400]
+            log.warning("ReportOriginator %s -> %s not created: %s", engine_action_guid, report_guid,
+                        out["originator_error"])
+        if requester:
+            from resource_explorer.egeria_identity import draft_zones, stamp_published
+
+            try:
+                out["governance"] = stamp_published(report_guid, requester, identity=self.principal(),
+                                                    zones=draft_zones())
+            except Exception as exc:  # noqa: BLE001 - a governance gap is reported, never a failed survey
+                out["governance"] = {"ownership": False, "zone_membership": False, "owner": requester,
+                                     "reason": f"{type(exc).__name__}: {exc}"[:300]}
+        return out
+
     @staticmethod
     def _is_duplicate_qualified_name(exc: Exception) -> bool:
         """Egeria's 409 for a create whose qualifiedName is already taken (OMAG-COMMON-409-001)."""

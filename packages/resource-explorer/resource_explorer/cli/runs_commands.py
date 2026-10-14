@@ -346,13 +346,13 @@ def runs_cancel(run_id: str = typer.Argument(help="Run id")):
     if registry.cancel_queued_run(run_id):
         console.print(f"[green]cancelled {run_id}[/green]")
         return
-    from resource_explorer.run_queue import HELD_KINDS
+    from resource_explorer.run_queue import UNCANCELLABLE_KINDS
 
-    if row.get("kind") in HELD_KINDS:      # refused by the registry; say why
+    if row.get("kind") in UNCANCELLABLE_KINDS:      # refused by the registry; say why
         console.print(
-            f"[yellow]Run {run_id} is a held {row['kind']} run — nothing was changed.[/yellow]\n[dim]RE has "
-            "claimed its Egeria engine action; cancelling it here would leave that action claimed with "
-            "nothing to complete it.[/dim]"
+            f"[yellow]Run {run_id} is an {row['kind']} run, held for its Egeria engine action — nothing was "
+            "changed.[/yellow]\n[dim]RE has claimed that action; cancelling the run here would leave it "
+            "claimed with nothing to complete it.[/dim]"
         )
         raise typer.Exit(code=1)
     console.print(

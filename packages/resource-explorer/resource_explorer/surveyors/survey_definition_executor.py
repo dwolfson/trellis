@@ -206,6 +206,11 @@ NOTHING_TO_PUBLISH = "nothing to publish · no step produced results"
 PUBLISHED_NOT_RECORDED = "published to Egeria · not recorded locally"
 #: Longest publish word stored or shown (the sentence lives in a title).
 PUBLISH_WORD_LIMIT = 300
+#: `publish=` value for a run whose CALLER publishes the results itself, so the executor's own adapter publish
+#: is not attempted. Used by the engine host (engine_host.py, E4): an Egeria engine action's SurveyReport is
+#: shaped like native and linked to the action, which the adapter's publish does not do, and a second report
+#: from the same run would be a duplicate.
+PUBLISH_BY_CALLER = "caller"
 
 
 class PublishedNotRecorded(Exception):
@@ -473,6 +478,7 @@ class SurveyDefinitionExecutor:
         demanded_by: str = "",
         capability_consented: bool = False,
         credential_scope: str = "",
+        outputs_sink: list | None = None,
     ) -> dict:
         """Run an already-resolved Survey Definition's steps.
 
@@ -1137,6 +1143,9 @@ class SurveyDefinitionExecutor:
         # are stored locally either way; only the automatic Egeria write is
         # skipped for an unassigned resource. Manual publish is still available
         # to catalog an unassigned resource explicitly, or to re-publish.
+        if outputs_sink is not None:
+            # The caller publishes (PUBLISH_BY_CALLER): it gets this run's own step outputs, never a re-derivation.
+            outputs_sink.extend(step_outputs)
         report_guid = ""
         published: bool | str = False
         publish_waiting = ""
@@ -1145,7 +1154,8 @@ class SurveyDefinitionExecutor:
         refusal = ""
         publish_error = ""
         not_recorded = ""
-        publish_chosen = bool(self.registry.has_assigned_egeria_project(entity_type, slug))
+        publish_chosen = (publish != PUBLISH_BY_CALLER
+                          and bool(self.registry.has_assigned_egeria_project(entity_type, slug)))
         if step_outputs and publish_chosen:
             # Brief Z2: the requester must be allowed to publish this resource, re-checked right before the write.
             from resource_explorer.workflows.curate import person_write_refusal
@@ -1526,6 +1536,7 @@ class SurveyDefinitionExecutor:
         engine_override: str | None = None,
         demanded_by: str = "",
         capability_consented: bool = False,
+        step_outputs: list | None = None,
         **runner_kwargs: Any,
     ) -> dict:
         """Run ONE step through the same dispatch loop `run()` uses, without
@@ -1549,6 +1560,9 @@ class SurveyDefinitionExecutor:
         through the executor" primitive, and a future caller wanting
         "resource-explorer" or "egeria" for one step needs no separate
         method.
+
+        `step_outputs`, when given, receives this run's step outputs (the same objects the publish step would
+        get), for a caller that publishes them itself with `publish=PUBLISH_BY_CALLER` (the engine host).
         """
         from resource_explorer.surveyors.survey_definition_reader import (
             SurveyDefinition,
@@ -1596,6 +1610,7 @@ class SurveyDefinitionExecutor:
             # Without it the re-resolve inside `_execute` would raise the very
             # shortfall the user just accepted and skip the step.
             capability_consented=capability_consented,
+            outputs_sink=step_outputs,
         )
 
     def _run_via_prefect(self, entity_type, entity, survey_def, runner_kwargs,
