@@ -92,6 +92,24 @@ def _summary(rows: list[tuple[str, str, str, str, str]], errors: dict[str, list[
     return buf.getvalue()
 
 
+MATCHING_LINK = {
+    "type": {"typeName": "SupportedGovernanceService"},
+    "element": {"elementGUID": SERVICE_GUID},
+    "relationshipProperties": {"propertyValueMap": {"requestType": {"primitiveValue": "re-db-derived"}}}}
+OTHER_LINK = dict(MATCHING_LINK, element={"elementGUID": "0a1b2c3d-0000-4000-8000-00000000f999"})
+
+
+def _as_user(monkeypatch, sub, admins=("dan",), admin_token=""):
+    """Sign `sub` in (None: anonymous) and configure the admin list (FEEDBACK_ADMIN_USERS) and token."""
+    from resource_explorer.config import get_config
+
+    feedback = get_config().feedback
+    monkeypatch.setattr(feedback, "admin_users", list(admins))
+    monkeypatch.setattr(feedback, "admin_token", admin_token)
+    monkeypatch.setattr("resource_explorer.auth.get_current_user",
+                        lambda *a, **k: {"sub": sub} if sub else None)
+
+
 OK_OUTPUT_ROWS = [
     ("Create Governance Action Type", "SUCCESS", "Resource Explorer Survey — db_derived",
      "ResourceExplorerSurvey::re-db-derived", "Created Governance Action Type"),
@@ -143,7 +161,7 @@ class Fakes:
 
         def by_name(name=None, property_name="qualifiedName", as_of_time=None, body=None, **kwargs):
             self.calls.append(f"find {name}")
-            return self.known.get(name, "No element found")
+            return self.known.get(name, "No elements found")      # pyegeria's live NO_ELEMENTS_FOUND
 
         def create_capability(body=None):
             self.calls.append("create engine")
@@ -155,21 +173,23 @@ class Fakes:
             self.known[body["properties"]["qualifiedName"]] = SERVICE_GUID
             return SERVICE_GUID
 
+        #: Pages of the engine's SupportedGovernanceService read, by page number; past the end: "No elements found".
+        self.related_pages: list = [{"elementList": [MATCHING_LINK]}] if link_exists else []
+        self.link_answer = LINK_GUID
+        self.link_visible_after_create = False
+
         def related(guid, relationship_type, body, for_lineage=None, for_duplicate_processing=None,
                     starting_at_end=0, start_from=0, page_size=500, timeout=30, mermaid_only=False, **kwargs):
             self.calls.append(f"related {relationship_type}")
-            if link_exists and (body or {}).get("startFrom", 0) == 0:
-                return {"elementList": [{
-                    "type": {"typeName": "SupportedGovernanceService"},
-                    "element": {"elementGUID": SERVICE_GUID},
-                    "relationshipProperties": {"propertyValueMap": {
-                        "requestType": {"primitiveValue": "re-db-derived"}}}}]}
-            return "No elements found"
+            page = (body or {}).get("startFrom", 0) // max((body or {}).get("pageSize", 1), 1)
+            return self.related_pages[page] if page < len(self.related_pages) else "No elements found"
 
         def link(governance_engine_guid, governance_service_guid, body=None):
             self.calls.append("link supported service")
             self.link_body = body
-            return LINK_GUID
+            if self.link_visible_after_create:
+                self.related_pages = [{"elementList": [dict(MATCHING_LINK, relationshipGUID=LINK_GUID)]}]
+            return self.link_answer
 
         self.expert.get_metadata_guid_by_unique_name.side_effect = by_name
         self.expert.get_related_metadata_elements.side_effect = related
@@ -496,9 +516,7 @@ def test_the_cli_and_the_route_call_the_same_function(root, monkeypatch):
     res = CliRunner().invoke(cli_app, ["dr-egeria", "run", "engine-host/decl.md", "--dry-run"])
     assert res.exit_code == 0, res.output
 
-    monkeypatch.setattr("resource_explorer.web.admin_auth.is_admin_request", lambda *a, **k: True)
-    monkeypatch.setattr("resource_explorer.web.admin_auth.admin_configured", lambda *a, **k: True)
-    monkeypatch.setattr("resource_explorer.auth.get_current_user", lambda *a, **k: {"sub": "dan"})
+    _as_user(monkeypatch, "dan")
     r = TestClient(web_app).post("/api/bootstrap/dr-egeria/run",
                                  json={"path": "engine-host/decl.md", "dry_run": True})
     assert r.status_code == 200, r.text
@@ -512,13 +530,11 @@ def test_the_route_is_admin_only(root, monkeypatch):
     from resource_explorer.web.app import app as web_app
 
     monkeypatch.setattr(runner, "run_document", lambda *a, **k: pytest.fail("a refused caller runs nothing"))
-    monkeypatch.setattr("resource_explorer.web.admin_auth.is_admin_request", lambda *a, **k: False)
-    monkeypatch.setattr("resource_explorer.web.admin_auth.admin_configured", lambda *a, **k: True)
-    monkeypatch.setattr("resource_explorer.auth.get_current_user", lambda *a, **k: {"sub": "peter"})
+    _as_user(monkeypatch, "peter")
     client = TestClient(web_app)
     for body in ({"path": "engine-host/decl.md"}, {"path": "engine-host/decl.md", "dry_run": True}):
         assert client.post("/api/bootstrap/dr-egeria/run", json=body).status_code == 403
-    monkeypatch.setattr("resource_explorer.auth.get_current_user", lambda *a, **k: None)
+    _as_user(monkeypatch, None)
     assert client.post("/api/bootstrap/dr-egeria/run", json={"path": "x.md"}).status_code == 403
 
 
@@ -528,9 +544,7 @@ def test_the_route_maps_refusals(root, reg, monkeypatch):
     from resource_explorer import dr_egeria_runner as runner
     from resource_explorer.web.app import app as web_app
 
-    monkeypatch.setattr("resource_explorer.web.admin_auth.is_admin_request", lambda *a, **k: True)
-    monkeypatch.setattr("resource_explorer.web.admin_auth.admin_configured", lambda *a, **k: True)
-    monkeypatch.setattr("resource_explorer.auth.get_current_user", lambda *a, **k: {"sub": "dan"})
+    _as_user(monkeypatch, "dan")
     real = runner.run_document
     monkeypatch.setattr(runner, "run_document", lambda path, **k: real(path, **{**k, "registry": reg}))
     Fakes(monkeypatch)
@@ -557,3 +571,205 @@ def test_the_cli_refuses_a_repeat_with_exit_1(root, reg, monkeypatch):
     assert "not safe to repeat" in first.output and "Link Action to Action Executor" in first.output
     second = CliRunner().invoke(cli_app, ["dr-egeria", "run", "plain/only.md"])
     assert second.exit_code == 1 and "--force" in second.output
+
+
+
+# ── review round 1 ──────────────────────────────────────────────────────────
+
+def _route(monkeypatch, reg=None):
+    from fastapi.testclient import TestClient
+
+    from resource_explorer import dr_egeria_runner as runner
+    from resource_explorer.web.app import app as web_app
+
+    if reg is not None:
+        real = runner.run_document
+        monkeypatch.setattr(runner, "run_document", lambda path, **k: real(path, **{**k, "registry": reg}))
+    return TestClient(web_app)
+
+
+def test_the_route_is_refused_when_no_admin_list_is_configured(root, reg, monkeypatch):
+    """Not the fail-open require_admin: an empty FEEDBACK_ADMIN_USERS refuses everyone, an admin TOKEN too."""
+    _as_user(monkeypatch, "dan", admins=(), admin_token="t0ken")
+    client = _route(monkeypatch, reg)
+    res = client.post("/api/bootstrap/dr-egeria/run", json={"path": "plain/only.md", "dry_run": True},
+                      headers={"X-Admin-Token": "t0ken", "X-Admin-User": "dan"})
+    assert res.status_code == 403 and "no admin configured" in res.json()["detail"]
+
+
+def test_an_admin_name_in_the_header_does_not_make_a_non_admin_an_admin(root, reg, monkeypatch):
+    _as_user(monkeypatch, "peter", admins=("dan",))
+    client = _route(monkeypatch, reg)
+    res = client.post("/api/bootstrap/dr-egeria/run", json={"path": "plain/only.md", "dry_run": True},
+                      headers={"X-Admin-User": "dan"})
+    assert res.status_code == 403
+
+
+def test_an_admin_jwt_is_let_through(root, reg, monkeypatch):
+    _as_user(monkeypatch, "dan", admins=("dan",))
+    client = _route(monkeypatch, reg)
+    res = client.post("/api/bootstrap/dr-egeria/run", json={"path": "plain/only.md", "dry_run": True})
+    assert res.status_code == 200 and res.json()["status"] == "planned"
+
+
+def test_a_nul_byte_in_the_path_is_400(root, reg, monkeypatch):
+    from resource_explorer import dr_egeria_runner as runner
+
+    with pytest.raises(runner.DocumentRefused):
+        runner.run_document("plain/only\x00.md", dry_run=True, registry=reg)
+    _as_user(monkeypatch, "dan")
+    assert _route(monkeypatch, reg).post("/api/bootstrap/dr-egeria/run",
+                                         json={"path": "plain/only\x00.md"}).status_code == 400
+
+
+def test_a_bootstrap_batch_document_is_refused_without_force(root, reg, monkeypatch):
+    """The heal may already have applied it (heals before this change left no row), so a batch document is
+    refused unless forced, whatever this runner's own rows say."""
+    from resource_explorer import dr_egeria_runner as runner
+
+    batch = root / "questions"
+    batch.mkdir()
+    (batch / "q.md").write_text(DOC)
+    (batch / "_batch.json").write_text(json.dumps({"display_name": "Q", "idempotent": False,
+                                                   "canary": {"qualified_name": "x"}, "files": ["q.md"],
+                                                   "post_heal": {"script": "scripts/fix.py"}}))
+    fakes = Fakes(monkeypatch)
+    planned = runner.run_document("questions/q.md", dry_run=True, registry=reg)
+    assert "bootstrap batch questions" in planned["batch_note"]
+    with pytest.raises(runner.RepeatRefused, match="bootstrap batch questions"):
+        runner.run_document("questions/q.md", registry=reg)
+    assert fakes.calls == [] and _rows(reg) == []
+    assert runner.run_document("questions/q.md", force=True, registry=reg)["status"] == "ok"
+
+
+def test_an_interrupt_finalises_the_row_and_is_re_raised(root, reg, monkeypatch):
+    from resource_explorer import bootstrap
+    from resource_explorer import dr_egeria_runner as runner
+
+    Fakes(monkeypatch)
+
+    def interrupted(doc, *, env=None):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(bootstrap, "run_dr_egeria_document", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        runner.run_document("plain/only.md", registry=reg)
+    row = _rows(reg)[0]
+    assert row["status"] == "interrupted"
+    assert "_runner" not in json.loads(row["detail"])
+
+
+def _running_row(reg, sha256: str, runner_identity: dict) -> str:
+    from resource_explorer.registry import ActivityEntry
+
+    entry_id = "prior-" + runner_identity.get("started_at", "x")[:4]
+    reg.write_activity(ActivityEntry(
+        id=entry_id, ts="2026-10-14T00:00:00+00:00", operation="dr_egeria", intent="enrichment",
+        entity_type="dr_egeria_document", entity_slug="plain/only.md", status="running", summary="running",
+        detail=json.dumps({"document": "plain/only.md", "sha256": sha256, "dry_run": False,
+                           "_runner": runner_identity})))
+    return entry_id
+
+
+def _dead_pid() -> int:
+    import subprocess as sp
+    import sys
+
+    proc = sp.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    return proc.pid
+
+
+def test_a_running_row_whose_process_is_gone_is_reconciled_and_does_not_block_a_forced_run(root, reg, monkeypatch):
+    from resource_explorer import dr_egeria_runner as runner
+
+    Fakes(monkeypatch)
+    sha = runner.plan_document("plain/only.md").sha256
+    prior = _running_row(reg, sha, {"pid": _dead_pid(), "started_at": "Tue Oct 14 00:00:00 2026"})
+    with pytest.raises(runner.RepeatRefused):            # reconciled to interrupted: it may have written, so applied
+        runner.run_document("plain/only.md", registry=reg)
+    assert reg.get_activity(prior)["status"] == "interrupted"
+    assert runner.run_document("plain/only.md", force=True, registry=reg)["status"] == "ok"
+
+
+def test_a_running_row_with_a_live_owner_refuses_even_with_force(root, reg, monkeypatch):
+    from resource_explorer import dr_egeria_runner as runner
+    from resource_explorer.run_reconciler import process_identity
+
+    fakes = Fakes(monkeypatch)
+    sha = runner.plan_document("plain/only.md").sha256
+    prior = _running_row(reg, sha, process_identity())
+    with pytest.raises(runner.RunRefused, match="in progress"):
+        runner.run_document("plain/only.md", force=True, registry=reg)
+    assert reg.get_activity(prior)["status"] == "running" and not fakes.writes()
+
+
+@pytest.mark.parametrize("heading", ["## delete glossary term", "## Clear Valid Metadata Map Name",
+                                     "## Cancel Engine Action", "## Unlink Element From Scope",
+                                     "## Initiate Engine Action"])
+def test_only_allow_listed_verbs_run(root, reg, monkeypatch, heading):
+    from resource_explorer import dr_egeria_runner as runner
+
+    (root / "plain" / "x.md").write_text(DOC + "\n" + heading + "\n### Qualified Name\nx\n\n___\n")
+    fakes = Fakes(monkeypatch)
+    out = runner.run_document("plain/x.md", dry_run=True, registry=reg)
+    assert out["valid"] is False and any("not run by RE" in e for e in out["errors"]), out["errors"]
+    with pytest.raises(runner.DocumentRefused):
+        runner.run_document("plain/x.md", registry=reg)
+    assert fakes.calls == []
+
+
+def test_a_link_with_no_guid_back_is_ok_only_when_the_read_back_finds_it(root, reg, monkeypatch):
+    from resource_explorer import dr_egeria_runner as runner
+
+    fakes = Fakes(monkeypatch)
+    fakes.link_answer = None
+    fakes.link_visible_after_create = True
+    runner.run_document("engine-host/decl.md", registry=reg)
+    link = _rows(reg)[0]["items"][2]
+    assert (link["status"], link["outcome"], link["guid"]) == ("ok", "created", LINK_GUID)
+
+
+def test_a_link_with_no_guid_back_and_no_read_back_is_unknown(root, reg, monkeypatch):
+    from resource_explorer import dr_egeria_runner as runner
+
+    fakes = Fakes(monkeypatch)
+    fakes.link_answer = None
+    runner.run_document("engine-host/decl.md", registry=reg)
+    row = _rows(reg)[0]
+    assert row["items"][2]["status"] == "unknown" and row["status"] == "error"
+
+
+def test_an_empty_later_page_ends_the_link_read(root, reg, monkeypatch):
+    from resource_explorer import dr_egeria_runner as runner
+
+    fakes = Fakes(monkeypatch)
+    fakes.related_pages = [{"elementList": [OTHER_LINK]}, []]
+    runner.run_document("engine-host/decl.md", registry=reg)
+    fakes.maker.link_supported_governance_service.assert_called_once()
+    assert _rows(reg)[0]["items"][2]["status"] == "ok"
+
+
+def test_a_steps_file_that_points_outside_the_docs_directory_is_refused(root, reg, monkeypatch):
+    from resource_explorer import dr_egeria_runner as runner
+
+    outside = root.parent / "evil.pyegeria-steps.json"
+    outside.write_text(json.dumps(STEPS))
+    (root / "plain" / "only.pyegeria-steps.json").symlink_to(outside)
+    fakes = Fakes(monkeypatch)
+    with pytest.raises(runner.DocumentRefused, match="steps"):
+        runner.run_document("plain/only.md", dry_run=True, registry=reg)
+    assert fakes.calls == []
+
+
+def test_a_refused_repeat_says_how_the_earlier_run_ended(root, reg, monkeypatch):
+    from resource_explorer import dr_egeria_runner as runner
+
+    fakes = Fakes(monkeypatch)
+    fakes.maker.create_asset.side_effect = RuntimeError("Egeria said no")
+    runner.run_document("engine-host/decl.md", registry=reg)
+    with pytest.raises(runner.RepeatRefused) as refused:
+        runner.run_document("engine-host/decl.md", registry=reg)
+    words = str(refused.value)
+    assert "already applied" not in words
+    assert "ended error" in words and "1 ok, 1 error, 3 not run" in words

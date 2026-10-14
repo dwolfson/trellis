@@ -59,12 +59,16 @@ STEPS_SUFFIX = ".pyegeria-steps.json"
 RUNNING, OK, ERROR, WARNING, REFUSED = "running", "ok", "error", "warning", "refused"
 PLANNED, NOT_RUN, UNKNOWN = "planned", "not_run", "unknown"
 
-#: Verbs whose commands remove something. RE never runs them: the owner performs destructive deletes himself.
-DESTRUCTIVE_VERBS = frozenset({"Delete", "Remove", "Unlink", "Detach", "Declassify"})
 #: Name-keyed upserts: a repeat updates the element it created.
 UPSERT_VERBS = frozenset({"Create", "Update"})
 #: Reads.
 READ_VERBS = frozenset({"Display", "View", "Search", "Find", "Validate"})
+#: An ALLOW-list: every other verb is refused, whatever it does (Delete, Remove, Unlink, Detach, Declassify,
+#: Clear, Cancel, Initiate, Run, Process, Import, Publish, and any verb Dr.Egeria adds later). Destructive and
+#: runtime-request commands are the owner's to run himself. Of these, only UPSERT_VERBS and READ_VERBS are
+#: safe to repeat; the rest add relationships, classifications or values and are flagged not safe.
+ALLOWED_VERBS = UPSERT_VERBS | READ_VERBS | frozenset({"Link", "Attach", "Add", "Classify", "Reclassify",
+                                                        "Setup", "Set"})
 
 ENGINE_STEP = "Create Survey Action Engine"
 SERVICE_STEP = "Create Survey Action Service"
@@ -117,10 +121,16 @@ def resolve_document(path: str | os.PathLike) -> Path:
     A relative path is taken relative to the docs directory first, then to the working directory; either way the
     RESOLVED path (symlinks and `..` followed) must lie under the docs directory."""
     root = docs_root()
-    raw = Path(os.fspath(path)).expanduser()
+    text = os.fspath(path)
+    if "\x00" in str(text):
+        raise DocumentRefused("a document path may not contain a NUL byte")
+    raw = Path(text).expanduser()
     candidates = [raw] if raw.is_absolute() else [root / raw, Path.cwd() / raw]
     for candidate in candidates:
-        resolved = candidate.resolve()
+        try:
+            resolved = candidate.resolve()
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise DocumentRefused(f"unreadable document path {path!r}: {exc}") from None
         if not resolved.is_relative_to(root):
             continue
         if resolved.suffix.lower() != ".md":
@@ -156,6 +166,8 @@ class DocumentPlan:
     commands: list[PlannedCommand] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     batch_note: str = ""
+    #: The bootstrap batch whose `_batch.json` lists this document ('' when none): the heal may have applied it.
+    batch_id: str = ""
 
     @property
     def steps(self) -> list[PlannedCommand]:
@@ -170,8 +182,17 @@ class DocumentPlan:
         return [c.command for c in self.commands if not c.safe_to_repeat]
 
 
-def _steps_path(doc: Path) -> Path:
-    return doc.with_name(doc.stem + STEPS_SUFFIX)
+def _steps_path(doc: Path) -> Optional[Path]:
+    """The document's pyegeria steps file, path-checked like the document: None when there is none; refused
+    when it exists but resolves outside the docs directory (a symlink out, say) or is not a regular file."""
+    sibling = doc.with_name(doc.stem + STEPS_SUFFIX)
+    if not os.path.lexists(sibling):
+        return None
+    resolved = sibling.resolve()
+    if not resolved.is_relative_to(docs_root()) or not resolved.is_file():
+        raise DocumentRefused(f"the pyegeria steps file {sibling.name} resolves outside {docs_root()} "
+                              "or is not a file; refused")
+    return resolved
 
 
 def _element_of(attributes: dict) -> str:
@@ -222,6 +243,20 @@ _STEP_FIELDS = {
 }
 
 
+def _batch_of(doc: Path) -> str:
+    """The batch id (directory name) when the `_batch.json` beside the document lists it in `files`."""
+    from resource_explorer import bootstrap
+
+    manifest = doc.parent / bootstrap.BATCH_MANIFEST_FILE
+    if not manifest.is_file():
+        return ""
+    try:
+        files = json.loads(manifest.read_text()).get("files") or []
+    except (OSError, ValueError, AttributeError):
+        return doc.parent.name             # unreadable manifest: assume it may list the document
+    return doc.parent.name if doc.name in files else ""
+
+
 def _batch_note(doc: Path) -> str:
     """When the document belongs to a bootstrap batch that is not idempotent, say what a repeat needs after it."""
     from resource_explorer import bootstrap
@@ -248,10 +283,10 @@ def plan_document(path: str | os.PathLike) -> DocumentPlan:
     doc = resolve_document(path)
     text = doc.read_bytes()
     steps_file = _steps_path(doc)
-    steps_bytes = steps_file.read_bytes() if steps_file.is_file() else b""
+    steps_bytes = steps_file.read_bytes() if steps_file is not None else b""
     digest = hashlib.sha256(text + b"\0" + steps_bytes).hexdigest()
     plan = DocumentPlan(path=doc, rel=doc.relative_to(docs_root()).as_posix(), sha256=digest,
-                        batch_note=_batch_note(doc))
+                        batch_note=_batch_note(doc), batch_id=_batch_of(doc))
     if steps_bytes:
         plan.commands.extend(_plan_steps(steps_file, plan.errors))
 
@@ -260,8 +295,9 @@ def plan_document(path: str | os.PathLike) -> DocumentPlan:
         if not cmd.is_command or cmd.verb == "Provenance":
             continue
         name = f"{cmd.verb} {cmd.object_type}"
-        if cmd.verb in DESTRUCTIVE_VERBS:
-            plan.errors.append(f"{name}: destructive commands are not run by RE; the owner runs them himself")
+        if cmd.verb not in ALLOWED_VERBS:
+            plan.errors.append(f"{name}: '{cmd.verb}' commands are not run by RE (only "
+                               f"{', '.join(sorted(ALLOWED_VERBS))}); destructive ones the owner runs himself")
             continue
         if not dispatcher.resolve_processor_class(cmd):
             plan.errors.append(f"{name}: Dr.Egeria has no such command")
@@ -287,6 +323,7 @@ def _plan_view(plan: DocumentPlan) -> dict:
                     else f"not valid: {len(plan.errors)} problem(s)"),
         "commands": [dict(c.item(PLANNED), repeat_note=c.repeat_note) for c in plan.commands],
         "not_safe_to_repeat": plan.not_safe_to_repeat, "batch_note": plan.batch_note, "activity_id": "",
+        "bootstrap_batch": plan.batch_id,
     }
 
 
@@ -467,9 +504,19 @@ class _Steps:
                 "properties": {"class": "SupportedGovernanceServiceProperties", "requestType": request_type,
                                "serviceRequestType": service_request_type}}
         answer = self._maker().link_supported_governance_service(engine, service, body)
-        guid = answer.strip() if isinstance(answer, str) and _GUID_RE.match(answer.strip()) else ""
-        return planned.item(OK, outcome="created", guid=guid,
-                            message="" if guid else "Egeria returned no relationship GUID")
+        if isinstance(answer, str) and _GUID_RE.match(answer.strip()):
+            return planned.item(OK, outcome="created", guid=answer.strip())
+        # No GUID back: only a read that finds the link says it is there.
+        try:
+            found = self._existing_link(engine, service, request_type)
+        except StepFailed as exc:
+            return planned.item(UNKNOWN, error=f"Egeria returned no relationship GUID ({answer!r:.80}) and the "
+                                               f"read-back failed: {exc}")
+        if found is None:
+            return planned.item(UNKNOWN, error=f"Egeria returned no relationship GUID ({answer!r:.80}) and the "
+                                               "read-back does not show the link")
+        return planned.item(OK, outcome="created", guid=found,
+                            message="no GUID in the create's answer; confirmed by reading it back")
 
     def _existing_link(self, engine: str, service: str, request_type: str) -> Optional[str]:
         """The SupportedGovernanceService from this engine to this service with this requestType, if one exists
@@ -484,6 +531,8 @@ class _Steps:
                 {"class": "ResultsRequestBody", "startFrom": page * _LINK_READ_PAGE, "pageSize": _LINK_READ_PAGE},
                 starting_at_end=1)
             if isinstance(answer, str) and answer.strip().casefold() in _ABSENT:
+                return None
+            if page > 0 and answer in ([], {}, ""):         # an empty later page is the end of the list
                 return None
             if not isinstance(answer, dict):
                 raise StepFailed("the read of the engine's supported governance services gave "
@@ -533,19 +582,44 @@ def _runs_of(registry, sha256: str) -> list[dict]:
             and r.get("status") != REFUSED]
 
 
+def _item_counts(row: dict) -> str:
+    counts: dict[str, int] = {}
+    for item in row.get("items") or []:
+        status = item.get("status", "") if isinstance(item, dict) else ""
+        counts[status] = counts.get(status, 0) + 1
+    order = (OK, WARNING, ERROR, UNKNOWN, NOT_RUN)
+    parts = [f"{counts[s]} {s.replace('_', ' ')}" for s in order if counts.get(s)]
+    return ", ".join(parts) or "no command results recorded"
+
+
 def _guard_repeat(registry, plan: DocumentPlan, force: bool, own_id: str = "") -> None:
+    """Refuse a run that could repeat writes. Order: a live run of the same content (always refused, force or
+    not); a bootstrap batch document (refused unless forced); an earlier run of the same content (refused
+    unless forced). A running row whose owner is provably gone is first reconciled to `interrupted` exactly as
+    run_reconciler does, and then counts as an earlier run (it may have written before it stopped)."""
+    from resource_explorer.run_reconciler import reconcile_one
+
+    for r in _runs_of(registry, plan.sha256):
+        if r["id"] != own_id and r.get("status") == RUNNING:
+            reconcile_one(registry, r)
     prior = [r for r in _runs_of(registry, plan.sha256) if r["id"] != own_id]
     running = [r for r in prior if r.get("status") == RUNNING]
     if running:
         r = running[0]
-        raise RunRefused(f"a run of {plan.rel} (same content) is in progress: activity {r['id']} since {r['ts']}")
+        raise RunRefused(f"a run of {plan.rel} (same content) is in progress: activity {r['id']} since {r['ts']} "
+                         "(its process is alive or cannot be checked)")
+    unsafe = ", ".join(plan.not_safe_to_repeat) or "none"
+    if plan.batch_id and not force:
+        raise RepeatRefused(
+            f"{plan.rel} is listed in bootstrap batch {plan.batch_id}, which the bootstrap heal applies, so it may "
+            f"already be in Egeria. Commands not safe to repeat: {unsafe}. Run it only on purpose, with force."
+            + (f" Note: {plan.batch_note}." if plan.batch_note else ""))
     if prior and not force:
         r = prior[0]
-        unsafe = ", ".join(plan.not_safe_to_repeat) or "none"
         raise RepeatRefused(
-            f"{plan.rel} (sha256 {plan.sha256[:12]}) was already applied: activity {r['id']} at {r['ts']}, "
-            f"status {r['status']}. Commands not safe to repeat: {unsafe}. Run it again only on purpose, "
-            "with force." + (f" Note: {plan.batch_note}." if plan.batch_note else ""))
+            f"{plan.rel} (sha256 {plan.sha256[:12]}) was run before: activity {r['id']} at {r['ts']} ended "
+            f"{r['status']} ({_item_counts(r)}). Commands not safe to repeat: {unsafe}. Run it again only on "
+            "purpose, with force." + (f" Note: {plan.batch_note}." if plan.batch_note else ""))
 
 
 def _daemon_env(clients) -> dict:
@@ -685,8 +759,9 @@ def _run_locked(plan: DocumentPlan, *, force: bool, requested_by: str, registry)
                 steps.close()
             loop.close()
             asyncio.set_event_loop(None)
-    except Exception as exc:  # noqa: BLE001 - the row must not stay "running"; the words are kept, then re-raised
-        status, summary = ERROR, f"Dr.Egeria {plan.rel}: failed, {type(exc).__name__}: {exc}"
+    except BaseException as exc:  # noqa: BLE001 - the row must not stay "running" (Ctrl-C included); then re-raised
+        status = ERROR if isinstance(exc, Exception) else "interrupted"
+        summary = f"Dr.Egeria {plan.rel}: {'failed' if status == ERROR else 'interrupted'}, {type(exc).__name__}: {exc}"
         write(status, summary, items, running=False)
         raise
 
