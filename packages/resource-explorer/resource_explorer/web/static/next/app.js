@@ -8911,8 +8911,8 @@ function contextRecordedBodyHtml(entry, indent) {
   const link = `<button type="button" data-goto-context
     class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${held?.value ? 'Enrichment › Context ›' : 'record it on Context ›'}</button>`;
   return held?.value
-    ? `<div class="${indent} text-answer text-ink" data-context-recorded>recorded on ${link}</div>`
-    : `<div class="${indent} text-answer text-ink" data-context-recorded>no survey measures this for databases · ${link}</div>`;
+    ? `<div class="ml-[22px] mt-[6px] text-answer text-ink" data-context-recorded>recorded on ${link}</div>`
+    : `<div class="ml-[22px] mt-[6px] text-answer text-ink" data-context-recorded>no survey measures this for databases · ${link}</div>`;
 }
 
 function bodyLines(entry, i, st, env) {
@@ -8925,7 +8925,7 @@ function bodyLines(entry, i, st, env) {
 
   if (st === 'loading') {
     // A skeleton, not a spinner, and not a claim.
-    return `<div class="${indent} h-[14px] w-[42%] rounded-sm bg-paper-surface"></div>`;
+    return `<div class="ml-[22px] mt-[6px] h-[14px] w-[42%] rounded-sm bg-paper-surface"></div>`;
   }
 
   if (st === 'proposal') {
@@ -8934,14 +8934,14 @@ function bodyLines(entry, i, st, env) {
 
   if (st === 'running') {
     const r = state.runsInFlight.get(entry.question);
-    return `<div class="${indent} text-answer text-accent-ink">${esc(r.label)}</div>`
+    return `<div class="ml-[22px] mt-[6px] text-answer text-accent-ink">${esc(r.label)}</div>`
       + provenanceLine(entry, i, { canRun: [], sources: r.analysisId ? [r.analysisId] : [] }, st);
   }
 
   if (st === 'error') {
     // Per-row failure, per-row retry. Never a page-level error.
-    return `<div class="${indent} text-answer text-accent-ink">${esc(env.__error)}</div>
-      <div class="${indent} text-provenance text-ink-muted">
+    return `<div class="ml-[22px] mt-[6px] text-answer text-accent-ink">${esc(env.__error)}</div>
+      <div class="ml-[22px] mt-[6px] text-provenance text-ink-muted">
         <button data-retry="${i}" class="cursor-pointer bg-transparent text-accent-ink underline">retry</button>
       </div>`;
   }
@@ -8950,7 +8950,7 @@ function bodyLines(entry, i, st, env) {
     const why = (env && env.blocked_reason)
       || entry.note
       || 'No surveyor exists for this question. Nothing has run and nothing can.';
-    return `<div class="${indent} text-answer text-ink">${tnum(esc(why))}</div>`;
+    return `<div class="ml-[22px] mt-[6px] text-answer text-ink">${tnum(esc(why))}</div>`;
   }
 
   // The catalog names a mechanism (`direct`/`chart`), but no reader has been
@@ -8960,7 +8960,7 @@ function bodyLines(entry, i, st, env) {
     const why = (env && env.blocked_reason)
       || entry.note
       || 'Answerable from a stored field, but no reader has been wired up for it yet.';
-    return `<div class="${indent} text-answer text-ink">${tnum(esc(why))}</div>`;
+    return `<div class="ml-[22px] mt-[6px] text-answer text-ink">${tnum(esc(why))}</div>`;
   }
 
   if (st === 'human') {
@@ -8994,7 +8994,7 @@ function bodyLines(entry, i, st, env) {
     // larger IA restructure), so the control opens on this row itself,
     // which is the narrower, in-scope place for it today.
     const editing = state.editingAnswer === entry.question;
-    const editorHtml = editing ? `<div class="${indent} mt-s1 flex items-start gap-s2">
+    const editorHtml = editing ? `<div class="ml-[22px] mt-[6px] mt-s1 flex items-start gap-s2">
          <textarea data-answer-input rows="2"
            class="w-full max-w-[60ch] rounded-sm border border-rule-strong bg-transparent px-[6px] py-[2px] text-answer text-ink"
            placeholder="${esc(why)}">${esc(held?.answer || '')}</textarea>
@@ -9005,27 +9005,27 @@ function bodyLines(entry, i, st, env) {
              class="cursor-pointer bg-transparent p-0 text-provenance text-ink-muted underline">cancel</button>
          </div>
        </div>` : '';
-    return `<div class="${indent} text-answer text-ink">${tnum(esc(why))}</div>
+    return `<div class="ml-[22px] mt-[6px] text-answer text-ink">${tnum(esc(why))}</div>
       ${held?.answer
-        ? `<div class="${indent} mt-s1 text-answer text-ink">${tnum(esc(held.answer))}</div>
-           <div class="${indent} text-provenance text-ink-muted">${provenance}
+        ? `<div class="ml-[22px] mt-[6px] mt-s1 text-answer text-ink">${tnum(esc(held.answer))}</div>
+           <div class="ml-[22px] mt-[6px] text-provenance text-ink-muted">${provenance}
              · <button type="button" data-human-edit="${esc(entry.question)}"
                  class="cursor-pointer bg-transparent text-accent-ink underline">change</button></div>`
-        : (editing ? '' : `<div class="${indent} mt-s1">
+        : (editing ? '' : `<div class="ml-[22px] mt-[6px] mt-s1">
              <button type="button" data-human-edit="${esc(entry.question)}"
                class="cursor-pointer rounded-sm border border-accent px-2 py-[2px] text-accent-ink"
                >Answer this →</button>
            </div>`)}
       ${editorHtml}
       ${wanted
-        ? `<div class="${indent} text-provenance text-ink-muted">The catalog says
+        ? `<div class="ml-[22px] mt-[6px] text-provenance text-ink-muted">The catalog says
              ${esc(declared)}, but no analysis is attached to this question, so
              nothing was queried — the answer here is yours alone.</div>`
         : ''}`;
   }
 
   if (st === 'unclassified') {
-    return `<div class="${indent} text-answer text-ink">The catalog does not state how this
+    return `<div class="ml-[22px] mt-[6px] text-answer text-ink">The catalog does not state how this
       question would be answered.</div>`;
   }
 
@@ -9035,7 +9035,7 @@ function bodyLines(entry, i, st, env) {
     const why = (env && env.blocked_reason) || 'Not run yet.';
     const lines = readEnvelope(entry, env, esc, tnum);
     return autoRanNoteHtml(entry, indent)
-      + `<div class="${indent} text-answer text-ink">${tnum(esc(why))}</div>`
+      + `<div class="ml-[22px] mt-[6px] text-answer text-ink">${tnum(esc(why))}</div>`
       + provenanceLine(entry, i, lines, st);
   }
 
@@ -9043,7 +9043,7 @@ function bodyLines(entry, i, st, env) {
   const lines = readEnvelope(entry, env, esc, tnum);
   let html = autoRanNoteHtml(entry, indent);
   if (lines.answer) {
-    html += `<div class="${indent} text-answer text-ink">${lines.answer}</div>`;
+    html += `<div class="ml-[22px] mt-[6px] text-answer text-ink">${lines.answer}</div>`;
   }
   // §18.3's own caveat, ahead of the analysis's own (below): a rollup with
   // no schema/table/column named is the more important thing to say here,
@@ -9073,7 +9073,7 @@ function autoRanNoteHtml(entry, indent) {
   const note = state.autoRanNotes.get(entry.question);
   if (!note) return '';
   state.autoRanNotes.delete(entry.question);
-  return `<div class="${indent} text-caveat text-ink-muted">${tnum(esc(note))}</div>`;
+  return `<div class="ml-[22px] mt-[6px] text-caveat text-ink-muted">${tnum(esc(note))}</div>`;
 }
 
 /** §17.1's crossing-tier half: the resolver would not start the run unasked.
@@ -9135,12 +9135,12 @@ function prerequisiteProposalHtml(entry, i, indent) {
         title="Raise a request to the database owner naming this step and the privilege it needs"
         >ask for broader access</button>`
     : '';
-  return `<div class="${indent} text-answer text-ink">${lead}</div>
-    ${reasons ? `<ul class="${indent} mt-[4px] list-disc list-inside text-caveat text-ink-muted">${reasons}</ul>` : ''}
-    ${partial ? `<div class="${indent} mt-[4px] text-caveat text-ink-muted">Running it anyway is not wrong —
+  return `<div class="ml-[22px] mt-[6px] text-answer text-ink">${lead}</div>
+    ${reasons ? `<ul class="ml-[22px] mt-[6px] mt-[4px] list-disc list-inside text-caveat text-ink-muted">${reasons}</ul>` : ''}
+    ${partial ? `<div class="ml-[22px] mt-[6px] mt-[4px] text-caveat text-ink-muted">Running it anyway is not wrong —
       the result is marked as measured within this credential's scope, never as a
       measurement of the whole database.</div>` : ''}
-    <div class="${indent} mt-s2 flex flex-wrap items-center gap-s2">
+    <div class="ml-[22px] mt-[6px] mt-s2 flex flex-wrap items-center gap-s2">
       <button type="button" data-prereq-accept="${i}"
         class="cursor-pointer rounded-sm border border-accent px-2 py-[1px] text-caveat text-accent-ink"
         >${accept}</button>

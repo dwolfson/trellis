@@ -384,9 +384,9 @@ async function renderDetail(slug) {
 
   const isCurrent = inv.slug === state.investigation;
   const lifecycleButtons = inv.status === 'open'
-    ? `<button data-act="inv-suspend" class="${btnCls()}">Suspend</button>
-       <button data-act="inv-close" class="${btnCls()}">Close</button>`
-    : `<button data-act="inv-reopen" class="${btnCls()}">Reopen</button>`;
+    ? `<button data-act="inv-suspend" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">Suspend</button>
+       <button data-act="inv-close" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">Close</button>`
+    : `<button data-act="inv-reopen" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">Reopen</button>`;
 
   el.innerHTML = `${detailHeaderHtml(inv)}
     <div class="mb-s3 flex flex-wrap items-center gap-s2 text-caveat text-ink-muted">
@@ -400,10 +400,10 @@ async function renderDetail(slug) {
     </div>
     <p class="max-w-[70ch] text-answer text-ink">${esc(inv.description || 'No description.')}</p>
     <div class="mb-s3 flex flex-wrap gap-s2">
-      <button data-act="inv-make-current" class="${btnCls()}" ${isCurrent ? 'disabled' : ''}>${
+      <button data-act="inv-make-current" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60" ${isCurrent ? 'disabled' : ''}>${
         isCurrent ? 'Current investigation' : 'Make current'}</button>
-      <button data-act="inv-edit" class="${btnCls()}">Edit</button>
-      <button data-act="inv-reclassify" class="${btnCls()}">Reclassify…</button>
+      <button data-act="inv-edit" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">Edit</button>
+      <button data-act="inv-reclassify" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">Reclassify…</button>
       ${lifecycleButtons}
     </div>
     <div id="inv-edit-form"></div>
@@ -415,7 +415,7 @@ async function renderDetail(slug) {
       <li class="mb-s2 rounded-sm border border-rule p-s2">
         <div class="text-answer text-ink">${esc(s.title)}</div>
         <div class="text-caveat text-ink-muted">${esc(s.detail || '')}</div>
-        ${s.action ? `<button data-next-step="${esc(s.action)}" class="${btnCls()} mt-s1">Go</button>` : ''}
+        ${s.action ? `<button data-next-step="${esc(s.action)}" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60 mt-s1">Go</button>` : ''}
       </li>`).join('')}</ul>`
       : `<p class="mb-s3 text-caveat text-ink-muted">${nextSteps.complete ? 'Nothing outstanding.' : 'No next steps offered.'}</p>`}
 
@@ -429,7 +429,7 @@ async function renderDetail(slug) {
     <div class="my-s3 h-px bg-rule"></div>
     <div id="inv-scope" class="mb-s2 flex items-center gap-s3">
       <h4 class="m-0 font-heading text-subtab font-normal text-ink">Scope · <span class="tnum">${members.length}</span></h4>
-      <button data-act="inv-add-menu" type="button" class="${btnCls()}">＋ add…</button>
+      <button data-act="inv-add-menu" type="button" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">＋ add…</button>
       <button data-act="inv-export-scope" type="button"
         class="cursor-pointer bg-transparent text-caveat text-accent-ink underline"
         title="Download the in-scope members as CSV. Loading it into another investigation adds the resources; the status_ columns are for a reader and are never read back."
@@ -449,11 +449,6 @@ function failurePopup(title, reason) {
   const body = el.querySelector('#wl-detail-body');
   body.setAttribute('data-inv-failure-popup', '');
   body.innerHTML = `<p class="text-state-warn">${esc(reason || 'no reason given')}</p>`;
-}
-
-function btnCls() {
-  return 'cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] '
-    + 'text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60';
 }
 
 // Link status per slug: the counts from GET /link-status (read on every detail render), or null when that read
@@ -505,9 +500,9 @@ function egeriaSectionHtml(inv) {
         · <span class="font-mono">${esc(inv.egeria_project_qualified_name || inv.egeria_project_guid)}</span>${notLinked}
       </p>
       <div class="flex flex-wrap gap-s2">
-        <button data-act="inv-sync" class="${btnCls()}">Publish again</button>
-        <button data-act="inv-relink" class="${btnCls()}">${n > 0 ? `Link members${counted ? ` (${n})` : ''}` : 'Relink members'}</button>
-        <button data-act="inv-unbind" class="${btnCls()}">Unbind</button>
+        <button data-act="inv-sync" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">Publish again</button>
+        <button data-act="inv-relink" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">${n > 0 ? `Link members${counted ? ` (${n})` : ''}` : 'Relink members'}</button>
+        <button data-act="inv-unbind" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">Unbind</button>
       </div>`;
   }
   return `<p class="max-w-[70ch] text-caveat text-ink-muted">
@@ -515,8 +510,8 @@ function egeriaSectionHtml(inv) {
       (Project + Folio + ResourceList) from this investigation's current members.
     </p>
     <div class="flex flex-wrap gap-s2">
-      <button data-act="inv-bind" class="${btnCls()}">Bind existing project…</button>
-      <button data-act="inv-promote" class="${btnCls()}">Publish to Egeria →</button>
+      <button data-act="inv-bind" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">Bind existing project…</button>
+      <button data-act="inv-promote" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">Publish to Egeria →</button>
     </div>`;
 }
 
@@ -553,7 +548,7 @@ function addMemberFormHtml() {
     </datalist>
     <input id="inv-add-rationale" type="text" placeholder="why (optional)"
       class="flex-1 min-w-[160px] rounded-sm border border-rule bg-paper px-2 py-1 text-caveat text-ink">
-    <button data-act="inv-add-member" class="${btnCls()}">Add</button>
+    <button data-act="inv-add-member" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">Add</button>
     <span id="inv-add-error" class="text-caveat text-state-warn"></span>
   </div>`;
 }
@@ -653,7 +648,7 @@ function bindDetail(inv, members) {
       <div class="mb-s2">${purposePickerHtml({
         prefix: 'inv-edit', vocab: purposeVocab, selected: inv.purposes || [], text: inv.purpose_text || '' })}</div>
       <div class="flex gap-s2">
-        <button id="inv-edit-save" class="${btnCls()}">Save</button>
+        <button id="inv-edit-save" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">Save</button>
         <button id="inv-edit-cancel" class="cursor-pointer bg-transparent text-caveat text-ink-muted underline">Cancel</button>
       </div>
       <span id="inv-edit-error" class="text-caveat text-state-warn"></span>
@@ -698,7 +693,7 @@ function bindDetail(inv, members) {
         exactly which elements moved and which did not.
       </p>
       <div class="flex gap-s2">
-        <button id="inv-reclass-save" class="${btnCls()}">Reclassify</button>
+        <button id="inv-reclass-save" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">Reclassify</button>
         <button id="inv-reclass-cancel" class="cursor-pointer bg-transparent text-caveat text-ink-muted underline">Cancel</button>
       </div>
       <div id="inv-reclass-result" class="mt-s2 text-caveat"></div>
@@ -732,7 +727,7 @@ function bindDetail(inv, members) {
               esc(String(result.local_applied))}.${result.still_public.length
                 ? ` Still public: ${result.still_public.map(esc).join(', ')}.` : ''}${
               result.errors.length ? ` Errors: ${result.errors.map(esc).join('; ')}.` : ''}</span>`)
-          + `<div class="mt-s2"><button id="inv-reclass-reload" class="${btnCls()}">Reload</button></div>`;
+          + `<div class="mt-s2"><button id="inv-reclass-reload" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">Reload</button></div>`;
         resultEl.querySelector('#inv-reclass-reload').addEventListener('click', () => renderDetail(inv.slug));
         await refreshInvestigationsAndSidebar();
       } catch (err) {
@@ -768,7 +763,7 @@ function bindDetail(inv, members) {
       <label class="mb-[3px] block text-caveat text-ink-muted">Qualified name (optional)</label>
       <input id="inv-bind-qn" type="text" class="mb-s2 w-full rounded-sm border border-rule bg-paper px-2 py-1 text-caveat text-ink">
       <div class="flex gap-s2">
-        <button id="inv-bind-save" class="${btnCls()}">Bind</button>
+        <button id="inv-bind-save" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">Bind</button>
         <button id="inv-bind-cancel" class="cursor-pointer bg-transparent text-caveat text-ink-muted underline">Cancel</button>
       </div>
       <span id="inv-bind-error" class="text-caveat text-state-warn"></span>
@@ -833,7 +828,7 @@ function bindDetail(inv, members) {
         ${result.members_linked?.length ? ` Linked: ${result.members_linked.map(esc).join(', ')}.` : ''}
         ${result.members_unlinkable?.length ? ` Could not link: ${result.members_unlinkable.map(memberLine).join('; ')}.` : ''}
         ${result.errors?.length ? ` Errors: ${result.errors.map(esc).join('; ')}.` : ''}
-        <div class="mt-s2"><button id="inv-promote-reload" class="${btnCls()}">Reload</button></div>
+        <div class="mt-s2"><button id="inv-promote-reload" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">Reload</button></div>
       </div>`;
       // The result stays on screen (a partial promote's members_unlinkable/errors matter more than a clean
       // view), but the section above is redrawn as bound -- the 'Creating…' button must not outlive the write.

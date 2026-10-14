@@ -103,7 +103,9 @@ KNOWN_PREEXISTING_GAPS: set[str] = set()
 # Pinned so a big jump is visible in review even though individual names in
 # this bucket can't be checked (see module docstring). Re-measure and update
 # deliberately if legitimate new dynamic-only class construction is added.
-EXPECTED_EXCLUDED_DYNAMIC_COUNT = 75
+# 2026-10-14 cleanup: constant-helper interpolations (btnCls() x19, LINK_BTN x3, indent x22) made literal;
+# re-measured at 46 (was 90 at the 75+15 ceiling). Lowered deliberately so the +15 headroom is real again.
+EXPECTED_EXCLUDED_DYNAMIC_COUNT = 46
 EXCLUDED_DYNAMIC_SLACK = 15
 
 

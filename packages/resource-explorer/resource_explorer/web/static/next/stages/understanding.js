@@ -128,7 +128,6 @@ async function plotlyGlobal() {
   return window.Plotly;
 }
 
-const LINK_BTN = `cursor-pointer border-0 bg-transparent p-0 text-caveat text-accent-ink underline`;
 
 /** One chart card. Draws the response's figure unless the response says it
  *  measured nothing. Everything it says comes from `resp`. */
@@ -245,7 +244,7 @@ function namesToggle(label, names) {
   if (!names || !names.length) return { label, block: '' };
   const id = `names-${_namesSeq += 1}`;
   return {
-    label: `<button type="button" data-names-toggle="${id}" class="${LINK_BTN}">${label}</button>`,
+    label: `<button type="button" data-names-toggle="${id}" class="cursor-pointer border-0 bg-transparent p-0 text-caveat text-accent-ink underline">${label}</button>`,
     block: `<div hidden data-names="${id}" class="mt-[2px] font-diagram text-provenance">${names.map(esc).join('<br>')}</div>`,
   };
 }
@@ -269,10 +268,10 @@ function tableSizesExtra(resp, measure) {
     const names = namesToggle(`<span class="tnum">${n}</span> tables' ${what}`, resp.not_established_tables);
     bits.push(`<div class="mt-s2 text-caveat text-ink" data-not-established>? ${names.label
     } not established — statistics not gathered on the server · <button data-measure="${other}" type="button"
-      class="${LINK_BTN}">${measure === 'size' ? 'by rows instead ›' : 'by size instead ›'}</button>${names.block}</div>`);
+      class="cursor-pointer border-0 bg-transparent p-0 text-caveat text-accent-ink underline">${measure === 'size' ? 'by rows instead ›' : 'by size instead ›'}</button>${names.block}</div>`);
   } else if (resp.state === 'not_measured' && measure === 'rows') {
     bits.push(`<div class="mt-s2 text-caveat text-ink"><button data-measure="size" type="button"
-      class="${LINK_BTN}">by size instead ›</button></div>`);
+      class="cursor-pointer border-0 bg-transparent p-0 text-caveat text-accent-ink underline">by size instead ›</button></div>`);
   }
   if (resp.truncated_by_limit) {
     bits.push(`<div class="mt-[2px] text-caveat text-ink-muted" data-truncated>Showing the largest ${
