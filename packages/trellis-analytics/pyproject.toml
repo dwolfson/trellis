@@ -8,8 +8,10 @@ requires-python = ">=3.12,<4.0"
 dependencies = [
     # Manifests subclass pyegeria's AnalyticFunctionSpec (brief 2a). 6.2.2: an analytic-only FormatSet needs no
     # action function (ISSUE-141) and exec_report_spec builds no Egeria client for a routine with no client
-    # parameter (ISSUE-137); the Portal tile relies on both.
-    "pyegeria>=6.2.2",
+    # parameter (ISSUE-137); the Portal tile relies on both. 6.2.3 (ISSUE-149): the spec carries kind, source,
+    # version, envelope, annotation_type, resource_types, family and tags itself, and a chart gets the envelope as its
+    # subtitle (ISSUE-139); manifest.py relies on both.
+    "pyegeria>=6.2.3",
 ]
 
 [project.optional-dependencies]

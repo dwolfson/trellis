@@ -125,7 +125,9 @@ dependencies = [
     # Raised to 6.2.1 for the ISSUE-131 fix (the *_by_name finds now send the
     # type filter when no body is given). 6.2.1 also pins altair==6.3.0 and
     # needs fastapi>=0.141.1; the lock moved altair 6.2.2 -> 6.3.0 with it.
-    "pyegeria>=6.2.2",
+    # Raised to 6.2.3: AssetMaker's action/process queries default activity_status_list to None (ISSUE-148), and
+    # AutomatedCuration.get_engine_actions is gone (ISSUE-151); neither is called by RE (AUDIT-PYEGERIA-6.2.3.md).
+    "pyegeria>=6.2.3",
     "mcp>=2.0.0",
     # nest-asyncio removed 2026-09-04 with the shared-pool refactor: RE no
     # longer imports it anywhere. Its one site, surveyors/prefect_adapter.py's
