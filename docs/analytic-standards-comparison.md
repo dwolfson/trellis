@@ -52,3 +52,69 @@ screen derives from these, carried in the interim in
    publishing slice P1 is built.
 3. The quality-result distinction when the first quality step is written.
 4. JSON-LD for the pack's graph shape after the tabular and document shapes.
+
+## OpenLineage run events (R21, built)
+
+Every step run emits an OpenLineage run event from
+`step_cost_observer.observe()` (`openlineage.begin` at entry, `openlineage.finish`
+in its `finally`), the one place the local loop, the orchestrator, an accepted
+prerequisite and the Prefect task all pass through, so built-in and external
+steps get events alike. Code: `resource_explorer/observability/openlineage.py`.
+
+**Off by default; nothing is sent to Egeria unless the owner sets it.**
+
+| Variable | Meaning |
+|---|---|
+| `RE_OPENLINEAGE_TRANSPORT` | `off` (default), `file`, or `http` |
+| `RE_OPENLINEAGE_DIR` | `file`: events are appended to `<dir>/openlineage-events.jsonl` |
+| `RE_OPENLINEAGE_URL` | `http`: the URL each event is POSTed to |
+| `RE_OPENLINEAGE_TOKEN` | `http`: optional bearer token |
+| `RE_OPENLINEAGE_TIMEOUT_S` | `http`: per-event timeout, default 2 |
+
+**Turning it on for Egeria.** Egeria's Runtime Manager forwards an OpenLineage
+event posted to an Integration Daemon to the connectors that registered a
+listener for open lineage events (egeria-python `RuntimeManager.publish_open_lineage_event`).
+The URL to set, with the daemon's GUID from `get_integration_daemons` / the
+Runtime Manager:
+
+```
+RE_OPENLINEAGE_TRANSPORT=http
+RE_OPENLINEAGE_URL=<platform_url>/servers/<view_server>/api/open-metadata/runtime-manager/integration-daemons/<daemon_guid>/open-lineage-events/publish-event
+RE_OPENLINEAGE_TOKEN=<view-server bearer token>
+```
+
+The body is the bare event JSON (`publish-event`; there is also a
+`publish-event-string` form taking `{"class":"StringRequestBody","string":...}`).
+It only does something if the daemon has an OpenLineage-listening connector
+(for example the OpenLineage Event Receiver / Lineage Integrator) configured.
+This was read from the pyegeria source and has **not** been called; the first
+live run is the owner's to clear.
+
+**Shape.** `run.runId` is a fresh UUID per step run, also stored on the
+`step_runs` row at `metrics.openlineage.run_id` (with `transport`, `emitted`,
+`failed`, `last_error`, so a lost event is visible). `job` is
+`resource-explorer` / `<survey|analysis>.<step_key>`. `inputs` is the resource
+surveyed, from an allow-list (a repo `https://github.com` + `owner/repo`, a
+database `postgres://host:port` + database name), never credentials; schema and
+table are not known at step level. A step that raised, or that caught its own
+error and called `openlineage.note_failure`, ends in FAIL with a scrubbed
+`errorMessage`. Delivery uses a bounded timeout; a failure is counted and logged
+and never fails or stalls the step.
+
+```json
+{"eventType":"COMPLETE","eventTime":"2026-10-13T09:15:04.210Z",
+ "producer":"https://github.com/odpi/egeria-trellis/tree/main/packages/resource-explorer",
+ "schemaURL":"https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent",
+ "run":{"runId":"3f0e6c1e-6a52-4c0f-9d0b-1c1f0b0e7a11","facets":{
+   "nominalTime":{"_producer":"…","_schemaURL":"https://openlineage.io/spec/facets/1-0-0/NominalTimeRunFacet.json#/$defs/NominalTimeRunFacet",
+                  "nominalStartTime":"2026-10-13T09:15:02.870Z","nominalEndTime":"2026-10-13T09:15:04.210Z"},
+   "processing_engine":{"_producer":"…","_schemaURL":"https://openlineage.io/spec/facets/1-1-1/ProcessingEngineRunFacet.json#/$defs/ProcessingEngineRunFacet",
+                  "name":"resource-explorer","version":"0.1.0","openlineageAdapterVersion":"none"}}},
+ "job":{"namespace":"resource-explorer","name":"analysis.postgres_schema_and_stats"},
+ "inputs":[{"namespace":"postgres://localhost:5432","name":"coco_pharma"}],"outputs":[]}
+```
+
+What Egeria does with it: the listening connector turns the run into a
+lineage process/run record with the database as the dataset read, so the run's
+provenance sits beside the lineage of Egeria's own engines. `outputs` is empty
+for now: a result's envelope stays RE's own.

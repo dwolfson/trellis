@@ -10,6 +10,7 @@ from trellis_microflow import resolve_resources
 
 from resource_explorer.activity_logger import log_survey
 from resource_explorer.registry import ProjectRegistry
+from resource_explorer.observability import openlineage
 from resource_explorer.surveyors import credential_capability, prerequisite_resolver, step_cost_observer
 from resource_explorer.surveyors import result_status, step_preconditions
 from resource_explorer.surveyors.survey_report import summarise_annotations, ClassificationAnnotation, SurveyResult
@@ -95,6 +96,8 @@ class SurveyOrchestrator:
         with step_cost_observer.observe(
             producer, info.fetch_cost, info.compute_cost,
             demanded_by=demanding_step,
+            entity_type="repo", slug=project.slug, resource=project,
+            job_family="survey",
         ) as observed:
             try:
                 annotations = surveyor.run()
@@ -104,6 +107,7 @@ class SurveyOrchestrator:
             except Exception as exc:
                 msg = f"prerequisite {producer} raised unexpectedly: {exc}"
                 log.exception(msg)
+                openlineage.note_failure(msg)
                 result.add_error(msg)
         if observed:
             observed[0].annotations, observed[0].outcomes = (
@@ -452,6 +456,8 @@ class SurveyOrchestrator:
                     step_key,
                     getattr(info, "fetch_cost", ""),
                     getattr(info, "compute_cost", ""),
+                    entity_type="repo", slug=project.slug, resource=project,
+                    job_family="survey",
                 ) as _observed:
                     try:
                         annotations = surveyor.run()
@@ -462,6 +468,7 @@ class SurveyOrchestrator:
                     except Exception as exc:
                         msg = f"{surveyor.step_name} raised unexpectedly: {exc}"
                         log.exception(msg)
+                        openlineage.note_failure(msg)
                         result.add_error(msg)
                         # Also keyed by step, so a caller running steps on behalf
                         # of several analyses at once can tell which of them
