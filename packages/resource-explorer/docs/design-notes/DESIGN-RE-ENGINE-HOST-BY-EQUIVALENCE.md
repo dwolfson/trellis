@@ -828,3 +828,25 @@ Each question is marked with whose it is. None is decided here.
 **Decision (project owner, 2026-10-13):** Q-O4: yes. RE may claim an action whose start time is in the future and hold it, visibly as RE's in Egeria.
 
 **Q-O5 resolved (2026-10-13):** logged and fixed in egeria-python as ISSUE-151 (d73b162f, PR odpi/egeria-python#452, not yet merged or released). The View Server has no list-all engine-actions endpoint, so `AutomatedCuration.get_engine_actions` is removed in 6.2.3. The slice uses `find_engine_actions("*")` for a list-all (EngineAction is an Asset in 6.2) and `get_active_engine_actions()` for live actions; never `get_engine_actions`.
+
+## Answers from the Egeria leads (Mandy, via the project owner, 2026-10-14)
+
+Recorded from a discussion with the owner. These are the Mandy-note items 19–26 (Q-M1…Q-M8 above).
+
+- **Q-M1 / item 19, approved-actions listing on the View Server: yes.** Mandy will expose more of the internal engine-host APIs as View Server REST calls. It will take a few days; other fixes and features come first. Until then RE polls `get_active_engine_actions` / `find_engine_actions` and filters client-side (option A).
+- **Q-M2 / item 20, engine subtype: `SurveyActionEngine` is correct for surveys.** RE may also expose services through a `GovernanceActionEngine` (general actions) or a `WatchdogActionEngine` (monitoring).
+  - Refs: https://egeria-project.org/concepts/survey-action-engine/ , https://egeria-project.org/types/4/0461-Governance-Engines/ , https://egeria-project.org/types/4/0462-Governance-Action-Processes/
+  - **RE must create:** a service definition for each service, and the `GovernanceActionExecutor` relationship to the engine element. The services of a `SurveyActionEngine` are **`SurveyActionService`** elements (project owner, 2026-10-14). A `GovernanceActionEngine` has `GovernanceActionService`s, and a `WatchdogActionEngine` has its watchdog services.
+  - **requestType:** what the engine advertises, and what the engine is passed to execute. RE dispatches on the request type to choose the action to invoke.
+  - **Consequence:** the provisional 2c declaration (`docs/dr-egeria/analytic-functions/database_staleness.md`) and egeria-python ISSUE-150 move from "provisional" to this shape.
+- **Q-M3 / item 21, zones and identity: up to us.** "Generally a GovernanceProcess or Action would execute as the end user who initiated it. If peterprofile initiates a survey, he is the user." Whether results land in a default (public) zone or not is RE's choice.
+  - **Decision (project owner, 2026-10-14):** "run as the end user unless this was an automated action and didn't know who the end user was".
+    - It restates an earlier owner decision and agrees with Mandy.
+    - Q-O2's "service account" applies only to truly automated work with no known person.
+    - Private-investigation work runs as its owner.
+    - **Open mechanism:** an Egeria-dispatched action started by a person, whose `requesterUserId` is known, when RE holds no live token for that person. How RE acts as them is to be settled in the slice. Options to explore: the requester's session if one is active; otherwise wait for the person, as #640's `OutboxAwaitsOwner` does; or an Egeria-supported on-behalf-of mechanism. Ask Mandy whether one exists.
+- **Q-M4 / item 22, being "native":** whatever makes sense. Telling Egeria status and completion of engine actions is what makes RE visible. Refresh-config may make sense. Record where the engine host executes in a description field on the engine element.
+- **Q-M5 / item 23, guards:** not mandatory, but best practice is to use the standard guards for consistency. Look for an existing valid-value set for "nothing to derive from"-style outcomes before inventing one.
+- **Q-M6 / item 24, lineage:** nothing explicit is needed now. Updating engine-action status is enough, and Egeria reports the lineage. RE's own R21 OpenLineage events stay off for Egeria-dispatched work, with no join for now.
+- **Q-M7 / item 25, a request type with no service:** not discussed. RE will test what a native host does and match it.
+- **Q-M8 / item 26, claims:** claim arbitration works in a heterogeneous distributed environment today. A cancel *process* will be added alongside cancel engine action. No lease or reclaim was discussed; stuck claims are recovered by cancel.
