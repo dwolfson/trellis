@@ -726,8 +726,8 @@ export const searchDiscoveryRepos = (filters) => post('/api/discovery/search', f
 export const listQuickListSources = () => cached('discovery-quick-list-sources', () => get('/api/discovery/quick-list-sources'));
 
 /** Queues a background import of the given DiscoveredRepo-shaped candidates.
- *  Returns immediately (`{queued, skipped}`); progress lands in the activity
- *  log, not in this response. */
+ *  Returns immediately (`{queued, skipped, in_flight, batch_id}`): the batch's
+ *  activity rows already exist as 'running'; poll `getImportStatus(batch_id)`. */
 export const importDiscoveredRepos = (repos, { groupSlug = '', sourceLabel = 'search' } = {}) =>
   post('/api/discovery/import', {
     repos: repos.map((r) => ({
@@ -736,6 +736,11 @@ export const importDiscoveredRepos = (repos, { groupSlug = '', sourceLabel = 'se
     group_slug: groupSlug,
     source_label: sourceLabel,
   });
+
+/** Progress of an import batch, read from its persisted activity rows:
+ *  `{status, done, summary, repos: {github_url: {state, detail}}}` where state is
+ *  importing | imported | already_registered | failed. */
+export const getImportStatus = (batchId) => get(`/api/discovery/import/${encodeURIComponent(batchId)}`);
 
 /** A pasted/uploaded CSV or newline list of GitHub URLs, turned into the
  *  same DiscoveredRepo rows a search would — read-only, same as search:
