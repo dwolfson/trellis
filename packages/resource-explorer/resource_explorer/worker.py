@@ -52,6 +52,7 @@ from resource_explorer.leader_election import (
     LOCK_BOOTSTRAP,
     LOCK_DRAFT_ZONE,
     LOCK_EGERIA_RESYNC,
+    LOCK_ENGINE_HOST,
     LOCK_SCHEDULER,
     LeaderLock,
 )
@@ -106,10 +107,32 @@ def _resync_spec() -> LoopSpec:
     )
 
 
+def _engine_host_spec() -> LoopSpec:
+    from resource_explorer import engine_host
+
+    return LoopSpec(
+        name="engine-host",
+        lock_name=LOCK_ENGINE_HOST,
+        interval_seconds=engine_host.SWEEP_INTERVAL_SECONDS,
+        start=engine_host.start_engine_host,
+        stop=engine_host.stop_engine_host,
+    )
+
+
 def loop_specs() -> list[LoopSpec]:
-    """The three leader-elected loops, imported lazily so that importing
-    this module does not drag in Egeria clients or the registry."""
-    return [_scheduler_spec(), _bootstrap_spec(), _resync_spec()]
+    """The leader-elected loops, imported lazily so that importing
+    this module does not drag in Egeria clients or the registry.
+
+    Three by default. The engine-host claim sweep is a fourth only when
+    RE_ENGINE_HOST_ENABLED is on: off means the loop is never started, never
+    elects, and makes no Egeria call (DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE §5.2
+    test 10)."""
+    specs = [_scheduler_spec(), _bootstrap_spec(), _resync_spec()]
+    from resource_explorer.engine_host import engine_host_enabled
+
+    if engine_host_enabled():
+        specs.append(_engine_host_spec())
+    return specs
 
 
 # ── one-shots ───────────────────────────────────────────────────────────

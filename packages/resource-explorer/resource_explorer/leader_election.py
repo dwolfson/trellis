@@ -69,6 +69,9 @@ LOCK_EGERIA_RESYNC = "egeria-resync"
 #: processes starting together would otherwise each race to create the same
 #: zone, and pyegeria's generic element create has no upsert.
 LOCK_DRAFT_ZONE = "draft-zone-bootstrap"
+#: The engine-host claim sweep (engine_host.py). A loop like the three above, but started only when
+#: RE_ENGINE_HOST_ENABLED is on, so a default worker still runs exactly three loops.
+LOCK_ENGINE_HOST = "engine-host"
 
 
 def advisory_key(name: str) -> int:
@@ -250,7 +253,7 @@ def still_leader(name: str) -> bool | None:
     return lock.still_held()
 
 
-ALL_LOCK_NAMES = (LOCK_SCHEDULER, LOCK_BOOTSTRAP, LOCK_EGERIA_RESYNC, LOCK_DRAFT_ZONE)
+ALL_LOCK_NAMES = (LOCK_SCHEDULER, LOCK_BOOTSTRAP, LOCK_EGERIA_RESYNC, LOCK_DRAFT_ZONE, LOCK_ENGINE_HOST)
 
 
 def documented_keys() -> dict[str, int]:

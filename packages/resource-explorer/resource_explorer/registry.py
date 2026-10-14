@@ -4416,6 +4416,10 @@ class ProjectRegistry:
         "materialize_components",
         "publish_architecture",
         "catalogue_commit",
+        # An Egeria engine action RE claimed as an engine host (engine_host.py). Its handler is E4 of
+        # DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE §5.1; until it exists run_queue.HELD_KINDS keeps such a row
+        # queued rather than failing it for want of a handler.
+        "engine_action",
     )
 
     #: States that occupy a user's one fairness slot.
@@ -11203,6 +11207,20 @@ class ProjectRegistry:
                 "UPDATE databases SET last_surveyed_at = ? WHERE slug = ?",
                 (datetime.utcnow().isoformat(), slug),
             )
+
+    def database_slug_for_asset_guid(self, guid: str) -> str:
+        """The slug of the registered database whose Egeria Asset is `guid`, or `""` for none.
+
+        Unscoped, like `private_owner_for_entity`: the engine host asks it as a daemon, before it may
+        claim an action, to find the resource the action targets and whether it is privately owned."""
+        guid = (guid or "").strip()
+        if not guid:
+            return ""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT slug FROM databases WHERE egeria_asset_guid = ? ORDER BY slug LIMIT 1", (guid,)
+            ).fetchone()
+        return row["slug"] if row else ""
 
     def set_database_egeria_guid(self, slug: str, guid: str) -> None:
         """Set the Egeria asset GUID for a database."""

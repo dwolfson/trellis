@@ -95,6 +95,8 @@ class TestAdvisoryKeys:
             # create the same zone, and pyegeria's generic element create has
             # no upsert.
             "draft-zone-bootstrap": 3533934354696901714,
+            # The engine-host claim sweep (engine_host.py), started only with RE_ENGINE_HOST_ENABLED on.
+            "engine-host": 54773764437381287,
         }
 
     def test_keys_are_distinct_and_fit_int64(self):

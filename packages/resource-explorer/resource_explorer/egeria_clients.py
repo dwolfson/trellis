@@ -136,6 +136,7 @@ class DaemonReason(str, Enum):
     PREFECT_FLOW = "prefect_flow"      # a survey flow run in a Prefect worker process (no caller there)
     IDENTITY_BOOTSTRAP = "identity_bootstrap"  # RE's own ITProfile / UserIdentity / ProfileIdentity (7h)
     ACTOR_LOOKUP = "actor_lookup"      # read-only: a person's UserIdentity and profile, for Ownership (7h)
+    ENGINE_HOST = "engine_host"        # Egeria engine actions RE accepts as an engine host (requester recorded)
 
 
 # ---------------------------------------------------------------------------
