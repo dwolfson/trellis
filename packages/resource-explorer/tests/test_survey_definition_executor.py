@@ -1083,6 +1083,46 @@ class TestProposeProducerDefinition:
         assert "postgres_column_profile" in message  # the original message survives
         assert "run" in message.lower()
 
+    def test_names_the_lightest_definition_that_contains_the_producer(self):
+        """testgen: the remedy for a missing `repo_manifest_parse` was 'Full
+        Survey (all steps)' because it was the first candidate that held it."""
+        def definition(name, keys):
+            return SurveyDefinition(
+                process_guid=f"g-{name}", display_name=name,
+                qualified_name=f"GovActionProcess::{name}",
+                supported_technology_type="PostgreSQL Database",
+                steps=[SurveyStep(guid=f"{name}-{k}", display_name=k,
+                                  qualified_name=f"QN::{k}", re_analysis_step=k)
+                       for k in keys])
+
+        defs = {
+            "g-full": definition("Full Survey (all steps)",
+                                 ["a", "b", "repo_manifest_parse", "c", "d"]),
+            "g-scout": definition("Scouting Survey", ["repo_manifest_parse", "a"]),
+            "g-other": definition("Other", ["x"]),
+        }
+        reader = MagicMock()
+        reader.find_candidate_process_guids.return_value = [
+            {"guid": "g-full", "display_name": "Full Survey (all steps)",
+             "qualified_name": "GovActionProcess::Full"},
+            {"guid": "g-other", "display_name": "Other",
+             "qualified_name": "GovActionProcess::Other"},
+            {"guid": "g-scout", "display_name": "Scouting Survey",
+             "qualified_name": "GovActionProcess::Scout"},
+        ]
+        reader.fetch.side_effect = lambda guid: defs[guid]
+        register_adapter(ResourceTypeAdapter(
+            entity_type=self._ENTITY_TYPE, technology_type="PostgreSQL Database",
+            re_analysis_steps={}, get_entity=lambda registry, slug: object(),
+            publish=MagicMock()))
+        executor = SurveyDefinitionExecutor(_fake_registry(), reader=reader)
+        exc = _MissingPrereq("base message", producer_key="repo_manifest_parse")
+
+        message = executor._propose_producer_definition(self._ENTITY_TYPE, exc)
+
+        assert "Scouting Survey" in message
+        assert "Full Survey" not in message
+
     def test_falls_back_to_the_plain_message_when_no_candidate_has_the_producer(self):
         other_step = SurveyStep(guid="g2", display_name="Other",
                                 qualified_name="QN::other",
@@ -1300,3 +1340,37 @@ class TestFreshStoredAnswerActuallyReachesPrefect:
         fake_flow.assert_not_called()
         producer_runner.assert_called_once()
         consumer_runner.assert_not_called()  # correctly skipped: the mock producer wrote nothing real
+
+
+def test_a_planner_added_step_leaves_one_short_activity_line():
+    """The Prefect path records an added prerequisite the way the local loop's
+    auto-run does: one short line, naming the step and why."""
+    from unittest.mock import create_autospec
+
+    from resource_explorer.activity_logger import log_survey as real_log_survey
+
+    note = "added repo_manifest_parse: needed for has_versioned_dependencies; no fresh result"
+    report = [
+        {"step_key": "repo_manifest_parse", "status": "ok", "output": {},
+         "added_because": note, "demanded_by": "repo_cve_scan", "auto_run": True},
+        {"step_key": "repo_cve_scan", "status": "ok", "output": {}},
+    ]
+    entity = MagicMock(slug="tg", display_name="tg", github_url="https://x/tg")
+    survey_def = SurveyDefinition(
+        process_guid="p", display_name="A", qualified_name="GovActionProcess::A",
+        supported_technology_type="Repo",
+        steps=[SurveyStep(guid="s", display_name="s", qualified_name="s",
+                          re_analysis_step="repo_cve_scan")])
+    fake_log = create_autospec(real_log_survey, spec_set=True)
+    executor = SurveyDefinitionExecutor(_fake_registry(), reader=MagicMock())
+    plan = MagicMock(steps=[MagicMock()])
+    with patch.object(sde_module, "log_survey", fake_log), \
+         patch("resource_explorer.surveyors.survey_execution_plan.build_plan",
+               return_value=plan), \
+         patch("resource_explorer.surveyors.survey_execution_plan.serialise",
+               return_value=[]), \
+         patch("resource_explorer.prefect.flows.re_survey_definition_flow",
+               return_value=report):
+        executor._run_via_prefect("repo", entity, survey_def, {})
+    assert fake_log.call_count == 1
+    assert fake_log.call_args.kwargs["summary"] == note

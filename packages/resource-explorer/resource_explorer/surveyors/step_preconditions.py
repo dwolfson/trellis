@@ -63,7 +63,7 @@ def _row_count(registry, table: str, slug: str, where: str = "",
             ).fetchone()
         return int(row["n"] or 0)
     except Exception as exc:
-        log.debug("precondition: cannot count %s for %s: %s", table, slug, exc)
+        log.warning("precondition: cannot count %s for %s: %s", table, slug, exc)
         return -1
 
 
@@ -88,25 +88,66 @@ DEFAULT_FRESHNESS_WINDOW_HOURS = 24
 
 
 def _latest_surveyed_at(registry, table: str, slug: str,
-                        slug_column: str = "project_slug") -> str | None:
-    """The newest `surveyed_at` for `table`/`slug`, or None if there is none
-    or the table cannot be read. Used for provenance ("schema inventory from
-    20:59:29") and for the freshness-window check below — the *same* query
-    `_row_count` already trusts to answer "does this table exist for this
-    resource", just asking for the timestamp instead of the count.
+                        slug_column: str = "project_slug",
+                        ts_column: str = "surveyed_at") -> str | None:
+    """The newest `ts_column` for `table`/`slug`, or None if there is none or
+    the table cannot be read. Only tables that really carry such a column may
+    be asked (`Precondition.ts_column` says which); an unreadable one is
+    logged at WARNING, because a swallowed failure here made four of five
+    preconditions unsatisfiable by stored data (2026-10-14).
     """
     try:
         with registry._conn() as conn:
             row = conn.execute(
-                f"SELECT MAX(surveyed_at) AS ts FROM {table} WHERE {slug_column} = ?",
+                f"SELECT MAX({ts_column}) AS ts FROM {table} WHERE {slug_column} = ?",
                 (slug,),
             ).fetchone()
         ts = row["ts"] if row else None
         return str(ts) if ts else None
     except Exception as exc:
-        log.debug("precondition: cannot read surveyed_at from %s for %s: %s",
-                  table, slug, exc)
+        log.warning("precondition: cannot read %s from %s for %s: %s",
+                    ts_column, table, slug, exc)
         return None
+
+
+def _latest_producer_run(registry, step_key: str, slug: str) -> str | None:
+    """When `step_key` last ran successfully on `slug`, from `step_runs`.
+
+    The one provenance source every precondition shares: whichever table a
+    producer fills, it leaves a `step_runs` row (`step_cost_observer.record`,
+    written by the local loop, the Prefect task and the auto-run alike). A row
+    whose `dispatch_failed` is set is a dispatch that did not run, so it does
+    not count. None when there is no such row or `step_runs` cannot be read
+    (the latter logged at WARNING).
+    """
+    if not step_key:
+        return None
+    try:
+        with registry._conn() as conn:
+            row = conn.execute(
+                "SELECT MAX(surveyed_at) AS ts FROM step_runs "
+                "WHERE slug = ? AND step_key = ? "
+                "AND (dispatch_failed IS NULL OR dispatch_failed = '')",
+                (slug, step_key),
+            ).fetchone()
+        ts = row["ts"] if row else None
+        return str(ts) if ts else None
+    except Exception as exc:
+        log.warning("precondition: cannot read step_runs for %s/%s: %s",
+                    slug, step_key, exc)
+        return None
+
+
+def _parse_ts(value: str):
+    from datetime import datetime, timezone
+
+    for candidate in (value, value.replace(" ", "T")):
+        try:
+            ts = datetime.fromisoformat(candidate)
+        except ValueError:
+            continue
+        return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+    return None
 
 
 def _hours_since(surveyed_at: str) -> float | None:
@@ -164,6 +205,13 @@ class Precondition:
     table: str
     slug_column: str = "project_slug"
     caveat: str = ""
+    #: The same filter `check` applies, so `freshness()` counts the rows the
+    #: check counts (has_versioned_dependencies is not has_dependencies).
+    where: str = ""
+    #: A timestamp column on `table` itself, when it really has one
+    #: (`database_tables.surveyed_at`). Optional corroboration only: the
+    #: producer's `step_runs` row is the source every precondition has.
+    ts_column: str = ""
 
     def produced_by(self) -> str:
         """The step that fills `self.table`, from its own `produces`."""
@@ -186,26 +234,45 @@ class Precondition:
     def freshness(self, registry, project,
                  window_hours: float = DEFAULT_FRESHNESS_WINDOW_HOURS
                  ) -> tuple[bool, str | None]:
-        """(within_window, surveyed_at).
+        """(fresh, surveyed_at).
 
-        `surveyed_at` is the newest timestamp found for this table/slug (or
-        None if there is none) — the provenance stamp design §17.1/§E asks
-        for ("schema inventory from 20:59:29"), returned whether or not it
-        falls inside the window so a caller can still report what it found.
-        `within_window` is False when there is no row at all, or its age
-        cannot be determined (the conservative reading — see
-        `_hours_since`'s docstring: unparseable is "can't tell", handled by
-        the caller as "not fresh enough to skip a producer" rather than
-        assumed fresh).
+        Fresh means BOTH: the rows exist (the same count `check` makes), AND
+        the producer step ran successfully on this resource inside the
+        window. The run time comes from the producer's `step_runs` row, which
+        every precondition has; a table that also carries its own timestamp
+        (`ts_column`) may supply a newer one.
+
+        `surveyed_at` is the newest run time found (None when there is none),
+        returned whether or not it falls inside the window, as provenance.
+        An unreadable count or an unparseable stamp is NOT fresh: the
+        conservative direction, which asks the producer to run rather than
+        trusting what could not be read. Unreadable is logged at WARNING.
         """
-        surveyed_at = _latest_surveyed_at(registry, self.table, project.slug,
-                                          self.slug_column)
-        if not surveyed_at:
+        candidates = [_latest_producer_run(registry, self.produced_by(),
+                                           project.slug)]
+        if self.ts_column:
+            candidates.append(_latest_surveyed_at(
+                registry, self.table, project.slug, self.slug_column,
+                self.ts_column))
+        stamps = [c for c in candidates if c]
+        if not stamps:
             return False, None
-        age_hours = _hours_since(surveyed_at)
+        parsed = [(_parse_ts(c), c) for c in stamps]
+        usable = [(t, c) for t, c in parsed if t is not None]
+        if not usable:
+            log.warning("precondition: could not parse %r as a time", stamps)
+            return False, stamps[0]
+        newest_ts, newest = max(usable, key=lambda tc: tc[0])
+        n = _row_count(registry, self.table, project.slug, self.where,
+                       self.slug_column)
+        if n <= 0:
+            # The producer ran but nothing is stored (or it cannot be read):
+            # a run is not an answer when its rows are not there.
+            return False, newest
+        age_hours = _hours_since(newest)
         if age_hours is None:
-            return False, surveyed_at
-        return age_hours <= window_hours, surveyed_at
+            return False, newest
+        return age_hours <= window_hours, newest
 
 
 #: name → the condition. No producer string: see this module's docstring and
@@ -225,6 +292,7 @@ PRECONDITIONS: dict[str, Precondition] = {
         _needs_rows("project_dependencies", "dependencies with a resolved version",
                     where="dep_version IS NOT NULL AND dep_version != ''"),
         table="project_dependencies",
+        where="dep_version IS NOT NULL AND dep_version != ''",
         caveat="and version resolution — see Backlog, Gradle/BOM"),
     "has_file_inventory": Precondition(
         _needs_rows("project_file_inventory", "file inventory"),
@@ -243,7 +311,8 @@ PRECONDITIONS: dict[str, Precondition] = {
         _needs_rows("database_tables", "schema inventory",
                     slug_column="database_slug"),
         table="database_tables",
-        slug_column="database_slug"),
+        slug_column="database_slug",
+        ts_column="surveyed_at"),
 }
 
 

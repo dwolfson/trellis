@@ -1720,6 +1720,32 @@ class SurveyDefinitionExecutor:
             if ref:
                 credential_handoff.revoke(ref)
 
+        for entry in report:
+            note = entry.get("added_because")
+            if not note:
+                continue
+            # The planner added this step (no fresh stored result for a
+            # precondition, producer inside the definition's budget). One
+            # short activity line, the same record the local loop's auto-run
+            # writes: an added step is a result, not an omission.
+            log.info("%s", note)
+            try:
+                log_survey(
+                    self.registry, entity_type, entity.slug,
+                    getattr(entity, "display_name", "") or entity.slug,
+                    getattr(entity, "github_url", "") or "",
+                    intent="analysis",
+                    status="ok" if entry.get("status") == "ok" else "error",
+                    summary=note,
+                    detail=json.dumps({"prerequisite_auto_run": entry.get("step_key"),
+                                       "demanded_by": entry.get("demanded_by", ""),
+                                       "engine": "prefect"}),
+                )
+            except Exception as exc:
+                # Observable on the step's own report entry, not only in a log.
+                entry["activity_log_error"] = str(exc)
+                log.warning("could not log the added prerequisite step: %s", exc)
+
         return (
             [{k: v for k, v in entry.items() if k != "output"} for entry in report],
             [entry["output"] for entry in report
@@ -1750,23 +1776,34 @@ class SurveyDefinitionExecutor:
             adapter = get_adapter(entity_type)
             technology_type = getattr(adapter, "technology_type", "") or ""
             candidates = self.reader.find_candidate_process_guids(technology_type) if technology_type else []
+            # The LIGHTEST definition that contains the producer, not the
+            # first one found: the first was usually "Full Survey (all
+            # steps)", a heavy remedy for one cheap step. Lighter = fewer
+            # steps; ties break on name so the answer is stable.
+            best = None
             for candidate in candidates:
                 guid = candidate.get("guid")
                 if not guid:
                     continue
                 survey_def = self.reader.fetch(guid)
+                steps = getattr(survey_def, "steps", []) or []
                 step_keys = {
                     (getattr(s, "re_analysis_step", None) or getattr(s, "qualified_name", ""))
-                    for s in getattr(survey_def, "steps", []) or []
+                    for s in steps
                 }
-                if producer in step_keys:
-                    name = candidate.get("display_name") or candidate.get("qualified_name") or guid
-                    return (
-                        f"{base} Proposed next step: run {name!r} first — it "
-                        f"includes {producer!r} — then re-run this definition."
-                    )
+                if producer not in step_keys:
+                    continue
+                name = candidate.get("display_name") or candidate.get("qualified_name") or guid
+                rank = (len(steps), str(name))
+                if best is None or rank < best[0]:
+                    best = (rank, name)
+            if best is not None:
+                return (
+                    f"{base} Proposed next step: run {best[1]!r} first — it "
+                    f"includes {producer!r} — then re-run this definition."
+                )
         except Exception as lookup_exc:  # pragma: no cover - best-effort only
-            log.debug("could not look up a Survey Definition producing %r: %s",
+            log.warning("could not look up a Survey Definition producing %r: %s",
                       producer, lookup_exc)
         return base
 

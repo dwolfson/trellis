@@ -310,6 +310,8 @@ def run_planned_step_task(
     satisfied_by_stored: dict[str, Any] | None = None,
     surveyed_at: str = "",
     credential_ref: str = "",
+    added_because: str = "",
+    demanded_by: str = "",
 ) -> dict[str, Any]:
     """One planned step, plus the guard decision for its incoming edges.
 
@@ -363,6 +365,7 @@ def run_planned_step_task(
         with step_cost_observer.observe(
             step_key, getattr(info, "fetch_cost", ""), getattr(info, "compute_cost", ""),
             executor="prefect", source="prefect",
+            demanded_by=demanded_by,
             entity_type=entity_type, slug=slug,
         ) as observed:
             output = run_surveyor_step_task.fn(
@@ -408,6 +411,13 @@ def run_planned_step_task(
               "output": output}
     if satisfied_by_stored:
         result["satisfied_by_stored"] = dict(satisfied_by_stored)
+    if added_because:
+        # The planner added this step; say so in the report, the same way an
+        # auto-run prerequisite is marked on the local loop.
+        result["auto_run"] = True
+        result["added_because"] = added_because
+        result["detail"] = added_because
+        result["demanded_by"] = demanded_by
     return result
 
 
@@ -447,6 +457,8 @@ def re_survey_definition_flow(
             satisfied_by_stored=entry.get("satisfied_by_stored", {}) or {},
             surveyed_at=surveyed_at,
             credential_ref=credential_ref,
+            added_because=entry.get("added_because", "") or "",
+            demanded_by=entry.get("demanded_by", "") or "",
         )
     # Resolved in plan order so the report reads in the order authored, not the
     # order Prefect happened to finish them in.
