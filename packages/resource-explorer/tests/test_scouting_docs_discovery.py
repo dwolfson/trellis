@@ -320,3 +320,51 @@ class TestScoutingScanRunsTheStep:
         monkeypatch.setattr("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator",
                             lambda reg: (_ for _ in ()).throw(AssertionError("ran twice")))
         assert scouting.run_scouting_scan("testgen", registry).message == "Coarse scan complete."
+
+
+class TestIngestionTargetsDocs:
+    """repo_website_ingestion prefers a reachable docs_url over homepage_url."""
+
+    def _setup(self, registry, reach_state):
+        p = registry.get("testgen")
+        registry.update_project_homepage("testgen", "https://datakitchen.io")
+        _run(registry, _gh({"pyproject.toml": PYPROJECT}),
+             _probe(reach_state, 200 if reach_state == "reachable" else 404))
+        return registry.get("testgen")
+
+    def _target(self, registry, project, monkeypatch):
+        from resource_explorer.surveyors.sub_surveyors import website_ingestion as wi
+        seen = {}
+        import resource_explorer.ingestion.site_profile as sp
+        def fake_profile(url, fetch):
+            seen["url"] = url
+            raise RuntimeError("stop after targeting")
+        monkeypatch.setattr(sp, "profile_site", fake_profile)
+        try:
+            anns = wi.WebsiteIngestionSurveyor(project, registry).run()
+        except RuntimeError:
+            anns = []
+        return seen.get("url"), anns
+
+    def test_reachable_docs_is_the_target(self, registry, monkeypatch):
+        project = self._setup(registry, "reachable")
+        url, _ = self._target(registry, project, monkeypatch)
+        assert url == DOCS
+
+    def test_unreachable_docs_falls_back_to_homepage_and_says_why(self, registry, monkeypatch):
+        project = self._setup(registry, "unreachable")
+        url, _ = self._target(registry, project, monkeypatch)
+        assert url == "https://datakitchen.io"
+        m = registry.query_metrics("testgen", "website_ingestion")
+        # recorded on whichever terminal path ran
+        d = (m or {}).get("detail") or {}
+        assert d.get("target_field") in (None, "homepage_url")
+
+    def test_record_names_the_field_and_reason(self, registry):
+        from resource_explorer.surveyors.sub_surveyors.website_ingestion import WebsiteIngestionSurveyor
+        project = self._setup(registry, "reachable")
+        registry.upsert_file_inventory("testgen", [("site/mkdocs.yml", 10)])   # forces a no-network terminal path
+        WebsiteIngestionSurveyor(project, registry).run()
+        d = registry.query_metrics("testgen", "website_ingestion")["detail"]
+        assert d["target_field"] == "docs_url" and "reachable" in d["target_why"]
+        assert d["url"] == DOCS
