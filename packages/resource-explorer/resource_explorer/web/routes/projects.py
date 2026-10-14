@@ -489,6 +489,8 @@ class ScoutingOverview(BaseModel):
     # value in the latest project_stats row (or the whole set, when there is no row) are listed
     # here and the tile shows "not read" for them.
     stats_unread: list[str] = []
+    # False when no project_stats row exists at all: an imported repo nobody has surveyed yet.
+    stats_fetched: bool = True
 
 
 _SCOUTING_STAT_FIELDS = (
@@ -591,6 +593,7 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
         latest_deployment_environment=stats.get("latest_deployment_environment") or "",
         latest_deployment_ref=stats.get("latest_deployment_ref") or "",
         stats_unread=_scouting_stats_unread(stats),
+        stats_fetched=bool(stats),
     )
 
 

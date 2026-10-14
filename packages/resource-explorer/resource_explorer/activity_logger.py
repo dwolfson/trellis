@@ -244,8 +244,13 @@ def log_scout(
     status: str,
     summary: str,
     detail: str = "",
+    entry_id: str = "",
+    items: list[dict] | None = None,
 ) -> str:
-    entry_id = str(uuid.uuid4())
+    """Write a scout entry. Passing the `entry_id` of an earlier 'running' entry
+    finalises that row in place (write_activity upserts on id) instead of adding
+    a second one, so a long import shows up as running from its first moment."""
+    entry_id = entry_id or str(uuid.uuid4())
     registry.write_activity(ActivityEntry(
         id=entry_id,
         ts=_now(),
@@ -258,5 +263,6 @@ def log_scout(
         status=status,
         summary=summary,
         detail=detail,
+        items=items or [],
     ))
     return entry_id

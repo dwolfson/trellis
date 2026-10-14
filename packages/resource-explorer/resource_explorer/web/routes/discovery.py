@@ -473,40 +473,84 @@ class ImportRequest(BaseModel):
 class ImportResponse(BaseModel):
     queued: int
     skipped: list[str]  # github_urls already registered, not re-queued
+    in_flight: list[str] = []  # github_urls already in another running batch, refused
+    batch_id: str = ""  # activity-log id of the batch row, written 'running' before this returns
 
 
 @router.post("/import", response_model=ImportResponse)
 async def import_repos(body: ImportRequest) -> ImportResponse:
     """Queues a background import — see resource_explorer/github/org_importer.py.
-    Returns immediately; progress is written to the activity log (operation
-    'scout') as each repo completes, not polled from this response."""
+    Returns immediately. The batch row and one row per repo are written to the
+    activity log (operation 'scout') as 'running' BEFORE this returns, and each
+    is finalised as its repo finishes; GET /import/{batch_id} reads them back."""
     import threading
 
-    from resource_explorer.github.org_importer import _run_import_batch
+    from resource_explorer.github.org_importer import (
+        _run_import_batch, begin_import_batch, claim_in_flight, release_in_flight,
+    )
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
     if body.group_slug and not registry.get_group(body.group_slug):
         raise HTTPException(status_code=404, detail=f"Group '{body.group_slug}' not found")
 
-    to_queue = []
+    candidates = []
     skipped = []
     for r in body.repos:
         if registry.get_by_github_url(r.github_url):
             skipped.append(r.github_url)
         else:
-            to_queue.append(r.model_dump())
+            candidates.append(r.model_dump())
 
+    claimed, in_flight = claim_in_flight([c["github_url"] for c in candidates])
+    to_queue = [c for c in candidates if c["github_url"] in claimed]
+
+    batch_id = ""
     if to_queue:
-        t = threading.Thread(
-            target=_run_import_batch,
-            args=(body.source_label, to_queue, body.group_slug),
-            daemon=True,
-            name="resource-explorer-discovery-import",
-        )
-        t.start()
+        try:
+            batch = begin_import_batch(registry, body.source_label, to_queue)
+            batch_id = batch.batch_id
+            t = threading.Thread(
+                target=_run_import_batch,
+                args=(body.source_label, to_queue, body.group_slug, batch),
+                daemon=True,
+                name="resource-explorer-discovery-import",
+            )
+            t.start()
+        except BaseException:
+            release_in_flight(claimed)
+            raise
 
-    return ImportResponse(queued=len(to_queue), skipped=skipped)
+    return ImportResponse(queued=len(to_queue), skipped=skipped, in_flight=in_flight, batch_id=batch_id)
+
+
+def _repo_state(entry: dict | None) -> str:
+    """importing | imported | already_registered | failed | unknown, from the persisted row."""
+    if not entry:
+        return "unknown"
+    if entry["status"] == "running":
+        return "importing"
+    if entry["status"] == "error":
+        return "failed"
+    outcome = next((i.get("outcome") for i in entry.get("items", []) if i.get("outcome")), "")
+    return outcome or "imported"
+
+
+@router.get("/import/{batch_id}")
+def import_status(batch_id: str) -> dict:
+    """Progress of a batch, derived only from its persisted activity rows."""
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    batch = registry.get_activity(batch_id)
+    if not batch or batch.get("operation") != "scout":
+        raise HTTPException(status_code=404, detail="Unknown import batch")
+    repos = {}
+    for it in batch.get("items", []):
+        e = registry.get_activity(it.get("entry_id", ""))
+        repos[it["github_url"]] = {"state": _repo_state(e), "detail": (e or {}).get("detail", "")}
+    return {"batch_id": batch_id, "status": batch["status"], "done": batch["status"] != "running",
+            "summary": batch["summary"], "repos": repos}
 
 
 class DispositionRequest(BaseModel):

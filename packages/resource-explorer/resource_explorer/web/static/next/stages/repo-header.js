@@ -31,12 +31,14 @@ function esc(s) {
 }
 
 export const NOT_READ_WORD = 'not read';
+/** The word when the repo has no GitHub figures at all: imported, never surveyed. */
+export const NOT_SURVEYED_WORD = 'not yet surveyed';
 export const ZERO_PROVES_NOTHING_SENTENCE = 'Zero here is also what a repository that was never asked looks like, so it reads as not read. A non-zero value would show.';
 export const NOT_READ_SENTENCE = 'GitHub has not been asked for this yet, or did not answer. Run a scouting scan to read it.';
 
 /** `? not read`, a muted cue; the sentence is on hover. */
-export function notReadCue(title = NOT_READ_SENTENCE) {
-  return `<span data-unread class="text-ink-muted" title="${esc(title)}"><span class="font-glyph" aria-hidden="true">${stateEntry('not_established').glyph}</span> ${NOT_READ_WORD}</span>`;
+export function notReadCue(title = NOT_READ_SENTENCE, word = NOT_READ_WORD) {
+  return `<span data-unread class="text-ink-muted" title="${esc(title)}"><span class="font-glyph" aria-hidden="true">${stateEntry('not_established').glyph}</span> ${word}</span>`;
 }
 
 function prettyHost(url) {
@@ -63,7 +65,10 @@ export function scoutingTilesHtml(ov) {
   const unread = new Set(Array.isArray(ov.stats_unread) ? ov.stats_unread : [
     'primary_language', 'stars', 'forks', 'contributors', 'last_pushed_at', 'repo_size_kb',
     'security_and_analysis', 'deployments_count']);
-  const num = (key, v) => (unread.has(key) ? notReadCue() : esc(String(v)));
+  // No GitHub row at all: say "not yet surveyed" (the first scouting survey fetches it), never zeros.
+  const never = ov.stats_fetched === false;
+  const cue = (title) => (never ? notReadCue(title, NOT_SURVEYED_WORD) : notReadCue(title));
+  const num = (key, v) => (unread.has(key) ? cue() : esc(String(v)));
   const sec = securityCounts(ov.security_and_analysis);
   const dep = ov.deployments_count || 0;
   const tiles = [
@@ -71,17 +76,17 @@ export function scoutingTilesHtml(ov) {
     tile('website', 'Website', ov.homepage
       ? `<a href="${esc(ov.homepage)}" target="_blank" rel="noopener noreferrer" class="text-accent-ink underline">${esc(prettyHost(ov.homepage))} ↗</a>`
       : '<span class="text-ink-muted">none found</span>', ov.homepage || 'No project website found'),
-    tile('language', 'Language', unread.has('primary_language') ? notReadCue() : esc(ov.primary_language)),
+    tile('language', 'Language', unread.has('primary_language') ? cue() : esc(ov.primary_language)),
     tile('stars', 'Stars', num('stars', ov.stars)),
     tile('forks', 'Forks', num('forks', ov.forks)),
     tile('contributors', 'Contributors', num('contributors', ov.contributors_count)),
-    tile('last_pushed', 'Last pushed', unread.has('last_pushed_at') ? notReadCue() : esc(ago(ov.last_pushed_at) || ov.last_pushed_at),
+    tile('last_pushed', 'Last pushed', unread.has('last_pushed_at') ? cue() : esc(ago(ov.last_pushed_at) || ov.last_pushed_at),
       unread.has('last_pushed_at') ? '' : ov.last_pushed_at),
-    tile('size', 'Size', unread.has('repo_size_kb') ? notReadCue(ZERO_PROVES_NOTHING_SENTENCE) : `${esc((ov.repo_size_kb / 1024).toFixed(1))} MB`),
+    tile('size', 'Size', unread.has('repo_size_kb') ? cue(ZERO_PROVES_NOTHING_SENTENCE) : `${esc((ov.repo_size_kb / 1024).toFixed(1))} MB`),
     tile('security', 'Security', unread.has('security_and_analysis') || !sec
-      ? notReadCue('GitHub shows security settings only to admins of the repository, or they have not been read yet.')
+      ? cue('GitHub shows security settings only to admins of the repository, or they have not been read yet.')
       : `${sec.on}/${sec.total} enabled`, sec ? sec.detail : ''),
-    tile('deployments', 'Deployments', unread.has('deployments_count') ? notReadCue(ZERO_PROVES_NOTHING_SENTENCE)
+    tile('deployments', 'Deployments', unread.has('deployments_count') ? cue(ZERO_PROVES_NOTHING_SENTENCE)
       : (dep ? `${dep}${ov.latest_deployment_at ? ` · ${esc(ago(ov.latest_deployment_at))}` : ''}` : '0'),
     ov.latest_deployment_environment ? `Latest: ${ov.latest_deployment_environment}${ov.latest_deployment_ref ? ` @ ${ov.latest_deployment_ref}` : ''}` : ''),
   ];
