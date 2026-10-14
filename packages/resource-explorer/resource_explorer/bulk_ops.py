@@ -113,6 +113,11 @@ def resolve_all(registry, targets: list[dict], action: str, *,
 
     result = BulkResult(action=action, dry_run=dry_run)
     total = len(targets)
+    from datetime import UTC, datetime
+
+    from resource_explorer.private_publish import PrivateAwaitsOwner, record_waiting
+
+    run_key = f"bulk {action} · {datetime.now(UTC).isoformat()}"     # one waiting row per (slug, this run)
     for t in _each(targets, progress, total):
         entity_type, slug = t.get("entity_type", "repo"), t.get("slug", "")
         if not slug:
@@ -137,6 +142,10 @@ def resolve_all(registry, targets: list[dict], action: str, *,
         try:
             _resolve_one(registry, entity_type, slug, action)
             result.record(entity_type, slug, "ok", action)
+        except PrivateAwaitsOwner as exc:
+            # Waiting, not failed (2026-10-13 review): only the private investigation's owner can publish it.
+            record_waiting(registry, exc, run_key=run_key, source="bulk")
+            result.record(entity_type, slug, "skipped", str(exc)[:300])
         except Exception as exc:
             # Isolated deliberately: nineteen resources must not be abandoned
             # because the twentieth failed.

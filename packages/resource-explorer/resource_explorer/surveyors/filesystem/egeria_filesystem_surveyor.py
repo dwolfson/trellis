@@ -103,6 +103,12 @@ class EgeriaFileSystemSurveyor:
         registry: ProjectRegistry | None = None,
     ) -> dict:
         """Catalog the filesystem root folder and data files in Egeria, then publish the survey report."""
+        # Interim (2026-10-13 review): no private (born-private) publish exists for file systems yet, so a file system
+        # in a private investigation is refused here, before anything is written, recorded once per state.
+        from resource_explorer.private_publish import refuse_unsupported_private
+
+        refuse_unsupported_private(registry, "filesystem", fs_entity.slug,
+                                   name=fs_entity.display_name or fs_entity.slug)
         self.connect()
 
         local_mount = fs_entity.local_mount_point.rstrip("/")
@@ -313,6 +319,12 @@ class EgeriaFileSystemSurveyor:
         Egeria (fs_entity.egeria_asset_guid set, or findable by canonical mount
         point); this method does not auto-catalog it.
         """
+        # Interim (2026-10-13 review): no private (born-private) publish exists for file systems yet, so a file system
+        # in a private investigation is refused here, before anything is written, recorded once per state.
+        from resource_explorer.private_publish import refuse_unsupported_private
+
+        refuse_unsupported_private(registry, "filesystem", fs_entity.slug,
+                                   name=fs_entity.display_name or fs_entity.slug)
         self.connect()
 
         canonical_mount = (fs_entity.canonical_mount_point or fs_entity.local_mount_point).rstrip("/")

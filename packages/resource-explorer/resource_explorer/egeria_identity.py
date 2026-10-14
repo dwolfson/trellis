@@ -130,6 +130,33 @@ def draft_zones() -> list[str]:
     return [zone] if zone else []
 
 
+def referenced_element_zones() -> list[str]:
+    """The zones for an element a publish REFERENCES rather than produces. Never the private zone.
+
+    Design §3.6 (`docs/investigation-classification-and-zoning-design.md`): "an investigation zones
+    what it produced, never what it references". A repository, database or file-system Asset, and the
+    deployment-wide GitHub `SourceControlLibrary`, are shared by every investigation that names them;
+    zoning one private to one owner hides it from everyone else, and the next publish by anyone else
+    cannot see it, clears its registration and 409s on the re-create. So a referenced element gets
+    the deployment's ordinary treatment, whoever publishes and however private their investigation
+    is: the configured draft zone, else none (`draft_zones()`). The ONE helper the creates and the
+    referenced-element stamp share, so the two cannot drift apart again (2026-10-13 review).
+    """
+    return draft_zones()
+
+
+def zone_membership_initial_classification(zones: Iterable[str]) -> dict:
+    """The `initialClassifications` entry that CREATES an element already in `zones`.
+
+    The shape Egeria's `NewElementRequestBody.initialClassifications` takes
+    (`Map<String, ClassificationProperties>`, `ZoneMembershipProperties` a registered subtype), and
+    the one pyegeria's `InitialClassifications` model serialises flat. A `zoneMembership` key inside
+    an Asset's `properties` is NOT this: Egeria's `AssetProperties` has no such field and ignores
+    unknown keys, so a zone sent there never reaches the element.
+    """
+    return {"ZoneMembership": {"class": "ZoneMembershipProperties", "zoneMembership": list(zones)}}
+
+
 def private_zone() -> str:
     """RE's private zone name (`EXPLORER_PRIVATE_ZONE` overrides)."""
     return (os.environ.get("EXPLORER_PRIVATE_ZONE") or "").strip() or PRIVATE_ZONE
