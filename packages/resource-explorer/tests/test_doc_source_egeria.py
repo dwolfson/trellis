@@ -241,6 +241,18 @@ def test_ref_guid_exists_is_true_when_egeria_still_has_the_element(monkeypatch):
     assert m.ref_guid_exists("still-here", **_EGERIA_KW) is True
 
 
+def test_ref_guid_exists_reads_the_live_open_metadata_element_shape(monkeypatch):
+    """LIVE 2026-10-14: get_metadata_element_by_guid answers an OpenMetadataElement -- a TOP-LEVEL
+    `elementGUID`, no `elementHeader` and no `guid`. The fake above answers a shape Egeria never sends,
+    which is how every Enrichment doc-source publish came to fail its own existence check ("unexpected
+    answer {'headerVersion': 0, 'status': 'ACTIVE', ...}") and retry forever."""
+    live = {"headerVersion": 0, "status": "ACTIVE",
+            "type": {"typeId": "af536f20-062b-48ef-9c31-1ddd05b04c56", "typeName": "ExternalReference"},
+            "elementGUID": "c1d541ca-971a-4768-9f72-b5d1aa8a4afa", "properties": {}}
+    _patched_metadata_expert(monkeypatch, {"c1d541ca-971a-4768-9f72-b5d1aa8a4afa": live})
+    assert m.ref_guid_exists("c1d541ca-971a-4768-9f72-b5d1aa8a4afa", **_EGERIA_KW) is True
+
+
 def test_ref_guid_exists_is_false_on_a_confirmed_unknown_guid_error(monkeypatch):
     unknown_guid_error = Exception(
         "OMRS-REPOSITORY-404-002 The entity identified with guid b9925119 "

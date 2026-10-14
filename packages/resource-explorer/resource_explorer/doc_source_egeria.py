@@ -192,7 +192,10 @@ def ref_guid_exists(ref_guid: str, *, clients) -> bool:
 
 
 def _guid_in(element: dict) -> str:
-    return str((element.get("elementHeader") or {}).get("guid") or element.get("guid") or "")
+    """LIVE: get_metadata_element_by_guid answers an OpenMetadataElement with a top-level `elementGUID`
+    (`elementHeader.guid` is the asset-graph shape) -- see catalogue_gateway's reader of the same."""
+    return str((element.get("elementHeader") or {}).get("guid") or element.get("elementGUID")
+               or element.get("guid") or "")
 
 
 def _find_ref_guid(clients, qualified_name: str) -> str:
