@@ -843,3 +843,12 @@ def allow_example_platform(monkeypatch):
     real = egeria_clients.allowed_platforms
     monkeypatch.setattr(egeria_clients, "allowed_platforms",
                         lambda: real() | {egeria_clients.origin_of("https://egeria.example")})
+
+
+@pytest.fixture(autouse=True)
+def fresh_zone_controls_report(monkeypatch):
+    """The start-up zone check's answer (`egeria_identity._zone_controls_state`) is per-process; each test starts
+    with it unasked, so one test's "ok" or "blocked" never decides another's publish."""
+    from resource_explorer import egeria_identity
+
+    monkeypatch.setattr(egeria_identity, "_zone_controls_state", None)

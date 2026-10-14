@@ -521,6 +521,15 @@ class InvestigationReclassifier:
                 return res
 
         target = self._target_zones(res.direction, owner)
+        if res.direction != TIGHTEN:
+            # Loosening moves into the configured publish zones: never into one that grants nobody once Egeria
+            # e9fd817f4c ships (or whose control could not be read). Refused before anything moves.
+            from resource_explorer.egeria_identity import zone_lockout_refusal
+
+            refusal = zone_lockout_refusal(target)
+            if refusal:
+                res.errors.append(f"nothing was moved: {refusal}.")
+                return res
 
         moved, reason = self._move_zones(project_guid, target, owner)
         res.project_rezoned = moved

@@ -2274,9 +2274,12 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
                 cur.set_step(curation_id, "refresh", "requested", f"refresh requested · {why}")
 
     # 6 ── the zone, LAST of the writes, and only when the deployment configured one
-    from resource_explorer.egeria_identity import configured_publish_zones
+    from resource_explorer.egeria_identity import configured_publish_zones, zone_lockout_refusal
     zones = configured_publish_zones()
     steps_now = {s["name"]: s["state"] for s in cur.get(curation_id)["steps"]}
+    # A zone that grants nobody once Egeria e9fd817f4c ships (or whose control could not be read) is never
+    # written: the database element would be unreadable and unmovable for everyone, RE's daemon included.
+    zone_refusal = zone_lockout_refusal(zones) if (db_guid and zones) else ""
     if not db_guid:
         cur.set_step(curation_id, "zone_membership", "skipped", "no database element: the publish step did not produce one")
     elif not zones:
@@ -2285,6 +2288,8 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
     elif any(steps_now.get(n) == "failed" for n in ("owner", "schema_targets", "leave_outs", "survey", "refresh")):
         cur.set_step(curation_id, "zone_membership", "skipped",
                      "not written: an earlier step failed, and a zone written now would stop that step being retried")
+    elif zone_refusal:
+        cur.set_step(curation_id, "zone_membership", "failed", f"not written: {zone_refusal}")
     else:
         try:
             gateway.set_zone_membership(db_guid, zones)

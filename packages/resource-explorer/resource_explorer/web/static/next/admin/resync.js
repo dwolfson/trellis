@@ -196,6 +196,31 @@ function decisionRowHtml(f) {
   </div>`;
 }
 
+// The start-up check over every zone RE stamps: one row per zone, a cue plus a short word, the sentence on hover.
+// Full literal markup per verdict (no interpolated class names, so the Tailwind coverage check can read them).
+const ZONE_CUE = {
+  ok: '<span class="text-state-ok">✓</span>',
+  warned: '<span class="text-state-warn">⚠</span>',
+  blocked: '<span class="text-state-warn">⛔</span>',
+  could_not_check: '<span class="text-state-warn">?</span>',
+  unknown: '<span class="text-ink-muted">…</span>',
+};
+function zoneControlsHtml(rows) {
+  if (!rows || !rows.length) return '';
+  return `<ul class="mt-s2 list-none p-0 text-provenance">${rows.map((e) => {
+    const cue = ZONE_CUE[e.verdict] || ZONE_CUE.unknown;
+    const facts = e.control === 'present'
+      ? `control present · lists ${esc((e.operations || []).join(', ') || 'no operation')} · DEFAULT ${e.default_list ? 'yes' : 'no'}`
+      : `control ${esc(e.control)}`;
+    const words = e.verdict === 'ok' ? ''
+      : e.verdict === 'unknown' ? `· <span class="text-ink-muted">${esc(e.words || '')}</span>`
+        : `· <span class="text-state-warn">${esc(e.words || '')}</span>`;
+    return `<li title="${esc(e.words || '')}">${cue}
+      <span class="font-mono">${esc(e.zone)}</span> · <span class="text-ink-muted">${facts}</span>
+      ${words}</li>`;
+  }).join('')}</ul>`;
+}
+
 function privateZoneHtml() {
   const z = _zone;
   if (!z) return '';
@@ -205,6 +230,7 @@ function privateZoneHtml() {
       <div class="text-caveat text-state-ok">🔒 Private zone enforced</div>
       <div class="mt-[2px] text-provenance text-ink-muted">Personal and Experiment investigations
         publish to <span class="font-mono">${zone}</span>, readable only by their creator.</div>
+      ${zoneControlsHtml(z.zone_controls)}
     </div>`;
   }
   const settling = (z.settling_seconds_remaining || 0) > 0;
@@ -219,6 +245,7 @@ function privateZoneHtml() {
         + `everyone could read them.`}</div>
     ${z.detail ? `<div class="mt-[2px] text-provenance text-ink-muted">${esc(z.detail)}</div>` : ''}
     ${z.remedy ? `<div class="mt-[2px] text-caveat text-accent-ink">${esc(z.remedy)}</div>` : ''}
+    ${zoneControlsHtml(z.zone_controls)}
   </div>`;
 }
 

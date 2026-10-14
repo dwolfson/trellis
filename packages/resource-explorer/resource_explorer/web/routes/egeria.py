@@ -317,7 +317,14 @@ async def private_zone_state() -> dict:
         # Nothing has asked in this process yet. Ask now rather than reporting
         # "unknown" to a person who opened this page precisely to find out —
         # `ensure_private_zone_exists` is idempotent and never raises.
-        status = ensure_private_zone_exists()
+        ensure_private_zone_exists()
+        status = private_zone_status()
+    if any(e.get("verdict") == "unknown" for e in status.get("zone_controls") or []):
+        # The draft/publish zones' controls, likewise asked now rather than shown as "not checked yet".
+        from resource_explorer.egeria_identity import check_zone_controls
+
+        check_zone_controls()
+        status = private_zone_status()
     return status
 
 
