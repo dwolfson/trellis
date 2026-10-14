@@ -463,6 +463,21 @@ class ScoutingOverview(BaseModel):
     # "disabled" > "fork" > "template" > "active", first match wins.
     lifecycle_state: str = "active"
     homepage: str = ""
+    # Documentation site beside the homepage (Scouting's repo_homepage step).
+    # `docs_cue` is the short word shown next to the link: "docs ✓" / "docs
+    # unreachable" / "no docs found" / "docs not checked", or "" when the step has
+    # never run (nothing measured is not "no docs found"). `docs_state` is the
+    # machine word: reachable | unreachable | not_checked | none_found | unknown.
+    docs_url: str = ""
+    docs_state: str = ""
+    docs_cue: str = ""
+    docs_status: int | None = None
+    docs_final_url: str = ""
+    docs_last_modified: str = ""
+    docs_source: str = ""
+    docs_scope: str = ""
+    homepage_source: str = ""
+    homepage_scope: str = ""
     security_and_analysis: dict = {}
     deployments_count: int = 0
     latest_deployment_at: str = ""
@@ -587,6 +602,7 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
         # either the same value or a better one. stats.homepage remains the
         # fallback for repos surveyed before that step existed.
         homepage=(project.homepage_url or stats.get("homepage") or ""),
+        **_docs_overview_fields(registry, project),
         security_and_analysis=security_and_analysis,
         deployments_count=stats.get("deployments_count") or 0,
         latest_deployment_at=stats.get("latest_deployment_at") or "",
@@ -595,6 +611,14 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
         stats_unread=_scouting_stats_unread(stats),
         stats_fetched=bool(stats),
     )
+
+
+def _docs_overview_fields(registry, project) -> dict:
+    from resource_explorer.ingestion.docs_discovery import read_summary
+    d = read_summary(registry, project.slug, getattr(project, "docs_url", "") or "")
+    return {k: d[k] for k in ("docs_url", "docs_state", "docs_status", "docs_final_url",
+                              "docs_last_modified", "docs_source", "docs_scope",
+                              "homepage_source", "homepage_scope")} | {"docs_cue": d["cue"]}
 
 
 class ScoutingScanResult(BaseModel):

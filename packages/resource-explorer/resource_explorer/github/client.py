@@ -467,6 +467,15 @@ class GitHubClient:
         except GithubException:
             return None
 
+    def list_root_file_names(self, repo: Repository) -> list[str]:
+        """Names of the files (not directories) at the repo root: ONE contents-API call.
+
+        Scouting uses this to fetch only the manifests and README that actually
+        exist, instead of probing for each name and paying a 404 per absent one.
+        Raises on API failure; callers must tell "could not list" from "empty".
+        """
+        return [c.name for c in repo.get_contents("") if getattr(c, "type", "file") == "file"]
+
     def get_default_branch(self, repo: Repository) -> str:
         return repo.default_branch
 

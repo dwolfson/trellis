@@ -6058,6 +6058,21 @@ class ProjectRegistry:
                 (homepage_url, slug),
             )
 
+    def update_project_docs_url(self, slug: str, docs_url: str) -> None:
+        """Record the project's documentation site -- set by HomepageSurveyor.
+
+        Sits beside update_project_homepage and for the same reason: it writes
+        `projects.docs_url`, which a stats refresh never touches. An empty string
+        is a real value (the sources were read and none names documentation) and
+        clears an earlier answer; the caller must not pass "" for "could not read".
+        """
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE projects SET docs_url = ? WHERE slug = ?",
+                (docs_url, slug),
+            )
+
     def update_github_url(self, slug: str, github_url: str) -> None:
         """Change which repository this slug points at.
 

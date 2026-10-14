@@ -63,7 +63,6 @@
   "resource_explorer/surveyors/sub_surveyors/documentation.py::run": 1,
   "resource_explorer/surveyors/sub_surveyors/git_statistics.py::run": 1,
   "resource_explorer/surveyors/sub_surveyors/health.py::run": 1,
-  "resource_explorer/surveyors/sub_surveyors/homepage.py::run": 1,
   "resource_explorer/surveyors/sub_surveyors/license_classifier.py::run": 1,
   "resource_explorer/surveyors/sub_surveyors/maturity.py::run": 1,
   "resource_explorer/surveyors/sub_surveyors/rag_ingestion.py::run": 3,

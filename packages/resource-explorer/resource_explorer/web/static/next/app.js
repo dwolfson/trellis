@@ -3315,11 +3315,20 @@ export function resourceHeaderHtml(slug) {
   // `homepage` is NOT on the summary row — it comes from the scouting
   // overview, and it is already the derived best link (GitHub's declared
   // homepage, then the packaging manifest, then the README), doing duty as
-  // both project site and docs. There is no separate docs field to show.
+  // project site; the documentation site is its own field (docs_url) and is drawn below.
   const homepage = state.overview?.slug === slug ? state.overview.homepage : '';
   if (homepage) {
     links.push(`<a href="${esc(homepage)}" target="_blank" rel="noopener noreferrer"
       class="text-accent-ink underline">Project site ↗</a>`);
+  }
+  // Documentation beside it, with the short cue from the server (docs ✓ / docs unreachable /
+  // no docs found / docs not checked). Nothing is drawn until the Homepage step has run.
+  const docsOv = state.overview?.slug === slug ? state.overview : null;
+  if (docsOv?.docs_cue) {
+    links.push(docsOv.docs_url
+      ? `<a href="${esc(docsOv.docs_url)}" data-docs-cue="${esc(docsOv.docs_state || '')}" target="_blank" rel="noopener noreferrer"
+      class="text-accent-ink underline">${esc(docsOv.docs_cue)} ↗</a>`
+      : `<span data-docs-cue="${esc(docsOv.docs_state || '')}" class="text-ink-muted">${esc(docsOv.docs_cue)}</span>`);
   }
 
   // PI-030: the source word comes from the summary row's `last_survey_source`, which the server

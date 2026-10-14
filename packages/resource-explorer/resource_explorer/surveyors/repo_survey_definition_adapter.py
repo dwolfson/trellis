@@ -602,24 +602,22 @@ STEP_REGISTRY: dict[str, StepInfo] = {
     ),
     "repo_homepage": StepInfo(
         "repo_homepage", HomepageSurveyor,
-        "Finds the project's external website — GitHub's declared homepage first, "
-        "falling back to pyproject.toml [project.urls], package.json or the README "
-        "when that is empty (measured: 11 of 24 registered repos have no declared "
-        "homepage). Surfaced in Scouting as a clickable link and published to "
-        "Egeria as an ExternalReference linked to the repo.",
+        "Finds where the project's homepage and its documentation are, and whether "
+        "the documentation answers. Reads GitHub's homepage field, the packaging "
+        "manifests (pyproject.toml, package.json, setup.cfg, Cargo.toml, pom.xml) and "
+        "the README -- small files only, through the GitHub contents API, never a "
+        "download -- and keeps the source and the other candidates for each answer. "
+        "An entry labelled Documentation wins; placeholders such as example.com are "
+        "rejected. One bounded request records whether the docs URL is reachable. "
+        "Surfaced in Scouting as links with a short cue; the homepage is published "
+        "to Egeria as an ExternalReference linked to the repo.",
         ["ClassificationAnnotation"],
         accepts_surveyed_at=True,
-        # Optional, not required: tier 1 reads project_stats and needs no repo
-        # contents at all, so this step still produces an answer when run without
-        # a zipball. Declaring it means the fallback tiers work for free whenever
-        # another step in the same run has already paid for the download.
-        requires_resources={"zipball_root": "local_path"},
-        requires_views={"zipball_root": VIEW_SOURCE},
-        # Optional zipball (see the constructor comment above) but still
-        # one of the 4 steps that declare it — "download", not "none",
-        # per D3. Parsing pyproject.toml/package.json/README for a URL is
-        # cheap.
-        fetch_cost="download",
+        # No requires_resources: the files it needs are a handful of small ones
+        # fetched through the contents API (one listing call plus one per file
+        # that exists), so this step is Scouting-cheap and no longer triggers a
+        # zipball. A caller that already holds the contents passes local_path.
+        fetch_cost="api",
         compute_cost="low",
     ),
     # Directly after repo_homepage, which is what populates projects.homepage_url
