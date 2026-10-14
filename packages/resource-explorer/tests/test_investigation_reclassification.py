@@ -261,7 +261,7 @@ def test_loosening_with_no_configured_zone_clears_the_zones_and_invents_none(tmp
     assert "egeria-runtime" not in str(zones)
 
 
-def test_loosening_moves_everything_into_the_publish_zones(tmp_path, monkeypatch):
+def test_loosening_moves_everything_into_the_publish_zones(tmp_path, monkeypatch, zone_controls_ok):
     reg = ProjectRegistry(db_path=str(tmp_path / "t.db"))
     reg.add(Project(slug="r1", display_name="r1", github_url="https://github.com/o/r1",
                     description=""))
@@ -782,3 +782,11 @@ def test_a_clean_declassify_that_did_nothing_says_that_instead(monkeypatch):
     assert "reported no error" in why, why
     assert "Error" not in why.split("reported no error")[0], (
         "nothing raised, so the reason must not name an exception")
+
+
+@pytest.fixture
+def zone_controls_ok(monkeypatch):
+    """The configured zones' controls admit everyone, so the start-up zone check lets them be written."""
+    from tests.zone_fakes import zone_controls_grant_all
+
+    return zone_controls_grant_all(monkeypatch)

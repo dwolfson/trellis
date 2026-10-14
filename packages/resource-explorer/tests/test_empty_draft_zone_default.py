@@ -71,7 +71,7 @@ def test_stamp_published_sends_the_configured_zone(spy, monkeypatch):
     assert [b["properties"]["zoneMembership"] for _, b in spy.zones] == [[CONFIGURED]]
 
 
-def test_materialiser_sends_no_zone_by_default_and_the_configured_one_when_set(spy, monkeypatch):
+def test_materialiser_sends_no_zone_by_default_and_the_configured_one_when_set(spy, monkeypatch, zone_controls_ok):
     from tests.test_component_materializer import _materializer
 
     reg = MagicMock(get_materialized_component=MagicMock(return_value=None))
@@ -167,3 +167,11 @@ def test_post_write_verification_passes_for_an_unzoned_element(monkeypatch):
     out = curate.promote_to_publish_zones("g1")
     assert out["status"] == "already_unzoned" and out["zones"] == []
     clear.assert_not_called()
+
+
+@pytest.fixture
+def zone_controls_ok(monkeypatch):
+    """The configured zones' controls admit everyone, so the start-up zone check lets them be written."""
+    from tests.zone_fakes import zone_controls_grant_all
+
+    return zone_controls_grant_all(monkeypatch)

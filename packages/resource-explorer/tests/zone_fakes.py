@@ -105,6 +105,32 @@ def open_access(monkeypatch, *, caller_if_none: str = "") -> FakeEgeria:
     return fake
 
 
+#: A security access control whose DEFAULT list admits every user: what a configured zone needs so that Egeria
+#: e9fd817f4c (every named zone secured; no control grants nobody) still lets everyone in. RE's start-up zone check
+#: (`egeria_identity.zone_lockout_refusal`) refuses to publish into a configured zone without one.
+GRANT_ALL_CONTROL = {"associatedSecurityList": {"DEFAULT": ["allUsers"]}}
+
+
+def grant_all(*zones: str) -> dict:
+    """`{zone: GRANT_ALL_CONTROL}` for `FakeEgeria.controls`."""
+    return {z: GRANT_ALL_CONTROL for z in zones}
+
+
+def zone_controls_grant_all(monkeypatch):
+    """For tests of a write into a configured zone that are about something else: every zone's control is read
+    (as RE reads it, `zone_access.EgeriaAccessReader.control`) from an autospec of the real pyegeria
+    `SecurityOfficer` answering `GRANT_ALL_CONTROL`, so the start-up zone check passes."""
+    from unittest.mock import create_autospec
+
+    from pyegeria.omvs.security_officer import SecurityOfficer
+
+    so = create_autospec(SecurityOfficer, instance=True, spec_set=True)
+    so.get_security_access_control.return_value = GRANT_ALL_CONTROL
+    monkeypatch.setattr("resource_explorer.zone_access._security_officer", lambda: so)
+    monkeypatch.setattr("resource_explorer.zone_access._platform", lambda: ("Quickstart platform", "plat-guid"))
+    return so
+
+
 #: pyegeria's real by-name miss.
 NO_ELEMENTS_FOUND = "No elements found"
 

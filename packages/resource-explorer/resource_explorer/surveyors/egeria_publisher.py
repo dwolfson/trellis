@@ -318,6 +318,7 @@ class EgeriaPublisher:
             # queued run, another person) is refused here, BEFORE the asset, homepage, documentation-source or
             # GitHub-library writes, rather than by a raw 403 at the report create after them (2026-10-13 review).
             self._require_owner_identity(result.resource_slug)
+        self._require_zones_grant_someone(result.resource_slug)
         self._connect()
 
         # Everything below depends on the asset GUID RE cached for this project,
@@ -1072,6 +1073,21 @@ class EgeriaPublisher:
             "private. Nothing was written. "
             + (status.get("remedy") or "See Admin → Egeria for the zone's status.")
         )
+
+    def _require_zones_grant_someone(self, resource_slug: str) -> None:
+        """Refuse the publish when a zone RE stamps on it would grant nobody once Egeria e9fd817f4c ships
+        (`egeria_identity.zone_lockout_refusal`: no control, or neither READ nor DEFAULT, or unreadable).
+
+        The twin of `_require_enforced_private_zone` for the draft and publish zones, and for the same reason
+        raised before anything is written: an element born in a zone that grants nobody cannot be read or
+        unzoned afterwards, by RE's daemon or anyone else."""
+        from resource_explorer.egeria_identity import zone_lockout_refusal
+
+        refusal = zone_lockout_refusal([*(self.zone_names or []), *self._referenced_zones()])
+        if refusal:
+            raise EgeriaConnectionError(
+                f"'{resource_slug}' was not published: {refusal}. Nothing was written. "
+                "See Admin → Egeria for every zone's control.")
 
     @staticmethod
     def _referenced_zones() -> list[str]:

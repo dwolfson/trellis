@@ -578,6 +578,7 @@ def promote_to_publish_zones(guid: str) -> dict:
         private_zone,
         read_zones,
         set_zone_membership,
+        zone_lockout_refusal,
     )
 
     zones = configured_publish_zones()
@@ -639,6 +640,15 @@ def promote_to_publish_zones(guid: str) -> dict:
     # The write is the configured zones UNIONED with the foreign ones (RE's draft zone goes; nothing
     # else does). Chosen over "leave it and say so" because accept still has to make the element
     # visible in the configured zone, and the union costs the foreign zone nothing.
+    # **Never promote into a zone that grants nobody** (Egeria e9fd817f4c: a zone with no control, or with
+    # neither READ nor DEFAULT, grants no one; an unreadable control blocks too). Checked before the zone write:
+    # an accepted element moved there could not be read or moved back, by RE's daemon or anyone else. After the
+    # two no-write answers above, so an already-promoted element still reads as already promoted.
+    refusal = zone_lockout_refusal(zones)
+    if refusal:
+        return {"status": "blocked", "guid": guid, "zones": zones, "from_zones": already, "error": refusal,
+                "words": f"accepted · zones not changed · {refusal}"}
+
     foreign = [z for z in (already or []) if z not in {*draft_zones(), private_zone()}]
     zones = list(dict.fromkeys([*foreign, *zones]))
     ok = set_zone_membership(guid, zones)

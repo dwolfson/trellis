@@ -296,6 +296,19 @@ def _ensure_draft_zone() -> None:
                     "private-zone bootstrap: %s — private investigations will NOT "
                     "publish to Egeria until this is resolved. %s",
                     private, private.get("remedy") or "")
+
+            # Every OTHER zone RE stamps (a configured draft or publish zone): its control read, three facts
+            # recorded per zone, and one line for all of them, the private zone's entry included. WARNING when
+            # any zone would lock everyone out once Egeria e9fd817f4c ships, warns, or could not be checked.
+            from resource_explorer.egeria_identity import check_zone_controls, zone_controls_line
+
+            report = check_zone_controls()
+            if all(e.get("verdict") == "ok" for e in report):
+                log.info(zone_controls_line(report))
+            else:
+                log.warning(zone_controls_line(report)
+                            + " — publishing into a zone that would lock out everyone, or could not be "
+                              "checked, is refused until its control is fixed.")
         except Exception as exc:  # pragma: no cover - defensive
             log.warning("draft-zone bootstrap failed: %s", exc)
         try:

@@ -17581,6 +17581,27 @@ async function loadAdminResyncPanel() {
 // Four states, rendered differently on purpose. "Enforced" and "not checked
 // yet" must never look alike: the second is a question nobody has asked, and
 // showing it as healthy is the exact failure this whole feature guards against.
+// The start-up check over every zone RE stamps: one row per zone, a cue plus a short word, the sentence on hover.
+function _zoneControlsHtml(rows) {
+  if (!rows || !rows.length) return '';
+  // Full literal markup per verdict (no interpolated class names).
+  const cues = { ok: '<span class="text-emerald-300">✓</span>', warned: '<span class="text-amber-300">⚠</span>',
+    blocked: '<span class="text-amber-300">⛔</span>', could_not_check: '<span class="text-amber-300">?</span>',
+    unknown: '<span class="text-slate-500">…</span>' };
+  return `<ul class="mt-2 text-[11px] space-y-0.5">${rows.map(e => {
+    const cue = cues[e.verdict] || cues.unknown;
+    const facts = e.control === 'present'
+      ? `control present · lists ${_esc((e.operations || []).join(', ') || 'no operation')} · DEFAULT ${e.default_list ? 'yes' : 'no'}`
+      : `control ${_esc(e.control)}`;
+    const words = e.verdict === 'ok' ? ''
+      : e.verdict === 'unknown' ? `· <span class="text-slate-500">${_esc(e.words || '')}</span>`
+        : `· <span class="text-amber-300">${_esc(e.words || '')}</span>`;
+    return `<li title="${_esc(e.words || '')}">${cue}
+      <span class="font-mono text-slate-300">${_esc(e.zone)}</span> · <span class="text-slate-500">${facts}</span>
+      ${words}</li>`;
+  }).join('')}</ul>`;
+}
+
 function _privateZoneCardHtml() {
   const z = _privateZone;
   if (!z) return '';
@@ -17590,6 +17611,7 @@ function _privateZoneCardHtml() {
       <div class="text-xs font-semibold text-emerald-300">🔒 Private zone enforced</div>
       <div class="text-[11px] text-slate-400 mt-1">Personal and Experiment investigations publish to
         <span class="font-mono">${zone}</span>, readable only by their creator.</div>
+      ${_zoneControlsHtml(z.zone_controls)}
     </div>`;
   }
   const settling = (z.settling_seconds_remaining || 0) > 0;
@@ -17607,6 +17629,7 @@ function _privateZoneCardHtml() {
          where everyone could read them.`}</div>
     ${z.detail ? `<div class="text-[11px] text-slate-500 mt-1">${_esc(z.detail)}</div>` : ''}
     ${z.remedy ? `<div class="text-[11px] text-cyan-300 mt-1">${_esc(z.remedy)}</div>` : ''}
+    ${_zoneControlsHtml(z.zone_controls)}
   </div>`;
 }
 

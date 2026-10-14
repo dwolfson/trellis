@@ -144,7 +144,7 @@ def test_a_zone_that_is_not_res_draft_stamp_is_never_cleared(egeria):
 
 # ── a configured zone ──────────────────────────────────────────────────────
 
-def test_a_configured_zone_is_exactly_what_is_written(egeria, monkeypatch):
+def test_a_configured_zone_is_exactly_what_is_written(egeria, monkeypatch, zone_controls_ok):
     monkeypatch.setenv("EXPLORER_PUBLISH_ZONES", "team-zone")
     fake = egeria(FakeEgeria([DRAFT]))
     out = curate.promote_to_publish_zones("bp-1")
@@ -155,7 +155,7 @@ def test_a_configured_zone_is_exactly_what_is_written(egeria, monkeypatch):
     assert "egeria-runtime" not in repr(fake.calls)
 
 
-def test_the_configured_zone_is_never_cleared_and_no_default_joins_it(egeria, monkeypatch):
+def test_the_configured_zone_is_never_cleared_and_no_default_joins_it(egeria, monkeypatch, zone_controls_ok):
     monkeypatch.setenv("EXPLORER_PUBLISH_ZONES", "a, b")
     fake = egeria(FakeEgeria([DRAFT]))
     curate.promote_to_publish_zones("bp-1")
@@ -224,7 +224,7 @@ def test_the_component_tree_leaf_carries_the_promotion_words(registry, monkeypat
     assert rows[0]["promotion"]["words"] == "accepted · zone team-zone"
 
 
-def test_the_configured_zone_is_read_back_before_the_success_words(egeria, monkeypatch):
+def test_the_configured_zone_is_read_back_before_the_success_words(egeria, monkeypatch, zone_controls_ok):
     monkeypatch.setenv("EXPLORER_PUBLISH_ZONES", "team-zone")
     fake = egeria(FakeEgeria([DRAFT]))
     fake.add_zone_membership = lambda guid, body: fake.calls.append(("add_zone_membership", guid, body))   # accepted, did not take
@@ -282,7 +282,7 @@ def test_a_failed_promotion_is_not_counted_as_done_and_is_reported_separately(re
 
 # ── never strip a foreign zone (coordinator review) ─────────────────────────
 
-def test_the_configured_branch_keeps_a_foreign_zone_and_reads_back(egeria, monkeypatch):
+def test_the_configured_branch_keeps_a_foreign_zone_and_reads_back(egeria, monkeypatch, zone_controls_ok):
     monkeypatch.setenv("EXPLORER_PUBLISH_ZONES", "team-zone")
     fake = egeria(FakeEgeria([DRAFT, "foreign-zone"]))
     out = curate.promote_to_publish_zones("bp-1")
@@ -309,3 +309,11 @@ def test_the_reclassifier_keeps_foreign_zones_beside_re_s(monkeypatch):
             assert fake.writes() == [], "a foreign-only element was touched"
         if "foreign" in zones and len(zones) > 1:
             assert not any(c[0] == "clear_zone_membership" for c in fake.calls), "the whole classification was cleared"
+
+
+@pytest.fixture
+def zone_controls_ok(monkeypatch):
+    """The configured zones' controls admit everyone, so the start-up zone check lets them be written."""
+    from tests.zone_fakes import zone_controls_grant_all
+
+    return zone_controls_grant_all(monkeypatch)

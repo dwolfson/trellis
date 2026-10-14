@@ -778,7 +778,9 @@ class TestCurateRoutes:
         be read as "in no zones, nothing to do" — an unreachable Egeria would
         then silently skip every promotion."""
         from resource_explorer.workflows import curate as curate_wf
+        from tests.zone_fakes import zone_controls_grant_all
 
+        zone_controls_grant_all(monkeypatch)      # the zone's control admits everyone (start-up zone check)
         monkeypatch.setenv("EXPLORER_PUBLISH_ZONES", "egeria-runtime")
         monkeypatch.setattr(
             "resource_explorer.egeria_identity.current_zones",

@@ -68,6 +68,12 @@ __all__ = [
     "private_zone_is_enforced",
     "private_zone_status",
     "private_zones",
+    "assess_zone_control",
+    "check_zone_controls",
+    "stamped_zones",
+    "zone_controls_line",
+    "zone_controls_report",
+    "zone_lockout_refusal",
     "ownership_body",
     "person_ownership_body",
     "configured_publish_zones",
@@ -914,11 +920,23 @@ def ensure_private_zone_exists(identity: Optional[EgeriaIdentity] = None) -> dic
 
         existing = client.get_security_access_control(platform, zone, **guid_kwargs)
         if existing and (existing.get("associatedSecurityList") or {}):
+            facts = assess_zone_control(zone, existing)
+            if facts["verdict"] == "blocked":
+                # An operator's control that lists neither READ nor DEFAULT. Today Egeria treats the zone as
+                # unsecured for a read (world-readable); once e9fd817f4c ships it grants nobody. Neither is
+                # private, so it is reported and refused, never overwritten (it is not RE's to rewrite).
+                _private_zone_state = {
+                    "status": "locks_out", "zone": zone, "platform": platform,
+                    "control_present": True, "enforced": False, "zone_control": facts,
+                    "detail": f"the {zone!r} control ({', '.join(facts['operations'])} only): {facts['words']}",
+                    "remedy": f"Add a DEFAULT (or READ) list to the {zone!r} security access control.",
+                }
+                return _private_zone_state
             # Already there when we first looked, so it predates this process
             # and the connector has had at least as long as we have been up.
             _private_zone_state = {
                 "status": "exists", "zone": zone, "platform": platform,
-                "control_present": True, "enforced": True,
+                "control_present": True, "enforced": True, "zone_control": facts,
                 "basis": "control was already present when this process first looked",
             }
             return _private_zone_state
@@ -957,6 +975,7 @@ def ensure_private_zone_exists(identity: Optional[EgeriaIdentity] = None) -> dic
             _private_zone_state = {
                 "status": "unconfirmed", "zone": zone, "platform": platform,
                 "control_present": False, "enforced": False,
+                "zone_control": assess_zone_control(zone, back),
                 "detail": "the control did not read back with a security list",
             }
             return _private_zone_state
@@ -968,6 +987,7 @@ def ensure_private_zone_exists(identity: Optional[EgeriaIdentity] = None) -> dic
         _private_zone_state = {
             "status": "created", "zone": zone, "platform": platform,
             "control_present": True, "enforced": False,
+            "zone_control": assess_zone_control(zone, back),
             "settle_after": settle_at,
             "detail": (
                 f"just created; the security connector reloads on its own timer, so "
@@ -985,6 +1005,7 @@ def ensure_private_zone_exists(identity: Optional[EgeriaIdentity] = None) -> dic
         _private_zone_state = {
             "status": "not_authorized" if unauthorized else "error",
             "zone": zone, "control_present": False, "enforced": False,
+            "zone_control": assess_zone_control(zone, None, unreadable=detail[:300]),
             "detail": detail,
             "remedy": (
                 "Writing a security access control needs platform-operator rights. "
@@ -1026,8 +1047,11 @@ def private_zone_status() -> dict:
 
     if _private_zone_state is None:
         return {"status": "unknown", "zone": private_zone(), "control_present": False,
-                "enforced": False, "detail": "not checked yet this process"}
+                "enforced": False, "detail": "not checked yet this process",
+                "zone_controls": zone_controls_report()}
     state = dict(_private_zone_state)
+    # The start-up report over EVERY zone RE stamps (the private zone's entry is `zone_control`).
+    state["zone_controls"] = zone_controls_report()
     settle_after = state.pop("settle_after", None)
     if settle_after is not None:
         remaining = max(0, int(settle_after - _time.time()))
@@ -1036,6 +1060,159 @@ def private_zone_status() -> dict:
         if remaining:
             state["status"] = "settling"
     return state
+
+
+# ---------------------------------------------------------------------------
+# The start-up check over every zone RE stamps (design brief, 2026-10-14)
+# ---------------------------------------------------------------------------
+#
+# Egeria e9fd817f4c ("Make governance zones without a security control private"; origin/main 003f6f6510,
+# `OpenMetadataAccessSecurityConnector.validateZoneAccess` ~1094-1205) secures EVERY named zone:
+#
+# * a zone named after the userId grants first, so the owner-id zone RE puts beside the private zone is exempt;
+# * any other zone with no SecurityAccessControl, or whose control has neither a list for the operation nor a
+#   DEFAULT list (`getAssociatedSecurityListForZone`: the operation's enum NAME, then DEFAULT), grants NOBODY;
+# * an element in no zone stays open.
+#
+# Not in the image running on 2026-10-14 (built 2026-10-06), but in the next rebuild. Before it, such a zone is
+# "not secured" and ignored, so the same element was readable by everyone; after it, by no one (RE's own
+# daemon, Egeria's survey engine and the cataloguer included) and nothing can unzone it. So RE reads each
+# control at start-up, records three facts (control present / absent, the operations it lists, a DEFAULT list
+# or not), and refuses to publish into a zone that would lock everyone out.
+
+#: The words for a zone whose control would grant nobody once e9fd817f4c is in the running image.
+ZONE_LOCKOUT_WORDS = "would lock out everyone once Egeria e9fd817f4c ships"
+#: The words for a READ-only control (no DEFAULT, no write-operation list): readable, but no write is granted.
+ZONE_WRITES_DENIED_WORDS = "writes would be denied once Egeria e9fd817f4c ships"
+#: A control that could not be read. Never "fine": see `zone_lockout_refusal`.
+ZONE_COULD_NOT_CHECK_WORDS = "could not check"
+
+#: `AccessOperation` names (open-connector-framework .../users/AccessOperation.java) other than READ and
+#: DEFAULT: the operations a write is judged on.
+_WRITE_OPERATIONS = frozenset({
+    "CREATE", "UPDATE_PROPERTIES", "UPDATE_STATUS", "DELETE", "ATTACH", "DETACH", "ADD_MEMBER",
+    "DELETE_MEMBER", "ADD_FEEDBACK", "DELETE_FEEDBACK", "CLASSIFY", "DECLASSIFY", "PUBLISH",
+})
+
+#: The last `check_zone_controls()` answer for the zones OTHER than the private zone, `{zone: entry}`. The
+#: private zone's entry lives in `_private_zone_state["zone_control"]`, written by the same read that decides
+#: whether it is enforced (`ensure_private_zone_exists`). `None` = not checked in this process yet.
+_zone_controls_state: Optional[dict] = None
+
+
+def stamped_zones() -> list[str]:
+    """Every zone RE itself will stamp: the private zone, then any configured draft or publish zone. Never
+    the owner-userId zone (exempt in Egeria: `userId.equals(zoneName)` grants first)."""
+    return list(dict.fromkeys([private_zone(), *draft_zones(), *configured_publish_zones()]))
+
+
+def assess_zone_control(zone: str, control: Any, *, unreadable: str = "") -> dict:
+    """The three facts about one zone's control, and what they mean once e9fd817f4c ships.
+
+    `control` is pyegeria's answer (`get_security_access_control`: the `securityAccessControl` dict, or None
+    when Egeria holds no such control). `unreadable` is why the read failed; then nothing is claimed about the
+    control (`operations` / `default_list` are None, not empty) and the verdict is `could_not_check`.
+    Keys are read the way Egeria reads them: a list is there when its key holds a non-null value.
+    """
+    if unreadable:
+        return {"zone": zone, "control": "could not check", "operations": None, "default_list": None,
+                "verdict": "could_not_check", "words": f"{ZONE_COULD_NOT_CHECK_WORDS} ({unreadable})"}
+    if not isinstance(control, dict):
+        return {"zone": zone, "control": "absent", "operations": [], "default_list": False, "verdict": "blocked",
+                "words": f"no security access control: {ZONE_LOCKOUT_WORDS}"}
+    lists = control.get("associatedSecurityList")
+    lists = {k: v for k, v in lists.items() if v is not None} if isinstance(lists, dict) else {}
+    operations = sorted(k for k in lists if k != "DEFAULT")
+    has_default = "DEFAULT" in lists
+    entry = {"zone": zone, "control": "present", "operations": operations, "default_list": has_default}
+    if not has_default and "READ" not in lists:
+        return {**entry, "verdict": "blocked",
+                "words": f"its control lists neither READ nor DEFAULT: {ZONE_LOCKOUT_WORDS}"}
+    if not has_default and not (_WRITE_OPERATIONS & set(lists)):
+        return {**entry, "verdict": "warned",
+                "words": f"READ only, no DEFAULT and no write-operation list: {ZONE_WRITES_DENIED_WORDS}"}
+    return {**entry, "verdict": "ok", "words": "ok"}
+
+
+def _read_zone_control(zone: str) -> dict:
+    """Read one zone's control through RE's control reader (`zone_access.EgeriaAccessReader.control`: the
+    Security Officer client as RE's daemon, the resolved platform guid, bounded, and pyegeria's catch wrapper
+    treated as unreadable). Never raises: a failed read is the `could_not_check` entry."""
+    from resource_explorer.zone_access import EgeriaAccessReader
+
+    try:
+        return assess_zone_control(zone, EgeriaAccessReader().control(zone))
+    except Exception as exc:  # noqa: BLE001 - every failure is "could not check", never "no control"
+        reason = str(exc) if type(exc).__name__ == "AccessUnreadable" else f"{type(exc).__name__}: {exc}"
+        return assess_zone_control(zone, None, unreadable=reason[:300])
+
+
+def check_zone_controls(zones: Optional[Iterable[str]] = None) -> list[dict]:
+    """Read the control of every stamped zone other than the private zone (or just `zones`), remember the
+    answers, and return the whole start-up report (`zone_controls_report`). Never raises.
+
+    The private zone is not read here: `ensure_private_zone_exists` reads it (and creates it when missing),
+    and records its entry from that same read, so the facts shown and the `enforced` gate cannot disagree."""
+    global _zone_controls_state
+    targets = [z for z in (zones if zones is not None else stamped_zones()) if z and z != private_zone()]
+    state = dict(_zone_controls_state or {})
+    for zone in dict.fromkeys(targets):
+        state[zone] = _read_zone_control(zone)
+    _zone_controls_state = state
+    return zone_controls_report()
+
+
+def zone_controls_report() -> list[dict]:
+    """One entry per stamped zone, in stamping order: what the last check found, or `not checked yet`."""
+    out = []
+    for zone in stamped_zones():
+        if zone == private_zone():
+            entry = (_private_zone_state or {}).get("zone_control")
+        else:
+            entry = (_zone_controls_state or {}).get(zone)
+        out.append(entry or {"zone": zone, "control": "not checked yet", "operations": None,
+                             "default_list": None, "verdict": "unknown", "words": "not checked yet"})
+    return out
+
+
+def zone_controls_line(report: Optional[list[dict]] = None) -> str:
+    """The start-up report as one log line: `zone · control … · lists … · DEFAULT yes/no · words` per zone."""
+    parts = []
+    for e in report if report is not None else zone_controls_report():
+        if e["control"] == "present":
+            ops = ", ".join(e["operations"]) or "no operation"
+            parts.append(f"{e['zone']} · control present · lists {ops} · DEFAULT "
+                         f"{'yes' if e['default_list'] else 'no'} · {e['words']}")
+        elif e["control"] == "absent":
+            parts.append(f"{e['zone']} · control absent · {e['words']}")
+        else:
+            parts.append(f"{e['zone']} · {e['words']}")
+    return "zone controls: " + ("; ".join(parts) or "no zone stamped")
+
+
+def zone_lockout_refusal(zones: Iterable[str]) -> str:
+    """Why a write that stamps `zones` must not happen, or `""` when it may.
+
+    Judges only the zones RE stamps other than the private zone (that one has its own gate,
+    `EgeriaPublisher._require_enforced_private_zone`, which carries the same words); the owner-userId zone and
+    any zone RE did not configure are not read. A zone not checked yet in this process is checked now, and a
+    zone last seen blocked or unreadable is RE-READ before refusing, so an operator's fix takes effect without
+    a restart.
+
+    **Unreadable blocks**, as it does for the private zone (`private_zone_is_enforced` is False for `error` and
+    `unknown`): the cost asymmetry is the same. Refusing is visible and recoverable; publishing into a zone
+    that turns out to grant nobody leaves elements nobody can read or unzone, RE's own daemon included."""
+    stamped = set(stamped_zones()) - {private_zone()}
+    targets = [z for z in dict.fromkeys(zones) if z in stamped]
+    if not targets:
+        return ""
+    known = _zone_controls_state or {}
+    recheck = [z for z in targets if (known.get(z) or {}).get("verdict") not in ("ok", "warned")]
+    if recheck:
+        check_zone_controls(recheck)
+    known = _zone_controls_state or {}
+    problems = [known[z] for z in targets if known[z]["verdict"] in ("blocked", "could_not_check")]
+    return "; ".join(f"zone '{e['zone']}': {e['words']}" for e in problems)
 
 
 def ensure_draft_zone_exists(identity: Optional[EgeriaIdentity] = None) -> dict:

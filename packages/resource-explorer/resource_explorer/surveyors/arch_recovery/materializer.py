@@ -255,6 +255,15 @@ class ComponentMaterializer:
                                "nothing was written to Egeria"),
                     "scope_locator": scope_locator,
                     "qualified_name": qualified_name}
+        # The same question for the draft zone it would be born in: never one that grants nobody once Egeria
+        # e9fd817f4c ships (or whose control could not be read). At the top for the reason above.
+        if not private_owner:
+            from resource_explorer.egeria_identity import draft_zones, zone_lockout_refusal
+
+            refusal = zone_lockout_refusal(draft_zones())
+            if refusal:
+                return {"status": "skipped", "reason": f"{refusal}; nothing was written to Egeria",
+                        "scope_locator": scope_locator, "qualified_name": qualified_name}
 
         # Local cache first — same shape as _find_or_create_asset's cached-
         # GUID check, and for the same reason: a repeat accept (re-running
