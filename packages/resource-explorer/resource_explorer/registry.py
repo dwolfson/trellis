@@ -4611,14 +4611,22 @@ class ProjectRegistry:
         answer-shaped-non-answer `run_reconciler.py` exists to remove. If that
         worker dies, reconciliation resolves the row as failed with the reason;
         if it lives, the run finishes normally.
+
+        A row of a held kind (`run_queue.HELD_KINDS`, e.g. `engine_action`) is refused too (False), whatever
+        its state: it stands for an Egeria engine action RE has already claimed, and cancelling it here would
+        leave that action claimed with nothing to complete it. Refused HERE so every caller (web, CLI) gets it.
         """
+        from resource_explorer.run_queue import HELD_KINDS
+
         now = now or datetime.now(timezone.utc).isoformat()
+        held = sorted(HELD_KINDS)
+        held_clause = f" AND kind NOT IN ({','.join('?' * len(held))})" if held else ""
         with self._conn() as conn:
             cur = conn.execute(
                 "UPDATE runs SET state='cancelled', finished_at=?, "
                 "error='cancelled before it was claimed' "
-                "WHERE id=? AND state='queued'",
-                (now, run_id),
+                "WHERE id=? AND state='queued'" + held_clause,
+                (now, run_id, *held),
             )
             return bool(getattr(cur, "rowcount", 0))
 
@@ -11229,7 +11237,9 @@ class ProjectRegistry:
         if not guid:
             return False
         with self._conn() as conn:
-            rows = conn.execute("SELECT target FROM runs WHERE kind = 'engine_action'").fetchall()
+            # Text prefilter (parameterised), then the exact JSON compare below decides.
+            rows = conn.execute("SELECT target FROM runs WHERE kind = 'engine_action' AND target LIKE ?",
+                                (f"%{guid}%",)).fetchall()
         for row in rows:
             try:
                 if (json.loads(row["target"] or "{}") or {}).get("engine_action_guid") == guid:
