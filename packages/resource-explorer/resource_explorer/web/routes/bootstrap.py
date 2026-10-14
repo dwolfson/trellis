@@ -58,3 +58,35 @@ async def bootstrap_run(request: Request, body: RunRequest | None = None) -> dic
     if out.get("running"):       # lost the lock inside check_and_heal: another pass (manual or automatic) holds it
         raise HTTPException(status_code=409, detail="A bootstrap heal is already running")
     return out
+
+
+class DrEgeriaRunRequest(BaseModel):
+    path: str
+    """A .md document under docs/dr-egeria/ (relative to it). Anything else is refused with 400."""
+    dry_run: bool = False
+    """Parse and validate, list the commands, write nothing."""
+    force: bool = False
+    """Run a document whose content was already applied. Commands marked not safe to repeat may duplicate
+    relationships, so the UI must confirm before sending True."""
+
+
+@router.post("/dr-egeria/run")
+async def dr_egeria_run(request: Request, body: DrEgeriaRunRequest) -> dict:
+    """Run one Dr.Egeria document ad hoc, as RE's service account. Admin only, dry runs included.
+
+    Calls `dr_egeria_runner.run_document`, the same function as `resource-explorer dr-egeria run`. 400 for a path
+    outside docs/dr-egeria/ or an invalid document; 409 for a repeat without `force` or a run already going.
+    Blocking work (the pyegeria steps and the dr_egeria subprocess) runs in a thread.
+    """
+    admin_auth.require_admin(request)
+    from resource_explorer import dr_egeria_runner as runner
+    from resource_explorer.auth import get_current_user
+
+    user = get_current_user(request) or {}
+    try:
+        return await asyncio.to_thread(runner.run_document, body.path, dry_run=body.dry_run, force=body.force,
+                                       requested_by=str(user.get("sub") or ""))
+    except runner.DocumentRefused as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except runner.RunRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc))

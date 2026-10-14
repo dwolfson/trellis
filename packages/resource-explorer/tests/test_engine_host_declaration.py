@@ -88,3 +88,50 @@ def test_the_declaration_is_never_a_bootstrap_batch():
 
     assert not (DOC.parent / "_batch.json").exists()
     assert "engine-host" not in [b.batch_id for b in bootstrap.discover_batches()]
+
+
+STEPS = DOC.with_name(DOC.stem + ".pyegeria-steps.json")
+
+
+def test_the_committed_pyegeria_steps_are_what_the_generator_writes():
+    assert STEPS.read_text() == _script().render_steps(), \
+        "the engine-host pyegeria steps are stale: run scripts/generate_engine_host_declaration.py"
+
+
+def test_the_pyegeria_steps_declare_engine_then_service_then_link_with_the_registry_names():
+    import json
+
+    from resource_explorer import engine_host
+
+    steps = json.loads(STEPS.read_text())["steps"]
+    assert [s["command"] for s in steps] == [
+        "Create Survey Action Engine", "Create Survey Action Service", "Link Supported Governance Service"]
+    engine, service, link = steps
+    assert engine["qualified_name"] == engine_host.ENGINE_QUALIFIED_NAME == "ResourceExplorerSurvey"
+    assert engine["display_name"] == engine_host.ENGINE_DISPLAY_NAME
+    assert "outside any Egeria engine host" in engine["description"]
+    assert service["qualified_name"] == engine_host.service_qualified_name("db_derived") \
+        == "SurveyActionService::ResourceExplorerSurvey::db_derived"
+    assert (link["governance_engine"], link["governance_service"]) == (engine["qualified_name"],
+                                                                         service["qualified_name"])
+    assert link["request_type"] == link["service_request_type"] == "re-db-derived"
+
+
+def test_the_runner_plans_the_committed_declaration_in_the_order_that_works(monkeypatch):
+    """Engine, service, SupportedGovernanceService link, THEN the action type and its executor link (which
+    resolves the engine by name). A dry run: no client, no subprocess, no row."""
+    from resource_explorer import dr_egeria_runner
+
+    monkeypatch.delenv("RE_DR_EGERIA_DOCS_DIR", raising=False)
+    out = dr_egeria_runner.run_document("engine-host/resource-explorer-survey-engine.md", dry_run=True)
+    assert out["valid"] is True, out["errors"]
+    assert [(c["kind"], c["command"]) for c in out["commands"]] == [
+        ("pyegeria", "Create Survey Action Engine"), ("pyegeria", "Create Survey Action Service"),
+        ("pyegeria", "Link Supported Governance Service"),
+        ("dr_egeria", "Create Governance Action Type"), ("dr_egeria", "Link Action to Action Executor")]
+    assert out["not_safe_to_repeat"] == ["Link Action to Action Executor"]
+
+
+def test_the_declaration_names_when_it_joins_the_initialization_batches():
+    for text in (DOC.read_text(), STEPS.read_text()):
+        assert "TODO (engine host, step 2 live gate)" in text
