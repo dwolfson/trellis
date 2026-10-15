@@ -194,13 +194,28 @@ class TestApiStructureOrdering:
         from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
         assert "repo_symbol_extraction" in STEP_REGISTRY["repo_api_structure"].requires
 
-    def test_a_definition_that_runs_api_structure_first_is_refused_not_run(self):
+    def test_a_definition_authored_api_first_still_plans_with_extraction_first(self):
         from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+        from resource_explorer.surveyors.survey_execution_plan import build_plan
+        keys = ["repo_dependency", "repo_api_structure", "repo_data_profiling", "repo_symbol_extraction"]
+        d = _Def(steps=[_Step(k, k, k) for k in keys],
+                 links=[_Link(a, b) for a, b in zip(keys, keys[1:])])
+        order = [s.step_key for s in build_plan(d, step_registry=STEP_REGISTRY).steps]
+        assert sorted(order) == sorted(keys)
+        assert order.index("repo_symbol_extraction") < order.index("repo_api_structure")
+        assert order[0] == "repo_dependency"          # the dropped edge did not strand a step
+
+    def test_a_real_data_cycle_still_raises(self, monkeypatch):
+        from resource_explorer.surveyors import step_preconditions as sp, step_produces
+        from resource_explorer.surveyors.repo_survey_definition_adapter import StepInfo
         from resource_explorer.surveyors.survey_execution_plan import CyclicPlanError, build_plan
-        keys = ["repo_api_structure", "repo_symbol_extraction"]
-        d = _Def(steps=[_Step(k, k, k) for k in keys])
+        for n, t in (("needs_a", "ta"), ("needs_b", "tb")):
+            monkeypatch.setitem(sp.PRECONDITIONS, n, sp.Precondition(sp._needs_rows(t, n), table=t))
+        reg = {"a": StepInfo("a", None, "", [], produces=("ta",), requires_context={"needs_b": "x"}),
+               "b": StepInfo("b", None, "", [], produces=("tb",), requires_context={"needs_a": "x"})}
+        monkeypatch.setattr(step_produces, "_registries", lambda: {"repo": reg})
         with pytest.raises(CyclicPlanError):
-            build_plan(d, step_registry=STEP_REGISTRY)
+            build_plan(_Def(steps=[_Step("a", "a", "a"), _Step("b", "b", "b")]), step_registry=reg)
 
     def test_extraction_then_api_structure_plans_in_that_order(self):
         from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
