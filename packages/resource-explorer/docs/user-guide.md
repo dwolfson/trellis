@@ -1,6 +1,6 @@
 # Resource Explorer — User Guide
 
-**Status:** live. Investigations, work lists, private work, Curate and Publish are current; more sections follow.
+**Status:** live. Investigations, work lists, private work, scouting, Curate, Publish and live status are current.
 
 **Last revised:** 2026-10-14
 
@@ -207,6 +207,37 @@ Select **Scouting** in the Analyses panel, then click **Run all scouting analyse
 
 Results appear in the Activity Log and are visible in the Survey Report immediately after the run completes.
 
+#### Importing many repositories at once
+
+Use **＋ Find repos** at the bottom of the repositories sidebar. It has two ways in: a **search** (keywords,
+stars, language, licence, organisation, topic) and **From a list** (a CSV with an `address` column, or one
+GitHub URL per line; an organisation URL expands to its repositories). Either one only fills a review table.
+**Nothing is registered until you tick rows and press Import Selected.**
+
+- **Progress comes from the press.** The button reads *Importing…* and each row shows its own state
+  (importing, imported, failed) as the repositories finish. The sidebar fills in as they land, and the batch
+  also appears in the Activity log. You can close the dialog; the import carries on.
+- **Already-registered repositories are skipped**, and the status line says how many. A repository that another
+  batch is importing at that moment is left alone and counted separately.
+- **Statistics are deferred.** Import registers a repository at once and does not fetch its GitHub statistics.
+  Until the first scouting survey runs it reads **not yet surveyed**, never zero. The survey fetches the numbers.
+- You can choose a group for the whole batch, and set a disposition on a row before you import it.
+
+#### Where the docs are
+
+A repository's homepage and its documentation are often different places (GitHub's homepage field is
+frequently a marketing site). When the Scouting survey's homepage step has run, the repository header shows
+the **Project site** and, beside it, the documentation link with one short cue:
+
+| Cue | Means |
+|---|---|
+| **docs ✓** | A documentation site was found and it answered. |
+| **docs unreachable** | One was found but did not answer when RE looked. |
+| **no docs found** | RE looked in the repository and its manifests and found none. |
+| **docs not checked** | A link is known but has not been checked yet. |
+
+Nothing is drawn before the homepage step has run: "not measured" is not "no docs found".
+
 ### Assessment
 *Goal: deep analysis of a specific resource*
 
@@ -351,6 +382,66 @@ Three things to know:
 After a press, the page shows a short cue (**publishing…**) and then what Egeria reports back (**✓ in Egeria ·
 published 10-11 · confirmed**, or a plain statement of what failed). A word on screen comes from what was
 read back from Egeria, never from the fact that you pressed a button.
+
+---
+
+## Steps that run by themselves
+
+Some questions can only be answered after an earlier step has run. For example, profiling a database's columns
+needs its schema inventory first. When you ask, Resource Explorer works out what is missing and handles it for
+you in one of two ways, and **your own choice of tier is the consent**:
+
+- **Cheap and within what you asked for: it just runs.** The row afterwards says what happened, for example
+  *Ran postgres_schema_and_stats first, then postgres_column_profile.* If a fresh stored result already
+  exists, nothing extra runs.
+- **Costlier than what you asked for: it asks first.** The row shows *Answering this needs step → step first*,
+  the estimated time (and whether that is measured from earlier runs or only declared), and why it is asking.
+  Press **Run it** to go ahead, or **not now — nothing has run** to leave it.
+
+If the account for a database can only see part of it, the choice reads **Run it anyway — and say so**; the
+result is then marked as measured within that account's reach, never as the whole database. **ask for broader
+access** raises a request to the database owner.
+
+---
+
+## Live status
+
+Things you start keep reporting back without you reloading:
+
+- **Activity badge.** The Activity link in the header shows **N new** when entries are newer than the last one
+  you looked at. It checks every 30 seconds. The first time on a browser nothing is flagged, so it does not
+  open with a large count.
+- **Toast.** When a run or batch finishes (or fails) while you are elsewhere, a small notice appears with the
+  summary and a **View** button that opens the entry. It closes itself after a few seconds.
+- **Imports and runs.** A batch import follows its own rows and updates the sidebar as each repository lands. A
+  question whose analysis is running shows ◔ *running* and fills in when the result is stored.
+- **Banners.** If the server or its database stops answering, a banner says so in a few words ("Server not
+  responding", "Database unreachable"). If your session lapses a single **Signed out** banner with a
+  **Sign in** button replaces the errors each pane would otherwise show.
+
+Every status word comes from rows RE stored, not from the fact that a button was pressed.
+
+---
+
+## The Analytic Library
+
+The **Analytic Library** is a set of small, installable analyses that sit beside Resource Explorer's own. Each
+one is either a **routine** (it reads and counts) or a **step** (it can be part of a survey). Every result
+carries its own **state word**, one of *measured*, *nothing found*, *not established* or *not applicable*,
+so "we looked and found nothing" never looks like "we could not look". The library's guide for people who
+write them is [`../../trellis-analytics/README.md`](../../trellis-analytics/README.md).
+
+Where you meet it:
+
+- **Curate → By analysis** (for a database) shows **curation coverage**: how many of the database's schemas are
+  published, not yet published, or blocked, with a **which** link that lists the names. The state word sits
+  beside the counts. If the count could not be made, you see the state and the reason, not a table of zeros.
+- **The Egeria Portal** can show the same numbers as a tile named **Trellis - Curation Coverage** (family
+  *Curation*): a bar of published against not yet published, with the result's state as the subtitle and a line
+  saying which version produced it and when. An administrator adds it to the Portal (see the library's
+  README); it needs no extra work from you.
+- **Other steps** an administrator installs show up as extra analyses on the database, tagged with the stage
+  they belong to.
 
 ---
 

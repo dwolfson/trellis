@@ -89,7 +89,7 @@ Decisions and models. Cited from source where a comment cannot restate them.
 - **[trellis.md](trellis.md)** — 2026-09-02  
   hand-authored reference outline describing runtime and deployment
 - **[user-guide.md](user-guide.md)** — 2026-10-14  
-  live. Investigations, work lists, private work, Curate and Publish are current; more sections fo
+  live. Investigations, work lists, private work, scouting, Curate, Publish and live status are cu
 - **[work-timeline-2026-08-31-to-09-02.md](work-timeline-2026-08-31-to-09-02.md)** — 2026-09-03  
   source material, not a design document. A commit-derived narrative of one work window, kept as r
 - **[workspaces.md](workspaces.md)** — 2026-09-02  
