@@ -67,6 +67,7 @@ import {
 // (still called from within it, via `context.js`'s shared pieces) even
 // though app.js itself no longer calls `renderEnrichment` directly.
 import { renderContext } from '/static/next/stages/context.js';
+import { openApiReference } from '/static/next/stages/api-reference.js';
 import { inPageConfirm, inPageNotice, inPagePrompt } from '/static/next/confirm-dialog.js';
 import { scoutingTilesHtml, scoutingSignalHtml, staleLinkBannerHtml, bindStaleLinkBanner } from '/static/next/stages/repo-header.js';
 import { contextRecordedSpec, contextRecordedState } from '/static/next/context-recorded.js';
@@ -3075,7 +3076,7 @@ export function ensureRailShowing() {
  *     Last CLICK wins, not last response. */
 let railTicket = 0;
 export function railClaim() { return ++railTicket; }
-function railStale(ticket) { return ticket !== railTicket; }
+export function railStale(ticket) { return ticket !== railTicket; }
 
 /* WHAT THE RAIL IS A FUNCTION OF. The evidence slot belongs to one
  * (resource type, resource, stage, sub-tab, work list) at a time. Before this,
@@ -7145,7 +7146,9 @@ export async function openMembers({ slug, analysisId, metric = '', title = '' })
     </div>
     <div class="mb-s2 text-caps text-chrome-muted">
       <span class="font-mono">${esc(data.analysis_id)}</span>
-      · <button data-act="member-history" class="cursor-pointer bg-transparent text-accent-on-dark underline">measurement ›</button>
+      · <button data-act="member-history" class="cursor-pointer bg-transparent text-accent-on-dark underline">measurement ›</button>${analysisId === 'interface_surface' && state.resourceType === 'repo'
+        ? `
+      · <button data-act="api-reference" class="cursor-pointer bg-transparent text-accent-on-dark underline">API reference ›</button>` : ''}
       · scope
       <button data-scope="public" aria-pressed="${scope === 'public'}" class="wl-chartchip cursor-pointer bg-transparent px-[4px] text-chrome-muted">use</button>
       <button data-scope="all" aria-pressed="${scope === 'all'}" class="wl-chartchip cursor-pointer bg-transparent px-[4px] text-chrome-muted">maintain</button>
@@ -7183,6 +7186,7 @@ export async function openMembers({ slug, analysisId, metric = '', title = '' })
   } else {
     wireSelection(out, { slug, analysisId, metric, data });
   }
+  out.querySelector('[data-act="api-reference"]')?.addEventListener('click', () => openApiReference({ slug }));
   out.querySelector('[data-act="member-history"]')?.addEventListener('click', () => openMeasurementDetail({
     slug, analysisId, title: title || analysisId, metric,
   }));

@@ -291,6 +291,38 @@ def _findings_members(registry, slug, analysis_id, scope, limit) -> MemberSet:
                      source="project_analysis_findings")
 
 
+def _spec_endpoint_members(registry, slug, scope, limit):
+    """The endpoints from the best DESCRIBED source (committed spec, else registered running instance), grouped
+    by tag -- the same source the chat compile quotes (api_reference/service.best_spec_interface). None when
+    only code is known, so the by-file code list runs."""
+    from resource_explorer.api_reference.service import best_spec_interface
+
+    iface = best_spec_interface(registry, slug)
+    if iface is None:
+        return None
+    by_tag: dict[str, list] = {}
+    for op in iface.operations:
+        by_tag.setdefault(op.group or "(untagged)", []).append(op)
+    groups = []
+    remaining = limit
+    for tag in sorted(by_tag):
+        items = by_tag[tag]
+        take = items[:max(remaining, 0)]
+        remaining -= len(take)
+        groups.append(Group(tag, len(items), [
+            {"name": o.name,
+             "detail": " · ".join(x for x in (o.summary, f"auth {', '.join(o.security)}" if o.security else "",
+                                              "deprecated" if o.deprecated else "") if x),
+             "extra": {"method": o.method, "path": o.path, "operation_id": o.operation_id, "tags": o.tags}}
+            for o in take], len(take) < len(items)))
+    n = len(iface.operations)
+    return MemberSet("interface_surface", "endpoints", "operations, by tag", n, scope, False, groups,
+                     note=f"{iface.source_phrase.capitalize()}. The API reference pane has parameters, bodies, "
+                          "responses and the comparison with the code.",
+                     source=f"api_reference:{iface.source}",
+                     inventory=f"{n:,} operations in {len(groups)} groups")
+
+
 def _endpoint_members(registry, slug, scope, limit) -> MemberSet:
     """interface_surface's members are the endpoints, grouped by file, each
     with method, path, handler and line -- read from project_code_markers
@@ -303,6 +335,9 @@ def _endpoint_members(registry, slug, scope, limit) -> MemberSet:
     none is `total=0`. Different sentences, never one blank."""
     from resource_explorer.endpoints import read_endpoints
 
+    spec = _spec_endpoint_members(registry, slug, scope, limit)
+    if spec is not None:
+        return spec
     es = read_endpoints(registry, slug)
     if es is None:
         return MemberSet("interface_surface", "endpoints", "endpoints, by file", None, scope, False,
