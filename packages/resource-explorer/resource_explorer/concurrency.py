@@ -89,6 +89,7 @@ Two things make abandonment real here:
 from __future__ import annotations
 
 import atexit
+import contextvars
 import logging
 import os
 import threading
@@ -159,6 +160,39 @@ def _configured_size() -> int:
     return DEFAULT_SYNC_POOL_SIZE
 
 
+def _run_in_callers_context(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+    """The pool-side half of :class:`_CallersContextPool`: runs inside a COPY of the submitter's context.
+
+    The per-request Egeria client cache (`egeria_clients.client_scope`) is the one thing not carried
+    across: a pyegeria client binds its HTTP pool to the event loop of the thread that first drives it
+    (pyegeria ISSUE-96), so a pool thread builds its own, as it always did."""
+    try:
+        from resource_explorer.egeria_clients import _scope
+    except Exception:  # pragma: no cover - import cycle safety only
+        return fn(*args, **kwargs)
+    _scope.set(None)            # only this copy of the context; the submitter's scope is untouched
+    return fn(*args, **kwargs)
+
+
+class _CallersContextPool(ThreadPoolExecutor):
+    """The shared pool, with the SUBMITTER's ContextVars carried into the worker (caller identity, 2026-10-14).
+
+    A bare pool thread starts with an empty context. RE's identity lives in ContextVars
+    (`a2a_auth.current_caller`, `egeria_clients.acting_as`), and a registry read that finds no caller
+    reads as the shared/service identity, which sees every private investigation (`_may_see_investigation`
+    returns True for ''). So any scoped registry read made from a pool job read as "see everything" (found in
+    review: `GET /api/analyses/facts` fans out on this pool; the investigation-naming reader it was suspected of
+    is reached through `/facts/{slug}/answer`, a sync route Starlette already runs in a copied context, but the
+    pool path leaked for any such read). Copying the context
+    in `submit` covers every way in (`submit`, `submit_all`, `run_sync`, `run_sync_all`, and a raw
+    `get_pool().submit`), so a call site cannot forget. Each submission gets its own copy, so nothing a job
+    sets outlives it and a worker holds no caller between jobs."""
+
+    def submit(self, fn, /, *args, **kwargs):  # noqa: D401 - ThreadPoolExecutor's signature
+        ctx = contextvars.copy_context()
+        return super().submit(ctx.run, _run_in_callers_context, fn, *args, **kwargs)
+
+
 def _mark_in_pool() -> None:
     _IN_POOL.value = True
 
@@ -171,7 +205,7 @@ def get_pool() -> ThreadPoolExecutor:
     with _pool_lock:
         if _pool is None:
             _pool_size = _configured_size()
-            pool = ThreadPoolExecutor(
+            pool = _CallersContextPool(
                 max_workers=_pool_size,
                 thread_name_prefix="re-sync",
                 initializer=_mark_in_pool,

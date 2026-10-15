@@ -228,6 +228,8 @@ class BaseExplorerAgent(ABC):
             # six ad hoc pools became one.
             from resource_explorer.concurrency import run_sync
 
+            # The shared pool carries the caller into its thread (concurrency._CallersContextPool),
+            # so an A2A or chat request's agent reads the registry and Egeria as the caller.
             return run_sync(lambda: asyncio.run(_inner()))
         except RuntimeError:
             # No running event loop — safe to call asyncio.run directly

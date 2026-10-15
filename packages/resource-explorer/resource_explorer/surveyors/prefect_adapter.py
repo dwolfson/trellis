@@ -422,12 +422,10 @@ def _run_step_in_process_flow(
     if loop and loop.is_running():
         from resource_explorer.concurrency import run_sync
 
-        import contextvars
-
-        # Carry the caller/daemon identity into the pool thread (Brief I): a bare pool thread
-        # drops ContextVars, and the step's Egeria clients read who they act as from them.
-        ctx = contextvars.copy_context()
-        out = run_sync(lambda: ctx.run(flow_fn, **parameters))
+        # The shared pool carries the caller/daemon identity into its thread itself
+        # (concurrency._CallersContextPool) and leaves the request's Egeria client scope behind
+        # (pyegeria ISSUE-96); an explicit ctx.run here would bring that scope back.
+        out = run_sync(lambda: flow_fn(**parameters))
     else:
         out = flow_fn(**parameters)
     return (out.get("result") or {}), str(out.get("flow_run_id") or "")

@@ -166,7 +166,7 @@ class ConversationAgent(BaseExplorerAgent):
                 asyncio.get_running_loop()
                 from resource_explorer.concurrency import run_sync
 
-                run_sync(lambda: asyncio.run(_inject()), timeout=10)
+                run_sync(lambda: asyncio.run(_inject()), timeout=10)   # the pool carries the caller
             except RuntimeError:
                 asyncio.run(_inject())
         except Exception:
@@ -328,6 +328,7 @@ class ConversationAgent(BaseExplorerAgent):
             asyncio.get_running_loop()
             from resource_explorer.concurrency import run_sync
 
+            # The shared pool carries the caller into its thread (see BaseAgent._run_agent).
             return run_sync(lambda: asyncio.run(_bounded()), timeout=timeout + 5)
         except RuntimeError:
             return asyncio.run(_bounded())

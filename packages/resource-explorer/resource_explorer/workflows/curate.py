@@ -218,9 +218,20 @@ def curation_access(registry: ProjectRegistry, entity_type: str, slug: str, scop
         return AccessDecision(False, verdict.why, BASIS_ZONE_REFUSED, tuple(zones))
     secured = ", ".join(verdict.secured)
     word = OPERATION_WORDS.get(verdict.operation, verdict.operation.lower())
+    hidden = set(verdict.person_zones or ())
+    if hidden:
+        # A zone named after the element's owner would tell the caller whose element it is: the verdict and a
+        # reason that names no one; the full detail goes to the server log only.
+        log.info("curation access: %s refused %s (secured zones %s; person zones withheld from the reason)",
+                 user, word, secured)
+    shown = [z for z in verdict.secured if z not in hidden]
+    if not shown:
+        return AccessDecision(False, f"private to its owner: {user} may not {word} it in Egeria",
+                              BASIS_ZONE_REFUSED, tuple(zones))
+    listed = ", ".join(shown) + (" and a zone private to its owner" if hidden else "")
     return AccessDecision(
-        False, f"zone {secured} does not grant {user} {word} in Egeria" if len(verdict.secured) == 1
-        else f"zones {secured} do not grant {user} {word} in Egeria",
+        False, f"zone {listed} does not grant {user} {word} in Egeria" if len(shown) == 1 and not hidden
+        else f"zones {listed} do not grant {user} {word} in Egeria",
         BASIS_ZONE_REFUSED, tuple(zones))
 
 

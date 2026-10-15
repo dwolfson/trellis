@@ -68,14 +68,36 @@ _CANDIDATES_CACHE_TTL_SECONDS = 300
 # find_candidate_process_guids_by_questions) — forever.
 _QUESTION_GUID_CALL_TIMEOUT_SECONDS = 15
 _question_guid_cache: dict[str, tuple[float, str | None]] = {}
+#: A `None` (not found, or not visible to THIS reader) is kept only briefly: the cache is shared, so one
+#: reader who cannot see a term must not take scoping away from everyone for an hour (caller identity round 3).
+_QUESTION_GUID_MISS_TTL_SECONDS = 60
+
+
+def _question_guid_fresh(cached, now: float) -> bool:
+    if cached is None:
+        return False
+    ttl = _QUESTION_GUID_CACHE_TTL_SECONDS if cached[1] else _QUESTION_GUID_MISS_TTL_SECONDS
+    return now - cached[0] < ttl
+# Keyed PER READER (caller identity, 2026-10-14): the first element of every candidates key, and of every
+# fetch / process-GUID key, is `SurveyDefinitionReader._reader_key()` (who Egeria answered). The full scan
+# lists every GovernanceActionProcess, including user-authored ones a deployment may zone, so one person's
+# answer is never served to another. The question-GUID cache stays shared: it holds only the GUIDs of RE's
+# own question glossary terms, seeded from RE's Dr.Egeria documents and never zoned.
 _candidates_cache: dict[tuple, tuple[float, list]] = {}
-_fetch_cache: dict[str, tuple[float, object]] = {}  # process_guid -> (cached_at, SurveyDefinition)
+_fetch_cache: dict[tuple, tuple[float, object]] = {}  # (reader, process_guid) -> (cached_at, SurveyDefinition)
 # qualified_name -> (cached_at, guid or None). A definition's GUID changes only
 # when it is re-published, and a None is cached too: "not published" is an
 # answer, and re-asking Egeria for it on every candidates call would put the
 # round trips back that the local lookup below removed.
-_process_guid_cache: dict[str, tuple[float, str | None]] = {}
+_process_guid_cache: dict[tuple, tuple[float, str | None]] = {}   # (reader, qualified_name) -> ...
 _PROCESS_GUID_CACHE_TTL_SECONDS = 3600
+
+
+def _bust_fetch_cache(process_guid: str) -> None:
+    """Drop every reader's cached graph for `process_guid` (and a bare-GUID key, if one was set)."""
+    for key in [k for k in list(_fetch_cache) if k == process_guid
+                or (isinstance(k, tuple) and len(k) == 2 and k[1] == process_guid)]:
+        _fetch_cache.pop(key, None)
 
 
 def clear_caches() -> None:
@@ -326,6 +348,12 @@ class SurveyDefinitionReader:
             self._identity = current_principal()
         return self._identity
 
+    def _reader_key(self) -> tuple:
+        """Who Egeria answers for this reader: (kind, the account the client is built for). The first
+        element of every per-reader cache key (see the cache declarations)."""
+        p = self.principal()
+        return (p.kind, p.client_user or p.user_id)
+
     def _clients(self, *, shared: bool = True):
         from resource_explorer.egeria_clients import egeria_client
 
@@ -466,7 +494,7 @@ class SurveyDefinitionReader:
         it still deserves the same short-TTL cache rather than re-scanning
         every GovernanceActionProcess on every call.
         """
-        cache_key = ("full_scan", technology_type, survey_kind)
+        cache_key = (self._reader_key(), "full_scan", technology_type, survey_kind)
         now = time.monotonic()
         cached = _candidates_cache.get(cache_key)
         if cached is not None and now - cached[0] < _CANDIDATES_CACHE_TTL_SECONDS:
@@ -542,7 +570,7 @@ class SurveyDefinitionReader:
         hard failure — the caller falls back to the full scan)."""
         now = time.monotonic()
         cached = _question_guid_cache.get(question_display_name)
-        if cached is not None and now - cached[0] < _QUESTION_GUID_CACHE_TTL_SECONDS:
+        if _question_guid_fresh(cached, now):
             return cached[1]
 
         guid = self._lookup_question_guid(question_display_name)
@@ -838,7 +866,7 @@ class SurveyDefinitionReader:
         """
         now = time.monotonic()
         cached = _question_guid_cache.get(question_display_name)
-        if cached is not None and now - cached[0] < _QUESTION_GUID_CACHE_TTL_SECONDS:
+        if _question_guid_fresh(cached, now):
             return cached[1]
         guid = self._lookup_question_guid(question_display_name)
         _question_guid_cache[question_display_name] = (now, guid)
@@ -884,11 +912,9 @@ class SurveyDefinitionReader:
             return self._find_candidates_via_egeria(questions, technology_type, survey_kind)
 
         wanted = list(dict.fromkeys(q for q in questions if q))
-        cache_key = ("local", tuple(wanted), technology_type, survey_kind)
-        now = time.monotonic()
-        cached = _candidates_cache.get(cache_key)
-        if cached is not None and now - cached[0] < _CANDIDATES_CACHE_TTL_SECONDS:
-            return cached[1]
+        # No candidates-level cache on this path (caller identity, 2026-10-14): the list is local documents
+        # filtered in memory, and the only Egeria answer in it (each definition's GUID) is already cached PER
+        # READER by `_process_guid_cached`. A reader is needed only when a document matches.
 
         candidates: list = []
         for name, doc in sorted(docs.items()):
@@ -915,16 +941,16 @@ class SurveyDefinitionReader:
                 "guid": guid,
                 "matched_questions": matched,
             })
-        _candidates_cache[cache_key] = (now, candidates)
         return candidates
 
     def _process_guid_cached(self, qualified_name: str) -> str | None:
         now = time.monotonic()
-        hit = _process_guid_cache.get(qualified_name)
+        key = (self._reader_key(), qualified_name)
+        hit = _process_guid_cache.get(key)
         if hit is not None and now - hit[0] < _PROCESS_GUID_CACHE_TTL_SECONDS:
             return hit[1]
         guid = self.find_process_guid_by_name(qualified_name)
-        _process_guid_cache[qualified_name] = (now, guid)
+        _process_guid_cache[key] = (now, guid)
         return guid
 
     def _find_candidates_via_egeria(
@@ -963,7 +989,7 @@ class SurveyDefinitionReader:
         if not question_guids:
             return []
 
-        cache_key = (tuple(sorted(g for _, g in question_guids)), technology_type, survey_kind)
+        cache_key = (self._reader_key(), tuple(sorted(g for _, g in question_guids)), technology_type, survey_kind)
         now = time.monotonic()
         cached = _candidates_cache.get(cache_key)
         if cached is not None and now - cached[0] < _CANDIDATES_CACHE_TTL_SECONDS:
@@ -1094,7 +1120,8 @@ class SurveyDefinitionReader:
         root cause.
         """
         now = time.monotonic()
-        cached = _fetch_cache.get(process_guid)
+        fetch_key = (self._reader_key(), process_guid)
+        cached = _fetch_cache.get(fetch_key)
         if cached is not None and now - cached[0] < _CANDIDATES_CACHE_TTL_SECONDS:
             return cached[1]
 
@@ -1111,7 +1138,7 @@ class SurveyDefinitionReader:
                 f"Unexpected response fetching Survey Definition graph for {process_guid}"
             )
         survey_def = self._parse_graph(graph)
-        _fetch_cache[process_guid] = (now, survey_def)
+        _fetch_cache[fetch_key] = (now, survey_def)
         return survey_def
 
     # ── reconciliation: fix Dr.Egeria's non-idempotent Link commands ──────────
@@ -1197,7 +1224,7 @@ class SurveyDefinitionReader:
                         "reconcile_step_links: failed to delete %s link %s -> %s (guid=%s): %s",
                         entry.reason, entry.prev_qualified_name, entry.next_qualified_name, entry.link_guid, exc,
                     )
-            _fetch_cache.pop(process_guid, None)
+            _bust_fetch_cache(process_guid)
 
         return result
 
