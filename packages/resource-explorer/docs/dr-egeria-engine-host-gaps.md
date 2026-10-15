@@ -1,5 +1,7 @@
 # Dr.Egeria gaps found declaring RE's engine host (for egeria-python)
 
+**Status:** live. Request to the egeria-python maintainers (2026-10-14); open until they respond.
+
 Written 2026-10-14 for the egeria-python maintainers. Resource Explorer (RE) declares itself to Egeria as the host
 of one survey engine (`docs/design-notes/DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE.md` §5.1). The declaration is
 generated into `docs/dr-egeria/engine-host/`. pyegeria 6.2.3's Dr.Egeria can express two of its five parts:

@@ -1,5 +1,7 @@
 # Matrix response — implemented
 
+**Status:** implemented. Matrix response round, 2026-09-10; kept as a record.
+
 **From:** the implementation session, 2026-09-10
 **Against:** `Resource Explorer Matrix Response.dc.html`
 **Branch:** `re-experimental-ui` (PR #21, draft) · full suite 4,222 passed, 0 failed

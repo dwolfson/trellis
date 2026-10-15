@@ -1,5 +1,7 @@
 # Builder brief checklist
 
+**Status:** live. Short checklist for every builder brief.
+
 Put these in every brief handed to a builder session.
 
 - A worktree has no .env; RE defaults its registry to the shared Postgres. Set REGISTRY_DATABASE_URL to a temp SQLite file before any command or test that opens the registry; the guard will fail you otherwise.

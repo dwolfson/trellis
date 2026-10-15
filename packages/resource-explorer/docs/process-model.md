@@ -1,5 +1,7 @@
 # Resource Explorer — Process & Threading Model
 
+**Status:** live. Process roles, leader locks and loop inventory.
+
 **Added 2026-09-04**, per `docs/runtime-architecture-plan.md` §Sequencing step 1: "Write RE's
 threading and process-role model into `docs/Architecture.md`" — this is that write-up, split into
 its own file because `Architecture.md` was already dense (see that file's linked pointer). It

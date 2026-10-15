@@ -1,5 +1,7 @@
 # The `/next` UI experiment
 
+**Status:** implemented. Narrative of the /next experiment; Next has since become the default UI (2026-10-07).
+
 A parallel web UI at `/next`, served alongside `/` by the same FastAPI app,
 implementing the design handed off as *"skin 1c + answer-in-the-row"*: a
 "dark chrome, paper content" skin behind a named token layer, and one
