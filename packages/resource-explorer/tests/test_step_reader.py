@@ -230,3 +230,73 @@ def test_pg_no_connection_or_url_is_reachable(pg_url):
         objs = _reachable(ods)
     assert not [o for o in objs if isinstance(o, psycopg2.extensions.connection)]
     assert not [o for o in objs if isinstance(o, str) and ("advisor@" in o or "search_path" in o)]
+
+
+# ── no step code runs in the reader thread ────────────────────────────────────
+
+class _Evil(str):
+    """A str whose methods record which thread called them."""
+    seen: list = []
+
+    def _mark(self):
+        import threading
+
+        _Evil.seen.append(threading.current_thread().name)
+
+    def replace(self, *a, **k):
+        self._mark()
+        return str.replace(self, *a, **k)
+
+    def lower(self):
+        self._mark()
+        return str.lower(self)
+
+    def __eq__(self, other):
+        self._mark()
+        return str.__eq__(self, other)
+
+    def __hash__(self):
+        self._mark()
+        return str.__hash__(self)
+
+    def __str__(self):
+        self._mark()
+        return str.__str__(self)
+
+
+def test_a_str_subclass_argument_runs_no_step_code_in_the_reader_thread(sqlite_url):
+    _Evil.seen.clear()
+    with step_reader(sqlite_url) as ods:
+        ods.outbox_status_counts(_Evil("database"), _Evil("shop"))
+        ods.row_count_snapshots(_Evil("shop"), limit=2)
+    assert "re-step-reader" not in _Evil.seen, _Evil.seen
+
+
+def test_anything_but_plain_values_is_refused(sqlite_url):
+    with step_reader(sqlite_url) as ods:
+        with pytest.raises(TypeError):
+            ods.row_count_snapshots(["shop"])
+        with pytest.raises(TypeError):
+            ods.row_count_snapshots("shop", limit=2.5)
+
+
+def test_hand_sent_requests_with_odd_values_or_reply_objects_run_no_step_code(sqlite_url):
+    import queue
+
+    from resource_explorer.surveyors.survey_step_host import _Requests
+
+    class OddReply(queue.Queue):
+        def put(self, *a, **k):
+            _Evil.seen.append(__import__("threading").current_thread().name)
+            return super().put(*a, **k)
+
+    _Evil.seen.clear()
+    with step_reader(sqlite_url) as ods:
+        [requests] = [o for o in _reachable(ods) if isinstance(o, _Requests)]
+        reply: queue.Queue = queue.Queue(maxsize=1)
+        requests.put(("row_count_snapshots", (_Evil("shop"),), {}, reply))
+        status, words = reply.get(timeout=10)
+        assert status == "error" and "plain" in words
+        requests.put(("row_count_snapshots", ("shop",), {}, OddReply()))
+        ods.outbox_status_counts("database", "shop")      # the thread is still serving
+    assert "re-step-reader" not in _Evil.seen, _Evil.seen

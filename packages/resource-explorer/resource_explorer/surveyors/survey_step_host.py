@@ -218,6 +218,47 @@ STEP_ODS_METHODS = ("row_count_snapshots", "commit_proofs", "catalogue_scope_eve
 READ_TIMEOUT_SECONDS = 120
 
 
+def _plain(value):
+    """`value` as an exact builtin `str` or `int`, or None. Anything else raises TypeError. Run on the STEP's side
+    (a str or int subclass is converted there, so its methods run in the step's thread) and checked again, exact
+    types only, on the reader thread's side."""
+    if value is None or type(value) in (str, int):
+        return value
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, str):
+        out = str(value)
+    elif isinstance(value, int):
+        out = int(value)
+    else:
+        raise TypeError(f"a step's read takes plain strings and integers, not {type(value).__name__}")
+    if type(out) not in (str, int):
+        raise TypeError(f"a step's read takes plain strings and integers, not {type(value).__name__}")
+    return out
+
+
+def _plain_request(item) -> tuple:
+    """The reader thread's check of one request, exact types only and no method of the step's objects called:
+    (name, args, kwargs, reply). Raises TypeError, or returns None when the reply object itself is not a plain
+    queue (nothing can be answered then)."""
+    import queue
+
+    if type(item) is not tuple or len(item) != 4:
+        return None
+    name, args, kwargs, reply = item
+    if type(reply) is not queue.Queue:
+        return None
+    if type(name) is not str or type(args) is not tuple or type(kwargs) is not dict:
+        raise TypeError("a request is (name, tuple of plain values, dict of plain values)")
+    for v in (*args, *dict.values(kwargs)):
+        if not (v is None or type(v) in (str, int)):
+            raise TypeError(f"a step's read takes plain strings and integers, not {type(v).__name__}")
+    for k in dict.keys(kwargs):
+        if type(k) is not str:
+            raise TypeError("a request's keyword names are plain strings")
+    return name, args, kwargs, reply
+
+
 def _sqlite_authorizer(action, *_args):
     """Only reading is authorized on the reader's SQLite connection (ATTACH, PRAGMA and every write are denied)."""
     import sqlite3
@@ -273,6 +314,8 @@ def _serve(database_url: str, requests, ready) -> None:
     """The reader's thread: owns the read-only connection and a reader over it, and answers one typed read at a
     time (`STEP_ODS_METHODS` only) with plain data: rows, or an error's words, never an exception object (whose
     traceback would lead back to this frame)."""
+    import queue
+
     from trellis_analytics.readers.ods import OdsReader
 
     try:
@@ -297,7 +340,16 @@ def _serve(database_url: str, requests, ready) -> None:
             item = requests.get()
             if item is None:
                 return
-            name, args, kwargs, reply = item
+            try:
+                checked = _plain_request(item)
+            except TypeError as exc:
+                reply = item[3] if type(item) is tuple and len(item) == 4 else None
+                if type(reply) is queue.Queue:
+                    reply.put(("error", f"TypeError: {exc}"))
+                continue
+            if checked is None:
+                continue                    # no plain reply queue: nothing is run and nothing can be answered
+            name, args, kwargs, reply = checked
             try:
                 if name not in STEP_ODS_METHODS:
                     raise PermissionError(f"'{name}' is not one of the reads a step may make "
@@ -333,6 +385,8 @@ def _remote(requests, name):
     from trellis_analytics.readers.ods import OdsReader, OdsUnreadable
 
     def call(*args, **kwargs):
+        args = tuple(_plain(a) for a in args)
+        kwargs = {str(k): _plain(v) for k, v in kwargs.items()}
         reply: queue.Queue = queue.Queue(maxsize=1)
         if requests.closed:
             raise OdsUnreadable("the reader is closed: the step's run has ended")
