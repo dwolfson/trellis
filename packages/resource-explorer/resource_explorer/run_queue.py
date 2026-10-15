@@ -53,6 +53,7 @@ import socket
 import threading
 from collections.abc import Callable
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
@@ -341,6 +342,16 @@ def _publish_architecture(target: dict, result_ref: str) -> RunOutcome:
         f"{r['name']}: {r['status']} · {r['words']}" for r in bad)[:1500])
 
 
+def _handle_engine_action(target: dict, result_ref: str) -> RunOutcome:
+    """An Egeria engine action RE claimed as an engine host (engine_host.py, E4). Runs as
+    `Daemon(ENGINE_HOST, requested_by)` (see `_run_as`), never as `_run_as_requester`'s RUN_QUEUE."""
+    from resource_explorer.engine_host import run_engine_action
+
+    run = current_run.get() or {}
+    state, error = run_engine_action(run.get("registry"), run.get("id", ""), target)
+    return RunOutcome(state=state, error=error)
+
+
 HANDLERS: dict[str, Callable[[dict, str], RunOutcome]] = {
     "curate_commit": _handle_curate_commit,
     "catalogue_commit": _handle_catalogue_commit,
@@ -352,15 +363,28 @@ HANDLERS: dict[str, Callable[[dict, str], RunOutcome]] = {
     "scouting_scan": _handle_scouting_scan,
     "survey_definition_run": _handle_survey_definition_run,
     "discovery_expand": _handle_discovery_expand,
+    "engine_action": _handle_engine_action,
 }
 
 
 #: Kinds whose rows are enqueued before their handler exists, and so are held QUEUED rather than claimed
-#: and failed with "no handler". `engine_action` rows are written by the engine-host sweep (engine_host.py,
-#: E3); their handler is E4 of DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE §5.1, which registers it in HANDLERS
-#: and removes the kind from here. A held row is still visible in `runs`; failing it would leave the Egeria
-#: action RE claimed with no completion, which only the restart pass (E5) could recover.
-HELD_KINDS = frozenset({"engine_action"})
+#: and failed with "no handler". Empty since E4 (DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE §5.1) registered the
+#: `engine_action` handler; kept as the mechanism for the next kind enqueued ahead of its handler.
+HELD_KINDS: frozenset[str] = frozenset()
+
+#: Kinds a person may never cancel from RE (web route and CLI; refused in `registry.cancel_queued_run`), in
+#: any state. An `engine_action` row stands for an Egeria engine action RE has already CLAIMED: cancelling
+#: the row would leave that action claimed in Egeria with nothing to complete it (C11: Egeria has no lease).
+#: Cancelling an engine action is Egeria's own call (C10), not in this slice. Held kinds are included.
+UNCANCELLABLE_KINDS: frozenset[str] = HELD_KINDS | frozenset({"engine_action"})
+
+#: Kinds run as an engine host, `Daemon(ENGINE_HOST, requested_by)`: owner, 2026-10-14, "when RE accepts an
+#: action or process for execution, it is acting as a daemon - there is no relationship to logged in users."
+ENGINE_HOST_KINDS = frozenset({"engine_action"})
+
+#: The row being executed (`{"id", "registry"}`), for a handler that must write its own outcome on the row
+#: before it tells Egeria (the engine-action handler). Set by `execute_run` around the handler only.
+current_run: "ContextVar[dict | None]" = ContextVar("re_current_run", default=None)
 
 
 # ── executing one claimed row ────────────────────────────────────────────────
@@ -435,6 +459,31 @@ def _run_as_requester(row: dict):
             yield
     finally:
         current_caller.reset(reset)
+
+
+@contextmanager
+def _run_as_engine_host(row: dict):
+    """Execute an engine-action row as `Daemon(ENGINE_HOST, requested_by=<requesterUserId>)`. No caller is
+    set: the engine host has no relationship to a signed-in person (owner, 2026-10-14). The requester is
+    recorded and stamped as Ownership by the handler; it is never a credential (native does the same:
+    `GovernanceEngineHandler.java:98-101`, `SurveyActionEngineHandler.java:302-331`)."""
+    from resource_explorer.a2a_auth import current_caller
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
+
+    requester = (row.get("requested_by") or "").strip()
+    reset = current_caller.set(None)
+    try:
+        with acting_as(Daemon(DaemonReason.ENGINE_HOST, requested_by=requester or None)):
+            yield
+    finally:
+        current_caller.reset(reset)
+
+
+def _run_as(row: dict):
+    """Who a claimed row runs as: the engine host for engine-host kinds, else `_run_as_requester`."""
+    if row.get("kind") in ENGINE_HOST_KINDS:
+        return _run_as_engine_host(row)
+    return _run_as_requester(row)
 
 
 def _first_sentence(text: str, limit: int = 240) -> str:
@@ -565,11 +614,15 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
     try:
         from resource_explorer.observability import acquisition, llm_usage
 
-        with _Heartbeat(registry, run_id), \
-                _run_as_requester(row), \
-                llm_usage.usage_scope() as usage, \
-                acquisition.acquisition_scope() as acquired:
-            outcome = handler(target, result_ref)
+        run_reset = current_run.set({"id": run_id, "registry": registry})
+        try:
+            with _Heartbeat(registry, run_id), \
+                    _run_as(row), \
+                    llm_usage.usage_scope() as usage, \
+                    acquisition.acquisition_scope() as acquired:
+                outcome = handler(target, result_ref)
+        finally:
+            current_run.reset(run_reset)
     except Exception as exc:  # pragma: no cover — a handler is expected to catch its own
         # Scrubbed by shape before it is logged or stored: a handler's exception can carry a connection
         # string or token, and this catch-all writes the traceback, the run row and the outcome.

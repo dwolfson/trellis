@@ -455,6 +455,9 @@ class PostgresCursorWrapper:
 #: A distinct namespace so no RE analysis step key can ever collide with one.
 NATIVE_SURVEY_STEP_PREFIX = "egeria-native:"
 
+#: runs ids already warned about as an unreadable engine_action target (once per process, not every sweep).
+_UNREADABLE_ENGINE_ROWS_WARNED: set = set()
+
 
 #: What a schedule row's `analysis_id` refers to. Running always goes through a
 #: survey type by preference (a single analysis gets a single-step survey type,
@@ -4416,9 +4419,9 @@ class ProjectRegistry:
         "materialize_components",
         "publish_architecture",
         "catalogue_commit",
-        # An Egeria engine action RE claimed as an engine host (engine_host.py). Its handler is E4 of
-        # DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE §5.1; until it exists run_queue.HELD_KINDS keeps such a row
-        # queued rather than failing it for want of a handler.
+        # An Egeria engine action RE claimed as an engine host (engine_host.py). Run by
+        # run_queue._handle_engine_action (E4 of DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE §5.1); never cancellable
+        # from RE (run_queue.UNCANCELLABLE_KINDS).
         "engine_action",
     )
 
@@ -4612,14 +4615,15 @@ class ProjectRegistry:
         worker dies, reconciliation resolves the row as failed with the reason;
         if it lives, the run finishes normally.
 
-        A row of a held kind (`run_queue.HELD_KINDS`, e.g. `engine_action`) is refused too (False), whatever
-        its state: it stands for an Egeria engine action RE has already claimed, and cancelling it here would
-        leave that action claimed with nothing to complete it. Refused HERE so every caller (web, CLI) gets it.
+        A row of an uncancellable kind (`run_queue.UNCANCELLABLE_KINDS`: `engine_action`, and any held kind)
+        is refused too (False), whatever its state: it stands for an Egeria engine action RE has already
+        claimed, and cancelling it here would leave that action claimed with nothing to complete it. Refused
+        HERE so every caller (web, CLI) gets it.
         """
-        from resource_explorer.run_queue import HELD_KINDS
+        from resource_explorer.run_queue import UNCANCELLABLE_KINDS
 
         now = now or datetime.now(timezone.utc).isoformat()
-        held = sorted(HELD_KINDS)
+        held = sorted(UNCANCELLABLE_KINDS)
         held_clause = f" AND kind NOT IN ({','.join('?' * len(held))})" if held else ""
         with self._conn() as conn:
             cur = conn.execute(
@@ -11245,23 +11249,67 @@ class ProjectRegistry:
             ).fetchone()
         return row["slug"] if row else ""
 
-    def engine_action_run_exists(self, engine_action_guid: str) -> bool:
-        """Any `engine_action` runs row (in any state) whose target names this Egeria engine action.
-        Parsed, not matched as text: the target is JSON."""
+    def engine_action_runs(self, engine_action_guid: str) -> list[dict]:
+        """Every `engine_action` runs row (any state) whose target names this Egeria engine action, newest
+        first. Parsed, not matched as text: the target is JSON."""
         guid = (engine_action_guid or "").strip()
         if not guid:
-            return False
+            return []
         with self._conn() as conn:
             # Text prefilter (parameterised), then the exact JSON compare below decides.
-            rows = conn.execute("SELECT target FROM runs WHERE kind = 'engine_action' AND target LIKE ?",
-                                (f"%{guid}%",)).fetchall()
+            rows = conn.execute("SELECT * FROM runs WHERE kind = 'engine_action' AND target LIKE ? "
+                                "ORDER BY enqueued_at DESC", (f"%{guid}%",)).fetchall()
+        out = []
         for row in rows:
             try:
-                if (json.loads(row["target"] or "{}") or {}).get("engine_action_guid") == guid:
-                    return True
+                target = json.loads(row["target"] or "{}")
             except (TypeError, ValueError):
-                continue
-        return False
+                target = None
+            if not isinstance(target, dict):
+                # It names the GUID (the prefilter) but cannot be read: it counts as existing, so the action is
+                # never adopted a second time (and given a second report); the caller leaves it alone.
+                if row["id"] not in _UNREADABLE_ENGINE_ROWS_WARNED:
+                    _UNREADABLE_ENGINE_ROWS_WARNED.add(row["id"])
+                    log.warning("runs row %s names engine action %s but its target is not readable JSON; it "
+                                "counts as that action's run and is left alone", row["id"], guid)
+                out.append({**dict(row), "target_unreadable": True})
+            elif target.get("engine_action_guid") == guid:
+                out.append(dict(row))
+        return out
+
+    def resource_kind_for_asset_guid(self, guid: str) -> str:
+        """`"repo"` or `"filesystem"` when a resource of that kind is registered with this Egeria Asset GUID,
+        else `""`. Unscoped, like `database_slug_for_asset_guid`: the engine host says which kind of thing an
+        action's target is when it is not a database."""
+        guid = (guid or "").strip()
+        if not guid:
+            return ""
+        with self._conn() as conn:
+            for kind, table in (("repo", "projects"), ("filesystem", "file_systems")):
+                if conn.execute(f"SELECT 1 FROM {table} WHERE egeria_asset_guid = ? LIMIT 1",  # noqa: S608
+                                (guid,)).fetchone():
+                    return kind
+        return ""
+
+    def engine_action_run_exists(self, engine_action_guid: str) -> bool:
+        """Any `engine_action` runs row (in any state) whose target names this Egeria engine action."""
+        return bool(self.engine_action_runs(engine_action_guid))
+
+    def merge_run_target(self, run_id: str, patch: dict) -> dict:
+        """Merge `patch` into a runs row's `target` JSON and return the merged target. No DDL: the engine host
+        keeps its outcome and its "completion recorded in Egeria" marker here (engine_host.py, E4/E5). Raises
+        when the row is missing or its target is not a JSON object: an outcome that could not be stored must
+        never be reported to Egeria as if it were."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT target FROM runs WHERE id = ?", (run_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"no runs row {run_id!r}")
+            target = json.loads(row["target"] or "{}")
+            if not isinstance(target, dict):
+                raise ValueError(f"runs row {run_id!r} has a target that is not a JSON object")
+            target.update(patch)
+            conn.execute("UPDATE runs SET target = ? WHERE id = ?", (json.dumps(target, default=str), run_id))
+        return target
 
     def set_database_egeria_guid(self, slug: str, guid: str) -> None:
         """Set the Egeria asset GUID for a database."""

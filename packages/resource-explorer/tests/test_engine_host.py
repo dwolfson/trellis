@@ -305,9 +305,11 @@ def test_with_the_flag_unset_the_worker_starts_no_engine_host_loop(monkeypatch):
     assert spec.interval_seconds == 5
 
 
-# ── E4 is not built: a claimed row waits, it is not failed by the queue ────────
+# ── E4 is built (step 2): a claimed row is now run by the queue, not held ──────
+# Changed in step 2 on purpose: step 1 pinned "held queued until its handler exists"; the handler now exists
+# (tests/test_engine_host_e4.py covers what it does), so the queue claims the row.
 
-def test_a_claimed_row_is_held_queued_until_its_handler_exists(reg, enabled, monkeypatch):
+def test_a_claimed_row_is_taken_by_the_queue_now_its_handler_exists(reg, enabled, monkeypatch):
     from resource_explorer import run_queue
 
     Fakes(monkeypatch, [_action("a-good")])
@@ -316,8 +318,12 @@ def test_a_claimed_row_is_held_queued_until_its_handler_exists(reg, enabled, mon
         host.sweep_once()
     finally:
         host.close()
-    assert run_queue.claim_and_execute_once(reg) is None
-    assert [r["state"] for r in _engine_rows(reg)] == ["queued"]
+    ran = []
+    monkeypatch.setitem(run_queue.HANDLERS, "engine_action",
+                        lambda target, result_ref: ran.append(target["engine_action_guid"])
+                        or run_queue.RunOutcome(state="succeeded"))
+    assert run_queue.claim_and_execute_once(reg) is not None
+    assert ran == ["a-good"]
 
 
 # ── review fixes: adopt RE's own orphaned claims; fail closed on targets ──────
@@ -406,7 +412,10 @@ def test_an_own_claim_that_already_has_a_row_is_not_adopted_again(reg, enabled, 
     assert len(_engine_rows(reg)) == 1
 
 
-def test_an_action_with_any_unregistered_target_is_not_claimed(reg, enabled, monkeypatch):
+def test_an_action_with_an_unregistered_target_is_claimed_to_be_failed(reg, enabled, monkeypatch):
+    """Changed in step 2 (owner ruling, 2026-10-14): an unregistered target is claimed and then completed with
+    "not registered in Resource Explorer", as native claims and fails NO_TARGET_ASSET; step 1 left it unclaimed.
+    The row carries the refusal and no slug, so the handler runs nothing for it."""
     action = _action("a-mixed")
     action["actionTargetElements"].append(
         {"actionTargetName": "other", "actionTargetGUID": "0a1b2c3d-0000-4000-8000-0000000000ff"})
@@ -416,9 +425,10 @@ def test_an_action_with_any_unregistered_target_is_not_claimed(reg, enabled, mon
         result = host.sweep_once()
     finally:
         host.close()
-    fakes.curation.claim_engine_action.assert_not_called()
-    assert "a-mixed" in result.skipped.get("unknown_target", [])
-    assert _engine_rows(reg) == []
+    assert [g for g, _ in fakes.claims] == ["a-mixed"]
+    assert result.claimed == ["a-mixed"]
+    [row] = _engine_rows(reg)
+    assert "not registered in Resource Explorer" in row["target"]["refusal"]
 
 
 def test_a_failing_private_owner_check_claims_nothing(reg, enabled, monkeypatch):

@@ -473,6 +473,7 @@ class SurveyDefinitionExecutor:
         demanded_by: str = "",
         capability_consented: bool = False,
         credential_scope: str = "",
+        publisher: Callable | None = None,
     ) -> dict:
         """Run an already-resolved Survey Definition's steps.
 
@@ -1145,8 +1146,12 @@ class SurveyDefinitionExecutor:
         refusal = ""
         publish_error = ""
         not_recorded = ""
-        publish_chosen = bool(self.registry.has_assigned_egeria_project(entity_type, slug))
-        if step_outputs and publish_chosen:
+        # A caller-supplied `publisher` (the engine host, E4) IS the decision to publish: Egeria dispatched the
+        # work and expects its report. It replaces the adapter's publish, and the run's publish words below
+        # follow its proof (the report GUID it returns, or the error it raises) like any other publish.
+        publish_chosen = publisher is not None or bool(self.registry.has_assigned_egeria_project(entity_type, slug))
+        publish_fn = publisher or adapter.publish
+        if step_outputs and publish_chosen and publisher is None:
             # Brief Z2: the requester must be allowed to publish this resource, re-checked right before the write.
             from resource_explorer.workflows.curate import person_write_refusal
 
@@ -1179,10 +1184,10 @@ class SurveyDefinitionExecutor:
             import inspect
 
             publish_kwargs = {}
-            if "defer_drain" in inspect.signature(adapter.publish).parameters:
+            if "defer_drain" in inspect.signature(publish_fn).parameters:
                 publish_kwargs["defer_drain"] = defer_drain
             try:
-                report_guid = adapter.publish(
+                report_guid = publish_fn(
                     entity, step_outputs, surveyed_at, self.registry, **publish_kwargs,
                 )
                 published = "queued" if (defer_drain and publish_kwargs) else True
@@ -1526,6 +1531,7 @@ class SurveyDefinitionExecutor:
         engine_override: str | None = None,
         demanded_by: str = "",
         capability_consented: bool = False,
+        publisher: Callable | None = None,
         **runner_kwargs: Any,
     ) -> dict:
         """Run ONE step through the same dispatch loop `run()` uses, without
@@ -1549,6 +1555,11 @@ class SurveyDefinitionExecutor:
         through the executor" primitive, and a future caller wanting
         "resource-explorer" or "egeria" for one step needs no separate
         method.
+
+        `publisher`, when given, replaces the adapter's publish for this run, with the same signature
+        `(entity, step_outputs, surveyed_at, registry) -> report_guid`, and is always attempted when a step
+        produced output (the engine host, E4: Egeria dispatched the work and expects its report). The run's
+        `published`/`egeria_report_guid`/`publish_state` then follow what it returned or raised.
         """
         from resource_explorer.surveyors.survey_definition_reader import (
             SurveyDefinition,
@@ -1596,6 +1607,7 @@ class SurveyDefinitionExecutor:
             # Without it the re-resolve inside `_execute` would raise the very
             # shortfall the user just accepted and skip the step.
             capability_consented=capability_consented,
+            publisher=publisher,
         )
 
     def _run_via_prefect(self, entity_type, entity, survey_def, runner_kwargs,

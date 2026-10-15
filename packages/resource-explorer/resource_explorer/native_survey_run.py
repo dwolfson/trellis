@@ -632,6 +632,13 @@ def cannot_run_reason(process: NativeProcess, entity, *, registry=None, technolo
                                  technology_type, entity) if entity is not None else "This resource is not registered."
     if process.kind != KIND_SURVEY_EXISTING:
         return f"RE does not run processes of kind {process.kind!r}."
+    from resource_explorer import engine_host
+
+    if process.qualified_name.startswith(engine_host.ENGINE_QUALIFIED_NAME + "::") \
+            and not engine_host.engine_host_enabled():
+        # RE's own engine serves this action; with the engine host off nothing would, and the action would sit
+        # APPROVED while the row polls. Still shown, not runnable.
+        return ENGINE_HOST_OFF
     if entity is None:
         return "This resource is not registered."
     if process.target == "server":
@@ -640,7 +647,13 @@ def cannot_run_reason(process: NativeProcess, entity, *, registry=None, technolo
         return _missing_credentials_reason(entity)
     if not (getattr(entity, "egeria_asset_guid", "") or "").strip():
         return cas.NOT_REGISTERED_WORDS if hasattr(entity, "db_type") else _NEEDS_CATALOGUING
+    if not process.needs_credentials:
+        return ""
     return _missing_credentials_reason(entity)
+
+
+#: Why an RE engine-host process (`ResourceExplorerSurvey::...`) cannot run: RE_ENGINE_HOST_ENABLED is off.
+ENGINE_HOST_OFF = "engine host off"
 
 
 def row_is_neutral(reason: str) -> bool:
@@ -736,7 +749,9 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
         gone = pointers.get(gone_key) == "gone"
         if gone:
             reason = cas.STALE_WORDS
-        creds = credentials_state(entity) if (process.kind == KIND_SURVEY_EXISTING and entity is not None) else PRESENT
+        creds = (credentials_state(entity)
+                 if (process.kind == KIND_SURVEY_EXISTING and entity is not None and process.needs_credentials)
+                 else PRESENT)
         stored = None
         if latest and latest.get("survey_report_guid"):
             stored = registry.count_native_survey_annotations(latest["survey_report_guid"])

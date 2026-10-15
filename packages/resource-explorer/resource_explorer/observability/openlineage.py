@@ -69,8 +69,28 @@ def engine_version() -> str:
 
 
 def transport() -> str:
+    if _suppressed.get():
+        return OFF
     t = (os.environ.get("RE_OPENLINEAGE_TRANSPORT") or OFF).strip().lower()
     return t if t in (FILE, HTTP) else OFF
+
+
+#: True inside `suppressed()`: work Egeria dispatched (an engine action RE runs as an engine host) emits no
+#: R21 event. Egeria reports that work's lineage from the engine action's own status changes (the Egeria
+#: leads, 2026-10-14, Q-M6: "RE's own R21 OpenLineage events stay off for Egeria-dispatched work").
+_suppressed: contextvars.ContextVar[bool] = contextvars.ContextVar("re_openlineage_suppressed", default=False)
+
+
+class suppressed:  # noqa: N801 - used as `with openlineage.suppressed():`
+    """No R21 event is emitted for steps run inside this block (mode `off`, as when the transport is unset)."""
+
+    def __enter__(self):
+        self._token = _suppressed.set(True)
+        return self
+
+    def __exit__(self, *exc_info):
+        _suppressed.reset(self._token)
+        return False
 
 
 def _timeout() -> float:
