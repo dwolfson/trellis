@@ -113,19 +113,18 @@ def element_from(raw) -> Element | None:
     )
 
 
-def enumerate_annotations(discovery, page_size: int = 200) -> list[Element]:
-    """Every RE ClassificationAnnotation in Egeria, paged. Raises when a page cannot be read: a partial enumeration
-    must not pass for a complete one."""
+def _enumerate_once(discovery, page_size: int) -> dict[str, Element]:
+    """One full unordered pass over the annotation search. Raises when a page cannot be read."""
     found: dict[str, Element] = {}
     seen: set[str] = set()
     start = 0
     while True:
-        # A fixed order: without one Egeria's paging by offset has no stable sequence, so a page could repeat or
-        # skip elements.
+        # Do NOT pass sequencing_order. Measured 2026-10-15: the same query paged with
+        # sequencing_order="CREATION_DATE_OLDEST" returned 398 distinct annotations, without it 598 (all 398
+        # among them), so the ordered search silently drops elements.
         page = discovery.find_annotations(
             search_string=RE_PREFIX, starts_with=True, ignore_case=False, start_from=start, page_size=page_size,
-            output_format="JSON", graph_query_depth=0, metadata_element_type=TYPE_NAME,
-            sequencing_order="CREATION_DATE_OLDEST")
+            output_format="JSON", graph_query_depth=0, metadata_element_type=TYPE_NAME)
         if not isinstance(page, list):
             if start == 0 and not (isinstance(page, str) and "no elements" in page.lower()):
                 raise RuntimeError(f"Egeria's annotation search did not answer with a list: {str(page)[:200]}")
@@ -142,6 +141,20 @@ def enumerate_annotations(discovery, page_size: int = 200) -> list[Element]:
         if len(page) < page_size:
             break
         start += page_size
+    return found
+
+
+def enumerate_annotations(discovery, page_size: int = 200, warn=None) -> list[Element]:
+    """Every RE ClassificationAnnotation in Egeria: two full unordered passes, the union of both. Unordered offset
+    paging is not guaranteed stable, so a second pass is the cross-check; when the passes differ, `warn` is told
+    (the union is still the answer, and the script is idempotent, so a re-run catches anything else). Raises when
+    a page cannot be read: a partial enumeration must not pass for a complete one."""
+    first = _enumerate_once(discovery, page_size)
+    second = _enumerate_once(discovery, page_size)
+    if set(first) != set(second) and warn is not None:
+        warn(f"WARNING: the two enumeration passes disagree: pass 1 found {len(first)}, pass 2 found "
+             f"{len(second)}, {len(set(first) ^ set(second))} differ; using the union ({len(set(first) | set(second))})")
+    found = {**first, **second}
     return sorted(found.values(), key=lambda e: e.qualified_name)
 
 
@@ -338,7 +351,7 @@ def jsonl_logger(path: Path):
 def run(discovery, registry, *, apply: bool, log_path: Path, out=print, page_size: int = 200,
         limit: int | None = None) -> int:
     """Enumerate, plan, report, and (with apply) write. Returns the exit code."""
-    elements = enumerate_annotations(discovery, page_size=page_size)
+    elements = enumerate_annotations(discovery, page_size=page_size, warn=out)
     rows = registry.list_outbox_payloads("annotation", PROPERTIES_CLASS)
     from resource_explorer.private_publish import resolve_private_owner
 
