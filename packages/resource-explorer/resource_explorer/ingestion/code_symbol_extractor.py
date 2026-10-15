@@ -107,7 +107,13 @@ class CodeSymbolExtractor:
         §3.1). Only languages in MARKER_CAPABLE_LANGUAGES are attempted;
         anything else returns [] and the caller is responsible for recording
         the language as uncovered rather than reading the empty list as a
-        measured zero."""
+        measured zero.
+
+        A test file registers nothing the product exposes (its ``patch(...)``
+        calls and sample routes are mocks), so it yields no markers."""
+        from resource_explorer.ingestion.test_paths import is_test_path
+        if is_test_path(file_path):
+            return []
         try:
             if language == "python":
                 return self._extract_python_markers(file_path, content, resource_slug)
@@ -447,6 +453,32 @@ class _PythonMarkerVisitor(ast.NodeVisitor):
         self._is_urls_file = file_path.rsplit("/", 1)[-1] == "urls.py"
         self.markers: list[CodeMarker] = []
         self._class_stack: list[str] = []
+        # Celery's `@task`/`@shared_task` only means a celery task when the file
+        # is in celery's world; invoke's `@task` is a build-script command.
+        self._celery_file = False
+        #: names bound to a Celery app or imported from a module named *celery*
+        self._celery_names: set[str] = set()
+
+    #: Receivers that are mocking helpers, never an app or router.
+    _MOCK_RECEIVER_TAILS = frozenset({"mock", "mocker", "monkeypatch", "patch"})
+
+    def visit_Module(self, node: ast.Module) -> None:
+        for n in ast.walk(node):
+            if isinstance(n, ast.Import) and any(
+                    a.name.split(".")[0] == "celery" for a in n.names):
+                self._celery_file = True
+            elif isinstance(n, ast.ImportFrom):
+                mod = n.module or ""
+                if mod.split(".")[0] == "celery":
+                    self._celery_file = True
+                if "celery" in mod.lower():
+                    self._celery_names.update(a.asname or a.name for a in n.names)
+            elif isinstance(n, ast.Assign) and isinstance(n.value, ast.Call):
+                callee = self._dotted(n.value.func).rsplit(".", 1)[-1]
+                if callee == "Celery":
+                    self._celery_names.update(
+                        t.id for t in n.targets if isinstance(t, ast.Name))
+        self.generic_visit(node)
 
     # ── helpers ─────────────────────────────────────────────────────────────
 
@@ -540,13 +572,29 @@ class _PythonMarkerVisitor(ast.NodeVisitor):
         else:
             return None
 
+        if attr in self._HTTP_VERBS or attr == "route":
+            # A route decorator is a CALL on an app/router, with a path that is
+            # absolute (or empty, or computed). `@patch("pkg.mod.name")` and
+            # `@mock.patch(...)` are mock patches, not registrations.
+            if call is None:
+                return None
+            if receiver.rsplit(".", 1)[-1].lower() in self._MOCK_RECEIVER_TAILS:
+                return None
+            first = args[0] if args else kwargs.get("path")
+            if isinstance(first, ast.Constant) and isinstance(first.value, str) \
+                    and first.value and not first.value.startswith("/"):
+                return None
+            if isinstance(func, ast.Name) and not (
+                    isinstance(first, ast.Constant) and isinstance(first.value, str)):
+                return None  # bare `get(...)`/`patch(...)` needs a literal "/path"
+
         if attr in self._HTTP_VERBS:
-            path = self._const_str(args[0]) if args else ""
+            path = self._const_str(args[0] if args else kwargs.get("path"))
             detail = f"{attr.upper()} {path}".strip()
             return self._marker(node, "route", "fastapi", "http_api", detail, node.name)
 
         if attr == "route":
-            path = self._const_str(args[0]) if args else ""
+            path = self._const_str(args[0] if args else kwargs.get("path"))
             methods = self._const_list_str(kwargs.get("methods"))
             verb = methods[0] if methods else "GET"
             detail = f"{verb} {path}".strip()
@@ -558,7 +606,9 @@ class _PythonMarkerVisitor(ast.NodeVisitor):
             return self._marker(node, "route", "django-rest-framework",
                                  "http_api", verb, node.name)
 
-        if attr in ("task", "shared_task"):
+        if attr in ("task", "shared_task") and (
+                self._celery_file or receiver.split(".")[0] in self._celery_names
+                or (not receiver and attr in self._celery_names)):
             return self._marker(node, "message_handler", "celery",
                                  "messaging", "", node.name)
 

@@ -608,25 +608,6 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Full Survey (all steps) — Repo Api Structure
-
-### Qualified Name
-GovActionProcessStep::RepoFullSurvey::repo_api_structure
-
-### Description
-Public API surface (functions/classes/methods) per language.
-
-### Additional Properties
-| Parameter Name | Parameter Value |
-|---|---|
-| executes_at | resource-explorer |
-| supported_technology_type | Git Repository |
-| re_analysis_step | repo_api_structure |
-
-___
-
-## Create Governance Action Process Step
-### Display Name
 Full Survey (all steps) — Repo Data Profiling
 
 ### Qualified Name
@@ -679,6 +660,25 @@ Extracts class/function/method symbols (tree-sitter/ast) for every supported lan
 | executes_at | resource-explorer |
 | supported_technology_type | Git Repository |
 | re_analysis_step | repo_symbol_extraction |
+
+___
+
+## Create Governance Action Process Step
+### Display Name
+Full Survey (all steps) — Repo Api Structure
+
+### Qualified Name
+GovActionProcessStep::RepoFullSurvey::repo_api_structure
+
+### Description
+Public API surface (functions/classes/methods) per language.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| supported_technology_type | Git Repository |
+| re_analysis_step | repo_api_structure |
 
 ___
 
@@ -1219,18 +1219,6 @@ ___
 GovActionProcessStep::RepoFullSurvey::repo_conventions
 
 ### Next Governance Action Process Step
-GovActionProcessStep::RepoFullSurvey::repo_api_structure
-
-### Guard
-Any
-
-___
-
-## Link Next Process Step
-### Governance Action Process Step
-GovActionProcessStep::RepoFullSurvey::repo_api_structure
-
-### Next Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_data_profiling
 
 ### Guard
@@ -1265,6 +1253,18 @@ ___
 ## Link Next Process Step
 ### Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_symbol_extraction
+
+### Next Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_api_structure
+
+### Guard
+Any
+
+___
+
+## Link Next Process Step
+### Governance Action Process Step
+GovActionProcessStep::RepoFullSurvey::repo_api_structure
 
 ### Next Governance Action Process Step
 GovActionProcessStep::RepoFullSurvey::repo_arch_detect

@@ -982,16 +982,6 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # ingest-time-parsing relationship as repo_ci_quality) — no fetch
         # here.
     ),
-    "repo_api_structure": StepInfo(
-        "repo_api_structure", ApiStructureSurveyor,
-        "Public API surface (functions/classes/methods) per language.",
-        ["SchemaAnalysisAnnotation", "ResourceMeasureAnnotation"],
-        accepts_surveyed_at=True,
-        accepts_scope_locator=True,
-        # Reads project_code_symbols — doesn't extract itself (that's
-        # repo_symbol_extraction's job), per this surveyor's own
-        # docstring. No fetch, no re-parsing.
-    ),
     "repo_data_profiling": StepInfo(
         "repo_data_profiling", DataProfilerSurveyor,
         "Inventories data files and profiles their schema (rows/columns/dtypes/nulls).",
@@ -1068,6 +1058,20 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # every supported-language file in the zipball.
         fetch_cost="download",
         compute_cost="medium",
+    ),
+    # ORDER MATTERS, and registry order generates the Full chain: repo_api_structure
+    # sits AFTER repo_symbol_extraction because it summarises the symbols that step
+    # writes (a run stored the previous run's count when it ran first). Nothing
+    # enforces this in the planner; the generated definitions carry the order.
+    "repo_api_structure": StepInfo(
+        "repo_api_structure", ApiStructureSurveyor,
+        "Public API surface (functions/classes/methods) per language.",
+        ["SchemaAnalysisAnnotation", "ResourceMeasureAnnotation"],
+        accepts_surveyed_at=True,
+        accepts_scope_locator=True,
+        # Reads project_code_symbols — doesn't extract itself (that's
+        # repo_symbol_extraction's job), per this surveyor's own
+        # docstring. No fetch, no re-parsing.
     ),
     # Architecture recovery — Phase 1 plan §4.2 (docs/architecture-recovery-
     # phase1-plan.md), ported from scripts/arch-spike (44 findings recorded
