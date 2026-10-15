@@ -260,6 +260,13 @@ function listSentenceHtml(l, i) {
     ? `<span class="tnum">${l.total}</span> ${esc(mapped)}${l.parts ? ` · in <span class="tnum">${l.parts}</span> ${esc(group)}${l.parts === 1 ? '' : 's'}` : ''}`
     : `<span class="tnum">${l.total}</span> ${esc(l.field.replace(/_/g, ' '))} · ${esc(l.key.replace(/_/g, ' '))}`;
   const partial = l.shown < l.total;
+  // Which analysis the list came from, always first: the line is the label
+  // for the link that ends it. A list with nothing stored carries no link and
+  // says so, from the manifest's own total.
+  const label = `<span data-list-label class="font-mono text-chrome-muted">${esc(l.key.replace(/_/g, ' '))}</span> · `;
+  if (!l.total) {
+    return `<div data-list-empty class="mt-s2 text-chip text-chrome-muted">${label}nothing stored by ${esc(l.key)} for this repo</div>`;
+  }
   // Three things the designer's read of #60 fixed: the packer's rung is
   // internal and "at full" read as "shown fully"; a section with no member
   // reader rendered nothing where the link would be (the silent-omission
@@ -272,7 +279,7 @@ function listSentenceHtml(l, i) {
   // function assumes `l.members` is true; a readerless `l` reaching it is a
   // caller bug, not a state to render.
   return `<div class="mt-s2 text-chip text-chrome-ink">
-    ${head}${
+    ${label}${head}${
       partial ? ` · <span class="text-chrome-muted"><span class="tnum">${l.shown}</span> shown to the model</span>` : ' · all shown to the model'}${
       // The control says what pressing it does; it is the only clickable
       // part of the line, and the middot before it does the sentence

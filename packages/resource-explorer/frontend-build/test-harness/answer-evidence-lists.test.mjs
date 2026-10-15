@@ -1,0 +1,39 @@
+// Every evidence list under an answer has a label (which analysis, what it
+// lists); an empty list shows no link and says why (2026-10-15, dataops_testgen
+// "Does TestGen have an API?": unlabeled links, one opened "0 findings").
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const chat = readFileSync(join(here, '../../resource_explorer/web/static/next/chat.js'), 'utf8');
+const src = chat.slice(chat.indexOf('const MEMBER_LISTED = new Set('), chat.indexOf('function renderTurnList('));
+const mod = 'const esc = (s) => String(s); const icon = (n) => `<svg data-icon="${n}"/>`;\n' + src
+  + '\nexport { listSentences, evidenceFooterListsHtml };\n';
+const { listSentences, evidenceFooterListsHtml } = await import('data:text/javascript,' + encodeURIComponent(mod));
+
+const ext = (total, shown = total) => ({ total, shown: { FULL: shown, SUMMARY: shown } });
+const body = (lists, keys) => ({ compiled: { manifest: {
+  packed: keys.map((key) => ({ key, role: 'evidence', rung: 'FULL' })), lists } } });
+
+test('every list names its analysis and what it lists', () => {
+  const b = body({ dependency_analysis: { 'by_ecosystem.python': ext(32, 10) }, api_structure: { entry_points: ext(3) },
+                   cve_scan: { findings: ext(4) } }, ['dependency_analysis', 'api_structure', 'cve_scan']);
+  const html = evidenceFooterListsHtml(listSentences(b), 'p');
+  const rows = html.split('</div>').filter((r) => r.includes('data-list-source'));
+  assert.equal(rows.length, 3);
+  for (const key of ['dependency_analysis', 'api_structure', 'cve_scan']) {
+    const row = rows.find((r) => r.includes(`data-list-source="${key}"`));
+    assert.match(row, new RegExp(`data-list-label[^>]*>${key.replace(/_/g, ' ')}<`), key);
+  }
+});
+
+test('an empty list shows no link and says why', () => {
+  const b = body({ api_structure: { entry_points: ext(0) } }, ['api_structure']);
+  const html = evidenceFooterListsHtml(listSentences(b), 'p');
+  assert.ok(!html.includes('data-list-source'), 'no link for an empty list');
+  assert.match(html, /nothing stored by api_structure for this repo/);
+  assert.match(html, /data-list-empty/);
+});
