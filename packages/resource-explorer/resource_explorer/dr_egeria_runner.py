@@ -348,8 +348,11 @@ def _summary_rows(stdout: str) -> Optional[list[list[str]]]:
             continue
         if s.startswith("│"):
             cells = [c.strip() for c in s.strip("│").split("│")]
-            if len(cells) != 7:
+            if len(cells) < 7:
                 return None
+            if len(cells) > 7:
+                # A "│" inside the last cell (the free-text Message) is not a column edge: keep it in the message.
+                cells = cells[:6] + [" │ ".join(cells[6:])]
             if current is None:
                 current = [[c] for c in cells]
             else:
@@ -390,31 +393,56 @@ def _norm(text: str) -> str:
     return " ".join((text or "").split()).casefold()
 
 
+def _squash(text: str) -> str:
+    """Whitespace-free, so a cell rich folded mid-word ("Governance" -> "Govern ance") still compares equal."""
+    return "".join((text or "").split()).casefold()
+
+
 _STATUS = {"SUCCESS": OK, "FAILURE": ERROR, "WARNING": WARNING}
+
+
+def _row_matches(planned: PlannedCommand, row: list[str]) -> bool:
+    want = _squash(planned.command)
+    return want in (_squash(row[0]), _squash(row[1]))
 
 
 def dr_egeria_results(planned: list[PlannedCommand], stdout: str, process_detail: str) -> list[dict]:
     """One item per planned Dr.Egeria command, read from dr_egeria's own summary table.
 
-    A table that cannot be read, or whose rows do not line up with the planned commands, gives `unknown` for
-    every command it cannot account for: never `ok` without a row that says SUCCESS."""
+    Each command is matched to its row by name (either the markdown or the canonical command, whitespace
+    ignored), in order, so a stray or missing row costs only the command it belongs to. `unknown` is kept for
+    what truly cannot be matched, and always names why: no table, no row for the command, or a status word
+    other than SUCCESS / FAILURE / WARNING (a DEFERRED row, say, is reported as deferred, not as ok): never `ok`
+    without a row that says SUCCESS."""
     rows = _summary_rows(stdout)
-    if rows is None or len(rows) != len(planned):
+    if rows is None:
         tail = (_ANSI.sub("", stdout or "").strip().splitlines() or [process_detail])[-1][:300]
-        why = ("no summary table in dr_egeria's output" if rows is None
-               else f"dr_egeria's summary has {len(rows)} row(s) for {len(planned)} command(s)")
-        return [p.item(UNKNOWN, error=f"{why}; process: {process_detail}; last line: {tail}") for p in planned]
+        why = f"no summary table in dr_egeria's output; process: {process_detail}; last line: {tail}"
+        return [p.item(UNKNOWN, error=why) for p in planned]
     blocks = _error_blocks(stdout)
     items = []
-    for p, row in zip(planned, rows):
-        md_cmd, canonical, status_word, _found, _name, _qn, message = row
-        if _norm(md_cmd) != _norm(p.command):
-            items.append(p.item(UNKNOWN, error=f"dr_egeria reported {md_cmd!r} where {p.command!r} was planned"))
+    at = 0
+    for p in planned:
+        hit = next((j for j in range(at, len(rows)) if _row_matches(p, rows[j])), None)
+        if hit is None:
+            same_place = at < len(rows) and len(rows) == len(planned)
+            items.append(p.item(UNKNOWN, error=(
+                f"dr_egeria reported {rows[at][0]!r} where {p.command!r} was planned" if same_place else
+                f"no row for {p.command!r} in dr_egeria's summary ({len(rows)} row(s) for {len(planned)} "
+                "command(s))")))
+            if same_place:
+                at += 1
             continue
-        status = _STATUS.get(status_word.strip().upper(), UNKNOWN)
+        at = hit + 1
+        _md_cmd, canonical, status_word, _found, _name, _qn, message = rows[hit]
+        word = status_word.strip().upper()
+        status = _STATUS.get(word, UNKNOWN)
         words = []
         if status != OK:
             words.append(message)
+            if status == UNKNOWN:
+                words.insert(0, f"dr_egeria's status was {status_word.strip() or 'empty'!r}, not "
+                                "SUCCESS, FAILURE or WARNING")
             for n, (header, errs) in enumerate(blocks):
                 if _norm(header).startswith(_norm(canonical) + " ("):
                     words.extend(errs)

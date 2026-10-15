@@ -396,6 +396,10 @@ def test_the_executor_records_the_sha_from_the_runner_output(tmp_path):
 def test_a_run_that_read_no_code_stores_null_even_with_a_last_commit_sha(zipball_run):
     from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
 
+    with zipball_run._conn() as conn:        # api_structure declares has_code_symbols: seed the symbols it reads
+        conn.execute(
+            "INSERT INTO project_code_symbols (project_slug, file_path, language, kind, name, "
+            "qualified_name) VALUES ('p', 'a.py', 'python', 'function', 'f', 'a.f')")
     SurveyOrchestrator(zipball_run).run("p", steps=["repo_api_structure"])    # reads stored symbols only
     rows = _step_shas(zipball_run)
     assert rows and {r["survey_commit_sha"] for r in rows} == {None}

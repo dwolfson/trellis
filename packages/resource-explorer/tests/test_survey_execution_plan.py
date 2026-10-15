@@ -538,3 +538,88 @@ def test_testgen_over_budget_manifest_parse_still_raises(tmp_path):
         _plan_for(registry, _assessment())
     assert exc.value.producer_key == "repo_manifest_parse"
     assert "budget" in str(exc.value)
+
+
+# ── repo_api_structure declares has_code_symbols (2026-10-15) ───────────────
+
+def _definition(*keys):
+    return FakeDefinition(
+        qualified_name="GovActionProcess::T",
+        steps=[FakeStep(guid=k, re_analysis_step=k, qualified_name=k) for k in keys],
+        links=[FakeLink(a, b) for a, b in zip(keys, keys[1:])])
+
+
+def _store_code_symbols(registry, extracted_minutes_ago=10):
+    from datetime import datetime, timedelta, timezone
+
+    with registry._conn() as conn:
+        conn.execute(
+            "INSERT INTO project_code_symbols (project_slug, file_path, language, kind, name, "
+            "qualified_name) VALUES ('tg', 'a.py', 'python', 'function', 'f', 'a.f')")
+    registry.record_step_run(
+        "tg", "repo_symbol_extraction",
+        (datetime.now(timezone.utc) - timedelta(minutes=extracted_minutes_ago)).isoformat())
+
+
+def test_api_structure_declares_the_symbols_it_reads_and_stays_at_its_own_tier():
+    from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+
+    info = STEP_REGISTRY["repo_api_structure"]
+    assert "has_code_symbols" in info.requires_context
+    assert info.requires == ("repo_symbol_extraction",)
+    assert (info.fetch_cost, info.compute_cost) == ("none", "low")      # its own declared tier, unchanged
+
+
+def test_a_definition_with_both_steps_in_order_plans_unchanged(tmp_path):
+    registry = _repo_registry(tmp_path)
+    definition = _definition("repo_file_inventory", "repo_symbol_extraction", "repo_api_structure")
+    for kwargs in ({}, {"registry": registry, "entity": SimpleFakeEntity(slug="tg")}):
+        from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+
+        plan = build_plan(definition, step_registry=STEP_REGISTRY, **kwargs)
+        assert [s.step_key for s in plan.steps] == [
+            "repo_file_inventory", "repo_symbol_extraction", "repo_api_structure"]
+        assert not any(s.added_because for s in plan.steps)
+        assert plan.by_key["repo_api_structure"].depends_on == ["repo_symbol_extraction"] or \
+            "repo_symbol_extraction" in plan.by_key["repo_api_structure"].depends_on
+
+
+def test_no_fresh_symbols_adds_extraction_for_a_run_that_already_downloads(tmp_path):
+    """A full-scope definition: another of its steps already acquires the zipball at download/medium, so
+    the definition has budgeted the download, a medium-compute ceiling covers extraction, and the plan adds it ahead of api_structure."""
+    from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+
+    assert STEP_REGISTRY["repo_arch_detect"].fetch_cost == "download"
+    registry = _repo_registry(tmp_path)
+    plan = build_plan(_definition("repo_arch_detect", "repo_api_structure"), step_registry=STEP_REGISTRY,
+                      max_compute_cost="medium",     # the full-scope run's ceiling; extraction is medium compute
+                      registry=registry, entity=SimpleFakeEntity(slug="tg"))
+    keys = [s.step_key for s in plan.steps]
+    assert set(keys) == {"repo_arch_detect", "repo_symbol_extraction", "repo_api_structure"}
+    assert keys.index("repo_symbol_extraction") < keys.index("repo_api_structure")
+    added = plan.by_key["repo_symbol_extraction"]
+    assert added.demanded_by == "repo_api_structure" and added.added_because
+
+
+def test_only_api_structure_never_adds_a_download_even_under_a_download_ceiling(tmp_path):
+    """The lone / scoped shape: nothing in the definition acquires a zipball, so the planner refuses
+    (the executor then proposes the producing definition) instead of adding a download."""
+    from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+
+    registry = _repo_registry(tmp_path)
+    for ceilings in ({}, {"max_fetch_cost": "download", "max_compute_cost": "medium"}):
+        with pytest.raises(MissingPrerequisiteError) as exc:
+            build_plan(_definition("repo_api_structure"), step_registry=STEP_REGISTRY,
+                       registry=registry, entity=SimpleFakeEntity(slug="tg"), **ceilings)
+        assert exc.value.producer_key == "repo_symbol_extraction" and "download" in str(exc.value)
+
+
+def test_fresh_symbols_mean_extraction_is_not_added(tmp_path):
+    from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+
+    registry = _repo_registry(tmp_path)
+    _store_code_symbols(registry)
+    plan = build_plan(_definition("repo_arch_detect", "repo_api_structure"), step_registry=STEP_REGISTRY,
+                      registry=registry, entity=SimpleFakeEntity(slug="tg"))
+    assert [s.step_key for s in plan.steps] == ["repo_arch_detect", "repo_api_structure"]
+    assert plan.by_key["repo_api_structure"].satisfied_by_stored.get("has_code_symbols")
