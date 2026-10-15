@@ -272,14 +272,33 @@ class ElementFacts(NamedTuple):
 # ── reading the element, the controls and the account from Egeria ─────────────────────────────────────
 
 def _string_array(classification: dict, name: str) -> Optional[list[str]]:
-    """A string-array property of a raw classification, or None when it is not there."""
+    """A string-array property of a raw classification as Egeria's `getStringArrayProperty` reads it
+    (OMRSRepositoryPropertiesUtilities:277-323): None when the property is absent or null, or an array with no
+    values; else its strings. Present but in a shape RE cannot read RAISES `AccessUnreadable` (review round 1:
+    `userIds` of `{}` or `"{0=bob}"` read as None, which `instance_groups` turns into instanceOwner)."""
     cp = classification.get("classificationProperties") or classification.get("properties") or {}
-    arr = (((cp.get("propertyValueMap") or {}).get(name) or {}).get("arrayValues") or {}).get("propertiesAsStrings")
-    if isinstance(arr, dict):
-        return [str(arr[k]) for k in sorted(arr, key=lambda x: int(x) if str(x).isdigit() else 0)]
+    if not isinstance(cp, dict):
+        raise AccessUnreadable(f"a classification with unreadable properties: its {name} are unknown")
+    pvm = cp.get("propertyValueMap")
+    if isinstance(pvm, dict) and pvm.get(name) is not None:
+        value = pvm[name]
+        if isinstance(value, dict):
+            arr_values = value.get("arrayValues")
+            arr = arr_values.get("propertiesAsStrings") if isinstance(arr_values, dict) else None
+            if isinstance(arr, dict):
+                out = [str(arr[k]) for k in sorted(arr, key=lambda x: int(x) if str(x).isdigit() else 0)]
+                return out or None
+            if value.get("arrayCount") == 0 and arr_values is None:
+                return None
+        raise AccessUnreadable(f"a {name} RE cannot read: unknown")
     value = cp.get(name)
     if isinstance(value, list):
-        return [str(v) for v in value]
+        return [str(v) for v in value] or None
+    if value is not None:
+        raise AccessUnreadable(f"a {name} RE cannot read: unknown")
+    strings = cp.get("propertiesAsStrings")
+    if isinstance(strings, dict) and strings.get(name) is not None:
+        raise AccessUnreadable(f"a {name} RE cannot read (only as a string): unknown")
     return None
 
 
@@ -293,6 +312,10 @@ def _classifications(element: dict, name: str) -> list[dict]:
         return classifications_named(element, name)
     except UnreadableClassification as exc:
         raise AccessUnreadable(str(exc)) from exc
+
+
+_ANCHORS_BEAN_KEYS = {"class", "typeName", "anchorGUID", "anchorTypeName", "anchorDomainName", "anchorScopeGUIDs",
+                      "zoneMembership", "effectiveFrom", "effectiveTo", "extendedProperties"}
 
 
 def _anchor_of(element: dict) -> str:
@@ -317,9 +340,11 @@ def _anchor_of(element: dict) -> str:
         # (OpenMetadataAPIAnchorHandler.getAnchorsFromAnchorsClassification: "If the anchorGUID is not filled out
         # then the entity is its own anchor"; null properties = unanchored), so its own zones decide.
         # Seen live on egeria_git's Asset: Anchors {anchorTypeName, anchorDomainName}, no anchorGUID.
-        # 6.2's flattened bean (`elementHeader.anchor`) says what it is: `class` AnchorsProperties.
+        # 6.2's flattened bean (`elementHeader.anchor`): `class` AnchorsProperties and only that bean's keys
+        # (AnchorsProperties.java:25-29 + ClassificationBeanProperties/ClassificationProperties), so a mis-cased
+        # `anchorGuid` is never read as "no anchorGUID".
         known = (not cp or isinstance(cp.get("propertyValueMap"), dict) or isinstance(strings, dict)
-                 or cp.get("class") == "AnchorsProperties"
+                 or (cp.get("class") == "AnchorsProperties" and set(cp) <= _ANCHORS_BEAN_KEYS)
                  or set(cp) <= {"anchorGUID", "anchorTypeName", "anchorDomainName", "anchorScopeGUID", "class"})
         if not known:
             raise AccessUnreadable("an Anchors classification in a shape RE cannot read")
