@@ -249,7 +249,63 @@ def _findings_members(registry, slug, analysis_id, scope, limit) -> MemberSet:
                      source="project_analysis_findings")
 
 
+def _endpoint_members(registry, slug, scope, limit) -> MemberSet:
+    """interface_surface's members are the endpoints, grouped by file, each
+    with method, path, handler and line -- read from project_code_markers
+    through the same reader the compile uses (resource_explorer/endpoints.py),
+    so the list the model was shown and the list the pane opens are one list.
+    The fallback this replaced opened the four findings and, inside the
+    http_api one, a 1,869-item evidence blob that was mostly test mocks.
+
+    Not measured (no markers ever captured) is `total=None`; measured and
+    none is `total=0`. Different sentences, never one blank."""
+    from resource_explorer.endpoints import read_endpoints
+
+    es = read_endpoints(registry, slug)
+    if es is None:
+        return MemberSet("interface_surface", "endpoints", "endpoints, by file", None, scope, False,
+                         empty=True, reason="the endpoint reader could not read the registry; this is not a count of zero",
+                         source="project_code_markers")
+    left_out = []
+    if es.excluded_tests:
+        left_out.append(f"{es.excluded_tests:,} registration(s) under test paths left out")
+    if es.excluded_vendored:
+        left_out.append(f"{es.excluded_vendored:,} under vendored code left out")
+    note = ("Code registrations (route decorators and annotations) outside tests"
+            + (f"; {'; '.join(left_out)}" if left_out else "") + ". Ordered by file, then line.")
+    if not es.measured:
+        return MemberSet("interface_surface", "endpoints", "endpoints, by file", None, scope, False,
+                         empty=True, note=note,
+                         reason="not measured: no code markers were captured for this repository, "
+                                "which is not the same as having no endpoints",
+                         source="project_code_markers")
+    by_file: dict[str, list] = {}
+    for e in es.rows:
+        by_file.setdefault(e.file_path, []).append(e)
+    groups = []
+    remaining = limit
+    for path in sorted(by_file):
+        items = by_file[path]
+        take = items[:max(remaining, 0)]
+        remaining -= len(take)
+        groups.append(Group(path, len(items), [
+            {"name": e.label or e.path,
+             "detail": " · ".join(x for x in (e.handler, f"line {e.start_line}" if e.start_line else "",
+                                              e.framework, e.kind if e.kind != "http_api" else "") if x),
+             "extra": {"handler": e.handler, "file": e.file_path, "line": e.start_line, "kind": e.kind,
+                       "method": e.method, "path": e.path, "framework": e.framework,
+                       "signature": e.signature, "doc": e.doc}}
+            for e in take], len(take) < len(items)))
+    ms = MemberSet("interface_surface", "endpoints", "endpoints, by file", es.total, scope, False, groups,
+                   note=note, source="project_code_markers", inventory=f"{es.total:,} endpoints in {len(groups)} files")
+    if es.total == 0:
+        ms.empty = True
+        ms.reason = f"measured: no endpoints found outside tests ({'; '.join(left_out) or 'nothing left out'})"
+    return ms
+
+
 _READERS = {
+    ("interface_surface", None): _endpoint_members,
     ("cve_scan", None): _cve_members,
     ("dependency_analysis", None): _dependency_members,
     ("manifest_parse", "dependency_count"): _dependency_members,
@@ -339,7 +395,7 @@ def members_for(registry: ProjectRegistry, slug: str, analysis_id: str, metric: 
         # place to look (or the analysis is unknown to this registry) —
         # unchanged behaviour.
         ms = _findings_members(registry, slug, analysis_id, scope, limit)
-    if not ms.not_applicable and not ms.total:
+    if not ms.not_applicable and not ms.total and not ms.reason:
         ms.empty = True
         ms.reason = f"nothing stored by {analysis_id} for this repo"
     ms.run_at = last_run_at(registry, slug, analysis_id)
