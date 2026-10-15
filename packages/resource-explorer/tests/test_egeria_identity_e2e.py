@@ -509,6 +509,8 @@ def stamps(boundary, monkeypatch):
         create_elem_from_template=lambda body: NEW_GUID))
     me = boundary.fake("MetadataExpert", create_metadata_element=create,
                        get_metadata_guid_by_unique_name=lambda *a, **k: "No elements found",
+                       # S19: the archived-sibling find, answered as live 6.2 answers a miss (no archived copy)
+                       find_metadata_elements_with_string=lambda *a, **k: "No elements found",
                        update_metadata_element_properties=update,
                        get_metadata_element_by_guid=lambda guid, *a, **k: {
                            "elementHeader": {"guid": guid}, "elementProperties": {"propertyValueMap": {}}})
