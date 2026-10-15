@@ -134,9 +134,15 @@ The owner runs C1's document and republishes one definition with C2
 - Steps that need a signed-in person (private work).
 - Changing any authored guard.
 
-## Open points for the owner
+## Owner's answers (2026-10-15)
 
-- [ ] Which definition is the first live gate: `DatabaseAnalysisSurvey`
-      (proposed) or a smaller one?
-- [ ] Should the Run button offer "run in Egeria" beside the RE run, or
-      is Dr.Egeria the only start until the gate passes?
+- [x] First live gate: `DatabaseAnalysisSurvey`. The owner allows a
+      smaller definition if it makes the gate clearer; the design keeps
+      `DatabaseAnalysisSurvey`, because it is the one whose credentialed
+      step proves the capability gate (negative, live) and whose steps
+      are already proven individually.
+- [x] The Run button gains a second control now, labelled **"coordinated
+      by Egeria"** (never "run in Egeria"), beside the RE run; the owner
+      expects it to be temporary. It calls `initiate_gov_action_process`
+      through `EgeriaSurveyPort`, records `started_by: egeria` on the run,
+      and is hidden when the engine host is off (the sentence says why).

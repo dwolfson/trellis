@@ -23,7 +23,7 @@ wide one.
 | # | Step (request type) | Derives | Typed reads needed | Nothing-to-derive guard and sentence | Egeria annotation |
 |---|---|---|---|---|---|
 | 1 | `re-statistics-freshness` (from `db_derived.derive_statistics_freshness`) | per table: age of last ANALYZE and VACUUM, tables never analysed, with the catalog's as-of | tables with `last_analyze`, `last_autoanalyze`, `last_vacuum`, `n_live_tup` (exists if the staleness step's read exposes them; else one method `tables_maintenance_timestamps(slug, run)`) | `survey-invalid` · "no maintenance timestamps stored for this database" | `ResourceMeasureAnnotation` per table, measure names as Egeria's resource-measure convention; one `DataProfileAnnotation`-style summary |
-| 2 | `re-hub-tables` (from `derive_hub_tables`) | tables by foreign-key degree in and out; the hubs | tables and captured keys (`keys_captured` per table) | `survey-invalid` · "no keys captured; hubs cannot be derived" | `ResourceMeasureAnnotation` (fk_in, fk_out per table); hubs as a `ClassificationAnnotation` candidate "hub table" (proposal only) |
+| 2 | `re-hub-tables` (from `derive_hub_tables`) | tables by foreign-key degree in and out; the hubs | tables and captured keys (`keys_captured` per table) | `survey-invalid` · "no keys captured; hubs cannot be derived" | `ResourceMeasureAnnotation` (fk_in, fk_out per table); hubs as a `ClassificationAnnotation` naming "hub table" (an annotation, never a classification on the element) |
 | 3 | `re-change-rates` (from `derive_change_rates`) | writes per day per table between two activity snapshots over their interval; the counter-reset caveat | two `database_table_activity` snapshots for the slug (the read exists for staleness or is the same method) | `survey-invalid` · "one activity snapshot only; a rate needs two" | `ResourceMeasureAnnotation` with the interval and both as-ofs |
 | 4 | `re-schema-diff` (from `derive_schema_diff`) | added, removed and changed schemas, tables and columns between two inventories | two inventories (schemas, tables, columns per run); one method `inventory_at(slug, run)` if not present | `survey-invalid` · "one inventory only; nothing to compare" | `SchemaAnalysisAnnotation`-style summary (added/removed counts) plus one `RequestForActionAnnotation` when a published table was removed |
 | 5 | `re-grant-change` (from `derive_grant_change`) | grants added and removed per role between two grant snapshots | two `database_grants` snapshots; one method `grants_at(slug, run)` | `survey-invalid` · "one grant snapshot only" | `ResourceMeasureAnnotation` per role plus a `RequestForActionAnnotation` on a new write grant to a role that had none |
@@ -71,9 +71,13 @@ the same trigger on a throwaway database with one snapshot only:
 `survey-invalid` with the sentence. Five candidates, one gate each, in
 rank order; a candidate that fails its gate does not block the next.
 
-## Open points for the owner
+## Owner's answers (2026-10-15)
 
-- [ ] The hub-table and grant-change proposals as `ClassificationAnnotation`
-      and `RequestForActionAnnotation`: proposals only, as the two-channel
-      rule says, or facts?
-- [ ] Order: all five, or the first three before case 3's gate?
+- [x] The two channels stay separate. Hub-table and grant-change outputs
+      are **annotations**, published automatically when Egeria runs the
+      step; facts (a classification on the element, a relationship) come
+      only through Curate. Whether Egeria has a mechanism that turns an
+      accepted annotation into a fact is on the Mandy list.
+- [x] Order: the first three (`re-statistics-freshness`, `re-hub-tables`,
+      `re-change-rates`) before case 3's gate; `re-schema-diff` and
+      `re-grant-change` after it.
