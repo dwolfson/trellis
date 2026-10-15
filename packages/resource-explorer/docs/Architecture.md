@@ -465,3 +465,85 @@ one copy, deliberately. The ones with the most architectural reach:
 - The eight intent labels are canonical (rule 17)
 - `HybridDatabaseSurveyor` must run the local scan immediately after triggering Egeria's
   async native survey (rule 15)
+
+---
+
+## Runtime neighbours
+
+Three hand-authored component outlines (written 2026-09-02) used to sit beside this document as
+`egeria.md`, `trellis.md` and `workspaces.md`. They are folded in here, trimmed to what is still
+true. They are descriptive notes, **not** the scoring fixtures: the pre-registered ground-truth
+partitions used to score architecture recovery are separate, and richer, in
+`../tests/fixtures/architecture-ground-truth/` (which has its own `trellis.md`, `egeria.md` and
+`egeria-workspaces.md`; those are different files).
+
+### Egeria
+
+The catalog of record (see Overview). An outline of its runtime and deployment components, from
+the maintainer's notes; Egeria is an external project and this list was not re-derived from its
+code.
+
+- **egeria-platform**: the runtime that hosts the OMAG servers.
+- **egeria-servers**: metadata servers, integration daemons, engine hosts and view servers.
+  RE talks to the view server (through pyegeria), which is the single channel.
+- **connectors**: many, each a component.
+- **deployment components**: docker, build, swagger and similar, startup configuration.
+- **conformance test suite**.
+- **samples**: http clients, sample clients, reports, utilities.
+- **content packs**: pre-built loadable archives of metadata that define useful content.
+
+### Trellis
+
+The workspace this package lives in (`packages/`: `resource-explorer`, `egeria-advisor` and the
+shared `trellis-*` libraries; the library list is under the Directory map). Resource Explorer's
+runtime components, checked against the code on 2026-10-15:
+
+| Component | Where | What it is |
+|---|---|---|
+| web backend | `resource_explorer/web/` | FastAPI services behind the front-end |
+| web front-end | `frontend-build/` (build inputs) | JavaScript single-page applications |
+| CLI | `resource_explorer/cli/` | Typer terminal interface, including the `web`, `worker` and `serve` roles |
+| TUI | `resource_explorer/tui/` | Textual terminal interface |
+| RAG ingestion | `resource_explorer/ingestion/` | repo to chunks to pgvector |
+| agents | `resource_explorer/agents/` | specialist agents (stats, code, doc, health, compare, dependency, examples, conversation, integration, survey-meta) |
+| observability | `resource_explorer/observability/` | MLflow tracking, optional Phoenix client, metrics, feedback collection |
+| Prefect flows | `resource_explorer/prefect/flows.py` | Prefect flow and task definitions used when a step declares `executes_at: prefect` (see "Two coordinators") |
+| surveyors | `resource_explorer/surveyors/` | the survey steps (the survey layer above) |
+| utility scripts | `scripts/` (package root) | operational scripts |
+
+Two corrections to the old outline: its `utility_scripts` directory does not exist (the scripts
+are in `scripts/`), and its file globs were relative to `resource-explorer/` rather than to the
+repository root.
+
+### Egeria Workspaces
+
+A separate repository (`egeria-workspaces`) that provides the Docker environments Egeria and
+RE run in. Container names below were checked against its compose files on 2026-10-15; the
+descriptions are the maintainer's.
+
+- **QuickStart** (preconfigured sample environment): `quickstart-egeria-main` (one Java runtime
+  hosting several Egeria servers, not standalone processes), `quickstart-egeria-watchdog`,
+  `quickstart-jupyter-work-full`, `quickstart-web-server` (Apache), `quickstart-pyegeria-web`
+  (a FastAPI module serving both MCP commands and the Egeria Portal, whose single-page apps have
+  Python backends; MCP executes reports and Dr.Egeria commands), `quickstart-my-profile` (a
+  Textual app for managing the environment) and `obsidian-quickstart` (an Obsidian client over
+  the Coco Workbooks that can issue Dr.Egeria MCP calls).
+- **Freshstart** (unconfigured, ready for customization): `freshstart-egeria-main`,
+  `freshstart-jupyter-work-full`, `freshstart-web-server`, `freshstart-pyegeria-web`. Same shapes
+  as QuickStart with nothing pre-configured.
+- **Shared infrastructure**: `egeria-shared-kafka`, `egeria-shared-kroki` and
+  `egeria-shared-kroki-mermaid` (mermaid rendering helpers), `egeria-shared-openlineage-proxy-backend`
+  (common OpenLineage proxy) and `egeria-shared-postgres` (pgvector-enabled Postgres serving all
+  runtimes; host port 5442 per [`../../../docs/deploying-trellis-with-quickstart.md`](../../../docs/deploying-trellis-with-quickstart.md)).
+- **Optional runtimes** (`compose-configs/optional-associated-runtimes/`): Airflow with Marquez
+  (OpenLineage demos), Dagster, Prefect, Apache Atlas, MLflow with MinIO, Milvus, DuckDB
+  federation, Superset (presents survey results), Unity Catalog (two deployments, Postgres-backed
+  and native), Ollama (local models; no dedicated README yet), Delta Lake with Spark, MinIO and a
+  Hive metastore, and a `trellis` directory for the Trellis containers (`trellis-re-web`,
+  `trellis-re-worker`, `trellis-ea-web`).
+- **Directories**: `coco-workbooks` (samples and tutorials in Jupyter and Dr.Egeria),
+  `exchange-freshstart` and `exchange-quickstart` (shared folders), `obsidian-plugins` (shared
+  source for the Dr.Egeria Obsidian plug-ins), `portal-docs` (environment and Portal app docs,
+  launched from the Portal), `runtime-volumes` (runtime state kept outside the containers),
+  `templates` (Dr.Egeria template files) and `work` (unmanaged local user work). The old outline
+  says `workbooks` is to be deprecated; the directory still exists.

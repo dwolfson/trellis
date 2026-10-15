@@ -1,6 +1,6 @@
 # Resource Explorer documentation
 
-48 documents, grouped by what they *are* rather than what they are about — the
+45 documents, grouped by what they *are* rather than what they are about — the
 distinction that matters when deciding whether one is still live.
 
 **Generated from each document's own `**Status:**` line**, not from a
@@ -39,8 +39,6 @@ Decisions and models. Cited from source where a comment cannot restate them.
   consolidated runbook. Current as of 2026-09-02
 - **[egeria-support-for-multi-resource.md](egeria-support-for-multi-resource.md)** — 2026-10-14  
   validation and planning input, 2026-09-20. Expands §12 of
-- **[egeria.md](egeria.md)** — 2026-09-02  
-  hand-authored reference outline. Sparse by nature — the headings are
 - **[extending-resource-explorer.md](extending-resource-explorer.md)** — 2026-10-14  
   live. How to add a question, analysis step, annotation type or survey type
 - **[feedback-and-curation.md](feedback-and-curation.md)** — 2026-09-03  
@@ -71,12 +69,8 @@ Decisions and models. Cited from source where a comment cannot restate them.
   consolidated design and reference. Current as of 2026-09-02
 - **[surveyor-reference.md](surveyor-reference.md)** — 2026-10-14  
   stale. Oldest unrevised reference (2026-08-07); predates the database surveyors and Prefect. Che
-- **[trellis.md](trellis.md)** — 2026-09-02  
-  hand-authored reference outline describing runtime and deployment
 - **[user-guide.md](user-guide.md)** — 2026-10-14  
   live. Investigations, work lists, private work, scouting, Curate, Publish and live status are cu
-- **[workspaces.md](workspaces.md)** — 2026-09-02  
-  hand-authored reference outline describing runtime and deployment
 
 ## Findings and audits
 
