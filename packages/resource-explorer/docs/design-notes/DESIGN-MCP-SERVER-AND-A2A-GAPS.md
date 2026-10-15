@@ -92,12 +92,26 @@ service account. The rule from here:
   <caller> · written by the service account". Moving queued writes to
   the caller waits for Egeria to offer delegation (option 3, not
   pursued).
-- **Construction sites.** Each place RE builds a pyegeria client is
-  listed with file:line in the adoption PR and marked caller or
-  service; a committed test per converted site proves the caller's
-  token is the one sent, and one test proves a queued write still
-  carries the requester. The A2A agents and the MCP read tools are
-  converted in the same PR, so one answer serves both.
+- **Construction sites.** RE already has the seam: `egeria_clients.
+  egeria_client(identity, ...)` takes `Caller()`, `Daemon(reason,
+  requested_by)` or `current_principal()`, and the A2A middleware sets
+  the `current_caller` ContextVar from the bearer token. The adoption
+  PR is therefore an inventory, not a mechanism: each place RE builds a
+  pyegeria client listed with file:line and marked caller or service
+  with its reason; every synchronous request path still on the daemon
+  converted to the caller; a committed test per converted site that
+  the caller's token is the one sent; one test that a queued write
+  still carries the requester; a two-user live read of one zoned
+  element through a converted route. (The helper `apply_caller_token`
+  named in `docs/a2a.md` does not exist; the doc is corrected in the
+  same PR.) Owner's go: 2026-10-14.
+- **The exchange for MCP.** The same middleware guards `/mcp` for the
+  streamable HTTP transport, so a bearer token becomes the caller
+  identity exactly as on A2A. For stdio, where a local process has no
+  request header, the token is supplied at start (`resource-explorer
+  mcp --token` or the environment) and set once as the caller for the
+  session. One conversion of the construction sites then serves the web
+  routes, A2A and MCP alike.
 
 **Resources and prompts.** MCP resources expose the design notes folder
 and a resource's survey report as readable documents; one prompt per
