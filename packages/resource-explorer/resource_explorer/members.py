@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
+from resource_explorer.artifact_provenance import commit_label, extraction_commit, role_label
 from resource_explorer.registry import ProjectRegistry
 from resource_explorer.surveyors.repo_survey_definition_adapter import ANALYSIS_KINDS
 
@@ -171,10 +172,12 @@ def _symbol_members(registry, slug, scope, limit) -> MemberSet:
     # the inventory summary is how the rail says so rather than hiding it.
     inv = registry.file_inventory_summary(slug)
     provenance = inventory_sentence(inv, nfiles)
+    sha = extraction_commit(registry, slug)
+    extracted = f"Symbols extracted at {commit_label(sha)}." if sha else f"Extraction {commit_label(sha)}."
     return MemberSet("api_structure", "symbol_count",
                      "symbols, by language and file" + ("" if scope == "all" else " — public only"),
                      int(total or 0), scope, True, groups,
-                     note=f"{provenance} `public` is inferred from naming conventions, not declared; a maintainer's marking would be better.",
+                     note=f"{provenance} {extracted} `public` is inferred from naming conventions, not declared; a maintainer's marking would be better.",
                      source="project_code_symbols", inventory=inv.get("short", ""))
 
 
@@ -200,9 +203,11 @@ def _symbols_in_file(registry, slug, file_path, scope, limit) -> list[dict]:
     where = "project_slug = ? AND file_path = ?" + ("" if scope == "all" else " AND COALESCE(is_private, 0) = 0")
     with registry._conn() as conn:
         rows = [_row(r) for r in conn.execute(
-            f"SELECT qualified_name, kind, COALESCE(is_private,0) AS is_private FROM project_code_symbols WHERE {where} "
-            "ORDER BY kind, qualified_name LIMIT ?", (slug, file_path, limit)).fetchall()]
-    return [{"name": r["qualified_name"], "detail": (r.get("kind") or "") + (" · private" if r.get("is_private") else "")} for r in rows]
+            f"SELECT qualified_name, kind, COALESCE(is_private,0) AS is_private, file_role FROM project_code_symbols "
+            f"WHERE {where} ORDER BY kind, qualified_name LIMIT ?", (slug, file_path, limit)).fetchall()]
+    return [{"name": r["qualified_name"],
+             "detail": (r.get("kind") or "") + (" · private" if r.get("is_private") else "")
+             + f" · {role_label(r.get('file_role'))}"} for r in rows]
 
 
 def _component_members(registry, slug, scope, limit) -> MemberSet:

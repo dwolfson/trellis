@@ -1622,6 +1622,26 @@ class ProjectRegistry:
                     ) from exc
                 raise
 
+    def _add_nullable_text_column(self, conn, table: str, column: str, existing: set[str]) -> None:
+        """Additive, nullable, no default: an ADD COLUMN that rewrites nothing, and every older row reads
+        NULL ("not recorded"). The same shape as resource_schedules.created_by and step_runs'
+        engine_action_* columns: IF NOT EXISTS on Postgres so two processes starting together cannot fail
+        each other; lock_timeout so a table another process holds fails fast instead of queueing every
+        later reader behind it. SQLite has no IF NOT EXISTS here (single writer)."""
+        if not existing or column in existing:
+            return
+        if conn.is_postgres:
+            conn.execute("SET LOCAL lock_timeout = '10s'")
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} TEXT"
+                         if conn.is_postgres else f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+        except Exception as exc:
+            if getattr(exc, "pgcode", None) == "55P03" or "lock timeout" in str(exc).lower():
+                raise RuntimeError(
+                    f"Could not add {table}.{column}: another process holds a lock on {table}; "
+                    "stop other Resource Explorer processes and restart.") from exc
+            raise
+
     def _get_table_columns(self, conn, table_name: str) -> set[str]:
         """Columns currently on table_name, read through the SAME open
         transaction as the caller's CREATE TABLE — not a fresh connection via
@@ -2015,6 +2035,10 @@ class ProjectRegistry:
             ]:
                 if col not in existing_symbol_cols:
                     conn.execute(f"ALTER TABLE project_code_symbols ADD COLUMN {col} {defn}")
+            # Migration: file_role — artifacts slice 1 (DESIGN-ARTIFACTS-VIEW-AND-DOC-LINKS.md §3; owner's
+            # go 2026-10-15). core | test | generated | vendored | docs from ingestion/file_role.py, set at
+            # extraction; NULL = extracted before the column existed ("not recorded").
+            self._add_nullable_text_column(conn, "project_code_symbols", "file_role", existing_symbol_cols)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_symbols_slug_kind "
                 "ON project_code_symbols(project_slug, kind)"
@@ -2055,6 +2079,9 @@ class ProjectRegistry:
             # (project_slug, interface_kind) — how interface_surface reads;
             # (project_slug, qualified_name) — the join back to
             # project_code_symbols.
+            # Migration: file_role, as on project_code_symbols (artifacts slice 1).
+            self._add_nullable_text_column(conn, "project_code_markers", "file_role",
+                                           self._get_table_columns(conn, "project_code_markers"))
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_markers_slug_interface_kind "
                 "ON project_code_markers(project_slug, interface_kind)"
@@ -2657,6 +2684,11 @@ class ProjectRegistry:
                                 f"Could not add step_runs.{_col}: another process holds a lock on "
                                 "step_runs; stop other Resource Explorer processes and restart.") from exc
                         raise
+            # Migration: survey_commit_sha — artifacts slice 1 (DESIGN-ARTIFACTS-VIEW-AND-DOC-LINKS.md §3; owner's
+            # go 2026-10-15). The commit a repo step run surveyed, copied from projects.last_commit_sha when
+            # the row is written (record_step_run); a permalink needs it. NULL = not a repo, no commit known,
+            # or the row predates the column ("not recorded").
+            self._add_nullable_text_column(conn, "step_runs", "survey_commit_sha", _step_run_cols)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_step_runs_step "
                 "ON step_runs(step_key, surveyed_at)"
@@ -6189,6 +6221,7 @@ class ProjectRegistry:
                 slug, s.file_path, s.language, s.kind, s.name, s.qualified_name,
                 s.signature, s.docstring, "", s.start_line, s.end_line,
                 s.parent_class, s.return_type, int(s.is_private), int(s.is_async), s.complexity,
+                getattr(s, "file_role", None),
             )
             for s in symbols
         ]
@@ -6202,8 +6235,8 @@ class ProjectRegistry:
                 """INSERT INTO project_code_symbols
                    (project_slug, file_path, language, kind, name, qualified_name,
                     signature, docstring, summary, start_line, end_line,
-                    parent_class, return_type, is_private, is_async, complexity)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    parent_class, return_type, is_private, is_async, complexity, file_role)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(project_slug, file_path, qualified_name)
                    DO UPDATE SET
                      language=excluded.language, kind=excluded.kind, name=excluded.name,
@@ -6211,7 +6244,7 @@ class ProjectRegistry:
                      start_line=excluded.start_line, end_line=excluded.end_line,
                      parent_class=excluded.parent_class, return_type=excluded.return_type,
                      is_private=excluded.is_private, is_async=excluded.is_async,
-                     complexity=excluded.complexity""",
+                     complexity=excluded.complexity, file_role=excluded.file_role""",
                 rows,
             )
             if relationships:
@@ -6263,6 +6296,7 @@ class ProjectRegistry:
             (
                 slug, m.file_path, m.start_line, m.language, m.marker_kind,
                 m.framework, m.interface_kind, m.detail, m.qualified_name,
+                getattr(m, "file_role", None),
             )
             for m in markers
         ]
@@ -6270,8 +6304,8 @@ class ProjectRegistry:
             conn.executemany(
                 """INSERT INTO project_code_markers
                    (project_slug, file_path, start_line, language, marker_kind,
-                    framework, interface_kind, detail, qualified_name)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    framework, interface_kind, detail, qualified_name, file_role)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 rows,
             )
 
@@ -7304,16 +7338,26 @@ class ProjectRegistry:
         all.
         """
         with self._conn() as conn:
+            # `survey_commit_sha` (artifacts slice 1): a repo step run records the commit it surveyed, read
+            # from projects.last_commit_sha in the same transaction as the insert, so every path that records
+            # a step run (local, Prefect, observer) stores it. Copied, not joined: a later fetch moves
+            # last_commit_sha and must not rewrite what an earlier run surveyed. '' (never fetched) and
+            # non-repo runs store NULL, which readers show as "not recorded".
+            commit_sha = None
+            if entity_type == "repo":
+                row = conn.execute("SELECT last_commit_sha FROM projects WHERE slug = ?",
+                                   (self._normalize_slug(slug),)).fetchone()
+                commit_sha = (dict(row).get("last_commit_sha") if row else None) or None
             conn.execute(
                 "INSERT INTO step_runs (slug, entity_type, step_key, surveyed_at, "
                 "source, executor, executor_ref, demanded_by, metrics, declared, "
-                "disagreement, surveyed_as, flow_run_id, dispatch_failed) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "disagreement, surveyed_as, flow_run_id, dispatch_failed, survey_commit_sha) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (slug, entity_type, step_key, surveyed_at, source, executor,
                  executor_ref or "", demanded_by or "",
                  json.dumps(metrics or {}), json.dumps(declared or {}),
                  disagreement or "", surveyed_as or "",
-                 flow_run_id or "", dispatch_failed or ""),
+                 flow_run_id or "", dispatch_failed or "", commit_sha),
             )
 
     def query_step_runs(
