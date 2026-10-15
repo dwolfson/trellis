@@ -68,8 +68,9 @@ ALREADY_CURRENT = "already_current"     # Egeria already holds what RE meant (a 
 NO_PROPOSAL = "no_proposal"             # RE's body proposed nothing: there is nothing to restore
 DIFFERS = "differs"                     # Egeria holds a different classificationName: left alone, reported
 NO_LOCAL_SOURCE = "no_local_source"     # no outbox row for this guid or qualifiedName: reported, never written
-AMBIGUOUS_SOURCE = "ambiguous_source"   # several outbox rows that disagree: reported, never written
-REPORTED = (DIFFERS, NO_LOCAL_SOURCE, AMBIGUOUS_SOURCE)
+AMBIGUOUS_SOURCE = "ambiguous_source"   # rows that disagree, or a guid row naming another qualifiedName: reported
+PRIVATE_OWNER = "private_owner"         # the resource is in a private investigation: only its owner writes there
+REPORTED = (DIFFERS, NO_LOCAL_SOURCE, AMBIGUOUS_SOURCE, PRIVATE_OWNER)
 
 
 @dataclass
@@ -90,6 +91,7 @@ class PlanItem:
     after: dict = field(default_factory=dict)
     body: dict | None = None
     reason: str = ""
+    entities: list = field(default_factory=list)   # (entity_type, slug) of the outbox rows behind a repair
 
 
 # ── reading Egeria ───────────────────────────────────────────────────────────
@@ -115,15 +117,24 @@ def enumerate_annotations(discovery, page_size: int = 200) -> list[Element]:
     """Every RE ClassificationAnnotation in Egeria, paged. Raises when a page cannot be read: a partial enumeration
     must not pass for a complete one."""
     found: dict[str, Element] = {}
+    seen: set[str] = set()
     start = 0
     while True:
+        # A fixed order: without one Egeria's paging by offset has no stable sequence, so a page could repeat or
+        # skip elements.
         page = discovery.find_annotations(
             search_string=RE_PREFIX, starts_with=True, ignore_case=False, start_from=start, page_size=page_size,
-            output_format="JSON", graph_query_depth=0, metadata_element_type=TYPE_NAME)
+            output_format="JSON", graph_query_depth=0, metadata_element_type=TYPE_NAME,
+            sequencing_order="CREATION_DATE_OLDEST")
         if not isinstance(page, list):
             if start == 0 and not (isinstance(page, str) and "no elements" in page.lower()):
                 raise RuntimeError(f"Egeria's annotation search did not answer with a list: {str(page)[:200]}")
             break
+        guids = {((raw.get("elementHeader") or {}).get("guid") or "") for raw in page if isinstance(raw, dict)}
+        if len(page) >= page_size and not (guids - seen):
+            raise RuntimeError(f"Egeria's annotation search returned a full page at offset {start} with no new "
+                               "element: the paging is not advancing, so the enumeration cannot be trusted")
+        seen |= guids
         for raw in page:
             el = element_from(raw)
             if el is not None:
@@ -173,6 +184,12 @@ def plan_one(element: Element, by_guid: dict, by_qn: dict) -> PlanItem:
     if not rows:
         return PlanItem(element, NO_LOCAL_SOURCE, reason="no outbox row has this guid or qualifiedName")
     ids = [r["id"] for r in rows]
+    if source == "outbox:egeria_guid":
+        other = sorted({r.get("qualified_name") or "" for r in rows} - {element.qualified_name})
+        if other:
+            # A row's recorded GUID can name a peer element (an adopted lookup hit): not this annotation's body.
+            return PlanItem(element, AMBIGUOUS_SOURCE, source, ids,
+                            reason=f"outbox row with this guid names another qualifiedName: {other[0]}")
     try:
         candidates = {json.dumps(intended_fields(json.loads(r["payload_json"])), sort_keys=True) for r in rows}
     except (TypeError, ValueError) as exc:
@@ -188,12 +205,33 @@ def plan_one(element: Element, by_guid: dict, by_qn: dict) -> PlanItem:
     if held and held != after.get("classificationName"):
         return PlanItem(element, DIFFERS, source, ids, after=after,
                         reason=f"Egeria holds classificationName {held!r}")
-    return PlanItem(element, REPAIR, source, ids, after=after, body=update_body(element, after))
+    item = PlanItem(element, REPAIR, source, ids, after=after, body=update_body(element, after))
+    item.entities = sorted({(r.get("entity_type") or "", r.get("entity_slug") or "") for r in rows})
+    return item
 
 
-def make_plan(elements: list[Element], outbox_rows: list[dict]) -> list[PlanItem]:
+def make_plan(elements: list[Element], outbox_rows: list[dict], owner_of=None) -> list[PlanItem]:
+    """`owner_of(entity_type, slug)` is private_publish.resolve_private_owner bound to the registry: a repair on a
+    resource with a private owner is reported, not written (RE's rule: only that owner writes there). A lookup that
+    fails is treated as private (fail closed)."""
     by_guid, by_qn = index_outbox(outbox_rows)
-    return [plan_one(e, by_guid, by_qn) for e in elements]
+    plan = [plan_one(e, by_guid, by_qn) for e in elements]
+    if owner_of is None:
+        return plan
+    for item in plan:
+        if item.outcome != REPAIR:
+            continue
+        for entity_type, slug in item.entities:
+            try:
+                owner = owner_of(entity_type, slug)
+            except Exception as exc:  # noqa: BLE001 -- cannot tell is not "not private"
+                owner, why = "?", f"private owner of {entity_type}/{slug} could not be read: {exc}"
+            else:
+                why = f"{entity_type}/{slug} is in a private investigation of {owner}"
+            if owner:
+                item.outcome, item.body, item.reason = PRIVATE_OWNER, None, why
+                break
+    return plan
 
 
 # ── the write ────────────────────────────────────────────────────────────────
@@ -221,13 +259,19 @@ def apply_plan(discovery, plan: list[PlanItem], log, limit: int | None = None) -
                  "source": item.source, "outbox_ids": item.outbox_ids, "before": el.current, "after": item.after,
                  "confidence": el.primitives.get("confidence")}
         try:
-            send_update(discovery, el.guid, item.body)
+            # The primitives are read again just before the write: Egeria's merge writes every one of them, so the
+            # body must carry what the element holds now, not what it held when the plan was made.
+            fresh = read_element(discovery, el.guid)
+            if fresh is None:
+                raise RuntimeError("no RE ClassificationAnnotation at this guid just before the write")
+            entry["confidence"] = fresh.primitives.get("confidence")
+            send_update(discovery, el.guid, update_body(fresh, item.after))
             back = read_element(discovery, el.guid)
             if back is None:
                 raise RuntimeError("read-back found no RE ClassificationAnnotation at this guid")
             wrong = {k: back.current.get(k) for k, v in item.after.items() if back.current.get(k) != v}
-            if back.primitives.get("confidence") != el.primitives.get("confidence"):
-                wrong["confidence"] = back.primitives.get("confidence")
+            wrong.update({k: back.primitives.get(k) for k in CARRIED_PRIMITIVES
+                          if back.primitives.get(k) != fresh.primitives.get(k)})
             if wrong:
                 raise RuntimeError(f"read-back differs from the plan: {wrong}")
         except Exception as exc:  # noqa: BLE001 -- one failure is recorded and the batch goes on
@@ -256,7 +300,8 @@ def summarize(plan: list[PlanItem]) -> dict:
 
 def print_report(plan: list[PlanItem], out=print, samples: int = 5) -> None:
     s = summarize(plan)
-    out(f"RE ClassificationAnnotations in Egeria: {s['total']}")
+    out(f"=== ClassificationAnnotations in Egeria with qualifiedName prefix {RE_PREFIX} (RE and others): "
+        f"{s['total']} ===")
     for title, key in (("by outcome", "by_outcome"), ("by source", "by_source"),
                        ("by analysisStep and outcome", "by_analysis_step_and_outcome")):
         out(f"\n{title}:")
@@ -295,7 +340,9 @@ def run(discovery, registry, *, apply: bool, log_path: Path, out=print, page_siz
     """Enumerate, plan, report, and (with apply) write. Returns the exit code."""
     elements = enumerate_annotations(discovery, page_size=page_size)
     rows = registry.list_outbox_payloads("annotation", PROPERTIES_CLASS)
-    plan = make_plan(elements, rows)
+    from resource_explorer.private_publish import resolve_private_owner
+
+    plan = make_plan(elements, rows, owner_of=lambda et, slug: resolve_private_owner(registry, et, slug))
     out(f"{'APPLY' if apply else 'DRY RUN (nothing is written; --apply to write)'}  "
         f"outbox annotation rows read: {len(rows)}")
     print_report(plan, out=out)
@@ -306,6 +353,8 @@ def run(discovery, registry, *, apply: bool, log_path: Path, out=print, page_siz
                  "qualifiedName": i.element.qualified_name, "outcome": i.outcome, "reason": i.reason,
                  "source": i.source, "before": i.element.current, "after": i.after})
     if not apply:
+        if limit is not None:
+            out(f"--limit {limit} is ignored in a dry run: the whole plan is shown")
         for i in plan:
             if i.outcome == REPAIR:
                 log({"mode": "dry-run", "guid": i.element.guid, "qualifiedName": i.element.qualified_name,
@@ -329,6 +378,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=None,
                         help="With --apply, write only the first N repairs (a canary); a re-run continues.")
     args = parser.parse_args(argv)
+    if args.limit is not None and args.limit < 0:
+        parser.error("--limit must be 0 or more")
+    if args.page_size < 1:
+        parser.error("--page-size must be 1 or more")
 
     from pyegeria import DataDiscovery
 

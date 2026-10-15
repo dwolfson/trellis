@@ -9039,13 +9039,15 @@ class ProjectRegistry:
 
         Read-only. For a repair that needs what RE asked Egeria to write (scripts/
         backfill_classification_annotations.py: the ClassificationAnnotation bodies), keyed by the row's
-        `egeria_guid` and `qualified_name`. No limit: the substring is the filter."""
+        `egeria_guid` and `qualified_name`. No limit: the substring is the filter, matched literally (LIKE's
+        wildcards in it are escaped)."""
+        literal = payload_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT id, entity_type, entity_slug, run_id, element_kind, qualified_name, payload_json, status, "
                 "egeria_guid, created_at, completed_at FROM egeria_outbox "
-                "WHERE element_kind = ? AND payload_json LIKE ? ORDER BY id",
-                (element_kind, f"%{payload_contains}%"),
+                "WHERE element_kind = ? AND payload_json LIKE ? ESCAPE '\\' ORDER BY id",
+                (element_kind, f"%{literal}%"),
             ).fetchall()
         return [dict(r) for r in rows]
 

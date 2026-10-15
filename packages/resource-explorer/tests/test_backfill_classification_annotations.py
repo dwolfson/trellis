@@ -56,6 +56,7 @@ class FakeEgeria:
         self.updates: list[tuple[str, dict]] = []
         self.fail_guids: set[str] = set()
         self.ignore_updates = False
+        self.zero_on_update: set[str] = set()     # primitives Egeria (wrongly) resets whatever the body says
         # Every instance carries these (pyegeria's ServerClient.__init__ sets them); the class does not, so autospec
         # cannot see them. Declared on the class for the spec only.
         monkeypatch.setattr(DataDiscovery, "platform_url", PLATFORM, raising=False)
@@ -78,6 +79,7 @@ class FakeEgeria:
     def find_annotations(self, search_string="*", body=None, starts_with=True, ends_with=False, ignore_case=False,
                          start_from=0, page_size=100, graph_query_depth=3, output_format="JSON",
                          report_spec="Referenceable", **kwargs):
+        assert kwargs.get("sequencing_order") == "CREATION_DATE_OLDEST"
         want = kwargs.get("metadata_element_type")
         hits = sorted((e for e in self.elements.values()
                        if e["properties"].get("qualifiedName", "").startswith(search_string)
@@ -107,7 +109,7 @@ class FakeEgeria:
             return
         props = self.elements[guid]["properties"]
         for k in PRIMITIVES:                     # OpenMetadataElementBuilder writes every primitive on a merge
-            props[k] = kept.get(k, 0)
+            props[k] = 0 if k in self.zero_on_update else kept.get(k, 0)
         for k, v in kept.items():
             if k != "class" and k not in PRIMITIVES and v is not None:
                 props[k] = v
@@ -133,10 +135,10 @@ def published(registry, egeria, guid, qn, candidates, *, record_guid=True, statu
     return row
 
 
-def run(egeria, registry, tmp_path, *, apply, out=None, page_size=200):
+def run(egeria, registry, tmp_path, *, apply, out=None, page_size=200, limit=None):
     lines = []
     code = bf.run(egeria.discovery, registry, apply=apply, log_path=tmp_path / "log.jsonl",
-                  out=(out or lines.append), page_size=page_size)
+                  out=(out or lines.append), page_size=page_size, limit=limit)
     return code, "\n".join(lines)
 
 
@@ -164,7 +166,7 @@ class TestEndToEnd:
 
         code, text = run(egeria, registry, tmp_path, apply=False)
         assert code == 0 and egeria.updates == []
-        assert "RE ClassificationAnnotations in Egeria: 5" in text
+        assert "with qualifiedName prefix Annotation:: (RE and others): 5 ===" in text
         s = bf.summarize(bf.make_plan(bf.enumerate_annotations(egeria.discovery),
                                       registry.list_outbox_payloads("annotation", CLS)))
         assert s["by_outcome"] == {bf.REPAIR: 3, bf.NO_PROPOSAL: 1, bf.NO_LOCAL_SOURCE: 1}
@@ -319,3 +321,71 @@ def test_limit_writes_a_canary_and_a_rerun_continues(egeria, registry, tmp_path)
     assert len(egeria.updates) == 1
     assert bf.run(egeria.discovery, registry, apply=True, log_path=tmp_path / "l", out=lambda _: None) == 0
     assert len(egeria.updates) == 4
+
+
+
+class TestReviewRound:
+    def test_a_guid_row_naming_another_qualified_name_is_ambiguous(self, egeria, registry, tmp_path):
+        """A row's recorded GUID can name a peer element: its body is not this annotation's."""
+        row = registry.enqueue_outbox_element("repo", "p", "annotation", QN.format(7), old_body(QN.format(7), ["x"]))
+        registry.mark_outbox_done(row, "g-a")
+        egeria.create("g-a", old_body(QN.format(1), ["oltp"]))
+        _code, text = run(egeria, registry, tmp_path, apply=True)
+        assert egeria.updates == [] and bf.AMBIGUOUS_SOURCE in text and QN.format(7) in text
+
+    def test_a_full_page_with_nothing_new_stops_the_enumeration(self, egeria, registry, tmp_path):
+        for i in range(3):
+            published(registry, egeria, f"g{i}", QN.format(i), [f"c{i}"])
+        first = egeria.find_annotations(search_string=bf.RE_PREFIX, page_size=2,
+                                        sequencing_order="CREATION_DATE_OLDEST")
+        egeria.discovery.find_annotations.side_effect = lambda **kw: json.loads(json.dumps(first))
+        with pytest.raises(RuntimeError, match="paging is not advancing"):
+            bf.enumerate_annotations(egeria.discovery, page_size=2)
+
+    def test_limit_is_validated_and_said_to_be_ignored_in_a_dry_run(self, egeria, registry, tmp_path):
+        with pytest.raises(SystemExit):
+            bf.main(["--limit", "-1"])
+        published(registry, egeria, "g1", QN.format(1), ["c"])
+        _code, text = run(egeria, registry, tmp_path, apply=False, limit=2)
+        assert "--limit 2 is ignored in a dry run" in text and egeria.updates == []
+
+    def test_primitives_are_read_again_just_before_the_write(self, egeria, registry, tmp_path):
+        published(registry, egeria, "g1", QN.format(1), ["c"], confidence=40)
+        plan = bf.make_plan(bf.enumerate_annotations(egeria.discovery),
+                            registry.list_outbox_payloads("annotation", CLS))
+        egeria.elements["g1"]["properties"].update(confidence=41, sampleSize=9)   # changed after the plan
+        written, failures = bf.apply_plan(egeria.discovery, plan, lambda e: None)
+        assert (written, failures) == (1, [])
+        sent = egeria.updates[0][1]["properties"]
+        assert (sent["confidence"], sent["sampleSize"]) == (41, 9)
+        assert egeria.elements["g1"]["properties"]["sampleSize"] == 9
+
+    def test_read_back_checks_every_primitive(self, egeria, registry, tmp_path):
+        published(registry, egeria, "g1", QN.format(1), ["c"])
+        egeria.elements["g1"]["properties"]["sampleSize"] = 9
+        egeria.zero_on_update = {"sampleSize"}
+        code, text = run(egeria, registry, tmp_path, apply=True)
+        assert code == 1 and "sampleSize" in text
+
+    def test_a_resource_with_a_private_owner_is_reported_not_written(self, egeria, registry, tmp_path, monkeypatch):
+        published(registry, egeria, "g1", QN.format(1), ["c"])
+        monkeypatch.setattr(registry, "private_owner_for_entity", lambda et, slug: "alice" if slug == "p" else "")
+        code, text = run(egeria, registry, tmp_path, apply=True)
+        assert code == 0 and egeria.updates == []
+        assert bf.PRIVATE_OWNER in text and "alice" in text
+
+    def test_an_unreadable_private_owner_fails_closed(self, egeria, registry, tmp_path, monkeypatch):
+        published(registry, egeria, "g1", QN.format(1), ["c"])
+
+        def boom(et, slug):
+            raise RuntimeError("registry down")
+
+        monkeypatch.setattr(registry, "private_owner_for_entity", boom)
+        _code, text = run(egeria, registry, tmp_path, apply=True)
+        assert egeria.updates == [] and bf.PRIVATE_OWNER in text
+
+    def test_outbox_payload_filter_is_literal(self, registry):
+        registry.enqueue_outbox_element("repo", "p", "annotation", "Q::1", {"k": "aXb"})
+        registry.enqueue_outbox_element("repo", "p", "annotation", "Q::2", {"k": "a_b"})
+        assert [r["qualified_name"] for r in registry.list_outbox_payloads("annotation", "a_b")] == ["Q::2"]
+        assert registry.list_outbox_payloads("annotation", "%") == []
