@@ -81,6 +81,9 @@ KNOWN_EXCLUSIVE = {
     ("sub_surveyors/file_structure.py", "language_breakdown"),
     ("sub_surveyors/git_statistics.py", "git_statistics"),
     ("sub_surveyors/homepage.py", "homepage"),
+    # Three returns (found / repo unreadable / none found), chosen by `state`,
+    # which is one of exactly three values -- they cannot both run in one survey.
+    ("sub_surveyors/homepage.py", "documentation_site"),
     ("sub_surveyors/interface_surface.py", "interface_surface"),
     ("sub_surveyors/manifest_parse.py", "ci_workflow_manifest"),
     ("sub_surveyors/manifest_parse.py", "dependency_manifest"),

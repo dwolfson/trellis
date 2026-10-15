@@ -59,6 +59,21 @@ const tile = (key, label, bodyHtml, title = '') =>
   + `<div class="text-provenance uppercase text-ink-muted">${esc(label)}</div>`
   + `<div class="tnum truncate text-caveat text-ink">${bodyHtml}</div></div>`;
 
+/** The documentation link beside the homepage link, with a short cue and no sentence:
+ *  "docs ✓" (linked), "docs unreachable" (linked), "no docs found", "docs not checked".
+ *  The server decides the cue (overview.docs_cue); '' means the step has never run, so draw nothing. */
+export function docsHtml(ov) {
+  const cue = ov && ov.docs_cue;
+  if (!cue) return '';
+  const hover = ov.docs_url
+    ? `${ov.docs_url}${ov.docs_status ? ` · HTTP ${ov.docs_status}` : ''}${ov.docs_source ? ` · from ${ov.docs_source}` : ''}`
+    : '';
+  const word = ov.docs_url
+    ? `<a href="${esc(ov.docs_url)}" target="_blank" rel="noopener noreferrer" class="text-accent-ink underline">${esc(cue)} ↗</a>`
+    : `<span class="text-ink-muted">${esc(cue)}</span>`;
+  return ` · <span data-docs-cue="${esc(ov.docs_state || '')}"${hover ? ` title="${esc(hover)}"` : ''}>${word}</span>`;
+}
+
 /** The tile row. `ov` is the scouting overview; returns '' when there is none (the header renders without it). */
 export function scoutingTilesHtml(ov) {
   if (!ov) return '';
@@ -74,8 +89,8 @@ export function scoutingTilesHtml(ov) {
   const tiles = [
     // Website is derived by the Homepage survey step, not a GitHub stat: no homepage is "none found".
     tile('website', 'Website', ov.homepage
-      ? `<a href="${esc(ov.homepage)}" target="_blank" rel="noopener noreferrer" class="text-accent-ink underline">${esc(prettyHost(ov.homepage))} ↗</a>`
-      : '<span class="text-ink-muted">none found</span>', ov.homepage || 'No project website found'),
+      ? `<a href="${esc(ov.homepage)}" target="_blank" rel="noopener noreferrer" class="text-accent-ink underline">${esc(prettyHost(ov.homepage))} ↗</a>${docsHtml(ov)}`
+      : `<span class="text-ink-muted">none found</span>${docsHtml(ov)}`, ov.homepage || 'No project website found'),
     tile('language', 'Language', unread.has('primary_language') ? cue() : esc(ov.primary_language)),
     tile('stars', 'Stars', num('stars', ov.stars)),
     tile('forks', 'Forks', num('forks', ov.forks)),

@@ -166,7 +166,9 @@ class TestStepCostTiers:
             k for k, info in STEP_REGISTRY.items() if "zipball_root" in info.requires_resources
         }
         assert zipball_steps == {
-            "repo_file_inventory", "repo_homepage", "repo_data_profiling", "repo_symbol_extraction",
+            # repo_homepage left this set (2026-10-14): it reads a handful of small
+            # files through the contents API instead, so Scouting can run it.
+            "repo_file_inventory", "repo_data_profiling", "repo_symbol_extraction",
             "repo_arch_detect", "repo_arch_coupling",
             # repo_manifest_parse (2026-08-23) — parses dependency manifests, CI
             # workflow content and convention signals from the SAME extraction

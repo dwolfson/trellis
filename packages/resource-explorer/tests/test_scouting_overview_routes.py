@@ -266,7 +266,7 @@ class TestScoutingScanMissingSurveyDefinitionFallback:
         assert result.status == "ok"
         assert "ran locally" in result.message
         MockOrch.return_value.run.assert_called_once_with(
-            "myproj", steps=["repo_health", "repo_language"], fast=True,
+            "myproj", steps=["repo_health", "repo_language", "repo_homepage"], fast=True,
         )
 
     def test_fallback_step_errors_are_surfaced(self, registry):
