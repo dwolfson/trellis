@@ -427,7 +427,8 @@ class EgeriaPublisher:
                     "analyses": sorted(_analyses_for_steps(result.steps_run)),
                     "report_guid": report_guid,
                 }
-            else:
+            elif result.annotations:
+                # Nothing published (no annotation) records no badge: a ☁ needs something behind it.
                 try:
                     self._registry.record_published_annotation_types(
                         result.resource_slug,

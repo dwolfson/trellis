@@ -8696,7 +8696,7 @@ class ProjectRegistry:
         which would otherwise read "queued for publish" for ever. Bounded like `_queue_missing_read_back` (every
         write done, a report GUID found, one row per run by its key) and by `limit` runs per call, newest first.
         Returns how many were queued. Called from the scheduler's drain loop before the drain."""
-        from resource_explorer.egeria_outbox import READ_BACK_SUFFIX
+        from resource_explorer.egeria_outbox import LINKS_SUFFIX, READ_BACK_SUFFIX
 
         with self._conn() as conn:
             rows = conn.execute(
@@ -8704,8 +8704,11 @@ class ProjectRegistry:
                 "WHERE a.publish_run_id <> '' "
                 "AND EXISTS (SELECT 1 FROM egeria_outbox o WHERE o.run_id = a.publish_run_id) "
                 "AND NOT EXISTS (SELECT 1 FROM egeria_outbox r WHERE r.run_id = a.publish_run_id || ?) "
+                # A run with a dead row is already "publish failed": it never takes a slot (no starvation).
+                "AND NOT EXISTS (SELECT 1 FROM egeria_outbox d WHERE d.status = 'dead' "
+                "                AND d.run_id IN (a.publish_run_id, a.publish_run_id || ?)) "
                 "ORDER BY a.ts DESC LIMIT ?",
-                (READ_BACK_SUFFIX, int(limit)),
+                (READ_BACK_SUFFIX, LINKS_SUFFIX, int(limit)),
             ).fetchall()
         queued, seen = 0, set()
         for r in rows:

@@ -440,3 +440,44 @@ def test_an_old_run_already_flipped_to_published_gets_a_read_back(world):
     assert reg.queue_missing_read_backs() == 0, "one read-back per run"
     [rb] = reg.list_outbox_elements(run_id=f"{run}::read_back")
     assert json.loads(rb["payload_json"])["report_guid"] == "report-old"
+
+
+# ── round 2 ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+def test_runs_with_a_dead_row_do_not_starve_the_read_back_backfill(world):
+    """A run with a dead row is already "publish failed": it never takes one of the backfill's slots."""
+    _store, reg = world
+    from resource_explorer.activity_logger import log_analysis_run
+
+    def _old_run(name, *, dead):
+        run = f"Annotation::r::{name}"
+        a = reg.enqueue_outbox_element("repo", SLUG, "annotation", f"{run}::0",
+                                       {"class": "X", "parentGUID": f"rep-{name}"}, run_id=run)
+        if dead:
+            reg.mark_outbox_failed(a, "403 refused", max_attempts=1)
+        else:
+            reg.mark_outbox_done(a, "guid")
+        aid = log_analysis_run(reg, "repo", SLUG, "R", "ok", "done", "fake_analysis")
+        reg.update_activity_status(aid, "ok", detail=json.dumps({"published": True}), publish_run_id=run)
+        return run
+
+    good = _old_run("good", dead=False)           # oldest
+    for i in range(3):
+        _old_run(f"dead{i}", dead=True)          # newer, would fill a limit of 3
+    assert reg.queue_missing_read_backs(limit=3) == 1
+    assert reg.list_outbox_elements(run_id=f"{good}::read_back")
+
+
+def test_nothing_published_records_no_published_analysis(world):
+    """Zero annotations: the analysis badge (record_published_analyses) is not written."""
+    _store, reg = world
+    from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
+    from resource_explorer.surveyors.survey_report import SurveyResult
+    from tests.test_publisher_private_zones_e2e import _signed_in
+
+    empty = SurveyResult(resource_slug=SLUG, project_display_name="R", github_url="https://github.com/o/r")
+    empty.steps_run = ["repo_language"]
+    with _signed_in("alice"):
+        EgeriaPublisher(platform_url="https://localhost:9443", registry=reg).publish(empty, defer_drain=False)
+    assert reg.get_last_published_analyses(SLUG) == {}
+    assert reg.get_last_published_annotation_types(SLUG) == {}
