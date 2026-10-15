@@ -9081,6 +9081,23 @@ class ProjectRegistry:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def list_outbox_payloads(self, element_kind: str, payload_contains: str) -> list[dict]:
+        """Every outbox row of one kind whose payload contains `payload_contains`, any status, oldest first.
+
+        Read-only. For a repair that needs what RE asked Egeria to write (scripts/
+        backfill_classification_annotations.py: the ClassificationAnnotation bodies), keyed by the row's
+        `egeria_guid` and `qualified_name`. No limit: the substring is the filter, matched literally (LIKE's
+        wildcards in it are escaped)."""
+        literal = payload_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, entity_type, entity_slug, run_id, element_kind, qualified_name, payload_json, status, "
+                "egeria_guid, created_at, completed_at FROM egeria_outbox "
+                "WHERE element_kind = ? AND payload_json LIKE ? ESCAPE '\\' ORDER BY id",
+                (element_kind, f"%{literal}%"),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def cancel_outbox_row(self, row_id: int, reason: str) -> bool:
         """Retire ONE row that was never applied (pending, or failed and backing off) because a later decision in
         RE supersedes it. `running`, `done` and `dead` rows are never changed: a running row may be landing now,
