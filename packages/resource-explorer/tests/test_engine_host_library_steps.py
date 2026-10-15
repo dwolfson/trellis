@@ -533,8 +533,8 @@ def test_f2_round2_no_registry_or_dsn_is_reachable_and_reachable_connections_are
     _run_queue_once(reg)
     assert found["registries"] == []
     assert found["dsn"] == []
-    assert found["connections"] >= 1          # the walk does reach the reader's connection ...
-    assert found["writes"] == []              # ... and it cannot write
+    assert found["connections"] == 0          # the reader's connection lives in its own thread, out of reach
+    assert found["writes"] == []
     assert egeria.actions["ea-walk"]["completion"]["guards"] == ["survey-completed"]
 
 

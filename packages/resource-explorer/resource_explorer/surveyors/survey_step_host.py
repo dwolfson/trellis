@@ -16,14 +16,16 @@ This module puts such steps BESIDE a resource type's step registry, never in it 
   sentence naming the package, rather than the card saying "no mapped survey step".
 - An installed step with no catalog entry is attached as a runnable step and logged: run the generator.
 
-**The boundary, honestly.** A step is in-process, trusted code: RE enforces that it gets no connection to the
-resource, read-only access to RE's stored rows (`StepOds`: the reader's SELECT methods only, over one connection the
-host opened read-only; the reader never held the registry or its URL) and no Egeria identity (its code runs inside `egeria_clients.no_identity()`, so `current_principal()` raises).
-It is NOT a sandbox: Python code in the same process can reach past any of this on purpose. Install only steps you
-would run as Resource Explorer.
+**The boundary, honestly.** A step is in-process, trusted code. RE enforces three things: no connection to the
+resource; read-only access to RE's stored rows (`step_reader`: the reader's SELECT methods, each query checked to be
+one plain SELECT and run by a separate thread that owns a connection which cannot write: a rolled-back READ ONLY
+transaction per query on Postgres, `mode=ro` + `query_only` + a read-only authorizer on SQLite; the step holds no
+connection, registry or URL); and no Egeria identity (its code runs inside `egeria_clients.no_identity()`, so
+`current_principal()` raises). It is NOT a sandbox: Python code in the same process can reach past any of this on
+purpose (the process environment holds the registry's URL, for one). Install only steps you would run as Resource
+Explorer. A read-only database role for the step reader would be stronger (follow-up: needs a role, i.e. ops).
 
-What the host gives the wrapper: the resource, an ODS reader that can only read (one connection opened read-only
-from the registry's URL: Postgres `set_session(readonly=True)`, SQLite `mode=ro`), and a store that
+What the host gives the wrapper: the resource, that read-only ODS reader, and a store that
 keeps the annotations with their envelope in `additionalProperties`, in their own table `step_annotations`
 (`ProjectRegistry.record_step_annotations`).
 It never gives a password: the runner kwargs (`db_user`, `db_pwd`) stop here. It opens no connection to the
@@ -54,7 +56,9 @@ Nothing in RE's code names the step.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -203,54 +207,180 @@ class StepNotInstalled(RuntimeError):
     """The catalog names a step whose package is not installed in this environment."""
 
 
+#: Words a step's query may not contain outside a literal: anything that changes a setting, attaches a database,
+#: writes, or reaches outside the database. The text check is the first guard; the connection's own (a READ ONLY
+#: transaction that is always rolled back on Postgres; `mode=ro`, `query_only` and an authorizer on SQLite) is the
+#: second, and the connection itself is never reachable from the step (it lives in the reader's own thread).
+_REFUSED_WORDS = frozenset({
+    "set", "set_config", "reset", "attach", "detach", "pragma", "into", "insert", "update", "delete", "merge",
+    "create", "drop", "alter", "truncate", "grant", "revoke", "copy", "vacuum", "analyze", "reindex", "lock",
+    "listen", "notify", "begin", "commit", "rollback", "savepoint", "release", "do", "call", "dblink",
+    "dblink_exec", "lo_import", "lo_export", "pg_read_file", "pg_read_binary_file", "pg_ls_dir",
+    "pg_terminate_backend", "pg_cancel_backend", "pg_reload_conf", "load_extension", "nextval", "setval",
+})
+
+#: How long a step's query may wait for its answer.
+READ_TIMEOUT_SECONDS = 120
+
+
+def check_read_sql(sql: str) -> None:
+    """Refuse anything but ONE plain SELECT: no `;`, no comment, no `$` quoting, no refused word, outside literals.
+    Raises ValueError with the reason."""
+    import re
+
+    text = str(sql or "")
+    if not text.lstrip().lower().startswith("select"):
+        raise ValueError("the ODS reader runs SELECT statements only")
+    outside, i, n = [], 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch in ("'", '"'):
+            j = i + 1
+            while j < n and not (text[j] == ch and (j + 1 >= n or text[j + 1] != ch)):
+                j += 2 if text[j] == ch else 1
+            if j >= n:
+                raise ValueError("the query has an unterminated literal")
+            outside.append(" ")
+            i = j + 1
+            continue
+        outside.append(ch)
+        i += 1
+    bare = "".join(outside)
+    for mark, why in ((";", "one statement only"), ("--", "no comments"), ("/*", "no comments"),
+                      ("$", "no dollar quoting")):
+        if mark in bare:
+            raise ValueError(f"the ODS reader refuses {mark!r} outside a literal ({why})")
+    words = set(re.findall(r"[a-z_][a-z0-9_]*", bare.lower()))
+    if refused := sorted(words & _REFUSED_WORDS):
+        raise ValueError(f"the ODS reader refuses {', '.join(refused)}: it reads, and changes nothing")
+
+
+def _sqlite_authorizer(action, *_args):
+    """Only reading is authorized on a step's SQLite connection (ATTACH, PRAGMA and every write are denied)."""
+    import sqlite3
+
+    allowed = {sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION,
+               getattr(sqlite3, "SQLITE_RECURSIVE", 33)}
+    return sqlite3.SQLITE_OK if action in allowed else sqlite3.SQLITE_DENY
+
+
 def _open_read_only(database_url: str):
-    """(connection, is_postgres): a connection that cannot write, opened from the registry's URL by the HOST. The
-    step is handed only the connection, never the URL: SQLite opened `mode=ro`; Postgres with
-    `set_session(readonly=True)`, so every statement runs in a read-only transaction."""
+    """(connection, is_postgres) that cannot write. SQLite: opened `mode=ro`, autocommit, `query_only=ON`, and an
+    authorizer that allows reading only. Postgres: a read-only session with autocommit OFF; `_execute_read_only`
+    also runs each query in its own `READ ONLY` transaction and rolls it back."""
     if database_url.startswith("postgresql"):
         import psycopg2
 
         conn = psycopg2.connect(database_url)
-        conn.set_session(readonly=True, autocommit=True)
+        conn.set_session(readonly=True, autocommit=False)
         return conn, True
     import sqlite3
 
     path = database_url.removeprefix("sqlite:///")
-    # Autocommit: a refused write opens no transaction that would hold a lock past the statement.
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, isolation_level=None)
+    conn.execute("PRAGMA query_only = ON")
+    conn.set_authorizer(_sqlite_authorizer)
     conn.row_factory = sqlite3.Row
     return conn, False
 
 
-def _step_reader(conn, is_postgres: bool):
-    """The step's ODS reader: the Analytic Library reader's methods over ONE read-only connection. It never held
-    the registry or its URL, so nothing a step digs out of it can write or reconnect."""
+def _execute_read_only(conn, is_postgres: bool, sql: str, params: tuple) -> list[dict]:
+    """Run one query on a read-only connection. Postgres: its own transaction, `SET TRANSACTION READ ONLY` first,
+    always rolled back, so a setting changed inside it does not survive and nothing can be written."""
+    if is_postgres:
+        import psycopg2.extras
+
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SET TRANSACTION READ ONLY")
+                cur.execute(sql.replace("?", "%s"), params)
+                return [dict(r) for r in cur.fetchall()]
+        finally:
+            conn.rollback()
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def _serve(database_url: str, requests, ready) -> None:
+    """The reader's thread: owns the read-only connection, answers one query at a time with plain data (rows, or
+    an error's words; never an exception object, whose traceback would lead back to this frame)."""
+    try:
+        conn, is_pg = _open_read_only(database_url)
+    except Exception as exc:  # noqa: BLE001 - said to the host, which raises it
+        ready.put(f"could not open the registry read-only: {type(exc).__name__}: {exc}")
+        return
+    ready.put("")
+    try:
+        while True:
+            item = requests.get()
+            if item is None:
+                return
+            sql, params, reply = item
+            try:
+                check_read_sql(sql)
+                reply.put(("ok", _execute_read_only(conn, is_pg, sql, params)))
+            except Exception as exc:  # noqa: BLE001
+                reply.put(("error", f"{type(exc).__name__}: {exc}"))
+    finally:
+        conn.close()
+
+
+def _make_reader(requests):
+    """The step's ODS reader: the Analytic Library reader's methods, sending each query to the reader's thread.
+    It holds a request queue and nothing else: no connection, no registry, no URL."""
+    import queue
+
     from trellis_analytics.readers.ods import OdsReader, OdsUnreadable
 
     class StepReader(OdsReader):
-        __slots__ = ("_c", "_is_pg")
+        __slots__ = ("_requests",)
 
-        def __init__(self, c, pg):          # deliberately not OdsReader.__init__: no `url`
-            self._c, self._is_pg = c, pg
+        def __init__(self, q):              # deliberately not OdsReader.__init__: no `url`
+            self._requests = q
 
         def registry_view(self):
             raise AttributeError("a step's ODS reader has no registry view")
 
         def query(self, sql: str, params: tuple = ()) -> list[dict]:
-            if not sql.lstrip().lower().startswith("select"):
-                raise ValueError("the ODS reader runs SELECT statements only")
+            check_read_sql(sql)
+            reply: queue.Queue = queue.Queue(maxsize=1)
+            if self._requests is None:
+                raise OdsUnreadable("the reader is closed: the step's run has ended")
+            self._requests.put((sql, tuple(params), reply))
             try:
-                if self._is_pg:
-                    import psycopg2.extras
+                status, payload = reply.get(timeout=READ_TIMEOUT_SECONDS)
+            except queue.Empty:
+                raise OdsUnreadable(f"the registry did not answer within {READ_TIMEOUT_SECONDS}s") from None
+            if status != "ok":
+                raise OdsUnreadable(f"the registry did not answer: {payload}")
+            return payload
 
-                    cur = self._c.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-                    cur.execute(sql.replace("?", "%s"), params)
-                    return [dict(r) for r in cur.fetchall()]
-                return [dict(r) for r in self._c.execute(sql, params).fetchall()]
-            except Exception as exc:  # noqa: BLE001
-                raise OdsUnreadable(f"the registry did not answer: {exc}") from exc
+    return StepReader(requests)
 
-    return StepReader(conn, is_postgres)
+
+@contextmanager
+def step_reader(database_url: str):
+    """A step's read-only ODS (`StepOds`) for the duration of the block. The connection is opened and used only in
+    the reader's own thread; the block's end stops the thread and closes it, and the reader refuses after that."""
+    import queue
+    import threading
+
+    requests: queue.Queue = queue.Queue()
+    ready: queue.Queue = queue.Queue(maxsize=1)
+    thread = threading.Thread(target=_serve, args=(database_url, requests, ready), name="re-step-reader",
+                              daemon=True)
+    thread.start()
+    problem = ready.get(timeout=READ_TIMEOUT_SECONDS)
+    reader = _make_reader(requests)
+    try:
+        if problem:
+            from trellis_analytics.readers.ods import OdsUnreadable
+
+            raise OdsUnreadable(problem)
+        yield StepOds(reader)
+    finally:
+        object.__setattr__(reader, "_requests", None)
+        requests.put(None)
+        thread.join(timeout=READ_TIMEOUT_SECONDS)
 
 
 #: The reader methods a step may call: SELECTs over RE's stored rows, nothing else.
@@ -286,9 +416,9 @@ def _forward(reader, name):
     return call
 
 
-def _without_identity(code, conn=None):
-    """The step's own code, run with no Egeria identity (`egeria_clients.no_identity`). The reader's connection, when
-    given, is closed as soon as the code returns, before the host stores anything."""
+def _without_identity(code, done=None):
+    """The step's own code, run with no Egeria identity (`egeria_clients.no_identity`). `done`, when given, is called
+    as soon as the code returns (it closes the step's reader), before the host stores anything."""
     from resource_explorer.egeria_clients import no_identity
 
     def run(inputs):
@@ -296,8 +426,8 @@ def _without_identity(code, conn=None):
             with no_identity():
                 return code(inputs)
         finally:
-            if conn is not None:
-                conn.close()
+            if done is not None:
+                done()
 
     return run
 
@@ -324,15 +454,14 @@ class SurveyStepHost:
                 annotations=[a.to_record() for a in annotations],
                 package=self.provided_by.get("package", ""), producer_version=self.manifest.version)
 
-        conn, is_pg = _open_read_only(registry.database_url)
-        try:
+        with contextlib.ExitStack() as stack:
+            ods = stack.enter_context(step_reader(registry.database_url))
             host = HostContext(resource_type=self.entity_type, slug=entity.slug, producing_run=run,
-                               ods=StepOds(_step_reader(conn, is_pg)), connect=None, store=store)
-            # The step's code runs with no Egeria identity; the store and anything after it run as the host does.
+                               ods=ods, connect=None, store=store)
+            # The step's code runs with no Egeria identity, and its reader is closed when the code returns; the
+            # store and anything after it run as the host does.
             code = SurveyStep(self.manifest).code
-            annotations = SurveyStep(self.manifest, code=_without_identity(code, conn)).run(host)
-        finally:
-            conn.close()
+            annotations = SurveyStep(self.manifest, code=_without_identity(code, stack.close)).run(host)
         counts: dict[str, int] = {}
         for a in annotations:
             counts[a.envelope.result_state.value] = counts.get(a.envelope.result_state.value, 0) + 1

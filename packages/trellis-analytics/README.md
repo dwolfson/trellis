@@ -40,8 +40,10 @@ No executor: a routine is called directly; a step is run by a host.
 
 **What a step can and cannot reach (Resource Explorer's host).** A step is in-process, trusted code. The host
 enforces three things: it hands no connection to the resource (a step declaring `connection` is refused); `inputs.ods`
-is a read-only reader of RE's stored rows exposing only its SELECT methods (`query`, `row_count_snapshots`, ...), with
-no registry object and no database URL; and the step's code runs with no Egeria identity, so it cannot act in Egeria
+is a read-only reader of RE's stored rows exposing only its SELECT methods (`query`, `row_count_snapshots`, ...): each
+query must be one plain SELECT, and runs in a separate thread on a connection that cannot write (a rolled-back READ ONLY
+transaction on Postgres; read-only mode, `query_only` and a read-only authorizer on SQLite), so the step holds no
+connection, registry object or database URL; and the step's code runs with no Egeria identity, so it cannot act in Egeria
 (the host publishes its results afterwards, as itself). This narrows what a step is handed; it is **not a sandbox**.
 Python code in the same process can reach past any of it on purpose, so install only steps you would run as Resource
 Explorer itself.
