@@ -549,19 +549,14 @@ async function openReport(slug, reportGuid) {
 
 const COORD_IN_FLIGHT = new Set(['submitted', 'running', 'awaiting_report', 'unreadable']);
 
-/** The control for one definition row. `c.coordinated_by_egeria` is the server's {available, why_not, state, line}. */
+/** The control for one definition row. `c.coordinated_by_egeria` is the server's {available, why_not, state, line}; the
+ *  server leaves it off rows it does not belong to (repository definitions). When it cannot be offered the row draws
+ *  nothing: the reason is said once for the pane (`coordinateOffNoteHtml`), not on every row. */
 export function coordinateControlHtml(c) {
   const ctl = c && c.coordinated_by_egeria;
-  if (!ctl) return '';
+  if (!ctl || !ctl.available) return '';
   const qn = esc(c.qualified_name || c.guid || '');
   const label = esc(ctl.label || 'coordinated by Egeria');
-  if (!ctl.available) {
-    // Hidden: no button, only the short reason (the full wording is the server's one sentence).
-    return ctl.why_not
-      ? `<span data-coordinate-off="${qn}" class="shrink-0 text-provenance text-ink-muted"
-          title="${esc(ctl.why_not)}"><span aria-hidden="true">◌</span> ${label} · ${esc(shortWhy(ctl.why_not))}</span>`
-      : '';
-  }
   const live = COORD_IN_FLIGHT.has(String(ctl.state || ''));
   return `<span class="inline-flex shrink-0 items-baseline gap-s1">
     <button type="button" data-coordinate-egeria="${qn}" ${live ? 'disabled aria-pressed="true"' : 'aria-pressed="false"'}
@@ -571,7 +566,18 @@ export function coordinateControlHtml(c) {
     <span data-coordinate-why="${qn}" class="hidden text-provenance"></span></span>`;
 }
 
-/** The first clause of a reason, for the hidden control's short words ("engine host off"). */
+/** Once for the pane: why "coordinated by Egeria" is not offered (engine host off, ...), when no row offers it and
+ *  some row would have. The short words on the line; the server's full reason on hover. */
+export function coordinateOffNoteHtml(candidates) {
+  const ctls = (candidates || []).map((c) => c && c.coordinated_by_egeria).filter(Boolean);
+  if (!ctls.length || ctls.some((x) => x.available)) return '';
+  const why = (ctls.find((x) => x.why_not) || {}).why_not || '';
+  if (!why) return '';
+  return `<div data-coordinate-off class="mt-s1 text-provenance text-ink-muted" title="${esc(why)}">
+    <span aria-hidden="true">◌</span> ${esc(ctls[0].label || 'coordinated by Egeria')} · ${esc(shortWhy(why))}</div>`;
+}
+
+/** The first clause of a reason, for the short words ("engine host off"). */
 function shortWhy(text) {
   return String(text || '').split(' · ')[0].slice(0, 60);
 }

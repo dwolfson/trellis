@@ -198,11 +198,12 @@ def from_upstream_table(
 # after its first step.
 #
 # So a step of an RE definition completes with its standard survey guard (`SurveyActionGuard`, what every survey
-# reader understands) AND, when the process should go on, the routing guard its authored links carry. Only a
-# completed step goes on: a step that is `survey-invalid` (it was not run, e.g. its credential lacks the capability)
-# or `survey-failed` ends the process there, and the engine host says so on the run. That is a deliberate departure
-# from RE's own executor, which runs every step of an unbranched definition whatever the one before it did; the
-# owner's case-3 gate asks for "that step survey-invalid ... the process ends there".
+# reader understands) AND the routing guard its authored links carry, whatever its outcome: `Any` means "always follow
+# this edge" in RE's own executor, and an Egeria-coordinated run must read the same way (review of case 3, M1: the
+# same steps run, with the same words, both ways). A step that is `survey-invalid` or `survey-failed` therefore does
+# not stop the process; the next step runs, as RE's executor would run it. An authored link with any OTHER guard is
+# taken only when the step produces that guard, and when none of a step's links is taken the engine host says the
+# process ended there.
 #
 # One mapping, three readers: the engine host's completion (`completion_guards`), the GovernanceActionType and
 # GovernanceActionProcessStep declarations (`produced_guards`, scripts/generate_engine_host_declaration.py and
@@ -217,8 +218,8 @@ SURVEY_GUARDS = (SURVEY_COMPLETED, SURVEY_INVALID, SURVEY_FAILED)
 #: The guard RE's generated next-step links carry (`dr_egeria_survey_publisher.render_link_next_block`).
 ROUTING_GUARD = "Any"
 
-#: Which standard guards also emit the routing guard, so Egeria starts the next step.
-CONTINUES_PROCESS = frozenset({SURVEY_COMPLETED})
+#: Which standard guards also emit the routing guard, so Egeria starts the next step: all of them (M1).
+CONTINUES_PROCESS = frozenset(SURVEY_GUARDS)
 
 #: Per-step departures from the default mapping, {step_key: {survey guard: completion guards}}. Empty: no step
 #: routes differently today. A step added here changes its declaration and its completion together.

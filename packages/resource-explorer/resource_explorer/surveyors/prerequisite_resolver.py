@@ -514,19 +514,16 @@ def _capability_reason(step_key: str, info, probe, consented: bool = False,
     return ConsentReason(step_key, "capability", detail), assessment
 
 
-def capability_sentence(step_key: str, info, probe) -> str:
-    """The launcher's own sentence for `step_key`'s capability shortfall against the stored `probe`, or "" when
-    there is none to say (the step declares no capability, nobody has probed, or the credential has it).
+def capability_reason_detail(step_key: str, info, probe) -> str:
+    """The launcher's own reason for `step_key`'s capability shortfall against the stored `probe` (the
+    `ConsentReason.detail` the launcher puts in its proposal, "`<step>` needs `<tier>`: connected as ..."), or ""
+    when there is none (the step declares no capability, nobody has probed, or the credential has it).
 
-    Built by the same `_capability_reason` and `Proposal.sentence()` the launcher shows for a capability-only
-    proposal, so the words cannot drift. Used by RE's engine host (case 3, decision 4), which has nobody to ask and
-    completes such a step `survey-invalid` with this sentence instead of the advisory "run partially" an unattended
-    RE run takes."""
-    reason, assessment = _capability_reason(step_key, info, probe, demanding=True)
-    if reason is None:
-        return ""
-    return Proposal(reasons=[reason], demanding_step=step_key, run_partially=step_key,
-                    capability=assessment.as_dict()).sentence()
+    The reason only, never `Proposal.sentence()`: that sentence offers to "run, but not completely", and RE's engine
+    host (case 3, decision 4), which has nobody to ask, does not run such a step at all; it completes it
+    `survey-invalid` with this reason instead of the advisory partial run an unattended RE run takes."""
+    reason, _assessment = _capability_reason(step_key, info, probe)
+    return reason.detail if reason is not None else ""
 
 
 def _estimate(registry, slug: str, step_keys: list[str],

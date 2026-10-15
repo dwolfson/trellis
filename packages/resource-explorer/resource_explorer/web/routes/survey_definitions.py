@@ -474,6 +474,9 @@ async def list_candidates(
                 "last_run_at": last_activity.get("last_run_at", ""),
                 "last_run_status": last_activity.get("last_run_status", ""),
                 "last_run_activity_id": last_activity.get("last_run_activity_id", ""),
+                # Case 3 (C4): "started in RE by <person>", from the run's own activity detail.
+                "last_run_started_by": last_activity.get("last_run_started_by", ""),
+                "last_run_by": last_activity.get("last_run_by", ""),
                 # Non-empty only when the last run recorded step errors — the
                 # ⚠ beside "ran Xm ago" opens these, rather than only
                 # flagging that something went wrong with no way to see what.
@@ -635,7 +638,9 @@ async def list_candidates(
         for cand in detailed:
             qn = cand.get("qualified_name") or ""
             try:
-                cand["coordinated_by_egeria"] = _nsr.coordinate_control(_reg, entity_type, slug, qn)
+                ctl = _nsr.coordinate_control(_reg, entity_type, slug, qn)
+                if ctl is not None:          # never on a row it does not belong to (repository definitions)
+                    cand["coordinated_by_egeria"] = ctl
             except Exception as exc:  # noqa: BLE001 - the list still renders; the control says why it is not offered
                 log.warning("coordinated-by-Egeria control for %s on %s/%s not computed: %s", qn, entity_type,
                             slug, exc)
@@ -684,7 +689,26 @@ def _params(body: "SurveyDefinitionRunRequest") -> SurveyDefinitionRunParams:
         engine_override="resource-explorer" if override else body.engine,
         credential_scope=OVERRIDE_SCOPE if override else "",
         force_custom=body.force_custom,
+        # Case 3 (decision 5): RE's own Run; who pressed it, read here in the request (both the queued and the
+        # override path go through this function).
+        started_by=_started_by_re(),
+        started_by_person=_requester(),
     )
+
+
+def _started_by_re() -> str:
+    from resource_explorer.engine_host import STARTED_BY_RE
+
+    return STARTED_BY_RE
+
+
+def _requester() -> str:
+    from resource_explorer.run_queue import requested_by
+
+    try:
+        return requested_by() or ""
+    except Exception:  # noqa: BLE001 - who pressed is a label; a run never fails for it
+        return ""
 
 
 #: The word the run rows show for a credential typed for one run only.
@@ -788,13 +812,11 @@ async def run_survey_definition_route(entity_type: str, slug: str,
         summary=f"Running Survey Definition '{body.survey_definition_ref}' on {slug}…",
         detail=json.dumps({"survey_definition_ref": body.survey_definition_ref}),
     )
-    from resource_explorer.engine_host import STARTED_BY_RE
-
     run_id = registry.enqueue_run(
         "survey_definition_run",
-        # Case 3, decision 5: RE's own Run coordinates the definition itself and creates no engine action; the row
-        # says so ("started_by": "re"). "coordinated by Egeria" is the other control, and records "egeria".
-        {"entity_type": entity_type, "slug": slug, "params": _params(body).to_dict(), "started_by": STARTED_BY_RE},
+        # Case 3, decision 5: RE's own Run coordinates the definition itself and creates no engine action; its params
+        # say so (`started_by: re`, and who pressed), and the run's activity detail carries them to Understanding.
+        {"entity_type": entity_type, "slug": slug, "params": _params(body).to_dict()},
         result_ref=activity_id, requested_by=requested_by(),
     )
     log.info("enqueued survey_definition_run %s for %s/%s (activity %s)",

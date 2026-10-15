@@ -803,23 +803,21 @@ def _definition_processes(entity_type: str) -> list[NativeProcess]:
 COORDINATE_LABEL = "coordinated by Egeria"
 
 
-def coordinate_control(registry, entity_type: str, slug: str, process_qn: str) -> dict:
+def coordinate_control(registry, entity_type: str, slug: str, process_qn: str) -> dict | None:
     """The "coordinated by Egeria" control for one Survey Definition on one resource, from the registry only:
-    `available`, `why_not` (the short sentence shown when it is hidden), and the state of the latest run Egeria
-    coordinated, from its persisted row (`derive_mixed_state`), so the control shows "started" from proof."""
-    from resource_explorer import mixed_process
+    `available`, `why_not` (the short sentence shown, once for the pane, when it cannot be offered), and the state of
+    the latest run Egeria coordinated, from its persisted row (`derive_mixed_state`), so the control shows "started"
+    from proof. None where the control does not belong at all (review L6): a definition RE does not declare, or one
+    for a kind of resource the engine host does not run (repositories), so no row of those carries it."""
+    from resource_explorer import engine_host, mixed_process
 
-    out = {"label": COORDINATE_LABEL, "available": False, "why_not": "", "state": "", "line": ""}
     declared = mixed_process.definition_process(process_qn)
-    if declared is None:
-        out["why_not"] = "not a definition Resource Explorer declares"
-        return out
-    entity = _resource_entity(registry, entity_type, slug) if entity_type in ("database", "filesystem") else None
+    if declared is None or declared.entity_type != engine_host.ENTITY_TYPE or entity_type != declared.entity_type:
+        return None
+    out = {"label": COORDINATE_LABEL, "available": False, "why_not": "", "state": "", "line": ""}
+    entity = _resource_entity(registry, entity_type, slug)
     process = NativeProcess(qualified_name=process_qn, display_name=declared.display_name, kind=KIND_RE_DEFINITION,
                             description="", action_target_name="newAsset", target="asset", needs_credentials=False)
-    if entity_type != declared.entity_type:
-        out["why_not"] = NOT_FOR_THIS_KIND.format(kind=entity_type)
-        return out
     out["why_not"] = _definition_cannot_run_reason(process, entity)
     out["available"] = not out["why_not"]
     runs = registry.list_native_survey_runs(entity_type, slug, process_qn) if entity is not None else []
@@ -1082,11 +1080,16 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
     ended_badly = next((s for s in by_index if s.get("status") not in ("", None, *ACTIVE_STATUSES)
                         and not (s.get("status") == "COMPLETED" and "survey-completed" in (s.get("guards") or []))),
                        None)
-    if ended_badly is not None:
+    # An RE definition goes on after an invalid or failed step (case 3, review M1: its steps always emit `Any`), so
+    # while a step is active or still to come it is running; failed only once nothing more will run.
+    goes_on = process is not None and process.qualified_name.startswith(mixed_process.DEFINITION_PREFIX) \
+        and mixed_process.by_qualified_name(process.qualified_name) is None
+    still_going = any(s.get("status") in ACTIVE_STATUSES for s in by_index) or len(by_index) < expected
+    if ended_badly is not None and not (goes_on and still_going):
         out["state"] = FAILED
         out["message"] = pr.get("words") or out["message"]
         return out
-    if any(s.get("status") in ACTIVE_STATUSES for s in by_index) or len(by_index) < expected:
+    if still_going:
         out["state"] = RUNNING
         out["message"] = pr.get("words") or out["message"]
         return out
@@ -1368,10 +1371,20 @@ def submit_native_survey(registry, port: EgeriaSurveyPort, entity_type: str, slu
             started_by=started_by, started_in=started_in)
         raise NativeSurveyError(error) from exc
 
-    registry.record_native_survey_submission(
-        entity_type, slug, process_qualified_name, submitted_at,
-        engine_action_guid=engine_action_guid, submitted_by=submitted_by, started_as=started_as,
-        started_by=started_by, started_in=started_in)
+    if process.kind == KIND_RE_DEFINITION:
+        # One run line per process instance (review L5): RE's engine host may already have listed it from the first
+        # step it ran; then this press is recorded on that row, never as a second one.
+        if not registry.record_native_survey_submission_once(
+                entity_type, slug, process_qualified_name, submitted_at, engine_action_guid=engine_action_guid,
+                submitted_by=submitted_by, started_as=started_as, started_by=started_by, started_in=started_in):
+            registry.adopt_native_survey_submission(
+                engine_action_guid, submitted_by=submitted_by,
+                declared_patch={"started_as": started_as, "started_by": started_by, "started_in": started_in})
+    else:
+        registry.record_native_survey_submission(
+            entity_type, slug, process_qualified_name, submitted_at,
+            engine_action_guid=engine_action_guid, submitted_by=submitted_by, started_as=started_as,
+            started_by=started_by, started_in=started_in)
     log.info("submitted native survey %s for %s/%s: engine action %s",
              process_qualified_name, entity_type, slug, engine_action_guid)
 

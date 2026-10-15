@@ -170,9 +170,10 @@ def test_request_types_equal_both_registries_and_guards_equal_the_mapping():
     # Every registry request type is one RE's engine claims, mapped to its own step key.
     supported = eh.supported_request_types()
     assert {rt: supported[rt] for rt in expected} == expected
-    # The mapping: a completed step also emits the guard RE's authored links carry; the others end the process.
-    assert step_outcome.completion_guards("postgres_operations", "survey-completed") == ("survey-completed", "Any")
-    assert step_outcome.completion_guards("postgres_operations", "survey-invalid") == ("survey-invalid",)
+    # The mapping (review M1): every outcome also emits the guard RE's authored links carry, so an Egeria-coordinated
+    # run goes on after any step exactly as RE's own executor follows `Any`.
+    for g in ("survey-completed", "survey-invalid", "survey-failed"):
+        assert step_outcome.completion_guards("postgres_operations", g) == (g, "Any")
 
 
 # ── test 2: an executor per step in the published document; the reconciler flags none, two, or a wrong one ─────
@@ -280,12 +281,14 @@ def test_an_out_of_scope_repository_step_is_claimed_and_completed_invalid_naming
 # ── test 4: a guard no authored link consumes ends the process, and RE says so ─────────────────────────────────
 
 def test_a_guard_no_next_step_consumes_ends_the_process_and_the_run_says_so(reg, egeria, no_connection):
-    # db_derived with no stored inventory completes survey-invalid; its authored next link takes only "Any".
-    _process_action(egeria, "ea-dd", "db_derived", next_guards=("Any",), target="0a1b2c3d-0000-4000-8000-0000000000d3")
+    # db_derived with no stored inventory completes survey-invalid; its (hand-authored) next link takes only
+    # "survey-completed", which it does not produce, and not "Any".
+    _process_action(egeria, "ea-dd", "db_derived", next_guards=("survey-completed",),
+                    target="0a1b2c3d-0000-4000-8000-0000000000d3")
     assert _sweep(reg).claimed == ["ea-dd"]
     _run_queue_once(reg)
     done = egeria.actions["ea-dd"]["completion"]
-    assert done["guards"] == ["survey-invalid"]                  # Egeria is told the guard
+    assert done["guards"] == ["survey-invalid", "Any"]           # Egeria is told the guards
     note = "process ended after db_derived: guard survey-invalid has no next step"
     assert note in done["message"]
     [row] = _rows(reg)
@@ -296,8 +299,8 @@ def test_a_guard_no_next_step_consumes_ends_the_process_and_the_run_says_so(reg,
 
 # ── test 5: credential capability ─────────────────────────────────────────────────────────────────────────────
 
-def test_a_step_the_stored_credential_cannot_serve_is_invalid_with_the_launchers_sentence(reg, egeria, no_connection,
-                                                                                         ops_runner):
+def test_a_step_the_stored_credential_cannot_serve_is_invalid_with_the_launchers_reason(reg, egeria, no_connection,
+                                                                                       ops_runner):
     from resource_explorer.surveyors import credential_capability, prerequisite_resolver
     from resource_explorer.surveyors.database.survey_definition_adapter import DATABASE_STEP_REGISTRY
 
@@ -309,11 +312,12 @@ def test_a_step_the_stored_credential_cannot_serve_is_invalid_with_the_launchers
     entity = reg.get_database("coco_pharma", allow_unreadable=True)
     launcher = prerequisite_resolver.resolve(reg, entity, "postgres_operations", DATABASE_STEP_REGISTRY,
                                              capability_probe=credential_capability.stored_probe(reg, entity))
-    sentence = launcher.proposal.sentence()
-    assert sentence.startswith("`postgres_operations` can run, but not completely")
+    [reason] = [r.detail for r in launcher.proposal.reasons if r.kind == "capability"]
+    assert reason.startswith("needs `stats`: connected as egeria_user")
     done = egeria.actions["ea-cap"]["completion"]
-    assert done["status"] == "INVALID" and done["guards"] == ["survey-invalid"]
-    assert sentence in done["message"]
+    assert done["status"] == "INVALID" and done["guards"] == ["survey-invalid", "Any"]
+    assert reason in done["message"]                             # the launcher's own reason, nothing invented
+    assert "can run, but not completely" not in done["message"]  # never "did not run ... can run" (review M2)
     assert egeria.reports() == [] and ops_runner == []           # nothing run, no report
 
 
@@ -335,7 +339,8 @@ def test_a_definition_started_in_re_creates_no_engine_action_and_its_row_says_re
                                json={"survey_definition_ref": ANALYSIS})
     assert res.status_code == 200, res.text
     [row] = reg.list_runs(kind="survey_definition_run")
-    assert json.loads(row["target"])["started_by"] == "re"
+    params = json.loads(row["target"])["params"]
+    assert params["started_by"] == "re" and "started_by_person" in params
     assert not egeria.method_calls("initiate_gov_action_process") and not egeria.method_calls("claim_engine_action")
     assert reg.list_runs(kind="engine_action") == []
 
@@ -445,13 +450,13 @@ def test_an_egeria_coordinated_definition_run_reads_as_one_line_with_every_step(
 
     views = [_view("a1", "postgres_column_profile", "COMPLETED", ["survey-completed", "Any"], "r1aaaaaa-0000"),
              _view("a2", "postgres_nested_columns", "COMPLETED", ["survey-completed", "Any"], "r2bbbbbb-0000"),
-             _view("a3", "db_derived", "INVALID", ["survey-invalid"])]
+             _view("a3", "db_derived", "INVALID", ["survey-invalid", "Any"])]
     [line] = mixed_process.group_by_process(views)
     assert line.process.display_name == "Database Analysis Survey"
     words = mixed_process.run_line_words(line, started="10-15", started_in=mixed_process.STARTED_IN_EGERIA)
     assert words == ("Database Analysis Survey · step 1 postgres_column_profile ✓ report r1aaaaaa · step 2 "
-                     "postgres_nested_columns ✓ report r2bbbbbb · step 3 db_derived ✗ survey-invalid · step 4 not "
-                     "started · step 3 failed · started in Egeria by peterprofile 10-15")
+                     "postgres_nested_columns ✓ report r2bbbbbb · step 3 db_derived ✗ survey-invalid · step 4 "
+                     "postgres_operations not started yet · started in Egeria by peterprofile 10-15")
     from_re = mixed_process.run_line_words(line, started_in=mixed_process.STARTED_IN_RE, started_by="dan")
     assert from_re.endswith("· started in RE by dan")
 
@@ -488,8 +493,8 @@ def test_the_control_is_hidden_with_a_sentence_when_the_engine_host_is_off(reg, 
     assert off["why_not"] == nsr.ENGINE_HOST_OFF
     monkeypatch.setenv("RE_ENGINE_HOST_ENABLED", "true")
     assert nsr.coordinate_control(reg, "database", "coco_pharma", ANALYSIS)["available"] is True
-    repo = nsr.coordinate_control(reg, "repo", "anything", "GovActionProcess::RepoScoutingSurvey")
-    assert repo["available"] is False and repo["why_not"].startswith("not for repos yet")
+    # never on a repository definition's row at all (review L6)
+    assert nsr.coordinate_control(reg, "repo", "anything", "GovActionProcess::RepoScoutingSurvey") is None
 
 
 def test_the_control_starts_the_process_through_egeria_and_records_started_by_egeria(reg, egeria, no_connection):
@@ -535,3 +540,143 @@ def test_a_later_step_handed_every_earlier_steps_report_runs_and_is_not_refused(
     done = egeria.actions["ea-3"]["completion"]
     assert done["guards"] == ["survey-completed", "Any"], done
     assert "other target" not in done["message"]                 # the asset Egeria listed twice is one target
+
+
+# ── review round 1 (H1, M1, L1, L2, L4, L5) ────────────────────────────────────────────────────────────────────
+
+def test_every_published_step_ignores_multiple_triggers():
+    """H1(a): duplicate next-step links (Dr.Egeria's Link Next only adds) must not start a step twice."""
+    from resource_explorer.surveyors.survey_definition_docs import documented_definitions
+
+    for path in sorted((PKG / "docs" / "dr-egeria").glob("survey-definitions*/*-survey-definition-*.md")):
+        text = path.read_text()
+        blocks = text.split("## Create Governance Action Process Step")[1:]
+        assert blocks, path
+        for block in blocks:
+            block = block.split("___")[0]
+            assert "### Ignore Multiple Triggers\ntrue\n" in block, (path.name, block[:120])
+    assert documented_definitions()["DatabaseAnalysisSurvey"].steps    # the parser still reads the steps
+
+
+def test_a_step_started_twice_in_one_run_runs_once_and_the_second_is_invalid(reg, egeria, no_connection):
+    """H1(b): two engine actions for the same process step of the same process instance (a duplicate link fired)."""
+    _process_action(egeria, "ea-dup-1", "db_derived")
+    _process_action(egeria, "ea-dup-2", "db_derived")              # same instance, same step
+    _process_action(egeria, "ea-other-run", "db_derived", instance=INSTANCE_2)   # another run: its own step
+    assert sorted(_sweep(reg).claimed) == ["ea-dup-1", "ea-dup-2", "ea-other-run"]
+    for _ in range(3):
+        _run_queue_once(reg)
+    first, second, other = (egeria.actions[g]["completion"] for g in ("ea-dup-1", "ea-dup-2", "ea-other-run"))
+    assert first["guards"] == ["survey-completed", "Any"] and other["guards"] == ["survey-completed", "Any"]
+    assert second["status"] == "INVALID" and second["guards"] == ["survey-invalid", "Any"]
+    assert "triggered twice in this run; the first ran (engine action ea-dup-1)" in second["message"]
+    assert sorted(e1 for e1, _ in [(r["end1"], r) for r in egeria.relationships if r["type"] == "ReportOriginator"]) \
+        == ["ea-dup-1", "ea-other-run"]                          # the second wrote no report
+
+
+def test_a_private_repository_target_is_not_claimed(reg, egeria):
+    """L1: a repository request type's private target is left unclaimed, like a database's."""
+    from resource_explorer.a2a_auth import CallerIdentity, current_caller
+    from resource_explorer.registry import Project
+
+    repo_guid = "0a1b2c3d-0000-4000-8000-0000000000e7"
+    reg.add(Project(slug="alice_repo", display_name="alice_repo", github_url="https://github.com/a/alice_repo",
+                    egeria_asset_guid=repo_guid))
+    reset = current_caller.set(CallerIdentity(user_id="alice", egeria_token=None, auth_source="app-jwt"))
+    try:
+        inv = reg.create_investigation("Alice Repo", project_classification="PersonalProject")
+        ws = reg.get_or_create_working_set(inv["slug"])
+        reg.add_working_set_member(ws["slug"], "repo", "alice_repo")
+    finally:
+        current_caller.reset(reset)
+    assert reg.repo_slug_for_asset_guid(repo_guid) == "alice_repo"
+    assert reg.private_owner_for_entity("repo", "alice_repo") == "alice"
+    egeria.add_action("ea-private-repo", request_type="re-repo-arch-coupling", target=repo_guid)
+    swept = _sweep(reg)
+    assert swept.claimed == [] and swept.skipped.get("private_target") == ["ea-private-repo"]
+    assert egeria.actions["ea-private-repo"]["processingEngineUserId"] is None
+
+
+def test_an_unreadable_stored_credential_is_invalid_and_never_tried_empty(reg, egeria, no_connection, ops_runner,
+                                                                          monkeypatch):
+    """L4: never a driver error with an empty password."""
+    import resource_explorer.credential_crypto as crypto
+
+    _with_credential(reg)
+
+    def cannot(_raw):
+        raise ValueError("no key")
+
+    monkeypatch.setattr(crypto, "decrypt_db_password", cannot)
+    assert reg.get_database("coco_pharma", allow_unreadable=True).credential_status == "unreadable"
+    _process_action(egeria, "ea-unread", "postgres_operations", next_guards=())
+    assert _sweep(reg).claimed == ["ea-unread"]
+    _run_queue_once(reg)
+    done = egeria.actions["ea-unread"]["completion"]
+    assert done["status"] == "INVALID" and "stored credential unreadable" in done["message"]
+    assert ops_runner == [] and egeria.reports() == []
+
+
+def test_the_run_press_and_the_engine_host_write_one_run_line_whoever_is_first(reg, egeria, no_connection):
+    """L5: the engine host listed the instance first (its first step ran before Run's own write); the press is then
+    recorded on that row, not as a second run line."""
+    from resource_explorer import catalog_and_survey as cas
+    from resource_explorer.egeria_clients import Daemon, DaemonReason
+    from resource_explorer.native_survey_run import port_session, submit_native_survey
+
+    egeria.declared.add(ANALYSIS)
+    egeria.assets.add(DB_GUID)
+    started = egeria._start_process
+
+    def start_then_engine_host_lists_it(*a, **k):
+        guid = started(*a, **k)
+        reg.record_native_survey_submission_once("database", "coco_pharma", ANALYSIS, "2026-10-15T09:00:00",
+                                                 engine_action_guid=guid, submitted_by=REQUESTER,
+                                                 started_as="engine-host", started_by="egeria", started_in="egeria")
+        return guid
+
+    egeria._start_process = start_then_engine_host_lists_it
+    with port_session(cas.PyegeriaRegistrationPort(identity=Daemon(DaemonReason.SCHEDULER))) as port:
+        submit_native_survey(reg, port, "database", "coco_pharma", ANALYSIS, technology_type=TECH, submitted_by="dan")
+    [row] = reg.list_native_survey_runs("database", "coco_pharma", ANALYSIS)
+    assert row["engine_action_guid"] == "pi-1" and row["submitted_by"] == "dan"
+    assert json.loads(row["declared"])["started_in"] == "re"
+    # and the other order: the engine host writes second and adds nothing
+    assert reg.record_native_survey_submission_once("database", "coco_pharma", ANALYSIS, "2026-10-15T09:01:00",
+                                                    engine_action_guid="pi-1", started_in="egeria") is False
+    assert len(reg.list_native_survey_runs("database", "coco_pharma", ANALYSIS)) == 1
+
+
+def test_an_re_run_records_and_shows_where_it_was_started():
+    """L2: RE's own Run records started_by "re" and who pressed; Understanding's last-run line reads both back."""
+    from resource_explorer.workflows.survey_definition import SurveyDefinitionRunParams
+
+    params = SurveyDefinitionRunParams(survey_definition_ref=ANALYSIS, started_by_person="dan")
+    again = SurveyDefinitionRunParams.from_dict(params.to_dict())
+    assert (again.started_by, again.started_by_person) == ("re", "dan")
+
+
+def test_the_last_run_line_reads_where_an_re_run_was_started(tmp_path):
+    from resource_explorer.registry import ProjectRegistry
+
+    reg = ProjectRegistry(db_path=str(tmp_path / "lastrun.db"))
+    from resource_explorer.activity_logger import log_survey
+
+    log_survey(reg, entity_type="database", entity_slug="coco_pharma", entity_name="coco_pharma",
+               entity_location="", intent="assessment", status="ok", summary="ran",
+               detail=json.dumps({"survey_definition_ref": ANALYSIS, "started_by": "re", "started_by_person": "dan"}))
+    entry = reg.get_survey_definition_last_activity("database", "coco_pharma")[ANALYSIS]
+    assert (entry["last_run_started_by"], entry["last_run_by"]) == ("re", "dan")
+
+
+def test_a_definition_run_goes_on_after_a_failed_step_and_reads_running_until_done():
+    """M1: an Egeria-coordinated definition run continues past an invalid step, as RE's executor would."""
+    from resource_explorer.native_survey_run import RUNNING, derive_mixed_state
+
+    row = {"engine_action_guid": INSTANCE, "executor_ref": ANALYSIS, "surveyed_at": "2026-10-15T09:00:00",
+           "engine_action_status": "IN_PROGRESS", "engine_action_read_at": "2026-10-15T09:01:00",
+           "declared": json.dumps({"process_run": {"words": "w", "steps": [
+               {"status": "COMPLETED", "guards": ["survey-completed", "Any"]},
+               {"status": "INVALID", "guards": ["survey-invalid", "Any"]},
+               {"status": "IN_PROGRESS", "guards": []}]}})}
+    assert derive_mixed_state(row)["state"] == RUNNING

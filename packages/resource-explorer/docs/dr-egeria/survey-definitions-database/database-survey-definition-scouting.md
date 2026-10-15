@@ -11,6 +11,9 @@ Schema, table and column inventory plus row-count/size statistics.
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -33,6 +36,9 @@ privilege_audit, db_activity_signals, db_resilience, db_external_dependencies.
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -54,6 +60,9 @@ Read-only catalog/privilege introspection: what this credential can see and do.
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |

@@ -11,6 +11,9 @@ Refreshes project_stats (stars, forks, contributors, commit activity, releases, 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -32,6 +35,9 @@ Activity, community, release-cadence, and freshness scoring from GitHub stats.
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -55,6 +61,9 @@ Primary/secondary language and coarse project-type classification.
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -76,6 +85,9 @@ Finds where the project's homepage and its documentation are, and whether the do
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |

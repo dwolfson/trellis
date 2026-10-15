@@ -11,6 +11,9 @@ What a refresh would actually need to do: which targets have never run, which ar
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -32,6 +35,9 @@ Refreshes project_stats (stars, forks, contributors, commit activity, releases, 
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -55,6 +61,9 @@ Refreshes project_file_inventory from a fresh zipball — the table every file-s
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -76,6 +85,9 @@ Parses dependency manifests, CI workflow content, supply-chain signals and repo-
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -99,6 +111,9 @@ File counts, per-language breakdown, and top-level directory structure.
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -120,6 +135,9 @@ Per-file sizes, total footprint, size-by-type, top-10 largest files.
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -143,6 +161,9 @@ Primary/secondary language and coarse project-type classification.
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -164,6 +185,9 @@ Activity, community, release-cadence, and freshness scoring from GitHub stats.
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -187,6 +211,9 @@ Finds where the project's homepage and its documentation are, and whether the do
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -208,6 +235,9 @@ Ingests the project's documentation site into pgvector as web_docs_{host}, so Ch
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -231,6 +261,9 @@ Package dependencies per ecosystem (PyPI/npm/Maven).
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -252,6 +285,9 @@ Presence of README/CHANGELOG/CONTRIBUTING/SECURITY and overall doc-quality label
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -275,6 +311,9 @@ Presence of SECURITY.md, CI config, LICENSE — flags gaps as RFAs.
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -296,6 +335,9 @@ What the repo represents (7 roles, ranked, multi-valued), where each artifact it
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -319,6 +361,9 @@ Classifies the repo's SPDX license id into a risk tier (permissive/weak copyleft
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -340,6 +385,9 @@ GitHub's native security feature toggles (Dependabot, secret scanning, etc.) —
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -363,6 +411,9 @@ Whether CI workflows actually run tests/lint/build, via a keyword scan of workfl
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -384,6 +435,9 @@ What can be talked to, and whether the contract is written down — three rungs:
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -407,6 +461,9 @@ CHAOSS community-health metrics over recorded commits — chiefly the elephant f
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -428,6 +485,9 @@ The real OpenSSF Best Practices (CII) badge, read from bestpractices.dev rather 
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -451,6 +511,9 @@ Community support as separate dimensions — attention, participation, channels 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -473,6 +536,9 @@ Dependency advisories from OSV.dev, over dependencies the manifest parser alread
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -491,6 +557,9 @@ GovActionProcessStep::RepoFullSurvey::repo_secret_scan
 
 ### Description
 Committed-credential scan over HEAD content, using a VENDORED gitleaks ruleset (222 rules, MIT, provenance recorded). Reports what it matched AND which ruleset version it matched with — never 'no secrets', only 'no matches against this ruleset in HEAD'.
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -514,6 +583,9 @@ Telemetry / phone-home indicators: known SDK imports and literal outbound endpoi
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -535,6 +607,9 @@ CLA/DCO provenance, kept as two separate questions: whether sign-off is STATED, 
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -558,6 +633,9 @@ Whether the project publishes support or service-level commitments. Deliberately
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -579,6 +657,9 @@ OpenSSF-Scorecard-shaped checks computed from data already held — an unevaluab
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -602,6 +683,9 @@ Project age/lifecycle stage (nascent/emerging/established/mature), from repo_cre
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -623,6 +707,9 @@ Which curated technologies the dependency list indicates (psycopg2 -> PostgreSQL
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -646,6 +733,9 @@ Per declared distribution (repo_manifest_parse's output): which deployment evide
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -667,6 +757,9 @@ Which Egeria view services this repository consumes — one per pyegeria client 
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -690,6 +783,9 @@ Discovery-tier repo conventions: security policy content, build automation, depl
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -711,6 +807,9 @@ Inventories data files and profiles their schema (rows/columns/dtypes/nulls).
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -734,6 +833,9 @@ Classifies every file by type using filename/extension mapping (Egeria-enrichabl
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -755,6 +857,9 @@ Extracts class/function/method symbols (tree-sitter/ast) for every supported lan
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -778,6 +883,9 @@ Public API surface (functions/classes/methods) per language.
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -800,6 +908,9 @@ Recovers candidate architecture components from package manifests, deployment un
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -818,6 +929,9 @@ GovActionProcessStep::RepoFullSurvey::repo_arch_coupling
 
 ### Description
 Proposes additional architecture-component boundaries from import coupling and co-change coupling — the conventional, undeclared components (Agents, Core, Surveyors, ...) that manifests and code markers structurally cannot see (design doc §5.5, Phase 1 plan §4.1). Needs real git history, not just a checkout.
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -841,6 +955,9 @@ Labels recovered components against the project's own architecture document, whe
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -862,6 +979,9 @@ Collapses architecture-recovery findings to the depth the question asked for —
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -885,6 +1005,9 @@ Surveys file/folder characteristics to recommend which sub-resources are worthy 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -907,6 +1030,9 @@ Reduces the security family's stored findings to one topic summary. Measures not
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -925,6 +1051,9 @@ GovActionProcessStep::RepoFullSurvey::repo_rag_ingestion
 
 ### Description
 Refreshes the project's pgvector collections via IncrementalIndexer — the queryable representation Chat, the query router and every RAG-backed answer read, previously built only at registration, on webhook or from a bespoke route branch and never by a survey step. A no-op when the repository's last indexed commit is unchanged.
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |

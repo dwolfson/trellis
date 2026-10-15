@@ -21,11 +21,15 @@ test('available: one button labelled "coordinated by Egeria", never "run in Eger
   assert.doesNotMatch(text(h).toLowerCase(), /run in egeria/);
 });
 
-test('engine host off: no button, the short reason instead', () => {
-  const h = ns.coordinateControlHtml(cand({ available: false, why_not: 'engine host off' }));
-  assert.doesNotMatch(h, /data-coordinate-egeria=/);
-  assert.match(h, /data-coordinate-off=/);
-  assert.match(text(h), /coordinated by Egeria · engine host off/);
+test('engine host off: no button on any row, the short reason once for the pane', () => {
+  const off = cand({ available: false, why_not: 'engine host off' });
+  assert.equal(ns.coordinateControlHtml(off), '');
+  const note = ns.coordinateOffNoteHtml([off, { ...off, qualified_name: 'GovActionProcess::DatabaseScoutingSurvey' }]);
+  assert.equal((note.match(/data-coordinate-off/g) || []).length, 1);
+  assert.match(text(note), /^◌ coordinated by Egeria · engine host off$/);
+  // a pane where it is offered, or where no row carries it (repository definitions), says nothing
+  assert.equal(ns.coordinateOffNoteHtml([off, cand({})]), '');
+  assert.equal(ns.coordinateOffNoteHtml([{ qualified_name: 'GovActionProcess::RepoScoutingSurvey' }]), '');
 });
 
 test('a run Egeria is coordinating shows on the control, from the persisted state', () => {
@@ -37,4 +41,61 @@ test('a run Egeria is coordinating shows on the control, from the persisted stat
 
 test('no server answer about the control: nothing is drawn', () => {
   assert.equal(ns.coordinateControlHtml({ qualified_name: QN }), '');
+});
+
+test('pressed -> starting -> started, from the server answer; a second press sends nothing', async () => {
+  const { state } = await import('/static/next/app.js');
+  state.resourceType = 'db';
+  let release;
+  const calls = [];
+  globalThis.fetch = (url, init) => {
+    calls.push([String(url), init && init.method]);
+    return new Promise((resolve) => { release = () => resolve({ ok: true, status: 200,
+      json: async () => ({ run: { state: 'submitted', engine_action_guid: 'pi-1', line: 'Database Analysis Survey · step 1 postgres_column_profile not started yet' }, surveys: [] }) }); });
+  };
+  const host = document.createElement('div');
+  host.innerHTML = ns.coordinateControlHtml(cand({}));
+  document.body.appendChild(host);
+  ns.bindCoordinateControls(host, 'coco_pharma');
+  const b = host.querySelector('[data-coordinate-egeria]');
+  b.click();
+  assert.equal(b.disabled, true);
+  assert.equal(b.getAttribute('aria-pressed'), 'true');
+  assert.match(b.textContent, /starting…/);
+  b.click();                                    // the second press while starting
+  assert.equal(calls.length, 1);
+  assert.match(calls[0][0], /\/api\/native-surveys\/database\/coco_pharma\/run$/);
+  release();
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.match(b.textContent, /● started/);
+  assert.match(b.title, /Database Analysis Survey/);
+  b.click();                                    // still pressed: nothing more is sent
+  assert.equal(calls.length, 1);
+});
+
+test('a refused start says "not started" on the control, with the reason one click away', async () => {
+  globalThis.fetch = async () => ({ ok: false, status: 422, headers: { get: () => 'application/json' },
+    json: async () => ({ detail: 'engine host off' }), text: async () => '{"detail":"engine host off"}' });
+  const host = document.createElement('div');
+  host.innerHTML = ns.coordinateControlHtml(cand({}));
+  ns.bindCoordinateControls(host, 'coco_pharma');
+  const b = host.querySelector('[data-coordinate-egeria]');
+  b.click();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.match(b.textContent, /✗ not started/);
+  assert.equal(b.disabled, false);
+  const why = host.querySelector('[data-coordinate-why]');
+  assert.equal(why.classList.contains('hidden'), false);
+  assert.equal(why.querySelector('[data-coordinate-why-text]').classList.contains('hidden'), true);
+  why.querySelector('[data-coordinate-why-open]').click();
+  assert.match(why.querySelector('[data-coordinate-why-text]').textContent, /engine host off/);
+});
+
+test('a definition RE ran says where it was started, from the run it recorded', async () => {
+  const { lastRunHtml } = await import('/static/next/app.js');
+  const when = new Date(Date.now() - 60000).toISOString();
+  const h = lastRunHtml({ last_run_at: when, last_run_status: 'ok', last_run_started_by: 're', last_run_by: 'dan' });
+  assert.match(text(h), /started in RE by dan/);
+  assert.doesNotMatch(text(lastRunHtml({ last_run_at: when, last_run_status: 'ok' })), /started in/);
 });

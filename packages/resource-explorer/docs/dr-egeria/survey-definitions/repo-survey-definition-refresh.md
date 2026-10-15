@@ -11,6 +11,9 @@ What a refresh would actually need to do: which targets have never run, which ar
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -32,6 +35,9 @@ Refreshes project_file_inventory from a fresh zipball — the table every file-s
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -55,6 +61,9 @@ Parses dependency manifests, CI workflow content, supply-chain signals and repo-
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -73,6 +82,9 @@ GovActionProcessStep::RepoRefreshSurvey::repo_rag_ingestion
 
 ### Description
 Refreshes the project's pgvector collections via IncrementalIndexer — the queryable representation Chat, the query router and every RAG-backed answer read, previously built only at registration, on webhook or from a bespoke route branch and never by a survey step. A no-op when the repository's last indexed commit is unchanged.
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -95,6 +107,9 @@ Ingests the project's documentation site into pgvector as web_docs_{host}, so Ch
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |

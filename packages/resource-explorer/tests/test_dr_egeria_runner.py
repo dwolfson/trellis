@@ -796,8 +796,14 @@ def test_every_command_of_the_analysis_definition_gets_a_real_status(fixture):
 
     plan = runner.plan_document(_ANALYSIS_DOC)
     items = runner.dr_egeria_results(plan.dr_egeria, (_FIXTURES / fixture).read_text(), "ok")
-    assert len(items) == 31 and "unknown" not in {i["status"] for i in items}
-    assert {s for c, s in _statuses(items) if c != "Link Element To Scope"} == {"ok"}
+    # The capture ran the document's 31 commands as they were before engine host case 3 added one "Link Action to
+    # Action Executor" per step (10). Every command it ran gets a real status; the executor links it never saw are
+    # "unknown" (no row), never "ok".
+    executors = [i for i in items if i["command"] == "Link Action to Action Executor"]
+    ran = [i for i in items if i["command"] != "Link Action to Action Executor"]
+    assert len(ran) == 31 and "unknown" not in {i["status"] for i in ran}
+    assert len(executors) == 10 and {i["status"] for i in executors} == {"unknown"}
+    assert {s for c, s in _statuses(ran) if c != "Link Element To Scope"} == {"ok"}
 
 
 def test_a_full_size_document_lines_up_row_for_row_even_when_rich_folds_every_cell():
@@ -813,7 +819,8 @@ def test_a_full_size_document_lines_up_row_for_row_even_when_rich_folds_every_ce
         finally:
             del os.environ["EGERIA_WIDTH"]
         items = runner.dr_egeria_results(plan.dr_egeria, out, "ok")
-        assert len(items) == 119 and {i["status"] for i in items} == {"ok"}, width
+        # every command of the document (119 before engine host case 3 added an executor link per step: 159)
+        assert len(items) == len(plan.dr_egeria) == 159 and {i["status"] for i in items} == {"ok"}, width
 
 
 def test_a_deferred_row_is_unknown_with_its_reason_not_ok():

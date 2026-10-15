@@ -11,6 +11,9 @@ What the repo represents (7 roles, ranked, multi-valued), where each artifact it
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -32,6 +35,9 @@ Classifies the repo's SPDX license id into a risk tier (permissive/weak copyleft
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -55,6 +61,9 @@ Project age/lifecycle stage (nascent/emerging/established/mature), from repo_cre
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -76,6 +85,9 @@ Discovery-tier repo conventions: security policy content, build automation, depl
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -99,6 +111,9 @@ Community support as separate dimensions — attention, participation, channels 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -120,6 +135,9 @@ What can be talked to, and whether the contract is written down — three rungs:
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -143,6 +161,9 @@ Which curated technologies the dependency list indicates (psycopg2 -> PostgreSQL
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -165,6 +186,9 @@ Per declared distribution (repo_manifest_parse's output): which deployment evide
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -186,6 +210,9 @@ Which Egeria view services this repository consumes — one per pyegeria client 
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |

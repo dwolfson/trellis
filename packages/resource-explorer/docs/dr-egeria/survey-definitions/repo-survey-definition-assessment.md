@@ -11,6 +11,9 @@ Refreshes project_stats (stars, forks, contributors, commit activity, releases, 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -32,6 +35,9 @@ Refreshes project_file_inventory from a fresh zipball — the table every file-s
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -55,6 +61,9 @@ Presence of README/CHANGELOG/CONTRIBUTING/SECURITY and overall doc-quality label
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -76,6 +85,9 @@ Presence of SECURITY.md, CI config, LICENSE — flags gaps as RFAs.
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -99,6 +111,9 @@ GitHub's native security feature toggles (Dependabot, secret scanning, etc.) —
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -120,6 +135,9 @@ Whether CI workflows actually run tests/lint/build, via a keyword scan of workfl
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -143,6 +161,9 @@ Dependency advisories from OSV.dev, over dependencies the manifest parser alread
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -161,6 +182,9 @@ GovActionProcessStep::RepoAssessmentSurvey::repo_secret_scan
 
 ### Description
 Committed-credential scan over HEAD content, using a VENDORED gitleaks ruleset (222 rules, MIT, provenance recorded). Reports what it matched AND which ruleset version it matched with — never 'no secrets', only 'no matches against this ruleset in HEAD'.
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -184,6 +208,9 @@ Telemetry / phone-home indicators: known SDK imports and literal outbound endpoi
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -205,6 +232,9 @@ CLA/DCO provenance, kept as two separate questions: whether sign-off is STATED, 
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -228,6 +258,9 @@ Whether the project publishes support or service-level commitments. Deliberately
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -249,6 +282,9 @@ OpenSSF-Scorecard-shaped checks computed from data already held — an unevaluab
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -272,6 +308,9 @@ The real OpenSSF Best Practices (CII) badge, read from bestpractices.dev rather 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -293,6 +332,9 @@ Reduces the security family's stored findings to one topic summary. Measures not
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |

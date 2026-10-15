@@ -513,7 +513,7 @@ def _step_words(n: int, label: str, view: EngineActionView | None) -> str:
         if view.status in ("APPROVED", "REQUESTED"):
             return f"step {n} {label} not claimed yet"
         return f"step {n} {label} {'running' if view.status == 'IN_PROGRESS' else 'waiting'}"
-    guard = ", ".join(view.completion_guards)
+    guard = ", ".join(g for g in view.completion_guards if g != _ROUTING_GUARD)
     return f"step {n} {label} ✗ {guard or view.status or 'status unknown'}"
 
 
@@ -546,7 +546,8 @@ def run_line_words(line: RunLine, *, started: str = "", started_in: str = "", st
     previous_number = 0
     for step in sorted(process.steps, key=lambda s: s.number):
         view = by_request.get(step.request_type)
-        if view is None and previous is not None and not previous.active and not previous.succeeded:
+        if (view is None and previous is not None and not previous.active and not previous.succeeded
+                and not _always_follows(process, previous_number, step.number, previous)):
             parts.append(f"step {step.number} not started · step {previous_number} failed")
             break
         if view is None and previous is not None and previous.active:
@@ -560,6 +561,16 @@ def run_line_words(line: RunLine, *, started: str = "", started_in: str = "", st
     if line.note:
         parts.append(line.note)
     return " · ".join(parts + tail)
+
+
+def _always_follows(process: MixedProcess, from_step: int, to_step: int, previous: EngineActionView) -> bool:
+    """Whether Egeria starts `to_step` after `from_step` whatever `from_step` produced: an RE definition's `Any` link,
+    which its steps always emit (case 3, review M1), or a link with no guard. Then a step after a failed one is still
+    to come, never "not started"."""
+    for link in process.links:
+        if link.from_step == from_step and link.to_step == to_step:
+            return link.guard in ("", _ROUTING_GUARD) and (not link.guard or link.guard in previous.completion_guards)
+    return False
 
 
 def run_line_dict(line: RunLine, *, started: str = "", started_in: str = "", started_by: str = "") -> dict:

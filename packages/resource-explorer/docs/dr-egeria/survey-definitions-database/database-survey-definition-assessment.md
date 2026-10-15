@@ -11,6 +11,9 @@ privilege_audit, db_activity_signals, db_resilience, db_external_dependencies.
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
 
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|

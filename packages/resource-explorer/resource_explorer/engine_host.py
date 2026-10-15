@@ -75,11 +75,12 @@ surveyReport that is present and wrong (another subject, not the predecessor's, 
 key of RE's step registries is a request type (`registry_steps`, `re-<step key>`), so Egeria can run a published
 definition one engine action per step. A database step runs through the same synthetic-step executor with the
 database registration's stored credential, after the launcher's capability gate (a shortfall completes
-survey-invalid with the launcher's sentence; nothing runs); a repository step is claimed and completed survey-invalid
+survey-invalid with the launcher's own reason; nothing runs); a repository step is claimed and completed survey-invalid
 naming why (`out_of_scope_reason`). A definition's step completes with `step_outcome.completion_guards`: its survey
-guard, plus the `Any` its authored next-step links carry when the process should go on (Egeria matches link guards
-exactly); when no authored link takes the guard, the run says "process ended after <step>: guard <g> has no next
-step". The `surveyReport` targets Egeria carries forward are not a definition step's input. One native-survey row is
+guard, plus the `Any` its authored next-step links carry, whatever the outcome (Egeria matches link guards
+exactly; RE's executor follows `Any` always); when no authored link takes the guards, the run says "process ended
+after <step>: guard <g> has no next step". A second action for the same step of the same run (duplicate next-step
+links) is completed survey-invalid without running (`TRIGGERED_TWICE_SENTENCE`). The `surveyReport` targets Egeria carries forward are not a definition step's input. One native-survey row is
 written per process instance (`_record_submission`), read back as one run line (`mixed_process.definition_process`).
 Every engine-action row records `started_by: egeria`; RE's own Run records `re`.
 
@@ -126,6 +127,10 @@ SURVEY_REPORT_TARGET = "surveyReport"
 #: says so instead.
 NOT_REGISTERED_SENTENCE = "not registered in Resource Explorer"
 NOT_A_DATABASE_SENTENCE = "not a database registered in Resource Explorer"
+
+#: Case 3 (H1): the same process step started twice in one process run (duplicate NextGovernanceActionProcessStep
+#: links each fire). The second is completed survey-invalid with this, never run.
+TRIGGERED_TWICE_SENTENCE = "triggered twice in this run; the first ran"
 
 #: An action RE already claimed whose target has since joined a private investigation: completed once,
 #: survey-invalid, never run as the service account (owner, Q-O3).
@@ -580,7 +585,12 @@ class EngineHost:
                  # guards its authored next-step links take (None when it is no definition's step).
                  **self._process_facts(action, instance)}
         scope = out_of_scope_reason(step_key) if step_key in registry_steps() else ""
-        if report_refusal:
+        twice = self._triggered_twice(_guid(action), facts)
+        if twice:
+            # Case 3 (H1): Egeria started this step a second time in the same run (a duplicate next-step link). It is
+            # claimed and completed survey-invalid without running; the first one ran.
+            facts["refusal"] = twice
+        elif report_refusal:
             # Claimed, then completed survey-invalid: the supplied information is invalid for this survey.
             facts["refusal"] = report_refusal
         elif scope:
@@ -623,6 +633,22 @@ class EngineHost:
             for prev in view.previous:
                 reports.update(mixed_process.read_action_graph(expert, prev.guid).report_guids)
         return mixed_process.previous_step_refusal(view), reports, view.instance_guid
+
+    def _triggered_twice(self, guid: str, facts: dict) -> str:
+        """Why this action is a second start of a step RE already holds in the same process run, or "". Keyed on the
+        process instance and process step, never on the request type: one step key in two definitions, or in two
+        runs, is two steps."""
+        if not facts.get("definition"):
+            return ""
+        lookup = getattr(self.registry, "engine_action_runs_for_process_step", None)
+        if not callable(lookup):
+            return ""
+        first = [r for r in lookup(facts.get("process_instance_guid", ""), facts.get("process_step_guid", ""))
+                 if _row_target_json(r).get("engine_action_guid") != guid]
+        if not first:
+            return ""
+        return (f"{TRIGGERED_TWICE_SENTENCE} (engine action "
+                f"{_row_target_json(first[0]).get('engine_action_guid') or first[0].get('id')})")
 
     def _repo_slug(self, guid: str) -> str:
         """The registered repository whose Egeria Asset is `guid`, or "" (a registry without the lookup: "")."""
@@ -1097,7 +1123,7 @@ def _decide(registry, target: dict) -> dict:
 
 def _route(outcome: dict, target: dict) -> None:
     """Case 3, decision 3: a step of an RE definition completes with the guards `step_outcome.completion_guards`
-    maps its survey guard to (the routing guard its authored links carry only when the process should go on), stored
+    maps its survey guard to (its survey guard and the routing guard its authored links carry), stored
     on the outcome as `guards`. When the step's authored next-step links take none of those guards, the process ends
     here and the run says so (`process_note`, also in the completion message); Egeria is told the guard all the same.
     An action that is no definition's step completes with its one survey guard, as before."""
@@ -1123,7 +1149,7 @@ def _route(outcome: dict, target: dict) -> None:
 
 
 def _capability_refusal(registry, slug: str, step: RegistryStep) -> str:
-    """The launcher's sentence when the database's stored credential lacks the capability `step` declares, else "".
+    """The launcher's reason when the database's stored credential lacks the capability `step` declares, else "".
     Read back from the stored `credential_capability` probe, exactly as the launcher gate reads it; "never probed"
     blocks nothing, as there."""
     if not (getattr(step.info, "requires_capability", "") or ""):
@@ -1134,7 +1160,17 @@ def _capability_refusal(registry, slug: str, step: RegistryStep) -> str:
     if entity is None:
         return ""
     probe = credential_capability.stored_probe(registry, entity)
-    return prerequisite_resolver.capability_sentence(step.step_key, step.info, probe)
+    return prerequisite_resolver.capability_reason_detail(step.step_key, step.info, probe)
+
+
+#: Review L4: the registration's stored password cannot be decrypted here; the step is not run with an empty one.
+CREDENTIAL_UNREADABLE_SENTENCE = ("stored credential unreadable · re-enter it on the database's registration "
+                                  "(Resource Explorer cannot decrypt it here)")
+
+
+def _credential_unreadable(registry, slug: str) -> bool:
+    entity = registry.get_database(slug, allow_unreadable=True)
+    return entity is not None and getattr(entity, "credential_status", "") == "unreadable"
 
 
 def _stored_credentials(registry, slug: str) -> dict:
@@ -1177,6 +1213,10 @@ def _decide_one(registry, target: dict) -> dict:
         if refusal:
             # Decision 4: the launcher's own gate, with its own sentence, and nothing run or published.
             return _outcome(SURVEY_INVALID, f"Resource Explorer did not run {request_type} on {slug}: {refusal}")
+        if _credential_unreadable(registry, slug):
+            # Review L4: never a driver error with an empty password; the stored credential is what is wrong.
+            return _outcome(SURVEY_INVALID, f"Resource Explorer did not run {request_type} on {slug}: "
+                            f"{CREDENTIAL_UNREADABLE_SENTENCE}")
         runner_kwargs.update(_stored_credentials(registry, slug))
     elif step_key not in declared_steps():
         library = library_steps().get(request_type)
@@ -1421,15 +1461,24 @@ def _record_submission(registry, target: dict, principal) -> str:
         from resource_explorer import mixed_process
 
         process_qn, guid = target["definition"], target["process_instance_guid"]
-        extra = {"started_by": STARTED_BY_EGERIA, "started_in": mixed_process.STARTED_IN_EGERIA}
+        # Who coordinates it, from the row the claim wrote (`_row_target`), onto the run line Understanding reads.
+        extra = {"started_by": target.get("started_by") or STARTED_BY_EGERIA,
+                 "started_in": mixed_process.STARTED_IN_EGERIA}
     try:
+        if extra:
+            # One row per process instance, whoever writes first (review L5): a row the Run press wrote is kept.
+            registry.record_native_survey_submission_once(ENTITY_TYPE, slug, process_qn, _now_iso(),
+                                                          engine_action_guid=guid,
+                                                          submitted_by=(principal.requested_by or "").strip(),
+                                                          started_as="engine-host", **extra)
+            return ""
         if any(r.get("engine_action_guid") == guid
                for r in registry.list_native_survey_runs(ENTITY_TYPE, slug, process_qn)):
             return ""
         registry.record_native_survey_submission(ENTITY_TYPE, slug, process_qn, _now_iso(),
                                                  engine_action_guid=guid,
                                                  submitted_by=(principal.requested_by or "").strip(),
-                                                 started_as="engine-host", **extra)
+                                                 started_as="engine-host")
     except Exception as exc:  # noqa: BLE001 -- the listing row, not the work: recorded on the outcome
         why = _short(exc)
         log.warning("engine host: no native-survey row for engine action %s (%s)", guid, why)

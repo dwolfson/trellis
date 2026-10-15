@@ -154,9 +154,15 @@ The owner runs C1's document and republishes one definition with C2
 - **Egeria matches a link's guard exactly.** `EngineActionHandler.initiateNextEngineActions` (egeria `af400039c2`)
   starts the next step only when an output guard EQUALS the link's guard (or the link has none). RE's generated links
   carry `Any`, which RE's own executor reads as "always"; Egeria does not. So a definition step completes with its
-  survey guard AND `Any` when the process should go on (`step_outcome.guard_mapping`): `survey-completed` continues,
-  `survey-invalid` and `survey-failed` end the process there, as the gate's negative asks. This departs from RE's own
-  executor, which runs every step of an unbranched definition whatever the one before it did.
+  survey guard AND `Any` (`step_outcome.guard_mapping`), whatever its outcome (review M1): an Egeria-coordinated run
+  continues after an invalid or failed step exactly as RE's executor does, so both read the same. Only an authored
+  link with another guard can go untaken; then the run says the process ended there (negative 4). For the gate's
+  credential negative this means `postgres_operations` is `survey-invalid` and is the last step anyway.
+- **Duplicate next-step links start a step twice.** `NextGovernanceActionProcessStep` is multi-link and Dr.Egeria's
+  Link Next only adds, so a republish leaves duplicates, and with every step emitting `Any` each duplicate starts the
+  next step again (2, 4, 8 actions down the chain). Every generated step now declares `Ignore Multiple Triggers`
+  true, and the engine host completes a second action for the same process instance and step `survey-invalid`
+  "triggered twice in this run; the first ran", without running it.
 - **Report targets accumulate.** Egeria hands a later step the previous action's targets plus the completion's new
   ones (`prepareEngineActionFromProcessStep`), so step 3 arrives with two `surveyReport` targets. Only a step that
   derives from a report (a library step with `source_report`) is checked against them; a definition step ignores
@@ -176,7 +182,7 @@ The owner runs C1's document and republishes one definition with C2
   `SurveyDefinitionReader.executor_drift` (live, report-only) check one executor per step; the database links script
   prints the drift and never writes it.
 - C3: `engine_host._screen` / `_decide_one` / `_route`; the capability sentence is
-  `prerequisite_resolver.capability_sentence`. Repository steps: `out_of_scope_reason`.
+  `prerequisite_resolver.capability_reason_detail` (the reason only). Repository steps: `out_of_scope_reason`.
 - C4: `mixed_process.definition_process` reads a definition as a declared process; `run_line_words` says "started in
   Egeria by <requester>" or "started in RE by <person>". The control is `native_survey_run.coordinate_control` (on
   each candidate row) and the native-surveys Run route with the definition's qualifiedName.

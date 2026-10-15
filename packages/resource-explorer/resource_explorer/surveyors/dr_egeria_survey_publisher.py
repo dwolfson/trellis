@@ -94,6 +94,11 @@ def render_step_block(survey_group: str, survey_display_name: str, step: Publish
         f"### Qualified Name\n{qn}\n\n"
         f"### Description\n{step.description}\n\n"
         + _produced_guards_section(step)
+        # Engine host case 3 (H1): `NextGovernanceActionProcessStep` is MULTI_LINK and Dr.Egeria's Link Next only
+        # adds, so a republish can leave two identical links into this step. With Egeria coordinating, each one
+        # would start this step again (EngineActionHandler.initiateNextEngineActions, one engine action per matching
+        # link). `ignoreMultipleTriggers` makes Egeria start it once per process run, whatever the duplicates.
+        + "### Ignore Multiple Triggers\ntrue\n\n"
         + "### Additional Properties\n"
         "| Parameter Name | Parameter Value |\n"
         "|---|---|\n"
