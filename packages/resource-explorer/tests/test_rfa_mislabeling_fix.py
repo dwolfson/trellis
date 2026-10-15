@@ -223,12 +223,6 @@ def test_the_rfa_drawer_feed_shows_only_the_real_gap(registry, project):
     is about the RFA feed for one step's mixed pass/gap output, not about
     every precondition in the registry."""
     registry.upsert_file_inventory(project, [("README.md", 100)])
-    # repo_api_structure declares has_code_symbols (it must run after symbol
-    # extraction), so without a symbol row it too would be skipped-by-design.
-    from resource_explorer.ingestion.code_symbol_extractor import CodeSymbol
-    registry.upsert_code_symbols(project, [CodeSymbol(
-        resource_slug=project, file_path="a.py", language="python", kind="function",
-        name="f", qualified_name="f", signature="()", docstring="", start_line=1, end_line=1)])
     mixed = [
         ClassificationAnnotation(
             summary="Security policy file present",

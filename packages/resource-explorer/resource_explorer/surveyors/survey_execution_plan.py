@@ -345,8 +345,6 @@ def _add_produces_edges(
     """
     from resource_explorer.surveyors import prerequisite_resolver, step_preconditions
 
-    folded: set = set()   # (step, producer) edges added by THIS pass, never authored
-
     def ancestors(key: str) -> set:
         """Every step already reachable from `key` by a `depends_on` chain —
         authored edges and any PRODUCES edge already folded in earlier in
@@ -471,7 +469,6 @@ def _add_produces_edges(
                          planned[producer].added_because)
             if producer in ancestors(key):
                 continue  # already runs first, via an authored or folded edge
-            _yield_authored_order(planned, key, producer, folded, process_name)
             producer_info = step_registry.get(producer)
             # A producer this planner added was already judged against the
             # definition's budget; the demanding step's own tier is not the
@@ -491,51 +488,6 @@ def _add_produces_edges(
                 )
             if producer not in planned[key].depends_on:
                 planned[key].depends_on.append(producer)
-                folded.add((key, producer))
-
-
-def _yield_authored_order(planned: dict, key: str, producer: str, folded: set,
-                          process_name: str) -> None:
-    """A data dependency outranks an authored sequence.
-
-    `key` needs `producer`'s output, but the definition authored `key` BEFORE
-    it (`producer` already depends on `key` through authored edges). A
-    definition published before the dependency was declared must keep running,
-    so the authored ordering edge into the first step after `key` on that path
-    is dropped, rewired to `key`'s own predecessors so that step is not
-    stranded as an entry point. The PRODUCES edge then orders producer first.
-    Only a loop that remains after this (a genuine data cycle) reaches
-    `_topological` and raises.
-    """
-    # Walk producer -> ... -> key along AUTHORED depends_on edges only (an edge
-    # this pass folded is a data dependency, and two of those closing a loop is
-    # a genuine cycle that must raise); find the step that depends on `key`
-    # directly on that path.
-    parent: dict = {producer: None}
-    queue = [producer]
-    hit = None
-    while queue and hit is None:
-        cur = queue.pop(0)
-        for dep in planned[cur].depends_on:
-            if (cur, dep) in folded:
-                continue
-            if dep == key:
-                hit = cur
-                break
-            if dep not in parent and dep in planned:
-                parent[dep] = cur
-                queue.append(dep)
-    if hit is None:
-        return
-    victim = planned[hit]
-    victim.depends_on.remove(key)
-    victim.guarded_by.pop(key, None)
-    for pred in planned[key].depends_on:
-        if pred not in victim.depends_on and pred != hit:
-            victim.depends_on.append(pred)
-    log.info("%s: %s is authored before %s but needs its output; ordering "
-             "%s first and dropping the authored edge %s -> %s",
-             process_name or "plan", key, producer, producer, key, hit)
 
 
 def _topological(planned: dict, process_name: str) -> list:

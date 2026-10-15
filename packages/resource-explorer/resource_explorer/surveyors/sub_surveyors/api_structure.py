@@ -51,8 +51,8 @@ class ApiStructureSurveyor(BaseSurveyor):
         counts of public symbols, complexity, and inheritance depth.
       - One ResourceMeasureAnnotation with total symbol/relationship counts.
 
-    This surveyor doesn't itself extract symbols — extraction happens first (the step
-    declares has_code_symbols, so the plan runs repo_symbol_extraction ahead of it),
+    This surveyor doesn't itself extract symbols — extraction happens first (the generated
+    definitions place repo_symbol_extraction ahead of this step),
     inline during ingestion (IngestionPipeline._ingest_code(), which already
     re-runs on every full add and incremental refresh — see
     ingestion/code_symbol_extractor.py / java_symbol_extractor.py). Since this

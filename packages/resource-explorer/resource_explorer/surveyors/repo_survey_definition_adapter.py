@@ -1060,8 +1060,9 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         compute_cost="medium",
     ),
     # ORDER MATTERS, and registry order generates the Full chain: repo_api_structure
-    # sits AFTER repo_symbol_extraction because it declares has_code_symbols; the
-    # plan adds the produces edge and would reject an authored chain that ran it first.
+    # sits AFTER repo_symbol_extraction because it summarises the symbols that step
+    # writes (a run stored the previous run's count when it ran first). Nothing
+    # enforces this in the planner; the generated definitions carry the order.
     "repo_api_structure": StepInfo(
         "repo_api_structure", ApiStructureSurveyor,
         "Public API surface (functions/classes/methods) per language.",
@@ -1071,24 +1072,6 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # Reads project_code_symbols — doesn't extract itself (that's
         # repo_symbol_extraction's job), per this surveyor's own
         # docstring. No fetch, no re-parsing.
-        #
-        # The precondition is also the ORDERING: the plan adds a PRODUCES edge
-        # from repo_symbol_extraction to this step, so it reads the symbols
-        # written in the same run. Without it, a run stored 5,937 symbols
-        # (the previous run's table) two seconds before extraction wrote 9,713.
-        requires_context={
-            "has_code_symbols":
-                "api_structure summarises project_code_symbols, so a run that "
-                "has not extracted symbols yet would report the previous run's "
-                "count as this run's",
-        },
-        # Its producer downloads the zipball and extracts (medium), and the
-        # planner refuses a step whose producer is dearer than its own tier
-        # (PrerequisiteTierError), which would have broken every definition
-        # that authors both. This step still reads only the registry; the tier
-        # says what its chain costs.
-        fetch_cost="download",
-        compute_cost="medium",
     ),
     # Architecture recovery — Phase 1 plan §4.2 (docs/architecture-recovery-
     # phase1-plan.md), ported from scripts/arch-spike (44 findings recorded

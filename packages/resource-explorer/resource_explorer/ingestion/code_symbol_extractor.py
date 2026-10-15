@@ -456,6 +456,8 @@ class _PythonMarkerVisitor(ast.NodeVisitor):
         # Celery's `@task`/`@shared_task` only means a celery task when the file
         # is in celery's world; invoke's `@task` is a build-script command.
         self._celery_file = False
+        #: names bound to a Celery app or imported from a module named *celery*
+        self._celery_names: set[str] = set()
 
     #: Receivers that are mocking helpers, never an app or router.
     _MOCK_RECEIVER_TAILS = frozenset({"mock", "mocker", "monkeypatch", "patch"})
@@ -465,8 +467,17 @@ class _PythonMarkerVisitor(ast.NodeVisitor):
             if isinstance(n, ast.Import) and any(
                     a.name.split(".")[0] == "celery" for a in n.names):
                 self._celery_file = True
-            elif isinstance(n, ast.ImportFrom) and (n.module or "").split(".")[0] == "celery":
-                self._celery_file = True
+            elif isinstance(n, ast.ImportFrom):
+                mod = n.module or ""
+                if mod.split(".")[0] == "celery":
+                    self._celery_file = True
+                if "celery" in mod.lower():
+                    self._celery_names.update(a.asname or a.name for a in n.names)
+            elif isinstance(n, ast.Assign) and isinstance(n.value, ast.Call):
+                callee = self._dotted(n.value.func).rsplit(".", 1)[-1]
+                if callee == "Celery":
+                    self._celery_names.update(
+                        t.id for t in n.targets if isinstance(t, ast.Name))
         self.generic_visit(node)
 
     # ── helpers ─────────────────────────────────────────────────────────────
@@ -569,7 +580,7 @@ class _PythonMarkerVisitor(ast.NodeVisitor):
                 return None
             if receiver.rsplit(".", 1)[-1].lower() in self._MOCK_RECEIVER_TAILS:
                 return None
-            first = args[0] if args else None
+            first = args[0] if args else kwargs.get("path")
             if isinstance(first, ast.Constant) and isinstance(first.value, str) \
                     and first.value and not first.value.startswith("/"):
                 return None
@@ -578,12 +589,12 @@ class _PythonMarkerVisitor(ast.NodeVisitor):
                 return None  # bare `get(...)`/`patch(...)` needs a literal "/path"
 
         if attr in self._HTTP_VERBS:
-            path = self._const_str(args[0]) if args else ""
+            path = self._const_str(args[0] if args else kwargs.get("path"))
             detail = f"{attr.upper()} {path}".strip()
             return self._marker(node, "route", "fastapi", "http_api", detail, node.name)
 
         if attr == "route":
-            path = self._const_str(args[0]) if args else ""
+            path = self._const_str(args[0] if args else kwargs.get("path"))
             methods = self._const_list_str(kwargs.get("methods"))
             verb = methods[0] if methods else "GET"
             detail = f"{verb} {path}".strip()
@@ -595,7 +606,9 @@ class _PythonMarkerVisitor(ast.NodeVisitor):
             return self._marker(node, "route", "django-rest-framework",
                                  "http_api", verb, node.name)
 
-        if attr in ("task", "shared_task") and self._celery_file:
+        if attr in ("task", "shared_task") and (
+                self._celery_file or receiver.split(".")[0] in self._celery_names
+                or (not receiver and attr in self._celery_names)):
             return self._marker(node, "message_handler", "celery",
                                  "messaging", "", node.name)
 

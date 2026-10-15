@@ -353,10 +353,6 @@ class TestCostTierFilter:
                     "repo_classification",
                     "repo_file_inventory", "repo_homepage", "repo_data_profiling",
                     "repo_symbol_extraction", "repo_rag_ingestion",
-                    # repo_api_structure (2026-10-15) — reads only the registry, but
-                    # declares has_code_symbols and the planner refuses a step whose
-                    # producer (repo_symbol_extraction) is dearer than its own tier.
-                    "repo_api_structure",
                     # repo_website_ingestion (2026-08-20) — fetches the project's
                     # external site over HTTP, so it is not zero-fetch.
                     "repo_website_ingestion",
@@ -411,8 +407,6 @@ class TestCostTierFilter:
                 excluded = {k for k, info in STEP_REGISTRY.items() if info.compute_cost != "low"}
                 assert excluded == {
                     "repo_symbol_extraction", "repo_rag_ingestion",
-                    # repo_api_structure (2026-10-15): see the fetch-axis test.
-                    "repo_api_structure",
                     # repo_data_profiling was here until 2026-09-01, when it was
                     # re-declared low on measurement. Raw it shows 0.01s median
                     # over 85 runs — a number that cannot separate "cheap" from
