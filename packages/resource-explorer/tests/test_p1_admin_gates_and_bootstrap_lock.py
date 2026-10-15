@@ -113,10 +113,23 @@ class TestAdminStatus:
 
 
 class TestOwnerRulingAdminOnlyWhenConfigured:
-    """Enforce admin only when an admin is configured; until then any signed-in user may act; anonymous never."""
+    """Owner ruling 2026-10-14 (replacing 2026-10-09's): unconfigured fails closed, unless the local-dev flag
+    RE_ADMIN_OPEN_WHEN_UNCONFIGURED is set; anonymous never. Real-JWT coverage: tests/test_admin_auth_strict.py."""
 
-    def test_unconfigured_lets_a_signed_in_non_admin_retry_and_resolve_all(self, client, monkeypatch):
+    def test_unconfigured_refuses_a_signed_in_non_admin_without_the_dev_flag(self, client, monkeypatch):
         _admin(monkeypatch, False, configured=False, signed_in=True)
+        from resource_explorer.config import get_config
+        monkeypatch.setattr(get_config().feedback, "admin_open_when_unconfigured", False)
+        res = client.post("/api/egeria/linkage/resolve-all", json={"targets": [], "action": "republish", "dry_run": True})
+        assert res.status_code == 403 and "no admin configured" in res.json()["detail"]
+        with patch("resource_explorer.bootstrap.check_and_heal") as heal:
+            assert client.post("/api/bootstrap/run", json={}).status_code == 403
+        heal.assert_not_called()
+
+    def test_unconfigured_with_the_dev_flag_lets_a_signed_in_non_admin_retry_and_resolve_all(self, client, monkeypatch):
+        _admin(monkeypatch, False, configured=False, signed_in=True)
+        from resource_explorer.config import get_config
+        monkeypatch.setattr(get_config().feedback, "admin_open_when_unconfigured", True)
         res = client.post("/api/egeria/linkage/resolve-all", json={"targets": [], "action": "republish", "dry_run": True})
         assert res.status_code == 200
         with patch("resource_explorer.bootstrap.check_and_heal", return_value={"batches": {}}):
@@ -152,10 +165,12 @@ class TestOwnerRulingAdminOnlyWhenConfigured:
         assert is_admin_request(req, SimpleNamespace(admin_token="", admin_users=[])) is False
 
     def test_admin_status_reports_configured_and_admin(self, client, monkeypatch):
+        from resource_explorer.config import get_config
+        monkeypatch.setattr(get_config().feedback, "admin_open_when_unconfigured", False)
         _admin(monkeypatch, False, configured=False)
-        assert client.get("/api/egeria/admin-status").json() == {"admin": False, "configured": False}
+        assert client.get("/api/egeria/admin-status").json() == {"admin": False, "configured": False, "open": False}
         _admin(monkeypatch, True, configured=True)
-        assert client.get("/api/egeria/admin-status").json() == {"admin": True, "configured": True}
+        assert client.get("/api/egeria/admin-status").json() == {"admin": True, "configured": True, "open": False}
 
 
 class TestCheckAndHealTakesTheLockItself:

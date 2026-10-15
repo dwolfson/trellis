@@ -22,7 +22,7 @@ const CUE = {
 let _host = null;
 let _filter = '';
 let _data = null;
-/** true when an admin is configured and this caller is not one: a retry re-queues an Egeria write. */
+/** true when this caller may not retry (see `adminLocked`): a retry re-queues an Egeria write. */
 let _locked = false;
 let _lockRead = false;
 

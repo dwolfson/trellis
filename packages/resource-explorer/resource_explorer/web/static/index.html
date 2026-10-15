@@ -1600,7 +1600,7 @@ async function _runBootstrapNow() {
     });
     if (!res.ok) {
       // A refusal is not "everything already present". 409: a heal is already running (this tab, another, or the
-      // automatic loop). 403: an admin is configured and this caller is not one.
+      // automatic loop). 403: this caller is not an admin (or no admin is configured: it fails closed).
       if (res.status === 409) showToast('info', 'A repair is already running', 5000);
       else if (res.status === 403) showToast('error', 'Admin only: enter the admin token under Admin → Feedback', 6000);
       else showToast('error', `Repair refused (HTTP ${res.status})`, 6000);
