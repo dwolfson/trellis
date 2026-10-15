@@ -38,24 +38,29 @@ class EgeriaTechTypeCatalog:
         self.view_server = view_server or egeria_view_server()
         self.user_id = user_id or os.getenv("EGERIA_USER_ID", "erinoverview")
         self.user_password = user_password or ""   # not used to authenticate (Brief I)
+        #: A client handed in from outside (tests) only; otherwise each read builds its own for whoever
+        #: is asking (`_reader`), never held on the instance.
         self._automated_curation = None
-        #: Whose client `_automated_curation` is (`egeria_clients.identity_key`); None = a client
-        #: handed in from outside (tests), which is kept as is.
-        self._client_key = None
-        self._all_types_cache: list[dict] | None = None
-        self._detail_cache: dict[str, dict] = {}
+        #: The answers, kept PER READER (the account Egeria answers for): an instance can be module-level
+        #: and serve every signed-in person, so one person's answer is never served to another
+        #: (caller-identity reads, 2026-10-14: a read runs as the caller and returns what the caller may see).
+        self._all_types_cache: dict[object, list[dict]] = {}
+        self._detail_cache: dict[tuple[object, str], dict | None] = {}
 
-    def connect(self) -> None:
-        """(Re)bind the client to whoever is asking NOW. A catalog instance can be module-level
-        (`web/routes/survey_definitions.py`), so the client is never pinned to the first caller:
-        the factory's per-request scope makes this one lookup, not one token, per call (Brief I)."""
-        from resource_explorer.egeria_clients import current_principal, identity_key
+    def _reader(self) -> tuple:
+        """(client, answer key) for whoever is asking NOW, resolved in this call.
 
-        if self._automated_curation is not None and self._client_key is None:
-            return                     # handed in from outside: not ours to rebind
+        A catalog instance can be module-level (`web/routes/survey_definitions.py`) and serve
+        concurrent requests, so neither the client nor the answers are pinned to an instance slot
+        another request could rebind between this request's bind and its read: each read uses the
+        client returned here, for this call's principal (the factory's per-request scope makes it
+        one lookup, not one token, per call; Brief I), and caches under this principal's key.
+        A client handed in from outside (tests) is kept as is, under the key None."""
+        from resource_explorer.egeria_clients import current_principal
+
+        if self._automated_curation is not None:
+            return self._automated_curation, None      # handed in from outside: not ours to rebind
         principal = current_principal()
-        if self._automated_curation is not None and self._client_key == identity_key(principal):
-            return
         if not self.platform_url:
             raise EgeriaTechTypeCatalogError(
                 "EGERIA_PLATFORM_URL is not set. Set it in .env or pass platform_url=."
@@ -65,10 +70,9 @@ class EgeriaTechTypeCatalog:
 
             from resource_explorer.egeria_clients import egeria_client
 
-            self._automated_curation = egeria_client(
+            client = egeria_client(
                 principal, purpose="technology types", view_server=self.view_server,
                 platform_url=self.platform_url).of(AutomatedCuration)
-            self._client_key = identity_key(principal)
         except PermissionError:
             raise
         except ImportError as exc:
@@ -77,17 +81,23 @@ class EgeriaTechTypeCatalog:
             raise EgeriaTechTypeCatalogError(
                 f"Could not connect to Egeria at {self.platform_url}: {exc}"
             ) from exc
+        # Who Egeria answers for: the account the client is built for (a person, or the daemon).
+        return client, (principal.kind, principal.client_user or principal.user_id)
+
+    def connect(self) -> None:
+        """Check that a client can be built for whoever is asking now (raises as `_reader` does)."""
+        self._reader()
 
     def list_technology_types(self, search: str = "*", refresh: bool = False) -> list[dict]:
         """All registered Technology Types (or a filtered subset if search is
         narrower than "*"), each a dict with technologyTypeGUID/qualifiedName/
         displayName/description/category. Cached per (search) after first call."""
-        self.connect()
-        if search == "*" and self._all_types_cache is not None and not refresh:
-            return self._all_types_cache
+        client, key = self._reader()
+        if search == "*" and key in self._all_types_cache and not refresh:
+            return self._all_types_cache[key]
 
         try:
-            result = self._automated_curation.find_technology_types(
+            result = client.find_technology_types(
                 search_string=search, output_format="JSON"
             )
         except Exception as exc:
@@ -95,7 +105,7 @@ class EgeriaTechTypeCatalog:
 
         types = result if isinstance(result, list) else []
         if search == "*":
-            self._all_types_cache = types
+            self._all_types_cache[key] = types
         return types
 
     def get_tech_type_detail(self, display_name: str, refresh: bool = False) -> dict | None:
@@ -103,19 +113,20 @@ class EgeriaTechTypeCatalog:
         (e.g. "PostgreSQL Relational Database") — includes catalogTemplates,
         governanceActionProcesses, and resourceList. Returns None if Egeria has
         no Technology Type registered under that exact name. Cached per name."""
-        self.connect()
-        if display_name in self._detail_cache and not refresh:
-            return self._detail_cache[display_name]
+        client, who = self._reader()
+        key = (who, display_name)
+        if key in self._detail_cache and not refresh:
+            return self._detail_cache[key]
 
         try:
-            result = self._automated_curation.get_tech_type_detail(display_name, output_format="JSON")
+            result = client.get_tech_type_detail(display_name, output_format="JSON")
         except Exception as exc:
             raise EgeriaTechTypeCatalogError(
                 f"get_tech_type_detail({display_name!r}) failed: {exc}"
             ) from exc
 
         detail = result if isinstance(result, dict) else None
-        self._detail_cache[display_name] = detail
+        self._detail_cache[key] = detail
         return detail
 
     def get_produced_annotation_types(self, display_name: str) -> list[dict]:
