@@ -102,15 +102,20 @@ component is new and The Catalog may adopt it later.
 - My lists: the collections the user owns or can see (§5).
 - Popular: by the usage measure Egeria already holds (owner, 2026-10-14):
   the `DataScope` classification's additionalProperties written by the
-  open-lineage data-scope governance service, which carry `readCount`,
-  `readsPerDay`, `readersInWindow`, `lastReadAt` and
-  `analysisWindowStart`/`analysisWindowEnd` (the "nanny" work, being
-  reinstated after the architecture changes). The tile ranks by
-  `readsPerDay` within the window and shows the window's end as the
-  as-of. A resource whose DataScope carries no usage properties, or has
-  no DataScope, says "no usage recorded"; until the service runs again
-  on this platform the tile says "popularity not available yet". Never a
-  fake ranking.
+  open-lineage data-scope governance service (the "nanny" work). Live
+  on quickstart 2026-10-14 (analysis runs about 12:00 and 23:00 UTC; 12
+  of 110 DataScope elements carried usage). Properties present on every
+  measured element: `readsPerDay`, `readsInWindow`, `readersInWindow`,
+  `lastReadInWindow`, `analysisWindowStart`, `analysisWindowEnd`,
+  `analysisTime`, `analysisService`; present on only some: `readCount`,
+  `lastReadAt`, `lastReadByRunId`, so the tile relies on the first set
+  only. Location trap: in Egeria 6.2 and pyegeria 6.2 the classification
+  is returned at `elementHeader.dataScope`, not in the
+  `elementHeader.classifications` list; a reader that looks in the list
+  reports zero. The tile ranks by `readsPerDay` within the window and
+  shows `analysisWindowEnd` as the as-of. A resource whose DataScope
+  carries no usage properties, or has no DataScope, says "no usage
+  recorded". Never a fake ranking.
 
 ### Search (phase 2 at L0; ranking and facet counts in phase 4)
 - One box over names, qualified names, descriptions, tags, keywords,
