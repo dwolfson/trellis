@@ -142,7 +142,8 @@ def test_serialise_carries_exactly_what_the_flow_needs():
                        "executes_at": "resource-explorer",
                        "depends_on": ["triage"],
                        "guarded_by": {"triage": "needs_deep"},
-                       "satisfied_by_stored": {}}
+                       "satisfied_by_stored": {},
+                       "added_because": "", "demanded_by": ""}
 
 
 # ── PRODUCES edges (design §17.1's Prefect-side gap) ────────────────────────
@@ -306,71 +307,88 @@ def test_no_step_registry_keeps_the_old_behaviour(produces_world):
 # resolver already trusts short-circuit the structural requirement.
 
 
-class _TimedRegistry:
-    """A registry double answering MAX(surveyed_at) for one table, the query
-    `step_preconditions._latest_surveyed_at` issues."""
-    def __init__(self, surveyed_at):
-        self._surveyed_at = surveyed_at
-
-    def _conn(self):
-        surveyed_at = self._surveyed_at
-
-        class _Conn:
-            def execute(self, sql, params):
-                from types import SimpleNamespace
-                return SimpleNamespace(fetchone=lambda: {"ts": surveyed_at})
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-
-        return _Conn()
-
-
-def _iso_hours_ago(hours: float) -> str:
+def _real_registry_with_thing_table(tmp_path, *, rows=True, producer_ran_minutes_ago=None):
+    """A real sqlite registry, plus a `thing_table` the fixture precondition
+    counts. `producer_ran_minutes_ago` writes the `step_runs` row that proves
+    the producer ran (None writes none)."""
     from datetime import datetime, timedelta, timezone
-    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry(db_path=str(tmp_path / "plan.db"))
+    with registry._conn() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS thing_table (project_slug TEXT)")
+        if rows:
+            conn.execute("INSERT INTO thing_table (project_slug) VALUES ('db1')")
+    if producer_ran_minutes_ago is not None:
+        when = datetime.now(timezone.utc) - timedelta(minutes=producer_ran_minutes_ago)
+        registry.record_step_run("db1", "producer", when.isoformat())
+    return registry
 
 
 def test_a_fresh_stored_answer_needs_no_producer_edge_even_outside_the_definition(
-    produces_world,
+    produces_world, tmp_path,
 ):
-    """`producer` is not authored into this definition at all — same shape as
-    `test_a_producer_outside_the_definition_is_a_build_time_error` — but the
-    entity already has a fresh row for the precondition `producer` would
-    fill. That must satisfy it without requiring `producer` to be one of
-    this definition's own steps."""
+    """`producer` is not authored into this definition at all, but the entity
+    already has rows AND a step_runs row proving `producer` ran 20 minutes
+    ago. That satisfies the precondition without any edge or added step."""
     steps = [FakeStep(guid="consumer", re_analysis_step="consumer")]
     entity = SimpleFakeEntity(slug="db1")
-    registry = _TimedRegistry(_iso_hours_ago(0.33))  # 20 minutes ago
+    registry = _real_registry_with_thing_table(tmp_path, producer_ran_minutes_ago=20)
     plan = build_plan(FakeDefinition(steps=steps, links=[]),
                       step_registry=produces_world,
                       registry=registry, entity=entity)
     consumer = plan.by_key["consumer"]
     assert consumer.depends_on == [], "a fresh stored answer must not add an edge"
+    assert [s.step_key for s in plan.steps] == ["consumer"], "nothing may be added"
     assert consumer.satisfied_by_stored.get("needs_thing"), (
         "provenance for the satisfied-by-stored precondition was not recorded"
     )
 
 
-def test_a_stale_stored_answer_still_raises_the_build_time_error(produces_world):
-    """A row exists but is well outside the freshness window — this must NOT
-    be treated as satisfied; the producer is still required."""
+def test_a_stale_stored_answer_adds_the_producer(produces_world, tmp_path):
+    """Rows exist but the producer last ran far outside the window: not
+    satisfied, so the planner adds the producer (it is within budget)."""
     steps = [FakeStep(guid="consumer", re_analysis_step="consumer")]
     entity = SimpleFakeEntity(slug="db1")
-    registry = _TimedRegistry(_iso_hours_ago(500))
-    with pytest.raises(MissingPrerequisiteError) as excinfo:
-        build_plan(FakeDefinition(steps=steps, links=[]),
-                  step_registry=produces_world, registry=registry, entity=entity)
-    assert excinfo.value.producer_key == "producer"
-    assert excinfo.value.precondition_name == "needs_thing"
+    registry = _real_registry_with_thing_table(tmp_path, producer_ran_minutes_ago=60 * 500)
+    plan = build_plan(FakeDefinition(steps=steps, links=[]),
+                      step_registry=produces_world, registry=registry, entity=entity)
+    added = plan.by_key["producer"]
+    assert plan.by_key["consumer"].depends_on == ["producer"]
+    assert added.added_because == "added producer: needed for needs_thing; no fresh result"
+    assert added.demanded_by == "consumer"
+    assert [s.step_key for s in plan.steps] == ["producer", "consumer"]
+    assert serialise(plan)[0]["added_because"] == added.added_because
 
 
-def test_no_stored_answer_at_all_still_raises_the_build_time_error(produces_world):
+def test_no_stored_answer_at_all_adds_the_producer(produces_world, tmp_path):
     steps = [FakeStep(guid="consumer", re_analysis_step="consumer")]
     entity = SimpleFakeEntity(slug="db1")
-    registry = _TimedRegistry(None)
-    with pytest.raises(MissingPrerequisiteError):
+    registry = _real_registry_with_thing_table(tmp_path, rows=False)
+    plan = build_plan(FakeDefinition(steps=steps, links=[]),
+                      step_registry=produces_world, registry=registry, entity=entity)
+    assert [s.step_key for s in plan.steps] == ["producer", "consumer"]
+    assert plan.by_key["producer"].executes_at == "resource-explorer"
+    assert plan.by_key["consumer"].added_because == ""
+
+
+def test_an_added_producer_over_the_definitions_budget_still_raises(
+    produces_world, tmp_path,
+):
+    from resource_explorer.surveyors.repo_survey_definition_adapter import StepInfo
+
+    produces_world["producer"] = StepInfo(
+        "producer", None, "", [], fetch_cost="download", compute_cost="low",
+        produces=("thing_table",))
+    steps = [FakeStep(guid="consumer", re_analysis_step="consumer")]
+    registry = _real_registry_with_thing_table(tmp_path, rows=False)
+    with pytest.raises(MissingPrerequisiteError, match="beyond this definition's budget") as exc:
         build_plan(FakeDefinition(steps=steps, links=[]),
-                  step_registry=produces_world, registry=registry, entity=entity)
+                   step_registry=produces_world, registry=registry,
+                   entity=SimpleFakeEntity(slug="db1"))
+    assert exc.value.producer_key == "producer"
+    assert exc.value.precondition_name == "needs_thing"
 
 
 def test_omitting_registry_and_entity_keeps_the_old_structural_only_behaviour(
@@ -444,3 +462,79 @@ def test_every_live_definition_plans_to_its_existing_order():
         plan = build_plan(FakeDefinition(qualified_name=name, steps=steps, links=links))
         assert [s.step_key for s in plan.steps] == doc.steps, name
         assert plan.branches is False, name
+
+
+# ── The dataops_testgen scenario, with the REAL step registry (2026-10-14) ──
+#
+# Scouting ran `repo_manifest_parse` at 21:18:31 and `project_dependencies`
+# held 126 versioned rows by 21:18:52; at 21:31:52 the Assessment survey still
+# refused with "no fresh stored result ... found", because the freshness query
+# asked `project_dependencies` for a `surveyed_at` column it does not have.
+
+
+def _repo_registry(tmp_path):
+    from resource_explorer.registry import Project, ProjectRegistry
+
+    registry = ProjectRegistry(db_path=str(tmp_path / "tg.db"))
+    registry.add(Project(slug="tg", display_name="tg",
+                         github_url="https://github.com/x/tg"))
+    return registry
+
+
+def _store_versioned_dependencies(registry, n=3):
+    with registry._conn() as conn:
+        for i in range(n):
+            conn.execute(
+                "INSERT INTO project_dependencies (project_slug, dep_name, "
+                "dep_version, indexed_at) VALUES ('tg', ?, '1.0', '2026-10-14T21:18:40')",
+                (f"dep{i}",))
+
+
+def _assessment(*extra):
+    keys = ("repo_cve_scan", *extra)
+    return FakeDefinition(
+        qualified_name="GovActionProcess::Assessment",
+        steps=[FakeStep(guid=k, re_analysis_step=k, qualified_name=k) for k in keys],
+        links=[FakeLink(a, b) for a, b in zip(keys, keys[1:])])
+
+
+def _plan_for(registry, definition):
+    from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+
+    return build_plan(definition, step_registry=STEP_REGISTRY, registry=registry,
+                      entity=SimpleFakeEntity(slug="tg"))
+
+
+def test_testgen_manifest_parse_ten_minutes_ago_satisfies_the_assessment(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    registry = _repo_registry(tmp_path)
+    _store_versioned_dependencies(registry)
+    registry.record_step_run(
+        "tg", "repo_manifest_parse",
+        (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat())
+    plan = _plan_for(registry, _assessment("repo_arch_detect"))
+    assert [s.step_key for s in plan.steps] == ["repo_cve_scan", "repo_arch_detect"]
+    assert plan.by_key["repo_cve_scan"].satisfied_by_stored.get("has_versioned_dependencies")
+    assert not any(s.added_because for s in plan.steps)
+
+
+def test_testgen_with_no_rows_adds_manifest_parse(tmp_path):
+    registry = _repo_registry(tmp_path)
+    plan = _plan_for(registry, _assessment("repo_arch_detect"))
+    keys = [s.step_key for s in plan.steps]
+    assert keys.index("repo_manifest_parse") < keys.index("repo_cve_scan")
+    added = plan.by_key["repo_manifest_parse"]
+    assert added.added_because == (
+        "added repo_manifest_parse: needed for has_versioned_dependencies; "
+        "no fresh result")
+    assert added.demanded_by == "repo_cve_scan"
+
+
+def test_testgen_over_budget_manifest_parse_still_raises(tmp_path):
+    """A definition authored at the api tier has not budgeted a download."""
+    registry = _repo_registry(tmp_path)
+    with pytest.raises(MissingPrerequisiteError) as exc:
+        _plan_for(registry, _assessment())
+    assert exc.value.producer_key == "repo_manifest_parse"
+    assert "budget" in str(exc.value)
