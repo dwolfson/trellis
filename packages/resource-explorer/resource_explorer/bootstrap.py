@@ -433,16 +433,35 @@ def _resolve_dr_egeria_executable() -> str | None:
     return shutil.which("dr_egeria")
 
 
-def _run_dr_egeria(doc: Path) -> tuple[bool, str]:
-    """Execute one document. Runs `dr_egeria` as a subprocess from the
-    document's own directory, matching how these documents are run by hand and
-    keeping relative paths resolving the same way."""
+@dataclass
+class DrEgeriaProcess:
+    """What one `dr_egeria --process` run of one document returned. `ok` is the process's own answer (exit 0);
+    it is NOT a per-command result: the CLI exits 0 even when commands fail or the client raises, so a caller
+    that needs per-command results reads `stdout` (the summary table), as `dr_egeria_runner` does."""
+
+    ok: bool
+    detail: str
+    stdout: str = ""
+    stderr: str = ""
+
+
+def run_dr_egeria_document(doc: Path, *, env: dict | None = None) -> DrEgeriaProcess:
+    """THE Dr.Egeria processor: run one document through the `dr_egeria` CLI, `--process --summary-only`.
+
+    Used by the bootstrap heal (`_run_dr_egeria`) and by the ad-hoc runner (`dr_egeria_runner`), so there is
+    one way RE executes a Dr.Egeria document. Runs as a subprocess from the document's own directory, matching
+    how these documents are run by hand and keeping relative paths resolving the same way.
+
+    `env` replaces the child's environment when given (the ad-hoc runner passes RE's daemon credential and
+    platform explicitly); None inherits this process's environment, which is what the bootstrap has always done.
+    """
     executable = _resolve_dr_egeria_executable()
     if executable is None:
         venv_candidate = Path(sys.executable).parent / "dr_egeria"
-        return False, f"dr_egeria CLI not found next to {venv_candidate} or on PATH"
+        return DrEgeriaProcess(False, f"dr_egeria CLI not found next to {venv_candidate} or on PATH")
 
     log.info("bootstrap: running dr_egeria via %s", executable)
+    kwargs = {"env": env} if env is not None else {}
     try:
         proc = subprocess.run(
             [executable, "--process", "--summary-only", doc.name],
@@ -450,18 +469,27 @@ def _run_dr_egeria(doc: Path) -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=HEAL_TIMEOUT_SECONDS,
+            **kwargs,
         )
     except FileNotFoundError:
-        return False, "dr_egeria CLI not found on PATH"
+        return DrEgeriaProcess(False, "dr_egeria CLI not found on PATH")
     except subprocess.TimeoutExpired:
-        return False, f"timed out after {HEAL_TIMEOUT_SECONDS}s"
+        return DrEgeriaProcess(False, f"timed out after {HEAL_TIMEOUT_SECONDS}s")
     except Exception as exc:  # pragma: no cover - defensive
-        return False, f"{type(exc).__name__}: {exc}"
+        return DrEgeriaProcess(False, f"{type(exc).__name__}: {exc}")
 
+    stdout, stderr = proc.stdout or "", proc.stderr or ""
     if proc.returncode != 0:
-        tail = (proc.stderr or proc.stdout or "").strip().splitlines()
-        return False, f"exit {proc.returncode}: {tail[-1] if tail else 'no output'}"
-    return True, "ok"
+        tail = (stderr or stdout).strip().splitlines()
+        return DrEgeriaProcess(False, f"exit {proc.returncode}: {tail[-1] if tail else 'no output'}",
+                               stdout, stderr)
+    return DrEgeriaProcess(True, "ok", stdout, stderr)
+
+
+def _run_dr_egeria(doc: Path) -> tuple[bool, str]:
+    """Execute one document for a heal (inherits this process's environment)."""
+    result = run_dr_egeria_document(doc)
+    return result.ok, result.detail
 
 
 def _run_post_heal(batch: Batch) -> tuple[bool, str]:

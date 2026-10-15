@@ -3007,6 +3007,10 @@ from resource_explorer.cli import runs_commands as _runs_commands  # noqa: E402
 
 _runs_commands.register(app)
 
+from resource_explorer.cli import dr_egeria_commands as _dr_egeria_commands  # noqa: E402
+
+_dr_egeria_commands.register(app)
+
 
 if __name__ == "__main__":
     app()
