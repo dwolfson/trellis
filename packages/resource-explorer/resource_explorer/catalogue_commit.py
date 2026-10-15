@@ -67,7 +67,19 @@ CATALOG_POLL_SECONDS = 2
 
 # ── words the screen uses (one place, so tests and the UI pin the same text) ──
 
-S19_SENTENCE = "can't be re-included until Egeria restores archived elements"
+# S19 (owner ruling 2026-10-14, replacing "can't be re-included until Egeria restores archived elements"): Egeria
+# renames what it archives to `<qn>_archivedOn_<date>`, so the original name is free and a re-include CREATES A NEW
+# element. RE looks for that archived sibling before every create that would re-include it, and creates only on an
+# explicit confirmation that names the sibling's GUID.
+REINCLUDE_TAIL = "re-including creates a new element; the archived record stays"
+S19_SENTENCE = REINCLUDE_TAIL
+SIBLING_UNREADABLE = gw.SIBLING_UNREADABLE
+SIBLING_CHANGED = "the archived copy changed since you confirmed · nothing created · check again"
+NEEDS_CONFIRMATION = "needs_confirmation"
+
+
+def reinclude_words(date: str) -> str:
+    return f"archived in Egeria · {date or 'date not stated'} · {REINCLUDE_TAIL}"
 WHOLE_SCHEMAS_LINE = "Egeria adds whole schemas · table choices are kept for when it can"
 SURVEY_LINE = "Egeria's survey is limited to your chosen schemas"
 LINGERING_LINE = ("Egeria's cataloguer still lists this schema until its connector restarts "
@@ -873,8 +885,13 @@ def not_permitted_row(schema: str, reason: str) -> dict:
             "text": f"{schema}: {NOT_PERMITTED_WORDS} · {reason}"}
 
 
+#: Schema states whose proof rows say Egeria holds the element. With no gateway they are attached on the rows' word
+#: (the run re-checks); every other schema is held, since nothing can say whether its create re-includes an archive.
+NO_CREATE_STATES = ("catalogued", "attached_waiting", "restored")
+
+
 def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | None, *,
-                  db_entity=None, derived: dict | None = None) -> dict:
+                  db_entity=None, derived: dict | None = None, confirms: list[dict] | None = None) -> dict:
     """What pressing Catalogue would do, with the Egeria reads it needs.
 
     `gateway` None means Egeria could not be reached: every leave out that needs
@@ -892,13 +909,49 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
     refused, attach, leave, blockers = [], [], [], []
     not_permitted: list[dict] = []
 
-    for name in chosen:
-        st = states[name]
-        if st["state"] == "archived":
-            refused.append({"schema": name, "text": f"{name}: {S19_SENTENCE}"})
-        else:
+    # S19 (owner ruling 2026-10-14): a schema whose create would re-include an archived element is NOT attached until
+    # the person confirms, by its archived GUID. `reinclude_check` is the routine the run's attach calls too.
+    needs_confirmation: list[dict] = []
+    changed: list[dict] = []
+    reincluded: dict[str, dict] = {}
+    # A name collision stops the press before anything else (409) and no Egeria read is made for it (round 3), so
+    # the archived-sibling reads are skipped too: the press cannot go ahead, and the press re-reads when it can.
+    colliding = bool(wildcard_collisions(view, chosen + kept))
+    # Every schema the press would attach is read, whatever its proof rows say: Egeria may have archived (and renamed)
+    # it since. `reinclude_check` reads the live element first, so one that is there costs one read and asks nothing.
+    for name in chosen + kept:
+        st = states.get(name, {})
+        if colliding or (gateway is None and st.get("state") in NO_CREATE_STATES):
             attach.append(name)
-    attach += [n for n in kept]
+            continue
+        if gateway is None:
+            refused.append({"schema": name, "text": f"{name}: {SIBLING_UNREADABLE}", "state": "cannot_check"})
+            continue
+        chk = reinclude_check(gateway, schema_qn(db_entity, name), confirmed_guid_for(confirms, "schema", name))
+        if chk["state"] in ("exists", "clear"):
+            attach.append(name)
+        elif chk["state"] == "confirmed":
+            attach.append(name)
+            reincluded[name] = reinclude_row("schema", name, chk)
+        elif chk["state"] == NEEDS_CONFIRMATION:
+            needs_confirmation.append(reinclude_row("schema", name, chk))
+        elif chk["state"] == "changed":
+            changed.append({"node": "schema", "name": name, "text": f"{name}: {SIBLING_CHANGED}"})
+            refused.append({"schema": name, "text": f"{name}: {SIBLING_CHANGED}", "state": "changed"})
+        else:
+            refused.append({"schema": name, "text": f"{name}: {SIBLING_UNREADABLE}", "state": "cannot_check"})
+    # The database element: a publish under its name re-includes an archived database the same way.
+    db_check = None
+    if gateway is not None and not colliding:
+        db_check = reinclude_check(gateway, gw.database_qualified_name(gw.server_name_for(db_entity),
+                                                                      db_entity.database_name),
+                                   confirmed_guid_for(confirms, "database"))
+        if db_check["state"] == NEEDS_CONFIRMATION:
+            needs_confirmation.insert(0, reinclude_row("database", "", db_check))
+        elif db_check["state"] == "changed":
+            changed.insert(0, {"node": "database", "name": "", "text": f"the database: {SIBLING_CHANGED}"})
+        elif db_check["state"] == "confirmed":
+            reincluded[""] = reinclude_row("database", "", db_check)
 
     leave_out_names = [s["name"] for s in view["schemas"] if s.get("effective") == LEAVE_OUT]
     checked = _caller_signed_in()
@@ -987,7 +1040,7 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
         else:
             row.update(form=ARCHIVE, blocked=False, hangs_off=read["hangs_off"], checked=read["checked"],
                        text=f"{name}: {read['hangs_off']['words']} hang off it · will archive in Egeria, "
-                            f"not delete · can't be re-included until Egeria restores archived elements"
+                            f"not delete · re-including it later creates a new element; the archived record stays"
                             + "".join(f" · archive · lineage to {n} would be lost"
                                       for n in read["hangs_off"].get("lineage_to", [])))
         leave.append(row)
@@ -1034,7 +1087,10 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
         if r.get("blocked"):
             held.setdefault(r.get("reason", CANT_CHECK), []).append(r["schema"])
     for r in refused:
-        held.setdefault(S19_SENTENCE, []).append(r["schema"])
+        held.setdefault(r["text"][len(r["schema"]) + 2:], []).append(r["schema"])
+    for r in needs_confirmation:
+        if r["node"] == "schema":
+            held.setdefault(f"archived in Egeria · {REINCLUDE_TAIL} · confirm Re-include", []).append(r["name"])
     for r in not_permitted:
         if r["write"] == "attach":
             held.setdefault(r["words"], []).append(r["schema"])
@@ -1064,6 +1120,12 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
                            f"elements are created for the {len(attach)} you chose.")
     lines.append({"id": "survey_report_whole", "mechanism": 0, "text": report_sentence})
 
+    # S19: the database itself is archived and unconfirmed (or a confirmation went stale, or it could not be checked):
+    # everything hangs under it, so nothing is pressed until the person confirms (Re-include on its row).
+    if db_check is not None and db_check["state"] == NEEDS_CONFIRMATION:
+        blockers.append(f"the database is {reinclude_words(db_check['sibling'].date)} · confirm Re-include")
+    elif db_check is not None and db_check["state"] in ("changed", "cannot_check"):
+        blockers.append(f"the database: {db_check['text']}")
     something = bool(attach or [r for r in leave if r["form"] in (SOFT_DELETE, ARCHIVE)])
     all_refused = bool(not something and not_permitted)
     # Round 2 (LOW 7): what ELSE holds this commit, each as a short word with its reason on demand, so a refusal
@@ -1089,6 +1151,11 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
         "blocked_notes": [r["text"] for r in leave if r.get("blocked")],
         "attach": attach,
         "refused": refused,
+        # S19: rows the person confirms with Re-include (each names the archived GUID it re-submits), the
+        # confirmations that no longer match the newest archived copy, and the confirmed ones this press re-includes.
+        "needs_confirmation": needs_confirmation,
+        "confirmation_changed": changed,
+        "reinclude": list(reincluded.values()),
         "not_permitted": not_permitted,
         "all_refused": all_refused,
         "also_blocked": also_blocked,
@@ -1103,6 +1170,73 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
                      "whole_schemas_line": WHOLE_SCHEMAS_LINE},
         "tables_line": WHOLE_SCHEMAS_LINE,
     }
+
+
+# ── S19: the archived-sibling guard, the ONE routine every re-including create calls ─────────────────
+
+#: A record of a confirmed re-include: the new element and the archived sibling it stands beside. A record of a
+#: create, never a state: NOT in STATE_PROOFS. Its detail carries `archived_sibling_guid` and `archived_on` (no DDL).
+P_REINCLUDED = "reincluded"
+
+
+def reinclude_check(gateway: CatalogueGateway, qn: str, confirmed_guid: str = "") -> dict:
+    """What a create under `qn` may do, read from Egeria now. The preview, the press, the schema attach and the
+    database publish all call this, so what the panel shows is what the run does (§5b rule 1).
+
+    `state`:
+      exists              a live element holds the name: no create (it is adopted).
+      clear               no live element and no archived copy: a normal create.
+      needs_confirmation  an archived copy exists and nobody confirmed it: NO create.
+      confirmed           the newest archived copy is the one `confirmed_guid` names: create, and record it.
+      changed             a confirmation names a copy that is no longer the newest one: NO create.
+      cannot_check        a read could not be made: NO create.
+    `live` is the live element (exists), `sibling` the newest archived copy, `text` the sentence for the row."""
+    try:
+        live = gateway.read_element(qn)
+    except GatewayError as exc:
+        return {"state": "cannot_check", "live": None, "sibling": None, "text": SIBLING_UNREADABLE,
+                "error": egeria_first_sentence(str(exc))[0]}
+    if live is not None:
+        return {"state": "exists", "live": live, "sibling": None, "text": ""}
+    try:
+        sibs = gateway.archived_siblings(qn)
+    except GatewayError as exc:
+        return {"state": "cannot_check", "live": None, "sibling": None, "text": SIBLING_UNREADABLE,
+                "error": egeria_first_sentence(str(exc))[0]}
+    if not sibs:
+        return {"state": "clear", "live": None, "sibling": None, "text": ""}
+    newest = sibs[0]
+    base = {"live": None, "sibling": newest, "others": [x.guid for x in sibs[1:]]}
+    if confirmed_guid and confirmed_guid == newest.guid:
+        return {**base, "state": "confirmed", "text": reinclude_words(newest.date)}
+    if confirmed_guid:
+        return {**base, "state": "changed", "text": SIBLING_CHANGED}
+    return {**base, "state": NEEDS_CONFIRMATION, "text": reinclude_words(newest.date)}
+
+
+def reinclude_row(node: str, name: str, check: dict) -> dict:
+    """One row of the preview's `needs_confirmation` list: what the Re-include control re-submits."""
+    sib = check["sibling"]
+    label = name or "the database"
+    return {"node": node, "name": name, "archived_guid": sib.guid, "archived_qualified_name": sib.qualified_name,
+            "archived_on": sib.archived_on, "archived_at": sib.archived_at, "date": sib.date,
+            "words": f"archived · {sib.date}", "text": f"{label}: {check['text']}"}
+
+
+def reinclude_detail(check: dict, by: str = "") -> dict:
+    sib = check["sibling"]
+    return {"archived_sibling_guid": sib.guid, "archived_qualified_name": sib.qualified_name,
+            "archived_on": sib.archived_on, "archived_at": sib.archived_at,
+            "other_archived_guids": check.get("others") or [], "confirmed_by": by,
+            "note": REINCLUDE_TAIL}
+
+
+def confirmed_guid_for(confirms: list[dict] | None, node: str, name: str = "") -> str:
+    """The archived GUID a confirmation names for one node ('' = none)."""
+    for c in confirms or []:
+        if (c.get("node") or "schema") == node and (c.get("name") or "") == (name or ""):
+            return str(c.get("archived_guid") or "")
+    return ""
 
 
 # ── what an outbox row does ──────────────────────────────────────────────────
@@ -1258,12 +1392,15 @@ def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_i
         # undo their choice; nothing is written and the row is simply done.
         log.info("catalog commit: %s/%s was left out after its attach was queued; not attaching", slug, schema)
         return ""
-    # Re-inclusion after an archive is refused: the archived element still holds the
-    # qualified name, the template create fails 400, and nothing can be adopted.
-    seen = gateway.read_element(qn, for_lineage=True)
-    if seen is not None and seen.archived:
-        raise SchemaRefused(f"{schema}: {S19_SENTENCE}")
-    el = gateway.read_element(qn)
+    # S19 (owner ruling 2026-10-14): Egeria renames an archived element to `<qn>_archivedOn_<date>`, so the name is
+    # free and a create here would re-include it as a NEW element. Created only when the press confirmed exactly the
+    # newest archived copy (`archived_sibling_guid`); otherwise refused, and nothing is created.
+    chk = reinclude_check(gateway, qn, str(payload.get("archived_sibling_guid") or ""))
+    if chk["state"] == "cannot_check":           # a read that could not be made: Egeria unreadable, nothing created
+        raise GatewayError(f"{schema}: {chk['text']}" + (f" ({chk['error']})" if chk.get("error") else ""))
+    if chk["state"] in (NEEDS_CONFIRMATION, "changed"):
+        raise SchemaRefused(f"{schema}: {chk['text']}")
+    el = chk["live"]
     create_note, requester_note = "", ""
     if el is None:
         try:
@@ -1283,6 +1420,10 @@ def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_i
                            "verified": "DataSetContent link to the database and ResourceConnection, read by the element's GUID"})
         if not guid:
             raise GatewayError(f"Egeria created no schema element for {schema}")
+        if chk["state"] == "confirmed":
+            _proof(registry, slug, P_REINCLUDED, schema=schema, element_guid=guid, qualified_name=qn,
+                   curation_id=payload.get("curation_id", ""), outbox_id=outbox_id, recorded_by=payload.get("by", ""),
+                   detail=reinclude_detail(chk, payload.get("by", "")))
         if not create_note:
             # Freshly created on a person's behalf (Brief I): `requestedBy` in its provenance and
             # Ownership = the requester, from the one helper. A drain-loop retry runs as
@@ -1409,11 +1550,15 @@ def apply_leave_out(registry, gateway: CatalogueGateway, payload: dict, *, outbo
                curation_id=cid, outbox_id=outbox_id, recorded_by=payload.get("by", ""),
                detail={"note": "target gone from the cataloguer's list on read-back"})
     if el is None:
-        archived = gateway.read_element(qn, for_lineage=True)
-        if archived is not None and archived.archived:
-            _proof(registry, slug, P_ARCHIVED, schema=schema, element_guid=archived.guid, qualified_name=qn,
-                   curation_id=cid, outbox_id=outbox_id, detail={"note": "already archived when read"})
-            return archived.guid
+        # An archived schema is no longer under its own name (Egeria renames it `<qn>_archivedOn_<date>`): it is
+        # found by that name. A lookup that cannot be made raises, never "absent".
+        archived = gateway.archived_siblings(qn)
+        if archived:
+            _proof(registry, slug, P_ARCHIVED, schema=schema, element_guid=archived[0].guid, qualified_name=qn,
+                   curation_id=cid, outbox_id=outbox_id,
+                   detail={"note": "already archived when read", "archived_qualified_name": archived[0].qualified_name,
+                           "archived_on": archived[0].archived_on})
+            return archived[0].guid
         _proof(registry, slug, P_REMOVED, schema=schema, qualified_name=qn, curation_id=cid, outbox_id=outbox_id,
                detail={"form": "absent", "note": "no schema element in Egeria when read"})
         return ""
@@ -1433,11 +1578,11 @@ def apply_leave_out(registry, gateway: CatalogueGateway, payload: dict, *, outbo
     _send_destructive(registry, gateway, "delete", element_guid=guid, typ="DeployedDatabaseSchema", qualified_name=qn, **send)
     for g, _typ, mqn in order:
         if mqn:
-            _prove_gone(gateway, mqn, form, schema)
+            _prove_gone(gateway, mqn, form, schema, g)
     now = gateway.read_element(qn)
-    seen = gateway.read_element(qn, for_lineage=True)
     if form == ARCHIVE:
-        if now is not None or seen is None or not seen.archived:
+        seen = _archived_copy(gateway, qn, guid)
+        if now is not None or seen is None:
             raise GatewayError(f"{schema}: the archive was sent but the read-back does not show it archived")
         _proof(registry, slug, P_ARCHIVED, schema=schema, element_guid=guid, qualified_name=qn, curation_id=cid,
                outbox_id=outbox_id, recorded_by=payload.get("by", ""),
@@ -1452,14 +1597,18 @@ def apply_leave_out(registry, gateway: CatalogueGateway, payload: dict, *, outbo
     return guid
 
 
-def _prove_gone(gateway: CatalogueGateway, qualified_name: str, form: str, schema: str) -> None:
-    """The read-back that proves one element gone (soft delete) or archived (a Memento, visible with `forLineage`)."""
+def _archived_copy(gateway: CatalogueGateway, qualified_name: str, guid: str):
+    """The archived copy of THIS element (by its GUID) under the name Egeria gives it on archive, or None."""
+    return next((x for x in gateway.archived_siblings(qualified_name) if x.guid == guid and x.archived), None)
+
+
+def _prove_gone(gateway: CatalogueGateway, qualified_name: str, form: str, schema: str, guid: str = "") -> None:
+    """The read-back that proves one element gone (soft delete) or archived: a Memento, renamed by Egeria to
+    `<qn>_archivedOn_<date>` and visible with `forLineage`, found by that name and matched by its GUID."""
     if gateway.read_element(qualified_name) is not None:
         raise GatewayError(f"{schema}: {qualified_name} is still readable after its {form}")
-    if form == ARCHIVE:
-        seen = gateway.read_element(qualified_name, for_lineage=True)
-        if seen is None or not seen.archived:
-            raise GatewayError(f"{schema}: {qualified_name} was archived but the read-back does not show it")
+    if form == ARCHIVE and _archived_copy(gateway, qualified_name, guid) is None:
+        raise GatewayError(f"{schema}: {qualified_name} was archived but the read-back does not show it")
 
 
 def _guid_to_read(registry, slug: str, schema: str, by_name) -> str:
@@ -1660,12 +1809,16 @@ def make_gateway(db_entity, identity=None) -> CatalogueGateway:
 
 
 def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
-                 gateway: CatalogueGateway | None = None) -> dict:
+                 gateway: CatalogueGateway | None = None, confirm_reinclude: list[dict] | None = None) -> dict:
     """Validate the press against a fresh preview and queue the run.
 
     The preview is recomputed here, with its Egeria reads: what the person saw
     is not trusted, only the rows are. Raises `CommitBlocked` (409) with the
-    reasons when the commit is disabled."""
+    reasons when the commit is disabled.
+
+    `confirm_reinclude` (S19): the person's Re-include confirmations, each `{"node": "schema"|"database", "name",
+    "archived_guid"}`. The preview re-reads the archived copy here; a confirmation that names a copy which is no
+    longer the newest one is refused whole (409), nothing queued."""
     from resource_explorer.catalogue_scope import build_scope_view
     from resource_explorer.curate_plan import Curations
     if not author:
@@ -1688,7 +1841,10 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
         except Exception as exc:  # no client at all: every read-dependent row will say so
             log.warning("catalog commit: no Egeria gateway for %s: %s", slug, exc)
             gateway = None
-    preview = build_preview(registry, slug, view, gateway, db_entity=db_entity, derived=derived)
+    preview = build_preview(registry, slug, view, gateway, db_entity=db_entity, derived=derived,
+                            confirms=confirm_reinclude)
+    if preview.get("confirmation_changed"):
+        raise CommitBlocked(409, SIBLING_CHANGED, [c["text"] for c in preview["confirmation_changed"]])
     if preview.get("all_refused"):
         # Brief Z2: every part the press would write is one the person may not change: refused whole (403).
         raise CommitBlocked(403, preview["not_permitted"][0]["reason"],
@@ -1704,6 +1860,9 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
         "survey_schemas": preview["survey"]["schemas"],
         "survey_not_scopable": preview["survey"]["not_scopable"],
         "refresh_now": bool(refresh_now),
+        # S19: the confirmed re-includes, each naming the archived GUID the run re-checks before it creates.
+        "reinclude": [{"node": r["node"], "name": r["name"], "archived_guid": r["archived_guid"],
+                       "archived_on": r["archived_on"]} for r in preview.get("reinclude") or []],
         # Brief Z2: the parts refused at the press (said by the run as rows, never written), and a Portal
         # curator/admin override seen at the press, from the verified caller (the run re-checks every part as the
         # requester unless this is set, as Publish's run does).
@@ -2029,6 +2188,20 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         # the write when it is not the one step 0 judged (a race since step 0).
         if refuse_database(found_db_guid, written=False):
             return cur.finish(curation_id)
+        # S19: a publish under the database's name when Egeria holds none re-includes an archived database as a NEW
+        # element. The same routine as the preview, re-read now: created only when the press confirmed exactly the
+        # newest archived copy.
+        db_reinclude = None
+        if not existed["database"]:
+            db_reinclude = reinclude_check(gateway, expected["database"],
+                                           confirmed_guid_for(sel.get("reinclude"), "database"))
+            if db_reinclude["state"] in (NEEDS_CONFIRMATION, "changed", "cannot_check"):
+                why_ = (f"the database is {db_reinclude['text']} · confirm Re-include"
+                        if db_reinclude["state"] == NEEDS_CONFIRMATION else f"the database: {db_reinclude['text']}")
+                cur.set_step(curation_id, "publish_elements", "failed", f"{why_} · nothing created")
+                for st in STEPS_DB[1:]:
+                    cur.set_step(curation_id, st, "skipped", "needs the database element first: nothing created")
+                return cur.finish(curation_id)
         before_pointer = getattr(registry.get_database(slug, allow_unreadable=True), "egeria_asset_guid", "") or ""
         pub = gateway.publish_database(db, db.db_user, db.db_password, registry=registry, submitted_by=author)
         returned = pub.database_guid
@@ -2044,6 +2217,10 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
             return cur.finish(curation_id)
         db_guid = returned
         registry.set_database_egeria_guid(slug, db_guid)
+        if db_reinclude is not None and db_reinclude["state"] == "confirmed":
+            _proof(registry, slug, P_REINCLUDED, node_kind="database", element_guid=db_guid,
+                   qualified_name=pub.database_qualified_name, curation_id=curation_id, recorded_by=author,
+                   detail=reinclude_detail(db_reinclude, author))
         # Brief I: the server and database elements carry the requester like everything else a
         # queued person-action creates: `requestedBy` merged into their provenance, Ownership = the
         # requester. The database's Ownership is left to the owner step below when the Context
@@ -2120,10 +2297,12 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
                                                 anchor_guid=db_guid)
         _record_not_permitted(registry, slug, curation_id, author, np_attach, "attach")
         for schema in attach:
-            registry.enqueue_outbox_element(
-                "database", slug, KIND_ATTACH, schema_qn(db, schema),
-                {"slug": slug, "schema": schema, "database_guid": db_guid, "curation_id": curation_id, "by": author},
-                run_id=curation_id)
+            payload = {"slug": slug, "schema": schema, "database_guid": db_guid, "curation_id": curation_id, "by": author}
+            confirmed = confirmed_guid_for(sel.get("reinclude"), "schema", schema)
+            if confirmed:
+                payload["archived_sibling_guid"] = confirmed     # S19: the attach re-checks it before it creates
+            registry.enqueue_outbox_element("database", slug, KIND_ATTACH, schema_qn(db, schema), payload,
+                                            run_id=curation_id)
         drain(curation_id)
         rows = [r for r in registry.list_catalogue_outbox_rows(slug)
                 if r["run_id"] == curation_id and r["element_kind"] == KIND_ATTACH]

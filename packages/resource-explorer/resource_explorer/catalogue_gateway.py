@@ -177,6 +177,61 @@ class ConnectorStatus:
     last_refresh_time: str = ""
 
 
+# ── archived siblings (S19, owner ruling 2026-10-14) ─────────────────────────
+#: Egeria renames an element it archives to `<qualifiedName>_archivedOn_<date>` and keeps it as a Memento
+#: (captured 2026-10-14: `...::re_throwaway_62_archivedOn_Fri Oct 09 01:28:08 GMT 2026`). The original name is
+#: then FREE, so a read by it answers "No elements found" and a create under it makes a NEW element.
+ARCHIVED_ON = "_archivedOn_"
+#: The date in the suffix is Java's `Date.toString()`.
+_JAVA_DATE = "%a %b %d %H:%M:%S %Z %Y"
+SIBLING_UNREADABLE = "could not check whether an archived copy exists"
+
+
+class SiblingLookupFailed(GatewayError):
+    """The archived-sibling lookup could not be made: never read as "no archived copy"."""
+
+    def __init__(self, detail: str = ""):
+        super().__init__(f"{SIBLING_UNREADABLE}" + (f" ({detail})" if detail else ""))
+
+
+@dataclass
+class ArchivedSibling:
+    guid: str
+    qualified_name: str
+    #: the suffix exactly as Egeria wrote it, and its ISO form ('' when the suffix is not a Java date)
+    archived_on: str = ""
+    archived_at: str = ""
+    archived: bool = True
+
+    @property
+    def date(self) -> str:
+        """The day it was archived, for the screen: `2026-10-09`, or Egeria's own text when unparsed."""
+        return self.archived_at[:10] if self.archived_at else self.archived_on
+
+
+def archived_on_of(qualified_name: str, original: str) -> tuple[str, str]:
+    """(the suffix text, its ISO time or '') of `<original>_archivedOn_<suffix>`."""
+    text = qualified_name[len(original) + len(ARCHIVED_ON):]
+    from datetime import datetime
+    try:
+        return text, datetime.strptime(text, _JAVA_DATE).isoformat()
+    except ValueError:
+        return text, ""
+
+
+def parse_archived_siblings(res: Any, qualified_name: str) -> list[ArchivedSibling]:
+    """The elements named `<qualified_name>_archivedOn_...` in a find answer, NEWEST first. "No elements found"
+    is []; an answer this does not recognise raises (`parse_elements_answer`)."""
+    prefix = qualified_name + ARCHIVED_ON
+    out = []
+    for e in parse_elements_answer(res):
+        if not e.qualified_name.startswith(prefix):
+            continue                  # a starts-with search on every string property: other names can match
+        text, at = archived_on_of(e.qualified_name, qualified_name)
+        out.append(ArchivedSibling(e.guid, e.qualified_name, text, at, e.archived))
+    return sorted(out, key=lambda s: (s.archived_at, s.qualified_name), reverse=True)
+
+
 # ── names ────────────────────────────────────────────────────────────────────
 
 def server_name_for(db_entity) -> str:
@@ -241,6 +296,7 @@ class CatalogueGateway(Protocol):
     def add_catalog_target(self, element_guid: str, name: str) -> str: ...
     def remove_catalog_target(self, relationship_guid: str) -> None: ...
     def elements_under(self, qualified_name_prefix: str) -> list[ElementRead]: ...
+    def archived_siblings(self, qualified_name: str) -> list[ArchivedSibling]: ...
     def relationships(self, guid: str) -> list[Relationship]: ...
     def delete_element(self, guid: str, form: str) -> None: ...
     def initiate_survey(self, database_guid: str, request_parameters: dict[str, str]) -> tuple[str, str]: ...
@@ -939,6 +995,28 @@ class PyegeriaCatalogueGateway:
                 return []
             raise GatewayError(_short(exc)) from exc
         return [e for e in parse_elements_answer(res) if e.qualified_name.startswith(qualified_name_prefix)]
+
+    def archived_siblings(self, qualified_name: str) -> list[ArchivedSibling]:
+        """S19: the archived copies of `qualified_name`, found by the name Egeria gives them on archive,
+        `<qualified_name>_archivedOn_<date>`, newest first. The SAME starts-with body `elements_under` sends
+        (captured 2026-10-14 returning the Memento), `forLineage` true so a Memento is visible. A read that
+        cannot be made raises `SiblingLookupFailed`: never "no archived copy", so nothing is created on it."""
+        prefix = qualified_name + ARCHIVED_ON
+        body = {"class": "SearchStringRequestBody", "searchString": prefix,
+                "startsWith": True, "ignoreCase": False, "forLineage": True,
+                "forDuplicateProcessing": True, "graphQueryDepth": 0}
+        try:
+            res = self._client("MetadataExpert").find_metadata_elements_with_string(
+                search_string=prefix, starts_with=True, body=body)
+        except Exception as exc:
+            from resource_explorer.egeria_absence import lookup_exception_is_absent
+            if lookup_exception_is_absent(exc):
+                return []
+            raise SiblingLookupFailed(_short(exc, 200)) from exc
+        try:
+            return parse_archived_siblings(res, qualified_name)
+        except GatewayError as exc:
+            raise SiblingLookupFailed(_short(exc, 200)) from exc
 
     def relationships(self, guid: str) -> list[Relationship]:
         body = {"class": "ResultsRequestBody", "graphQueryDepth": 0,

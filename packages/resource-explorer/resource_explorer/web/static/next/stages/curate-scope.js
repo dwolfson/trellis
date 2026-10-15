@@ -769,6 +769,9 @@ export function commitPanelHtml(preview, me, ui, declared = true, view = null) {
   const dis = (why) => `disabled title="${esc(why)}"`;
   const reason = !me ? signInReason : commitWhyNot(preview, declared);
   const refused = (preview.refused || []).map((r) => `<div data-scope-refused="${esc(r.schema)}" class="text-ink">${glyphSpan('human')} ${esc(r.text)}</div>`).join('');
+  // S19 (owner ruling 2026-10-14): an archived element is never re-included silently. Its row is a cue and a short
+  // word (the sentence on hover) and a Re-include control that re-submits the press naming the archived GUID.
+  const reinclude = reincludeRowsHtml(preview, me);
   const collisions = (preview.all_refused ? [] : preview.collisions || []).map((c) => `<div data-scope-collision-line class="text-right text-ink">${esc(c.text)}</div>`).join('');
   // Brief Z2: a part the person may not change is a cue and a short word; the reason is on demand (hover).
   const notPermitted = (preview.not_permitted || []).map((r) => `<div data-scope-not-permitted="${esc(r.schema)}" data-write="${esc(r.write || '')}" class="text-ink">${cue('no_access', 'not permitted', r.reason)} ${esc(r.schema)}</div>`).join('');
@@ -784,7 +787,7 @@ export function commitPanelHtml(preview, me, ui, declared = true, view = null) {
     <div class="text-answer text-ink">What this commit does</div>
     <div class="mb-s1"><button type="button" data-rc-reset-commit disabled class="opacity-60 text-ink-muted bg-transparent p-0 text-caveat" title="Put every column back to its default width">reset widths</button></div>
     <div class="flex flex-wrap items-start justify-between gap-s3">
-      <div class="min-w-0 flex-1">${manifestTableHtml(preview, view, refused + notPermitted + leave)}</div>
+      <div class="min-w-0 flex-1">${manifestTableHtml(preview, view, reinclude + refused + notPermitted + leave)}</div>
       <div data-scope-commit-row class="flex shrink-0 flex-col items-end gap-s1" style="width:260px">
         <button type="button" data-scope-commit-btn ${off ? dis(reason) : ''} class="rounded-sm border border-accent bg-accent px-s3 py-[6px] text-resource font-semibold text-chrome ${off ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}">${esc(preview.button || 'Publish')}</button>
         ${off ? `<span data-scope-commit-why class="text-right text-caveat text-ink">⚠ ${esc(reason)}</span>` : ''}
@@ -798,6 +801,13 @@ export function commitPanelHtml(preview, me, ui, declared = true, view = null) {
     <div class="mt-s1 text-caveat"><button type="button" data-scope-read-back ${me ? '' : dis(signInReason)} class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">Read Egeria again</button></div>
     <div data-scope-commit-status class="mt-s1 text-provenance text-ink-muted"></div>
   </div>`;
+}
+
+/** S19: one row per archived element the press would re-include: the archived cue with `archived · <date>`, the
+ *  sentence ("archived in Egeria · <date> · re-including creates a new element; the archived record stays") on hover,
+ *  and a Re-include control carrying the archived GUID it confirms. Signed out, the control is off and says why. */
+export function reincludeRowsHtml(preview, me) {
+  return (preview.needs_confirmation || []).map((r) => `<div data-scope-reinclude="${esc(r.name || '')}" data-node="${esc(r.node)}" class="text-ink">${cue('archived', r.words || 'archived', r.text)} ${esc(r.name || 'the database')} <button type="button" data-scope-reinclude-btn data-node="${esc(r.node)}" data-name="${esc(r.name || '')}" data-archived-guid="${esc(r.archived_guid)}" title="${esc(me ? r.text : signInReason)}" ${me ? '' : 'disabled'} class="cursor-pointer bg-transparent p-0 text-accent-ink underline disabled:cursor-not-allowed disabled:opacity-50">Re-include</button></div>`).join('');
 }
 
 /** Column widths of the commit table: wired on the table's own scroll host, which is new with
@@ -967,15 +977,16 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshSco
   };
   if (resumedPoll) setTimeout(poll, commitPollMs);        // a commit still running: follow it to its end
   const btn = host.querySelector('[data-scope-commit-btn]');
-  if (btn) btn.addEventListener('click', async () => {
+  /** The press: the Publish button, or a Re-include control (S19) that sends the same press with its confirmation. */
+  const press = async (trigger, confirm = []) => {
     const refreshNow = host.querySelector('[data-scope-refresh-now]').checked;
-    const label = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = 'sending…';
-    say('Queuing the commit…');
+    const label = trigger.textContent;
+    trigger.disabled = true;
+    trigger.textContent = confirm.length ? 're-including…' : 'sending…';
+    say(confirm.length ? 'Queuing the commit with the re-include confirmed…' : 'Queuing the commit…');
     let out;
-    try { out = await postCatalogueCommit(slug, refreshNow); } catch (err) {
-      btn.disabled = false; btn.textContent = label; say(fail(err, 'the commit'), true); offerSignIn(err);
+    try { out = await postCatalogueCommit(slug, refreshNow, confirm); } catch (err) {
+      trigger.disabled = false; trigger.textContent = label; say(fail(err, 'the commit'), true); offerSignIn(err);
       if (err.status === 403 && !host.querySelector('[data-scope-commit-refused]')) {
         btn.insertAdjacentHTML('afterend', `<span data-scope-commit-refused class="text-right text-caveat">${cue('no_access', 'not permitted', err.message)}</span>`);
       }
@@ -987,12 +998,16 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshSco
     }
     commitUi = { slug, id: out.curation.id, rec: out.curation, polling: true, sig: stepSig(out.curation) };
     setCommitLine(commitLineFromRecord('db', out.curation));   // the one line on the other tabs, from the record, at once
-    btn.textContent = label;
+    trigger.textContent = label;
     if (!host.querySelector('[data-scope-commit-sent]')) host.querySelector('[data-scope-commit-row]').insertAdjacentHTML('afterend', '<div data-scope-commit-sent class="mt-s1 text-caveat text-ink">sent · waiting for Egeria</div>');
     say(`queued: commit ${String(out.curation.id).slice(0, 8)} · run ${String(out.run_id || '').slice(0, 8)}`);
     paintSteps();
     setTimeout(poll, commitPollMs);
-  });
+  };
+  if (btn) btn.addEventListener('click', () => press(btn));
+  host.querySelectorAll('[data-scope-reinclude-btn]').forEach((rbtn) => rbtn.addEventListener('click', () => press(rbtn, [{
+    node: rbtn.getAttribute('data-node'), name: rbtn.getAttribute('data-name') || '', archived_guid: rbtn.getAttribute('data-archived-guid'),
+  }])));
   const rb = host.querySelector('[data-scope-read-back]');
   if (rb) rb.addEventListener('click', async () => {
     say('Reading Egeria…');

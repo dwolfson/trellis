@@ -216,7 +216,7 @@ test('leave-out rows name their form before the press: soft delete, archive, and
     button: 'Publish · 2 schemas · removes 1 from Egeria · archives 1',
     leave_out: [
       { schema: 'old', form: 'soft_delete', blocked: false, text: 'old: nothing hangs off it · will delete in Egeria with its 1 tables' },
-      { schema: 'ledger', form: 'archive', blocked: false, text: "ledger: 2 term assignments hang off it · will archive in Egeria, not delete · can't be re-included until Egeria restores archived elements" },
+      { schema: 'ledger', form: 'archive', blocked: false, text: "ledger: 2 term assignments hang off it · will archive in Egeria, not delete · re-including it later creates a new element; the archived record stays" },
       { schema: 'tmp', form: 'cannot_check', blocked: true, text: "tmp: couldn't check what hangs off it" },
     ],
   });
@@ -228,7 +228,7 @@ test('leave-out rows name their form before the press: soft delete, archive, and
   assert.doesNotMatch(flat(rows.old), /removed|soft-deleted/);
   assert.equal(rows.ledger.dataset.form, 'archive');
   assert.match(flat(rows.ledger), /2 term assignments hang off it · will archive in Egeria, not delete/);
-  assert.match(flat(rows.ledger), /can't be re-included until Egeria restores archived elements/);
+  assert.match(flat(rows.ledger), /re-including it later creates a new element; the archived record stays/);
   assert.match(flat(rows.tmp), /^⚠ tmp: couldn't check what hangs off it$/);
   assert.doesNotMatch(flat(rows.tmp), /nothing hangs off it/);
   assert.match(flat(document.querySelector('[data-scope-commit-btn]')), /removes 1 from Egeria · archives 1/);
@@ -253,10 +253,10 @@ test('a name collision is flagged on the row and in the panel, and the commit bu
   assert.match(flat(document.querySelector('[data-scope-commit-why]')), /^⚠ name collisions: /);
 });
 
-test('an archived schema chosen again is refused with the S19 sentence', async () => {
-  const preview = previewFor({ refused: [{ schema: 'ledger', text: "ledger: can't be re-included until Egeria restores archived elements" }] });
+test('a schema whose archived copy could not be checked is held with that sentence', async () => {
+  const preview = previewFor({ refused: [{ schema: 'ledger', text: 'ledger: could not check whether an archived copy exists' }] });
   const { document } = await setUp(baseView(), preview);
-  assert.match(flat(document.querySelector('[data-scope-refused="ledger"]')), /can't be re-included until Egeria restores archived elements/);
+  assert.match(flat(document.querySelector('[data-scope-refused="ledger"]')), /could not check whether an archived copy exists/);
 });
 
 test('a preview that cannot be read says so and leaves no Catalog button', async () => {
@@ -299,7 +299,7 @@ function committedView() {
   };
   v.schemas.push(schema('ledger', [table('ledger', 'l1')], { explicit: chose('catalogue'), effective: 'catalogue' }));
   v.schemas.push(schema('q', [table('q', 'q1')], { explicit: chose('catalogue'), effective: 'catalogue' }));
-  v.commit.schemas.ledger = { state: 'archived', words: 'archived in Egeria · 10-05 09:31', second: "can't be re-included until Egeria restores archived elements" };
+  v.commit.schemas.ledger = { state: 'archived', words: 'archived in Egeria · 10-05 09:31', second: 're-including creates a new element; the archived record stays' };
   v.commit.schemas.q = { state: 'queued', words: 'queued · outbox #4182', second: 'step: attach' };
   return v;
 }
@@ -318,7 +318,7 @@ test('every state word on a schema row is the server\'s, with its glyph and seco
   assert.match(flat(word('old')), /^deleted in Egeria · 10-05 09:30$/);
   assert.match(flat(secondOf(document, 'schema:old')), /still lists this schema until its connector restarts · nothing is recreated/);
   assert.match(flat(word('ledger')), /^□ archived in Egeria · 10-05 09:31$/);
-  assert.match(flat(secondOf(document, 'schema:ledger')), /can't be re-included until Egeria restores archived elements/);
+  assert.match(flat(secondOf(document, 'schema:ledger')), /re-including creates a new element; the archived record stays/);
 });
 
 test('a schema whose attach action was sent reads "sent", between queued and attached (D-C ladder)', async () => {

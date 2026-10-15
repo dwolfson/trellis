@@ -10,9 +10,10 @@ routes still only edit RE's record; only `/commit` and `/read-back` reach Egeria
 from __future__ import annotations
 
 import asyncio
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from resource_explorer import catalogue_commit as commit
 from resource_explorer import catalogue_scope as scope
@@ -117,8 +118,18 @@ async def read_commit_preview(slug: str) -> dict:
     return await asyncio.to_thread(commit.run_with_loop, build)
 
 
+class ReincludeConfirm(BaseModel):
+    """S19: the person confirmed re-including ONE archived element, named by its archived copy's GUID."""
+    node: Literal["schema", "database"] = "schema"
+    name: str = ""
+    archived_guid: str = Field(min_length=1)
+
+
 class CommitBody(BaseModel):
     refresh_now: bool = False
+    #: S19 (owner ruling 2026-10-14): Re-include confirmations. The press re-reads each archived copy and refuses
+    #: (409) when the copy named is no longer the newest one.
+    confirm_reinclude: list[ReincludeConfirm] = Field(default_factory=list)
 
 
 @router.post("/{slug}/commit")
@@ -130,7 +141,8 @@ async def post_commit(slug: str, body: CommitBody, request: Request) -> dict:
     await _authorize(registry, slug, publish=True)
     try:
         out = await asyncio.to_thread(commit.run_with_loop, commit.start_commit, registry, slug, author,
-                                      refresh_now=body.refresh_now)
+                                      refresh_now=body.refresh_now,
+                                      confirm_reinclude=[c.model_dump() for c in body.confirm_reinclude])
     except commit.CommitBlocked as exc:
         raise HTTPException(status_code=exc.status, detail=exc.message) from exc
     return {"curation": out["curation"], "run_id": out["run_id"], "activity_id": out["activity_id"]}

@@ -7,8 +7,11 @@ not from what would be convenient:
   columns on its next refresh, and nothing under the database;
 * the cataloguer hands names to JDBC as patterns, so a schema `a_b` also pulls in
   `aXb`'s tables and a table `x_y` also gets `xZy`'s columns;
-* an archive hides the element (and its children) from a plain read; a read with
-  `for_lineage` still sees it, as a Memento; recreating an archived name fails 400;
+* an archive RENAMES the element to `<qn>_archivedOn_<Java Date>` and keeps it as a Memento, exactly as
+  Egeria 6.2 does (captured 2026-10-14, `tests/fixtures/egeria_6_2/*memento*`): a read by the ORIGINAL name
+  answers "No elements found" even with `for_lineage`, the name is free, and a create under it makes a NEW
+  element. The archived copy is found by its new name (`archived_siblings`), in the captured 6.2 shape. The
+  old shape (an archived element still holding its name) is refused by `by_qn` (S19, owner ruling 2026-10-14);
 * a soft delete of a parent that still has visible children is refused (the strict
   reading, so a parent-first delete order fails in the test, never silently passes);
 * a removed target is still refreshed by the running connector until it is
@@ -31,12 +34,31 @@ sys.path.insert(0, str(Path(__file__).parent))
 import live_catalogue_payloads as _live  # noqa: E402
 from live_catalogue_payloads import raw_element as _raw_element, raw_related as _raw_related  # noqa: E402
 
+import copy  # noqa: E402
+import json  # noqa: E402
+from datetime import datetime, timedelta  # noqa: E402
+
 import resource_explorer.catalogue_gateway as _gw  # noqa: E402  (new parsers are looked up at call time)
 from resource_explorer.catalogue_gateway import (  # noqa: E402
     ARCHIVE, CatalogTarget, ConnectorStatus, ElementRead, GatewayError, PublishedDatabase,
     Relationship, SurveyOutcome, like_matches, parse_element_answer, parse_elements_answer, parse_related_answer)
 
 PROCESS_QN = "PostgreSQLSurvey::survey-postgres-database"
+#: The captured 6.2 Memento element (a starts-with, forLineage find), the template every archived copy is drawn from.
+_MEMENTO_FIXTURE = Path(__file__).parent / "fixtures" / "egeria_6_2" / "metadata_expert_find_with_string_for_lineage__memento.json"
+#: Egeria's suffix is Java's `Date.toString()` in the platform's zone (GMT on the quickstart).
+JAVA_DATE = "%a %b %d %H:%M:%S GMT %Y"
+
+
+def captured_memento(guid: str, qn: str, type_name: str) -> dict:
+    """The captured 6.2 Memento answer with this element's GUID, archived name and type."""
+    el = copy.deepcopy(json.loads(_MEMENTO_FIXTURE.read_text())["answer"][0])
+    el["elementGUID"] = guid
+    el["type"]["typeName"] = type_name
+    ep = el["elementProperties"]
+    ep["propertiesAsStrings"]["qualifiedName"] = qn
+    ep["propertyValueMap"]["qualifiedName"]["primitiveValue"] = qn
+    return el
 #: The job component the OpenLineage cataloguer made for Egeria's own survey action (READBACK note, last section).
 CONNECTOR_JOB_QN = "DeployedSoftwareComponent::GovernanceActions::PostgreSQLSurvey::survey-postgres-database"
 
@@ -97,6 +119,8 @@ class FakeEgeria:
                                "Details are in the audit log.")
         self.refresh_moves_time = True
         self.last_wire: tuple | None = None       # (kind, raw payload) of the newest read
+        # The platform clock an archive stamps into the new name (a test moves it to make a newer archived copy).
+        self.archive_clock = datetime(2026, 10, 9, 1, 28, 8)
 
     # -- helpers ---------------------------------------------------------
     def _guid(self, prefix: str = "g") -> str:
@@ -116,6 +140,10 @@ class FakeEgeria:
 
     def by_qn(self, qn: str) -> dict | None:
         for g, e in self.elements.items():
+            # S19: Egeria never leaves an archived element under its own name. A test that builds that shape
+            # (`archived` set without the rename) is testing an Egeria that does not exist: refuse it loudly.
+            assert not (e["archived"] and _gw.ARCHIVED_ON not in e["qn"]), \
+                f"old fake shape: archived element {g} still holds its qualifiedName {e['qn']!r}; use archive()"
             if e["qn"] == qn and not e["deleted"]:        # a soft-deleted element is gone; its name is free
                 return {**e, "guid": g}
         return None
@@ -124,6 +152,14 @@ class FakeEgeria:
         g = self._guid("e")
         self.elements[g] = {"qn": qn, "type": type_name, "parent": parent, "archived": False, "deleted": False}
         return g
+
+    def archive(self, guid: str) -> str:
+        """What Egeria does on an archive: Memento AND the rename `<qn>_archivedOn_<date>`. Returns the new name."""
+        e = self.elements[guid]
+        e["original_qn"] = e["qn"]
+        e["qn"] = f"{e['qn']}{_gw.ARCHIVED_ON}{self.archive_clock.strftime(JAVA_DATE)}"
+        e["archived"] = True                # the clock does not move by itself: one leave-out is one moment
+        return e["qn"]
 
     def reset(self) -> None:
         """An Egeria reset: everything RE ever wrote is gone."""
@@ -141,13 +177,16 @@ class FakeEgeria:
         self._boom("publish_database")
         server = f"{getattr(db_entity, 'egeria_host', '') or db_entity.host}:{db_entity.port}"
         qn = f"PostgreSQL Relational Database::{server}::{db_entity.database_name}"
-        if not self.db_guid:
-            self.server_guid = self._guid("s")
+        if not self.db_guid or self.by_qn(qn) is None:
+            # By name, as the surveyor resolves it: an archived database no longer holds the name, so a publish
+            # creates a NEW database element beside the archived one.
+            if not self.server_guid or self.by_qn(f"PostgreSQL Server::{server}") is None:
+                # The server is an element too (shared by host:port), so a later read finds it.
+                self.server_guid = self._guid("s")
+                self.elements[self.server_guid] = {"qn": f"PostgreSQL Server::{server}", "type": "SoftwareServer",
+                                                   "parent": "", "archived": False, "deleted": False}
             self.db_guid = self._guid("d")
             self.elements[self.db_guid] = {"qn": qn, "type": "RelationalDatabase", "parent": "", "archived": False, "deleted": False}
-            # The server is an element too (shared by host:port), so a later read finds it.
-            self.elements[self.server_guid] = {"qn": f"PostgreSQL Server::{server}", "type": "SoftwareServer",
-                                               "parent": "", "archived": False, "deleted": False}
             self.zones[self.db_guid] = list(self.default_zones)
         if registry is not None:
             # as the real surveyor does (egeria_database_surveyor.py ~:599): it records the database GUID on RE's
@@ -185,8 +224,11 @@ class FakeEgeria:
 
     # -- reads and schema elements --------------------------------------
     def raw_element(self, guid: str) -> dict:
-        """The element as Egeria answers (live shape): `elementGUID`, `elementProperties`, ..."""
+        """The element as Egeria answers (live shape): `elementGUID`, `elementProperties`, ...; an archived one
+        is the captured 6.2 Memento answer."""
         e = self.elements[guid]
+        if e["archived"]:
+            return captured_memento(guid, e["qn"], e["type"])
         return _raw_element(guid, e["qn"], e["type"], archived=e["archived"], zones=self.zones.get(guid))
 
     def raw_related(self, guid: str) -> dict:
@@ -232,10 +274,7 @@ class FakeEgeria:
         self._locked(database_guid, "Create")
         server = f"{getattr(db_entity, 'egeria_host', '') or db_entity.host}:{db_entity.port}"
         qn = f"PostgreSQL Relational Database Schema::{server}::{db_entity.database_name}.{schema}"
-        e = self.by_qn(qn)
-        if e is not None and e["archived"]:
-            raise GatewayError(f"400 OMAG-REPOSITORY-HANDLER-400-010 A DeployedDatabaseSchema entity with unique "
-                               f"identifier {e['guid']} is not visible [Anchors, Memento]")
+        e = self.by_qn(qn)          # an archived schema no longer holds this name: a create here is a NEW element
         if e is not None and not e["deleted"]:
             return e["guid"]
         g = self.add_element(qn, "DeployedDatabaseSchema", parent=database_guid)
@@ -334,6 +373,16 @@ class FakeEgeria:
         self.last_wire = ("elements", raw or "No elements found")
         return parse_elements_answer(self.last_wire[1])
 
+    def archived_siblings(self, qualified_name):
+        """The starts-with, forLineage find for `<qn>_archivedOn_`, answered in the captured 6.2 shape and
+        parsed by the real gateway's parser."""
+        self.calls.append(("archived_siblings", qualified_name))
+        self._boom("archived_siblings")
+        prefix = qualified_name + _gw.ARCHIVED_ON
+        raw = [self.raw_element(g) for g, e in self.elements.items() if not e["deleted"] and e["qn"].startswith(prefix)]
+        self.last_wire = ("elements", raw or "No elements found")
+        return _gw.parse_archived_siblings(self.last_wire[1], qualified_name)
+
     def relationships(self, guid):
         self.calls.append(("relationships", guid))
         self._boom("relationships")
@@ -400,8 +449,8 @@ class FakeEgeria:
             if kids:
                 raise GatewayError(f"400 OMAG-REPOSITORY-HANDLER-400-010 an archive of {e['type']} element {guid} would "
                                    f"leave its dependent element {kids[0]} behind")
-            e["archived"] = True
             self.deleted_order.append((e["qn"], e["type"], form))
+            self.archive(guid)
             return
         if kids:
             raise GatewayError(f"401 OMAG-GENERIC-HANDLERS-403-005 A delete of {e['type']} element {guid} is not "
