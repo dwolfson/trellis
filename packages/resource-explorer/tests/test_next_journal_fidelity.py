@@ -119,7 +119,7 @@ class TestDispositionRulings:
 
     def test_a_non_repo_now_renders_real_disposition_chips_not_the_old_apology(self):
         """SUPERSEDED (re/multiselect-groups-dbfs, 2026-09-23): FUNNEL-COST-
-        RULINGS §5 (docs/design-notes/REPLY-FUNNEL-COST.md) was correct for
+        RULINGS §5 (docs/design-notes/exchange/REPLY-FUNNEL-COST.md) was correct for
         2026-09-13's mechanism -- a database/filesystem genuinely had no
         disposition, so an empty facet row would have misrepresented a
         mechanism gap as "nothing is dispositioned". That mechanism gap

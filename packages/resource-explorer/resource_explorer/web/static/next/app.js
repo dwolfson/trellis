@@ -73,7 +73,7 @@ import { contextRecordedSpec, contextRecordedState } from '/static/next/context-
 import { followUntil, ACTIVITY_LIVE } from '/static/next/live-status.js';
 import { nativeSurveysSectionHtml, nativeSurveysUnreadableHtml, bindNativeSurveys } from '/static/next/stages/native-surveys.js';
 // The row anatomy shared with Enrichment's judgements/observations rows
-// (ENRICHMENT-E0-ROW-ANATOMY, docs/design-notes/REPLY-DESIGNER-ENRICHMENT-
+// (ENRICHMENT-E0-ROW-ANATOMY, docs/design-notes/exchange/REPLY-DESIGNER-ENRICHMENT-
 // STAGE-IA.md §0.3/§6 item 1) — who + when + the evidence-moved flag, one
 // function, called from both stores' rows rather than reimplemented here.
 import { personRowLineHtml } from '/static/next/row-anatomy.js';

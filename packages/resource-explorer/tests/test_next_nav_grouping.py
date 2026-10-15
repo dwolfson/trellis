@@ -1,5 +1,5 @@
 """Nav grouping: three classes, declared in the data
-(docs/design-notes/RULING-NAV-GROUPING.md).
+(docs/design-notes/rulings/RULING-NAV-GROUPING.md).
 
 The ruling answers a peer critique of the nine-item intent row: Understanding
 leaves the run (project owner, 2026-09-18 — it will become a per-user

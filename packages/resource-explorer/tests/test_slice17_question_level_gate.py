@@ -1,4 +1,4 @@
-"""Slice 17, item 3 (docs/design-notes/COORDINATOR-BRIEF-MULTI-RESOURCE.md,
+"""Slice 17, item 3 (docs/design-notes/exchange/COORDINATOR-BRIEF-MULTI-RESOURCE.md,
 Phase 1b row 17; docs/multi-resource-questions-design.md §18.3): a checkmark
 is withheld when the question is asked below `resource` level (`container`,
 `member`, `field` — design §18.3's engine-neutral vocabulary) and nothing

@@ -1,6 +1,6 @@
 # Nav grouping — implemented
 
-**Replies to:** `docs/design-notes/RULING-NAV-GROUPING.md` (2026-09-18) — the
+**Replies to:** `docs/design-notes/rulings/RULING-NAV-GROUPING.md` (2026-09-18) — the
 ruling answering a peer critique of the nine-item `/next` intent row.
 **Branch:** `re/nav-grouping`, worktree `.claude/worktrees/wt-nav-grouping`.
 Nothing was written in the main checkout.

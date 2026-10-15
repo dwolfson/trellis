@@ -9,11 +9,11 @@ read-only probe with its states, the ExternalReference on publish"). Slices 2 ("
 (`/Users/dwolfson/localGit/egeria-v6/trellis-re-doc-sources-slice1`), never in the shared checkout.
 
 **Brief status at start:** `origin/main` (`a90ce17c`, PR #346 merged) did **not** yet carry
-`docs/design-notes/BRIEF-DATABASE-DOCUMENTATION-SOURCES.md` — PRs #344/#345/#347 referenced in the
+`docs/design-notes/exchange/BRIEF-DATABASE-DOCUMENTATION-SOURCES.md` — PRs #344/#345/#347 referenced in the
 dispatch either hadn't landed or don't exist under those numbers on this fork. The brief existed
 only on an unmerged branch (`re/brief-database-doc-sources`, commit `597e85be`, sitting in
 `.claude/worktrees/wt-docsources` in the shared checkout — a design-only commit, no implementation).
-Copied from there into this branch (`docs/design-notes/BRIEF-DATABASE-DOCUMENTATION-SOURCES.md`) so
+Copied from there into this branch (`docs/design-notes/exchange/BRIEF-DATABASE-DOCUMENTATION-SOURCES.md`) so
 this slice has its own copy of what it's implementing; flagging this gap per the dispatch's own
 instruction rather than blocking on it.
 

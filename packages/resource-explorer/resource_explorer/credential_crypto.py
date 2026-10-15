@@ -2,7 +2,7 @@
 
 Design context
 ---------------
-`docs/design-notes/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md` §7
+`docs/design-notes/exchange/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md` §7
 (the architecture session's ruling on the `ASK-DATABASE-CREDENTIAL-
 CAPABILITY-VISIBILITY.md` question): pyegeria only exposes
 `save_client_side_secret`/`delete_client_side_secret` — there is no read API

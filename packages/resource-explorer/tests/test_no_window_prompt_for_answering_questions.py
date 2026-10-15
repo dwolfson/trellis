@@ -1,6 +1,6 @@
 """No `window.prompt()` anywhere in the flow for answering one of the
 catalog's Human-Supplied questions (ENRICHMENT-E0-ROW-ANATOMY,
-docs/design-notes/REPLY-DESIGNER-ENRICHMENT-STAGE-IA.md §0.3/§6 item 1).
+docs/design-notes/exchange/REPLY-DESIGNER-ENRICHMENT-STAGE-IA.md §0.3/§6 item 1).
 
 Before this change, `wireHumanAnswers()` in app.js opened a blocking
 `window.prompt(question, prior)` popup: one line, no author, and it froze

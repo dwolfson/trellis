@@ -7439,7 +7439,7 @@ already in `db_change_comparator.py`'s own module docstring.
 **Decision (project owner, 2026-09-22):** `/next` should reach parity with
 classic across all three resource types (repo, database, filesystem), not
 just repos — reversing the earlier ruling logged in
-`docs/design-notes/COORDINATOR-BRIEF-MULTI-RESOURCE.md` ("DB and FS stay out
+`docs/design-notes/exchange/COORDINATOR-BRIEF-MULTI-RESOURCE.md` ("DB and FS stay out
 of `/next`. Project owner, 2026-09-20. They land in the classic UI..."; see
 that file's "What is different from the repo work" section for the original
 wording). The one-session-at-a-time rule on `next/app.js` that ruling had
@@ -8111,7 +8111,7 @@ the launcher shows one combined reason."
 merged to `main`** — `main` carries the doc through §6 only (`98e8c137`,
 PR #255). Anyone reading the doc from `main` will not find the §7 this build
 implements; read it with `git show 990d7d61:packages/resource-explorer/docs/
-design-notes/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md` until that
+design-notes/exchange/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md` until that
 branch lands. Not cherry-picked onto the build branch on purpose: the doc
 commit belongs to its own PR and duplicating it would give one design note
 two histories.
@@ -8120,7 +8120,7 @@ two histories.
 
 ## Database credential-capability model — awaiting the project owner's ruling
 
-**From:** `docs/design-notes/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md`
+**From:** `docs/design-notes/exchange/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md`
 (architecture session, 2026-09-24), replying to
 `ASK-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md` (`#251`). Read both in
 full before picking this up — this entry is a pointer, not a substitute.

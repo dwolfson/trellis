@@ -1,6 +1,6 @@
 """Sub-Resources in /next (re/next-analysis-subresources).
 
-docs/design-notes/RULING-SUBRESOURCES-PLACEMENT.md (merged, PR #214) found
+docs/design-notes/rulings/RULING-SUBRESOURCES-PLACEMENT.md (merged, PR #214) found
 classic's Sub-Resources sub-tab (index.html's loadAnalysisSubResourcesView,
 ~380 lines) decomposes into two features with two different, already-
 existing homes -- nothing joins /next's four-tab sub-strip:

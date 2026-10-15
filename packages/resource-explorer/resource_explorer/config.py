@@ -366,7 +366,7 @@ class EgeriaConfig(BaseSettings):
     # mount's host-side path (e.g. .../runtime-volumes/quickstart-platform-
     # data/secrets/resource-explorer.omsecrets) that lets RE read/write the
     # file directly for the credential-storage/drift-detection work in
-    # docs/design-notes/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md
+    # docs/design-notes/exchange/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md
     # §7 ("one secrets-collection name per (resource, role), written to both
     # places by RE in the same operation"). Empty by default — most
     # deployments (CI, a from-scratch checkout, a remote engine host) have no

@@ -1,5 +1,5 @@
 /* Enrichment — Context, the stage's new first sub-tab (ENRICHMENT-E1-
- * CONTEXT-TAB, replying to docs/design-notes/REPLY-DESIGNER-ENRICHMENT-
+ * CONTEXT-TAB, replying to docs/design-notes/exchange/REPLY-DESIGNER-ENRICHMENT-
  * STAGE-IA.md §1). Builds on E0 (ENRICHMENT-E0-ROW-ANATOMY): the shared row
  * anatomy (`row-anatomy.js`'s `personRowLineHtml`) and the inline
  * question-answer editor E0 built with no Context tab to live in yet.

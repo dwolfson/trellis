@@ -1,6 +1,6 @@
 /* Row anatomy for a person's input: who + when + the evidence-moved flag.
  *
- * ENRICHMENT-E0-ROW-ANATOMY (docs/design-notes/REPLY-DESIGNER-ENRICHMENT-
+ * ENRICHMENT-E0-ROW-ANATOMY (docs/design-notes/exchange/REPLY-DESIGNER-ENRICHMENT-
  * STAGE-IA.md §0.3, §6 item 1): a person's input used to live in two stores
  * with two different rules. Enrichment's judgements/observations
  * (`state.enrichment` via `saveEnrichmentField`) always carried who, when,

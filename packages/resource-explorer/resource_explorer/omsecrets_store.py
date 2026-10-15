@@ -1,6 +1,6 @@
 """RE's direct read/write access to the `.omsecrets` YAML file.
 
-Background — docs/design-notes/REPLY-DATABASE-CREDENTIAL-CAPABILITY-
+Background — docs/design-notes/exchange/REPLY-DATABASE-CREDENTIAL-CAPABILITY-
 VISIBILITY.md §7: RE writes a credential to two places in the same
 operation — its own registry (`registry.py`'s `databases.db_password`,
 encrypted at rest via `credential_crypto.py`) and this file, which is the
