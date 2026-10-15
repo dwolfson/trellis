@@ -332,6 +332,15 @@ def _ensure_draft_zone() -> None:
                 log.warning(zone_controls_line(report)
                             + " — publishing into a zone that would lock out everyone, or could not be "
                               "checked, is refused until its control is fixed.")
+
+            # Read-only check of the ConnectorType RE's secrets store uses; a mismatch is named, never repaired.
+            from resource_explorer.connector_type_check import check_connector_type, connector_type_line
+
+            ct = check_connector_type()
+            if ct.get("status") in ("ok", "absent"):
+                log.info(connector_type_line(ct))
+            else:
+                log.warning(connector_type_line(ct))
         except Exception as exc:  # pragma: no cover - defensive
             log.warning("draft-zone bootstrap failed: %s", exc)
         try:
