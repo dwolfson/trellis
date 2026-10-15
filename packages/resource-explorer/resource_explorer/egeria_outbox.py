@@ -235,7 +235,9 @@ _SELF_RESOLVING_KINDS = {"doc_source_publish", "doc_source_unpublish",
                          "collection_membership_detach",
                          # Brief F: a person's Rating (keyed by element and person) and a journal entry's Note
                          # (found by its own qualifiedName in the asset's NoteLog by its creator).
-                         "feedback_rating", "feedback_note"}
+                         "feedback_rating", "feedback_note",
+                         # A run's read-back: no element of its own, its key is the run's.
+                         "publish_read_back"}
 
 
 #: Outbox kinds whose write ARCHIVES, DELETES or DETACHES something in Egeria. A retry of a destructive write is itself
@@ -1035,7 +1037,7 @@ def _private_investigation_reader(registry, row: dict, identity):
 
 
 #: The kinds a private member's survey writes beneath its private report (anchored to it, so judged by its zones).
-PRIVATE_FINDING_KINDS = ("annotation", "annotation_link")
+PRIVATE_FINDING_KINDS = ("annotation", "annotation_link", "publish_read_back")
 
 
 def _private_findings_await_owner(registry, row: dict, identity) -> None:
@@ -1263,6 +1265,107 @@ def _guid_of(result) -> str:
     return ""
 
 
+# ── a run's read-back: the proof that turns "queued for publish" into "published · read back" ──────────────
+
+#: The outbox kind, and the run_id suffixes a publish run's rows carry: the annotations under the base run_id,
+#: their evidence links under `::links`, the read-back under `::read_back`.
+PUBLISH_READ_BACK = "publish_read_back"
+LINKS_SUFFIX = "::links"
+READ_BACK_SUFFIX = "::read_back"
+#: The run_id suffixes that belong to a base run (never a run of their own).
+RUN_COMPANION_SUFFIXES = (LINKS_SUFFIX, READ_BACK_SUFFIX)
+#: Page size of the read-back's `get_new_annotations` walk, and the guard on how many pages it reads.
+READ_BACK_PAGE = 500
+READ_BACK_MAX_PAGES = 20
+#: The words on a done read-back row (`last_error` keeps a done row's note).
+READ_BACK_DONE_WORDS = "read back"
+
+
+def base_run_id(run_id: str) -> str:
+    """The publish run a row belongs to: its run_id without a companion suffix."""
+    for suffix in RUN_COMPANION_SUFFIXES:
+        if run_id.endswith(suffix):
+            return run_id[: -len(suffix)]
+    return run_id
+
+
+def enqueue_publish_read_back(registry, entity_type: str, entity_slug: str, publish_run_id: str,
+                              report_guid: str) -> int:
+    """Queue the read-back of one publish run, once (idempotent by its key). The drain applies it after every
+    write of the run has landed; see `_read_back_publish`."""
+    key = f"{publish_run_id}{READ_BACK_SUFFIX}"
+    return registry.enqueue_outbox_element_once(
+        entity_type, entity_slug, PUBLISH_READ_BACK, key,
+        {"report_guid": report_guid, "publish_run_id": publish_run_id, **requester_fields()},
+        run_id=key,
+    )
+
+
+class OutboxReadBackFailed(OutboxApplyError):
+    """The run's writes landed but Egeria's answer does not hold them yet: an ordinary failed attempt (retried with
+    backoff, so a slow index has time), dead after the usual attempts, in these words."""
+
+
+def _read_back_publish(clients: "OutboxClients", payload: dict) -> str:
+    """Read one publish run back from Egeria and return the report GUID it was read under.
+
+    Waits (OutboxNotReadyError, no attempt burned) while any write of the run (its annotations, its `::links`) is
+    still pending, failed-and-retrying or running. A dead write means the run cannot be read back whole: dead at
+    once (OutboxNotKept), naming the dead write and Egeria's words for it. Otherwise it reads the report's
+    annotations BY RELATIONSHIP (`DataDiscovery.get_new_annotations`, the call measured to answer them; see
+    egeria_annotation_materializer.py) and requires every annotation GUID the run's rows recorded to be among
+    them. An unreadable answer, or one that lacks some, is a failed attempt (OutboxReadBackFailed)."""
+    registry = clients.registry
+    if registry is None:
+        raise OutboxApplyError("The read-back needs the registry, which the drain was not given")
+    run_id = str(payload.get("publish_run_id") or "")
+    report_guid = str(payload.get("report_guid") or "")
+    if not run_id or not report_guid:
+        raise OutboxNotKept("not read back: the row names no publish run or no report")
+    rows = registry.list_outbox_rows_for_runs([run_id, f"{run_id}{LINKS_SUFFIX}"])
+    waiting = [r for r in rows if r["status"] in ("pending", "failed", "running")]
+    if waiting:
+        raise OutboxNotReadyError(f"waiting for {len(waiting)} write(s) of this run to land")
+    dead = [r for r in rows if r["status"] == "dead"]
+    if dead:
+        first = dead[0]
+        raise OutboxNotKept(f"not read back: {len(dead)} write(s) of this run failed · "
+                            f"{first['element_kind']} {first['qualified_name']}: {first.get('last_error') or ''}")
+    expected = {(r.get("egeria_guid") or "").strip() for r in rows
+                if r["element_kind"] == "annotation" and r["status"] == "done"}
+    expected.discard("")
+    if not expected:
+        raise OutboxNotKept("not read back: no annotation of this run recorded a GUID")
+    discovery = clients.require("discovery")
+    seen: set[str] = set()
+    for page in range(READ_BACK_MAX_PAGES):
+        try:
+            answer = discovery.get_new_annotations(report_guid, start_from=page * READ_BACK_PAGE,
+                                                   page_size=READ_BACK_PAGE, output_format="JSON")
+        except Exception as exc:
+            raise OutboxReadBackFailed(f"the read-back could not read report {report_guid}: "
+                                       f"{type(exc).__name__}: {str(exc)[:EGERIA_DETAIL_LIMIT]}") from exc
+        if isinstance(answer, str):
+            from resource_explorer.egeria_absence import ABSENT, is_absent
+
+            if is_absent(answer) == ABSENT:
+                break
+            raise OutboxReadBackFailed(f"the read-back got an unreadable answer: {answer[:EGERIA_DETAIL_LIMIT]!r}")
+        if not isinstance(answer, list):
+            raise OutboxReadBackFailed(f"the read-back got an unreadable answer: {type(answer).__name__}")
+        for el in answer:
+            guid = ((el or {}).get("elementHeader") or {}).get("guid") if isinstance(el, dict) else ""
+            if guid:
+                seen.add(guid)
+        if len(answer) < READ_BACK_PAGE:
+            break
+    missing = expected - seen
+    if missing:
+        raise OutboxReadBackFailed(f"read back {len(expected) - len(missing)} of {len(expected)} annotation(s) "
+                                   f"under report {report_guid}; Egeria does not answer {len(missing)} yet")
+    return report_guid
+
+
 #: element_kind -> creator. An unregistered kind raises rather than silently
 #: succeeding — a row that reports 'done' without writing anything is precisely
 #: the confident-wrong-answer failure this whole subsystem exists to remove.
@@ -1287,6 +1390,7 @@ _CREATORS: dict[str, Callable[["OutboxClients", dict], str]] = {
     COLLECTION_MEMBERSHIP_DETACH: _create_collection_membership_detach,
     "feedback_rating": _create_feedback_rating,
     "feedback_note": _create_feedback_note,
+    PUBLISH_READ_BACK: _read_back_publish,
 }
 
 
@@ -1410,7 +1514,7 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
             # annotations`'s deferred branch) — completion is checked against
             # the BASE run_id, which is what the activity row was tagged
             # with (see registry.complete_publish_run_if_done).
-            touched_run_ids.add(run_id[: -len("::links")] if run_id.endswith("::links") else run_id)
+            touched_run_ids.add(base_run_id(run_id))
         not_theirs = _person_only_refusal(row, identity)
         if not_theirs:
             # Brief F: claimed by a drain that is not its author's (another person's request, or a claim before
@@ -1429,11 +1533,13 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
             refused = _queued_write_refusal(registry, row, identity)
             if refused:
                 raise OutboxNotPermitted(refused)
-            with time_egeria_call(registry, f"outbox:{row.get('element_kind', 'unknown')}", "write"), \
+            is_read = row.get("element_kind") == PUBLISH_READ_BACK
+            with time_egeria_call(registry, f"outbox:{row.get('element_kind', 'unknown')}",
+                                  "query" if is_read else "write"), \
                     _row_identity(row, identity):
                 guid = apply_element(row, clients, find_element_guid,
                                      resolve_row_guids=registry.get_outbox_guids)
-            done_note = ""
+            done_note = READ_BACK_DONE_WORDS if is_read else ""
             if row.get("element_kind") == "collection_membership":
                 # Timed apart from the write: the read-back is a query, not part of the write's latency.
                 with time_egeria_call(registry, "outbox:collection_membership:read_back", "query"), \
@@ -1517,9 +1623,9 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
     # AnalysisRunResult docstring for the three-state contract. Checked once
     # per run_id touched by THIS pass, not on every pass, so an idle drain
     # with nothing to claim does not re-scan every "queued" activity row.
-    for base_run_id in touched_run_ids:
+    for base_run in touched_run_ids:
         try:
-            registry.complete_publish_run_if_done(base_run_id)
+            registry.complete_publish_run_if_done(base_run)
         except Exception:
             # Best-effort bookkeeping: a failure here must not fail the drain
             # that already succeeded above, but it also must not vanish into
@@ -1527,7 +1633,7 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
             # to catch) — counted so a caller inspecting the returned summary
             # can tell "nothing to check" from "checked and failed".
             summary["publish_run_check_failed"] += 1
-            log.exception("Could not check publish-run completion for run_id %s", base_run_id)
+            log.exception("Could not check publish-run completion for run_id %s", base_run)
 
     return summary
 

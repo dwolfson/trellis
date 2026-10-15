@@ -46,7 +46,7 @@ class SurveyDefinitionRunRequest(BaseModel):
     #: the Egeria publish or enqueue it and move on — see
     #: workflows/analysis.py's run_analysis for the parallel choice on the
     #: Analyses-card path. None/omitted keeps RunsConfig.publish_inline's
-    #: default, unchanged behaviour for every caller that does not ask.
+    #: default: enqueue-only since 2026-10-14.
     publish: str | None = None
     #: The per-run engine choice for this definition's 'resource-explorer'-
     #: tagged steps — "resource-explorer" (force local), "prefect" (force

@@ -746,7 +746,9 @@ async def resolve_stale_linkage(
                 # so this is the "fast, no re-scan" path the choice promises.
                 survey = await asyncio.to_thread(
                     lambda: SurveyOrchestrator(registry).run(slug, max_fetch_cost="none"))
-            guid = await asyncio.to_thread(lambda: EgeriaPublisher(registry=registry).publish(survey))
+            # An explicit re-create waits for Egeria (RUNS_PUBLISH_INLINE governs a run's auto-publish only).
+            guid = await asyncio.to_thread(
+                lambda: EgeriaPublisher(registry=registry).publish(survey, defer_drain=False))
             next_step = f"Re-created in Egeria as SurveyReport {guid}."
         except Exception as exc:
             # The link is already cleared, so this is recoverable by retrying the
@@ -933,7 +935,9 @@ async def publish_survey(slug: str, req: PublishRequest | None = None) -> Publis
             loop = _aio.new_event_loop()
             _aio.set_event_loop(loop)
             try:
-                return EgeriaPublisher(registry=registry, zone_names=zone_names).publish(result)
+                # The manual Publish waits for Egeria (RUNS_PUBLISH_INLINE governs a run's auto-publish only).
+                return EgeriaPublisher(registry=registry, zone_names=zone_names).publish(
+                    result, defer_drain=False)
             finally:
                 loop.close()
                 _aio.set_event_loop(None)

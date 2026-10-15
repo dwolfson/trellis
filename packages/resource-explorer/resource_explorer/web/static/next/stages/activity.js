@@ -41,6 +41,7 @@ import { listActivity } from '/static/re-api.js';
 import { esc, tnum } from '/static/next/app.js';
 import { ago } from '/static/next/format.js';
 import { markSeen } from '/static/next/activity-unread.js';
+import { publishProofHtml, publishStillQueued } from '/static/next/publish-proof.js';
 
 const PANEL_ID = 'activity-panel';
 const FETCH_LIMIT = 300;
@@ -159,8 +160,17 @@ const RUNNING = new Set(['running', 'queued', 'pending']);
 let refreshTimer = null;
 let refreshTicks = 0;
 
+/** Still going: the operation itself, or its publish (queued until the drain lands and reads it back), so the
+ *  open list re-reads until the publish word reaches its proof. */
+export function isLive(e) {
+  return RUNNING.has(String(e?.status || '').toLowerCase()) || publishStillQueued(e?.publish_proof);
+}
 export function anyRunning(entries) {
-  return (entries || []).some((e) => RUNNING.has(String(e?.status || '').toLowerCase()));
+  return (entries || []).some(isLive);
+}
+/** The key a change is noticed by: the status and the publish state together. */
+function liveKey(e) {
+  return `${String(e?.status || '').toLowerCase()}|${String(e?.publish_proof?.state || '')}`;
 }
 function stopRefresh() {
   if (refreshTimer) clearTimeout(refreshTimer);
@@ -205,15 +215,15 @@ const noticed = new Set();  // `id:status` pairs already acted on, so a filtered
  *  the panel is closed or already polling. Returns whether it refreshed. */
 export async function noticeActivity(entries) {
   if (!document.getElementById(PANEL_ID) || refreshTimer || !Array.isArray(panel.entries)) return false;
-  const shown = new Map(panel.entries.map((e) => [e?.id, String(e?.status || '').toLowerCase()]));
+  const shown = new Map(panel.entries.map((e) => [e?.id, e]));
   const fresh = (entries || []).filter((e) => {
     if (!e?.id) return false;
-    const st = String(e.status || '').toLowerCase();
-    const changed = !shown.has(e.id) || RUNNING.has(st) !== RUNNING.has(shown.get(e.id));
-    return changed && !noticed.has(`${e.id}:${st}`);
+    const before = shown.get(e.id);
+    const changed = !shown.has(e.id) || isLive(e) !== isLive(before) || liveKey(e) !== liveKey(before);
+    return changed && !noticed.has(`${e.id}:${liveKey(e)}`);
   });
   if (!fresh.length) return false;
-  fresh.forEach((e) => noticed.add(`${e.id}:${String(e.status || '').toLowerCase()}`));
+  fresh.forEach((e) => noticed.add(`${e.id}:${liveKey(e)}`));
   refreshTicks = 0;
   if (!(await refreshOnce())) return false;
   scheduleRefresh();
@@ -478,6 +488,7 @@ function entryRowHtml(op) {
       ${op.entity_slug ? `<span class="font-mono text-provenance text-ink-muted">${entityIcon} ${esc(op.entity_slug)}</span>` : ''}
       ${op.intent ? `<span class="text-provenance text-ink-muted">${esc(op.intent)}</span>` : ''}
       <span class="ml-auto shrink-0 text-provenance ${tone}">${glyph} ${esc(op.status || '')}</span>
+      ${op.publish_proof ? publishProofHtml(op.publish_proof) : ''}
       ${hasDetail ? `<button type="button" data-activity-toggle="${detailId}"
         class="cursor-pointer bg-transparent p-0 text-provenance text-accent-ink" title="Show detail">▶ detail</button>` : ''}
     </div>

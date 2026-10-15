@@ -8542,12 +8542,16 @@ class ProjectRegistry:
             conn.execute(sql, tuple(params))
 
     def complete_publish_run_if_done(self, publish_run_id: str) -> bool:
-        """When every `egeria_outbox` row belonging to `publish_run_id` — its
-        annotations AND its evidence-link companion run (`f"{publish_run_id}
-        ::links"`, see egeria_publisher.py's `_link_evidence_outbox`/
-        `_create_annotations`) — has reached a terminal state (done or dead;
-        neither is retried again), resolve the activity row that reported
-        this run as `published: "queued"`:
+        """Resolve the activity row that reported this run as `published: "queued"`, by the run's proof
+        (`publish_proofs`, from its outbox rows: annotations, `::links`, `::read_back`), never by "all writes
+        done": since 2026-10-14 a run is published only once its `publish_read_back` row is done.
+
+        * proof `read_back` — flips to `published: True` (below, "All done");
+        * proof `failed` — flips to `published: False` (below, "Any dead");
+        * proof `queued` — untouched; a run with no read-back row whose writes are all done gets one queued
+          (`_queue_missing_read_back`: runs enqueued before the read-back existed).
+
+        The original contract, with "done" now meaning "read back":
 
         * **All done, none dead** — the honest success case. Flips to
           `published: True`, appends "Published at <ts>." to the summary,
@@ -8578,40 +8582,34 @@ class ProjectRegistry:
         """
         if not publish_run_id:
             return False
-        links_run_id = f"{publish_run_id}::links"
+        proof = self.publish_proofs([publish_run_id]).get(publish_run_id)
+        if proof is None:
+            return False
+        # The newest entry of this run that still says queued: a run can name more than one entry (its run row and
+        # the publisher's own catalog entry), and only the one that reported "queued" is flipped.
+        row, detail = None, {}
         with self._conn() as conn:
-            remaining = conn.execute(
-                "SELECT COUNT(*) AS n FROM egeria_outbox "
-                "WHERE run_id IN (?, ?) AND status IN ('pending', 'failed', 'running')",
-                (publish_run_id, links_run_id),
-            ).fetchone()["n"]
-            if remaining:
-                return False
-            dead = conn.execute(
-                "SELECT COUNT(*) AS n FROM egeria_outbox "
-                "WHERE run_id IN (?, ?) AND status = 'dead'",
-                (publish_run_id, links_run_id),
-            ).fetchone()["n"]
-            total = conn.execute(
-                "SELECT COUNT(*) AS n FROM egeria_outbox WHERE run_id IN (?, ?)",
-                (publish_run_id, links_run_id),
-            ).fetchone()["n"]
-            if not total:
-                return False
-            row = conn.execute(
+            for cand in conn.execute(
                 "SELECT id, summary, detail FROM activity_log "
-                "WHERE publish_run_id = ? ORDER BY ts DESC LIMIT 1",
+                "WHERE publish_run_id = ? ORDER BY ts DESC",
                 (publish_run_id,),
-            ).fetchone()
-            if row is None:
-                return False
-            try:
-                detail = json.loads(row["detail"] or "{}")
-            except (TypeError, ValueError):
-                return False
-            if detail.get("published") != "queued":
-                return False
-
+            ).fetchall():
+                try:
+                    cand_detail = json.loads(cand["detail"] or "{}")
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(cand_detail, dict) and cand_detail.get("published") == "queued":
+                    row, detail = cand, cand_detail
+                    break
+        if row is None:
+            return False
+        if proof["state"] == "queued":
+            # A run queued before the read-back existed (2026-10-14) has none: once its writes are all done, queue
+            # it, so it can still become "published · read back" — never by being assumed.
+            self._queue_missing_read_back(publish_run_id, detail)
+            return False
+        dead = proof.get("failed", 0) if proof["state"] == "failed" else 0
+        with self._conn() as conn:
             pending_record = detail.pop("pending_published_record", None)
             base_summary = row["summary"] or ""
             if dead:
@@ -8621,12 +8619,15 @@ class ProjectRegistry:
                 # button is the correct behaviour here, not a new state.
                 detail["published"] = False
                 detail["published_failed_count"] = dead
-                summary = f"{base_summary} {dead} Egeria write(s) failed permanently — see the Publish Queue."
+                summary = (f"{base_summary} {self.PUBLISH_FAILED_WORD}: {dead} Egeria write(s) failed "
+                           f"permanently — see the Publish Queue.")
             else:
-                now = datetime.utcnow().isoformat()
+                # Only the read-back proof gets here (proof state `read_back`): every write landed AND Egeria
+                # answered them under the report.
+                now = proof.get("at") or datetime.utcnow().isoformat()
                 detail["published"] = True
                 detail["published_at"] = now
-                summary = f"{base_summary} Published at {now}."
+                summary = f"{base_summary} {self.PUBLISH_READ_BACK_WORD} at {now}."
                 if pending_record:
                     # Best-effort, same contract as the inline call site in
                     # egeria_publisher.py's publish() — a bookkeeping failure
@@ -8658,6 +8659,34 @@ class ProjectRegistry:
                 (json.dumps(detail), summary, row["id"]),
             )
         return True
+
+    def _queue_missing_read_back(self, publish_run_id: str, detail: dict) -> int | None:
+        """Queue the read-back of a run that has none, once all of its writes are done (a run enqueued before the
+        read-back existed). The report GUID comes from the run's own record (`pending_published_record`) or, failing
+        that, from its annotation rows' `parentGUID`. Returns the row id, or None when nothing was queued."""
+        from resource_explorer.egeria_outbox import (
+            LINKS_SUFFIX, PUBLISH_READ_BACK, READ_BACK_SUFFIX, enqueue_publish_read_back,
+        )
+
+        rows = self.list_outbox_rows_for_runs(
+            [publish_run_id, f"{publish_run_id}{LINKS_SUFFIX}", f"{publish_run_id}{READ_BACK_SUFFIX}"])
+        if not rows or any(r["element_kind"] == PUBLISH_READ_BACK for r in rows):
+            return None
+        if any(r["status"] != "done" for r in rows):
+            return None
+        report_guid = str(((detail or {}).get("pending_published_record") or {}).get("report_guid") or "")
+        if not report_guid:
+            for r in rows:
+                try:
+                    report_guid = str((json.loads(r.get("payload_json") or "{}") or {}).get("parentGUID") or "")
+                except (TypeError, ValueError):
+                    report_guid = ""
+                if report_guid:
+                    break
+        if not report_guid:
+            return None
+        return enqueue_publish_read_back(self, rows[0]["entity_type"], rows[0]["entity_slug"],
+                                         publish_run_id, report_guid)
 
     def get_outbox_guids(self, row_ids: list[int]) -> dict[int, str]:
         """Map row id -> the GUID it resolved to, for rows that reached
@@ -8761,6 +8790,77 @@ class ProjectRegistry:
         with self._conn() as conn:
             rows = conn.execute(sql, tuple(params)).fetchall()
         return [dict(r) for r in rows]
+
+    def list_outbox_rows_for_runs(self, run_ids: "list[str] | tuple[str, ...]") -> list[dict]:
+        """Every outbox row whose run_id is one of `run_ids`, oldest first. Read-only."""
+        ids = [r for r in (run_ids or []) if r]
+        if not ids:
+            return []
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM egeria_outbox WHERE run_id IN ({','.join('?' * len(ids))}) ORDER BY id",  # noqa: S608
+                tuple(ids),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    #: The three publish words (designer, REPLY-COST-LADDER-AND-PUBLISH-STATE.md §2, 2026-09-13).
+    PUBLISH_QUEUED_WORD = "queued for publish"
+    PUBLISH_READ_BACK_WORD = "published · read back"
+    PUBLISH_FAILED_WORD = "publish failed"
+
+    def publish_proofs(self, publish_run_ids: "list[str] | tuple[str, ...]") -> dict[str, dict]:
+        """A publish run's state, from its own outbox rows (annotations, `::links`, `::read_back`), never from
+        which code branch ran or from the `published` flag an activity row carries:
+
+        * `read_back` · "published · read back": the run's `publish_read_back` row is done (`at` is when);
+        * `failed` · "publish failed": a row of the run is dead; `words` are that row's (Egeria's) words;
+        * `queued` · "queued for publish": anything else with rows: a write or the read-back is still to land.
+          A run whose writes are all done but whose read-back has not succeeded is queued, not published.
+
+        A run_id with no rows at all is left out (no proof, no word: never assumed queued or published)."""
+        from resource_explorer.egeria_outbox import PUBLISH_READ_BACK, RUN_COMPANION_SUFFIXES, base_run_id
+
+        bases = sorted({r for r in (publish_run_ids or []) if r})
+        if not bases:
+            return {}
+        wanted = [b + suffix for b in bases for suffix in ("", *RUN_COMPANION_SUFFIXES)]
+        by_run: dict[str, list[dict]] = {}
+        for row in self.list_outbox_rows_for_runs(wanted):
+            by_run.setdefault(base_run_id(row.get("run_id") or ""), []).append(row)
+        out: dict[str, dict] = {}
+        for base, rows in by_run.items():
+            read_back = [r for r in rows if r["element_kind"] == PUBLISH_READ_BACK and r["status"] == "done"]
+            dead = [r for r in rows if r["status"] == "dead"]
+            if read_back:
+                out[base] = {"state": "read_back", "word": self.PUBLISH_READ_BACK_WORD,
+                             "at": read_back[-1].get("completed_at") or "", "words": ""}
+            elif dead:
+                first = next((r for r in dead if r["element_kind"] != PUBLISH_READ_BACK), dead[0])
+                out[base] = {"state": "failed", "word": self.PUBLISH_FAILED_WORD, "at": "",
+                             "words": (first.get("last_error") or "").strip() or "Egeria gave no words",
+                             "failed": len(dead)}
+            else:
+                pending = sum(1 for r in rows if r["status"] in ("pending", "failed", "running"))
+                out[base] = {"state": "queued", "word": self.PUBLISH_QUEUED_WORD, "at": "", "words": "",
+                             "waiting": pending}
+        return out
+
+    def _attach_publish_proofs(self, entries: list[dict]) -> list[dict]:
+        """Put `publish_proof` on every activity entry that names a publish run with outbox rows."""
+        runs = [e.get("publish_run_id") for e in entries if e.get("publish_run_id")]
+        if not runs:
+            return entries
+        try:
+            proofs = self.publish_proofs(runs)
+        except Exception as exc:  # noqa: BLE001 - a proof that could not be read is said, never a guessed word
+            log.warning("publish proofs could not be read: %s", exc)
+            proofs = {r: {"state": "unknown", "word": "publish not established", "at": "",
+                          "words": f"the outbox could not be read: {exc}"} for r in runs}
+        for e in entries:
+            proof = proofs.get(e.get("publish_run_id") or "")
+            if proof:
+                e["publish_proof"] = proof
+        return entries
 
     def list_outbox_rows_for_kinds(self, entity_type: str, entity_slug: str,
                                    kinds: "tuple[str, ...] | list[str]") -> list[dict]:
@@ -8970,7 +9070,7 @@ class ProjectRegistry:
         with self._conn() as conn:
             cur = conn.execute(
                 "DELETE FROM egeria_outbox WHERE status='done' AND completed_at <> '' "
-                "AND completed_at < ?", (cutoff,),
+                "AND completed_at < ? AND element_kind <> 'publish_read_back'", (cutoff,),
             )
         return cur.rowcount or 0
 
@@ -12788,7 +12888,7 @@ class ProjectRegistry:
             d["items"] = json.loads(d.pop("items_json") or "[]")
             d["annotations"] = json.loads(d.pop("annotations_json") or "[]")
             result.append(d)
-        return result
+        return self._attach_publish_proofs(result)
 
     def get_activity(self, entry_id: str) -> dict | None:
         with self._conn() as conn:
@@ -12800,7 +12900,7 @@ class ProjectRegistry:
         d = dict(row)
         d["items"] = json.loads(d.pop("items_json") or "[]")
         d["annotations"] = json.loads(d.pop("annotations_json") or "[]")
-        return d
+        return self._attach_publish_proofs([d])[0]
 
     def get_survey_definition_last_activity(
         self, entity_type: str, entity_slug: str, limit: int = 500,
@@ -12844,11 +12944,14 @@ class ProjectRegistry:
         result: dict[str, dict] = {}
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT operation, ts, status, detail FROM activity_log "
+                "SELECT operation, ts, status, detail, publish_run_id FROM activity_log "
                 "WHERE entity_type = ? AND entity_slug = ? AND operation IN ('survey', 'catalog') "
                 "ORDER BY ts DESC LIMIT ?",
                 (entity_type, entity_slug, limit),
             ).fetchall()
+        # A row that names a publish run is a publish only once that run is read back (2026-10-14): its word, and
+        # whether it counts as a publish at all, come from the run's proof rows.
+        proofs = self.publish_proofs([r["publish_run_id"] for r in rows if r["publish_run_id"]])
         repo_wide_publish_at = ""  # most recent catalog row with no ref at all
         for row in rows:
             try:
@@ -12857,9 +12960,11 @@ class ProjectRegistry:
                 continue
             if not isinstance(detail, dict):
                 continue
+            proof = proofs.get(row["publish_run_id"] or "")
             ref = detail.get("survey_definition_ref") or detail.get("process_qualified_name")
             if not ref:
-                if row["operation"] == "catalog" and not repo_wide_publish_at:
+                if (row["operation"] == "catalog" and not repo_wide_publish_at
+                        and (not row["publish_run_id"] or (proof or {}).get("state") == "read_back")):
                     repo_wide_publish_at = row["ts"]
                 continue
             entry = result.setdefault(ref, {})
@@ -12886,6 +12991,8 @@ class ProjectRegistry:
                 # persisted data — it survives any re-render and shows up for
                 # historical runs too, not only the one just launched.
                 entry["last_run_engine_note"] = detail.get("engine_note") or ""
+                if proof:
+                    entry["last_publish_proof"] = proof
                 # SurveyDefinitionExecutor.run() (added 2026-08-27) publishes
                 # BEFORE it logs the 'survey' row that records the run itself
                 # — adapter.publish() runs first, its own untagged 'catalog'
@@ -13050,12 +13157,14 @@ class ProjectRegistry:
 
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT ts, status, detail, operation FROM activity_log "
+                "SELECT ts, status, detail, operation, publish_run_id FROM activity_log "
                 "WHERE entity_type = ? AND entity_slug = ? "
                 "AND operation IN ('analysis_run', 'survey') "
                 "ORDER BY ts DESC LIMIT ?",
                 (entity_type, entity_slug, limit),
             ).fetchall()
+        # The last run's publish word, from that run's proof rows (2026-10-14).
+        proofs = self.publish_proofs([r["publish_run_id"] for r in rows if r["publish_run_id"]])
 
         # step_runs: one row per step EXECUTION, written by the step-cost
         # observer on every path (survey, Run button, Prefect or local). It is
@@ -13125,6 +13234,8 @@ class ProjectRegistry:
                         "ran_as": detail.get("ran_as") or None,
                         "not_retried": detail.get("not_retried") or "",
                     }
+                    if proofs.get(row["publish_run_id"] or ""):
+                        result[analysis_id]["last_publish_proof"] = proofs[row["publish_run_id"]]
                 continue
 
             ran: dict[str, list] = {}
@@ -13146,6 +13257,8 @@ class ProjectRegistry:
                     "last_run_via": "survey",
                     "last_run_partial": len(statuses) < owned_counts.get(analysis_id, 0),
                 }
+                if proofs.get(row["publish_run_id"] or ""):
+                    result[analysis_id]["last_publish_proof"] = proofs[row["publish_run_id"]]
         # Credit analyses whose steps have a step_runs row newer than (or
         # missing from) what the activity_log gave. Same ownership map, same
         # "any owned step ran counts" rule as the survey branch above.
@@ -13347,6 +13460,14 @@ class ProjectRegistry:
                 (status, summary, summary, detail, detail,
                  anns_json, anns_json, publish_run_id, publish_run_id, entry_id),
             )
+
+    def tag_activity_publish_run(self, entry_id: str, publish_run_id: str) -> None:
+        """Name the publish run an activity entry is about, so its publish word is read from that run's proof rows
+        (`publish_proofs`). Never clears a tag."""
+        if not entry_id or not publish_run_id:
+            return
+        with self._conn() as conn:
+            conn.execute("UPDATE activity_log SET publish_run_id = ? WHERE id = ?", (publish_run_id, entry_id))
 
     def close_activity_if_running(self, entry_id: str, status: str, summary: str) -> bool:
         """Finalise an activity entry ONLY if it is still 'running'. Returns whether it closed one.

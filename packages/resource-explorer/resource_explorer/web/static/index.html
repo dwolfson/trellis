@@ -5020,7 +5020,8 @@ function _handleFreshnessSkip(started, onForce, onForceBackground = null) {
   return true;
 }
 
-// `publish`: null (default) leaves the choice to RunsConfig.publish_inline;
+// `publish`: null (default) leaves the choice to RunsConfig.publish_inline
+// (enqueue-only since 2026-10-14);
 // "background" enqueues the Egeria write and returns without waiting for it
 // (run-in-background plan, project owner 2026-09-13 — measured: the publish
 // is almost all of a run's wall time, ~3min at ~3.6s/write). "Run in

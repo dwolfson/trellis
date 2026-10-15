@@ -35,9 +35,13 @@ class AnalysisRunResult:
     `published` is FOUR-state, not a bool: None (never attempted — the
     resource has no assigned Egeria project, or the run produced no
     annotations), False (attempted and failed), True (attempted, drained
-    inline, and landed in Egeria before this call returned), "queued"
-    (`RunsConfig.publish_inline=False` — durably enqueued, not yet applied;
-    the scheduler's periodic drain will apply it, within its own cycle).
+    inline, landed in Egeria AND read back before this call returned),
+    "queued" (enqueued — the default since 2026-10-14 — or inline but not yet
+    read back; the scheduler's periodic drain applies and reads it back).
+    The word a person sees is not this flag: it is derived from the run's
+    outbox rows (`registry.publish_proofs`, carried as `publish_proof` on the
+    activity entry): "queued for publish", "published · read back", or
+    "publish failed" with Egeria's words.
     Callers render the ☁ Publish button on False and None and hide it on True
     and "queued" alike (both mean "nothing for the user to retry by hand"),
     so collapsing True/False would hide the recovery path for a failure, and
@@ -49,8 +53,9 @@ class AnalysisRunResult:
     steps) vs "waited" (the synchronous Egeria drain) — see
     `RunsConfig.publish_inline`'s docstring for the measurement that made the
     split worth having. `publish_mode` is "not-attempted" (no assigned
-    project, or no annotations), "inline" (drained synchronously — the
-    unchanged default), or "enqueued" (`publish_inline=False`).
+    project, or no annotations), "inline" (drained synchronously —
+    `RUNS_PUBLISH_INLINE=true` or the per-run "wait"), or "enqueued" (the
+    default since 2026-10-14).
     """
 
     status: str  # "ok" | "error"
@@ -308,14 +313,19 @@ def run_analysis(
                 # docstring for the measurement, and this run-in-background
                 # design for the per-run choice that can now also cause it).
                 published = "queued"
-                publish_run_id = getattr(publisher, "publish_run_id", "") or ""
+                run_id = getattr(publisher, "publish_run_id", "")
+                publish_run_id = run_id if isinstance(run_id, str) else ""
                 pending_published_record = getattr(publisher, "pending_published_record", None)
                 summary = summary.rstrip(".") + (
                     f"; {len(result.annotations)} Egeria write(s) queued for "
                     "publish — next drain ≤ 15 min."
                 )
             else:
+                # Inline, and its read-back proof landed before publish() returned (the publisher reports
+                # `publish_deferred` otherwise, whichever branch ran).
                 published = True
+                run_id = getattr(publisher, "publish_run_id", "")
+                publish_run_id = run_id if isinstance(run_id, str) else ""
         except PrivateAwaitsOwner as exc:
             # Waiting, not failed (2026-10-13 review): only the private investigation's owner can publish it.
             # Nothing was written, so `published` stays None ("not attempted"), and the wait is recorded once.
@@ -447,10 +457,10 @@ def execute_and_record_analysis(slug: str, analysis_id: str, activity_id: str,
     # apply later.
     if result.published == "queued" and result.pending_published_record:
         detail["pending_published_record"] = result.pending_published_record
-    # publish_run_id only when queued — see registry.complete_publish_run_
-    # if_done, which reads it off this exact activity row to flip
-    # `published` from "queued" to True once the run's outbox rows land.
-    publish_run_id = result.publish_run_id if result.published == "queued" else ""
+    # publish_run_id whenever the run published through the outbox: the entry's publish word is derived from that
+    # run's proof rows (registry.publish_proofs), and registry.complete_publish_run_if_done reads it off this exact
+    # row to flip `published` from "queued" once the run is read back.
+    publish_run_id = result.publish_run_id if result.published in ("queued", True) else ""
     registry.update_activity_status(
         activity_id, result.status, summary=summary, detail=json.dumps(detail),
         annotations=result.annotations or None, publish_run_id=publish_run_id,
@@ -1070,6 +1080,7 @@ def build_analysis_last_activity(registry, entity_type: str, slug: str) -> dict[
             "last_run_via": run.get("last_run_via", ""),
             "last_run_derived_from": run.get("last_run_derived_from", ""),
             "last_run_partial": run.get("last_run_partial", False),
+            "last_publish_proof": run.get("last_publish_proof"),
             "last_published_at": pub_at,
             "last_published_scope": pub_scope,
             **publish_fields(registry, slug, pub_at, reset_at),

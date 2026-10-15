@@ -468,8 +468,15 @@ class TestPublishChoiceThreeStates:
         assert result["published"] is True
 
     def test_no_choice_matches_the_config_default(self):
-        """Byte-for-byte: an unset `publish` must behave exactly as it did
-        before this feature existed."""
+        """An unset `publish` follows RunsConfig.publish_inline: enqueue-only
+        since 2026-10-14 (project owner: a run does not wait for its publish)."""
+        result = self._run(_fake_registry())
+        assert result["published"] == "queued"
+
+    def test_no_choice_waits_when_inline_is_configured(self, monkeypatch):
+        from resource_explorer.config import get_config
+
+        monkeypatch.setattr(get_config().runs, "publish_inline", True)
         result = self._run(_fake_registry())
         assert result["published"] is True
 

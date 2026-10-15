@@ -1015,7 +1015,16 @@ class TestDeferredLinksWaitForTheirReferents:
 class TestCompletePublishRunIfDone:
     """registry.complete_publish_run_if_done — the flip from `published:
     "queued"` to `published: True` once a background publish's outbox rows
-    (annotations AND their `::links` companion) have all landed."""
+    (annotations AND their `::links` companion) have all landed AND its
+    `::read_back` row is done (2026-10-14: published means read back)."""
+
+    def _read_back(self, db, project, run_id, *, done=True):
+        from resource_explorer.egeria_outbox import enqueue_publish_read_back
+
+        row = enqueue_publish_read_back(db, "repo", project, run_id, "report-guid")
+        if done:
+            db.mark_outbox_done(row, "report-guid", note="read back")
+        return row
 
     def _activity_row(self, db, publish_run_id, published="queued"):
         from resource_explorer.activity_logger import log_analysis_run
@@ -1030,18 +1039,31 @@ class TestCompletePublishRunIfDone:
         )
         return entry_id
 
-    def test_flips_to_true_once_every_row_is_terminal(self, db, project):
+    def test_flips_to_true_once_the_run_is_read_back(self, db, project):
+        """Every write done is not published: a run with no read-back gets one queued (a run enqueued before the
+        read-back existed), and only that row, done, flips it."""
         run_id = "Annotation::p::2026-01-01T00:00:00"
-        row = _enqueue(db, project, qn="Annotation::p::1::0", run_id=run_id)
+        db.enqueue_outbox_element("repo", project, "annotation", "Annotation::p::1::0",
+                                  {"class": "X", "parentGUID": "report-guid-1"}, run_id=run_id)
+        row = db.list_outbox_elements(run_id=run_id)[0]["id"]
         db.mark_outbox_done(row, "guid-1")
         entry_id = self._activity_row(db, run_id)
 
+        assert db.complete_publish_run_if_done(run_id) is False
+        assert json.loads(db.get_activity(entry_id)["detail"])["published"] == "queued"
+        [rb] = db.list_outbox_elements(run_id=f"{run_id}::read_back")
+        assert rb["element_kind"] == "publish_read_back" and rb["status"] == "pending"
+        assert json.loads(rb["payload_json"])["report_guid"] == "report-guid-1"
+        assert db.get_activity(entry_id)["publish_proof"]["state"] == "queued"
+
+        db.mark_outbox_done(rb["id"], "report-guid-1", note="read back")
         assert db.complete_publish_run_if_done(run_id) is True
         entry = db.get_activity(entry_id)
         detail = json.loads(entry["detail"])
         assert detail["published"] is True
         assert "published_at" in detail
-        assert "Published at" in entry["summary"]
+        assert "published · read back at" in entry["summary"]
+        assert entry["publish_proof"]["state"] == "read_back"
 
     def test_does_not_flip_while_a_row_is_still_pending(self, db, project):
         run_id = "Annotation::p::2026-01-01T00:00:01"
@@ -1087,18 +1109,23 @@ class TestCompletePublishRunIfDone:
         """The integration point: drain_outbox must call this itself once a
         run's last row lands, not leave it to a separate caller."""
         run_id = "Annotation::p::2026-01-01T00:00:04"
-        discovery = type("D", (), {"create_annotation": lambda *a, **k: "guid-5"})()
+        discovery = type("D", (), {
+            "create_annotation": lambda *a, **k: "guid-5",
+            "get_new_annotations": lambda self, guid, **k: (
+                [{"elementHeader": {"guid": "guid-5"}, "properties": {}}] if not k.get("start_from")
+                else "No elements found"),
+        })()
         row = db.enqueue_outbox_element(
             "repo", project, "annotation", "Annotation::p::5::0",
             {"class": "NewElementRequestBody"}, run_id=run_id,
         )
+        self._read_back(db, project, run_id, done=False)
         entry_id = self._activity_row(db, run_id)
 
         from resource_explorer.egeria_outbox import OutboxClients, drain_outbox
 
-        summary = drain_outbox(db, OutboxClients(discovery=discovery), lambda qn: "",
-                               run_id=run_id)
-        assert summary["done"] == 1
+        summary = drain_outbox(db, OutboxClients(discovery=discovery), lambda qn: "")
+        assert summary["done"] == 2, summary
         detail = json.loads(db.get_activity(entry_id)["detail"])
         assert detail["published"] is True
 
@@ -1128,6 +1155,7 @@ class TestCompletePublishRunIfDone:
         run_id = "Annotation::p::2026-01-01T00:00:06"
         row = _enqueue(db, project, qn="Annotation::p::7::0", run_id=run_id)
         db.mark_outbox_done(row, "guid-7")
+        self._read_back(db, project, run_id)
         entry_id = self._activity_row(db, run_id)
 
         assert db.complete_publish_run_if_done(run_id) is True
@@ -1143,6 +1171,7 @@ class TestCompletePublishRunIfDone:
         run_id = "Annotation::p::2026-01-01T00:00:07"
         row = _enqueue(db, project, qn="Annotation::p::8::0", run_id=run_id)
         db.mark_outbox_done(row, "guid-8")
+        self._read_back(db, project, run_id)
         entry_id = self._activity_row(db, run_id)
         db.update_activity_status(
             entry_id, "ok",

@@ -43,6 +43,8 @@ class Store:
         self.drop_initial_zones = False        # the create ignores initialClassifications
         self.zones_after_stamp = None          # a stamp that lands but leaves THESE zones (e.g. an extra one)
         self.unreadable: set[str] = set()      # reads of these GUIDs fail as an outage would
+        self.hidden: set[str] = set()          # annotations Egeria holds but does not answer under their report
+        self.read_back_error: Exception | None = None   # the report's annotations cannot be read
 
     # the zone check
     def _zones(self, guid):
@@ -137,6 +139,21 @@ class Store:
             return store._new(user, "Annotation", body["properties"]["qualifiedName"], anchor=anchor)
 
         dd.create_annotation.side_effect = _annotate
+
+        def _new_annotations(survey_report_guid, body=None, start_from=0, page_size=0, **kw):
+            """The report's annotations by relationship, paged; the live answer shapes (a list of
+            {"elementHeader": {"guid"}, "properties"}, or the string "No elements found")."""
+            if store.read_back_error is not None:
+                raise store.read_back_error
+            hits = [{"elementHeader": {"guid": g, "type": {"typeName": "Annotation"}},
+                     "properties": {"qualifiedName": e["qn"]}}
+                    for g, e in store.elements.items()
+                    if e["kind"] == "Annotation" and e.get("anchor") == survey_report_guid
+                    and g not in store.hidden and store.visible(user, g)]
+            page = hits[start_from:start_from + page_size] if page_size else hits[start_from:]
+            return page or "No elements found"
+
+        dd.get_new_annotations.side_effect = _new_annotations
         ac.get_guid_for_name.side_effect = lambda qn, *a, **k: next(
             (g for g, e in store.elements.items() if e["qn"] == qn and store.visible(user, g)),
             "No elements found")
@@ -494,6 +511,7 @@ def test_a_deferred_private_publish_drains_now_as_the_owner(world):
         pub = _publisher(reg)
         pub.publish(_result(), defer_drain=True)
     assert pub.publish_deferred is False
+    assert pub.publish_read_back is True, "the owner's inline drain read the run back"
     assert len(_of(store, "Annotation")) == 2
 
 

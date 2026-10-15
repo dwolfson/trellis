@@ -427,7 +427,9 @@ def publish_snapshot(registry, slug: str, author: str, context: dict, snapshot) 
     # Brief F round 4: whether the publisher reached the asset and sent the documentation sources itself.
     docs_sent = lambda: getattr(publisher, "doc_sources_attempted", False) is True  # noqa: E731
     try:
-        report_guid = publisher.publish(result)
+        # The page's Publish waits for Egeria and then reads the report back (RUNS_PUBLISH_INLINE governs a run's
+        # auto-publish only).
+        report_guid = publisher.publish(result, defer_drain=False)
     except Exception as exc:
         _proof(registry, slug, P_READ_FAILED, recorded_by=author,
                detail={"error": str(exc), "stage": "publish", "surveyed_at": surveyed_at, "project": project})
