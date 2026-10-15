@@ -37,7 +37,7 @@ For people who use the results, not write them: see the "Analytic Library" secti
 | `trellis_analytics.routines.context_pack` | Packages what Egeria holds about one database for one kind of consumer, each fact with a state word and provenance. |
 | `trellis_analytics.portal` | The Portal tile for `curation_coverage`. |
 | `trellis_analytics.step` | `SurveyStep`, the wrapper that runs a user's step code (see below). |
-| `trellis_analytics.declare` | Generates the Dr.Egeria document that declares a step in Egeria. |
+| `trellis_analytics.declare` | `manifest_properties`: what a step's Egeria declaration says about it, from its manifest. The declaration itself is RE's engine host's (see "Dispatched by Egeria" below). |
 
 ## Writing a routine
 
@@ -118,6 +118,8 @@ MANIFEST = StepManifest(
     inputs=["ods"],               # what the wrapper hands the code: "resource", "ods", "connection"
     stage="analysis",             # the stage its results belong to
     questions=["Q-0041"], purposes=["Maintain"],
+    request_type="re-database-staleness",       # what RE's engine host advertises to Egeria (default re-<name>)
+    nothing_to_derive_guard="survey-invalid",   # survey-completed, survey-invalid or survey-failed
 )
 ```
 
@@ -133,15 +135,47 @@ What the wrapper guarantees, so the code does not have to:
 A complete example, installable on its own, is `examples/steps/database_staleness/`. It registers itself
 through the same `trellis.analytics` entry point.
 
-To tell RE and Egeria about an installed step, run the generator from the repo root. It writes the catalog
-entry into `analysis_catalog.yaml` (between its GENERATED markers) and a Dr.Egeria declaration into
-`docs/dr-egeria/analytic-functions/`. It never talks to Egeria; running the declaration is a separate, deliberate
-step.
+To tell RE and Egeria about an installed step, run the two generators from the repo root. The first writes the
+catalog entry into `analysis_catalog.yaml` (between its GENERATED markers); the second writes the step's Egeria
+declaration into `packages/resource-explorer/docs/dr-egeria/engine-host/library/<step>.md` (see below). Neither
+talks to Egeria; running the declaration is a separate, deliberate step.
 
 ```bash
 uv run --with-editable packages/trellis-analytics/examples/steps/database_staleness \
     python packages/resource-explorer/scripts/generate_external_step_entries.py
+uv run --with-editable packages/trellis-analytics/examples/steps/database_staleness \
+    python packages/resource-explorer/scripts/generate_engine_host_declaration.py
 ```
+
+### Dispatched by Egeria
+
+RE's engine host offers each installed step to Egeria as a service of its `SurveyActionEngine`
+`ResourceExplorerSurvey`. The step's declaration (generated from its manifest) is one `SurveyActionService`, one
+`SupportedGovernanceService` link carrying the manifest's `request_type`, and one `GovernanceActionType`
+`ResourceExplorerSurvey::<request type>` with a `GovernanceActionExecutor` to the engine; the manifest's fields ride
+in its Additional Properties. The owner runs it with `resource-explorer dr-egeria run engine-host/library/<step>.md`.
+When Egeria starts that type on a database, RE claims the engine action, runs the step, publishes its results as
+annotations on a SurveyReport and completes the action. If none of the step's results is `measured` or
+`nothing_found`, it completes with the manifest's `nothing_to_derive_guard` (no report unless that is
+`survey-completed`). A step is not offered if it takes a built-in RE step's name or request type, declares
+`connection`, or emits anything but `ResourceMeasureAnnotation`.
+
+### What a step can and cannot reach
+
+A step is in-process, trusted code. RE's host enforces three things:
+
+- **No connection to the resource.** A step that declares `connection` is refused.
+- **Reads only through RE's typed methods.** `inputs.ods` offers `row_count_snapshots`, `commit_proofs`,
+  `catalogue_scope_events`, `resource_scope_events` and `outbox_status_counts`, each a parameterised SELECT that RE
+  owns. A step cannot send SQL: there is no `query`. Each read runs in a separate thread on a connection that cannot
+  write (one statement per rolled-back READ ONLY transaction on Postgres; read-only mode, `query_only` and a read-only
+  authorizer on SQLite), and the step holds no connection, registry object or database URL. A step that needs a read
+  RE does not offer asks for a new typed method; arbitrary SQL from steps would need a read-only database role, a
+  follow-up for the owner (ops/DDL).
+- **No Egeria identity.** The step's code cannot act in Egeria; the host publishes its results afterwards.
+
+This narrows what a step is handed; it is **not a sandbox**. The thread list, the call stack and the process
+environment still reach Resource Explorer's internals, so install only steps you would run as Resource Explorer itself.
 
 ## How it is run
 
@@ -155,7 +189,8 @@ The same routine can run in three places. None counts anything of its own; each 
 
 A **step** is run by RE itself: RE's `survey_step_host` attaches installed steps beside the built-in ones, so the
 executor runs them the same way and records their cost. The step's annotations are kept, with their envelope, in
-RE's own table; they are not published to Egeria by this slice.
+RE's own table. When Egeria dispatches the step to RE's engine host, they are also published as annotations on
+the action's SurveyReport.
 
 Resource Explorer's Curate page uses `curation_coverage` directly for its **By analysis** view of a database.
 

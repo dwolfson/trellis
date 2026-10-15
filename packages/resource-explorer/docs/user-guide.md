@@ -442,6 +442,10 @@ Where you meet it:
   README); it needs no extra work from you.
 - **Other steps** an administrator installs show up as extra analyses on the database, tagged with the stage
   they belong to.
+- **From Egeria**, once the owner has declared a step to Resource Explorer's engine (for example
+  `ResourceExplorerSurvey::re-database-staleness`), starting it on a database in Egeria runs the step in Resource
+  Explorer. The results appear as a survey report in Egeria and in the database's Understanding list, beside
+  *Resource Explorer: derived checks*.
 
 ---
 

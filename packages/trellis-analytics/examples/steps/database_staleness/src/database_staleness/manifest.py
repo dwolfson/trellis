@@ -24,4 +24,9 @@ MANIFEST = StepManifest(
     purposes=["Maintain"],
     family="Freshness",
     tags=["staleness", "row counts"],
+    # What Resource Explorer's engine host advertises to Egeria for this step, and dispatches on.
+    request_type="re-database-staleness",
+    # Never surveyed, or surveyed once: there is no change to report. The survey's input was not enough for this
+    # kind of survey, which is Egeria's survey-invalid.
+    nothing_to_derive_guard="survey-invalid",
 )

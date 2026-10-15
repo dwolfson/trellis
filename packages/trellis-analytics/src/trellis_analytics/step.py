@@ -20,6 +20,9 @@ What the wrapper owns, so the code does not have to:
   stored: a partial store would read as the whole answer.
 - **Storage.** The host supplies the sink (`HostContext.store`); the wrapper decides what reaches it.
 
+What a host may add (Resource Explorer's does): `inputs.ods` narrowed to typed read methods (no SQL text), and the code
+run with no Egeria identity. A step is in-process, trusted code; none of this is a sandbox.
+
 A result the code returns is a plain dict:
 
     {"scope": "public.orders", "state": "measured", "value": {"rowsChanged": 30}, "summary": "+30 rows",

@@ -13,10 +13,12 @@ trellis wants stricter than the base:
   built as a step. The base allows either on either.
 
 and what the base does not have: `purposes` and `questions` (qualifiers checked at load) and a step's
-`credential_tier`, `inputs`, `display_name`, `stage` and `perspectives`.
+`credential_tier`, `inputs`, `display_name`, `stage`, `perspectives`, `request_type` and
+`nothing_to_derive_guard`.
 """
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -66,6 +68,19 @@ CREDENTIAL_TIERS = ("none", "read_only")
 STEP_INPUTS = ("resource", "ods", "connection")
 
 
+#: Egeria's standard survey guards (`SurveyActionGuard`): survey-completed, survey-invalid, survey-failed. A step
+#: names one of them as what applies when it has nothing to derive (Mandy, Q-M5: use the standard guards).
+SURVEY_GUARDS = ("survey-completed", "survey-invalid", "survey-failed")
+
+#: A request type as an engine advertises it: lower-case words joined by single hyphens (`re-db-derived`).
+_REQUEST_TYPE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
+
+def default_request_type(name: str) -> str:
+    """`database_staleness` -> `re-database-staleness`: the shape of Resource Explorer's built-in request types."""
+    return "re-" + name.replace("_", "-")
+
+
 def tier_refusal(tier: str) -> str:
     """The sentence for a tier above read-only, or "" for an allowed one."""
     if tier in CREDENTIAL_TIERS:
@@ -85,6 +100,30 @@ class StepManifest(_TrellisManifest):
     #: The stage this step's results belong to (RE's catalog calls it `intent`: scouting, analysis, ...).
     stage: str = "analysis"
     perspectives: list[str] = Field(default_factory=lambda: ["all"])
+    #: The request type an engine host advertises for this step and dispatches on (Mandy, Q-M2: "RE dispatches on
+    #: the request type to choose the action to invoke"). Empty means `default_request_type(name)`.
+    request_type: str = ""
+    #: Which of Egeria's survey guards (`SURVEY_GUARDS`) the engine host completes with when the step has nothing
+    #: to derive: no result it returns is `measured` or `nothing_found`. With `survey-completed` the report is
+    #: still published; with either other guard no report is written (an absence, not a finding).
+    nothing_to_derive_guard: str = "survey-invalid"
+
+    @field_validator("nothing_to_derive_guard")
+    @classmethod
+    def _guard(cls, v: str) -> str:
+        if v not in SURVEY_GUARDS:
+            raise ValueError(f"nothing_to_derive_guard '{v}' is not one of Egeria's survey guards "
+                             f"({', '.join(SURVEY_GUARDS)})")
+        return v
+
+    @model_validator(mode="after")
+    def _request_type(self) -> "StepManifest":
+        if not self.request_type:
+            self.request_type = default_request_type(self.name)
+        if not _REQUEST_TYPE.match(self.request_type):
+            raise ValueError(f"request_type '{self.request_type}' must be lower-case words joined by hyphens "
+                             "(for example re-database-staleness)")
+        return self
 
     @field_validator("credential_tier")
     @classmethod

@@ -39,8 +39,15 @@ def test_the_committed_document_is_what_the_generator_writes():
         "the engine-host declaration is stale: run scripts/generate_engine_host_declaration.py"
 
 
-def test_check_mode_passes_on_the_committed_tree():
-    out = subprocess.run([sys.executable, str(SCRIPT), "--check"], capture_output=True, text=True, timeout=120)
+def test_check_mode_passes_on_the_committed_tree(tmp_path):
+    """With the catalogued library step installed, as the generator needs it (see the library tests below)."""
+    import os
+
+    from tests.library_step_install import pythonpath
+
+    env = {**os.environ, "PYTHONPATH": pythonpath(tmp_path)}
+    out = subprocess.run([sys.executable, str(SCRIPT), "--check"], capture_output=True, text=True, timeout=120,
+                         env=env)
     assert out.returncode == 0, out.stdout + out.stderr
 
 
@@ -135,3 +142,113 @@ def test_the_runner_plans_the_committed_declaration_in_the_order_that_works(monk
 def test_the_declaration_names_when_it_joins_the_initialization_batches():
     for text in (DOC.read_text(), STEPS.read_text()):
         assert "TODO (engine host, step 2 live gate)" in text
+
+
+# ── engine host step 3: Analytic Library steps, one declaration per step, generated from its manifest ──
+
+from tests.library_step_install import pythonpath, staleness_installed  # noqa: E402,F401 - the fixture
+
+LIBRARY = DOC.parent / "library"
+STALENESS_DOC = LIBRARY / "database_staleness.md"
+STALENESS_STEPS = STALENESS_DOC.with_name(STALENESS_DOC.stem + ".pyegeria-steps.json")
+
+
+def _manifest():
+    from trellis_analytics.discovery import discover
+
+    return discover()["database_staleness"]
+
+
+def test_the_committed_library_declaration_is_what_the_generator_writes(staleness_installed):
+    want = _script().render_library()
+    assert set(want) == {STALENESS_DOC, STALENESS_STEPS}
+    assert STALENESS_DOC.read_text() == want[STALENESS_DOC], "stale: run scripts/generate_engine_host_declaration.py"
+    assert STALENESS_STEPS.read_text() == want[STALENESS_STEPS], "stale: run the generator"
+
+
+def test_the_library_declaration_equals_the_manifest(staleness_installed):
+    import json
+
+    from trellis_analytics.declare import manifest_properties
+    from trellis_analytics.discovery import origin
+
+    from resource_explorer import engine_host
+
+    m = _manifest()
+    doc = STALENESS_DOC.read_text()
+    gat = f"ResourceExplorerSurvey::{m.request_type}"
+    assert m.request_type == "re-database-staleness"
+    assert _section(doc, "Create Governance Action Type", "Qualified Name") == gat
+    assert _section(doc, "Create Governance Action Type", "Description") == m.description
+    guards = [g.strip() for g in _section(doc, "Create Governance Action Type", "Produced Guards").split(",")]
+    assert tuple(guards) == engine_host.SURVEY_GUARDS
+    assert m.nothing_to_derive_guard in guards
+    props = _section(doc, "Create Governance Action Type", "Additional Properties")
+    for key, value in [("executes_at", "resource-explorer"), ("re_analysis_step", m.name),
+                       ("request_type", m.request_type), ("nothing_to_derive_guard", m.nothing_to_derive_guard),
+                       *manifest_properties(m, origin(m.name))]:
+        assert f"| {key} | {value} |" in props, (key, value)
+    assert _section(doc, "Link Action to Action Executor", "Governance Action Type") == gat
+    assert _section(doc, "Link Action to Action Executor", "Governance Engine") == "ResourceExplorerSurvey"
+    assert _section(doc, "Link Action to Action Executor", "Request Type") == m.request_type
+
+    steps = json.loads(STALENESS_STEPS.read_text())["steps"]
+    assert [s["command"] for s in steps] == [
+        "Create Survey Action Engine", "Create Survey Action Service", "Link Supported Governance Service"]
+    engine, service, link = steps
+    assert engine["qualified_name"] == "ResourceExplorerSurvey"
+    assert service["qualified_name"] == "SurveyActionService::ResourceExplorerSurvey::database_staleness"
+    assert service["description"] == m.description
+    assert (link["governance_engine"], link["governance_service"]) == (engine["qualified_name"],
+                                                                         service["qualified_name"])
+    assert link["request_type"] == link["service_request_type"] == m.request_type
+    # what Egeria is told is what the engine host claims
+    assert engine_host.supported_request_types()[m.request_type] == m.name
+
+
+def test_a_manifest_change_changes_the_generated_library_declaration(staleness_installed, monkeypatch):
+    from resource_explorer.surveyors import survey_step_host
+
+    real = survey_step_host.discover_steps
+
+    def changed(entity_type):
+        found = dict(real(entity_type))
+        m = found["database_staleness"]
+        found["database_staleness"] = m.model_copy(update={"request_type": "re-staleness-v2",
+                                                          "description": "Something else entirely."})
+        return found
+
+    monkeypatch.setattr(survey_step_host, "discover_steps", changed)
+    survey_step_host.refresh("database")
+    want = _script().render_library()
+    assert want[STALENESS_DOC] != STALENESS_DOC.read_text()
+    assert "ResourceExplorerSurvey::re-staleness-v2" in want[STALENESS_DOC]
+    assert "Something else entirely." in want[STALENESS_DOC]
+    assert '"request_type": "re-staleness-v2"' in want[STALENESS_STEPS]
+
+
+def test_generating_without_a_catalogued_step_installed_is_refused_not_silently_dropped():
+    """The analysis catalog names database_staleness (generated from its manifest); generating the engine-host
+    declaration where its package is not installed must say so, never write a declaration without it."""
+    import pytest as _pytest
+
+    with _pytest.raises(SystemExit) as raised:
+        _script().render_library()
+    assert "trellis-step-database-staleness" in str(raised.value)
+
+
+def test_the_runner_plans_the_library_declaration_and_it_is_never_a_bootstrap_batch(monkeypatch):
+    from resource_explorer import dr_egeria_runner
+
+    monkeypatch.delenv("RE_DR_EGERIA_DOCS_DIR", raising=False)
+    out = dr_egeria_runner.run_document("engine-host/library/database_staleness.md", dry_run=True)
+    assert out["valid"] is True, out["errors"]
+    assert [(c["kind"], c["command"]) for c in out["commands"]] == [
+        ("pyegeria", "Create Survey Action Engine"), ("pyegeria", "Create Survey Action Service"),
+        ("pyegeria", "Link Supported Governance Service"),
+        ("dr_egeria", "Create Governance Action Type"), ("dr_egeria", "Link Action to Action Executor")]
+    assert not (LIBRARY / "_batch.json").exists()
+
+
+def test_the_provisional_analytic_functions_declaration_is_retired():
+    assert not (PKG / "docs" / "dr-egeria" / "analytic-functions" / "database_staleness.md").exists()

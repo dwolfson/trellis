@@ -16,20 +16,51 @@ This module puts such steps BESIDE a resource type's step registry, never in it 
   sentence naming the package, rather than the card saying "no mapped survey step".
 - An installed step with no catalog entry is attached as a runnable step and logged: run the generator.
 
-What the host gives the wrapper: the resource, an ODS reader that can only read (the registry's own connection,
-read-only at the database: Postgres `SET TRANSACTION READ ONLY`, SQLite `PRAGMA query_only`), and a store that
+**The boundary, honestly.** A step is in-process, trusted code. RE enforces three things: no connection to the
+resource; reads of RE's stored rows only through RE's TYPED read methods (`StepOds`: `row_count_snapshots`,
+`commit_proofs`, ... with parameterised SQL RE owns; a step sends no SQL text and has no `query`), executed by a
+separate thread on a connection that cannot write (one statement per rolled-back READ ONLY transaction on Postgres;
+`mode=ro` + `query_only` + a read-only authorizer on SQLite), with no connection, registry or URL in the step's
+hands; and no Egeria identity (its code runs inside `egeria_clients.no_identity()`, so `current_principal()`
+raises). It is NOT a sandbox: the thread list, the call stack and the process environment still reach RE's
+internals. Arbitrary SQL from a step would need a read-only database role (a follow-up for the owner: ops/DDL).
+Install only steps you would run as Resource Explorer.
+
+What the host gives the wrapper: the resource, that read-only ODS reader, and a store that
 keeps the annotations with their envelope in `additionalProperties`, in their own table `step_annotations`
 (`ProjectRegistry.record_step_annotations`).
 It never gives a password: the runner kwargs (`db_user`, `db_pwd`) stop here. It opens no connection to the
 resource yet, so a step declaring the `connection` input is refused by the wrapper with that sentence.
 
-The step's own annotations are not published to Egeria in this slice. A run's publish, when the resource has an
-Egeria project, goes through the adapter's existing `publish` and its refusals (`person_write_refusal`, and the
-publisher's own zone rules), with no publish code here.
+A run's publish, when the resource has an Egeria project, goes through the adapter's existing `publish` and its
+refusals (`person_write_refusal`, and the publisher's own zone rules), with no publish code here.
+
+**Dispatched by Egeria (engine host, step 3).** `library_steps()` is the seam the engine host dispatches through:
+request type -> `LibraryStep`, built from the installed manifests at `attach()` (the same discovery that attached the
+runners), never from a list in RE's code. Each step declares in its manifest its request type, the resource kind it
+targets (`resource_types`; database only so far), the annotation type it emits (Egeria's type name) and the survey
+guard that applies when it has nothing to derive. A step may take no built-in step's name or request type
+(`_BUILTIN`: every key of the resource type's step registry). A step is admitted only when this host can run and publish it
+unattended: it opens no connection (no `connection` input: the engine host has no person's credential) and emits an
+annotation type the report path can carry (`PUBLISHABLE_ANNOTATION_TYPES`); otherwise it is refused, with the
+sentence, in `library_step_refusals()`. The engine host runs the step through the synthetic-step executor, so its
+annotations land in `step_annotations` as for any run, then puts them on the SurveyReport with
+`LibraryStep.report_annotations` and completes from the proof (engine_host.py, E4).
+
+Adding a step that Egeria can dispatch, as its author:
+  1. write `run(inputs)` and a `StepManifest` (with `request_type`, `nothing_to_derive_guard`) in its own package,
+     exposed through the `trellis.analytics` entry point;
+  2. install it where RE's worker runs, and run `scripts/generate_external_step_entries.py` (the catalog card) and
+     `scripts/generate_engine_host_declaration.py` (its Egeria declaration, `docs/dr-egeria/engine-host/library/`);
+  3. have the owner run that declaration (`resource-explorer dr-egeria run engine-host/library/<step>.md`).
+Nothing in RE's code names the step.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime
 
 log = logging.getLogger(__name__)
@@ -37,37 +68,400 @@ log = logging.getLogger(__name__)
 #: Problems found loading manifests, per resource type, for the honest sentence a page or the CLI can show.
 LOAD_ERRORS: dict[str, str] = {}
 
+#: The annotation types the engine host's report path can publish a library step's results as (with the envelope
+#: in `additionalProperties`, the owner's interim carrier). Egeria's own type names.
+PUBLISHABLE_ANNOTATION_TYPES = ("ResourceMeasureAnnotation",)
+
+#: The result states that are a derivation. A step none of whose results is one of these had nothing to derive.
+DERIVED_STATES = ("measured", "nothing_found")
+
+#: Per resource type: the admitted library steps by request type, and the refused ones by step name.
+_LIBRARY: dict[str, dict] = {}
+_REFUSED: dict[str, dict[str, str]] = {}
+
+#: Per resource type: RE's own step keys, captured at the FIRST attach, before any user step is added to the
+#: registry. A user step may take none of these names (nor `re-<name>` as its request type): it would replace the
+#: built-in's runner and its analysisStep.
+_BUILTIN: dict[str, frozenset[str]] = {}
+
+#: Per resource type: the user steps the last attach() attached, so the next one can remove those it no longer has.
+_ATTACHED: dict[str, set[str]] = {}
+
+
+@dataclass(frozen=True)
+class LibraryStep:
+    """One Analytic Library step as the engine host sees it: what to claim, what to run, what to publish."""
+    request_type: str
+    step_key: str
+    entity_type: str
+    annotation_type: str
+    nothing_to_derive_guard: str
+    description: str
+    manifest: object = field(repr=False, compare=False)
+    provided_by: dict = field(default_factory=dict, compare=False)
+
+    @staticmethod
+    def derived(records: list[dict]) -> bool:
+        """At least one result is a derivation (`DERIVED_STATES`)."""
+        return any(_state_of(r) in DERIVED_STATES for r in records)
+
+    @staticmethod
+    def nothing_to_derive_reason(records: list[dict]) -> str:
+        """The step's own reasons, deduplicated, for the completion message."""
+        reasons = []
+        for r in records:
+            why = str(r.get("explanation") or (r.get("additionalProperties") or {}).get("resultStateReason") or "")
+            if why and why not in reasons:
+                reasons.append(why)
+        if not records:
+            return "the step returned no results"
+        return "; ".join(reasons[:3]) + (f" (and {len(reasons) - 3} more)" if len(reasons) > 3 else "")
+
+    def report_annotations(self, records: list[dict]) -> list:
+        """The step's results (`StepAnnotation.to_record()` dicts, as stored) as the annotations the SurveyReport
+        carries: Egeria's annotation type, the step as `analysisStep`, the step's display name as `annotationType`
+        (which result this is), the measured values in `resourceProperties` and the envelope in
+        `additionalProperties`. Each is identified by step and scope (`check_name`, `item_key`), so a re-publish
+        of the same run converges on the same elements."""
+        from resource_explorer.surveyors.survey_report import ResourceMeasureAnnotation
+
+        if self.annotation_type != "ResourceMeasureAnnotation":
+            raise ValueError(f"step '{self.step_key}' emits {self.annotation_type}, which the engine host cannot "
+                             "publish")
+        m = self.manifest
+        name = getattr(m, "display_name", "") or self.step_key.replace("_", " ").title()
+        out = []
+        for r in records:
+            scope = str(r.get("scope") or "")
+            state = _state_of(r)
+            summary = str(r.get("summary") or "") or f"{scope}: {state.replace('_', ' ')}"
+            out.append(ResourceMeasureAnnotation(
+                summary=summary, analysis_step=self.step_key, annotation_type_name=name,
+                explanation=str(r.get("explanation") or ""),
+                resource_properties=dict(r.get("resourceProperties") or {}),
+                additional_properties=dict(r.get("additionalProperties") or {}),
+                check_name=self.step_key, item_key=scope))
+        return out
+
+
+def _state_of(record: dict) -> str:
+    return str((record.get("additionalProperties") or {}).get("resultState") or record.get("result_state") or "")
+
+
+def _builtin_refusal(name: str, request_type: str, builtin: frozenset[str]) -> str:
+    """Why a user step collides with a built-in step, or ""."""
+    from resource_explorer.engine_host import request_type_for_step
+
+    if name in builtin:
+        return f"is named '{name}', which is one of Resource Explorer's built-in steps"
+    taken = {request_type_for_step(k): k for k in builtin}
+    if request_type in taken:
+        return (f"declares request type '{request_type}', which belongs to Resource Explorer's built-in step "
+                f"'{taken[request_type]}'")
+    return ""
+
+
+def _admit(entity_type: str, found: dict, provided_by: dict[str, dict]) -> tuple[dict, dict[str, str]]:
+    builtin = _BUILTIN.get(entity_type, frozenset())
+    admitted: dict[str, LibraryStep] = {}
+    refused: dict[str, str] = {}
+    by_type: dict[str, list[str]] = {}
+    for name, m in sorted(found.items()):
+        if why := _builtin_refusal(name, m.request_type, builtin):
+            refused[name] = why
+            continue
+        if "connection" in (m.inputs or []):
+            refused[name] = ("declares the 'connection' input; the engine host opens no connection to a resource "
+                             "(it holds no person's credential), so Egeria is not offered this step")
+            continue
+        if m.annotation_type not in PUBLISHABLE_ANNOTATION_TYPES:
+            refused[name] = (f"emits {m.annotation_type}; the engine host publishes "
+                             f"{', '.join(PUBLISHABLE_ANNOTATION_TYPES)} only")
+            continue
+        rt = m.request_type
+        by_type.setdefault(rt, []).append(name)
+        admitted[rt] = LibraryStep(rt, name, entity_type, m.annotation_type, m.nothing_to_derive_guard,
+                                   m.description, m, dict(provided_by.get(name) or {}))
+    for rt, names in by_type.items():
+        if len(names) > 1:
+            admitted.pop(rt, None)
+            for n in names:
+                refused[n] = f"declares request type '{rt}', as do {', '.join(x for x in names if x != n)}"
+    for name, why in refused.items():
+        log.warning("engine host: library step '%s' not offered to Egeria: %s", name, why)
+    return admitted, refused
+
+
+def library_steps(entity_type: str = "database") -> dict[str, LibraryStep]:
+    """{request type: LibraryStep} for every installed, admitted Analytic Library step that targets `entity_type`,
+    from the discovery `attach()` last made (refresh() discovers again)."""
+    if entity_type == "database":
+        # Importing the adapter attaches its user steps (once, at import).
+        from resource_explorer.surveyors.database import survey_definition_adapter  # noqa: F401
+    return dict(_LIBRARY.get(entity_type, {}))
+
+
+def library_step_refusals(entity_type: str = "database") -> dict[str, str]:
+    """{step name: why it is not offered to Egeria} for installed steps the engine host does not admit."""
+    library_steps(entity_type)
+    return dict(_REFUSED.get(entity_type, {}))
+
 
 class StepNotInstalled(RuntimeError):
     """The catalog names a step whose package is not installed in this environment."""
 
 
-def _registry_ods(registry):
-    """An ODS reader over the registry's own connection, read-only at the database for every query."""
-    from trellis_analytics.readers.ods import OdsReader, OdsUnreadable
+#: What a step may read: RE's typed read methods of the Analytic Library's ODS reader, each a fixed, parameterised
+#: SELECT that RE owns. A step sends no SQL text: free SQL from a step needs a read-only database role (a follow-up
+#: for the owner: ops/DDL), and validating SQL by its text cannot be made safe. `query` is NOT here.
+STEP_ODS_METHODS = ("row_count_snapshots", "commit_proofs", "catalogue_scope_events", "resource_scope_events",
+                    "outbox_status_counts")
 
-    class RegistryOds(OdsReader):
-        def __init__(self, reg):
-            super().__init__(reg.database_url)
-            self._reg = reg
+#: How long a step's read may wait for its answer.
+READ_TIMEOUT_SECONDS = 120
+
+
+def _plain(value):
+    """`value` as an exact builtin `str` or `int`, or None. Anything else raises TypeError. Run on the STEP's side
+    (a str or int subclass is converted there, so its methods run in the step's thread) and checked again, exact
+    types only, on the reader thread's side."""
+    if value is None or type(value) in (str, int):
+        return value
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, str):
+        out = str(value)
+    elif isinstance(value, int):
+        out = int(value)
+    else:
+        raise TypeError(f"a step's read takes plain strings and integers, not {type(value).__name__}")
+    if type(out) not in (str, int):
+        raise TypeError(f"a step's read takes plain strings and integers, not {type(value).__name__}")
+    return out
+
+
+def _plain_request(item) -> tuple:
+    """The reader thread's check of one request, exact types only and no method of the step's objects called:
+    (name, args, kwargs, reply). Raises TypeError, or returns None when the reply object itself is not a plain
+    queue (nothing can be answered then)."""
+    import queue
+
+    if type(item) is not tuple or len(item) != 4:
+        return None
+    name, args, kwargs, reply = item
+    if type(reply) is not queue.Queue:
+        return None
+    if type(name) is not str or type(args) is not tuple or type(kwargs) is not dict:
+        raise TypeError("a request is (name, tuple of plain values, dict of plain values)")
+    for v in (*args, *dict.values(kwargs)):
+        if not (v is None or type(v) in (str, int)):
+            raise TypeError(f"a step's read takes plain strings and integers, not {type(v).__name__}")
+    for k in dict.keys(kwargs):
+        if type(k) is not str:
+            raise TypeError("a request's keyword names are plain strings")
+    return name, args, kwargs, reply
+
+
+def _sqlite_authorizer(action, *_args):
+    """Only reading is authorized on the reader's SQLite connection (ATTACH, PRAGMA and every write are denied)."""
+    import sqlite3
+
+    allowed = {sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION,
+               getattr(sqlite3, "SQLITE_RECURSIVE", 33)}
+    return sqlite3.SQLITE_OK if action in allowed else sqlite3.SQLITE_DENY
+
+
+def _open_read_only(database_url: str):
+    """(connection, is_postgres) that cannot write. SQLite: opened `mode=ro`, autocommit, `query_only=ON`, and an
+    authorizer that allows reading only. Postgres: a read-only session with autocommit OFF; `_execute_read_only`
+    also runs each query in its own `READ ONLY` transaction, through a server-side cursor, and rolls it back."""
+    if database_url.startswith("postgresql"):
+        import psycopg2
+
+        conn = psycopg2.connect(database_url)
+        conn.set_session(readonly=True, autocommit=False)
+        return conn, True
+    import sqlite3
+
+    path = database_url.removeprefix("sqlite:///")
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, isolation_level=None)
+    conn.execute("PRAGMA query_only = ON")
+    conn.set_authorizer(_sqlite_authorizer)
+    conn.row_factory = sqlite3.Row
+    return conn, False
+
+
+def _execute_read_only(conn, is_postgres: bool, sql: str, params: tuple) -> list[dict]:
+    """Run ONE statement on a read-only connection (defence in depth under the typed methods, whose SQL RE owns).
+    Postgres: its own transaction, `SET TRANSACTION READ ONLY` first, the query through a named (server-side)
+    cursor, which Postgres declares as `DECLARE ... CURSOR FOR <one query>` and so refuses a second statement, and
+    always rolled back. SQLite: `execute` runs one statement only."""
+    if is_postgres:
+        import uuid
+
+        import psycopg2.extras
+
+        try:
+            with conn.cursor() as setup:
+                setup.execute("SET TRANSACTION READ ONLY")
+            with conn.cursor(name=f"re_step_{uuid.uuid4().hex}",
+                             cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(sql.replace("?", "%s"), params)
+                return [dict(r) for r in cur.fetchall()]
+        finally:
+            conn.rollback()
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def _serve(database_url: str, requests, ready) -> None:
+    """The reader's thread: owns the read-only connection and a reader over it, and answers one typed read at a
+    time (`STEP_ODS_METHODS` only) with plain data: rows, or an error's words, never an exception object (whose
+    traceback would lead back to this frame)."""
+    import queue
+
+    from trellis_analytics.readers.ods import OdsReader
+
+    try:
+        conn, is_pg = _open_read_only(database_url)
+    except Exception as exc:  # noqa: BLE001 - said to the host, which raises it
+        ready.put(f"could not open the registry read-only: {type(exc).__name__}: {exc}")
+        return
+
+    class _ThreadReader(OdsReader):
+        """RE's typed read methods over this thread's connection. Lives only in this frame."""
+
+        def __init__(self):                 # deliberately not OdsReader.__init__: no `url`
+            pass
 
         def query(self, sql: str, params: tuple = ()) -> list[dict]:
-            if not sql.lstrip().lower().startswith("select"):
-                raise ValueError("the ODS reader runs SELECT statements only")
-            try:
-                with self._reg._conn() as conn:
-                    if conn.is_postgres:
-                        conn.execute("SET TRANSACTION READ ONLY")
-                        return [dict(r) for r in conn.execute(sql, params).fetchall()]
-                    conn.execute("PRAGMA query_only = ON")
-                    try:
-                        return [dict(r) for r in conn.execute(sql, params).fetchall()]
-                    finally:
-                        conn.execute("PRAGMA query_only = OFF")
-            except Exception as exc:  # noqa: BLE001
-                raise OdsUnreadable(f"the registry did not answer: {exc}") from exc
+            return _execute_read_only(conn, is_pg, sql, params)
 
-    return RegistryOds(registry)
+    reader = _ThreadReader()
+    ready.put("")
+    try:
+        while True:
+            item = requests.get()
+            if item is None:
+                return
+            try:
+                checked = _plain_request(item)
+            except TypeError as exc:
+                reply = item[3] if type(item) is tuple and len(item) == 4 else None
+                if type(reply) is queue.Queue:
+                    reply.put(("error", f"TypeError: {exc}"))
+                continue
+            if checked is None:
+                continue                    # no plain reply queue: nothing is run and nothing can be answered
+            name, args, kwargs, reply = checked
+            try:
+                if name not in STEP_ODS_METHODS:
+                    raise PermissionError(f"'{name}' is not one of the reads a step may make "
+                                          f"({', '.join(STEP_ODS_METHODS)})")
+                reply.put(("ok", getattr(reader, name)(*args, **kwargs)))
+            except Exception as exc:  # noqa: BLE001
+                reply.put(("error", f"{type(exc).__name__}: {exc}"))
+    finally:
+        conn.close()
+
+
+class StepOds:
+    """What a step's `inputs.ods` is: RE's typed read methods (`STEP_ODS_METHODS`) and nothing else. No `query`,
+    no registry, no URL, no connection: each method sends its name and arguments to the reader's own thread, which
+    owns the read-only connection. Trusted in-process code can still reach RE internals (the thread list, the call
+    stack): this narrows what a step is handed, it is not a sandbox."""
+    __slots__ = STEP_ODS_METHODS
+
+    def __init__(self, requests):
+        for name in STEP_ODS_METHODS:
+            object.__setattr__(self, name, _remote(requests, name))
+
+    def __setattr__(self, name, value):
+        raise AttributeError("a step's ODS reader is read-only")
+
+    def __repr__(self) -> str:
+        return "<read-only ODS>"
+
+
+def _remote(requests, name):
+    import queue
+
+    from trellis_analytics.readers.ods import OdsReader, OdsUnreadable
+
+    def call(*args, **kwargs):
+        args = tuple(_plain(a) for a in args)
+        kwargs = {str(k): _plain(v) for k, v in kwargs.items()}
+        reply: queue.Queue = queue.Queue(maxsize=1)
+        if requests.closed:
+            raise OdsUnreadable("the reader is closed: the step's run has ended")
+        requests.put((name, args, kwargs, reply))
+        try:
+            status, payload = reply.get(timeout=READ_TIMEOUT_SECONDS)
+        except queue.Empty:
+            raise OdsUnreadable(f"the registry did not answer within {READ_TIMEOUT_SECONDS}s") from None
+        if status != "ok":
+            raise OdsUnreadable(f"the registry did not answer: {payload}")
+        return payload
+
+    call.__name__ = name
+    call.__doc__ = getattr(OdsReader, name).__doc__
+    return call
+
+
+class _Requests:
+    """The queue a step's reader sends its reads on, with a flag the host sets when the run ends."""
+    __slots__ = ("_q", "closed")
+
+    def __init__(self):
+        import queue
+
+        self._q, self.closed = queue.Queue(), False
+
+    def put(self, item) -> None:
+        self._q.put(item)
+
+    def get(self):
+        return self._q.get()
+
+
+@contextmanager
+def step_reader(database_url: str):
+    """A step's read-only ODS (`StepOds`) for the duration of the block. The connection is opened and used only in
+    the reader's own thread; the block's end stops the thread and closes it, and the reader refuses after that."""
+    import queue
+    import threading
+
+    requests = _Requests()
+    ready: queue.Queue = queue.Queue(maxsize=1)
+    thread = threading.Thread(target=_serve, args=(database_url, requests, ready), name="re-step-reader",
+                              daemon=True)
+    thread.start()
+    problem = ready.get(timeout=READ_TIMEOUT_SECONDS)
+    try:
+        if problem:
+            from trellis_analytics.readers.ods import OdsUnreadable
+
+            raise OdsUnreadable(problem)
+        yield StepOds(requests)
+    finally:
+        requests.closed = True
+        requests.put(None)
+        thread.join(timeout=READ_TIMEOUT_SECONDS)
+
+
+def _without_identity(code, done=None):
+    """The step's own code, run with no Egeria identity (`egeria_clients.no_identity`). `done`, when given, is called
+    as soon as the code returns (it closes the step's reader), before the host stores anything."""
+    from resource_explorer.egeria_clients import no_identity
+
+    def run(inputs):
+        try:
+            with no_identity():
+                return code(inputs)
+        finally:
+            if done is not None:
+                done()
+
+    return run
 
 
 class SurveyStepHost:
@@ -92,9 +486,14 @@ class SurveyStepHost:
                 annotations=[a.to_record() for a in annotations],
                 package=self.provided_by.get("package", ""), producer_version=self.manifest.version)
 
-        host = HostContext(resource_type=self.entity_type, slug=entity.slug, producing_run=run,
-                           ods=_registry_ods(registry), connect=None, store=store)
-        annotations = SurveyStep(self.manifest).run(host)
+        with contextlib.ExitStack() as stack:
+            ods = stack.enter_context(step_reader(registry.database_url))
+            host = HostContext(resource_type=self.entity_type, slug=entity.slug, producing_run=run,
+                               ods=ods, connect=None, store=store)
+            # The step's code runs with no Egeria identity, and its reader is closed when the code returns; the
+            # store and anything after it run as the host does.
+            code = SurveyStep(self.manifest).code
+            annotations = SurveyStep(self.manifest, code=_without_identity(code, stack.close)).run(host)
         counts: dict[str, int] = {}
         for a in annotations:
             counts[a.envelope.result_state.value] = counts.get(a.envelope.result_state.value, 0) + 1
@@ -190,14 +589,21 @@ def attach(entity_type: str, adapter, step_registry: dict, step_map: dict, resul
     from resource_explorer.surveyors.analysis_catalog_reader import _load
     from resource_explorer.surveyors.repo_survey_definition_adapter import AnalysisKind, AnalysisKindResults
 
+    builtin = _BUILTIN.setdefault(entity_type, frozenset(step_registry) | frozenset(adapter.re_analysis_steps))
     found = discover_steps(entity_type)
+    origins = {}
     attached: list[str] = []
     for entry in _load().get(entity_type, []):
         if not entry.provided_by:
             continue
         step_key = entry.provided_by.get("step") or entry.id
+        if step_key in builtin:
+            log.error("analysis catalog entry '%s' names user step '%s', which is a built-in step; not attached",
+                      entry.id, step_key)
+            continue
         annotation_type = (entry.annotation_types or ["ResourceMeasureAnnotation"])[0]
         manifest = found.get(step_key)
+        origins[step_key] = entry.provided_by
         runner = (SurveyStepHost(manifest, entity_type, entry.provided_by) if manifest
                   else NotInstalledStep(entry.provided_by, step_key))
         adapter.re_analysis_steps[step_key] = runner
@@ -217,6 +623,10 @@ def attach(entity_type: str, adapter, step_registry: dict, step_map: dict, resul
     for name, manifest in found.items():
         if name in attached:
             continue
+        if name in builtin:
+            log.error("installed user step '%s' has a built-in step's name; not attached (it would replace "
+                      "Resource Explorer's own step)", name)
+            continue
         log.warning("installed step '%s' has no analysis catalog entry; it can run from a Survey Definition but "
                     "shows no card: run scripts/generate_external_step_entries.py", name)
         adapter.re_analysis_steps[name] = SurveyStepHost(manifest, entity_type)
@@ -225,6 +635,14 @@ def attach(entity_type: str, adapter, step_registry: dict, step_map: dict, resul
         step_registry[name] = _step_info(name, manifest.description, manifest.annotation_type,
                                          manifest.source, manifest.credential_tier)
         attached.append(name)
+    # A step attached by an earlier attach and not this one (uninstalled, or a test's) leaves the maps: a refresh
+    # replaces what the last attach attached, it never accumulates.
+    for gone in _ATTACHED.get(entity_type, set()) - set(attached) - builtin:
+        adapter.re_analysis_steps.pop(gone, None)
+        adapter.re_analysis_step_info.pop(gone, None)
+        step_registry.pop(gone, None)
+    _ATTACHED[entity_type] = set(attached)
+    _LIBRARY[entity_type], _REFUSED[entity_type] = _admit(entity_type, found, origins)
     return attached
 
 

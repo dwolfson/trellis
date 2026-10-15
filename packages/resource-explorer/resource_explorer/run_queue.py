@@ -671,6 +671,23 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
 # ── the claim loop ───────────────────────────────────────────────────────────
 
 
+def _engine_request_types_here(kinds: list[str] | None) -> "set[str] | None":
+    """The engine-action request types THIS worker can run (built-in steps plus the Analytic Library steps
+    installed here), so an `engine_action` row for a step whose package this worker lacks stays queued for one
+    that has it. None when this claim cannot take an engine_action row at all. Unreadable is the empty set: no
+    engine_action row is taken (fail closed), every other kind is."""
+    if kinds is not None and "engine_action" not in kinds:
+        return None
+    try:
+        from resource_explorer.engine_host import supported_request_types
+
+        return set(supported_request_types())
+    except Exception as exc:  # noqa: BLE001 - never stop the queue for it; take no engine action instead
+        log.warning("run queue: could not read the engine host's request types (%s); no engine_action row is "
+                    "taken by this worker until it can", exc)
+        return set()
+
+
 def claim_and_execute_once(registry=None, *, kinds: list[str] | None = None) -> dict | None:
     """Claim at most one row and run it. Returns the row, or None if the queue
     had nothing this worker was allowed to take.
@@ -687,7 +704,8 @@ def claim_and_execute_once(registry=None, *, kinds: list[str] | None = None) -> 
     if kinds is None and HELD_KINDS:
         # "All kinds" means all kinds this worker can run: a held kind waits for its handler (see HELD_KINDS).
         kinds = [k for k in registry.RUN_KINDS if k not in HELD_KINDS]
-    row = registry.claim_next_run(identity, process_identity(), kinds=kinds)
+    row = registry.claim_next_run(identity, process_identity(), kinds=kinds,
+                                  engine_request_types=_engine_request_types_here(kinds))
     if row is None:
         return None
     log.info("run claimed: id=%s kind=%s claimed_by=%s", row["id"], row["kind"], identity)
