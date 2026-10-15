@@ -1515,7 +1515,8 @@ class TestSharedCoverageBar:
         if field == "grain_determination":
             return {"grains": [{"state": STATE_MEASURED if i < measured else STATE_NOT_MEASURED}
                                for i in range(total)]}, None
-        return {"state": STATE_MEASURED}, {"measured": measured, "total": total}
+        return {"state": STATE_MEASURED}, {"keys": {"measured": measured, "total": total},
+                                          "catalog": {"measured": measured, "total": total}}
 
     @pytest.mark.parametrize("field", SEVEN)
     def test_79_percent_is_not_established_with_the_exact_words(self, field):
@@ -1524,7 +1525,9 @@ class TestSharedCoverageBar:
         data, cov = self._payload(field, 79, 100)
         _attach_coverage_status(field, data, cov)
         assert data["_status"]["state"] == NOT_ESTABLISHED
-        assert data["_status"]["detail"] == "measured on 79 of 100 tables (below the 80% bar)"
+        words = "tables read" if field in ("schema_conventions", "subject_signals",
+                                           "coverage_signals", "preliminary_fit") else "tables"
+        assert data["_status"]["detail"] == f"measured on 79 of 100 {words} (below the 80% bar)"
 
     @pytest.mark.parametrize("field", SEVEN)
     def test_80_percent_is_measured(self, field):
@@ -1542,11 +1545,11 @@ class TestSharedCoverageBar:
         assert "_status" not in mine
         other, cov = self._payload("subject_signals", 60, 100)
         _attach_coverage_status("subject_signals", other, cov)
-        assert other["_status"]["detail"] == "measured on 60 of 100 tables (below the 80% bar)"
+        assert other["_status"]["detail"] == "measured on 60 of 100 tables read (below the 80% bar)"
         monkeypatch.setitem(result_status.COVERAGE_BAR_OVERRIDES, "subject_signals", 0.9)
         strict, cov = self._payload("subject_signals", 85, 100)
         _attach_coverage_status("subject_signals", strict, cov)
-        assert strict["_status"]["detail"] == "measured on 85 of 100 tables (below the 90% bar)"
+        assert strict["_status"]["detail"] == "measured on 85 of 100 tables read (below the 90% bar)"
 
     def test_all_seven_read_the_shared_constant(self, monkeypatch):
         from resource_explorer.surveyors import result_status
@@ -1568,6 +1571,57 @@ class TestSharedCoverageBar:
             columns = [_column(f"t{i}", "id", pk=True) for i in range(measured)]
             columns += [_column(f"t{i}", "id", keys_captured=False) for i in range(measured, 100)]
             _store(registry, slug, f"2026-09-{day}T12:00:00", tables=tables, columns=columns)
+            registry.write_detail_rows("database_schemas", slug, f"2026-09-{day}T12:00:00",
+                                       rows=[{"schema_name": "public"}], source="local")
             fl = FactLayer(registry=registry, resource_type="database")
-            for field in ("db_relationship_graph", "schema_conventions"):
-                assert fl.fact(slug, field).state == expected, (measured, field)
+            # keys notion: the graph is under the bar at 79 keyed tables
+            assert fl.fact(slug, "db_relationship_graph").state == expected, measured
+            # catalog notion: all 100 tables were read, so conventions is measured either way
+            assert fl.fact(slug, "schema_conventions").state == MEASURED, measured
+
+
+class TestCatalogTierNotion:
+    """The four name/comment-level analyses measure by catalog read, not keys."""
+
+    FOUR = ("schema_conventions", "subject_signals", "coverage_signals", "preliminary_fit")
+
+    def _store_db(self, registry, day, read, total=100):
+        tables = [_table(f"t{i}") for i in range(total)]
+        # every table has column rows; none has keys captured (no foreign keys either)
+        columns = [_column(f"t{i}", "id", keys_captured=False) for i in range(read)]
+        _store(registry, "coco_ods", f"2026-09-{day}T12:00:00", tables=tables, columns=columns)
+        registry.write_detail_rows("database_schemas", "coco_ods", f"2026-09-{day}T12:00:00",
+                                   rows=[{"schema_name": "public"}], source="local")
+
+    def test_fully_read_database_without_keys_is_measured_for_the_four(self, registry):
+        from resource_explorer.surveyors.database.survey_definition_adapter import _db_derived_field_reader
+        self._store_db(registry, 22, read=100)
+        for field in self.FOUR:
+            data = _db_derived_field_reader(field)(registry, "coco_ods")
+            assert (data.get("_status") or {}).get("reason") != "thin_table_coverage", field
+        # the keys notion still marks the graph below the bar on the same data
+        graph = _db_derived_field_reader("db_relationship_graph")(registry, "coco_ods")
+        assert not graph or graph["_status"]["detail"].endswith("tables (below the 80% bar)")
+
+    def test_partially_read_database_is_not_established_with_tables_read_words(self, registry):
+        from resource_explorer.surveyors.database.db_derived import run_db_derived
+        from resource_explorer.surveyors.database.survey_definition_adapter import _attach_coverage_status
+        self._store_db(registry, 23, read=79)
+        cov = run_db_derived(registry, "coco_ods")["table_coverage"]
+        assert cov["catalog"] == {"measured": 79, "total": 100}
+        for field in self.FOUR:
+            data = {"state": "measured"}
+            _attach_coverage_status(field, data, cov)
+            assert data["_status"]["state"] == "not_established"
+            assert data["_status"]["detail"] == "measured on 79 of 100 tables read (below the 80% bar)"
+
+    def test_fully_read_no_keys_counts_catalog_full_and_keys_zero(self, registry):
+        from resource_explorer.surveyors.database.db_derived import run_db_derived
+        from resource_explorer.surveyors.database.survey_definition_adapter import _attach_coverage_status
+        self._store_db(registry, 24, read=100)
+        cov = run_db_derived(registry, "coco_ods")["table_coverage"]
+        assert cov["catalog"]["measured"] == 100 and cov["keys"]["measured"] == 0
+        for field in self.FOUR:
+            data = {"state": "measured"}
+            _attach_coverage_status(field, data, cov)
+            assert "_status" not in data, field

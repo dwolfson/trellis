@@ -5154,15 +5154,24 @@ def apply_container_grain(registry, inputs: DerivedInputs, derived: dict) -> dic
 # ═══════════════════════════════════════════════════════════════════════════
 
 def table_coverage(inputs: DerivedInputs) -> dict:
-    """How many base tables were actually measured, for the shared coverage bar.
+    """Per-notion table counts for the shared coverage bar. Views are not counted.
 
-    "Measured" is the same notion `derive_relationship_graph` uses: the
-    table's OWN keys were captured (`keys_captured_for_table`). Views are not
-    counted, same as the structural checks.
+    * `keys`: tables whose OWN keys were captured (`keys_captured_for_table`);
+      the notion the relationship graph, grain and classification use.
+    * `catalog`: tables whose catalog metadata was read -- a schema row, a
+      table row and at least one column row for that table; the notion the
+      four name/comment-level analyses (conventions, subject_signals,
+      coverage_signals, preliminary_fit) use. A fully read database whose
+      tables have no foreign keys is fully measured here.
     """
     tables = [t for t in inputs.tables if _is_base_table(t)]
-    measured = sum(1 for t in tables if inputs.keys_captured_for_table(_table_key(t)))
-    return {"measured": measured, "total": len(tables)}
+    schemas = {r.get("schema_name") or "" for r in inputs.schemas}
+    with_columns = {_table_key(c) for c in inputs.columns}
+    keys = sum(1 for t in tables if inputs.keys_captured_for_table(_table_key(t)))
+    catalog = sum(1 for t in tables
+                  if (t.get("schema_name") or "") in schemas and _table_key(t) in with_columns)
+    return {"keys": {"measured": keys, "total": len(tables)},
+            "catalog": {"measured": catalog, "total": len(tables)}}
 
 
 def run_db_derived(

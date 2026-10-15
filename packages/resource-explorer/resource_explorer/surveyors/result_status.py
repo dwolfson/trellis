@@ -262,7 +262,7 @@ def coverage_bar_for(field: str) -> float:
     return COVERAGE_BAR_OVERRIDES.get(field, COVERAGE_BAR)
 
 
-def coverage_shortfall(field: str, measured: int, total: int) -> dict | None:
+def coverage_shortfall(field: str, measured: int, total: int, notion: str = "keys") -> dict | None:
     """A NOT_ESTABLISHED `_status` when `measured` of `total` tables is under
     the bar for `field`; None when the bar is met or there is nothing to count."""
     bar = coverage_bar_for(field)
@@ -271,6 +271,7 @@ def coverage_shortfall(field: str, measured: int, total: int) -> dict | None:
     return {
         "state": NOT_ESTABLISHED,
         "reason": "thin_table_coverage",
-        "detail": (f"measured on {measured} of {total} tables "
+        "detail": (f"measured on {measured} of {total} tables"
+                   f"{' read' if notion == 'catalog' else ''} "
                    f"(below the {round(bar * 100)}% bar)"),
     }

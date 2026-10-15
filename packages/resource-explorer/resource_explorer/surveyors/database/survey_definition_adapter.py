@@ -1078,6 +1078,7 @@ def _attach_coverage_status(field: str, data: dict, coverage: dict | None = None
         coverage_shortfall,
     )
 
+    notion = "keys"
     if field == "db_relationship_graph":
         measured = data.get("table_count")
         if measured is None:
@@ -1091,13 +1092,15 @@ def _attach_coverage_status(field: str, data: dict, coverage: dict | None = None
         measured = sum(1 for g in grains if g.get("state") == STATE_MEASURED)
         total = len(grains)
     elif field in COVERAGE_BAR_FIELDS:
-        if not coverage:
+        notion = "catalog" if field in CATALOG_READ_FIELDS else "keys"
+        counts = (coverage or {}).get(notion)
+        if not counts:
             return
-        measured, total = coverage.get("measured") or 0, coverage.get("total") or 0
+        measured, total = counts.get("measured") or 0, counts.get("total") or 0
     else:
         return
 
-    status = coverage_shortfall(field, measured, total)
+    status = coverage_shortfall(field, measured, total, notion)
     if status is not None:
         data["_status"] = status
         return
@@ -1116,6 +1119,11 @@ def _attach_coverage_status(field: str, data: dict, coverage: dict | None = None
                            f"little signal to call at all"),
             }
 
+
+#: The four analyses that decide at the catalog tier (names, comments, row
+#: estimates): measured = the table's schema, table and column rows were read.
+#: The other three (graph, grain, classification) measure by keys captured.
+CATALOG_READ_FIELDS = ("schema_conventions", "subject_signals", "coverage_signals", "preliminary_fit")
 
 #: The seven `db_derived` analyses the shared coverage bar applies to.
 COVERAGE_BAR_FIELDS = (
