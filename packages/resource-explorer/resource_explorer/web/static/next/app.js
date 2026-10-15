@@ -30,6 +30,7 @@ import { ago, whenMs, verdictLineHtml, changedTimesHtml, savedLine, readBackAt, 
 // and `factGlyph` below are thin views over `GLYPH_STATES` -- this file
 // declares no glyph-to-meaning mapping of its own any more.
 import { STATES as GLYPH_STATES, stateEntry } from '/static/next/glyphs.js';
+import { publishProofHtml } from '/static/next/publish-proof.js';
 // `readEnvelope` and its own private helpers used to live here directly;
 // split into their own module (BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §D,
 // 2026-09-27) so a node-run test can import `readEnvelope` and check it
@@ -4872,7 +4873,8 @@ export function lastRunHtml(c) {
     : '';
   return `<span title="${esc(when)}${c.last_run_status ? ` · ${esc(c.last_run_status)}` : ''}">
     ${ok ? '<span class="text-state-ok">✓</span> ' : warn}
-    <span class="${stale ? 'wl-age-text' : ''}">ran ${esc(ago(when))}</span></span>`;
+    <span class="${stale ? 'wl-age-text' : ''}">ran ${esc(ago(when))}</span></span>${
+    c.last_publish_proof ? ` ${publishProofHtml(c.last_publish_proof)}` : ''}`;
 }
 
 /** Which engine actually ran a definition's last run, rendered ON THE ROW
@@ -5726,6 +5728,7 @@ export function analysisIndexRowHtml(row) {
           : row.serves === 'chat-only' ? 'chat-only — no question asks' : 'nothing-yet — no question asks, no reader either'}
         · ${row.last_run_at ? `<span class="tnum">${esc(ago(row.last_run_at))}</span>${row.last_run_via ? ` · via ${esc(row.last_run_via.replace(/_/g, ' '))}` : ''}` : 'never run'}
         · ${analysisRowPrice(row.cost)}
+        ${row.last_publish_proof ? `· ${publishProofHtml(row.last_publish_proof)}` : ''}
         ${analysisRanAsHtml(row)}
       </div>
       <div class="mt-[2px] text-provenance">${analysisCoverageHtml(row)}</div>
@@ -6670,7 +6673,8 @@ export async function openRunsList(slug) {
     try {
       const d = typeof r.detail === 'string' ? JSON.parse(r.detail) : (r.detail || {});
       steps = d.steps || [];
-      runPublish = runPublishHtml(d);
+      // A run that published through the outbox carries its proof-derived word; a database run its own word.
+      runPublish = r.publish_proof ? publishProofHtml(r.publish_proof) : runPublishHtml(d);
     } catch (_) { /* a detail we cannot parse is a run with no step list */ }
     const ok = steps.filter((s) => s.status === 'ok').length;
     const bad = steps.filter((s) => s.status && s.status !== 'ok');

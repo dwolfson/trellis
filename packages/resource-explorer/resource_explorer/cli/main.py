@@ -1353,7 +1353,8 @@ def survey(
 
             try:
                 console.print(f"  [dim]Publishing to Egeria…[/dim]")
-                report_guid = publisher.publish(result)
+                # An explicit publish waits for Egeria (RUNS_PUBLISH_INLINE governs a run's auto-publish only).
+                report_guid = publisher.publish(result, defer_drain=False)
                 console.print(f"  [green]SurveyReport GUID: {report_guid}[/green]")
             except PrivateAwaitsOwner as exc:
                 # Waiting, not failed (2026-10-13 review): only the private investigation's owner can publish it.

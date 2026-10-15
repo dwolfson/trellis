@@ -182,7 +182,8 @@ def _resolve_one(registry, entity_type: str, slug: str, action: str) -> None:
     # keeps it to stored data, which is what makes it the fast, no-re-scan option.
     survey = (orch.run(slug) if action == "resurvey"
               else orch.run(slug, max_fetch_cost="none"))
-    EgeriaPublisher(registry=registry).publish(survey)
+    # An explicit (re)publish waits for Egeria, as before: RUNS_PUBLISH_INLINE governs a run's auto-publish only.
+    EgeriaPublisher(registry=registry).publish(survey, defer_drain=False)
 
 
 def delete_local(registry, targets: list[dict], *, dry_run: bool = False,

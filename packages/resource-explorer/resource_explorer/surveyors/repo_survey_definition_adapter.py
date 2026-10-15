@@ -5351,7 +5351,7 @@ def _trigger_egeria_native_survey(project, registry, step, **_) -> dict:
 
 
 def _publish(project, step_outputs: list, surveyed_at: str, registry, *,
-            defer_drain: bool = False) -> str:
+            defer_drain: bool = False, publish_out: dict | None = None) -> str:
     """`defer_drain` is the run-in-background choice (see
     survey_definition_executor.py's `SurveyDefinitionExecutor.run`,
     `publish` parameter) — threaded straight through to EgeriaPublisher,
@@ -5370,7 +5370,14 @@ def _publish(project, step_outputs: list, surveyed_at: str, registry, *,
             result.add(ann)
 
     publisher = EgeriaPublisher(registry=registry)
-    return publisher.publish(result, defer_drain=defer_drain)
+    report_guid = publisher.publish(result, defer_drain=defer_drain)
+    if publish_out is not None:
+        # What the executor's run words are derived from: the outbox run whose proof rows decide "queued for
+        # publish" / "published · read back" / "publish failed", and whether it was read back before returning.
+        publish_out["publish_run_id"] = publisher.publish_run_id
+        publish_out["read_back"] = bool(publisher.publish_read_back)
+        publish_out["deferred"] = bool(publisher.publish_deferred)
+    return report_guid
 
 
 _ADAPTER = ResourceTypeAdapter(

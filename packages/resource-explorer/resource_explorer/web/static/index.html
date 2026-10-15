@@ -5020,7 +5020,8 @@ function _handleFreshnessSkip(started, onForce, onForceBackground = null) {
   return true;
 }
 
-// `publish`: null (default) leaves the choice to RunsConfig.publish_inline;
+// `publish`: null (default) leaves the choice to RunsConfig.publish_inline
+// (enqueue-only since 2026-10-14);
 // "background" enqueues the Egeria write and returns without waiting for it
 // (run-in-background plan, project owner 2026-09-13 — measured: the publish
 // is almost all of a run's wall time, ~3min at ~3.6s/write). "Run in
@@ -6569,7 +6570,7 @@ async function publishSurvey() {
     }
     const data = await res.json();
     if (data.status === 'ok') {
-      fb.innerHTML = `<span class="text-emerald-400">✓ Published — ${data.annotation_count} annotations · Report: <span class="font-mono">${(data.report_guid||'').substring(0,12)}…</span></span>`;
+      fb.innerHTML = `${_publishStateCue(data).html} <span class="text-slate-400">— ${data.annotation_count} annotations · Report: <span class="font-mono">${(data.report_guid||'').substring(0,12)}…</span></span>`;
       loadActivityLog();
       setTimeout(() => showEgeria(), 800);
     } else {
@@ -6583,6 +6584,17 @@ async function publishSurvey() {
     btn.disabled = false;
     btn.textContent = 'Retry →';
   }
+}
+
+// The manual Publish's word, from the server's proof-derived `publish_state` (registry.publish_proofs): only a
+// read-back says "published". A cue plus a short word; Egeria's words only for a failure.
+function _publishStateCue(data) {
+  const st = data && data.publish_state;
+  if (st === 'read_back') return { tone: 'success', html: '<span class="text-emerald-400">✓ published · read back</span>', text: 'published · read back' };
+  if (st === 'queued') return { tone: 'info', html: '<span class="text-amber-400">◔ queued for publish</span>', text: 'queued for publish' };
+  if (st === 'failed') return { tone: 'error', html: `<span class="text-red-400">✕ publish failed · ${_esc(data.publish_words || '')}</span>`, text: `publish failed · ${data.publish_words || ''}` };
+  if (st === 'nothing') return { tone: 'info', html: '<span class="text-slate-400">nothing to publish</span>', text: 'nothing to publish' };
+  return { tone: 'info', html: `<span class="text-slate-400">· ${_esc((data && data.publish_word) || 'publish not established')}</span>`, text: (data && data.publish_word) || 'publish not established' };
 }
 
 async function resetEgeria(btn) {
@@ -12506,7 +12518,8 @@ async function _publishScopedSteps(slug, steps, btn, label, surveyDefinitionRef 
     if (_handlePublishContextGate(res, slug)) return;
     const data = await res.json();
     if (data.status === 'ok') {
-      showToast('success', `${label}: published ${data.annotation_count} annotation(s).`, 4000);
+      const cue = _publishStateCue(data);
+      showToast(cue.tone, `${label}: ${_esc(cue.text)} · ${data.annotation_count} annotation(s).`, cue.tone === 'success' ? 4000 : 0);
       loadActivityLog();
       // The Survey tab is the only publish surface now (Coarse Profile
       // folded into it) — always safe to just reload it.

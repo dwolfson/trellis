@@ -222,8 +222,15 @@ def test_resync_reports_an_adopted_asset_refusal_as_not_permitted(registry, monk
         def __init__(self, registry=None):
             pass
 
-        def publish(self, survey):
+        def publish(self, result, zone_names=None, *, defer_drain=None):     # the real signature (checked below)
             raise WriteNotPermitted(f"not permitted · zone {SECURED} does not grant {ME} update in Egeria")
+
+    import inspect
+
+    from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
+
+    shape = lambda f: [(p.name, p.kind, p.default) for p in inspect.signature(f).parameters.values()]  # noqa: E731
+    assert shape(Refusing.publish) == shape(EgeriaPublisher.publish)
     monkeypatch.setattr("resource_explorer.surveyors.egeria_publisher.EgeriaPublisher", Refusing)
     logged = []
     monkeypatch.setattr(r, "_log_publish_failure", lambda slug, error: logged.append(slug))

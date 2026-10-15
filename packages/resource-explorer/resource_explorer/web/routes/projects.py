@@ -878,8 +878,8 @@ async def run_single_analysis(slug: str, analysis_id: str,
     `force`): the per-run choice of whether to wait for the Egeria publish or
     enqueue it and move on (project owner, 2026-09-13 — measured: the survey
     steps take ~0.2s, the synchronous publish ~3min at ~3.6s/write for 53
-    writes). Omitted keeps `RunsConfig.publish_inline`'s default — unchanged
-    behaviour for every caller that does not ask.
+    writes). Omitted keeps `RunsConfig.publish_inline`'s default: enqueue-only
+    since 2026-10-14 (project owner: a run does not wait for its publish).
 
     Validation still happens synchronously, so an unknown analysis_id is a 400
     rather than a queued row that fails a minute later in a different process.

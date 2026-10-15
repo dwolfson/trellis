@@ -1394,7 +1394,8 @@ class EgeriaResync:
         from resource_explorer.workflows.curate import WriteNotPermitted
 
         try:
-            guid = EgeriaPublisher(registry=reg).publish(survey)
+            # A repair re-publish waits for Egeria (RUNS_PUBLISH_INLINE governs a run's auto-publish only).
+            guid = EgeriaPublisher(registry=reg).publish(survey, defer_drain=False)
         except WriteNotPermitted as exc:
             # Round 3: an adopted asset the caller may not change is a refusal, reported with its words.
             return {"slug": slug, "ok": False, "not_permitted": str(exc)}

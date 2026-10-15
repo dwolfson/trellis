@@ -223,6 +223,12 @@ class EgeriaPublisher:
         #: ("durably enqueued; not yet applied"). Stays False for the
         #: no-registry direct-write path, which has no outbox to defer to.
         self.publish_deferred = False
+        #: True only when this publish's `publish_read_back` outbox row is DONE before `publish()` returns (an
+        #: inline publish whose drain landed every write and whose read-back found them under the report). The
+        #: proof itself is that row (`registry.publish_proofs`); this mirrors it for the caller. When False on the
+        #: registry path, `publish_deferred` is True too: the run is "queued for publish" until the drain reads
+        #: it back, whichever branch ran.
+        self.publish_read_back = False
         #: Per-call override of `RunsConfig.publish_inline`, set by `publish(
         #: defer_drain=...)` — the run-in-background choice (project owner,
         #: 2026-09-13): the caller decides per RUN whether to wait for the
@@ -302,6 +308,9 @@ class EgeriaPublisher:
             self.zone_names = zone_names
         self._defer_drain_override = defer_drain
         self.report_reused = False
+        self.publish_deferred = False
+        self.publish_read_back = False
+        self.publish_run_id = ""
         # Privacy is decided here, before anything is written, and it OVERRIDES
         # the caller's zone_names rather than deferring to them. A caller that
         # passes explicit zones is asking where a normal publish should land;
@@ -418,7 +427,8 @@ class EgeriaPublisher:
                     "analyses": sorted(_analyses_for_steps(result.steps_run)),
                     "report_guid": report_guid,
                 }
-            else:
+            elif result.annotations:
+                # Nothing published (no annotation) records no badge: a ☁ needs something behind it.
                 try:
                     self._registry.record_published_annotation_types(
                         result.resource_slug,
@@ -482,7 +492,7 @@ class EgeriaPublisher:
         if self.publish_deferred:
             deferred_note = (
                 f" — {link_counts.get('annotations_queued', 0)} Egeria write(s) "
-                f"QUEUED for publish (not yet applied; next scheduled drain <=15 min)"
+                f"queued for publish (not read back yet; next scheduled drain <=15 min)"
             )
             if link_counts.get("links_queued"):
                 deferred_note += (
@@ -499,7 +509,11 @@ class EgeriaPublisher:
         if self._registry:
             try:
                 from resource_explorer.activity_logger import log_catalog
-                log_catalog(
+                # The lead word follows the read-back proof: "published" only once the run was read back.
+                lead = ("Queued for publish to Egeria: " if self.publish_deferred
+                        else "Published to Egeria · read back: " if self.publish_read_back
+                        else "Nothing to publish to Egeria: ")      # no annotation queued: no run, no proof
+                catalog_entry = log_catalog(
                     self._registry,
                     entity_type="repo",
                     entity_slug=result.resource_slug,
@@ -510,7 +524,7 @@ class EgeriaPublisher:
                         # The QUEUED count when there is one, not the produced
                         # count — a capped run must not report the number it
                         # made as the number it published.
-                        f"Published to Egeria: "
+                        f"{lead}"
                         f"{link_counts.get('annotations_queued', len(result.annotations))}"
                         f" annotations"
                         f" → {(report_guid or 'no-guid')[:12]}…"
@@ -537,6 +551,9 @@ class EgeriaPublisher:
                         },
                     ],
                 )
+                if self.publish_run_id and catalog_entry:
+                    # The Activity panel shows this entry's word from the run's proof rows, as it does the run's.
+                    self._registry.tag_activity_publish_run(catalog_entry, self.publish_run_id)
             except Exception as exc:
                 log.warning("Could not write activity log entry: %s", exc)
 
@@ -1517,11 +1534,13 @@ class EgeriaPublisher:
             OutboxClients, drain_outbox, enqueue_annotations,
         )
 
-        self.publish_run_id = qualified_name_prefix
         row_ids = enqueue_annotations(
             self._registry, "repo", result.resource_slug, result.annotations,
             report_guid, qualified_name_prefix, run_id=qualified_name_prefix,
         )
+        # A run id only when something was queued under it: with nothing to publish there is no proof row, and the
+        # word is "nothing to publish", never "queued" or "published".
+        self.publish_run_id = qualified_name_prefix if row_ids else ""
 
         from resource_explorer.config import get_config
 
@@ -1538,7 +1557,7 @@ class EgeriaPublisher:
             # method's docstring for how evidence links are enqueued too, by
             # row id rather than GUID, and resolved once their referent
             # annotations are applied.
-            self.publish_deferred = True
+            self.publish_deferred = bool(row_ids)
             counts = dict(self._LINK_COUNTS_ZERO)
             counts["annotations_queued"] = len(row_ids)
             counts["annotations_produced"] = len(result.annotations)
@@ -1565,6 +1584,12 @@ class EgeriaPublisher:
                     )
                     links_queued = len(link_refs)
             counts["links_queued"] = links_queued
+            if row_ids:
+                # Last, after the links: the drain reads the run back once every write above has landed.
+                from resource_explorer.egeria_outbox import enqueue_publish_read_back
+
+                enqueue_publish_read_back(self._registry, "repo", result.resource_slug,
+                                          qualified_name_prefix, report_guid)
             return counts
 
         drain_outbox(
@@ -1574,6 +1599,7 @@ class EgeriaPublisher:
         counts = self._link_evidence_outbox(
             result, row_ids, link_pairs, qualified_name_prefix,
         )
+        self._read_back_inline(result, row_ids, qualified_name_prefix, report_guid)
         # What was actually QUEUED, which is not len(result.annotations) once
         # the outbox cap bites. Reported so the Activity summary can state a
         # published count rather than a produced one — counting what a
@@ -1582,6 +1608,30 @@ class EgeriaPublisher:
         counts["annotations_queued"] = len(row_ids)
         counts["annotations_produced"] = len(result.annotations)
         return counts
+
+    def _read_back_inline(self, result: SurveyResult, row_ids: list[int], qualified_name_prefix: str,
+                          report_guid: str) -> None:
+        """The inline publish (`RUNS_PUBLISH_INLINE=true`, or the per-run "wait"): queue the run's read-back and
+        drain it now, as the same caller. Published only if that row is done; otherwise the run is reported
+        queued (`publish_deferred`) and the background drain finishes it, so the word follows the proof whichever
+        branch ran. Never raises: the writes are durable and the read-back stays queued."""
+        if not row_ids:
+            return
+        from resource_explorer.egeria_outbox import (
+            READ_BACK_SUFFIX, OutboxClients, drain_outbox, enqueue_publish_read_back,
+        )
+
+        row_id = enqueue_publish_read_back(self._registry, "repo", result.resource_slug,
+                                           qualified_name_prefix, report_guid)
+        try:
+            drain_outbox(self._registry, OutboxClients(discovery=self._discovery, registry=self._registry),
+                         self._find_element_guid, limit=1, run_id=f"{qualified_name_prefix}{READ_BACK_SUFFIX}")
+        except Exception as exc:  # noqa: BLE001 - the read-back row stays queued; the word says queued
+            log.warning("inline read-back of %s did not run: %s", qualified_name_prefix, exc)
+        done = self._registry.get_outbox_guids([row_id])
+        self.publish_read_back = bool(done.get(row_id))
+        if not self.publish_read_back:
+            self.publish_deferred = True
 
     # ── evidence linking (annotation-linking-plan Phase 2, Tier 1) ─────────────
 

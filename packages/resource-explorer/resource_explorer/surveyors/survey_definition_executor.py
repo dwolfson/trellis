@@ -1139,6 +1139,8 @@ class SurveyDefinitionExecutor:
         # skipped for an unassigned resource. Manual publish is still available
         # to catalog an unassigned resource explicitly, or to re-publish.
         report_guid = ""
+        publish_run_id = ""
+        nothing_published = ""
         published: bool | str = False
         publish_waiting = ""
         from resource_explorer.private_publish import PrivateAwaitsOwner, record_waiting
@@ -1184,13 +1186,27 @@ class SurveyDefinitionExecutor:
             import inspect
 
             publish_kwargs = {}
-            if "defer_drain" in inspect.signature(publish_fn).parameters:
+            params = inspect.signature(publish_fn).parameters
+            if "defer_drain" in params:
                 publish_kwargs["defer_drain"] = defer_drain
+            publish_out: dict = {}
+            if "publish_out" in params:
+                publish_kwargs["publish_out"] = publish_out
             try:
                 report_guid = publish_fn(
                     entity, step_outputs, surveyed_at, self.registry, **publish_kwargs,
                 )
-                published = "queued" if (defer_drain and publish_kwargs) else True
+                if "publish_run_id" in publish_out:
+                    # The publisher said what it did: queued unless its read-back landed before it returned; with
+                    # no run id nothing was queued (no annotations), so there is nothing to publish, not "published".
+                    publish_run_id = publish_out.get("publish_run_id") or ""
+                    if not publish_run_id:
+                        published = None
+                        nothing_published = NOTHING_TO_PUBLISH
+                    else:
+                        published = True if publish_out.get("read_back") else "queued"
+                else:
+                    published = "queued" if (defer_drain and "defer_drain" in publish_kwargs) else True
             except PrivateAwaitsOwner as exc:
                 # Waiting, not failed (2026-10-13 review): only the private investigation's owner can publish it.
                 # Nothing was written; said in `publish_waiting`, recorded once per (resource, run), not an error.
@@ -1216,7 +1232,7 @@ class SurveyDefinitionExecutor:
         # word, from the variables above. Database only: a filesystem step
         # already carries its own `publish_state` (its adaptive step publishes),
         # and a second, run-level word could contradict it.
-        publish_state = ""
+        publish_state = nothing_published
         if entity_type == "database":
             # The variable parts (refusal, error, not_recorded) were masked on
             # the way in; masking the run's passwords over the WHOLE word would
@@ -1257,7 +1273,7 @@ class SurveyDefinitionExecutor:
         # than to the repo generally.
         ran = sum(1 for r in steps_report if r.get("status") in ("ok", "triggered"))
         try:
-            log_survey(
+            survey_entry = log_survey(
                 self.registry, entity_type, slug,
                 getattr(entity, "display_name", "") or slug,
                 getattr(entity, "github_url", "") or "",
@@ -1281,6 +1297,10 @@ class SurveyDefinitionExecutor:
                     "engine_note": engine_note,
                 }),
             )
+            if publish_run_id and survey_entry:
+                # The run's publish word is read from that run's proof rows (registry.publish_proofs), and the
+                # drain flips `published` on this row once the run is read back.
+                self.registry.tag_activity_publish_run(survey_entry, publish_run_id)
             run_recorded = True
         except Exception as exc:
             # A survey that ran must not report failure because its bookkeeping

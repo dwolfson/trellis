@@ -282,6 +282,9 @@ class TestPublishAnnotationLinksDirect:
 
 def _publisher_with_registry(registry):
     pub = EgeriaPublisher(platform_url="https://fake", registry=registry)
+    # These tests are about the INLINE path (drain, then links by real GUID). Since 2026-10-14 the config default is
+    # enqueue-only, so the inline path is chosen here as an explicit publish chooses it (`publish(defer_drain=False)`).
+    pub._defer_drain_override = False
     pub._discovery = MagicMock()
     pub._metadata_expert = MagicMock()
     pub._find_element_guid = lambda qn: ""  # nothing pre-exists

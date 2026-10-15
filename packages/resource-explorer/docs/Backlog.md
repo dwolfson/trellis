@@ -6404,6 +6404,15 @@ Two things follow, and one decision:
   `RUNS_PUBLISH_INLINE`), default `True` = today's behaviour, on the same branch. The designer
   (FUNNEL-COST-STATUS, 2026-09-13) asked for the state vocabulary to gain *queued for publish* if it
   flips — a fact about the mechanism that must not read as a fact about the catalog.
+- **Decision (project owner, 2026-10-14):** "A synchronous survey or analysis does NOT wait for its
+  publish." Built on `re/publish-queued-not-inline`: `RUNS_PUBLISH_INLINE` defaults to `False`
+  (`true` keeps the wait). Every outbox publish run now also queues one `publish_read_back` row; the
+  run's word comes from its outbox rows (`registry.publish_proofs`): *queued for publish*,
+  *published · read back* (the read-back row is done: `get_new_annotations` on the report answers
+  every annotation the run wrote), or *publish failed* with Egeria's words. Explicit publish actions
+  (Curate's Publish, the manual publish routes, CLI publish, bulk re-publish, resync) pass
+  `defer_drain=False` and still wait. The engine host is unaffected: its publisher takes no
+  `defer_drain` and completes in its own handler.
 
 ### Question-GUID lookup fails on pool threads — pyegeria cross-loop bug (ISSUE-96 drafted)
 

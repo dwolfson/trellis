@@ -178,6 +178,7 @@ def _last_run_info(registry, slug: str, analysis_id: str, entity_type: str = "re
             "last_run_via": own.get("last_run_via") or analysis_id,
             "ran_as": own.get("ran_as") or None,
             "not_retried": own.get("not_retried") or "",
+            "publish_proof": own.get("last_publish_proof") or None,
         }
     if entity_type == "repo":
         from resource_explorer.surveyors.repo_survey_definition_adapter import (
@@ -690,6 +691,9 @@ def build_analyses_index(registry, slug: str, entity_type: str = "repo", *,
             "last_run_via": run_info["last_run_via"],
             "last_run_ran_as": run_info.get("ran_as"),
             "last_run_not_retried": run_info.get("not_retried", ""),
+            # The last run's publish word, from its proof rows: queued for publish / published · read back /
+            # publish failed. None when that run published nothing through the outbox.
+            "last_publish_proof": run_info.get("publish_proof"),
             "uses_credential": _credential_use(entity_type, aid),
             "cost": cost,
             "runnable": runnable,
