@@ -44,6 +44,13 @@ def _reachable(root, limit: int = 4000):
     return walk(root, limit)
 
 
+def _requests_of(ods, kind):
+    """The request queue of THIS reader, read from its own method's closure (never found by enumeration)."""
+    [requests] = [c.cell_contents for c in ods.outbox_status_counts.__closure__
+                  if isinstance(c.cell_contents, kind)]
+    return requests
+
+
 def _all_typed_reads(ods) -> dict:
     return {
         "row_count_snapshots": ods.row_count_snapshots("shop", limit=2),
@@ -102,7 +109,7 @@ def test_the_reader_thread_refuses_any_other_name_even_sent_by_hand(sqlite_url):
     from resource_explorer.surveyors.survey_step_host import _Requests
 
     with step_reader(sqlite_url) as ods:
-        [requests] = [o for o in _reachable(ods) if isinstance(o, _Requests)]
+        requests = _requests_of(ods, _Requests)
         for name in ("query", "_conn", "registry_view", "__init__"):
             reply: queue.Queue = queue.Queue(maxsize=1)
             requests.put((name, ("delete from egeria_outbox",), {}, reply))
@@ -292,7 +299,7 @@ def test_hand_sent_requests_with_odd_values_or_reply_objects_run_no_step_code(sq
 
     _Evil.seen.clear()
     with step_reader(sqlite_url) as ods:
-        [requests] = [o for o in _reachable(ods) if isinstance(o, _Requests)]
+        requests = _requests_of(ods, _Requests)
         reply: queue.Queue = queue.Queue(maxsize=1)
         requests.put(("row_count_snapshots", (_Evil("shop"),), {}, reply))
         status, words = reply.get(timeout=10)

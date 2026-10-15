@@ -551,3 +551,19 @@ def test_the_claim_filter_is_exact_not_fooled_by_request_parameters(staleness_in
     ok = reg.enqueue_run("engine_action", {"engine_action_guid": "y", "request_type": "re-db-derived"})
     assert reg.claim_next_run("w", {}, kinds=["engine_action"], engine_request_types={"re-db-derived"})["id"] == ok
     assert run_id
+
+
+def test_a_refresh_removes_steps_the_last_attach_had_and_this_one_does_not(staleness_installed, monkeypatch):
+    """Test-only (or uninstalled) steps never stay in the global step registry after the next attach."""
+    from resource_explorer.surveyors import survey_step_host
+    from resource_explorer.surveyors.database.survey_definition_adapter import DATABASE_STEP_REGISTRY
+    from resource_explorer.surveyors.survey_definition_executor import get_adapter
+
+    real = survey_step_host.discover_steps
+    _with_extra_manifests(monkeypatch, _manifest("temporary_step"))
+    assert "temporary_step" in DATABASE_STEP_REGISTRY
+    monkeypatch.setattr(survey_step_host, "discover_steps", real)
+    survey_step_host.refresh("database")
+    assert "temporary_step" not in DATABASE_STEP_REGISTRY
+    assert "temporary_step" not in get_adapter("database").re_analysis_steps
+    assert "database_staleness" in DATABASE_STEP_REGISTRY

@@ -84,6 +84,9 @@ _REFUSED: dict[str, dict[str, str]] = {}
 #: built-in's runner and its analysisStep.
 _BUILTIN: dict[str, frozenset[str]] = {}
 
+#: Per resource type: the user steps the last attach() attached, so the next one can remove those it no longer has.
+_ATTACHED: dict[str, set[str]] = {}
+
 
 @dataclass(frozen=True)
 class LibraryStep:
@@ -632,6 +635,13 @@ def attach(entity_type: str, adapter, step_registry: dict, step_map: dict, resul
         step_registry[name] = _step_info(name, manifest.description, manifest.annotation_type,
                                          manifest.source, manifest.credential_tier)
         attached.append(name)
+    # A step attached by an earlier attach and not this one (uninstalled, or a test's) leaves the maps: a refresh
+    # replaces what the last attach attached, it never accumulates.
+    for gone in _ATTACHED.get(entity_type, set()) - set(attached) - builtin:
+        adapter.re_analysis_steps.pop(gone, None)
+        adapter.re_analysis_step_info.pop(gone, None)
+        step_registry.pop(gone, None)
+    _ATTACHED[entity_type] = set(attached)
     _LIBRARY[entity_type], _REFUSED[entity_type] = _admit(entity_type, found, origins)
     return attached
 
