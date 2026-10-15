@@ -310,3 +310,12 @@ def test_main_runs_as_the_resync_daemon_and_dry_runs_by_default(egeria, registry
     assert bf.main(["--log", str(tmp_path / "log.jsonl")]) == 0
     assert seen["identity"].reason == ec.DaemonReason.RESYNC.value
     assert egeria.updates == []
+
+
+def test_limit_writes_a_canary_and_a_rerun_continues(egeria, registry, tmp_path):
+    for i in range(4):
+        published(registry, egeria, f"g{i}", QN.format(i), [f"c{i}"])
+    assert bf.run(egeria.discovery, registry, apply=True, log_path=tmp_path / "l", out=lambda _: None, limit=1) == 0
+    assert len(egeria.updates) == 1
+    assert bf.run(egeria.discovery, registry, apply=True, log_path=tmp_path / "l", out=lambda _: None) == 0
+    assert len(egeria.updates) == 4

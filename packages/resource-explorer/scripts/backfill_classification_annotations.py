@@ -31,6 +31,7 @@ JSONL log (`--log`, default under ~/.re-gate/). After each write the element is 
 
 Usage (dry-run is the default; nothing is written without --apply):
     uv run --all-packages --extra dev python packages/resource-explorer/scripts/backfill_classification_annotations.py
+    uv run --all-packages --extra dev python packages/resource-explorer/scripts/backfill_classification_annotations.py --apply --limit 3
     uv run --all-packages --extra dev python packages/resource-explorer/scripts/backfill_classification_annotations.py --apply
 """
 from __future__ import annotations
@@ -209,12 +210,12 @@ def send_update(discovery, guid: str, body: dict) -> None:
     loop.run_until_complete(discovery._async_update_element_body_request(update_url(discovery, guid), body=body))
 
 
-def apply_plan(discovery, plan: list[PlanItem], log) -> tuple[int, list[tuple[PlanItem, str]]]:
-    """Write every REPAIR item; returns (written, failures). One failure never stops the batch."""
+def apply_plan(discovery, plan: list[PlanItem], log, limit: int | None = None) -> tuple[int, list[tuple[PlanItem, str]]]:
+    """Write every REPAIR item (the first `limit` of them, for a canary); returns (written, failures). One failure
+    never stops the batch."""
     written, failures = 0, []
-    for item in plan:
-        if item.outcome != REPAIR:
-            continue
+    repairs = [i for i in plan if i.outcome == REPAIR]
+    for item in repairs[:limit] if limit is not None else repairs:
         el = item.element
         entry = {"guid": el.guid, "qualifiedName": el.qualified_name, "analysisStep": el.analysis_step,
                  "source": item.source, "outbox_ids": item.outbox_ids, "before": el.current, "after": item.after,
@@ -289,7 +290,8 @@ def jsonl_logger(path: Path):
     return log
 
 
-def run(discovery, registry, *, apply: bool, log_path: Path, out=print, page_size: int = 200) -> int:
+def run(discovery, registry, *, apply: bool, log_path: Path, out=print, page_size: int = 200,
+        limit: int | None = None) -> int:
     """Enumerate, plan, report, and (with apply) write. Returns the exit code."""
     elements = enumerate_annotations(discovery, page_size=page_size)
     rows = registry.list_outbox_payloads("annotation", PROPERTIES_CLASS)
@@ -311,7 +313,7 @@ def run(discovery, registry, *, apply: bool, log_path: Path, out=print, page_siz
                      "body": i.body})
         out(f"\nlog: {log_path}")
         return 0
-    written, failures = apply_plan(discovery, plan, lambda e: log({"mode": "apply", **e}))
+    written, failures = apply_plan(discovery, plan, lambda e: log({"mode": "apply", **e}), limit=limit)
     out(f"\nwritten (read back and verified): {written}   failed: {len(failures)}")
     for item, words in failures:
         out(f"  FAILED {item.element.guid}  {item.element.qualified_name}  {words}")
@@ -324,6 +326,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--apply", action="store_true", help="Write the repairs (default: dry run).")
     parser.add_argument("--log", type=Path, default=None, help="JSONL audit log (default: ~/.re-gate/…jsonl).")
     parser.add_argument("--page-size", type=int, default=200)
+    parser.add_argument("--limit", type=int, default=None,
+                        help="With --apply, write only the first N repairs (a canary); a re-run continues.")
     args = parser.parse_args(argv)
 
     from pyegeria import DataDiscovery
@@ -334,7 +338,7 @@ def main(argv: list[str] | None = None) -> int:
     with acting_as(Daemon(DaemonReason.RESYNC)) as identity:
         discovery = egeria_client(identity, purpose="classification annotation backfill").of(DataDiscovery)
         return run(discovery, ProjectRegistry(), apply=args.apply, log_path=args.log or default_log_path(),
-                   page_size=args.page_size)
+                   page_size=args.page_size, limit=args.limit)
 
 
 if __name__ == "__main__":
