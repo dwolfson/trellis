@@ -102,28 +102,63 @@ def _annotation_type_name(ann, atype) -> str:
     return resolve_annotation_type(getattr(ann, "analysis_step", "")) or atype.value
 
 
+# Map our AnnotationType enum to the Egeria Jackson subtype class name.
+# Note: RequestForActionAnnotationProperties is NOT valid — use RequestForActionProperties.
+#: The strict test fakes (tests/egeria_annotation_beans.py) check every class here against Egeria's beans.
+EGERIA_PROPERTIES_CLASSES = {
+    AnnotationType.RESOURCE_MEASURE:   "ResourceMeasureAnnotationProperties",
+    AnnotationType.CLASSIFICATION:     "ClassificationAnnotationProperties",
+    AnnotationType.QUALITY_SCORE:      "QualityAnnotationProperties",
+    AnnotationType.DATA_CLASS:         "DataClassAnnotationProperties",
+    AnnotationType.REQUEST_FOR_ACTION: "RequestForActionProperties",
+    AnnotationType.SCHEMA_ANALYSIS:    "SchemaAnalysisAnnotationProperties",
+    AnnotationType.RELATIONSHIP:       "RelationshipAdviceAnnotationProperties",
+    AnnotationType.RESOURCE_PHYSICAL_STATUS: "ResourcePhysicalStatusAnnotationProperties",
+    AnnotationType.DATA_GRAIN:         "DataGrainAnnotationProperties",
+    AnnotationType.FINGERPRINT:        "FingerprintAnnotationProperties",
+    AnnotationType.RESOURCE_PROFILE:   "ResourceProfileAnnotationProperties",
+    AnnotationType.RESOURCE_PROFILE_LOG: "ResourceProfileLogAnnotationProperties",
+}
+
+
+#: The key, inside a ClassificationAnnotation's `properties`, that holds every classification it proposes (a JSON
+#: list, first = `classificationName`) when it proposes more than one. Read back by egeria_reader.
+CANDIDATES_KEY = "candidateClassifications"
+
+
+def classification_fields(ann) -> dict:
+    """A ClassificationAnnotation's proposal in the only fields Egeria 6.2 keeps for it.
+
+    `ClassificationAnnotationProperties` has `classificationName` (String) and `properties` (map<string,string>) of
+    its own, and the typedef agrees (OpenMetadataTypesArchive1_2.getClassificationAnnotationEntity). The bean ignores
+    unknown fields, so the `candidateClassifications` RE sent until 2026-10-15 was dropped on every annotation with
+    no error: the proposal never reached Egeria.
+
+    One annotation names one classification. When RE proposes several (a ranked list, or a set of labels), the
+    first is `classificationName` and the whole list, in order, goes in `properties` under CANDIDATES_KEY. The
+    alternatives are evidence for this one proposal, not proposals of their own, and splitting them would change the
+    annotation count, the per-index qualifiedNames and every reader that counts by them. An explicit
+    `classification_name` (an Analytic Library step) wins; its `classification_properties` ride in `properties`.
+    A proposal of nothing sends neither field.
+    """
+    candidates = [str(c) for c in (getattr(ann, "candidate_classifications", None) or [])]
+    name = getattr(ann, "classification_name", "") or (candidates[0] if candidates else "")
+    values = dict(getattr(ann, "classification_properties", None) or {})
+    if candidates and candidates != [name]:
+        values[CANDIDATES_KEY] = candidates
+    out: dict = {}
+    if name:
+        out["classificationName"] = name
+    if values:
+        out["properties"] = to_string_map(values)
+    return out
+
+
 def build_annotation_props(ann, qualified_name: str) -> dict:
-    """Map an Annotation dataclass to the correct Egeria subtype properties body."""
     """Map an Annotation dataclass to the correct Egeria subtype properties body."""
     atype = ann.annotation_type
 
-    # Map our AnnotationType enum to the Egeria Jackson subtype class name.
-    # Note: RequestForActionAnnotationProperties is NOT valid — use RequestForActionProperties.
-    _class_map = {
-        AnnotationType.RESOURCE_MEASURE:   "ResourceMeasureAnnotationProperties",
-        AnnotationType.CLASSIFICATION:     "ClassificationAnnotationProperties",
-        AnnotationType.QUALITY_SCORE:      "QualityAnnotationProperties",
-        AnnotationType.DATA_CLASS:         "DataClassAnnotationProperties",
-        AnnotationType.REQUEST_FOR_ACTION: "RequestForActionProperties",
-        AnnotationType.SCHEMA_ANALYSIS:    "SchemaAnalysisAnnotationProperties",
-        AnnotationType.RELATIONSHIP:       "RelationshipAdviceAnnotationProperties",
-        AnnotationType.RESOURCE_PHYSICAL_STATUS: "ResourcePhysicalStatusAnnotationProperties",
-        AnnotationType.DATA_GRAIN:         "DataGrainAnnotationProperties",
-        AnnotationType.FINGERPRINT:        "FingerprintAnnotationProperties",
-        AnnotationType.RESOURCE_PROFILE:   "ResourceProfileAnnotationProperties",
-        AnnotationType.RESOURCE_PROFILE_LOG: "ResourceProfileLogAnnotationProperties",
-    }
-    egeria_class = _class_map.get(atype, "AnnotationProperties")
+    egeria_class = EGERIA_PROPERTIES_CLASSES.get(atype, "AnnotationProperties")
 
     props: dict = {
         "class": egeria_class,
@@ -168,18 +203,7 @@ def build_annotation_props(ann, qualified_name: str) -> dict:
             props["additionalProperties"] = to_string_map(ap)
 
     elif atype == AnnotationType.CLASSIFICATION:
-        # Egeria 6.2's ClassificationAnnotationProperties has `classificationName` and `properties` and nothing else
-        # of its own (it ignores unknown fields, so anything else is silently dropped). An annotation that names its
-        # classification is published in those fields. One that does not keeps its old wire shape, unchanged.
-        cn = getattr(ann, "classification_name", "")
-        cp = getattr(ann, "classification_properties", {}) or {}
-        cc = getattr(ann, "candidate_classifications", [])
-        if cn:
-            props["classificationName"] = cn
-        if cp:
-            props["properties"] = to_string_map(cp)
-        if cc and not (cn or cp):
-            props["candidateClassifications"] = cc
+        props.update(classification_fields(ann))
         # The annotation envelope (resultState, measuredAt, producingRun, scope) of a library step's proposal rides
         # here, as on a ResourceMeasureAnnotation. Only an annotation that carries an envelope: every other
         # classification annotation stays byte-identical on the wire.

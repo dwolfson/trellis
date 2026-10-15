@@ -11,6 +11,7 @@ no data for the project.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import TYPE_CHECKING
@@ -246,9 +247,22 @@ def _parse_annotation(header: dict, props: dict) -> dict:
         if val is not None:
             subtype_data[field] = val
 
-    # A proposal published in Egeria's own field reads back as the candidate it is, for readers of the old key.
-    if subtype_data.get("classificationName") and "candidateClassifications" not in subtype_data:
-        subtype_data["candidateClassifications"] = [subtype_data["classificationName"]]
+    # A proposal published in Egeria's own fields reads back as the candidates it is, for readers of the old key:
+    # the whole ordered list from `properties` when it proposed several, else its one `classificationName`
+    # (annotation_props.classification_fields writes both).
+    if "candidateClassifications" not in subtype_data:
+        from resource_explorer.surveyors.annotation_props import CANDIDATES_KEY
+
+        listed = (subtype_data.get("properties") or {}).get(CANDIDATES_KEY)
+        if isinstance(listed, str):
+            try:
+                listed = json.loads(listed)
+            except ValueError:
+                listed = None
+        if isinstance(listed, list) and listed:
+            subtype_data["candidateClassifications"] = [str(c) for c in listed]
+        elif subtype_data.get("classificationName"):
+            subtype_data["candidateClassifications"] = [subtype_data["classificationName"]]
 
     return {
         "guid": header.get("guid", ""),
