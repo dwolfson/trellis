@@ -36,7 +36,7 @@ from live_catalogue_payloads import raw_element as _raw_element, raw_related as 
 
 import copy  # noqa: E402
 import json  # noqa: E402
-from datetime import datetime, timedelta  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
 
 import resource_explorer.catalogue_gateway as _gw  # noqa: E402  (new parsers are looked up at call time)
 from resource_explorer.catalogue_gateway import (  # noqa: E402
@@ -50,14 +50,21 @@ _MEMENTO_FIXTURE = Path(__file__).parent / "fixtures" / "egeria_6_2" / "metadata
 JAVA_DATE = "%a %b %d %H:%M:%S GMT %Y"
 
 
-def captured_memento(guid: str, qn: str, type_name: str) -> dict:
-    """The captured 6.2 Memento answer with this element's GUID, archived name and type."""
+def captured_memento(guid: str, qn: str, type_name: str, archived: datetime | None = None) -> dict:
+    """The captured 6.2 Memento answer with this element's GUID, archived name and type, and (given) the time it
+    was archived in the Memento's `archiveDate` and the element's `versions.updateTime`, as Egeria stamps them."""
     el = copy.deepcopy(json.loads(_MEMENTO_FIXTURE.read_text())["answer"][0])
     el["elementGUID"] = guid
     el["type"]["typeName"] = type_name
     ep = el["elementProperties"]
     ep["propertiesAsStrings"]["qualifiedName"] = qn
     ep["propertyValueMap"]["qualifiedName"]["primitiveValue"] = qn
+    if archived is not None:
+        ms = int(archived.replace(tzinfo=timezone.utc).timestamp() * 1000)
+        m = next(c for c in el["classifications"] if c["classificationName"] == "Memento")
+        m["classificationProperties"]["propertiesAsStrings"]["archiveDate"] = str(ms)
+        m["classificationProperties"]["propertyValueMap"]["archiveDate"]["primitiveValue"] = ms
+        el["versions"]["updateTime"] = archived.strftime("%Y-%m-%dT%H:%M:%S.000+00:00")
     return el
 #: The job component the OpenLineage cataloguer made for Egeria's own survey action (READBACK note, last section).
 CONNECTOR_JOB_QN = "DeployedSoftwareComponent::GovernanceActions::PostgreSQLSurvey::survey-postgres-database"
@@ -159,6 +166,7 @@ class FakeEgeria:
         e["original_qn"] = e["qn"]
         e["qn"] = f"{e['qn']}{_gw.ARCHIVED_ON}{self.archive_clock.strftime(JAVA_DATE)}"
         e["archived"] = True                # the clock does not move by itself: one leave-out is one moment
+        e["archived_time"] = self.archive_clock
         return e["qn"]
 
     def reset(self) -> None:
@@ -172,11 +180,17 @@ class FakeEgeria:
         return [c for c in self.calls if c[0] == name]
 
     # -- step 1 ----------------------------------------------------------
-    def publish_database(self, db_entity, db_user, db_pwd, *, registry=None, submitted_by="") -> PublishedDatabase:
+    def publish_database(self, db_entity, db_user, db_pwd, *, registry=None, submitted_by="",
+                         reinclude_guid="") -> PublishedDatabase:
         self.calls.append(("publish_database",))
         self._boom("publish_database")
         server = f"{getattr(db_entity, 'egeria_host', '') or db_entity.host}:{db_entity.port}"
         qn = f"PostgreSQL Relational Database::{server}::{db_entity.database_name}"
+        if self.by_qn(qn) is None:
+            # The surveyor's own S19 guard (`_refuse_unconfirmed_reinclude`): the same decision, before any create.
+            got = _gw.decide_reinclude(None, self.archived_siblings(qn), reinclude_guid)
+            if got["state"] in (_gw.NEEDS_CONFIRMATION, "changed"):
+                raise GatewayError(f"the database is {got['text']} · nothing created")
         if not self.db_guid or self.by_qn(qn) is None:
             # By name, as the surveyor resolves it: an archived database no longer holds the name, so a publish
             # creates a NEW database element beside the archived one.
@@ -228,7 +242,7 @@ class FakeEgeria:
         is the captured 6.2 Memento answer."""
         e = self.elements[guid]
         if e["archived"]:
-            return captured_memento(guid, e["qn"], e["type"])
+            return captured_memento(guid, e["qn"], e["type"], e.get("archived_time"))
         return _raw_element(guid, e["qn"], e["type"], archived=e["archived"], zones=self.zones.get(guid))
 
     def raw_related(self, guid: str) -> dict:
@@ -382,6 +396,16 @@ class FakeEgeria:
         raw = [self.raw_element(g) for g, e in self.elements.items() if not e["deleted"] and e["qn"].startswith(prefix)]
         self.last_wire = ("elements", raw or "No elements found")
         return _gw.parse_archived_siblings(self.last_wire[1], qualified_name)
+
+    def schema_elements(self, prefix):
+        """The one paged schema find (live and archived DeployedDatabaseSchema under `prefix`), as raw 6.2 answers
+        parsed by the real parser. One call however many schemas the preview asks about."""
+        self.calls.append(("schema_elements", prefix))
+        self._boom("schema_elements")
+        raw = [self.raw_element(g) for g, e in self.elements.items()
+               if not e["deleted"] and e["type"] == "DeployedDatabaseSchema" and e["qn"].startswith(prefix)]
+        self.last_wire = ("elements", raw or "No elements found")
+        return parse_elements_answer(self.last_wire[1])
 
     def relationships(self, guid):
         self.calls.append(("relationships", guid))

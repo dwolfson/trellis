@@ -71,15 +71,13 @@ CATALOG_POLL_SECONDS = 2
 # renames what it archives to `<qn>_archivedOn_<date>`, so the original name is free and a re-include CREATES A NEW
 # element. RE looks for that archived sibling before every create that would re-include it, and creates only on an
 # explicit confirmation that names the sibling's GUID.
-REINCLUDE_TAIL = "re-including creates a new element; the archived record stays"
+# The words and the decision live in catalogue_gateway (the survey path uses them too); repeated names here.
+REINCLUDE_TAIL = gw.REINCLUDE_TAIL
 S19_SENTENCE = REINCLUDE_TAIL
 SIBLING_UNREADABLE = gw.SIBLING_UNREADABLE
-SIBLING_CHANGED = "the archived copy changed since you confirmed · nothing created · check again"
-NEEDS_CONFIRMATION = "needs_confirmation"
-
-
-def reinclude_words(date: str) -> str:
-    return f"archived in Egeria · {date or 'date not stated'} · {REINCLUDE_TAIL}"
+SIBLING_CHANGED = gw.SIBLING_CHANGED
+NEEDS_CONFIRMATION = gw.NEEDS_CONFIRMATION
+reinclude_words = gw.reinclude_words
 WHOLE_SCHEMAS_LINE = "Egeria adds whole schemas · table choices are kept for when it can"
 SURVEY_LINE = "Egeria's survey is limited to your chosen schemas"
 LINGERING_LINE = ("Egeria's cataloguer still lists this schema until its connector restarts "
@@ -919,6 +917,7 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
     colliding = bool(wildcard_collisions(view, chosen + kept))
     # Every schema the press would attach is read, whatever its proof rows say: Egeria may have archived (and renamed)
     # it since. `reinclude_check` reads the live element first, so one that is there costs one read and asks nothing.
+    checks = reinclude_checks(gateway, db_entity, [] if colliding or gateway is None else chosen + kept, confirms)
     for name in chosen + kept:
         st = states.get(name, {})
         if colliding or (gateway is None and st.get("state") in NO_CREATE_STATES):
@@ -927,7 +926,7 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
         if gateway is None:
             refused.append({"schema": name, "text": f"{name}: {SIBLING_UNREADABLE}", "state": "cannot_check"})
             continue
-        chk = reinclude_check(gateway, schema_qn(db_entity, name), confirmed_guid_for(confirms, "schema", name))
+        chk = checks[name]
         if chk["state"] in ("exists", "clear"):
             attach.append(name)
         elif chk["state"] == "confirmed":
@@ -1177,6 +1176,8 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
 #: A record of a confirmed re-include: the new element and the archived sibling it stands beside. A record of a
 #: create, never a state: NOT in STATE_PROOFS. Its detail carries `archived_sibling_guid` and `archived_on` (no DDL).
 P_REINCLUDED = "reincluded"
+#: A re-include the run refused (no confirmation, or the archived copy changed since it): a record, NOT a state.
+P_REINCLUDE_HELD = "reinclude_held"
 
 
 def reinclude_check(gateway: CatalogueGateway, qn: str, confirmed_guid: str = "") -> dict:
@@ -1193,25 +1194,37 @@ def reinclude_check(gateway: CatalogueGateway, qn: str, confirmed_guid: str = ""
     `live` is the live element (exists), `sibling` the newest archived copy, `text` the sentence for the row."""
     try:
         live = gateway.read_element(qn)
+        sibs = [] if live is not None else gateway.archived_siblings(qn)
     except GatewayError as exc:
-        return {"state": "cannot_check", "live": None, "sibling": None, "text": SIBLING_UNREADABLE,
-                "error": egeria_first_sentence(str(exc))[0]}
-    if live is not None:
-        return {"state": "exists", "live": live, "sibling": None, "text": ""}
+        return _cannot_check(exc)
+    return gw.decide_reinclude(live, sibs, confirmed_guid)
+
+
+def _cannot_check(exc: Exception) -> dict:
+    return {"state": "cannot_check", "live": None, "sibling": None, "text": SIBLING_UNREADABLE,
+            "error": egeria_first_sentence(str(exc))[0]}
+
+
+def reinclude_checks(gateway: CatalogueGateway, db_entity, names: list[str], confirms: list[dict] | None) -> dict:
+    """`reinclude_check` for many schemas of one database from ONE paged find (review round 1): every
+    DeployedDatabaseSchema under `<db schema prefix>`, live and archived, read once; each schema's answer is built
+    from it with the same decision (`gw.decide_reinclude`). A failed read makes every answer `cannot_check`."""
+    if not names:
+        return {}
+    prefix = schema_qn(db_entity, "")
     try:
-        sibs = gateway.archived_siblings(qn)
+        els = gateway.schema_elements(prefix)
     except GatewayError as exc:
-        return {"state": "cannot_check", "live": None, "sibling": None, "text": SIBLING_UNREADABLE,
-                "error": egeria_first_sentence(str(exc))[0]}
-    if not sibs:
-        return {"state": "clear", "live": None, "sibling": None, "text": ""}
-    newest = sibs[0]
-    base = {"live": None, "sibling": newest, "others": [x.guid for x in sibs[1:]]}
-    if confirmed_guid and confirmed_guid == newest.guid:
-        return {**base, "state": "confirmed", "text": reinclude_words(newest.date)}
-    if confirmed_guid:
-        return {**base, "state": "changed", "text": SIBLING_CHANGED}
-    return {**base, "state": NEEDS_CONFIRMATION, "text": reinclude_words(newest.date)}
+        return {n: _cannot_check(exc) for n in names}
+    out = {}
+    for n in names:
+        qn = schema_qn(db_entity, n)
+        live = next((e for e in els if e.qualified_name == qn and not e.archived), None)
+        sibs = gw._newest_first([gw.ArchivedSibling(e.guid, e.qualified_name, *gw.archived_on_of(e.qualified_name, qn),
+                                                    archived_at=e.archived_at, archived=e.archived)
+                                 for e in els if e.qualified_name.startswith(qn + gw.ARCHIVED_ON)])
+        out[n] = gw.decide_reinclude(live, sibs, confirmed_guid_for(confirms, "schema", n))
+    return out
 
 
 def reinclude_row(node: str, name: str, check: dict) -> dict:
@@ -1399,6 +1412,11 @@ def apply_attach(registry, gateway: CatalogueGateway, payload: dict, *, outbox_i
     if chk["state"] == "cannot_check":           # a read that could not be made: Egeria unreadable, nothing created
         raise GatewayError(f"{schema}: {chk['text']}" + (f" ({chk['error']})" if chk.get("error") else ""))
     if chk["state"] in (NEEDS_CONFIRMATION, "changed"):
+        # A record of the refusal (not a state): the run keeps this schema out of the survey's scope too.
+        _proof(registry, slug, P_REINCLUDE_HELD, schema=schema, qualified_name=qn,
+               element_guid=chk["sibling"].guid, curation_id=payload.get("curation_id", ""), outbox_id=outbox_id,
+               recorded_by=payload.get("by", ""), detail={"state": chk["state"], "text": chk["text"],
+                                                          "confirmed": str(payload.get("archived_sibling_guid") or "")})
         raise SchemaRefused(f"{schema}: {chk['text']}")
     el = chk["live"]
     create_note, requester_note = "", ""
@@ -2203,7 +2221,10 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
                     cur.set_step(curation_id, st, "skipped", "needs the database element first: nothing created")
                 return cur.finish(curation_id)
         before_pointer = getattr(registry.get_database(slug, allow_unreadable=True), "egeria_asset_guid", "") or ""
-        pub = gateway.publish_database(db, db.db_user, db.db_password, registry=registry, submitted_by=author)
+        pub = gateway.publish_database(
+            db, db.db_user, db.db_password, registry=registry, submitted_by=author,
+            reinclude_guid=(db_reinclude["sibling"].guid
+                            if db_reinclude is not None and db_reinclude["state"] == "confirmed" else ""))
         returned = pub.database_guid
         if not returned:
             raise GatewayError("Egeria returned no database element")
@@ -2387,6 +2408,9 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
     # when a read-back shows the survey report WITH annotations (`settle_survey`).
     # Round 2: a schema refused at run time is never surveyed either (the survey writes its report against it).
     refused_now = {r["schema"] for r in np_attach}
+    # S19: a schema whose re-include the run refused (its archived copy changed since the press) is not surveyed.
+    refused_now |= {p["schema_name"] for p in registry.list_catalogue_commit_proofs(slug)
+                    if p["proof"] == P_REINCLUDE_HELD and p.get("curation_id") == curation_id}
     names = [n for n in sel.get("survey_schemas") or [] if n not in refused_now]
     bad = list(sel.get("survey_not_scopable") or [])
     if not db_guid:

@@ -75,7 +75,7 @@ def test_an_archived_sibling_means_no_create_and_needs_confirmation_with_its_dat
     assert p["needs_confirmation"] == [{
         "node": "schema", "name": "archive", "archived_guid": archived,
         "archived_qualified_name": f"{SQN}_archivedOn_Fri Oct 09 01:28:08 GMT 2026",
-        "archived_on": "Fri Oct 09 01:28:08 GMT 2026", "archived_at": "2026-10-09T01:28:08", "date": "2026-10-09",
+        "archived_on": "Fri Oct 09 01:28:08 GMT 2026", "archived_at": "2026-10-09T01:28:08+00:00", "date": "2026-10-09",
         "words": "archived · 2026-10-09",
         "text": "archive: archived in Egeria · 2026-10-09 · re-including creates a new element; the archived record stays"}]
     assert "archive" not in p["attach"]
@@ -106,7 +106,7 @@ def test_a_confirmed_reinclude_creates_and_records_the_archived_sibling_on_the_p
     assert len(rows) == 1 and rows[0]["element_guid"] == new and rows[0]["schema_name"] == "archive"
     d = rows[0]["detail"]
     assert d["archived_sibling_guid"] == archived and d["archived_on"] == "Fri Oct 09 01:28:08 GMT 2026"
-    assert d["archived_at"] == "2026-10-09T01:28:08" and d["confirmed_by"] == ME
+    assert d["archived_at"] == "2026-10-09T01:28:08+00:00" and d["confirmed_by"] == ME
     assert step(rec, "schema_targets")["state"] == "done"
     # the next read: published, and a fresh preview asks nothing (a live element holds the name now)
     assert derived(world)["schemas"]["archive"]["state"] == "catalogued"
@@ -151,11 +151,12 @@ def test_the_run_re_checks_the_sibling_before_it_creates(world, fake):
 
 def test_a_lookup_that_cannot_be_made_creates_nothing_and_says_so(world, fake):
     choose(world, "sales", "catalogue")
-    fake.fail["archived_siblings"] = "503 the view server timed out"
+    fake.fail["schema_elements"] = "503 the view server timed out"       # the preview's one paged find
     p = cc.build_preview(world["registry"], "db", view(world), fake)
     assert p["refused"] == [{"schema": "sales", "state": "cannot_check",
                              "text": "sales: could not check whether an archived copy exists"}]
     assert "sales" not in p["attach"] and not p["can_commit"]
+    fake.fail["archived_siblings"] = "503 the view server timed out"     # the run's own re-check
     with pytest.raises(gw.GatewayError, match="could not check whether an archived copy exists"):
         cc.apply_attach(world["registry"], fake, {"slug": "db", "schema": "sales", "database_guid": "d"})
     assert _creates(fake) == []
@@ -239,15 +240,21 @@ CAPTURED_ORIGINAL = "PostgreSQL Relational Database::host.docker.internal:5432::
 
 
 def test_the_gateway_finds_the_captured_6_2_memento_by_its_archived_name():
-    g, client = _gateway_with(captured("metadata_expert_find_with_string_for_lineage__memento"))
+    page = captured("metadata_expert_find_with_string_for_lineage__memento")
+    g, client = _gateway_with(None)
+    client.find_metadata_elements_with_string.side_effect = [page, "No elements found"]
     sibs = g.archived_siblings(CAPTURED_ORIGINAL)
-    assert [(s.guid, s.date, s.archived) for s in sibs] == [("ad2724e6-40e9-46a9-aaff-e3352c6b04bb", "2026-10-09", True)]
-    kw = client.find_metadata_elements_with_string.call_args.kwargs
-    assert kw["search_string"] == CAPTURED_ORIGINAL + "_archivedOn_" and kw["starts_with"] is True
-    assert kw["body"] == {"class": "SearchStringRequestBody", "searchString": CAPTURED_ORIGINAL + "_archivedOn_",
-                          "startsWith": True, "ignoreCase": False, "forLineage": True,
-                          "forDuplicateProcessing": True, "graphQueryDepth": 0}
+    # ordered by Egeria's own archive time (the Memento's archiveDate), the day read from the suffix
+    assert [(s.guid, s.date, s.archived_at, s.archived) for s in sibs] == [
+        ("ad2724e6-40e9-46a9-aaff-e3352c6b04bb", "2026-10-09", "2026-10-09T01:28:07.233000+00:00", True)]
+    first, end = client.find_metadata_elements_with_string.call_args_list
+    assert first.kwargs["search_string"] == CAPTURED_ORIGINAL + "_archivedOn_" and first.kwargs["starts_with"] is True
+    assert first.kwargs["body"] == {"class": "SearchStringRequestBody", "searchString": CAPTURED_ORIGINAL + "_archivedOn_",
+                                    "startsWith": True, "ignoreCase": False, "forLineage": True,
+                                    "forDuplicateProcessing": True, "graphQueryDepth": 0, "startFrom": 0, "pageSize": 500}
+    assert end.kwargs["body"]["startFrom"] == 500                          # read to "No elements found"
     # the same element is NOT a sibling of a name it merely starts with
+    client.find_metadata_elements_with_string.side_effect = [page, "No elements found"]
     assert g.archived_siblings(CAPTURED_ORIGINAL[:-3]) == []
 
 
@@ -279,7 +286,8 @@ def test_the_fake_renames_on_archive_exactly_as_the_captured_6_2_answer_shows():
     assert new_qn.split("_archivedOn_")[1] == real_qn.split("_archivedOn_")[1]     # same Java Date form
     assert fake.read_element(SQN) is None and fake.read_element(SQN, for_lineage=True) is None
     assert fake.read_element(new_qn, for_lineage=True).archived
-    assert fake.raw_element(g)["classifications"] == real["classifications"]       # the captured Memento shape
+    assert [c["classificationName"] for c in fake.raw_element(g)["classifications"]] == \
+        [c["classificationName"] for c in real["classifications"]]               # the captured Memento shape
 
 
 def test_the_old_fake_shape_an_archived_element_keeping_its_name_is_refused():
@@ -303,3 +311,157 @@ def test_the_commit_route_passes_the_confirmation_and_refuses_a_stale_one(client
     assert r.json()["curation"]["selection"]["reinclude"][0]["archived_guid"] == archived
     assert client.post("/api/catalogue-scope/db/commit", headers=as_user(ME),
                        json={"confirm_reinclude": [{"node": "schema", "name": "archive"}]}).status_code == 422
+
+
+# ── review round 1 ────────────────────────────────────────────────────────────────────────────────────────────────
+
+def _memento_named(qn: str, guid: str = "ad2724e6-40e9-46a9-aaff-e3352c6b04bb", archive_ms: int | None = None) -> dict:
+    """The captured 6.2 Memento, renamed to `qn` (and, given, archived at `archive_ms`)."""
+    el = captured("metadata_expert_find_with_string_for_lineage__memento")[0]
+    el["elementGUID"] = guid
+    el["elementProperties"]["propertiesAsStrings"]["qualifiedName"] = qn
+    if archive_ms is not None:
+        m = next(c for c in el["classifications"] if c["classificationName"] == "Memento")
+        m["classificationProperties"]["propertiesAsStrings"]["archiveDate"] = str(archive_ms)
+    return el
+
+
+def _surveyor_over(answers):
+    """The real EgeriaDatabaseSurveyor with its Egeria clients faked at the boundary: no database or server by
+    name, and the archived-sibling find answering `answers` (pages, or an exception)."""
+    from unittest.mock import MagicMock
+
+    from pyegeria import MetadataExpert
+
+    from resource_explorer.surveyors.database.egeria_database_surveyor import EgeriaDatabaseSurveyor
+    s = EgeriaDatabaseSurveyor(platform_url="https://localhost:9443", view_server="qs-view-server",
+                               user_id="u", user_password="p")
+    s._automated_curation = MagicMock()
+    s._automated_curation.get_guid_for_name.return_value = "No elements found"
+    s._automated_curation.create_elem_from_template.side_effect = ["new-server", "new-db"]
+    s._asset_maker = MagicMock()
+    s._discovery = MagicMock()
+    s._metadata_expert = create_autospec(MetadataExpert, spec_set=True, instance=True)
+    s._metadata_expert.find_metadata_elements_with_string.side_effect = answers
+    s.connect = lambda: None
+    s.saved_secrets = []
+    s._save_database_secret = lambda *a: (s.saved_secrets.append(a) or ("", ""))
+    s._warn_if_database_has_no_connection = lambda *a, **k: None
+    return s
+
+
+def _db_entity():
+    from resource_explorer.registry import DatabaseEntity
+    return DatabaseEntity(slug="shop", display_name="Shop", db_type="postgresql", host="localhost",
+                          egeria_host="host.docker.internal", port=5442, database_name="shop")
+
+
+ARCHIVED_DB = _memento_named(f"{DBQN}_archivedOn_Fri Oct 09 01:28:08 GMT 2026")
+
+
+def test_a_survey_of_an_archived_database_creates_nothing_and_says_it_needs_confirmation():
+    from resource_explorer.surveyors.database.egeria_database_surveyor import ArchivedDatabaseNeedsConfirmation
+    s = _surveyor_over([[ARCHIVED_DB], "No elements found"])
+    with pytest.raises(ArchivedDatabaseNeedsConfirmation) as err:
+        s.publish_local_survey(_db_entity(), schema_info={}, schema_count=0, table_count=0, column_count=0,
+                               surveyed_at="2026-10-14T10:00:00")
+    assert err.value.state == cc.NEEDS_CONFIRMATION and err.value.archived_guid == ARCHIVED_DB["elementGUID"]
+    assert str(err.value) == ("the database is archived in Egeria · 2026-10-09 · re-including creates a new element; "
+                              "the archived record stays · confirm Re-include in Curate › Contents · nothing created")
+    s._automated_curation.create_elem_from_template.assert_not_called()
+    assert s.saved_secrets == []                                            # nothing written before the check either
+
+
+def test_the_hybrid_survey_outcome_says_needs_confirmation_and_the_local_result_stands(monkeypatch):
+    from resource_explorer.surveyors.database.hybrid_database_surveyor import HybridDatabaseSurveyor
+    s = _surveyor_over([[ARCHIVED_DB], "No elements found"])
+    h = HybridDatabaseSurveyor.__new__(HybridDatabaseSurveyor)
+    h.registry = None
+    monkeypatch.setattr(h, "_get_egeria_surveyor", lambda: s, raising=False)
+    monkeypatch.setattr(h, "_run_custom_survey", lambda e, c: {"database_slug": "shop", "schema_info": {}}, raising=False)
+    out = h._run_egeria_survey(_db_entity(), None, {"user": "u", "password": "p"})
+    assert out["egeria_status"] == "needs_confirmation" and out["needs_confirmation"]["node"] == "database"
+    assert "re-including creates a new element" in out["message"] and out["schema_info"] == {}
+    s._automated_curation.create_elem_from_template.assert_not_called()
+
+
+def test_a_survey_whose_sibling_lookup_cannot_be_made_creates_nothing():
+    from resource_explorer.surveyors.database.egeria_database_surveyor import EgeriaDatabaseSurveyorError
+    s = _surveyor_over(TimeoutError("read timed out"))
+    with pytest.raises(EgeriaDatabaseSurveyorError, match="could not check whether an archived copy exists"):
+        s._catalog_and_survey(_db_entity(), "u", "p", survey_after_catalog=False)
+    s._automated_curation.create_elem_from_template.assert_not_called()
+
+
+def test_the_commit_s_confirmed_guid_lets_the_surveyor_create_and_a_stale_one_does_not():
+    from resource_explorer.surveyors.database.egeria_database_surveyor import ArchivedDatabaseNeedsConfirmation
+    s = _surveyor_over([[ARCHIVED_DB], "No elements found"])
+    with pytest.raises(ArchivedDatabaseNeedsConfirmation) as err:
+        s._catalog_and_survey(_db_entity(), "u", "p", survey_after_catalog=False, reinclude_guid="older-copy")
+    assert err.value.state == "changed"
+    s = _surveyor_over([[ARCHIVED_DB], "No elements found"])
+    out = s._catalog_and_survey(_db_entity(), "u", "p", survey_after_catalog=False,
+                                reinclude_guid=ARCHIVED_DB["elementGUID"])
+    assert out["database_guid"] == "new-db"
+
+
+@pytest.mark.parametrize("n", [1, 4])
+def test_the_preview_reads_every_schema_in_one_find_however_many_are_chosen(world, fake, n):
+    names = ["sales", "archive", "aXb", "cm,ma"][:n]          # no wildcard collision among them
+    for name in names:
+        choose(world, name, "catalogue")
+    before = len(fake.calls)
+    cc.build_preview(world["registry"], "db", view(world), fake)
+    mine = [c for c in fake.calls[before:] if c[0] in ("schema_elements", "archived_siblings")]
+    # one paged schema find for every schema, and the database's own sibling read: never one per schema
+    assert [c[0] for c in mine].count("schema_elements") == 1
+    assert len(mine) <= 2
+
+
+def test_the_one_find_is_paged_past_filtered_pages_to_the_end():
+    page = [_memento_named(f"{SQN}_archivedOn_Fri Oct 09 01:28:08 GMT 2026")]
+    g, client = _gateway_with(None)
+    client.find_metadata_elements_with_string.side_effect = [page, "No elements returned", page[:0] or
+                                                             [_memento_named(SQN.replace("archive", "sales"), "g-sales")],
+                                                             "No elements found"]
+    got = g.schema_elements("PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.")
+    assert sorted(e.qualified_name for e in got)[0].endswith("shop.archive_archivedOn_Fri Oct 09 01:28:08 GMT 2026")
+    bodies = [c.kwargs["body"] for c in client.find_metadata_elements_with_string.call_args_list]
+    assert [b["startFrom"] for b in bodies] == [0, 500, 1000, 1500]
+    assert {b["metadataElementTypeName"] for b in bodies} == {"DeployedDatabaseSchema"} and all(b["forLineage"] for b in bodies)
+    client.find_metadata_elements_with_string.side_effect = ["No elements returned"] * 12
+    with pytest.raises(gw.SiblingLookupFailed, match="pages in a row came back empty"):
+        g.schema_elements("x")
+
+
+def test_a_schema_refused_at_run_time_is_not_in_the_survey_scope(world, fake):
+    archived = _archived(world, fake)
+    choose(world, "sales", "catalogue")
+    out = cc.start_commit(world["registry"], "db", ME, gateway=fake,
+                          confirm_reinclude=[{"node": "schema", "name": "archive", "archived_guid": archived}])
+    again = fake.add_element(SQN, "DeployedDatabaseSchema", parent=fake.db_guid)   # a newer copy before the run
+    fake.archive_clock += timedelta(days=2)
+    fake.archive(again)
+    n = len(fake.surveys)
+    cc.execute_commit(world["registry"], out["curation"]["id"], gateway=fake)
+    assert fake.surveys[n:][0][1] == {"includeSchemaNames": "sales"}
+    held = [p for p in world["registry"].list_catalogue_commit_proofs("db") if p["proof"] == cc.P_REINCLUDE_HELD]
+    assert [(p["schema_name"], p["detail"]["state"]) for p in held] == [("archive", "changed")]
+
+
+@pytest.mark.parametrize("suffix,day", [("Fri Oct 09 01:28:08 GMT 2026", "2026-10-09"),
+                                        ("Fri Oct 09 02:28:08 BST 2026", "2026-10-09"),
+                                        ("Thu Oct 08 18:28:08 PDT 2026", "2026-10-08"),
+                                        ("Fri Oct 09 03:28:08 CEST 2026", "2026-10-09"),
+                                        ("Fri Oct 09 01:28:08 GMT+01:00 2026", "2026-10-09")])
+def test_the_day_is_read_from_a_java_date_in_any_zone(suffix, day):
+    assert gw.java_date_day(suffix) == day
+
+
+def test_an_unparseable_suffix_is_still_a_sibling_and_the_order_is_egeria_s_archive_time():
+    newer_by_suffix = _memento_named(f"{SQN}_archivedOn_Sat Dec 31 23:59:59 GMT 2099", "g-old", archive_ms=1_000_000_000_000)
+    odd = _memento_named(f"{SQN}_archivedOn_2026.10.09 at 01:28", "g-new", archive_ms=1_791_509_287_233)
+    sibs = gw.parse_archived_siblings([newer_by_suffix, odd], SQN)
+    assert [s.guid for s in sibs] == ["g-new", "g-old"]                    # by archiveDate, not by the suffix
+    assert sibs[0].date == "2026.10.09 at 01:28" and sibs[0].archived       # still a sibling, its text shown
+    assert gw.decide_reinclude(None, sibs)["state"] == cc.NEEDS_CONFIRMATION

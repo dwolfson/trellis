@@ -51,6 +51,18 @@ class EgeriaDatabaseSurveyorError(RuntimeError):
     """Raised when Egeria survey operations fail."""
 
 
+class ArchivedDatabaseNeedsConfirmation(EgeriaDatabaseSurveyorError):
+    """S19 (owner ruling 2026-10-14): Egeria holds no database under this name but an archived copy of it
+    (`<qn>_archivedOn_<date>`), so a create here would re-include it as a NEW element. Nothing is created; the
+    person confirms through a Curate commit (Re-include), never through a survey."""
+
+    def __init__(self, message: str, *, state: str, archived_guid: str = "", date: str = ""):
+        super().__init__(message)
+        self.state = state
+        self.archived_guid = archived_guid
+        self.date = date
+
+
 # The connector provider RE's OWN secrets-store Connection must use --
 # NOT the one Egeria's own documentation page and content-pack templates
 # show (YAMLSecretsStoreProvider). Confirmed live 2026-09-21, tracing Egeria's
@@ -135,6 +147,7 @@ class EgeriaDatabaseSurveyor:
         self._automated_curation = None
         self._asset_maker = None
         self._discovery = None
+        self._metadata_expert = None
         self._secrets_store_guid = ""
 
     def principal(self):
@@ -191,6 +204,7 @@ class EgeriaDatabaseSurveyor:
         registry=None,
         survey_after_catalog: bool = True,
         submitted_by: str = "",
+        reinclude_guid: str = "",
     ) -> dict:
         """Guarded front door — see _catalog_and_survey."""
         from resource_explorer.egeria_linkage import guard_linkage
@@ -200,7 +214,7 @@ class EgeriaDatabaseSurveyor:
                            db_entity.egeria_asset_guid or ""):
             return self._catalog_and_survey(
                 db_entity, db_user, db_pwd, registry, survey_after_catalog,
-                submitted_by=submitted_by)
+                submitted_by=submitted_by, reinclude_guid=reinclude_guid)
 
     @staticmethod
     def _note_stale_guid_if_any(exc, db_entity, guid: str, registry) -> None:
@@ -472,8 +486,14 @@ class EgeriaDatabaseSurveyor:
         registry=None,
         survey_after_catalog: bool = True,
         submitted_by: str = "",
+        reinclude_guid: str = "",
     ) -> dict:
         """Catalog the PostgreSQL server + database in Egeria, then optionally initiate a native survey.
+
+        S19 (owner ruling 2026-10-14): when no database holds its name, its archived copy is looked for FIRST,
+        before anything is written. One there and `reinclude_guid` not naming it (the newest copy, confirmed in a
+        Curate commit): `ArchivedDatabaseNeedsConfirmation`, nothing created. A lookup that cannot be made:
+        `EgeriaDatabaseSurveyorError`, nothing created.
 
         Egeria's template-based creation stores the connection details (including
         credentials) so that subsequent surveys can be initiated without supplying
@@ -516,6 +536,9 @@ class EgeriaDatabaseSurveyor:
         server_guid = self._find_by_qualified_name(server_qualified_name(server_name))
         if server_guid and server_guid == db_guid_lookup:
             server_guid = ""
+        if not db_guid_lookup:
+            self._refuse_unconfirmed_reinclude(database_qualified_name(server_name, db_entity.database_name),
+                                               reinclude_guid)
 
         # Whether a secrets write is needed at all: reusing both existing elements by name is
         # the common re-survey path, and a reused element's deepCopy already
@@ -980,6 +1003,32 @@ class EgeriaDatabaseSurveyor:
         from resource_explorer.egeria_absence import guid_from_answer
 
         return guid_from_answer(result, name or "(by-name look-up)", EgeriaDatabaseSurveyorError)
+
+    def _metadata_expert_client(self):
+        if self._metadata_expert is None:
+            from pyegeria import MetadataExpert
+            self._metadata_expert = self._clients().of(MetadataExpert)
+        return self._metadata_expert
+
+    def _refuse_unconfirmed_reinclude(self, qualified_name: str, reinclude_guid: str = "") -> None:
+        """S19: raise unless a create under `qualified_name` re-includes nothing, or re-includes exactly the newest
+        archived copy the person confirmed. The decision is `catalogue_gateway.decide_reinclude`, the one the
+        catalogue commit uses."""
+        from resource_explorer.catalogue_gateway import (
+            NEEDS_CONFIRMATION, SIBLING_UNREADABLE, decide_reinclude, find_archived_siblings)
+        try:
+            sibs = find_archived_siblings(self._metadata_expert_client(), qualified_name)
+        except Exception as exc:  # noqa: BLE001 - every failure is "could not check": nothing is created
+            raise EgeriaDatabaseSurveyorError(
+                f"{SIBLING_UNREADABLE} for {qualified_name!r}: nothing created "
+                f"({' '.join(str(exc).split())[:200] or type(exc).__name__})") from exc
+        got = decide_reinclude(None, sibs, reinclude_guid)
+        if got["state"] in (NEEDS_CONFIRMATION, "changed"):
+            sib = got["sibling"]
+            tail = " · confirm Re-include in Curate › Contents" if got["state"] == NEEDS_CONFIRMATION else ""
+            raise ArchivedDatabaseNeedsConfirmation(
+                f"the database is {got['text']}{tail} · nothing created", state=got["state"],
+                archived_guid=sib.guid, date=sib.date)
 
     def _find_by_qualified_name(self, qualified_name: str) -> str:
         """The GUID of the element whose qualifiedName is EXACTLY `qualified_name`, or '' (not found).

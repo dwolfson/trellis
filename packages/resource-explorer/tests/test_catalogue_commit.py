@@ -900,6 +900,10 @@ def test_the_database_template_gets_database_description_and_version_so_no_place
     # A real miss is pyegeria's "No elements found"; a bare MagicMock answer is not one (round 3: odd answers are
     # could-not-check, never "create").
     s._automated_curation.get_guid_for_name.return_value = "No elements found"
+    from unittest.mock import create_autospec
+    from pyegeria import MetadataExpert
+    s._metadata_expert = create_autospec(MetadataExpert, spec_set=True, instance=True)
+    s._metadata_expert.find_metadata_elements_with_string.return_value = "No elements found"   # S19: no archived copy
     s.connect = lambda: None
     s._find_element_guid = lambda name: ""
     s._save_database_secret = lambda *a, **k: ("", "")
