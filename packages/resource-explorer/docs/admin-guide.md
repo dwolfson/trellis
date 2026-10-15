@@ -252,7 +252,7 @@ There is no admin role in the Egeria sign-in. RE has one small, separate admin c
 ```bash
 # Either or both. Unset = no admin configured.
 FEEDBACK_ADMIN_TOKEN=<a long random string>   # a shared secret, sent by the browser as the X-Admin-Token header
-FEEDBACK_ADMIN_USERS=alice,bob                # signed-in user ids (the session JWT's `sub`) that are admins
+FEEDBACK_ADMIN_USERS=alice,bob                # signed-in user ids (the session JWT's `sub`) that are admins; also accepts a JSON list ["alice","bob"], a single name, or empty (no admins)
 # Local dev only: with no admin configured, let any signed-in user do the require_admin actions below.
 # RE_ADMIN_OPEN_WHEN_UNCONFIGURED=true
 ```
@@ -733,7 +733,7 @@ other path is refused. There is also an admin route, `POST /api/bootstrap/dr-ege
 
 | Setting | What it does |
 |---|---|
-| `FEEDBACK_ADMIN_USERS` | Comma-separated Egeria user ids who count as admin. Required for the Dr.Egeria runner route. |
+| `FEEDBACK_ADMIN_USERS` | Egeria user ids who count as admin: comma-separated (`alice,bob`), a JSON list (`["alice","bob"]`), a single name, or empty for none. Whitespace is trimmed. A value that cannot be read logs one warning at startup and counts as empty (no admins); it never stops the server. Required for the Dr.Egeria runner route. |
 | `FEEDBACK_ADMIN_TOKEN` | A shared secret an admin pastes once in Admin → Feedback (sent as `X-Admin-Token`). Counts as admin for the gates in "Admin gating", but not for the Dr.Egeria runner route. |
 | `RE_ENGINE_HOST_ENABLED` | Turns the engine host on (see above). Default off. |
 | `RE_DR_EGERIA_DOCS_DIR` | Moves the folder the Dr.Egeria runner reads documents from. |
