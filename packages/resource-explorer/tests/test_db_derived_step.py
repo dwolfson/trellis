@@ -1525,7 +1525,7 @@ class TestSharedCoverageBar:
         data, cov = self._payload(field, 79, 100)
         _attach_coverage_status(field, data, cov)
         assert data["_status"]["state"] == NOT_ESTABLISHED
-        words = "tables read" if field in ("schema_conventions", "subject_signals",
+        words = "tables read" if field in ("db_classification", "schema_conventions", "subject_signals",
                                            "coverage_signals", "preliminary_fit") else "tables"
         assert data["_status"]["detail"] == f"measured on 79 of 100 {words} (below the 80% bar)"
 
@@ -1583,7 +1583,7 @@ class TestSharedCoverageBar:
 class TestCatalogTierNotion:
     """The four name/comment-level analyses measure by catalog read, not keys."""
 
-    FOUR = ("schema_conventions", "subject_signals", "coverage_signals", "preliminary_fit")
+    FOUR = ("db_classification", "schema_conventions", "subject_signals", "coverage_signals", "preliminary_fit")
 
     def _store_db(self, registry, day, read, total=100):
         tables = [_table(f"t{i}") for i in range(total)]

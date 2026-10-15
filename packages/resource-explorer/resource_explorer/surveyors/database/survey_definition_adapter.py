@@ -1120,10 +1120,10 @@ def _attach_coverage_status(field: str, data: dict, coverage: dict | None = None
             }
 
 
-#: The four analyses that decide at the catalog tier (names, comments, row
+#: The five analyses that decide at the catalog tier (names, comments, row
 #: estimates): measured = the table's schema, table and column rows were read.
-#: The other three (graph, grain, classification) measure by keys captured.
-CATALOG_READ_FIELDS = ("schema_conventions", "subject_signals", "coverage_signals", "preliminary_fit")
+#: The other two (graph, grain) measure by keys captured.
+CATALOG_READ_FIELDS = ("db_classification", "schema_conventions", "subject_signals", "coverage_signals", "preliminary_fit")
 
 #: The seven `db_derived` analyses the shared coverage bar applies to.
 COVERAGE_BAR_FIELDS = (
