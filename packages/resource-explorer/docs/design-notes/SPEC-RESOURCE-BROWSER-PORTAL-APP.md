@@ -100,8 +100,17 @@ component is new and The Catalog may adopt it later.
   `Person.additionalProperties["portal_favorites"]`), not Likes (owner).
   Likes and ratings are ranking inputs, not bookmarks.
 - My lists: the collections the user owns or can see (§5).
-- Popular: by the usage measure once reinstated in Egeria; until then
-  the tile says "popularity not available yet". Never a fake ranking.
+- Popular: by the usage measure Egeria already holds (owner, 2026-10-14):
+  the `DataScope` classification's additionalProperties written by the
+  open-lineage data-scope governance service, which carry `readCount`,
+  `readsPerDay`, `readersInWindow`, `lastReadAt` and
+  `analysisWindowStart`/`analysisWindowEnd` (the "nanny" work, being
+  reinstated after the architecture changes). The tile ranks by
+  `readsPerDay` within the window and shows the window's end as the
+  as-of. A resource whose DataScope carries no usage properties, or has
+  no DataScope, says "no usage recorded"; until the service runs again
+  on this platform the tile says "popularity not available yet". Never a
+  fake ranking.
 
 ### Search (phase 2 at L0; ranking and facet counts in phase 4)
 - One box over names, qualified names, descriptions, tags, keywords,
@@ -175,7 +184,8 @@ Proposal for v1, for the owner to decide:
   replace L0 without changing the page.
 - **L1, buckets as search keywords (owner's direction, 2026-10-12):**
   rather than ordering by discrete counts, which Egeria's find cannot
-  do, the popularity measure is turned into a small set of **buckets**
+  do, the popularity measure (DataScope's `readsPerDay` and
+  `readersInWindow`, above) is turned into a small set of **buckets**
   ("Very popular", "Popular", "Rarely used", "No usage recorded") and
   each written to the asset as a `SearchKeyword` through
   `search_keywords_handler.py`, never as an `InformalTag`, which is
@@ -240,5 +250,8 @@ chosen. Phases 1 and 2 are enough for gates 2 and 5.
 - [ ] Search beyond L0: L1 buckets as search keywords is the owner's
       direction; bucket names and quantile schedule to be set; L2 later
       if fine ordering is wanted.
-- [ ] Where the reinstated usage measure lives and its shape.
+- [x] Where the usage measure lives: the DataScope classification's
+      additionalProperties from the open-lineage data-scope governance
+      service (owner, 2026-10-14); its reinstatement after the
+      architecture changes is the Egeria side's item.
 - [ ] Portal app or trellis app: this spec assumes the Portal.
