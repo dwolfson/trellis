@@ -1,5 +1,5 @@
 /** Real-DOM regression test for ENRICHMENT-E0-ROW-ANATOMY
- *  (docs/design-notes/REPLY-DESIGNER-ENRICHMENT-STAGE-IA.md §0.3/§6 item 1,
+ *  (docs/design-notes/exchange/REPLY-DESIGNER-ENRICHMENT-STAGE-IA.md §0.3/§6 item 1,
  *  ENRICHMENT-E0-ROW-ANATOMY-IMPLEMENTED.md).
  *
  *  THE PROBLEM: a person's input to a resource lived in two stores with two

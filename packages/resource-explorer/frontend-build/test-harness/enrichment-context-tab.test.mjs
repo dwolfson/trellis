@@ -1,5 +1,5 @@
 /** Real-DOM regression tests for ENRICHMENT-E1-CONTEXT-TAB (replying to
- *  docs/design-notes/REPLY-DESIGNER-ENRICHMENT-STAGE-IA.md §1, on top of
+ *  docs/design-notes/exchange/REPLY-DESIGNER-ENRICHMENT-STAGE-IA.md §1, on top of
  *  ENRICHMENT-E0-ROW-ANATOMY) and its 2026-09-29 amendment (project owner):
  *  analyses whose prerequisite is a human input run at the Enrichment
  *  stage, and Survey & analyses lists them as unlocked/locked.

@@ -574,7 +574,7 @@ export function questionKey(text) {
 
 /** Save ONE human-question answer, author-stamped by the server.
  *
- * ENRICHMENT-E0-ROW-ANATOMY (docs/design-notes/REPLY-DESIGNER-ENRICHMENT-
+ * ENRICHMENT-E0-ROW-ANATOMY (docs/design-notes/exchange/REPLY-DESIGNER-ENRICHMENT-
  * STAGE-IA.md §0.3): this used to be a client-side read-modify-write
  * against the whole context document (`getContext` then `saveContext`),
  * and the answer it built carried only `answered_at` — no author, because

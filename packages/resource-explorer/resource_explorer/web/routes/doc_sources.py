@@ -1,5 +1,5 @@
 """Documentation sources API — Enrichment stage, slice 1 ("Declare and
-probe") of `docs/design-notes/BRIEF-DATABASE-DOCUMENTATION-SOURCES.md`.
+probe") of `docs/design-notes/exchange/BRIEF-DATABASE-DOCUMENTATION-SOURCES.md`.
 
 A person declares a URL pointing at documentation for a database or
 filesystem — a wiki page, a data dictionary, a runbook — RE probes it

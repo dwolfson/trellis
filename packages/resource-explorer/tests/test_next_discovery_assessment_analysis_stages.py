@@ -11,7 +11,7 @@ Automate's comment about what a card-less Assessment/Analysis stage means.
 
 That note (`renderAnalysisNote`) was later removed once Sub-Resources itself
 was built for real -- see `test_next_analysis_subresources.py` and
-`docs/design-notes/RULING-SUBRESOURCES-PLACEMENT.md`. `TestTheGenericEngine
+`docs/design-notes/rulings/RULING-SUBRESOURCES-PLACEMENT.md`. `TestTheGenericEngine
 NeededNoStageSpecificBranch` below was updated accordingly: Analysis now has
 exactly as little stage-specific code in `loadPane()` as Discovery/
 Assessment.

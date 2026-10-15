@@ -1370,7 +1370,7 @@ can see (structure, keys, names, comments, partition bounds, activity
 counters) is the Scouting estimate; column statistics and everything
 value-derived need the *data identity* and so arrive at Discovery only when
 that identity is held — the two-identity model in
-`design-notes/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md` §9.
+`design-notes/exchange/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md` §9.
 
 ### 16.3 The questions
 

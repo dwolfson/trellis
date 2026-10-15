@@ -1,6 +1,6 @@
 """A human-question answer, author-stamped — PATCH /api/context/{type}/{slug}/answer.
 
-ENRICHMENT-E0-ROW-ANATOMY (docs/design-notes/REPLY-DESIGNER-ENRICHMENT-
+ENRICHMENT-E0-ROW-ANATOMY (docs/design-notes/exchange/REPLY-DESIGNER-ENRICHMENT-
 STAGE-IA.md §0.3/§6 item 1): before this route existed, a human answer to one
 of the catalog's Human-Supplied questions was saved by the client doing its
 own read-modify-write against the whole context document, and the record it

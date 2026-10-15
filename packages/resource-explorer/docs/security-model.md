@@ -2,7 +2,7 @@
 
 **Status:** consolidated model, current as of 2026-09-25. This is the single
 place the strategy is stated; the design notes it draws on
-(`design-notes/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md`,
+(`design-notes/exchange/REPLY-DATABASE-CREDENTIAL-CAPABILITY-VISIBILITY.md`,
 `DATABASE-ENGINE-CATALOG-CAPABILITY-SURVEY.md`,
 `DATABASE-STEP-CAPABILITY-AUDIT.md`,
 `RESOURCE-REACHABILITY-IMPLEMENTED.md`) are the history and the

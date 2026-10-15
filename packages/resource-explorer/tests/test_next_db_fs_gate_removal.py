@@ -1,7 +1,7 @@
 """DB/FS gate removal in /next (re/next-db-fs-gate-removal, 2026-09-22).
 
 The project owner reversed the earlier "DB and FS stay out of /next" ruling
-(docs/design-notes/COORDINATOR-BRIEF-MULTI-RESOURCE.md, 2026-09-20) — see
+(docs/design-notes/exchange/COORDINATOR-BRIEF-MULTI-RESOURCE.md, 2026-09-20) — see
 docs/Backlog.md's reversal entry. This slice:
 
   - relaxes `paneNeedsRepo()` so Survey no longer blocks db/filesystem (its
