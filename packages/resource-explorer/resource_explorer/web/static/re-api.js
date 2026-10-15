@@ -1646,17 +1646,27 @@ export const saveRfaNote = (rfaId, notes) =>
  */
 export async function pollActivity(entryId, {
   intervalMs = 2000,
-  timeoutMs = 5 * 60_000,
+  slowMs = 10000,
+  fastForMs = 60_000,
+  timeoutMs = 30 * 60_000,
   onTick = () => {},
 } = {}) {
   const deadline = Date.now() + timeoutMs;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const started = Date.now();
+  let entry = null;
   for (;;) {
-    const entry = await getActivityEntry(entryId);
-    onTick(entry);
-    const status = (entry?.status || '').toLowerCase();
-    if (status && status !== 'running' && status !== 'queued' && status !== 'pending') {
-      return entry;
+    // A failed read is not a status: keep the last answer and ask again, at the same pace.
+    try {
+      entry = await getActivityEntry(entryId);
+      onTick(entry);
+      const status = (entry?.status || '').toLowerCase();
+      // Only these words mean "still going"; anything else is the end (ok, error, partial, ...).
+      if (status && !['running', 'queued', 'pending', 'claimed', 'submitted'].includes(status)) {
+        return entry;
+      }
+    } catch (err) {
+      if (err?.status === 404) throw err;
     }
     if (Date.now() >= deadline) {
       const err = new Error(`Still running after ${Math.round(timeoutMs / 1000)}s`);
@@ -1664,7 +1674,7 @@ export async function pollActivity(entryId, {
       err.entry = entry;
       throw err;
     }
-    await sleep(intervalMs);
+    await sleep(Date.now() - started < fastForMs ? intervalMs : slowMs);
   }
 }
 

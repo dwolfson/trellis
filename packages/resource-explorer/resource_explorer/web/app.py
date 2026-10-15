@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -330,6 +331,11 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+# A fresh token per server process: a page that sees it change knows the server restarted (and so what it can
+# do may have changed: config flags, engine host) and re-reads what it shows. Not a secret, not an identity.
+_BOOT_ID = uuid.uuid4().hex
+
+
 @app.get("/health/ready")
 async def health_ready() -> JSONResponse:
     """Readiness check — actually exercises the registry's database
@@ -345,9 +351,9 @@ async def health_ready() -> JSONResponse:
     except Exception as exc:
         return JSONResponse(
             status_code=503,
-            content={"status": "error", "database": "unreachable", "detail": str(exc)},
+            content={"status": "error", "database": "unreachable", "detail": str(exc), "boot_id": _BOOT_ID},
         )
-    return JSONResponse(content={"status": "ok", "database": "ok"})
+    return JSONResponse(content={"status": "ok", "database": "ok", "boot_id": _BOOT_ID})
 
 
 def _resolve_default_ui(raw: Optional[str]) -> str:
