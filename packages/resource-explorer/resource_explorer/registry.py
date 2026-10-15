@@ -1622,6 +1622,30 @@ class ProjectRegistry:
                     ) from exc
                 raise
 
+    #: How long an ADD COLUMN waits for its table's lock before failing the start (a class attribute so a
+    #: test can shorten it; production is 10 s).
+    _DDL_LOCK_TIMEOUT = "10s"
+
+    def _add_nullable_text_column(self, conn, table: str, column: str, existing: set[str]) -> None:
+        """Additive, nullable, no default: an ADD COLUMN that rewrites nothing, and every older row reads
+        NULL ("not recorded"). The same shape as resource_schedules.created_by and step_runs'
+        engine_action_* columns: IF NOT EXISTS on Postgres so two processes starting together cannot fail
+        each other; lock_timeout so a table another process holds fails fast instead of queueing every
+        later reader behind it. SQLite has no IF NOT EXISTS here (single writer)."""
+        if not existing or column in existing:
+            return
+        if conn.is_postgres:
+            conn.execute(f"SET LOCAL lock_timeout = '{self._DDL_LOCK_TIMEOUT}'")
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} TEXT"
+                         if conn.is_postgres else f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+        except Exception as exc:
+            if getattr(exc, "pgcode", None) == "55P03" or "lock timeout" in str(exc).lower():
+                raise RuntimeError(
+                    f"Could not add {table}.{column}: another process holds a lock on {table}; "
+                    "stop other Resource Explorer processes and restart.") from exc
+            raise
+
     def _get_table_columns(self, conn, table_name: str) -> set[str]:
         """Columns currently on table_name, read through the SAME open
         transaction as the caller's CREATE TABLE — not a fresh connection via
@@ -4400,6 +4424,24 @@ class ProjectRegistry:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_runs_result_ref ON runs(result_ref)"
             )
+        self._migrate_artifact_columns()
+
+    #: Artifacts slice 1 (DESIGN-ARTIFACTS-VIEW-AND-DOC-LINKS.md §3; owner's go 2026-10-15; DDL record
+    #: docs/ddl-artifact-columns.md). file_role: core | test | generated | vendored | docs from
+    #: ingestion/file_role.py, set at extraction. survey_commit_sha: the commit of the zipball or clone a
+    #: repo step run READ, written only for a step that completed (record_step_run's caller decides); never
+    #: projects.last_commit_sha. NULL in either = "not recorded".
+    ARTIFACT_COLUMNS = (("project_code_symbols", "file_role"),
+                        ("project_code_markers", "file_role"),
+                        ("step_runs", "survey_commit_sha"))
+
+    def _migrate_artifact_columns(self) -> None:
+        """Each ADD COLUMN in its OWN short transaction, after the main init has committed, so one
+        table's ACCESS EXCLUSIVE lock is never held while waiting for the next table's (each wait is
+        bounded by its own 10 s lock_timeout)."""
+        for table, column in self.ARTIFACT_COLUMNS:
+            with self._conn() as conn:
+                self._add_nullable_text_column(conn, table, column, self._get_table_columns(conn, table))
 
     # ── the run queue ─────────────────────────────────────────────────────────
     #
@@ -6189,6 +6231,7 @@ class ProjectRegistry:
                 slug, s.file_path, s.language, s.kind, s.name, s.qualified_name,
                 s.signature, s.docstring, "", s.start_line, s.end_line,
                 s.parent_class, s.return_type, int(s.is_private), int(s.is_async), s.complexity,
+                getattr(s, "file_role", None),
             )
             for s in symbols
         ]
@@ -6202,8 +6245,8 @@ class ProjectRegistry:
                 """INSERT INTO project_code_symbols
                    (project_slug, file_path, language, kind, name, qualified_name,
                     signature, docstring, summary, start_line, end_line,
-                    parent_class, return_type, is_private, is_async, complexity)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    parent_class, return_type, is_private, is_async, complexity, file_role)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(project_slug, file_path, qualified_name)
                    DO UPDATE SET
                      language=excluded.language, kind=excluded.kind, name=excluded.name,
@@ -6211,7 +6254,7 @@ class ProjectRegistry:
                      start_line=excluded.start_line, end_line=excluded.end_line,
                      parent_class=excluded.parent_class, return_type=excluded.return_type,
                      is_private=excluded.is_private, is_async=excluded.is_async,
-                     complexity=excluded.complexity""",
+                     complexity=excluded.complexity, file_role=excluded.file_role""",
                 rows,
             )
             if relationships:
@@ -6263,6 +6306,7 @@ class ProjectRegistry:
             (
                 slug, m.file_path, m.start_line, m.language, m.marker_kind,
                 m.framework, m.interface_kind, m.detail, m.qualified_name,
+                getattr(m, "file_role", None),
             )
             for m in markers
         ]
@@ -6270,8 +6314,8 @@ class ProjectRegistry:
             conn.executemany(
                 """INSERT INTO project_code_markers
                    (project_slug, file_path, start_line, language, marker_kind,
-                    framework, interface_kind, detail, qualified_name)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    framework, interface_kind, detail, qualified_name, file_role)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 rows,
             )
 
@@ -7283,6 +7327,7 @@ class ProjectRegistry:
         metrics: dict | None = None, declared: dict | None = None,
         disagreement: str = "", surveyed_as: str = "",
         flow_run_id: str = "", dispatch_failed: str = "",
+        survey_commit_sha: str | None = None,
     ) -> None:
         """One row per step EXECUTION. Append-only: a step run twice in one
         snapshot (once as a prerequisite, once on its own request) is two
@@ -7304,16 +7349,21 @@ class ProjectRegistry:
         all.
         """
         with self._conn() as conn:
+            # `survey_commit_sha` (artifacts slice 1): the commit of the code this run READ, as the caller
+            # got it from the zipball or clone it acquired (SurveyOrchestrator, via the run's resources).
+            # Never projects.last_commit_sha: that moves only on a re-index and can be older than the tree
+            # the survey read. A run that read no code passes nothing and stores NULL ("not recorded").
+            commit_sha = survey_commit_sha or None
             conn.execute(
                 "INSERT INTO step_runs (slug, entity_type, step_key, surveyed_at, "
                 "source, executor, executor_ref, demanded_by, metrics, declared, "
-                "disagreement, surveyed_as, flow_run_id, dispatch_failed) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "disagreement, surveyed_as, flow_run_id, dispatch_failed, survey_commit_sha) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (slug, entity_type, step_key, surveyed_at, source, executor,
                  executor_ref or "", demanded_by or "",
                  json.dumps(metrics or {}), json.dumps(declared or {}),
                  disagreement or "", surveyed_as or "",
-                 flow_run_id or "", dispatch_failed or ""),
+                 flow_run_id or "", dispatch_failed or "", commit_sha),
             )
 
     def query_step_runs(

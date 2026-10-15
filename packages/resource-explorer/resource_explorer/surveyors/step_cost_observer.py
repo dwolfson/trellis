@@ -387,6 +387,13 @@ def _step_ever_measured(registry, step_key: str) -> bool:
     return row is not None
 
 
+def completed(annotations, raised: bool) -> bool:
+    """True when a step ran to the end: it did not raise and reported no `step_error` (BaseSurveyor._warn,
+    which most surveyors use instead of raising). Only a completed step's step_runs row carries the commit
+    it read (`survey_commit_sha`): a failed step read nothing a reader should cite."""
+    return not raised and not any(getattr(a, "check_name", "") == "step_error" for a in annotations or ())
+
+
 def describe_work(annotations) -> tuple[int, tuple[str, ...]]:
     """What a step produced, as the observer needs it: how many annotations,
     and any StepOutcome labels they carry.
@@ -460,7 +467,7 @@ def _analyses_for_step(step_key: str, entity_type: str) -> set[str] | None:
 
 
 def record(registry, slug: str, obs: Observation, surveyed_at: str | None = None,
-           entity_type: str = "repo") -> str:
+           entity_type: str = "repo", survey_commit_sha: str | None = None) -> str:
     """Persist one observation. Returns FIRST when this is the first ever for
     this step, RECORDED normally, NOT_RECORDED when persistence failed.
 
@@ -490,6 +497,7 @@ def record(registry, slug: str, obs: Observation, surveyed_at: str | None = None
             metrics=obs.vector(), declared=obs.declared_vector(),
             disagreement=obs.disagreement,
             flow_run_id=obs.flow_run_id, dispatch_failed=obs.dispatch_failed,
+            survey_commit_sha=survey_commit_sha,
         )
     except Exception as exc:
         vector_recorded = False

@@ -29,6 +29,9 @@ class CodeSymbol:
     is_async: bool = False
     complexity: int = 0         # cyclomatic complexity; 0 for non-function symbols (classes/interfaces)
     bases: list[str] = field(default_factory=list)  # class-kind only: raw base-class expressions, not FQN-resolved
+    #: core | test | generated | vendored | docs (ingestion/file_role.py), stamped by
+    #: CodeSymbolExtractor.extract. None = not classified, stored as NULL ("not recorded").
+    file_role: str | None = None
 
 
 @dataclass
@@ -52,6 +55,7 @@ class CodeMarker:
     detail: str             # "GET /assets/{guid}", topic name, etc. — '' if none
     qualified_name: str     # the decorated/annotated symbol, or '' when there is none
                             # (e.g. a Django urls.py path() call)
+    file_role: str | None = None  # as CodeSymbol.file_role; stamped by extract_markers
 
 
 #: Languages whose marker extraction is real — Python via `ast.decorator_list`
@@ -65,6 +69,18 @@ class CodeMarker:
 #: language absent here must be NAMED as uncovered, never silently reported
 #: as a measured zero.
 MARKER_CAPABLE_LANGUAGES = frozenset({"python", "java"})
+
+
+def _stamp_role(file_path: str, rows: list) -> list:
+    """Every symbol and marker row carries the role of the file it came from
+    (DESIGN-ARTIFACTS-VIEW-AND-DOC-LINKS.md §3). One call per file: the role is
+    a fact about the path, decided by the one shared classifier."""
+    if rows:
+        from resource_explorer.ingestion.file_role import classify_file_role
+        role = classify_file_role(file_path)
+        for row in rows:
+            row.file_role = role
+    return rows
 
 
 class CodeSymbolExtractor:
@@ -84,6 +100,11 @@ class CodeSymbolExtractor:
     """
 
     def extract(
+        self, file_path: str, content: str, resource_slug: str, language: str
+    ) -> list[CodeSymbol]:
+        return _stamp_role(file_path, self._extract_symbols(file_path, content, resource_slug, language))
+
+    def _extract_symbols(
         self, file_path: str, content: str, resource_slug: str, language: str
     ) -> list[CodeSymbol]:
         try:
@@ -116,9 +137,9 @@ class CodeSymbolExtractor:
             return []
         try:
             if language == "python":
-                return self._extract_python_markers(file_path, content, resource_slug)
+                return _stamp_role(file_path, self._extract_python_markers(file_path, content, resource_slug))
             if language == "java":
-                return self._extract_java_markers(file_path, content, resource_slug)
+                return _stamp_role(file_path, self._extract_java_markers(file_path, content, resource_slug))
         except Exception:
             pass
         return []

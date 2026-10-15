@@ -292,8 +292,10 @@ def _record_step_cost(entity_type: str, slug: str, obs, output, surveyed_at: str
         annotations = (output or {}).get("annotations") if isinstance(output, dict) else None
         obs.annotations, obs.outcomes = step_cost_observer.describe_work(annotations)
         obs.disagreement = step_cost_observer._disagreement(obs)
+        # The commit the runner's run read, when its step completed (repo runners put it on the output).
+        commit = output.get("survey_commit_sha") if isinstance(output, dict) else None
         step_cost_observer.record(ProjectRegistry(), slug, obs, surveyed_at,
-                                  entity_type=entity_type)
+                                  entity_type=entity_type, survey_commit_sha=commit or None)
     except Exception as exc:  # pragma: no cover - best-effort observability only
         log.debug("could not record step cost for %s/%s: %s", slug, obs.step_key, exc)
 
