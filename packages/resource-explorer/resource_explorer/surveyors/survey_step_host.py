@@ -69,8 +69,13 @@ log = logging.getLogger(__name__)
 LOAD_ERRORS: dict[str, str] = {}
 
 #: The annotation types the engine host's report path can publish a library step's results as (with the envelope
-#: in `additionalProperties`, the owner's interim carrier). Egeria's own type names.
-PUBLISHABLE_ANNOTATION_TYPES = ("ResourceMeasureAnnotation",)
+#: in `additionalProperties`, the owner's interim carrier). Egeria's own type names. A ClassificationAnnotation is a
+#: PROPOSAL (`contentStatus` DRAFT, its `candidateClassifications`), never a classification on the element: facts come
+#: only through Curate (owner, 2026-10-15: the two channels stay separate).
+PUBLISHABLE_ANNOTATION_TYPES = ("ResourceMeasureAnnotation", "ClassificationAnnotation")
+
+#: Egeria's `contentStatus` for a library step's proposal: the content asks a curator to decide.
+PROPOSAL_CONTENT_STATUS = "DRAFT"
 
 #: The result states that are a derivation. A step none of whose results is one of these had nothing to derive.
 DERIVED_STATES = ("measured", "nothing_found")
@@ -123,12 +128,13 @@ class LibraryStep:
         (which result this is), the measured values in `resourceProperties` and the envelope in
         `additionalProperties`. Each is identified by step and scope (`check_name`, `item_key`), so a re-publish
         of the same run converges on the same elements."""
-        from resource_explorer.surveyors.survey_report import ResourceMeasureAnnotation
+        from resource_explorer.surveyors.survey_report import ClassificationAnnotation, ResourceMeasureAnnotation
 
-        if self.annotation_type != "ResourceMeasureAnnotation":
-            raise ValueError(f"step '{self.step_key}' emits {self.annotation_type}, which the engine host cannot "
-                             "publish")
         m = self.manifest
+        cannot = [t for t in _annotation_types(m) if t not in PUBLISHABLE_ANNOTATION_TYPES]
+        if cannot:
+            raise ValueError(f"step '{self.step_key}' emits {', '.join(cannot)}, which the engine host cannot "
+                             "publish")
         name = getattr(m, "display_name", "") or self.step_key.replace("_", " ").title()
         out = []
         for r in records:
@@ -138,8 +144,27 @@ class LibraryStep:
             other = bool(measure) and measure != self.step_key
             summary = str(r.get("summary") or "") or f"{scope}: {state.replace('_', ' ')}"
             # Each declared measure is its own annotation: its own annotationType and its own identity (check_name),
-            # never published under the step's name (engine host step 4 ruling). Egeria's type stays the nearest
-            # native one, ResourceMeasureAnnotation, which the native survey itself uses for these counters.
+            # never published under the step's name (engine host step 4 ruling). Egeria's type is the one the
+            # manifest declares for the measure (`measure_annotation_types`); by default the step's own,
+            # ResourceMeasureAnnotation, which the native survey itself uses for these counters.
+            if _annotation_type_for(m, measure) == "ClassificationAnnotation":
+                # A proposal, in Egeria's own fields: the classification in `classificationName` (one per annotation),
+                # the measured values in `properties`, the envelope in additionalProperties. Never a classification
+                # on the element.
+                proposed = [str(c) for c in (r.get("candidateClassifications") or [])]
+                if len(proposed) > 1:
+                    raise ValueError(f"step '{self.step_key}', '{scope}': proposes {len(proposed)} classifications; "
+                                     "Egeria's ClassificationAnnotation names one (classificationName)")
+                out.append(ClassificationAnnotation(
+                    summary=summary, analysis_step=self.step_key,
+                    annotation_type_name=measure_display_name(measure) if other else name,
+                    explanation=str(r.get("explanation") or ""),
+                    classification_name=proposed[0] if proposed else "",
+                    classification_properties=dict(r.get("resourceProperties") or {}),
+                    additional_properties=dict(r.get("additionalProperties") or {}),
+                    content_status=PROPOSAL_CONTENT_STATUS,
+                    check_name=measure if other else self.step_key, item_key=scope))
+                continue
             out.append(ResourceMeasureAnnotation(
                 summary=summary, analysis_step=self.step_key,
                 annotation_type_name=measure_display_name(measure) if other else name,
@@ -148,6 +173,22 @@ class LibraryStep:
                 additional_properties=dict(r.get("additionalProperties") or {}),
                 check_name=measure if other else self.step_key, item_key=scope))
         return out
+
+
+def _annotation_type_for(manifest, measure: str) -> str:
+    """The Egeria type a measure's results are published as (`StepManifest.annotation_type_for`, read defensively: a
+    manifest from an older library has no per-measure types)."""
+    per = getattr(manifest, "measure_annotation_types", None) or {}
+    return per.get(measure or manifest.name, manifest.annotation_type)
+
+
+def _annotation_types(manifest) -> list[str]:
+    """Every annotation type a step can emit, the step's own first."""
+    out = [manifest.annotation_type]
+    for t in (getattr(manifest, "measure_annotation_types", None) or {}).values():
+        if t not in out:
+            out.append(t)
+    return out
 
 
 def measure_step_key(step_key: str, measure: str) -> str:
@@ -190,8 +231,9 @@ def _admit(entity_type: str, found: dict, provided_by: dict[str, dict]) -> tuple
             refused[name] = ("declares the 'connection' input; the engine host opens no connection to a resource "
                              "(it holds no person's credential), so Egeria is not offered this step")
             continue
-        if m.annotation_type not in PUBLISHABLE_ANNOTATION_TYPES:
-            refused[name] = (f"emits {m.annotation_type}; the engine host publishes "
+        cannot = [t for t in _annotation_types(m) if t not in PUBLISHABLE_ANNOTATION_TYPES]
+        if cannot:
+            refused[name] = (f"emits {', '.join(cannot)}; the engine host publishes "
                              f"{', '.join(PUBLISHABLE_ANNOTATION_TYPES)} only")
             continue
         rt = m.request_type
@@ -231,7 +273,7 @@ class StepNotInstalled(RuntimeError):
 #: SELECT that RE owns. A step sends no SQL text: free SQL from a step needs a read-only database role (a follow-up
 #: for the owner: ops/DDL), and validating SQL by its text cannot be made safe. `query` is NOT here.
 STEP_ODS_METHODS = ("row_count_snapshots", "commit_proofs", "catalogue_scope_events", "resource_scope_events",
-                    "outbox_status_counts")
+                    "outbox_status_counts", "table_activity_snapshots", "table_keys")
 
 #: How long a step's read may wait for its answer.
 READ_TIMEOUT_SECONDS = 120

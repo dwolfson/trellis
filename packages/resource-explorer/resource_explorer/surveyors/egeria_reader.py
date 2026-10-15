@@ -229,6 +229,9 @@ def _parse_annotation(header: dict, props: dict) -> dict:
     subtype_data: dict = {}
     for field in (
         "candidateClassifications",
+        # ClassificationAnnotation's own Egeria fields (6.2): the proposed classification and its values.
+        "classificationName",
+        "properties",
         "resourceProperties",
         "qualityScores",
         "candidateDataClassGUIDs",
@@ -242,6 +245,10 @@ def _parse_annotation(header: dict, props: dict) -> dict:
         val = props.get(field)
         if val is not None:
             subtype_data[field] = val
+
+    # A proposal published in Egeria's own field reads back as the candidate it is, for readers of the old key.
+    if subtype_data.get("classificationName") and "candidateClassifications" not in subtype_data:
+        subtype_data["candidateClassifications"] = [subtype_data["classificationName"]]
 
     return {
         "guid": header.get("guid", ""),

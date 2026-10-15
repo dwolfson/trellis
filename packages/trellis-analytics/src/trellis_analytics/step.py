@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import importlib
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from pydantic import BaseModel, Field
@@ -82,6 +82,8 @@ class StepInputs:
     ods: Any = None
     connection: Any = None
     source_report: Any = None
+    #: The manifest's declared `parameters`, a copy: what the declaration publishes is what the code reads.
+    parameters: dict = field(default_factory=dict)
 
 
 class StepAnnotation(BaseModel):
@@ -98,6 +100,9 @@ class StepAnnotation(BaseModel):
     envelope: Envelope
     #: Which of the manifest's declared measures this result is; "" is the step's own (primary) measure.
     measure: str = ""
+    #: For a measure published as a ClassificationAnnotation: the classifications it PROPOSES (Egeria's
+    #: `candidateClassifications`). A proposal on the annotation, never a classification on the element.
+    candidate_classifications: list[str] = Field(default_factory=list)
 
     def additional_properties(self) -> dict[str, str]:
         props = self.envelope.to_additional_properties()
@@ -111,7 +116,9 @@ class StepAnnotation(BaseModel):
                 "analysis_step": self.analysis_step,
                 "summary": self.summary, "explanation": self.explanation,
                 "resourceProperties": dict(self.resource_properties),
-                "additionalProperties": self.additional_properties()}
+                "additionalProperties": self.additional_properties(),
+                **({"candidateClassifications": list(self.candidate_classifications)}
+                   if self.candidate_classifications else {})}
 
 
 def _resolve(dotted: str) -> Callable:
@@ -148,7 +155,8 @@ class SurveyStep:
             connection = host.connect(self.manifest.credential_tier)
         return StepInputs(resource_type=host.resource_type, slug=host.slug,
                           ods=host.ods if "ods" in declared else None, connection=connection,
-                          source_report=host.source_report if "source_report" in declared else None)
+                          source_report=host.source_report if "source_report" in declared else None,
+                          parameters=dict(getattr(self.manifest, "parameters", None) or {}))
 
     def _annotate(self, result: Any, host: HostContext, measured_at: str) -> StepAnnotation:
         name = self.manifest.name
@@ -185,6 +193,25 @@ class SurveyStep:
             resource_properties={str(k): str(v) for k, v in value.items() if v is not None},
             envelope=envelope)
 
+    def _typed(self, annotation: StepAnnotation, result: dict) -> StepAnnotation:
+        """The annotation with its measure's declared Egeria type (`StepManifest.measure_annotation_types`) and, for a
+        ClassificationAnnotation, the classifications the result proposes (`candidate_classifications`, plain
+        strings). A proposal given for any other type is refused: it would be dropped on the way to Egeria."""
+        atype = self.manifest.annotation_type_for(annotation.measure)
+        raw = result.get("candidate_classifications") or []
+        if isinstance(raw, str) or not all(isinstance(c, str) and c.strip() for c in raw):
+            raise StepRefused(f"step '{self.manifest.name}', '{annotation.scope}': candidate_classifications must be "
+                              "a list of non-empty strings")
+        if raw and atype != "ClassificationAnnotation":
+            raise StepRefused(f"step '{self.manifest.name}', '{annotation.scope}': proposes classifications in a "
+                              f"{atype}; only a ClassificationAnnotation carries them")
+        if len(raw) > 1:
+            raise StepRefused(f"step '{self.manifest.name}', '{annotation.scope}': proposes {len(raw)} "
+                              "classifications; a ClassificationAnnotation names one (Egeria's classificationName)")
+        if atype == annotation.annotation_type and not raw:
+            return annotation
+        return annotation.model_copy(update={"annotation_type": atype, "candidate_classifications": list(raw)})
+
     def run(self, host: HostContext) -> list[StepAnnotation]:
         """Run the code once for one resource; return (and store, when the host gives a store) its annotations.
         Raises StepRefused when the results cannot all be kept; nothing is stored then."""
@@ -193,7 +220,7 @@ class SurveyStep:
                               f"not {host.resource_type}")
         results = self.code(self.inputs_for(host))
         measured_at = _now()
-        annotations = [self._annotate(r, host, measured_at) for r in (results or [])]
+        annotations = [self._typed(self._annotate(r, host, measured_at), r) for r in (results or [])]
         if host.store is not None:
             host.store(annotations)
         return annotations

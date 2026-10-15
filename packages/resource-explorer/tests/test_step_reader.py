@@ -27,6 +27,12 @@ DDL = [
     "CREATE TABLE resource_scope_events (id INTEGER, resource_type TEXT, resource_slug TEXT, locator TEXT, "
     "kind TEXT, choice TEXT, action TEXT, source TEXT, proposal_rule TEXT, changed_at TEXT)",
     "CREATE TABLE egeria_outbox (id INTEGER, entity_type TEXT, entity_slug TEXT, status TEXT)",
+    "CREATE TABLE database_table_activity (database_slug TEXT, surveyed_at TEXT, source TEXT, schema_name TEXT, "
+    "table_name TEXT, rows_inserted BIGINT, rows_updated BIGINT, rows_deleted BIGINT, live_tuples BIGINT, "
+    "dead_tuples BIGINT, seq_scan BIGINT, idx_scan BIGINT, last_vacuum TEXT, last_autovacuum TEXT, "
+    "last_analyze TEXT, last_autoanalyze TEXT, pending_changes BIGINT, stats_reset TEXT, state TEXT)",
+    "CREATE TABLE database_columns (database_slug TEXT, surveyed_at TEXT, source TEXT, schema_name TEXT, "
+    "table_name TEXT, column_name TEXT, is_primary_key INTEGER, foreign_key_json TEXT)",
 ]
 ROWS = [
     "INSERT INTO database_surveys VALUES ('shop', '2026-10-01', 'local', NULL)",
@@ -35,6 +41,10 @@ ROWS = [
     "INSERT INTO catalogue_scope_events VALUES (1, 'shop', 'schema', 'public', '', 'include', 'set', 's', '', 'c')",
     "INSERT INTO resource_scope_events VALUES (1, 'database', 'shop', 'public', 'schema', 'include', 'set', 's', '', 'c')",
     "INSERT INTO egeria_outbox VALUES (1, 'database', 'shop', 'done')",
+    "INSERT INTO database_table_activity VALUES ('shop', '2026-10-01', 'local', 'public', 'orders', 7, 2, 1, 40, 0, "
+    "3, 4, '', '', '2026-09-30', '', 6, NULL, 'measured')",
+    "INSERT INTO database_columns VALUES ('shop', '2026-10-01', 'local', 'public', 'orders', 'customer_id', 0, "
+    "'{\"foreign_schema\": \"public\", \"foreign_table\": \"customer\", \"foreign_column\": \"id\"}')",
 ]
 
 
@@ -58,6 +68,8 @@ def _all_typed_reads(ods) -> dict:
         "catalogue_scope_events": ods.catalogue_scope_events("shop"),
         "resource_scope_events": ods.resource_scope_events("database", "shop"),
         "outbox_status_counts": ods.outbox_status_counts("database", "shop"),
+        "table_activity_snapshots": ods.table_activity_snapshots("shop", limit=2),
+        "table_keys": ods.table_keys("shop"),
     }
 
 
@@ -67,6 +79,18 @@ def _assert_reads(got):
     assert got["catalogue_scope_events"][0]["choice"] == "include"
     assert got["resource_scope_events"][0]["locator"] == "public"
     assert got["outbox_status_counts"] == {"done": [1]}
+    [snap] = got["table_activity_snapshots"]
+    assert (snap["surveyed_at"], snap["source"]) == ("2026-10-01", "local")
+    [act] = snap["tables"]
+    assert (act["table_name"], act["rows_inserted"], act["live_tuples"], act["last_analyze"]) == (
+        "orders", 7, 40, "2026-09-30")
+    assert "seq_scan" not in act                                  # only the columns the read names
+    keys = got["table_keys"]
+    [orders] = keys["tables"]
+    assert (keys["surveyed_at"], orders["table_type"], orders["keys_captured"]) == (
+        "2026-10-01", "BASE TABLE", True)
+    assert orders["foreign_keys"] == [{"column": "customer_id", "to_schema": "public", "to_table": "customer",
+                                       "to_column": "id"}]
 
 
 @pytest.fixture
@@ -307,3 +331,70 @@ def test_hand_sent_requests_with_odd_values_or_reply_objects_run_no_step_code(sq
         requests.put(("row_count_snapshots", ("shop",), {}, OddReply()))
         ods.outbox_status_counts("database", "shop")      # the thread is still serving
     assert "re-step-reader" not in _Evil.seen, _Evil.seen
+
+
+# ── the two typed reads the library steps added (statistics_freshness, change_rates, hub_tables) ──
+
+INJECTIONS = ("shop'; DELETE FROM egeria_outbox; --", "shop' OR '1'='1", "x') UNION SELECT * FROM egeria_outbox --")
+
+
+def _new_reads(ods, slug):
+    return ods.table_activity_snapshots(slug, limit=2), ods.table_keys(slug)
+
+
+def test_the_new_reads_take_their_parameters_as_values_never_as_sql(sqlite_url):
+    with step_reader(sqlite_url) as ods:
+        for text in INJECTIONS:
+            assert _new_reads(ods, text) == ([], None), text
+    assert _count(sqlite_url) == 1
+
+
+def test_the_new_reads_refuse_anything_but_plain_values_and_bound_their_limit(sqlite_url):
+    with step_reader(sqlite_url) as ods:
+        for bad in (["shop"], {"slug": "shop"}, 2.5, b"shop"):
+            with pytest.raises(TypeError):
+                ods.table_activity_snapshots(bad)
+            with pytest.raises(TypeError):
+                ods.table_keys(bad)
+        with pytest.raises(TypeError):
+            ods.table_activity_snapshots("shop", limit=2.5)
+        assert len(ods.table_activity_snapshots("shop", limit=0)) == 1      # never an empty answer
+
+
+def test_the_activity_read_is_capped_at_ten_snapshots(sqlite_url):
+    """Twelve stored snapshots: any limit above ten returns the newest ten, never the history."""
+    c = sqlite3.connect(sqlite_url.removeprefix("sqlite:///"))
+    for day in range(2, 13):
+        c.execute("INSERT INTO database_table_activity (database_slug, surveyed_at, source, schema_name, table_name, "
+                  "rows_inserted, live_tuples) VALUES ('shop', ?, 'local', 'public', 'orders', ?, 1)",
+                  (f"2026-10-{day:02d}", day))
+    c.commit()
+    c.close()
+    with step_reader(sqlite_url) as ods:
+        for limit in (11, 12, 10**9):
+            snaps = ods.table_activity_snapshots("shop", limit=limit)
+            assert len(snaps) == 10, (limit, len(snaps))
+            assert [s["surveyed_at"] for s in snaps][0] == "2026-10-12"           # the newest ten, newest first
+        assert len(ods.table_activity_snapshots("shop", limit=3)) == 3
+
+
+def test_the_new_reads_offer_no_other_way_in(sqlite_url):
+    """The step is handed the two new methods and nothing else new: no `query`, no table name, no column list."""
+    import inspect
+
+    from trellis_analytics.readers.ods import OdsReader
+
+    assert {"table_activity_snapshots", "table_keys"} <= set(STEP_ODS_METHODS)
+    assert list(inspect.signature(OdsReader.table_activity_snapshots).parameters) == ["self", "slug", "limit"]
+    assert list(inspect.signature(OdsReader.table_keys).parameters) == ["self", "slug"]
+    with step_reader(sqlite_url) as ods:
+        assert not hasattr(ods, "query") and not hasattr(ods, "MAX_SNAPSHOTS")
+
+
+@pytest.mark.requires_pgvector
+def test_pg_the_new_reads_take_their_parameters_as_values_never_as_sql(pg_url):
+    url, admin, schema = pg_url
+    with step_reader(url) as ods:
+        for text in INJECTIONS:
+            assert _new_reads(ods, text) == ([], None), text
+    assert _pg_count(admin, schema) == 1

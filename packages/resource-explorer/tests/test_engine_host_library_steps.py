@@ -460,7 +460,8 @@ def test_f2_a_step_gets_no_registry_no_dsn_and_no_egeria_identity(staleness_inst
     _run_queue_once(reg)
     assert seen["reg"] is False, seen["attrs"]
     assert seen["attrs"] == {"row_count_snapshots", "commit_proofs", "catalogue_scope_events",
-                             "resource_scope_events", "outbox_status_counts"}, seen["attrs"]   # no `query`
+                             "resource_scope_events", "outbox_status_counts", "table_activity_snapshots",
+                             "table_keys"}, seen["attrs"]   # no `query`
     assert all(b is None for b in seen["bound"]), "a method is bound to the reader object"
     assert seen["identity"] == "none"
     # publishing still happened as the daemon, after the step returned
