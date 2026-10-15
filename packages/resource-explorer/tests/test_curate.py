@@ -242,7 +242,8 @@ class TestTheCommitSteps:
             report_reused = False
             def __init__(self, registry=None):
                 self._asset_maker = type("AM", (), {"get_asset_by_guid": staticmethod(lambda g, **k: {"guid": g})})()
-            def publish(self, survey):
+            def publish(self, result, zone_names=None, *, defer_drain=None):    # the real signature (pinned below)
+                calls.append(("publish", defer_drain))
                 registry.set_egeria_asset_guid("p", "asset-1") if hasattr(registry, "set_egeria_asset_guid") else None
                 return "report-9"
             def get_survey_reports_by_guid(self, guid):
@@ -255,6 +256,7 @@ class TestTheCommitSteps:
             def set_confidentiality_classification(self, guid, body):
                 calls.append(("conf", guid, body["properties"]["confidentialityLevel"], body["properties"]["notes"]))
 
+        _same_publish_signature(FakePublisher)
         monkeypatch.setattr("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator", FakeOrch)
         monkeypatch.setattr("resource_explorer.surveyors.egeria_publisher.EgeriaPublisher", FakePublisher)
         monkeypatch.setattr("resource_explorer.egeria_identity.classification_client", lambda *a, **k: FakeClient())
@@ -275,6 +277,7 @@ class TestTheCommitSteps:
         assert by["sub_resources"]["detail"] == "1 of 1 published · 2 read back · plus 1 ancestor folder"   # not "2 of 1"
         assert by["components"]["state"] == "skipped"
         assert out["state"] == "done"
+        assert ("publish", False) in calls, "Curate's commit is an explicit publish: it waits (defer_drain=False)"
         conf = next(c for c in calls if c[0] == "conf")
         assert conf[2] == 1 and "set by peterprofile on 2026-09-01" in conf[3]
         subs = next(c for c in calls if c[0] == "subs")
@@ -290,8 +293,9 @@ class TestTheCommitSteps:
 
         class Boom:
             def __init__(self, registry=None): pass
-            def publish(self, survey): raise RuntimeError("Egeria unreachable")
+            def publish(self, result, zone_names=None, *, defer_drain=None): raise RuntimeError("Egeria unreachable")
 
+        _same_publish_signature(Boom)
         monkeypatch.setattr("resource_explorer.surveyors.egeria_publisher.EgeriaPublisher", Boom)
         rec = Curations(registry).create("repo", "p", author="peterprofile",
                                          selection={"sub_resources": ["docs"]}, manifest={}, steps=list(wf.STEPS))
@@ -377,3 +381,14 @@ class TestTheStructureCountComesFromOneFunction:
         got = client.get("/api/projects/p/curate/commits/latest").json()["curation"]
         assert got["entity_slug"] == "p" and "proof_summary" in got
         assert client.get("/api/projects/nope/curate/commits/latest").status_code == 404
+
+
+def _same_publish_signature(fake) -> None:
+    """A fake publisher binds the real `EgeriaPublisher.publish` signature: a fake that drifts from it hides a
+    TypeError the real code would raise (2026-10-14: the fakes lacked `defer_drain`)."""
+    import inspect
+
+    from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
+
+    shape = lambda f: [(p.name, p.kind, p.default) for p in inspect.signature(f).parameters.values()]  # noqa: E731
+    assert shape(fake.publish) == shape(EgeriaPublisher.publish), fake
