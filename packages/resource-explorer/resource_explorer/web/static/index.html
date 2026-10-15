@@ -2224,8 +2224,8 @@ function _showWhoamiInfo() {
   showToast('info',
     `Signed in as <b>${_esc(who)}</b>. Every Egeria read and write this session makes ` +
     `runs as you, so Egeria's own provenance records your user id — and anything ` +
-    `published is owned by you and starts in the <code>resource-explorer-draft</code> zone ` +
-    `until a curator accepts it.<br><br>` +
+    `published is owned by you. Resource Explorer adds no zone unless your deployment ` +
+    `configures one; private investigations are visible to you only.<br><br>` +
     `Egeria view server <b>${_esc(vs)}</b> at <b>${_esc(url)}</b>. ` +
     `Sessions last as long as your Egeria token (one hour by default); when it lapses, ` +
     `sign in again.`,

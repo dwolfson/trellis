@@ -13,9 +13,12 @@
   UserIdentity, else `owner` = their userId and `ownerTypeName = "UserIdentity"`
   (7h, `egeria_actors.ownership_for_person`). Ownership is attribution; who may curate
   follows Egeria's zones (`workflows/curate.curation_access`, Brief Z).
-* **Draft zone.** One zone per app (owner's decision, 2026-09-04). On publish
-  an element joins `resource-explorer-draft`; on curate-accept it is promoted
-  into the deployment's publish zones.
+* **Draft zone: configured-only.** DRAFT is a content status, not a zone (owner ruling
+  2026-10-08, retiring the 2026-09-04 one-zone-per-app default). Published assets get NO
+  RE-imposed zone; a draft zone (`EXPLORER_DRAFT_ZONE`, conventionally
+  `resource-explorer-draft`) exists only if a deployment configures one, and then
+  curate-accept moves the element into the configured publish zones. Private-investigation
+  work is zoned `[resource-explorer-private, <owner>]`.
 
 The daemon identity is legitimate only where it is named
 --------------------------------------------------------
@@ -667,10 +670,11 @@ def stamp_published(
     client: Any = None,
     zones: Optional[Iterable[str]] = None,
 ) -> dict:
-    """`Ownership` + draft-zone `ZoneMembership` on one just-published element.
+    """`Ownership` + `ZoneMembership` (the zones passed in; by default the CONFIGURED draft
+    zone, if any, else none) on one just-published element.
 
     The pair is applied together because they are one decision — "this is
-    yours, and it is not visible outside the draft zone yet" — and a publish
+    yours, and (when a draft zone is configured) it is not visible outside it yet" — and a publish
     that set one without the other would be either an unowned draft or an
     owned element already in the catalogue's normal zones.
 

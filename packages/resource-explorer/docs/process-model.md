@@ -57,8 +57,10 @@ RE through the A2A door and stops there:
 - **`requested_by` is a real user id**, so the per-user fairness rule in §1.2c has stopped being
   inert: `""` now holds only the worker's own service-account runs.
 - **Ownership and zones.** Everything RE publishes carries the `Ownership` classification (owner =
-  the requesting user) and lands in the `resource-explorer-draft` zone; curate-accept promotes it
-  into the deployment's publish zones.
+  the requesting user). RE imposes no zone on published assets (owner ruling 2026-10-08: DRAFT is
+  a content status, not a zone); a draft zone exists only if the deployment sets `EXPLORER_DRAFT_ZONE`,
+  and then curate-accept promotes out of it into the configured publish zones. Private-investigation
+  work is zoned `[resource-explorer-private, <owner>]`.
 - **CLI login.** `resource-explorer login` / `logout`, cached via `trellis_auth.session_file`.
   Commands that reach Egeria exit 2 with one line when the session is missing or expired;
   read-only commands keep working without one.
