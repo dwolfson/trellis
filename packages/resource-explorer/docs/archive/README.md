@@ -12,8 +12,9 @@ cluster: before archiving they referenced only each other, plus one link from
 `database-surveyor-quickstart.md`, which now points here.
 
 **`arch-recovery-handoff-2026-08-24.md`.** A session handoff, time-bound by
-nature. Its durable content lives in `architecture-recovery-design.md` and
-`architecture-recovery-phase1-findings.md`, both still current. `Backlog.md`
+nature. Its durable content lives in `../architecture-recovery.md` (the
+earlier `architecture-recovery-design.md` and `-phase1-findings.md` were consolidated into it on
+2026-09-03 and no longer exist as separate files). `Backlog.md`
 links here.
 
 ## What is deliberately NOT here

@@ -264,7 +264,7 @@ class EgeriaPublisher:
         # checkout — so everything RE published landed in the view server's
         # default zones with nothing distinguishing "surveyed, not yet
         # reviewed" from "curated". Now an unreviewed publish goes to the
-        # draft zone and `curate accept` promotes it (see
+        # configured draft zone (if any) and `curate accept` promotes it (see
         # `workflows/curate.promote_to_publish_zones`). `default_catalog_zones`
         # is still honoured as the *publish* target — see
         # `egeria_identity.configured_publish_zones` — which is the question
@@ -1180,8 +1180,8 @@ class EgeriaPublisher:
         """`Ownership` and `ZoneMembership` on everything this publish created.
 
         Plan §4: everything trellis publishes gets `Ownership` set to the
-        publishing user's `UserIdentity`, and one draft zone per app until a
-        curator accepts it. Ownership is attribution: who may curate follows
+        publishing user's `UserIdentity`, and the configured draft zone (none by
+        default since 2026-10-08) until a curator accepts it. Ownership is attribution: who may curate follows
         Egeria's zones (`workflows/curate.curation_access`, Brief Z), and
         Egeria's own `isUserAnOwner` reads this classification's `userIds`.
 

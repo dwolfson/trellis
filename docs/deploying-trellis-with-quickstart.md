@@ -230,8 +230,8 @@ echo secret | $C run --rm --no-deps -T --entrypoint sh trellis-re-web -c \
 ```
 
 The published asset and its survey report read back from Egeria with `createdBy` and
-`Ownership.owner` equal to the user who logged in, and zone `resource-explorer-draft` until a
-curator accepts it.
+`Ownership.owner` equal to the user who logged in, and no RE-imposed zone (since 2026-10-08
+draft is a content status, not a zone; a draft zone appears only if `EXPLORER_DRAFT_ZONE` is set).
 
 Load EA's retrieval corpus once per box (clones the Egeria repositories into the container's data
 volume and indexes them into pgvector):

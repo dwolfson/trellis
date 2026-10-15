@@ -106,7 +106,7 @@ resource_explorer/
 │
 │   # identity — see "Who a call runs as" below
 ├── auth.py                 # thin adapter over trellis-auth: policy, secrets, token mint/exchange
-├── egeria_identity.py      # per-request pyegeria clients, Ownership, ZoneMembership, the draft zone
+├── egeria_identity.py      # per-request pyegeria clients, Ownership, ZoneMembership, the (configured-only) draft zone
 ├── cli/session.py          # `resource-explorer login`'s cached session (trellis_auth.session_file)
 │
 │   # the workflows — one module per unit of work, FastAPI-free
@@ -379,17 +379,19 @@ The owner may accept, reject, promote and delete with no separate grant; a `cura
 claim curates across resources it does not own; everyone else gets 403. Enforced in
 `workflows/curate.py`, not in the routes, so the CLI and A2A inherit it.
 
-**One draft zone per app.** *Everything* RE creates in Egeria — survey reports, the library
-element, materialized components and blueprints — is born in `resource-explorer-draft`
-(`ZoneMembership`, `0424`), and curate-accept promotes it into the deployment's CONFIGURED publish
-zones (`EXPLORER_PUBLISH_ZONES`). **Configured-only (owner, 2026-10-07): there is no default zone.**
-With none configured, accept writes no zone at all and clears the draft `ZoneMembership` (the
-documented clear call), and the verdict row reads "accepted · zones left to Egeria · everyone
-visible" only after a read-back found none. The worker creates the draft zone itself once at
-startup, leader-elected. (A database catalogue commit writes the publish zone only when
-`EXPLORER_PUBLISH_ZONES` is set, last; unverified for a second commit.)
+**Zones: no default draft zone (owner ruling 2026-10-08).** DRAFT is a content status, not a zone.
+Published assets (survey reports, the library element, materialized components and blueprints) get
+**no RE-imposed zone**. The 2026-09-04 "one draft zone per app, `resource-explorer-draft`" default was
+retired; a draft zone exists only when a deployment sets `EXPLORER_DRAFT_ZONE`, and only then does the
+worker create it (once at startup, leader-elected; `worker.py::_ensure_draft_zone`). Private-investigation
+work is zoned `[resource-explorer-private, <owner>]`. Curate-accept promotes into the deployment's
+CONFIGURED publish zones (`EXPLORER_PUBLISH_ZONES`); **configured-only (owner, 2026-10-07): there is no
+default publish zone.** With none configured, accept writes no zone at all (and clears RE's draft
+`ZoneMembership` if one was configured), and the verdict row reads "accepted · zones left to Egeria ·
+everyone visible" only after a read-back found none. (A database catalogue commit writes the publish
+zone only when `EXPLORER_PUBLISH_ZONES` is set, last; unverified for a second commit.)
 
-"Everything, no exceptions" is a correction, made against the live platform on 2026-09-04. A
+*History.* "Everything, no exceptions" was a correction, made against the live platform on 2026-09-04. A
 materialized component was at first written straight into the publish zones, on the reasoning that
 it *is* the accepted outcome — and the accept path's promotion then failed with
 `OMAG-SERVER-SECURITY-403-005: not authorized to change the zone membership ... from
