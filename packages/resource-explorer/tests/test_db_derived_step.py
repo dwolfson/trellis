@@ -577,6 +577,30 @@ class TestGrain:
         assert grain["grain_statement"] == "one row per account_id + balance_date"
         assert grain["interval"] == "per-date"
 
+    def test_a_named_period_never_reaches_egerias_long_interval(self, registry):
+        """Egeria's DataGrainAnnotationProperties.interval is a Java `long` (a count in the
+        grain's units; OpenMetadataProperty.INTERVAL is DataType.LONG). RE's period is a
+        word ("per-date"), and the live gate (2026-10-14) had 157 of 157 grain annotations
+        refused with Jackson's "Cannot deserialize value of type `long` from String
+        \"per-date\"". The word travels as additionalProperties.intervalName instead."""
+        from resource_explorer.surveyors.annotation_props import build_annotation_props
+
+        tables = [_table("account_balance_daily")]
+        columns = [
+            _column("account_balance_daily", "account_id", pk=True),
+            _column("account_balance_daily", "balance_date", pk=True, dtype="date"),
+            _column("account_balance_daily", "balance", dtype="numeric"),
+        ]
+        _store(registry, "coco_ods", NOW, tables=tables, columns=columns)
+        grains = [a for a in run_db_derived(registry, "coco_ods")["annotations"]
+                  if isinstance(a, DataGrainAnnotation)]
+        assert len(grains) == 1
+        assert grains[0].interval is None
+        assert grains[0].interval_name == "per-date"
+        props = build_annotation_props(grains[0], "q")
+        assert "interval" not in props
+        assert props["additionalProperties"] == {"intervalName": "per-date"}
+
     def test_a_unique_column_stands_in_for_a_missing_primary_key(self, registry):
         tables = [_table("event", rows=1_000)]
         columns = [
@@ -1095,7 +1119,7 @@ class TestPublishMapping:
         ann = DataGrainAnnotation(
             summary="s", analysis_step="x",
             grain_statement="one row per customer_id",
-            granularity_basis="primary_key", interval="per-date",
+            granularity_basis="primary_key", interval_name="per-date",
             content_status="DRAFT",
         )
         props = build_annotation_props(ann, "q")
@@ -1103,7 +1127,9 @@ class TestPublishMapping:
         # The Egeria type's own field names, per support doc §3.
         assert props["grainStatement"] == "one row per customer_id"
         assert props["granularityBasis"] == "primary_key"
-        assert props["interval"] == "per-date"
+        # Egeria's `interval` is a long; the period word is not one (live 400, 2026-10-14).
+        assert "interval" not in props
+        assert props["additionalProperties"] == {"intervalName": "per-date"}
         assert props["contentStatus"] == "DRAFT"
 
     def test_fingerprint_payload_travels_as_additional_properties(self):

@@ -287,8 +287,15 @@ class DataGrainAnnotation(Annotation):
     #: WHAT the statement was derived from — "primary_key", "unique_column",
     #: "temporal_key" — so a reader can weigh it without re-deriving it.
     granularity_basis: str = ""
-    #: The temporal interval, when the grain has one (daily, monthly).
-    interval: str = ""
+    #: Egeria's own `interval`: a Java `long`, "the granularity of the data expressed in
+    #: the units of the grain" (OpenMetadataProperty.INTERVAL, DataType.LONG, example "60").
+    #: None = not known, and then nothing is sent. Only a whole number may go here: a word
+    #: was refused live (400, Jackson "Cannot deserialize value of type `long`", 2026-10-14).
+    interval: int | None = None
+    #: RE's name for the period ("per-date", "daily", "monthly", ...), which is a word, not
+    #: Egeria's count; published as additionalProperties.intervalName (a named departure:
+    #: Egeria has no string field for it).
+    interval_name: str = ""
     candidate_data_grain_guids: list[str] = field(default_factory=list)
 
 
@@ -472,7 +479,7 @@ ANNOTATION_TYPES_REGISTRY = [
         "description": "Represents the granularity of a data collection — what one row means (e.g. one row per customer, one row per account per day). Produced as a PROPOSAL (contentStatus DRAFT) where no DataGrain element exists yet.",
         "properties": [
             "grain_statement (str)", "granularity_basis (str)",
-            "interval (str)", "candidate_data_grain_guids (list[str])",
+            "interval (int | None)", "interval_name (str)", "candidate_data_grain_guids (list[str])",
         ],
         "egeria_type": "DataGrainAnnotationProperties",
         "python_class": "DataGrainAnnotation",

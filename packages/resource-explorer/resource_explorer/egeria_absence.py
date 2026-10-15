@@ -77,6 +77,49 @@ def egeria_message_id(exc: BaseException) -> str:
     return str(found).strip()
 
 
+def egeria_error_detail(exc: BaseException, limit: int = 1500) -> str:
+    """Egeria's own words for a failed call, or '' when the exception carries no Egeria response.
+
+    pyegeria's CLIENT_ERROR_400 text names only the endpoint (live 2026-10-14: a DataGrainAnnotation
+    create refused for a Jackson type mismatch read "Client error occurred with status code `<url>`").
+    The response body (FFDCResponseBase: relatedHTTPCode, exceptionClassName, exceptionErrorMessageId,
+    exceptionErrorMessage, exceptionUserAction) is kept on the exception, as `additional_info['reason']`
+    and as `response`; read from there, never parsed out of str(exc). Walks __cause__ / __context__."""
+    import json
+
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        info = getattr(cur, "additional_info", None)
+        raw = info.get("reason") if isinstance(info, dict) else None
+        response = getattr(cur, "response", None)
+        if not raw and response is not None:
+            raw = getattr(response, "text", None)
+        if raw:
+            raw = str(raw)
+            status = getattr(cur, "http_status_code", None) or getattr(response, "status_code", None)
+            try:
+                body = json.loads(raw)
+            except ValueError:
+                body = None
+            if isinstance(body, dict):
+                status = body.get("relatedHTTPCode") or status
+                parts = [f"HTTP {status}" if status else "", str(body.get("exceptionClassName") or "").rsplit(".", 1)[-1],
+                         str(body.get("exceptionErrorMessageId") or "")]
+                head = " ".join(p for p in parts if p)
+                message = str(body.get("exceptionErrorMessage") or body.get("userMessage") or "").strip()
+                action = str(body.get("exceptionUserAction") or "").strip()
+                text = f"{head}: {message}" if message else (head or raw)
+                if action:
+                    text += f" (user action: {action})"
+            else:
+                text = f"HTTP {status}: {raw}" if status else raw
+            return text[:limit]
+        cur = cur.__cause__ or cur.__context__
+    return ""
+
+
 def lookup_could_not_be_made(name: str, cause) -> str:
     """The words for a by-name look-up whose outcome is 'unreadable', for a caller that was about to create.
 

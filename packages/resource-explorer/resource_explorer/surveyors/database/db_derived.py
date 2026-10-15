@@ -5451,7 +5451,9 @@ def _grain_annotations(result: dict) -> list:
                 expression=item_key,
                 grain_statement=grain["grain_statement"],
                 granularity_basis=grain["basis"],
-                interval=grain.get("interval") or "",
+                # RE's period is a word; Egeria's `interval` is a long count, so the word
+                # travels as interval_name (additionalProperties.intervalName).
+                interval_name=grain.get("interval") or "",
                 # A PROPOSAL: no DataGrain element exists for this yet, and a
                 # curator must declare it (support doc §3's decision).
                 content_status="DRAFT",
