@@ -5153,6 +5153,18 @@ def apply_container_grain(registry, inputs: DerivedInputs, derived: dict) -> dic
 # The step
 # ═══════════════════════════════════════════════════════════════════════════
 
+def table_coverage(inputs: DerivedInputs) -> dict:
+    """How many base tables were actually measured, for the shared coverage bar.
+
+    "Measured" is the same notion `derive_relationship_graph` uses: the
+    table's OWN keys were captured (`keys_captured_for_table`). Views are not
+    counted, same as the structural checks.
+    """
+    tables = [t for t in inputs.tables if _is_base_table(t)]
+    measured = sum(1 for t in tables if inputs.keys_captured_for_table(_table_key(t)))
+    return {"measured": measured, "total": len(tables)}
+
+
 def run_db_derived(
     registry,
     slug: str,
@@ -5221,6 +5233,7 @@ def run_db_derived(
         "read_snapshot": inputs.surveyed_at,
         "source": source,
         "derived": derived,
+        "table_coverage": table_coverage(inputs),
         "annotations": build_annotations(derived),
         "errors": [],
     }
