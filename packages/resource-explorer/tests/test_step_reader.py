@@ -1,5 +1,5 @@
-"""The reader a user step is handed (`survey_step_host.step_reader`): read-only on both backends, whatever the step
-sends through it, and no connection reachable from it.
+"""The reader a user step is handed (`survey_step_host.step_reader`): RE's typed read methods only (no `query`, no SQL
+text from the step), on a connection the step cannot reach and that cannot write, on both backends.
 
 SQLite tests run everywhere. The Postgres tests are `requires_pgvector`: they create and drop ONLY their own schema,
 `resource_explorer_test_stepreader_<pid>` (a name the conftest's orphan sweep never matches), and never construct a
@@ -12,21 +12,30 @@ import sqlite3
 
 import pytest
 
-from resource_explorer.surveyors.survey_step_host import step_reader
+from resource_explorer.surveyors.survey_step_host import STEP_ODS_METHODS, step_reader
 from trellis_analytics.readers.ods import OdsUnreadable
 
-REFUSED = (
-    "select 1; delete from t",
-    "select 1;",
-    "select set_config('default_transaction_read_only','off',false)",
-    "SELECT * FROM t; SET default_transaction_read_only = off",
-    "attach database 'x' as y",
-    "select 1 /* hidden */",
-    "select 1 -- trailing",
-    "select a into t2 from t",
-    "pragma query_only = off",
-    "with d as (delete from t returning a) select * from d",
-)
+#: The tables and columns the typed methods read (trellis_analytics.readers.ods), and one row each.
+DDL = [
+    "CREATE TABLE database_surveys (database_slug TEXT, surveyed_at TEXT, source TEXT, invalid_at TEXT)",
+    "CREATE TABLE database_tables (database_slug TEXT, surveyed_at TEXT, source TEXT, schema_name TEXT, "
+    "table_name TEXT, table_type TEXT, row_count INTEGER, state TEXT)",
+    "CREATE TABLE catalogue_commit_proofs (id INTEGER, database_slug TEXT, node_kind TEXT, schema_name TEXT, "
+    "table_name TEXT, proof TEXT, element_guid TEXT, read_at TEXT, detail_json TEXT)",
+    "CREATE TABLE catalogue_scope_events (id INTEGER, database_slug TEXT, node_kind TEXT, schema_name TEXT, "
+    "table_name TEXT, choice TEXT, action TEXT, source TEXT, proposal_rule TEXT, changed_at TEXT)",
+    "CREATE TABLE resource_scope_events (id INTEGER, resource_type TEXT, resource_slug TEXT, locator TEXT, "
+    "kind TEXT, choice TEXT, action TEXT, source TEXT, proposal_rule TEXT, changed_at TEXT)",
+    "CREATE TABLE egeria_outbox (id INTEGER, entity_type TEXT, entity_slug TEXT, status TEXT)",
+]
+ROWS = [
+    "INSERT INTO database_surveys VALUES ('shop', '2026-10-01', 'local', NULL)",
+    "INSERT INTO database_tables VALUES ('shop', '2026-10-01', 'local', 'public', 'orders', 'BASE TABLE', 5, 'm')",
+    "INSERT INTO catalogue_commit_proofs VALUES (1, 'shop', 'schema', 'public', '', 'p', 'g', 'r', '{\"a\": 1}')",
+    "INSERT INTO catalogue_scope_events VALUES (1, 'shop', 'schema', 'public', '', 'include', 'set', 's', '', 'c')",
+    "INSERT INTO resource_scope_events VALUES (1, 'database', 'shop', 'public', 'schema', 'include', 'set', 's', '', 'c')",
+    "INSERT INTO egeria_outbox VALUES (1, 'database', 'shop', 'done')",
+]
 
 
 def _reachable(root, limit: int = 4000):
@@ -35,12 +44,30 @@ def _reachable(root, limit: int = 4000):
     return walk(root, limit)
 
 
+def _all_typed_reads(ods) -> dict:
+    return {
+        "row_count_snapshots": ods.row_count_snapshots("shop", limit=2),
+        "commit_proofs": ods.commit_proofs("shop"),
+        "catalogue_scope_events": ods.catalogue_scope_events("shop"),
+        "resource_scope_events": ods.resource_scope_events("database", "shop"),
+        "outbox_status_counts": ods.outbox_status_counts("database", "shop"),
+    }
+
+
+def _assert_reads(got):
+    assert got["row_count_snapshots"][0]["tables"][0]["row_count"] == 5
+    assert got["commit_proofs"][0]["detail"] == {"a": 1}
+    assert got["catalogue_scope_events"][0]["choice"] == "include"
+    assert got["resource_scope_events"][0]["locator"] == "public"
+    assert got["outbox_status_counts"] == {"done": [1]}
+
+
 @pytest.fixture
 def sqlite_url(tmp_path):
     path = tmp_path / "ods.sqlite"
     c = sqlite3.connect(path)
-    c.execute("CREATE TABLE t (a INTEGER)")
-    c.execute("INSERT INTO t VALUES (1)")
+    for sql in DDL + ROWS:
+        c.execute(sql)
     c.commit()
     c.close()
     return f"sqlite:///{path}"
@@ -49,33 +76,48 @@ def sqlite_url(tmp_path):
 def _count(url) -> int:
     c = sqlite3.connect(url.removeprefix("sqlite:///"))
     try:
-        return c.execute("SELECT count(*) FROM t").fetchone()[0]
+        return c.execute("SELECT count(*) FROM egeria_outbox").fetchone()[0]
     finally:
         c.close()
 
 
-def test_sqlite_reads(sqlite_url):
+def test_a_step_reader_offers_the_typed_reads_and_no_query(sqlite_url):
     with step_reader(sqlite_url) as ods:
-        assert ods.query("SELECT a FROM t WHERE a = ?", (1,)) == [{"a": 1}]
-        assert ods.query("select 'a;b' as s") == [{"s": "a;b"}]      # a ';' inside a literal is fine
+        assert not hasattr(ods, "query")
+        assert {a for a in dir(ods) if not a.startswith("_")} == set(STEP_ODS_METHODS)
+        assert "query" not in STEP_ODS_METHODS
+        with pytest.raises(AttributeError):
+            ods.query = lambda *a: None
 
 
-@pytest.mark.parametrize("sql", REFUSED)
-def test_sqlite_refuses_anything_but_one_plain_select(sqlite_url, sql):
+def test_every_typed_read_works_on_sqlite(sqlite_url):
     with step_reader(sqlite_url) as ods:
-        with pytest.raises((ValueError, OdsUnreadable)):
-            ods.query(sql)
+        _assert_reads(_all_typed_reads(ods))
+
+
+def test_the_reader_thread_refuses_any_other_name_even_sent_by_hand(sqlite_url):
+    """A step that digs out the request queue and asks for `query` (or any reader method) by name is refused."""
+    import queue
+
+    from resource_explorer.surveyors.survey_step_host import _Requests
+
+    with step_reader(sqlite_url) as ods:
+        [requests] = [o for o in _reachable(ods) if isinstance(o, _Requests)]
+        for name in ("query", "_conn", "registry_view", "__init__"):
+            reply: queue.Queue = queue.Queue(maxsize=1)
+            requests.put((name, ("delete from egeria_outbox",), {}, reply))
+            status, words = reply.get(timeout=10)
+            assert status == "error" and "not one of the reads a step may make" in words, (name, words)
     assert _count(sqlite_url) == 1
 
 
-def test_sqlite_attach_read_write_is_refused_even_past_the_text_check(sqlite_url, tmp_path):
-    """The connection's own guard (authorizer, query_only) refuses what the text check would have let through."""
+def test_sqlite_attach_pragma_and_writes_are_refused_by_the_connection_itself(sqlite_url, tmp_path):
     from resource_explorer.surveyors.survey_step_host import _execute_read_only, _open_read_only
 
     conn, pg = _open_read_only(sqlite_url)
     try:
         for sql in (f"ATTACH DATABASE 'file:{tmp_path / 'ods.sqlite'}?mode=rw' AS w", "PRAGMA query_only = OFF",
-                    "DELETE FROM t", "CREATE TABLE z (a)"):
+                    "DELETE FROM egeria_outbox", "CREATE TABLE z (a)", "select 1; delete from egeria_outbox"):
             with pytest.raises(Exception):
                 _execute_read_only(conn, pg, sql, ())
     finally:
@@ -99,10 +141,10 @@ def test_the_reader_stops_with_its_block(sqlite_url):
 
     before = threading.active_count()
     with step_reader(sqlite_url) as ods:
-        ods.query("select 1 as x")
+        ods.outbox_status_counts("database", "shop")
     assert threading.active_count() == before
     with pytest.raises(OdsUnreadable):
-        ods.query("select 1 as x")
+        ods.outbox_status_counts("database", "shop")
 
 
 # ── Postgres ──────────────────────────────────────────────────────────────────
@@ -125,8 +167,8 @@ def pg_url():
     with admin.cursor() as cur:
         cur.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         cur.execute(f'CREATE SCHEMA "{schema}"')
-        cur.execute(f'CREATE TABLE "{schema}".t (a INTEGER)')
-        cur.execute(f'INSERT INTO "{schema}".t VALUES (1)')
+        for sql in DDL + ROWS:
+            cur.execute(sql)
     url = (f"postgresql://{cfg.db_user}:{cfg.password}@{cfg.host}:{cfg.port}/{cfg.dbname}"
            f"?options=-csearch_path%3D{schema}")
     try:
@@ -139,44 +181,41 @@ def pg_url():
 
 def _pg_count(admin, schema) -> int:
     with admin.cursor() as cur:
-        cur.execute(f'SELECT count(*) FROM "{schema}".t')
+        cur.execute(f'SELECT count(*) FROM "{schema}".egeria_outbox')
         return cur.fetchone()[0]
 
 
 @pytest.mark.requires_pgvector
-def test_pg_reads(pg_url):
+def test_every_typed_read_works_on_postgres(pg_url):
     url, _admin, _schema = pg_url
     with step_reader(url) as ods:
-        assert ods.query("SELECT a FROM t WHERE a = ?", (1,)) == [{"a": 1}]
+        assert not hasattr(ods, "query")
+        _assert_reads(_all_typed_reads(ods))
 
 
 @pytest.mark.requires_pgvector
-@pytest.mark.parametrize("sql", REFUSED)
-def test_pg_refuses_anything_but_one_plain_select(pg_url, sql):
-    url, admin, schema = pg_url
-    with step_reader(url) as ods:
-        with pytest.raises((ValueError, OdsUnreadable)):
-            ods.query(sql)
-        # and the session is still read-only afterwards: the set_config sequence had no effect
-        with pytest.raises((ValueError, OdsUnreadable)):
-            ods.query("select 1; delete from t")
-    assert _pg_count(admin, schema) == 1
-
-
-@pytest.mark.requires_pgvector
-def test_pg_set_config_then_a_write_has_no_effect_even_past_the_text_check(pg_url):
-    """Each query runs in its own READ ONLY transaction that is rolled back, so a set_config that slipped past the
-    text check is undone and a data-modifying statement fails."""
+@pytest.mark.parametrize("sql", [
+    # the review's probe: a commit inside the text ends the READ ONLY transaction
+    "select E'\\'' as a; commit; select current_setting('transaction_read_only') as ro, E'\\'' as b",
+    "select set_config('default_transaction_read_only','off',false); delete from egeria_outbox",
+    "select 1; delete from egeria_outbox",
+    "with d as (delete from egeria_outbox returning id) select * from d",
+    "delete from egeria_outbox",
+])
+def test_pg_executor_runs_one_statement_in_a_read_only_transaction(pg_url, sql):
+    """Defence in depth under the typed methods: even raw text handed to the executor cannot write or leave the
+    READ ONLY transaction (one statement, through a server-side cursor; always rolled back)."""
     from resource_explorer.surveyors.survey_step_host import _execute_read_only, _open_read_only
 
     url, admin, schema = pg_url
     conn, pg = _open_read_only(url)
     try:
-        _execute_read_only(conn, pg, "select set_config('default_transaction_read_only','off',false)", ())
-        with pytest.raises(Exception, match="read-only"):
-            _execute_read_only(conn, pg, "with d as (delete from t returning a) select * from d", ())
-        with pytest.raises(Exception, match="read-only"):
-            _execute_read_only(conn, pg, "select 1; delete from t", ())
+        with pytest.raises(Exception):
+            _execute_read_only(conn, pg, sql, ())
+        # a set_config that ran inside a transaction does not survive it
+        _execute_read_only(conn, pg, "select set_config('default_transaction_read_only','off',false) as s", ())
+        assert _execute_read_only(conn, pg, "select current_setting('transaction_read_only') as ro", ()) == [
+            {"ro": "on"}]
     finally:
         conn.close()
     assert _pg_count(admin, schema) == 1

@@ -17,13 +17,14 @@ This module puts such steps BESIDE a resource type's step registry, never in it 
 - An installed step with no catalog entry is attached as a runnable step and logged: run the generator.
 
 **The boundary, honestly.** A step is in-process, trusted code. RE enforces three things: no connection to the
-resource; read-only access to RE's stored rows (`step_reader`: the reader's SELECT methods, each query checked to be
-one plain SELECT and run by a separate thread that owns a connection which cannot write: a rolled-back READ ONLY
-transaction per query on Postgres, `mode=ro` + `query_only` + a read-only authorizer on SQLite; the step holds no
-connection, registry or URL); and no Egeria identity (its code runs inside `egeria_clients.no_identity()`, so
-`current_principal()` raises). It is NOT a sandbox: Python code in the same process can reach past any of this on
-purpose (the process environment holds the registry's URL, for one). Install only steps you would run as Resource
-Explorer. A read-only database role for the step reader would be stronger (follow-up: needs a role, i.e. ops).
+resource; reads of RE's stored rows only through RE's TYPED read methods (`StepOds`: `row_count_snapshots`,
+`commit_proofs`, ... with parameterised SQL RE owns; a step sends no SQL text and has no `query`), executed by a
+separate thread on a connection that cannot write (one statement per rolled-back READ ONLY transaction on Postgres;
+`mode=ro` + `query_only` + a read-only authorizer on SQLite), with no connection, registry or URL in the step's
+hands; and no Egeria identity (its code runs inside `egeria_clients.no_identity()`, so `current_principal()`
+raises). It is NOT a sandbox: the thread list, the call stack and the process environment still reach RE's
+internals. Arbitrary SQL from a step would need a read-only database role (a follow-up for the owner: ops/DDL).
+Install only steps you would run as Resource Explorer.
 
 What the host gives the wrapper: the resource, that read-only ODS reader, and a store that
 keeps the annotations with their envelope in `additionalProperties`, in their own table `step_annotations`
@@ -207,56 +208,18 @@ class StepNotInstalled(RuntimeError):
     """The catalog names a step whose package is not installed in this environment."""
 
 
-#: Words a step's query may not contain outside a literal: anything that changes a setting, attaches a database,
-#: writes, or reaches outside the database. The text check is the first guard; the connection's own (a READ ONLY
-#: transaction that is always rolled back on Postgres; `mode=ro`, `query_only` and an authorizer on SQLite) is the
-#: second, and the connection itself is never reachable from the step (it lives in the reader's own thread).
-_REFUSED_WORDS = frozenset({
-    "set", "set_config", "reset", "attach", "detach", "pragma", "into", "insert", "update", "delete", "merge",
-    "create", "drop", "alter", "truncate", "grant", "revoke", "copy", "vacuum", "analyze", "reindex", "lock",
-    "listen", "notify", "begin", "commit", "rollback", "savepoint", "release", "do", "call", "dblink",
-    "dblink_exec", "lo_import", "lo_export", "pg_read_file", "pg_read_binary_file", "pg_ls_dir",
-    "pg_terminate_backend", "pg_cancel_backend", "pg_reload_conf", "load_extension", "nextval", "setval",
-})
+#: What a step may read: RE's typed read methods of the Analytic Library's ODS reader, each a fixed, parameterised
+#: SELECT that RE owns. A step sends no SQL text: free SQL from a step needs a read-only database role (a follow-up
+#: for the owner: ops/DDL), and validating SQL by its text cannot be made safe. `query` is NOT here.
+STEP_ODS_METHODS = ("row_count_snapshots", "commit_proofs", "catalogue_scope_events", "resource_scope_events",
+                    "outbox_status_counts")
 
-#: How long a step's query may wait for its answer.
+#: How long a step's read may wait for its answer.
 READ_TIMEOUT_SECONDS = 120
 
 
-def check_read_sql(sql: str) -> None:
-    """Refuse anything but ONE plain SELECT: no `;`, no comment, no `$` quoting, no refused word, outside literals.
-    Raises ValueError with the reason."""
-    import re
-
-    text = str(sql or "")
-    if not text.lstrip().lower().startswith("select"):
-        raise ValueError("the ODS reader runs SELECT statements only")
-    outside, i, n = [], 0, len(text)
-    while i < n:
-        ch = text[i]
-        if ch in ("'", '"'):
-            j = i + 1
-            while j < n and not (text[j] == ch and (j + 1 >= n or text[j + 1] != ch)):
-                j += 2 if text[j] == ch else 1
-            if j >= n:
-                raise ValueError("the query has an unterminated literal")
-            outside.append(" ")
-            i = j + 1
-            continue
-        outside.append(ch)
-        i += 1
-    bare = "".join(outside)
-    for mark, why in ((";", "one statement only"), ("--", "no comments"), ("/*", "no comments"),
-                      ("$", "no dollar quoting")):
-        if mark in bare:
-            raise ValueError(f"the ODS reader refuses {mark!r} outside a literal ({why})")
-    words = set(re.findall(r"[a-z_][a-z0-9_]*", bare.lower()))
-    if refused := sorted(words & _REFUSED_WORDS):
-        raise ValueError(f"the ODS reader refuses {', '.join(refused)}: it reads, and changes nothing")
-
-
 def _sqlite_authorizer(action, *_args):
-    """Only reading is authorized on a step's SQLite connection (ATTACH, PRAGMA and every write are denied)."""
+    """Only reading is authorized on the reader's SQLite connection (ATTACH, PRAGMA and every write are denied)."""
     import sqlite3
 
     allowed = {sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION,
@@ -267,7 +230,7 @@ def _sqlite_authorizer(action, *_args):
 def _open_read_only(database_url: str):
     """(connection, is_postgres) that cannot write. SQLite: opened `mode=ro`, autocommit, `query_only=ON`, and an
     authorizer that allows reading only. Postgres: a read-only session with autocommit OFF; `_execute_read_only`
-    also runs each query in its own `READ ONLY` transaction and rolls it back."""
+    also runs each query in its own `READ ONLY` transaction, through a server-side cursor, and rolls it back."""
     if database_url.startswith("postgresql"):
         import psycopg2
 
@@ -285,14 +248,20 @@ def _open_read_only(database_url: str):
 
 
 def _execute_read_only(conn, is_postgres: bool, sql: str, params: tuple) -> list[dict]:
-    """Run one query on a read-only connection. Postgres: its own transaction, `SET TRANSACTION READ ONLY` first,
-    always rolled back, so a setting changed inside it does not survive and nothing can be written."""
+    """Run ONE statement on a read-only connection (defence in depth under the typed methods, whose SQL RE owns).
+    Postgres: its own transaction, `SET TRANSACTION READ ONLY` first, the query through a named (server-side)
+    cursor, which Postgres declares as `DECLARE ... CURSOR FOR <one query>` and so refuses a second statement, and
+    always rolled back. SQLite: `execute` runs one statement only."""
     if is_postgres:
+        import uuid
+
         import psycopg2.extras
 
         try:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("SET TRANSACTION READ ONLY")
+            with conn.cursor() as setup:
+                setup.execute("SET TRANSACTION READ ONLY")
+            with conn.cursor(name=f"re_step_{uuid.uuid4().hex}",
+                             cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(sql.replace("?", "%s"), params)
                 return [dict(r) for r in cur.fetchall()]
         finally:
@@ -301,60 +270,100 @@ def _execute_read_only(conn, is_postgres: bool, sql: str, params: tuple) -> list
 
 
 def _serve(database_url: str, requests, ready) -> None:
-    """The reader's thread: owns the read-only connection, answers one query at a time with plain data (rows, or
-    an error's words; never an exception object, whose traceback would lead back to this frame)."""
+    """The reader's thread: owns the read-only connection and a reader over it, and answers one typed read at a
+    time (`STEP_ODS_METHODS` only) with plain data: rows, or an error's words, never an exception object (whose
+    traceback would lead back to this frame)."""
+    from trellis_analytics.readers.ods import OdsReader
+
     try:
         conn, is_pg = _open_read_only(database_url)
     except Exception as exc:  # noqa: BLE001 - said to the host, which raises it
         ready.put(f"could not open the registry read-only: {type(exc).__name__}: {exc}")
         return
+
+    class _ThreadReader(OdsReader):
+        """RE's typed read methods over this thread's connection. Lives only in this frame."""
+
+        def __init__(self):                 # deliberately not OdsReader.__init__: no `url`
+            pass
+
+        def query(self, sql: str, params: tuple = ()) -> list[dict]:
+            return _execute_read_only(conn, is_pg, sql, params)
+
+    reader = _ThreadReader()
     ready.put("")
     try:
         while True:
             item = requests.get()
             if item is None:
                 return
-            sql, params, reply = item
+            name, args, kwargs, reply = item
             try:
-                check_read_sql(sql)
-                reply.put(("ok", _execute_read_only(conn, is_pg, sql, params)))
+                if name not in STEP_ODS_METHODS:
+                    raise PermissionError(f"'{name}' is not one of the reads a step may make "
+                                          f"({', '.join(STEP_ODS_METHODS)})")
+                reply.put(("ok", getattr(reader, name)(*args, **kwargs)))
             except Exception as exc:  # noqa: BLE001
                 reply.put(("error", f"{type(exc).__name__}: {exc}"))
     finally:
         conn.close()
 
 
-def _make_reader(requests):
-    """The step's ODS reader: the Analytic Library reader's methods, sending each query to the reader's thread.
-    It holds a request queue and nothing else: no connection, no registry, no URL."""
+class StepOds:
+    """What a step's `inputs.ods` is: RE's typed read methods (`STEP_ODS_METHODS`) and nothing else. No `query`,
+    no registry, no URL, no connection: each method sends its name and arguments to the reader's own thread, which
+    owns the read-only connection. Trusted in-process code can still reach RE internals (the thread list, the call
+    stack): this narrows what a step is handed, it is not a sandbox."""
+    __slots__ = STEP_ODS_METHODS
+
+    def __init__(self, requests):
+        for name in STEP_ODS_METHODS:
+            object.__setattr__(self, name, _remote(requests, name))
+
+    def __setattr__(self, name, value):
+        raise AttributeError("a step's ODS reader is read-only")
+
+    def __repr__(self) -> str:
+        return "<read-only ODS>"
+
+
+def _remote(requests, name):
     import queue
 
     from trellis_analytics.readers.ods import OdsReader, OdsUnreadable
 
-    class StepReader(OdsReader):
-        __slots__ = ("_requests",)
+    def call(*args, **kwargs):
+        reply: queue.Queue = queue.Queue(maxsize=1)
+        if requests.closed:
+            raise OdsUnreadable("the reader is closed: the step's run has ended")
+        requests.put((name, args, kwargs, reply))
+        try:
+            status, payload = reply.get(timeout=READ_TIMEOUT_SECONDS)
+        except queue.Empty:
+            raise OdsUnreadable(f"the registry did not answer within {READ_TIMEOUT_SECONDS}s") from None
+        if status != "ok":
+            raise OdsUnreadable(f"the registry did not answer: {payload}")
+        return payload
 
-        def __init__(self, q):              # deliberately not OdsReader.__init__: no `url`
-            self._requests = q
+    call.__name__ = name
+    call.__doc__ = getattr(OdsReader, name).__doc__
+    return call
 
-        def registry_view(self):
-            raise AttributeError("a step's ODS reader has no registry view")
 
-        def query(self, sql: str, params: tuple = ()) -> list[dict]:
-            check_read_sql(sql)
-            reply: queue.Queue = queue.Queue(maxsize=1)
-            if self._requests is None:
-                raise OdsUnreadable("the reader is closed: the step's run has ended")
-            self._requests.put((sql, tuple(params), reply))
-            try:
-                status, payload = reply.get(timeout=READ_TIMEOUT_SECONDS)
-            except queue.Empty:
-                raise OdsUnreadable(f"the registry did not answer within {READ_TIMEOUT_SECONDS}s") from None
-            if status != "ok":
-                raise OdsUnreadable(f"the registry did not answer: {payload}")
-            return payload
+class _Requests:
+    """The queue a step's reader sends its reads on, with a flag the host sets when the run ends."""
+    __slots__ = ("_q", "closed")
 
-    return StepReader(requests)
+    def __init__(self):
+        import queue
+
+        self._q, self.closed = queue.Queue(), False
+
+    def put(self, item) -> None:
+        self._q.put(item)
+
+    def get(self):
+        return self._q.get()
 
 
 @contextmanager
@@ -364,56 +373,22 @@ def step_reader(database_url: str):
     import queue
     import threading
 
-    requests: queue.Queue = queue.Queue()
+    requests = _Requests()
     ready: queue.Queue = queue.Queue(maxsize=1)
     thread = threading.Thread(target=_serve, args=(database_url, requests, ready), name="re-step-reader",
                               daemon=True)
     thread.start()
     problem = ready.get(timeout=READ_TIMEOUT_SECONDS)
-    reader = _make_reader(requests)
     try:
         if problem:
             from trellis_analytics.readers.ods import OdsUnreadable
 
             raise OdsUnreadable(problem)
-        yield StepOds(reader)
+        yield StepOds(requests)
     finally:
-        object.__setattr__(reader, "_requests", None)
+        requests.closed = True
         requests.put(None)
         thread.join(timeout=READ_TIMEOUT_SECONDS)
-
-
-#: The reader methods a step may call: SELECTs over RE's stored rows, nothing else.
-STEP_ODS_METHODS = ("query", "row_count_snapshots", "commit_proofs", "catalogue_scope_events",
-                    "resource_scope_events", "outbox_status_counts")
-
-
-class StepOds:
-    """What a step's `inputs.ods` is: the read-only reader methods and nothing else. No registry, no DSN, no
-    connection attribute; each method is a plain function (not bound to the reader). In-process, trusted code
-    can still dig the reader out of a closure: this narrows what a step is handed, it is not a sandbox."""
-    __slots__ = STEP_ODS_METHODS
-
-    def __init__(self, reader):
-        for name in STEP_ODS_METHODS:
-            object.__setattr__(self, name, _forward(reader, name))
-
-    def __setattr__(self, name, value):
-        raise AttributeError("a step's ODS reader is read-only")
-
-    def __repr__(self) -> str:
-        return "<read-only ODS>"
-
-
-def _forward(reader, name):
-    method = getattr(reader, name)
-
-    def call(*args, **kwargs):
-        return method(*args, **kwargs)
-
-    call.__name__ = name
-    call.__doc__ = method.__doc__
-    return call
 
 
 def _without_identity(code, done=None):

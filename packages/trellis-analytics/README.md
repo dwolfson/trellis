@@ -162,13 +162,20 @@ annotations on a SurveyReport and completes the action. If none of the step's re
 
 ### What a step can and cannot reach
 
-A step is in-process, trusted code. RE's host enforces three things: no connection to the resource (a step that
-declares `connection` is refused); `inputs.ods` exposes only the reader's SELECT methods, and each query must be one
-plain SELECT, run in a separate thread on a connection that cannot write (a rolled-back READ ONLY transaction on
-Postgres; read-only mode, `query_only` and a read-only authorizer on SQLite), so the step holds no connection, registry
-object or database URL; and the step's code runs with no Egeria identity, so it cannot act in Egeria (the host
-publishes its results afterwards). This narrows what a step is handed; it is **not a sandbox**. Python code in the
-same process can reach past any of it on purpose, so install only steps you would run as Resource Explorer itself.
+A step is in-process, trusted code. RE's host enforces three things:
+
+- **No connection to the resource.** A step that declares `connection` is refused.
+- **Reads only through RE's typed methods.** `inputs.ods` offers `row_count_snapshots`, `commit_proofs`,
+  `catalogue_scope_events`, `resource_scope_events` and `outbox_status_counts`, each a parameterised SELECT that RE
+  owns. A step cannot send SQL: there is no `query`. Each read runs in a separate thread on a connection that cannot
+  write (one statement per rolled-back READ ONLY transaction on Postgres; read-only mode, `query_only` and a read-only
+  authorizer on SQLite), and the step holds no connection, registry object or database URL. A step that needs a read
+  RE does not offer asks for a new typed method; arbitrary SQL from steps would need a read-only database role, a
+  follow-up for the owner (ops/DDL).
+- **No Egeria identity.** The step's code cannot act in Egeria; the host publishes its results afterwards.
+
+This narrows what a step is handed; it is **not a sandbox**. The thread list, the call stack and the process
+environment still reach Resource Explorer's internals, so install only steps you would run as Resource Explorer itself.
 
 ## How it is run
 
