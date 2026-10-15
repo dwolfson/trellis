@@ -47,8 +47,6 @@ on:
       - "packages/resource-explorer/docs/*.md"
       - "packages/resource-explorer/docs/archive/**"
       - "packages/resource-explorer/docs/experiments/**"
-      - "packages/resource-explorer/docs/incident-evidence/**"
-      - "packages/resource-explorer/docs/incident-2026-09-02-egeria-stall/**"
   workflow_dispatch:
 
 # One run per ref at a time: a newer push to a branch cancels the superseded

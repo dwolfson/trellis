@@ -17,6 +17,19 @@ earlier `architecture-recovery-design.md` and `-phase1-findings.md` were consoli
 2026-09-03 and no longer exist as separate files). `Backlog.md`
 links here.
 
+## Snapshots, one-off Dr.Egeria batches and incident notes (2026-10-15)
+
+- `snapshots/` holds dated, self-labelled snapshots (consolidation, gap audit, project
+  review, work timeline), the `next-ui-*` experiment and round records, and the
+  historical `tutorial.md`. `../next-ui-design-rules.md` stays live.
+- `dr-egeria-batches/` holds Dr.Egeria documents that were executed once (the dated
+  `questions/` repair and update batches), `re-inventory-2026-08-21.csv`, and two
+  stale hand-authored files. None is read at runtime; the live inputs stay in
+  `../dr-egeria/`.
+- `incidents/` keeps only the two written findings of the September 2026 incidents.
+  The raw logs, `docker inspect` output and registry snapshots (about 5 MB) were
+  dropped from the package; they remain in git history before this change.
+
 ## What is deliberately NOT here
 
 Most plans in `docs/` describe work that has shipped, and moving them would have

@@ -661,9 +661,9 @@ where §5 was. Every cross-reference that would otherwise have gone stale was fo
 requalified with the new filename, not just the ones this entry originally predicted: 16 lines in
 `architecture-recovery.md` itself (some hand-written, not the mechanical first-token pass, where
 a line mixed a moving §5.x reference with a staying §6.x one), 17 in `Backlog.md`, and one
-verbatim-quoted title in `consolidation-2026-08-24.md`. The four other RE docs flagged as
+verbatim-quoted title in `archive/snapshots/consolidation-2026-08-24.md`. The four other RE docs flagged as
 candidates (`investigation-framing-design.md`, `feedback-and-curation.md`,
-`question-answering-and-context.md`, plus `consolidation-2026-08-24.md`'s own non-quoted `§5`s)
+`question-answering-and-context.md`, plus `archive/snapshots/consolidation-2026-08-24.md`'s own non-quoted `§5`s)
 turned out to reference their **own** local §5 heading, not architecture-recovery's — checked
 each doc's own heading list before touching anything, left all four alone. Dr.Egeria
 survey-definition/outbox files and `archive/` were out of scope by the existing exclusion
@@ -6445,7 +6445,7 @@ Two things the enumeration taught, kept here so the next deletion is faster:
   the distinction is direction, not count.
 - `RepoArchitectureDiscovery` had **only** the dead term as a scope, because the 2026-09-12
   re-authoring ran the discovery and full documents and not this one. Repaired the same day from its
-  own document's scope blocks (`docs/dr-egeria/questions/arch-discovery-scope-links-2026-09-13.md`,
+  own document's scope blocks (`docs/archive/dr-egeria-batches/arch-discovery-scope-links-2026-09-13.md`,
   0 → 2). Verified through the app's own scoped lookup.
 
 > **Closed 2026-10-01** (backlog closure pass, from `BACKLOG-TRIAGE-2026-09-30`, bucket 1): done in `ae4b7c23`; each cited commit checked present on `main`. Any residual the body below still describes is not closed by this line.
@@ -6465,7 +6465,7 @@ only write it would ever need.
 
 19 of 52 terms had Description/Usage text from an older CSV. No "Update Term" command exists;
 `Create Glossary Term` is a verified upsert (tested on a throwaway term first — same GUID, fields
-updated in place). `docs/dr-egeria/questions/update-questions-2026-09-13.md` holds the 19 blocks,
+updated in place). `docs/archive/dr-egeria-batches/update-questions-2026-09-13.md` holds the 19 blocks,
 executed once (19/19), all 52 verified matching afterwards, GUIDs unchanged. Contains no Link
 commands, so it cannot duplicate anything; not in `_batch.json`.
 
