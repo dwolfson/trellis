@@ -199,15 +199,57 @@ def inventory_sentence(inv: dict, nfiles=None) -> str:
             "2026-09-11 counts vendored code as the repository's own until re-indexed.")
 
 
+def _symbol_row(r: dict) -> dict:
+    """One symbol as a member: name, a detail line that now carries the line
+    and signature, and the same facts as keys (line, signature, doc) so a
+    reader of the JSON does not parse the line. A class carries a
+    children_key and opens to its methods."""
+    from resource_explorer.code_symbols import TYPE_KINDS
+
+    line = int(r.get("start_line") or 0)
+    sig = (r.get("signature") or "").strip()
+    doc = ""
+    for ln in (r.get("docstring") or "").strip().splitlines():
+        if ln.strip():
+            doc = ln.strip()[:160]
+            break
+    bits = [(r.get("kind") or "") + (" · private" if r.get("is_private") else ""),
+            role_label(r.get("file_role"))]
+    if line:
+        bits.append(f"line {line}")
+    detail = " · ".join(bits) + (f" · {sig}" if sig else "") + (f" · {doc}" if doc else "")
+    row = {"name": r["qualified_name"], "detail": detail, "line": line, "signature": sig, "doc": doc,
+           "kind": r.get("kind") or ""}
+    if (r.get("kind") or "") in TYPE_KINDS:
+        row["children_key"] = f"class:{r['file_path']}::{r['qualified_name']}"
+    return row
+
+
+_SYMBOL_COLS = ("qualified_name, kind, name, file_path, start_line, signature, docstring, parent_class, "
+                "COALESCE(is_private,0) AS is_private, file_role")
+
+
 def _symbols_in_file(registry, slug, file_path, scope, limit) -> list[dict]:
     where = "project_slug = ? AND file_path = ?" + ("" if scope == "all" else " AND COALESCE(is_private, 0) = 0")
     with registry._conn() as conn:
         rows = [_row(r) for r in conn.execute(
-            f"SELECT qualified_name, kind, COALESCE(is_private,0) AS is_private, file_role FROM project_code_symbols "
-            f"WHERE {where} ORDER BY kind, qualified_name LIMIT ?", (slug, file_path, limit)).fetchall()]
-    return [{"name": r["qualified_name"],
-             "detail": (r.get("kind") or "") + (" · private" if r.get("is_private") else "")
-             + f" · {role_label(r.get('file_role'))}"} for r in rows]
+            f"SELECT {_SYMBOL_COLS} FROM project_code_symbols "
+            f"WHERE {where} ORDER BY start_line, qualified_name LIMIT ?", (slug, file_path, limit)).fetchall()]
+    return [_symbol_row(r) for r in rows]
+
+
+def _methods_of(registry, slug, key, scope, limit) -> list[dict]:
+    """`class:<file>::<qualified_name>` -> the symbols whose parent_class is
+    that class's simple name, in the same file, by line."""
+    file_path, _, qn = key[len("class:"):].partition("::")
+    simple = qn.rsplit(".", 1)[-1]
+    where = ("project_slug = ? AND file_path = ? AND parent_class = ?"
+             + ("" if scope == "all" else " AND COALESCE(is_private, 0) = 0"))
+    with registry._conn() as conn:
+        rows = [_row(r) for r in conn.execute(
+            f"SELECT {_SYMBOL_COLS} FROM project_code_symbols WHERE {where} "
+            "ORDER BY start_line, qualified_name LIMIT ?", (slug, file_path, simple, limit)).fetchall()]
+    return [_symbol_row(r) for r in rows]
 
 
 def _component_members(registry, slug, scope, limit) -> MemberSet:
@@ -406,6 +448,8 @@ def children_for(registry: ProjectRegistry, slug: str, analysis_id: str, key: st
                  scope: str = "public", limit: int = DEFAULT_LIMIT) -> list[dict]:
     """One level down. Keys are opaque to the client: `file:<path>` today."""
     scope = "all" if scope == "all" else "public"
+    if key.startswith("class:") and analysis_id in ("api_structure", "code_symbol_extraction"):
+        return _methods_of(registry, slug, key, scope, limit)
     if key.startswith("file:") and analysis_id in ("api_structure", "code_symbol_extraction"):
         return _symbols_in_file(registry, slug, key[5:], scope, limit)
     return []

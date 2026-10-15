@@ -7190,10 +7190,10 @@ export async function openMembers({ slug, analysisId, metric = '', title = '' })
     state.memberScope = b.dataset.scope;
     openMembers({ slug, analysisId, metric, title });
   }));
-  // One level down, on demand: a file opens its symbols in place.
-  out.querySelectorAll('[data-children]').forEach((b) => b.addEventListener('click', async () => {
+  // One level down, on demand: a file opens its symbols in place, and a class opens its methods.
+  const wireChildren = (root) => root.querySelectorAll('[data-children]').forEach((b) => b.addEventListener('click', async () => {
     const li = b.closest('li');
-    if (li.querySelector('ul')) { li.querySelector('ul').remove(); return; }
+    if (li.querySelector(':scope > ul')) { li.querySelector(':scope > ul').remove(); return; }
     b.textContent = `${b.textContent} …`;
     let rows;
     try { rows = (await getMemberChildren(slug, analysisId, b.dataset.children, { scope }, apiEntityType(state.resourceType))).members || []; }
@@ -7201,12 +7201,16 @@ export async function openMembers({ slug, analysisId, metric = '', title = '' })
     b.textContent = b.textContent.replace(/ …$/, '');
     const ul = document.createElement('ul');
     ul.className = 'm-0 mt-[2px] w-full list-none p-0 pl-s3';
-    ul.innerHTML = rows.map((m) => `<li class="flex items-baseline gap-s2 py-[1px] text-caps">
-        <span class="min-w-0 break-all font-mono text-chrome-ink">${esc(m.name)}</span>
-        ${m.detail ? `<span class="shrink-0 text-chrome-muted">${esc(m.detail)}</span>` : ''}</li>`).join('')
+    ul.innerHTML = rows.map((m) => `<li class="flex flex-wrap items-baseline gap-x-s2 py-[1px] text-caps">
+        ${m.children_key
+          ? `<button data-children="${esc(m.children_key)}" class="cursor-pointer bg-transparent p-0 text-left font-mono text-chrome-ink underline">${esc(m.name)}</button>`
+          : `<span class="min-w-0 break-all font-mono text-chrome-ink">${esc(m.name)}</span>`}
+        ${m.detail ? `<span class="min-w-0 break-words text-chrome-muted">${esc(m.detail)}</span>` : ''}</li>`).join('')
       || `<li class="text-caps text-chrome-muted">nothing at this level</li>`;
     li.appendChild(ul);
+    wireChildren(ul);
   }));
+  wireChildren(out);
   // The rail may be closed on a narrow shell; a members request opens it.
   if (typeof setRailOpen === 'function') setRailOpen(true);
 }

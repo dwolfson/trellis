@@ -251,8 +251,9 @@ const LIST_NOUNS = {
   api_structure: 'symbols', code_symbol_extraction: 'symbols', architecture_recovery: 'components',
   sub_resource_survey: 'files and folders', manifest_parse: 'manifest entries', interface_surface: 'endpoints',
 };
+const LIST_FIELD_NOUNS = { 'api_structure.classes': 'classes', 'api_structure.functions': 'public functions' };
 function listSentenceHtml(l, i) {
-  const mapped = LIST_NOUNS[l.key];
+  const mapped = LIST_FIELD_NOUNS[`${l.key}.${l.field}`] || LIST_NOUNS[l.key];
   // "68 dependencies · in 3 ecosystems" when the noun is known and the list
   // was grouped; "3 findings · security scan" when it is not.
   const group = l.field.replace(/^by_/, '').replace(/_/g, ' ');

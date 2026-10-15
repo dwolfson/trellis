@@ -754,6 +754,47 @@ def _with_endpoints(rungs: dict[Rung, str], registry, slug: str):
     return out, extents
 
 
+MAX_CLASSES_FULL, MAX_CLASSES_SUMMARY = 60, 15
+MAX_FUNCTIONS_FULL, MAX_FUNCTIONS_SUMMARY = 40, 10
+
+
+def _with_symbols(rungs: dict[Rung, str], registry, slug: str, question: str):
+    """Add the symbol lists to api_structure's rungs: the question-matched
+    block first (classes the question names with their methods, or the
+    symbols under a module it names, or one line saying nothing matched),
+    then the public classes and top-level functions with N-of-M extents.
+    Counts alone ("5,937 symbols") gave the model nothing to list from
+    (resource_explorer/code_symbols.py)."""
+    from resource_explorer.code_symbols import TYPE_KINDS, left_out_tail, list_line, read_symbols, render_matched
+
+    ss = read_symbols(registry, slug)
+    if ss is None or not ss.measured:
+        return rungs, {}
+    classes = [s for s in ss.rows if s.kind in TYPE_KINDS]
+    funcs = [s for s in ss.rows if s.kind == "function" and not s.parent_class]
+    heading = ("symbol lists (public, non-test symbols from the stored code symbols; ordered by file then line; "
+               "public is inferred from naming)")
+    matched = render_matched(question, ss, ss.rows)
+    tail = left_out_tail(ss)
+
+    def block(nc: int, nf: int) -> str:
+        return "\n".join([heading] + matched + list_line("classes", classes, nc, tail)
+                         + list_line("top-level functions", funcs, nf))
+
+    out = dict(rungs)
+    full, summ = block(MAX_CLASSES_FULL, MAX_FUNCTIONS_FULL), block(MAX_CLASSES_SUMMARY, MAX_FUNCTIONS_SUMMARY)
+    out[Rung.FULL] = (out[Rung.FULL] + "\n" + full) if Rung.FULL in out else f"## api_structure\n{full}"
+    out[Rung.SUMMARY] = (out[Rung.SUMMARY] + "\n" + summ) if Rung.SUMMARY in out else f"## api_structure\n{summ}"
+    out.setdefault(Rung.IDENTIFIERS, "## api_structure\nreports: classes, top-level functions")
+    extents = {
+        "classes": {"total": len(classes), "shown": {"FULL": min(len(classes), MAX_CLASSES_FULL),
+                                                      "SUMMARY": min(len(classes), MAX_CLASSES_SUMMARY)}},
+        "functions": {"total": len(funcs), "shown": {"FULL": min(len(funcs), MAX_FUNCTIONS_FULL),
+                                                      "SUMMARY": min(len(funcs), MAX_FUNCTIONS_SUMMARY)}},
+    }
+    return out, extents
+
+
 #: Which analyses have a real, addressable view to point at. Deliberately
 #: narrow: Backlog "a compiled answer should be able to POINT at a view" notes
 #: deep-linking to a perspective/scope is the *prerequisite* work, and today
@@ -1198,6 +1239,13 @@ def compile_context(
             rungs, ep_extent = _with_endpoints(rungs, registry, slug)
             if ep_extent:
                 list_extents.setdefault(analysis_id, {}).update(ep_extent)
+            if rungs and not provenance:
+                provenance = ({"analysis_id": analysis_id, "check": None, "surveyed_at": None},)
+
+        if analysis_id == "api_structure":
+            rungs, sym_extent = _with_symbols(rungs, registry, slug, question)
+            if sym_extent:
+                list_extents.setdefault(analysis_id, {}).update(sym_extent)
             if rungs and not provenance:
                 provenance = ({"analysis_id": analysis_id, "check": None, "surveyed_at": None},)
 
