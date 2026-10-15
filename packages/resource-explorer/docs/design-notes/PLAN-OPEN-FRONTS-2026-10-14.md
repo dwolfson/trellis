@@ -10,7 +10,7 @@ the design session's and say so.
 | Item | Decision (owner) | First step |
 |---|---|---|
 | Inline publish | A synchronous survey does not wait for its publish; show "queued for publish" | PR/CI: flip the default, add the state, proof-backed transition |
-| n_distinct rows stored before the sign fix | Repair if it costs the same as labelling, else the simplest; test environment | PR/CI |
+| n_distinct rows stored before the sign fix | Repair if it costs the same as labelling, else the simplest; test environment | Closed 2026-10-14 with no change: a read-only count found 0 affected rows (64,806 column-profile rows, none with distinct_count < 0, earliest surveyed_at 2026-09-22, after the fix); a repair is not possible anyway, since the denominator pg_class.reltuples is not stored |
 | Stale ConnectorType provider class | A one-time leftover; add a provider-class check to the start-up heal | PR/CI |
 | CI duplication | The cap was already raised; the owner suspects the same tests run several times | PR/CI: inventory of jobs and modes, then cuts |
 | Coverage threshold, seven db_derived analyses | Design session rules: one shared 80% constant, per-analysis override allowed but unused, through result_status's vocabulary | PR/CI |
