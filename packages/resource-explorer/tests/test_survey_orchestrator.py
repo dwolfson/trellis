@@ -515,6 +515,11 @@ class TestApiStructureNeedsSymbols:
             assert "repo_symbol_extraction" in result.skipped_steps["repo_api_structure"]
             assert result.proposals["repo_api_structure"]["steps"] == ["repo_symbol_extraction"]
             assert not result.auto_ran_steps
+            # The skip is a ROW, not an omission: a step_skipped annotation saying why, in plain words.
+            skips = [a for a in result.annotations
+                     if getattr(a, "check_name", "") == "step_skipped"]
+            assert len(skips) == 1
+            assert "repo_symbol_extraction" in skips[0].summary and "Skipped" in skips[0].summary
         finally:
             for p in patchers:
                 p.stop()
