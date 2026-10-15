@@ -43,6 +43,17 @@ from trellis_analytics.manifest import StepManifest, tier_refusal
 log = logging.getLogger(__name__)
 
 
+_STATE_SENTENCE = {ResultState.MEASURED: "measured", ResultState.NOTHING_FOUND: "nothing found",
+                   ResultState.NOT_ESTABLISHED: "not measured", ResultState.NOT_APPLICABLE: "not applicable"}
+
+
+def _state_sentence(state: ResultState, reason: str) -> str:
+    """The short words a result carries when its step gave none: the state, then why. Never empty, so a state shown
+    on screen always has words from the stored data."""
+    words = _STATE_SENTENCE[state]
+    return f"{words} · {reason}" if reason else words
+
+
 class StepRefused(Exception):
     """The wrapper would not run the step, or would not keep what it returned; the sentence says why."""
 
@@ -170,7 +181,7 @@ class SurveyStep:
         value = result.get("value") or {}
         return StepAnnotation(measure=measure,
             annotation_type=self.manifest.annotation_type, analysis_step=name, scope=scope,
-            summary=str(result.get("summary") or ""), explanation=reason,
+            summary=str(result.get("summary") or "") or _state_sentence(rstate, reason), explanation=reason,
             resource_properties={str(k): str(v) for k, v in value.items() if v is not None},
             envelope=envelope)
 

@@ -1,12 +1,12 @@
 <!--
-GENERATED from the manifest of 'database_staleness' (trellis-step-database-staleness 0.2.0) by
+GENERATED from the manifest of 'database_staleness' (trellis-step-database-staleness 0.2.1) by
 packages/resource-explorer/scripts/generate_engine_host_declaration.py. Do not hand-edit; regenerate.
 Design: docs/design-notes/DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE.md §4.3 (engine host, step 3).
 
 Declares the Analytic Library step 'database_staleness' as a service of Resource Explorer's engine, so Egeria can
 dispatch it: initiating ResourceExplorerSurvey::re-database-staleness creates an engine action with request type re-database-staleness, which RE's engine host
 claims, runs through its step host and completes with one of survey-completed, survey-invalid, survey-failed
-(survey-invalid when there is nothing to derive).
+(survey-completed when there is nothing to derive).
 
 Run it with `resource-explorer dr-egeria run engine-host/library/database_staleness.md`. RE's bootstrap never runs it.
 Its pyegeria steps (database_staleness.pyegeria-steps.json) run first, each find-or-create:
@@ -40,10 +40,10 @@ ACTIVE
 | re_analysis_step | database_staleness |
 | engine_host | resource-explorer-worker |
 | request_type | re-database-staleness |
-| nothing_to_derive_guard | survey-invalid |
+| nothing_to_derive_guard | survey-completed |
 | kind | step |
 | source | ods |
-| version | 0.2.0 |
+| version | 0.2.1 |
 | resource_types | database |
 | annotation_type | ResourceMeasureAnnotation |
 | questions | Q-0041 |

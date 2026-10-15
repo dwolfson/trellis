@@ -176,8 +176,80 @@ function rollup(g) {
     fmtN(n)} of ${fmtN(real)} tables not visible to the survey's user</div>` : '';
 }
 
+/* ── step results: annotations that carry a result state (RE's own steps, e.g. Database Staleness) ──
+ * Their rows are the measured subject (additionalProperties.scope), a state, one sentence and the key values in
+ * resourceProperties -- not a name column over generic keys. Rows that say "not measured", "nothing found" or "not
+ * applicable" sit behind a count, so what was measured is what a person sees first. Every class string below is a
+ * whole literal (no interpolation) so the Tailwind scan finds it. */
+const STATE_ORDER = ['measured', 'nothing_found', 'not_established', 'not_applicable'];
+const STATE_CUE = {
+  measured: { glyph: '✓', words: 'measured', ok: true },
+  nothing_found: { glyph: '∅', words: 'nothing found', ok: true },
+  not_established: { glyph: '?', words: 'not measured', ok: false },
+  not_applicable: { glyph: '·', words: 'not applicable', ok: false },
+};
+const stateOf = (a) => String(((a && a.detail) || {}).additional_properties?.resultState || '');
+/** A result with a state in its envelope (and a state this viewer knows). */
+export const isStepResult = (a) => STATE_ORDER.includes(stateOf(a));
+
+/** The sentence a row carries: the stored summary, else "state · reason" from the stored explanation, never empty. */
+export function sentenceOf(a) {
+  if (a.summary) return a.summary;
+  const st = STATE_CUE[stateOf(a)];
+  const why = a.explanation || ((a.detail || {}).additional_properties || {}).resultStateReason || '';
+  return st ? (why ? `${st.words} · ${why}` : st.words) : why;
+}
+
+const wordsOfKey = (k) => String(k).replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
+
+/** The key values of a result: its resourceProperties, a handful, as "label value". */
+function valuesHtml(a) {
+  const rp = ((a.detail || {}).resource_properties) || {};
+  const keys = Object.keys(rp).filter((k) => rp[k] !== '' && rp[k] !== null && rp[k] !== undefined
+    && !['basis', 'sourceReport'].includes(k));
+  if (!keys.length) return '';
+  return keys.slice(0, 5).map((k) => `<span class="text-ink-muted">${esc(wordsOfKey(k))}</span> <span class="tnum">${
+    esc(/^-?\d+$/.test(String(rp[k])) ? fmtN(Number(rp[k])) : rp[k])}</span>`).join(' · ');
+}
+
+const scopeOf = (a) => String(((a.detail || {}).additional_properties || {}).scope || nameOf(a) || '');
+
+function stepRowHtml(a) {
+  const st = STATE_CUE[stateOf(a)];
+  const why = a.explanation || '';
+  return `<tr data-report-row data-result-state="${esc(stateOf(a))}"><td class="pr-s3 font-mono text-ink">${esc(scopeOf(a))}</td>
+    <td class="${st.ok ? 'pr-s3 whitespace-nowrap text-state-ok' : 'pr-s3 whitespace-nowrap text-ink-muted'}"><span class="font-glyph" aria-hidden="true">${st.glyph}</span> ${esc(st.words)}</td>
+    <td class="pr-s3 text-ink" title="${esc(why)}">${esc(sentenceOf(a))}</td>
+    <td class="text-ink">${valuesHtml(a)}</td></tr>`;
+}
+
+const stepTable = (items) => `<table class="mt-s2 text-caveat"><tbody>${
+  [...items].sort((x, y) => scopeOf(x).localeCompare(scopeOf(y))).map(stepRowHtml).join('')}</tbody></table>`;
+
+/** "Database staleness · 7 measured · 256 not measured": the group's header, counts by state in a fixed order. */
+export function stepGroupHeader(type, items) {
+  const counts = STATE_ORDER.map((k) => [k, items.filter((a) => stateOf(a) === k).length]).filter(([, n]) => n);
+  return `${type}${counts.map(([k, n]) => ` · ${fmtN(n)} ${STATE_CUE[k].words}`).join('')}`;
+}
+
+function stepGroupHtml(g) {
+  const shown = g.items.filter((a) => stateOf(a) === 'measured');
+  const hidden = STATE_ORDER.filter((k) => k !== 'measured')
+    .map((k) => [k, g.items.filter((a) => stateOf(a) === k)]).filter(([, items]) => items.length);
+  return `<details class="mt-s2 border-b border-rule pb-s2" data-report-group="${esc(g.type)}" data-report-kind="result" data-report-results>
+    <summary class="cursor-pointer text-answer text-ink" title="${esc(g.description)}" data-report-header>${
+  esc(stepGroupHeader(g.type, g.items))}</summary>
+    ${shown.length ? stepTable(shown) : ''}
+    ${hidden.map(([k, items]) => `<details class="mt-s2" data-report-collapsed="${esc(k)}">
+      <summary class="${STATE_CUE[k].ok ? 'cursor-pointer text-caveat text-state-ok' : 'cursor-pointer text-caveat text-ink-muted'}" data-report-collapsed-count><span class="font-glyph" aria-hidden="true">${
+  STATE_CUE[k].glyph}</span> <span class="tnum">${fmtN(items.length)}</span> ${esc(STATE_CUE[k].words)}</summary>
+      ${stepTable(items)}</details>`).join('')}
+  </details>`;
+}
+
 /** One group: collapsed by default; the generic type description is the summary's hover title, once. */
 function groupHtml(g, prefix, cap) {
+  if (g.items.length && g.items.every(isStepResult)) return stepGroupHtml(g);
   const cols = SPECS[g.kind] || genericSpec(g.items);
   const unnamed = g.items.filter((a) => !nameOf(a)).length;
   const more = g.items.length - cap;

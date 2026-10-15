@@ -67,8 +67,9 @@ survey-completed no report is written (`NothingToPublish`), as db_derived writes
 **Mixed processes (step 4, `mixed_process.py`).** An action Egeria creates as a later step of a process (a native
 survey, then RE's step) carries the previous step's report as the `surveyReport` action target. That target is never
 an asset. A library step that declares the `source_report` input is handed the report as plain data, read here, and
-records `derived_from_report`; without the target it completes survey-invalid ("no surveyReport action target;
-nothing to derive from"). An action whose previous step did not complete with the linking guard is left unclaimed.
+records `derived_from_report`. Without the target the step runs standalone and completes survey-completed, its
+report-based measure recorded as "not measured · no survey report in this run"; survey-invalid is only for a
+surveyReport that is present and wrong (another subject, not the predecessor's, or more than one), naming which. An action whose previous step did not complete with the linking guard is left unclaimed.
 
 **Completion only from proof.** The outcome (guard, status, message, report GUID, annotation count) is
 written to the row's `target.outcome` before Egeria is told; `target.completion_recorded_at` marks that
@@ -136,8 +137,8 @@ NO_TARGET_SENTENCE = ("no asset action target was supplied, so the survey was no
 
 #: Engine host step 4 (SLICE-ENGINE-HOST-STEP4-MIXED-PROCESS.md): a library step that declares the `source_report`
 #: input derives from the report the previous process step wrote, which Egeria hands it as the `surveyReport` action
-#: target. Without that target it has nothing to derive from: survey-invalid, no report, never survey-completed.
-NO_SOURCE_REPORT_SENTENCE = "no surveyReport action target; nothing to derive from"
+#: target. Without that target the step runs standalone (design ruling, 2026-10-15) and records the absence of the
+#: report-based measure; survey-invalid is only for a report that is present and wrong.
 
 #: The input a library step's manifest declares to be handed the previous step's report (trellis_analytics).
 SOURCE_REPORT_INPUT = "source_report"
@@ -936,10 +937,12 @@ def _decide_one(registry, target: dict) -> dict:
     report_extra: dict = {}
     if library is not None and SOURCE_REPORT_INPUT in (getattr(library.manifest, "inputs", None) or []):
         source_guid = (target.get("source_report") or "").strip()
-        if not source_guid:
-            return _outcome(SURVEY_INVALID, f"{request_type} on {slug}: {NO_SOURCE_REPORT_SENTENCE}")
         try:
-            runner_kwargs[SOURCE_REPORT_INPUT] = _read_source_report(source_guid, target.get("asset_guid") or "")
+            # No surveyReport target is a standalone run (design ruling, 2026-10-15): the step runs from what it has
+            # and records the absence of the report-based measure. survey-invalid is only for a report that is
+            # present and wrong.
+            if source_guid:
+                runner_kwargs[SOURCE_REPORT_INPUT] = _read_source_report(source_guid, target.get("asset_guid") or "")
         except SourceReportRefused as exc:
             # Readable, and not this database's survey report: the supplied information is invalid.
             return _outcome(SURVEY_INVALID, f"{request_type} on {slug}: the surveyReport action target "
@@ -947,7 +950,8 @@ def _decide_one(registry, target: dict) -> dict:
         except Exception as exc:  # noqa: BLE001 -- the input could not be read: the survey failed, in its words
             return _outcome(SURVEY_FAILED, f"{request_type} on {slug}: the surveyReport action target "
                             f"{source_guid} could not be read: {_short(exc)}", derived_from_report=source_guid)
-        report_extra["derived_from_report"] = source_guid
+        if source_guid:
+            report_extra["derived_from_report"] = source_guid
 
     from resource_explorer.surveyors import result_status
     from resource_explorer.surveyors.survey_definition_executor import NothingToPublish, SurveyDefinitionExecutor

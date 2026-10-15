@@ -70,9 +70,16 @@ over an older stored inventory; the step records which report it read
 in its own report's additionalProperties (`derived_from_report`).
 
 If `surveyReport` is absent (the process was started at step 2, or the
-native service did not add it), the step completes `survey-invalid` with
-the sentence "no surveyReport action target; nothing to derive from",
-never `survey-completed`.
+native service did not add it), the step runs standalone, from the stored
+snapshots as in step 3, and completes `survey-completed`. The writes
+measure is omitted and its absence is recorded as "writes since statistics
+reset: not measured · no survey report in this run". (Ruling 2026-10-15,
+replacing "survey-invalid, nothing to derive from".) With one snapshot the
+staleness rows say "not measured · one snapshot only" and the run still
+completes: an absence honestly recorded is not a wrong input.
+`survey-invalid` is only for a `surveyReport` that is present and wrong,
+and its message names which: the wrong subject, not the previous step's
+report, or more than one `surveyReport` target.
 
 ## 5.1 Pieces
 
@@ -80,7 +87,7 @@ never `survey-completed`.
 |---|---|---|---|
 | M1 | **Process declaration generator.** Extends `scripts/generate_engine_host_declaration.py` with `--mixed-process`: emits a Dr.Egeria document creating the process, its two steps (step 1 referencing the content pack's `PostgreSQLSurvey` type by qualified name, step 2 referencing `ResourceExplorerSurvey::re-database-staleness`), and the one next-step link with its guard. Under `docs/dr-egeria/engine-host/processes/postgres-survey-then-derived.md`. Test: the document's step types, guard and order equal a registry entry `MIXED_PROCESSES["postgres_survey_then_derived"]`. If Dr.Egeria's Link Action to Action Executor or next-step command is unverified (ISSUE-150), E2 verifies them live before M1 is trusted | RE `scripts/`, docs | No; the owner runs the document |
 | M2 | **Read-only probe** of one existing native `PostgreSQLSurvey` engine action and, if any exists, one process instance: the action-target names and whether `surveyReport` is added on completion; what a next engine action carries. Saved as fixtures. This settles the target name the design assumes | gate venv | Read-only |
-| M3 | **Target reading in the handler.** `engine_action` handler reads all action targets, maps the asset target to the slug and passes `source_report` when a `surveyReport` target is present; the step host passes it to the step; `re-database-staleness` accepts it and records `derived_from_report`. Absent target → `survey-invalid` with the sentence above | `run_queue.py`, `survey_step_host.py`, the library step | Egeria: claim, status, completion, the report, as step 3 |
+| M3 | **Target reading in the handler.** `engine_action` handler reads all action targets, maps the asset target to the slug and passes `source_report` when a `surveyReport` target is present; the step host passes it to the step; `re-database-staleness` accepts it and records `derived_from_report`. Absent target → standalone `survey-completed` with writes "not measured" (ruling 2026-10-15); a wrong target → `survey-invalid` naming the mismatch | `run_queue.py`, `survey_step_host.py`, the library step | Egeria: claim, status, completion, the report, as step 3 |
 | M4 | **Process grouping in Understanding.** A reader that groups engine actions by the process instance they belong to (the engine action's anchor or `GovernanceActionProcessInstance` relationship, confirmed in M2) and shows one run line: "Postgres survey then derived · step 1 PostgreSQLSurvey ✓ report a1b2 · step 2 re-database-staleness ✓ report c3d4 · started by <requester> 10-15". Each step's report opens as today. `derive_native_state` is unchanged for each action | `native_survey_run.py` reader, Understanding's survey history | Read-only |
 | M5 | **Trigger.** The owner runs `initiate_gov_action_process("GovActionProcess::ResourceExplorer::PostgresSurveyThenDerived", action_targets=[coco_pharma database asset])` from Dr.Egeria, or RE's Run route gains the process as a choice beside `PostgreSQLSurvey` through `EgeriaSurveyPort` (same call shape) | Dr.Egeria or RE | Egeria write (the owner's) |
 
@@ -93,9 +100,14 @@ never `survey-completed`.
    `source_report`, the step reads the report through the existing
    reader (fake binds its real signature), and the step's report carries
    `derived_from_report` equal to the input GUID.
-3. **Missing report target.** Same action without `surveyReport`: the
-   step completes `survey-invalid` with the sentence; no report is
-   published; no `survey-completed` call.
+3. **Wrong report target.** A `surveyReport` of another subject, not the
+   previous step's report, or two `surveyReport` targets: the step completes
+   `survey-invalid`, the message naming which; no report is published.
+   **Missing report target** is not a wrong one: the same action without
+   `surveyReport` completes `survey-completed` standalone, staleness from
+   the snapshots and writes "not measured · no survey report in this run"
+   (with one snapshot, both absences; report present with no snapshots,
+   writes measured and staleness "not measured").
 4. **Step 2 is claimed only as step 2.** An approved action of RE's type
    whose process instance's previous action is not `COMPLETED` with
    `survey-completed` is not claimed (Egeria should never create it, so
@@ -132,7 +144,10 @@ The owner runs M1's document, then M5 on coco_pharma. Then:
   `survey-failed`, no step 2, Understanding says "step 2 not started ·
   step 1 failed".
 - **Negative, live:** `initiate_gov_action_type` on step 2's type alone
-  with only the asset target: `survey-invalid` with the sentence.
+  with a `surveyReport` of another database (or not the previous step's):
+  `survey-invalid`, the message naming the mismatch.
+- **Standalone, live:** step 2's type alone with only the asset target:
+  `survey-completed`; writes "not measured · no survey report in this run".
 
 ## 5.4 Not in the slice
 

@@ -46,7 +46,6 @@ TECH = "PostgreSQL Relational Database"
 NATIVE_REPORT = "cb92eedc-5e24-4da7-ba5e-fc11d1707d8f"
 INSTANCE = "06994d5d-a228-408c-8842-fd6256db4c34"
 SURVEY_STEP = "532d040d-e2ca-45b8-9167-675d6e20128f"
-NO_REPORT_WORDS = "no surveyReport action target; nothing to derive from"
 
 
 def _fx(name: str):
@@ -348,19 +347,28 @@ def test_2_step_2_reads_the_survey_report_target_and_records_derived_from_report
 
 # ── test 3: missing report target (M3) ─────────────────────────────────────────
 
-def test_3_without_a_survey_report_target_step_2_is_survey_invalid_and_publishes_nothing(
+def test_3_without_a_survey_report_target_step_2_runs_standalone_and_completes(
         staleness_installed, reg, egeria, no_connection):
+    """Ruling 2026-10-15: no surveyReport target is a standalone run, not an invalid one. One snapshot: both
+    measures say why they are not measured, and the run completes survey-completed."""
     _step2_action(egeria, "ea-alone", report=None)
     assert _sweep(reg).claimed == ["ea-alone"]
     _run_queue_once(reg)
     done = egeria.actions["ea-alone"]["completion"]
-    assert done["status"] == "INVALID" and done["guards"] == ["survey-invalid"], done
-    assert NO_REPORT_WORDS in done["message"]
-    assert done["targets"] == []
-    assert egeria.reports() == [] and not egeria.method_calls("create_annotation")
-    assert not egeria.method_calls("get_asset_by_guid")           # nothing to read, nothing read
+    assert done["status"] == "ACTIONED" and done["guards"] == ["survey-completed"], done
+    assert not egeria.method_calls("get_asset_by_guid")           # no report to read, none read
+    [(report_guid, body)] = egeria.reports()
+    assert "derived_from_report" not in body["properties"].get("additionalProperties", {})
+    texts = {}
+    for r in egeria.relationships:
+        if r["end1"] == report_guid and egeria.elements.get(r["end2"], {}).get("type") == "Annotation":
+            p = egeria.elements[r["end2"]]["body"]["properties"]
+            texts[(p["annotationType"], p["additionalProperties"]["scope"])] = p
+    assert texts[("Database Staleness", "public.orders")]["summary"] == "not measured · one snapshot only"
+    assert texts[("Writes Since Statistics Reset", "coco_pharma")]["summary"] == \
+        "writes since statistics reset: not measured · no survey report in this run"
     outcome = _row(reg)["target"]["outcome"]
-    assert outcome["guard"] == "survey-invalid" and not outcome["report_guid"]
+    assert outcome["guard"] == "survey-completed" and outcome["report_guid"] == report_guid
 
 
 def test_3_an_unreadable_report_target_fails_in_its_words(staleness_installed, reg, egeria, no_connection):

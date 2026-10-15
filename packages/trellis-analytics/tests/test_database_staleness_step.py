@@ -222,8 +222,11 @@ def test_with_no_report_there_is_no_writes_annotation_and_staleness_is_step_3s(s
     _survey(reg, "shop", "2026-10-01T00:00:00", [("public", "orders", "BASE TABLE", 100)])
     _survey(reg, "shop", "2026-10-08T00:00:00", [("public", "orders", "BASE TABLE", 130)])
     anns = _run_both(url, None)
-    assert [k for k in anns if k[0]] == []
-    assert list(anns) == [("", "public.orders")]
+    # standalone: the second measure is absent and the absence is recorded
+    assert list(anns) == [("", "public.orders"), (WRITES, "shop")]
+    w = anns[(WRITES, "shop")]
+    assert w.envelope.result_state.value == "not_established"
+    assert w.summary == "writes since statistics reset: not measured · no survey report in this run"
     assert anns[("", "public.orders")].resource_properties["rowsChanged"] == "30"
 
 
@@ -349,7 +352,7 @@ def test_the_manifest_declares_its_request_type_and_nothing_to_derive_guard(stal
     from trellis_analytics.discovery import discover
 
     m = discover()["database_staleness"]
-    assert (m.request_type, m.nothing_to_derive_guard) == ("re-database-staleness", "survey-invalid")
+    assert (m.request_type, m.nothing_to_derive_guard) == ("re-database-staleness", "survey-completed")
 
 
 # ── RE runs it ──
@@ -425,3 +428,57 @@ def test_re_runs_the_step_end_to_end_and_the_analysis_pane_reads_the_envelope(
 def test_survey_step_host_is_named_and_aliased_as_the_brief_names_it():
     from resource_explorer.surveyors import survey_step_host
     assert survey_step_host.ExternalStep is survey_step_host.SurveyStepHost
+
+
+# ── a state on screen carries short words from the stored data: no annotation of any state has an empty summary ──
+
+def test_one_snapshot_says_exactly_not_measured_one_snapshot_only(staleness_installed, make_registry):
+    reg, url = make_registry("shop")
+    _survey(reg, "shop", "2026-10-01T00:00:00", [("public", "orders", "BASE TABLE", 100)])
+    a = _run_step(url)["public.orders"]
+    assert a.summary == "not measured · one snapshot only"
+
+
+def test_every_state_has_a_summary_sentence(staleness_installed, make_registry):
+    reg, url = make_registry("shop")
+    # never surveyed
+    never = _run_both(url, None)
+    # two snapshots: measured, nothing found, a table gone from the previous one, an unmeasured count, a view
+    _survey(reg, "shop", "2026-10-01T00:00:00", [
+        ("public", "a", "BASE TABLE", 1), ("public", "b", "BASE TABLE", 5), ("public", "d", "BASE TABLE", None),
+        ("public", "v", "VIEW", None)])
+    _survey(reg, "shop", "2026-10-08T00:00:00", [
+        ("public", "a", "BASE TABLE", 9), ("public", "b", "BASE TABLE", 5), ("public", "c", "BASE TABLE", 3),
+        ("public", "d", "BASE TABLE", 4), ("public", "v", "VIEW", None)])
+    two = _run_both(url, _report())
+    states = {a.envelope.result_state.value for a in two.values()}
+    assert states == {"measured", "nothing_found", "not_established", "not_applicable"}
+    for a in list(never.values()) + list(two.values()):
+        assert a.summary.strip(), (a.measure, a.scope, a.envelope.result_state.value)
+    assert two[("", "public.c")].summary == "not measured · table not in the previous survey"
+    assert two[("", "public.d")].summary == "not measured · row count missing in a survey"
+    assert two[("", "public.v")].summary == "not applicable · a view holds no rows"
+    assert never[("", "shop")].summary == "not measured · no survey has counted rows yet"
+    assert two[(WRITES, "public.odd")].summary == "not measured · a write counter is missing in the survey report"
+
+
+def test_a_report_with_no_table_measurements_has_a_summary(staleness_installed, make_registry):
+    reg, url = make_registry("shop")
+    anns = _run_both(url, {"guid": REPORT_GUID, "at": "x", "annotations": []})
+    assert anns[(WRITES, "shop")].summary == "not measured · the survey report has no table measurements"
+
+
+def test_the_library_never_stores_an_empty_summary_for_a_step_that_gave_none(staleness_installed):
+    from trellis_analytics.envelope import ResultState
+    from trellis_analytics.step import HostContext, SurveyStep
+    from trellis_analytics.manifest import StepManifest
+    from trellis_analytics.discovery import discover
+
+    m = discover()["database_staleness"]
+    step = SurveyStep(m)
+    host = HostContext(resource_type="database", slug="s", producing_run="r")
+    for state, reason, want in (("not_established", "why", "not measured · why"),
+                                ("not_applicable", "because", "not applicable · because"),
+                                ("nothing_found", "", "nothing found"), ("measured", "", "measured")):
+        a = step._annotate({"scope": "x", "state": state, "reason": reason}, host, "2026-10-15T00:00:00Z")
+        assert a.summary == want
