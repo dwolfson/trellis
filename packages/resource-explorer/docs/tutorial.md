@@ -1,5 +1,7 @@
 # Building Project Explorer: An Incremental Design Tutorial
 
+**Status:** historical. Narrates how the predecessor Project Explorer was built; do not follow as instructions.
+
 > **HISTORICAL — do not follow this as instructions.** This tutorial narrates how
 > **Project Explorer**, Resource Explorer's predecessor, was built. It teaches a
 > stack that no longer exists here: Milvus was replaced by pgvector, and the

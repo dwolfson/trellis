@@ -1,5 +1,7 @@
 # Resource Explorer — User Guide
 
+**Status:** stale. Last revised 2026-08-21; predates private investigations, work lists, the Curate split and single Publish. Rewrite in progress.
+
 **Last revised:** 2026-08-21
 
 Resource Explorer discovers, surveys, and catalogs information resources using Egeria as the metadata catalog. This guide covers the web UI, the eight user intents, and how to get the most out of each workflow.

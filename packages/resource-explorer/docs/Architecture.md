@@ -1,5 +1,7 @@
 # Resource Explorer — Architecture
 
+**Status:** live. Module map, flows and key decisions; the zone passage was corrected 2026-10-14.
+
 **Last revised:** 2026-08-30. Supersedes the 2026-06-10 revision, which described a
 SQLite-only registry, ten sub-surveyors and eleven web routes — the counts are now 51 tables,
 33 sub-surveyors and 25 route modules.

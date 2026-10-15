@@ -1,5 +1,7 @@
 # `/next` — design rules
 
+**Status:** live. Design rules the Next UI is built to.
+
 Rules the experimental UI is built to, each earned by something that went
 wrong or by a design round that settled an argument. Short on purpose: a rule
 nobody can recall is not a rule.
