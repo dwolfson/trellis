@@ -25,7 +25,9 @@ exactly as native leaves it:
 * its `governanceEngineGUID` is RE's engine (resolved once by qualified name, `ENGINE_QUALIFIED_NAME`);
 * its `actionStatus` is `APPROVED` and its `processingEngineUserId` is empty (Egeria's own claim gate, C5);
 * its `requestType` is one RE declares (`supported_request_types()`, the same function the declaration
-  generator uses); an unknown type is left unclaimed and logged once (§3.3; Q-M7 is still open);
+  generator uses): a built-in step's (`ENGINE_HOST_STEPS`), or an installed Analytic Library step's, read from its
+  manifest through `survey_step_host.library_steps()` (step 3). An unknown type, including a library step's whose
+  package is not installed here, is left unclaimed and logged once (§3.3; Q-M7 is still open);
 * none of its targets is a database with a private owner (`registry.private_owner_for_entity`). The engine
   host is unattended, so it is a daemon; private work never runs as the service account (owner, Q-O3). The
   owner runs such work attended from RE. Claiming and then refusing would write a FAILED action into a
@@ -55,6 +57,12 @@ nothing is written and nothing is logged as an error (§3.3 step 2).
 `target` carries everything the handler needs (`_row_target`). `run_queue.HANDLERS["engine_action"]` runs it
 as `Daemon(ENGINE_HOST, requested_by=...)` (`run_queue._run_as_engine_host`), not `_run_as_requester`'s
 `RUN_QUEUE`. Such a row is never cancellable from RE (`run_queue.UNCANCELLABLE_KINDS`).
+
+**Library steps (step 3).** A library request type runs its step through the same synthetic-step executor (the
+step host, `survey_step_host.SurveyStepHost`, stores its annotations in `step_annotations`), and the report carries
+those annotations (`LibraryStep.report_annotations`) through the same `_publish`. When none of its results is a
+derivation, the run completes with the guard the manifest declares for nothing to derive; with a guard other than
+survey-completed no report is written (`NothingToPublish`), as db_derived writes none when it is skipped.
 
 **Completion only from proof.** The outcome (guard, status, message, report GUID, annotation count) is
 written to the row's `target.outcome` before Egeria is told; `target.completion_recorded_at` marks that
@@ -156,7 +164,13 @@ def request_type_for_step(step_key: str) -> str:
 
 def governance_action_type_qn(step_key: str) -> str:
     """`ResourceExplorerSurvey::re-db-derived`, the shape of native `PostgreSQLSurvey::survey-postgres-database`."""
-    return f"{ENGINE_QUALIFIED_NAME}::{request_type_for_step(step_key)}"
+    return governance_action_type_qn_for(request_type_for_step(step_key))
+
+
+def governance_action_type_qn_for(request_type: str) -> str:
+    """The GovernanceActionType of a request type: `ResourceExplorerSurvey::<request type>`. A library step declares
+    its request type in its manifest, so its type is named from that, never re-derived from the step name."""
+    return f"{ENGINE_QUALIFIED_NAME}::{request_type}"
 
 
 def service_qualified_name(step_key: str) -> str:
@@ -173,9 +187,20 @@ def declared_steps() -> dict:
     return {key: DATABASE_STEP_REGISTRY[key] for key in ENGINE_HOST_STEPS}
 
 
+def library_steps() -> dict:
+    """{request type: survey_step_host.LibraryStep} for the installed Analytic Library steps RE's engine runs."""
+    from resource_explorer.surveyors.survey_step_host import library_steps as _library_steps
+
+    return _library_steps(ENTITY_TYPE)
+
+
 def supported_request_types() -> dict[str, str]:
-    """{request type: step key} RE's engine can run."""
-    return {request_type_for_step(key): key for key in declared_steps()}
+    """{request type: step key} RE's engine can run: the built-in steps, then the library's (which can never take
+    a built-in's request type or name: `survey_step_host._admit` refuses it)."""
+    out = {request_type_for_step(key): key for key in declared_steps()}
+    for request_type, step in library_steps().items():
+        out.setdefault(request_type, step.step_key)
+    return out
 
 
 def is_claim_refused(exc: BaseException) -> bool:
@@ -788,18 +813,36 @@ def _decide_one(registry, target: dict) -> dict:
         return _outcome(SURVEY_INVALID, f"Resource Explorer did not run {target.get('request_type')}: {refusal}")
     slug, step_key = target.get("slug") or "", target.get("step_key") or ""
     request_type = target.get("request_type") or ""
+    library = None
     if step_key not in declared_steps():
-        return _outcome(SURVEY_FAILED, f"step {step_key!r} is not one Resource Explorer's engine runs")
+        library = library_steps().get(request_type)
+        if library is None or library.step_key != step_key:
+            return _outcome(SURVEY_FAILED, f"step {step_key!r} ({request_type}) is not one Resource Explorer's "
+                            "engine runs here" + ("" if library else "; if it is an Analytic Library step, its "
+                                                  "package is not installed where the engine host runs"))
 
     from resource_explorer.surveyors import result_status
-    from resource_explorer.surveyors.survey_definition_executor import SurveyDefinitionExecutor
+    from resource_explorer.surveyors.survey_definition_executor import NothingToPublish, SurveyDefinitionExecutor
 
     published: dict = {}
 
     def publisher(entity, step_outputs, surveyed_at, _registry):
         """The executor's publish step for this run: ONE native-shaped report, linked to the action. The
         executor records what this returns (the report GUID) or raises as the run's publish words."""
-        annotations = [a for out in step_outputs if isinstance(out, dict) for a in (out.get("annotations") or [])]
+        if library is None:
+            annotations = [a for out in step_outputs if isinstance(out, dict)
+                           for a in (out.get("annotations") or [])]
+        else:
+            records = [r for out in step_outputs if isinstance(out, dict)
+                       for r in (out.get("step_annotations") or [])]
+            if not library.derived(records):
+                why = (f"{step_key} on {slug}: nothing to derive ({library.nothing_to_derive_reason(records)}): "
+                       "an absence, not a finding")
+                if library.nothing_to_derive_guard != SURVEY_COMPLETED:
+                    published["outcome"] = _outcome(library.nothing_to_derive_guard, why,
+                                                    annotation_count=len(records))
+                    raise NothingToPublish(why)
+            annotations = library.report_annotations(records)
         published["outcome"] = _publish(registry, target, annotations)
         if published["outcome"]["guard"] != SURVEY_COMPLETED:
             raise EngineHostPublishFailed(published["outcome"]["message"])
@@ -822,8 +865,9 @@ def _decide_one(registry, target: dict) -> dict:
         # db_derived's precondition: no stored schema inventory. "an absence, not a finding" (survey-invalid:
         # "the supplied information (such as the asset) is invalid for this type of survey").
         return _outcome(SURVEY_INVALID, f"{step_key} did not run on {slug}: "
-                        f"{report.get('detail') or 'its precondition is not met'} (no stored schema inventory "
-                        "to derive from: an absence, not a finding)")
+                        f"{report.get('detail') or 'its precondition is not met'}"
+                        + ("" if library else " (no stored schema inventory to derive from: an absence, not a "
+                           "finding)"))
     errors = "; ".join(str(e) for e in ran.get("errors") or []) or f"step status {status or 'unknown'}"
     if status == "ok":
         errors = f"the step produced no output to publish ({errors})"
@@ -929,7 +973,8 @@ def _record_submission(registry, target: dict, principal) -> str:
     slug, guid = target.get("slug") or "", target["engine_action_guid"]
     if not slug:
         return ""
-    process_qn = governance_action_type_qn(target.get("step_key") or "")
+    process_qn = governance_action_type_qn_for(target.get("request_type") or
+                                               request_type_for_step(target.get("step_key") or ""))
     try:
         if any(r.get("engine_action_guid") == guid
                for r in registry.list_native_survey_runs(ENTITY_TYPE, slug, process_qn)):

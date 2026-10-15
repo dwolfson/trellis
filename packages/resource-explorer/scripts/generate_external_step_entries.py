@@ -1,9 +1,10 @@
-"""Generate, from installed step manifests, what RE and Egeria need to know about user steps (extensibility brief 2c):
+"""Generate, from installed step manifests, what RE needs to know about user steps (extensibility brief 2c): the
+`analysis_catalog.yaml` entries, written between the GENERATED markers at the end of each `<type>_analyses` list
+(`survey_step_host.catalog_entry`). Generated only: this script never talks to Egeria.
 
-1. the `analysis_catalog.yaml` entries, written between the GENERATED markers at the end of each
-   `<type>_analyses` list (`survey_step_host.catalog_entry`), and
-2. the Dr.Egeria document declaring each step (`trellis_analytics.declare.declaration_markdown`), written to
-   `docs/dr-egeria/analytic-functions/<step>.md`. Generated only: this script never talks to Egeria.
+Each step's Egeria declaration is the engine host's, written by `scripts/generate_engine_host_declaration.py` to
+`docs/dr-egeria/engine-host/library/<step>.md` (engine host, step 3). This script used to write a provisional one to
+`docs/dr-egeria/analytic-functions/<step>.md` (a GovernanceActionType with no executor); that document is retired.
 
 Manifests are read from the `trellis.analytics` entry point, so the step's package must be installed where this
 runs, for example:
@@ -24,7 +25,6 @@ import yaml
 
 PKG = Path(__file__).resolve().parents[1]
 CATALOG = PKG / "resource_explorer" / "configdata" / "analysis_catalog.yaml"
-DOCS = PKG / "docs" / "dr-egeria" / "analytic-functions"
 SECTIONS = {"database": "database_analyses"}
 BEGIN = "  # BEGIN GENERATED user steps ({type}): scripts/generate_external_step_entries.py. Do not hand-edit."
 END = "  # END GENERATED user steps ({type})"
@@ -45,17 +45,6 @@ def render_catalog_block(entity_type: str) -> str:
     body = yaml.safe_dump(entries, sort_keys=False, allow_unicode=True, width=100) if entries else ""
     indented = "".join(f"  {line}\n" if line else "\n" for line in body.splitlines())
     return f"{BEGIN.format(type=entity_type)}\n{indented}{END.format(type=entity_type)}\n"
-
-
-def render_declarations() -> dict[Path, str]:
-    from trellis_analytics.declare import declaration_markdown
-    from trellis_analytics.discovery import origin
-
-    out = {}
-    for entity_type in SECTIONS:
-        for m in _step_manifests(entity_type):
-            out[DOCS / f"{m.name}.md"] = declaration_markdown(m, origin(m.name))
-    return out
 
 
 def _with_block(text: str, entity_type: str) -> str:
@@ -84,7 +73,6 @@ def main(argv: list[str] | None = None) -> int:
     for entity_type in SECTIONS:
         text = _with_block(text, entity_type)
     want[CATALOG] = text
-    want.update(render_declarations())
 
     stale = [p for p, body in want.items() if not p.exists() or p.read_text() != body]
     if args.check:

@@ -128,3 +128,25 @@ def test_unknown_question_id_or_purpose_warns_naming_it_and_the_step_still_loads
     assert "'Q-9999'" in caplog.text and "'Wander'" in caplog.text
     assert "'Q-0041'" not in caplog.text and "'Maintain'" not in caplog.text
     assert s.manifest.questions == ["Q-0041", "Q-9999"] and s.manifest.purposes == ["Maintain", "Wander"]
+
+
+# ── what an engine host dispatches on: the request type and the nothing-to-derive guard ──
+
+def test_a_step_declares_its_request_type_or_gets_the_conventional_one():
+    assert _manifest(name="database_staleness").request_type == "re-database-staleness"
+    assert _manifest(request_type="re-other").request_type == "re-other"
+
+
+def test_a_request_type_that_is_not_hyphenated_lower_case_is_refused():
+    with pytest.raises(ValueError, match="request_type 'Re_Bad'"):
+        _manifest(request_type="Re_Bad")
+
+
+def test_the_nothing_to_derive_guard_is_one_of_egerias_survey_guards():
+    from trellis_analytics.manifest import SURVEY_GUARDS
+
+    assert SURVEY_GUARDS == ("survey-completed", "survey-invalid", "survey-failed")
+    assert _manifest().nothing_to_derive_guard == "survey-invalid"
+    assert _manifest(nothing_to_derive_guard="survey-completed").nothing_to_derive_guard == "survey-completed"
+    with pytest.raises(ValueError, match="'survey-skipped' is not one of Egeria's survey guards"):
+        _manifest(nothing_to_derive_guard="survey-skipped")

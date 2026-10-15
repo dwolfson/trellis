@@ -219,6 +219,12 @@ class PublishedNotRecorded(Exception):
         self.cause = cause
 
 
+class NothingToPublish(Exception):
+    """Raised by a caller-supplied `publisher` (the engine host's, for a library step with nothing to derive) that
+    decided, after reading the step's output, that there is no report to write. Not a failure: the run's publish
+    word says "nothing to publish · <why>", nothing is added to `errors`, and nothing was written to Egeria."""
+
+
 def safe_publish_text(text: str, secrets: "list[str] | tuple[str, ...]" = ()) -> str:
     """Text about a publish that is stored and shown: credentials masked by
     shape (`scrub_text`: URL userinfo, password=, Bearer ...), then every known
@@ -236,7 +242,7 @@ def safe_publish_text(text: str, secrets: "list[str] | tuple[str, ...]" = ()) ->
 
 def run_publish_state(*, chosen: bool, had_outputs: bool, refusal: str,
                       published: "bool | str", report_guid: str, error: str,
-                      not_recorded: str = "") -> str:
+                      not_recorded: str = "", declined: str = "") -> str:
     """The database run's publish word, from the same variables `_execute`'s
     publish block decided with (backlog 7f.8). `chosen` is "the resource has
     an assigned Egeria project", which is what makes a run publish at all.
@@ -245,6 +251,8 @@ def run_publish_state(*, chosen: bool, had_outputs: bool, refusal: str,
     queued word: a "queued" without an outbox row to prove it is not a publish."""
     if not chosen:
         return PUBLISH_NOT_CHOSEN
+    if declined:
+        return f"{NOTHING_TO_PUBLISH.split(' · ')[0]} · {declined}"
     if not had_outputs:
         return NOTHING_TO_PUBLISH
     if refusal:
@@ -1146,6 +1154,7 @@ class SurveyDefinitionExecutor:
         refusal = ""
         publish_error = ""
         not_recorded = ""
+        declined = ""
         # A caller-supplied `publisher` (the engine host, E4) IS the decision to publish: Egeria dispatched the
         # work and expects its report. It replaces the adapter's publish, and the run's publish words below
         # follow its proof (the report GUID it returns, or the error it raises) like any other publish.
@@ -1196,6 +1205,9 @@ class SurveyDefinitionExecutor:
                 # Nothing was written; said in `publish_waiting`, recorded once per (resource, run), not an error.
                 publish_waiting = str(exc)
                 record_waiting(self.registry, exc, run_key=f"{process_qn} · {surveyed_at}", source="survey definition")
+            except NothingToPublish as exc:
+                # The caller's publisher read the output and decided there is no report to write: said, not failed.
+                declined = str(exc) or "the publisher had nothing to write"
             except PublishedNotRecorded as exc:
                 # Egeria has the report; only RE's own record of it failed.
                 report_guid, published = exc.report_guid, True
@@ -1225,7 +1237,7 @@ class SurveyDefinitionExecutor:
             publish_state = safe_publish_text(run_publish_state(
                 chosen=publish_chosen, had_outputs=bool(step_outputs), refusal=refusal,
                 published=published, report_guid=report_guid, error=publish_error,
-                not_recorded=not_recorded,
+                not_recorded=not_recorded, declined=declined,
             ))
             # The stored flag agrees with the proof: no report guid, not published.
             published = bool(report_guid)

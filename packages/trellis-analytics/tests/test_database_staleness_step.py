@@ -19,7 +19,8 @@ EXAMPLE = ROOT / "examples" / "steps" / "database_staleness"
 REPO = ROOT.parents[1]
 RE_PKG = REPO / "packages" / "resource-explorer"
 CATALOG = RE_PKG / "resource_explorer" / "configdata" / "analysis_catalog.yaml"
-DECLARATION = RE_PKG / "docs" / "dr-egeria" / "analytic-functions" / "database_staleness.md"
+DECLARATION = RE_PKG / "docs" / "dr-egeria" / "engine-host" / "library" / "database_staleness.md"
+DECLARATION_STEPS = DECLARATION.with_name("database_staleness.pyegeria-steps.json")
 
 
 @pytest.fixture
@@ -171,28 +172,44 @@ def test_the_catalog_entry_in_analysis_catalog_yaml_is_the_generated_one(stalene
     assert entry["availability"] == "queued"      # a step never runs in the web process
 
 
-def test_the_dr_egeria_declaration_is_generated_and_has_the_expected_shape(staleness_installed):
-    from trellis_analytics.declare import declaration_markdown
+def test_the_engine_host_declaration_is_generated_from_the_manifest(reattach_after, staleness_installed):
+    """The step's Egeria declaration is RE's engine host's (Mandy, Q-M2; egeria-python ISSUE-150), one document per
+    step, generated from the manifest. The provisional analytic-functions document is retired."""
+    import importlib.util
+    import json
+
+    from trellis_analytics.declare import manifest_properties
     from trellis_analytics.discovery import discover, origin
 
+    from resource_explorer.surveyors import survey_step_host
+
+    survey_step_host.refresh("database")
+    spec = importlib.util.spec_from_file_location(
+        "gen_engine_host_decl", RE_PKG / "scripts" / "generate_engine_host_declaration.py")
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    want = gen.render_library()
+    assert DECLARATION.read_text() == want[DECLARATION], "the declaration is stale: run the generator"
+    assert DECLARATION_STEPS.read_text() == want[DECLARATION_STEPS], "the pyegeria steps are stale"
+    assert not (RE_PKG / "docs" / "dr-egeria" / "analytic-functions" / "database_staleness.md").exists()
+
     m = discover()["database_staleness"]
-    doc = declaration_markdown(m, origin("database_staleness"))
-    assert DECLARATION.read_text() == doc, "the declaration document is stale: run the generator"
-    assert doc.startswith("<!--") and "PROVISIONAL" in doc.split("-->")[0]
-    blocks = [b.strip() for b in doc.split("___") if b.strip()]
-    gat = next(b for b in blocks if "## Create Governance Action Type" in b)
-    assert "### Qualified Name\nGovActionType::trellis-analytics::database_staleness" in gat
-    assert "### Version Identifier\n" + m.version in gat
-    assert "### Content Status\nACTIVE" in gat
-    for row in ("| kind | step |", "| source | ods |", "| resource_types | database |",
-                "| annotation_type | ResourceMeasureAnnotation |", "| questions | Q-0041 |", "| purposes | Maintain |",
-                "| credential_tier | none |", "| re_analysis_step | database_staleness |",
-                "| package | trellis-step-database-staleness |"):
-        assert row in gat, row
-    # level 3: the step a Survey Definition author pastes in, referencing the step by re_analysis_step
-    step = next(b for b in blocks if "## Create Governance Action Process Step" in b)
-    assert "| re_analysis_step | database_staleness |" in step and "| executes_at | resource-explorer |" in step
+    doc = DECLARATION.read_text()
+    assert f"### Qualified Name\nResourceExplorerSurvey::{m.request_type}" in doc
+    assert f"### Request Type\n{m.request_type}" in doc
+    for k, v in manifest_properties(m, origin("database_staleness")):
+        assert f"| {k} | {v} |" in doc, (k, v)
+    assert f"| nothing_to_derive_guard | {m.nothing_to_derive_guard} |" in doc
     assert "Delete" not in doc and "DEPRECATED" in doc     # retirement is a status, never a delete
+    link = json.loads(DECLARATION_STEPS.read_text())["steps"][-1]
+    assert (link["command"], link["request_type"]) == ("Link Supported Governance Service", m.request_type)
+
+
+def test_the_manifest_declares_its_request_type_and_nothing_to_derive_guard(staleness_installed):
+    from trellis_analytics.discovery import discover
+
+    m = discover()["database_staleness"]
+    assert (m.request_type, m.nothing_to_derive_guard) == ("re-database-staleness", "survey-invalid")
 
 
 # ── RE runs it ──

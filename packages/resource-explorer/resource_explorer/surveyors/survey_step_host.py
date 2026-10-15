@@ -23,19 +23,159 @@ keeps the annotations with their envelope in `additionalProperties`, in their ow
 It never gives a password: the runner kwargs (`db_user`, `db_pwd`) stop here. It opens no connection to the
 resource yet, so a step declaring the `connection` input is refused by the wrapper with that sentence.
 
-The step's own annotations are not published to Egeria in this slice. A run's publish, when the resource has an
-Egeria project, goes through the adapter's existing `publish` and its refusals (`person_write_refusal`, and the
-publisher's own zone rules), with no publish code here.
+A run's publish, when the resource has an Egeria project, goes through the adapter's existing `publish` and its
+refusals (`person_write_refusal`, and the publisher's own zone rules), with no publish code here.
+
+**Dispatched by Egeria (engine host, step 3).** `library_steps()` is the seam the engine host dispatches through:
+request type -> `LibraryStep`, built from the installed manifests at `attach()` (the same discovery that attached the
+runners), never from a list in RE's code. Each step declares in its manifest its request type, the resource kind it
+targets (`resource_types`; database only so far), the annotation type it emits (Egeria's type name) and the survey
+guard that applies when it has nothing to derive. A step is admitted only when this host can run and publish it
+unattended: it opens no connection (no `connection` input: the engine host has no person's credential) and emits an
+annotation type the report path can carry (`PUBLISHABLE_ANNOTATION_TYPES`); otherwise it is refused, with the
+sentence, in `library_step_refusals()`. The engine host runs the step through the synthetic-step executor, so its
+annotations land in `step_annotations` as for any run, then puts them on the SurveyReport with
+`LibraryStep.report_annotations` and completes from the proof (engine_host.py, E4).
+
+Adding a step that Egeria can dispatch, as its author:
+  1. write `run(inputs)` and a `StepManifest` (with `request_type`, `nothing_to_derive_guard`) in its own package,
+     exposed through the `trellis.analytics` entry point;
+  2. install it where RE's worker runs, and run `scripts/generate_external_step_entries.py` (the catalog card) and
+     `scripts/generate_engine_host_declaration.py` (its Egeria declaration, `docs/dr-egeria/engine-host/library/`);
+  3. have the owner run that declaration (`resource-explorer dr-egeria run engine-host/library/<step>.md`).
+Nothing in RE's code names the step.
 """
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime
 
 log = logging.getLogger(__name__)
 
 #: Problems found loading manifests, per resource type, for the honest sentence a page or the CLI can show.
 LOAD_ERRORS: dict[str, str] = {}
+
+#: The annotation types the engine host's report path can publish a library step's results as (with the envelope
+#: in `additionalProperties`, the owner's interim carrier). Egeria's own type names.
+PUBLISHABLE_ANNOTATION_TYPES = ("ResourceMeasureAnnotation",)
+
+#: The result states that are a derivation. A step none of whose results is one of these had nothing to derive.
+DERIVED_STATES = ("measured", "nothing_found")
+
+#: Per resource type: the admitted library steps by request type, and the refused ones by step name.
+_LIBRARY: dict[str, dict] = {}
+_REFUSED: dict[str, dict[str, str]] = {}
+
+
+@dataclass(frozen=True)
+class LibraryStep:
+    """One Analytic Library step as the engine host sees it: what to claim, what to run, what to publish."""
+    request_type: str
+    step_key: str
+    entity_type: str
+    annotation_type: str
+    nothing_to_derive_guard: str
+    description: str
+    manifest: object = field(repr=False, compare=False)
+    provided_by: dict = field(default_factory=dict, compare=False)
+
+    @staticmethod
+    def derived(records: list[dict]) -> bool:
+        """At least one result is a derivation (`DERIVED_STATES`)."""
+        return any(_state_of(r) in DERIVED_STATES for r in records)
+
+    @staticmethod
+    def nothing_to_derive_reason(records: list[dict]) -> str:
+        """The step's own reasons, deduplicated, for the completion message."""
+        reasons = []
+        for r in records:
+            why = str(r.get("explanation") or (r.get("additionalProperties") or {}).get("resultStateReason") or "")
+            if why and why not in reasons:
+                reasons.append(why)
+        if not records:
+            return "the step returned no results"
+        return "; ".join(reasons[:3]) + (f" (and {len(reasons) - 3} more)" if len(reasons) > 3 else "")
+
+    def report_annotations(self, records: list[dict]) -> list:
+        """The step's results (`StepAnnotation.to_record()` dicts, as stored) as the annotations the SurveyReport
+        carries: Egeria's annotation type, the step as `analysisStep`, the step's display name as `annotationType`
+        (which result this is), the measured values in `resourceProperties` and the envelope in
+        `additionalProperties`. Each is identified by step and scope (`check_name`, `item_key`), so a re-publish
+        of the same run converges on the same elements."""
+        from resource_explorer.surveyors.survey_report import ResourceMeasureAnnotation
+
+        if self.annotation_type != "ResourceMeasureAnnotation":
+            raise ValueError(f"step '{self.step_key}' emits {self.annotation_type}, which the engine host cannot "
+                             "publish")
+        m = self.manifest
+        name = getattr(m, "display_name", "") or self.step_key.replace("_", " ").title()
+        out = []
+        for r in records:
+            scope = str(r.get("scope") or "")
+            state = _state_of(r)
+            summary = str(r.get("summary") or "") or f"{scope}: {state.replace('_', ' ')}"
+            out.append(ResourceMeasureAnnotation(
+                summary=summary, analysis_step=self.step_key, annotation_type_name=name,
+                explanation=str(r.get("explanation") or ""),
+                resource_properties=dict(r.get("resourceProperties") or {}),
+                additional_properties=dict(r.get("additionalProperties") or {}),
+                check_name=self.step_key, item_key=scope))
+        return out
+
+
+def _state_of(record: dict) -> str:
+    return str((record.get("additionalProperties") or {}).get("resultState") or record.get("result_state") or "")
+
+
+def _admit(entity_type: str, found: dict, provided_by: dict[str, dict]) -> tuple[dict, dict[str, str]]:
+    from resource_explorer.engine_host import ENGINE_HOST_STEPS, request_type_for_step
+
+    # The engine host's built-in steps keep their request types and names; a library step may take neither.
+    reserved = {request_type_for_step(k): k for k in ENGINE_HOST_STEPS}
+    admitted: dict[str, LibraryStep] = {}
+    refused: dict[str, str] = {}
+    by_type: dict[str, list[str]] = {}
+    for name, m in sorted(found.items()):
+        if "connection" in (m.inputs or []):
+            refused[name] = ("declares the 'connection' input; the engine host opens no connection to a resource "
+                             "(it holds no person's credential), so Egeria is not offered this step")
+            continue
+        if m.annotation_type not in PUBLISHABLE_ANNOTATION_TYPES:
+            refused[name] = (f"emits {m.annotation_type}; the engine host publishes "
+                             f"{', '.join(PUBLISHABLE_ANNOTATION_TYPES)} only")
+            continue
+        rt = m.request_type
+        if rt in reserved or name in reserved.values():
+            refused[name] = (f"declares request type '{rt}' as step '{name}', which collides with the engine "
+                             "host's built-in step " + (reserved.get(rt) or name))
+            continue
+        by_type.setdefault(rt, []).append(name)
+        admitted[rt] = LibraryStep(rt, name, entity_type, m.annotation_type, m.nothing_to_derive_guard,
+                                   m.description, m, dict(provided_by.get(name) or {}))
+    for rt, names in by_type.items():
+        if len(names) > 1:
+            admitted.pop(rt, None)
+            for n in names:
+                refused[n] = f"declares request type '{rt}', as do {', '.join(x for x in names if x != n)}"
+    for name, why in refused.items():
+        log.warning("engine host: library step '%s' not offered to Egeria: %s", name, why)
+    return admitted, refused
+
+
+def library_steps(entity_type: str = "database") -> dict[str, LibraryStep]:
+    """{request type: LibraryStep} for every installed, admitted Analytic Library step that targets `entity_type`,
+    from the discovery `attach()` last made (refresh() discovers again)."""
+    if entity_type == "database":
+        # Importing the adapter attaches its user steps (once, at import).
+        from resource_explorer.surveyors.database import survey_definition_adapter  # noqa: F401
+    return dict(_LIBRARY.get(entity_type, {}))
+
+
+def library_step_refusals(entity_type: str = "database") -> dict[str, str]:
+    """{step name: why it is not offered to Egeria} for installed steps the engine host does not admit."""
+    library_steps(entity_type)
+    return dict(_REFUSED.get(entity_type, {}))
 
 
 class StepNotInstalled(RuntimeError):
@@ -191,6 +331,7 @@ def attach(entity_type: str, adapter, step_registry: dict, step_map: dict, resul
     from resource_explorer.surveyors.repo_survey_definition_adapter import AnalysisKind, AnalysisKindResults
 
     found = discover_steps(entity_type)
+    origins = {}
     attached: list[str] = []
     for entry in _load().get(entity_type, []):
         if not entry.provided_by:
@@ -198,6 +339,7 @@ def attach(entity_type: str, adapter, step_registry: dict, step_map: dict, resul
         step_key = entry.provided_by.get("step") or entry.id
         annotation_type = (entry.annotation_types or ["ResourceMeasureAnnotation"])[0]
         manifest = found.get(step_key)
+        origins[step_key] = entry.provided_by
         runner = (SurveyStepHost(manifest, entity_type, entry.provided_by) if manifest
                   else NotInstalledStep(entry.provided_by, step_key))
         adapter.re_analysis_steps[step_key] = runner
@@ -225,6 +367,7 @@ def attach(entity_type: str, adapter, step_registry: dict, step_map: dict, resul
         step_registry[name] = _step_info(name, manifest.description, manifest.annotation_type,
                                          manifest.source, manifest.credential_tier)
         attached.append(name)
+    _LIBRARY[entity_type], _REFUSED[entity_type] = _admit(entity_type, found, origins)
     return attached
 
 
