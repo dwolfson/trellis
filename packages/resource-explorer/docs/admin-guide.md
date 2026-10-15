@@ -1,5 +1,7 @@
 # Resource Explorer — Admin Guide
 
+**Status:** live. Operator guide; the best-maintained user-facing document.
+
 **Last revised:** 2026-08-21
 
 This guide covers installation, configuration, Egeria integration, scheduled analyses, and troubleshooting.

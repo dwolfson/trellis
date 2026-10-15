@@ -1,5 +1,7 @@
 # Corrections implemented — and a fifth instance found by changing the sample
 
+**Status:** implemented. Next UI corrections round, 2026-09-10; kept as a record.
+
 **From:** the implementation session, 2026-09-10
 **Against:** the Corrections section of
 `Resource Explorer Survey and Dashboard.dc.html`

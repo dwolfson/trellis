@@ -1,5 +1,7 @@
 # Resource Explorer — the A2A surface
 
+**Status:** live. The A2A server surface (one service, routed by path).
+
 **The `a2a` process role** (`docs/runtime-architecture-plan.md` §2). One service,
 one port, every agent routed by path, a bearer token required on every call.
 

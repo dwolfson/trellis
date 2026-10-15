@@ -1,5 +1,7 @@
 # DDL record: `step_annotations` (re/analytics-2c-database-staleness)
 
+**Status:** live. Deployment record for the step_annotations table (2026-10-13).
+
 The deployment record for one new table in RE's shared registry, following the template the architect
 endorsed on 2026-10-08 for `resource_scope_events`. **Decision (project owner, 2026-10-13):** user-step
 annotations get a dedicated table instead of reusing `native_survey_annotations`, which holds Egeria's
