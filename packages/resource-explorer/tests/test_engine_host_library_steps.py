@@ -245,3 +245,204 @@ def test_the_library_and_the_engine_host_name_the_same_survey_guards():
     from resource_explorer import engine_host
 
     assert SURVEY_GUARDS == engine_host.SURVEY_GUARDS
+
+
+# ── review round 1 ────────────────────────────────────────────────────────────
+
+def _with_extra_manifests(monkeypatch, *extra):
+    """Discovery returns the installed steps plus `extra` manifests; RE re-attaches."""
+    from resource_explorer.surveyors import survey_step_host
+
+    real = survey_step_host.discover_steps
+    monkeypatch.setattr(survey_step_host, "discover_steps",
+                        lambda entity_type: {**real(entity_type), **{m.name: m for m in extra}})
+    survey_step_host.refresh("database")
+
+
+def _manifest(name, **kw):
+    from trellis_analytics.manifest import StepManifest
+
+    base = dict(name=name, function="x.y", description="d", source="ods", version="1", resource_types=["database"])
+    base.update(kw)
+    return StepManifest(**base)
+
+
+@pytest.mark.parametrize("builtin", ["sql_analysis", "postgres_schema_and_stats", "postgres_operations", "db_derived"])
+def test_f1_a_library_step_may_not_take_any_built_in_steps_name(staleness_installed, monkeypatch, builtin):
+    from resource_explorer import engine_host
+    from resource_explorer.surveyors import survey_step_host
+    from resource_explorer.surveyors.database.survey_definition_adapter import DATABASE_STEP_REGISTRY
+    from resource_explorer.surveyors.survey_definition_executor import get_adapter
+
+    assert builtin in DATABASE_STEP_REGISTRY
+    builtin_runner = get_adapter("database").re_analysis_steps[builtin]
+    _with_extra_manifests(monkeypatch, _manifest(builtin))
+    assert all(s.step_key != builtin for s in survey_step_host.library_steps().values())
+    assert "built-in" in survey_step_host.library_step_refusals()[builtin]
+    assert engine_host.supported_request_types().get("re-" + builtin.replace("_", "-")) in (None, "db_derived")
+    # and it never replaces the built-in's runner
+    assert get_adapter("database").re_analysis_steps[builtin] is builtin_runner
+
+
+def test_f1_a_library_step_may_not_take_a_built_in_steps_request_type(staleness_installed, monkeypatch):
+    from resource_explorer.surveyors import survey_step_host
+
+    _with_extra_manifests(monkeypatch, _manifest("sneaky", request_type="re-sql-analysis"))
+    assert "re-sql-analysis" not in survey_step_host.library_steps()
+    assert "built-in" in survey_step_host.library_step_refusals()["sneaky"]
+
+
+def test_an_annotation_type_the_report_cannot_carry_is_refused(staleness_installed, monkeypatch):
+    from resource_explorer.surveyors import survey_step_host
+
+    _with_extra_manifests(monkeypatch, _manifest("graded", annotation_type="QualityAnnotation"))
+    assert set(survey_step_host.library_steps()) == {REQUEST_TYPE}
+    assert "QualityAnnotation" in survey_step_host.library_step_refusals()["graded"]
+
+
+def test_two_steps_declaring_one_request_type_are_both_refused(staleness_installed, monkeypatch):
+    from resource_explorer.surveyors import survey_step_host
+
+    _with_extra_manifests(monkeypatch, _manifest("twin", request_type=REQUEST_TYPE))
+    assert REQUEST_TYPE not in survey_step_host.library_steps()
+    refused = survey_step_host.library_step_refusals()
+    assert "twin" in refused["database_staleness"] and "database_staleness" in refused["twin"]
+
+
+def test_a_private_target_with_a_library_request_type_is_left_unclaimed(staleness_installed, reg, egeria):
+    from resource_explorer.a2a_auth import CallerIdentity, current_caller
+    from tests.test_engine_host_e4 import PRIVATE_DB_GUID
+
+    reset = current_caller.set(CallerIdentity(user_id="alice", egeria_token=None, auth_source="app-jwt"))
+    try:
+        inv = reg.create_investigation("Alice Private", project_classification="PersonalProject")
+        ws = reg.get_or_create_working_set(inv["slug"])
+        reg.add_working_set_member(ws["slug"], "database", "alice_db")
+    finally:
+        current_caller.reset(reset)
+    egeria.add_action("ea-priv", target=PRIVATE_DB_GUID, request_type=REQUEST_TYPE)
+    result = _sweep(reg)
+    assert result.claimed == [] and "ea-priv" in result.skipped.get("private_target", [])
+    assert not egeria.method_calls("claim_engine_action")
+
+
+def test_a_step_that_raises_completes_survey_failed(staleness_installed, reg, egeria, no_connection, monkeypatch):
+    import database_staleness.step as user_code
+
+    def boom(inputs):
+        raise RuntimeError("the step broke")
+
+    monkeypatch.setattr(user_code, "run", boom)
+    _second_survey(reg)
+    egeria.add_action("ea-boom", request_type=REQUEST_TYPE)
+    _sweep(reg)
+    _run_queue_once(reg)
+    done = egeria.actions["ea-boom"]["completion"]
+    assert done["guards"] == ["survey-failed"], done
+    assert "the step broke" in done["message"]
+    assert egeria.reports() == []
+
+
+# F2: what step code can reach
+
+def test_f2_a_step_gets_no_registry_no_dsn_and_no_egeria_identity(staleness_installed, reg, egeria, no_connection,
+                                                                  monkeypatch):
+    import database_staleness.step as user_code
+
+    from resource_explorer.egeria_clients import NoCallerIdentity, current_principal
+
+    seen = {}
+    real = user_code.run
+
+    def spy(inputs):
+        ods = inputs.ods
+        seen["attrs"] = {a for a in dir(ods) if not a.startswith("__")}
+        seen["reg"] = any(hasattr(ods, a) for a in ("_reg", "url", "_conn", "registry_view"))
+        seen["bound"] = [getattr(getattr(ods, a), "__self__", None) for a in seen["attrs"]]
+        try:
+            current_principal()
+            seen["identity"] = "present"
+        except NoCallerIdentity:
+            seen["identity"] = "none"
+        return real(inputs)
+
+    monkeypatch.setattr(user_code, "run", spy)
+    _second_survey(reg)
+    egeria.add_action("ea-narrow", request_type=REQUEST_TYPE)
+    _sweep(reg)
+    _run_queue_once(reg)
+    assert seen["reg"] is False, seen["attrs"]
+    assert seen["attrs"] <= {"query", "row_count_snapshots", "commit_proofs", "catalogue_scope_events",
+                             "resource_scope_events", "outbox_status_counts"}, seen["attrs"]
+    assert all(b is None for b in seen["bound"]), "a method is bound to the reader object"
+    assert seen["identity"] == "none"
+    # publishing still happened as the daemon, after the step returned
+    assert egeria.actions["ea-narrow"]["completion"]["guards"] == ["survey-completed"]
+
+
+# F3: a worker without the package leaves the row queued
+
+def test_f3_a_worker_without_the_package_leaves_a_library_row_queued(staleness_installed, reg, egeria, monkeypatch):
+    from resource_explorer.surveyors import survey_step_host
+
+    _second_survey(reg)
+    egeria.add_action("ea-q", request_type=REQUEST_TYPE)
+    assert _sweep(reg).claimed == ["ea-q"]
+    # this worker does not have the package
+    monkeypatch.setattr(survey_step_host, "discover_steps", lambda entity_type: {})
+    survey_step_host.refresh("database")
+    assert _run_queue_once(reg) is None
+    assert _row(reg)["state"] == "queued"
+    assert egeria.actions["ea-q"]["completion"] is None
+
+
+def test_f3_a_row_no_worker_can_run_is_completed_survey_failed_after_the_bound(staleness_installed, reg, egeria,
+                                                                             monkeypatch):
+    from resource_explorer import engine_host
+    from resource_explorer.surveyors import survey_step_host
+    from tests.test_engine_host_e4 import _restart
+
+    egeria.add_action("ea-stuck", request_type=REQUEST_TYPE)
+    assert _sweep(reg).claimed == ["ea-stuck"]
+    monkeypatch.setattr(survey_step_host, "discover_steps", lambda entity_type: {})
+    survey_step_host.refresh("database")
+    # within the bound: left queued
+    assert "ea-stuck" in _restart(reg).pending and _row(reg)["state"] == "queued"
+    monkeypatch.setattr(engine_host, "UNRUNNABLE_QUEUED_SECONDS", 0)
+    result = _restart(reg)
+    assert "ea-stuck" in result.completed
+    done = egeria.actions["ea-stuck"]["completion"]
+    assert done["guards"] == ["survey-failed"] and "not installed" in done["message"], done
+    row = _row(reg)
+    assert row["state"] == "failed" and row["target"]["outcome"]["guard"] == "survey-failed"
+
+
+def test_understanding_lists_a_library_step_like_a_native_survey(staleness_installed, reg, egeria, no_connection,
+                                                                 monkeypatch, tmp_path):
+    import resource_explorer.config as config_module
+    from resource_explorer.egeria_clients import Daemon, DaemonReason
+    from resource_explorer.native_survey_run import (
+        COMPLETE,
+        PyegeriaSurveyPort,
+        native_survey_rows,
+        port_session,
+        refresh_resource,
+    )
+
+    (tmp_path / "om.omsecrets").write_text("{}")
+    monkeypatch.setenv("EGERIA_SECRETS_STORE_LOCAL_PATH", str(tmp_path / "om.omsecrets"))
+    config_module._config = None
+    _second_survey(reg)
+    egeria.add_action("ea-und-lib", request_type=REQUEST_TYPE)
+    _sweep(reg)
+    _run_queue_once(reg)
+    with port_session(PyegeriaSurveyPort(identity=Daemon(DaemonReason.SCHEDULER))) as port:
+        assert refresh_resource(reg, port, "database", "coco_pharma") == 1
+    rows = {r["qualified_name"]: r for r in native_survey_rows(reg, "database", "coco_pharma",
+                                                                "PostgreSQL Relational Database")}
+    mine = rows[f"ResourceExplorerSurvey::{REQUEST_TYPE}"]
+    assert mine["display_name"] == "Resource Explorer: Database Staleness"
+    assert mine["run"]["state"] == COMPLETE, mine["run"]
+    assert mine["run"]["engine_action_guid"] == "ea-und-lib"
+    assert mine["run"]["report_guid"] == _row(reg)["target"]["outcome"]["report_guid"]
+    assert mine["credentials"] == "present" and not mine["cannot_run_reason"], mine

@@ -372,6 +372,22 @@ def acting_as(identity: EgeriaIdentity) -> Iterator[EgeriaIdentity]:
         _acting.reset(reset)
 
 
+@contextmanager
+def no_identity() -> Iterator[None]:
+    """Run a block with NO Egeria identity: no declared Daemon, no signed-in caller, no client scope, so
+    `current_principal()` raises `NoCallerIdentity` inside it. Used around a user step's own code
+    (survey_step_host.SurveyStepHost): the step measures, the host publishes afterwards, as whoever it runs as."""
+    from resource_explorer.a2a_auth import current_caller
+
+    acting, scope, caller = _acting.set(None), _scope.set(None), current_caller.set(None)
+    try:
+        yield
+    finally:
+        current_caller.reset(caller)
+        _scope.reset(scope)
+        _acting.reset(acting)
+
+
 #: Set in a Prefect WORKER's flow-run process (Prefect's process worker exports it for every
 #: flow run it starts); never set by RE's own in-process flows, which run in RE's context.
 PREFECT_WORKER_MARKER = "PREFECT__FLOW_RUN_ID"

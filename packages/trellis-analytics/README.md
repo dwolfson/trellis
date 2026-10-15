@@ -38,6 +38,20 @@ Routines and steps with a result envelope, discovered through the
 
 No executor: a routine is called directly; a step is run by a host.
 
+**What a step can and cannot reach (Resource Explorer's host).** A step is in-process, trusted code. The host
+enforces three things: it hands no connection to the resource (a step declaring `connection` is refused); `inputs.ods`
+is a read-only reader of RE's stored rows exposing only its SELECT methods (`query`, `row_count_snapshots`, ...), with
+no registry object and no database URL; and the step's code runs with no Egeria identity, so it cannot act in Egeria
+(the host publishes its results afterwards, as itself). This narrows what a step is handed; it is **not a sandbox**.
+Python code in the same process can reach past any of it on purpose, so install only steps you would run as Resource
+Explorer itself.
+
+**Making a step Egeria can dispatch.** Declare `request_type` (default `re-<name>`) and `nothing_to_derive_guard`
+(one of `survey-completed`, `survey-invalid`, `survey-failed`; applied when none of the step's results is `measured`
+or `nothing_found`) in its `StepManifest`; install it where RE's worker runs; generate its declaration with
+`generate_engine_host_declaration.py`; and have the owner run `engine-host/library/<step>.md`. A step may not take a
+built-in RE step's name or request type, must not declare `connection`, and must emit `ResourceMeasureAnnotation`.
+
 ```python
 from trellis_analytics.readers.ods import OdsReader
 from trellis_analytics.routines import curation_coverage

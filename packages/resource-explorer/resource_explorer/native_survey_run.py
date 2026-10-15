@@ -707,6 +707,35 @@ def _missing_credentials_reason(entity) -> str:
     return NO_CREDENTIALS if credentials_state(entity) == ABSENT else ""
 
 
+def _library_processes(entity_type: str, configured: list[NativeProcess]) -> list[NativeProcess]:
+    """The engine host's Analytic Library steps as processes (engine host, step 3), listed beside the configured
+    RE engine-host process (`ResourceExplorerSurvey::re-db-derived`) and only for a technology type that lists
+    one: a library step is read back and run exactly like it. Never fails the listing."""
+    from resource_explorer import engine_host
+
+    prefix = engine_host.ENGINE_QUALIFIED_NAME + "::"
+    template = next((p for p in configured if p.qualified_name.startswith(prefix)), None)
+    if template is None or entity_type != engine_host.ENTITY_TYPE:
+        return []
+    try:
+        steps = engine_host.library_steps()
+    except Exception as exc:  # noqa: BLE001 - the configured rows still list
+        log.warning("library steps not listed: %s", exc)
+        return []
+    have = {p.qualified_name for p in configured}
+    out = []
+    for request_type, step in sorted(steps.items()):
+        qn = engine_host.governance_action_type_qn_for(request_type)
+        if qn in have:
+            continue
+        name = getattr(step.manifest, "display_name", "") or step.step_key
+        out.append(NativeProcess(qualified_name=qn, display_name=f"Resource Explorer: {name}",
+                                 kind=template.kind, description=step.description,
+                                 action_target_name=template.action_target_name, target=template.target,
+                                 needs_credentials=False))
+    return out
+
+
 def _processes_for_rows(entity_type: str, technology_type: str) -> list[NativeProcess]:
     """The resource's own processes, then (for a kind with a separate server element) the server's
     survey. The server's is listed only when the config says the kind has one."""
@@ -714,6 +743,7 @@ def _processes_for_rows(entity_type: str, technology_type: str) -> list[NativePr
         get_wiring, server_has_separate_element)
 
     procs = list(get_native_processes(entity_type, technology_type))
+    procs += _library_processes(entity_type, procs)
     if server_has_separate_element(entity_type, technology_type):
         st = get_wiring(entity_type, technology_type).server_technology_type
         procs += [p for p in get_native_processes(entity_type, st) if p.target == "server"]

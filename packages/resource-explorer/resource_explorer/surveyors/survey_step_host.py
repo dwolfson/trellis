@@ -16,6 +16,12 @@ This module puts such steps BESIDE a resource type's step registry, never in it 
   sentence naming the package, rather than the card saying "no mapped survey step".
 - An installed step with no catalog entry is attached as a runnable step and logged: run the generator.
 
+**The boundary, honestly.** A step is in-process, trusted code: RE enforces that it gets no connection to the
+resource, read-only access to RE's stored rows (`StepOds`: the reader's SELECT methods only, no registry object, no
+DSN) and no Egeria identity (its code runs inside `egeria_clients.no_identity()`, so `current_principal()` raises).
+It is NOT a sandbox: Python code in the same process can reach past any of this on purpose. Install only steps you
+would run as Resource Explorer.
+
 What the host gives the wrapper: the resource, an ODS reader that can only read (the registry's own connection,
 read-only at the database: Postgres `SET TRANSACTION READ ONLY`, SQLite `PRAGMA query_only`), and a store that
 keeps the annotations with their envelope in `additionalProperties`, in their own table `step_annotations`
@@ -30,7 +36,8 @@ refusals (`person_write_refusal`, and the publisher's own zone rules), with no p
 request type -> `LibraryStep`, built from the installed manifests at `attach()` (the same discovery that attached the
 runners), never from a list in RE's code. Each step declares in its manifest its request type, the resource kind it
 targets (`resource_types`; database only so far), the annotation type it emits (Egeria's type name) and the survey
-guard that applies when it has nothing to derive. A step is admitted only when this host can run and publish it
+guard that applies when it has nothing to derive. A step may take no built-in step's name or request type
+(`_BUILTIN`: every key of the resource type's step registry). A step is admitted only when this host can run and publish it
 unattended: it opens no connection (no `connection` input: the engine host has no person's credential) and emits an
 annotation type the report path can carry (`PUBLISHABLE_ANNOTATION_TYPES`); otherwise it is refused, with the
 sentence, in `library_step_refusals()`. The engine host runs the step through the synthetic-step executor, so its
@@ -66,6 +73,11 @@ DERIVED_STATES = ("measured", "nothing_found")
 #: Per resource type: the admitted library steps by request type, and the refused ones by step name.
 _LIBRARY: dict[str, dict] = {}
 _REFUSED: dict[str, dict[str, str]] = {}
+
+#: Per resource type: RE's own step keys, captured at the FIRST attach, before any user step is added to the
+#: registry. A user step may take none of these names (nor `re-<name>` as its request type): it would replace the
+#: built-in's runner and its analysisStep.
+_BUILTIN: dict[str, frozenset[str]] = {}
 
 
 @dataclass(frozen=True)
@@ -128,15 +140,28 @@ def _state_of(record: dict) -> str:
     return str((record.get("additionalProperties") or {}).get("resultState") or record.get("result_state") or "")
 
 
-def _admit(entity_type: str, found: dict, provided_by: dict[str, dict]) -> tuple[dict, dict[str, str]]:
-    from resource_explorer.engine_host import ENGINE_HOST_STEPS, request_type_for_step
+def _builtin_refusal(name: str, request_type: str, builtin: frozenset[str]) -> str:
+    """Why a user step collides with a built-in step, or ""."""
+    from resource_explorer.engine_host import request_type_for_step
 
-    # The engine host's built-in steps keep their request types and names; a library step may take neither.
-    reserved = {request_type_for_step(k): k for k in ENGINE_HOST_STEPS}
+    if name in builtin:
+        return f"is named '{name}', which is one of Resource Explorer's built-in steps"
+    taken = {request_type_for_step(k): k for k in builtin}
+    if request_type in taken:
+        return (f"declares request type '{request_type}', which belongs to Resource Explorer's built-in step "
+                f"'{taken[request_type]}'")
+    return ""
+
+
+def _admit(entity_type: str, found: dict, provided_by: dict[str, dict]) -> tuple[dict, dict[str, str]]:
+    builtin = _BUILTIN.get(entity_type, frozenset())
     admitted: dict[str, LibraryStep] = {}
     refused: dict[str, str] = {}
     by_type: dict[str, list[str]] = {}
     for name, m in sorted(found.items()):
+        if why := _builtin_refusal(name, m.request_type, builtin):
+            refused[name] = why
+            continue
         if "connection" in (m.inputs or []):
             refused[name] = ("declares the 'connection' input; the engine host opens no connection to a resource "
                              "(it holds no person's credential), so Egeria is not offered this step")
@@ -146,10 +171,6 @@ def _admit(entity_type: str, found: dict, provided_by: dict[str, dict]) -> tuple
                              f"{', '.join(PUBLISHABLE_ANNOTATION_TYPES)} only")
             continue
         rt = m.request_type
-        if rt in reserved or name in reserved.values():
-            refused[name] = (f"declares request type '{rt}' as step '{name}', which collides with the engine "
-                             "host's built-in step " + (reserved.get(rt) or name))
-            continue
         by_type.setdefault(rt, []).append(name)
         admitted[rt] = LibraryStep(rt, name, entity_type, m.annotation_type, m.nothing_to_derive_guard,
                                    m.description, m, dict(provided_by.get(name) or {}))
@@ -210,6 +231,50 @@ def _registry_ods(registry):
     return RegistryOds(registry)
 
 
+#: The reader methods a step may call: SELECTs over RE's stored rows, nothing else.
+STEP_ODS_METHODS = ("query", "row_count_snapshots", "commit_proofs", "catalogue_scope_events",
+                    "resource_scope_events", "outbox_status_counts")
+
+
+class StepOds:
+    """What a step's `inputs.ods` is: the read-only reader methods and nothing else. No registry, no DSN, no
+    connection attribute; each method is a plain function (not bound to the reader). In-process, trusted code
+    can still dig the reader out of a closure: this narrows what a step is handed, it is not a sandbox."""
+    __slots__ = STEP_ODS_METHODS
+
+    def __init__(self, reader):
+        for name in STEP_ODS_METHODS:
+            object.__setattr__(self, name, _forward(reader, name))
+
+    def __setattr__(self, name, value):
+        raise AttributeError("a step's ODS reader is read-only")
+
+    def __repr__(self) -> str:
+        return "<read-only ODS>"
+
+
+def _forward(reader, name):
+    method = getattr(reader, name)
+
+    def call(*args, **kwargs):
+        return method(*args, **kwargs)
+
+    call.__name__ = name
+    call.__doc__ = method.__doc__
+    return call
+
+
+def _without_identity(code):
+    """The step's own code, run with no Egeria identity (`egeria_clients.no_identity`)."""
+    from resource_explorer.egeria_clients import no_identity
+
+    def run(inputs):
+        with no_identity():
+            return code(inputs)
+
+    return run
+
+
 class SurveyStepHost:
     """The runner the executor calls for a user step: `(entity, registry, **runner_kwargs) -> dict`."""
 
@@ -233,8 +298,10 @@ class SurveyStepHost:
                 package=self.provided_by.get("package", ""), producer_version=self.manifest.version)
 
         host = HostContext(resource_type=self.entity_type, slug=entity.slug, producing_run=run,
-                           ods=_registry_ods(registry), connect=None, store=store)
-        annotations = SurveyStep(self.manifest).run(host)
+                           ods=StepOds(_registry_ods(registry)), connect=None, store=store)
+        # The step's code runs with no Egeria identity; the store and anything after it run as the host does.
+        code = SurveyStep(self.manifest).code
+        annotations = SurveyStep(self.manifest, code=_without_identity(code)).run(host)
         counts: dict[str, int] = {}
         for a in annotations:
             counts[a.envelope.result_state.value] = counts.get(a.envelope.result_state.value, 0) + 1
@@ -330,6 +397,7 @@ def attach(entity_type: str, adapter, step_registry: dict, step_map: dict, resul
     from resource_explorer.surveyors.analysis_catalog_reader import _load
     from resource_explorer.surveyors.repo_survey_definition_adapter import AnalysisKind, AnalysisKindResults
 
+    builtin = _BUILTIN.setdefault(entity_type, frozenset(step_registry) | frozenset(adapter.re_analysis_steps))
     found = discover_steps(entity_type)
     origins = {}
     attached: list[str] = []
@@ -337,6 +405,10 @@ def attach(entity_type: str, adapter, step_registry: dict, step_map: dict, resul
         if not entry.provided_by:
             continue
         step_key = entry.provided_by.get("step") or entry.id
+        if step_key in builtin:
+            log.error("analysis catalog entry '%s' names user step '%s', which is a built-in step; not attached",
+                      entry.id, step_key)
+            continue
         annotation_type = (entry.annotation_types or ["ResourceMeasureAnnotation"])[0]
         manifest = found.get(step_key)
         origins[step_key] = entry.provided_by
@@ -358,6 +430,10 @@ def attach(entity_type: str, adapter, step_registry: dict, step_map: dict, resul
         attached.append(step_key)
     for name, manifest in found.items():
         if name in attached:
+            continue
+        if name in builtin:
+            log.error("installed user step '%s' has a built-in step's name; not attached (it would replace "
+                      "Resource Explorer's own step)", name)
             continue
         log.warning("installed step '%s' has no analysis catalog entry; it can run from a Survey Definition but "
                     "shows no card: run scripts/generate_external_step_entries.py", name)

@@ -110,6 +110,11 @@ NOT_A_DATABASE_SENTENCE = "not a database registered in Resource Explorer"
 #: survey-invalid, never run as the service account (owner, Q-O3).
 NOW_PRIVATE_SENTENCE = "target is now private to its owner"
 
+#: How long an `engine_action` row may stay queued for a request type no worker here can run (an Analytic Library
+#: step whose package is not installed where the queue runs) before the restart pass completes it survey-failed.
+#: Workers that cannot run it leave it queued (`run_queue._engine_request_types_here`).
+UNRUNNABLE_QUEUED_SECONDS = 900
+
 #: How often the running engine host repeats the completion pass (`restart_pass`, idempotent): a completion
 #: that timed out, or a run whose worker died, is told to Egeria within this long, not only at the next start.
 COMPLETION_RETRY_SECONDS = 60
@@ -195,8 +200,10 @@ def library_steps() -> dict:
 
 
 def supported_request_types() -> dict[str, str]:
-    """{request type: step key} RE's engine can run: the built-in steps, then the library's (which can never take
-    a built-in's request type or name: `survey_step_host._admit` refuses it)."""
+    """{request type: step key} RE's engine can run: the admitted built-in steps (`ENGINE_HOST_STEPS`), then the
+    installed library steps. A library step can take neither the name nor the `re-<name>` request type of ANY
+    built-in step in DATABASE_STEP_REGISTRY (admitted to the engine host or not): `survey_step_host._admit`
+    refuses it, with the reason in `library_step_refusals()`."""
     out = {request_type_for_step(key): key for key in declared_steps()}
     for request_type, step in library_steps().items():
         out.setdefault(request_type, step.step_key)
@@ -601,6 +608,8 @@ class EngineHost:
                               "unreadable target; left alone", row["id"], guid, level=logging.WARNING)
             return
         state = row.get("state") or ""
+        if state == "queued" and self._complete_unrunnable(row, guid, supported, result):
+            return
         if state in ("queued", "claimed"):
             result.pending.append(guid)
             return
@@ -651,6 +660,47 @@ class EngineHost:
         result.completed.append(guid)
         log.info("engine host restart: completed engine action %s from run %s (%s)", guid, row["id"],
                  outcome.get("guard"))
+
+    def _complete_unrunnable(self, row: dict, guid: str, supported: dict, result: RestartResult) -> bool:
+        """A queued row for a request type this host cannot run, older than UNRUNNABLE_QUEUED_SECONDS: no worker
+        has taken it, so it is failed (only while still queued) and completed survey-failed with why. True when
+        handled here."""
+        from datetime import datetime
+
+        target = _row_target_json(row)
+        request_type = target.get("request_type") or ""
+        if not request_type or request_type in supported:
+            return False
+        try:
+            queued_at = datetime.fromisoformat(str(row.get("enqueued_at") or "").replace("Z", "+00:00"))
+            if queued_at.tzinfo is None:
+                queued_at = queued_at.replace(tzinfo=UTC)
+            waited = (datetime.now(UTC) - queued_at).total_seconds()
+        except (TypeError, ValueError):
+            return False
+        if waited < UNRUNNABLE_QUEUED_SECONDS:
+            return False
+        why = (f"step {target.get('step_key')!r} ({request_type}) is not installed on any worker that took up "
+               f"this run within {UNRUNNABLE_QUEUED_SECONDS}s; install its Analytic Library package where Resource "
+               "Explorer's worker runs")
+        if not self.registry.fail_queued_run(row["id"], why):
+            return False                      # a worker claimed it meanwhile: it runs
+        outcome = _outcome(SURVEY_FAILED, f"Resource Explorer did not run {request_type}: {why}")
+        self.registry.merge_run_target(row["id"], {"outcome": outcome})
+        from pyegeria import AutomatedCuration
+
+        from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
+
+        with acting_as(Daemon(DaemonReason.ENGINE_HOST, requested_by=(row.get("requested_by") or None))):
+            recorded, error = _record_completion(self._client(AutomatedCuration), guid, outcome)
+        if not recorded:
+            result.errors.append(guid)        # the next pass completes it from the stored outcome
+            log.warning("engine host restart: engine action %s (unrunnable here) not completed: %s", guid, error)
+            return True
+        self.registry.merge_run_target(row["id"], {"completion_recorded_at": _now_iso()})
+        result.completed.append(guid)
+        log.warning("engine host restart: completed engine action %s survey-failed: %s", guid, why)
+        return True
 
     def _claim(self, action: dict, guid: str, facts: dict, engine_guid: str, result: SweepResult) -> None:
         from pyegeria import AutomatedCuration

@@ -4466,9 +4466,16 @@ class ProjectRegistry:
         runner: dict | None = None,
         *,
         kinds: "list[str] | None" = None,
+        engine_request_types: "Collection[str] | None" = None,
         now: str | None = None,
     ) -> dict | None:
         """Take the oldest queued row this worker is allowed to run, or None.
+
+        **Engine actions this worker can run.** With `engine_request_types` given, an `engine_action` row is
+        taken only when its target's `request_type` is one of them (the worker's own
+        `engine_host.supported_request_types()`): a worker without an Analytic Library step's package leaves
+        that row queued for a worker that has it, rather than claiming it and failing the action closed. A text
+        prefilter on the JSON `RUN_KIND`-row target, which `enqueue_run` writes with `json.dumps` defaults.
 
         **Concurrency.** Select-and-mark happen in one transaction, and on
         Postgres the SELECT carries `FOR UPDATE SKIP LOCKED` so a second
@@ -4507,6 +4514,11 @@ class ProjectRegistry:
         if kinds:
             sql += f"  AND r.kind IN ({','.join('?' * len(kinds))}) "
             params.extend(kinds)
+        if engine_request_types is not None:
+            types = sorted(set(engine_request_types))
+            runnable = " OR ".join("r.target LIKE ?" for _ in types) or "1 = 0"
+            sql += f"  AND (r.kind <> 'engine_action' OR ({runnable})) "
+            params.extend(f'%"request_type": {json.dumps(t)}%' for t in types)
         sql += "ORDER BY r.enqueued_at ASC, r.id ASC LIMIT 1"
 
         with self._conn() as conn:
@@ -4603,6 +4615,15 @@ class ProjectRegistry:
         params.append(limit)
         with self._conn() as conn:
             return [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
+
+    def fail_queued_run(self, run_id: str, error: str, *, now: str | None = None) -> bool:
+        """Mark a row that has NOT been claimed yet `failed`, with `error`. False when it is no longer queued
+        (a worker claimed it meanwhile). The engine host's bound on an engine action no worker here can run."""
+        now = now or datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            cur = conn.execute("UPDATE runs SET state='failed', finished_at=?, error=? WHERE id=? AND state='queued'",
+                               (now, error, run_id))
+            return bool(getattr(cur, "rowcount", 0))
 
     def cancel_queued_run(self, run_id: str, *, now: str | None = None) -> bool:
         """Cancel a row that has NOT been claimed yet. Returns False otherwise.
