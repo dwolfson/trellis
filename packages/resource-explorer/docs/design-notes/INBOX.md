@@ -124,3 +124,5 @@ the three reviews that landed in `81031e92`.
   a derived INBOX, a repo-only discovery pane). Measuring is still the
   fastest correction path, so the errors stay in the ledger where they can
   be read rather than being tidied out.
+
+When an *-IMPLEMENTED note merges, move its ask and design into implemented/; answered exchanges go to exchange/.
