@@ -25,7 +25,7 @@ Decisions and models. Cited from source where a comment cannot restate them.
   reference, current as of 2026-09-02
 - **[Architecture.md](Architecture.md)** — 2026-10-14  
   live. Module map, flows and key decisions; the zone passage was corrected 2026-10-14
-- **[Backlog.md](Backlog.md)** — 2026-10-07  
+- **[Backlog.md](Backlog.md)** — 2026-10-15  
   design question first (generalized discovery across resource kinds), then slice. Not scheduled
 - **[BUILDER-BRIEF-CHECKLIST.md](BUILDER-BRIEF-CHECKLIST.md)** — 2026-10-14  
   live. Short checklist for every builder brief
@@ -55,7 +55,7 @@ Decisions and models. Cited from source where a comment cannot restate them.
   live. How server-side mermaid rendering works
 - **[multi-resource-questions-design.md](multi-resource-questions-design.md)** — 2026-10-01  
   design and planning input. First draft 2026-09-20; revised the same
-- **[open-stack-checklist.md](open-stack-checklist.md)** — 2026-10-14  
+- **[open-stack-checklist.md](open-stack-checklist.md)** — 2026-10-15  
   live, partly dated. Outstanding-work checklist, last updated 2026-08-31; entries are deleted whe
 - **[process-model.md](process-model.md)** — 2026-10-14  
   live. Process roles, leader locks and loop inventory
@@ -111,7 +111,7 @@ The work is done and these are NOT archive candidates: source comments point her
   BUILT. All six phases are implemented and live-verified (2026-09-07/08). Extends
 - **[investigation-framing-design.md](investigation-framing-design.md)** — 2026-10-13  
   design; two pieces have since been built (2026-08-24). All 41 questions are tagged with Purpose 
-- **[next-ui-design-rules.md](next-ui-design-rules.md)** — 2026-10-14  
+- **[next-ui-design-rules.md](next-ui-design-rules.md)** — 2026-10-15  
   live. Design rules the Next UI is built to
 - **[repair-operations-design.md](repair-operations-design.md)** — 2026-10-14  
   implemented. Four repo-repair operations (2026-08-28), built
