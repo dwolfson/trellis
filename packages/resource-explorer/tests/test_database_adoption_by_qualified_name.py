@@ -61,6 +61,10 @@ def surveyor(egeria):
     s._automated_curation = curation
     s._asset_maker = MagicMock()
     s._discovery = MagicMock()
+    from unittest.mock import create_autospec
+    from pyegeria import MetadataExpert
+    s._metadata_expert = create_autospec(MetadataExpert, spec_set=True, instance=True)
+    s._metadata_expert.find_metadata_elements_with_string.return_value = "No elements found"   # S19: no archived copy
     s.connect = lambda: None
     s._save_database_secret = lambda *a: ("", "")
     return s

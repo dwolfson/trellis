@@ -115,6 +115,8 @@ class ElementRead:
     qualified_name: str
     type_name: str = ""
     archived: bool = False
+    #: an archived element's archive time (Memento archiveDate, else versions), ISO UTC; '' otherwise
+    archived_at: str = ""
 
 
 @dataclass
@@ -177,6 +179,193 @@ class ConnectorStatus:
     last_refresh_time: str = ""
 
 
+# ── archived siblings (S19, owner ruling 2026-10-14) ─────────────────────────
+#: Egeria renames an element it archives to `<qualifiedName>_archivedOn_<date>` and keeps it as a Memento
+#: (captured 2026-10-14: `...::re_throwaway_62_archivedOn_Fri Oct 09 01:28:08 GMT 2026`). The original name is
+#: then FREE, so a read by it answers "No elements found" and a create under it makes a NEW element.
+ARCHIVED_ON = "_archivedOn_"
+SIBLING_UNREADABLE = "could not check whether an archived copy exists"
+REINCLUDE_TAIL = "re-including creates a new element; the archived record stays"
+SIBLING_CHANGED = "the archived copy changed since you confirmed · nothing created · check again"
+NEEDS_CONFIRMATION = "needs_confirmation"
+#: Java's `Date.toString()`: `EEE MMM dd HH:mm:ss zzz yyyy`, the zone any abbreviation (GMT on the quickstart,
+#: BST, CEST, PDT, ... elsewhere). Only the day is read from it; the ORDER comes from the element's own times.
+_JAVA_DATE_RE = re.compile(r"^[A-Z][a-z]{2} ([A-Z][a-z]{2}) (\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\S+) (\d{4})$")
+_MONTHS = {m: i for i, m in enumerate(("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov",
+                                       "Dec"), start=1)}
+#: Paging, as `egeria_link_once` pages (re/lineage-link-dedupe): read until "No elements found"; "No elements
+#: returned" is a page Egeria emptied by filtering and is read past (a bounded run of them); a bound on pages.
+FIND_PAGE_SIZE = 500
+MAX_FIND_PAGES = 200
+MAX_FILTERED_RUN = 10
+_END_OF_LIST = "no elements found"
+_FILTERED_PAGE = "no elements returned"
+
+
+def reinclude_words(date: str) -> str:
+    return f"archived in Egeria · {date or 'date not stated'} · {REINCLUDE_TAIL}"
+
+
+class SiblingLookupFailed(GatewayError):
+    """The archived-sibling lookup could not be made: never read as "no archived copy"."""
+
+    def __init__(self, detail: str = ""):
+        super().__init__(f"{SIBLING_UNREADABLE}" + (f" ({detail})" if detail else ""))
+
+
+@dataclass
+class ArchivedSibling:
+    guid: str
+    qualified_name: str
+    #: the suffix exactly as Egeria wrote it; the day it names ('' when the suffix is not a Java date)
+    archived_on: str = ""
+    archived_day: str = ""
+    #: when Egeria archived it, from the element itself (the Memento's archiveDate, else versions.updateTime,
+    #: else versions.createTime), as ISO UTC; '' when the element states none. This orders the copies.
+    archived_at: str = ""
+    archived: bool = True
+
+    @property
+    def date(self) -> str:
+        """The day it was archived, for the screen: `2026-10-09`, or Egeria's own text when unparsed."""
+        return self.archived_day or self.archived_on
+
+
+def java_date_day(text: str) -> str:
+    """`2026-10-09` from `Fri Oct 09 01:28:08 <any zone> 2026`; '' when the text is not that form."""
+    m = _JAVA_DATE_RE.match(text.strip())
+    if not m or m.group(1) not in _MONTHS:
+        return ""
+    return f"{int(m.group(7)):04d}-{_MONTHS[m.group(1)]:02d}-{int(m.group(2)):02d}"
+
+
+def _iso_of(value: Any) -> str:
+    """An Egeria time (epoch ms, as a number or a string, or an ISO string) as ISO UTC; '' when unreadable."""
+    from datetime import datetime, timezone
+    if value in (None, ""):
+        return ""
+    text = str(value).strip()
+    if text.isdigit():
+        return datetime.fromtimestamp(int(text) / 1000, tz=timezone.utc).isoformat()
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).astimezone(timezone.utc).isoformat()
+
+
+def _archived_at_of(element: dict) -> str:
+    for c in classifications_named(element, "Memento"):
+        cp = c.get("classificationProperties") or c.get("properties") or {}
+        got = _iso_of(((cp.get("propertiesAsStrings") or {}) if isinstance(cp, dict) else {}).get("archiveDate")
+                      or (cp.get("archiveDate") if isinstance(cp, dict) else None))
+        if got:
+            return got
+    header = element.get("elementHeader") if isinstance(element.get("elementHeader"), dict) else {}
+    versions = element.get("versions") if isinstance(element.get("versions"), dict) else header.get("versions") or {}
+    return _iso_of(versions.get("updateTime")) or _iso_of(versions.get("createTime"))
+
+
+def archived_on_of(qualified_name: str, original: str) -> tuple[str, str]:
+    """(the suffix text, the day it names or '') of `<original>_archivedOn_<suffix>`."""
+    text = qualified_name[len(original) + len(ARCHIVED_ON):]
+    return text, java_date_day(text)
+
+
+def _sibling_of(element: dict, qualified_name: str) -> ArchivedSibling:
+    qn = _qn_of(element)
+    text, day = archived_on_of(qn, qualified_name)
+    return ArchivedSibling(_guid_of(element), qn, text, day, _archived_at_of(element), _is_memento(element))
+
+
+def _newest_first(sibs: list[ArchivedSibling]) -> list[ArchivedSibling]:
+    return sorted(sibs, key=lambda s: (s.archived_at, s.archived_day, s.qualified_name), reverse=True)
+
+
+def parse_archived_siblings(res: Any, qualified_name: str) -> list[ArchivedSibling]:
+    """The elements named `<qualified_name>_archivedOn_...` in a find answer (one page, or the raw elements of
+    every page), NEWEST first. "No elements found" is []; an answer this does not recognise raises."""
+    _no_answer(res, "elements")
+    if _no_elements(res):
+        return []
+    if not isinstance(res, list) or not all(isinstance(x, dict) and _guid_of(x) for x in res):
+        raise GatewayError(f"unrecognised elements answer from Egeria: {type(res).__name__}")
+    prefix = qualified_name + ARCHIVED_ON
+    return _newest_first([_sibling_of(x, qualified_name) for x in res if _qn_of(x).startswith(prefix)])
+
+
+def find_all_starting_with(client: Any, prefix: str, *, type_name: str = "",
+                           page_size: int = FIND_PAGE_SIZE) -> list[dict]:
+    """Every raw element a starts-with, forLineage find for `prefix` answers, read page by page to the end.
+    The body is the one `elements_under` sends (captured 6.2 returning a Memento) plus the page and, given, the
+    element type. Anything that is not an answer, a page, the end or a filtered page raises
+    `SiblingLookupFailed`: a lookup that could not be made never reads as "nothing there"."""
+    from resource_explorer.egeria_absence import lookup_exception_is_absent
+    found: list[dict] = []
+    start, filtered_run = 0, 0
+    for _ in range(MAX_FIND_PAGES):
+        body = {"class": "SearchStringRequestBody", "searchString": prefix, "startsWith": True, "ignoreCase": False,
+                "forLineage": True, "forDuplicateProcessing": True, "graphQueryDepth": 0,
+                "startFrom": start, "pageSize": page_size}
+        if type_name:
+            body["metadataElementTypeName"] = type_name
+        try:
+            res = client.find_metadata_elements_with_string(
+                search_string=prefix, starts_with=True, start_from=start, page_size=page_size, body=body)
+        except Exception as exc:
+            if lookup_exception_is_absent(exc):
+                return found                     # the end of the list, said as a typed not-found
+            raise SiblingLookupFailed(_short(exc, 200)) from exc
+        if res is None:
+            raise SiblingLookupFailed("the client returned nothing")
+        if isinstance(res, str):
+            said = res.strip().rstrip(".").strip().lower()
+            if said == _END_OF_LIST:
+                return found
+            if said != _FILTERED_PAGE:
+                raise SiblingLookupFailed(f"unexpected answer {res!r:.120}")
+            res = []
+        if not isinstance(res, list):
+            raise SiblingLookupFailed(f"unexpected answer type {type(res).__name__}")
+        if not res:
+            filtered_run += 1
+            if filtered_run > MAX_FILTERED_RUN:
+                raise SiblingLookupFailed(f"more than {MAX_FILTERED_RUN} pages in a row came back empty after "
+                                          "Egeria's filtering, so the end of the list was not reached")
+        else:
+            filtered_run = 0
+            for x in res:
+                if not (isinstance(x, dict) and _guid_of(x)):
+                    raise SiblingLookupFailed("an element in the answer carries no GUID")
+                found.append(x)
+        start += page_size
+    raise SiblingLookupFailed(f"more than {MAX_FIND_PAGES} pages")
+
+
+def find_archived_siblings(client: Any, qualified_name: str) -> list[ArchivedSibling]:
+    """S19: the archived copies of `qualified_name`, by the name Egeria gives them on archive, newest first."""
+    raw = find_all_starting_with(client, qualified_name + ARCHIVED_ON)
+    return parse_archived_siblings(raw or "No elements found", qualified_name)
+
+
+def decide_reinclude(live: Any, sibs: list[ArchivedSibling], confirmed_guid: str = "") -> dict:
+    """What a create under one name may do, given the live element (or None) and its archived copies.
+
+    `state`: exists (a live element: adopt, no create) | clear (create) | needs_confirmation (NO create) |
+    confirmed (create; the confirmation names the newest copy) | changed (NO create; it names another copy)."""
+    if live is not None:
+        return {"state": "exists", "live": live, "sibling": None, "text": ""}
+    if not sibs:
+        return {"state": "clear", "live": None, "sibling": None, "text": ""}
+    newest = sibs[0]
+    base = {"live": None, "sibling": newest, "others": [x.guid for x in sibs[1:]]}
+    if confirmed_guid and confirmed_guid == newest.guid:
+        return {**base, "state": "confirmed", "text": reinclude_words(newest.date)}
+    if confirmed_guid:
+        return {**base, "state": "changed", "text": SIBLING_CHANGED}
+    return {**base, "state": NEEDS_CONFIRMATION, "text": reinclude_words(newest.date)}
+
+
 # ── names ────────────────────────────────────────────────────────────────────
 
 def server_name_for(db_entity) -> str:
@@ -223,7 +412,7 @@ class CatalogueGateway(Protocol):
     """Everything a catalogue commit asks of Egeria. Reads raise `GatewayError`."""
 
     def publish_database(self, db_entity, db_user: str, db_pwd: str, *, registry=None,
-                         submitted_by: str = "") -> PublishedDatabase: ...
+                         submitted_by: str = "", reinclude_guid: str = "") -> PublishedDatabase: ...
     def publish_local_report(self, db_entity, db_user: str, db_pwd: str, measured: dict, *,
                              registry=None, submitted_by: str = "") -> dict: ...
     def set_zone_membership(self, guid: str, zones: list[str]) -> bool: ...
@@ -241,6 +430,8 @@ class CatalogueGateway(Protocol):
     def add_catalog_target(self, element_guid: str, name: str) -> str: ...
     def remove_catalog_target(self, relationship_guid: str) -> None: ...
     def elements_under(self, qualified_name_prefix: str) -> list[ElementRead]: ...
+    def archived_siblings(self, qualified_name: str) -> list[ArchivedSibling]: ...
+    def schema_elements(self, prefix: str) -> list[ElementRead]: ...
     def relationships(self, guid: str) -> list[Relationship]: ...
     def delete_element(self, guid: str, form: str) -> None: ...
     def initiate_survey(self, database_guid: str, request_parameters: dict[str, str]) -> tuple[str, str]: ...
@@ -367,8 +558,9 @@ def _is_memento(element: Any) -> bool:
 
 
 def _element_read(element: Any) -> ElementRead:
-    return ElementRead(guid=_guid_of(element), qualified_name=_qn_of(element),
-                       type_name=_type_of(element), archived=_is_memento(element))
+    archived = _is_memento(element)
+    return ElementRead(guid=_guid_of(element), qualified_name=_qn_of(element), type_name=_type_of(element),
+                       archived=archived, archived_at=_archived_at_of(element) if archived else "")
 
 
 def _strings_of(element: Any) -> dict:
@@ -630,12 +822,13 @@ class PyegeriaCatalogueGateway:
     # -- step 1 ----------------------------------------------------------
 
     def publish_database(self, db_entity, db_user: str, db_pwd: str, *, registry=None,
-                         submitted_by: str = "") -> PublishedDatabase:
-        """The server and database elements, as Classic's publish did, but with no survey."""
+                         submitted_by: str = "", reinclude_guid: str = "") -> PublishedDatabase:
+        """The server and database elements, as Classic's publish did, but with no survey. `reinclude_guid`
+        (S19) is the archived database copy the press confirmed; the surveyor re-checks it before any create."""
         try:
             res = self._surveyor().catalog_and_survey(
                 db_entity, db_user, db_pwd, registry=registry, survey_after_catalog=False,
-                submitted_by=submitted_by)
+                submitted_by=submitted_by, reinclude_guid=reinclude_guid)
         except Exception as exc:
             raise GatewayError(_short(exc)) from exc
         server = server_name_for(db_entity)
@@ -939,6 +1132,26 @@ class PyegeriaCatalogueGateway:
                 return []
             raise GatewayError(_short(exc)) from exc
         return [e for e in parse_elements_answer(res) if e.qualified_name.startswith(qualified_name_prefix)]
+
+    def archived_siblings(self, qualified_name: str) -> list[ArchivedSibling]:
+        """S19: the archived copies of `qualified_name`, found by the name Egeria gives them on archive,
+        `<qualified_name>_archivedOn_<date>`, newest first, every page read. A read that cannot be made raises
+        `SiblingLookupFailed`: never "no archived copy", so nothing is created on it."""
+        try:
+            client = self._client("MetadataExpert")
+        except Exception as exc:
+            raise SiblingLookupFailed(_short(exc, 200)) from exc
+        return find_archived_siblings(client, qualified_name)
+
+    def schema_elements(self, prefix: str) -> list[ElementRead]:
+        """Every DeployedDatabaseSchema named `<prefix>...`, live AND archived (forLineage), in ONE paged find:
+        the preview builds every schema's answer from it instead of reading each schema by name."""
+        try:
+            client = self._client("MetadataExpert")
+        except Exception as exc:
+            raise SiblingLookupFailed(_short(exc, 200)) from exc
+        raw = find_all_starting_with(client, prefix, type_name="DeployedDatabaseSchema")
+        return [_element_read(x) for x in raw if _qn_of(x).startswith(prefix)]
 
     def relationships(self, guid: str) -> list[Relationship]:
         body = {"class": "ResultsRequestBody", "graphQueryDepth": 0,

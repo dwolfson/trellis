@@ -277,7 +277,8 @@ def test_a_6_2_zone_membership_bean_with_an_unknown_key_still_raises():
 
 def test_the_qualified_name_before_an_archive_reads_absent():
     """Egeria renames an archived element's qualifiedName (`<qn>_archivedOn_<date>`): S19's lookup by the original
-    name answers "No elements found". Pinned as the live fact; S19's behaviour waits for the owner's ruling."""
+    name answers "No elements found". Pinned as the live fact; S19 now finds the archived copy by its new name
+    (`archived_siblings`, test_s19_confirm_reinclude.py)."""
     assert gw.parse_element_answer(answer(L_MEMENTO_ORIGINAL_QN)) is None
 
 

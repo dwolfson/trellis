@@ -137,6 +137,16 @@ commit is queued work, so the survey definition is not auto-retried: the toast s
 **Decision (architect, 2026-10-05):** (3) Refresh-now default stays: UI on, API off.
 **Decision (architect, 2026-10-05):** (4) The database version stays "not recorded".
 
+**Decision (project owner, 2026-10-14), superseding the S19 wording above:** Egeria archives an element by renaming it
+`<qn>_archivedOn_<date>` (a Memento), so the original name is free and a re-include creates a NEW element. Before any
+create that would re-include one (schema attach, database publish) RE looks for the `_archivedOn_` sibling
+(`catalogue_gateway.archived_siblings`, one routine `catalogue_commit.reinclude_check` for preview, press and run). If
+one exists it does not create: the row reads "archived in Egeria · <date> · re-including creates a new element; the
+archived record stays" with a Re-include control. Only a press with `confirm_reinclude` naming the newest archived
+GUID creates, re-checked at the press (409 if it changed) and again in the run; the create's `reincluded` proof row
+records `archived_sibling_guid` and the date. A lookup that cannot be made creates nothing ("could not check whether
+an archived copy exists"). "Can't be re-included until Egeria restores" is retired.
+
 **Backlog:** `POST /api/databases/{slug}/publish` stays only for Classic API callers and its docstring says it is unscoped; a follow-up
 makes it scope-aware or removes it. Also unscoped and not touched here: `HybridDatabaseSurveyor` (the `egeria-adaptive` survey path)
 still calls `publish_local_survey`/`catalog_and_survey`, which catalogue and start an unscoped survey; that is a separate follow-up.

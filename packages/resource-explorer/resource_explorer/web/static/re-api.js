@@ -232,8 +232,10 @@ export const redeclareCatalogueScope = (slug) => post(scopeUrl(slug, '/redeclare
  * being left out) and writes nothing; the commit and the read-back are 401 when
  * nobody is signed in, and the commit's body carries no scope: the record is the scope. */
 export const getCatalogueCommitPreview = (slug) => get(scopeUrl(slug, '/commit-preview'));
-export const postCatalogueCommit = (slug, refreshNow = false) =>
-  post(scopeUrl(slug, '/commit'), { refresh_now: !!refreshNow });
+export const postCatalogueCommit = (slug, refreshNow = false, confirmReinclude = []) =>
+  post(scopeUrl(slug, '/commit'), confirmReinclude.length
+    ? { refresh_now: !!refreshNow, confirm_reinclude: confirmReinclude }   // S19: names each archived GUID confirmed
+    : { refresh_now: !!refreshNow });
 export const getCatalogueCommitRecord = (slug, id) =>
   get(scopeUrl(slug, `/commits/${encodeURIComponent(id)}`));
 /** The newest commit for the database, read from the registry (a reload and a second tab see the same). Read-only. */

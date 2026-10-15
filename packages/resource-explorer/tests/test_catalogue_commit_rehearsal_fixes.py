@@ -271,6 +271,11 @@ def _surveyor_calls():
     # could-not-check, never "create").
     s._automated_curation.get_guid_for_name.return_value = "No elements found"
     s.connect = lambda: None
+    # S19: no archived copy of the database, so a create is a plain create (a real 6.2 miss).
+    from pyegeria import MetadataExpert
+    from unittest.mock import create_autospec
+    s._metadata_expert = create_autospec(MetadataExpert, spec_set=True, instance=True)
+    s._metadata_expert.find_metadata_elements_with_string.return_value = "No elements found"
     s._find_element_guid = lambda name: ""
     s._save_database_secret = lambda *a, **k: ("coll", "/path")
     calls = []

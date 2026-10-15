@@ -1302,7 +1302,11 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
         raise      # no caller / expired sign-in: the app's 401 handler (Brief I)
     except Exception as exc:
         from resource_explorer.egeria_clients import refusal
+        from resource_explorer.surveyors.database.egeria_database_surveyor import ArchivedDatabaseNeedsConfirmation
 
+        if isinstance(exc, ArchivedDatabaseNeedsConfirmation):
+            # S19: nothing created; the person confirms the re-include through a Curate commit, never here.
+            return PublishResult(status="needs_confirmation", slug=slug, error=str(exc))
         refused = refusal(exc)
         # Egeria refused this person: said as a refusal with Egeria's sentence (Brief I).
         err_str = f"refused by Egeria: {refused}" if refused is not None else str(exc)

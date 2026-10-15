@@ -379,14 +379,17 @@ def test_leave_out_with_a_term_assignment_is_an_archive_through_the_delete_endpo
     out, rec = press(world, fake)
     row = out["preview"]["leave_out"][0]
     assert row["form"] == "archive" and "2 term assignments" in row["text"]
-    assert "can't be re-included until Egeria restores archived elements" in row["text"]
+    assert "re-including it later creates a new element; the archived record stays" in row["text"]
     # the delete endpoint's ARCHIVE form, per element, leaf first: tables, columns and the schema type are anchored to the
     # database, so archiving the schema NEVER cascades them (live read 2026-10-06)
     kinds = [t for _, t, f in fake.deleted_order]
     assert {f for _, _, f in fake.deleted_order} == {"archive"} and kinds[-2:] == ["RelationalDBSchemaType", "DeployedDatabaseSchema"]
     assert kinds.index("RelationalTable") > kinds.index("RelationalColumn")
     assert all(e["archived"] for e in fake.elements.values() if e["qn"].startswith(sqn))
-    assert fake.read_element(sqn) is None and fake.read_element(sqn, for_lineage=True).archived
+    # Egeria renamed it on archive: the original name reads absent even for lineage; the copy is under the new name
+    assert fake.read_element(sqn) is None and fake.read_element(sqn, for_lineage=True) is None
+    copies = fake.archived_siblings(sqn)
+    assert [c.qualified_name for c in copies] == [f"{sqn}_archivedOn_" + copies[0].archived_on] and copies[0].archived
     s = derived(world)["schemas"]["archive"]
     assert s["state"] == "archived" and s["words"].startswith("archived in Egeria ·")
     assert fake.targets == []
@@ -490,24 +493,27 @@ def test_re_inclusion_after_a_soft_delete_recreates_and_reattaches_with_new_guid
     assert derived(world)["schemas"]["sales"]["state"] == "catalogued"
 
 
-def test_re_inclusion_after_an_archive_is_refused_with_the_s19_sentence(world, fake):
+def test_re_inclusion_after_an_archive_needs_confirmation_and_the_rest_proceeds(world, fake):
+    """S19 (owner ruling 2026-10-14): the archive renamed the schema, so its name is free. Not created until the
+    person confirms; another chosen schema proceeds; forced past the plan the attach still refuses."""
     _catalogued(world, fake, "archive")
     fake.add_term_assignment("orders", "PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.archive")
     choose(world, "archive", "leave_out")
     press(world, fake)
     choose(world, "archive", "catalogue")
     s = derived(world)["schemas"]["archive"]
-    assert s["state"] == "archived" and s["second"] == cc.S19_SENTENCE
+    assert s["state"] == "archived" and s["second"] == cc.REINCLUDE_TAIL
     p = cc.build_preview(world["registry"], "db", view(world), fake)
-    assert p["refused"] == [{"schema": "archive", "text": f"archive: {cc.S19_SENTENCE}"}]
+    nc = p["needs_confirmation"]
+    assert [(r["node"], r["name"], r["date"]) for r in nc] == [("schema", "archive", "2026-10-09")]
+    assert nc[0]["text"] == ("archive: archived in Egeria · 2026-10-09 · re-including creates a new element; "
+                             "the archived record stays")
     assert "archive" not in p["attach"] and not p["can_commit"]               # nothing else to do
-    # another schema chosen: the commit proceeds for it and still refuses the archived one
     choose(world, "sales", "catalogue")
     adds_before = len(fake.ops("create_schema_element"))
     press(world, fake)
     assert [c[1] for c in fake.ops("create_schema_element")[adds_before:]] == ["sales"]
-    # forced past the plan, the refusal still holds at the element level
-    with pytest.raises(cc.SchemaRefused, match="restores archived elements"):
+    with pytest.raises(cc.SchemaRefused, match="re-including creates a new element"):
         cc.apply_attach(world["registry"], fake, {"slug": "db", "schema": "archive", "database_guid": fake.db_guid})
 
 
@@ -894,6 +900,10 @@ def test_the_database_template_gets_database_description_and_version_so_no_place
     # A real miss is pyegeria's "No elements found"; a bare MagicMock answer is not one (round 3: odd answers are
     # could-not-check, never "create").
     s._automated_curation.get_guid_for_name.return_value = "No elements found"
+    from unittest.mock import create_autospec
+    from pyegeria import MetadataExpert
+    s._metadata_expert = create_autospec(MetadataExpert, spec_set=True, instance=True)
+    s._metadata_expert.find_metadata_elements_with_string.return_value = "No elements found"   # S19: no archived copy
     s.connect = lambda: None
     s._find_element_guid = lambda name: ""
     s._save_database_secret = lambda *a, **k: ("", "")
@@ -925,8 +935,8 @@ def test_refused_reinclusion_and_a_failed_read_are_both_named_and_collisions_sti
     choose(world, "archive", "catalogue")
     choose(world, "sales", "catalogue")
     p = cc.build_preview(world["registry"], "db", view(world), fake)
-    assert "1 schema not committed: archive · can't be re-included until Egeria restores archived elements" in \
-        [ln["text"] for ln in p["manifest"]["lines"]]
+    assert ("1 schema not committed: archive · archived in Egeria · re-including creates a new element; the archived "
+            "record stays · confirm Re-include") in [ln["text"] for ln in p["manifest"]["lines"]]
     assert p["can_commit"] and p["attach"] == ["sales"]
     choose(world, "a_b", "catalogue")                                          # a collision blocks the whole commit
     assert not cc.build_preview(world["registry"], "db", view(world), fake)["can_commit"]
@@ -1028,12 +1038,20 @@ def _captured_6_2(name):
 
 @pytest.mark.parametrize("captured", ["asset_maker_by_guid_for_lineage__memento",                    # 6.2 header field
                                       "metadata_expert_by_unique_name_for_lineage__memento_archived_qn"])  # the list
-def test_s19_refuses_when_the_lineage_read_carries_a_memento_in_either_shape(world, fake, monkeypatch, captured):
+def test_s19_needs_confirmation_when_the_archived_copy_is_in_either_captured_shape(world, fake, monkeypatch, captured):
+    """The captured 6.2 Memento, renamed to the schema's own `_archivedOn_` name, answers the sibling find: the attach
+    refuses with the date from the suffix and creates nothing."""
     _catalogued(world, fake, "archive")
+    sqn = "PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.archive"
     raw = _captured_6_2(captured)
-    monkeypatch.setattr(fake, "read_element",
-                        lambda qn, *, for_lineage=False: gw.parse_element_answer(raw) if for_lineage else None)
+    archived_qn = f"{sqn}_archivedOn_Fri Oct 09 01:28:08 GMT 2026"
+    if "properties" in raw:
+        raw["properties"]["qualifiedName"] = archived_qn
+    else:
+        raw["elementProperties"]["propertiesAsStrings"]["qualifiedName"] = archived_qn
+    monkeypatch.setattr(fake, "read_element", lambda qn, *, for_lineage=False: None)
+    monkeypatch.setattr(fake, "archived_siblings", lambda qn: gw.parse_archived_siblings([raw], qn))
     adds_before = len(fake.ops("create_schema_element"))
-    with pytest.raises(cc.SchemaRefused, match="restores archived elements"):
+    with pytest.raises(cc.SchemaRefused, match="archived in Egeria · 2026-10-09 · re-including creates a new element"):
         cc.apply_attach(world["registry"], fake, {"slug": "db", "schema": "archive", "database_guid": fake.db_guid})
     assert len(fake.ops("create_schema_element")) == adds_before
