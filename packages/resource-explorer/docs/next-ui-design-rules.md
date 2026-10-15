@@ -10,7 +10,7 @@ Sources: the design handoffs in the `claude_design` project
 (`Resource Explorer Restyle`, `Next UI Regressions`, `FIX-ROUND`,
 `Resource Explorer Matrix Response`), and use of the matrix on real work
 lists. Round-by-round narrative lives in
-[`next-ui-matrix-round.md`](next-ui-matrix-round.md).
+[`next-ui-matrix-round.md`](archive/snapshots/next-ui-matrix-round.md).
 
 ---
 
