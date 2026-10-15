@@ -53,14 +53,16 @@ def writes_since_reset(slug: str, report: dict) -> list[dict]:
     tables = [a for a in anns if a.get("annotation_type") == TABLE_MEASUREMENTS]
     if not tables:
         return [{"scope": slug, "measure": WRITES, "state": "not_established",
-                 "reason": f"survey report {guid} carries no table measurements"}]
+                 "reason": f"survey report {guid} carries no table measurements",
+                 "summary": "not measured · the survey report has no table measurements"}]
     out = []
     for a in tables:
         props = a.get("resource_properties") or {}
         scope = _report_scope(props)
         if str(props.get("Table Type") or "").upper().replace("_", " ") == "VIEW":
             out.append({"scope": scope, "measure": WRITES, "state": "not_applicable",
-                        "reason": "a view holds no rows of its own"})
+                        "reason": "a view holds no rows of its own",
+                        "summary": "not applicable · a view holds no rows"})
             continue
         counts = {}
         for key, name in _COUNTERS:
@@ -71,7 +73,8 @@ def writes_since_reset(slug: str, report: dict) -> list[dict]:
         missing = [name for key, name in _COUNTERS if counts[key] is None]
         if missing:
             out.append({"scope": scope, "measure": WRITES, "state": "not_established",
-                        "reason": f"{', '.join(missing)} not measured in survey report {guid}"})
+                        "reason": f"{', '.join(missing)} not measured in survey report {guid}",
+                        "summary": "not measured · a write counter is missing in the survey report"})
             continue
         total = sum(counts.values())
         value = {**counts, "writesSinceStatisticsReset": total, "asOf": as_of, "statisticsReset": reset or None,
@@ -89,6 +92,12 @@ def run(inputs) -> list[dict]:
     report = getattr(inputs, "source_report", None)
     if report:
         out += writes_since_reset(inputs.slug, report)
+    else:
+        # Standalone (design ruling, 2026-10-15): staleness runs from the snapshots alone; the second measure is
+        # absent, and the absence is recorded, never left silent.
+        out.append({"scope": inputs.slug, "measure": WRITES, "state": "not_established",
+                    "reason": "no survey report in this run",
+                    "summary": "writes since statistics reset: not measured · no survey report in this run"})
     return out
 
 
@@ -97,30 +106,35 @@ def staleness(inputs) -> list[dict]:
     snaps = inputs.ods.row_count_snapshots(inputs.slug, limit=2)
     if not snaps:
         return [{"scope": inputs.slug, "state": "not_established",
-                 "reason": "no survey has measured row counts for this database yet"}]
+                 "reason": "no survey has measured row counts for this database yet",
+                 "summary": "not measured · no survey has counted rows yet"}]
     latest = snaps[0]
     previous = {_key(t): t for t in snaps[1]["tables"]} if len(snaps) > 1 else None
     out = []
     for t in latest["tables"]:
         scope = _key(t)
         if _is_view(t):
-            out.append({"scope": scope, "state": "not_applicable", "reason": "a view holds no rows of its own"})
+            out.append({"scope": scope, "state": "not_applicable", "reason": "a view holds no rows of its own",
+                        "summary": "not applicable · a view holds no rows"})
             continue
         if previous is None:
             out.append({"scope": scope, "state": "not_established",
                         "reason": f"not measured · one snapshot only: only one survey has measured row counts "
-                                  f"({latest['surveyed_at']}); a change needs two"})
+                                  f"({latest['surveyed_at']}); a change needs two",
+                        "summary": "not measured · one snapshot only"})
             continue
         before = previous.get(scope)
         if before is None:
             out.append({"scope": scope, "state": "not_established",
-                        "reason": f"not in the previous survey ({snaps[1]['surveyed_at']})"})
+                        "reason": f"not in the previous survey ({snaps[1]['surveyed_at']})",
+                        "summary": "not measured · table not in the previous survey"})
             continue
         missing = [at for at, row in ((snaps[1]["surveyed_at"], before), (latest["surveyed_at"], t))
                    if row.get("row_count") is None]
         if missing:
             out.append({"scope": scope, "state": "not_established",
-                        "reason": f"row count not measured in the survey of {' and '.join(missing)}"})
+                        "reason": f"row count not measured in the survey of {' and '.join(missing)}",
+                        "summary": "not measured · row count missing in a survey"})
             continue
         b, a = int(before["row_count"]), int(t["row_count"])
         value = {"rowsBefore": b, "rowsAfter": a, "rowsChanged": a - b,

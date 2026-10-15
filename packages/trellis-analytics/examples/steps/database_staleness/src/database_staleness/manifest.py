@@ -30,7 +30,7 @@ MANIFEST = StepManifest(
     tags=["staleness", "row counts"],
     # What Resource Explorer's engine host advertises to Egeria for this step, and dispatches on.
     request_type="re-database-staleness",
-    # Never surveyed, or surveyed once: there is no change to report. The survey's input was not enough for this
-    # kind of survey, which is Egeria's survey-invalid.
-    nothing_to_derive_guard="survey-invalid",
+    # Design ruling 2026-10-15: an absence honestly recorded is a completed survey (the report says "not measured ·
+    # one snapshot only"). survey-invalid is for a surveyReport that is present but wrong, decided by the engine host.
+    nothing_to_derive_guard="survey-completed",
 )

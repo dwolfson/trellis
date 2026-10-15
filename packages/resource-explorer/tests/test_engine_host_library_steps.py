@@ -82,7 +82,7 @@ def test_the_step_host_maps_request_types_from_installed_manifests(staleness_ins
     assert list(steps) == [REQUEST_TYPE]
     step = steps[REQUEST_TYPE]
     assert (step.step_key, step.entity_type, step.annotation_type, step.nothing_to_derive_guard) == (
-        "database_staleness", "database", "ResourceMeasureAnnotation", "survey-invalid")
+        "database_staleness", "database", "ResourceMeasureAnnotation", "survey-completed")
     assert step.provided_by["package"] == "trellis-step-database-staleness"
     # the engine host claims exactly the built-in request types and the library's
     assert engine_host.supported_request_types() == {"re-db-derived": "db_derived",
@@ -183,30 +183,83 @@ def test_a_library_action_is_claimed_run_published_and_completed(staleness_insta
             ("daemon", "engine_host", REQUESTER, daemon), f"{cls}.{method} ran as {who}"
 
 
-def test_nothing_to_derive_completes_with_the_declared_guard_and_publishes_nothing(
+def _states(egeria, report_guid):
+    """{(annotationType, scope): (resultState, summary-or-explanation words)} of one published report."""
+    return {(a["annotationType"], a["additionalProperties"]["scope"]):
+            (a["additionalProperties"]["resultState"], a.get("summary") or "", a.get("explanation") or "")
+            for a in _annotation_bodies(egeria, report_guid)}
+
+
+def test_report_with_no_table_measurements_and_no_snapshots_completes_with_both_absences(
         staleness_installed, reg, egeria, no_connection):
-    """empty_db was never surveyed and the source report carries no table measurements: both measures say
-    not_established for the database, which is nothing to derive. The manifest declares survey-invalid for that; no
-    report is written."""
+    """Live bug (laz_local_egeria_observations): a valid report and no stored snapshots was completed survey-invalid
+    "nothing to derive". Ruling 2026-10-15: an absence honestly recorded completes survey-completed."""
     _lib_action(egeria, "ea-empty", target=EMPTY_DB_GUID, report=EMPTY_REPORT)
     assert _sweep(reg).claimed == ["ea-empty"]
     _run_queue_once(reg)
 
     done = egeria.actions["ea-empty"]["completion"]
-    assert done["status"] == "INVALID" and done["guards"] == ["survey-invalid"], done
-    assert "nothing to derive" in done["message"]
-    assert "no survey has measured row counts" in done["message"]
-    assert f"survey report {EMPTY_REPORT} carries no table measurements" in done["message"]
-    assert done["targets"] == []
-    assert egeria.reports() == []
-    assert not egeria.method_calls("create_annotation")
-
-    row = _row(reg)
-    assert row["target"]["outcome"]["guard"] == "survey-invalid" and not row["target"]["outcome"]["report_guid"]
-    # the honest not_established row is still in RE's store
+    assert done["status"] == "ACTIONED" and done["guards"] == ["survey-completed"], done
+    [(report_guid, _)] = egeria.reports()
+    got = _states(egeria, report_guid)
+    assert {v[0] for v in got.values()} == {"not_established"} and len(got) == 2
+    assert got[("Database Staleness", "empty_db")][1] == "not measured · no survey has counted rows yet"
+    assert got[("Writes Since Statistics Reset", "empty_db")][1] == \
+        "not measured · the survey report has no table measurements"
+    outcome = _row(reg)["target"]["outcome"]
+    assert outcome["guard"] == "survey-completed" and outcome["report_guid"] == report_guid
     _run, rows = reg.query_step_annotations("database", "empty_db", "database_staleness")
-    assert [r["result_state"] for r in rows] == ["not_established"]
-    assert "no survey" in rows[0]["explanation"]
+    assert [r["result_state"] for r in rows] == ["not_established"] and rows[0]["summary"]
+
+
+def test_report_present_no_snapshots_publishes_writes_and_staleness_not_measured(
+        staleness_installed, reg, egeria, no_connection):
+    from tests.test_engine_host_step4_mixed_process import _native_report
+
+    guid = "0a1b2c3d-0000-4000-8000-00000000e0e1"
+    egeria.native_reports[guid] = _native_report(written={"src_cd": 250}, subject=EMPTY_DB_GUID, guid=guid)
+    _lib_action(egeria, "ea-nosnap", target=EMPTY_DB_GUID, report=guid)
+    _sweep(reg)
+    _run_queue_once(reg)
+    done = egeria.actions["ea-nosnap"]["completion"]
+    assert done["status"] == "ACTIONED" and done["guards"] == ["survey-completed"], done
+    [(report_guid, _)] = egeria.reports()
+    got = _states(egeria, report_guid)
+    assert got[("Database Staleness", "empty_db")][:2] == ("not_established",
+                                                           "not measured · no survey has counted rows yet")
+    assert got[("Writes Since Statistics Reset", "public.src_cd")][0] == "measured"
+    assert all(v[1] for v in got.values())
+
+
+def test_standalone_with_two_snapshots_completes_staleness_measured_writes_not_measured(
+        staleness_installed, reg, egeria, no_connection):
+    _second_survey(reg)
+    _lib_action(egeria, "ea-alone2", report=None)
+    assert _sweep(reg).claimed == ["ea-alone2"]
+    _run_queue_once(reg)
+    done = egeria.actions["ea-alone2"]["completion"]
+    assert done["status"] == "ACTIONED" and done["guards"] == ["survey-completed"], done
+    [(report_guid, body)] = egeria.reports()
+    assert "derived_from_report" not in body["properties"].get("additionalProperties", {})
+    got = _states(egeria, report_guid)
+    assert got[("Database Staleness", "public.orders")][0] == "measured"
+    assert got[("Writes Since Statistics Reset", "coco_pharma")][:2] == (
+        "not_established", "writes since statistics reset: not measured · no survey report in this run")
+    assert all(v[1] for v in got.values())
+
+
+def test_standalone_with_one_snapshot_completes_with_both_absences(staleness_installed, reg, egeria, no_connection):
+    _lib_action(egeria, "ea-alone1", report=None)
+    _sweep(reg)
+    _run_queue_once(reg)
+    done = egeria.actions["ea-alone1"]["completion"]
+    assert done["status"] == "ACTIONED" and done["guards"] == ["survey-completed"], done
+    [(report_guid, _)] = egeria.reports()
+    got = _states(egeria, report_guid)
+    assert {v[0] for v in got.values()} == {"not_established"}
+    assert got[("Database Staleness", "public.orders")][1] == "not measured · one snapshot only"
+    assert got[("Writes Since Statistics Reset", "coco_pharma")][1] == \
+        "writes since statistics reset: not measured · no survey report in this run"
 
 
 def test_the_declared_nothing_guard_is_the_one_used(staleness_installed, reg, egeria, no_connection, monkeypatch):
