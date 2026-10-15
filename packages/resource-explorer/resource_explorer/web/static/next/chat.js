@@ -247,27 +247,46 @@ function listSentences(body) {
  *  is in the pane". A field like `by_ecosystem.python` reads as "by
  *  ecosystem · python". */
 const LIST_NOUNS = {
-  dependency_analysis: 'dependencies', cve_scan: 'advisories', data_file_profiling: 'data files',
-  api_structure: 'symbols', code_symbol_extraction: 'symbols', architecture_recovery: 'components',
-  sub_resource_survey: 'files and folders', manifest_parse: 'manifest entries', interface_surface: 'endpoints',
+  dependency_analysis: ['dependency', 'dependencies'], cve_scan: ['advisory', 'advisories'],
+  data_file_profiling: ['data file', 'data files'], api_structure: ['symbol', 'symbols'],
+  code_symbol_extraction: ['symbol', 'symbols'], architecture_recovery: ['component', 'components'],
+  sub_resource_survey: ['file or folder', 'files and folders'], manifest_parse: ['manifest entry', 'manifest entries'],
+  interface_surface: ['endpoint', 'endpoints'],
 };
-const LIST_FIELD_NOUNS = { 'api_structure.classes': 'classes', 'api_structure.functions': 'public functions' };
-function listSentenceHtml(l, i) {
-  const mapped = LIST_FIELD_NOUNS[`${l.key}.${l.field}`] || LIST_NOUNS[l.key];
-  // "68 dependencies · in 3 ecosystems" when the noun is known and the list
-  // was grouped; "3 findings · security scan" when it is not.
-  const group = l.field.replace(/^by_/, '').replace(/_/g, ' ');
-  const head = mapped
-    ? `<span class="tnum">${l.total}</span> ${esc(mapped)}${l.parts ? ` · in <span class="tnum">${l.parts}</span> ${esc(group)}${l.parts === 1 ? '' : 's'}` : ''}`
-    : `<span class="tnum">${l.total}</span> ${esc(l.field.replace(/_/g, ' '))} · ${esc(l.key.replace(/_/g, ' '))}`;
-  const partial = l.shown < l.total;
-  // Which analysis the list came from, always first: the line is the label
-  // for the link that ends it. A list with nothing stored carries no link and
-  // says so, from the manifest's own total.
-  const label = `<span data-list-label class="font-mono text-chrome-muted">${esc(l.key.replace(/_/g, ' '))}</span> · `;
-  if (!l.total) {
-    return `<div data-list-empty class="mt-s2 text-chip text-chrome-muted">${label}nothing stored by ${esc(l.key)} for this repo</div>`;
+const LIST_FIELD_NOUNS = {
+  'api_structure.classes': ['class', 'classes'], 'api_structure.functions': ['public function', 'public functions'],
+  'cve_scan.findings': ['finding', 'findings'], 'cve_scan.ecosystems_seen': ['ecosystem', 'ecosystems'],
+};
+/** [singular, plural] for one list field, or null when no noun is known. */
+function listNoun(l) {
+  return LIST_FIELD_NOUNS[`${l.key}.${l.field}`] || LIST_NOUNS[l.key] || null;
+}
+/** "49 endpoints" / "1 finding" -- the count with its noun, singular at 1. */
+function countNounHtml(l) {
+  const n = listNoun(l);
+  const word = n ? n[l.total === 1 ? 0 : 1] : l.field.replace(/_/g, ' ');
+  return `<span class="tnum">${l.total}</span> ${esc(word)}`;
+}
+/** One row per SECTION. A section with several list fields (cve_scan:
+ *  findings + ecosystems_seen) is one row naming each field's count, one
+ *  link. Then the extent: how much of it the model was shown. */
+function listSentenceHtml(group, i) {
+  const ls = Array.isArray(group) ? group : [group];
+  const key = ls[0].key;
+  const live = ls.filter((l) => l.total);
+  const label = `<span data-list-label class="font-mono text-chrome-muted">${esc(key.replace(/_/g, ' '))}</span> · `;
+  if (!live.length) {
+    return `<div data-list-empty class="mt-s2 text-chip text-chrome-muted">${label}nothing stored by ${esc(key)} for this repo</div>`;
   }
+  const head = live.map((l) => {
+    const grp = l.parts ? ` (in <span class="tnum">${l.parts}</span> ${esc(l.field.replace(/^by_/, '').replace(/_/g, ' '))}${l.parts === 1 ? '' : 's'})` : '';
+    return countNounHtml(l) + grp;
+  }).join(' · ');
+  const total = live.reduce((a, l) => a + l.total, 0);
+  const shown = live.reduce((a, l) => a + l.shown, 0);
+  const extent = shown < total
+    ? `<span class="text-chrome-muted"><span class="tnum">${shown}</span> of <span class="tnum">${total}</span> shown to the model</span>`
+    : '<span class="text-chrome-muted">all shown to the model</span>';
   // Three things the designer's read of #60 fixed: the packer's rung is
   // internal and "at full" read as "shown fully"; a section with no member
   // reader rendered nothing where the link would be (the silent-omission
@@ -280,12 +299,11 @@ function listSentenceHtml(l, i) {
   // function assumes `l.members` is true; a readerless `l` reaching it is a
   // caller bug, not a state to render.
   return `<div class="mt-s2 text-chip text-chrome-ink">
-    ${label}${head}${
-      partial ? ` · <span class="text-chrome-muted"><span class="tnum">${l.shown}</span> shown to the model</span>` : ' · all shown to the model'}${
+    ${label}${head} · ${extent}${
       // The control says what pressing it does; it is the only clickable
       // part of the line, and the middot before it does the sentence
       // break's work.
-      ` · <button data-list-source="${esc(l.key)}" data-list-slug="${esc(i)}"
+      ` · <button data-list-source="${esc(key)}" data-list-slug="${esc(i)}"
           class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">open the full list${icon('chevron-right', { size: 13 })}</button>`}
   </div>`;
 }
@@ -307,7 +325,19 @@ function listSentenceHtml(l, i) {
  *  the footer had no business asserting: a footer that lists what exists is
  *  not the place to enumerate what doesn't. */
 function evidenceFooterListsHtml(lists, slug) {
-  return lists.filter((l) => l.members).map((l) => listSentenceHtml(l, slug)).join('');
+  const groups = new Map();
+  for (const l of lists.filter((x) => x.members)) {
+    if (!groups.has(l.key)) groups.set(l.key, []);
+    groups.get(l.key).push(l);
+  }
+  // Status from stored data, not from the model's compliance: when a list was
+  // cut, say how much of it the answer could have named.
+  const cut = [...groups.values()].flat().filter((l) => l.total && l.shown < l.total);
+  const note = cut.length
+    ? `<div data-partial-note class="mt-s2 text-chip text-chrome-ink">Listed ${cut.map((l) =>
+        `<span class="tnum">${l.shown}</span> of <span class="tnum">${l.total}</span> ${esc((listNoun(l) || [0, l.field.replace(/_/g, ' ')])[1])}`).join('; ')} -- open the full list for the rest</div>`
+    : '';
+  return note + [...groups.values()].map((g) => listSentenceHtml(g, slug)).join('');
 }
 
 /**

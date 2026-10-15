@@ -37,3 +37,26 @@ test('an empty list shows no link and says why', () => {
   assert.match(html, /nothing stored by api_structure for this repo/);
   assert.match(html, /data-list-empty/);
 });
+
+test('one row per section, naming each list field with its count and noun', () => {
+  const b = body({ cve_scan: { ecosystems_seen: ext(1), findings: ext(1) } }, ['cve_scan']);
+  const html = evidenceFooterListsHtml(listSentences(b), 'p');
+  assert.equal((html.match(/data-list-source=/g) || []).length, 1, 'one link');
+  assert.equal((html.match(/data-list-label/g) || []).length, 1, 'one row');
+  assert.match(html, /<span class="tnum">1<\/span> finding\b/);
+  assert.match(html, /<span class="tnum">1<\/span> ecosystem\b/);
+});
+
+test('a row shows count and noun, then the extent', () => {
+  const b = body({ interface_surface: { endpoints: ext(49, 20) } }, ['interface_surface']);
+  const html = evidenceFooterListsHtml(listSentences(b), 'p');
+  const row = html.split('</div>').find((r) => r.includes('data-list-source'));
+  assert.match(row, /interface surface<\/span> · <span class="tnum">49<\/span> endpoints · <span[^>]*><span class="tnum">20<\/span> of <span class="tnum">49<\/span> shown to the model/);
+});
+
+test('a cut list gets a note from the manifest; a whole one does not', () => {
+  const cut = evidenceFooterListsHtml(listSentences(body({ interface_surface: { endpoints: ext(49, 20) } }, ['interface_surface'])), 'p');
+  assert.match(cut, /data-partial-note[^>]*>Listed <span class="tnum">20<\/span> of <span class="tnum">49<\/span> endpoints/);
+  const whole = evidenceFooterListsHtml(listSentences(body({ interface_surface: { endpoints: ext(3) } }, ['interface_surface'])), 'p');
+  assert.ok(!whole.includes('data-partial-note'));
+});
