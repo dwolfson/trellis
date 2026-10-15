@@ -331,16 +331,18 @@ def test_output_that_cannot_be_read_is_unknown_never_ok(root, reg, monkeypatch):
 
 
 
-def test_a_summary_that_does_not_line_up_with_the_commands_is_unknown(root, reg, monkeypatch):
-    """One SUCCESS row for a two-command document: which command it belongs to is not known, so neither is ok."""
+def test_a_summary_with_a_missing_row_is_unknown_only_for_that_command(root, reg, monkeypatch):
+    """One SUCCESS row for a two-command document: the command it names is ok, the one without a row is
+    unknown and says so."""
     from resource_explorer import dr_egeria_runner as runner
 
     Fakes(monkeypatch, output=_summary(OK_OUTPUT_ROWS[:1]))
     runner.run_document("plain/only.md", registry=reg)
     row = _rows(reg)[0]
     assert row["status"] == "error"
-    assert [i["status"] for i in row["items"]] == ["unknown", "unknown"]
-    assert "1 row(s) for 2 command(s)" in row["items"][0]["error"]
+    assert [i["status"] for i in row["items"]] == ["ok", "unknown"]
+    assert "1 row(s) for 2 command(s)" in row["items"][1]["error"]
+
 
 def test_a_failed_pyegeria_step_stops_the_run_before_dr_egeria(root, reg, monkeypatch):
     from resource_explorer import dr_egeria_runner as runner
@@ -773,3 +775,73 @@ def test_a_refused_repeat_says_how_the_earlier_run_ended(root, reg, monkeypatch)
     words = str(refused.value)
     assert "already applied" not in words
     assert "ended error" in words and "1 ok, 1 error, 3 not run" in words
+
+
+# ── the summary reader on the survey-definition documents ────────────────────
+# Fixtures are the real `dr_egeria` rendering (md_processing.process_md_file_v2, the installed pyegeria) of
+# survey-definitions/repo-survey-definition-analysis.md, captured with a stub client and no Egeria call.
+
+_FIXTURES = Path(__file__).parent / "fixtures"
+_ANALYSIS_DOC = "survey-definitions/repo-survey-definition-analysis.md"
+
+
+def _statuses(items):
+    return [(i["command"], i["status"]) for i in items]
+
+
+@pytest.mark.parametrize("fixture", ["dr_egeria_summary_repo_analysis_process.txt",
+                                     "dr_egeria_summary_repo_analysis_folded.txt"])
+def test_every_command_of_the_analysis_definition_gets_a_real_status(fixture):
+    from resource_explorer import dr_egeria_runner as runner
+
+    plan = runner.plan_document(_ANALYSIS_DOC)
+    items = runner.dr_egeria_results(plan.dr_egeria, (_FIXTURES / fixture).read_text(), "ok")
+    assert len(items) == 31 and "unknown" not in {i["status"] for i in items}
+    assert {s for c, s in _statuses(items) if c != "Link Element To Scope"} == {"ok"}
+
+
+def test_a_full_size_document_lines_up_row_for_row_even_when_rich_folds_every_cell():
+    from resource_explorer import dr_egeria_runner as runner
+
+    plan = runner.plan_document("survey-definitions/repo-survey-definition-full.md")
+    rows = [(c.command, "SUCCESS", "n", "GovActionProcessStep::" + "x" * 90, "Executed " + c.command)
+            for c in plan.dr_egeria]
+    for width in ("80", "220", "4000"):
+        os.environ["EGERIA_WIDTH"] = width
+        try:
+            out = _summary(rows)
+        finally:
+            del os.environ["EGERIA_WIDTH"]
+        items = runner.dr_egeria_results(plan.dr_egeria, out, "ok")
+        assert len(items) == 119 and {i["status"] for i in items} == {"ok"}, width
+
+
+def test_a_deferred_row_is_unknown_with_its_reason_not_ok():
+    from resource_explorer import dr_egeria_runner as runner
+
+    cmds = [runner.PlannedCommand("dr_egeria", "Link Next Process Step", "", False, ""),
+            runner.PlannedCommand("dr_egeria", "Link First Process Step", "", False, "")]
+    out = _summary([("Link Next Process Step", "DEFERRED", "", "", "Deferred: waiting on x"),
+                    ("Link First Process Step", "SUCCESS", "", "", "Executed")])
+    items = runner.dr_egeria_results(cmds, out, "ok")
+    assert [i["status"] for i in items] == ["unknown", "ok"]
+    assert "'DEFERRED'" in items[0]["error"] and "waiting on x" in items[0]["error"]
+
+
+def test_a_pipe_inside_the_message_does_not_void_the_table():
+    from resource_explorer import dr_egeria_runner as runner
+
+    cmds = [runner.PlannedCommand("dr_egeria", "Link Next Process Step", "", False, "")]
+    out = _summary([("Link Next Process Step", "SUCCESS", "", "", "Executed a │ b")])
+    items = runner.dr_egeria_results(cmds, out, "ok")
+    assert items[0]["status"] == "ok" and "a │ b" in items[0]["message"]
+
+
+def test_a_missing_row_costs_only_its_own_command():
+    from resource_explorer import dr_egeria_runner as runner
+
+    cmds = [runner.PlannedCommand("dr_egeria", n, "", True, "") for n in ("Create A", "Create B", "Create C")]
+    out = _summary([("Create A", "SUCCESS", "", "", "m"), ("Create C", "FAILURE", "", "", "boom")])
+    items = runner.dr_egeria_results(cmds, out, "ok")
+    assert _statuses(items) == [("Create A", "ok"), ("Create B", "unknown"), ("Create C", "error")]
+    assert "no row for 'Create B'" in items[1]["error"]
