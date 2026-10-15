@@ -9,7 +9,8 @@ MANIFEST = StepManifest(
     function="statistics_freshness.step.run",
     description=("How old each table's planner statistics are: the age of the last ANALYZE and VACUUM, tables "
                  "never analysed, and tables changed past autovacuum's analyse trigger, as of the newest table "
-                 "activity snapshot Resource Explorer stored. Opens no connection to the database."),
+                 "activity snapshot Resource Explorer stored. Opens no connection to the database. A table whose statistics were not read, "
+                 "or a database with none stored, is shown as \"not measured\", never as fresh."),
     returns="one ResourceMeasureAnnotation per table, and one summary for the database, each with its envelope",
     source="ods",
     version=__version__,

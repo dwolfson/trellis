@@ -25,7 +25,7 @@ Resource Explorer Survey — Database Staleness
 ResourceExplorerSurvey::re-database-staleness
 
 ### Description
-Rows changed per table since the last survey: compares the latest two row-count snapshots Resource Explorer stored for the database. Reads only what RE already stored; opens no connection to the database.
+Rows changed per table since the last survey: compares the latest two row-count snapshots Resource Explorer stored for the database. Reads only what RE already stored; opens no connection to the database. Shown as "not measured", never as zero, when fewer than two row-count snapshots exist, or a table or its count is missing from one.
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed

@@ -257,7 +257,7 @@ def test_the_library_declaration_equals_the_manifest(staleness_installed):
     assert engine_host.supported_request_types()[m.request_type] == m.name
 
 
-def test_a_manifest_change_changes_the_generated_library_declaration(staleness_installed, monkeypatch):
+def test_a_manifest_change_changes_the_generated_library_declaration(library_installed, monkeypatch):
     from resource_explorer.surveyors import survey_step_host
 
     real = survey_step_host.discover_steps

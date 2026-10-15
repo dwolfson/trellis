@@ -25,7 +25,7 @@ Resource Explorer Survey — Table Statistics Freshness
 ResourceExplorerSurvey::re-statistics-freshness
 
 ### Description
-How old each table's planner statistics are: the age of the last ANALYZE and VACUUM, tables never analysed, and tables changed past autovacuum's analyse trigger, as of the newest table activity snapshot Resource Explorer stored. Opens no connection to the database.
+How old each table's planner statistics are: the age of the last ANALYZE and VACUUM, tables never analysed, and tables changed past autovacuum's analyse trigger, as of the newest table activity snapshot Resource Explorer stored. Opens no connection to the database. A table whose statistics were not read, or a database with none stored, is shown as "not measured", never as fresh.
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed

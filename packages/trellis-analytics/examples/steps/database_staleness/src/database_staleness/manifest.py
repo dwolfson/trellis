@@ -9,7 +9,8 @@ MANIFEST = StepManifest(
     function="database_staleness.step.run",
     description=("Rows changed per table since the last survey: compares the latest two row-count snapshots "
                  "Resource Explorer stored for the database. Reads only what RE already stored; opens no "
-                 "connection to the database."),
+                 "connection to the database. Shown as \"not measured\", never as zero, when fewer than two "
+                 "row-count snapshots exist, or a table or its count is missing from one."),
     returns="one ResourceMeasureAnnotation per table, each with its envelope",
     source="ods",
     version=__version__,

@@ -10,7 +10,8 @@ MANIFEST = StepManifest(
     description=("Foreign-key degree in and out per table, from the keys Resource Explorer stored, and the tables "
                  "it proposes as hubs (referenced by at least hub_min_referencing other tables, a declared "
                  "parameter). The proposal is an annotation, never a classification on the table. Opens no "
-                 "connection to the database."),
+                 "connection to the database. With no foreign keys stored it is shown as \"not measured\", "
+                 "never as a database with no hubs."),
     returns=("one ResourceMeasureAnnotation per table (foreign keys in and out), and one ClassificationAnnotation "
              "proposing 'hub table' per hub, each with its envelope"),
     source="ods",

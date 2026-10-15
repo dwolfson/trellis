@@ -74,7 +74,7 @@ def _act(table, **kw):
 # ══ statistics_freshness ═════════════════════════════════════════════════════════
 
 @pytest.fixture
-def freshness(tmp_path, monkeypatch, reattach_after):
+def freshness(reattach_after, tmp_path, monkeypatch):
     return _install(tmp_path, monkeypatch, "statistics_freshness")
 
 
@@ -160,7 +160,7 @@ def test_freshness_manifest(freshness):
 # ══ change_rates ══════════════════════════════════════════════════════════════════
 
 @pytest.fixture
-def rates(tmp_path, monkeypatch, reattach_after):
+def rates(reattach_after, tmp_path, monkeypatch):
     return _install(tmp_path, monkeypatch, "change_rates")
 
 
@@ -258,7 +258,7 @@ def test_change_rates_manifest(rates):
 # ══ hub_tables ════════════════════════════════════════════════════════════════════
 
 @pytest.fixture
-def hubs(tmp_path, monkeypatch, reattach_after):
+def hubs(reattach_after, tmp_path, monkeypatch):
     return _install(tmp_path, monkeypatch, "hub_tables")
 
 

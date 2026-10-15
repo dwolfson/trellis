@@ -290,7 +290,22 @@ def test_the_manifest_is_the_wrappers_declaration(staleness_installed):
 
 # ── generated, not hand-written ──
 
-def test_the_catalog_entry_in_analysis_catalog_yaml_is_the_generated_one(staleness_installed):
+@pytest.fixture
+def library_installed(tmp_path, monkeypatch):
+    """Every example step installed the way pip would; the catalog block holds all of them, not only staleness."""
+    for pkg in sorted(p for p in EXAMPLE.parent.iterdir() if (p / "pyproject.toml").is_file()):
+        project = tomllib.loads((pkg / "pyproject.toml").read_text())["project"]
+        version = re.search(r'__version__ = "([^"]+)"', (pkg / "src" / pkg.name / "__init__.py").read_text()).group(1)
+        d = tmp_path / f"{project['name'].replace('-', '_')}-{version}.dist-info"
+        d.mkdir()
+        (d / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {project['name']}\nVersion: {version}\n")
+        (d / "entry_points.txt").write_text("[trellis.analytics]\n" + "".join(
+            f"{k} = {v}\n" for k, v in project["entry-points"]["trellis.analytics"].items()))
+        monkeypatch.syspath_prepend(str(pkg / "src"))
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+
+def test_the_catalog_entries_in_analysis_catalog_yaml_are_the_generated_ones(reattach_after, library_installed):
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
@@ -300,22 +315,30 @@ def test_the_catalog_entry_in_analysis_catalog_yaml_is_the_generated_one(stalene
 
     text = CATALOG.read_text()
     assert gen.render_catalog_block("database") in text, "analysis_catalog.yaml is stale: run the generator"
-    entry = next(e for e in yaml.safe_load(text)["database_analyses"] if e["id"] == "database_staleness")
-
+    cards = {e["id"]: e for e in yaml.safe_load(text)["database_analyses"] if "provided_by" in e}
     from trellis_analytics.discovery import discover
-    m = discover()["database_staleness"]
-    # what the entry says is what the manifest says
-    assert entry["name"] == m.display_name and entry["description"] == m.description
-    assert entry["resource_types"] == m.resource_types and entry["annotation_types"] == [m.annotation_type]
-    assert entry["intent"] == m.stage and entry["perspectives"] == m.perspectives
-    assert entry["provided_by"] == {
+    steps = {n: m for n, m in discover().items() if m.kind == "step" and "database" in m.resource_types}
+    assert set(cards) == set(steps) == {"database_staleness", "statistics_freshness", "hub_tables", "change_rates"}
+
+    for name, m in steps.items():
+        entry = cards[name]
+        # what the entry says is what the manifest says
+        assert entry["name"] == m.display_name and entry["description"] == m.description
+        assert entry["resource_types"] == m.resource_types and entry["annotation_types"] == [m.annotation_type]
+        assert entry["intent"] == m.stage and entry["perspectives"] == m.perspectives
+        assert entry["provided_by"]["step"] == m.name and entry["provided_by"]["version"] == m.version
+        assert entry["provided_by"]["questions"] == m.questions and entry["provided_by"]["purposes"] == m.purposes
+        assert entry["availability"] == "queued"      # a step never runs in the web process
+        # a card must say what "not measured" means: an absence is never shown as a zero
+        assert "not measured" in entry["description"], name
+
+    assert cards["database_staleness"]["provided_by"] == {
         "package": "trellis-step-database-staleness", "entry_point": "database_staleness",
-        "step": m.name, "version": m.version, "kind": m.kind, "source": m.source,
-        "credential_tier": m.credential_tier, "questions": m.questions, "purposes": m.purposes}
-    assert entry["availability"] == "queued"      # a step never runs in the web process
+        "step": "database_staleness", "version": steps["database_staleness"].version, "kind": "step", "source": "ods",
+        "credential_tier": "none", "questions": ["Q-0041"], "purposes": ["Maintain"]}
 
 
-def test_the_engine_host_declaration_is_generated_from_the_manifest(reattach_after, staleness_installed):
+def test_the_engine_host_declaration_is_generated_from_the_manifest(reattach_after, library_installed):
     """The step's Egeria declaration is RE's engine host's (Mandy, Q-M2; egeria-python ISSUE-150), one document per
     step, generated from the manifest. The provisional analytic-functions document is retired."""
     import importlib.util
