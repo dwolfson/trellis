@@ -99,7 +99,11 @@ class TestDatabaseResultsMapCoverage:
         # 2c), the first user step: its catalog entry is generated from its
         # manifest and `survey_step_host` attaches the generic
         # ResourceMeasureAnnotation reader for it, installed or not.
-        assert len(DATABASE_ANALYSIS_RESULTS_MAP) == 22
+        # Twenty-five (2026-10-15): the catalog cards for the first three
+        # library steps, `statistics_freshness`, `hub_tables` and
+        # `change_rates`, get the same generic reader from their generated
+        # entries, installed or not.
+        assert len(DATABASE_ANALYSIS_RESULTS_MAP) == 25
 
     def test_every_entry_is_a_reader_pair(self):
         from resource_explorer.surveyors.database.survey_definition_adapter import (
