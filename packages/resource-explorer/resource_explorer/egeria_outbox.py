@@ -1563,6 +1563,10 @@ def drain_identity(identity=None):
     return identity
 
 
+#: Bound on Egeria's own words appended to an outbox row's last_error.
+EGERIA_DETAIL_LIMIT = 300
+
+
 def _describe_refusal(exc: Exception, clients: "OutboxClients") -> str:
     """`str(exc)`, plus who was refused when Egeria said 401/403.
 
@@ -1570,7 +1574,13 @@ def _describe_refusal(exc: Exception, clients: "OutboxClients") -> str:
     sets, so the text ends "for user - ``" whoever was sent. Left alone, a row's last_error
     reads as "no user was sent" and sends the next reader after the wrong cause.
     """
+    from resource_explorer.egeria_absence import egeria_error_detail
+
     text = str(exc)
+    # pyegeria's 400 text names only the URL; Egeria's own reason (the FFDC body) is kept, bounded.
+    said = egeria_error_detail(exc, limit=EGERIA_DETAIL_LIMIT)
+    if said:
+        text = f"{text} · Egeria said: {said}"
     if not any(type(e).__name__ == "PyegeriaUnauthorizedException" for e in _self_and_cause(exc)):
         return text
     who = getattr(clients, "acting_as", "") or "(not recorded)"
