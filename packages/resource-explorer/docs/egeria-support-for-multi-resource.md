@@ -233,7 +233,10 @@ curator must *declare* (design doc §14, "measured is not declared").
 `DataClassAnnotationProperties` has `specification` and
 `candidateDataClassGUIDs` (`:22-25`); `DataGrainAnnotationProperties` has
 `granularityBasis`, `grainStatement`, `interval`, `candidateDataGrainGUIDs`
-(`:22-27`). `RequestForActionProperties` (note: not
+(`:22-27`); `interval` is a Java `long` (a count in the grain's units), so
+RE's period word ("per-date", "monthly") goes in
+`additionalProperties.intervalName` instead (a word there was a 400, live
+2026-10-14). `RequestForActionProperties` (note: not
 `RequestForActionAnnotationProperties`) has `actionSourceName`,
 `actionRequested`, `actionProperties: Map<String,String>` (`:24-28`) plus
 inherited `dataType`, `matchingValues`, `nonMatchingValues`; its target

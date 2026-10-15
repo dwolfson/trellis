@@ -222,14 +222,26 @@ def build_annotation_props(ann, qualified_name: str) -> dict:
         # these do NOT go through additionalProperties.
         gs = getattr(ann, "grain_statement", "")
         gb = getattr(ann, "granularity_basis", "")
-        iv = getattr(ann, "interval", "")
+        iv = getattr(ann, "interval", None)
+        name = getattr(ann, "interval_name", "")
         cg = getattr(ann, "candidate_data_grain_guids", [])
         if gs:
             props["grainStatement"] = gs
         if gb:
             props["granularityBasis"] = gb
-        if iv:
+        # Egeria's `interval` is a Java `long` (DataGrainAnnotationProperties, OpenMetadataProperty.INTERVAL
+        # DataType.LONG): anything but a whole number is a 400 for the whole annotation (live 2026-10-14:
+        # "Cannot deserialize value of type `long` from String \"per-date\""). Refused here, loudly, rather
+        # than sent; 0 is a real value and is sent. None means not known: nothing is sent.
+        if iv is not None:
+            if isinstance(iv, bool) or not isinstance(iv, int):
+                raise TypeError(
+                    f"DataGrainAnnotation.interval must be a whole number (Egeria's long) or None, got {iv!r}; "
+                    "a period word belongs in interval_name")
             props["interval"] = iv
+        if name:
+            # No string field for a period word on Egeria's type: a named departure, in additionalProperties.
+            props["additionalProperties"] = {"intervalName": str(name)}
         if cg:
             props["candidateDataGrainGUIDs"] = cg
 
@@ -388,9 +400,14 @@ def publish_annotations(
         try:
             guid = discovery.create_annotation(body=body)
         except Exception as exc:
+            # pyegeria's text for a 400 names only the URL; Egeria's own reason is in the response body.
+            from resource_explorer.egeria_absence import egeria_error_detail
+
+            said = egeria_error_detail(exc)
             log.warning(
-                "Failed to create annotation %d (%s): %s",
-                i, ann.annotation_type.value, exc,
+                "Failed to create annotation %d (%s, %s): %s%s",
+                i, ann.annotation_type.value, qualified_name, exc,
+                f"\n  Egeria said: {said}" if said else "",
             )
             guids.append(None)
             continue
