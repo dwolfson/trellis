@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import importlib
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from pydantic import BaseModel, Field
@@ -71,6 +71,8 @@ class StepInputs:
     ods: Any = None
     connection: Any = None
     source_report: Any = None
+    #: The manifest's declared `parameters`, a copy: what the declaration publishes is what the code reads.
+    parameters: dict = field(default_factory=dict)
 
 
 class StepAnnotation(BaseModel):
@@ -142,7 +144,8 @@ class SurveyStep:
             connection = host.connect(self.manifest.credential_tier)
         return StepInputs(resource_type=host.resource_type, slug=host.slug,
                           ods=host.ods if "ods" in declared else None, connection=connection,
-                          source_report=host.source_report if "source_report" in declared else None)
+                          source_report=host.source_report if "source_report" in declared else None,
+                          parameters=dict(getattr(self.manifest, "parameters", None) or {}))
 
     def _annotate(self, result: Any, host: HostContext, measured_at: str) -> StepAnnotation:
         name = self.manifest.name
@@ -191,6 +194,9 @@ class SurveyStep:
         if raw and atype != "ClassificationAnnotation":
             raise StepRefused(f"step '{self.manifest.name}', '{annotation.scope}': proposes classifications in a "
                               f"{atype}; only a ClassificationAnnotation carries them")
+        if len(raw) > 1:
+            raise StepRefused(f"step '{self.manifest.name}', '{annotation.scope}': proposes {len(raw)} "
+                              "classifications; a ClassificationAnnotation names one (Egeria's classificationName)")
         if atype == annotation.annotation_type and not raw:
             return annotation
         return annotation.model_copy(update={"annotation_type": atype, "candidate_classifications": list(raw)})

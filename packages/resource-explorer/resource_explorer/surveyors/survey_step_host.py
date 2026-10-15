@@ -148,14 +148,19 @@ class LibraryStep:
             # manifest declares for the measure (`measure_annotation_types`); by default the step's own,
             # ResourceMeasureAnnotation, which the native survey itself uses for these counters.
             if _annotation_type_for(m, measure) == "ClassificationAnnotation":
-                # A proposal: the classifications ride as candidateClassifications on the annotation, the measured
-                # values as jsonProperties, the envelope in additionalProperties. Never a classification on the element.
+                # A proposal, in Egeria's own fields: the classification in `classificationName` (one per annotation),
+                # the measured values in `properties`, the envelope in additionalProperties. Never a classification
+                # on the element.
+                proposed = [str(c) for c in (r.get("candidateClassifications") or [])]
+                if len(proposed) > 1:
+                    raise ValueError(f"step '{self.step_key}', '{scope}': proposes {len(proposed)} classifications; "
+                                     "Egeria's ClassificationAnnotation names one (classificationName)")
                 out.append(ClassificationAnnotation(
                     summary=summary, analysis_step=self.step_key,
                     annotation_type_name=measure_display_name(measure) if other else name,
                     explanation=str(r.get("explanation") or ""),
-                    candidate_classifications=[str(c) for c in (r.get("candidateClassifications") or [])],
-                    json_properties=dict(r.get("resourceProperties") or {}),
+                    classification_name=proposed[0] if proposed else "",
+                    classification_properties=dict(r.get("resourceProperties") or {}),
                     additional_properties=dict(r.get("additionalProperties") or {}),
                     content_status=PROPOSAL_CONTENT_STATUS,
                     check_name=measure if other else self.step_key, item_key=scope))

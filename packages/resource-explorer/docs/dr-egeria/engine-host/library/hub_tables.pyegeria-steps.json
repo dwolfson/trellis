@@ -14,7 +14,7 @@
       "command": "Create Survey Action Service",
       "qualified_name": "SurveyActionService::ResourceExplorerSurvey::hub_tables",
       "display_name": "Resource Explorer Survey Service — hub_tables",
-      "description": "Foreign-key degree in and out per table, from the keys Resource Explorer stored, and the tables it proposes as hubs (referenced by at least three other tables). The proposal is an annotation, never a classification on the table. Opens no connection to the database."
+      "description": "Foreign-key degree in and out per table, from the keys Resource Explorer stored, and the tables it proposes as hubs (referenced by at least hub_min_referencing other tables, a declared parameter). The proposal is an annotation, never a classification on the table. Opens no connection to the database."
     },
     {
       "command": "Link Supported Governance Service",

@@ -90,14 +90,19 @@ entry point, declared by `generate_engine_host_declaration.py` in `docs/dr-egeri
 | Step | Request type | Typed read | Measures (Egeria type) |
 |---|---|---|---|
 | `statistics_freshness` | `re-statistics-freshness` | `table_activity_snapshots(slug, limit=1)` | per table (ResourceMeasureAnnotation); `statistics_freshness_summary` for the database (ResourceMeasureAnnotation) |
-| `hub_tables` | `re-hub-tables` | `table_keys(slug)` | per table, foreign keys in and out (ResourceMeasureAnnotation); `hub_table_proposal` (ClassificationAnnotation, `candidateClassifications: ["hub table"]`, `contentStatus` DRAFT) |
+| `hub_tables` | `re-hub-tables` | `table_keys(slug)` | per table, foreign keys in and out (ResourceMeasureAnnotation); `hub_table_proposal` (ClassificationAnnotation, `classificationName: "hub table"`, values in `properties`, `contentStatus` DRAFT) |
 | `change_rates` | `re-change-rates` | `table_activity_snapshots(slug, limit=2)` | per table, writes per day over the interval with both as-ofs (ResourceMeasureAnnotation) |
 
 Departures from the table above, by the 2026-10-15 ruling the staleness fix follows: the nothing-to-derive guard is
 `survey-completed` for all three. One snapshot, no keys captured or nothing stored is an absence recorded on the
 report with its sentence ("not measured · one activity snapshot only; a rate needs two", "not measured · no keys
 captured; hubs cannot be derived", "not measured · no table statistics stored"). `survey-invalid` stays for inputs
-that are present and wrong. A hub is a table referenced by at least three other tables.
+that are present and wrong. A hub is a table referenced by at least `hub_min_referencing` other tables, a declared
+manifest parameter (3) the code reads and the declaration publishes. A possible counter reset (the reset time moved,
+or appeared where the older snapshot had none) gives no rate. Review fix (2026-10-15): Egeria 6.2's
+ClassificationAnnotationProperties has only `classificationName` and `properties` of its own and ignores anything
+else, so `candidateClassifications` never reaches it; `db_derived`'s classification annotation still sends it and is
+dropped the same way (not fixed here).
 
 Library pieces: `StepManifest.measure_annotation_types` (a measure published as another Egeria type), a result's
 `candidate_classifications`, and `ClassificationAnnotation` in the engine host's publishable types, with the envelope in

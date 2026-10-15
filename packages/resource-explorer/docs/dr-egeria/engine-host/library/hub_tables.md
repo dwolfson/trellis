@@ -25,7 +25,7 @@ Resource Explorer Survey — Hub Tables
 ResourceExplorerSurvey::re-hub-tables
 
 ### Description
-Foreign-key degree in and out per table, from the keys Resource Explorer stored, and the tables it proposes as hubs (referenced by at least three other tables). The proposal is an annotation, never a classification on the table. Opens no connection to the database.
+Foreign-key degree in and out per table, from the keys Resource Explorer stored, and the tables it proposes as hubs (referenced by at least hub_min_referencing other tables, a declared parameter). The proposal is an annotation, never a classification on the table. Opens no connection to the database.
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed
@@ -56,6 +56,7 @@ ACTIVE
 | function | hub_tables.step.run |
 | package | trellis-step-hub-tables |
 | entry_point | trellis.analytics:hub_tables |
+| parameters | hub_min_referencing=3 |
 | measure_annotation_types | hub_table_proposal: ClassificationAnnotation |
 
 ___

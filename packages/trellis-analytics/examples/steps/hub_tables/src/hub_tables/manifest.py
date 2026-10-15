@@ -8,8 +8,9 @@ MANIFEST = StepManifest(
     display_name="Hub Tables",
     function="hub_tables.step.run",
     description=("Foreign-key degree in and out per table, from the keys Resource Explorer stored, and the tables "
-                 "it proposes as hubs (referenced by at least three other tables). The proposal is an annotation, "
-                 "never a classification on the table. Opens no connection to the database."),
+                 "it proposes as hubs (referenced by at least hub_min_referencing other tables, a declared "
+                 "parameter). The proposal is an annotation, never a classification on the table. Opens no "
+                 "connection to the database."),
     returns=("one ResourceMeasureAnnotation per table (foreign keys in and out), and one ClassificationAnnotation "
              "proposing 'hub table' per hub, each with its envelope"),
     source="ods",
@@ -22,6 +23,8 @@ MANIFEST = StepManifest(
     # Egeria's ClassificationAnnotation (owner, 2026-10-15: an annotation, never a classification on the element).
     measures=["hub_tables", "hub_table_proposal"],
     measure_annotation_types={"hub_table_proposal": "ClassificationAnnotation"},
+    # The hub threshold, read by the code from here (inputs.parameters), so the declaration cannot drift from it.
+    parameters={"hub_min_referencing": 3},
     stage="analysis",
     perspectives=["Data Expert", "Steward"],
     # Q-0072: "Which tables would a consumer start with?"; Q-0068: "Is there a data model here ...?"

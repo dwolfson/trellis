@@ -6,8 +6,9 @@ days. Each measured result names the interval and both as-ofs.
 
 Never a silent zero:
 - one snapshot (or none): one ``not_established`` result for the database, "a rate needs two";
-- a counter reset between the snapshots (the reset time moved, or a counter went backwards: a reset, failover or
-  restore): ``not_established`` for that table, "no rate for this interval", never the negative difference;
+- a possible counter reset between the snapshots (the reset time moved, or appeared where the older snapshot had none,
+  or a counter went backwards: a reset, failover or restore): ``not_established`` for that table, "statistics were
+  reset between snapshots", never the difference; a reset time read before and not after cannot rule one out either;
 - a counter missing in either snapshot, a table new since the older one, or two snapshots with no interval between
   them: ``not_established``, naming which.
 ``nothing_found`` is a measured zero: no writes at all over the interval.
@@ -76,14 +77,22 @@ def run(inputs) -> list[dict]:
                                       f"({old['surveyed_at']}, {new['surveyed_at']})",
                                "a write counter is missing in a snapshot"))
             continue
-        reset_old, reset_new = prev.get("stats_reset"), t.get("stats_reset")
+        reset_old, reset_new = prev.get("stats_reset") or None, t.get("stats_reset") or None
         backwards = [label for col, label in COUNTERS if int(t[col]) < int(prev[col])]
-        if (reset_old and reset_new and reset_old != reset_new) or backwards:
-            how = (f"the statistics reset time moved ({reset_old} to {reset_new})"
-                   if reset_old and reset_new and reset_old != reset_new
+        # Never a rate across a POSSIBLE reset: a reset time that moved, one that appears where the older snapshot had
+        # none (NULL then a time: a reset the older snapshot could not show), or counters that went backwards.
+        if reset_old and not reset_new:
+            out.append(_absent(scope, f"the statistics reset time was read in the older snapshot ({reset_old}) and "
+                                      f"not in the newer one ({new['surveyed_at']}), so a reset cannot be ruled out: "
+                                      "no rate for this interval",
+                               "statistics reset time not read in the newer snapshot"))
+            continue
+        moved = bool(reset_new) and reset_old != reset_new
+        if moved or backwards:
+            how = (f"the statistics reset time moved ({reset_old or 'not set'} to {reset_new})" if moved
                    else f"{', '.join(backwards)} went backwards, so the counters were reset")
             out.append(_absent(scope, f"{how} between {old['surveyed_at']} and {new['surveyed_at']}: no rate for this "
-                                      "interval", "counters reset between the snapshots; no rate"))
+                                      "interval", "statistics were reset between snapshots"))
             continue
         deltas = {label: int(t[col]) - int(prev[col]) for col, label in COUNTERS}
         total = sum(deltas.values())

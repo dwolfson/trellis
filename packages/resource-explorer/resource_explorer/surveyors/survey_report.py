@@ -203,6 +203,12 @@ class ClassificationAnnotation(Annotation):
     """Category or label assignments (language, project type, doc presence, etc.)."""
     annotation_type: AnnotationType = field(default=AnnotationType.CLASSIFICATION, init=False)
     candidate_classifications: list[str] = field(default_factory=list)
+    #: Egeria 6.2's own fields for this type (ClassificationAnnotationProperties: `classificationName`, String, and
+    #: `properties`, map<string,string>; typedef OpenMetadataTypesArchive1_2 CLASSIFICATION_NAME, PROPERTIES). When
+    #: `classification_name` is set these are what is published; `candidateClassifications` is not an Egeria field
+    #: on this type and the bean ignores it (an Analytic Library proposal uses these, review 2026-10-15).
+    classification_name: str = ""
+    classification_properties: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

@@ -166,11 +166,14 @@ def test_hub_tables_publishes_degrees_and_a_proposal_never_a_classification(inst
         == ("3", "0")
     [hub] = [b for b in bodies if b["annotationType"] == "Hub Table Proposal"]
     assert hub["class"] == "ClassificationAnnotationProperties"
-    assert hub["candidateClassifications"] == ["hub table"] and hub["contentStatus"] == "DRAFT"
+    # Egeria 6.2's own fields for the type (the fake refuses any other, as Egeria would silently drop it)
+    assert hub["classificationName"] == "hub table" and hub["contentStatus"] == "DRAFT"
+    assert "candidateClassifications" not in hub and "jsonProperties" not in hub
+    assert [d for d in egeria.dropped if d["analysisStep"] == "hub_tables"] == []     # nothing Egeria would drop
+    assert hub["properties"]["Foreign Keys In"] == "3" and hub["properties"]["Hub Threshold"] == "3"
     assert hub["analysisStep"] == "hub_tables" and "referenced by 3 other tables" in hub["summary"]
     assert _envelope(hub)["scope"] == "public.customer" and _envelope(hub)["measure"] == "hub_table_proposal"
     assert _envelope(hub)["resultState"] == "measured"
-    assert "Foreign Keys In" in hub["jsonProperties"]
     # the proposal is an annotation only: nothing classified any table, no classification call at all on a table
     assert not [c for c in egeria.calls if "classif" in c[1].lower() and c[1] not in (
         "add_ownership_to_element", "add_zone_membership")], egeria.calls
@@ -178,6 +181,29 @@ def test_hub_tables_publishes_degrees_and_a_proposal_never_a_classification(inst
     [stored] = rows
     assert stored["annotation_type"] == "ClassificationAnnotation"
     assert stored["detail"]["candidateClassifications"] == ["hub table"]
+    # and it reads back from Egeria's fields as the proposal it is
+    from resource_explorer.surveyors.egeria_reader import _parse_annotation
+
+    back = _parse_annotation({"guid": "g", "type": {"typeName": "ClassificationAnnotation"}}, hub)
+    assert back["subtype_data"]["classificationName"] == "hub table"
+    assert back["subtype_data"]["candidateClassifications"] == ["hub table"]
+    assert back["subtype_data"]["properties"]["Foreign Keys In"] == "3"
+    assert back["additional_properties"]["measure"] == "hub_table_proposal"
+
+
+def test_the_fake_drops_what_egeria_drops(egeria):
+    """The guard behind the hub test: a ClassificationAnnotation field Egeria 6.2's bean does not have is stored
+    without it (as Egeria does, silently) and the drop is recorded."""
+    from tests.test_engine_host_e4 import _CLASSIFICATION_ANNOTATION_TYPEDEF
+
+    assert _CLASSIFICATION_ANNOTATION_TYPEDEF == ("classificationName", "properties")
+    guid = egeria._create_annotation({"properties": {"class": "ClassificationAnnotationProperties",
+                                                     "analysisStep": "x", "classificationName": "hub table",
+                                                     "candidateClassifications": ["hub table"]}})
+    assert egeria.elements[guid]["body"]["properties"] == {"class": "ClassificationAnnotationProperties",
+                                                           "analysisStep": "x", "classificationName": "hub table"}
+    assert egeria.dropped == [{"class": "ClassificationAnnotationProperties", "analysisStep": "x",
+                               "fields": ["candidateClassifications"]}]
 
 
 def test_hub_tables_with_no_keys_captured_completes_with_the_absence(install_steps, reg, egeria, no_connection):

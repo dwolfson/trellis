@@ -195,13 +195,32 @@ def test_change_rates_measured_over_the_interval_with_both_as_ofs(rates, make_re
     for t, why in (("reset", "reset time moved"), ("back", "Rows Inserted went backwards")):
         a = anns[("", f"public.{t}")]
         assert _state(a) == "not_established" and a.resource_properties == {}, t
-        assert why in a.envelope.result_state_reason and a.summary.endswith("counters reset between the snapshots; "
-                                                                            "no rate")
+        assert why in a.envelope.result_state_reason
+        assert a.summary == "not measured · statistics were reset between snapshots"
     half = anns[("", "public.half")]
     assert _state(half) == "not_established" and "Rows Updated not measured in one snapshot" in \
         half.envelope.result_state_reason
     assert _state(anns[("", "public.fresh")]) == "not_established"
     assert anns[("", "public.fresh")].summary == "not measured · table not in the earlier snapshot"
+
+
+@pytest.mark.parametrize("old_reset, new_reset, words", [
+    # NULL then a time: a reset the older snapshot could not show. Never a rate across it (review, 2026-10-15).
+    (None, "2026-10-03T00:00:00", "not measured · statistics were reset between snapshots"),
+    ("2026-09-01T00:00:00", None, "not measured · statistics reset time not read in the newer snapshot"),
+    ("2026-09-01T00:00:00", "2026-09-01T00:00:00", None),       # the same reset: a rate
+    (None, None, None),                                          # no reset evidence, counters forward: a rate
+])
+def test_change_rates_never_computes_a_rate_across_a_possible_reset(rates, make_registry, old_reset, new_reset,
+                                                                    words):
+    reg, url = make_registry("shop")
+    _activity(reg, "shop", "2026-10-01T00:00:00", [_act("orders", **_counters(100, 0, 0, stats_reset=old_reset))])
+    _activity(reg, "shop", "2026-10-05T00:00:00", [_act("orders", **_counters(140, 0, 0, stats_reset=new_reset))])
+    a = _run(url, "change_rates")[("", "public.orders")]
+    if words is None:
+        assert _state(a) == "measured" and a.resource_properties["Writes In Interval"] == "40"
+    else:
+        assert _state(a) == "not_established" and a.summary == words and a.resource_properties == {}
 
 
 @pytest.mark.parametrize("snapshots, words", [
@@ -335,6 +354,33 @@ def test_hub_tables_partly_captured_keys_establish_out_never_in_and_propose_noth
     assert _state(proposal) == "not_established" and "no hub proposed" in proposal.summary
 
 
+def test_hub_tables_reads_its_threshold_from_the_manifest_parameter(hubs, make_registry, monkeypatch):
+    """The threshold is the manifest's declared `hub_min_referencing`, handed as inputs.parameters: changing the
+    manifest changes the hubs, and the code holds no number of its own."""
+    import hub_tables.step as code
+    from trellis_analytics.discovery import discover
+    from trellis_analytics.readers.ods import OdsReader
+    from trellis_analytics.step import HostContext, SurveyStep
+
+    assert not hasattr(code, "HUB_MIN_REFERENCING")
+    reg, url = make_registry("shop")
+    _schema(reg, "shop", SCHEMA)
+    m = discover()["hub_tables"]
+    assert m.parameters == {"hub_min_referencing": 3}
+    host = HostContext(resource_type="database", slug="shop", producing_run="r", ods=OdsReader(url))
+
+    def hubs_with(params):
+        anns = SurveyStep(m.model_copy(update={"parameters": params})).run(host)
+        return sorted(a.scope for a in anns if a.measure == "hub_table_proposal" and a.candidate_classifications)
+
+    assert hubs_with({"hub_min_referencing": 3}) == ["public.customer", "public.store"]
+    assert hubs_with({"hub_min_referencing": 4}) == ["public.customer"]
+    assert hubs_with({"hub_min_referencing": 1}) == ["public.customer", "public.orders", "public.product",
+                                                     "public.store"]
+    with pytest.raises(ValueError, match="hub_min_referencing"):
+        SurveyStep(m.model_copy(update={"parameters": {}})).run(host)
+
+
 def test_hub_tables_manifest_declares_the_proposal_as_a_classification_annotation(hubs):
     from trellis_analytics.declare import manifest_properties
     from trellis_analytics.discovery import discover
@@ -344,8 +390,9 @@ def test_hub_tables_manifest_declares_the_proposal_as_a_classification_annotatio
     assert m.annotation_type_for("") == m.annotation_type_for("hub_tables") == "ResourceMeasureAnnotation"
     assert m.annotation_type_for("hub_table_proposal") == "ClassificationAnnotation"
     assert m.annotation_types() == ["ResourceMeasureAnnotation", "ClassificationAnnotation"]
-    assert ("measure_annotation_types", "hub_table_proposal: ClassificationAnnotation") in manifest_properties(
-        m, {"package": "p", "entry_point": "hub_tables"})
+    rows = manifest_properties(m, {"package": "p", "entry_point": "hub_tables"})
+    assert ("measure_annotation_types", "hub_table_proposal: ClassificationAnnotation") in rows
+    assert ("parameters", "hub_min_referencing=3") in rows
 
 
 # ══ the library pieces the three need ════════════════════════════════════════════
@@ -383,3 +430,18 @@ def test_a_step_without_measure_types_declares_exactly_what_it_did(tmp_path, mon
     m = StepManifest(name="s", function="x.y", description="d", source="ods", version="1",
                      resource_types=["database"])
     assert "measure_annotation_types" not in dict(manifest_properties(m, {}))
+    assert "parameters" not in dict(manifest_properties(m, {}))
+
+
+def test_a_result_proposes_at_most_one_classification():
+    """Egeria's ClassificationAnnotation names ONE classification (classificationName)."""
+    from trellis_analytics.manifest import StepManifest
+    from trellis_analytics.step import HostContext, StepRefused, SurveyStep
+
+    m = StepManifest(name="s", function="x.y", description="d", source="ods", version="1",
+                     resource_types=["database"], measures=["s", "p"],
+                     measure_annotation_types={"p": "ClassificationAnnotation"})
+    host = HostContext(resource_type="database", slug="x", producing_run="r")
+    with pytest.raises(StepRefused, match="names one"):
+        SurveyStep(m, code=lambda i: [{"scope": "x", "measure": "p", "state": "measured",
+                                       "candidate_classifications": ["a", "b"]}]).run(host)

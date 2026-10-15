@@ -358,9 +358,24 @@ def test_the_new_reads_refuse_anything_but_plain_values_and_bound_their_limit(sq
                 ods.table_keys(bad)
         with pytest.raises(TypeError):
             ods.table_activity_snapshots("shop", limit=2.5)
-        # a limit outside 1..10 is bounded, never a history dump nor an empty answer
-        assert len(ods.table_activity_snapshots("shop", limit=0)) == 1
-        assert len(ods.table_activity_snapshots("shop", limit=10**9)) == 1
+        assert len(ods.table_activity_snapshots("shop", limit=0)) == 1      # never an empty answer
+
+
+def test_the_activity_read_is_capped_at_ten_snapshots(sqlite_url):
+    """Twelve stored snapshots: any limit above ten returns the newest ten, never the history."""
+    c = sqlite3.connect(sqlite_url.removeprefix("sqlite:///"))
+    for day in range(2, 13):
+        c.execute("INSERT INTO database_table_activity (database_slug, surveyed_at, source, schema_name, table_name, "
+                  "rows_inserted, live_tuples) VALUES ('shop', ?, 'local', 'public', 'orders', ?, 1)",
+                  (f"2026-10-{day:02d}", day))
+    c.commit()
+    c.close()
+    with step_reader(sqlite_url) as ods:
+        for limit in (11, 12, 10**9):
+            snaps = ods.table_activity_snapshots("shop", limit=limit)
+            assert len(snaps) == 10, (limit, len(snaps))
+            assert [s["surveyed_at"] for s in snaps][0] == "2026-10-12"           # the newest ten, newest first
+        assert len(ods.table_activity_snapshots("shop", limit=3)) == 3
 
 
 def test_the_new_reads_offer_no_other_way_in(sqlite_url):

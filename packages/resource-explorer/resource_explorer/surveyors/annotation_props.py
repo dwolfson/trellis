@@ -168,8 +168,17 @@ def build_annotation_props(ann, qualified_name: str) -> dict:
             props["additionalProperties"] = to_string_map(ap)
 
     elif atype == AnnotationType.CLASSIFICATION:
+        # Egeria 6.2's ClassificationAnnotationProperties has `classificationName` and `properties` and nothing else
+        # of its own (it ignores unknown fields, so anything else is silently dropped). An annotation that names its
+        # classification is published in those fields. One that does not keeps its old wire shape, unchanged.
+        cn = getattr(ann, "classification_name", "")
+        cp = getattr(ann, "classification_properties", {}) or {}
         cc = getattr(ann, "candidate_classifications", [])
-        if cc:
+        if cn:
+            props["classificationName"] = cn
+        if cp:
+            props["properties"] = to_string_map(cp)
+        if cc and not (cn or cp):
             props["candidateClassifications"] = cc
         # The annotation envelope (resultState, measuredAt, producingRun, scope) of a library step's proposal rides
         # here, as on a ResourceMeasureAnnotation. Only an annotation that carries an envelope: every other

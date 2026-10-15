@@ -8,7 +8,8 @@ From the newest column survey's keys (`inputs.ods.table_keys`), per table:
   keys were captured: a table whose keys were never read could be referencing this one, so 0 is only a finding when
   nothing was left unread (the rule `db_derived.derive_hub_tables` uses).
 
-Then the second measure, `hub_table_proposal`: each table referenced by at least `HUB_MIN_REFERENCING` other tables
+Then the second measure, `hub_table_proposal`: each table referenced by at least the manifest's
+`hub_min_referencing` parameter of other tables
 is proposed as a "hub table" in a ClassificationAnnotation. A proposal on the report, never a classification on the
 element (owner, 2026-10-15); Curate is where a proposal becomes a fact. Self-references are not counted. A view has no
 keys of its own and is not applicable.
@@ -19,8 +20,17 @@ from __future__ import annotations
 PROPOSAL = "hub_table_proposal"
 #: The classification proposed.
 HUB = "hub table"
-#: A hub is referenced by at least this many other tables.
-HUB_MIN_REFERENCING = 3
+#: The manifest parameter naming the threshold: a hub is referenced by at least this many other tables. The value is
+#: declared in the manifest (and so in the published declaration) and handed to the code as `inputs.parameters`.
+THRESHOLD = "hub_min_referencing"
+
+
+def _threshold(inputs) -> int:
+    value = (getattr(inputs, "parameters", None) or {}).get(THRESHOLD)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"the manifest declares no usable '{THRESHOLD}' parameter (got {value!r}); "
+                         "hub_tables needs a whole number of at least 1")
+    return value
 
 CAVEAT = ("foreign keys as the column survey stored them; a degree counts distinct other tables, self-references "
           "not counted; 'foreign keys in' counts only stored tables and is established only when every table's keys "
@@ -45,6 +55,7 @@ def _names(keys) -> str:
 
 def run(inputs) -> list[dict]:
     slug = inputs.slug
+    hub_min = _threshold(inputs)
     snap = inputs.ods.table_keys(slug)
     if snap is None:
         why = "no survey has stored this database's columns yet, so no keys were read"
@@ -106,12 +117,12 @@ def run(inputs) -> list[dict]:
         out.append(_absent(slug, f"{in_unknown}; a table they reference could be a hub, so no hub is proposed",
                            "keys not captured for every table; no hub proposed", PROPOSAL))
         return out
-    hubs = sorted((k for k in keys if len(referencing[k]) >= HUB_MIN_REFERENCING),
+    hubs = sorted((k for k in keys if len(referencing[k]) >= hub_min),
                   key=lambda k: (-len(referencing[k]), k))
     if not hubs:
         out.append({"scope": slug, "measure": PROPOSAL, "state": "nothing_found",
-                    "value": {"Hub Threshold": HUB_MIN_REFERENCING, "asOf": as_of, "basis": CAVEAT},
-                    "summary": f"no table is referenced by {HUB_MIN_REFERENCING} or more other tables "
+                    "value": {"Hub Threshold": hub_min, "asOf": as_of, "basis": CAVEAT},
+                    "summary": f"no table is referenced by {hub_min} or more other tables "
                                f"(as of {as_of})"})
         return out
     for k in hubs:
@@ -119,7 +130,7 @@ def run(inputs) -> list[dict]:
         out.append({"scope": f"{k[0]}.{k[1]}", "measure": PROPOSAL, "state": "measured",
                     "candidate_classifications": [HUB],
                     "value": {"Foreign Keys In": n, "Foreign Keys Out": len(referenced[k]),
-                              "Hub Threshold": HUB_MIN_REFERENCING, "Referencing Tables": _names(referencing[k]),
+                              "Hub Threshold": hub_min, "Referencing Tables": _names(referencing[k]),
                               "asOf": as_of, "basis": CAVEAT},
                     "summary": f"proposed: {HUB} · referenced by {n} other tables (as of {as_of})"})
     return out

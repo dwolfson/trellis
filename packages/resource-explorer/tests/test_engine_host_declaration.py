@@ -209,6 +209,11 @@ def test_each_new_library_declaration_equals_its_manifest(library_installed, ste
 def test_the_hub_declaration_names_its_proposal_as_a_classification_annotation(library_installed):
     props = _section((LIBRARY / "hub_tables.md").read_text(), "Create Governance Action Type", "Additional Properties")
     assert "| measure_annotation_types | hub_table_proposal: ClassificationAnnotation |" in props
+    # the threshold the code reads (inputs.parameters) is the one Egeria is told
+    from trellis_analytics.discovery import discover
+
+    assert discover()["hub_tables"].parameters == {"hub_min_referencing": 3}
+    assert "| parameters | hub_min_referencing=3 |" in props
     assert "measure_annotation_types" not in STALENESS_DOC.read_text()
 
 

@@ -40,6 +40,25 @@ def _daemon_user() -> str:
     return _daemon_credential()[0]
 
 
+# ── what Egeria 6.2's property beans accept ────────────────────────────────────
+#: Fields every annotation bean inherits (Java beans, egeria open-metadata-framework .../properties):
+#: OpenMetadataRootProperties, ReferenceableProperties, AuthoredReferenceableProperties, AnnotationProperties.
+_ANNOTATION_BASE_FIELDS = frozenset({
+    "class", "typeName", "legal", "extendedProperties",
+    "qualifiedName", "identifier", "displayName", "description", "versionIdentifier", "category", "url",
+    "additionalProperties", "authors", "contentStatus", "userDefinedContentStatus",
+    "annotationType", "summary", "sampleSize", "samplePercent", "samplingMethod", "confidence", "units",
+    "absoluteUncertainty", "relativeUncertainty", "expression", "explanation", "analysisStep", "jsonProperties"})
+#: DataFieldAnnotation's attributes (DataFieldAnnotationProperties) and ClassificationAnnotation's own, from the
+#: typedef: OpenMetadataTypesArchive1_2.getClassificationAnnotationEntity adds CLASSIFICATION_NAME and PROPERTIES.
+_DATA_FIELD_ANNOTATION_FIELDS = frozenset({"dataType", "matchingValues", "nonMatchingValues"})
+_CLASSIFICATION_ANNOTATION_TYPEDEF = ("classificationName", "properties")
+EGERIA_PROPERTIES_FIELDS = {
+    "ClassificationAnnotationProperties":
+        _ANNOTATION_BASE_FIELDS | _DATA_FIELD_ANNOTATION_FIELDS | frozenset(_CLASSIFICATION_ANNOTATION_TYPEDEF),
+}
+
+
 # ── the fake Egeria behind the autospecs ───────────────────────────────────────
 
 def _refusal(message_id: str, text: str):
@@ -73,6 +92,8 @@ class FakeEgeria:
         # Egeria (by qualifiedName), assets get_metadata_element_by_guid finds, and the process starts made.
         self.native_reports: dict[str, dict] = {}
         self.graphs: dict[str, object] = {}
+        #: Fields an annotation was sent with that Egeria 6.2's bean for its class does not have, and so drops.
+        self.dropped: list[dict] = []
         self.declared: set[str] = set()
         self.assets: set[str] = set()
         self.process_starts: list[dict] = []
@@ -231,6 +252,16 @@ class FakeEgeria:
         return guid
 
     def _create_annotation(self, body=None):
+        props = (body or {}).get("properties") or {}
+        allowed = EGERIA_PROPERTIES_FIELDS.get(props.get("class"))
+        unknown = sorted(set(props) - allowed) if allowed is not None else []
+        if unknown:
+            # Egeria's bean ignores unknown fields (@JsonIgnoreProperties(ignoreUnknown=true)): the live platform
+            # stores the annotation WITHOUT them and says nothing. The fake does the same, so a test reading the
+            # stored body sees what Egeria keeps, and records each drop in `dropped` for a test to assert on.
+            self.dropped.append({"class": props["class"], "analysisStep": props.get("analysisStep"),
+                                 "fields": unknown})
+            body = {**body, "properties": {k: v for k, v in props.items() if k not in unknown}}
         guid = _uuid()
         self.elements[guid] = {"type": "Annotation", "body": body}
         parent = (body or {}).get("parentGUID")

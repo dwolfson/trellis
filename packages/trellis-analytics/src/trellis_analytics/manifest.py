@@ -118,6 +118,10 @@ class StepManifest(_TrellisManifest):
     #: `ClassificationAnnotation` proposing a classification beside a step's ResourceMeasureAnnotations). Only for
     #: declared measures; a measure not named here is published as `annotation_type`.
     measure_annotation_types: dict[str, str] = Field(default_factory=dict)
+    #: The step's tunable values (a threshold, a window), declared here so the published declaration says exactly
+    #: what the code uses: the wrapper hands them to the code as `inputs.parameters`, and the code reads them from
+    #: there rather than from a constant of its own.
+    parameters: dict[str, int | float | str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _measure_types(self) -> "StepManifest":
