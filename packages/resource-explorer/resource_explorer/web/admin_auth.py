@@ -27,6 +27,8 @@ and would have long outlived the conversation that produced it.
 """
 from __future__ import annotations
 
+import hmac
+
 from fastapi import HTTPException, Request
 
 from resource_explorer.config import FeedbackConfig
@@ -54,7 +56,8 @@ def is_admin_request(request: Request, cfg: FeedbackConfig) -> bool:
     returns False — fail closed, not fail open.
     """
     token = request.headers.get("X-Admin-Token", "")
-    if cfg.admin_token and token and token == cfg.admin_token:
+    # Constant-time: a plain == lets a remote caller recover the token byte by byte from response timing.
+    if cfg.admin_token and token and hmac.compare_digest(token.encode(), cfg.admin_token.encode()):
         return True
 
     admins = {str(a).strip() for a in (cfg.admin_users or []) if str(a).strip()}
