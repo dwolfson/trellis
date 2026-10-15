@@ -65,7 +65,10 @@ CREDENTIAL_TIERS = ("none", "read_only")
 #:   resource   - the resource's type and slug (always handed; declaring it alone hands nothing more)
 #:   ods        - a read-only reader of RE's registry (the ODS)
 #:   connection - a connection to the resource opened at the declared tier, never a password
-STEP_INPUTS = ("resource", "ods", "connection")
+#:   source_report - the report of the step before this one in an Egeria process, as plain data
+#:                   ({guid, at, annotations}), read by the host (RE's engine host: the `surveyReport` action target);
+#:                   a host with none hands None, and RE's engine host refuses to run the step without one
+STEP_INPUTS = ("resource", "ods", "connection", "source_report")
 
 
 #: Egeria's standard survey guards (`SurveyActionGuard`): survey-completed, survey-invalid, survey-failed. A step
@@ -107,6 +110,10 @@ class StepManifest(_TrellisManifest):
     #: to derive: no result it returns is `measured` or `nothing_found`. With `survey-completed` the report is
     #: still published; with either other guard no report is written (an absence, not a finding).
     nothing_to_derive_guard: str = "survey-invalid"
+    #: Every measure the step reports, each published as its own annotation and never folded into another (design
+    #: ruling, engine host step 4: "never one function with two meanings"). The step's own name is its primary
+    #: measure; a result names another declared measure with `"measure": <name>`. Empty means the step's own only.
+    measures: list[str] = Field(default_factory=list)
 
     @field_validator("nothing_to_derive_guard")
     @classmethod
@@ -115,6 +122,16 @@ class StepManifest(_TrellisManifest):
             raise ValueError(f"nothing_to_derive_guard '{v}' is not one of Egeria's survey guards "
                              f"({', '.join(SURVEY_GUARDS)})")
         return v
+
+    @model_validator(mode="after")
+    def _measures(self) -> "StepManifest":
+        if self.measures and self.name not in self.measures:
+            raise ValueError(f"measures {self.measures} must include the step's own measure '{self.name}'")
+        return self
+
+    def measure_names(self) -> list[str]:
+        """The declared measures, the step's own first."""
+        return [self.name] + [m for m in self.measures if m != self.name]
 
     @model_validator(mode="after")
     def _request_type(self) -> "StepManifest":

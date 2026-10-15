@@ -1,5 +1,5 @@
 <!--
-GENERATED from the manifest of 'database_staleness' (trellis-step-database-staleness 0.1.0) by
+GENERATED from the manifest of 'database_staleness' (trellis-step-database-staleness 0.2.0) by
 packages/resource-explorer/scripts/generate_engine_host_declaration.py. Do not hand-edit; regenerate.
 Design: docs/design-notes/DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE.md §4.3 (engine host, step 3).
 
@@ -43,14 +43,15 @@ ACTIVE
 | nothing_to_derive_guard | survey-invalid |
 | kind | step |
 | source | ods |
-| version | 0.1.0 |
+| version | 0.2.0 |
 | resource_types | database |
 | annotation_type | ResourceMeasureAnnotation |
 | questions | Q-0041 |
 | purposes | Maintain |
 | perspectives | Steward, Data Expert |
 | credential_tier | none |
-| inputs | ods |
+| inputs | ods, source_report |
+| measures | database_staleness, writes_since_statistics_reset |
 | family | Freshness |
 | function | database_staleness.step.run |
 | package | trellis-step-database-staleness |

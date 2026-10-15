@@ -132,6 +132,145 @@ def test_never_surveyed_is_one_not_established_for_the_database(staleness_instal
     assert "no survey" in anns["shop"].envelope.result_state_reason
 
 
+# ── engine host step 4: two measures, kept distinct (design ruling) ──
+# Staleness keeps its definition (two stored snapshots); the survey report the host hands in (`source_report`) adds
+# a second, separate measure, "writes since statistics reset", and never stands in for staleness.
+
+REPORT_GUID = "cb92eedc-5e24-4da7-ba5e-fc11d1707d8f"
+
+
+def _table_measurement(qualified, table_type="Table", inserted="0", updated="0", deleted="0"):
+    """One native PostgreSQLSurvey table measurement, as RE's reader (`annotations_from_report`) flattens it; the
+    property names are the live ones (2026-10-15)."""
+    props = {"Table Qualified Name": qualified, "Table Name": qualified.rsplit(".", 1)[-1], "Table Type": table_type}
+    for name, v in (("Number Of Rows Inserted", inserted), ("Number Of Rows Updated", updated),
+                    ("Number Of Rows Deleted", deleted)):
+        if v is not None:
+            props[name] = v
+    return {"annotation_type": "Capture Database Table Measurements", "resource_properties": props}
+
+
+def _report():
+    return {"guid": REPORT_GUID, "at": "2026-10-15T08:00:00Z", "annotations": [
+        _table_measurement("shop.public.orders", inserted="200", updated="40", deleted="10"),
+        _table_measurement("shop.public.weight"),
+        _table_measurement("shop.public.v_sales", table_type="View", inserted=None, updated=None, deleted=None),
+        _table_measurement("shop.public.odd", deleted=None),
+        {"annotation_type": "Capture Database Column Measurements", "resource_properties": {}},
+    ]}
+
+
+def _run_both(url, report, slug="shop"):
+    """{(measure, scope): annotation} for one run with an ODS reader and, when given, a source report."""
+    from trellis_analytics.discovery import discover
+    from trellis_analytics.readers.ods import OdsReader
+    from trellis_analytics.step import HostContext, SurveyStep
+
+    m = discover()["database_staleness"]
+    host = HostContext(resource_type="database", slug=slug, producing_run="run-x", ods=OdsReader(url),
+                       source_report=report)
+    return {(a.measure, a.scope): a for a in SurveyStep(m).run(host)}
+
+
+WRITES = "writes_since_statistics_reset"
+
+
+def test_with_a_report_and_two_snapshots_both_measures_appear_and_staleness_is_unchanged(
+        staleness_installed, make_registry):
+    reg, url = make_registry("shop")
+    _survey(reg, "shop", "2026-10-01T00:00:00", [("public", "orders", "BASE TABLE", 100)])
+    _survey(reg, "shop", "2026-10-08T00:00:00", [("public", "orders", "BASE TABLE", 130)])
+    anns = _run_both(url, _report())
+    stale = anns[("", "public.orders")]
+    without = _run_both(url, None)[("", "public.orders")]
+    # staleness: exactly step 3's figure, from the snapshots; nothing of the report in it
+    assert stale.envelope.result_state.value == "measured"
+    assert stale.resource_properties == without.resource_properties
+    assert stale.resource_properties["rowsChanged"] == "30" and "writesSinceStatisticsReset" not in stale.resource_properties
+    assert "measure" not in stale.additional_properties()
+    # the second measure: its own annotations, the report's totals, as-of time and caveat
+    writes = anns[(WRITES, "public.orders")]
+    assert writes.envelope.result_state.value == "measured"
+    assert writes.additional_properties()["measure"] == WRITES
+    p = writes.resource_properties
+    assert (p["rowsInserted"], p["rowsUpdated"], p["rowsDeleted"], p["writesSinceStatisticsReset"]) == (
+        "200", "40", "10", "250")
+    assert p["asOf"] == "2026-10-15T08:00:00Z" and p["sourceReport"] == REPORT_GUID
+    assert "not a rate" in p["basis"] and "statistics were last reset" in p["basis"]
+    assert "not a rate" in writes.summary and "rowsChanged" not in p
+    assert anns[(WRITES, "public.weight")].envelope.result_state.value == "nothing_found"
+    assert anns[(WRITES, "public.v_sales")].envelope.result_state.value == "not_applicable"
+    odd = anns[(WRITES, "public.odd")]
+    assert odd.envelope.result_state.value == "not_established"
+    assert "Number Of Rows Deleted" in odd.envelope.result_state_reason
+
+
+def test_with_a_report_and_one_snapshot_staleness_is_not_measured_and_writes_are_present(
+        staleness_installed, make_registry):
+    reg, url = make_registry("shop")
+    _survey(reg, "shop", "2026-10-08T00:00:00", [("public", "orders", "BASE TABLE", 130)])
+    anns = _run_both(url, _report())
+    stale = anns[("", "public.orders")]
+    assert stale.envelope.result_state.value == "not_established"
+    assert stale.envelope.result_state_reason.startswith("not measured · one snapshot only")
+    assert stale.resource_properties == {}                    # no substitute figure
+    assert anns[(WRITES, "public.orders")].resource_properties["writesSinceStatisticsReset"] == "250"
+
+
+def test_with_no_report_there_is_no_writes_annotation_and_staleness_is_step_3s(staleness_installed, make_registry):
+    reg, url = make_registry("shop")
+    _survey(reg, "shop", "2026-10-01T00:00:00", [("public", "orders", "BASE TABLE", 100)])
+    _survey(reg, "shop", "2026-10-08T00:00:00", [("public", "orders", "BASE TABLE", 130)])
+    anns = _run_both(url, None)
+    assert [k for k in anns if k[0]] == []
+    assert list(anns) == [("", "public.orders")]
+    assert anns[("", "public.orders")].resource_properties["rowsChanged"] == "30"
+
+
+def test_a_report_without_table_measurements_is_one_not_established_writes_result(staleness_installed,
+                                                                                    make_registry):
+    reg, url = make_registry("shop")
+    anns = _run_both(url, {"guid": "g-1", "annotations": []})
+    writes = anns[(WRITES, "shop")]
+    assert writes.envelope.result_state.value == "not_established"
+    assert "g-1 carries no table measurements" in writes.envelope.result_state_reason
+    assert anns[("", "shop")].envelope.result_state.value == "not_established"     # never surveyed: staleness
+
+
+def test_a_result_of_an_undeclared_measure_is_refused():
+    from trellis_analytics.manifest import StepManifest
+    from trellis_analytics.step import HostContext, StepRefused, SurveyStep
+
+    m = StepManifest(name="s", function="x.y", description="d", source="ods", version="1",
+                     resource_types=["database"], measures=["s", "other"])
+    host = HostContext(resource_type="database", slug="x", producing_run="r")
+    ok = SurveyStep(m, code=lambda i: [{"scope": "x", "measure": "other", "state": "nothing_found"}]).run(host)
+    assert ok[0].measure == "other"
+    with pytest.raises(StepRefused, match="does not declare"):
+        SurveyStep(m, code=lambda i: [{"scope": "x", "measure": "sneaky", "state": "nothing_found"}]).run(host)
+    with pytest.raises(ValueError, match="must include the step's own measure"):
+        StepManifest(name="s", function="x.y", description="d", source="ods", version="1",
+                     resource_types=["database"], measures=["other"])
+
+
+def test_source_report_is_handed_only_to_a_step_that_declares_it():
+    from trellis_analytics.manifest import StepManifest
+    from trellis_analytics.step import HostContext, SurveyStep
+
+    seen = {}
+
+    def code(inputs):
+        seen["report"] = inputs.source_report
+        return [{"scope": "x", "state": "nothing_found"}]
+
+    host = HostContext(resource_type="database", slug="x", producing_run="r", source_report={"guid": "g"})
+    for inputs, expected in ((["ods"], None), (["ods", "source_report"], {"guid": "g"})):
+        m = StepManifest(name="s", function="x.y", description="d", source="ods", version="1",
+                         resource_types=["database"], inputs=inputs)
+        SurveyStep(m, code=code).run(host)
+        assert seen["report"] == expected
+
+
 def test_the_manifest_is_the_wrappers_declaration(staleness_installed):
     from trellis_analytics.discovery import discover
     from trellis_analytics.manifest import StepManifest
@@ -142,7 +281,8 @@ def test_the_manifest_is_the_wrappers_declaration(staleness_installed):
         "step", "ods", ["database"], "ResourceMeasureAnnotation")
     assert m.version == staleness_installed
     assert m.questions == ["Q-0041"] and m.purposes == ["Maintain"]
-    assert m.credential_tier == "none" and m.inputs == ["ods"]
+    assert m.credential_tier == "none" and m.inputs == ["ods", "source_report"]
+    assert m.measure_names() == ["database_staleness", "writes_since_statistics_reset"]
 
 
 # ── generated, not hand-written ──

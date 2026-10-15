@@ -1368,6 +1368,7 @@ class EgeriaDatabaseSurveyor:
         engine_user: str,
         requester: str,
         registry=None,
+        extra_properties: dict | None = None,
     ) -> dict:
         """Publish the SurveyReport of an Egeria engine action RE ran as an engine host (engine_host.py, E4),
         shaped like a native survey action service's report (DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE C9):
@@ -1399,6 +1400,8 @@ class EgeriaDatabaseSurveyor:
         additional = {"annotation_count": str(len(annotations)), "engineActionGUID": engine_action_guid}
         if requester:
             additional["requestedBy"] = requester
+        # Engine host step 4: `derived_from_report`, the previous process step's report this one was derived from.
+        additional.update({str(k): str(v) for k, v in (extra_properties or {}).items() if v not in (None, "")})
         body = {
             "class": "NewElementRequestBody",
             "anchorGUID": asset_guid,

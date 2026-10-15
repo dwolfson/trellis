@@ -134,14 +134,30 @@ class LibraryStep:
         for r in records:
             scope = str(r.get("scope") or "")
             state = _state_of(r)
+            measure = str(r.get("measure") or "")
+            other = bool(measure) and measure != self.step_key
             summary = str(r.get("summary") or "") or f"{scope}: {state.replace('_', ' ')}"
+            # Each declared measure is its own annotation: its own annotationType and its own identity (check_name),
+            # never published under the step's name (engine host step 4 ruling). Egeria's type stays the nearest
+            # native one, ResourceMeasureAnnotation, which the native survey itself uses for these counters.
             out.append(ResourceMeasureAnnotation(
-                summary=summary, analysis_step=self.step_key, annotation_type_name=name,
+                summary=summary, analysis_step=self.step_key,
+                annotation_type_name=measure_display_name(measure) if other else name,
                 explanation=str(r.get("explanation") or ""),
                 resource_properties=dict(r.get("resourceProperties") or {}),
                 additional_properties=dict(r.get("additionalProperties") or {}),
-                check_name=self.step_key, item_key=scope))
+                check_name=measure if other else self.step_key, item_key=scope))
         return out
+
+
+def measure_step_key(step_key: str, measure: str) -> str:
+    """Where a measure's results are stored: the step's own under the step key, any other as `<step>:<measure>`."""
+    return step_key if not measure or measure == step_key else f"{step_key}:{measure}"
+
+
+def measure_display_name(measure: str) -> str:
+    """`writes_since_statistics_reset` -> `Writes Since Statistics Reset`, the annotationType it is published under."""
+    return measure.replace("_", " ").title()
 
 
 def _state_of(record: dict) -> str:
@@ -480,16 +496,24 @@ class SurveyStepHost:
         run = runner_kwargs.get("scan_surveyed_at") or datetime.utcnow().isoformat()
 
         def store(annotations) -> int:
+            # One stored set per measure: the step's own under its name, each further declared measure under
+            # `<step>:<measure>`, so a reader of the step's results never sees another measure's rows as its own.
             measured_at = annotations[0].envelope.measured_at if annotations else run
-            return registry.record_step_annotations(
-                self.entity_type, entity.slug, step, run=run, measured_at=measured_at,
-                annotations=[a.to_record() for a in annotations],
+            groups: dict[str, list] = {step: []}
+            for a in annotations:
+                groups.setdefault(measure_step_key(step, getattr(a, "measure", "")), []).append(a)
+            return sum(registry.record_step_annotations(
+                self.entity_type, entity.slug, key, run=run, measured_at=measured_at,
+                annotations=[a.to_record() for a in group],
                 package=self.provided_by.get("package", ""), producer_version=self.manifest.version)
+                for key, group in groups.items())
 
         with contextlib.ExitStack() as stack:
             ods = stack.enter_context(step_reader(registry.database_url))
+            # `source_report`: the previous process step's report as plain data, read by the engine host (step 4).
             host = HostContext(resource_type=self.entity_type, slug=entity.slug, producing_run=run,
-                               ods=ods, connect=None, store=store)
+                               ods=ods, connect=None, store=store,
+                               source_report=runner_kwargs.get("source_report"))
             # The step's code runs with no Egeria identity, and its reader is closed when the code returns; the
             # store and anything after it run as the host does.
             code = SurveyStep(self.manifest).code

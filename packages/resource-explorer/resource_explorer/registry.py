@@ -7415,6 +7415,23 @@ class ProjectRegistry:
                     (status, message, read_at, requested_at, started_at, engine_action_guid),
                 )
 
+    def merge_native_survey_declared(self, engine_action_guid: str, patch: dict) -> None:
+        """Merge `patch` into the `declared` JSON of the native-survey row(s) holding this GUID. No DDL: a
+        process run (engine host step 4) keeps what it last read of each of its steps here, beside `started_as`."""
+        with self._conn() as conn:
+            rows = conn.execute("SELECT id, declared FROM step_runs WHERE engine_action_guid = ?",
+                                (engine_action_guid,)).fetchall()
+            for row in rows:
+                try:
+                    current = json.loads(dict(row).get("declared") or "{}")
+                except (TypeError, ValueError):
+                    current = {}
+                if not isinstance(current, dict):
+                    current = {}
+                current.update(patch)
+                conn.execute("UPDATE step_runs SET declared = ? WHERE id = ?",
+                             (json.dumps(current, default=str), dict(row)["id"]))
+
     def record_native_survey_report(
         self, engine_action_guid: str, *, entity_type: str, slug: str,
         process_qualified_name: str, report_guid: str, report_at: str,

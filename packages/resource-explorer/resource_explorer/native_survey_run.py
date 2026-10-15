@@ -50,6 +50,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterator, Protocol
 
+from resource_explorer.mixed_process import KIND_MIXED_PROCESS
 from resource_explorer.registry import NATIVE_SURVEY_STEP_PREFIX
 from resource_explorer.surveyors.technology_type_processes import (
     KIND_CATALOG_AND_SURVEY,
@@ -420,6 +421,49 @@ class PyegeriaSurveyPort:
                 f"{engine_action_guid} ({sorted(set(guids))}); not choosing one")
         return guids[0]
 
+    def process_declared(self, qualified_name: str) -> bool:
+        """Is a governance action process with this qualifiedName in Egeria? Read-only. True/False only for an
+        element or Egeria's exact "nothing there"; anything else raises (never "not declared" by inference)."""
+        from resource_explorer.catalogue_gateway import _guid_of
+
+        self._enter()
+        body = {"class": "UniqueNameRequestBody", "name": qualified_name, "namePropertyName": "qualifiedName",
+                "forLineage": False, "forDuplicateProcessing": False}
+        try:
+            res = self._get_expert().get_metadata_element_by_unique_name(
+                name=qualified_name, property_name="qualifiedName", body=body)
+        except Exception as exc:  # noqa: BLE001 -- only a TYPED not-found is absence
+            if self._is_not_found(exc):
+                return False
+            raise
+        if is_exact_absent(res):
+            return False
+        if isinstance(res, dict) and _guid_of(res):
+            return True
+        raise NativeSurveyError(f"Egeria answered a lookup of {qualified_name} with something other than an "
+                                "element: " + " ".join(str(res).split())[:300])
+
+    def initiate_process_run(self, process_qualified_name: str, action_target_name: str, target_guid: str) -> str:
+        """Start a governance action process on one asset (pyegeria 6.2.3
+        `AutomatedCuration.initiate_gov_action_process(action_type_qualified_name, ..., action_targets=[...])`).
+        A WRITE, as the port's principal. Returns the GovernanceActionProcessInstance GUID (live: the
+        catalog-and-survey runs store exactly that GUID)."""
+        self._enter()
+        guid = self._get_curation().initiate_gov_action_process(
+            action_type_qualified_name=process_qualified_name,
+            action_targets=[{"class": "NewActionTarget", "actionTargetName": action_target_name,
+                             "actionTargetGUID": target_guid.strip()}])
+        if not guid or guid == "Action not initiated":
+            raise NativeSurveyError(f"Egeria did not initiate {process_qualified_name!r} (it answered {guid!r})")
+        return guid
+
+    def read_process_run(self, instance_guid: str) -> list:
+        """The engine actions of one process instance, in run order (`mixed_process.read_process_run`). Read-only."""
+        from resource_explorer import mixed_process
+
+        self._enter()
+        return mixed_process.read_process_run(self._get_expert(), instance_guid)
+
     def read_report(self, report_guid: str) -> ReportRead:
         from resource_explorer.surveyors.egeria_survey_reader import annotations_from_report
 
@@ -630,6 +674,10 @@ def cannot_run_reason(process: NativeProcess, entity, *, registry=None, technolo
         # Not run through `submit_native_survey`: registering is its own press (register_with_egeria).
         return cas.wiring_reason("database" if hasattr(entity, "db_type") else "filesystem",
                                  technology_type, entity) if entity is not None else "This resource is not registered."
+    if entity is not None and hasattr(entity, "db_type") and is_postgres_only(process) and not _is_postgres(entity):
+        return NOT_POSTGRES
+    if process.kind == KIND_MIXED_PROCESS:
+        return _mixed_cannot_run_reason(process, entity)
     if process.kind != KIND_SURVEY_EXISTING:
         return f"RE does not run processes of kind {process.kind!r}."
     from resource_explorer import engine_host
@@ -654,6 +702,46 @@ def cannot_run_reason(process: NativeProcess, entity, *, registry=None, technolo
 
 #: Why an RE engine-host process (`ResourceExplorerSurvey::...`) cannot run: RE_ENGINE_HOST_ENABLED is off.
 ENGINE_HOST_OFF = "engine host off"
+
+#: Why a mixed process (engine host step 4) cannot run: Egeria has no process by that qualifiedName. Known only after
+#: a read (the /check press, or Run itself); the registry-only listing never claims it.
+PROCESS_NOT_DECLARED = "process not declared in Egeria · run its document in engine-host/processes/"
+
+
+#: Processes whose (first) step is Egeria's PostgreSQL survey: offered for a PostgreSQL database only.
+NOT_POSTGRES = "not a PostgreSQL database"
+
+
+def is_postgres_only(process: NativeProcess) -> bool:
+    return process.kind == KIND_MIXED_PROCESS or process.qualified_name.startswith("PostgreSQLSurvey::")
+
+
+def _is_postgres(entity) -> bool:
+    return str(getattr(entity, "db_type", "") or "").strip().lower() in ("postgresql", "postgres")
+
+
+def _mixed_cannot_run_reason(process: NativeProcess, entity) -> str:
+    """A mixed process (`mixed_process.MIXED_PROCESSES`) runs only when RE's engine host is on (it serves the RE
+    step), the database has an Egeria asset, RE's engine runs every RE step here, and the native step's
+    precondition holds: Egeria's survey engine has the database's credentials, as for PostgreSQLSurvey.
+    Registry-only; whether Egeria has the process declared is a read (`PROCESS_NOT_DECLARED`)."""
+    from resource_explorer import catalog_and_survey as cas
+    from resource_explorer import engine_host, mixed_process
+
+    declared = mixed_process.by_qualified_name(process.qualified_name)
+    if declared is None:
+        return f"{process.qualified_name} is not a process Resource Explorer declares."
+    if not engine_host.engine_host_enabled():
+        return ENGINE_HOST_OFF
+    if entity is None:
+        return "This resource is not registered."
+    if not (getattr(entity, "egeria_asset_guid", "") or "").strip():
+        return cas.NOT_REGISTERED_WORDS if hasattr(entity, "db_type") else _NEEDS_CATALOGUING
+    supported = engine_host.supported_request_types()
+    for step in declared.re_steps:
+        if step.request_type not in supported:
+            return f"step {step.number} ({step.request_type}) is not installed where the engine host runs"
+    return _missing_credentials_reason(entity) if process.needs_credentials else ""
 
 
 def row_is_neutral(reason: str) -> bool:
@@ -751,7 +839,7 @@ def _processes_for_rows(entity_type: str, technology_type: str) -> list[NativePr
 
 
 def native_survey_rows(registry, entity_type: str, slug: str, technology_type: str, *,
-                       pointers: dict | None = None) -> list[dict]:
+                       pointers: dict | None = None, declared: dict | None = None) -> list[dict]:
     """One row per native survey process known for this resource's technology
     type: what it is, whether RE can run it (and if not, why), and the state
     derived from the newest persisted run. Registry-only -- no Egeria call --
@@ -759,7 +847,10 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
 
     `pointers` is the result of `catalog_and_survey.check_pointers` when a caller has READ them
     from Egeria; only then can a row say a stored pointer is gone (stale). Without it, no row
-    claims anything about whether a stored pointer still resolves."""
+    claims anything about whether a stored pointer still resolves.
+
+    `declared` ({process qualifiedName: True/False}) is what a caller READ from Egeria about the mixed processes
+    (`check_declared`); only then can a mixed row say "process not declared"."""
     from resource_explorer import catalog_and_survey as cas
 
     entity = _resource_entity(registry, entity_type, slug)
@@ -770,6 +861,9 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
             continue  # never offered, in any form
         runs = registry.list_native_survey_runs(entity_type, slug, process.qualified_name)
         latest = runs[0] if runs else None
+        if entity is not None and hasattr(entity, "db_type") and is_postgres_only(process) \
+                and not _is_postgres(entity):
+            continue  # Egeria's PostgreSQL survey (alone, or as a process's first step) is offered for PostgreSQL only
         if process.kind == KIND_CATALOG_AND_SURVEY:
             rows.append(_catalog_row(registry, entity_type, slug, technology_type, entity,
                                      process, latest, stale=(pointers.get("database") == "gone")))
@@ -779,13 +873,19 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
         gone = pointers.get(gone_key) == "gone"
         if gone:
             reason = cas.STALE_WORDS
+        if process.kind == KIND_MIXED_PROCESS and not reason and (declared or {}).get(process.qualified_name) is False:
+            reason = PROCESS_NOT_DECLARED
         creds = (credentials_state(entity)
-                 if (process.kind == KIND_SURVEY_EXISTING and entity is not None and process.needs_credentials)
+                 if (process.kind in (KIND_SURVEY_EXISTING, KIND_MIXED_PROCESS) and entity is not None
+                     and process.needs_credentials)
                  else PRESENT)
         stored = None
         if latest and latest.get("survey_report_guid"):
             stored = registry.count_native_survey_annotations(latest["survey_report_guid"])
-        derived = derive_native_state(latest, stored_annotation_count=stored)
+        derived = (derive_mixed_state(latest) if process.kind == KIND_MIXED_PROCESS
+                   else derive_native_state(latest, stored_annotation_count=stored))
+        if process.kind == KIND_MIXED_PROCESS:
+            derived["waiting_for"] = _waiting_for_engine_host(registry, entity_type, slug, derived)
         row = {
             "qualified_name": process.qualified_name,
             "display_name": process.display_name,
@@ -853,6 +953,142 @@ def _catalog_row(registry, entity_type, slug, technology_type, entity, process, 
     }
 
 
+# ── a mixed process run (engine host step 4, M4) ─────────────────────────────
+
+def _declared(run: dict) -> dict:
+    import json
+
+    raw = run.get("declared")
+    try:
+        out = raw if isinstance(raw, dict) else json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        out = {}
+    return out if isinstance(out, dict) else {}
+
+
+def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict:
+    """A mixed process run's row state, from persisted proof only: the row (process instance GUID, the last read's
+    time and error) and what that read stored of each step (`declared.process_run`: action, Egeria's status, guards,
+    report). Same shape as `derive_native_state`, plus `line` (the one run line) and `steps`.
+
+    complete only when the LAST declared step COMPLETED with survey-completed; failed when any step ended otherwise
+    ("step 2 not started · step 1 failed" when Egeria never created the next step); running while a step is active
+    or the next one has not appeared yet after a success."""
+    from resource_explorer import mixed_process
+
+    out = derive_native_state(run, now=now)
+    out.update(line="", steps=[])
+    if not run or not run.get("engine_action_guid"):
+        return out
+    pr = _declared(run).get("process_run") or {}
+    steps = pr.get("steps") or []
+    out.update(line=pr.get("words") or "", steps=steps, report_guid="", annotation_count=None)
+    if not pr or not steps:
+        # Nothing read yet, or Egeria has linked no engine action to the instance yet: submitted (or the last read
+        # failed), as derive_native_state says from the row, never "running".
+        out["state"] = UNREADABLE if out.get("error") else SUBMITTED
+        return out
+    process = mixed_process.by_qualified_name(run.get("executor_ref") or "")
+    expected = len(process.steps) if process else len(steps)
+    by_index = list(steps)
+    ended_badly = next((s for s in by_index if s.get("status") not in ("", None, *ACTIVE_STATUSES)
+                        and not (s.get("status") == "COMPLETED" and "survey-completed" in (s.get("guards") or []))),
+                       None)
+    if ended_badly is not None:
+        out["state"] = FAILED
+        out["message"] = pr.get("words") or out["message"]
+        return out
+    if any(s.get("status") in ACTIVE_STATUSES for s in by_index) or len(by_index) < expected:
+        out["state"] = RUNNING
+        out["message"] = pr.get("words") or out["message"]
+        return out
+    out["state"] = COMPLETE
+    out["message"] = pr.get("words") or out["message"]
+    out["report_guid"] = (by_index[-1].get("report_guid") if by_index else "") or ""
+    return out
+
+
+#: A mixed run whose RE step Egeria created but nobody claimed: said with why, never left as a bare "running".
+WAITING_FOR_ENGINE_HOST = "waiting for RE's engine host"
+
+
+def _waiting_for_engine_host(registry, entity_type: str, slug: str, derived: dict) -> str:
+    """"waiting for RE's engine host · <why>" when the last read shows an RE step Egeria created and nobody has
+    claimed (APPROVED or REQUESTED), else "". Registry-only: the engine host's switch, and whether the target is now
+    private to its owner (the host leaves such actions unclaimed, owner Q-O3)."""
+    from resource_explorer import mixed_process
+
+    if derived.get("state") != RUNNING:
+        return ""
+    re_types = {s.request_type for p in mixed_process.MIXED_PROCESSES.values() for s in p.re_steps}
+    waiting = [s for s in derived.get("steps") or []
+               if s.get("request_type") in re_types and s.get("status") in ("APPROVED", "REQUESTED")]
+    if not waiting:
+        return ""
+    from resource_explorer import engine_host
+
+    if not engine_host.engine_host_enabled():
+        why = ENGINE_HOST_OFF + " · turn it on, or cancel step 2 in Egeria"
+    else:
+        try:
+            private = registry.private_owner_for_entity(entity_type, slug)
+        except Exception:  # noqa: BLE001 -- unknown is said as unknown
+            private = None
+        why = ("the database is private to its owner, so the unattended host leaves it · run it attended, or cancel "
+               "step 2 in Egeria") if private else "not claimed yet"
+    return f"{WAITING_FOR_ENGINE_HOST} · {why}"
+
+
+def refresh_mixed_run(registry, port, run: dict, *, entity_type: str, slug: str) -> dict:
+    """Read one mixed process run back (read-only): the instance's engine actions in run order, grouped into its one
+    run line (`mixed_process.group_by_process`). Stores what it read on the row (`declared.process_run`) and the
+    newest step's Egeria status as the row's; a failed read is recorded as one and never becomes a status."""
+    from resource_explorer import mixed_process
+
+    guid = run["engine_action_guid"]
+    entity = _resource_entity(registry, entity_type, slug)
+    read_at = _now()
+    try:
+        views = port.read_process_run(guid)
+    except Exception as exc:  # noqa: BLE001 -- recorded, not raised
+        registry.record_native_survey_readback(guid, read_at=read_at, error=scrub_secret(_short_error(exc), entity))
+        return _refetch_mixed(registry, entity_type, slug, run)
+    lines = [ln for ln in mixed_process.group_by_process(views) if ln.instance_guid == guid]
+    line = lines[0] if lines else mixed_process.RunLine(guid, run.get("executor_ref") or "", [])
+    if not line.process_name:
+        line.process_name = run.get("executor_ref") or ""
+    started = (run.get("surveyed_at") or "")[5:10]
+    detail = mixed_process.run_line_dict(line, started=started)
+    detail["words"] = scrub_secret(detail["words"], entity)
+    for step in detail["steps"]:
+        step["message"] = scrub_secret(step.get("message") or "", entity)
+    registry.merge_native_survey_declared(guid, {"process_run": {**detail, "read_at": read_at}})
+    newest = line.steps[-1].status if line.steps else ""
+    registry.record_native_survey_readback(guid, read_at=read_at, status=newest, message=detail["words"])
+    return _refetch_mixed(registry, entity_type, slug, run)
+
+
+def _refetch_mixed(registry, entity_type: str, slug: str, run: dict) -> dict:
+    runs = registry.list_native_survey_runs(entity_type, slug, run.get("executor_ref") or "")
+    latest = next((r for r in runs if r.get("engine_action_guid") == run.get("engine_action_guid")),
+                  runs[0] if runs else None)
+    return derive_mixed_state(latest)
+
+
+def check_declared(port, entity_type: str, technology_type: str) -> dict:
+    """{qualifiedName: True/False/None} for this resource's mixed processes, read from Egeria (None: unreadable)."""
+    out: dict = {}
+    for process in _processes_for_rows(entity_type, technology_type):
+        if process.kind != KIND_MIXED_PROCESS:
+            continue
+        try:
+            out[process.qualified_name] = bool(port.process_declared(process.qualified_name))
+        except Exception as exc:  # noqa: BLE001 -- unreadable is not "not declared"
+            log.warning("could not check %s is declared: %s", process.qualified_name, _short_error(exc))
+            out[process.qualified_name] = None
+    return out
+
+
 # ── submit and read back ────────────────────────────────────────────────────
 
 
@@ -876,6 +1112,8 @@ def refresh_run(registry, port: EgeriaSurveyPort, run: dict, *, entity_type: str
         # A registration process has no survey report of its own: its proof is the database element.
         from resource_explorer import catalog_and_survey as cas
         return cas.refresh_registration_run(registry, port, run, entity_type=entity_type, slug=slug)
+    if kind_of(process_qn) == KIND_MIXED_PROCESS:
+        return refresh_mixed_run(registry, port, run, entity_type=entity_type, slug=slug)
 
     entity = _resource_entity(registry, entity_type, slug)
     try:
@@ -980,8 +1218,9 @@ def submit_native_survey(registry, port: EgeriaSurveyPort, entity_type: str, slu
         latest = runs[0]
         stored = (registry.count_native_survey_annotations(latest["survey_report_guid"])
                   if latest.get("survey_report_guid") else None)
-        if derive_native_state(latest, stored_annotation_count=stored)["state"] in (
-                SUBMITTED, RUNNING, AWAITING_REPORT, UNREADABLE):
+        state = (derive_mixed_state(latest) if process.kind == KIND_MIXED_PROCESS
+                 else derive_native_state(latest, stored_annotation_count=stored))["state"]
+        if state in (SUBMITTED, RUNNING, AWAITING_REPORT, UNREADABLE):
             raise NativeSurveyBusy(
                 "This survey is already in flight on this resource "
                 f"(engine action {latest['engine_action_guid']}).")
@@ -1001,20 +1240,37 @@ def submit_native_survey(registry, port: EgeriaSurveyPort, entity_type: str, slu
         raise NativeSurveyStale(
             f"{cas.STALE_WORDS} ({asset_guid}); register the server with Egeria again.")
 
+    started_as = STARTED_AS_ACTION_TYPE
+    if process.kind == KIND_MIXED_PROCESS:
+        # Engine host step 4: the process must be declared in Egeria (read first; a failed read is not "absent").
+        try:
+            declared = port.process_declared(process_qualified_name)
+        except Exception as exc:  # noqa: BLE001
+            raise NativeSurveyError(f"Could not check that {process_qualified_name} is declared in Egeria: "
+                                    f"{_short_error(exc)}") from exc
+        if not declared:
+            raise NativeSurveyCannotRun(PROCESS_NOT_DECLARED)
+        started_as = STARTED_AS_PROCESS
+
     submitted_at = _now()
     try:
-        engine_action_guid = port.initiate(
-            process_qualified_name, process.action_target_name, asset_guid)
+        if process.kind == KIND_MIXED_PROCESS:
+            # The process instance GUID is what the row holds (as for a catalog-and-survey run).
+            engine_action_guid = port.initiate_process_run(
+                process_qualified_name, process.action_target_name, asset_guid)
+        else:
+            engine_action_guid = port.initiate(
+                process_qualified_name, process.action_target_name, asset_guid)
     except Exception as exc:  # noqa: BLE001
         error = scrub_secret(_short_error(exc), entity)
         registry.record_native_survey_submission(
             entity_type, slug, process_qualified_name, submitted_at,
-            submit_error=error, submitted_by=submitted_by, started_as=STARTED_AS_ACTION_TYPE)
+            submit_error=error, submitted_by=submitted_by, started_as=started_as)
         raise NativeSurveyError(error) from exc
 
     registry.record_native_survey_submission(
         entity_type, slug, process_qualified_name, submitted_at,
-        engine_action_guid=engine_action_guid, submitted_by=submitted_by, started_as=STARTED_AS_ACTION_TYPE)
+        engine_action_guid=engine_action_guid, submitted_by=submitted_by, started_as=started_as)
     log.info("submitted native survey %s for %s/%s: engine action %s",
              process_qualified_name, entity_type, slug, engine_action_guid)
 
@@ -1152,6 +1408,8 @@ def _run_in_flight(registry, run: dict, entity_type: str, slug: str) -> bool:
         entity = _resource_entity(registry, entity_type, slug)
         has_ptr = bool((getattr(entity, "egeria_asset_guid", "") or "").strip())
         return cas.catalog_in_flight(cas.derive_catalog_state(run, has_pointer=has_ptr), run)
+    if kind_of(process_qn) == KIND_MIXED_PROCESS:
+        return derive_mixed_state(run)["state"] in _IN_FLIGHT
     stored = (registry.count_native_survey_annotations(run["survey_report_guid"])
               if run.get("survey_report_guid") else None)
     return derive_native_state(run, stored_annotation_count=stored)["state"] in _IN_FLIGHT

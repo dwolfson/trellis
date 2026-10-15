@@ -146,7 +146,58 @@ The owner runs M1's document, then M5 on coco_pharma. Then:
 
 ## Open points for the owner
 
-- [ ] Does the Run route offer the mixed process beside `PostgreSQLSurvey`
+- [x] Does the Run route offer the mixed process beside `PostgreSQLSurvey`
       in this slice, or is Dr.Egeria the only trigger until the gate passes?
+      **Decision (project owner, 2026-10-15):** RE's Run can start the mixed
+      process. Runnable only when the engine host is on, the process is
+      declared in Egeria, and the native step's credentials are in place.
 - [ ] On a `survey-invalid` from step 1 (nothing to survey), should the
       process still run step 2? The design says no: nothing was measured.
+
+## Built (engine host step 4, 2026-10-15)
+
+**M2, read-only probe** (fixtures `tests/fixtures/egeria_6_2/engine_action__*`, `process_instance__*`,
+`survey_report__native_postgres_database__*`), on a native `PostgreSQLDatabase:CreateAndSurvey` run of
+laz_local_usda. It agrees with the design:
+
+- the native survey service does not add `surveyReport` to its own action. Its completion passes the report GUID as
+  a new action target, and the NEXT action carries `surveyReport` plus the original asset target under the name the
+  process was started with (`newAsset` there; RE starts this process with `serverToSurvey`, the name its own
+  PostgreSQLSurvey run uses);
+- actions are linked by `ControlFlow` relationships carrying `guard` and `mandatoryGuard` (end 1 is the earlier
+  action). Every action is anchored (`Anchors`) to its `GovernanceActionProcessInstance`, and its `processName` is
+  the instance's qualifiedName. The instance links to its first action by `ActionRequester`. One
+  `get_all_related_elements(guid, graph_query_depth=1)` returns an action's targets, its report, and its
+  neighbours' status and guards;
+- `initiate_gov_action_process` returns the process-instance GUID (as the stored catalog-and-survey rows show).
+
+**Found by M2, not in the design:** a native PostgreSQL survey reports no row count. Its table measurements carry
+PostgreSQL's cumulative rows inserted, updated and deleted.
+
+**Decision (design session, 2026-10-15):** report two measures, kept distinct, never one function with two meanings.
+- *Database staleness* keeps its definition: the change between two stored row-count snapshots, over their interval.
+  The step-1 report is provenance only (`derived_from_report`). With one snapshot it says "not measured · one
+  snapshot only", with no substitute figure.
+- *Writes since statistics reset* is the native report's cumulative inserted/updated/deleted per table: totals since
+  PostgreSQL's statistics reset, not a rate and not a delta. It is its own annotation (Egeria's
+  `ResourceMeasureAnnotation`, as the native survey uses for these counters; annotationType "Writes Since Statistics
+  Reset", its own check name). It carries the as-of time and the reset caveat, and appears only when a report is
+  present.
+- The manifest declares both (`measures`; 0.2.0 adds the second). RE stores the second under
+  `database_staleness:writes_since_statistics_reset`, so a reader of staleness never sees it.
+
+**Where it lives.**
+
+- M1: `mixed_process.MIXED_PROCESSES` and `generate_engine_host_declaration.py --mixed-process` produce
+  `docs/dr-egeria/engine-host/processes/postgres-survey-then-derived.md`. A process step cannot point at a
+  GovernanceActionType, so each step carries the executor of the type it stands for and names the type in its
+  Additional Properties.
+- M3: in `engine_host.py`, the `surveyReport` target is never an asset. A library step that declares the
+  `source_report` input gets the report as plain data, read by the host through `annotations_from_report`. The
+  SurveyReport and the outcome carry `derived_from_report`. A later process step whose previous step did not
+  complete with the linking guard is left unclaimed.
+- M4: `mixed_process.group_by_process` / `run_line_words`, read back by `native_survey_run.refresh_mixed_run` into
+  the row's `declared.process_run`.
+- M5: the `mixed_process` row in `technology_type_processes.yaml`, started by `submit_native_survey`.
+
+Tests: `tests/test_engine_host_step4_mixed_process.py`.

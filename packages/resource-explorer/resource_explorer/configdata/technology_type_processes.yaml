@@ -40,6 +40,10 @@
 #                        (never a password: credentials reach Egeria through
 #                        the .omsecrets projection) and submits the process.
 #                        FileDirectory's is not wired yet.
+#   mixed_process      - a GovernanceActionProcess RE declares whose steps run
+#                        on different hosts (a native survey, then an RE step on
+#                        RE's engine host); its steps are mixed_process.py's
+#                        MIXED_PROCESSES. Started with the asset as target.
 #   delete             - a destructive process (e.g. deletes a cataloged
 #                        asset). RE must NEVER expose this as a runnable
 #                        candidate, one-click or otherwise.
@@ -79,6 +83,18 @@ technology_types:
           survey_existing process keep Egeria's own survey. Runs only where the
           owner has declared the engine (docs/dr-egeria/engine-host/) and RE's
           engine host is on.
+      - qualified_name: "GovActionProcess::ResourceExplorer::PostgresSurveyThenDerived"
+        display_name: "Postgres survey then derived"
+        kind: mixed_process
+        description: >-
+          One Egeria process, two steps: Egeria's own PostgreSQL survey, then
+          Resource Explorer's database staleness derived from the report that
+          survey just wrote (engine host step 4, mixed_process.py; the steps and
+          guard are MIXED_PROCESSES["postgres_survey_then_derived"]). Started
+          with the database asset as its "serverToSurvey" target, the name RE's
+          own PostgreSQLSurvey run uses. Runs only where the owner has declared
+          the process (docs/dr-egeria/engine-host/processes/) and RE's engine
+          host is on; step 1 needs the database's credentials as PostgreSQLSurvey does.
       - qualified_name: "PostgreSQLDatabase:DeleteAssetWithTemplateGovernanceActionProcess"
         display_name: "Delete Database Asset"
         kind: delete
