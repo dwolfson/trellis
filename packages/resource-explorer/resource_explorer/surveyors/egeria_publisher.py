@@ -1337,13 +1337,13 @@ class EgeriaPublisher:
                 log.info("Created ExternalReference %s for %s (%s)",
                          ref_guid, result.resource_slug, homepage)
 
-            # Linking is separately guarded: a duplicate link attempt on a
-            # re-publish is harmless to report but must not lose the reference.
-            try:
-                self._external_references.link_external_reference(asset_guid, ref_guid)
-            except Exception as exc:
-                log.debug("Could not link ExternalReference %s to %s: %s",
-                          ref_guid, asset_guid, exc)
+            # ExternalReferenceLink is multi-link: every link call made another copy on each
+            # re-publish. Link only when none exists; the helper logs its own failures at warning
+            # and never links when it cannot check. The reference itself is kept either way.
+            from resource_explorer.egeria_extref_link import link_external_reference_once
+
+            link_external_reference_once(self._metadata_expert, self._external_references,
+                                         asset_guid, ref_guid)
             return ref_guid
         except Exception as exc:
             log.warning("Could not publish homepage ExternalReference for %s: %s",

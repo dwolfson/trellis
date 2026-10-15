@@ -24,6 +24,21 @@ class _FakeClients:
 _EGERIA_KW = dict(clients=_FakeClients())
 
 
+@pytest.fixture(autouse=True)
+def _no_existing_links(monkeypatch):
+    """The link step first reads the reference's ExternalReferenceLinks (multi-link: a blind link
+    duplicates). These tests are about find-or-create; their asset is never linked yet, so the read
+    answers pyegeria's live end-of-list sentence. Duplicate behaviour: test_extref_link_dedupe.py."""
+    from unittest.mock import create_autospec
+
+    from pyegeria.omvs.metadata_expert import MetadataExpert
+
+    expert = create_autospec(MetadataExpert, spec_set=True, instance=True)
+    expert.get_related_metadata_elements.return_value = "No elements found"
+    monkeypatch.setattr(m, "_expert", lambda clients: expert)
+    return expert
+
+
 def test_source_type_label_covers_the_full_vocabulary():
     """Owner gate feedback on 8813 (2026-09-29) added installation_guide and
     user_manual; design added api_reference and release_notes while touching
