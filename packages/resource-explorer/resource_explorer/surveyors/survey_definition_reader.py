@@ -1228,6 +1228,37 @@ class SurveyDefinitionReader:
 
         return result
 
+    # ── reconciliation: each step's executor (engine host case 3, decision 2) ──
+
+    def executor_drift(self, process_guid: str) -> list:
+        """REPORT-ONLY: each step's `GovernanceActionExecutor` against decision 2 of the case-3 slice (a step RE runs
+        has exactly one executor, to RE's engine, with its step key's request type). Reads live (bypasses the fetch
+        cache), writes nothing, never repairs: drift is a finding for a person. A step whose relationships cannot be
+        read is reported as such ("unreadable"), never as "missing"."""
+        from resource_explorer import engine_host
+        from resource_explorer.surveyors.survey_definition_reconciler import (
+            ExecutorDrift,
+            diff_executors,
+            executors_from_related,
+        )
+
+        _bust_fetch_cache(process_guid)
+        survey_def = self.fetch(process_guid)
+        expert = self._connect_metadata_expert()
+        out: list = []
+        for step in survey_def.steps:
+            key = step.re_analysis_step or step.qualified_name.rsplit("::", 1)[-1]
+            try:
+                executors = executors_from_related(expert.get_all_related_elements(step.guid, graph_query_depth=1))
+            except Exception as exc:  # noqa: BLE001 -- "could not tell" is its own finding, never "missing"
+                out.append(ExecutorDrift(step.qualified_name, key, "unreadable",
+                                         " ".join(f"{type(exc).__name__}: {exc}".split())[:200]))
+                continue
+            out.extend(diff_executors(step.qualified_name, key, step.executes_at, executors,
+                                      engine_qualified_name=engine_host.ENGINE_QUALIFIED_NAME,
+                                      expected_request_type=engine_host.request_type_for_step(key)))
+        return out
+
     # ── reconciliation: ScopedBy links vs. an authored document ─────────────
 
     def get_live_scopes(self, process_guid: str) -> list[dict]:

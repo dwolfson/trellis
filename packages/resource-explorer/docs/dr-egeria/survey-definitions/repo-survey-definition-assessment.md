@@ -8,6 +8,12 @@ GovActionProcessStep::RepoAssessmentSurvey::repo_git_statistics
 ### Description
 Refreshes project_stats (stars, forks, contributors, commit activity, releases, security config, deployments) from the GitHub API — the table eight other steps read. Replaces five independent StatsFetcher calls that each refreshed it separately in the same run.
 
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -26,6 +32,12 @@ GovActionProcessStep::RepoAssessmentSurvey::repo_file_inventory
 
 ### Description
 Refreshes project_file_inventory from a fresh zipball — the table every file-shape step reads. Closes the gap where the inventory was written only by RAG ingestion/refresh_profile and never by a survey step, so a survey reported whatever an earlier, unrelated run had left behind.
+
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -46,6 +58,12 @@ GovActionProcessStep::RepoAssessmentSurvey::repo_documentation
 ### Description
 Presence of README/CHANGELOG/CONTRIBUTING/SECURITY and overall doc-quality label.
 
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -64,6 +82,12 @@ GovActionProcessStep::RepoAssessmentSurvey::repo_security
 
 ### Description
 Presence of SECURITY.md, CI config, LICENSE — flags gaps as RFAs.
+
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -84,6 +108,12 @@ GovActionProcessStep::RepoAssessmentSurvey::repo_security_features
 ### Description
 GitHub's native security feature toggles (Dependabot, secret scanning, etc.) — configuration state, not artifact presence.
 
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -102,6 +132,12 @@ GovActionProcessStep::RepoAssessmentSurvey::repo_ci_quality
 
 ### Description
 Whether CI workflows actually run tests/lint/build, via a keyword scan of workflow content — not just whether a CI config exists.
+
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -122,6 +158,12 @@ GovActionProcessStep::RepoAssessmentSurvey::repo_cve_scan
 ### Description
 Dependency advisories from OSV.dev, over dependencies the manifest parser already recorded. Reports coverage with the count: declared dependencies only, and only those with a pinned, parseable version.
 
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -140,6 +182,9 @@ GovActionProcessStep::RepoAssessmentSurvey::repo_secret_scan
 
 ### Description
 Committed-credential scan over HEAD content, using a VENDORED gitleaks ruleset (222 rules, MIT, provenance recorded). Reports what it matched AND which ruleset version it matched with — never 'no secrets', only 'no matches against this ruleset in HEAD'.
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -160,6 +205,12 @@ GovActionProcessStep::RepoAssessmentSurvey::repo_telemetry_scan
 ### Description
 Telemetry / phone-home indicators: known SDK imports and literal outbound endpoints, paired with whether the project discloses them. Never labels an ordinary API client as telemetry.
 
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -178,6 +229,12 @@ GovActionProcessStep::RepoAssessmentSurvey::repo_contribution_provenance
 
 ### Description
 CLA/DCO provenance, kept as two separate questions: whether sign-off is STATED, and whether it is ENFORCED. Config presence alone is reported `partial`, never `pass`.
+
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -198,6 +255,12 @@ GovActionProcessStep::RepoAssessmentSurvey::repo_sla_content
 ### Description
 Whether the project publishes support or service-level commitments. Deliberately NEUTRAL (present/absent, not pass/gap): most repositories legitimately publish none, and absence alone never raises an action.
 
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -216,6 +279,12 @@ GovActionProcessStep::RepoAssessmentSurvey::repo_foss_scorecard
 
 ### Description
 OpenSSF-Scorecard-shaped checks computed from data already held — an unevaluable check reports unknown and is excluded from the score, rather than scored zero as OpenSSF's own tool does.
+
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -236,6 +305,12 @@ GovActionProcessStep::RepoAssessmentSurvey::repo_cii_badge
 ### Description
 The real OpenSSF Best Practices (CII) badge, read from bestpractices.dev rather than estimated. Reports the level with the age of the self-assessment behind it, and keeps 'no badge' apart from 'could not ask'.
 
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -254,6 +329,12 @@ GovActionProcessStep::RepoAssessmentSurvey::repo_security_summary
 
 ### Description
 Reduces the security family's stored findings to one topic summary. Measures nothing itself — it reads what the other security steps wrote, so it belongs LAST in any survey that runs them. Reports coverage and the age of its oldest input alongside the verdict, and refuses a verdict at all below four inputs.
+
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -444,6 +525,201 @@ GovActionProcessStep::RepoAssessmentSurvey::repo_security_summary
 
 ### Guard
 Any
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoAssessmentSurvey::repo_git_statistics
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-git-statistics
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoAssessmentSurvey::repo_git_statistics to Resource Explorer's engine, which claims it and runs RE step repo_git_statistics.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoAssessmentSurvey::repo_file_inventory
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-file-inventory
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoAssessmentSurvey::repo_file_inventory to Resource Explorer's engine, which claims it and runs RE step repo_file_inventory.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoAssessmentSurvey::repo_documentation
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-documentation
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoAssessmentSurvey::repo_documentation to Resource Explorer's engine, which claims it and runs RE step repo_documentation.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoAssessmentSurvey::repo_security
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-security
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoAssessmentSurvey::repo_security to Resource Explorer's engine, which claims it and runs RE step repo_security.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoAssessmentSurvey::repo_security_features
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-security-features
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoAssessmentSurvey::repo_security_features to Resource Explorer's engine, which claims it and runs RE step repo_security_features.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoAssessmentSurvey::repo_ci_quality
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-ci-quality
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoAssessmentSurvey::repo_ci_quality to Resource Explorer's engine, which claims it and runs RE step repo_ci_quality.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoAssessmentSurvey::repo_cve_scan
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-cve-scan
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoAssessmentSurvey::repo_cve_scan to Resource Explorer's engine, which claims it and runs RE step repo_cve_scan.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoAssessmentSurvey::repo_telemetry_scan
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-telemetry-scan
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoAssessmentSurvey::repo_telemetry_scan to Resource Explorer's engine, which claims it and runs RE step repo_telemetry_scan.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoAssessmentSurvey::repo_contribution_provenance
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-contribution-provenance
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoAssessmentSurvey::repo_contribution_provenance to Resource Explorer's engine, which claims it and runs RE step repo_contribution_provenance.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoAssessmentSurvey::repo_sla_content
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-sla-content
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoAssessmentSurvey::repo_sla_content to Resource Explorer's engine, which claims it and runs RE step repo_sla_content.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoAssessmentSurvey::repo_foss_scorecard
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-foss-scorecard
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoAssessmentSurvey::repo_foss_scorecard to Resource Explorer's engine, which claims it and runs RE step repo_foss_scorecard.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoAssessmentSurvey::repo_cii_badge
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-cii-badge
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoAssessmentSurvey::repo_cii_badge to Resource Explorer's engine, which claims it and runs RE step repo_cii_badge.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoAssessmentSurvey::repo_security_summary
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-security-summary
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoAssessmentSurvey::repo_security_summary to Resource Explorer's engine, which claims it and runs RE step repo_security_summary.
 
 ___
 

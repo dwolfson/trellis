@@ -48,6 +48,11 @@ class SurveyDefinitionRunParams:
     #: True = "do not try Egeria first": an egeria-adaptive step runs its
     #: local scan only (parity G2, PI-018). False leaves every step as it was.
     force_custom: bool = False
+    #: Engine host case 3, decision 5: who coordinates the run. RE's own Run is "re" (RE's executor runs every step
+    #: and creates no engine action); "coordinated by Egeria" never comes through here. `started_by_person` is who
+    #: pressed Run. Both land in the run's activity detail, which Understanding reads ("started in RE by <person>").
+    started_by: str = "re"          # engine_host.STARTED_BY_RE
+    started_by_person: str = ""
 
     @classmethod
     def from_dict(cls, data: dict) -> SurveyDefinitionRunParams:
@@ -64,6 +69,8 @@ class SurveyDefinitionRunParams:
             "engine_override": self.engine_override,
             "credential_scope": self.credential_scope,
             "force_custom": self.force_custom,
+            "started_by": self.started_by,
+            "started_by_person": self.started_by_person,
         }
 
 
@@ -150,6 +157,8 @@ def execute_and_record_definition(entity_type: str, slug: str,
 
         if ran_as:
             body = {**body, "ran_as": ran_as}
+        # Case 3: where the run was started and by whom, read back by get_survey_definition_last_activity.
+        body = {**body, "started_by": params.started_by, "started_by_person": params.started_by_person}
         return json.dumps(scrub(body, secret))
 
     def _say(text: str) -> str:

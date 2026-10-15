@@ -71,7 +71,7 @@ import { inPageConfirm, inPageNotice, inPagePrompt } from '/static/next/confirm-
 import { scoutingTilesHtml, scoutingSignalHtml, staleLinkBannerHtml, bindStaleLinkBanner } from '/static/next/stages/repo-header.js';
 import { contextRecordedSpec, contextRecordedState } from '/static/next/context-recorded.js';
 import { followUntil, ACTIVITY_LIVE } from '/static/next/live-status.js';
-import { nativeSurveysSectionHtml, nativeSurveysUnreadableHtml, bindNativeSurveys } from '/static/next/stages/native-surveys.js';
+import { nativeSurveysSectionHtml, nativeSurveysUnreadableHtml, bindNativeSurveys, coordinateControlHtml, coordinateOffNoteHtml, bindCoordinateControls } from '/static/next/stages/native-surveys.js';
 // The row anatomy shared with Enrichment's judgements/observations rows
 // (ENRICHMENT-E0-ROW-ANATOMY, docs/design-notes/exchange/REPLY-DESIGNER-ENRICHMENT-
 // STAGE-IA.md §0.3/§6 item 1) — who + when + the evidence-moved flag, one
@@ -4871,9 +4871,12 @@ export function lastRunHtml(c) {
              title="Click to see what failed">⚠</button> `
         : `<span class="text-state-warn" title="${esc(c.last_run_status)}">⚠</span> `)
     : '';
+  // Engine host case 3 (C4): where the run was started, as the run itself recorded it.
+  const startedIn = c.last_run_started_by === 're' && c.last_run_by
+    ? ` <span data-run-started-in class="text-ink-muted">· started in RE by ${esc(c.last_run_by)}</span>` : '';
   return `<span title="${esc(when)}${c.last_run_status ? ` · ${esc(c.last_run_status)}` : ''}">
     ${ok ? '<span class="text-state-ok">✓</span> ' : warn}
-    <span class="${stale ? 'wl-age-text' : ''}">ran ${esc(ago(when))}</span></span>${
+    <span class="${stale ? 'wl-age-text' : ''}">ran ${esc(ago(when))}</span>${startedIn}</span>${
     c.last_publish_proof ? ` ${publishProofHtml(c.last_publish_proof)}` : ''}`;
 }
 
@@ -4980,6 +4983,9 @@ export function bindSurveyRowActions(el, all, slug) {
       // Curate holds the Catalog button; this only goes there (Contents, once the tabs are on).
       openCurate({ tab: 'curate_contents' });
     }));
+  // Engine host case 3: "coordinated by Egeria", beside each definition's Run. After a start the pane re-reads, so
+  // the Egeria-coordinated run appears in "Egeria's own surveys" from its persisted row.
+  bindCoordinateControls(el, slug, { after: () => { if (slug === state.selectedSlug) loadSurveyPane(); } });
 }
 
 /** The definition row's button. It OPENS A DIALOG (the run plan, which since G2 offers "Use different
@@ -5034,6 +5040,7 @@ export function surveyRowHtml(c) {
       : `<button data-run-survey="${esc(c.qualified_name || c.guid)}"
       class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
       >${DEFINITION_RUN_WORD(c)}</button>`}
+    ${coordinateControlHtml(c)}
   </div>`;
 }
 
@@ -5533,6 +5540,7 @@ export async function loadSurveyPane() {
     </div>
 
     ${nativeProcessesHtml}
+    ${coordinateOffNoteHtml(all)}
 
     ${here.map((t) => `
       <div class="mt-s3 text-caps uppercase tracking-caps text-ink-muted">${esc(t)} ·

@@ -245,7 +245,10 @@ export function nativeSurveyRowHtml(row) {
       <div class="flex flex-wrap items-baseline gap-s2">
         <span class="text-answer text-ink">${esc(row.display_name)}</span>
         <span class="text-provenance text-ink-muted">${row.kind === 'mixed_process'
-          ? "Egeria process · native survey, then Resource Explorer's engine host" : "Egeria's own survey engine"}</span>
+          ? "Egeria process · native survey, then Resource Explorer's engine host"
+          : row.kind === 're_definition'
+            ? "Resource Explorer's Survey Definition · coordinated by Egeria"
+            : "Egeria's own survey engine"}</span>
       </div>
       <div class="mt-[2px] text-provenance text-ink-muted" data-native-status>${nativeSurveyStatusHtml(row)}</div>
       ${cancelControlHtml(row)}
@@ -258,7 +261,7 @@ export function nativeSurveyRowHtml(row) {
     ${(!row.runnable && row.register && row.register.available) ? `<button type="button" data-native-register="${esc(row.qualified_name)}" ${row.register.start_again ? `data-native-start-again="1" data-native-confirm="${esc(row.register.confirm || '')}"` : ''} ${busy ? 'disabled' : ''}
       class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
       >${esc(row.register.label)}</button>` : ''}
-    ${row.runnable ? `<button type="button" data-native-run="${esc(row.qualified_name)}" ${busy ? 'disabled' : ''}
+    ${row.runnable && row.kind !== 're_definition' ? `<button type="button" data-native-run="${esc(row.qualified_name)}" ${busy ? 'disabled' : ''}
       class="shrink-0 cursor-pointer rounded-sm border ${busy ? 'border-rule-strong text-ink-muted' : 'border-accent text-accent-ink'} bg-transparent px-2 py-[2px] text-caveat"
       >${busy ? 'in flight' : (ran ? 'Run again in Egeria →' : 'Run in Egeria →')}</button>` : ''}
     <span data-native-info="${esc(row.qualified_name)}" class="hidden w-full text-provenance text-ink-muted"></span>
@@ -533,4 +536,90 @@ async function openReport(slug, reportGuid) {
     ${copy.resetLine ? `<div class="mb-s2 text-provenance text-state-warn" data-stored-copy-reset>${esc(copy.resetLine)}</div>` : ''}
     ${reportViewerHtml(rep)}`;
   bindReportViewer(body, rep);
+}
+
+/* ── "coordinated by Egeria" (engine host case 3) ──────────────────────────
+ *
+ * The second control beside a Survey Definition's Run (owner, 2026-10-15; never "run in Egeria"). It asks Egeria to
+ * run the definition as a process (`initiate_gov_action_process` through the server's EgeriaSurveyPort); Egeria
+ * then hands each step to Resource Explorer's engine host. Hidden, with a short sentence, when it cannot be offered
+ * (engine host off, ...). Its state is ON the control -- pressed, starting, started, not started -- with a cue and a
+ * short word; the sentence is on demand. "started" comes from the server's answer, which it derived from the
+ * persisted row (`native_survey_run.derive_mixed_state`), never from the click. */
+
+const COORD_IN_FLIGHT = new Set(['submitted', 'running', 'awaiting_report', 'unreadable']);
+
+/** The control for one definition row. `c.coordinated_by_egeria` is the server's {available, why_not, state, line}; the
+ *  server leaves it off rows it does not belong to (repository definitions). When it cannot be offered the row draws
+ *  nothing: the reason is said once for the pane (`coordinateOffNoteHtml`), not on every row. */
+export function coordinateControlHtml(c) {
+  const ctl = c && c.coordinated_by_egeria;
+  if (!ctl || !ctl.available) return '';
+  const qn = esc(c.qualified_name || c.guid || '');
+  const label = esc(ctl.label || 'coordinated by Egeria');
+  const live = COORD_IN_FLIGHT.has(String(ctl.state || ''));
+  return `<span class="inline-flex shrink-0 items-baseline gap-s1">
+    <button type="button" data-coordinate-egeria="${qn}" ${live ? 'disabled aria-pressed="true"' : 'aria-pressed="false"'}
+      title="${esc(live ? (ctl.line || 'Egeria is coordinating a run of this definition') : 'Egeria runs this definition as a process; Resource Explorer\'s engine host runs each step')}"
+      class="cursor-pointer rounded-sm border ${live ? 'border-rule-strong text-ink-muted' : 'border-accent text-accent-ink'} bg-transparent px-2 py-[2px] text-caveat"
+      >${live ? `<span aria-hidden="true">◔</span> ${label} · running` : label}</button>
+    <span data-coordinate-why="${qn}" class="hidden text-provenance"></span></span>`;
+}
+
+/** Once for the pane: why "coordinated by Egeria" is not offered on the rows that do not offer it (engine host off,
+ *  not published to Egeria, ...): each distinct reason once, short words on the line, the server's full reason on
+ *  hover. Rows that offer it, and rows it does not belong to (repository definitions), add nothing. */
+export function coordinateOffNoteHtml(candidates) {
+  const off = (candidates || []).map((c) => c && c.coordinated_by_egeria).filter((x) => x && !x.available);
+  if (!off.length) return '';
+  const seen = new Map();                                 // "label · reason" -> [label, reason], each once
+  for (const x of off) {
+    const label = x.label || 'coordinated by Egeria';
+    const why = x.why_not || 'not offered for this definition';
+    seen.set(`${label}\u0000${why}`, [label, why]);
+  }
+  return [...seen.values()].map(([label, why]) => `<div data-coordinate-off class="mt-s1 text-provenance text-ink-muted" title="${esc(why)}">
+    <span aria-hidden="true">◌</span> ${esc(label)} · ${esc(shortWhy(why))}</div>`).join('');
+}
+
+/** The first clause of a reason, for the short words ("engine host off"). */
+function shortWhy(text) {
+  return String(text || '').split(' · ')[0].slice(0, 60);
+}
+
+/** Bind every "coordinated by Egeria" control under `el`. `after` repaints the pane from the server's rows. */
+export function bindCoordinateControls(el, slug, { after = null } = {}) {
+  el.querySelectorAll('[data-coordinate-egeria]').forEach((b) => b.addEventListener('click', async () => {
+    if (b.disabled) return;                                 // a pressed control ignores a second press
+    const qn = b.dataset.coordinateEgeria;
+    const why = [...el.querySelectorAll('[data-coordinate-why]')].find((s) => s.dataset.coordinateWhy === qn);
+    b.disabled = true;
+    b.setAttribute('aria-pressed', 'true');
+    b.innerHTML = '<span aria-hidden="true">◔</span> starting…';
+    if (why) { why.textContent = ''; why.classList.add('hidden'); }
+    try {
+      const res = await runNativeSurvey(slug, qn, { entityType: apiEntityType(state.resourceType) });
+      const run = (res && res.run) || {};
+      const started = COORD_IN_FLIGHT.has(String(run.state || '')) || run.state === 'complete';
+      b.innerHTML = started
+        ? '<span class="text-state-ok" aria-hidden="true">●</span> started'
+        : `<span class="text-state-warn" aria-hidden="true">✗</span> ${esc(run.state || 'not started')}`;
+      b.title = run.line || run.message || (run.engine_action_guid ? `process ${run.engine_action_guid}` : '');
+      if (typeof after === 'function') after();
+    } catch (err) {
+      b.disabled = false;
+      b.setAttribute('aria-pressed', 'false');
+      b.innerHTML = '<span class="text-state-warn" aria-hidden="true">✗</span> not started';
+      if (why) {
+        // The sentence on demand: one click on "why" shows it, the button keeps the short word.
+        why.innerHTML = `<button type="button" class="cursor-pointer bg-transparent p-0 text-ink-muted underline"
+          data-coordinate-why-open>why</button><span class="hidden text-state-warn" data-coordinate-why-text>${esc(err.message || '')}</span>`;
+        why.classList.remove('hidden');
+        why.querySelector('[data-coordinate-why-open]').addEventListener('click', (ev) => {
+          ev.currentTarget.classList.add('hidden');
+          why.querySelector('[data-coordinate-why-text]').classList.remove('hidden');
+        });
+      }
+    }
+  }));
 }

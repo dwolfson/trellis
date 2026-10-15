@@ -74,8 +74,11 @@ def test_request_type_guards_and_step_key_match_the_registry_entry():
     assert _section(doc, "Link Action to Action Executor", "Governance Engine") == "ResourceExplorerSurvey"
     assert _section(doc, "Link Action to Action Executor", "Request Type") == "re-db-derived"
 
-    # The sweep dispatches on exactly what the document declares.
-    assert engine_host.supported_request_types() == {"re-db-derived": "db_derived"}
+    # The sweep dispatches on exactly what the documents declare: this one re-db-derived, engine-host/steps/ every
+    # other registry step (case 3, held to the registries by test_engine_host_case3).
+    assert engine_host.supported_request_types()["re-db-derived"] == "db_derived"
+    assert set(engine_host.supported_request_types()) == {engine_host.request_type_for_step(k)
+                                                          for k in engine_host.registry_steps()}
     assert engine_host.ENGINE_QUALIFIED_NAME == "ResourceExplorerSurvey"
 
 
