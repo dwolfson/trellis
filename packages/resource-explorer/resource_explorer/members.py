@@ -61,6 +61,10 @@ class MemberSet:
     #: decided from.
     not_applicable: bool = False
     reason: str = ""
+    #: True when the analysis's own store holds no member rows for this
+    #: resource. `reason` then says which store was empty, so the pane never
+    #: prints a bare "0 findings" for data that lives elsewhere.
+    empty: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -70,6 +74,7 @@ class MemberSet:
                        for g in self.groups],
             "note": self.note, "source": self.source, "inventory": self.inventory,
             "run_at": self.run_at, "not_applicable": self.not_applicable, "reason": self.reason,
+            "empty": self.empty,
         }
 
 
@@ -245,6 +250,11 @@ _READERS = {
     ("manifest_parse", "dependency_count"): _dependency_members,
     ("data_file_profiling", None): _data_file_members,
     ("api_structure", "symbol_count"): _symbol_members,
+    # The answer page's link sends no metric. Without a bare key these fell
+    # through to the findings fallback: "0 findings" for api_structure, whose
+    # rows live in project_code_symbols (dataops_testgen, 2026-10-15).
+    ("api_structure", None): _symbol_members,
+    ("manifest_parse", None): _dependency_members,
     ("code_symbol_extraction", "symbol_count"): _symbol_members,
     ("code_symbol_extraction", None): _symbol_members,
     ("architecture_recovery", None): _component_members,
@@ -324,6 +334,9 @@ def members_for(registry: ProjectRegistry, slug: str, analysis_id: str, metric: 
         # place to look (or the analysis is unknown to this registry) —
         # unchanged behaviour.
         ms = _findings_members(registry, slug, analysis_id, scope, limit)
+    if not ms.not_applicable and not ms.total:
+        ms.empty = True
+        ms.reason = f"nothing stored by {analysis_id} for this repo"
     ms.run_at = last_run_at(registry, slug, analysis_id)
     return ms
 

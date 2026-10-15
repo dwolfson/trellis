@@ -100,7 +100,7 @@ class TestPromotionSelectionInTheShell:
         members = app[app.index("async function openMembers("):app.index("function rowKey(i)")]
         assert "accent-accent" not in members, "gold is not a fill on 200 checkboxes"
         assert "this list is a tree" in self._sel()
-        assert "Nothing listed" in members
+        assert "nothing stored by" in members
 
 
 class TestDispositionRulings:
