@@ -69,6 +69,7 @@ import { renderContext } from '/static/next/stages/context.js';
 import { inPageConfirm, inPageNotice, inPagePrompt } from '/static/next/confirm-dialog.js';
 import { scoutingTilesHtml, scoutingSignalHtml, staleLinkBannerHtml, bindStaleLinkBanner } from '/static/next/stages/repo-header.js';
 import { contextRecordedSpec, contextRecordedState } from '/static/next/context-recorded.js';
+import { followUntil, ACTIVITY_LIVE } from '/static/next/live-status.js';
 import { nativeSurveysSectionHtml, nativeSurveysUnreadableHtml, bindNativeSurveys } from '/static/next/stages/native-surveys.js';
 // The row anatomy shared with Enrichment's judgements/observations rows
 // (ENRICHMENT-E0-ROW-ANATOMY, docs/design-notes/REPLY-DESIGNER-ENRICHMENT-
@@ -183,6 +184,7 @@ import {
   listRfas,
   clearCache,
   pollActivity,
+  getActivityEntry,
   activityFailure,
   failureText,
   planPrerequisites,
@@ -4847,12 +4849,17 @@ function onePurpose(text) {
  *  and their message(s) — the tooltip (this function's own `title`) already
  *  named the bare status word, which stays as the fallback when there is
  *  nothing more specific to show. */
+const RUN_LIVE = ACTIVITY_LIVE;
 export function lastRunHtml(c) {
   const when = c.last_run_at || '';
   if (!when) return '<span class="text-ink-muted">never run</span>';
   const days = (Date.now() - Date.parse(when)) / 86400000;
   const stale = Number.isFinite(days) && days >= SURVEY_STALE_DAYS;
   const ok = (c.last_run_status || '') === 'ok';
+  if (RUN_LIVE.has(String(c.last_run_status || '').toLowerCase())) {
+    // Still going: the cue and one word, from the persisted row. The pane follows it to its end.
+    return `<span data-run-live title="${esc(when)} · ${esc(c.last_run_status)}"><span class="text-ink-muted" aria-hidden="true">◔</span> running · started ${esc(ago(when))}</span>`;
+  }
   const errors = c.last_run_errors || [];
   // "recorded" = a step_runs row proves it ran, not that it succeeded: no
   // success cue, but not a failure either, so no warning glyph.
@@ -5421,6 +5428,27 @@ export function scopeFallbackHtml(data, stage) {
   return `all tiers — stage filter unavailable · ${retry}`;
 }
 
+/** Survey definition runs still going (per the persisted activity row) are followed to their end, then the pane is
+ *  re-read once. One follower per activity id; a launch from this page reloads the pane itself and is skipped. */
+const _runFollowers = new Map();
+const _launchOwned = new Set();
+function followRunningDefinitions(all, slug) {
+  for (const c of all) {
+    const id = c.last_run_activity_id;
+    if (!id || !RUN_LIVE.has(String(c.last_run_status || '').toLowerCase()) || _runFollowers.has(id)) continue;
+    _runFollowers.set(id, followUntil({
+      read: () => getActivityEntry(id),
+      isDone: (e) => !RUN_LIVE.has(String(e?.status || '').toLowerCase()),
+      alive: () => slug === state.selectedSlug && state.subTab === 'survey',
+      onUpdate: (e) => {
+        if (RUN_LIVE.has(String(e?.status || '').toLowerCase())) return;
+        _runFollowers.delete(id);
+        if (!_launchOwned.has(id) && slug === state.selectedSlug && state.subTab === 'survey') loadSurveyPane();
+      },
+    }));
+  }
+}
+
 export async function loadSurveyPane() {
   const el = $('content');
   const blocked = paneNeedsRepo();
@@ -5552,6 +5580,7 @@ export async function loadSurveyPane() {
   bindSubTabs();
 
   bindNativeSurveysPane(el, slug, nativeRes, () => loadSurveyPane());
+  followRunningDefinitions(all, slug);
   el.querySelector('[data-act="rescope"]')?.addEventListener('click', () => loadSurveyPane());
   el.querySelectorAll('[data-defhist]').forEach((b) => b.addEventListener('click', () => {
     const c = all.find((x) => x.qualified_name === b.dataset.defhist);
@@ -6167,6 +6196,9 @@ export async function launchSurvey(slug, ref, { credential = null, forceCustom =
     // everything else `getSurveyCandidates` returns, reflects what
     // actually happened rather than the stale pre-run snapshot.
     if (res && res.activity_id) {
+      _launchOwned.add(res.activity_id);
+      // The row turns "running" now, from the persisted row, rather than staying as it was until the end.
+      if (slug === state.selectedSlug && state.subTab === 'survey') loadSurveyPane();
       let finishedEntry = null;
       try {
         finishedEntry = await pollActivity(res.activity_id, {});
@@ -6219,6 +6251,7 @@ export async function launchSurvey(slug, ref, { credential = null, forceCustom =
         }
         setLaunchNote(slug, html);
       }
+      _launchOwned.delete(res.activity_id);
       if (slug === state.selectedSlug && state.subTab === 'survey') {
         await loadSurveyPane();
       }

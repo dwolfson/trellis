@@ -1998,11 +1998,15 @@ async function enqueueRun(ctx, analysisId, slugs) {
  */
 function watchBatch(ctx, setId) {
   clearInterval(grid.poll);
+  let misses = 0;
   const tick = async () => {
     let p;
     try {
       p = await getBatchProgress(setId);
+      misses = 0;
     } catch (err) {
+      // One failed read is not the end of the batch: give up only after five in a row.
+      if ((misses += 1) < 5) return;
       clearInterval(grid.poll);
       renderProgress(`<span class="text-state-warn">Lost track of this batch: ${esc(err.message)}</span>`);
       return;
