@@ -257,6 +257,13 @@ const LIST_FIELD_NOUNS = {
   'api_structure.classes': ['class', 'classes'], 'api_structure.functions': ['public function', 'public functions'],
   'cve_scan.findings': ['finding', 'findings'], 'cve_scan.ecosystems_seen': ['ecosystem', 'ecosystems'],
 };
+/** Text colours for the footer by the ground it sits on. Literal class
+ *  strings, so Tailwind sees them. The footer renders on the paper answer
+ *  pane (the only call site); `chrome` is for a dark-ground rail. */
+const FOOTER_TONES = {
+  paper: { ink: 'text-ink', muted: 'text-ink-muted', link: 'text-accent-ink' },
+  chrome: { ink: 'text-chrome-ink', muted: 'text-chrome-muted', link: 'text-accent-on-dark' },
+};
 /** [singular, plural] for one list field, or null when no noun is known. */
 function listNoun(l) {
   return LIST_FIELD_NOUNS[`${l.key}.${l.field}`] || LIST_NOUNS[l.key] || null;
@@ -270,13 +277,14 @@ function countNounHtml(l) {
 /** One row per SECTION. A section with several list fields (cve_scan:
  *  findings + ecosystems_seen) is one row naming each field's count, one
  *  link. Then the extent: how much of it the model was shown. */
-function listSentenceHtml(group, i) {
+function listSentenceHtml(group, i, surface = 'paper') {
+  const t = FOOTER_TONES[surface] || FOOTER_TONES.paper;
   const ls = Array.isArray(group) ? group : [group];
   const key = ls[0].key;
   const live = ls.filter((l) => l.total);
-  const label = `<span data-list-label class="font-mono text-chrome-muted">${esc(key.replace(/_/g, ' '))}</span> · `;
+  const label = `<span data-list-label class="font-mono ${t.muted}">${esc(key.replace(/_/g, ' '))}</span> · `;
   if (!live.length) {
-    return `<div data-list-empty class="mt-s2 text-chip text-chrome-muted">${label}nothing stored by ${esc(key)} for this repo</div>`;
+    return `<div data-list-empty class="mt-s2 text-chip ${t.muted}">${label}nothing stored by ${esc(key)} for this repo</div>`;
   }
   const head = live.map((l) => {
     const grp = l.parts ? ` (in <span class="tnum">${l.parts}</span> ${esc(l.field.replace(/^by_/, '').replace(/_/g, ' '))}${l.parts === 1 ? '' : 's'})` : '';
@@ -285,8 +293,8 @@ function listSentenceHtml(group, i) {
   const total = live.reduce((a, l) => a + l.total, 0);
   const shown = live.reduce((a, l) => a + l.shown, 0);
   const extent = shown < total
-    ? `<span class="text-chrome-muted"><span class="tnum">${shown}</span> of <span class="tnum">${total}</span> shown to the model</span>`
-    : '<span class="text-chrome-muted">all shown to the model</span>';
+    ? `<span class="${t.muted}"><span class="tnum">${shown}</span> of <span class="tnum">${total}</span> shown to the model</span>`
+    : `<span class="${t.muted}">all shown to the model</span>`;
   // Three things the designer's read of #60 fixed: the packer's rung is
   // internal and "at full" read as "shown fully"; a section with no member
   // reader rendered nothing where the link would be (the silent-omission
@@ -298,13 +306,13 @@ function listSentenceHtml(group, i) {
   // is not shown a wall of near-identical "no member reader" lines. This
   // function assumes `l.members` is true; a readerless `l` reaching it is a
   // caller bug, not a state to render.
-  return `<div class="mt-s2 text-chip text-chrome-ink">
+  return `<div class="mt-s2 text-chip ${t.ink}">
     ${label}${head} · ${extent}${
       // The control says what pressing it does; it is the only clickable
       // part of the line, and the middot before it does the sentence
       // break's work.
       ` · <button data-list-source="${esc(key)}" data-list-slug="${esc(i)}"
-          class="cursor-pointer bg-transparent p-0 text-accent-on-dark underline">open the full list${icon('chevron-right', { size: 13 })}</button>`}
+          class="cursor-pointer bg-transparent p-0 ${t.link} underline">open the full list${icon('chevron-right', { size: 13 })}</button>`}
   </div>`;
 }
 
@@ -324,7 +332,8 @@ function listSentenceHtml(group, i) {
  *  line naming every key — still a wall, just shorter, and still something
  *  the footer had no business asserting: a footer that lists what exists is
  *  not the place to enumerate what doesn't. */
-function evidenceFooterListsHtml(lists, slug) {
+function evidenceFooterListsHtml(lists, slug, surface = 'paper') {
+  const t = FOOTER_TONES[surface] || FOOTER_TONES.paper;
   const groups = new Map();
   for (const l of lists.filter((x) => x.members)) {
     if (!groups.has(l.key)) groups.set(l.key, []);
@@ -334,10 +343,10 @@ function evidenceFooterListsHtml(lists, slug) {
   // cut, say how much of it the answer could have named.
   const cut = [...groups.values()].flat().filter((l) => l.total && l.shown < l.total);
   const note = cut.length
-    ? `<div data-partial-note class="mt-s2 text-chip text-chrome-ink">Listed ${cut.map((l) =>
+    ? `<div data-partial-note class="mt-s2 text-chip ${t.ink}">Listed ${cut.map((l) =>
         `<span class="tnum">${l.shown}</span> of <span class="tnum">${l.total}</span> ${esc((listNoun(l) || [0, l.field.replace(/_/g, ' ')])[1])}`).join('; ')} -- open the full list for the rest</div>`
     : '';
-  return note + [...groups.values()].map((g) => listSentenceHtml(g, slug)).join('');
+  return note + [...groups.values()].map((g) => listSentenceHtml(g, slug, surface)).join('');
 }
 
 /**

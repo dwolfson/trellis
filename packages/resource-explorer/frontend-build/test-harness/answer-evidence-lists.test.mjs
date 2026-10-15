@@ -60,3 +60,15 @@ test('a cut list gets a note from the manifest; a whole one does not', () => {
   const whole = evidenceFooterListsHtml(listSentences(body({ interface_surface: { endpoints: ext(3) } }, ['interface_surface'])), 'p');
   assert.ok(!whole.includes('data-partial-note'));
 });
+
+test('footer colours follow the ground: paper has no chrome-* text, the rail has no paper ink', () => {
+  const b = body({ interface_surface: { endpoints: ext(49, 20) }, cve_scan: { findings: ext(1) }, api_structure: { entry_points: ext(0) } },
+    ['interface_surface', 'cve_scan', 'api_structure']);
+  const lists = listSentences(b);
+  const paper = evidenceFooterListsHtml(lists, 'p');
+  assert.ok(!/text-chrome-|text-accent-on-dark/.test(paper), 'paper: ' + paper);
+  assert.match(paper, /text-ink\b/);
+  const rail = evidenceFooterListsHtml(lists, 'p', 'chrome');
+  assert.ok(!/text-ink\b|text-ink-muted|text-accent-ink/.test(rail), 'rail: ' + rail);
+  assert.match(rail, /text-chrome-ink/);
+});
