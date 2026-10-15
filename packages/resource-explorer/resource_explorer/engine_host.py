@@ -446,16 +446,24 @@ class EngineHost:
         step_key = supported.get(request_type)
         if not step_key:
             return "unknown_request_type", {"request_type": request_type}
-        if not adopt:
-            # A later step of a process runs only after its previous step completed with the linking guard.
-            why = self._previous_step_refusal(_guid(action), str(action.get("requesterUserId") or "").strip())
-            if why:
-                return PREVIOUS_STEP_NOT_COMPLETED, {"request_type": request_type, "why": why}
         all_targets = _targets(action)
         # The previous step's report (engine host step 4): carried by Egeria as the `surveyReport` target, never an
         # asset to survey. Every other target is an asset, whatever name the process was started with.
         reports = [t["guid"] for t in all_targets if t["name"] == SURVEY_REPORT_TARGET]
         targets = [t for t in all_targets if t["name"] != SURVEY_REPORT_TARGET]
+        # A later step of a process runs only after its previous step completed with the linking guard, and the
+        # report it is handed must be that previous step's own (ReportOriginator).
+        why, predecessor_reports = self._previous_step(_guid(action),
+                                                       str(action.get("requesterUserId") or "").strip())
+        if why and not adopt:
+            return PREVIOUS_STEP_NOT_COMPLETED, {"request_type": request_type, "why": why}
+        report_refusal = ""
+        if len(set(reports)) > 1:
+            report_refusal = (f"{len(set(reports))} {SURVEY_REPORT_TARGET} action targets "
+                              f"({', '.join(sorted(set(reports)))}); not choosing one")
+        elif reports and predecessor_reports is not None and reports[0] not in predecessor_reports:
+            report_refusal = (f"{SURVEY_REPORT_TARGET} {reports[0]} is not the report of the previous process step "
+                              f"({', '.join(sorted(predecessor_reports)) or 'it linked none'})")
         slugs = [self.registry.database_slug_for_asset_guid(t["guid"]) for t in targets]
         # Private first: if ANY target is a resource in a private investigation the action is left unclaimed,
         # whatever else it names (owner, Q-O3; claiming and refusing would write a FAILED action into a
@@ -466,7 +474,10 @@ class EngineHost:
                 return "private_target", {"slug": slug, "ours": adopt}
         facts = {"request_type": request_type, "step_key": step_key, "targets": all_targets, "slug": "",
                  "asset_guid": "", "refusal": "", "other_targets": [], "source_report": reports[0] if reports else ""}
-        if not targets:
+        if report_refusal:
+            # Claimed, then completed survey-invalid: the supplied information is invalid for this survey.
+            facts["refusal"] = report_refusal
+        elif not targets:
             facts["refusal"] = NO_TARGET_SENTENCE
         elif not all(slugs):
             # Owner rulings, 2026-10-14: claimed, then completed survey-invalid with the reason (step 1 left it
@@ -484,18 +495,24 @@ class EngineHost:
             facts["other_targets"] = [t["guid"] for t in targets[1:]]
         return (ADOPT if adopt else ""), facts
 
-    def _previous_step_refusal(self, guid: str, requester: str) -> str:
-        """Why this action must not run yet as a later process step, or "": its neighbourhood read once
-        (`mixed_process.read_action_graph`), as the engine host for the action's requester, as the claim is made.
-        Raises when unreadable (the sweep fails closed)."""
+    def _previous_step(self, guid: str, requester: str) -> tuple[str, set[str] | None]:
+        """(why this action must not run yet as a later process step or "", the reports its previous steps linked by
+        ReportOriginator, or None when it has no previous step). Read as the engine host for the action's requester,
+        as the claim is made. Raises when unreadable (the sweep fails closed)."""
         from pyegeria import MetadataExpert
 
         from resource_explorer import mixed_process
         from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
 
         with acting_as(Daemon(DaemonReason.ENGINE_HOST, requested_by=requester or None)):
-            view = mixed_process.read_action_graph(self._client(MetadataExpert), guid)
-        return mixed_process.previous_step_refusal(view)
+            expert = self._client(MetadataExpert)
+            view = mixed_process.read_action_graph(expert, guid)
+            if not view.previous:
+                return "", None
+            reports: set[str] = set()
+            for prev in view.previous:
+                reports.update(mixed_process.read_action_graph(expert, prev.guid).report_guids)
+        return mixed_process.previous_step_refusal(view), reports
 
     def sweep_once(self) -> SweepResult:
         """One pass: list, filter, claim, enqueue. Never raises for an Egeria answer; returns what it did."""
@@ -922,7 +939,11 @@ def _decide_one(registry, target: dict) -> dict:
         if not source_guid:
             return _outcome(SURVEY_INVALID, f"{request_type} on {slug}: {NO_SOURCE_REPORT_SENTENCE}")
         try:
-            runner_kwargs[SOURCE_REPORT_INPUT] = _read_source_report(source_guid)
+            runner_kwargs[SOURCE_REPORT_INPUT] = _read_source_report(source_guid, target.get("asset_guid") or "")
+        except SourceReportRefused as exc:
+            # Readable, and not this database's survey report: the supplied information is invalid.
+            return _outcome(SURVEY_INVALID, f"{request_type} on {slug}: the surveyReport action target "
+                            f"{source_guid} {exc}")
         except Exception as exc:  # noqa: BLE001 -- the input could not be read: the survey failed, in its words
             return _outcome(SURVEY_FAILED, f"{request_type} on {slug}: the surveyReport action target "
                             f"{source_guid} could not be read: {_short(exc)}", derived_from_report=source_guid)
@@ -981,11 +1002,25 @@ def _decide_one(registry, target: dict) -> dict:
     return _outcome(SURVEY_FAILED, f"{step_key} failed on {slug}: {errors}"[:1500])
 
 
-def _read_source_report(report_guid: str) -> dict:
+class SourceReportRefused(ValueError):
+    """The surveyReport target was read and is not a survey report of the action's database."""
+
+
+def _report_subjects(result: dict) -> set[str]:
+    """The assets a report is about: its ReportSubject ends and its anchor (live shape, M2)."""
+    out = {str(((e.get("relatedElement") or {}).get("elementHeader") or {}).get("guid") or "")
+           for e in result.get("reportSubjects") or [] if isinstance(e, dict)}
+    anchor = (((result.get("elementHeader") or {}).get("anchor") or {}).get("classificationProperties") or {})
+    out.add(str(anchor.get("anchorGUID") or ""))
+    return {g for g in out if g}
+
+
+def _read_source_report(report_guid: str, asset_guid: str) -> dict:
     """The previous step's SurveyReport as plain data for a step that derives from it: {guid, at, annotations}, the
     annotations through the existing reader (`egeria_survey_reader.annotations_from_report`). Read as the current
-    principal (the engine host daemon); the step's own code never touches Egeria. Raises for anything that is not a
-    SurveyReport element."""
+    principal (the engine host daemon); the step's own code never touches Egeria. Fails closed: the element must
+    say it is a SurveyReport, and its subject (ReportSubject or anchor) must be `asset_guid`, else
+    `SourceReportRefused` (another database's counters must never be published as this one's)."""
     from pyegeria import AssetMaker
 
     from resource_explorer.egeria_clients import current_principal, egeria_client
@@ -1000,8 +1035,13 @@ def _read_source_report(report_guid: str) -> dict:
     if not isinstance(result, dict):
         raise RuntimeError(f"Egeria answered {' '.join(str(result).split())[:160]!r}, not a SurveyReport element")
     type_name = (((result.get("elementHeader") or {}).get("type") or {}).get("typeName")) or ""
-    if type_name and type_name != "SurveyReport":
-        raise RuntimeError(f"it is a {type_name}, not a SurveyReport")
+    if type_name != "SurveyReport":
+        raise SourceReportRefused(f"is {'a ' + type_name if type_name else 'an element of no stated type'}, "
+                                  "not a SurveyReport")
+    subjects = _report_subjects(result)
+    if not asset_guid or asset_guid not in subjects:
+        raise SourceReportRefused(f"is a survey report of {', '.join(sorted(subjects)) or 'no stated asset'}, "
+                                  f"not of this action's database {asset_guid or '(none)'}")
     props = result.get("properties") or {}
     return {"guid": report_guid, "at": str(props.get("completionTime") or props.get("createdTime") or ""),
             "annotations": annotations_from_report(result)}

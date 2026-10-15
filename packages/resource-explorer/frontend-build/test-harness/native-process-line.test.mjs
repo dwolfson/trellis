@@ -36,3 +36,17 @@ test('the row names what runs it; a plain survey row is unchanged', () => {
   const plain = { qualified_name: 'PostgreSQLSurvey::survey-postgres-database', kind: 'survey_existing', display_name: 'Survey', runnable: true, run: { state: 'not_run' } };
   assert.match(text(ns.nativeSurveyRowHtml(plain)), /Egeria's own survey engine/);
 });
+
+test('report links are numbered by step, not by position after filtering', () => {
+  const h = ns.nativeSurveyStatusHtml(row({ state: 'complete', line: LINE, steps: [
+    { report_guid: '' }, { report_guid: '7c1d0f9e-0000-4000-8000-00000000a002' }] }));
+  assert.match(text(h), /step 2 report ›/);
+  assert.doesNotMatch(text(h), /step 1 report/);
+});
+
+test('an unclaimed RE step shows the waiting cue and its reason', () => {
+  const h = ns.nativeSurveyStatusHtml(row({ state: 'running', line: 'Postgres survey then derived · step 1 PostgreSQLSurvey ✓ report cb92eedc · step 2 re-database-staleness not claimed yet',
+    waiting_for: "waiting for RE's engine host · engine host off · turn it on, or cancel step 2 in Egeria", steps: [] }));
+  assert.match(h, /data-native-waiting/);
+  assert.match(text(h), /◌ waiting for RE(&apos;|')s engine host · engine host off/);
+});

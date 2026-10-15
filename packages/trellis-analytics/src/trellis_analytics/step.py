@@ -85,13 +85,19 @@ class StepAnnotation(BaseModel):
     explanation: str = ""
     resource_properties: dict[str, str] = Field(default_factory=dict)
     envelope: Envelope
+    #: Which of the manifest's declared measures this result is; "" is the step's own (primary) measure.
+    measure: str = ""
 
     def additional_properties(self) -> dict[str, str]:
-        return self.envelope.to_additional_properties()
+        props = self.envelope.to_additional_properties()
+        if self.measure:
+            props["measure"] = self.measure
+        return props
 
     def to_record(self) -> dict:
         """The shape a host stores, Egeria's property names where Egeria has them."""
-        return {"scope": self.scope, "annotation_type": self.annotation_type, "analysis_step": self.analysis_step,
+        return {"scope": self.scope, "measure": self.measure, "annotation_type": self.annotation_type,
+                "analysis_step": self.analysis_step,
                 "summary": self.summary, "explanation": self.explanation,
                 "resourceProperties": dict(self.resource_properties),
                 "additionalProperties": self.additional_properties()}
@@ -155,8 +161,14 @@ class SurveyStep:
                                 measured_at=measured_at, producer_version=self.manifest.version, scope=scope)
         except ValueError as exc:
             raise StepRefused(f"step '{name}', '{scope}': {exc}") from exc
+        measure = str(result.get("measure") or "")
+        if measure == name:
+            measure = ""
+        if measure and measure not in self.manifest.measure_names():
+            raise StepRefused(f"step '{name}' returned a result for '{scope}' of measure '{measure}', which its "
+                              f"manifest does not declare ({', '.join(self.manifest.measure_names())})")
         value = result.get("value") or {}
-        return StepAnnotation(
+        return StepAnnotation(measure=measure,
             annotation_type=self.manifest.annotation_type, analysis_step=name, scope=scope,
             summary=str(result.get("summary") or ""), explanation=reason,
             resource_properties={str(k): str(v) for k, v in value.items() if v is not None},

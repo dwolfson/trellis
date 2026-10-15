@@ -28,6 +28,7 @@ def manifest_properties(manifest: StepManifest, origin: dict[str, str]) -> list[
         ("resource_types", ", ".join(m.resource_types)), ("annotation_type", m.annotation_type),
         ("questions", ", ".join(m.questions)), ("purposes", ", ".join(m.purposes)),
         ("perspectives", ", ".join(m.perspectives)), ("credential_tier", m.credential_tier),
-        ("inputs", ", ".join(m.inputs)), ("family", m.family), ("function", m.function),
+        ("inputs", ", ".join(m.inputs)), ("measures", ", ".join(m.measure_names())), ("family", m.family),
+        ("function", m.function),
         ("package", origin.get("package", "")), ("entry_point", f"trellis.analytics:{origin.get('entry_point', '')}"),
     ]

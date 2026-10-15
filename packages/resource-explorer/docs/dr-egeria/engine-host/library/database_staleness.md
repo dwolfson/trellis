@@ -51,6 +51,7 @@ ACTIVE
 | perspectives | Steward, Data Expert |
 | credential_tier | none |
 | inputs | ods, source_report |
+| measures | database_staleness, writes_since_statistics_reset |
 | family | Freshness |
 | function | database_staleness.step.run |
 | package | trellis-step-database-staleness |

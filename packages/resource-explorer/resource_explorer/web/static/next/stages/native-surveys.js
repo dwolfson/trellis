@@ -101,12 +101,15 @@ function timingCue(r) {
  *  ("Postgres survey then derived · step 1 PostgreSQLSurvey ✓ report cb92eedc · step 2 … ✓ …"), and each step's
  *  report opening as any report does. */
 function processLineHtml(r) {
-  const reports = (r.steps || []).filter((s) => s.report_guid).map((s, i) => `<button type="button"
+  // Numbered by the step's own place in the run, then filtered: a step-2 report is never "step 1 report".
+  const reports = (r.steps || []).map((s, i) => ({ s, n: i + 1 })).filter(({ s }) => s.report_guid)
+    .map(({ s, n }) => `<button type="button"
       data-native-report="${esc(s.report_guid)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline"
-      >step ${i + 1} report ›</button>`).join(' · ');
+      >step ${n} report ›</button>`).join(' · ');
+  const waiting = r.waiting_for ? ` · <span class="text-state-warn" data-native-waiting><span class="font-glyph" aria-hidden="true">◌</span> ${esc(r.waiting_for)}</span>` : '';
   const err = r.error ? ` · <span class="text-state-warn">last read failed: ${esc(r.error)}</span>` : '';
   const tone = r.state === 'failed' ? 'text-state-warn' : '';
-  return `<span class="${tone}" data-native-process-line>${esc(r.line)}</span>`
+  return `<span class="${tone}" data-native-process-line>${esc(r.line)}</span>${waiting}`
     + `${r.read_at ? ` · read ${timeSpan(r.read_at)}` : ''}${reports ? ` · ${reports}` : ''}${err}`;
 }
 

@@ -412,6 +412,8 @@ def _step_words(n: int, label: str, view: EngineActionView | None) -> str:
         return (f"step {n} {label} ✓" + (f" {', '.join(other)}" if other else "")
                 + (f" report {rep[:8]}" if rep else (" (no report linked)" if view.succeeded else "")))
     if view.active:
+        if view.status in ("APPROVED", "REQUESTED"):
+            return f"step {n} {label} not claimed yet"
         return f"step {n} {label} {'running' if view.status == 'IN_PROGRESS' else 'waiting'}"
     guard = ", ".join(view.completion_guards)
     return f"step {n} {label} ✗ {guard or view.status or 'status unknown'}"

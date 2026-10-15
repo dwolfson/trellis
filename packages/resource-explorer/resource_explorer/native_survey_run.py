@@ -674,6 +674,8 @@ def cannot_run_reason(process: NativeProcess, entity, *, registry=None, technolo
         # Not run through `submit_native_survey`: registering is its own press (register_with_egeria).
         return cas.wiring_reason("database" if hasattr(entity, "db_type") else "filesystem",
                                  technology_type, entity) if entity is not None else "This resource is not registered."
+    if entity is not None and hasattr(entity, "db_type") and is_postgres_only(process) and not _is_postgres(entity):
+        return NOT_POSTGRES
     if process.kind == KIND_MIXED_PROCESS:
         return _mixed_cannot_run_reason(process, entity)
     if process.kind != KIND_SURVEY_EXISTING:
@@ -704,6 +706,18 @@ ENGINE_HOST_OFF = "engine host off"
 #: Why a mixed process (engine host step 4) cannot run: Egeria has no process by that qualifiedName. Known only after
 #: a read (the /check press, or Run itself); the registry-only listing never claims it.
 PROCESS_NOT_DECLARED = "process not declared in Egeria · run its document in engine-host/processes/"
+
+
+#: Processes whose (first) step is Egeria's PostgreSQL survey: offered for a PostgreSQL database only.
+NOT_POSTGRES = "not a PostgreSQL database"
+
+
+def is_postgres_only(process: NativeProcess) -> bool:
+    return process.kind == KIND_MIXED_PROCESS or process.qualified_name.startswith("PostgreSQLSurvey::")
+
+
+def _is_postgres(entity) -> bool:
+    return str(getattr(entity, "db_type", "") or "").strip().lower() in ("postgresql", "postgres")
 
 
 def _mixed_cannot_run_reason(process: NativeProcess, entity) -> str:
@@ -847,6 +861,9 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
             continue  # never offered, in any form
         runs = registry.list_native_survey_runs(entity_type, slug, process.qualified_name)
         latest = runs[0] if runs else None
+        if entity is not None and hasattr(entity, "db_type") and is_postgres_only(process) \
+                and not _is_postgres(entity):
+            continue  # Egeria's PostgreSQL survey (alone, or as a process's first step) is offered for PostgreSQL only
         if process.kind == KIND_CATALOG_AND_SURVEY:
             rows.append(_catalog_row(registry, entity_type, slug, technology_type, entity,
                                      process, latest, stale=(pointers.get("database") == "gone")))
@@ -867,6 +884,8 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
             stored = registry.count_native_survey_annotations(latest["survey_report_guid"])
         derived = (derive_mixed_state(latest) if process.kind == KIND_MIXED_PROCESS
                    else derive_native_state(latest, stored_annotation_count=stored))
+        if process.kind == KIND_MIXED_PROCESS:
+            derived["waiting_for"] = _waiting_for_engine_host(registry, entity_type, slug, derived)
         row = {
             "qualified_name": process.qualified_name,
             "display_name": process.display_name,
@@ -989,6 +1008,37 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
     return out
 
 
+#: A mixed run whose RE step Egeria created but nobody claimed: said with why, never left as a bare "running".
+WAITING_FOR_ENGINE_HOST = "waiting for RE's engine host"
+
+
+def _waiting_for_engine_host(registry, entity_type: str, slug: str, derived: dict) -> str:
+    """"waiting for RE's engine host · <why>" when the last read shows an RE step Egeria created and nobody has
+    claimed (APPROVED or REQUESTED), else "". Registry-only: the engine host's switch, and whether the target is now
+    private to its owner (the host leaves such actions unclaimed, owner Q-O3)."""
+    from resource_explorer import mixed_process
+
+    if derived.get("state") != RUNNING:
+        return ""
+    re_types = {s.request_type for p in mixed_process.MIXED_PROCESSES.values() for s in p.re_steps}
+    waiting = [s for s in derived.get("steps") or []
+               if s.get("request_type") in re_types and s.get("status") in ("APPROVED", "REQUESTED")]
+    if not waiting:
+        return ""
+    from resource_explorer import engine_host
+
+    if not engine_host.engine_host_enabled():
+        why = ENGINE_HOST_OFF + " · turn it on, or cancel step 2 in Egeria"
+    else:
+        try:
+            private = registry.private_owner_for_entity(entity_type, slug)
+        except Exception:  # noqa: BLE001 -- unknown is said as unknown
+            private = None
+        why = ("the database is private to its owner, so the unattended host leaves it · run it attended, or cancel "
+               "step 2 in Egeria") if private else "not claimed yet"
+    return f"{WAITING_FOR_ENGINE_HOST} · {why}"
+
+
 def refresh_mixed_run(registry, port, run: dict, *, entity_type: str, slug: str) -> dict:
     """Read one mixed process run back (read-only): the instance's engine actions in run order, grouped into its one
     run line (`mixed_process.group_by_process`). Stores what it read on the row (`declared.process_run`) and the
@@ -1010,6 +1060,8 @@ def refresh_mixed_run(registry, port, run: dict, *, entity_type: str, slug: str)
     started = (run.get("surveyed_at") or "")[5:10]
     detail = mixed_process.run_line_dict(line, started=started)
     detail["words"] = scrub_secret(detail["words"], entity)
+    for step in detail["steps"]:
+        step["message"] = scrub_secret(step.get("message") or "", entity)
     registry.merge_native_survey_declared(guid, {"process_run": {**detail, "read_at": read_at}})
     newest = line.steps[-1].status if line.steps else ""
     registry.record_native_survey_readback(guid, read_at=read_at, status=newest, message=detail["words"])

@@ -38,7 +38,8 @@ LATER = "2026-10-15T09:00:00"
 #: Engine host step 4: database_staleness declares the `source_report` input, so under the engine host it runs only
 #: as a later process step, handed the previous step's report as the `surveyReport` action target. These step-3 tests
 #: give it one: the native PostgreSQLSurvey report captured live (tests/fixtures/egeria_6_2, M2), with one table's
-#: counters changed. Without the target it completes survey-invalid (test_engine_host_step4_mixed_process.py).
+#: counters changed. Staleness is still step 3's, from the snapshots; the report adds the separate "writes since
+#: statistics reset" measure. Without the target it completes survey-invalid (test_engine_host_step4_mixed_process.py).
 SOURCE_REPORT = "cb92eedc-5e24-4da7-ba5e-fc11d1707d8f"
 EMPTY_REPORT = "0a1b2c3d-0000-4000-8000-00000000e0e0"
 
@@ -48,9 +49,8 @@ def _lib_action(egeria, guid, *, target=DB_GUID, report=SOURCE_REPORT):
 
     egeria.native_reports.setdefault(SOURCE_REPORT, _native_report(written={"src_cd": 250}))
     if report == EMPTY_REPORT:
-        empty = _native_report(tables=False)
-        empty["elementHeader"]["guid"] = EMPTY_REPORT
-        egeria.native_reports.setdefault(EMPTY_REPORT, empty)
+        egeria.native_reports.setdefault(EMPTY_REPORT, _native_report(tables=False, subject=target,
+                                                                      guid=EMPTY_REPORT))
     return egeria.add_action(guid, target=target, request_type=REQUEST_TYPE, report=report)
 
 
@@ -137,30 +137,41 @@ def test_a_library_action_is_claimed_run_published_and_completed(staleness_insta
         {k: r[k] for k in ("type", "end1", "end2")} for r in egeria.relationships]
     assert done["targets"] == [{"actionTargetName": "surveyReport", "actionTargetGUID": report_guid}]
 
-    # the step's annotations, as Egeria's ResourceMeasureAnnotation with the envelope in additionalProperties,
-    # derived from the source report's ten table measurements (step 4: the survey that just ran)
-    anns = {a["additionalProperties"]["scope"]: a for a in _annotation_bodies(egeria, report_guid)}
-    assert len(anns) == 10 and all(k.startswith("public.") for k in anns)
-    src_cd = anns["public.src_cd"]
-    assert src_cd["class"] == "ResourceMeasureAnnotationProperties"
-    assert src_cd["analysisStep"] == "database_staleness"
-    assert src_cd["annotationType"] == "Database Staleness"
-    assert src_cd["resourceProperties"]["rowsWritten"] == "250"
-    assert src_cd["additionalProperties"]["resultState"] == "measured"
-    assert anns["public.weight"]["additionalProperties"]["resultState"] == "nothing_found"
-    assert len({a["qualifiedName"] for a in anns.values()}) == 10
+    # the step's annotations, as Egeria's ResourceMeasureAnnotation with the envelope in additionalProperties:
+    # staleness exactly as in step 3 (from the snapshots), and, separately, the report's writes since reset
+    bodies = _annotation_bodies(egeria, report_guid)
+    anns = {a["additionalProperties"]["scope"]: a for a in bodies if a["annotationType"] == "Database Staleness"}
+    writes = {a["additionalProperties"]["scope"]: a for a in bodies
+              if a["annotationType"] == "Writes Since Statistics Reset"}
+    assert set(anns) == {"public.customer", "public.orders"} and len(writes) == 10 and len(bodies) == 12
+    orders = anns["public.orders"]
+    assert orders["class"] == "ResourceMeasureAnnotationProperties"
+    assert orders["analysisStep"] == "database_staleness"
+    assert orders["resourceProperties"]["rowsChanged"] == "250"
+    assert "writesSinceStatisticsReset" not in orders["resourceProperties"]
+    assert orders["additionalProperties"]["resultState"] == "measured"
+    assert anns["public.customer"]["additionalProperties"]["resultState"] == "nothing_found"
+    src_cd = writes["public.src_cd"]
+    assert src_cd["analysisStep"] == "database_staleness" and src_cd["class"] == "ResourceMeasureAnnotationProperties"
+    assert src_cd["resourceProperties"]["writesSinceStatisticsReset"] == "250"
+    assert src_cd["additionalProperties"]["measure"] == "writes_since_statistics_reset"
+    assert "rowsChanged" not in src_cd["resourceProperties"]
+    assert len({a["qualifiedName"] for a in bodies}) == 12
     assert props["additionalProperties"]["derived_from_report"] == SOURCE_REPORT
 
-    # still stored where RE reads them today
+    # stored where RE reads them today; a reader of the step never sees the other measure's rows
     run, rows = reg.query_step_annotations("database", "coco_pharma", "database_staleness")
-    assert run and {r["scope"] for r in rows} == set(anns)
+    assert run and {r["scope"] for r in rows} == {"public.customer", "public.orders"}
+    _run2, wrows = reg.query_step_annotations("database", "coco_pharma",
+                                              "database_staleness:writes_since_statistics_reset")
+    assert {r["scope"] for r in wrows} == set(writes)
 
     row = _row(reg)
     assert row["state"] == "succeeded"
     outcome = row["target"]["outcome"]
     assert (outcome["guard"], outcome["report_guid"], outcome["annotation_count"]) == (
-        "survey-completed", report_guid, 10)
-    assert egeria.annotations_under(report_guid) == 10
+        "survey-completed", report_guid, 12)
+    assert egeria.annotations_under(report_guid) == 12
     assert row["target"]["completion_recorded_at"]
 
     # identity unchanged: every write is the engine host daemon for the requester
@@ -174,8 +185,9 @@ def test_a_library_action_is_claimed_run_published_and_completed(staleness_insta
 
 def test_nothing_to_derive_completes_with_the_declared_guard_and_publishes_nothing(
         staleness_installed, reg, egeria, no_connection):
-    """The source report carries no table measurements: the step says not_established for the database, which is
-    nothing to derive. The manifest declares survey-invalid for that; no report is written."""
+    """empty_db was never surveyed and the source report carries no table measurements: both measures say
+    not_established for the database, which is nothing to derive. The manifest declares survey-invalid for that; no
+    report is written."""
     _lib_action(egeria, "ea-empty", target=EMPTY_DB_GUID, report=EMPTY_REPORT)
     assert _sweep(reg).claimed == ["ea-empty"]
     _run_queue_once(reg)
@@ -183,6 +195,7 @@ def test_nothing_to_derive_completes_with_the_declared_guard_and_publishes_nothi
     done = egeria.actions["ea-empty"]["completion"]
     assert done["status"] == "INVALID" and done["guards"] == ["survey-invalid"], done
     assert "nothing to derive" in done["message"]
+    assert "no survey has measured row counts" in done["message"]
     assert f"survey report {EMPTY_REPORT} carries no table measurements" in done["message"]
     assert done["targets"] == []
     assert egeria.reports() == []
@@ -193,6 +206,7 @@ def test_nothing_to_derive_completes_with_the_declared_guard_and_publishes_nothi
     # the honest not_established row is still in RE's store
     _run, rows = reg.query_step_annotations("database", "empty_db", "database_staleness")
     assert [r["result_state"] for r in rows] == ["not_established"]
+    assert "no survey" in rows[0]["explanation"]
 
 
 def test_the_declared_nothing_guard_is_the_one_used(staleness_installed, reg, egeria, no_connection, monkeypatch):
@@ -216,7 +230,7 @@ def test_the_declared_nothing_guard_is_the_one_used(staleness_installed, reg, eg
     done = egeria.actions["ea-empty2"]["completion"]
     assert done["guards"] == ["survey-completed"], done
     [(report_guid, _)] = egeria.reports()
-    assert egeria.annotations_under(report_guid) == 1
+    assert egeria.annotations_under(report_guid) == 2      # both measures, each not_established
 
 
 def test_a_failed_publish_never_completes_survey_completed(staleness_installed, reg, egeria, no_connection):
@@ -227,7 +241,7 @@ def test_a_failed_publish_never_completes_survey_completed(staleness_installed, 
     _run_queue_once(reg)
     done = egeria.actions["ea-libfail"]["completion"]
     assert done["guards"] == ["survey-failed"], done
-    assert "9 of 10 reached Egeria" in done["message"]
+    assert "11 of 12 reached Egeria" in done["message"]
 
 
 # ── what is left alone ───────────────────────────────────────────────────────

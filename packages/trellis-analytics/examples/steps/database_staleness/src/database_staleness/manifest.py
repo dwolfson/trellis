@@ -18,6 +18,9 @@ MANIFEST = StepManifest(
     credential_tier="none",
     # `source_report`: in an Egeria process, the survey report the step before this one wrote (engine host step 4).
     inputs=["ods", "source_report"],
+    # Two measures, each its own annotation (design ruling, engine host step 4): staleness from the stored snapshots,
+    # and, only when a survey report is handed in, its writes since PostgreSQL's statistics reset. 0.2.0 adds the second.
+    measures=["database_staleness", "writes_since_statistics_reset"],
     stage="analysis",
     perspectives=["Steward", "Data Expert"],
     # Q-0041: "How much has changed since the last time this was surveyed — is it worth re-running now?"

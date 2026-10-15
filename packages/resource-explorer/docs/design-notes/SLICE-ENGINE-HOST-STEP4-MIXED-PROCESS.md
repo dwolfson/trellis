@@ -172,10 +172,19 @@ laz_local_usda. It agrees with the design:
 - `initiate_gov_action_process` returns the process-instance GUID (as the stored catalog-and-survey rows show).
 
 **Found by M2, not in the design:** a native PostgreSQL survey reports no row count. Its table measurements carry
-PostgreSQL's cumulative rows inserted, updated and deleted. So when `database_staleness` is handed the report, it
-derives rows written per table since the statistics were last reset, naming the report on every result. With no
-report (RE's own runs) it compares row-count snapshots, as before. This is a builder's choice; the alternative
-(compare against the previous native report's counters) needs a new typed read.
+PostgreSQL's cumulative rows inserted, updated and deleted.
+
+**Decision (design session, 2026-10-15):** report two measures, kept distinct, never one function with two meanings.
+- *Database staleness* keeps its definition: the change between two stored row-count snapshots, over their interval.
+  The step-1 report is provenance only (`derived_from_report`). With one snapshot it says "not measured · one
+  snapshot only", with no substitute figure.
+- *Writes since statistics reset* is the native report's cumulative inserted/updated/deleted per table: totals since
+  PostgreSQL's statistics reset, not a rate and not a delta. It is its own annotation (Egeria's
+  `ResourceMeasureAnnotation`, as the native survey uses for these counters; annotationType "Writes Since Statistics
+  Reset", its own check name). It carries the as-of time and the reset caveat, and appears only when a report is
+  present.
+- The manifest declares both (`measures`; 0.2.0 adds the second). RE stores the second under
+  `database_staleness:writes_since_statistics_reset`, so a reader of staleness never sees it.
 
 **Where it lives.**
 

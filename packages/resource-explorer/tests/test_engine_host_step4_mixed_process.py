@@ -53,9 +53,15 @@ def _fx(name: str):
     return json.loads((FIXTURES / name).read_text())["answer"]
 
 
-def _native_report(*, written: dict[str, int] | None = None, tables: bool = True) -> dict:
-    """The live native PostgreSQLSurvey report (M2), with some tables' "Number Of Rows Inserted" changed."""
+def _native_report(*, written: dict[str, int] | None = None, tables: bool = True, subject: str = DB_GUID,
+                   guid: str = NATIVE_REPORT) -> dict:
+    """The live native PostgreSQLSurvey report (M2), made a report of `subject` (its ReportSubject and anchor), with
+    some tables' "Number Of Rows Inserted" changed."""
     answer = copy.deepcopy(_fx("survey_report__native_postgres_database__asset_by_guid.json"))
+    answer["elementHeader"]["guid"] = guid
+    answer["elementHeader"]["anchor"]["classificationProperties"]["anchorGUID"] = subject
+    for e in answer["reportSubjects"]:
+        e["relatedElement"]["elementHeader"]["guid"] = subject
     keep = []
     for entry in answer["reportedAnnotations"]:
         props = entry["relatedElement"]["properties"]
@@ -149,6 +155,8 @@ def _step2_action(egeria, guid: str = "ea-s2", *, report: str | None = NATIVE_RE
     action = egeria.add_action(guid, target=target, request_type=STEP2_TYPE, report=report,
                                target_name="serverToSurvey")
     egeria.graphs[guid] = _step2_graph(guid, **graph)
+    # its previous step: the native survey, whose ReportOriginator report is the one handed on
+    egeria.graphs.setdefault(SURVEY_STEP, _survey_step_graph(next_guid=guid))
     egeria.native_reports.setdefault(NATIVE_REPORT, _native_report(written={"src_cd": 250}))
     return action
 
@@ -317,18 +325,25 @@ def test_2_step_2_reads_the_survey_report_target_and_records_derived_from_report
     outcome = _row(reg)["target"]["outcome"]
     assert outcome["derived_from_report"] == NATIVE_REPORT and outcome["report_guid"] == report_guid
 
-    # derived from the measurement that just happened: the native table counters, the report named on each
-    anns = {}
+    # two measures, kept distinct: staleness from the stored snapshots (coco_pharma has one: "not measured · one
+    # snapshot only", no substitute figure), and the report's writes since statistics reset, its own annotations
+    stale, writes = {}, {}
     for r in egeria.relationships:
         if r["end1"] == report_guid and egeria.elements.get(r["end2"], {}).get("type") == "Annotation":
             p = egeria.elements[r["end2"]]["body"]["properties"]
-            anns[p["additionalProperties"]["scope"]] = p
-    assert len(anns) == 10 and "public.src_cd" in anns
-    assert anns["public.src_cd"]["additionalProperties"]["resultState"] == "measured"
-    assert anns["public.src_cd"]["resourceProperties"]["rowsWritten"] == "250"
-    assert anns["public.src_cd"]["resourceProperties"]["sourceReport"] == NATIVE_REPORT
-    assert anns["public.weight"]["additionalProperties"]["resultState"] == "nothing_found"
-    assert outcome["annotation_count"] == 10
+            {"Database Staleness": stale, "Writes Since Statistics Reset": writes}[p["annotationType"]][
+                p["additionalProperties"]["scope"]] = p
+    assert set(stale) == {"public.customer", "public.orders"}
+    for p in stale.values():
+        assert p["additionalProperties"]["resultState"] == "not_established"
+        assert p["explanation"].startswith("not measured · one snapshot only")
+        assert not p.get("resourceProperties")       # no substitute figure
+    assert len(writes) == 10
+    assert writes["public.src_cd"]["additionalProperties"]["resultState"] == "measured"
+    assert writes["public.src_cd"]["resourceProperties"]["writesSinceStatisticsReset"] == "250"
+    assert writes["public.src_cd"]["resourceProperties"]["sourceReport"] == NATIVE_REPORT
+    assert writes["public.weight"]["additionalProperties"]["resultState"] == "nothing_found"
+    assert outcome["annotation_count"] == 12
 
 
 # ── test 3: missing report target (M3) ─────────────────────────────────────────
@@ -348,15 +363,68 @@ def test_3_without_a_survey_report_target_step_2_is_survey_invalid_and_publishes
     assert outcome["guard"] == "survey-invalid" and not outcome["report_guid"]
 
 
-def test_3_a_report_target_that_is_not_a_survey_report_fails_in_its_words(staleness_installed, reg, egeria,
-                                                                           no_connection):
+def test_3_an_unreadable_report_target_fails_in_its_words(staleness_installed, reg, egeria, no_connection):
     _step2_action(egeria, "ea-bad", report="0a1b2c3d-0000-4000-8000-0000000000ee")
+    egeria.graphs["ea-bad"] = "No elements found"          # started alone: no previous step to match
     _sweep(reg)
     _run_queue_once(reg)
     done = egeria.actions["ea-bad"]["completion"]
     assert done["guards"] == ["survey-failed"], done
     assert "surveyReport action target 0a1b2c3d-0000-4000-8000-0000000000ee could not be read" in done["message"]
     assert egeria.reports() == []
+
+
+# review round 1 (HIGH): the report must be this database's, the previous step's, and only one
+
+USDA_ASSET = "304152cf-fa47-4496-9a14-27a7f5b35df2"
+OTHER_REPORT = "0a1b2c3d-0000-4000-8000-00000000abcd"
+
+
+def _invalid(egeria, reg, guid):
+    _sweep(reg)
+    _run_queue_once(reg)
+    done = egeria.actions[guid]["completion"]
+    assert done["status"] == "INVALID" and done["guards"] == ["survey-invalid"], done
+    assert egeria.reports() == [] and not egeria.method_calls("create_annotation")
+    return done["message"]
+
+
+def test_review_a_report_of_another_database_is_refused(staleness_installed, reg, egeria, no_connection):
+    """Started alone: serverToSurvey = coco_pharma, surveyReport = a laz_local_usda report. Never usda's counters as
+    coco_pharma's."""
+    egeria.native_reports[NATIVE_REPORT] = _native_report(subject=USDA_ASSET)
+    _step2_action(egeria, "ea-other-db")
+    egeria.graphs["ea-other-db"] = "No elements found"
+    msg = _invalid(egeria, reg, "ea-other-db")
+    assert f"is a survey report of {USDA_ASSET}, not of this action's database {DB_GUID}" in msg
+
+
+def test_review_two_report_targets_are_refused(staleness_installed, reg, egeria, no_connection):
+    action = _step2_action(egeria, "ea-two")
+    action["actionTargetElements"].append({"actionTargetName": "surveyReport", "actionTargetGUID": OTHER_REPORT})
+    egeria.graphs["ea-two"] = "No elements found"
+    assert _sweep(reg).claimed == ["ea-two"]
+    _run_queue_once(reg)
+    done = egeria.actions["ea-two"]["completion"]
+    assert done["guards"] == ["survey-invalid"] and "2 surveyReport action targets" in done["message"], done
+    assert "not choosing one" in done["message"] and egeria.reports() == []
+    assert not egeria.method_calls("get_asset_by_guid")
+
+
+def test_review_a_report_with_no_stated_type_fails_closed(staleness_installed, reg, egeria, no_connection):
+    report = _native_report()
+    del report["elementHeader"]["type"]
+    egeria.native_reports[NATIVE_REPORT] = report
+    _step2_action(egeria, "ea-notype")
+    msg = _invalid(egeria, reg, "ea-notype")
+    assert "an element of no stated type, not a SurveyReport" in msg
+
+
+def test_review_a_report_that_is_not_the_previous_steps_is_refused(staleness_installed, reg, egeria, no_connection):
+    egeria.native_reports[OTHER_REPORT] = _native_report(guid=OTHER_REPORT)     # coco_pharma's, but an older one
+    _step2_action(egeria, "ea-stale", report=OTHER_REPORT)
+    msg = _invalid(egeria, reg, "ea-stale")
+    assert f"surveyReport {OTHER_REPORT} is not the report of the previous process step ({NATIVE_REPORT})" in msg
 
 
 # ── test 4: step 2 is claimed only as step 2 ───────────────────────────────────
@@ -624,6 +692,72 @@ def test_6_an_unreadable_process_read_is_recorded_never_a_status(staleness_insta
     _refresh(reg)
     run = _rows(reg)[PROCESS_QN]["run"]
     assert run["state"] == UNREADABLE and "read timeout" in run["error"], run
+
+
+# review round 1: per-step words scrubbed, PostgreSQL only, an unclaimed RE step says why
+
+def test_review_each_steps_message_is_scrubbed_like_the_line(staleness_installed, reg, egeria, monkeypatch):
+    from resource_explorer import native_survey_run as nsr
+    from resource_explorer.registry import DatabaseEntity
+
+    _ready(egeria, monkeypatch)
+    _run(reg)
+    secret = "hunter2-Pw-77"
+    real = nsr._resource_entity
+
+    def with_password(registry, entity_type, slug):
+        e = real(registry, entity_type, slug)
+        return DatabaseEntity(**{**e.__dict__, "db_password": secret}) if e is not None else e
+
+    monkeypatch.setattr(nsr, "_resource_entity", with_password)
+    egeria.graphs["pi-1"] = _instance_graph("pi-1", "s1")
+    egeria.graphs["s1"] = _survey_step_graph("s1", status="FAILED", guards=("survey-failed",), instance="pi-1")
+    _set_pv(egeria.graphs["s1"]["startingElement"], "completionMessage",
+            f'FATAL: password authentication failed for "{secret}"')
+    _refresh(reg)
+    run = reg.list_native_survey_runs("database", "coco_pharma", PROCESS_QN)[0]
+    assert secret not in json.dumps(run, default=str)
+    steps = _rows(reg)[PROCESS_QN]["run"]["steps"]
+    assert "password authentication failed" in steps[0]["message"] and secret not in steps[0]["message"]
+
+
+def test_review_postgresql_surveys_are_offered_for_postgresql_only(staleness_installed, reg, egeria, monkeypatch):
+    from resource_explorer.native_survey_run import NOT_POSTGRES, NativeSurveyCannotRun, native_survey_rows
+    from resource_explorer.registry import DatabaseEntity
+
+    _ready(egeria, monkeypatch)
+    reg.register_database(DatabaseEntity(slug="shop_mysql", display_name="shop", db_type="mysql", host="localhost",
+                                         port=3306, database_name="shop", egeria_asset_guid=DB_GUID))
+    names = {r["qualified_name"] for r in native_survey_rows(reg, "database", "shop_mysql", TECH)}
+    assert PROCESS_QN not in names and "PostgreSQLSurvey::survey-postgres-database" not in names
+    assert PROCESS_QN in _rows(reg)            # coco_pharma is PostgreSQL: still offered
+    from resource_explorer import catalog_and_survey as cas
+    from resource_explorer.egeria_clients import Daemon, DaemonReason
+    from resource_explorer.native_survey_run import port_session, submit_native_survey
+
+    with port_session(cas.PyegeriaRegistrationPort(identity=Daemon(DaemonReason.SCHEDULER))) as port:
+        with pytest.raises(NativeSurveyCannotRun):
+            submit_native_survey(reg, port, "database", "shop_mysql", PROCESS_QN, technology_type=TECH)
+    assert egeria.process_starts == [] and NOT_POSTGRES
+
+
+def test_review_an_unclaimed_re_step_says_it_waits_for_the_engine_host_and_why(staleness_installed, reg, egeria,
+                                                                              monkeypatch):
+    from resource_explorer.native_survey_run import RUNNING, WAITING_FOR_ENGINE_HOST
+
+    _ready(egeria, monkeypatch)
+    _run(reg)
+    egeria.graphs["pi-1"] = _instance_graph("pi-1", "s1")
+    egeria.graphs["s1"] = _survey_step_graph("s1", next_guid="s2", instance="pi-1")
+    egeria.graphs["s2"] = _step2_graph("s2", status="APPROVED", instance="pi-1")
+    _refresh(reg)
+    monkeypatch.delenv("RE_ENGINE_HOST_ENABLED", raising=False)
+    run = _rows(reg)[PROCESS_QN]["run"]
+    assert run["state"] == RUNNING
+    assert "step 2 re-database-staleness not claimed yet" in run["line"]
+    assert run["waiting_for"].startswith(f"{WAITING_FOR_ENGINE_HOST} · engine host off")
+    monkeypatch.setenv("RE_ENGINE_HOST_ENABLED", "true")
+    assert _rows(reg)[PROCESS_QN]["run"]["waiting_for"] == f"{WAITING_FOR_ENGINE_HOST} · not claimed yet"
 
 
 # ── test 7: same identity ─────────────────────────────────────────────────────
