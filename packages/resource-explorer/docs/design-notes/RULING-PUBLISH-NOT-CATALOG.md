@@ -57,9 +57,13 @@ unchanged from the scope rulings. The column header becomes **"Publish?"**.
 
 **2. Depth: how far down each included part goes.**
 
-> Depth · ○ the database only · ○ schemas · ● tables · ○ tables and columns
+> Depth · ○ the database only · ○ schemas (off) · ○ tables (off) · ● tables and columns
 
-This is unchanged, and all four depths are expressible (lever findings §1).
+**Corrected 2026-10-15** (`REPLY-DESIGNER-CATALOGUING-AT-SCALE.md`): under
+the schema-kind targets the commit uses, only two depths can be produced.
+Egeria's cataloguer creates a schema's tables and columns together and has
+no depth option (S2). "Schemas" and "tables" stay on the line, disabled,
+with that reason.
 
 **3. Detail: what's published about each part.** Two toggles under the
 depth line and one stated default, each saying what it governs and what it can't:
@@ -75,17 +79,17 @@ a worse table, and no one asked to withhold one.
 
 **The button carries all three choices:**
 
-> **Publish 2 schemas · tables · no column profiles**
+> **Publish 2 schemas · no column profiles**
 
 Only the choices that differ from the defaults are named, so the common
-case stays short ("Publish 2 schemas · tables"). After the press, the
+case stays short ("Publish 2 schemas"). After the press, the
 result line on each row reads "published · read back ‹when›", and the
 manifest's rows read:
 
 | | what | how many | when |
 |---|---|---|---|
 | RE publishes | server, database, survey report | 2 elements, 1 report (row counts; no profiles) | now |
-| Egeria's cataloguer creates | your included schemas, at table depth | 2 schemas | this refresh |
+| Egeria's cataloguer creates | your included schemas, whole: tables and columns | 2 schemas | its next refresh |
 | Egeria's survey | the same schemas | 2 | after attach |
 
 ## What we say about it: Enrichment facts, optionally published

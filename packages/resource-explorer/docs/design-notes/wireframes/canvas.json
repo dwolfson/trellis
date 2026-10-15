@@ -79,6 +79,10 @@
   {
    "id": "page-20",
    "name": "Curate and Understanding split by job (proposal)"
+  },
+  {
+   "id": "page-21",
+   "name": "Cataloguing at scale: rules and arrivals"
   }
  ],
  "artboards": [
@@ -346,6 +350,14 @@
    "w": 1560,
    "h": 930,
    "page": "page-20"
+  },
+  {
+   "file": "CatalogueAtScale.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 1560,
+   "h": 1360,
+   "page": "page-21"
   }
  ],
  "annotations": [
@@ -524,10 +536,18 @@
    "w": 300,
    "page": "page-20",
    "text": "Reply to ASK-DESIGNER-CURATE-SPLIT-BY-JOB (a proposal), against main at 62bcd4ad.\n\nThree jobs as Curate's stage-specific leading tabs on the existing sub-tab rail (the Context precedent), not a third level of tabs: Describe and publish \u00b7 Contents \u00b7 Structure. 'What it is' moves to Structure. No mode; a saved landing tab; counts on tab names.\n\nA running commit shows as one line on every tab, the stepper only where pressed. Tab 1 is the non-expert seed; Forget links, project bind and copy GUID move to Contents. A database has one press (Catalog) on Contents; tab 1 shows its state.\n\nUnderstanding: same positions (whole / parts / detail), names At a glance \u00b7 Contents \u00b7 Over time; both stages say 'Contents' at position 2."
+  },
+  {
+   "id": "scale-brief",
+   "x": 1660,
+   "y": 0,
+   "w": 300,
+   "page": "page-21",
+   "text": "Reply to ASK-DESIGNER-CATALOGUING-AT-SCALE, against main at 08390160.\n\nEgeria catalogs whole schemas today (one schema-kind target per schema, no lists: S1, S11), so a schema rule acts and a table or column rule is kept for when Egeria can (owner, 2026-10-15).\n\nRules are signed events in the scope record, listed in a strip with their match counts; the filter bar is the editor; a hand choice overrides one row and says it differs from the rule.\n\nArrivals: a new schema waits for Publish; a new table in a published schema is added by Egeria's cataloguer on its own refresh, said in Egeria's name; a gone table stays, lowered, until read back."
   }
  ],
  "launch": {
   "view": "canvas",
-  "page": "page-20"
+  "page": "page-21"
  }
 }
