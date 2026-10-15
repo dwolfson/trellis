@@ -204,7 +204,7 @@ def test_no_github_access_aborts_the_run_it_does_not_report_a_clean_zero(registr
     from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
 
     @contextmanager
-    def _no_token(project, registry):
+    def _no_token(project, registry, served=None):
         raise RuntimeError("GITHUB_TOKEN is not set")
         yield  # pragma: no cover
 
@@ -229,7 +229,7 @@ def test_no_inventory_is_skipped_by_design_with_a_reason_not_a_pass(registry, pr
     root.mkdir()
 
     @contextmanager
-    def _empty_zip(project, registry):
+    def _empty_zip(project, registry, served=None):
         yield str(root)
 
     monkeypatch.setattr(adapter, "_acquire_zipball_root", _empty_zip)

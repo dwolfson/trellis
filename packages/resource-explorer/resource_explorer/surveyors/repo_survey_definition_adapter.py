@@ -370,7 +370,7 @@ class StepInfo:
 # get one. See that package's README for why the split exists.
 
 @contextmanager
-def _acquire_zipball_root(project, registry):
+def _acquire_zipball_root(project, registry, served: dict | None = None):
     """Download `project`'s repo zipball into a fresh tempdir and yield the
     extracted root. One real network call + one extraction per invocation —
     trellis_microflow.resolve_resources is what guarantees this only gets
@@ -387,11 +387,13 @@ def _acquire_zipball_root(project, registry):
     client = GitHubClient()
     repo = client.get_repo(project.github_url)
     with client.zipball_root(repo) as root:
+        if served is not None:
+            served["zipball_root"] = getattr(client, "last_served_sha", None)
         yield root
 
 
 @contextmanager
-def _acquire_git_clone_root(project, registry):
+def _acquire_git_clone_root(project, registry, served: dict | None = None):
     """Treeless-clone `project`'s repo into a fresh tempdir and yield the
     clone root. Mirrors _acquire_zipball_root exactly — a plain function,
     not a StepInfo/surveyor, resolved once per SurveyOrchestrator.run() no
@@ -413,10 +415,12 @@ def _acquire_git_clone_root(project, registry):
     client = GitHubClient()
     repo = client.get_repo(project.github_url)
     with client.git_clone_root(repo) as root:
+        if served is not None:
+            served["git_clone_root"] = getattr(client, "last_served_sha", None)
         yield root
 
 
-def _resource_providers_for(project, registry) -> dict[str, ResourceProvider]:
+def _resource_providers_for(project, registry, served: dict | None = None) -> dict[str, ResourceProvider]:
     """Builds this run's RESOURCE_PROVIDERS, binding `project`/`registry`
     into each provider's zero-argument `acquire` via a closure — see
     ResourceProvider's own docstring for why the binding happens here,
@@ -426,7 +430,7 @@ def _resource_providers_for(project, registry) -> dict[str, ResourceProvider]:
             name="zipball_root",
             # Files, no history: a zipball has no `.git` at all.
             provides=frozenset({VIEW_SOURCE}),
-            acquire=lambda: _acquire_zipball_root(project, registry),
+            acquire=lambda: _acquire_zipball_root(project, registry, served=served),
         ),
         "git_clone_root": ResourceProvider(
             name="git_clone_root",
@@ -434,7 +438,7 @@ def _resource_providers_for(project, registry) -> dict[str, ResourceProvider]:
             # root containing only `.git`. Declaring VIEW_SOURCE here would be
             # a lie, and it is the lie that cost finding 52.
             provides=frozenset({VIEW_HISTORY}),
-            acquire=lambda: _acquire_git_clone_root(project, registry),
+            acquire=lambda: _acquire_git_clone_root(project, registry, served=served),
         ),
     }
 
@@ -1265,7 +1269,7 @@ def _run_step(step_key: str, **orchestrator_kwargs):
         # every other step, so forwarding it unconditionally here is safe
         # for any step_key, not just the ones that care.
         result = orch.run(project.slug, steps=[step_key], fast=fast)
-        return {"annotations": result.annotations}
+        return {"annotations": result.annotations, "survey_commit_sha": result.survey_commit_sha}
 
     return runner
 
@@ -1283,7 +1287,8 @@ def _run_batch(project, registry, step_keys: list[str], fast: bool = False, **_)
 
     orch = SurveyOrchestrator(registry)
     result = orch.run(project.slug, steps=step_keys, fast=fast)
-    return {"annotations": result.annotations, "errors": result.errors}
+    return {"annotations": result.annotations, "errors": result.errors,
+            "survey_commit_sha": result.survey_commit_sha}
 
 
 def validate_resource_views(registry: dict | None = None,

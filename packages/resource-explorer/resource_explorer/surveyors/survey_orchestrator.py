@@ -114,7 +114,8 @@ class SurveyOrchestrator:
                 step_cost_observer.describe_work(annotations))
             observed[0].disagreement = step_cost_observer._disagreement(observed[0])
             step_cost_observer.record(
-                self._registry, project.slug, observed[0], surveyed_at)
+                self._registry, project.slug, observed[0], surveyed_at,
+                survey_commit_sha=result.survey_commit_sha)
         result.add(ClassificationAnnotation(
             check_name="prerequisite_auto_run",
             item_key=producer,
@@ -263,14 +264,21 @@ class SurveyOrchestrator:
                     continue
                 needed_resources.add(resource_name)
 
+        # The commit of the code this run READ (artifacts slice 1): each provider writes the SHA of what it
+        # served into `served`, once, when resolve_resources acquires it — the same once-per-run sharing
+        # as the resource itself. Every step_runs row of the run carries it. A run that acquired no
+        # zipball or clone (API-only steps, or a caller's --data-path) records NULL, never
+        # projects.last_commit_sha.
+        served: dict = {}
         with ExitStack() as stack:
             resources = (
                 resolve_resources(
-                    stack, _resource_providers_for(project, self._registry), needed_resources
+                    stack, _resource_providers_for(project, self._registry, served), needed_resources
                 )
                 if needed_resources
                 else {}
             )
+            result.survey_commit_sha = served.get("zipball_root") or served.get("git_clone_root") or None
 
             # Iterate STEP_REGISTRY's own insertion order, not
             # step_keys_to_run (a set — unordered) — a full run's step
@@ -486,7 +494,8 @@ class SurveyOrchestrator:
 
                     _observed[0].disagreement = step_cost_observer._disagreement(_observed[0])
                     recorded = step_cost_observer.record(
-                        self._registry, project.slug, _observed[0], surveyed_at)
+                        self._registry, project.slug, _observed[0], surveyed_at,
+                        survey_commit_sha=result.survey_commit_sha)
                     if recorded == step_cost_observer.NOT_RECORDED:
                         # Branchable, not just logged: an unwritten observation
                         # is indistinguishable from a step that was never slow.

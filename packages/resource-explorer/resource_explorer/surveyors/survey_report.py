@@ -333,6 +333,8 @@ class SurveyResult:
     project_display_name: str
     github_url: str
     surveyed_at: datetime = field(default_factory=datetime.utcnow)
+    #: The commit of the zipball/clone this run read (artifacts slice 1); None when it read no code.
+    survey_commit_sha: str | None = None
     annotations: list[Annotation] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)   # non-fatal issues during survey
     #: The re_analysis_step keys this run actually executed, set by

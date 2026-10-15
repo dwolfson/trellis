@@ -460,7 +460,7 @@ def _analyses_for_step(step_key: str, entity_type: str) -> set[str] | None:
 
 
 def record(registry, slug: str, obs: Observation, surveyed_at: str | None = None,
-           entity_type: str = "repo") -> str:
+           entity_type: str = "repo", survey_commit_sha: str | None = None) -> str:
     """Persist one observation. Returns FIRST when this is the first ever for
     this step, RECORDED normally, NOT_RECORDED when persistence failed.
 
@@ -490,6 +490,7 @@ def record(registry, slug: str, obs: Observation, surveyed_at: str | None = None
             metrics=obs.vector(), declared=obs.declared_vector(),
             disagreement=obs.disagreement,
             flow_run_id=obs.flow_run_id, dispatch_failed=obs.dispatch_failed,
+            survey_commit_sha=survey_commit_sha,
         )
     except Exception as exc:
         vector_recorded = False

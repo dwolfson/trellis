@@ -40,7 +40,7 @@ Older rows read NULL, and no data is migrated.
 |---|---|---|
 | `project_code_symbols.file_role` | `core`, `test`, `generated`, `vendored` or `docs` | extracted before the column existed |
 | `project_code_markers.file_role` | the same | the same |
-| `step_runs.survey_commit_sha` | the commit a repo step run surveyed | not a repo run, no commit known for the repo (`last_commit_sha` empty), or the row predates the column |
+| `step_runs.survey_commit_sha` | the commit a repo step run surveyed | the run read no code, the zipball's SHA could not be established, not a repo run, or the row predates the column |
 
 ## Which code writes and reads them
 
@@ -53,10 +53,16 @@ Older rows read NULL, and no data is migrated.
   (`SymbolExtractionSurveyor`), RAG ingestion and `refresh_profile` (`ingestion/pipeline.py`).
 - `ProjectRegistry.upsert_code_symbols` writes the role, and a re-extraction overwrites it.
   `upsert_code_markers` also writes the role.
-- `ProjectRegistry.record_step_run` copies `projects.last_commit_sha` into `step_runs.survey_commit_sha` for
-  `entity_type='repo'`, in the same transaction as the insert. The local, Prefect and observer paths all go
-  through it (`step_cost_observer.record`). The value is copied rather than joined, so a later fetch does not
-  rewrite an earlier run.
+- `step_runs.survey_commit_sha` is the commit of the code the run READ. `GitHubClient.zipball_root` and
+  `git_clone_root` set `last_served_sha`: the SHA the zipball is cached under, or the clone's
+  `git rev-parse HEAD`. The uncached zipball fallback, whose SHA is unknown, sets None. `_acquire_zipball_root` and
+  `_acquire_git_clone_root` write that SHA into the run's `served` dict, once per run, when
+  `resolve_resources` acquires them. `SurveyOrchestrator.run` sets `SurveyResult.survey_commit_sha` and passes it
+  to `step_cost_observer.record` for every step_runs row of the run, auto-run prerequisites included. The
+  runners `_run_step` and `_run_batch` return it, so the executor's own `_record_cost` rows carry it too.
+- A run that read no code, such as API-only steps or a caller-supplied `--data-path`, stores NULL. The column is
+  never filled from `projects.last_commit_sha`, which moves only on a re-index and can be older than the tree that
+  was read (coordinator ruling, 2026-10-15).
 
 **Reads.**
 - `artifact_provenance.py` provides `role_label`, `commit_label` and `extraction_commit` (the latest
@@ -64,11 +70,8 @@ Older rows read NULL, and no data is migrated.
 - `members._symbols_in_file` shows each symbol's role. `members._symbol_members` adds "Symbols extracted at
   commit <sha12>", or "Extraction commit not recorded".
 
-**Known limit.** The survey reads a zipball of the default branch at download time
-(`GitHubClient.zipball_root`, which knows that SHA). `projects.last_commit_sha` is set only by
-`IncrementalIndexer` and the CLI wizard, so a repo surveyed without a re-index records the last indexed commit,
-which may be older than the surveyed tree. The slice-1 brief chose `last_commit_sha`. Making the zipball's own
-SHA the source would change only `record_step_run`'s single read.
+**Known limit.** A Prefect-dispatched step's row carries the SHA only if the flow returns the runner's output
+dict. Otherwise it stores NULL, which reads as "not recorded".
 
 ## Which processes would create it
 

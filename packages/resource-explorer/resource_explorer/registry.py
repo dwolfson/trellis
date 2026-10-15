@@ -7317,6 +7317,7 @@ class ProjectRegistry:
         metrics: dict | None = None, declared: dict | None = None,
         disagreement: str = "", surveyed_as: str = "",
         flow_run_id: str = "", dispatch_failed: str = "",
+        survey_commit_sha: str | None = None,
     ) -> None:
         """One row per step EXECUTION. Append-only: a step run twice in one
         snapshot (once as a prerequisite, once on its own request) is two
@@ -7338,16 +7339,11 @@ class ProjectRegistry:
         all.
         """
         with self._conn() as conn:
-            # `survey_commit_sha` (artifacts slice 1): a repo step run records the commit it surveyed, read
-            # from projects.last_commit_sha in the same transaction as the insert, so every path that records
-            # a step run (local, Prefect, observer) stores it. Copied, not joined: a later fetch moves
-            # last_commit_sha and must not rewrite what an earlier run surveyed. '' (never fetched) and
-            # non-repo runs store NULL, which readers show as "not recorded".
-            commit_sha = None
-            if entity_type == "repo":
-                row = conn.execute("SELECT last_commit_sha FROM projects WHERE slug = ?",
-                                   (self._normalize_slug(slug),)).fetchone()
-                commit_sha = (dict(row).get("last_commit_sha") if row else None) or None
+            # `survey_commit_sha` (artifacts slice 1): the commit of the code this run READ, as the caller
+            # got it from the zipball or clone it acquired (SurveyOrchestrator, via the run's resources).
+            # Never projects.last_commit_sha: that moves only on a re-index and can be older than the tree
+            # the survey read. A run that read no code passes nothing and stores NULL ("not recorded").
+            commit_sha = survey_commit_sha or None
             conn.execute(
                 "INSERT INTO step_runs (slug, entity_type, step_key, surveyed_at, "
                 "source, executor, executor_ref, demanded_by, metrics, declared, "

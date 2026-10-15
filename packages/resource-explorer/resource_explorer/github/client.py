@@ -230,6 +230,10 @@ class GitHubClient:
                 # Handing out a shared extracted tree would let concurrent
                 # surveys see each other's mutations.
                 sha = self._default_branch_sha(repo)
+                # The commit this zipball IS (the cache key), for the run's step_runs rows. None on the
+                # uncached fallback: the default branch's SHA could not be established, so it is not
+                # recorded rather than guessed.
+                self.last_served_sha = sha
                 if sha is None:
                     yield self.download_zipball(repo, Path(tmp), subproject_path)
                     return
@@ -384,8 +388,11 @@ class GitHubClient:
                 # CONTAINS, so it must not share a key with an unbounded one.
                 sha = self._default_branch_sha(repo)
                 if sha is None or shallow_since:
-                    yield self.clone_git_root(repo, dest, shallow_since=shallow_since)
+                    root = self.clone_git_root(repo, dest, shallow_since=shallow_since)
+                    self.last_served_sha = _clone_head(root)
+                    yield root
                     return
+                self.last_served_sha = sha
                 cache = SourceCache()
                 cached = cache.get("gitclone", repo.full_name, sha)
                 if cached is None:
@@ -499,3 +506,15 @@ class GitHubClient:
         if "github.com/" in url:
             return url.split("github.com/")[-1]
         return url
+
+
+def _clone_head(root) -> str | None:
+    """HEAD of a clone RE just made, or None when it cannot be read (then "not recorded")."""
+    import subprocess
+    try:
+        out = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True,
+                             text=True, timeout=30)
+        sha = out.stdout.strip()
+        return sha if out.returncode == 0 and len(sha) >= 40 else None
+    except Exception:
+        return None

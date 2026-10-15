@@ -1549,8 +1549,10 @@ class SurveyDefinitionExecutor:
         annotations = (output or {}).get("annotations") if isinstance(output, dict) else None
         obs.annotations, obs.outcomes = step_cost_observer.describe_work(annotations)
         obs.disagreement = step_cost_observer._disagreement(obs)
+        # The runner's own run knows which commit it read (SurveyOrchestrator); absent = read no code.
+        commit = output.get("survey_commit_sha") if isinstance(output, dict) else None
         step_cost_observer.record(self.registry, slug, obs, surveyed_at,
-                                  entity_type=entity_type)
+                                  entity_type=entity_type, survey_commit_sha=commit)
 
     def run_synthetic_step(
         self,

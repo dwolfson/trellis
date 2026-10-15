@@ -265,39 +265,90 @@ def _step_shas(reg):
             "SELECT slug, entity_type, step_key, survey_commit_sha FROM step_runs ORDER BY id").fetchall()]
 
 
-def test_a_repo_step_run_stores_the_commit_it_surveyed(tmp_path):
+class _FakeClient:
+    """GitHubClient at its boundary: the zipball it serves is commit ZIP_SHA."""
+    served_root = None
+
+    def __init__(self, *a, **k):
+        self.last_served_sha = None
+
+    def get_repo(self, url):
+        return object()
+
+    def zipball_root(self, repo, subproject_path=None):
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _cm():
+            self.last_served_sha = ZIP_SHA
+            yield _FakeClient.served_root
+        return _cm()
+
+
+ZIP_SHA = "a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0"
+INDEXED_SHA = "0000000000000000000000000000000000000old"
+
+
+@pytest.fixture
+def zipball_run(tmp_path, monkeypatch):
     reg = _reg(tmp_path)
-    _project(reg, "p", sha="3606859c0ffee")
-    reg.record_step_run("p", "repo_symbol_extraction", "2026-10-15T10:00:00")
-    assert _step_shas(reg)[0]["survey_commit_sha"] == "3606859c0ffee"
+    _project(reg, "p", sha=INDEXED_SHA)                                    # projects.last_commit_sha = Y
+    root = tmp_path / "repo"
+    _fixture_repo(root)
+    _FakeClient.served_root = root
+    monkeypatch.setattr("resource_explorer.github.client.GitHubClient", _FakeClient)
+    return reg
 
 
-def test_through_the_observer_path_too(tmp_path):
+def test_a_run_records_the_sha_of_the_zipball_it_read_not_last_commit_sha(zipball_run):
+    """The zipball has SHA X while projects.last_commit_sha is Y: every step row of the run records X."""
+    from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
+
+    result = SurveyOrchestrator(zipball_run).run("p", steps=["repo_symbol_extraction", "repo_api_structure"])
+    rows = _step_shas(zipball_run)
+    assert {r["step_key"] for r in rows} >= {"repo_symbol_extraction", "repo_api_structure"}
+    assert {r["survey_commit_sha"] for r in rows} == {ZIP_SHA}               # the API-reading step too
+    assert result.survey_commit_sha == ZIP_SHA
+
+
+def test_the_runner_output_carries_the_sha_to_the_executor(zipball_run):
+    from resource_explorer.surveyors.repo_survey_definition_adapter import _run_batch, _run_step
+
+    assert _run_step("repo_symbol_extraction")(zipball_run.get("p"), zipball_run)["survey_commit_sha"] == ZIP_SHA
+    out = _run_batch(zipball_run.get("p"), zipball_run, ["repo_symbol_extraction", "repo_api_structure"])
+    assert out["survey_commit_sha"] == ZIP_SHA
+
+
+def test_the_executor_records_the_sha_from_the_runner_output(tmp_path):
     from resource_explorer.surveyors import step_cost_observer
+    from resource_explorer.surveyors.survey_definition_executor import SurveyDefinitionExecutor
 
     reg = _reg(tmp_path)
-    _project(reg, "p", sha="abc123")
+    _project(reg, "p", sha=INDEXED_SHA)
     obs = step_cost_observer.Observation(step_key="repo_symbol_extraction", elapsed=0.1, connects=0,
-                                       declared_fetch="download", declared_compute="medium")
-    step_cost_observer.record(reg, "p", obs, "2026-10-15T10:00:00")
-    assert [r["survey_commit_sha"] for r in _step_shas(reg)] == ["abc123"]
+                                         declared_fetch="download", declared_compute="medium")
+    ex = SurveyDefinitionExecutor.__new__(SurveyDefinitionExecutor)
+    ex.registry = reg
+    ex._record_cost([obs], "repo", "p", {"annotations": [], "survey_commit_sha": ZIP_SHA}, "2026-10-15T10:00:00")
+    ex._record_cost([obs], "repo", "p", {"annotations": []}, "2026-10-15T11:00:00")
+    assert [r["survey_commit_sha"] for r in _step_shas(reg)] == [ZIP_SHA, None]
 
 
-def test_no_known_commit_and_non_repo_runs_store_null(tmp_path):
+def test_a_run_that_read_no_code_stores_null_even_with_a_last_commit_sha(zipball_run):
+    from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
+
+    SurveyOrchestrator(zipball_run).run("p", steps=["repo_api_structure"])    # reads stored symbols only
+    rows = _step_shas(zipball_run)
+    assert rows and {r["survey_commit_sha"] for r in rows} == {None}
+
+
+def test_record_step_run_never_falls_back_to_last_commit_sha(tmp_path):
     reg = _reg(tmp_path)
-    _project(reg, "nosha")                                                 # never fetched: last_commit_sha ''
-    reg.record_step_run("nosha", "repo_symbol_extraction", "2026-10-15T10:00:00")
-    reg.record_step_run("db1", "db_columns", "2026-10-15T10:00:00", entity_type="database")
-    assert [r["survey_commit_sha"] for r in _step_shas(reg)] == [None, None]
-
-
-def test_a_later_fetch_does_not_rewrite_an_earlier_run(tmp_path):
-    reg = _reg(tmp_path)
-    _project(reg, "p", sha="old")
-    reg.record_step_run("p", "repo_symbol_extraction", "2026-10-14T10:00:00")
-    reg.update_commit_sha("p", "new")
+    _project(reg, "p", sha=INDEXED_SHA)
     reg.record_step_run("p", "repo_symbol_extraction", "2026-10-15T10:00:00")
-    assert [r["survey_commit_sha"] for r in _step_shas(reg)] == ["old", "new"]
+    reg.record_step_run("p", "repo_symbol_extraction", "2026-10-15T11:00:00", survey_commit_sha=ZIP_SHA)
+    reg.record_step_run("db1", "db_columns", "2026-10-15T10:00:00", entity_type="database")
+    assert [r["survey_commit_sha"] for r in _step_shas(reg)] == [None, ZIP_SHA, None]
 
 
 # ── readers say "not recorded" for NULL ─────────────────────────────────────────────────────────────────
@@ -331,9 +382,9 @@ def test_the_symbol_drill_down_shows_role_and_commit_or_not_recorded(tmp_path):
 
     assert extraction_commit(reg, "p") is None                             # no extraction run recorded
     assert "commit not recorded" in members._symbol_members(reg, "p", "all", 50).note
-    reg.record_step_run("p", "repo_symbol_extraction", "2026-10-15T10:00:00")  # run with no known sha
+    reg.record_step_run("p", "repo_symbol_extraction", "2026-10-15T10:00:00")  # run that recorded no sha
     assert "commit not recorded" in members._symbol_members(reg, "p", "all", 50).note
-    reg.update_commit_sha("p", "3606859c0ffee1234567")
-    reg.record_step_run("p", "repo_symbol_extraction", "2026-10-15T11:00:00")
+    reg.record_step_run("p", "repo_symbol_extraction", "2026-10-15T11:00:00",
+                        survey_commit_sha="3606859c0ffee1234567")
     assert extraction_commit(reg, "p") == "3606859c0ffee1234567"
     assert "extracted at commit 3606859c0ffe" in members._symbol_members(reg, "p", "all", 50).note

@@ -26,7 +26,7 @@ def test_each_step_key_delegates_to_orchestrator_with_itself_as_the_only_step():
     registry = MagicMock()
 
     for key, runner in steps.items():
-        fake_result = MagicMock(annotations=[f"ann-for-{key}"])
+        fake_result = MagicMock(annotations=[f"ann-for-{key}"], survey_commit_sha="sha1")
         with patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
             MockOrch.return_value.run.return_value = fake_result
             output = runner(project, registry)
@@ -36,7 +36,8 @@ def test_each_step_key_delegates_to_orchestrator_with_itself_as_the_only_step():
         # unconditionally to SurveyOrchestrator.run(), which itself only
         # actually applies it to steps whose StepInfo.accepts_fast is True.
         MockOrch.return_value.run.assert_called_once_with(project.slug, steps=[key], fast=False)
-        assert output == {"annotations": [f"ann-for-{key}"]}
+        # survey_commit_sha: the commit the run read, for the executor's step_runs row (artifacts slice 1).
+        assert output == {"annotations": [f"ann-for-{key}"], "survey_commit_sha": "sha1"}
 
 
 def test_all_step_keys_are_registered():
@@ -372,7 +373,7 @@ class TestRunBatch:
 
         project = _project()
         registry = MagicMock()
-        fake_result = MagicMock(annotations=["a1", "a2"], errors=[])
+        fake_result = MagicMock(annotations=["a1", "a2"], errors=[], survey_commit_sha=None)
         with patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
             MockOrch.return_value.run.return_value = fake_result
             output = _run_batch(project, registry, ["repo_language", "repo_file_classification"])
@@ -380,7 +381,7 @@ class TestRunBatch:
         MockOrch.return_value.run.assert_called_once_with(
             project.slug, steps=["repo_language", "repo_file_classification"], fast=False,
         )
-        assert output == {"annotations": ["a1", "a2"], "errors": []}
+        assert output == {"annotations": ["a1", "a2"], "errors": [], "survey_commit_sha": None}
 
     def test_forwards_fast_flag(self):
         from resource_explorer.surveyors.repo_survey_definition_adapter import _run_batch
