@@ -253,7 +253,8 @@ def _parse_annotation(header: dict, props: dict) -> dict:
     if "candidateClassifications" not in subtype_data:
         from resource_explorer.surveyors.annotation_props import CANDIDATES_KEY
 
-        listed = (subtype_data.get("properties") or {}).get(CANDIDATES_KEY)
+        values = subtype_data.get("properties")
+        listed = values.get(CANDIDATES_KEY) if isinstance(values, dict) else None
         if isinstance(listed, str):
             try:
                 listed = json.loads(listed)

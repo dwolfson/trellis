@@ -187,3 +187,78 @@ def test_a_single_name_reads_back_as_its_one_candidate():
     back = _parse_annotation({"guid": "g", "type": {"typeName": "ClassificationAnnotation"}},
                              {"class": "ClassificationAnnotationProperties", "classificationName": "Apache-2.0"})
     assert back["subtype_data"]["candidateClassifications"] == ["Apache-2.0"]
+
+
+# ── review round 2 ────────────────────────────────────────────────────────────
+
+def _pre_fix_body(**props) -> dict:
+    """An outbox payload as RE enqueued it before 2026-10-15: the proposal in candidateClassifications."""
+    return {"class": "NewElementRequestBody", "parentGUID": "report-guid",
+            "parentRelationshipTypeName": "ReportedAnnotation", "isOwnAnchor": False, "anchorGUID": "report-guid",
+            "properties": {"class": "ClassificationAnnotationProperties", "qualifiedName": "Annotation::x::0",
+                           "annotationType": "db_classification", "summary": "s", "analysisStep": "db_derived",
+                           "confidence": 70, **props}}
+
+
+@pytest.mark.parametrize(("candidates", "name", "listed"), [
+    (["oltp", "warehouse"], "oltp", ["oltp", "warehouse"]),
+    (["Apache-2.0"], "Apache-2.0", None),
+])
+def test_an_outbox_row_enqueued_before_the_fix_drains_in_egerias_fields(candidates, name, listed):
+    from resource_explorer.egeria_outbox import OutboxClients, apply_element
+
+    egeria = StrictEgeria()
+    row = {"id": 1, "egeria_guid": None, "qualified_name": "Annotation::x::0", "element_kind": "annotation",
+           "payload_json": json.dumps(_pre_fix_body(candidateClassifications=candidates))}
+    assert apply_element(row, OutboxClients(discovery=egeria.discovery), lambda qn: "") == "guid-0"
+    assert egeria.dropped == []
+    stored = egeria.stored["guid-0"]
+    assert stored["classificationName"] == name
+    got = stored.get("properties", {}).get(CANDIDATES_KEY)
+    assert (json.loads(got) if got else None) == listed
+
+
+def test_an_outbox_row_already_in_egerias_fields_drains_unchanged():
+    from resource_explorer.egeria_outbox import OutboxClients, apply_element
+
+    egeria = StrictEgeria()
+    body = _pre_fix_body(classificationName="oltp")
+    row = {"id": 1, "egeria_guid": None, "qualified_name": "Annotation::x::0", "element_kind": "annotation",
+           "payload_json": json.dumps(body)}
+    apply_element(row, OutboxClients(discovery=egeria.discovery), lambda qn: "")
+    egeria.discovery.create_annotation.assert_called_once_with(body=body)
+
+
+def test_a_malformed_properties_value_does_not_break_the_read():
+    back = _parse_annotation({"guid": "g", "type": {"typeName": "ClassificationAnnotation"}},
+                             {"class": "ClassificationAnnotationProperties", "classificationName": "oltp",
+                              "properties": "not a map"})
+    assert back["subtype_data"]["candidateClassifications"] == ["oltp"]
+
+
+def test_an_explicit_name_is_first_in_the_published_list():
+    ann = ClassificationAnnotation(summary="s", analysis_step="a", classification_name="hub table",
+                                   candidate_classifications=["staging", "hub table", "fact"])
+    props = build_annotation_props(ann, "QN")
+    assert props["classificationName"] == "hub table"
+    assert json.loads(props["properties"][CANDIDATES_KEY]) == ["hub table", "staging", "fact"]
+    back = _parse_annotation({"guid": "g", "type": {"typeName": "ClassificationAnnotation"}}, props)
+    assert back["subtype_data"]["candidateClassifications"][0] == "hub table"
+
+
+def test_an_explicit_name_not_among_the_candidates_is_added_first():
+    ann = ClassificationAnnotation(summary="s", analysis_step="a", classification_name="hub table",
+                                   candidate_classifications=["staging"])
+    assert json.loads(build_annotation_props(ann, "QN")["properties"][CANDIDATES_KEY]) == ["hub table", "staging"]
+
+
+def test_the_generator_names_fields_as_jackson_legacy_mangling_does():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).parents[1] / "scripts" / "extract_egeria_annotation_fields.py"
+    spec = importlib.util.spec_from_file_location("extract_egeria_annotation_fields", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert [mod._jackson_name(s) for s in ("QualifiedName", "URL", "URLPath", "X")] == \
+        ["qualifiedName", "url", "urlpath", "x"]

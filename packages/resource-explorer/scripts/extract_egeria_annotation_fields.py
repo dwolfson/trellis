@@ -38,12 +38,14 @@ def _classes_re_publishes() -> list[str]:
 
 
 def _jackson_name(setter_suffix: str) -> str:
-    """Jackson's default property name for `setXxx`: the leading run of capitals lower-cased (`setURL` -> `url`)."""
+    """Jackson's default (legacy) property name for `setXxx`: every leading capital lower-cased.
+
+    `setQualifiedName` -> `qualifiedName`, `setURL` -> `url`, `setURLPath` -> `urlpath` (BeanUtil's legacy
+    mangling; Egeria's beans set no USE_STD_BEAN_NAMING).
+    """
     i = 0
     while i < len(setter_suffix) and setter_suffix[i].isupper():
         i += 1
-    if 1 < i < len(setter_suffix):      # `setURLPath`: Jackson keeps the capital that starts the next word
-        i -= 1
     return setter_suffix[:i].lower() + setter_suffix[i:]
 
 

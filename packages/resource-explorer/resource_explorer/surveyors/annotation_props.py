@@ -143,6 +143,9 @@ def classification_fields(ann) -> dict:
     """
     candidates = [str(c) for c in (getattr(ann, "candidate_classifications", None) or [])]
     name = getattr(ann, "classification_name", "") or (candidates[0] if candidates else "")
+    if name and candidates and candidates[0] != name:
+        # The list reads back with its first entry as the proposal: an explicit name leads it.
+        candidates = [name] + [c for c in candidates if c != name]
     values = dict(getattr(ann, "classification_properties", None) or {})
     if candidates and candidates != [name]:
         values[CANDIDATES_KEY] = candidates
@@ -152,6 +155,27 @@ def classification_fields(ann) -> dict:
     if values:
         out["properties"] = to_string_map(values)
     return out
+
+
+def upgrade_classification_payload(body: dict) -> dict:
+    """An annotation body enqueued before 2026-10-15, rewritten into Egeria's fields for the drain.
+
+    The outbox replays the body built at enqueue time, so a ClassificationAnnotation queued before
+    `classification_fields` existed still carries `candidateClassifications`, which Egeria drops. That key is
+    removed and the proposal rebuilt through `classification_fields`. Any other body is returned unchanged.
+    """
+    props = body.get("properties") if isinstance(body, dict) else None
+    if (not isinstance(props, dict) or props.get("class") != EGERIA_PROPERTIES_CLASSES[AnnotationType.CLASSIFICATION]
+            or CANDIDATES_KEY not in props or props.get("classificationName")):
+        return body
+    props = dict(props)
+    candidates = props.pop(CANDIDATES_KEY) or []
+    from types import SimpleNamespace
+
+    old = props.get("properties") if isinstance(props.get("properties"), dict) else {}
+    props.update(classification_fields(SimpleNamespace(candidate_classifications=list(candidates),
+                                                       classification_name="", classification_properties=old)))
+    return {**body, "properties": props}
 
 
 def build_annotation_props(ann, qualified_name: str) -> dict:
