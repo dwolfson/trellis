@@ -180,8 +180,10 @@ class _CallersContextPool(ThreadPoolExecutor):
     A bare pool thread starts with an empty context. RE's identity lives in ContextVars
     (`a2a_auth.current_caller`, `egeria_clients.acting_as`), and a registry read that finds no caller
     reads as the shared/service identity, which sees every private investigation (`_may_see_investigation`
-    returns True for ''). So a request's work hopped onto this pool read as "see everything": found live on
-    `GET /api/analyses/facts`, which named another person's private investigations. Copying the context
+    returns True for ''). So any scoped registry read made from a pool job read as "see everything" (found in
+    review: `GET /api/analyses/facts` fans out on this pool; the investigation-naming reader it was suspected of
+    is reached through `/facts/{slug}/answer`, a sync route Starlette already runs in a copied context, but the
+    pool path leaked for any such read). Copying the context
     in `submit` covers every way in (`submit`, `submit_all`, `run_sync`, `run_sync_all`, and a raw
     `get_pool().submit`), so a call site cannot forget. Each submission gets its own copy, so nothing a job
     sets outlives it and a worker holds no caller between jobs."""

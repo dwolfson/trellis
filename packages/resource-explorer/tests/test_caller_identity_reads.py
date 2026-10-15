@@ -366,10 +366,11 @@ EXISTING_USE = "Is there any existing use within our organization?"
 
 
 def _existing_use_on_the_pool(user):
-    """Erin's request hops onto the shared pool exactly as `GET /api/analyses/facts` does
-    (`concurrency.get_pool().submit(read_one, slug)`), and the pool job runs the real database state reader that
-    names investigations (`_db_r_existing_use` -> `find_entity_investigations` -> `_may_see_investigation`, which
-    lets '' see everything)."""
+    """A pool job (submitted the way `GET /api/analyses/facts` fans out, `concurrency.get_pool().submit`) runs the
+    real database state reader that names investigations (`_db_r_existing_use` -> `find_entity_investigations` ->
+    `_may_see_investigation`, which lets '' see everything). On the live routes that reader is reached through
+    `/facts/{slug}/answer`, a sync route Starlette already runs in a copied context (pinned by the route test
+    below); this test pins the POOL path, which leaked for any such read before the pool carried the caller."""
     from resource_explorer import concurrency
     from resource_explorer.a2a_auth import current_caller
     from resource_explorer.facts import FactLayer
@@ -554,3 +555,54 @@ def test_the_doc_source_immediate_attempt_runs_as_the_caller(boundary, monkeypat
         current_caller.reset(reset)
     (entry,) = boundary.of("MetadataExpert")
     _sent_only_the_callers_token(entry, PETER_TOKEN)
+
+
+# ── round 3 ─────────────────────────────────────────────────────────────────────────────────────────
+
+def test_a_prefect_in_process_step_from_a_request_runs_without_the_requests_client_scope(monkeypatch):
+    """The pooled flow sees the caller, but not the request's Egeria client scope (pyegeria ISSUE-96)."""
+    from resource_explorer import egeria_clients
+    from resource_explorer.a2a_auth import caller, current_caller
+    from resource_explorer.surveyors import prefect_adapter as pa
+
+    seen = {}
+
+    def flow(**kw):
+        seen["scope"] = egeria_clients.current_scope()
+        seen["caller"] = caller().user_id if caller() else None
+        return {"result": {}, "flow_run_id": "f"}
+
+    monkeypatch.setattr(pa, "check_prefect_reachable_sync", lambda: (True, ""))
+    monkeypatch.setattr(pa, "_in_process_step_flow", lambda: flow)
+    monkeypatch.setattr(pa, "assert_no_credentials", lambda *a, **k: None)
+    fn = pa._run_step_in_process_flow
+
+    async def handler():
+        with egeria_clients.client_scope():
+            return fn("database", "x", "step", {}, "")
+
+    reset = _signed_in(PETER, PETER_TOKEN)
+    try:
+        asyncio.run(handler())
+    finally:
+        current_caller.reset(reset)
+    assert seen == {"scope": None, "caller": PETER}
+
+
+def test_a_question_guid_miss_is_kept_briefly_not_for_an_hour(monkeypatch):
+    from resource_explorer.surveyors import survey_definition_reader as sdr
+
+    sdr.clear_caches()
+    clock = [1000.0]
+    monkeypatch.setattr(sdr.time, "monotonic", lambda: clock[0])
+    answers = iter([None, "g-q"])
+    reader = sdr.SurveyDefinitionReader(identity=object())
+    monkeypatch.setattr(reader, "_lookup_question_guid", lambda name: next(answers))
+    try:
+        assert reader.resolve_question_guid("Q") is None          # a reader who cannot see the term
+        clock[0] += sdr._QUESTION_GUID_MISS_TTL_SECONDS + 1
+        assert reader.resolve_question_guid("Q") == "g-q"           # asked again soon, not after an hour
+        clock[0] += 600
+        assert reader.resolve_question_guid("Q") == "g-q"           # a hit is still kept
+    finally:
+        sdr.clear_caches()

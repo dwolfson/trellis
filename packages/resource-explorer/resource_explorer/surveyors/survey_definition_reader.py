@@ -68,6 +68,16 @@ _CANDIDATES_CACHE_TTL_SECONDS = 300
 # find_candidate_process_guids_by_questions) — forever.
 _QUESTION_GUID_CALL_TIMEOUT_SECONDS = 15
 _question_guid_cache: dict[str, tuple[float, str | None]] = {}
+#: A `None` (not found, or not visible to THIS reader) is kept only briefly: the cache is shared, so one
+#: reader who cannot see a term must not take scoping away from everyone for an hour (caller identity round 3).
+_QUESTION_GUID_MISS_TTL_SECONDS = 60
+
+
+def _question_guid_fresh(cached, now: float) -> bool:
+    if cached is None:
+        return False
+    ttl = _QUESTION_GUID_CACHE_TTL_SECONDS if cached[1] else _QUESTION_GUID_MISS_TTL_SECONDS
+    return now - cached[0] < ttl
 # Keyed PER READER (caller identity, 2026-10-14): the first element of every candidates key, and of every
 # fetch / process-GUID key, is `SurveyDefinitionReader._reader_key()` (who Egeria answered). The full scan
 # lists every GovernanceActionProcess, including user-authored ones a deployment may zone, so one person's
@@ -560,7 +570,7 @@ class SurveyDefinitionReader:
         hard failure — the caller falls back to the full scan)."""
         now = time.monotonic()
         cached = _question_guid_cache.get(question_display_name)
-        if cached is not None and now - cached[0] < _QUESTION_GUID_CACHE_TTL_SECONDS:
+        if _question_guid_fresh(cached, now):
             return cached[1]
 
         guid = self._lookup_question_guid(question_display_name)
@@ -856,7 +866,7 @@ class SurveyDefinitionReader:
         """
         now = time.monotonic()
         cached = _question_guid_cache.get(question_display_name)
-        if cached is not None and now - cached[0] < _QUESTION_GUID_CACHE_TTL_SECONDS:
+        if _question_guid_fresh(cached, now):
             return cached[1]
         guid = self._lookup_question_guid(question_display_name)
         _question_guid_cache[question_display_name] = (now, guid)
