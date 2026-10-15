@@ -387,6 +387,13 @@ def _step_ever_measured(registry, step_key: str) -> bool:
     return row is not None
 
 
+def completed(annotations, raised: bool) -> bool:
+    """True when a step ran to the end: it did not raise and reported no `step_error` (BaseSurveyor._warn,
+    which most surveyors use instead of raising). Only a completed step's step_runs row carries the commit
+    it read (`survey_commit_sha`): a failed step read nothing a reader should cite."""
+    return not raised and not any(getattr(a, "check_name", "") == "step_error" for a in annotations or ())
+
+
 def describe_work(annotations) -> tuple[int, tuple[str, ...]]:
     """What a step produced, as the observer needs it: how many annotations,
     and any StepOutcome labels they carry.

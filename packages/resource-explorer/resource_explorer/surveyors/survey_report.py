@@ -335,6 +335,8 @@ class SurveyResult:
     surveyed_at: datetime = field(default_factory=datetime.utcnow)
     #: The commit of the zipball/clone this run read (artifacts slice 1); None when it read no code.
     survey_commit_sha: str | None = None
+    #: step_key -> that SHA, for each step that COMPLETED having read it (step_cost_observer.completed).
+    commit_by_step: dict = field(default_factory=dict)
     annotations: list[Annotation] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)   # non-fatal issues during survey
     #: The re_analysis_step keys this run actually executed, set by

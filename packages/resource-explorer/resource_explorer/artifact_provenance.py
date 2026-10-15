@@ -20,14 +20,23 @@ def commit_label(sha: str | None) -> str:
     return f"commit {sha[:12]}" if sha else f"commit {NOT_RECORDED}"
 
 
+#: StepOutcome labels that mean the extraction ran to the end (step_outcome.py). A failed extraction
+#: reports none (it raised, or BaseSurveyor._warn'd a step_error), so its row is skipped.
+_COMPLETED_OUTCOMES = frozenset({"recovered", "partial", "no_signal", "regression"})
+
+
 def extraction_commit(registry, slug: str) -> str | None:
-    """The commit the latest symbol extraction run of this repo surveyed, from
-    its own step_runs row (`survey_commit_sha`). None when no extraction run is
-    recorded, or the latest one recorded no commit. Never the project's current
-    `last_commit_sha`: that is what the NEXT run would survey."""
+    """The commit the latest SUCCESSFUL symbol extraction of this repo read, from
+    its own step_runs row (`survey_commit_sha`). A failed extraction after it does
+    not hide it. None when no successful extraction is recorded, or it recorded no
+    commit (read no zipball). Never the project's `last_commit_sha`."""
     try:
         rows = registry.query_step_runs(slug=slug, step_key="repo_symbol_extraction",
-                                        entity_type="repo", limit=1)
+                                        entity_type="repo", limit=200)
     except Exception:
         return None
-    return (rows[0].get("survey_commit_sha") or None) if rows else None
+    for row in rows:  # newest first
+        outcomes = set((row.get("metrics") or {}).get("outcomes") or ())
+        if outcomes & _COMPLETED_OUTCOMES:
+            return row.get("survey_commit_sha") or None
+    return None

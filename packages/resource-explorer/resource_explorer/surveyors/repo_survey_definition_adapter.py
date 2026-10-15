@@ -1269,7 +1269,9 @@ def _run_step(step_key: str, **orchestrator_kwargs):
         # every other step, so forwarding it unconditionally here is safe
         # for any step_key, not just the ones that care.
         result = orch.run(project.slug, steps=[step_key], fast=fast)
-        return {"annotations": result.annotations, "survey_commit_sha": result.survey_commit_sha}
+        # The commit this step read, only if it completed (SurveyResult.commit_by_step); the executor's
+        # and Prefect's step_runs rows take it from here.
+        return {"annotations": result.annotations, "survey_commit_sha": result.commit_by_step.get(step_key)}
 
     return runner
 
@@ -1287,8 +1289,9 @@ def _run_batch(project, registry, step_keys: list[str], fast: bool = False, **_)
 
     orch = SurveyOrchestrator(registry)
     result = orch.run(project.slug, steps=step_keys, fast=fast)
+    done = all(k in result.commit_by_step for k in step_keys)
     return {"annotations": result.annotations, "errors": result.errors,
-            "survey_commit_sha": result.survey_commit_sha}
+            "survey_commit_sha": result.survey_commit_sha if step_keys and done else None}
 
 
 def validate_resource_views(registry: dict | None = None,

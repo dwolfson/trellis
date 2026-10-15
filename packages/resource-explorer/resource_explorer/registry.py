@@ -1622,6 +1622,10 @@ class ProjectRegistry:
                     ) from exc
                 raise
 
+    #: How long an ADD COLUMN waits for its table's lock before failing the start (a class attribute so a
+    #: test can shorten it; production is 10 s).
+    _DDL_LOCK_TIMEOUT = "10s"
+
     def _add_nullable_text_column(self, conn, table: str, column: str, existing: set[str]) -> None:
         """Additive, nullable, no default: an ADD COLUMN that rewrites nothing, and every older row reads
         NULL ("not recorded"). The same shape as resource_schedules.created_by and step_runs'
@@ -1631,7 +1635,7 @@ class ProjectRegistry:
         if not existing or column in existing:
             return
         if conn.is_postgres:
-            conn.execute("SET LOCAL lock_timeout = '10s'")
+            conn.execute(f"SET LOCAL lock_timeout = '{self._DDL_LOCK_TIMEOUT}'")
         try:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} TEXT"
                          if conn.is_postgres else f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
@@ -2035,10 +2039,6 @@ class ProjectRegistry:
             ]:
                 if col not in existing_symbol_cols:
                     conn.execute(f"ALTER TABLE project_code_symbols ADD COLUMN {col} {defn}")
-            # Migration: file_role — artifacts slice 1 (DESIGN-ARTIFACTS-VIEW-AND-DOC-LINKS.md §3; owner's
-            # go 2026-10-15). core | test | generated | vendored | docs from ingestion/file_role.py, set at
-            # extraction; NULL = extracted before the column existed ("not recorded").
-            self._add_nullable_text_column(conn, "project_code_symbols", "file_role", existing_symbol_cols)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_symbols_slug_kind "
                 "ON project_code_symbols(project_slug, kind)"
@@ -2079,9 +2079,6 @@ class ProjectRegistry:
             # (project_slug, interface_kind) — how interface_surface reads;
             # (project_slug, qualified_name) — the join back to
             # project_code_symbols.
-            # Migration: file_role, as on project_code_symbols (artifacts slice 1).
-            self._add_nullable_text_column(conn, "project_code_markers", "file_role",
-                                           self._get_table_columns(conn, "project_code_markers"))
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_markers_slug_interface_kind "
                 "ON project_code_markers(project_slug, interface_kind)"
@@ -2684,11 +2681,6 @@ class ProjectRegistry:
                                 f"Could not add step_runs.{_col}: another process holds a lock on "
                                 "step_runs; stop other Resource Explorer processes and restart.") from exc
                         raise
-            # Migration: survey_commit_sha — artifacts slice 1 (DESIGN-ARTIFACTS-VIEW-AND-DOC-LINKS.md §3; owner's
-            # go 2026-10-15). The commit a repo step run surveyed, copied from projects.last_commit_sha when
-            # the row is written (record_step_run); a permalink needs it. NULL = not a repo, no commit known,
-            # or the row predates the column ("not recorded").
-            self._add_nullable_text_column(conn, "step_runs", "survey_commit_sha", _step_run_cols)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_step_runs_step "
                 "ON step_runs(step_key, surveyed_at)"
@@ -4432,6 +4424,24 @@ class ProjectRegistry:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_runs_result_ref ON runs(result_ref)"
             )
+        self._migrate_artifact_columns()
+
+    #: Artifacts slice 1 (DESIGN-ARTIFACTS-VIEW-AND-DOC-LINKS.md §3; owner's go 2026-10-15; DDL record
+    #: docs/ddl-artifact-columns.md). file_role: core | test | generated | vendored | docs from
+    #: ingestion/file_role.py, set at extraction. survey_commit_sha: the commit of the zipball or clone a
+    #: repo step run READ, written only for a step that completed (record_step_run's caller decides); never
+    #: projects.last_commit_sha. NULL in either = "not recorded".
+    ARTIFACT_COLUMNS = (("project_code_symbols", "file_role"),
+                        ("project_code_markers", "file_role"),
+                        ("step_runs", "survey_commit_sha"))
+
+    def _migrate_artifact_columns(self) -> None:
+        """Each ADD COLUMN in its OWN short transaction, after the main init has committed, so one
+        table's ACCESS EXCLUSIVE lock is never held while waiting for the next table's (each wait is
+        bounded by its own 10 s lock_timeout)."""
+        for table, column in self.ARTIFACT_COLUMNS:
+            with self._conn() as conn:
+                self._add_nullable_text_column(conn, table, column, self._get_table_columns(conn, table))
 
     # ── the run queue ─────────────────────────────────────────────────────────
     #

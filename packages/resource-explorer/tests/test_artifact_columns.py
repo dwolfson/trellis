@@ -84,22 +84,79 @@ def test_the_migration_is_idempotent_on_postgres(pg_registry, monkeypatch):
     assert {t: _cols(again, t) for t in NEW_COLUMNS} == before
 
 
-def test_two_processes_starting_together_both_add_the_columns_safely(pg_registry, monkeypatch):
-    """Both see the columns missing; the second ADD must not fail (ADD COLUMN IF NOT EXISTS)."""
+def _drop_new_columns(reg):
+    with reg._conn() as conn:
+        for table, col in NEW_COLUMNS.items():
+            conn.execute(f"ALTER TABLE {table} DROP COLUMN IF EXISTS {col}")
+
+
+def test_two_registries_adding_the_columns_at_the_same_moment_both_succeed(pg_registry, monkeypatch):
+    """Truly concurrent: two threads, two connections, both read each column as missing (a barrier holds
+    them until both have looked), then both ALTER. The second waits on the first's lock and then is a
+    no-op under ADD COLUMN IF NOT EXISTS; neither raises."""
+    import threading
+
     from resource_explorer.registry import ProjectRegistry as PR
 
     assert "resource_explorer_test" in pg_registry.database_url
+    _drop_new_columns(pg_registry)
     real = PR._get_table_columns
+    barrier = threading.Barrier(2, timeout=30)
 
-    def blind(self, conn, table):
+    def looked_then_wait(self, conn, table):
         cols = real(self, conn, table)
-        return cols - {NEW_COLUMNS[table]} if table in NEW_COLUMNS else cols
-    monkeypatch.setattr(PR, "_get_table_columns", blind)
-    monkeypatch.setattr(PR, "_pg_schema_ready", set())
-    again = PR(database_url=pg_registry.database_url)
+        if table in NEW_COLUMNS and threading.current_thread().name.startswith("ddl-"):
+            barrier.wait()                                                  # both have seen it missing
+        return cols
+    monkeypatch.setattr(PR, "_get_table_columns", looked_then_wait)
+    errors: list = []
+
+    def start():
+        try:
+            pg_registry._migrate_artifact_columns()
+        except Exception as exc:                                            # pragma: no cover - the failure
+            errors.append(exc)
+    threads = [threading.Thread(target=start, name=f"ddl-{i}") for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(60)
     monkeypatch.setattr(PR, "_get_table_columns", real)
+    assert errors == []
     for table, col in NEW_COLUMNS.items():
-        assert col in _cols(again, table), table
+        assert col in _cols(pg_registry, table), table
+
+
+def test_a_held_table_lock_fails_the_start_cleanly_and_a_later_start_adds_the_column(pg_registry, monkeypatch):
+    """Another process holds step_runs: the ADD COLUMN gives up after lock_timeout with the named
+    RuntimeError, its transaction rolls back (column still absent, the holder unaffected), and a start
+    once the table is quiet adds it."""
+    import psycopg2
+
+    from resource_explorer.config import get_config
+    from resource_explorer.registry import ProjectRegistry as PR
+
+    assert "resource_explorer_test" in pg_registry.database_url
+    _drop_new_columns(pg_registry)
+    monkeypatch.setattr(PR, "_DDL_LOCK_TIMEOUT", "300ms")
+    schema = pg_registry.database_url.split("search_path%3D")[-1]
+    cfg = get_config().pgvector
+    holder = psycopg2.connect(host=cfg.host, port=cfg.port, dbname=cfg.dbname, user=cfg.db_user,
+                              password=cfg.password)
+    try:
+        cur = holder.cursor()
+        cur.execute(f'LOCK TABLE "{schema}".step_runs IN ACCESS EXCLUSIVE MODE')     # held, not committed
+        with pytest.raises(RuntimeError, match=r"Could not add step_runs\.survey_commit_sha: another process"):
+            pg_registry._migrate_artifact_columns()
+        cur.execute(f'SELECT count(*) FROM "{schema}".step_runs')                    # holder still fine
+        assert cur.fetchone()[0] >= 0
+    finally:
+        holder.rollback()
+        holder.close()
+    assert "survey_commit_sha" not in _cols(pg_registry, "step_runs")            # rolled back, not half-done
+    assert "file_role" in _cols(pg_registry, "project_code_symbols")              # own short transaction
+    pg_registry._migrate_artifact_columns()                                        # the table is quiet now
+    assert "survey_commit_sha" in _cols(pg_registry, "step_runs")
 
 
 # ── the classifier ──────────────────────────────────────────────────────────────────────────────────────
@@ -125,7 +182,9 @@ FIXTURE_ROLES = {
     "module/src/it/java/org/x/ApiIT.java": "test",                         # src/it (new is_test_path rule)
     "src/main/java/org/x/TestimonialController.java": "core",
     "target/generated-sources/annotations/org/x/Api_.java": "generated",
-    "module/generated/org/x/Model.java": "generated",
+    "module/generated/org/x/Model.java": "core",                           # a dir called generated is not enough
+    "module/generated/api_pb2.py": "generated",                            # ... a generator's file name is
+    "module/generated-sources/org/x/Gen.java": "generated",
     "documentation/samples/Sample.java": "docs",
     # JavaScript
     "web/static/app.js": "core",
@@ -351,6 +410,139 @@ def test_record_step_run_never_falls_back_to_last_commit_sha(tmp_path):
     assert [r["survey_commit_sha"] for r in _step_shas(reg)] == [None, ZIP_SHA, None]
 
 
+def test_a_failed_step_records_no_commit(zipball_run, monkeypatch):
+    from resource_explorer.surveyors.sub_surveyors.api_structure import ApiStructureSurveyor
+    from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
+
+    def boom(self):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(ApiStructureSurveyor, "run", boom)
+    result = SurveyOrchestrator(zipball_run).run("p", steps=["repo_symbol_extraction", "repo_api_structure"])
+    shas = {r["step_key"]: r["survey_commit_sha"] for r in _step_shas(zipball_run)}
+    assert shas["repo_symbol_extraction"] == ZIP_SHA
+    assert shas["repo_api_structure"] is None                              # raised: read nothing to cite
+    assert "repo_api_structure" not in result.commit_by_step
+
+
+def test_a_warned_extraction_records_no_commit_and_the_reader_keeps_the_good_one(zipball_run, monkeypatch):
+    """A good extraction at X, then one that fails (step_error, the way surveyors report a failure): the
+    failed row has no commit and the drill-down still shows X."""
+    from resource_explorer.artifact_provenance import extraction_commit
+    from resource_explorer.surveyors.sub_surveyors import symbol_extraction
+    from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
+
+    SurveyOrchestrator(zipball_run).run("p", steps=["repo_symbol_extraction"])
+    monkeypatch.setattr(symbol_extraction, "COLLECTION_TYPES", None)       # extraction fails inside run()
+    SurveyOrchestrator(zipball_run).run("p", steps=["repo_symbol_extraction"])
+    rows = [r for r in _step_shas(zipball_run) if r["step_key"] == "repo_symbol_extraction"]
+    assert [r["survey_commit_sha"] for r in rows] == [ZIP_SHA, None]
+    assert extraction_commit(zipball_run, "p") == ZIP_SHA
+
+
+def test_the_reader_skips_a_failed_latest_row_even_with_a_commit(tmp_path):
+    from resource_explorer.artifact_provenance import extraction_commit
+
+    reg = _reg(tmp_path)
+    _project(reg)
+    reg.record_step_run("p", "repo_symbol_extraction", "2026-10-15T10:00:00",
+                        metrics={"outcomes": ["recovered"]}, survey_commit_sha="good")
+    reg.record_step_run("p", "repo_symbol_extraction", "2026-10-15T11:00:00",
+                        metrics={"outcomes": []}, survey_commit_sha="bad")
+    assert extraction_commit(reg, "p") == "good"
+
+
+def test_prefect_rows_carry_the_runner_commit(tmp_path, monkeypatch):
+    from resource_explorer.prefect import flows
+    from resource_explorer.surveyors import step_cost_observer
+
+    reg = _reg(tmp_path)
+    _project(reg, "p", sha=INDEXED_SHA)
+    monkeypatch.setattr("resource_explorer.registry.ProjectRegistry", lambda *a, **k: reg)
+    obs = step_cost_observer.Observation(step_key="repo_symbol_extraction", elapsed=0.1, connects=0,
+                                         declared_fetch="download", declared_compute="medium")
+    flows._record_step_cost("repo", "p", obs, {"annotations": [], "survey_commit_sha": ZIP_SHA},
+                            "2026-10-15T10:00:00")
+    assert [r["survey_commit_sha"] for r in _step_shas(reg)] == [ZIP_SHA]
+
+
+def test_the_zipball_is_downloaded_by_the_sha_it_is_recorded_under(tmp_path, monkeypatch):
+    """client.py's real code, faking only HTTP: the SHA lookup answers X, the branch then moves; the
+    download URL must name X, and last_served_sha is X."""
+    import io
+    import zipfile
+
+    import resource_explorer.github.source_cache as cache_mod
+    from resource_explorer.github.client import GitHubClient
+
+    real_cls = cache_mod.SourceCache
+    monkeypatch.setattr(cache_mod, "SourceCache", lambda: real_cls(cache_dir=tmp_path / "cache"))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("owner-repo-a1b2c3d/app.py", "x = 1\n")
+    urls: list[str] = []
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, chunk_size):
+            yield buf.getvalue()
+
+    def fake_get(url, **kw):
+        urls.append(url)
+        return _Resp()
+    monkeypatch.setattr("requests.get", fake_get)
+
+    class _Commit:
+        sha = ZIP_SHA
+
+    class _Repo:
+        full_name = "owner/repo"
+        default_branch = "main"
+
+        def get_commits(self):
+            return [_Commit()]
+
+    client = GitHubClient.__new__(GitHubClient)
+    client._base_url = "https://api.github.test"
+    with client.zipball_root(_Repo()) as root:
+        assert (root / "app.py").exists()
+    assert urls == [f"https://api.github.test/repos/owner/repo/zipball/{ZIP_SHA}"]
+    assert client.last_served_sha == ZIP_SHA
+
+
+def test_a_clone_records_its_own_head(tmp_path, monkeypatch):
+    """The clone's HEAD, read from the clone, not the cache key."""
+    import subprocess
+
+    import resource_explorer.github.source_cache as cache_mod
+    from resource_explorer.github.client import GitHubClient
+
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    git = ["git", "-C", str(origin), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+    subprocess.run(["git", "init", "-q", str(origin)], check=True)
+    (origin / "a.py").write_text("x = 1\n")
+    subprocess.run(git + ["add", "a.py"], check=True)
+    subprocess.run(git + ["commit", "-q", "-m", "one"], check=True)
+    head = subprocess.run(["git", "-C", str(origin), "rev-parse", "HEAD"], capture_output=True,
+                          text=True).stdout.strip()
+
+    real_cls = cache_mod.SourceCache
+    monkeypatch.setattr(cache_mod, "SourceCache", lambda: real_cls(cache_dir=tmp_path / "cache"))
+    client = GitHubClient.__new__(GitHubClient)
+    client._default_branch_sha = lambda repo: "0" * 40                       # a stale key
+    client.clone_git_root = lambda repo, dest, shallow_since=None: (
+        subprocess.run(["git", "clone", "-q", str(origin), str(dest)], check=True) and None) or dest
+
+    class _Repo:
+        full_name = "owner/repo"
+
+    with client.git_clone_root(_Repo()):
+        pass
+    assert client.last_served_sha == head
+
+
 # ── readers say "not recorded" for NULL ─────────────────────────────────────────────────────────────────
 
 def test_the_labels_say_not_recorded_for_null():
@@ -382,9 +574,10 @@ def test_the_symbol_drill_down_shows_role_and_commit_or_not_recorded(tmp_path):
 
     assert extraction_commit(reg, "p") is None                             # no extraction run recorded
     assert "commit not recorded" in members._symbol_members(reg, "p", "all", 50).note
-    reg.record_step_run("p", "repo_symbol_extraction", "2026-10-15T10:00:00")  # run that recorded no sha
+    reg.record_step_run("p", "repo_symbol_extraction", "2026-10-15T10:00:00",   # completed, read no zipball
+                        metrics={"outcomes": ["recovered"]})
     assert "commit not recorded" in members._symbol_members(reg, "p", "all", 50).note
     reg.record_step_run("p", "repo_symbol_extraction", "2026-10-15T11:00:00",
-                        survey_commit_sha="3606859c0ffee1234567")
+                        metrics={"outcomes": ["recovered"]}, survey_commit_sha="3606859c0ffee1234567")
     assert extraction_commit(reg, "p") == "3606859c0ffee1234567"
     assert "extracted at commit 3606859c0ffe" in members._symbol_members(reg, "p", "all", 50).note

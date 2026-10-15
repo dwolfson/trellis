@@ -120,7 +120,7 @@ class GitHubClient:
 
         return repo_root
 
-    def fetch_zipball(self, repo: Repository, zip_path: "Path") -> "Path":
+    def fetch_zipball(self, repo: Repository, zip_path: "Path", ref: str | None = None) -> "Path":
         """Download `repo`'s zipball to `zip_path`, with retries. No extraction.
 
         Split out of `download_zipball` so `SourceCache` can fill an entry with
@@ -134,7 +134,9 @@ class GitHubClient:
         from requests.exceptions import ConnectionError, SSLError, Timeout
 
         cfg = get_config().github
-        branch = repo.default_branch
+        # `ref` is a commit SHA when the caller has one (zipball_root's cache key): the archive is then
+        # exactly that commit, not whatever the branch points at by the time the download starts.
+        branch = ref or repo.default_branch
         url = f"{self._base_url}/repos/{repo.full_name}/zipball/{branch}"
         headers = {"Authorization": f"token {cfg.token}"} if cfg.token else {}
         zip_path = Path(zip_path)
@@ -230,9 +232,10 @@ class GitHubClient:
                 # Handing out a shared extracted tree would let concurrent
                 # surveys see each other's mutations.
                 sha = self._default_branch_sha(repo)
-                # The commit this zipball IS (the cache key), for the run's step_runs rows. None on the
-                # uncached fallback: the default branch's SHA could not be established, so it is not
-                # recorded rather than guessed.
+                # The commit this zipball IS, for the run's step_runs rows: the cache key, and on a miss
+                # the download is fetched BY that SHA (fetch_zipball ref=), so a push between the lookup
+                # and the download cannot make the two differ. None on the uncached fallback: the SHA
+                # could not be established, so it is not recorded rather than guessed.
                 self.last_served_sha = sha
                 if sha is None:
                     yield self.download_zipball(repo, Path(tmp), subproject_path)
@@ -241,7 +244,7 @@ class GitHubClient:
                 zip_path = cache.get("zipball", repo.full_name, sha)
                 if zip_path is None:
                     def _produce(target: Path) -> None:
-                        self.fetch_zipball(repo, target)
+                        self.fetch_zipball(repo, target, ref=sha)
                     zip_path = cache.put("zipball", repo.full_name, sha, _produce)
                 extract_to = Path(tmp) / "x"
                 with zipfile.ZipFile(zip_path) as z:
@@ -392,14 +395,18 @@ class GitHubClient:
                     self.last_served_sha = _clone_head(root)
                     yield root
                     return
-                self.last_served_sha = sha
                 cache = SourceCache()
                 cached = cache.get("gitclone", repo.full_name, sha)
                 if cached is None:
                     def _produce(target: Path) -> None:
                         self.clone_git_root(repo, target, shallow_since=None)
                     cached = cache.put("gitclone", repo.full_name, sha, _produce)
-                yield local_clone(cached, dest)
+                root = local_clone(cached, dest)
+                # The clone's own HEAD, not the cache key: the cached clone was made from the branch, and
+                # a push between the SHA lookup and the clone would make the key name a commit the clone
+                # does not have checked out as HEAD.
+                self.last_served_sha = _clone_head(root)
+                yield root
 
         return _cm()
 

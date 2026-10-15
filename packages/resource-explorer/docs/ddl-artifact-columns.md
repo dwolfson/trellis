@@ -11,28 +11,39 @@ owner's word for that restart. Merging is not enough.
 
 ## The exact Postgres DDL
 
-`ProjectRegistry._add_nullable_text_column` in `resource_explorer/registry.py` runs these from
-`_init_schema`. Each one runs only when `_get_table_columns` says the column is missing, inside the init
-transaction:
+`ProjectRegistry._migrate_artifact_columns` in `resource_explorer/registry.py` runs these at the end of
+`_init_schema`, after the main init transaction has committed. **Each ALTER runs in its own short
+transaction** (one `with self._conn()` per table), and only when `_get_table_columns` says the column is
+missing:
 
 ```sql
-SET LOCAL lock_timeout = '10s';
-ALTER TABLE project_code_symbols ADD COLUMN IF NOT EXISTS file_role TEXT;
-SET LOCAL lock_timeout = '10s';
-ALTER TABLE project_code_markers ADD COLUMN IF NOT EXISTS file_role TEXT;
-SET LOCAL lock_timeout = '10s';
-ALTER TABLE step_runs ADD COLUMN IF NOT EXISTS survey_commit_sha TEXT;
+BEGIN; SET LOCAL lock_timeout = '10s'; ALTER TABLE project_code_symbols ADD COLUMN IF NOT EXISTS file_role TEXT; COMMIT;
+BEGIN; SET LOCAL lock_timeout = '10s'; ALTER TABLE project_code_markers ADD COLUMN IF NOT EXISTS file_role TEXT; COMMIT;
+BEGIN; SET LOCAL lock_timeout = '10s'; ALTER TABLE step_runs ADD COLUMN IF NOT EXISTS survey_commit_sha TEXT; COMMIT;
 ```
 
-The three run in the order `_init_schema` reaches them: symbols right after that table's existing column
-migrations, markers right after its CREATE TABLE, and step_runs after its `engine_action_*` migrations. On
-SQLite the same statements run without `IF NOT EXISTS`.
+On SQLite the same statements run without `IF NOT EXISTS`.
 
-The columns are nullable with no default. On Postgres 11 and later that is a catalog-only change, with no table
-rewrite, and needs only a brief ACCESS EXCLUSIVE lock on each table. If another process holds that lock, the
-ALTER fails after 10 s with RuntimeError "Could not add <table>.<column>: another process holds a lock …; stop
-other Resource Explorer processes and restart.", rather than queueing every reader behind it. This is the same
-shape as `resource_schedules.created_by` (2026-10-11) and `step_runs.engine_action_requested_at`.
+### Lock behaviour
+
+The columns are nullable with no default. On Postgres 11 and later that is a catalog-only change, with no
+table rewrite. It still needs an ACCESS EXCLUSIVE lock on the table, and the effects are these:
+
+- **Readers can be blocked.** While the ALTER waits for its lock, every new reader of that table queues behind
+  it. For example, a symbol drill-down queues behind the `project_code_symbols` ALTER. Each wait is bounded at
+  10 s. Because each ALTER commits on its own, one table's lock is never held while the next table's is
+  awaited. In the worst case one reader waits about 10 s. Under the earlier single-transaction design the
+  symbols lock could be held across the later waits, for about 20 s or more.
+- **Startup fails cleanly on a timeout.** At 10 s that ALTER's transaction rolls back and startup raises
+  RuntimeError "Could not add <table>.<column>: another process holds a lock …; stop other Resource Explorer
+  processes and restart." Columns already added in earlier transactions stay, and they are correct.
+  `tests/test_artifact_columns.py::test_a_held_table_lock_fails_the_start_cleanly_and_a_later_start_adds_the_column`
+  pins this.
+- **The cure is to restart when the table is quiet:** no survey running, and the Prefect worker idle.
+- **Concurrent starts are safe.** Two processes that both see a column missing both ALTER. The second waits on
+  the first's lock, and `IF NOT EXISTS` then turns its ALTER into a no-op.
+  `test_two_registries_adding_the_columns_at_the_same_moment_both_succeed` pins this with two threads and a
+  barrier.
 
 Older rows read NULL, and no data is migrated.
 
@@ -70,8 +81,16 @@ Older rows read NULL, and no data is migrated.
 - `members._symbols_in_file` shows each symbol's role. `members._symbol_members` adds "Symbols extracted at
   commit <sha12>", or "Extraction commit not recorded".
 
-**Known limit.** A Prefect-dispatched step's row carries the SHA only if the flow returns the runner's output
-dict. Otherwise it stores NULL, which reads as "not recorded".
+**Rules the review added (2026-10-15).**
+- A zipball cache miss downloads `zipball/<sha>`, the SHA it is cached and recorded under, not the branch. A
+  clone records its own `git rev-parse HEAD`.
+- Only a step that **completed** carries the SHA. A step that raised, or reported `step_error`, stores NULL
+  (`step_cost_observer.completed`).
+- `artifact_provenance.extraction_commit` reads the latest **successful** extraction, meaning one whose
+  `metrics.outcomes` has a completed outcome, so a failed run after a good one does not hide the good one's
+  commit.
+- Prefect rows (`prefect/flows._record_step_cost`) take the SHA from the runner output, as the local executor
+  does.
 
 ## Which processes would create it
 
@@ -109,7 +128,9 @@ REGISTRY_SNAPSHOT_URL=postgresql://<user>:<pwd>@localhost:5442/egeria_advisor \
 It checks the following, and exits 1 if any check fails:
 
 - Each column exists once, in `resource_explorer`, as `text`, nullable, with no default.
-- Every other column of each table is unchanged and in its old order. The new one is appended last.
+- The new column is appended last. **What proves that every other column is unchanged is the `diff before.txt
+  after.txt`:** both snapshots print every table's full column list, so the only difference should be the
+  appended column.
 - The non-NULL counts are reported: 0 right after the restart, and they rise only as surveys run. A non-NULL
   `file_role` must be one of the five roles.
 

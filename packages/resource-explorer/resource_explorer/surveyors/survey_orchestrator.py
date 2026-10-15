@@ -93,6 +93,7 @@ class SurveyOrchestrator:
             result.add_error(msg)
             return msg
         annotations = []
+        raised = False
         with step_cost_observer.observe(
             producer, info.fetch_cost, info.compute_cost,
             demanded_by=demanding_step,
@@ -105,6 +106,7 @@ class SurveyOrchestrator:
                     result.add(ann)
                 result.step_annotations[producer] = list(annotations)
             except Exception as exc:
+                raised = True
                 msg = f"prerequisite {producer} raised unexpectedly: {exc}"
                 log.exception(msg)
                 openlineage.note_failure(msg)
@@ -113,9 +115,11 @@ class SurveyOrchestrator:
             observed[0].annotations, observed[0].outcomes = (
                 step_cost_observer.describe_work(annotations))
             observed[0].disagreement = step_cost_observer._disagreement(observed[0])
+            commit = result.survey_commit_sha if step_cost_observer.completed(annotations, raised) else None
+            if commit:
+                result.commit_by_step[producer] = commit
             step_cost_observer.record(
-                self._registry, project.slug, observed[0], surveyed_at,
-                survey_commit_sha=result.survey_commit_sha)
+                self._registry, project.slug, observed[0], surveyed_at, survey_commit_sha=commit)
         result.add(ClassificationAnnotation(
             check_name="prerequisite_auto_run",
             item_key=producer,
@@ -467,6 +471,9 @@ class SurveyOrchestrator:
                     entity_type="repo", slug=project.slug, resource=project,
                     job_family="survey",
                 ) as _observed:
+                    # Reset per step: a step that raises must not be judged on the previous step's output.
+                    annotations = []
+                    _raised = False
                     try:
                         annotations = surveyor.run()
                         for ann in annotations:
@@ -474,6 +481,7 @@ class SurveyOrchestrator:
                         result.step_annotations[step_key] = list(annotations)
                         log.info("  → %d annotation(s)", len(annotations))
                     except Exception as exc:
+                        _raised = True
                         msg = f"{surveyor.step_name} raised unexpectedly: {exc}"
                         log.exception(msg)
                         openlineage.note_failure(msg)
@@ -493,9 +501,14 @@ class SurveyOrchestrator:
                         step_cost_observer.describe_work(locals().get("annotations")))
 
                     _observed[0].disagreement = step_cost_observer._disagreement(_observed[0])
+                    # The commit only on a step that completed; a failed step read nothing to cite.
+                    _commit = (result.survey_commit_sha
+                               if step_cost_observer.completed(annotations, _raised) else None)
+                    if _commit:
+                        result.commit_by_step[step_key] = _commit
                     recorded = step_cost_observer.record(
                         self._registry, project.slug, _observed[0], surveyed_at,
-                        survey_commit_sha=result.survey_commit_sha)
+                        survey_commit_sha=_commit)
                     if recorded == step_cost_observer.NOT_RECORDED:
                         # Branchable, not just logged: an unwritten observation
                         # is indistinguishable from a step that was never slow.

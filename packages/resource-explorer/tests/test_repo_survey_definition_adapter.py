@@ -26,7 +26,8 @@ def test_each_step_key_delegates_to_orchestrator_with_itself_as_the_only_step():
     registry = MagicMock()
 
     for key, runner in steps.items():
-        fake_result = MagicMock(annotations=[f"ann-for-{key}"], survey_commit_sha="sha1")
+        fake_result = MagicMock(annotations=[f"ann-for-{key}"], survey_commit_sha="sha1",
+                                commit_by_step={key: "sha1"})
         with patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
             MockOrch.return_value.run.return_value = fake_result
             output = runner(project, registry)
@@ -373,7 +374,7 @@ class TestRunBatch:
 
         project = _project()
         registry = MagicMock()
-        fake_result = MagicMock(annotations=["a1", "a2"], errors=[], survey_commit_sha=None)
+        fake_result = MagicMock(annotations=["a1", "a2"], errors=[], survey_commit_sha=None, commit_by_step={})
         with patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as MockOrch:
             MockOrch.return_value.run.return_value = fake_result
             output = _run_batch(project, registry, ["repo_language", "repo_file_classification"])

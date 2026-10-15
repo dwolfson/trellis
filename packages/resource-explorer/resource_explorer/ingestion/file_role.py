@@ -10,8 +10,12 @@ The roles, in the order they are decided (the first that matches wins):
 
 - ``vendored``  somebody else's code checked in (`vendored.VENDORED_DIRS`);
 - ``generated`` this repository's own output: build and tool directories
-  (`vendored.GENERATED_DIRS`), generated-source directories, and files whose
-  name says a generator wrote them (``*_pb2.py``, ``*.pb.go``, ``*.min.js``);
+  (`vendored.GENERATED_DIRS`), the Maven/Gradle generator output roots
+  (``generated-sources``, ``generated-test-sources``, ``generated-src``), and
+  files whose name says a generator wrote them (``*_pb2.py``, ``*.pb.go``,
+  ``*.min.js``, ``*.generated.ts``). A directory merely called ``generated``
+  is NOT enough: hand-written code lives in such packages too (review,
+  2026-10-15), so without a file-name marker it stays ``core``;
 - ``test``      `test_paths.is_test_path` decides, unchanged: there is one
   rule for "is this a test" and this module calls it rather than copying it;
 - ``docs``      under a documentation directory (``docs/``, ``doc/``,
@@ -41,10 +45,10 @@ DOCS = "docs"
 #: means the row was extracted before the column existed ("not recorded").
 FILE_ROLES = (CORE, TEST, GENERATED_ROLE, VENDORED_ROLE, DOCS)
 
-#: Directories whose contents a generator wrote, beyond the build/tool set
-#: `vendored.GENERATED_DIRS` already names (Maven's generated-sources, a
-#: codegen package called `generated`).
-GENERATED_SOURCE_DIRS = frozenset({"generated", "generated-sources", "generated-test-sources"})
+#: Generator OUTPUT ROOTS named by the build tools themselves, beyond the
+#: build/tool set `vendored.GENERATED_DIRS` already names. Deliberately not a
+#: bare `generated`: that is also a hand-written package name.
+GENERATED_SOURCE_DIRS = frozenset({"generated-sources", "generated-test-sources", "generated-src"})
 
 _GENERATED_FILE_RES = (
     re.compile(r"^.+_pb2(_grpc)?\.pyi?$"),     # protoc, Python
