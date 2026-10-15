@@ -1076,6 +1076,23 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         # Reads project_code_symbols — doesn't extract itself (that's
         # repo_symbol_extraction's job), per this surveyor's own
         # docstring. No fetch, no re-parsing.
+        #
+        # The declared dependency is also the ordering and the "never summarise
+        # last run's symbols" guarantee: a definition that authors this step but
+        # not repo_symbol_extraction gets extraction added when the symbols are
+        # missing or stale (survey_execution_plan, prerequisite_resolver). The
+        # tier stays api/low ON PURPOSE -- this step only reads the registry. The
+        # budget is the consent: the resolver PROPOSES the download-tier producer
+        # to a run at this step's own tier, and (separately) treats a zipball the
+        # run has not acquired as its own consent reason, so a lone or scoped
+        # request is skipped with that proposal and never downloads. Only a
+        # planner given a download ceiling (a full-scope Prefect run) adds it.
+        requires_context={
+            "has_code_symbols":
+                "api_structure summarises project_code_symbols, so a run that "
+                "has not extracted symbols yet would report the previous run's "
+                "count as this run's",
+        },
     ),
     # Architecture recovery — Phase 1 plan §4.2 (docs/architecture-recovery-
     # phase1-plan.md), ported from scripts/arch-spike (44 findings recorded
