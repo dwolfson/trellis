@@ -280,3 +280,163 @@ def test_a_queued_catalog_entry_is_not_a_repo_wide_publish(world, monkeypatch):
     catalog = [e for e in reg.list_activity(entity_slug=SLUG, operation="catalog", limit=5)]
     assert catalog and catalog[0]["publish_proof"]["state"] == "queued"
     assert catalog[0]["summary"].startswith("Queued for publish to Egeria")
+
+
+# ── fix-first round (review of 411cdf1f) ────────────────────────────────────────────────────────────────────
+
+def _manual_publish(reg, monkeypatch, ref=""):
+    """The manual Publish route (`POST /api/egeria/{slug}/publish`), called as FastAPI would, signed in."""
+    import asyncio
+
+    from resource_explorer.web.routes import egeria as route
+    from tests.test_publisher_private_zones_e2e import _signed_in
+
+    monkeypatch.setattr(route, "_get_project_or_404", lambda slug: (reg.get(slug), reg))
+
+    async def _allow(*a, **k):
+        return None
+
+    monkeypatch.setattr("resource_explorer.web.routes.curate.authorize_resource_write", _allow)
+    with patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as orch, _signed_in("alice"):
+        orch.return_value.run.return_value = _result()
+        return asyncio.run(route.publish_survey(SLUG, route.PublishRequest(survey_definition_ref=ref)))
+
+
+def _hide_first_annotation(store):
+    real_new = store._new
+
+    def _new(user, kind, qn, *a, **k):
+        guid = real_new(user, kind, qn, *a, **k)
+        if kind == "Annotation" and not store.hidden:
+            store.hidden.add(guid)
+        return guid
+
+    store._new = _new
+
+
+def test_the_manual_publish_route_never_says_published_before_the_read_back(world, monkeypatch):
+    store, reg = world
+    _hide_first_annotation(store)
+    out = _manual_publish(reg, monkeypatch, ref="GovActionProcess::RepoScout")
+    assert out.status == "ok"                                    # the request worked; the publish word is apart
+    assert out.publish_state == "queued" and out.publish_word == "queued for publish"
+    assert not _says_published(f"{out.publish_word} {out.publish_words}")
+    [cat] = [e for e in reg.list_activity(entity_slug=SLUG, operation="catalog", limit=10)
+             if "RepoScout" in (e.get("summary") or "")]
+    assert not _says_published(cat["summary"]), cat["summary"]
+    assert cat["publish_proof"]["state"] == "queued"
+    # The ref-tagged row is not a publish for the Survey Definition card's badge until it is read back.
+    last = reg.get_survey_definition_last_activity("repo", SLUG)
+    assert "last_published_at" not in last.get("GovActionProcess::RepoScout", {})
+
+
+def test_the_manual_publish_route_says_published_read_back_once_it_is(world, monkeypatch):
+    _store, reg = world
+    out = _manual_publish(reg, monkeypatch, ref="GovActionProcess::RepoScout")
+    assert out.publish_state == "read_back" and out.publish_word == "published · read back"
+    last = reg.get_survey_definition_last_activity("repo", SLUG)
+    assert last["GovActionProcess::RepoScout"]["last_published_at"]
+
+
+def test_nothing_to_publish_is_never_published(world):
+    """No annotation: no run id, no proof row, and the word is "nothing to publish"."""
+    _store, reg = world
+    from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
+    from resource_explorer.surveyors.survey_report import SurveyResult
+    from resource_explorer.web.routes.egeria import manual_publish_proof
+    from tests.test_publisher_private_zones_e2e import _signed_in
+
+    empty = SurveyResult(resource_slug=SLUG, project_display_name="R", github_url="https://github.com/o/r")
+    with _signed_in("alice"):
+        pub = EgeriaPublisher(platform_url="https://localhost:9443", registry=reg)
+        pub.publish(empty, defer_drain=True)
+    assert pub.publish_run_id == "" and pub.publish_deferred is False
+    [cat] = reg.list_activity(entity_slug=SLUG, operation="catalog", limit=5)
+    assert cat["summary"].startswith("Nothing to publish to Egeria") and not _says_published(cat["summary"])
+    assert manual_publish_proof(reg, "")["word"] == "nothing to publish"
+
+
+def _rows(reg, run_id):
+    return {r["element_kind"]: r for r in reg.list_outbox_elements(entity_slug=SLUG, limit=50)
+            if r["run_id"].startswith(run_id)}
+
+
+def test_an_orphaned_link_fails_the_read_back_at_once(world):
+    """An annotation died, its link waits on it for ever: the read-back fails on the first drain, not every drain."""
+    _store, reg = world
+    from resource_explorer.egeria_outbox import enqueue_annotation_links, enqueue_publish_read_back
+
+    run = "Annotation::r::orphan"
+    a = reg.enqueue_outbox_element("repo", SLUG, "annotation", f"{run}::0", {"class": "X"}, run_id=run)
+    b = reg.enqueue_outbox_element("repo", SLUG, "annotation", f"{run}::1", {"class": "X"}, run_id=run)
+    reg.mark_outbox_done(a, "guid-a")
+    reg.mark_outbox_failed(b, "403 OPEN-METADATA-SECURITY-403 refused", max_attempts=1)
+    enqueue_annotation_links(reg, "repo", SLUG, [{"summary_row_id": a, "evidence_row_id": b}],
+                             run_id=f"{run}::links")
+    enqueue_publish_read_back(reg, "repo", SLUG, run, "report-x")
+    _drain(reg)
+    rb = [r for r in reg.list_outbox_elements(run_id=f"{run}::read_back")][0]
+    assert rb["status"] == "dead", rb
+    proof = reg.publish_proofs([run])[run]
+    assert proof["state"] == "failed" and "OPEN-METADATA-SECURITY-403" in proof["words"]
+
+
+def test_a_read_back_past_its_paging_bound_could_not_verify(world, monkeypatch):
+    """Every page full and the run's annotations still unseen: "could not verify", neither published nor failed."""
+    store, reg = world
+    import resource_explorer.egeria_outbox as ob
+
+    monkeypatch.setattr(ob, "READ_BACK_PAGE", 1)
+    monkeypatch.setattr(ob, "READ_BACK_MAX_PAGES", 1)
+    _out, entry = _run(reg, monkeypatch)
+    real = store.clients_for
+
+    def clients_for(user):
+        from pyegeria.omvs.data_discovery import DataDiscovery
+
+        c = real(user)
+        c.of(DataDiscovery).get_new_annotations.side_effect = (
+            lambda guid, **k: [{"elementHeader": {"guid": f"other-{k.get('start_from')}"}, "properties": {}}])
+        return c
+
+    store.clients_for = clients_for
+    _drain(reg)
+    proof = reg.get_activity(entry["id"])["publish_proof"]
+    assert proof["state"] == "unverified" and proof["word"] == "could not verify", proof
+    assert not _says_published(proof["word"])
+    assert json.loads(reg.get_activity(entry["id"])["detail"])["published"] == "queued"
+
+
+def test_read_back_rows_are_purged_with_the_runs_other_rows(world):
+    _store, reg = world
+    from resource_explorer.egeria_outbox import enqueue_publish_read_back
+
+    run = "Annotation::r::old"
+    a = reg.enqueue_outbox_element("repo", SLUG, "annotation", f"{run}::0", {"class": "X"}, run_id=run)
+    rb = enqueue_publish_read_back(reg, "repo", SLUG, run, "report-x")
+    reg.mark_outbox_done(a, "guid-a")
+    reg.mark_outbox_done(rb, "report-x", note="read back")
+    with reg._conn() as conn:
+        conn.execute("UPDATE egeria_outbox SET completed_at = '2020-01-01T00:00:00' WHERE run_id LIKE ?", (f"{run}%",))
+    assert reg.purge_outbox_completed() == 2
+    assert reg.publish_proofs([run]) == {}, "past the window: no proof, no word"
+    assert reg.queue_missing_read_backs() == 0, "a run whose rows are gone is not re-queued"
+
+
+def test_an_old_run_already_flipped_to_published_gets_a_read_back(world):
+    """Before 2026-10-14 the flip did not wait for a read-back: those runs carry `published: True` and a run id.
+    They get a read-back queued (once) rather than reading "queued for publish" for ever."""
+    _store, reg = world
+    from resource_explorer.activity_logger import log_analysis_run
+
+    run = "Annotation::r::flipped"
+    a = reg.enqueue_outbox_element("repo", SLUG, "annotation", f"{run}::0",
+                                   {"class": "X", "parentGUID": "report-old"}, run_id=run)
+    reg.mark_outbox_done(a, "guid-a")
+    aid = log_analysis_run(reg, "repo", SLUG, "R", "ok", "done", "fake_analysis")
+    reg.update_activity_status(aid, "ok", detail=json.dumps({"published": True}), publish_run_id=run)
+
+    assert reg.queue_missing_read_backs() == 1
+    assert reg.queue_missing_read_backs() == 0, "one read-back per run"
+    [rb] = reg.list_outbox_elements(run_id=f"{run}::read_back")
+    assert json.loads(rb["payload_json"])["report_guid"] == "report-old"

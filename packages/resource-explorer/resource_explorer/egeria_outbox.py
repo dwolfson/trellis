@@ -1301,6 +1301,17 @@ def enqueue_publish_read_back(registry, entity_type: str, entity_slug: str, publ
     )
 
 
+#: The words on a read-back row that read every page it may and still could not see every annotation: neither
+#: published nor failed. Kept on a done row (`last_error`), so the drain never re-reads it; `publish_proofs` says
+#: "could not verify".
+READ_BACK_UNVERIFIED = "could not verify"
+
+
+class OutboxReadBackUnverified(RuntimeError):
+    """The read-back reached its paging bound with annotations still unseen. Not a failure of any write and not a
+    proof: the drain marks the row done with `READ_BACK_UNVERIFIED` and these words."""
+
+
 class OutboxReadBackFailed(OutboxApplyError):
     """The run's writes landed but Egeria's answer does not hold them yet: an ordinary failed attempt (retried with
     backoff, so a slow index has time), dead after the usual attempts, in these words."""
@@ -1323,14 +1334,16 @@ def _read_back_publish(clients: "OutboxClients", payload: dict) -> str:
     if not run_id or not report_guid:
         raise OutboxNotKept("not read back: the row names no publish run or no report")
     rows = registry.list_outbox_rows_for_runs([run_id, f"{run_id}{LINKS_SUFFIX}"])
-    waiting = [r for r in rows if r["status"] in ("pending", "failed", "running")]
-    if waiting:
-        raise OutboxNotReadyError(f"waiting for {len(waiting)} write(s) of this run to land")
+    # Dead first: a link waiting on an annotation that died can never land, so waiting for it would defer this row
+    # on every drain for ever.
     dead = [r for r in rows if r["status"] == "dead"]
     if dead:
         first = dead[0]
         raise OutboxNotKept(f"not read back: {len(dead)} write(s) of this run failed · "
                             f"{first['element_kind']} {first['qualified_name']}: {first.get('last_error') or ''}")
+    waiting = [r for r in rows if r["status"] in ("pending", "failed", "running")]
+    if waiting:
+        raise OutboxNotReadyError(f"waiting for {len(waiting)} write(s) of this run to land")
     expected = {(r.get("egeria_guid") or "").strip() for r in rows
                 if r["element_kind"] == "annotation" and r["status"] == "done"}
     expected.discard("")
@@ -1338,7 +1351,10 @@ def _read_back_publish(clients: "OutboxClients", payload: dict) -> str:
         raise OutboxNotKept("not read back: no annotation of this run recorded a GUID")
     discovery = clients.require("discovery")
     seen: set[str] = set()
-    for page in range(READ_BACK_MAX_PAGES):
+    # Enough pages for every annotation the run wrote, with room for a reused report's older ones.
+    max_pages = max(READ_BACK_MAX_PAGES, -(-len(expected) // READ_BACK_PAGE) + 2)
+    ended = False
+    for page in range(max_pages):
         try:
             answer = discovery.get_new_annotations(report_guid, start_from=page * READ_BACK_PAGE,
                                                    page_size=READ_BACK_PAGE, output_format="JSON")
@@ -1349,6 +1365,7 @@ def _read_back_publish(clients: "OutboxClients", payload: dict) -> str:
             from resource_explorer.egeria_absence import ABSENT, is_absent
 
             if is_absent(answer) == ABSENT:
+                ended = True
                 break
             raise OutboxReadBackFailed(f"the read-back got an unreadable answer: {answer[:EGERIA_DETAIL_LIMIT]!r}")
         if not isinstance(answer, list):
@@ -1358,8 +1375,13 @@ def _read_back_publish(clients: "OutboxClients", payload: dict) -> str:
             if guid:
                 seen.add(guid)
         if len(answer) < READ_BACK_PAGE:
+            ended = True
             break
     missing = expected - seen
+    if missing and not ended:
+        raise OutboxReadBackUnverified(
+            f"{READ_BACK_UNVERIFIED}: read {max_pages} page(s) of report {report_guid} and {len(missing)} of "
+            f"{len(expected)} annotation(s) were not among them; the report holds more than the read-back reads")
     if missing:
         raise OutboxReadBackFailed(f"read back {len(expected) - len(missing)} of {len(expected)} annotation(s) "
                                    f"under report {report_guid}; Egeria does not answer {len(missing)} yet")
@@ -1545,6 +1567,12 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
                 with time_egeria_call(registry, "outbox:collection_membership:read_back", "query"), \
                         _row_identity(row, identity):
                     done_note = verify_membership_landed(row, clients)
+        except OutboxReadBackUnverified as exc:
+            # Neither published nor failed: done, with its words, so the drain never re-reads it.
+            registry.mark_outbox_done(row["id"], "", note=str(exc))
+            summary["done"] += 1
+            log.warning("Outbox row %s (%s) %s", row["id"], row["qualified_name"], exc)
+            continue
         except OutboxNotReadyError as exc:
             # Not a failure: this link's referent annotation(s) have not
             # landed yet. Hand it back to 'pending' with no attempt burned —

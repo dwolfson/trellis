@@ -228,6 +228,13 @@ def _drain_egeria_outbox() -> None:
     from resource_explorer.egeria_clients import Daemon, DaemonReason
 
     registry = ProjectRegistry()
+    # Runs from before the read-back existed get one, so their word can reach its proof (bounded per pass).
+    try:
+        backfilled = registry.queue_missing_read_backs()
+        if backfilled:
+            log.info("Egeria outbox: queued %d read-back(s) for earlier publish runs", backfilled)
+    except Exception:
+        log.exception("Egeria outbox: read-back backfill failed")
     # The background loop is the one drain that runs as the daemon (Brief I).
     summary = drain_outbox(registry, identity=Daemon(DaemonReason.OUTBOX))
     if summary.get("claimed"):

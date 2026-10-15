@@ -473,6 +473,16 @@ class TestPublishChoiceThreeStates:
         result = self._run(_fake_registry())
         assert result["published"] == "queued"
 
+    def test_nothing_queued_is_nothing_to_publish_not_published(self):
+        """The publisher queued no annotation (no run id): no proof row, so the run never says published."""
+        def publish(entity, outputs, at, reg, *, defer_drain=False, publish_out=None):
+            publish_out.update({"publish_run_id": "", "read_back": False, "deferred": False})
+            return "report-guid"
+
+        result = self._run(_fake_registry(), adapter_publish=publish)
+        assert result["published"] is None
+        assert result["publish_state"].startswith("nothing to publish")
+
     def test_no_choice_waits_when_inline_is_configured(self, monkeypatch):
         from resource_explorer.config import get_config
 

@@ -8603,7 +8603,9 @@ class ProjectRegistry:
                     break
         if row is None:
             return False
-        if proof["state"] == "queued":
+        if proof["state"] not in ("read_back", "failed"):
+            if proof["state"] != "queued":
+                return False          # "could not verify" (or unreadable): never flipped either way
             # A run queued before the read-back existed (2026-10-14) has none: once its writes are all done, queue
             # it, so it can still become "published · read back" — never by being assumed.
             self._queue_missing_read_back(publish_run_id, detail)
@@ -8687,6 +8689,36 @@ class ProjectRegistry:
             return None
         return enqueue_publish_read_back(self, rows[0]["entity_type"], rows[0]["entity_slug"],
                                          publish_run_id, report_guid)
+
+    def queue_missing_read_backs(self, limit: int = 50) -> int:
+        """Queue a read-back for runs that name a publish run, still have its outbox rows, and have no read-back row:
+        runs from before the read-back existed (2026-10-14), including ones already flipped to `published: True`,
+        which would otherwise read "queued for publish" for ever. Bounded like `_queue_missing_read_back` (every
+        write done, a report GUID found, one row per run by its key) and by `limit` runs per call, newest first.
+        Returns how many were queued. Called from the scheduler's drain loop before the drain."""
+        from resource_explorer.egeria_outbox import READ_BACK_SUFFIX
+
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT a.publish_run_id AS run_id, a.detail AS detail FROM activity_log a "
+                "WHERE a.publish_run_id <> '' "
+                "AND EXISTS (SELECT 1 FROM egeria_outbox o WHERE o.run_id = a.publish_run_id) "
+                "AND NOT EXISTS (SELECT 1 FROM egeria_outbox r WHERE r.run_id = a.publish_run_id || ?) "
+                "ORDER BY a.ts DESC LIMIT ?",
+                (READ_BACK_SUFFIX, int(limit)),
+            ).fetchall()
+        queued, seen = 0, set()
+        for r in rows:
+            if r["run_id"] in seen:
+                continue
+            seen.add(r["run_id"])
+            try:
+                detail = json.loads(r["detail"] or "{}")
+            except (TypeError, ValueError):
+                detail = {}
+            if self._queue_missing_read_back(r["run_id"], detail if isinstance(detail, dict) else {}):
+                queued += 1
+        return queued
 
     def get_outbox_guids(self, row_ids: list[int]) -> dict[int, str]:
         """Map row id -> the GUID it resolved to, for rows that reached
@@ -8814,11 +8846,15 @@ class ProjectRegistry:
 
         * `read_back` · "published · read back": the run's `publish_read_back` row is done (`at` is when);
         * `failed` · "publish failed": a row of the run is dead; `words` are that row's (Egeria's) words;
+        * `unverified` · "could not verify": the read-back read every page it may and did not see every annotation
+          (neither published nor failed);
         * `queued` · "queued for publish": anything else with rows: a write or the read-back is still to land.
           A run whose writes are all done but whose read-back has not succeeded is queued, not published.
 
         A run_id with no rows at all is left out (no proof, no word: never assumed queued or published)."""
-        from resource_explorer.egeria_outbox import PUBLISH_READ_BACK, RUN_COMPANION_SUFFIXES, base_run_id
+        from resource_explorer.egeria_outbox import (
+            PUBLISH_READ_BACK, READ_BACK_UNVERIFIED, RUN_COMPANION_SUFFIXES, base_run_id,
+        )
 
         bases = sorted({r for r in (publish_run_ids or []) if r})
         if not bases:
@@ -8829,9 +8865,15 @@ class ProjectRegistry:
             by_run.setdefault(base_run_id(row.get("run_id") or ""), []).append(row)
         out: dict[str, dict] = {}
         for base, rows in by_run.items():
-            read_back = [r for r in rows if r["element_kind"] == PUBLISH_READ_BACK and r["status"] == "done"]
+            done_reads = [r for r in rows if r["element_kind"] == PUBLISH_READ_BACK and r["status"] == "done"]
+            unverified = [r for r in done_reads
+                          if (r.get("last_error") or "").startswith(READ_BACK_UNVERIFIED)]
+            read_back = [r for r in done_reads if r not in unverified]
             dead = [r for r in rows if r["status"] == "dead"]
-            if read_back:
+            if unverified and not read_back:
+                out[base] = {"state": "unverified", "word": READ_BACK_UNVERIFIED, "at": "",
+                             "words": unverified[-1].get("last_error") or ""}
+            elif read_back:
                 out[base] = {"state": "read_back", "word": self.PUBLISH_READ_BACK_WORD,
                              "at": read_back[-1].get("completed_at") or "", "words": ""}
             elif dead:
@@ -9065,12 +9107,16 @@ class ProjectRegistry:
         and failed/pending rows are live work. Retention exists from day one
         because one proposal publish on egeria_git is ~2,100 rows at the
         largest run observed, not because today's 831-row total needs it.
+
+        A run's `publish_read_back` row (its proof) has the same retention as the run's other rows: once past the
+        window the run carries no publish word (no proof, no word), and `queue_missing_read_backs` does not
+        re-queue a run whose rows are gone.
         """
         cutoff = (datetime.utcnow() - timedelta(days=older_than_days)).isoformat()
         with self._conn() as conn:
             cur = conn.execute(
                 "DELETE FROM egeria_outbox WHERE status='done' AND completed_at <> '' "
-                "AND completed_at < ? AND element_kind <> 'publish_read_back'", (cutoff,),
+                "AND completed_at < ?", (cutoff,),
             )
         return cur.rowcount or 0
 
@@ -13010,7 +13056,10 @@ class ProjectRegistry:
                 if detail.get("published") is True:
                     entry["last_published_at"] = row["ts"]
                     entry["last_published_scope"] = "candidate"
-            elif row["operation"] == "catalog" and "last_published_at" not in entry:
+            elif (row["operation"] == "catalog" and "last_published_at" not in entry
+                  and (not row["publish_run_id"] or (proof or {}).get("state") == "read_back")):
+                # A ref-tagged catalog row is a publish only once its run is read back (same gate as the
+                # untagged branch above); an older row with no run id keeps its old meaning.
                 entry["last_published_at"] = row["ts"]
                 entry["last_published_scope"] = "candidate"
         if repo_wide_publish_at:

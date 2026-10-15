@@ -137,6 +137,12 @@ class PublishResult(BaseModel):
     surveyed_at: str | None = None
     error: str | None = None
     stage: str | None = None       # "survey" | "publish"
+    #: The publish word, from the run's proof rows (registry.publish_proofs), never from this route returning:
+    #: "read_back" ("published · read back"), "queued" ("queued for publish"), "failed" ("publish failed",
+    #: `publish_words` carries Egeria's), "unverified" ("could not verify"), or "nothing" ("nothing to publish").
+    publish_state: str | None = None
+    publish_word: str | None = None
+    publish_words: str | None = None
 
 
 class AnnotationItem(BaseModel):
@@ -936,13 +942,13 @@ async def publish_survey(slug: str, req: PublishRequest | None = None) -> Publis
             _aio.set_event_loop(loop)
             try:
                 # The manual Publish waits for Egeria (RUNS_PUBLISH_INLINE governs a run's auto-publish only).
-                return EgeriaPublisher(registry=registry, zone_names=zone_names).publish(
-                    result, defer_drain=False)
+                publisher = EgeriaPublisher(registry=registry, zone_names=zone_names)
+                return publisher.publish(result, defer_drain=False), publisher
             finally:
                 loop.close()
                 _aio.set_event_loop(None)
 
-        report_guid = await asyncio.to_thread(_run_publish)
+        report_guid, publisher = await asyncio.to_thread(_run_publish)
     except Exception as exc:
         return PublishResult(
             status="error",
@@ -956,23 +962,45 @@ async def publish_survey(slug: str, req: PublishRequest | None = None) -> Publis
     # shares) — only written when this publish came from a Survey Definition
     # candidate's own "☁ Publish" button, so its last-published badge
     # (registry.get_survey_definition_last_activity) has something to find.
+    run_id = getattr(publisher, "publish_run_id", "")
+    run_id = run_id if isinstance(run_id, str) else ""
+    proof = manual_publish_proof(registry, run_id)
     if req and req.survey_definition_ref:
         from resource_explorer.activity_logger import log_catalog
 
-        log_catalog(
+        entry = log_catalog(
             registry, entity_type="repo", entity_slug=slug,
             entity_name=project.display_name, entity_location=project.github_url,
             status="ok",
-            summary=f"Published '{req.survey_definition_ref}' findings ({len(result.annotations)} annotations)",
+            summary=(f"'{req.survey_definition_ref}' findings ({len(result.annotations)} annotations): "
+                     f"{proof['word']}"),
             detail=json.dumps({"survey_definition_ref": req.survey_definition_ref}),
         )
+        if run_id and entry:
+            # Its badge (get_survey_definition_last_activity) follows the run's proof, not this row existing.
+            registry.tag_activity_publish_run(entry, run_id)
 
     return PublishResult(
         status="ok",
         report_guid=report_guid,
         annotation_count=len(result.annotations),
         surveyed_at=result.surveyed_at.isoformat(),
+        publish_state=proof["state"],
+        publish_word=proof["word"],
+        publish_words=proof.get("words") or "",
     )
+
+
+def manual_publish_proof(registry, publish_run_id: str) -> dict:
+    """The manual Publish's word, from the run's proof rows. No run id means nothing was queued: "nothing to
+    publish". A run id whose rows cannot be read is "publish not established", never "published"."""
+    if not publish_run_id:
+        return {"state": "nothing", "word": "nothing to publish", "words": ""}
+    try:
+        proof = registry.publish_proofs([publish_run_id]).get(publish_run_id)
+    except Exception as exc:  # noqa: BLE001 - said, never guessed
+        return {"state": "unknown", "word": "publish not established", "words": f"the outbox could not be read: {exc}"}
+    return proof or {"state": "unknown", "word": "publish not established", "words": "no outbox rows for this run"}
 
 
 async def _authorize(registry: ProjectRegistry, entity_type: str, slug: str, write: str, *,

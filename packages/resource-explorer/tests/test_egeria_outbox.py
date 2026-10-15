@@ -1109,12 +1109,16 @@ class TestCompletePublishRunIfDone:
         """The integration point: drain_outbox must call this itself once a
         run's last row lands, not leave it to a separate caller."""
         run_id = "Annotation::p::2026-01-01T00:00:04"
-        discovery = type("D", (), {
-            "create_annotation": lambda *a, **k: "guid-5",
-            "get_new_annotations": lambda self, guid, **k: (
-                [{"elementHeader": {"guid": "guid-5"}, "properties": {}}] if not k.get("start_from")
-                else "No elements found"),
-        })()
+        from unittest.mock import create_autospec
+
+        from pyegeria.omvs.data_discovery import DataDiscovery
+
+        discovery = create_autospec(DataDiscovery, instance=True, spec_set=True)
+        discovery.create_annotation.return_value = "guid-5"
+        # The live shape (probed 2026-10-14): a list with the GUID at elementHeader.guid, then "No elements found".
+        discovery.get_new_annotations.side_effect = lambda guid, **k: (
+            [{"elementHeader": {"guid": "guid-5"}, "properties": {}}] if not k.get("start_from")
+            else "No elements found")
         row = db.enqueue_outbox_element(
             "repo", project, "annotation", "Annotation::p::5::0",
             {"class": "NewElementRequestBody"}, run_id=run_id,

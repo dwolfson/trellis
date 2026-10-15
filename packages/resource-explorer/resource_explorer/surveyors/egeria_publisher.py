@@ -511,7 +511,7 @@ class EgeriaPublisher:
                 # The lead word follows the read-back proof: "published" only once the run was read back.
                 lead = ("Queued for publish to Egeria: " if self.publish_deferred
                         else "Published to Egeria · read back: " if self.publish_read_back
-                        else "Published to Egeria: ")      # nothing queued (no annotations): no run to read back
+                        else "Nothing to publish to Egeria: ")      # no annotation queued: no run, no proof
                 catalog_entry = log_catalog(
                     self._registry,
                     entity_type="repo",
@@ -1533,11 +1533,13 @@ class EgeriaPublisher:
             OutboxClients, drain_outbox, enqueue_annotations,
         )
 
-        self.publish_run_id = qualified_name_prefix
         row_ids = enqueue_annotations(
             self._registry, "repo", result.resource_slug, result.annotations,
             report_guid, qualified_name_prefix, run_id=qualified_name_prefix,
         )
+        # A run id only when something was queued under it: with nothing to publish there is no proof row, and the
+        # word is "nothing to publish", never "queued" or "published".
+        self.publish_run_id = qualified_name_prefix if row_ids else ""
 
         from resource_explorer.config import get_config
 
@@ -1554,7 +1556,7 @@ class EgeriaPublisher:
             # method's docstring for how evidence links are enqueued too, by
             # row id rather than GUID, and resolved once their referent
             # annotations are applied.
-            self.publish_deferred = True
+            self.publish_deferred = bool(row_ids)
             counts = dict(self._LINK_COUNTS_ZERO)
             counts["annotations_queued"] = len(row_ids)
             counts["annotations_produced"] = len(result.annotations)

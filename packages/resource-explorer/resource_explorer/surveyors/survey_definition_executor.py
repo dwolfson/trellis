@@ -1140,6 +1140,7 @@ class SurveyDefinitionExecutor:
         # to catalog an unassigned resource explicitly, or to re-publish.
         report_guid = ""
         publish_run_id = ""
+        nothing_published = ""
         published: bool | str = False
         publish_waiting = ""
         from resource_explorer.private_publish import PrivateAwaitsOwner, record_waiting
@@ -1196,9 +1197,14 @@ class SurveyDefinitionExecutor:
                     entity, step_outputs, surveyed_at, self.registry, **publish_kwargs,
                 )
                 if "publish_run_id" in publish_out:
-                    # The publisher said what it did: queued unless its read-back landed before it returned.
+                    # The publisher said what it did: queued unless its read-back landed before it returned; with
+                    # no run id nothing was queued (no annotations), so there is nothing to publish, not "published".
                     publish_run_id = publish_out.get("publish_run_id") or ""
-                    published = True if publish_out.get("read_back") or not publish_run_id else "queued"
+                    if not publish_run_id:
+                        published = None
+                        nothing_published = NOTHING_TO_PUBLISH
+                    else:
+                        published = True if publish_out.get("read_back") else "queued"
                 else:
                     published = "queued" if (defer_drain and "defer_drain" in publish_kwargs) else True
             except PrivateAwaitsOwner as exc:
@@ -1226,7 +1232,7 @@ class SurveyDefinitionExecutor:
         # word, from the variables above. Database only: a filesystem step
         # already carries its own `publish_state` (its adaptive step publishes),
         # and a second, run-level word could contradict it.
-        publish_state = ""
+        publish_state = nothing_published
         if entity_type == "database":
             # The variable parts (refusal, error, not_recorded) were masked on
             # the way in; masking the run's passwords over the WHOLE word would
