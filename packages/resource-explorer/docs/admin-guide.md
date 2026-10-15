@@ -250,26 +250,29 @@ There is no admin role in the Egeria sign-in. RE has one small, separate admin c
 ```bash
 # Either or both. Unset = no admin configured.
 FEEDBACK_ADMIN_TOKEN=<a long random string>   # a shared secret, sent by the browser as the X-Admin-Token header
-FEEDBACK_ADMIN_USERS=alice,bob                # user ids accepted when sent as the X-Admin-User header
+FEEDBACK_ADMIN_USERS=alice,bob                # signed-in user ids (the session JWT's `sub`) that are admins
+# Local dev only: with no admin configured, let any signed-in user do the require_admin actions below.
+# RE_ADMIN_OPEN_WHEN_UNCONFIGURED=true
 ```
 
-An admin is a request that presents a matching `X-Admin-Token`, or an `X-Admin-User` listed in
-`FEEDBACK_ADMIN_USERS`. The browser sends `X-Admin-Token` from the token you enter once in **Admin → Feedback**
+An admin is a signed-in request whose session `sub` is listed in `FEEDBACK_ADMIN_USERS`, or one that presents a
+matching `X-Admin-Token`. The browser sends `X-Admin-Token` from the token you enter once in **Admin → Feedback**
 (held in `sessionStorage` under `re_admin_token`, for that tab only, and shared with the Classic UI and
-`/admin/feedback`). Nothing in the Next UI sends `X-Admin-User`; it exists for a reverse proxy that authenticates a
-user and sets the header. **`X-Admin-User` is trusted as sent**, so it is safe only behind a proxy that strips any copy the client sends; with
-`FEEDBACK_ADMIN_USERS` set and no such proxy, any signed-in user can claim to be an admin, so prefer
-`FEEDBACK_ADMIN_TOKEN`.
+`/admin/feedback`). A client-sent `X-Admin-User` header is ignored: until 2026-10-14 it was trusted as sent, so any
+signed-in user who knew an admin's name could claim to be them.
 
-Two behaviours, on purpose:
+**Decision (project owner, 2026-10-14):** with no admin configured, admin actions fail closed; the open behaviour
+of 2026-10-09 survives only behind `RE_ADMIN_OPEN_WHEN_UNCONFIGURED=true`, for local dev.
 
 | Gate | What it protects | When no admin is configured |
 |---|---|---|
-| `is_admin_request` (fail closed) | Curate's feedback listing, Admin → Feedback | **Denies everyone** |
-| `require_admin` (fail open for signed-in users) | Publish Queue **Retry**, **Run bootstrap now**, **bulk** Egeria Links resolve | **Any signed-in user may act**; an anonymous caller is always refused |
+| `is_admin_request` | Curate's feedback listing, Admin → Feedback | **Denies everyone** (the dev flag does not apply) |
+| `require_admin` | Publish Queue **Retry**, **Run bootstrap now**, **bulk** Egeria Links resolve | **Denies everyone** ("no admin configured"), unless `RE_ADMIN_OPEN_WHEN_UNCONFIGURED=true`, which lets any signed-in user act |
 
-Once either variable is set, the second row enforces admin as well. The Next controls read `GET /api/egeria/admin-status`
-(`{admin, configured}`) and show **admin only** on a control only when an admin is configured and the caller is not one.
+An anonymous caller is always refused by `require_admin`. Once an admin is configured the dev flag is ignored. The
+Next controls read `GET /api/egeria/admin-status` (`{admin, configured, open}`) and show **admin only** on a control
+whenever the server would refuse the caller: not an admin, and either an admin is configured or the deployment is
+not `open`.
 Resolving a single resource's stale Egeria link (the banner on a repo) is open to any signed-in user either way, and
 **Delete in Egeria** is not an RE admin action at all: it keeps only the ISSUE-117 archive/delete block.
 

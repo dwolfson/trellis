@@ -2098,10 +2098,12 @@ const adminPost = (path, body) =>
 /** {admin, configured}: whether this browser's credential is an admin one, and whether any admin is configured. */
 export const getAdminStatus = () => request('/api/egeria/admin-status', { headers: adminHeaders() });
 
-/** True only when the control should read "admin only": an admin is configured and this caller is not one. With no
- *  admin configured any signed-in user may act, and a status that could not be read locks nothing (the server
- *  still enforces). */
-export const adminLocked = (status) => !!status && status.configured === true && status.admin !== true;
+/** True when the control should read "admin only": this caller is not an admin, and either an admin is configured or
+ *  none is and the deployment is not open (owner ruling 2026-10-14: unconfigured fails closed unless
+ *  RE_ADMIN_OPEN_WHEN_UNCONFIGURED is set, reported as `open`). A status that could not be read, or one from a server
+ *  that predates `open`, locks only on `configured` (the server still enforces). */
+export const adminLocked = (status) => !!status && status.admin !== true
+  && (status.configured === true || status.open === false);
 
 export const getBootstrapStatus = () => get('/api/bootstrap/status');
 
