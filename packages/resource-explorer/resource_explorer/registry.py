@@ -7628,7 +7628,10 @@ class ProjectRegistry:
                      a.get("explanation") or "", measured_at,
                      json.dumps({"scope": a.get("scope") or "",
                                  "resourceProperties": a.get("resourceProperties") or {},
-                                 "additionalProperties": env}, default=str),
+                                 "additionalProperties": env,
+                                 # a library step's proposal (ClassificationAnnotation), kept as it was proposed
+                                 **({"candidateClassifications": list(a["candidateClassifications"])}
+                                    if a.get("candidateClassifications") else {})}, default=str),
                      created_at),
                 )
             return int(conn.execute(

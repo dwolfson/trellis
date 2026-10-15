@@ -189,10 +189,14 @@ def _catalogued_library_steps() -> dict[str, str]:
 
 
 def _library_header(step, gat: str) -> str:
+    from trellis_analytics.discovery import origin
+
     from resource_explorer import engine_host as eh
 
+    # The catalog entry's package when the step has one, else the installed distribution's (a step with no card).
+    package = step.provided_by.get("package") or origin(step.step_key).get("package", "")
     return f"""<!--
-GENERATED from the manifest of '{step.step_key}' ({step.provided_by.get('package', '')} {step.manifest.version}) by
+GENERATED from the manifest of '{step.step_key}' ({package} {step.manifest.version}) by
 packages/resource-explorer/scripts/generate_engine_host_declaration.py. Do not hand-edit; regenerate.
 Design: docs/design-notes/DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE.md §4.3 (engine host, step 3).
 

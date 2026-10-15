@@ -31,4 +31,7 @@ def manifest_properties(manifest: StepManifest, origin: dict[str, str]) -> list[
         ("inputs", ", ".join(m.inputs)), ("measures", ", ".join(m.measure_names())), ("family", m.family),
         ("function", m.function),
         ("package", origin.get("package", "")), ("entry_point", f"trellis.analytics:{origin.get('entry_point', '')}"),
+        # Only when a measure is published as another Egeria type than the step's own (a step with none says nothing).
+        *([("measure_annotation_types", ", ".join(f"{k}: {v}" for k, v in m.measure_annotation_types.items()))]
+          if m.measure_annotation_types else []),
     ]

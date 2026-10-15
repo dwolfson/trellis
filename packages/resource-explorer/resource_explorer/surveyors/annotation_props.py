@@ -171,6 +171,12 @@ def build_annotation_props(ann, qualified_name: str) -> dict:
         cc = getattr(ann, "candidate_classifications", [])
         if cc:
             props["candidateClassifications"] = cc
+        # The annotation envelope (resultState, measuredAt, producingRun, scope) of a library step's proposal rides
+        # here, as on a ResourceMeasureAnnotation. Only an annotation that carries an envelope: every other
+        # classification annotation stays byte-identical on the wire.
+        ap = getattr(ann, "additional_properties", {}) or {}
+        if "resultState" in ap:
+            props["additionalProperties"] = to_string_map(ap)
 
     elif atype == AnnotationType.QUALITY_SCORE:
         qs = getattr(ann, "quality_scores", {})

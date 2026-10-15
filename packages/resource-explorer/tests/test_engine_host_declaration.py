@@ -13,6 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 PKG = Path(__file__).resolve().parent.parent
 SCRIPT = PKG / "scripts" / "generate_engine_host_declaration.py"
 DOC = PKG / "docs" / "dr-egeria" / "engine-host" / "resource-explorer-survey-engine.md"
@@ -146,7 +148,12 @@ def test_the_declaration_names_when_it_joins_the_initialization_batches():
 
 # ── engine host step 3: Analytic Library steps, one declaration per step, generated from its manifest ──
 
-from tests.library_step_install import pythonpath, staleness_installed  # noqa: E402,F401 - the fixture
+from tests.library_step_install import (  # noqa: E402,F401 - the fixtures
+    EXAMPLE_STEPS,
+    library_installed,
+    pythonpath,
+    staleness_installed,
+)
 
 LIBRARY = DOC.parent / "library"
 STALENESS_DOC = LIBRARY / "database_staleness.md"
@@ -159,11 +166,50 @@ def _manifest():
     return discover()["database_staleness"]
 
 
-def test_the_committed_library_declaration_is_what_the_generator_writes(staleness_installed):
+def test_the_committed_library_declaration_is_what_the_generator_writes(library_installed):
+    """Every example step installed: one document and one steps file each, every committed file the generator's."""
     want = _script().render_library()
-    assert set(want) == {STALENESS_DOC, STALENESS_STEPS}
-    assert STALENESS_DOC.read_text() == want[STALENESS_DOC], "stale: run scripts/generate_engine_host_declaration.py"
-    assert STALENESS_STEPS.read_text() == want[STALENESS_STEPS], "stale: run the generator"
+    assert set(want) == {LIBRARY / f"{n}{ext}" for n in EXAMPLE_STEPS for ext in (".md", ".pyegeria-steps.json")}
+    assert set(LIBRARY.glob("*")) == set(want), "a library declaration nothing generates, or one never committed"
+    for path, text in want.items():
+        assert path.read_text() == text, f"stale: {path.name}: run scripts/generate_engine_host_declaration.py"
+
+
+@pytest.mark.parametrize("step, request_type, guard, types", [
+    ("statistics_freshness", "re-statistics-freshness", "survey-completed", "ResourceMeasureAnnotation"),
+    ("hub_tables", "re-hub-tables", "survey-completed", "ResourceMeasureAnnotation"),
+    ("change_rates", "re-change-rates", "survey-completed", "ResourceMeasureAnnotation"),
+])
+def test_each_new_library_declaration_equals_its_manifest(library_installed, step, request_type, guard, types):
+    """The slice's first three steps: request type, guard, every manifest property, and the executor link."""
+    import json
+
+    from trellis_analytics.declare import manifest_properties
+    from trellis_analytics.discovery import discover, origin
+
+    from resource_explorer import engine_host
+
+    m = discover()[step]
+    doc = (LIBRARY / f"{step}.md").read_text()
+    gat = f"ResourceExplorerSurvey::{request_type}"
+    assert (m.request_type, m.nothing_to_derive_guard, m.annotation_type) == (request_type, guard, types)
+    assert _section(doc, "Create Governance Action Type", "Qualified Name") == gat
+    assert _section(doc, "Create Governance Action Type", "Description") == m.description
+    props = _section(doc, "Create Governance Action Type", "Additional Properties")
+    for key, value in [("re_analysis_step", m.name), ("request_type", request_type),
+                       ("nothing_to_derive_guard", guard), *manifest_properties(m, origin(m.name))]:
+        assert f"| {key} | {value} |" in props, (key, value)
+    assert _section(doc, "Link Action to Action Executor", "Request Type") == request_type
+    assert f"({origin(step)['package']} {m.version})" in doc
+    link = json.loads((LIBRARY / f"{step}.pyegeria-steps.json").read_text())["steps"][-1]
+    assert link["request_type"] == link["service_request_type"] == request_type
+    assert engine_host.supported_request_types()[request_type] == step
+
+
+def test_the_hub_declaration_names_its_proposal_as_a_classification_annotation(library_installed):
+    props = _section((LIBRARY / "hub_tables.md").read_text(), "Create Governance Action Type", "Additional Properties")
+    assert "| measure_annotation_types | hub_table_proposal: ClassificationAnnotation |" in props
+    assert "measure_annotation_types" not in STALENESS_DOC.read_text()
 
 
 def test_the_library_declaration_equals_the_manifest(staleness_installed):
