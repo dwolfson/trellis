@@ -75,6 +75,11 @@ _YAML_SECRETS_FILE_PROVIDER_CLASS = (
 )
 _OWN_SECRETS_STORE_QUALIFIED_NAME = "Resource Explorer:SecretsStoreConnector:YAML File Connection"
 
+#: LineageMapping's ends (OpenMetadataTypesArchive1_2.getLineageMappingRelationship): end 1 is
+#: `sourceElement`, end 2 `targetElement`. `LineageLinker.link_lineage(element_one_guid=...)` is end 1
+#: (`LineageHandler.linkLineage` -> `createRelatedElementsInStore(type, elementOneGUID, elementTwoGUID)`).
+LINEAGE_MAPPING_TARGET_END = 2
+
 
 def _secrets_collection_name(db_slug: str) -> str:
     """The per-database secrets collection name written to RE's own secrets
@@ -843,7 +848,8 @@ class EgeriaDatabaseSurveyor:
                 # what Egeria returned a GUID for, None when RE cannot tell.
                 "annotation_count": len(annotations),
                 "annotations_in_egeria": sum(1 for g in made if g) if isinstance(made, list) else None,
-                # Column names whose look-up could not be made, so their lineage was not linked.
+                # Column names whose look-up could not be made, and "source -> target" pairs whose
+                # existing LineageMappings could not be read: their lineage was not linked.
                 "lineage_not_checked": list(self.lineage_not_checked)}
 
     def _initiate_survey(self, tech_type: str, target_guid: str, start_time: datetime | None = None) -> str:
@@ -1467,24 +1473,33 @@ class EgeriaDatabaseSurveyor:
         return out
 
     def _publish_column_lineage(self, db_entity: "DatabaseEntity", views: list[dict]) -> None:
-        """Publish column-level lineage to Egeria using LineageLinker."""
+        """Publish column-level lineage to Egeria as LineageMapping relationships (source column at end 1,
+        view column at end 2).
+
+        LineageMapping is MULTI-LINK (`OpenMetadataTypesArchive1_2.getLineageMappingRelationship`,
+        `setMultiLink(true)`): every `link_lineage` call adds another relationship between the same two
+        columns. So each (source, target) pair is built once per run, then linked only when no
+        LineageMapping between exactly those two exists (`egeria_link_once.link_once`), and never when
+        that cannot be read."""
         if not views:
             return
 
-        from pyegeria.omvs.lineage_linker import LineageLinker
-        linker = self._clients().of(LineageLinker)
-
         db_name = db_entity.database_name
 
-        #: Column names whose look-up could not be made, so their mappings were skipped. Kept on the
-        #: surveyor so a caller can tell "no lineage published" from "lineage RE could not check".
+        #: Column names whose look-up could not be made, and "source -> target" pairs whose existing links
+        #: could not be read, so their mappings were skipped. Kept on the surveyor so a caller can tell "no
+        #: lineage published" from "lineage RE could not check".
         self.lineage_not_checked = []
         _column_guid = self._lineage_column_guid
 
+        # (source GUID, target GUID) -> (source qualifiedName, target qualifiedName, view name), first seen
+        # wins. Two leaves can name one column ("orders" and "public.orders"), and two views can resolve to
+        # one element through the short-name fallback: each pair is linked once.
+        pairs: dict[tuple[str, str], tuple[str, str, str]] = {}
         for view in views:
             schema_name = view["schema"]
             view_name = view["name"]
-            
+
             # Walk column lineages
             for target_col, lineage_tree in view.get("lineage", {}).items():
                 sources = self._extract_leaf_sources(lineage_tree)
@@ -1498,7 +1513,7 @@ class EgeriaDatabaseSurveyor:
                     log.debug(f"Could not find Egeria GUID for derived column '{target_qn}'")
                     continue
 
-                for src_table, src_col in sources:
+                for src_table, src_col in sorted(sources):
                     if "." in src_table:
                         s_name, t_name = src_table.split(".", 1)
                     else:
@@ -1510,26 +1525,40 @@ class EgeriaDatabaseSurveyor:
                     if not src_guid:
                         log.debug(f"Could not find Egeria GUID for source column '{src_qn}'")
                         continue
+                    pairs.setdefault((src_guid, target_guid), (src_qn, target_qn, view_name))
 
-                    try:
-                        body = {
-                            "class": "NewRelationshipRequestBody",
-                            "properties": {
-                                "class": "LineageMappingProperties",
-                                "iscQualifiedName": f"SQLGlot::LineageMapping::{target_qn}",
-                                "label": "Column Derivation Link",
-                                "description": f"Statically analyzed lineage map of view {view_name} via SQLGlot."
-                            }
-                        }
-                        rel_guid = linker.link_lineage(
-                            element_one_guid=src_guid,
-                            relationship_type_name="LineageMapping",
-                            element_two_guid=target_guid,
-                            body=body
-                        )
-                        log.info(f"Published column lineage mapping: {src_qn} -> {target_qn} (guid: {rel_guid})")
-                    except Exception as link_err:
-                        log.warning(f"Failed to create LineageMapping link between {src_qn} and {target_qn}: {link_err}")
+        if not pairs:
+            return
+
+        from pyegeria import MetadataExpert
+        from pyegeria.omvs.lineage_linker import LineageLinker
+
+        from resource_explorer.egeria_link_once import COULD_NOT_CHECK, link_once
+
+        clients = self._clients()
+        linker = clients.of(LineageLinker)
+        expert = clients.of(MetadataExpert)
+
+        for (src_guid, target_guid), (src_qn, target_qn, view_name) in pairs.items():
+            body = {
+                "class": "NewRelationshipRequestBody",
+                "properties": {
+                    "class": "LineageMappingProperties",
+                    "iscQualifiedName": f"SQLGlot::LineageMapping::{target_qn}",
+                    "label": "Column Derivation Link",
+                    "description": f"Statically analyzed lineage map of view {view_name} via SQLGlot."
+                }
+            }
+            # Read from the view column (end 2, `targetElement`): it is fed by the few leaves of one
+            # expression, while a base-table column (end 1, `sourceElement`) can feed every view on it.
+            outcome = link_once(
+                expert, relationship_type="LineageMapping", read_guid=target_guid,
+                read_end=LINEAGE_MAPPING_TARGET_END, far_guid=src_guid,
+                what=f"from {src_qn} to {target_qn}",
+                create=lambda s=src_guid, t=target_guid, b=body: linker.link_lineage(
+                    element_one_guid=s, relationship_type_name="LineageMapping", element_two_guid=t, body=b))
+            if outcome.outcome == COULD_NOT_CHECK:
+                self.lineage_not_checked.append(f"{src_qn} -> {target_qn}")
 
     def _lineage_column_guid(self, *names: str) -> str:
         """The first of `names` found in Egeria, or "". Lineage only LINKS two columns that already exist and
