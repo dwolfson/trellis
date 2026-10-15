@@ -7447,12 +7447,19 @@ class ProjectRegistry:
         started_in: str = "",
     ) -> bool:
         """Engine host case 3 (review L5): one native-survey row per process instance. Inserts the row only when no
-        row holds `engine_action_guid` yet, in ONE statement, so the Run press and the engine host's first step cannot
-        both write a run line for the same instance. True when this call wrote it; False when a row was already there
-        (the caller then adopts it with `adopt_native_survey_submission`)."""
+        row holds `engine_action_guid` yet, so the Run press and the engine host's first step cannot both write a run
+        line for the same instance. True when this call wrote it; False when a row was already there (the caller then
+        adopts it with `adopt_native_survey_submission`).
+
+        The insert-if-absent is one statement, but that alone is not atomic on Postgres: under READ COMMITTED two
+        transactions can both see no row (`idx_step_runs_engine_action` is not unique, and making it so is DDL). So on
+        Postgres the transaction first takes `pg_advisory_xact_lock(hashtext(<guid>))`, released at its commit; the
+        second writer waits, then sees the first's row. SQLite serialises writers itself."""
         declared = {k: v for k, v in (("started_as", started_as), ("started_by", started_by),
                                       ("started_in", started_in)) if v}
         with self._conn() as conn:
+            if getattr(conn, "is_postgres", False):
+                conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", (engine_action_guid,))
             cur = conn.execute(
                 "INSERT INTO step_runs (slug, entity_type, step_key, surveyed_at, "
                 "source, executor, executor_ref, metrics, declared, "

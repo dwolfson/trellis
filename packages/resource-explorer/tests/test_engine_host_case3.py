@@ -150,7 +150,9 @@ def _declared_types(text: str) -> dict[str, list[str]]:
 def test_request_types_equal_both_registries_and_guards_equal_the_mapping():
     from resource_explorer import engine_host as eh
     from resource_explorer import step_outcome
-    from resource_explorer.surveyors.database.survey_definition_adapter import DATABASE_STEP_REGISTRY
+    from resource_explorer.surveyors.database.survey_definition_adapter import (
+        DATABASE_STEP_REGISTRY,
+    )
     from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
     from resource_explorer.surveyors.survey_step_host import attached_user_steps
 
@@ -193,7 +195,10 @@ def test_the_published_definition_carries_one_executor_per_step_and_the_reconcil
     assert sorted(links) == sorted((f"GovActionProcessStep::DatabaseAnalysisSurvey::{k}", eh.ENGINE_QUALIFIED_NAME,
                                     eh.request_type_for_step(k)) for k in doc.steps)
     # the generator writes what the document says
-    from resource_explorer.surveyors.dr_egeria_survey_publisher import PublishableStep, render_executor_block
+    from resource_explorer.surveyors.dr_egeria_survey_publisher import (
+        PublishableStep,
+        render_executor_block,
+    )
     assert render_executor_block("DatabaseAnalysisSurvey", PublishableStep("db_derived", "d", "t")).count(
         "### Request Type\nre-db-derived") == 1
 
@@ -302,7 +307,9 @@ def test_a_guard_no_next_step_consumes_ends_the_process_and_the_run_says_so(reg,
 def test_a_step_the_stored_credential_cannot_serve_is_invalid_with_the_launchers_reason(reg, egeria, no_connection,
                                                                                        ops_runner):
     from resource_explorer.surveyors import credential_capability, prerequisite_resolver
-    from resource_explorer.surveyors.database.survey_definition_adapter import DATABASE_STEP_REGISTRY
+    from resource_explorer.surveyors.database.survey_definition_adapter import (
+        DATABASE_STEP_REGISTRY,
+    )
 
     _with_credential(reg, stats_role=False)
     _process_action(egeria, "ea-cap", "postgres_operations", next_guards=())
@@ -568,7 +575,8 @@ def test_a_step_started_twice_in_one_run_runs_once_and_the_second_is_invalid(reg
         _run_queue_once(reg)
     first, second, other = (egeria.actions[g]["completion"] for g in ("ea-dup-1", "ea-dup-2", "ea-other-run"))
     assert first["guards"] == ["survey-completed", "Any"] and other["guards"] == ["survey-completed", "Any"]
-    assert second["status"] == "INVALID" and second["guards"] == ["survey-invalid", "Any"]
+    # survey-invalid ONLY: no routing guard, so the refused duplicate starts nothing after it (review round 2)
+    assert second["status"] == "INVALID" and second["guards"] == ["survey-invalid"]
     assert "triggered twice in this run; the first ran (engine action ea-dup-1)" in second["message"]
     assert sorted(e1 for e1, _ in [(r["end1"], r) for r in egeria.relationships if r["type"] == "ReportOriginator"]) \
         == ["ea-dup-1", "ea-other-run"]                          # the second wrote no report
@@ -680,3 +688,107 @@ def test_a_definition_run_goes_on_after_a_failed_step_and_reads_running_until_do
                {"status": "INVALID", "guards": ["survey-invalid", "Any"]},
                {"status": "IN_PROGRESS", "guards": []}]}})}
     assert derive_mixed_state(row)["state"] == RUNNING
+
+
+
+# ── review round 2 ───────────────────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("status,guard", [("INVALID", "survey-invalid"), ("FAILED", "survey-failed")])
+def test_after_an_invalid_or_failed_step_the_next_is_claimed_run_and_the_run_ends(reg, egeria, no_connection,
+                                                                                 ops_runner, status, guard):
+    """HIGH: step 3 ended INVALID or FAILED and (M1) still emitted Any, so Egeria created step 4: RE claims and runs it,
+    and the run reaches a terminal state."""
+    from resource_explorer.native_survey_run import FAILED as RUN_FAILED
+    from resource_explorer.native_survey_run import derive_mixed_state
+
+    _with_credential(reg)
+    _process_action(egeria, "ea-4", "postgres_operations", previous=("ea-3", status, [guard, "Any"]), next_guards=())
+    assert _sweep(reg).claimed == ["ea-4"]
+    _run_queue_once(reg)
+    assert ops_runner and egeria.actions["ea-4"]["completion"]["guards"] == ["survey-completed", "Any"]
+    row = {"engine_action_guid": INSTANCE, "executor_ref": ANALYSIS, "surveyed_at": "2026-10-15T09:00:00",
+           "engine_action_status": "COMPLETED", "engine_action_read_at": "2026-10-15T09:05:00",
+           "declared": json.dumps({"process_run": {"words": "w", "steps": [
+               {"status": "COMPLETED", "guards": ["survey-completed", "Any"]},
+               {"status": "COMPLETED", "guards": ["survey-completed", "Any"]},
+               {"status": status, "guards": [guard, "Any"]},
+               {"status": "COMPLETED", "guards": ["survey-completed", "Any"]}]}})}
+    assert derive_mixed_state(row)["state"] == RUN_FAILED           # terminal: every step ran, one did not succeed
+
+
+def test_a_step_that_never_ended_still_holds_the_next_one(reg, egeria):
+    _process_action(egeria, "ea-4", "postgres_operations", previous=("ea-3", "IN_PROGRESS", []), next_guards=())
+    swept = _sweep(reg)
+    assert swept.claimed == [] and swept.skipped.get("previous_step_not_completed") == ["ea-4"]
+
+
+def test_readers_skip_a_refused_duplicate_start(reg):
+    from resource_explorer import mixed_process
+    from resource_explorer.native_survey_run import RUNNING, derive_mixed_state
+
+    dup = _view("a2-dup", "postgres_nested_columns", "INVALID", ["survey-invalid"])
+    dup.message = "Resource Explorer did not run re-postgres-nested-columns: triggered twice in this run; the first ran"
+    views = [_view("a1", "postgres_column_profile", "COMPLETED", ["survey-completed", "Any"], "r1aaaaaa-0000"),
+             _view("a2", "postgres_nested_columns", "IN_PROGRESS", []), dup]
+    [line] = mixed_process.group_by_process(views)
+    assert [v.guid for v in line.steps] == ["a1", "a2"]
+    detail = mixed_process.run_line_dict(line)
+    assert "✗" not in detail["words"] and len(detail["steps"]) == 2
+    row = {"engine_action_guid": INSTANCE, "executor_ref": ANALYSIS, "surveyed_at": "2026-10-15T09:00:00",
+           "engine_action_status": "IN_PROGRESS", "engine_action_read_at": "2026-10-15T09:05:00",
+           "declared": json.dumps({"process_run": detail})}
+    assert derive_mixed_state(row)["state"] == RUNNING              # no false failure from the duplicate
+
+
+def test_a_run_that_ended_where_no_link_took_its_guard_is_terminal():
+    """LOW 1: the step said the process ended there; fewer steps than declared is not "still to come"."""
+    from resource_explorer.native_survey_run import COMPLETE, FAILED, derive_mixed_state
+
+    def row(steps):
+        return {"engine_action_guid": INSTANCE, "executor_ref": ANALYSIS, "surveyed_at": "2026-10-15T09:00:00",
+                "engine_action_status": "COMPLETED", "engine_action_read_at": "2026-10-15T09:05:00",
+                "declared": json.dumps({"process_run": {"words": "w", "steps": steps}})}
+
+    ended = "Resource Explorer ran ... · process ended after postgres_nested_columns: guard survey-completed has no next step"
+    done = [{"status": "COMPLETED", "guards": ["survey-completed", "Any"]},
+            {"status": "COMPLETED", "guards": ["survey-completed", "Any"], "message": ended}]
+    assert derive_mixed_state(row(done))["state"] == COMPLETE
+    failed = [{"status": "COMPLETED", "guards": ["survey-completed", "Any"]},
+              {"status": "INVALID", "guards": ["survey-invalid", "Any"],
+               "message": ended.replace("survey-completed", "survey-invalid")}]
+    assert derive_mixed_state(row(failed))["state"] == FAILED
+
+
+def test_the_once_insert_takes_an_advisory_lock_first_on_postgres(reg, monkeypatch):
+    """MEDIUM: on Postgres the insert-if-absent runs after pg_advisory_xact_lock on the GUID, in the same transaction
+    (SQLite here, with the connection told it is Postgres and the lock statement recorded instead of sent)."""
+    from contextlib import contextmanager
+
+    seen: list[str] = []
+    original = reg._conn
+
+    class AsPostgres:
+        is_postgres = True
+
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, sql, params=()):
+            seen.append(sql.split()[0] + (" LOCK" if "pg_advisory_xact_lock" in sql else ""))
+            if "pg_advisory_xact_lock" in sql:
+                assert params == ("pi-9",)
+                return None
+            return self._conn.execute(sql, params)
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    @contextmanager
+    def conn():
+        with original() as c:
+            yield AsPostgres(c)
+
+    monkeypatch.setattr(reg, "_conn", conn)
+    assert reg.record_native_survey_submission_once("database", "coco_pharma", ANALYSIS, "2026-10-15T09:00:00",
+                                                    engine_action_guid="pi-9") is True
+    assert seen[:2] == ["SELECT LOCK", "INSERT"]

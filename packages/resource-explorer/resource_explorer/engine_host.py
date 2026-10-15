@@ -99,7 +99,7 @@ from dataclasses import dataclass, field
 from datetime import UTC
 from typing import Any
 
-from resource_explorer.step_outcome import SURVEY_GUARDS
+from resource_explorer.step_outcome import SURVEY_GUARDS, TRIGGERED_TWICE_SENTENCE
 
 log = logging.getLogger(__name__)
 
@@ -129,8 +129,8 @@ NOT_REGISTERED_SENTENCE = "not registered in Resource Explorer"
 NOT_A_DATABASE_SENTENCE = "not a database registered in Resource Explorer"
 
 #: Case 3 (H1): the same process step started twice in one process run (duplicate NextGovernanceActionProcessStep
-#: links each fire). The second is completed survey-invalid with this, never run.
-TRIGGERED_TWICE_SENTENCE = "triggered twice in this run; the first ran"
+#: links each fire). The second is completed survey-invalid with this (`step_outcome.TRIGGERED_TWICE_SENTENCE`,
+#: imported above), never run, and with no routing guard.
 
 #: An action RE already claimed whose target has since joined a private investigation: completed once,
 #: survey-invalid, never run as the service account (owner, Q-O3).
@@ -590,6 +590,7 @@ class EngineHost:
             # Case 3 (H1): Egeria started this step a second time in the same run (a duplicate next-step link). It is
             # claimed and completed survey-invalid without running; the first one ran.
             facts["refusal"] = twice
+            facts["duplicate_trigger"] = True
         elif report_refusal:
             # Claimed, then completed survey-invalid: the supplied information is invalid for this survey.
             facts["refusal"] = report_refusal
@@ -1046,6 +1047,8 @@ def _row_target(action: dict, guid: str, facts: dict, engine_guid: str) -> dict:
         "process_instance_guid": facts.get("process_instance_guid", ""),
         "next_guards": facts.get("next_guards"),
         "next_guards_error": facts.get("next_guards_error", ""),
+        # A refused second start of a step already run in this process run (review round 2): no routing guard.
+        "duplicate_trigger": bool(facts.get("duplicate_trigger")),
     }
 
 
@@ -1131,6 +1134,10 @@ def _route(outcome: dict, target: dict) -> None:
         return
     from resource_explorer import step_outcome
 
+    if target.get("duplicate_trigger"):
+        # Only its survey guard: emitting the routing guard would start the next step a second time too.
+        outcome["guards"] = [outcome["guard"]]
+        return
     step_key = target.get("step_key") or ""
     guards = list(step_outcome.completion_guards(step_key, outcome["guard"]))
     outcome["guards"] = guards
@@ -1142,7 +1149,7 @@ def _route(outcome: dict, target: dict) -> None:
                     f"read ({target['next_guards_error']})")
     elif next_guards and not any(g == "" or g in guards for g in next_guards):
         # A link with no guard (Egeria's null) always fires; any other must equal an output guard.
-        note = f"process ended after {step_key}: guard {outcome['guard']} has no next step"
+        note = f"{step_outcome.PROCESS_ENDED_PREFIX} {step_key}: guard {outcome['guard']} has no next step"
     if note:
         outcome["process_note"] = note
         outcome["message"] = f"{outcome['message'].rstrip('.')} · {note}"

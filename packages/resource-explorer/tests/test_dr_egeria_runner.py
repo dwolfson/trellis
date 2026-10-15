@@ -779,7 +779,9 @@ def test_a_refused_repeat_says_how_the_earlier_run_ended(root, reg, monkeypatch)
 
 # ── the summary reader on the survey-definition documents ────────────────────
 # Fixtures are the real `dr_egeria` rendering (md_processing.process_md_file_v2, the installed pyegeria) of
-# survey-definitions/repo-survey-definition-analysis.md, captured with a stub client and no Egeria call.
+# survey-definitions/repo-survey-definition-analysis.md, captured with a stub client and no Egeria call: lookups find
+# nothing except RE's engine (declared before this document runs), every write answers one stub GUID. Re-captured
+# 2026-10-15 for engine host case 3 at widths 1158 (process) and the runner's default 600 (folded).
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 _ANALYSIS_DOC = "survey-definitions/repo-survey-definition-analysis.md"
@@ -796,13 +798,11 @@ def test_every_command_of_the_analysis_definition_gets_a_real_status(fixture):
 
     plan = runner.plan_document(_ANALYSIS_DOC)
     items = runner.dr_egeria_results(plan.dr_egeria, (_FIXTURES / fixture).read_text(), "ok")
-    # The capture ran the document's 31 commands as they were before engine host case 3 added one "Link Action to
-    # Action Executor" per step (10). Every command it ran gets a real status; the executor links it never saw are
-    # "unknown" (no row), never "ok".
-    executors = [i for i in items if i["command"] == "Link Action to Action Executor"]
-    ran = [i for i in items if i["command"] != "Link Action to Action Executor"]
-    assert len(ran) == 31 and "unknown" not in {i["status"] for i in ran}
-    assert len(executors) == 10 and {i["status"] for i in executors} == {"unknown"}
+    # Re-captured for engine host case 3 (the document now carries one "Link Action to Action Executor" per step), with a
+    # stub client that knows the engine its executor links name: every one of the 41 commands gets a real status.
+    ran = items
+    assert len(ran) == 41 and "unknown" not in {i["status"] for i in ran}
+    assert {i["status"] for i in ran if i["command"] == "Link Action to Action Executor"} == {"ok"}
     assert {s for c, s in _statuses(ran) if c != "Link Element To Scope"} == {"ok"}
 
 

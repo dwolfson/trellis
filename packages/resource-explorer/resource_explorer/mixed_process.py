@@ -36,6 +36,8 @@ import functools
 import logging
 from dataclasses import dataclass, field
 
+from resource_explorer.step_outcome import TRIGGERED_TWICE_SENTENCE
+
 log = logging.getLogger(__name__)
 
 #: The kind `technology_type_processes.yaml` lists a mixed process under.
@@ -51,6 +53,9 @@ _ROUTING_GUARD = "Any"
 #: Egeria's terminal "it worked" word for an engine action, and its "still going" words.
 _DONE = "COMPLETED"
 _ACTIVE = frozenset({"REQUESTED", "APPROVED", "WAITING", "ACTIVATING", "IN_PROGRESS"})
+#: The statuses an engine action's completion leaves it in (`record_completion_status`): ACTIONED -> COMPLETED,
+#: INVALID, FAILED. Egeria starts the next steps from any of them when a link's guard matches.
+_ENDED = frozenset({_DONE, "INVALID", "FAILED"})
 
 #: An instance is read by following ControlFlow from its first action; a run longer than this is not one RE declared.
 MAX_STEPS = 20
@@ -160,6 +165,16 @@ def by_qualified_name(qualified_name: str) -> MixedProcess | None:
 # `NextGovernanceActionProcessStep` links) is run by Egeria, one engine action per step, each claimed by RE's engine
 # host. The same reader and run line serve it as a mixed process: its steps are read from the definition's own
 # document (`survey_definition_docs`), every one served by RE's engine under the request type of its step key.
+
+#: Case 3 (H1): the same process step started twice in one process run (duplicate NextGovernanceActionProcessStep
+#: links each fire). RE's engine host completes the second survey-invalid with this, never runs it, and emits no
+#: routing guard, so it starts nothing. Readers skip such an action: it is not a step of the run.
+
+
+def is_duplicate_trigger(view: EngineActionView) -> bool:
+    """An action RE's engine host refused as a second start of a step already run in the same process run."""
+    return TRIGGERED_TWICE_SENTENCE in (view.message or "")
+
 
 #: The kind the native-surveys pane lists an RE definition's Egeria-coordinated runs under.
 KIND_RE_DEFINITION = "re_definition"
@@ -412,10 +427,12 @@ def read_action_views(expert, guids: list[str]) -> list[EngineActionView]:
 
 def previous_step_refusal(view: EngineActionView) -> str:
     """Why an action of RE's must not run as a later process step, or "". An action with no previous action (started
-    alone, or the first step) is fine. Otherwise EVERY previous action must be COMPLETED with the link's guard among
-    its completion guards: Egeria should never create the action if not, so this pins RE's own refusal."""
+    alone, or the first step) is fine. Otherwise EVERY previous action must have ENDED (COMPLETED, INVALID or FAILED:
+    Egeria creates the next action from the completion, whatever its status) with the link's guard among its
+    completion guards: Egeria should never create the action if not, so this pins RE's own refusal. Case 3 (review
+    M1): an RE definition's step that ends INVALID or FAILED still emits `Any`, and the step after it runs."""
     for prev in view.previous:
-        if prev.status != _DONE or (prev.guard and prev.guard not in prev.completion_guards):
+        if prev.status not in _ENDED or (prev.guard and prev.guard not in prev.completion_guards):
             return (f"previous step {prev.guid} is {prev.status or 'of unknown status'} with "
                     f"{', '.join(prev.completion_guards) or 'no guard'}, not {prev.guard or 'a completion'}")
     return ""
@@ -484,6 +501,8 @@ def group_by_process(views: list[EngineActionView]) -> list[RunLine]:
     lines: dict[str, RunLine] = {}
     out: list[RunLine] = []
     for v in views:
+        if is_duplicate_trigger(v):
+            continue        # a refused second start of a step: not a step of the run (no false failure, no extra step)
         if v.unreadable:
             out.append(RunLine("", v.process_name, [v], note="process unknown"))
             continue

@@ -566,15 +566,16 @@ export function coordinateControlHtml(c) {
     <span data-coordinate-why="${qn}" class="hidden text-provenance"></span></span>`;
 }
 
-/** Once for the pane: why "coordinated by Egeria" is not offered (engine host off, ...), when no row offers it and
- *  some row would have. The short words on the line; the server's full reason on hover. */
+/** Once for the pane: why "coordinated by Egeria" is not offered on the rows that do not offer it (engine host off,
+ *  not published to Egeria, ...): each distinct reason once, short words on the line, the server's full reason on
+ *  hover. Rows that offer it, and rows it does not belong to (repository definitions), add nothing. */
 export function coordinateOffNoteHtml(candidates) {
-  const ctls = (candidates || []).map((c) => c && c.coordinated_by_egeria).filter(Boolean);
-  if (!ctls.length || ctls.some((x) => x.available)) return '';
-  const why = (ctls.find((x) => x.why_not) || {}).why_not || '';
-  if (!why) return '';
-  return `<div data-coordinate-off class="mt-s1 text-provenance text-ink-muted" title="${esc(why)}">
-    <span aria-hidden="true">◌</span> ${esc(ctls[0].label || 'coordinated by Egeria')} · ${esc(shortWhy(why))}</div>`;
+  const off = (candidates || []).map((c) => c && c.coordinated_by_egeria).filter((x) => x && !x.available && x.why_not);
+  if (!off.length) return '';
+  const reasons = [...new Set(off.map((x) => x.why_not))];
+  const label = esc(off[0].label || 'coordinated by Egeria');
+  return reasons.map((why) => `<div data-coordinate-off class="mt-s1 text-provenance text-ink-muted" title="${esc(why)}">
+    <span aria-hidden="true">◌</span> ${label} · ${esc(shortWhy(why))}</div>`).join('');
 }
 
 /** The first clause of a reason, for the short words ("engine host off"). */

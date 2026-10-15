@@ -27,9 +27,18 @@ test('engine host off: no button on any row, the short reason once for the pane'
   const note = ns.coordinateOffNoteHtml([off, { ...off, qualified_name: 'GovActionProcess::DatabaseScoutingSurvey' }]);
   assert.equal((note.match(/data-coordinate-off/g) || []).length, 1);
   assert.match(text(note), /^◌ coordinated by Egeria · engine host off$/);
-  // a pane where it is offered, or where no row carries it (repository definitions), says nothing
-  assert.equal(ns.coordinateOffNoteHtml([off, cand({})]), '');
+  // rows that offer it, or that it does not belong to (repository definitions), add nothing
+  assert.equal(ns.coordinateOffNoteHtml([cand({})]), '');
   assert.equal(ns.coordinateOffNoteHtml([{ qualified_name: 'GovActionProcess::RepoScoutingSurvey' }]), '');
+});
+
+test('a row that cannot offer it is explained even when another row can; each distinct reason once', () => {
+  const unpublished = cand({ available: false, why_not: 'not registered with Egeria · publish it first' });
+  const one = ns.coordinateOffNoteHtml([cand({}), unpublished]);
+  assert.equal((one.match(/data-coordinate-off/g) || []).length, 1);
+  assert.match(text(one), /coordinated by Egeria · not registered with Egeria/);
+  const two = ns.coordinateOffNoteHtml([unpublished, cand({ available: false, why_not: 'engine host off' }), unpublished]);
+  assert.equal((two.match(/data-coordinate-off/g) || []).length, 2);
 });
 
 test('a run Egeria is coordinating shows on the control, from the persisted state', () => {

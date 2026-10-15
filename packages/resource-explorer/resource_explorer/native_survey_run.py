@@ -1084,7 +1084,12 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
     # while a step is active or still to come it is running; failed only once nothing more will run.
     goes_on = process is not None and process.qualified_name.startswith(mixed_process.DEFINITION_PREFIX) \
         and mixed_process.by_qualified_name(process.qualified_name) is None
-    still_going = any(s.get("status") in ACTIVE_STATUSES for s in by_index) or len(by_index) < expected
+    # A run whose step said the process ended there (no authored link took its guards) will create no more steps.
+    from resource_explorer.step_outcome import PROCESS_ENDED_PREFIX
+
+    ended_early = any(PROCESS_ENDED_PREFIX in (s.get("message") or "") for s in by_index)
+    still_going = any(s.get("status") in ACTIVE_STATUSES for s in by_index) or (
+        len(by_index) < expected and not ended_early)
     if ended_badly is not None and not (goes_on and still_going):
         out["state"] = FAILED
         out["message"] = pr.get("words") or out["message"]

@@ -250,3 +250,15 @@ def produced_guards(step_key: str) -> tuple[str, ...]:
             if g not in seen:
                 seen.append(g)
     return tuple(seen)
+
+
+#: Case 3 (H1): an engine action RE's engine host refused as a second start of a process step already run in the same
+#: process run (duplicate next-step links each fire). Completed survey-invalid with this, never run, no routing guard;
+#: readers of a process run skip it (`mixed_process.is_duplicate_trigger`).
+TRIGGERED_TWICE_SENTENCE = "triggered twice in this run; the first ran"
+
+
+#: Case 3 (negative 4): how the engine host says a process ended at a step because none of its authored next-step links
+#: takes the guards it completed with ("process ended after <step>: guard <g> has no next step"). A reader of the run
+#: treats a run whose last step says this as ended, never as waiting for a step that will not come.
+PROCESS_ENDED_PREFIX = "process ended after"
