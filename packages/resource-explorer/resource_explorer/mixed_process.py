@@ -312,6 +312,14 @@ class EngineActionView:
         return self.report_guids[0] if len(set(self.report_guids)) == 1 else ""
 
     @property
+    def process_ended(self) -> bool:
+        """RE's engine host said the process ended at this step (no authored link took its guards), read from the FULL
+        completion message: the note is at its end, past what a stored step keeps of the message."""
+        from resource_explorer.step_outcome import PROCESS_ENDED_PREFIX
+
+        return PROCESS_ENDED_PREFIX in (self.message or "")
+
+    @property
     def succeeded(self) -> bool:
         return self.status == _DONE and SURVEY_COMPLETED in self.completion_guards
 
@@ -494,14 +502,18 @@ def _order(steps: list[EngineActionView]) -> list[EngineActionView]:
     return sorted(steps, key=lambda s: (depth(s), s.guid))
 
 
-def group_by_process(views: list[EngineActionView]) -> list[RunLine]:
+def group_by_process(views: list[EngineActionView], *, duplicates: frozenset[str] | set[str] = frozenset()
+                     ) -> list[RunLine]:
     """Engine actions grouped by the process instance they are anchored to: one `RunLine` per instance with its
     actions in run order; an action with no instance is a line of its own; an action whose process could not be
-    read (`unreadable`) is a line of its own with the note "process unknown". Input order of first appearance."""
+    read (`unreadable`) is a line of its own with the note "process unknown". Input order of first appearance.
+
+    `duplicates`: the actions RE's own runs rows mark as refused second starts (`duplicate_trigger`), skipped by that
+    flag; the completion text is the fallback for an action RE did not persist."""
     lines: dict[str, RunLine] = {}
     out: list[RunLine] = []
     for v in views:
-        if is_duplicate_trigger(v):
+        if v.guid in duplicates or is_duplicate_trigger(v):
             continue        # a refused second start of a step: not a step of the run (no false failure, no extra step)
         if v.unreadable:
             out.append(RunLine("", v.process_name, [v], note="process unknown"))
@@ -598,4 +610,6 @@ def run_line_dict(line: RunLine, *, started: str = "", started_in: str = "", sta
             "words": run_line_words(line, started=started, started_in=started_in, started_by=started_by),
             "steps": [{"action_guid": s.guid, "request_type": s.request_type, "status": s.status,
                        "guards": list(s.completion_guards), "report_guid": s.report_guid,
-                       "message": s.message[:500]} for s in line.steps]}
+                       "message": s.message[:500],
+                       # From the FULL message, before it is cut: the engine host appends this note at its end.
+                       "process_ended": s.process_ended} for s in line.steps]}

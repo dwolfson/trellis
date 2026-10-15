@@ -792,3 +792,45 @@ def test_the_once_insert_takes_an_advisory_lock_first_on_postgres(reg, monkeypat
     assert reg.record_native_survey_submission_once("database", "coco_pharma", ANALYSIS, "2026-10-15T09:00:00",
                                                     engine_action_guid="pi-9") is True
     assert seen[:2] == ["SELECT LOCK", "INSERT"]
+
+
+# ── review round 3 ───────────────────────────────────────────────────────────────────────────────────────────
+
+def test_a_long_failed_message_still_ends_the_run_by_its_flag():
+    """The engine host appends "process ended after ..." at the END of a message that can reach 1500 chars; the stored
+    step keeps 500. The flag is computed from the full message, so the run is terminal, never "running"."""
+    from resource_explorer import mixed_process as mp
+    from resource_explorer.native_survey_run import RUNNING, derive_mixed_state
+    from resource_explorer.step_outcome import PROCESS_ENDED_PREFIX
+
+    err = "postgres_nested_columns failed on coco_pharma: " + "OperationalError: x " * 40
+    a1 = _view("a1", "postgres_column_profile", "COMPLETED", ["survey-completed", "Any"], "r1aaaaaa-0000")
+    a2 = _view("a2", "postgres_nested_columns", "FAILED", ["survey-failed", "Any"])
+    a2.message = f"{err} · {PROCESS_ENDED_PREFIX} postgres_nested_columns: guard survey-failed has no next step"
+    [line] = mp.group_by_process([a1, a2])
+    detail = mp.run_line_dict(line)
+    assert PROCESS_ENDED_PREFIX not in detail["steps"][1]["message"]          # cut: the text alone cannot tell
+    assert detail["steps"][1]["process_ended"] is True
+    row = {"engine_action_guid": INSTANCE, "executor_ref": ANALYSIS, "surveyed_at": "2026-10-15T09:00:00",
+           "engine_action_status": "FAILED", "engine_action_read_at": "2026-10-15T09:05:00",
+           "declared": json.dumps({"process_run": detail})}
+    assert derive_mixed_state(row)["state"] != RUNNING
+
+
+def test_a_refused_duplicate_is_skipped_by_the_flag_on_res_own_row(reg, egeria, no_connection):
+    """The refused second start is skipped by `duplicate_trigger` on RE's runs row, even when Egeria's message for it
+    says nothing RE recognises; the text match is only the fallback."""
+    from resource_explorer import mixed_process
+    from resource_explorer.native_survey_run import _refused_duplicates
+
+    _process_action(egeria, "ea-d1", "db_derived")
+    _process_action(egeria, "ea-d2", "db_derived")
+    _sweep(reg)
+    [r2] = [r for r in _rows(reg) if r["target"]["engine_action_guid"] == "ea-d2"]
+    assert r2["target"]["duplicate_trigger"] is True
+    views = [_view("ea-d1", "db_derived", "COMPLETED", ["survey-completed", "Any"]),
+             _view("ea-d2", "db_derived", "INVALID", ["survey-invalid"])]       # no recognisable message
+    dups = _refused_duplicates(reg, views)
+    assert dups == {"ea-d2"}
+    [line] = mixed_process.group_by_process(views, duplicates=dups)
+    assert [v.guid for v in line.steps] == ["ea-d1"]

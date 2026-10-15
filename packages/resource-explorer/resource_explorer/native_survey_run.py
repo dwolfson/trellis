@@ -1087,7 +1087,9 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
     # A run whose step said the process ended there (no authored link took its guards) will create no more steps.
     from resource_explorer.step_outcome import PROCESS_ENDED_PREFIX
 
-    ended_early = any(PROCESS_ENDED_PREFIX in (s.get("message") or "") for s in by_index)
+    # The stored flag (computed from the full message); the cut message only for a row stored before the flag.
+    ended_early = any(s.get("process_ended") if "process_ended" in s
+                      else PROCESS_ENDED_PREFIX in (s.get("message") or "") for s in by_index)
     still_going = any(s.get("status") in ACTIVE_STATUSES for s in by_index) or (
         len(by_index) < expected and not ended_early)
     if ended_badly is not None and not (goes_on and still_going):
@@ -1149,7 +1151,8 @@ def refresh_mixed_run(registry, port, run: dict, *, entity_type: str, slug: str)
     except Exception as exc:  # noqa: BLE001 -- recorded, not raised
         registry.record_native_survey_readback(guid, read_at=read_at, error=scrub_secret(_short_error(exc), entity))
         return _refetch_mixed(registry, entity_type, slug, run)
-    lines = [ln for ln in mixed_process.group_by_process(views) if ln.instance_guid == guid]
+    lines = [ln for ln in mixed_process.group_by_process(views, duplicates=_refused_duplicates(registry, views))
+             if ln.instance_guid == guid]
     line = lines[0] if lines else mixed_process.RunLine(guid, run.get("executor_ref") or "", [])
     if not line.process_name:
         line.process_name = run.get("executor_ref") or ""
@@ -1167,6 +1170,31 @@ def refresh_mixed_run(registry, port, run: dict, *, entity_type: str, slug: str)
     newest = line.steps[-1].status if line.steps else ""
     registry.record_native_survey_readback(guid, read_at=read_at, status=newest, message=detail["words"])
     return _refetch_mixed(registry, entity_type, slug, run)
+
+
+def _refused_duplicates(registry, views: list) -> set[str]:
+    """The actions of a process run RE's engine host refused as second starts of a step, by the flag on their own
+    runs rows (`target.duplicate_trigger`). An action whose row cannot be read is not counted (the reader's text
+    fallback still applies)."""
+    out: set[str] = set()
+    lookup = getattr(registry, "engine_action_runs", None)
+    if not callable(lookup):
+        return out
+    import json
+
+    for v in views:
+        try:
+            rows = lookup(v.guid)
+        except Exception:  # noqa: BLE001 - a flag not read is not a flag
+            continue
+        for row in rows:
+            try:
+                target = json.loads(row.get("target") or "{}")
+            except (TypeError, ValueError):
+                continue
+            if isinstance(target, dict) and target.get("duplicate_trigger"):
+                out.add(v.guid)
+    return out
 
 
 def _refetch_mixed(registry, entity_type: str, slug: str, run: dict) -> dict:

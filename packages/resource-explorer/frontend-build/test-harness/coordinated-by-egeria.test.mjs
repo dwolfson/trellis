@@ -108,3 +108,12 @@ test('a definition RE ran says where it was started, from the run it recorded', 
   assert.match(text(h), /started in RE by dan/);
   assert.doesNotMatch(text(lastRunHtml({ last_run_at: when, last_run_status: 'ok' })), /started in/);
 });
+
+test('each reason line uses its own row label; a row with no reason still says it is not offered', () => {
+  const a = cand({ available: false, why_not: 'engine host off', label: 'coordinated by Egeria' });
+  const b = cand({ available: false, why_not: '', label: 'coordinated by Egeria (beta)' });
+  const h = ns.coordinateOffNoteHtml([a, b]);
+  assert.equal((h.match(/data-coordinate-off/g) || []).length, 2);
+  assert.match(text(h), /coordinated by Egeria · engine host off/);
+  assert.match(text(h), /coordinated by Egeria \(beta\) · not offered for this definition/);
+});
