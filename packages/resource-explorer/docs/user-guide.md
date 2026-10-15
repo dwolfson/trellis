@@ -1,10 +1,10 @@
 # Resource Explorer — User Guide
 
-**Status:** stale. Last revised 2026-08-21; predates private investigations, work lists, the Curate split and single Publish. Rewrite in progress.
+**Status:** live. Investigations, work lists, private work, Curate and Publish are current; more sections follow.
 
-**Last revised:** 2026-08-21
+**Last revised:** 2026-10-14
 
-Resource Explorer discovers, surveys, and catalogs information resources using Egeria as the metadata catalog. This guide covers the web UI, the eight user intents, and how to get the most out of each workflow.
+Resource Explorer discovers, surveys, and catalogs information resources using Egeria as the metadata catalog. This guide covers the web UI, investigations and work lists, the eight intents, and how to get the most out of each workflow.
 
 ---
 
@@ -47,34 +47,155 @@ Commands that reach Egeria — `survey --publish`, `egeria-recheck`, `curate mat
 session expired at 14:07, run `resource-explorer login`
 ```
 
-## What "owned by you" means
+## Who can see your work, and what "owned by you" means
 
-Everything you publish to Egeria carries an **owner** — you — and lands in a *draft zone*
-(`resource-explorer-draft`) rather than in the catalogue's normal zones. Two consequences:
+Everything you publish to Egeria is written **as you**. Egeria's own record shows your user id, and the
+elements you create are owned by you. A run that a person starts in the Explorer, or that a schedule starts
+later, publishes in the same way, with the same care about whose work it is (see "Private investigations").
 
-- **Egeria's zones decide who may curate** (project owner, 2026-10-10). Where no governance zone is
-  in use, any signed-in person may accept, reject or publish, whoever decided last. Where zones are
-  in use, you may change an element only if Egeria's zone security would let you update it; a
-  Portal curator or admin role may always. A refused row says "not permitted" and why.
-- **Accepting publishes it properly.** When you accept a finding, the element moves out of the
-  draft zone into the deployment's normal zones. That move is what "accept" actually does in
-  Egeria — it is not just a note in Resource Explorer.
+**Resource Explorer adds no zone of its own.** Egeria "zones" are the labels a deployment uses to say who
+may see or change an element. By default RE sends none, so what you publish follows the deployment's normal
+rules. A draft is a *content status* (a draft is something a person has not yet accepted), not a zone. The
+older "draft zone" (`resource-explorer-draft`) was retired on 2026-10-08. A deployment can still choose to
+configure one; ask whoever runs your Explorer (the admin guide, "Governance zones", says how).
+
+- **Egeria's zones decide who may curate.** Where no governance zone is in use, any signed-in person may
+  accept, reject or publish. Where zones are in use, you may change an element only if Egeria's zone security
+  would let you update it; a Portal curator or admin role may always. A refused row says "not permitted" and why.
+- **Accepting is a decision, not a write.** Accepting or rejecting a finding records your decision in RE.
+  Nothing reaches Egeria until someone presses **Publish** (see "Curate and Publish").
+
+---
+
+## Investigations, purposes and work lists
+
+### What an investigation is
+
+An **investigation** says *why* you are looking at a set of resources. It has a name, a description, a kind
+(for example Personal, Experiment, Task, Campaign or Study) and one or more **purposes**. Its **scope** is the
+set of resources it covers, and the scope can mix repositories, databases and file systems.
+
+The **Investigation** stage, at the left of the stage strip, is where you start one and see its scope. Once an
+investigation is *current*, the sidebar shows **Scope · N** and **Work lists for <name> · N** under it, and a
+resource that is in the scope says so ("already in <name>'s scope"); otherwise the act reads "add to <name>".
+
+An investigation is a way of framing your work. It is **not** one of the eight intents below. The intents say
+what a piece of work does; the investigation says what it is for.
+
+### Purposes
+
+Pick a purpose from the list when you start an investigation (or when you fill in Enrichment's **Intended
+use**). The list is kept in Egeria as a valid-value list, so everyone using the same Egeria sees the same
+choices. It is **suggestive, not strict**:
+
+- You may type a purpose that is not in the list. It is kept exactly as you wrote it, and it shows a small
+  "◌ not in the list" cue instead of an error.
+- If Egeria cannot be read, RE shows the last list it read and says how old that copy is; with no copy at all,
+  it shows the list that shipped with it, and says so.
+
+### Private investigations
+
+An investigation of kind **Personal** or **Experiment** is **private to its owner**: you.
+
+- In RE, nobody else sees it in their list. It carries a 🔒 mark.
+- In Egeria, what it produces (its survey reports and their findings) is written with the zones
+  `[resource-explorer-private, <your user id>]`, so Egeria's own security lets only you read it.
+- **The work runs as you.** Only the signed-in owner can write a private investigation's reports. If a
+  schedule or another person's session reaches one, RE does not write it; the row waits, reading "waits for
+  <owner> to publish", and your next Publish sends it.
+- The repositories, databases and file systems in a private investigation's scope are shared things. RE does
+  not hide them from other people; only what the investigation *produces* is private.
+- Today a private investigation can publish **repositories**. Databases and file systems in a private
+  investigation are refused with a clear message instead of being published where others could read them.
+- Changing a private investigation to a public kind always works. Changing a public one to a private kind can
+  stop part-way if something already reached a public zone; the result lists exactly what moved and what did not.
+
+An older private investigation created before RE recorded owners shows a note saying so, and is visible to
+everyone until it is recreated.
+
+### Work lists versus investigations
+
+Three words, three jobs:
+
+| Word | What it is |
+|---|---|
+| **Investigation** | *Why.* Purposes, description, verdicts. |
+| **Scope** | *Which resources*, of any kind, that the investigation covers. |
+| **Work list** | A *bench*: one kind of resource laid out as rows against one stage's questions, so you can decide which ones belong in a scope. |
+
+To use one: open **Select** in the sidebar, tick some resources of one kind, and press **save as work list…**.
+Open the list from **▦ Work lists** in the stage strip. From there you can run one survey across the whole
+list, compare the results, narrow the list to a shortlist (**promote**), and then **Add to an investigation…**
+or **Start an investigation from this list…**. Publishing a work list is explicit: creating one writes only to
+RE.
+
+Lists that start with `suggested-to-` are not work lists. They are inboxes for entries other people pointed
+you at from the journal ("suggest to…"), and they have their own **Suggestions** line in the sidebar.
+
+---
+
+## Questions
+
+Resource Explorer organises its checks as a **question catalogue**. Each question has an id,
+**Q-0001 to Q-0095**, a funnel stage (Scouting, Discovery, Assessment, Analysis or Enrichment), the resource
+types it applies to, and the way it is answered. The questions you see in a stage's checklist are rows from
+this catalogue; the checklist shows the question's text.
+
+- A question is never reworded after the fact. To change one, an author adds a new question and retires the old
+  one; retired questions stay in the catalogue, dimmed, because past answers refer to them as they were asked.
+- Answers you give in Enrichment are saved with the id of the question they answer.
+- Administrators browse the catalogue under **Admin → Question Catalog**. The source is
+  `docs/dr-egeria/resource_questions.csv`, explained in
+  [`dr-egeria/resource_questions_guide.md`](dr-egeria/resource_questions_guide.md).
+
+---
+
+## What the marks mean
+
+RE shows a state as a **mark plus a short word** on the thing itself. Hover (or open the details) for the
+full sentence.
+
+| Mark | Reads as | Means |
+|---|---|---|
+| ✓ | answered, measured, published | It was done and checked. |
+| ∅ | nothing found, empty | It was measured and there was nothing. This is an answer, not a gap. |
+| ◐ | partial, structure only, within credential scope | Measured, but only part of the picture. |
+| ○ | not run | Nobody has run it yet. |
+| ◌ | no reader yet, undecided | There is no answer to give here yet. |
+| ? | not established, could not read | RE could not tell. Not the same as "no". |
+| ⚠ | needs you | A person has to act. |
+| ◔ | running, queued | Under way. |
+| ✕ | error, failed | It failed; the word says why. |
+| □ | stored, archived | Results exist but have not been read, or it was archived. |
+
+In Curate, a choice is **Include** or **Leave out** and is saved in RE the moment you press it. A row that is
+left out, or **deleted in Egeria**, is shown lowered in muted ink; "deleted in Egeria" has no mark of its own,
+only the word. "Saved · will publish" means RE holds your change and Egeria does not yet; "published 10-11"
+means Egeria has it. A draft finding is one nobody has accepted yet.
 
 ---
 
 ## Layout
 
-The web UI has three zones:
+The web UI (the **Next** UI, which is what `/` serves unless your administrator chose Classic) has:
 
-- **Left sidebar** — select a resource type (Repos / Databases / Filesystems) and choose a specific resource
-- **Main panel** — survey report, analysis menu, discovery results, or RFA panel depending on the active intent tab
-- **Header** — global navigation: Survey Report | 📋 RFAs | 🔬 Analyses | 📋 Context | 💬 Chat | 📊 Activity
+- **Stage strip** along the top. The run goes left to right: **Scouting, Discovery, Assessment, Analysis,
+  Enrichment, Curate**. **Investigation** (the frame) sits before them, and **Understanding** and **Automate**
+  are cross-cutting: Understanding is where you look at a resource over time, and Automate makes a run repeat.
+- **Left sidebar**: resources grouped by kind (repositories, databases, file systems), the current
+  investigation, its scope and work lists.
+- **Main panel**: the selected stage for the selected resource, usually as sub-tabs.
+- **Header**: who you are signed in as, and the Activity log.
 
----
+## The eight intents
 
-## Eight User Intents
-
-The intent tab strip has eight tabs: **Scouting**, **Discovery**, **Assessment**, **Analysis**, **Enrichment**, **Understanding**, **Curate**, **Automate**. This section covers each in turn; Scouting, Assessment, Discovery, and Enrichment are the original four and are documented in the most depth below, Analysis is covered separately (it's where Architecture Recovery lives), and Understanding, Curate, and Automate get a short pointer each.
+Every analysis in the catalogue is tagged with one of **eight intents**: **Scouting, Discovery, Assessment,
+Analysis, Enrichment, Understanding, Curate, Automate**. The tags come from the analysis catalogue,
+`resource_explorer/configdata/analysis_catalog.yaml`. In the Next UI the intents appear as the stages above.
+Automate has no analyses of its own: it holds schedules and subscriptions. This section covers each in turn;
+Scouting, Assessment, Discovery and Enrichment are the original four and are documented in the most depth,
+Analysis is covered separately (it is where Architecture Recovery lives), and Understanding, Curate and
+Automate get a short section each.
 
 ### Scouting
 *Goal: broad inventory across many resources, fast*
@@ -157,9 +278,20 @@ The **Context** panel lets you fill in resource context proactively:
 Charts for a resource's history — stars, commits, schema growth, and similar — rendered from the **Survey History** data described below. Fast, read-only.
 
 ### Curate
-*Goal: make a resource easier to find and more trustworthy to reuse*
+*Goal: decide what is published to Egeria, and make a resource easier to find and more trustworthy to reuse*
 
-Ongoing curatorial work distinct from Enrichment's one-time/periodic context form: search tags, resource-level feedback, and curator notes, so the next person to find this resource can tell it's been looked at and vouched for.
+For a repository or a database, Curate has **three tabs**, split by job. It always opens on the first.
+
+1. **Describe and publish**: describe the resource (tags, group, ratings and notes) and publish its report.
+   The one **Publish** button lives at the bottom of this tab.
+2. **Contents**: choose what is published. You pick files, folders, schemas and tables by name; each row has an
+   **Include | Leave out** choice, saved in RE as soon as you press it. For a database you also choose how deep
+   the catalogue goes. Nothing is taken wholesale.
+3. **Structure**: what the resource is made of and how it relates: components, blueprints, dependencies and the
+   rules. Accepting or rejecting a proposal here is a decision; it writes nothing to Egeria on its own.
+
+Deciding and sending are separate. Everything on these tabs saves in RE first. Egeria changes only when you
+press **Publish**, and Publish lists what it is about to write.
 
 **One Publish per page.** **Decision (project owner, 2026-10-11):** "I think there should be one publish button, but each section can have a save or indication that it will be published when the user presses publish." On a repository's first Curate tab (Describe and publish), every section saves in RE only, and shows where it stands as a mark and a short word: **saved · will publish**, **published 10-11**, **not sent · <reason>**, or, for someone else's rating or note, **<person>'s · waiting for them**. The **Publish** band is the last thing on the tab, and one press sends:
 
@@ -192,6 +324,36 @@ Subscribe to an analysis from its card; when a scheduled re-run produces a mater
 
 ---
 
+## Publishing to Egeria
+
+Publishing is always a **person's act**: a button press by someone signed in, and the changes are written as
+that person. Nothing publishes itself because you accepted a finding or made a choice.
+
+What a press can send, by where it comes from:
+
+| From | What Egeria receives | Where you press |
+|---|---|---|
+| The survey you already kept | A survey report on the resource's asset, with its annotations (measurements and observations) | Curate, **Describe and publish**, bottom |
+| Tags and group | Public tags and a Folio for the group | Same Publish |
+| Documentation sources | External references on the asset | Same Publish |
+| Your ratings and notes | Your rating and your notes on the asset, under your name | Same Publish |
+| Files, folders, schemas and tables you included | Each becomes its own asset related to the resource | Chosen on **Contents**; a repository's items go with the same Publish, a database has its own commit panel on that tab |
+
+Three things to know:
+
+- **No zone is added by RE.** What you publish follows your deployment's normal rules unless its administrator
+  configured a zone. A private investigation's output is the exception (see "Private investigations").
+- **Draft is a status, not a place.** A finding you have not accepted is a draft; it is not held in a separate
+  zone. The old draft zone was retired on 2026-10-08.
+- **Egeria rolls forward.** RE does not undo a publish. Removing a tag removes its link; a corrected note is a
+  later note; elements RE created stay in Egeria until the owner deletes them by hand.
+
+After a press, the page shows a short cue (**publishing…**) and then what Egeria reports back (**✓ in Egeria ·
+published 10-11 · confirmed**, or a plain statement of what failed). A word on screen comes from what was
+read back from Egeria, never from the fact that you pressed a button.
+
+---
+
 ## Files and File Systems
 
 Resource Explorer supports traversing local folders and data files (CSV, Parquet, Excel), profiling their schemas, and cataloging them in Egeria.
@@ -210,7 +372,7 @@ Running a survey walks the local directory structure (excluding noise directorie
 *   Row and column counts.
 *   Detailed schemas showing column names, datatypes, and null percentage rates.
 
-### Egeria Publishing & Integration
+### Egeria Publishing & Integration (file systems)
 Publishing a filesystem survey performs direct cataloging:
 *   **Compensation Layer:** Since Egeria repository services fail to recognize the default `FileSystem` classification type during standard template instantiation on some platforms, Resource Explorer catalogs the filesystem root folder as a root `DataFolder` asset.
 *   Data files are registered as `DataFile` variants (`CSV Data File`, `Parquet Data File`, `Spreadsheet Data File`, or generic `File`) using the computed `canonical_path`.
@@ -341,7 +503,7 @@ Check **Show resolved** at the top of the drawer to see deferred/reassigned/comp
 
 - **Column widths are resizable.** Drag the thin divider between the sidebar and main content, or between the main content and the chat panel / RFA drawer, to resize. Your chosen widths are remembered across reloads.
 - **The feedback button** (bottom-right, 💬 Feedback) is draggable if it's ever in your way — click and drag it anywhere on screen; its new position is remembered.
-- **"Connected as" in the header** shows which Egeria service account Resource Explorer is using — it's informational, not a login control. There's no per-user login yet; the account is configured once via `.env` (`EGERIA_USER_ID`/`EGERIA_USER_PASSWORD`), not from the UI. Click the badge for a reminder of this.
+- **The header shows who you are signed in as.** Everything you do runs as that Egeria user (see "Signing in"); the ⏻ button next to it signs you out.
 
 ## Keyboard shortcuts
 
