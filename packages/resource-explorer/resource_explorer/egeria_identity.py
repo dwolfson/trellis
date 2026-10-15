@@ -641,6 +641,8 @@ def current_zones(element_guid: str, identity: Optional[EgeriaIdentity] = None) 
     element that needs promoting and a genuinely promoted element would be
     re-promoted into a 403.
     """
+    from resource_explorer.catalogue_gateway import zones_of_element
+
     if not element_guid:
         return []
     try:
@@ -648,15 +650,9 @@ def current_zones(element_guid: str, identity: Optional[EgeriaIdentity] = None) 
         element = client.get_metadata_element_by_guid(element_guid)
         if not isinstance(element, dict):
             return []
-        header = element.get("elementHeader", element)
-        for classification in header.get("classifications") or []:
-            if classification.get("classificationName") != "ZoneMembership":
-                continue
-            props = classification.get("classificationProperties") or {}
-            array = (props.get("propertyValueMap") or {}).get("zoneMembership") or {}
-            values = (array.get("arrayValues") or {}).get("propertiesAsStrings") or {}
-            return [values[k] for k in sorted(values, key=lambda x: int(x))]
-        return []
+        # The one zone reader (6.2's `elementHeader.zoneMembership` first, then the `classifications` list); an
+        # answer it cannot read raises, which this lenient reader turns into "could not tell" below.
+        return zones_of_element(element)
     except Exception as exc:
         log.debug("egeria: could not read zones of %s — %s", element_guid, exc)
         return []
