@@ -1,5 +1,7 @@
 # Survey and Dashboard pass — implemented
 
+**Status:** implemented. Survey and dashboard pass, 2026-09-10; kept as a record.
+
 **From:** the implementation session, 2026-09-10
 **Against:** `Resource Explorer Survey and Dashboard.dc.html`
 **Branch:** `re-experimental-ui`, pushed through `b584f33`

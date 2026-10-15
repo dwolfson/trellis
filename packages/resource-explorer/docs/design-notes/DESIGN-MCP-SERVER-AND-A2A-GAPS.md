@@ -71,10 +71,47 @@ Archive and delete have no tool. The live-writes clearance variable and
 every hold apply unchanged; a tool reports the refusal, never works
 around it.
 
-**Identity.** The caller's token is available today, but RE's pyegeria
-clients still write as the service account (a2a.md's "scope note"). A
-write tool must say in its result who Egeria will record as the author,
-until the trellis-auth adoption lands; then the caller.
+**Identity (owner's decision, 2026-10-14: option 2).** The protocol
+already carries Egeria credentials: the serve role accepts a raw Egeria
+bearer token or a trellis app JWT with the Egeria token inside, and
+puts the caller in a ContextVar every spawned task inherits. The gap is
+RE's own construction sites, which build service-account pyegeria
+clients, so a call authenticated as the caller still writes as the
+service account. The rule from here:
+
+- **Everything synchronous runs as the caller.** Reads, the sync
+  analytic run, and any write that completes inside the request use the
+  caller's token through `apply_caller_token`. A read then returns
+  exactly what the caller may see, zones included, which is the privacy
+  property that matters; the read side is converted first.
+- **Queued writes stay on the service account, with the requester on
+  the row.** The outbox drains after the press, an Egeria token lives
+  one hour, so a queued write cannot carry the caller's token; it
+  carries the caller's identity, Egeria's `Ownership` and RE's
+  provenance name the requester, and every surface says "requested by
+  <caller> · written by the service account". Moving queued writes to
+  the caller waits for Egeria to offer delegation (option 3, not
+  pursued).
+- **Construction sites.** RE already has the seam: `egeria_clients.
+  egeria_client(identity, ...)` takes `Caller()`, `Daemon(reason,
+  requested_by)` or `current_principal()`, and the A2A middleware sets
+  the `current_caller` ContextVar from the bearer token. The adoption
+  PR is therefore an inventory, not a mechanism: each place RE builds a
+  pyegeria client listed with file:line and marked caller or service
+  with its reason; every synchronous request path still on the daemon
+  converted to the caller; a committed test per converted site that
+  the caller's token is the one sent; one test that a queued write
+  still carries the requester; a two-user live read of one zoned
+  element through a converted route. (The helper `apply_caller_token`
+  named in `docs/a2a.md` does not exist; the doc is corrected in the
+  same PR.) Owner's go: 2026-10-14.
+- **The exchange for MCP.** The same middleware guards `/mcp` for the
+  streamable HTTP transport, so a bearer token becomes the caller
+  identity exactly as on A2A. For stdio, where a local process has no
+  request header, the token is supplied at start (`resource-explorer
+  mcp --token` or the environment) and set once as the caller for the
+  session. One conversion of the construction sites then serves the web
+  routes, A2A and MCP alike.
 
 **Resources and prompts.** MCP resources expose the design notes folder
 and a resource's survey report as readable documents; one prompt per
@@ -100,10 +137,10 @@ writes nothing; one end-to-end faking only the pyegeria boundary for
    no source list. Every answer should end with what it drew on and
    when it was measured, the same honesty fields the screens carry.
 3. **Caller identity does not reach Egeria.** Stated in a2a.md: a call
-   is authenticated as the caller, writes are attributed to the service
-   account. Until the trellis-auth adoption lands, an A2A agent must not
-   cause an Egeria write, and the cards should say the agents are
-   read-only.
+   is authenticated as the caller, reads and writes run as the service
+   account. Closed by option 2 above: synchronous work as the caller,
+   queued writes on the service account with the requester recorded.
+   Until that PR lands, the cards say the agents are read-only.
 4. **Discovery is half-done.** The index exists; registering the cards
    with the Portal is open, and Egeria Advisor has no A2A surface. A
    Portal that lists RE's agents next to Advisor's is the useful end.
@@ -126,8 +163,11 @@ writes nothing; one end-to-end faking only the pyegeria boundary for
 
 ## 5. Order of work
 
-1. The MCP server with the read tools and `run_analytic`, in the `serve`
-   process, with tests. This is the smallest thing another tool can use.
+1. The caller-identity adoption for synchronous work (option 2, read
+   side first), then the MCP server with the read tools and
+   `run_analytic` on top of it, in the `serve` process, with tests. This
+   is the smallest thing another tool can use, and it already sees
+   only what the caller may see.
 2. The write tools under the shared-write rule, `request_publish` last.
 3. The A2A fixes that cost little: provenance on every answer (2),
    read-only stated on the cards (3), real versions (7).
@@ -139,8 +179,8 @@ writes nothing; one end-to-end faking only the pyegeria boundary for
 - [ ] Is the first external caller the Portal, Egeria Advisor, Claude in
       a terminal, or another product? It sets the transport that must
       work first (streamable HTTP versus stdio).
-- [ ] Should `request_publish` exist in the first MCP release at all, or
-      do writes wait for the trellis-auth adoption so the author is
-      always the caller?
+- [x] `request_publish` ships with the write tools under option 2: it
+      queues the same commit the screen runs, on the service account,
+      with the caller recorded as requester (owner, 2026-10-14).
 - [ ] Do the A2A agents stay LLM answerers, or become thin fronts over
       the MCP tools with the model only for phrasing?

@@ -119,6 +119,26 @@ def _client(clients):
     return clients.of(ExternalReferences)
 
 
+def _expert(clients):
+    from pyegeria.omvs.metadata_expert import MetadataExpert
+
+    return clients.of(MetadataExpert)
+
+
+def _link_once(clients, client, asset_guid: str, ref_guid: str):
+    """Link `asset_guid` to `ref_guid` unless that ExternalReferenceLink already exists
+    (`egeria_extref_link`). Never raises; the outcome carries the relationship GUID or the words."""
+    from resource_explorer.egeria_extref_link import COULD_NOT_CHECK, LinkOutcome, link_external_reference_once
+
+    try:
+        expert = _expert(clients)
+    except Exception as exc:  # noqa: BLE001 - no reader means no check, so no link
+        words = f"could not check for an existing ExternalReferenceLink ({type(exc).__name__}: {exc}); no link made"
+        log.warning("doc source: %s", words)
+        return LinkOutcome(COULD_NOT_CHECK, error=words[:400])
+    return link_external_reference_once(expert, client, asset_guid, ref_guid)
+
+
 def _qualified_name(url: str) -> str:
     # Same convention `_publish_homepage_reference` uses for the identical
     # element type, so a homepage and a declared doc source pointing at the
@@ -348,24 +368,15 @@ def publish_doc_source(source: dict, asset_guid: str, *, clients, display_name: 
             }
             ref_guid = client.create_external_reference(body=body)
             log.info("Created ExternalReference %s for doc source %s", ref_guid, url)
-        link_guid = ""
-        link_error = ""
-        try:
-            link_guid = client.link_external_reference(asset_guid, ref_guid) or ""
-        except Exception as exc:
-            # A duplicate link on a re-publish is harmless to report but
-            # must not lose the reference — same guard
-            # `_publish_homepage_reference` applies for the identical case.
-            # Recorded in `error` (distinct from failing `ok`) rather than
-            # only logged: the reference was created/reused successfully,
-            # so this is not a publish failure, but a caller inspecting
-            # only `ok` must still be able to see that the LINK step is
-            # the one that didn't happen (test_no_silent_success.py's
-            # ratchet — a log-only broad except here would hide exactly
-            # this from anything reading the return value).
-            link_error = str(exc)[:300]
-            log.debug("doc source: could not link %s to %s: %s", ref_guid, asset_guid, exc)
-        return {"ok": True, "ref_guid": ref_guid, "link_guid": link_guid, "error": link_error}
+        # ExternalReferenceLink is multi-link: a retry (or re-publish) that links again makes a
+        # second relationship. Link only when none exists between this asset and this reference;
+        # an existing link's GUID comes back as this publish's proof, and a check that cannot be
+        # made links nothing. A link step that did not complete is recorded in `error` (distinct
+        # from failing `ok`): the reference itself was created/reused, but a caller reading only
+        # `ok` must still see the link did not happen (the outbox then refuses to mark done).
+        outcome = _link_once(clients, client, asset_guid, ref_guid)
+        return {"ok": True, "ref_guid": ref_guid, "link_guid": outcome.relationship_guid,
+                "error": outcome.error}
     except Exception as exc:
         log.warning("doc source: could not publish ExternalReference for %s: %s", url, exc)
         return {"ok": False, "ref_guid": "", "link_guid": "", "error": str(exc)[:500]}

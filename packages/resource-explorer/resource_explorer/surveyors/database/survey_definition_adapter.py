@@ -1047,89 +1047,43 @@ def _db_derived_field_reader(field: str):
     def _read(registry, slug: str) -> dict:
         from resource_explorer.surveyors.database.db_derived import run_db_derived
 
-        data = run_db_derived(registry, slug).get("derived", {}).get(field) or {}
+        result = run_db_derived(registry, slug)
+        data = result.get("derived", {}).get(field) or {}
         if isinstance(data, dict) and data.get("state") == STATE_NOT_MEASURED:
             return {}
         if isinstance(data, dict):
             _attach_container_credential_scope(registry, slug, data)
-            _attach_coverage_status(field, data)
+            _attach_coverage_status(field, data, result.get("table_coverage"))
         return data
 
     return _read
 
 
-#: Below this fraction of tables actually measured (not merely "some table
-#: somewhere had a key captured" — see keys_captured_for_table's own
-#: docstring), the WHOLE analysis reports `not_established` rather than a
-#: technically-true-but-misleading `measured` built almost entirely from
-#: unmeasured tables. Live-found, `coco_pharma`, 2026-09-27: with 3 of 58
-#: tables key-captured, `db_relationship_graph` read "state measured ·
-#: verdict bag_of_tables" — a confident verdict over a database that was 95%
-#: unmeasured. 0.5 (a plain majority) is a coordinator-approved starting
-#: point, not a tuned constant; see docs/Backlog.md for the open question of
-#: whether it should be uniform across all seven or tuned per analysis.
-_COVERAGE_NOT_ESTABLISHED_THRESHOLD = 0.5
+def _attach_coverage_status(field: str, data: dict, coverage: dict | None = None) -> None:
+    """Flip `_status.state` to NOT_ESTABLISHED when too little of the database
+    was measured for this analysis's `STATE_MEASURED` verdict to mean much.
 
-
-def _attach_coverage_status(field: str, data: dict) -> None:
-    """Slice 21b follow-up (2026-09-27, live gate on `coco_pharma`): flip
-    `_status.state` to NOT_ESTABLISHED, with a reason and the actual counts,
-    when too little of the database was measured for this analysis's
-    `STATE_MEASURED` verdict to mean much — the exact "correct number, wrong
-    label" defect the owner's gate caught (the explanation text already said
-    "insufficient signal"/named 55 of 58 tables excluded; `_status.state`
-    still said `measured`).
-
-    Mutates `data` in place, in the SAME `_status` slot
-    `_attach_container_credential_scope` uses — `facts.py`'s `_state_for`
-    already prefers `value["_status"]["state"]` over its own generic
-    MEASURED/NOTHING_FOUND inference (see that function's own docstring:
-    "the surveyor knew more about its own run than this layer can infer"),
-    so this is the existing seam, not a new one. Only overwrites an ALREADY
-    STATE_MEASURED payload's `_status` — a genuinely NOT_MEASURED payload
-    (empty `{}`, normalized by this reader's own caller) never reaches here
-    at all, and a `_status` a container-credential-scope check already set
-    is left alone (that check runs first and is the more specific of the
-    two when both would apply).
+    One bar for all seven analyses: `result_status.COVERAGE_BAR` (80% of
+    tables), overridable per field via `COVERAGE_BAR_OVERRIDES`. Counts come
+    from the analysis's own payload where it carries them (relationship graph,
+    grain), otherwise from `coverage` (`run_db_derived`'s `table_coverage`).
+    Mutates `data` in the same `_status` slot `_attach_container_credential_
+    scope` uses (which runs first and wins) — `facts.py`'s `_state_for` already
+    prefers `value["_status"]["state"]`.
     """
     if "_status" in data:
         return
-    from resource_explorer.surveyors.result_status import NOT_ESTABLISHED
+    from resource_explorer.surveyors.result_status import (
+        NOT_ESTABLISHED,
+        coverage_shortfall,
+    )
 
+    notion = "keys"
     if field == "db_relationship_graph":
         measured = data.get("table_count")
-        unmeasured = data.get("unmeasured_table_count") or 0
         if measured is None:
             return
-        total = measured + unmeasured
-        if total and measured / total < _COVERAGE_NOT_ESTABLISHED_THRESHOLD:
-            data["_status"] = {
-                "state": NOT_ESTABLISHED,
-                "reason": "thin_key_coverage",
-                "detail": (f"only {measured} of {total} tables have their own keys "
-                           f"captured — too little of the database was measured for "
-                           f"a relationship verdict to mean much"),
-            }
-    elif field == "db_classification":
-        # `classify_database` already computes its own "undecided" verdict
-        # (`kind: None, confidence: 0`) whenever the winning and runner-up
-        # scores are too close to call at the available coverage — that IS
-        # this analysis's own signal for "not established," more precise
-        # than re-deriving a coverage-percentage cutoff (the live defect's
-        # own case was exactly 50% coverage, kind None: a coverage threshold
-        # tuned to catch it would have to sit AT the boundary rather than
-        # below it, which a stray fraction of a percent either way would
-        # then miss).
-        if "kind" in data and data.get("kind") is None:
-            coverage = data.get("coverage")
-            pct = f"{int(coverage * 100)}%" if coverage is not None else "unknown"
-            data["_status"] = {
-                "state": NOT_ESTABLISHED,
-                "reason": "undecided",
-                "detail": (f"the classification could not settle on a kind at "
-                           f"{pct} signal coverage — too close to call, or too "
-                           f"little signal to call at all"),
-            }
+        total = measured + (data.get("unmeasured_table_count") or 0)
     elif field == "grain_determination":
         grains = data.get("grains") or []
         if not grains:
@@ -1137,14 +1091,50 @@ def _attach_coverage_status(field: str, data: dict) -> None:
         from resource_explorer.registry import STATE_MEASURED
         measured = sum(1 for g in grains if g.get("state") == STATE_MEASURED)
         total = len(grains)
-        if total and measured / total < _COVERAGE_NOT_ESTABLISHED_THRESHOLD:
+    elif field in COVERAGE_BAR_FIELDS:
+        notion = "catalog" if field in CATALOG_READ_FIELDS else "keys"
+        counts = (coverage or {}).get(notion)
+        if not counts:
+            return
+        measured, total = counts.get("measured") or 0, counts.get("total") or 0
+    else:
+        return
+
+    status = coverage_shortfall(field, measured, total, notion)
+    if status is not None:
+        data["_status"] = status
+        return
+
+    if field == "db_classification":
+        # `classify_database`'s own "undecided" verdict (`kind: None`) is a
+        # separate signal, not a coverage threshold: kept as it was.
+        if "kind" in data and data.get("kind") is None:
+            cov = data.get("coverage")
+            pct = f"{int(cov * 100)}%" if cov is not None else "unknown"
             data["_status"] = {
                 "state": NOT_ESTABLISHED,
-                "reason": "thin_key_coverage",
-                "detail": (f"only {measured} of {total} tables were actually "
-                           f"measured for a grain — too little of the database "
-                           f"was covered for this analysis to mean much"),
+                "reason": "undecided",
+                "detail": (f"the classification could not settle on a kind at "
+                           f"{pct} signal coverage — too close to call, or too "
+                           f"little signal to call at all"),
             }
+
+
+#: The five analyses that decide at the catalog tier (names, comments, row
+#: estimates): measured = the table's schema, table and column rows were read.
+#: The other two (graph, grain) measure by keys captured.
+CATALOG_READ_FIELDS = ("db_classification", "schema_conventions", "subject_signals", "coverage_signals", "preliminary_fit")
+
+#: The seven `db_derived` analyses the shared coverage bar applies to.
+COVERAGE_BAR_FIELDS = (
+    "db_classification",
+    "db_relationship_graph",
+    "grain_determination",
+    "schema_conventions",
+    "subject_signals",
+    "coverage_signals",
+    "preliminary_fit",
+)
 
 
 def _attach_container_credential_scope(registry, slug: str, data: dict) -> None:

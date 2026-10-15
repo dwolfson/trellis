@@ -94,9 +94,9 @@ class DrEgeriaRunRequest(BaseModel):
 @router.post("/dr-egeria/run")
 async def dr_egeria_run(request: Request, body: DrEgeriaRunRequest) -> dict:
     """Run one Dr.Egeria document ad hoc, as RE's service account. Admin only, dry runs included, and admin
-    here means `_require_listed_admin`: the signed-in JWT's `sub` is in FEEDBACK_ADMIN_USERS. Not
-    `admin_auth.require_admin`, which lets any signed-in user through when no admin is configured and accepts a
-    client-sent X-Admin-User header.
+    here means `_require_listed_admin`: the signed-in JWT's `sub` is in FEEDBACK_ADMIN_USERS. Stricter than
+    `admin_auth.require_admin`, which also accepts the shared X-Admin-Token and, with RE_ADMIN_OPEN_WHEN_UNCONFIGURED
+    set, any signed-in user: a run is attributed to a named person, and a token names no one.
 
     Calls `dr_egeria_runner.run_document`, the same function as `resource-explorer dr-egeria run`. 400 for a path
     outside docs/dr-egeria/ or an invalid document; 409 for a repeat without `force` or a run already going.

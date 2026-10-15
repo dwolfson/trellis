@@ -1,5 +1,7 @@
 # `/` vs `/next` — a side-by-side walk on one resource
 
+**Status:** superseded. Walk written when / was Classic; Next is now the default (2026-10-07). Kept as a record.
+
 > **Routing note (2026-10-07):** Next is now the default at `/`; Classic is at `/classic`. This walk was written when `/` was Classic, so read its `/` column as Classic (`/classic`) and `/next` as Next (`/`). Cross-links are now `Classic` (in Next) and `New UI` (in Classic).
 
 **Resource:** `egeria_workspaces_git` (display name `egeria-workspaces`)

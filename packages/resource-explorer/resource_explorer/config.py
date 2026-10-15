@@ -483,7 +483,8 @@ class FeedbackConfig(BaseSettings):
 
     admin_token / admin_users are NOT a general auth system — see
     resource_explorer/web/admin_auth.py. Leaving both unset means every
-    admin-only feedback endpoint denies all requests (fail closed).
+    admin-only endpoint denies all requests (fail closed), unless
+    RE_ADMIN_OPEN_WHEN_UNCONFIGURED is set for local dev.
     """
     #: Defaults to the same shared Postgres instance/schema the registry uses
     #: (2026-08-23), not a local SQLite file. This store was written to be
@@ -501,6 +502,10 @@ class FeedbackConfig(BaseSettings):
     )
     admin_users: list[str] = Field(default_factory=list, alias="FEEDBACK_ADMIN_USERS")
     admin_token: str = Field(default="", alias="FEEDBACK_ADMIN_TOKEN")
+    #: Local dev only (owner ruling 2026-10-14). With no admin configured, `require_admin` refuses everyone; this
+    #: brings back "any signed-in user may act" for Retry / Run bootstrap / bulk resolve. Ignored once an admin
+    #: is configured; never admits an anonymous caller; never affects `is_admin_request` (Feedback, Curate).
+    admin_open_when_unconfigured: bool = Field(default=False, alias="RE_ADMIN_OPEN_WHEN_UNCONFIGURED")
 
     model_config = _ENV_FILE_CONFIG
 

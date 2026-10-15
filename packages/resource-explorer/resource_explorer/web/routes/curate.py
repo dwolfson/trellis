@@ -334,19 +334,19 @@ class FeedbackCreate(BaseModel):
 #: the feedback-triage admin endpoints", written to invert an Egeria Workspaces
 #: bug where the equivalent check failed OPEN.
 #:
-#: **This route has no such gate**, and on 2026-09-01 it was widened to serve the
+#: **This route had no such gate** when, on 2026-09-01, it was widened to serve the
 #: page-level store so the Admin pane would stop showing an empty list. That fix
 #: was right and its scope was not: it routed data the gated endpoint protects
-#: through an ungated one. Nothing was exposed in practice — no row carries an
+#: through an ungated one. (It is gated now: `_require_admin` below.) Nothing was exposed in practice — no row carries an
 #: email today — but the store has `wants_response` and `consent_to_contact`
 #: columns, so emails are expected, and the next one would have been served to
 #: anyone who could reach the port.
 #:
 #: Stripping is the INTERIM fix, agreed with Dan: it closes the exposure now
 #: without emptying the pane, which gating would do until the frontend sends
-#: `X-Admin-Token`. Gating this route properly is the real fix and is still
-#: outstanding — when it lands, this stripping becomes redundant rather than
-#: wrong, and the gated route can serve the full row.
+#: `X-Admin-Token`. Gating this route was the real fix and has since landed
+#: (`_require_admin`); the stripping is now redundant rather than wrong, and is
+#: kept as defence in depth until someone decides the gated route serves the full row.
 #:
 #: `message`, `rating`, `category`, `page`, `triage_status` and `created_at`
 #: stay: they are the feedback itself, which is the point of the pane.

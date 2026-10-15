@@ -1,5 +1,7 @@
 # Legibility and charts — implemented
 
+**Status:** implemented. Legibility and charts round, 2026-09-10; kept as a record.
+
 **From:** the implementation session, 2026-09-10
 **Against:** the "Legibility and charts" section of
 `Resource Explorer Survey and Dashboard.dc.html`

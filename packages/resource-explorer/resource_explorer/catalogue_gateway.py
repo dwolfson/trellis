@@ -259,13 +259,67 @@ def _short(exc: Exception, n: int = MAX_EGERIA_TEXT) -> str:
     return " ".join(str(exc).split())[:n] or type(exc).__name__
 
 
-def _header(element: Any) -> dict:
-    """The dict that carries an element's classifications. The LIVE raw element has them at the
-    top level; a header-wrapped shape (`elementHeader`, which `AssetMaker.get_asset_by_guid` uses)
-    is still tolerated for the places that read that one."""
+#: Egeria 6.2's ElementHeader (ElementHeader.java, shape since e17cc09d44) has NO generic `classifications` list:
+#: each classification below has its own field, holding one ElementClassification whose `classificationProperties`
+#: is the flattened bean (`{"class": "ZoneMembershipProperties", "zoneMembership": [...]}`). Captured live
+#: 2026-10-14 (tests/fixtures/egeria_6_2): AssetMaker.get_asset_by_guid -> `elementHeader.memento/.ownership/.anchor/
+#: .dataScope`; CollectionManager.get_collection_by_guid -> `elementHeader.zoneMembership`. MetadataExpert's answers
+#: (an OpenMetadataElement) still carry the top-level `classifications` list, which stays the fallback.
+HEADER_CLASSIFICATION_FIELDS = {
+    "Anchors": "anchor", "ZoneMembership": "zoneMembership", "ZoneMembershipProfile": "zoneMembershipProfile",
+    "Impact": "impact", "Criticality": "criticality", "Confidentiality": "confidentiality",
+    "Confidence": "confidence", "Retention": "retention", "GovernanceExpectations": "governanceExpectations",
+    "GovernanceMeasurements": "governanceMeasurements", "DigitalResourceOrigin": "digitalResourceOrigin",
+    "Ownership": "ownership", "Memento": "memento", "Promise": "promise", "Template": "template",
+    "TemplateSubstitute": "templateSubstitute", "TypeEmbeddedAttribute": "schemaType", "DataScope": "dataScope",
+    "RunMetrics": "runMetrics", "DataAssetEncoding": "dataAssetEncoding", "CalculatedValue": "calculatedValue",
+    "PrimaryKey": "primaryKey", "KnownDuplicate": "knownDuplicate", "ConsolidatedDuplicate": "consolidateDuplicate",
+    "SecurityTags": "securityTags", "AccountingCodes": "accountingCodes",
+    "SecurityListMembership": "securityListMembership", "UserAccountProfile": "userAccountProfile",
+    "ProjectClassification": "projectClassification",
+}
+#: The 6.2 header's classification lists (several classifications each); `otherClassifications` holds the rest.
+HEADER_CLASSIFICATION_LISTS = ("executionPoints", "duplicateClassifications", "collectionKinds", "glossaryTermKinds",
+                               "locationKinds", "projectKinds", "otherClassifications")
+
+
+class UnreadableClassification(GatewayError):
+    """A classification's header field is there but is not a classification RE can read: never "absent"."""
+
+
+def _is_named(c: Any, name: str) -> bool:
+    return isinstance(c, dict) and (c.get("classificationName") == name
+                                    or (c.get("type") or {}).get("typeName") == name)
+
+
+def classifications_named(element: Any, name: str) -> list[dict]:
+    """The element's `name` classifications, in either shape Egeria answers. The 6.2 dedicated header field is
+    read FIRST; only when it is absent (missing or null) are the lists read: `classifications` (top level, then
+    under `elementHeader`) and the header's lists, `otherClassifications` included. A dedicated field that is
+    present but not a classification RAISES `UnreadableClassification`: it is never read as "absent"."""
+    in_field, in_lists = classification_sources(element, name)
+    return in_field if in_field else in_lists
+
+
+def classification_sources(element: Any, name: str) -> tuple[list[dict], list[dict]]:
+    """(the 6.2 dedicated header field's `name` classification, or []; the `name` classifications in the lists).
+    A reader that must not silently prefer one when both are there (zones) compares the two. A dedicated field
+    that is present but is not a `name` classification RAISES `UnreadableClassification` (review round 1: `{}` or
+    another classification in `elementHeader.anchor` read as "own anchor, unzoned")."""
     if not isinstance(element, dict):
-        return {}
-    return element.get("elementHeader") or element
+        return [], []
+    header = element.get("elementHeader") if isinstance(element.get("elementHeader"), dict) else {}
+    in_field: list[dict] = []
+    field = HEADER_CLASSIFICATION_FIELDS.get(name)
+    if field and header.get(field) is not None:
+        value = header[field]
+        if not _is_named(value, name):
+            raise UnreadableClassification(f"a {name} in a shape RE cannot read (elementHeader.{field})")
+        in_field = [value]
+    found = [*(element.get("classifications") or []), *(header.get("classifications") or [])]
+    for listed in HEADER_CLASSIFICATION_LISTS:
+        found.extend(header.get(listed) or [])
+    return in_field, [c for c in found if _is_named(c, name)]
 
 
 def _guid_of(element: Any) -> str:
@@ -307,12 +361,9 @@ def _qn_of(element: Any) -> str:
 
 
 def _is_memento(element: Any) -> bool:
-    h = _header(element)
-    for c in (h.get("classifications") or []) if isinstance(h, dict) else []:
-        if isinstance(c, dict) and (c.get("classificationName") == "Memento"
-                                    or (c.get("type") or {}).get("typeName") == "Memento"):
-            return True
-    return False
+    """A Memento on the element: 6.2's `elementHeader.memento`, else the `classifications` list. A `memento`
+    field RE cannot read raises (`UnreadableClassification`), so an archived element is never read as live."""
+    return bool(classifications_named(element, "Memento"))
 
 
 def _element_read(element: Any) -> ElementRead:
@@ -349,39 +400,56 @@ def zones_of_element(element: Any) -> list[str]:
     "no zones"."""
     if not (isinstance(element, dict) and _guid_of(element)):
         raise GatewayError("unrecognised element answer from Egeria: cannot read its zones")
-    header = element.get("elementHeader") if isinstance(element.get("elementHeader"), dict) else {}
-    for c in [*(element.get("classifications") or []), *(header.get("classifications") or [])]:
-        if not (isinstance(c, dict) and c.get("classificationName") == "ZoneMembership"):
-            continue
-        cp = c.get("classificationProperties") or c.get("properties") or {}
-        if not isinstance(cp, dict):
-            raise GatewayError("a ZoneMembership with unreadable properties: its zones are unknown")
-        pvm = cp.get("propertyValueMap") or {}
-        if isinstance(pvm, dict) and "zoneMembership" in pvm:
-            # Present but null, or an array with no values: Egeria reads the element as unzoned (round 3).
-            value = pvm.get("zoneMembership")
-            if value is None:
-                return []
-            if not isinstance(value, dict):
-                raise GatewayError("a ZoneMembership whose zone list RE cannot read: its zones are unknown")
-            arr_values = value.get("arrayValues")
-            if arr_values is None and ("arrayValues" in value or value.get("arrayCount") == 0):
-                return []
-            arr = arr_values.get("propertiesAsStrings") if isinstance(arr_values, dict) else None
-            if isinstance(arr, dict):
-                return [str(arr[k]) for k in sorted(arr, key=lambda x: int(x) if str(x).isdigit() else 0)]
-            if value.get("arrayCount") == 0:
-                return []
+    in_field, in_lists = classification_sources(element, "ZoneMembership")
+    zones = [_zones_of(c) for c in (in_field[:1] + in_lists[:1])]
+    if len(zones) == 2 and sorted(zones[0]) != sorted(zones[1]):
+        # Review round 1: fail closed. Egeria answered two zone lists for one element; RE does not pick one.
+        raise GatewayError(f"the zones in elementHeader.zoneMembership {zones[0]} and in the classifications list "
+                           f"{zones[1]} disagree: its zones are unknown")
+    return zones[0] if zones else []
+
+
+#: The 6.2 ZoneMembershipProperties bean's keys (ZoneMembershipProperties -> ClassificationBeanProperties ->
+#: ClassificationProperties, all @JsonInclude(NON_NULL)) plus the `typeName` the answer carries.
+_ZONE_BEAN_KEYS = {"class", "typeName", "zoneMembership", "effectiveFrom", "effectiveTo", "extendedProperties"}
+
+
+def _zones_of(c: dict) -> list[str]:
+    """One ZoneMembership classification's zones; raises when they cannot be read."""
+    cp = c.get("classificationProperties") or c.get("properties") or {}
+    if not isinstance(cp, dict):
+        raise GatewayError("a ZoneMembership with unreadable properties: its zones are unknown")
+    pvm = cp.get("propertyValueMap") or {}
+    if isinstance(pvm, dict) and "zoneMembership" in pvm:
+        # Present but null, or an array with no values: Egeria reads the element as unzoned (round 3).
+        value = pvm.get("zoneMembership")
+        if value is None:
+            return []
+        if not isinstance(value, dict):
             raise GatewayError("a ZoneMembership whose zone list RE cannot read: its zones are unknown")
-        if isinstance(cp.get("zoneMembership"), list):
-            return [str(z) for z in cp["zoneMembership"]]
-        strings = cp.get("propertiesAsStrings")
-        if isinstance(strings, dict) and "zoneMembership" in strings:
-            raw = strings["zoneMembership"]
-            # Null: the array was null and valueAsString of a null array is null. Egeria: unzoned.
-            return [] if raw is None else _zone_list_from_string(raw)
-        raise GatewayError("a ZoneMembership with no zone list RE can read: its zones are unknown")
-    return []
+        arr_values = value.get("arrayValues")
+        if arr_values is None and ("arrayValues" in value or value.get("arrayCount") == 0):
+            return []
+        arr = arr_values.get("propertiesAsStrings") if isinstance(arr_values, dict) else None
+        if isinstance(arr, dict):
+            return [str(arr[k]) for k in sorted(arr, key=lambda x: int(x) if str(x).isdigit() else 0)]
+        if value.get("arrayCount") == 0:
+            return []
+        raise GatewayError("a ZoneMembership whose zone list RE cannot read: its zones are unknown")
+    if isinstance(cp.get("zoneMembership"), list):
+        return [str(z) for z in cp["zoneMembership"]]
+    strings = cp.get("propertiesAsStrings")
+    if isinstance(strings, dict) and "zoneMembership" in strings:
+        raw = strings["zoneMembership"]
+        # Null: the array was null and valueAsString of a null array is null. Egeria: unzoned.
+        return [] if raw is None else _zone_list_from_string(raw)
+    if cp.get("class") == "ZoneMembershipProperties" and set(cp) <= _ZONE_BEAN_KEYS and cp.get("zoneMembership") is None:
+        # 6.2's bean drops a null list (@JsonInclude NON_NULL, ZoneMembershipProperties.java:21). Egeria's access
+        # connector reads a null list as no zones: getZoneMembership (OpenMetadataAccessSecurityConnector
+        # :1869-1883) -> getStringArrayProperty null, and validateZoneAccess checks zones only when
+        # `(zoneMembership != null) && (! zoneMembership.isEmpty())` (:1112-1117).
+        return []
+    raise GatewayError("a ZoneMembership with no zone list RE can read: its zones are unknown")
 
 
 def parse_initiate_answer(res: Any) -> str:
@@ -695,10 +763,8 @@ class PyegeriaCatalogueGateway:
             element = self._client("MetadataExpert").get_metadata_element_by_guid(guid)
         except Exception as exc:
             raise GatewayError(f"could not read {guid} before classifying: {_short(exc)}") from exc
-        existing = None
-        for c in (_header(element).get("classifications") or []) if isinstance(element, dict) else []:
-            if isinstance(c, dict) and c.get("classificationName") == "Ownership":
-                existing = c
+        owned = classifications_named(element, "Ownership")      # 6.2's elementHeader.ownership first
+        existing = owned[-1] if owned else None
         if existing is not None:
             props = existing.get("classificationProperties") or {}
             current = ""

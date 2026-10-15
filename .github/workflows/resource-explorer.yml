@@ -33,7 +33,30 @@ on:
     # alone loses no coverage. If forked PRs are ever accepted, `pull_request:`
     # needs to come back — for a fork, `push:` never fires at all.
     branches: ["**"]
+    # Docs-only pushes skip the ~45 minute run (owner-approved 2026-10-14).
+    # ONLY paths that nothing reads are listed. Verified by grep 2026-10-14:
+    #   - docs/dr-egeria/** is read at runtime (bootstrap.py, egeria_resync.py,
+    #     survey_definition_docs.py) and by the generator-equality tests: NOT ignored.
+    #   - docs/design-notes/** is NOT ignored: test_design_note_references_resolve.py
+    #     checks every cited note name against the files that exist there, so a
+    #     rename or delete in that directory can turn the suite red.
+    #   - the package README.md and CLAUDE.md are scanned by that same test: NOT ignored.
+    # Nothing else under docs/ is opened by any test, script or source file
+    # (every other mention is a comment or docstring).
+    paths-ignore:
+      - "packages/resource-explorer/docs/*.md"
+      - "packages/resource-explorer/docs/archive/**"
+      - "packages/resource-explorer/docs/experiments/**"
+      - "packages/resource-explorer/docs/incident-evidence/**"
+      - "packages/resource-explorer/docs/incident-2026-09-02-egeria-stall/**"
   workflow_dispatch:
+
+# One run per ref at a time: a newer push to a branch cancels the superseded
+# run (it burned up to 45 minutes of runner time for a sha nobody will merge).
+# main is never cancelled -- its runs are the record of what merged.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 defaults:
   run:
@@ -175,10 +198,12 @@ jobs:
             -c 'CREATE SCHEMA IF NOT EXISTS resource_explorer;' \
             -c 'CREATE EXTENSION IF NOT EXISTS vector;'
 
-      - name: Confirm the integration tier can actually run
-        # Fails fast and unambiguously if the service is misconfigured, before
-        # 1800 unit tests scroll past and bury the reason.
-        run: uv run pytest tests/ -m requires_pgvector -q --no-header
+      - name: Confirm Postgres is reachable
+        # Fails fast if the service is misconfigured, before thousands of unit
+        # tests scroll past and bury the reason. The requires_pgvector tests
+        # themselves run inside the full suite below (RE_REQUIRE_POSTGRES=1
+        # makes an unreachable DB a hard error there), so they are not run twice.
+        run: PGPASSWORD=advisor psql -h localhost -p 5442 -U egeria_advisor -d egeria_advisor -c 'select 1;'
 
       - name: Full suite
         # -rs prints the reason for every skip in this same run.
@@ -195,7 +220,7 @@ jobs:
         # requires_egeria (22 tests) still has no service here — an Egeria
         # platform is not something a job can stand up — so those stay skipped,
         # and their reasons are now printed by the run that already happened.
-        run: uv run pytest tests/ -q --no-header -rs
+        run: uv run pytest tests/ -q --no-header -rs --durations=25
 
       - name: Analytic Library tests (trellis-analytics)
         # Its routines read RE's registry through resolve_node_set, so its tests need resource_explorer installed;

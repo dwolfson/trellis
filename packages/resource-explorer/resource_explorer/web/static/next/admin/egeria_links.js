@@ -28,7 +28,7 @@ const ACTION = Object.fromEntries(ACTIONS.map((a) => [a.id, a]));
 let _host = null;
 let _rows = [];
 let _busy = false;
-/** true when an admin is configured and this caller is not one. Bulk resolve is admin-gated; one resource stays open. */
+/** true when this caller may not bulk-resolve (see `adminLocked`). Bulk resolve is admin-gated; one resource stays open. */
 let _locked = false;
 let _preview = null;   // {action, targets, result}
 

@@ -1,6 +1,8 @@
 # Resource Explorer — Admin Guide
 
-**Last revised:** 2026-08-21
+**Status:** live. Operator guide; the best-maintained user-facing document.
+
+**Last revised:** 2026-10-14
 
 This guide covers installation, configuration, Egeria integration, scheduled analyses, and troubleshooting.
 
@@ -250,26 +252,29 @@ There is no admin role in the Egeria sign-in. RE has one small, separate admin c
 ```bash
 # Either or both. Unset = no admin configured.
 FEEDBACK_ADMIN_TOKEN=<a long random string>   # a shared secret, sent by the browser as the X-Admin-Token header
-FEEDBACK_ADMIN_USERS=alice,bob                # user ids accepted when sent as the X-Admin-User header
+FEEDBACK_ADMIN_USERS=alice,bob                # signed-in user ids (the session JWT's `sub`) that are admins
+# Local dev only: with no admin configured, let any signed-in user do the require_admin actions below.
+# RE_ADMIN_OPEN_WHEN_UNCONFIGURED=true
 ```
 
-An admin is a request that presents a matching `X-Admin-Token`, or an `X-Admin-User` listed in
-`FEEDBACK_ADMIN_USERS`. The browser sends `X-Admin-Token` from the token you enter once in **Admin → Feedback**
+An admin is a signed-in request whose session `sub` is listed in `FEEDBACK_ADMIN_USERS`, or one that presents a
+matching `X-Admin-Token`. The browser sends `X-Admin-Token` from the token you enter once in **Admin → Feedback**
 (held in `sessionStorage` under `re_admin_token`, for that tab only, and shared with the Classic UI and
-`/admin/feedback`). Nothing in the Next UI sends `X-Admin-User`; it exists for a reverse proxy that authenticates a
-user and sets the header. **`X-Admin-User` is trusted as sent**, so it is safe only behind a proxy that strips any copy the client sends; with
-`FEEDBACK_ADMIN_USERS` set and no such proxy, any signed-in user can claim to be an admin, so prefer
-`FEEDBACK_ADMIN_TOKEN`.
+`/admin/feedback`). A client-sent `X-Admin-User` header is ignored: until 2026-10-14 it was trusted as sent, so any
+signed-in user who knew an admin's name could claim to be them.
 
-Two behaviours, on purpose:
+**Decision (project owner, 2026-10-14):** with no admin configured, admin actions fail closed; the open behaviour
+of 2026-10-09 survives only behind `RE_ADMIN_OPEN_WHEN_UNCONFIGURED=true`, for local dev.
 
 | Gate | What it protects | When no admin is configured |
 |---|---|---|
-| `is_admin_request` (fail closed) | Curate's feedback listing, Admin → Feedback | **Denies everyone** |
-| `require_admin` (fail open for signed-in users) | Publish Queue **Retry**, **Run bootstrap now**, **bulk** Egeria Links resolve | **Any signed-in user may act**; an anonymous caller is always refused |
+| `is_admin_request` | Curate's feedback listing, Admin → Feedback | **Denies everyone** (the dev flag does not apply) |
+| `require_admin` | Publish Queue **Retry**, **Run bootstrap now**, **bulk** Egeria Links resolve | **Denies everyone** ("no admin configured"), unless `RE_ADMIN_OPEN_WHEN_UNCONFIGURED=true`, which lets any signed-in user act |
 
-Once either variable is set, the second row enforces admin as well. The Next controls read `GET /api/egeria/admin-status`
-(`{admin, configured}`) and show **admin only** on a control only when an admin is configured and the caller is not one.
+An anonymous caller is always refused by `require_admin`. Once an admin is configured the dev flag is ignored. The
+Next controls read `GET /api/egeria/admin-status` (`{admin, configured, open}`) and show **admin only** on a control
+whenever the server would refuse the caller: not an admin, and either an admin is configured or the deployment is
+not `open`.
 Resolving a single resource's stale Egeria link (the banner on a repo) is open to any signed-in user either way, and
 **Delete in Egeria** is not an RE admin action at all: it keeps only the ISSUE-117 archive/delete block.
 
@@ -670,6 +675,93 @@ When a survey produces `RequestForAction` annotations, they appear in the **RFAs
 ### Question catalog (Scouting "Questions" tab)
 
 The questions shown in Scouting's **Questions** checklist tab, and the corresponding `Question` elements published to Egeria, are both generated from `docs/dr-egeria/resource_questions.csv`. See [`docs/dr-egeria/resource_questions_guide.md`](dr-egeria/resource_questions_guide.md) for the full column reference, editing workflow, and regeneration commands.
+
+### Engine host: Resource Explorer as an Egeria SurveyActionEngine
+
+Resource Explorer's worker can act as an Egeria **engine host**. Egeria then sees RE's Python engine as a
+`SurveyActionEngine` named `ResourceExplorerSurvey`, with one request type per step RE can run (today the
+database step `db_derived`, as request type `re-db-derived`). When Egeria creates an engine action for that
+engine, the worker discovers it, claims it, runs the step and tells Egeria the result, the way a native engine
+host does. Design: [`design-notes/DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE.md`](design-notes/DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE.md).
+
+- **It is off unless you turn it on.** Set `RE_ENGINE_HOST_ENABLED=true` for the worker. Unset or false (the
+  default), the worker starts no loop and makes no engine-host call to Egeria. Only one worker runs the loop at
+  a time (the `engine-host` leader lock).
+- **It acts as a daemon, never as the requester.** Every Egeria call the engine host makes runs under RE's own
+  service account. The user who asked for the action is recorded on the run row as a name and is never used as
+  a credential.
+- **Private work is left alone.** An action whose target is a database in somebody's private investigation is
+  left **unclaimed**. The engine host is unattended, so private work never runs as the service account; its
+  owner runs it from RE while signed in.
+- **What it claims.** Only actions that are approved, not yet claimed, and for a request type RE declares. An
+  action with no target, or a target that is not a registered database, is claimed and then completed as
+  "survey-invalid" with the reason. If another host claims first, RE skips it quietly.
+- **Declaring the engine in Egeria** is a one-off step, run by an admin with the Dr.Egeria runner (next
+  section): `resource-explorer dr-egeria run engine-host/resource-explorer-survey-engine.md`. The document is
+  generated; do not edit it. Make sure no Java engine host lists `ResourceExplorerSurvey`, or it will race RE
+  for every claim.
+
+### The Dr.Egeria runner (ad hoc)
+
+Besides the documents RE applies itself at startup (the bootstrap heal), an admin can run **one** Dr.Egeria
+document on request:
+
+```bash
+uv run resource-explorer dr-egeria run <path.md>             # run it
+uv run resource-explorer dr-egeria run <path.md> --dry-run   # parse and validate; list the commands; write nothing
+uv run resource-explorer dr-egeria run <path.md> --force     # run a document already applied
+```
+
+`<path.md>` is a Markdown file under `docs/dr-egeria/` (or under `RE_DR_EGERIA_DOCS_DIR` if you set it). Any
+other path is refused. There is also an admin route, `POST /api/bootstrap/dr-egeria/run`, with the body
+`{"path": ..., "dry_run": false, "force": false}`.
+
+- **Who may use the route.** The signed-in user must be listed in `FEEDBACK_ADMIN_USERS`. The shared
+  `FEEDBACK_ADMIN_TOKEN` alone is not enough, and a dry run needs the same right. With no admin list
+  configured, nobody passes. The CLI needs shell access to the host instead.
+- **It runs as RE's service account**, and one activity-log row (operation `dr_egeria`) records the run, with
+  one item per command and Egeria's words for each. A dry run writes nothing.
+- **A repeat guard.** Dr.Egeria's *Create* and *Update* commands can be repeated safely, but link commands add a
+  second relationship each time. RE names the commands that are not safe to repeat and refuses a second run of a
+  document whose content it has already applied (409 from the route). `--force` (or `"force": true`) runs it on
+  purpose; confirm first.
+- **A verb allow-list.** Only *Create, Update, Display, View, Search, Find, Validate, Link, Attach, Add,
+  Classify, Reclassify, Setup* and *Set* commands run. Everything else (Delete, Remove, Unlink, Detach,
+  Declassify, Publish, Run, Process, Import and any verb added later) is refused, whatever the document says.
+
+### Admin settings at a glance
+
+| Setting | What it does |
+|---|---|
+| `FEEDBACK_ADMIN_USERS` | Comma-separated Egeria user ids who count as admin. Required for the Dr.Egeria runner route. |
+| `FEEDBACK_ADMIN_TOKEN` | A shared secret an admin pastes once in Admin → Feedback (sent as `X-Admin-Token`). Counts as admin for the gates in "Admin gating", but not for the Dr.Egeria runner route. |
+| `RE_ENGINE_HOST_ENABLED` | Turns the engine host on (see above). Default off. |
+| `RE_DR_EGERIA_DOCS_DIR` | Moves the folder the Dr.Egeria runner reads documents from. |
+| `EXPLORER_DRAFT_ZONE`, `EXPLORER_PUBLISH_ZONES` | Optional zones RE stamps; see "Governance zones". |
+
+`RE_ADMIN_OPEN_WHEN_UNCONFIGURED` is **not on main**. It belongs to PR #665 (`re/admin-auth-strict`), which was
+still open when this was written. What main does today is what "Admin gating" above says: the admin gate reads
+`X-Admin-Token` or a client-sent `X-Admin-User` header, and the Dr.Egeria route requires a listed user. Once
+#665 merges, identity comes from the signed-in session only and the client-sent header is ignored; check that
+PR's description for the final behaviour of the unconfigured case before relying on it.
+
+### Startup log lines
+
+When the worker starts it checks the zones it stamps and writes one line for all of them:
+
+```
+zone controls: <zone> · control present · lists READ, UPDATE_PROPERTIES · DEFAULT yes · ok; <zone> · ...
+```
+
+It is logged at INFO when every zone is `ok`. If any zone's access control would lock everyone out, only
+allows reading, or could not be read, the same line is logged at WARNING with a note that publishing into that
+zone is refused until its control is fixed. With no zone stamped the line reads `zone controls: no zone
+stamped`. The private zone is always checked, so the line normally names `resource-explorer-private`.
+
+**Coming (not on main when this was written):** a `connector type: ok` line, from the branch
+`re/connector-check-coverage-bar`. It checks that the connector type RE writes secrets through is still on the
+expected provider class, and reads Egeria without changing anything. It will also say `MISMATCH`, `not created
+yet` or `could not check`. Until that branch merges, no such line appears; do not look for it in the log.
 
 ---
 

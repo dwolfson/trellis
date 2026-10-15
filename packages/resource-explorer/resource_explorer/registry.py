@@ -12885,7 +12885,7 @@ class ProjectRegistry:
         result: dict[str, dict] = {}
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT operation, ts, status, detail FROM activity_log "
+                "SELECT id, operation, ts, status, detail FROM activity_log "
                 "WHERE entity_type = ? AND entity_slug = ? AND operation IN ('survey', 'catalog') "
                 "ORDER BY ts DESC LIMIT ?",
                 (entity_type, entity_slug, limit),
@@ -12907,6 +12907,7 @@ class ProjectRegistry:
             if row["operation"] == "survey" and "last_run_at" not in entry:
                 entry["last_run_at"] = row["ts"]
                 entry["last_run_status"] = row["status"]
+                entry["last_run_activity_id"] = row["id"]   # lets the page follow a run that is still going
                 # The run's own step report — carried so the UI's "ran but
                 # something failed" indicator can open what actually failed
                 # instead of only flagging that something did (found live

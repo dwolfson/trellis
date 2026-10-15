@@ -32,10 +32,22 @@ export function healthWord(err) {
 
 function removeEl(doc, id) { doc.getElementById(id)?.remove(); }
 
+/** The server process token last seen, and who wants to know when it changes. The first sighting is not a change. */
+let lastBootId = null;
+const restartListeners = new Set();
+export function onServerRestart(fn) { restartListeners.add(fn); return () => restartListeners.delete(fn); }
+export function noteBootId(id) {
+  if (!id) return;
+  const changed = lastBootId !== null && lastBootId !== id;
+  lastBootId = id;
+  if (changed) restartListeners.forEach((fn) => { try { fn(id); } catch (_) { /* one listener's failure is not another's */ } });
+}
+export function resetBootIdForTests() { lastBootId = null; restartListeners.clear(); }
+
 /** One check. Resolves true when healthy. A dead SESSION is not a dead backend: the session banner owns that. */
 export async function checkBackendHealth(doc, { getHealth = getHealthReady } = {}) {
   try {
-    await getHealth();
+    noteBootId((await getHealth())?.boot_id);
     removeEl(doc, HEALTH_BANNER_ID);
     return true;
   } catch (err) {
