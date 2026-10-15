@@ -113,7 +113,10 @@ NOW_PRIVATE_SENTENCE = "target is now private to its owner"
 #: How long an `engine_action` row may stay queued for a request type no worker here can run (an Analytic Library
 #: step whose package is not installed where the queue runs) before the restart pass completes it survey-failed.
 #: Workers that cannot run it leave it queued (`run_queue._engine_request_types_here`).
-UNRUNNABLE_QUEUED_SECONDS = 900
+#: An hour, from `enqueued_at`, judged by the leader's own request types: RE keeps no per-worker record of which
+#: request types each live worker can run (that would need a table), so the bound is long enough for a worker
+#: with the package to be started, and short enough that Egeria is not left holding a claimed action for a day.
+UNRUNNABLE_QUEUED_SECONDS = 3600
 
 #: How often the running engine host repeats the completion pass (`restart_pass`, idempotent): a completion
 #: that timed out, or a run whose worker died, is told to Egeria within this long, not only at the next start.

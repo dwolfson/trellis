@@ -17,13 +17,13 @@ This module puts such steps BESIDE a resource type's step registry, never in it 
 - An installed step with no catalog entry is attached as a runnable step and logged: run the generator.
 
 **The boundary, honestly.** A step is in-process, trusted code: RE enforces that it gets no connection to the
-resource, read-only access to RE's stored rows (`StepOds`: the reader's SELECT methods only, no registry object, no
-DSN) and no Egeria identity (its code runs inside `egeria_clients.no_identity()`, so `current_principal()` raises).
+resource, read-only access to RE's stored rows (`StepOds`: the reader's SELECT methods only, over one connection the
+host opened read-only; the reader never held the registry or its URL) and no Egeria identity (its code runs inside `egeria_clients.no_identity()`, so `current_principal()` raises).
 It is NOT a sandbox: Python code in the same process can reach past any of this on purpose. Install only steps you
 would run as Resource Explorer.
 
-What the host gives the wrapper: the resource, an ODS reader that can only read (the registry's own connection,
-read-only at the database: Postgres `SET TRANSACTION READ ONLY`, SQLite `PRAGMA query_only`), and a store that
+What the host gives the wrapper: the resource, an ODS reader that can only read (one connection opened read-only
+from the registry's URL: Postgres `set_session(readonly=True)`, SQLite `mode=ro`), and a store that
 keeps the annotations with their envelope in `additionalProperties`, in their own table `step_annotations`
 (`ProjectRegistry.record_step_annotations`).
 It never gives a password: the runner kwargs (`db_user`, `db_pwd`) stop here. It opens no connection to the
@@ -203,32 +203,54 @@ class StepNotInstalled(RuntimeError):
     """The catalog names a step whose package is not installed in this environment."""
 
 
-def _registry_ods(registry):
-    """An ODS reader over the registry's own connection, read-only at the database for every query."""
+def _open_read_only(database_url: str):
+    """(connection, is_postgres): a connection that cannot write, opened from the registry's URL by the HOST. The
+    step is handed only the connection, never the URL: SQLite opened `mode=ro`; Postgres with
+    `set_session(readonly=True)`, so every statement runs in a read-only transaction."""
+    if database_url.startswith("postgresql"):
+        import psycopg2
+
+        conn = psycopg2.connect(database_url)
+        conn.set_session(readonly=True, autocommit=True)
+        return conn, True
+    import sqlite3
+
+    path = database_url.removeprefix("sqlite:///")
+    # Autocommit: a refused write opens no transaction that would hold a lock past the statement.
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    return conn, False
+
+
+def _step_reader(conn, is_postgres: bool):
+    """The step's ODS reader: the Analytic Library reader's methods over ONE read-only connection. It never held
+    the registry or its URL, so nothing a step digs out of it can write or reconnect."""
     from trellis_analytics.readers.ods import OdsReader, OdsUnreadable
 
-    class RegistryOds(OdsReader):
-        def __init__(self, reg):
-            super().__init__(reg.database_url)
-            self._reg = reg
+    class StepReader(OdsReader):
+        __slots__ = ("_c", "_is_pg")
+
+        def __init__(self, c, pg):          # deliberately not OdsReader.__init__: no `url`
+            self._c, self._is_pg = c, pg
+
+        def registry_view(self):
+            raise AttributeError("a step's ODS reader has no registry view")
 
         def query(self, sql: str, params: tuple = ()) -> list[dict]:
             if not sql.lstrip().lower().startswith("select"):
                 raise ValueError("the ODS reader runs SELECT statements only")
             try:
-                with self._reg._conn() as conn:
-                    if conn.is_postgres:
-                        conn.execute("SET TRANSACTION READ ONLY")
-                        return [dict(r) for r in conn.execute(sql, params).fetchall()]
-                    conn.execute("PRAGMA query_only = ON")
-                    try:
-                        return [dict(r) for r in conn.execute(sql, params).fetchall()]
-                    finally:
-                        conn.execute("PRAGMA query_only = OFF")
+                if self._is_pg:
+                    import psycopg2.extras
+
+                    cur = self._c.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                    cur.execute(sql.replace("?", "%s"), params)
+                    return [dict(r) for r in cur.fetchall()]
+                return [dict(r) for r in self._c.execute(sql, params).fetchall()]
             except Exception as exc:  # noqa: BLE001
                 raise OdsUnreadable(f"the registry did not answer: {exc}") from exc
 
-    return RegistryOds(registry)
+    return StepReader(conn, is_postgres)
 
 
 #: The reader methods a step may call: SELECTs over RE's stored rows, nothing else.
@@ -264,13 +286,18 @@ def _forward(reader, name):
     return call
 
 
-def _without_identity(code):
-    """The step's own code, run with no Egeria identity (`egeria_clients.no_identity`)."""
+def _without_identity(code, conn=None):
+    """The step's own code, run with no Egeria identity (`egeria_clients.no_identity`). The reader's connection, when
+    given, is closed as soon as the code returns, before the host stores anything."""
     from resource_explorer.egeria_clients import no_identity
 
     def run(inputs):
-        with no_identity():
-            return code(inputs)
+        try:
+            with no_identity():
+                return code(inputs)
+        finally:
+            if conn is not None:
+                conn.close()
 
     return run
 
@@ -297,11 +324,15 @@ class SurveyStepHost:
                 annotations=[a.to_record() for a in annotations],
                 package=self.provided_by.get("package", ""), producer_version=self.manifest.version)
 
-        host = HostContext(resource_type=self.entity_type, slug=entity.slug, producing_run=run,
-                           ods=StepOds(_registry_ods(registry)), connect=None, store=store)
-        # The step's code runs with no Egeria identity; the store and anything after it run as the host does.
-        code = SurveyStep(self.manifest).code
-        annotations = SurveyStep(self.manifest, code=_without_identity(code)).run(host)
+        conn, is_pg = _open_read_only(registry.database_url)
+        try:
+            host = HostContext(resource_type=self.entity_type, slug=entity.slug, producing_run=run,
+                               ods=StepOds(_step_reader(conn, is_pg)), connect=None, store=store)
+            # The step's code runs with no Egeria identity; the store and anything after it run as the host does.
+            code = SurveyStep(self.manifest).code
+            annotations = SurveyStep(self.manifest, code=_without_identity(code, conn)).run(host)
+        finally:
+            conn.close()
         counts: dict[str, int] = {}
         for a in annotations:
             counts[a.envelope.result_state.value] = counts.get(a.envelope.result_state.value, 0) + 1

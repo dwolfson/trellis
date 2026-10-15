@@ -446,3 +446,108 @@ def test_understanding_lists_a_library_step_like_a_native_survey(staleness_insta
     assert mine["run"]["engine_action_guid"] == "ea-und-lib"
     assert mine["run"]["report_guid"] == _row(reg)["target"]["outcome"]["report_guid"]
     assert mine["credentials"] == "present" and not mine["cannot_run_reason"], mine
+
+
+# ── review round 2: nothing reachable from a step's inputs holds the registry or its URL ──
+
+def _reachable(root, limit: int = 4000):
+    """Every object reachable from `root` through attributes, slots, closures, `__self__`, `__wrapped__`, function
+    globals (not descending into modules or classes), containers. Bounded."""
+    import types
+
+    seen, out, todo = set(), [], [root]
+    while todo and len(out) < limit:
+        obj = todo.pop()
+        if id(obj) in seen or isinstance(obj, (types.ModuleType, type)):
+            continue
+        seen.add(id(obj))
+        out.append(obj)
+        if isinstance(obj, (str, bytes, int, float, bool)) or obj is None:
+            continue
+        if isinstance(obj, dict):
+            todo.extend(obj.keys())
+            todo.extend(obj.values())
+            continue
+        if isinstance(obj, (list, tuple, set, frozenset)):
+            todo.extend(obj)
+            continue
+        if isinstance(obj, types.FunctionType):
+            todo.extend(c.cell_contents for c in (obj.__closure__ or ()) if _has(c))
+            todo.extend(v for v in obj.__globals__.values() if not isinstance(v, (types.ModuleType, type)))
+            todo.append(getattr(obj, "__wrapped__", None))
+            todo.extend((obj.__defaults__ or ()))
+            continue
+        for name in ("__self__", "__func__", "__wrapped__"):
+            if hasattr(obj, name):
+                todo.append(getattr(obj, name))
+        todo.append(getattr(obj, "__dict__", None))
+        for slot in getattr(type(obj), "__slots__", ()) or ():
+            if isinstance(slot, str) and hasattr(obj, slot):
+                todo.append(getattr(obj, slot))
+    return out
+
+
+def _has(cell) -> bool:
+    try:
+        cell.cell_contents
+        return True
+    except ValueError:
+        return False
+
+
+def test_f2_round2_no_registry_or_dsn_is_reachable_and_reachable_connections_are_read_only(
+        staleness_installed, reg, egeria, no_connection, monkeypatch):
+    import sqlite3
+
+    import database_staleness.step as user_code
+
+    from resource_explorer.registry import ProjectRegistry
+
+    found = {}
+    real = user_code.run
+
+    def probe(inputs):
+        objs = _reachable(inputs)
+        found["registries"] = [o for o in objs if isinstance(o, ProjectRegistry)]
+        dsn, path = reg.database_url, reg.database_url.removeprefix("sqlite:///")
+        found["dsn"] = [o for o in objs if isinstance(o, str) and (dsn in o or path in o)]
+        found["writes"] = []
+        for conn in (o for o in objs if isinstance(o, sqlite3.Connection)):
+            try:
+                conn.execute("CREATE TABLE step_was_here (a INTEGER)")
+                found["writes"].append("created a table")
+            except sqlite3.Error:
+                pass
+            try:
+                conn.execute("DELETE FROM runs")
+                found["writes"].append("deleted runs")
+            except sqlite3.Error:
+                pass
+        found["connections"] = sum(1 for o in objs if isinstance(o, sqlite3.Connection))
+        return real(inputs)
+
+    monkeypatch.setattr(user_code, "run", probe)
+    _second_survey(reg)
+    egeria.add_action("ea-walk", request_type=REQUEST_TYPE)
+    _sweep(reg)
+    _run_queue_once(reg)
+    assert found["registries"] == []
+    assert found["dsn"] == []
+    assert found["connections"] >= 1          # the walk does reach the reader's connection ...
+    assert found["writes"] == []              # ... and it cannot write
+    assert egeria.actions["ea-walk"]["completion"]["guards"] == ["survey-completed"]
+
+
+def test_the_claim_filter_is_exact_not_fooled_by_request_parameters(staleness_installed, reg):
+    """A row whose request_parameters mention a supported request type is not claimable when its own
+    request_type is not."""
+    import json
+
+    run_id = reg.enqueue_run("engine_action", {"engine_action_guid": "x", "request_type": "re-unknown",
+                                               "request_parameters": {"k": '"request_type": "re-db-derived"',
+                                                                      "request_type": "re-db-derived"}})
+    assert reg.claim_next_run("w", {}, kinds=["engine_action"], engine_request_types={"re-db-derived"}) is None
+    assert json.loads(reg.list_runs(kind="engine_action")[0]["target"])["request_type"] == "re-unknown"
+    ok = reg.enqueue_run("engine_action", {"engine_action_guid": "y", "request_type": "re-db-derived"})
+    assert reg.claim_next_run("w", {}, kinds=["engine_action"], engine_request_types={"re-db-derived"})["id"] == ok
+    assert run_id

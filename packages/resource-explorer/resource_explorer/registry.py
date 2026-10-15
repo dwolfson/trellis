@@ -1315,6 +1315,15 @@ def is_false_zero_survey(row: dict) -> bool:
             and not _survey_schema_info(row))
 
 
+def _target_request_type(target_json) -> str:
+    """The top-level `request_type` of a runs row's target JSON, or "" when unreadable."""
+    try:
+        target = json.loads(target_json or "{}")
+    except (TypeError, ValueError):
+        return ""
+    return str(target.get("request_type") or "") if isinstance(target, dict) else ""
+
+
 class ProjectRegistry:
     # Process-wide cache: a Postgres `Engine` (connection pool) and whether
     # `_init_schema` has already run, keyed by `database_url`. Added
@@ -4475,7 +4484,9 @@ class ProjectRegistry:
         taken only when its target's `request_type` is one of them (the worker's own
         `engine_host.supported_request_types()`): a worker without an Analytic Library step's package leaves
         that row queued for a worker that has it, rather than claiming it and failing the action closed. A text
-        prefilter on the JSON `RUN_KIND`-row target, which `enqueue_run` writes with `json.dumps` defaults.
+        prefilter on the target JSON narrows the candidates; the parsed target's TOP-LEVEL `request_type` then
+        decides (a supported type mentioned inside `request_parameters`, which the requester controls, never
+        makes a row claimable).
 
         **Concurrency.** Select-and-mark happen in one transaction, and on
         Postgres the SELECT carries `FOR UPDATE SKIP LOCKED` so a second
@@ -4514,20 +4525,26 @@ class ProjectRegistry:
         if kinds:
             sql += f"  AND r.kind IN ({','.join('?' * len(kinds))}) "
             params.extend(kinds)
+        types: set[str] | None = None
         if engine_request_types is not None:
-            types = sorted(set(engine_request_types))
-            runnable = " OR ".join("r.target LIKE ?" for _ in types) or "1 = 0"
+            types = set(engine_request_types)
+            runnable = " OR ".join("r.target LIKE ?" for _ in sorted(types)) or "1 = 0"
             sql += f"  AND (r.kind <> 'engine_action' OR ({runnable})) "
-            params.extend(f'%"request_type": {json.dumps(t)}%' for t in types)
-        sql += "ORDER BY r.enqueued_at ASC, r.id ASC LIMIT 1"
+            params.extend(f'%"request_type": {json.dumps(t)}%' for t in sorted(types))
+        # With the request-type prefilter, a few candidates are read and the first exact one is taken.
+        sql = sql.replace("SELECT r.id FROM", "SELECT r.id, r.kind, r.target FROM", 1)
+        sql += f"ORDER BY r.enqueued_at ASC, r.id ASC LIMIT {1 if types is None else self._CLAIM_CANDIDATES}"
 
         with self._conn() as conn:
             if conn.is_postgres:
                 sql += " FOR UPDATE SKIP LOCKED"
-            row = conn.execute(sql, tuple(params)).fetchone()
-            if row is None:
+            run_id = None
+            for row in conn.execute(sql, tuple(params)).fetchall():
+                if types is None or row["kind"] != "engine_action" or _target_request_type(row["target"]) in types:
+                    run_id = row["id"]
+                    break
+            if run_id is None:
                 return None
-            run_id = row["id"]
             conn.execute(
                 """UPDATE runs SET state='claimed', claimed_by=?, runner=?,
                                    claimed_at=?, heartbeat_at=?
@@ -4615,6 +4632,9 @@ class ProjectRegistry:
         params.append(limit)
         with self._conn() as conn:
             return [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
+
+    #: How many prefiltered candidates `claim_next_run` reads when it must confirm an engine action's request type.
+    _CLAIM_CANDIDATES = 25
 
     def fail_queued_run(self, run_id: str, error: str, *, now: str | None = None) -> bool:
         """Mark a row that has NOT been claimed yet `failed`, with `error`. False when it is no longer queued
