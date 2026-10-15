@@ -157,6 +157,10 @@ class ZoneVerdict:
     granted_by: str = ""
     operation: str = ""
     why: str = ""
+    #: The `secured` zones named after a PERSON who owns or maintains the element (a private element is zoned
+    #: `[private zone, <owner's userId>]`). A refusal sentence must not name them: it would tell the caller whose
+    #: element it is. Detail for the server log only.
+    person_zones: list[str] = field(default_factory=list)
 
 
 def _one_operation(user_id: str, zones: list[str], operation: str, account: dict,
@@ -228,6 +232,8 @@ def zone_grants(user_id: str, zones: Iterable[str], *,
     for op in ops:
         last = _one_operation(user_id, zones, op, account, control_for, owners, maintainers)
         if not last.allowed:
+            people = {str(p) for p in [*(owners or []), *(maintainers or [])] if p and p != user_id}
+            last.person_zones = [z for z in last.secured if z in people]
             return last
     return last
 

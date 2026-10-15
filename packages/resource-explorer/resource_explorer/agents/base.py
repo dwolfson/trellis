@@ -226,15 +226,11 @@ class BaseExplorerAgent(ABC):
             # The ONE shared pool per process (resource_explorer/concurrency.py),
             # not a fresh ThreadPoolExecutor per call — see that module for why
             # six ad hoc pools became one.
-            import contextvars
-
             from resource_explorer.concurrency import run_sync
 
-            # Carry the caller into the pool thread (caller-identity reads, 2026-10-14): a pool
-            # thread starts with an empty context, so an A2A or chat request's agent would read
-            # the registry, and any Egeria client, as nobody. Same pattern as prefect_adapter.
-            ctx = contextvars.copy_context()
-            return run_sync(lambda: ctx.run(lambda: asyncio.run(_inner())))
+            # The shared pool carries the caller into its thread (concurrency._CallersContextPool),
+            # so an A2A or chat request's agent reads the registry and Egeria as the caller.
+            return run_sync(lambda: asyncio.run(_inner()))
         except RuntimeError:
             # No running event loop — safe to call asyncio.run directly
             return asyncio.run(_inner())

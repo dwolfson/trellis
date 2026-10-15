@@ -81,11 +81,13 @@ The cards carry no project data.
 The middleware puts a `CallerIdentity` in a ContextVar
 (`resource_explorer.a2a_auth.current_caller`) for the life of the request — the
 same ContextVar the web login's `_identity_middleware` sets from RE's session
-JWT, so both doors reach identical code. Asyncio tasks and `asyncio.to_thread`
-inherit it; a bare `threading.Thread` or a shared-pool `run_sync` does **not**,
-so a hop off the request thread carries it explicitly
-(`ctx = contextvars.copy_context(); run_sync(lambda: ctx.run(fn))`, as
-`agents/base.py` and `prefect_adapter.py` do) or hands the resolved identity in.
+JWT, so both doors reach identical code. Asyncio tasks, `asyncio.to_thread` and
+RE's shared pool (`concurrency.run_sync` / `submit`, which copy the submitter's
+context) carry it. A bare `threading.Thread` does **not**: copy the context
+explicitly (`ctx = contextvars.copy_context(); Thread(target=ctx.run, args=(fn,))`)
+or hand the resolved identity in. A read that finds no caller is not safe: the
+registry reads `''` as the service identity, which sees every private
+investigation.
 Agent code gets a pyegeria client for the caller from RE's one factory:
 
 ```python

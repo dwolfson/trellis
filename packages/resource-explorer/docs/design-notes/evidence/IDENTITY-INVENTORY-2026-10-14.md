@@ -31,19 +31,37 @@ Read against branch `re/caller-identity-reads`, which is based on main
   - It is pinned by
     `test_caller_identity_reads.py::test_the_web_login_session_reaches_the_factory_as_the_caller`.
 - **Thread hops.**
+  - **A context-less read is a leak, not a safe default.** A registry read that
+    finds no caller reads as `''`, the shared/service identity, and
+    `_may_see_investigation` lets `''` see every private investigation
+    (registry.py, "service/shared identity"). An Egeria read with no caller
+    raises `NoCallerIdentity`, which is loud. A registry read with no caller
+    is silent and sees everything. Round 1 of this inventory called the
+    agents' empty-context hop "not a leak". That was wrong: it was one.
   - `asyncio.to_thread` copies the context, and so does Starlette's thread
-    pool for sync routes.
-  - A bare `threading.Thread` does not, and neither does the shared pool
-    (`concurrency.run_sync` / `submit` / `run_sync_all`).
-  - RE's pattern is one of two:
-    - copy the context explicitly: `ctx = contextvars.copy_context();
-      run_sync(lambda: ctx.run(fn))`. Used in `prefect_adapter.py:429`,
-      `investigation_purposes.py:637`, `web/routes/query.py:324`,
-      `web/routes/doc_sources.py:81` and `workflows/survey_definition.py:217`.
-    - resolve the identity in the calling thread and hand it in. Used in
-      `SurveyDefinitionReader.principal()`, `zone_access.read_elements(read_as=)`,
-      `web/routes/egeria.py:378` and `doc_source_egeria.py:237` (the client is
-      built before the hop).
+    pool for sync routes. A bare `threading.Thread` does not.
+  - **The shared pool now carries the submitter's context (round 2).**
+    `concurrency._CallersContextPool.submit` runs every job in
+    `contextvars.copy_context()`. That covers `submit`, `submit_all`,
+    `run_sync`, `run_sync_all` and a raw `get_pool().submit`, which is what
+    `web/routes/analyses.py:412` (bulk facts) uses. So no call site can forget.
+    - Each job gets its own copy, so a worker holds no caller between jobs.
+    - One thing is deliberately not carried: the per-request Egeria client
+      cache (`client_scope`). A pool thread builds its own clients, because
+      pyegeria ISSUE-96 binds a client to the event loop of the thread that
+      first drives it.
+  - **Audit of the other hops** (`threading.Thread`, `run_in_executor`):
+
+| Hop | On a request path? | Handling |
+|---|---|---|
+| `web/routes/query.py:325`, `web/routes/doc_sources.py:94`, `workflows/survey_definition.py:218`, `investigation_purposes.py:648` | yes | already copy the context |
+| `prefect_adapter.py:430` | yes | copies the context explicitly, and the pool now does too |
+| `web/routes/auth.py:50,90` (`run_in_executor`) | yes, login only | needs no caller: it mints or validates the token that becomes the caller |
+| `rag_system.py:41,69,151,180` (`_track`) | yes | writes telemetry only, reads nothing back for the caller; values are passed in by value |
+| `web/routes/discovery.py:513` (import batch) | started by one | a job: registers shared repos and returns nothing to a response. If it ever publishes, it declares `Daemon(..., requested_by)` |
+| `egeria_actors.py:548` | yes | an explicit `Daemon(ACTOR_LOOKUP)`; needs no caller |
+| `blueprint_materializer.py:528` (claim heartbeat) | inside a run | a registry claim refresh, no scoped read |
+| `bootstrap.py:836`, `worker.py`, `scheduler.py:100`, `run_queue.py:408,748`, `egeria_resync.py:1689`, `engine_host.py:1029` | no | background loops that declare `acting_as(Daemon(...))` |
 
 ## The construction sites (42)
 
@@ -77,7 +95,7 @@ How to read the "Identity" column:
 | 19 | `doc_source_egeria.py:106` | handed in | doc-source route (Caller); outbox drain (daemon) | R+W | caller in request |
 | 20 | `egeria_linkage.py:474` | ambient | recheck route and CLI (Caller); resync (`Daemon(RESYNC)`) | R | caller in request |
 | 21 | `investigation_purposes.py:762` | `Caller()` (`:773`) / `Daemon(BOOTSTRAP)` (`:825`, `:868`) | purposes route (Caller); bootstrap seeding | R / W | caller in request; daemon by rule (bootstrap) |
-| 22 | `surveyors/survey_definition_reader.py:332` | handed in, else ambient (resolved once, before the pool hop) | survey-definition routes (Caller); worker warm (`Daemon(STARTUP_WARM)`, `worker.py:250`) | R | caller in request; **warm cache shared** (E) |
+| 22 | `surveyors/survey_definition_reader.py:332` | handed in, else ambient (resolved once, before the pool hop) | survey-definition routes (Caller); worker warm (`Daemon(STARTUP_WARM)`, `worker.py:250`) | R | caller in request; caches per reader since round 2 (E) |
 | 23 | `dr_egeria_runner.py:737` | `Daemon(DR_EGERIA)` | an admin's Dr.Egeria document run | W | **daemon, for the next change** (C) |
 | 24 | `surveyors/egeria_project_finder.py:67` | ambient | project-context route; a new instance per request | R | caller |
 | 25 | `surveyors/egeria_tech_type_catalog.py:73` | ambient, per call | survey-definitions route (a **module-level** instance), analysis catalog merge, dependency support | R | **converted here** (F) |
@@ -138,37 +156,60 @@ make no Egeria call. Egeria Advisor is a separate app and is not in scope.
 
 ## What this change converts
 
+- **The shared pool carries the caller (round 2; HIGH, already on main).**
+  - The coordinator's review found this one.
+  - `GET /api/analyses/facts` fans out with `get_pool().submit(read_one)`. Every
+    pool job read the registry as `''`, which sees every private
+    investigation.
+  - Fixed at the root in `concurrency._CallersContextPool` (see "Thread hops").
+  - **Check on the reported chain:** today the bulk facts route reads
+    analysis results, not the investigation-naming state reader.
+    `_db_r_existing_use` is reached only through
+    `GET /api/analyses/facts/{slug}/answer`, which is a sync route, so
+    Starlette copies the context. The leak is real for any scoped read made
+    from a pool job. The tests drive that state reader both on the pool (fails
+    before, passes after) and through the answer route (passes both ways).
 - **(F) The Technology Type catalog: a cross-caller leak, fixed.**
   - `web/routes/survey_definitions.py:25` holds ONE `EgeriaTechTypeCatalog`
     for the whole process.
-  - It already rebound its client to the current caller. But its
-    `_all_types_cache` and `_detail_cache` were per instance, so the first
-    person's answer was served to everyone after them.
+  - It already rebound its client to the current caller. But its two caches
+    were per instance, so the first person's answer was served to everyone
+    after them.
   - It also held the client in an instance slot that a concurrent request
     could rebind between another request's bind and its read.
   - Now each read builds its client for this call's principal, as a local
     variable, and caches under that reader's account.
-  - The same person asking twice is still one Egeria read.
+  - Round 2 adds a TTL of 300 s and a bound of 256 entries per cache.
+- **(E) The survey-definition caches are now per reader (round 2).**
+  - The full scan lists every GovernanceActionProcess, so a user-authored one
+    a deployment zones would be in a reader's answer. Callers fill these
+    caches as well as the startup warm.
+  - Chosen fix: **key by reader**, not "fill as the daemon and filter by
+    zone". Filtering would mean emulating READ access per definition.
+  - Keyed by `(kind, account)`: the full-scan and question-scoped candidates,
+    the fetched graphs (`_fetch_cache`) and the process GUIDs. A reconcile
+    busts every reader's copy of a graph.
+  - The local-document candidates path no longer has a candidates-level
+    cache: its only Egeria answer, the GUID, is cached per reader.
+  - The question-GUID cache stays shared. It holds only the GUIDs of RE's own
+    question glossary terms, which RE seeds and never zones.
+  - **Cost:** the worker's `Daemon(STARTUP_WARM)` warm now fills only the
+    daemon's entries. Each person's first candidates load after start (and
+    every 300 s) reads Egeria as that person.
 - **The A2A agents' hop onto the shared pool.**
-  - `agents/base.py:_run_agent` (stats, code, docs, health, compare,
-    integration, dependency, examples), `conversation_agent.py:_run_persistent`
-    and `load_history._inject` all run their coroutine on the shared pool when
-    they are called inside a running loop. The A2A handlers always are.
-  - The pool thread started with an empty context. So an A2A or orchestrator
-    request read the registry as nobody (the shared bucket only: not a leak,
-    but wrong for the caller), and any Egeria read inside it raised
-    `NoCallerIdentity`.
-  - Each hop now copies the context. The copy is per call, so nothing stays in
-    the pool thread afterwards.
-  - The agents make no Egeria call today. This makes the MCP tools that come
-    next see the caller.
+  - `agents/base.py:_run_agent`, `conversation_agent.py:_run_persistent` and
+    `load_history._inject` run on the pool inside a running loop, which every
+    A2A handler is.
+  - Round 1 added an explicit copy of the context. Round 2 removed it, because
+    the pool now carries the caller and the explicit copy would have
+    re-entered the request's client cache.
 - **`docs/a2a.md`.** The `apply_caller_token` example named a helper that does
   not exist. It now shows `egeria_client(Caller(), ...)` and states the
   thread-hop rule.
 
 No site in `web/routes/` or the A2A server built a client as the daemon for a
 plain read. Brief I (2026-10-09) had already moved them to `Caller()` /
-`current_principal()`. What remained was the two cross-request shapes above.
+`current_principal()`.
 
 ## Left on the daemon, and why
 
@@ -185,8 +226,15 @@ plain read. Brief I (2026-10-09) had already moved them to `Caller()` /
     daemon performs.
   - It reads `SecurityAccessControl` entries and user accounts. Those need
     security-officer rights that a person does not have.
-  - What it returns: a verdict. It never returns the element's content. Zone
-    names can appear in a refusal sentence.
+  - What it returns: a verdict and a reason. It never returns the element's
+    content.
+  - **Round 2:** a secured zone named after a person who owns or maintains the
+    element (`ZoneVerdict.person_zones`) is never named in the reason.
+    - Example: a private element is zoned `[private zone, <owner's userId>]`.
+    - The reason says "private to its owner" or "... and a zone private to
+      its owner"; the full list goes to the server log only.
+    - `AccessDecision.zones` still carries every zone, but no response
+      serializes it.
   - A private investigation's elements are already read as their signed-in
     owner (site 8).
   - Once in-request writes run as the caller, Egeria enforces this itself, and
@@ -200,21 +248,9 @@ plain read. Brief I (2026-10-09) had already moved them to `Caller()` /
     and which one holds the private-zone control.
   - This is deployment configuration, not resource content. The answer is a
     platform name.
-- **(E) The survey-definition warm caches**
-  (`survey_definition_reader.py:70-77`: question GUIDs, candidates, fetched
-  definitions, process GUIDs).
-  - The worker warms them once as `Daemon(STARTUP_WARM)`, and every caller
-    reads them.
-  - What they hold: RE's own authored Survey Definitions (the
-    `documented_definitions` list) and the GUIDs of its question glossary
-    terms.
-  - RE never writes a `ZoneMembership` on those. The private zone is stamped
-    only on an investigation's own elements
-    (`egeria_investigation_publisher`, `investigation_reclassifier`,
-    `egeria_publisher`'s private reports, `catalogue_gateway`).
-  - So no caller's zones would hide them.
-  - If a deployment ever zones a governance process, these caches must become
-    per reader, the way the Technology Type catalog now is.
+- **(E) The survey-definition startup warm** still runs as
+  `Daemon(STARTUP_WARM)`. Since round 2 it fills only the daemon's own
+  entries; callers' entries are kept per reader (see above).
 
 Other process-wide caches of Egeria answers were checked:
 
@@ -230,7 +266,7 @@ All are in `tests/test_caller_identity_reads.py`. Only the pyegeria boundary
 is faked: `egeria_clients._build` returns
 `create_autospec(<the real pyegeria class>, instance=True, spec_set=True)`.
 
-**Failed on unchanged code (4), and pass after:**
+**Round 1: failed on unchanged code (4), and pass after:**
 
 - the route catalog reads as each caller and never serves one caller's answer
   to another;
@@ -238,43 +274,65 @@ is faked: `egeria_clients._build` returns
 - a chat agent turn does the same;
 - the hop does not leave the caller in the pool thread afterwards.
 
-**Guards that pass on both sides (3):**
+**Round 2: failed on the round-1 sources, and pass after:**
+
+- a `run_sync` / `submit` / raw-pool / `run_sync_all` callee sees the caller,
+  and no caller is left behind in a worker;
+- Erin never sees Peter's private investigation from a pool job (the real
+  `_db_r_existing_use` reader, through `get_pool().submit`, as bulk facts
+  does);
+- a zoned definition seen by one reader is never served from cache to
+  another (full scan);
+- a refusal on a private element names no one (the real `zone_grants`; the
+  detail is in the log);
+- the catalog cache expires and is bounded.
+
+**Guards that pass on both sides:**
 
 - The web login session reaches the factory as the caller.
 - The catalog still caches within one caller.
+- The catalog with nobody signed in refuses and builds no client.
+- `list_technology_types` reads as each caller.
+- A pool job builds its own Egeria clients, not the request's.
+- Erin never sees Peter's private investigation through
+  `/api/analyses/facts/x/answer` (a sync route, so Starlette copies the
+  context).
 - A queued write keeps its requester and drains on the service account
   (`Daemon(OUTBOX, requested_by=peter)`, the client built for the daemon, a
   minted token, never Peter's).
   - It was made to fail on purpose by blanking `_row_requester` in
     `_row_identity`, and it failed as expected.
+- The doc-source immediate attempt runs as the caller.
+  - **Ruling for this branch:** the attempt made right after the press is the
+    person's own write, with their live token. That is an in-request write,
+    the next change's scope, and already on the caller.
+  - A retry by the background drain is a queued write: it runs on the service
+    account with `by` recorded, and the outbox test above pins that.
 
-## Live two-user probe: NOT RUN
+## Live two-user probe (the owner ran it, 2026-10-14 20:10)
 
-- **The plan:**
-  - Run the branch's code in-process with a TestClient, on a temp SQLite
-    registry, with no lifespan.
-  - Sign in through RE's own `POST /api/auth/login` as `peterprofile` (the
-    owner of private report 294a293f) and as `erinoverview`.
-  - Then call `GET /api/egeria/genaicomps/egeria-surveys` (asset 7e72dca7, all
-    readable) and `GET .../egeria-surveys/<294a293f...>/annotations`.
-  - Expected result: Peter lists and reads the report; Erin does not see it,
-    or gets 403-020.
-- **Blocked:** the permission classifier refused to run the probe (PII data
-  handling). It would have signed in two demo users with the QuickStart demo
-  password, read from `docs/deploying-trellis-with-quickstart.md`.
-- **Needed:** the owner either runs
-  `scratchpad/probe/probe_two_users.py` himself or allows that action. The
-  script prints only status codes, GUID prefixes and counts.
-- The read path it exercises was already on `Caller()` before this change.
-  The route probe proves zone filtering for the caller, not this change's
-  conversions.
+- **How it ran:**
+  - `~/.re-gate/scripts/probe_two_users_callerreads.py`, on the branch's code,
+    in-process with a TestClient, a temp SQLite registry and no lifespan.
+  - Signed in through RE's own `POST /api/auth/login`.
+  - Egeria reads only.
+- **Earlier attempt:** my own attempt to run it was refused by the permission
+  classifier (PII handling); the owner ran it.
 
 | User | Route | Element | Outcome |
 |---|---|---|---|
-| peterprofile | `/api/egeria/genaicomps/egeria-surveys` | asset 7e72dca7 → report 294a293f | not run (blocked) |
-| erinoverview | `/api/egeria/genaicomps/egeria-surveys` | the same | not run (blocked) |
-| peterprofile | `.../egeria-surveys/294a293f.../annotations` | report 294a293f | not run (blocked) |
-| erinoverview | `.../egeria-surveys/294a293f.../annotations` | report 294a293f | not run (blocked) |
+| peterprofile (owner) | `GET /api/egeria/genaicomps/egeria-surveys` | asset 7e72dca7 | lists private report 294a293f |
+| peterprofile (owner) | `GET .../egeria-surveys/294a293f.../annotations` | report 294a293f | 200, 4 annotations |
+| erinoverview | `GET /api/egeria/genaicomps/egeria-surveys` | asset 7e72dca7 | 200, 0 reports (294a293f not listed) |
+| erinoverview | `GET .../egeria-surveys/294a293f.../annotations` | report 294a293f | 200, 0 annotations |
+
+- **Result:** each caller sees only what their zones allow.
+- **Follow-up, a "never measured" shape:** Erin's direct read returns 200
+  with 0 annotations, not a refusal. "Egeria withheld it from you" looks the
+  same as "it has no annotations". The answer is truthful about content but
+  not about why. Labelling that is a separate, small change.
+- The routes probed were already on `Caller()` before this branch. The probe
+  proves zone filtering for the caller end to end.
 
 ## What the next change (in-request writes) must cover
 
@@ -291,5 +349,10 @@ is faked: `egeria_clients._build` returns
 - **`discovery.py:513`'s import thread** is a bare `threading.Thread` with no
   context. Today it registers locally. If it ever publishes, it must declare
   `Daemon(..., requested_by)` explicitly, the way `run_queue` does.
+- **In-request writes already on the caller** include the doc-source
+  immediate attempt (`doc_sources.py:79`). Confirm under option 2 that "made
+  just after the response, with the caller's live token" counts as in-request.
+- **The 200-with-nothing answer** for an element Egeria withholds, from the
+  probe above.
 - **The "requested by <caller> · written by the service account" wording** on
   every surface that shows a queued write.

@@ -296,3 +296,261 @@ def test_a_queued_write_keeps_its_requester_and_drains_on_the_service_account(bo
     row = reg.get_outbox_element(rid)
     assert row["status"] == "done"
     assert json.loads(row["payload_json"])["requested_by"] == PETER
+
+
+# ── round 2: the shared pool carries the caller (HIGH, pre-existing leak) ───────────────────────────
+
+def test_a_run_sync_or_submit_callee_sees_the_caller():
+    from resource_explorer import concurrency
+    from resource_explorer.a2a_auth import caller, current_caller
+
+    reset = _signed_in(PETER, PETER_TOKEN)
+    try:
+        via_run_sync = concurrency.run_sync(lambda: caller().user_id, timeout=10)
+        via_submit = concurrency.submit(lambda: caller().user_id).result(timeout=10)
+        via_raw_pool = concurrency.get_pool().submit(lambda: caller().user_id).result(timeout=10)
+        via_all = [v for ok, v in concurrency.run_sync_all([lambda: caller().user_id], timeout=10)]
+    finally:
+        current_caller.reset(reset)
+    assert via_run_sync == via_submit == via_raw_pool == PETER and via_all == [PETER]
+    # and nothing stays behind in a worker for the next, caller-less job
+    assert {concurrency.run_sync(lambda: caller(), timeout=10) for _ in range(16)} == {None}
+
+
+def test_a_pool_job_builds_its_own_egeria_clients_not_the_requests():
+    """The request's client cache is NOT carried into the pool (pyegeria ISSUE-96: a client is bound to the
+    loop of the thread that first drives it)."""
+    from resource_explorer import concurrency, egeria_clients
+
+    reset = _signed_in(PETER, PETER_TOKEN)
+    try:
+        with egeria_clients.client_scope():
+            assert egeria_clients.current_scope() is not None
+            in_pool = concurrency.run_sync(egeria_clients.current_scope, timeout=10)
+    finally:
+        from resource_explorer.a2a_auth import current_caller
+        current_caller.reset(reset)
+    assert in_pool is None
+
+
+@pytest.fixture
+def facts_world(tmp_path, monkeypatch):
+    """Peter's PRIVATE investigation holds database x; the route reads through FactLayer on the shared pool."""
+    from contextlib import contextmanager
+
+    from resource_explorer.registry import DatabaseEntity, ProjectRegistry
+
+    r = ProjectRegistry(db_path=str(tmp_path / "facts.db"))
+    monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
+                        lambda self, db_path=None, **k: setattr(self, "__dict__", r.__dict__) or None)
+    r.register_database(DatabaseEntity(slug="x", display_name="X", db_type="postgresql", host="h",
+                                       port=5432, database_name="x"))
+
+    @contextmanager
+    def as_user(user):
+        from resource_explorer.a2a_auth import current_caller
+        reset = _signed_in(user, "t")
+        try:
+            yield
+        finally:
+            current_caller.reset(reset)
+
+    with as_user(PETER):
+        inv = r.create_investigation("Peter Secret Plan", project_classification="PersonalProject")
+        ws = r.get_or_create_working_set(inv["slug"])
+        r.add_working_set_member(ws["slug"], "database", "x")
+    return r
+
+
+EXISTING_USE = "Is there any existing use within our organization?"
+
+
+def _existing_use_on_the_pool(user):
+    """Erin's request hops onto the shared pool exactly as `GET /api/analyses/facts` does
+    (`concurrency.get_pool().submit(read_one, slug)`), and the pool job runs the real database state reader that
+    names investigations (`_db_r_existing_use` -> `find_entity_investigations` -> `_may_see_investigation`, which
+    lets '' see everything)."""
+    from resource_explorer import concurrency
+    from resource_explorer.a2a_auth import current_caller
+    from resource_explorer.facts import FactLayer
+
+    reset = _signed_in(user, f"tok-{user}")
+    try:
+        env = concurrency.get_pool().submit(
+            lambda: FactLayer(resource_type="database").answer("x", {"question": EXISTING_USE}).as_dict()
+        ).result(timeout=30)
+    finally:
+        current_caller.reset(reset)
+    return json.dumps(env)
+
+
+def test_erin_never_sees_peters_private_investigation_from_a_pool_job(facts_world):
+    assert "Peter Secret Plan" in _existing_use_on_the_pool(PETER), "the fact must be computed for its owner"
+    assert "Peter Secret Plan" not in _existing_use_on_the_pool(ERIN)
+
+
+def test_erin_never_sees_peters_private_investigation_through_the_answer_route(facts_world):
+    from fastapi.testclient import TestClient
+
+    from resource_explorer.auth import create_access_token
+    from resource_explorer.web.app import app
+
+    def ask(user):
+        h = {"Authorization": "Bearer " + create_access_token(user_id=user, egeria_token=f"tok-{user}")}
+        r = TestClient(app).get("/api/analyses/facts/x/answer",
+                                params={"entity_type": "database", "question": EXISTING_USE}, headers=h)
+        assert r.status_code == 200, r.text
+        return r.text
+
+    assert "Peter Secret Plan" in ask(PETER)
+    assert "Peter Secret Plan" not in ask(ERIN)
+
+
+# ── round 2: survey-definition caches are per reader ────────────────────────────────────────────────
+
+def test_a_zoned_definition_seen_by_one_reader_is_never_served_from_cache_to_another(boundary):
+    """The full scan lists every GovernanceActionProcess, a zoned user-authored one included when the reader may
+    see it. Peter's scan finds his zoned definition; Erin's scan must reach Egeria as Erin, not hit his cache."""
+    from resource_explorer.a2a_auth import current_caller
+    from resource_explorer.egeria_clients import client_scope
+    from resource_explorer.surveyors import survey_definition_reader as sdr
+
+    def element(qn):
+        return {"properties": {"qualifiedName": qn, "displayName": qn,
+                               "additionalProperties": {"supported_technology_type": "PostgreSQL Server"}},
+                "elementHeader": {"guid": "g-" + qn}}
+
+    def per_token(mock):
+        def find(**kw):
+            token = mock.set_bearer_token.call_args.args[0]
+            return [element("Shared")] + ([element("PeterPrivate")] if token == PETER_TOKEN else [])
+        mock.find_governance_definitions.side_effect = find
+
+    boundary.configure["GovernanceOfficer"] = per_token
+    sdr.clear_caches()
+    try:
+        seen = {}
+        for user, token in ((PETER, PETER_TOKEN), (ERIN, ERIN_TOKEN)):
+            reset = _signed_in(user, token)
+            try:
+                with client_scope():
+                    seen[user] = {c["qualified_name"] for c in
+                                  sdr.SurveyDefinitionReader().find_candidate_process_guids("PostgreSQL Server")}
+            finally:
+                current_caller.reset(reset)
+    finally:
+        sdr.clear_caches()
+    assert seen[PETER] == {"Shared", "PeterPrivate"}
+    assert seen[ERIN] == {"Shared"}, "Erin was served Peter's cached scan"
+
+
+# ── round 2: a refusal never names another person's private zone ───────────────────────────────────
+
+def test_a_refusal_on_a_private_element_names_no_one(monkeypatch, caplog):
+    """A private element is zoned [private zone, <owner's userId>]. When the owner's zone is secured, the
+    refusal names the private zone at most, never the owner; the server log keeps the detail."""
+    from resource_explorer.egeria_identity import private_zone
+    from resource_explorer.workflows import curate as wc
+    from resource_explorer.zone_access import zone_grants
+
+    pz = private_zone()
+    zones = [pz, PETER]
+    control = {"associatedSecurityList": {"DEFAULT": ["instanceOwner"]}}
+    account = {"userAccountStatus": "AVAILABLE", "userAccountType": "EMPLOYEE"}
+
+    def verdict(user, guid, ops, reader):
+        return zone_grants(user, zones, control_for=lambda z: control, account_for=lambda: account,
+                           owners=[PETER], maintainers=[PETER], operations=ops), zones
+
+    monkeypatch.setattr(wc, "_existing_element_verdict", verdict)
+    reset = _signed_in(ERIN, ERIN_TOKEN)
+    try:
+        with caplog.at_level("INFO", logger="resource_explorer.workflows.curate"):
+            d = wc.curation_access(None, "database", "x", "", element_guid="g-1", reader=object())
+    finally:
+        from resource_explorer.a2a_auth import current_caller
+        current_caller.reset(reset)
+    assert not d.allowed
+    assert PETER not in d.reason, d.reason
+    assert "private to its owner" in d.reason
+    assert PETER in caplog.text, "the full detail stays in the server log"
+
+
+# ── round 2: the per-reader catalog cache expires, is bounded, and refuses with nobody signed in ─────
+
+def test_the_catalog_cache_expires_and_is_bounded(boundary, monkeypatch):
+    from resource_explorer.surveyors import egeria_tech_type_catalog as cat
+
+    c = cat._TTLCache(ttl=300, max_entries=3)
+    clock = [1000.0]
+    monkeypatch.setattr(cat.time, "monotonic", lambda: clock[0])
+    for i in range(5):
+        c[i] = i
+    assert len(c) == 3 and 0 not in c and 4 in c
+    clock[0] += 301
+    assert 4 not in c
+
+
+def test_the_catalog_with_nobody_signed_in_refuses_and_builds_nothing(boundary):
+    from resource_explorer.egeria_clients import NoCallerIdentity
+
+    catalog = _fresh_route_catalog()
+    with pytest.raises(NoCallerIdentity):
+        catalog.list_technology_types()
+    assert boundary.built == [], "never the service account in place of a missing caller"
+
+
+def test_list_technology_types_reads_as_each_caller(boundary):
+    from resource_explorer.a2a_auth import current_caller
+    from resource_explorer.egeria_clients import client_scope
+
+    def per_token(mock):
+        mock.find_technology_types.side_effect = lambda **kw: [
+            {"displayName": mock.set_bearer_token.call_args.args[0]}]
+
+    boundary.configure["AutomatedCuration"] = per_token
+    catalog = _fresh_route_catalog()
+    got = {}
+    try:
+        for user, token in ((ERIN, ERIN_TOKEN), (PETER, PETER_TOKEN)):
+            reset = _signed_in(user, token)
+            try:
+                with client_scope():
+                    got[user] = catalog.list_technology_types()
+            finally:
+                current_caller.reset(reset)
+    finally:
+        _fresh_route_catalog()
+    assert got == {ERIN: [{"displayName": ERIN_TOKEN}], PETER: [{"displayName": PETER_TOKEN}]}
+
+
+# ── round 2: the doc-source immediate attempt is the person's own write, made with their token ──────
+
+def test_the_doc_source_immediate_attempt_runs_as_the_caller(boundary, monkeypatch):
+    """Option 2 ruling for this branch: the immediate attempt right after the press is the person's own act
+    (an in-request write, PR 2's scope, already on the caller); a retry from the background drain is a queued
+    write on the service account with `by` recorded (pinned above)."""
+    from pyegeria.omvs.metadata_expert import MetadataExpert
+
+    from resource_explorer.a2a_auth import current_caller
+    from resource_explorer.egeria_clients import current_principal, egeria_client
+    from resource_explorer.web.routes import doc_sources
+
+    class SyncThread:
+        def __init__(self, target, name="", daemon=True):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(doc_sources.threading, "Thread", SyncThread)
+    monkeypatch.setattr(doc_sources, "_registry", lambda: None)
+    monkeypatch.setattr(doc_sources, "drain_outbox_row", lambda reg, rid: egeria_client(
+        current_principal(), purpose="doc sources").of(MetadataExpert))
+    reset = _signed_in(PETER, PETER_TOKEN)
+    try:
+        doc_sources._attempt_outbox_row_immediately(7)
+    finally:
+        current_caller.reset(reset)
+    (entry,) = boundary.of("MetadataExpert")
+    _sent_only_the_callers_token(entry, PETER_TOKEN)

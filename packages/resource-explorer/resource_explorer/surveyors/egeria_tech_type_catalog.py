@@ -17,9 +17,59 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
 from resource_explorer.config import egeria_platform_url, egeria_view_server  # noqa: E402,F401
 
 log = logging.getLogger(__name__)
+
+
+#: How long a cached answer is served (seconds), and how many answers one catalog keeps (per cache). Same TTL as
+#: the survey-definition candidates cache; the bound keeps a process-lifetime instance from growing with every
+#: reader who ever asked.
+CACHE_TTL_SECONDS = 300
+CACHE_MAX_ENTRIES = 256
+
+
+class _TTLCache:
+    """A small per-instance cache: entries expire after `ttl`, and past `max_entries` the oldest goes first."""
+
+    def __init__(self, ttl: float = CACHE_TTL_SECONDS, max_entries: int = CACHE_MAX_ENTRIES) -> None:
+        self.ttl, self.max_entries = ttl, max_entries
+        self._d: dict = {}
+        self._lock = threading.Lock()
+
+    _MISS = object()
+
+    def get(self, key, default=_MISS):
+        with self._lock:
+            hit = self._d.get(key)
+            if hit is None:
+                return default
+            if time.monotonic() - hit[0] >= self.ttl:
+                self._d.pop(key, None)
+                return default
+            return hit[1]
+
+    def __contains__(self, key) -> bool:
+        return self.get(key) is not self._MISS
+
+    def __getitem__(self, key):
+        got = self.get(key)
+        if got is self._MISS:
+            raise KeyError(key)
+        return got
+
+    def __setitem__(self, key, value) -> None:
+        with self._lock:
+            self._d.pop(key, None)
+            self._d[key] = (time.monotonic(), value)
+            while len(self._d) > self.max_entries:
+                self._d.pop(next(iter(self._d)))
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._d)
 
 
 class EgeriaTechTypeCatalogError(RuntimeError):
@@ -44,8 +94,9 @@ class EgeriaTechTypeCatalog:
         #: The answers, kept PER READER (the account Egeria answers for): an instance can be module-level
         #: and serve every signed-in person, so one person's answer is never served to another
         #: (caller-identity reads, 2026-10-14: a read runs as the caller and returns what the caller may see).
-        self._all_types_cache: dict[object, list[dict]] = {}
-        self._detail_cache: dict[tuple[object, str], dict | None] = {}
+        #: Each answer expires after `CACHE_TTL_SECONDS`; each cache holds at most `CACHE_MAX_ENTRIES`.
+        self._all_types_cache = _TTLCache()
+        self._detail_cache = _TTLCache()
 
     def _reader(self) -> tuple:
         """(client, answer key) for whoever is asking NOW, resolved in this call.
@@ -93,8 +144,10 @@ class EgeriaTechTypeCatalog:
         narrower than "*"), each a dict with technologyTypeGUID/qualifiedName/
         displayName/description/category. Cached per (search) after first call."""
         client, key = self._reader()
-        if search == "*" and key in self._all_types_cache and not refresh:
-            return self._all_types_cache[key]
+        if search == "*" and not refresh:
+            hit = self._all_types_cache.get(key, None)
+            if hit is not None:
+                return hit
 
         try:
             result = client.find_technology_types(
@@ -115,8 +168,10 @@ class EgeriaTechTypeCatalog:
         no Technology Type registered under that exact name. Cached per name."""
         client, who = self._reader()
         key = (who, display_name)
-        if key in self._detail_cache and not refresh:
-            return self._detail_cache[key]
+        if not refresh:
+            hit = self._detail_cache.get(key, _TTLCache._MISS)
+            if hit is not _TTLCache._MISS:
+                return hit
 
         try:
             result = client.get_tech_type_detail(display_name, output_format="JSON")
