@@ -1,6 +1,6 @@
 # Resource Explorer documentation
 
-45 documents, grouped by what they *are* rather than what they are about — the
+46 documents, grouped by what they *are* rather than what they are about — the
 distinction that matters when deciding whether one is still live.
 
 **Generated from each document's own `**Status:**` line**, not from a
@@ -23,12 +23,14 @@ Decisions and models. Cited from source where a comment cannot restate them.
   design reference. Part of the architecture-recovery design — split out 2026-09-03
 - **[architecture-recovery-in-practice.md](architecture-recovery-in-practice.md)** — 2026-09-02  
   reference, current as of 2026-09-02
-- **[Architecture.md](Architecture.md)** — 2026-10-14  
+- **[Architecture.md](Architecture.md)** — 2026-10-15  
   live. Module map, flows and key decisions; the zone passage was corrected 2026-10-14
 - **[Backlog.md](Backlog.md)** — 2026-10-15  
   design question first (generalized discovery across resource kinds), then slice. Not scheduled
 - **[BUILDER-BRIEF-CHECKLIST.md](BUILDER-BRIEF-CHECKLIST.md)** — 2026-10-14  
   live. Short checklist for every builder brief
+- **[ddl-artifact-columns.md](ddl-artifact-columns.md)** — 2026-10-15  
+  branch, not deployed. This is the deployment record for three additive columns in RE's shared
 - **[ddl-step-annotations.md](ddl-step-annotations.md)** — 2026-10-14  
   live. Deployment record for the step_annotations table (2026-10-13)
 - **[dr-egeria-engine-host-gaps.md](dr-egeria-engine-host-gaps.md)** — 2026-10-14  
@@ -51,7 +53,7 @@ Decisions and models. Cited from source where a comment cannot restate them.
   live. Design for four gap analyses; code and tests cite it
 - **[kroki-diagram-rendering.md](kroki-diagram-rendering.md)** — 2026-10-14  
   live. How server-side mermaid rendering works
-- **[multi-resource-questions-design.md](multi-resource-questions-design.md)** — 2026-10-01  
+- **[multi-resource-questions-design.md](multi-resource-questions-design.md)** — 2026-10-15  
   design and planning input. First draft 2026-09-20; revised the same
 - **[open-stack-checklist.md](open-stack-checklist.md)** — 2026-10-15  
   live, partly dated. Outstanding-work checklist, last updated 2026-08-31; entries are deleted whe
@@ -61,7 +63,7 @@ Decisions and models. Cited from source where a comment cannot restate them.
   consolidated design. Current as of 2026-09-02
 - **[repo-analysis-funnel.md](repo-analysis-funnel.md)** — 2026-09-02  
   consolidated design. Current as of 2026-09-02
-- **[security-model.md](security-model.md)** — 2026-10-11  
+- **[security-model.md](security-model.md)** — 2026-10-15  
   consolidated model, current as of 2026-09-25. This is the single
 - **[survey-execution.md](survey-execution.md)** — 2026-09-04  
   consolidated design. Current as of 2026-09-02
