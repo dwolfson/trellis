@@ -259,13 +259,57 @@ def _short(exc: Exception, n: int = MAX_EGERIA_TEXT) -> str:
     return " ".join(str(exc).split())[:n] or type(exc).__name__
 
 
-def _header(element: Any) -> dict:
-    """The dict that carries an element's classifications. The LIVE raw element has them at the
-    top level; a header-wrapped shape (`elementHeader`, which `AssetMaker.get_asset_by_guid` uses)
-    is still tolerated for the places that read that one."""
+#: Egeria 6.2's ElementHeader (ElementHeader.java, shape since e17cc09d44) has NO generic `classifications` list:
+#: each classification below has its own field, holding one ElementClassification whose `classificationProperties`
+#: is the flattened bean (`{"class": "ZoneMembershipProperties", "zoneMembership": [...]}`). Captured live
+#: 2026-10-14 (tests/fixtures/egeria_6_2): AssetMaker.get_asset_by_guid -> `elementHeader.memento/.ownership/.anchor/
+#: .dataScope`; CollectionManager.get_collection_by_guid -> `elementHeader.zoneMembership`. MetadataExpert's answers
+#: (an OpenMetadataElement) still carry the top-level `classifications` list, which stays the fallback.
+HEADER_CLASSIFICATION_FIELDS = {
+    "Anchors": "anchor", "ZoneMembership": "zoneMembership", "ZoneMembershipProfile": "zoneMembershipProfile",
+    "Impact": "impact", "Criticality": "criticality", "Confidentiality": "confidentiality",
+    "Confidence": "confidence", "Retention": "retention", "GovernanceExpectations": "governanceExpectations",
+    "GovernanceMeasurements": "governanceMeasurements", "DigitalResourceOrigin": "digitalResourceOrigin",
+    "Ownership": "ownership", "Memento": "memento", "Promise": "promise", "Template": "template",
+    "TemplateSubstitute": "templateSubstitute", "SchemaType": "schemaType", "DataScope": "dataScope",
+    "RunMetrics": "runMetrics", "DataAssetEncoding": "dataAssetEncoding", "CalculatedValue": "calculatedValue",
+    "PrimaryKey": "primaryKey", "KnownDuplicate": "knownDuplicate", "ConsolidatedDuplicate": "consolidateDuplicate",
+    "SecurityTags": "securityTags", "AccountingCodes": "accountingCodes",
+    "SecurityListMembership": "securityListMembership", "UserAccountProfile": "userAccountProfile",
+    "ProjectClassification": "projectClassification",
+}
+#: The 6.2 header's classification lists (several classifications each); `otherClassifications` holds the rest.
+HEADER_CLASSIFICATION_LISTS = ("executionPoints", "duplicateClassifications", "collectionKinds", "glossaryTermKinds",
+                               "locationKinds", "projectKinds", "otherClassifications")
+
+
+class UnreadableClassification(GatewayError):
+    """A classification's header field is there but is not a classification RE can read: never "absent"."""
+
+
+def _is_named(c: Any, name: str) -> bool:
+    return isinstance(c, dict) and (c.get("classificationName") == name
+                                    or (c.get("type") or {}).get("typeName") == name)
+
+
+def classifications_named(element: Any, name: str) -> list[dict]:
+    """The element's `name` classifications, in either shape Egeria answers. The 6.2 dedicated header field is
+    read FIRST; only when it is absent (missing or null) are the lists read: `classifications` (top level, then
+    under `elementHeader`) and the header's lists, `otherClassifications` included. A dedicated field that is
+    present but not a classification RAISES `UnreadableClassification`: it is never read as "absent"."""
     if not isinstance(element, dict):
-        return {}
-    return element.get("elementHeader") or element
+        return []
+    header = element.get("elementHeader") if isinstance(element.get("elementHeader"), dict) else {}
+    field = HEADER_CLASSIFICATION_FIELDS.get(name)
+    if field and header.get(field) is not None:
+        value = header[field]
+        if not isinstance(value, dict):
+            raise UnreadableClassification(f"a {name} in a shape RE cannot read (elementHeader.{field})")
+        return [value]
+    found = [*(element.get("classifications") or []), *(header.get("classifications") or [])]
+    for listed in HEADER_CLASSIFICATION_LISTS:
+        found.extend(header.get(listed) or [])
+    return [c for c in found if _is_named(c, name)]
 
 
 def _guid_of(element: Any) -> str:
@@ -307,12 +351,9 @@ def _qn_of(element: Any) -> str:
 
 
 def _is_memento(element: Any) -> bool:
-    h = _header(element)
-    for c in (h.get("classifications") or []) if isinstance(h, dict) else []:
-        if isinstance(c, dict) and (c.get("classificationName") == "Memento"
-                                    or (c.get("type") or {}).get("typeName") == "Memento"):
-            return True
-    return False
+    """A Memento on the element: 6.2's `elementHeader.memento`, else the `classifications` list. A `memento`
+    field RE cannot read raises (`UnreadableClassification`), so an archived element is never read as live."""
+    return bool(classifications_named(element, "Memento"))
 
 
 def _element_read(element: Any) -> ElementRead:
@@ -349,10 +390,7 @@ def zones_of_element(element: Any) -> list[str]:
     "no zones"."""
     if not (isinstance(element, dict) and _guid_of(element)):
         raise GatewayError("unrecognised element answer from Egeria: cannot read its zones")
-    header = element.get("elementHeader") if isinstance(element.get("elementHeader"), dict) else {}
-    for c in [*(element.get("classifications") or []), *(header.get("classifications") or [])]:
-        if not (isinstance(c, dict) and c.get("classificationName") == "ZoneMembership"):
-            continue
+    for c in classifications_named(element, "ZoneMembership"):   # 6.2's elementHeader.zoneMembership first
         cp = c.get("classificationProperties") or c.get("properties") or {}
         if not isinstance(cp, dict):
             raise GatewayError("a ZoneMembership with unreadable properties: its zones are unknown")
@@ -695,10 +733,8 @@ class PyegeriaCatalogueGateway:
             element = self._client("MetadataExpert").get_metadata_element_by_guid(guid)
         except Exception as exc:
             raise GatewayError(f"could not read {guid} before classifying: {_short(exc)}") from exc
-        existing = None
-        for c in (_header(element).get("classifications") or []) if isinstance(element, dict) else []:
-            if isinstance(c, dict) and c.get("classificationName") == "Ownership":
-                existing = c
+        owned = classifications_named(element, "Ownership")      # 6.2's elementHeader.ownership first
+        existing = owned[-1] if owned else None
         if existing is not None:
             props = existing.get("classificationProperties") or {}
             current = ""

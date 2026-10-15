@@ -1017,3 +1017,23 @@ def test_report_step_says_report_not_found_only_when_the_publish_returned_nothin
     choose(world, "sales", "catalogue")
     _, rec = press(world, fake)
     assert step(rec, "survey_report")["detail"] == "report not found · the publish returned nothing"
+
+
+# ── Egeria 6.2 element header (tests/fixtures/egeria_6_2, captured live read-only 2026-10-14) ────────────────
+
+def _captured_6_2(name):
+    import json
+    return json.loads((Path(__file__).parent / "fixtures" / "egeria_6_2" / f"{name}.json").read_text())["answer"]
+
+
+@pytest.mark.parametrize("captured", ["asset_maker_by_guid_for_lineage__memento",                    # 6.2 header field
+                                      "metadata_expert_by_unique_name_for_lineage__memento_archived_qn"])  # the list
+def test_s19_refuses_when_the_lineage_read_carries_a_memento_in_either_shape(world, fake, monkeypatch, captured):
+    _catalogued(world, fake, "archive")
+    raw = _captured_6_2(captured)
+    monkeypatch.setattr(fake, "read_element",
+                        lambda qn, *, for_lineage=False: gw.parse_element_answer(raw) if for_lineage else None)
+    adds_before = len(fake.ops("create_schema_element"))
+    with pytest.raises(cc.SchemaRefused, match="restores archived elements"):
+        cc.apply_attach(world["registry"], fake, {"slug": "db", "schema": "archive", "database_guid": fake.db_guid})
+    assert len(fake.ops("create_schema_element")) == adds_before
