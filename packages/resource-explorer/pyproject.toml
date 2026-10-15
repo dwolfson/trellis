@@ -150,7 +150,7 @@ dependencies = [
     "tree-sitter>=0.21",
     "tree-sitter-java>=0.21",
     # Structural code-marker detection engine for architecture recovery
-    # (docs/architecture-recovery-design.md §5.1). A pip dependency rather
+    # (docs/architecture-recovery.md §5.1, Detectors first). A pip dependency rather
     # than a system prerequisite on purpose: `ast-grep-cli` publishes
     # prebuilt wheels for macOS arm64/x86_64, manylinux aarch64/x86_64 and
     # Windows, at version parity with Homebrew, so `uv sync` provisions the

@@ -29,15 +29,19 @@ router = APIRouter()
 @router.get("/admin-status")
 def admin_status(request: Request) -> dict:
     """`admin`: this request carries a valid admin credential. `configured`: this deployment has any admin at all.
+    `open`: no admin is configured AND RE_ADMIN_OPEN_WHEN_UNCONFIGURED is set, so any signed-in user may act.
 
-    The Next controls draw "admin only" only when `configured` and not `admin`; with no admin configured any signed-in
-    user may act (admin_auth.require_admin), so a disabled control there would be a lie.
+    The Next controls draw "admin only" when not `admin` and either `configured` or not `open`, the same decision
+    admin_auth.require_admin makes (owner ruling 2026-10-14: unconfigured fails closed unless the dev flag is set).
     """
     from resource_explorer.config import get_config
     from resource_explorer.web import admin_auth
 
-    return {"admin": bool(admin_auth.is_admin_request(request, get_config().feedback)),
-            "configured": bool(admin_auth.admin_configured())}
+    cfg = get_config().feedback
+    configured = bool(admin_auth.admin_configured())
+    return {"admin": bool(admin_auth.is_admin_request(request, cfg)),
+            "configured": configured,
+            "open": (not configured) and bool(cfg.admin_open_when_unconfigured)}
 
 
 _BUILD_SHA: str | None = None

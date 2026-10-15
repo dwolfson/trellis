@@ -12,7 +12,7 @@ const STALE = [
   { entity_type: 'database', entity_slug: 'adventureworks', stale_guid: '', detected_at: '', detail: '' },
 ];
 
-async function setUp({ stale = STALE, confirmAnswer = true, resolveFail = false, admin = true, configured = true } = {}) {
+async function setUp({ stale = STALE, confirmAnswer = true, resolveFail = false, admin = true, configured = true, open = undefined } = {}) {
   const { window, document } = makeDomEnvironment();
   const calls = [];
   let rows = [...stale];
@@ -27,7 +27,7 @@ async function setUp({ stale = STALE, confirmAnswer = true, resolveFail = false,
     const u = String(url);
     calls.push({ url: u, method, body });
     const ok = (json) => ({ ok: true, status: 200, json: async () => json });
-    if (u === '/api/egeria/admin-status') return ok({ admin, configured });
+    if (u === '/api/egeria/admin-status') return ok({ admin, configured, open });
     if (u === '/api/egeria/linkage/stale') return ok(rows);
     let m;
     if ((m = u.match(/^\/api\/egeria\/linkage\/(\w+)\/([^/]+)\/resolve$/))) {
@@ -191,8 +191,13 @@ test('the bulk calls carry the admin token held for this tab', async () => {
   assert.equal(seen[0]['X-Admin-Token'], 'tok-123');
 });
 
-test('no admin configured: the bulk toolbar is live for a signed-in non-admin', async () => {
-  const { host } = await setUp({ admin: false, configured: false });
+test('no admin configured (owner ruling 2026-10-14): the bulk toolbar reads admin only', async () => {
+  const { host } = await setUp({ admin: false, configured: false, open: false });
+  assert.notEqual(host.querySelector('[data-link-toolbar] [data-admin-only]'), null);
+});
+
+test('no admin configured, local-dev flag on: the bulk toolbar is live for a signed-in non-admin', async () => {
+  const { host } = await setUp({ admin: false, configured: false, open: true });
   assert.equal(host.querySelector('[data-link-toolbar] [data-admin-only]'), null);
   host.querySelector('[data-link-pick="0"]').checked = true;
   host.querySelector('[data-link-pick="0"]').dispatchEvent(new globalThis.window.Event('change'));

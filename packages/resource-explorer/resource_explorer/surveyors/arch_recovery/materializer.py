@@ -353,8 +353,8 @@ class ComponentMaterializer:
         # The security connector refuses a *no-op* zone change, so the accept
         # path's promotion then 403'd on an element that was already where it
         # belonged. One rule is both simpler and what the plan actually asks
-        # for: **everything RE creates is born in the draft zone, and
-        # acceptance is what moves it.** That makes the transition real and
+        # for: **everything RE creates is born in the CONFIGURED draft zone
+        # (if any; none by default since 2026-10-08), and acceptance is what moves it.** That makes the transition real and
         # observable rather than something one code path skips.
         from resource_explorer.egeria_identity import draft_zones, stamp_published
 

@@ -31,6 +31,8 @@ import {
 } from '/static/re-api.js';
 import { state, esc, apiEntityType } from '/static/next/app.js';
 import { openDialog } from '/static/next/worklist.js';
+import { followUntil } from '/static/next/live-status.js';
+import { onServerRestart } from '/static/next/shell-status.js';
 import { reportViewerHtml, bindReportViewer } from '/static/next/stages/native-report.js';
 
 const POLL_MS = 8000;
@@ -268,7 +270,26 @@ export function nativeSurveysUnreadableHtml() {
   </div>`;
 }
 
-const _timers = new WeakMap();
+const _follow = new WeakMap();
+const _rereaders = new WeakMap();
+const _bound = new Set();   // hosts that registered a re-read
+
+/** Re-read every bound native-survey section still on screen. */
+export function rereadNativeSurveys() {
+  for (const host of [..._bound]) {
+    if (!host.isConnected) { _bound.delete(host); continue; }
+    _rereaders.get(host)?.();
+  }
+}
+let _restartWired = false;
+const _wiredDocs = new WeakSet();
+function wireReturnAndRestart() {
+  if (!_restartWired) { _restartWired = true; onServerRestart(rereadNativeSurveys); }
+  if (typeof document === 'undefined' || _wiredDocs.has(document)) return;
+  _wiredDocs.add(document);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') rereadNativeSurveys(); });
+  if (typeof window !== 'undefined') window.addEventListener('focus', rereadNativeSurveys);
+}
 
 /** Wire a rendered section: Run buttons, the annotations view, and the poll
  *  that runs only while something is in flight. Safe to call again on a fresh
@@ -278,24 +299,37 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
   if (!host) return;
   let rows = initialRows || [];
 
-  const paint = (next) => {
+  const draw = (next) => {
     rows = next;
     host.innerHTML = rows.map(nativeSurveyRowHtml).join('');
     bindRows();
-    schedule();
   };
+  const paint = (next) => { draw(next); schedule(); };
   const alive = () => host.isConnected && state.selectedSlug === slug && state.subTab === 'survey';
+  const kind = () => ({ entityType: apiEntityType(state.resourceType) });
+  // Follow the rows while any is in flight (2 s for the first minute, then 10 s), repainting each answer, and stop
+  // at the first answer with nothing in flight. `pollMs` (tests) fixes the pace.
   const schedule = () => {
-    clearTimeout(_timers.get(host));
+    _follow.get(host)?.stop();
+    _follow.delete(host);
     if (!rows || !rows.some((r) => r.in_flight)) return;
-    _timers.set(host, setTimeout(async () => {
-      if (!alive()) return;
-      try {
-        const res = await refreshNativeSurveys(slug, { entityType: apiEntityType(state.resourceType) });
-        if (alive()) paint(res.surveys);
-      } catch (_) { if (alive()) schedule(); }   // a failed poll is not a status; try again
-    }, pollMs));
+    _follow.set(host, followUntil({
+      read: () => refreshNativeSurveys(slug, kind()),
+      onUpdate: (res) => draw(res.surveys),
+      isDone: (res) => !(res.surveys || []).some((r) => r.in_flight),
+      alive, fixedMs: pollMs === POLL_MS ? null : pollMs,
+    }));
   };
+  // What a row may do (runnable or not) is the server's answer today; a restart or a long absence can change it.
+  // A cheap READ (no Egeria refresh), repainted unless something is mid-press.
+  const reread = async () => {
+    if (!alive()) return;
+    try {
+      const res = await getNativeSurveys(slug, kind());
+      if (alive()) paint(res.surveys);
+    } catch (_) { /* the rows on screen stay; the next trigger tries again */ }
+  };
+  _rereaders.set(host, reread);
   const showError = (qn, msg) => {
     const slot = [...host.querySelectorAll('[data-native-error]')].find((e) => e.dataset.nativeError === qn);
     if (!slot) return;
@@ -448,6 +482,8 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
     } catch (_) { /* the rows already on screen are what RE knows; a failed check says nothing */ }
   };
 
+  _bound.add(host);
+  wireReturnAndRestart();
   // The rows were rendered by the pane from the same fetch; bind them, and
   // start polling only if any of them is in flight.
   bindRows();

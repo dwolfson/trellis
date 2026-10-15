@@ -155,7 +155,9 @@ export function sortByTime(entries, order) {
 /** While the open list shows an entry that has not finished, re-read the log on a timer so the row turns finished
  *  (and new entries appear) without a reload. Bounded: it stops the moment nothing is running, when the panel
  *  closes, or after maxTicks. The tests shorten intervalMs. */
-export const refreshConfig = { intervalMs: 5000, maxTicks: 120 };
+// 2 s for the first minute, then 10 s; bounded only by two hours of a row still showing running (the header's
+// 30 s watch, noticeActivity, covers what follows).
+export const refreshConfig = { intervalMs: 2000, fastForMs: 60000, slowMs: 10000, maxTicks: 800 };
 const RUNNING = new Set(['running', 'queued', 'pending']);
 let refreshTimer = null;
 let refreshTicks = 0;
@@ -202,7 +204,7 @@ function scheduleRefresh() {
     refreshTicks += 1;
     if (!(await refreshOnce())) return;
     scheduleRefresh();
-  }, refreshConfig.intervalMs);
+  }, refreshTicks * refreshConfig.intervalMs < refreshConfig.fastForMs ? refreshConfig.intervalMs : refreshConfig.slowMs);
 }
 
 const noticed = new Set();  // `id:status` pairs already acted on, so a filtered-out entry costs one re-read, not one per tick

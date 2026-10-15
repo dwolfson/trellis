@@ -270,7 +270,7 @@ class EgeriaPublisher:
         # checkout — so everything RE published landed in the view server's
         # default zones with nothing distinguishing "surveyed, not yet
         # reviewed" from "curated". Now an unreviewed publish goes to the
-        # draft zone and `curate accept` promotes it (see
+        # configured draft zone (if any) and `curate accept` promotes it (see
         # `workflows/curate.promote_to_publish_zones`). `default_catalog_zones`
         # is still honoured as the *publish* target — see
         # `egeria_identity.configured_publish_zones` — which is the question
@@ -1196,8 +1196,8 @@ class EgeriaPublisher:
         """`Ownership` and `ZoneMembership` on everything this publish created.
 
         Plan §4: everything trellis publishes gets `Ownership` set to the
-        publishing user's `UserIdentity`, and one draft zone per app until a
-        curator accepts it. Ownership is attribution: who may curate follows
+        publishing user's `UserIdentity`, and the configured draft zone (none by
+        default since 2026-10-08) until a curator accepts it. Ownership is attribution: who may curate follows
         Egeria's zones (`workflows/curate.curation_access`, Brief Z), and
         Egeria's own `isUserAnOwner` reads this classification's `userIds`.
 
@@ -1353,13 +1353,13 @@ class EgeriaPublisher:
                 log.info("Created ExternalReference %s for %s (%s)",
                          ref_guid, result.resource_slug, homepage)
 
-            # Linking is separately guarded: a duplicate link attempt on a
-            # re-publish is harmless to report but must not lose the reference.
-            try:
-                self._external_references.link_external_reference(asset_guid, ref_guid)
-            except Exception as exc:
-                log.debug("Could not link ExternalReference %s to %s: %s",
-                          ref_guid, asset_guid, exc)
+            # ExternalReferenceLink is multi-link: every link call made another copy on each
+            # re-publish. Link only when none exists; the helper logs its own failures at warning
+            # and never links when it cannot check. The reference itself is kept either way.
+            from resource_explorer.egeria_extref_link import link_external_reference_once
+
+            link_external_reference_once(self._metadata_expert, self._external_references,
+                                         asset_guid, ref_guid)
             return ref_guid
         except Exception as exc:
             log.warning("Could not publish homepage ExternalReference for %s: %s",

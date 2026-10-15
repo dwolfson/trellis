@@ -473,6 +473,7 @@ async def list_candidates(
                 "survey_kind": survey_def.survey_kind,
                 "last_run_at": last_activity.get("last_run_at", ""),
                 "last_run_status": last_activity.get("last_run_status", ""),
+                "last_run_activity_id": last_activity.get("last_run_activity_id", ""),
                 # Non-empty only when the last run recorded step errors — the
                 # ⚠ beside "ran Xm ago" opens these, rather than only
                 # flagging that something went wrong with no way to see what.
@@ -574,6 +575,7 @@ async def list_candidates(
             if best is not None:
                 cand["last_run_at"] = best["last_run_at"]
                 cand["last_run_status"] = best.get("last_run_status", "")
+                cand["last_run_activity_id"] = best.get("last_run_activity_id", "")
                 cand["last_run_via"] = best["qualified_name"]
                 cand["last_run_engine_note"] = best.get("last_run_engine_note", "")
 

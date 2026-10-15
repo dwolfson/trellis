@@ -1,5 +1,7 @@
 # Open stack — working checklist
 
+**Status:** live, partly dated. Outstanding-work checklist, last updated 2026-08-31; entries are deleted when done.
+
 **Purpose:** the live list of what is outstanding right now, across repos, so it
 survives a context reset. Short entries with a pointer; the reasoning lives in
 the design docs. Delete an entry when it is done — this is not a history.
