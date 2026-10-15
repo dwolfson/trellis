@@ -7416,12 +7416,18 @@ class ProjectRegistry:
     def record_native_survey_submission(
         self, entity_type: str, slug: str, process_qualified_name: str,
         surveyed_at: str, *, engine_action_guid: str = "", submit_error: str = "",
-        submitted_by: str = "", started_as: str = "",
+        submitted_by: str = "", started_as: str = "", started_by: str = "", started_in: str = "",
     ) -> None:
         """One step_runs row per SUBMISSION attempt. With a GUID it is proof
         Egeria accepted the action; without one it records that the attempt
         failed (`submit_error`), which is a different, honest state -- not a
-        row that quietly claims a submission."""
+        row that quietly claims a submission.
+
+        `started_by` / `started_in` (engine host case 3, no DDL: the `declared` JSON beside `started_as`): who
+        coordinates the run ("egeria") and where it was started ("re": RE's "coordinated by Egeria" control;
+        "egeria": initiated in Egeria, recorded by RE's engine host when it ran the first step)."""
+        declared = {k: v for k, v in (("started_as", started_as), ("started_by", started_by),
+                                      ("started_in", started_in)) if v}
         with self._conn() as conn:
             conn.execute(
                 "INSERT INTO step_runs (slug, entity_type, step_key, surveyed_at, "
@@ -7430,7 +7436,7 @@ class ProjectRegistry:
                 "VALUES (?, ?, ?, ?, 'egeria', 'egeria', ?, '{}', ?, ?, ?, ?)",
                 (self._normalize_slug(slug), entity_type,
                  NATIVE_SURVEY_STEP_PREFIX + process_qualified_name, surveyed_at,
-                 process_qualified_name, json.dumps({"started_as": started_as}) if started_as else "{}",
+                 process_qualified_name, json.dumps(declared) if declared else "{}",
                  engine_action_guid or "",
                  submit_error or "", submitted_by or ""),
             )
@@ -11506,6 +11512,19 @@ class ProjectRegistry:
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT slug FROM databases WHERE egeria_asset_guid = ? ORDER BY slug LIMIT 1", (guid,)
+            ).fetchone()
+        return row["slug"] if row else ""
+
+    def repo_slug_for_asset_guid(self, guid: str) -> str:
+        """The slug of the registered repository whose Egeria Asset is `guid`, or `""` for none. Unscoped, like
+        `database_slug_for_asset_guid`: the engine host asks it before it may claim an action (case 3 claims
+        repository request types), to leave a privately owned target unclaimed."""
+        guid = (guid or "").strip()
+        if not guid:
+            return ""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT slug FROM projects WHERE egeria_asset_guid = ? ORDER BY slug LIMIT 1", (guid,)
             ).fetchone()
         return row["slug"] if row else ""
 

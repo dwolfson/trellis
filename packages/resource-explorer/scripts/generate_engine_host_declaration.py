@@ -39,6 +39,12 @@ Properties), the first-step link and each next-step link with its guard. pyegeri
 every one of these (`commands_action_author.json`), so no pyegeria steps file is written. Without the flag every
 document is generated, these included.
 
+**Registry steps (engine host, case 3).** `docs/dr-egeria/engine-host/steps/<kind>-steps.md` (and its pyegeria steps
+file), one per step registry (database, repo): every registry step not already in the engine's own document, as a
+SurveyActionService, a SupportedGovernanceService `re-<step key>` and a GovernanceActionType with its executor and the
+producedGuards of `step_outcome.produced_guards`, so the executor each Survey Definition step carries (C2) names a
+request type the engine advertises. Generated with every document (no flag).
+
 `--check` writes nothing and exits 1 when the committed document or steps file differs from what would be generated.
 tests/test_engine_host_declaration.py holds the committed document to this generator and to the registry.
 """
@@ -300,6 +306,127 @@ ___
     return out
 
 
+REGISTRY_STEPS = DOC.parent / "steps"
+
+
+def registry_steps_path(entity_type: str) -> Path:
+    return REGISTRY_STEPS / f"{entity_type}-steps.md"
+
+
+def _registry_steps_for(entity_type: str) -> list:
+    """The registry steps this kind's document declares: every key of its step registry except those the engine's
+    own document already declares (`engine_host.ENGINE_HOST_STEPS`), so no step is declared twice."""
+    from resource_explorer import engine_host as eh
+
+    return [s for s in eh.registry_steps().values()
+            if s.entity_type == entity_type and s.step_key not in eh.ENGINE_HOST_STEPS]
+
+
+def _registry_step_header(entity_type: str, steps: list) -> str:
+    from resource_explorer import engine_host as eh
+
+    declared_elsewhere = [k for k in eh.ENGINE_HOST_STEPS if k in eh.registry_steps()
+                          and eh.registry_steps()[k].entity_type == entity_type]
+    return f"""<!--
+GENERATED from the {entity_type} step registry by packages/resource-explorer/scripts/generate_engine_host_declaration.py.
+Do not hand-edit; regenerate. Design: docs/design-notes/SLICE-ENGINE-HOST-CASE3-RE-DEFINITIONS-DISPATCHED-BY-EGERIA.md
+(C1, decision 1: one SurveyActionService per step key, never per definition).
+
+Declares {len(steps)} {entity_type} step(s) as services of Resource Explorer's engine, so the GovernanceActionExecutor
+each Survey Definition step carries (C2, dr_egeria_survey_publisher) names a request type the engine advertises. Each:
+one {eh.SERVICE_TYPE_NAME}, one SupportedGovernanceService {{requestType: re-<step key>}} (both in
+{registry_steps_path(entity_type).stem}{STEPS.name[len(DOC.stem):]}, run first by `resource-explorer dr-egeria run`, find-or-create), then
+the GovernanceActionType ResourceExplorerSurvey::re-<step key> with producedGuards from step_outcome.py's mapping, and
+its GovernanceActionExecutor below.{f'''
+Not here, declared by the engine's own document: {", ".join(declared_elsewhere)}.''' if declared_elsewhere else ""}
+
+Run it with `resource-explorer dr-egeria run engine-host/steps/{registry_steps_path(entity_type).name}` AFTER the
+engine's own document. RE's bootstrap never runs it. "Link Action to Action Executor" is NOT safe to repeat; the runner
+refuses a second run of the same content unless forced. Retire a step by Content Status DEPRECATED, never by deleting.
+-->
+"""
+
+
+def render_registry_steps() -> dict[Path, str]:
+    """{path: text}: per step registry, one Dr.Egeria document declaring every registry step as a request type of RE's
+    engine (case 3, C1) and its pyegeria steps file. Out-of-scope steps are declared too, saying so in their
+    Additional Properties: the engine host claims them and completes them survey-invalid with the reason."""
+    from resource_explorer import engine_host as eh
+    from resource_explorer import step_outcome
+
+    out: dict[Path, str] = {}
+    for entity_type in eh.REGISTRY_ENTITY_TYPES:
+        steps = _registry_steps_for(entity_type)
+        path = registry_steps_path(entity_type)
+        parts = [_registry_step_header(entity_type, steps)]
+        for step in steps:
+            info = step.info
+            gat = eh.governance_action_type_qn(step.step_key)
+            scope = eh.out_of_scope_reason(step.step_key)
+            rows = [("executes_at", "resource-explorer"), ("re_analysis_step", step.step_key),
+                    ("engine_host", "resource-explorer-worker"), ("request_type", step.request_type),
+                    ("entity_type", entity_type), ("fetch_cost", getattr(info, "fetch_cost", "") or "none"),
+                    ("compute_cost", getattr(info, "compute_cost", "") or "low"),
+                    ("requires_capability", getattr(info, "requires_capability", "") or "undeclared"),
+                    ("engine_host_dispatch", "survey-invalid: " + scope.split(";")[0] if scope else "runs")]
+            parts.append(f"""
+## Create Governance Action Type
+### Display Name
+Resource Explorer Survey — {step.step_key}
+
+### Qualified Name
+{gat}
+
+### Description
+{info.description}
+
+### Produced Guards
+{", ".join(step_outcome.produced_guards(step.step_key))}
+
+### Content Status
+ACTIVE
+
+### Additional Properties
+{_table(rows)}
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+{gat}
+
+### Governance Engine
+{eh.ENGINE_QUALIFIED_NAME}
+
+### Request Type
+{step.request_type}
+
+### Description
+Egeria dispatches {gat} to Resource Explorer's engine, which claims it and runs RE step {step.step_key}.
+
+___
+""")
+        out[path] = "".join(parts)
+        steps_doc = {"$comment": [
+            (f"GENERATED with {path.name} by packages/resource-explorer/scripts/generate_engine_host_declaration.py "
+             f"from the {entity_type} step registry. Do not hand-edit; regenerate."),
+            ("resource_explorer.dr_egeria_runner runs these find-or-create pyegeria steps, in this order, before the "
+             "document (docs/dr-egeria-engine-host-gaps.md): the engine, one service per step, one link per step."),
+        ], "steps": [
+            {"command": "Create Survey Action Engine", "qualified_name": eh.ENGINE_QUALIFIED_NAME,
+             "display_name": eh.ENGINE_DISPLAY_NAME, "description": ENGINE_DESCRIPTION},
+            *({"command": "Create Survey Action Service", "qualified_name": eh.service_qualified_name(s.step_key),
+               "display_name": f"Resource Explorer Survey Service — {s.step_key}",
+               "description": s.info.description} for s in steps),
+            *({"command": "Link Supported Governance Service", "governance_engine": eh.ENGINE_QUALIFIED_NAME,
+               "governance_service": eh.service_qualified_name(s.step_key), "request_type": s.request_type,
+               "service_request_type": s.request_type} for s in steps),
+        ]}
+        out[path.with_name(path.stem + STEPS.name[len(DOC.stem):])] = (
+            json.dumps(steps_doc, indent=2, ensure_ascii=False) + "\n")
+    return out
+
+
 PROCESSES = DOC.parent / "processes"
 
 
@@ -455,9 +582,11 @@ def main(argv: list[str] | None = None) -> int:
         want = render_mixed_processes()
         orphans = sorted(PROCESSES.glob("*")) if PROCESSES.is_dir() else []
     else:
-        want = {DOC: render(), STEPS: render_steps(), **render_library(), **render_mixed_processes()}
+        want = {DOC: render(), STEPS: render_steps(), **render_library(), **render_mixed_processes(),
+                **render_registry_steps()}
         orphans = [*(sorted(LIBRARY.glob("*")) if LIBRARY.is_dir() else []),
-                   *(sorted(PROCESSES.glob("*")) if PROCESSES.is_dir() else [])]
+                   *(sorted(PROCESSES.glob("*")) if PROCESSES.is_dir() else []),
+                   *(sorted(REGISTRY_STEPS.glob("*")) if REGISTRY_STEPS.is_dir() else [])]
     # A document no admitted step or declared process generates any more is stale too (retire it by status, in Egeria).
     for orphan in orphans:
         if orphan not in want:

@@ -146,3 +146,41 @@ The owner runs C1's document and republishes one definition with C2
       expects it to be temporary. It calls `initiate_gov_action_process`
       through `EgeriaSurveyPort`, records `started_by: egeria` on the run,
       and is hidden when the engine host is off (the sentence says why).
+
+## Built (engine host case 3, 2026-10-15)
+
+**Found while building, not in the slice.**
+
+- **Egeria matches a link's guard exactly.** `EngineActionHandler.initiateNextEngineActions` (egeria `af400039c2`)
+  starts the next step only when an output guard EQUALS the link's guard (or the link has none). RE's generated links
+  carry `Any`, which RE's own executor reads as "always"; Egeria does not. So a definition step completes with its
+  survey guard AND `Any` when the process should go on (`step_outcome.guard_mapping`): `survey-completed` continues,
+  `survey-invalid` and `survey-failed` end the process there, as the gate's negative asks. This departs from RE's own
+  executor, which runs every step of an unbranched definition whatever the one before it did.
+- **Report targets accumulate.** Egeria hands a later step the previous action's targets plus the completion's new
+  ones (`prepareEngineActionFromProcessStep`), so step 3 arrives with two `surveyReport` targets. Only a step that
+  derives from a report (a library step with `source_report`) is checked against them; a definition step ignores
+  them, and the asset Egeria lists twice is one target.
+- A built-in database step's results become annotations through the code RE's own database publish runs
+  (`egeria_database_surveyor.build_step_annotations`); outputs that publish has no annotation form for (the column
+  profile's values) are not on the engine host's report either.
+
+**Where it lives.**
+
+- C1: `engine_host.registry_steps` (built-in keys of both registries; attached library steps excluded) and
+  `generate_engine_host_declaration.render_registry_steps` produce `docs/dr-egeria/engine-host/steps/database-steps.md`
+  and `repo-steps.md` (each with its pyegeria steps file). `db_derived` stays in the engine's own document, so no step
+  is declared twice.
+- C2: `dr_egeria_survey_publisher` writes `### Produced Guards` and one `Link Action to Action Executor` per step RE
+  runs; the 13 definition documents are regenerated. `survey_definition_reconciler.diff_executors` (pure) and
+  `SurveyDefinitionReader.executor_drift` (live, report-only) check one executor per step; the database links script
+  prints the drift and never writes it.
+- C3: `engine_host._screen` / `_decide_one` / `_route`; the capability sentence is
+  `prerequisite_resolver.capability_sentence`. Repository steps: `out_of_scope_reason`.
+- C4: `mixed_process.definition_process` reads a definition as a declared process; `run_line_words` says "started in
+  Egeria by <requester>" or "started in RE by <person>". The control is `native_survey_run.coordinate_control` (on
+  each candidate row) and the native-surveys Run route with the definition's qualifiedName.
+- `started_by`: no DDL. `runs.target.started_by` ("egeria" on engine-action rows, "re" on RE's own definition runs)
+  and `step_runs.declared.started_by` / `started_in` on the process run's native-survey row.
+
+Tests: `tests/test_engine_host_case3.py`, harness `coordinated-by-egeria.test.mjs`.

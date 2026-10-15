@@ -8,6 +8,9 @@ GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_detect
 ### Description
 Recovers candidate architecture components from package manifests, deployment units (Dockerfile/compose), and ast-grep code markers — the deterministic half of architecture recovery (design doc §5.1).
 
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -46,6 +49,9 @@ GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_lens
 ### Description
 Labels recovered components against the project's own architecture document, wherever it lives — in-repo, a sibling repository, or a documentation site. A LENS: it adds no component, removes none and assigns no type. Milvus goes from 206 candidates to 15 the authors actually name (finding 102).
 
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -64,6 +70,9 @@ GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_summary
 
 ### Description
 Collapses architecture-recovery findings to the depth the question asked for — the summarising half nothing owned. Milvus recovers 218 candidate components where its own authors describe eight; a suitability answer is 'serves gRPC (297 operations), 24 runnable units, 31 third-party'.
+
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -134,6 +143,51 @@ GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_summary
 
 ### Guard
 Any
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_detect
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-arch-detect
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_detect to Resource Explorer's engine, which claims it and runs RE step repo_arch_detect.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_lens
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-arch-lens
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_lens to Resource Explorer's engine, which claims it and runs RE step repo_arch_lens.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_summary
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-arch-summary
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoArchitectureDiscovery::repo_arch_summary to Resource Explorer's engine, which claims it and runs RE step repo_arch_summary.
 
 ___
 

@@ -8,6 +8,9 @@ GovActionProcessStep::RepoCoarseProfile::repo_file_inventory
 ### Description
 Refreshes project_file_inventory from a fresh zipball — the table every file-shape step reads. Closes the gap where the inventory was written only by RAG ingestion/refresh_profile and never by a survey step, so a survey reported whatever an earlier, unrelated run had left behind.
 
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -26,6 +29,9 @@ GovActionProcessStep::RepoCoarseProfile::repo_manifest_parse
 
 ### Description
 Parses dependency manifests, CI workflow content, supply-chain signals and repo-convention signals from a freshly extracted zipball, refreshing project_dependencies and project_analysis_findings (kind="ci_quality"/"repo_conventions"/"supply_chain") — the three tables previously written only by full ingestion (and, for the latter two, refresh_profile), never by a survey step.
+
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -46,6 +52,9 @@ GovActionProcessStep::RepoCoarseProfile::repo_language
 ### Description
 Primary/secondary language and coarse project-type classification.
 
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -64,6 +73,9 @@ GovActionProcessStep::RepoCoarseProfile::repo_file_classification
 
 ### Description
 Classifies every file by type using filename/extension mapping (Egeria-enrichable).
+
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -84,6 +96,9 @@ GovActionProcessStep::RepoCoarseProfile::repo_file_structure
 ### Description
 File counts, per-language breakdown, and top-level directory structure.
 
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -103,6 +118,9 @@ GovActionProcessStep::RepoCoarseProfile::repo_data_profiling
 ### Description
 Inventories data files and profiles their schema (rows/columns/dtypes/nulls).
 
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -121,6 +139,9 @@ GovActionProcessStep::RepoCoarseProfile::repo_homepage
 
 ### Description
 Finds where the project's homepage and its documentation are, and whether the documentation answers. Reads GitHub's homepage field, the packaging manifests (pyproject.toml, package.json, setup.cfg, Cargo.toml, pom.xml) and the README -- small files only, through the GitHub contents API, never a download -- and keeps the source and the other candidates for each answer. An entry labelled Documentation wins; placeholders such as example.com are rejected. One bounded request records whether the docs URL is reachable. Surfaced in Scouting as links with a short cue; the homepage is published to Egeria as an ExternalReference linked to the repo.
+
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -227,6 +248,111 @@ GovActionProcessStep::RepoCoarseProfile::repo_homepage
 
 ### Guard
 Any
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoCoarseProfile::repo_file_inventory
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-file-inventory
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoCoarseProfile::repo_file_inventory to Resource Explorer's engine, which claims it and runs RE step repo_file_inventory.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoCoarseProfile::repo_manifest_parse
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-manifest-parse
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoCoarseProfile::repo_manifest_parse to Resource Explorer's engine, which claims it and runs RE step repo_manifest_parse.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoCoarseProfile::repo_language
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-language
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoCoarseProfile::repo_language to Resource Explorer's engine, which claims it and runs RE step repo_language.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoCoarseProfile::repo_file_classification
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-file-classification
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoCoarseProfile::repo_file_classification to Resource Explorer's engine, which claims it and runs RE step repo_file_classification.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoCoarseProfile::repo_file_structure
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-file-structure
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoCoarseProfile::repo_file_structure to Resource Explorer's engine, which claims it and runs RE step repo_file_structure.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoCoarseProfile::repo_data_profiling
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-data-profiling
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoCoarseProfile::repo_data_profiling to Resource Explorer's engine, which claims it and runs RE step repo_data_profiling.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::RepoCoarseProfile::repo_homepage
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-repo-homepage
+
+### Description
+Egeria dispatches GovActionProcessStep::RepoCoarseProfile::repo_homepage to Resource Explorer's engine, which claims it and runs RE step repo_homepage.
 
 ___
 

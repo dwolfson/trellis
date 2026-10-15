@@ -514,6 +514,21 @@ def _capability_reason(step_key: str, info, probe, consented: bool = False,
     return ConsentReason(step_key, "capability", detail), assessment
 
 
+def capability_sentence(step_key: str, info, probe) -> str:
+    """The launcher's own sentence for `step_key`'s capability shortfall against the stored `probe`, or "" when
+    there is none to say (the step declares no capability, nobody has probed, or the credential has it).
+
+    Built by the same `_capability_reason` and `Proposal.sentence()` the launcher shows for a capability-only
+    proposal, so the words cannot drift. Used by RE's engine host (case 3, decision 4), which has nobody to ask and
+    completes such a step `survey-invalid` with this sentence instead of the advisory "run partially" an unattended
+    RE run takes."""
+    reason, assessment = _capability_reason(step_key, info, probe, demanding=True)
+    if reason is None:
+        return ""
+    return Proposal(reasons=[reason], demanding_step=step_key, run_partially=step_key,
+                    capability=assessment.as_dict()).sentence()
+
+
 def _estimate(registry, slug: str, step_keys: list[str],
               registries: Mapping[str, Any]) -> tuple[float, bool]:
     """(seconds, every_step_was_measured) for a chain."""

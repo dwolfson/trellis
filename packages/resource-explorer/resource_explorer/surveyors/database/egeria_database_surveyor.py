@@ -809,25 +809,9 @@ class EgeriaDatabaseSurveyor:
         if not db_guid:
             raise EgeriaDatabaseSurveyorError(self._not_catalogued_sentence(db_entity, expected_qn))
 
-        from resource_explorer.surveyors.database.database_surveyor import DatabaseSurveyor
-
-        annotations = []
-        local_surveyor = DatabaseSurveyor(db_entity, {}, registry)
-        if schema_info:
-            annotations.extend(local_surveyor._create_schema_annotations(schema_info))
-        if statistics:
-            annotations.extend(local_surveyor._create_statistics_annotations(statistics))
-        if views:
-            annotations.extend(local_surveyor._create_views_annotations(views))
-        if operations:
-            annotations.extend(local_surveyor._create_operations_annotations(operations))
-            annotations.extend(
-                local_surveyor._create_table_statistics_annotations(operations, schema_info)
-            )
-        if credential_capability:
-            annotations.extend(
-                local_surveyor._create_credential_capability_annotations(credential_capability)
-            )
+        annotations = build_step_annotations(
+            db_entity, registry, schema_info=schema_info, statistics=statistics, views=views,
+            operations=operations, credential_capability=credential_capability)
 
         qualified_name = f"SurveyReport::PostgreSQL::{db_entity.slug}::{surveyed_at}"
         body = {
@@ -1700,3 +1684,46 @@ def can_use_egeria() -> bool:
         return False
 
 # Made with Bob
+
+
+def build_step_annotations(db_entity, registry=None, *, schema_info: dict | None = None,
+                           statistics: dict | None = None, views: list | None = None,
+                           operations: dict | None = None, credential_capability: dict | None = None) -> list:
+    """The annotations a database run's results become, in one place: what `publish_step_annotations` publishes,
+    and what RE's engine host publishes on its native-shaped report for a credentialed database step (case 3). Pure:
+    builds annotation dicts, opens no connection and calls no Egeria."""
+    from resource_explorer.surveyors.database.database_surveyor import DatabaseSurveyor
+
+    annotations: list = []
+    local_surveyor = DatabaseSurveyor(db_entity, {}, registry)
+    if schema_info:
+        annotations.extend(local_surveyor._create_schema_annotations(schema_info))
+    if statistics:
+        annotations.extend(local_surveyor._create_statistics_annotations(statistics))
+    if views:
+        annotations.extend(local_surveyor._create_views_annotations(views))
+    if operations:
+        annotations.extend(local_surveyor._create_operations_annotations(operations))
+        annotations.extend(
+            local_surveyor._create_table_statistics_annotations(operations, schema_info or {})
+        )
+    if credential_capability:
+        annotations.extend(
+            local_surveyor._create_credential_capability_annotations(credential_capability)
+        )
+    return annotations
+
+
+def annotations_from_step_outputs(db_entity, step_outputs: list, registry=None) -> list:
+    """`build_step_annotations` over a run's step outputs, read the way the database adapter's `_publish` reads
+    them (the last output carrying each part wins). Nothing when no output carries one of the parts."""
+    parts: dict = {}
+    for output in step_outputs or []:
+        if not isinstance(output, dict):
+            continue
+        for key in ("schema_info", "statistics", "views", "operations", "credential_capability"):
+            if output.get(key):
+                parts[key] = output[key]
+    if not parts:
+        return []
+    return build_step_annotations(db_entity, registry, **parts)

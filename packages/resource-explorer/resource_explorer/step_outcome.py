@@ -185,3 +185,67 @@ def from_upstream_table(
                          rows_available=rows_available, **detail)
     return StepOutcome(RECOVERED, cause="", known_positive=True,
                        detail={"rows_available": rows_available, "matched": matched, **detail})
+
+
+# ── the guards a step completes with when Egeria coordinates the run (engine host case 3) ─────────────────────────
+#
+# docs/design-notes/SLICE-ENGINE-HOST-CASE3-RE-DEFINITIONS-DISPATCHED-BY-EGERIA.md, decision 3: "Guards stay
+# authored." RE's Survey Definitions chain their steps with `NextGovernanceActionProcessStep` links whose guard is
+# `Any` (`dr_egeria_survey_publisher.render_link_next_block`), and RE's own executor reads `Any` as "always follow
+# this edge". Egeria does not: it creates the next engine action only when one of the completing action's output
+# guards EQUALS the link's guard (`EngineActionHandler.initiateNextEngineActions`, egeria `af400039c2`, the
+# `outputGuard.equals(guard)` loop). A step that completes with `survey-completed` alone therefore ends the process
+# after its first step.
+#
+# So a step of an RE definition completes with its standard survey guard (`SurveyActionGuard`, what every survey
+# reader understands) AND, when the process should go on, the routing guard its authored links carry. Only a
+# completed step goes on: a step that is `survey-invalid` (it was not run, e.g. its credential lacks the capability)
+# or `survey-failed` ends the process there, and the engine host says so on the run. That is a deliberate departure
+# from RE's own executor, which runs every step of an unbranched definition whatever the one before it did; the
+# owner's case-3 gate asks for "that step survey-invalid ... the process ends there".
+#
+# One mapping, three readers: the engine host's completion (`completion_guards`), the GovernanceActionType and
+# GovernanceActionProcessStep declarations (`produced_guards`, scripts/generate_engine_host_declaration.py and
+# dr_egeria_survey_publisher), and the tests that hold both to it.
+
+#: `SurveyActionGuard`'s standard guards (`SurveyActionGuard.java:18-20`); engine_host re-exports them.
+SURVEY_COMPLETED = "survey-completed"
+SURVEY_INVALID = "survey-invalid"
+SURVEY_FAILED = "survey-failed"
+SURVEY_GUARDS = (SURVEY_COMPLETED, SURVEY_INVALID, SURVEY_FAILED)
+
+#: The guard RE's generated next-step links carry (`dr_egeria_survey_publisher.render_link_next_block`).
+ROUTING_GUARD = "Any"
+
+#: Which standard guards also emit the routing guard, so Egeria starts the next step.
+CONTINUES_PROCESS = frozenset({SURVEY_COMPLETED})
+
+#: Per-step departures from the default mapping, {step_key: {survey guard: completion guards}}. Empty: no step
+#: routes differently today. A step added here changes its declaration and its completion together.
+STEP_GUARD_OVERRIDES: dict[str, dict[str, tuple[str, ...]]] = {}
+
+
+def guard_mapping(step_key: str) -> dict[str, tuple[str, ...]]:
+    """{standard survey guard: the guards a step of an RE definition completes with} for one step."""
+    out = {g: ((g, ROUTING_GUARD) if g in CONTINUES_PROCESS else (g,)) for g in SURVEY_GUARDS}
+    out.update(STEP_GUARD_OVERRIDES.get(step_key, {}))
+    return out
+
+
+def completion_guards(step_key: str, survey_guard: str) -> tuple[str, ...]:
+    """The output guards an engine action of `step_key` completes with, for its standard survey guard."""
+    mapping = guard_mapping(step_key)
+    if survey_guard not in mapping:
+        raise ValueError(f"{survey_guard!r} is not one of the standard survey guards {SURVEY_GUARDS}")
+    return mapping[survey_guard]
+
+
+def produced_guards(step_key: str) -> tuple[str, ...]:
+    """Every guard `step_key` can complete with, in a stable order (the standard survey guards, then any routing
+    guard): what its declarations' `producedGuards` say."""
+    seen: list[str] = [g for g in SURVEY_GUARDS if any(g in gs for gs in guard_mapping(step_key).values())]
+    for guards in guard_mapping(step_key).values():
+        for g in guards:
+            if g not in seen:
+                seen.append(g)
+    return tuple(seen)

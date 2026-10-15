@@ -84,9 +84,9 @@ def test_the_step_host_maps_request_types_from_installed_manifests(staleness_ins
     assert (step.step_key, step.entity_type, step.annotation_type, step.nothing_to_derive_guard) == (
         "database_staleness", "database", "ResourceMeasureAnnotation", "survey-completed")
     assert step.provided_by["package"] == "trellis-step-database-staleness"
-    # the engine host claims exactly the built-in request types and the library's
-    assert engine_host.supported_request_types() == {"re-db-derived": "db_derived",
-                                                     REQUEST_TYPE: "database_staleness"}
+    # the engine host claims exactly the built-in request types (every registry step since case 3) and the library's
+    builtin = {engine_host.request_type_for_step(k): k for k in engine_host.registry_steps()}
+    assert engine_host.supported_request_types() == {**builtin, REQUEST_TYPE: "database_staleness"}
 
 
 def test_without_the_package_installed_the_library_request_type_is_not_supported():
@@ -94,7 +94,9 @@ def test_without_the_package_installed_the_library_request_type_is_not_supported
     from resource_explorer.surveyors import survey_step_host
 
     assert survey_step_host.library_steps() == {}
-    assert engine_host.supported_request_types() == {"re-db-derived": "db_derived"}
+    assert REQUEST_TYPE not in engine_host.supported_request_types()
+    assert set(engine_host.supported_request_types()) == {engine_host.request_type_for_step(k)
+                                                          for k in engine_host.registry_steps()}
 
 
 def test_a_step_that_needs_a_connection_is_not_admitted(staleness_installed, monkeypatch):
@@ -366,7 +368,8 @@ def test_f1_a_library_step_may_not_take_any_built_in_steps_name(staleness_instal
     _with_extra_manifests(monkeypatch, _manifest(builtin))
     assert all(s.step_key != builtin for s in survey_step_host.library_steps().values())
     assert "built-in" in survey_step_host.library_step_refusals()[builtin]
-    assert engine_host.supported_request_types().get("re-" + builtin.replace("_", "-")) in (None, "db_derived")
+    # the built-in's request type still dispatches to the built-in (every registry step is one since case 3)
+    assert engine_host.supported_request_types().get("re-" + builtin.replace("_", "-")) == builtin
     # and it never replaces the built-in's runner
     assert get_adapter("database").re_analysis_steps[builtin] is builtin_runner
 

@@ -71,7 +71,7 @@ import { inPageConfirm, inPageNotice, inPagePrompt } from '/static/next/confirm-
 import { scoutingTilesHtml, scoutingSignalHtml, staleLinkBannerHtml, bindStaleLinkBanner } from '/static/next/stages/repo-header.js';
 import { contextRecordedSpec, contextRecordedState } from '/static/next/context-recorded.js';
 import { followUntil, ACTIVITY_LIVE } from '/static/next/live-status.js';
-import { nativeSurveysSectionHtml, nativeSurveysUnreadableHtml, bindNativeSurveys } from '/static/next/stages/native-surveys.js';
+import { nativeSurveysSectionHtml, nativeSurveysUnreadableHtml, bindNativeSurveys, coordinateControlHtml, bindCoordinateControls } from '/static/next/stages/native-surveys.js';
 // The row anatomy shared with Enrichment's judgements/observations rows
 // (ENRICHMENT-E0-ROW-ANATOMY, docs/design-notes/exchange/REPLY-DESIGNER-ENRICHMENT-
 // STAGE-IA.md §0.3/§6 item 1) — who + when + the evidence-moved flag, one
@@ -4980,6 +4980,9 @@ export function bindSurveyRowActions(el, all, slug) {
       // Curate holds the Catalog button; this only goes there (Contents, once the tabs are on).
       openCurate({ tab: 'curate_contents' });
     }));
+  // Engine host case 3: "coordinated by Egeria", beside each definition's Run. After a start the pane re-reads, so
+  // the Egeria-coordinated run appears in "Egeria's own surveys" from its persisted row.
+  bindCoordinateControls(el, slug, { after: () => { if (slug === state.selectedSlug) loadSurveyPane(); } });
 }
 
 /** The definition row's button. It OPENS A DIALOG (the run plan, which since G2 offers "Use different
@@ -5034,6 +5037,7 @@ export function surveyRowHtml(c) {
       : `<button data-run-survey="${esc(c.qualified_name || c.guid)}"
       class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
       >${DEFINITION_RUN_WORD(c)}</button>`}
+    ${coordinateControlHtml(c)}
   </div>`;
 }
 

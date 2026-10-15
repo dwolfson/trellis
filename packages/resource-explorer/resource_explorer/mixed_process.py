@@ -32,6 +32,7 @@ Shapes are the ones captured live (read-only) on 2026-10-15, M2: `tests/fixtures
 """
 from __future__ import annotations
 
+import functools
 import logging
 from dataclasses import dataclass, field
 
@@ -43,6 +44,9 @@ KIND_MIXED_PROCESS = "mixed_process"
 #: The survey guard a mixed process chains on, and the action-target name a native survey hands the next step.
 SURVEY_COMPLETED = "survey-completed"
 SURVEY_REPORT_TARGET = "surveyReport"
+
+#: The routing guard RE's definition steps complete with beside their survey guard (`step_outcome.ROUTING_GUARD`).
+_ROUTING_GUARD = "Any"
 
 #: Egeria's terminal "it worked" word for an engine action, and its "still going" words.
 _DONE = "COMPLETED"
@@ -149,9 +153,102 @@ def by_qualified_name(qualified_name: str) -> MixedProcess | None:
     return next((p for p in MIXED_PROCESSES.values() if p.qualified_name == qualified_name), None)
 
 
+# ── RE's own Survey Definitions as Egeria processes (engine host case 3) ────────
+#
+# SLICE-ENGINE-HOST-CASE3-RE-DEFINITIONS-DISPATCHED-BY-EGERIA.md: a Survey Definition RE publishes
+# (`GovActionProcess::<group>` with its `GovActionProcessStep::<group>::<step key>` steps, chained by authored
+# `NextGovernanceActionProcessStep` links) is run by Egeria, one engine action per step, each claimed by RE's engine
+# host. The same reader and run line serve it as a mixed process: its steps are read from the definition's own
+# document (`survey_definition_docs`), every one served by RE's engine under the request type of its step key.
+
+#: The kind the native-surveys pane lists an RE definition's Egeria-coordinated runs under.
+KIND_RE_DEFINITION = "re_definition"
+
+DEFINITION_PREFIX = "GovActionProcess::"
+
+
+def definition_qn_for_instance_name(process_name: str) -> str:
+    """The RE Survey Definition (`GovActionProcess::<group>`) an engine action's `processName`
+    (`<process QN>@<start>::<uuid>`) belongs to, or "" when it is not one RE authored (a mixed process, a content
+    pack's process, or an action started alone)."""
+    qn = (process_name or "").split("@", 1)[0]
+    if not qn.startswith(DEFINITION_PREFIX) or by_qualified_name(qn) is not None:
+        return ""
+    return qn if definition_process(qn) is not None else ""
+
+
+def definition_process(qualified_name: str) -> MixedProcess | None:
+    """An RE Survey Definition as a declared process: its steps in document order, each run by RE's engine host
+    under its step key's request type, and its authored links. None when no document declares it. Cached: the
+    documents are the deployed definitions and change only with a deploy."""
+    return _definition_process(qualified_name or "")
+
+
+@functools.lru_cache(maxsize=64)
+def _definition_process(qualified_name: str) -> MixedProcess | None:
+    from resource_explorer import engine_host as eh
+    from resource_explorer.surveyors.survey_definition_docs import documented_definitions
+
+    if not (qualified_name or "").startswith(DEFINITION_PREFIX):
+        return None
+    group = qualified_name[len(DEFINITION_PREFIX):]
+    doc = documented_definitions().get(group)
+    if doc is None:
+        return None
+    numbers = {key: i + 1 for i, key in enumerate(doc.steps)}
+    steps = tuple(
+        ProcessStep(numbers[key], (doc.step_info.get(key) or {}).get("qualified_name")
+                    or f"GovActionProcessStep::{group}::{key}",
+                    (doc.step_info.get(key) or {}).get("display_name") or key, doc.descriptions.get(key, ""),
+                    governance_action_type=eh.governance_action_type_qn(key),
+                    governance_engine=eh.ENGINE_QUALIFIED_NAME, request_type=eh.request_type_for_step(key),
+                    runs_on="resource-explorer", label=key)
+        for key in doc.steps)
+    links = tuple(ProcessLink(numbers[a], numbers[b], guard, False)
+                  for a, b, guard in doc.links if a in numbers and b in numbers)
+    return MixedProcess(key=group, qualified_name=qualified_name, display_name=doc.display_name or group,
+                        short_name=doc.display_name or group, description=doc.description,
+                        entity_type=doc.resource_type, steps=steps, links=links)
+
+
+def declared_process(qualified_name: str) -> MixedProcess | None:
+    """A process RE declares, by qualifiedName: a mixed process, else one of RE's Survey Definitions."""
+    return by_qualified_name(qualified_name) or definition_process(qualified_name)
+
+
 def process_for_instance_name(process_name: str) -> MixedProcess | None:
     """The declared process an instance's qualifiedName (`<process QN>@<start>::<uuid>`) belongs to."""
-    return by_qualified_name((process_name or "").split("@", 1)[0])
+    return declared_process((process_name or "").split("@", 1)[0])
+
+
+#: The relationship from a GovernanceActionProcessStep to the next step(s) of its process (end 1 = this step).
+NEXT_STEP_RELATIONSHIP = "NextGovernanceActionProcessStep"
+
+
+def parse_next_step_guards(answer) -> list[str]:
+    """Pure: the guards of a process step's outgoing `NextGovernanceActionProcessStep` links, from a
+    `get_all_related_elements(step guid, graph_query_depth=1)` answer ("" for a link with no guard, which Egeria
+    always follows). [] when the step has no next step (the last step of its process)."""
+    if not isinstance(answer, dict):
+        raise ProcessUnreadable("Egeria answered the process step's relationships with "
+                                + " ".join(str(answer).split())[:200])
+    out = []
+    for entry in answer.get("elementList") or []:
+        if ((entry.get("type") or {}).get("typeName")) != NEXT_STEP_RELATIONSHIP or entry.get("elementAtEnd1"):
+            continue                                   # a link FROM the previous step to this one
+        out.append(str(_rel_props(entry).get("guard") or ""))
+    return out
+
+
+def read_next_step_guards(expert, step_guid: str) -> list[str]:
+    """The guards a process step's next-step links take, read live (read-only). Egeria's exact "No elements found"
+    is a step with no relationships at all, so no next step."""
+    from resource_explorer.native_survey_run import is_exact_absent
+
+    answer = expert.get_all_related_elements(step_guid, graph_query_depth=1)
+    if is_exact_absent(answer):
+        return []
+    return parse_next_step_guards(answer)
 
 
 def source_report_steps() -> frozenset[str]:
@@ -408,7 +505,8 @@ def _step_words(n: int, label: str, view: EngineActionView | None) -> str:
         return f"step {n} {label}"
     if view.status == _DONE:
         rep = view.report_guid
-        other = [g for g in view.completion_guards if g != SURVEY_COMPLETED]
+        # The routing guard an RE definition's step also completes with (case 3) is not news to a reader.
+        other = [g for g in view.completion_guards if g not in (SURVEY_COMPLETED, _ROUTING_GUARD)]
         return (f"step {n} {label} ✓" + (f" {', '.join(other)}" if other else "")
                 + (f" report {rep[:8]}" if rep else (" (no report linked)" if view.succeeded else "")))
     if view.active:
@@ -419,14 +517,23 @@ def _step_words(n: int, label: str, view: EngineActionView | None) -> str:
     return f"step {n} {label} ✗ {guard or view.status or 'status unknown'}"
 
 
-def run_line_words(line: RunLine, *, started: str = "") -> str:
+#: Case 3, C4: where a definition's Egeria-coordinated run was started, for its run line.
+STARTED_IN_EGERIA = "egeria"     # initiated in Egeria (Dr.Egeria, or another process): RE only ran its steps
+STARTED_IN_RE = "re"             # initiated from RE ("coordinated by Egeria"), then coordinated by Egeria
+_STARTED_WORDS = {STARTED_IN_EGERIA: "started in Egeria by", STARTED_IN_RE: "started in RE by"}
+
+
+def run_line_words(line: RunLine, *, started: str = "", started_in: str = "", started_by: str = "") -> str:
     """The run line: "Postgres survey then derived · step 1 PostgreSQLSurvey ✓ report cb92eedc · step 2
     re-database-staleness ✓ report 1a2b3c4d · started by peterprofile 10-15". A step Egeria never created after a
-    failed step says "step 2 not started · step 1 failed", never "pending"."""
+    failed step says "step 2 not started · step 1 failed", never "pending". `started_in` (case 3) says where the run
+    was started ("started in Egeria by <requester>", "started in RE by <person>"); `started_by` names the person when
+    RE recorded who pressed, else the actions' requester."""
     process = line.process
     tail = []
-    if line.requester:
-        tail.append(f"started by {line.requester}" + (f" {started}" if started else ""))
+    who = started_by or line.requester
+    if who:
+        tail.append(f"{_STARTED_WORDS.get(started_in, 'started by')} {who}" + (f" {started}" if started else ""))
     if process is None:
         parts = [line.process_name.split("@", 1)[0] or (line.steps[0].request_type if line.steps else "engine action")]
         parts += [_step_words(i + 1, s.request_type, s) for i, s in enumerate(line.steps)]
@@ -455,10 +562,10 @@ def run_line_words(line: RunLine, *, started: str = "") -> str:
     return " · ".join(parts + tail)
 
 
-def run_line_dict(line: RunLine, *, started: str = "") -> dict:
+def run_line_dict(line: RunLine, *, started: str = "", started_in: str = "", started_by: str = "") -> dict:
     """The run line for a page: its words and each step's action, status, guards and report."""
     return {"instance_guid": line.instance_guid, "process_name": line.process_name, "note": line.note,
-            "words": run_line_words(line, started=started),
+            "words": run_line_words(line, started=started, started_in=started_in, started_by=started_by),
             "steps": [{"action_guid": s.guid, "request_type": s.request_type, "status": s.status,
                        "guards": list(s.completion_guards), "report_guid": s.report_guid,
                        "message": s.message[:500]} for s in line.steps]}

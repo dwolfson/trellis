@@ -71,6 +71,18 @@ records `derived_from_report`. Without the target the step runs standalone and c
 report-based measure recorded as "not measured · no survey report in this run"; survey-invalid is only for a
 surveyReport that is present and wrong (another subject, not the predecessor's, or more than one), naming which. An action whose previous step did not complete with the linking guard is left unclaimed.
 
+**RE's own Survey Definitions (case 3, SLICE-ENGINE-HOST-CASE3-RE-DEFINITIONS-DISPATCHED-BY-EGERIA.md).** Every step
+key of RE's step registries is a request type (`registry_steps`, `re-<step key>`), so Egeria can run a published
+definition one engine action per step. A database step runs through the same synthetic-step executor with the
+database registration's stored credential, after the launcher's capability gate (a shortfall completes
+survey-invalid with the launcher's sentence; nothing runs); a repository step is claimed and completed survey-invalid
+naming why (`out_of_scope_reason`). A definition's step completes with `step_outcome.completion_guards`: its survey
+guard, plus the `Any` its authored next-step links carry when the process should go on (Egeria matches link guards
+exactly); when no authored link takes the guard, the run says "process ended after <step>: guard <g> has no next
+step". The `surveyReport` targets Egeria carries forward are not a definition step's input. One native-survey row is
+written per process instance (`_record_submission`), read back as one run line (`mixed_process.definition_process`).
+Every engine-action row records `started_by: egeria`; RE's own Run records `re`.
+
 **Completion only from proof.** The outcome (guard, status, message, report GUID, annotation count) is
 written to the row's `target.outcome` before Egeria is told; `target.completion_recorded_at` marks that
 Egeria accepted it. No DDL: both ride in the existing `runs.target` JSON.
@@ -86,6 +98,8 @@ from dataclasses import dataclass, field
 from datetime import UTC
 from typing import Any
 
+from resource_explorer.step_outcome import SURVEY_GUARDS
+
 log = logging.getLogger(__name__)
 
 #: The engine element (C1). Native engines are named by a plain qualified name (`PostgreSQLSurvey`).
@@ -95,7 +109,7 @@ ENGINE_TYPE_NAME = "SurveyActionEngine"           # Q-M2: right for surveys
 SERVICE_TYPE_NAME = "SurveyActionService"         # owner, 2026-10-14: a SurveyActionEngine's services
 
 #: `SurveyActionGuard`'s standard guards (C9). Mandy (Q-M5): use the standard guards.
-SURVEY_GUARDS = ("survey-completed", "survey-invalid", "survey-failed")
+#: Defined once in `step_outcome` (case 3: the guard mapping lives beside them) and re-exported here.
 SURVEY_COMPLETED, SURVEY_INVALID, SURVEY_FAILED = SURVEY_GUARDS
 
 #: Each guard's completion status, as `SurveyActionGuard` pairs them (`SurveyActionGuard.java:18-20`):
@@ -143,8 +157,10 @@ NO_TARGET_SENTENCE = ("no asset action target was supplied, so the survey was no
 #: The input a library step's manifest declares to be handed the previous step's report (trellis_analytics).
 SOURCE_REPORT_INPUT = "source_report"
 
-#: The RE steps admitted to the engine host. One zero-fetch step in the first slice (§5): it never opens a
-#: connection, so no credential question arises. A step is added here on purpose, never by default.
+#: The RE steps the engine's own declaration document declares (engine-host/resource-explorer-survey-engine.md).
+#: One zero-fetch step in the first slice (§5). Since case 3 every other registry step is declared by
+#: engine-host/steps/ (`registry_steps`), so a step is never declared twice: re-running a document repeats its
+#: "Link Action to Action Executor", which is not safe to repeat.
 ENGINE_HOST_STEPS = ("db_derived",)
 
 #: The resource kind every admitted step targets (all are database steps today).
@@ -152,6 +168,12 @@ ENTITY_TYPE = "database"
 
 #: The `runs` kind a claim enqueues (registry.RUN_KINDS).
 RUN_KIND = "engine_action"
+
+#: Case 3, decision 5: who coordinates a run, recorded on its `runs` row's target (and on a process run's native
+#: survey row, `declared.started_by`). "egeria": Egeria walks the process and RE runs the steps it is handed;
+#: "re": RE's own executor runs the definition and creates no engine action.
+STARTED_BY_EGERIA = "egeria"
+STARTED_BY_RE = "re"
 
 ENABLE_ENV = "RE_ENGINE_HOST_ENABLED"
 
@@ -210,6 +232,72 @@ def declared_steps() -> dict:
     return {key: DATABASE_STEP_REGISTRY[key] for key in ENGINE_HOST_STEPS}
 
 
+#: Engine host case 3 (SLICE-ENGINE-HOST-CASE3-RE-DEFINITIONS-DISPATCHED-BY-EGERIA.md, decision 1): one
+#: SurveyActionService per STEP KEY of RE's step registries, never per definition. A step shared by five definitions
+#: is one request type; the definition is the process, the step is the service.
+REGISTRY_ENTITY_TYPES = ("database", "repo")
+
+#: Repository steps whose fetch or compute is out of this slice (§5.4): "steps fetch sources or call models".
+_HEAVY_FETCH = frozenset({"api_heavy", "download"})
+_HEAVY_COMPUTE = frozenset({"high"})
+
+
+@dataclass(frozen=True)
+class RegistryStep:
+    step_key: str
+    entity_type: str            # "database" | "repo"
+    info: Any                   # the registry's StepInfo
+
+    @property
+    def request_type(self) -> str:
+        return request_type_for_step(self.step_key)
+
+
+def registry_steps() -> dict[str, RegistryStep]:
+    """{step_key: RegistryStep} for every BUILT-IN key of DATABASE_STEP_REGISTRY and the repository STEP_REGISTRY, in
+    that order. Analytic Library steps `survey_step_host.attach` added to a registry are left out: they are declared
+    and claimed under their manifests' own request types (`library_steps`). A key in both registries is a ValueError:
+    one request type cannot dispatch to two steps."""
+    from resource_explorer.surveyors.database.survey_definition_adapter import (
+        DATABASE_STEP_REGISTRY,
+    )
+    from resource_explorer.surveyors.repo_survey_definition_adapter import STEP_REGISTRY
+    from resource_explorer.surveyors.survey_step_host import attached_user_steps
+
+    out: dict[str, RegistryStep] = {}
+    for entity_type, registry in (("database", DATABASE_STEP_REGISTRY), ("repo", STEP_REGISTRY)):
+        user = attached_user_steps(entity_type)
+        for key, info in registry.items():
+            if key in user:
+                continue
+            if key in out:
+                raise ValueError(f"step key {key!r} is in both the {out[key].entity_type} and the {entity_type} "
+                                 "step registries; its request type would dispatch to two steps")
+            out[key] = RegistryStep(key, entity_type, info)
+    return out
+
+
+def out_of_scope_reason(step_key: str) -> str:
+    """Why RE's engine host does not run this registry step when Egeria dispatches it, or "" when it does. The
+    action is still claimed and then completed survey-invalid with this sentence (owner, 2026-10-15: "dispatch of an
+    out-of-scope step must complete survey-invalid with a sentence naming why, not run").
+
+    Database steps run. Repository steps do not yet: those that fetch sources or call models are out of the slice
+    (§5.4: the engine host's worker has no fetch budget like the queue's), and the rest because the engine host
+    resolves and publishes database targets only so far (its report path is the database survey publisher)."""
+    step = registry_steps().get(step_key)
+    if step is None or step.entity_type == "database":
+        return ""
+    fetch = getattr(step.info, "fetch_cost", "none") or "none"
+    compute = getattr(step.info, "compute_cost", "low") or "low"
+    if fetch in _HEAVY_FETCH or compute in _HEAVY_COMPUTE:
+        return (f"repository step {step_key} fetches sources or calls models (fetch cost {fetch}, compute cost "
+                f"{compute}); Resource Explorer's engine host does not run such steps yet. Run its definition "
+                "from Resource Explorer's own Run")
+    return (f"repository step {step_key} is not run by Resource Explorer's engine host yet: it runs database steps "
+            "only so far. Run its definition from Resource Explorer's own Run")
+
+
 def library_steps() -> dict:
     """{request type: survey_step_host.LibraryStep} for the installed Analytic Library steps RE's engine runs."""
     from resource_explorer.surveyors.survey_step_host import library_steps as _library_steps
@@ -223,6 +311,10 @@ def supported_request_types() -> dict[str, str]:
     built-in step in DATABASE_STEP_REGISTRY (admitted to the engine host or not): `survey_step_host._admit`
     refuses it, with the reason in `library_step_refusals()`."""
     out = {request_type_for_step(key): key for key in declared_steps()}
+    # Case 3: every registry step is a request type RE's engine claims; an out-of-scope one is then completed
+    # survey-invalid with its reason (`out_of_scope_reason`), never left unclaimed as unknown.
+    for key in registry_steps():
+        out.setdefault(request_type_for_step(key), key)
     for request_type, step in library_steps().items():
         out.setdefault(request_type, step.step_key)
     return out
@@ -451,33 +543,49 @@ class EngineHost:
         # The previous step's report (engine host step 4): carried by Egeria as the `surveyReport` target, never an
         # asset to survey. Every other target is an asset, whatever name the process was started with.
         reports = [t["guid"] for t in all_targets if t["name"] == SURVEY_REPORT_TARGET]
-        targets = [t for t in all_targets if t["name"] != SURVEY_REPORT_TARGET]
+        # Egeria hands a later process step the previous action's targets AND the completion's new ones
+        # (`EngineActionHandler.prepareEngineActionFromProcessStep`), so the same asset can arrive twice: one asset.
+        targets = _unique_targets([t for t in all_targets if t["name"] != SURVEY_REPORT_TARGET])
         # A later step of a process runs only after its previous step completed with the linking guard, and the
         # report it is handed must be that previous step's own (ReportOriginator).
-        why, predecessor_reports = self._previous_step(_guid(action),
-                                                       str(action.get("requesterUserId") or "").strip())
+        why, predecessor_reports, instance = self._previous_step(_guid(action),
+                                                                 str(action.get("requesterUserId") or "").strip())
         if why and not adopt:
             return PREVIOUS_STEP_NOT_COMPLETED, {"request_type": request_type, "why": why}
         report_refusal = ""
-        if len(set(reports)) > 1:
-            report_refusal = (f"{len(set(reports))} {SURVEY_REPORT_TARGET} action targets "
-                              f"({', '.join(sorted(set(reports)))}); not choosing one")
-        elif reports and predecessor_reports is not None and reports[0] not in predecessor_reports:
-            report_refusal = (f"{SURVEY_REPORT_TARGET} {reports[0]} is not the report of the previous process step "
-                              f"({', '.join(sorted(predecessor_reports)) or 'it linked none'})")
+        # Only a step that derives from the previous step's report is handed one, so only such a step can be handed
+        # a wrong one. A step of an RE definition (case 3) takes no report: in an N-step process Egeria carries every
+        # earlier step's surveyReport forward (step 3 arrives with two), and they are not its input.
+        if _consumes_source_report(request_type, step_key):
+            if len(set(reports)) > 1:
+                report_refusal = (f"{len(set(reports))} {SURVEY_REPORT_TARGET} action targets "
+                                  f"({', '.join(sorted(set(reports)))}); not choosing one")
+            elif reports and predecessor_reports is not None and reports[0] not in predecessor_reports:
+                report_refusal = (f"{SURVEY_REPORT_TARGET} {reports[0]} is not the report of the previous process "
+                                  f"step ({', '.join(sorted(predecessor_reports)) or 'it linked none'})")
+        else:
+            reports = []
         slugs = [self.registry.database_slug_for_asset_guid(t["guid"]) for t in targets]
         # Private first: if ANY target is a resource in a private investigation the action is left unclaimed,
         # whatever else it names (owner, Q-O3; claiming and refusing would write a FAILED action into a
-        # private context, §3.5).
-        for slug in slugs:
-            if slug and self.registry.private_owner_for_entity(ENTITY_TYPE, slug):
+        # private context, §3.5). A repository target counts too (case 3 claims repository request types).
+        for t, slug in zip(targets, slugs):
+            kind, private_slug = (ENTITY_TYPE, slug) if slug else ("repo", self._repo_slug(t["guid"]))
+            if private_slug and self.registry.private_owner_for_entity(kind, private_slug):
                 # `ours`: RE already holds the claim (it was claimed before the target went private).
-                return "private_target", {"slug": slug, "ours": adopt}
+                return "private_target", {"slug": private_slug, "ours": adopt}
         facts = {"request_type": request_type, "step_key": step_key, "targets": all_targets, "slug": "",
-                 "asset_guid": "", "refusal": "", "other_targets": [], "source_report": reports[0] if reports else ""}
+                 "asset_guid": "", "refusal": "", "other_targets": [], "source_report": reports[0] if reports else "",
+                 # Case 3: which process step of which RE definition this action is (`_process_facts`), and the
+                 # guards its authored next-step links take (None when it is no definition's step).
+                 **self._process_facts(action, instance)}
+        scope = out_of_scope_reason(step_key) if step_key in registry_steps() else ""
         if report_refusal:
             # Claimed, then completed survey-invalid: the supplied information is invalid for this survey.
             facts["refusal"] = report_refusal
+        elif scope:
+            # Claimed, then completed survey-invalid naming why (owner, 2026-10-15); never run.
+            facts["refusal"] = scope
         elif not targets:
             facts["refusal"] = NO_TARGET_SENTENCE
         elif not all(slugs):
@@ -496,10 +604,11 @@ class EngineHost:
             facts["other_targets"] = [t["guid"] for t in targets[1:]]
         return (ADOPT if adopt else ""), facts
 
-    def _previous_step(self, guid: str, requester: str) -> tuple[str, set[str] | None]:
+    def _previous_step(self, guid: str, requester: str) -> tuple[str, set[str] | None, str]:
         """(why this action must not run yet as a later process step or "", the reports its previous steps linked by
-        ReportOriginator, or None when it has no previous step). Read as the engine host for the action's requester,
-        as the claim is made. Raises when unreadable (the sweep fails closed)."""
+        ReportOriginator, or None when it has no previous step, the GovernanceActionProcessInstance it is anchored to
+        or ""). Read as the engine host for the action's requester, as the claim is made. Raises when unreadable (the
+        sweep fails closed)."""
         from pyegeria import MetadataExpert
 
         from resource_explorer import mixed_process
@@ -509,11 +618,45 @@ class EngineHost:
             expert = self._client(MetadataExpert)
             view = mixed_process.read_action_graph(expert, guid)
             if not view.previous:
-                return "", None
+                return "", None, view.instance_guid
             reports: set[str] = set()
             for prev in view.previous:
                 reports.update(mixed_process.read_action_graph(expert, prev.guid).report_guids)
-        return mixed_process.previous_step_refusal(view), reports
+        return mixed_process.previous_step_refusal(view), reports, view.instance_guid
+
+    def _repo_slug(self, guid: str) -> str:
+        """The registered repository whose Egeria Asset is `guid`, or "" (a registry without the lookup: "")."""
+        lookup = getattr(self.registry, "repo_slug_for_asset_guid", None)
+        return lookup(guid) if callable(lookup) else ""
+
+    def _process_facts(self, action: dict, instance: str) -> dict:
+        """Case 3: which step of which RE Survey Definition this action is, read from the action itself
+        (`processName`, `processStepGUID`, `processStepName`) and, for a definition's step, the guards its authored
+        next-step links take, read live from the step (`mixed_process.read_next_step_guards`). `next_guards` is None
+        for an action that is no RE definition's step, or whose links could not be read (then the run cannot say
+        whether its completion continues the process, and says so)."""
+        from resource_explorer import mixed_process
+
+        process_name = str(action.get("processName") or "")
+        step_guid = str(action.get("processStepGUID") or "")
+        definition = mixed_process.definition_qn_for_instance_name(process_name)
+        facts = {"process_name": process_name, "process_step_guid": step_guid,
+                 "process_step_name": str(action.get("processStepName") or ""),
+                 "definition": definition, "process_instance_guid": instance or "",
+                 "next_guards": None, "next_guards_error": ""}
+        if not definition or not step_guid:
+            return facts
+        from pyegeria import MetadataExpert
+
+        from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
+
+        requester = str(action.get("requesterUserId") or "").strip()
+        try:
+            with acting_as(Daemon(DaemonReason.ENGINE_HOST, requested_by=requester or None)):
+                facts["next_guards"] = mixed_process.read_next_step_guards(self._client(MetadataExpert), step_guid)
+        except Exception as exc:  # noqa: BLE001 -- recorded: the run then says it could not tell, never guesses
+            facts["next_guards_error"] = _short(exc, 200)
+        return facts
 
     def sweep_once(self) -> SweepResult:
         """One pass: list, filter, claim, enqueue. Never raises for an Egeria answer; returns what it did."""
@@ -807,6 +950,26 @@ class EngineHost:
                  f" (to be completed: {facts['refusal']})" if facts.get("refusal") else "")
 
 
+def _unique_targets(targets: list[dict]) -> list[dict]:
+    """The asset targets once each, by GUID, in the order Egeria listed them."""
+    seen: set[str] = set()
+    out = []
+    for t in targets:
+        if t["guid"] not in seen:
+            seen.add(t["guid"])
+            out.append(t)
+    return out
+
+
+def _consumes_source_report(request_type: str, step_key: str) -> bool:
+    """Whether this request type's step derives from the previous step's report (an Analytic Library step that
+    declares the `source_report` input, engine host step 4). Built-in registry steps take none."""
+    if step_key in registry_steps() or step_key in ENGINE_HOST_STEPS:
+        return False
+    library = library_steps().get(request_type)
+    return library is not None and SOURCE_REPORT_INPUT in (getattr(library.manifest, "inputs", None) or [])
+
+
 def _not_yet_due(action: dict) -> bool:
     """The action's `requestedStartTime` (epoch ms) is still in the future. Missing or unreadable is due."""
     import time
@@ -846,6 +1009,17 @@ def _row_target(action: dict, guid: str, facts: dict, engine_guid: str) -> dict:
         # (`_not_yet_due`), so a queued row never waits for its start time.
         "requested_start_time": action.get("requestedStartTime"),
         "request_parameters": action.get("requestParameters") or {},
+        # Case 3, decision 5: who coordinates this run. An engine action is always Egeria's; RE's own Run records
+        # "re" on its survey_definition_run row. No DDL: it rides in the target JSON.
+        "started_by": STARTED_BY_EGERIA,
+        # Case 3: the process step this action is, and its next steps' guards (`EngineHost._process_facts`).
+        "process_name": facts.get("process_name", ""),
+        "process_step_guid": facts.get("process_step_guid", ""),
+        "process_step_name": facts.get("process_step_name", ""),
+        "definition": facts.get("definition", ""),
+        "process_instance_guid": facts.get("process_instance_guid", ""),
+        "next_guards": facts.get("next_guards"),
+        "next_guards_error": facts.get("next_guards_error", ""),
     }
 
 
@@ -894,7 +1068,8 @@ def _record_completion(curation, guid: str, outcome: dict) -> tuple[bool, str]:
     report_guid = outcome.get("report_guid") or ""
     try:
         curation.record_completion_status(
-            guid, outcome["status"], output_guards=[outcome["guard"]],
+            # Case 3: a definition step's guards (its survey guard, and the routing guard when the process goes on).
+            guid, outcome["status"], output_guards=list(outcome.get("guards") or [outcome["guard"]]),
             new_action_targets=([{"actionTargetName": SURVEY_REPORT_TARGET, "actionTargetGUID": report_guid}]
                                 if report_guid else None),
             completion_message=outcome.get("message") or "")
@@ -916,7 +1091,70 @@ def _decide(registry, target: dict) -> dict:
     if others:
         outcome["message"] = (f"{outcome['message'].rstrip('.')}. Only the first database target was surveyed; "
                               f"{len(others)} other target(s) not surveyed: {', '.join(others)}.")
+    _route(outcome, target)
     return outcome
+
+
+def _route(outcome: dict, target: dict) -> None:
+    """Case 3, decision 3: a step of an RE definition completes with the guards `step_outcome.completion_guards`
+    maps its survey guard to (the routing guard its authored links carry only when the process should go on), stored
+    on the outcome as `guards`. When the step's authored next-step links take none of those guards, the process ends
+    here and the run says so (`process_note`, also in the completion message); Egeria is told the guard all the same.
+    An action that is no definition's step completes with its one survey guard, as before."""
+    if not target.get("definition"):
+        return
+    from resource_explorer import step_outcome
+
+    step_key = target.get("step_key") or ""
+    guards = list(step_outcome.completion_guards(step_key, outcome["guard"]))
+    outcome["guards"] = guards
+    next_guards = target.get("next_guards")
+    note = ""
+    if next_guards is None:
+        if target.get("next_guards_error"):
+            note = (f"could not tell whether the process continues after {step_key}: its next steps could not be "
+                    f"read ({target['next_guards_error']})")
+    elif next_guards and not any(g == "" or g in guards for g in next_guards):
+        # A link with no guard (Egeria's null) always fires; any other must equal an output guard.
+        note = f"process ended after {step_key}: guard {outcome['guard']} has no next step"
+    if note:
+        outcome["process_note"] = note
+        outcome["message"] = f"{outcome['message'].rstrip('.')} · {note}"
+
+
+def _capability_refusal(registry, slug: str, step: RegistryStep) -> str:
+    """The launcher's sentence when the database's stored credential lacks the capability `step` declares, else "".
+    Read back from the stored `credential_capability` probe, exactly as the launcher gate reads it; "never probed"
+    blocks nothing, as there."""
+    if not (getattr(step.info, "requires_capability", "") or ""):
+        return ""
+    from resource_explorer.surveyors import credential_capability, prerequisite_resolver
+
+    entity = registry.get_database(slug, allow_unreadable=True)
+    if entity is None:
+        return ""
+    probe = credential_capability.stored_probe(registry, entity)
+    return prerequisite_resolver.capability_sentence(step.step_key, step.info, probe)
+
+
+def _stored_credentials(registry, slug: str) -> dict:
+    """The database registration's own stored credential, as RE's queue uses it (decision 4): {db_user, db_pwd} for
+    the step runner, or {} when none is stored (the step then fails in its own words)."""
+    entity = registry.get_database(slug, allow_unreadable=True)
+    user = (getattr(entity, "db_user", "") or "") if entity is not None else ""
+    pwd = (getattr(entity, "db_password", "") or "") if entity is not None else ""
+    return {"db_user": user, "db_pwd": pwd} if (user or pwd) else {}
+
+
+def _step_output_annotations(entity, step_outputs: list, registry) -> list:
+    """The annotations RE's own database publish makes from a run's step outputs (schema inventory, statistics,
+    views, operations, credential capability), for the engine host's native-shaped report. Nothing for a step whose
+    outputs carry none of these (db_derived brings its own `annotations`)."""
+    from resource_explorer.surveyors.database.egeria_database_surveyor import (
+        annotations_from_step_outputs,
+    )
+
+    return annotations_from_step_outputs(entity, [o for o in step_outputs if isinstance(o, dict)], registry)
 
 
 def _decide_one(registry, target: dict) -> dict:
@@ -927,13 +1165,25 @@ def _decide_one(registry, target: dict) -> dict:
     slug, step_key = target.get("slug") or "", target.get("step_key") or ""
     request_type = target.get("request_type") or ""
     library = None
-    if step_key not in declared_steps():
+    runner_kwargs: dict = {}
+    builtin = registry_steps().get(step_key)
+    if builtin is not None and step_key not in declared_steps():
+        # Case 3: a registry step Egeria dispatched as a step of an RE definition (or alone). Out-of-scope steps were
+        # refused at the claim; this says so again if the scope changed between claim and run.
+        scope = out_of_scope_reason(step_key)
+        if scope:
+            return _outcome(SURVEY_INVALID, f"Resource Explorer did not run {request_type}: {scope}")
+        refusal = _capability_refusal(registry, slug, builtin)
+        if refusal:
+            # Decision 4: the launcher's own gate, with its own sentence, and nothing run or published.
+            return _outcome(SURVEY_INVALID, f"Resource Explorer did not run {request_type} on {slug}: {refusal}")
+        runner_kwargs.update(_stored_credentials(registry, slug))
+    elif step_key not in declared_steps():
         library = library_steps().get(request_type)
         if library is None or library.step_key != step_key:
             return _outcome(SURVEY_FAILED, f"step {step_key!r} ({request_type}) is not one Resource Explorer's "
                             "engine runs here" + ("" if library else "; if it is an Analytic Library step, its "
                                                   "package is not installed where the engine host runs"))
-    runner_kwargs: dict = {}
     report_extra: dict = {}
     if library is not None and SOURCE_REPORT_INPUT in (getattr(library.manifest, "inputs", None) or []):
         source_guid = (target.get("source_report") or "").strip()
@@ -964,6 +1214,9 @@ def _decide_one(registry, target: dict) -> dict:
         if library is None:
             annotations = [a for out in step_outputs if isinstance(out, dict)
                            for a in (out.get("annotations") or [])]
+            # Case 3: a credentialed database step's results become annotations exactly as RE's own database
+            # publish makes them (`annotations_from_step_outputs`, the code `publish_step_annotations` runs).
+            annotations += _step_output_annotations(entity, step_outputs, _registry)
         else:
             records = [r for out in step_outputs if isinstance(out, dict)
                        for r in (out.get("step_annotations") or [])]
@@ -980,12 +1233,17 @@ def _decide_one(registry, target: dict) -> dict:
             raise EngineHostPublishFailed(published["outcome"]["message"])
         return published["outcome"]["report_guid"]
 
+    from resource_explorer.secret_redaction import redacting_logs
+    from resource_explorer.surveyors.survey_definition_executor import _redactable
+
     try:
-        ran = SurveyDefinitionExecutor(registry).run_synthetic_step(
-            entity_type=ENTITY_TYPE, slug=slug, re_analysis_step=step_key, executes_at="resource-explorer",
-            # In this process, never Prefect (Prefect-only steps are not in the slice, §5.4).
-            engine_override="resource-explorer", publisher=publisher,
-            display_name=f"{request_type} (engine action {target.get('engine_action_guid')})", **runner_kwargs)
+        # The stored password, when one is used, is kept out of every log line about the run's own failures.
+        with redacting_logs(_redactable(runner_kwargs.get("db_pwd"), "")):
+            ran = SurveyDefinitionExecutor(registry).run_synthetic_step(
+                entity_type=ENTITY_TYPE, slug=slug, re_analysis_step=step_key, executes_at="resource-explorer",
+                # In this process, never Prefect (Prefect-only steps are not in the slice, §5.4).
+                engine_override="resource-explorer", publisher=publisher,
+                display_name=f"{request_type} (engine action {target.get('engine_action_guid')})", **runner_kwargs)
     except Exception as exc:  # noqa: BLE001 -- the step could not run: survey-failed with its words
         return published.get("outcome") or _outcome(SURVEY_FAILED, f"{step_key} on {slug} could not run: "
                                                     f"{_short(exc)}")
@@ -1154,6 +1412,16 @@ def _record_submission(registry, target: dict, principal) -> str:
         return ""
     process_qn = governance_action_type_qn_for(target.get("request_type") or
                                                request_type_for_step(target.get("step_key") or ""))
+    extra: dict = {}
+    if target.get("definition") and target.get("process_instance_guid"):
+        # Case 3 (C4): a step of an RE definition Egeria coordinates is ONE run of the definition, listed once per
+        # process instance and read back step by step (`native_survey_run.refresh_mixed_run`). A run started from
+        # RE's "coordinated by Egeria" control already has that row (its GUID is the same instance); one started in
+        # Egeria gets it here, from its first step RE runs.
+        from resource_explorer import mixed_process
+
+        process_qn, guid = target["definition"], target["process_instance_guid"]
+        extra = {"started_by": STARTED_BY_EGERIA, "started_in": mixed_process.STARTED_IN_EGERIA}
     try:
         if any(r.get("engine_action_guid") == guid
                for r in registry.list_native_survey_runs(ENTITY_TYPE, slug, process_qn)):
@@ -1161,7 +1429,7 @@ def _record_submission(registry, target: dict, principal) -> str:
         registry.record_native_survey_submission(ENTITY_TYPE, slug, process_qn, _now_iso(),
                                                  engine_action_guid=guid,
                                                  submitted_by=(principal.requested_by or "").strip(),
-                                                 started_as="engine-host")
+                                                 started_as="engine-host", **extra)
     except Exception as exc:  # noqa: BLE001 -- the listing row, not the work: recorded on the outcome
         why = _short(exc)
         log.warning("engine host: no native-survey row for engine action %s (%s)", guid, why)

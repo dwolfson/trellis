@@ -8,6 +8,9 @@ GovActionProcessStep::DatabaseAnalysisSurvey::postgres_column_profile
 ### Description
 Bounded value sampling, data_class_match, reference_data_match.
 
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -26,6 +29,9 @@ GovActionProcessStep::DatabaseAnalysisSurvey::postgres_nested_columns
 
 ### Description
 Bounded sampling and nested-schema inference for JSON/JSONB/XML columns.
+
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -46,6 +52,9 @@ GovActionProcessStep::DatabaseAnalysisSurvey::db_derived
 ### Description
 Zero-fetch derivation over already-stored rows.
 
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -64,6 +73,9 @@ GovActionProcessStep::DatabaseAnalysisSurvey::postgres_operations
 
 ### Description
 privilege_audit, db_activity_signals, db_resilience, db_external_dependencies.
+
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -134,6 +146,66 @@ GovActionProcessStep::DatabaseAnalysisSurvey::postgres_operations
 
 ### Guard
 Any
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::DatabaseAnalysisSurvey::postgres_column_profile
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-postgres-column-profile
+
+### Description
+Egeria dispatches GovActionProcessStep::DatabaseAnalysisSurvey::postgres_column_profile to Resource Explorer's engine, which claims it and runs RE step postgres_column_profile.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::DatabaseAnalysisSurvey::postgres_nested_columns
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-postgres-nested-columns
+
+### Description
+Egeria dispatches GovActionProcessStep::DatabaseAnalysisSurvey::postgres_nested_columns to Resource Explorer's engine, which claims it and runs RE step postgres_nested_columns.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::DatabaseAnalysisSurvey::db_derived
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-db-derived
+
+### Description
+Egeria dispatches GovActionProcessStep::DatabaseAnalysisSurvey::db_derived to Resource Explorer's engine, which claims it and runs RE step db_derived.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::DatabaseAnalysisSurvey::postgres_operations
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-postgres-operations
+
+### Description
+Egeria dispatches GovActionProcessStep::DatabaseAnalysisSurvey::postgres_operations to Resource Explorer's engine, which claims it and runs RE step postgres_operations.
 
 ___
 

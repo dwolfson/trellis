@@ -712,6 +712,12 @@ def attach(entity_type: str, adapter, step_registry: dict, step_map: dict, resul
     return attached
 
 
+def attached_user_steps(entity_type: str = "database") -> frozenset[str]:
+    """The user (Analytic Library) step keys `attach` put into this resource type's step registry. RE's engine host
+    declares and claims those through their manifests' request types, never as built-in registry steps (case 3)."""
+    return frozenset(_ATTACHED.get(entity_type, set()))
+
+
 def refresh(entity_type: str = "database") -> list[str]:
     """Discover again and re-attach (after a package is installed into a running process, or in a test)."""
     if entity_type != "database":

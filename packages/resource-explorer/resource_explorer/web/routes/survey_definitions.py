@@ -628,6 +628,20 @@ async def list_candidates(
                 if p.kind != KIND_DELETE
             ]
 
+        # Case 3: the "coordinated by Egeria" control beside each definition's Run (owner, 2026-10-15), from the
+        # registry only: hidden with a short sentence when it cannot be offered (engine host off, ...).
+        from resource_explorer import native_survey_run as _nsr
+
+        for cand in detailed:
+            qn = cand.get("qualified_name") or ""
+            try:
+                cand["coordinated_by_egeria"] = _nsr.coordinate_control(_reg, entity_type, slug, qn)
+            except Exception as exc:  # noqa: BLE001 - the list still renders; the control says why it is not offered
+                log.warning("coordinated-by-Egeria control for %s on %s/%s not computed: %s", qn, entity_type,
+                            slug, exc)
+                cand["coordinated_by_egeria"] = {"label": _nsr.COORDINATE_LABEL, "available": False,
+                                                 "why_not": "could not be checked", "state": "", "line": ""}
+
         return {
             "technology_type": adapter.technology_type,
             "candidates": _narrow_by_perspective(detailed, perspectives),
@@ -774,9 +788,13 @@ async def run_survey_definition_route(entity_type: str, slug: str,
         summary=f"Running Survey Definition '{body.survey_definition_ref}' on {slug}…",
         detail=json.dumps({"survey_definition_ref": body.survey_definition_ref}),
     )
+    from resource_explorer.engine_host import STARTED_BY_RE
+
     run_id = registry.enqueue_run(
         "survey_definition_run",
-        {"entity_type": entity_type, "slug": slug, "params": _params(body).to_dict()},
+        # Case 3, decision 5: RE's own Run coordinates the definition itself and creates no engine action; the row
+        # says so ("started_by": "re"). "coordinated by Egeria" is the other control, and records "egeria".
+        {"entity_type": entity_type, "slug": slug, "params": _params(body).to_dict(), "started_by": STARTED_BY_RE},
         result_ref=activity_id, requested_by=requested_by(),
     )
     log.info("enqueued survey_definition_run %s for %s/%s (activity %s)",
