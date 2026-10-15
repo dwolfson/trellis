@@ -4,10 +4,11 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Any, Optional
+import json
+from typing import Annotated, Any, Optional
 
-from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel, BeforeValidator, Field
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +41,53 @@ _ENV_FILES = (_PACKAGE_ENV, ".env")
 _ENV_FILE_CONFIG = SettingsConfigDict(
     populate_by_name=True, env_file=_ENV_FILES, env_file_encoding="utf-8", extra="ignore",
 )
+
+
+def parse_str_list(value: Any, setting: str = "setting") -> list[str]:
+    """Read a list-of-names setting from an env value without ever raising.
+
+    pydantic-settings parses a plain ``list[str]`` from the environment as JSON, so
+    ``FEEDBACK_ADMIN_USERS=peterprofile`` crashed the whole web process at startup (2026-10-14). Accepted:
+    a JSON list, a comma-separated list, a single name, or empty. Entries are trimmed and empties dropped.
+    A value that cannot be read logs ONE warning and gives ``[]`` (fail closed: nothing listed).
+    """
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        items = list(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if text.startswith("["):
+            try:
+                items = json.loads(text)
+            except ValueError:
+                log.warning("%s: could not read %r as a JSON list; treating it as empty (no entries)", setting, value)
+                return []
+            if not isinstance(items, list):
+                log.warning("%s: %r is not a list; treating it as empty (no entries)", setting, value)
+                return []
+        elif text.startswith(("{", '"', "'")) or "[" in text or "]" in text:
+            log.warning("%s: could not read %r; use a JSON list or comma-separated names. Treating it as empty.",
+                        setting, value)
+            return []
+        else:
+            items = text.split(",")
+    else:
+        log.warning("%s: could not read a %s value; treating it as empty (no entries)", setting, type(value).__name__)
+        return []
+    out: list[str] = []
+    for item in items:
+        if not isinstance(item, (str, int)) or isinstance(item, bool):
+            log.warning("%s: ignoring an entry that is not a name: %r", setting, item)
+            continue
+        name = str(item).strip()
+        if name:
+            out.append(name)
+    return out
+
+
+#: A list of names that reads JSON, comma-separated, a single name or empty from the environment.
+NameList = Annotated[list[str], NoDecode, BeforeValidator(lambda v, info: parse_str_list(v, info.field_name or "setting"))]
 
 
 class PgVectorConfig(BaseSettings):
@@ -277,8 +325,8 @@ class EgeriaConfig(BaseSettings):
     # FOR A SECOND COMMIT: a zone on the database element may lock the service identity, the
     # survey engine and the cataloguer out of later anchored writes. First live use: a throwaway
     # database with TWO commits, the second exercising anchored writes under the zone.
-    default_catalog_zones: list[str] = Field(default_factory=list)
-    default_survey_zones: list[str] = Field(default_factory=list)
+    default_catalog_zones: NameList = Field(default_factory=list)
+    default_survey_zones: NameList = Field(default_factory=list)
     # Secrets store used when Egeria's own native "catalog and survey" processes
     # need credentials. Confirmed live 2026-07-09: secrets are written via
     # AutomatedCuration.save_client_side_secret(secrets_store_guid, body) with
@@ -500,7 +548,7 @@ class FeedbackConfig(BaseSettings):
         ),
         alias="FEEDBACK_DATABASE_URL",
     )
-    admin_users: list[str] = Field(default_factory=list, alias="FEEDBACK_ADMIN_USERS")
+    admin_users: NameList = Field(default_factory=list, alias="FEEDBACK_ADMIN_USERS")
     admin_token: str = Field(default="", alias="FEEDBACK_ADMIN_TOKEN")
     #: Local dev only (owner ruling 2026-10-14). With no admin configured, `require_admin` refuses everyone; this
     #: brings back "any signed-in user may act" for Retry / Run bootstrap / bulk resolve. Ignored once an admin
