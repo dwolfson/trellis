@@ -122,7 +122,8 @@ FIXTURE_ROLES = {
     "src/main/java/org/x/Api.java": "core",
     "src/main/java/org/x/doc/DocBuilder.java": "core",                     # a package called doc is code
     "src/test/java/org/x/ApiTest.java": "test",
-    "module/src/main/java/org/x/ApiIT.java": "test",
+    "module/src/it/java/org/x/ApiIT.java": "test",                         # src/it (new is_test_path rule)
+    "src/main/java/org/x/TestimonialController.java": "core",
     "target/generated-sources/annotations/org/x/Api_.java": "generated",
     "module/generated/org/x/Model.java": "generated",
     "documentation/samples/Sample.java": "docs",
