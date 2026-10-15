@@ -488,8 +488,10 @@ class SurveyStepHost:
 
         with contextlib.ExitStack() as stack:
             ods = stack.enter_context(step_reader(registry.database_url))
+            # `source_report`: the previous process step's report as plain data, read by the engine host (step 4).
             host = HostContext(resource_type=self.entity_type, slug=entity.slug, producing_run=run,
-                               ods=ods, connect=None, store=store)
+                               ods=ods, connect=None, store=store,
+                               source_report=runner_kwargs.get("source_report"))
             # The step's code runs with no Egeria identity, and its reader is closed when the code returns; the
             # store and anything after it run as the host does.
             code = SurveyStep(self.manifest).code

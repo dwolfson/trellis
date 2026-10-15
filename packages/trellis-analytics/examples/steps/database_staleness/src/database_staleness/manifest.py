@@ -16,7 +16,8 @@ MANIFEST = StepManifest(
     resource_types=["database"],
     annotation_type="ResourceMeasureAnnotation",
     credential_tier="none",
-    inputs=["ods"],
+    # `source_report`: in an Egeria process, the survey report the step before this one wrote (engine host step 4).
+    inputs=["ods", "source_report"],
     stage="analysis",
     perspectives=["Steward", "Data Expert"],
     # Q-0041: "How much has changed since the last time this was surveyed — is it worth re-running now?"

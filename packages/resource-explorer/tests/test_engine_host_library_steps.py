@@ -35,6 +35,24 @@ from tests.test_engine_host_e4 import (  # noqa: F401 - fixtures and helpers reu
 REQUEST_TYPE = "re-database-staleness"
 LATER = "2026-10-15T09:00:00"
 
+#: Engine host step 4: database_staleness declares the `source_report` input, so under the engine host it runs only
+#: as a later process step, handed the previous step's report as the `surveyReport` action target. These step-3 tests
+#: give it one: the native PostgreSQLSurvey report captured live (tests/fixtures/egeria_6_2, M2), with one table's
+#: counters changed. Without the target it completes survey-invalid (test_engine_host_step4_mixed_process.py).
+SOURCE_REPORT = "cb92eedc-5e24-4da7-ba5e-fc11d1707d8f"
+EMPTY_REPORT = "0a1b2c3d-0000-4000-8000-00000000e0e0"
+
+
+def _lib_action(egeria, guid, *, target=DB_GUID, report=SOURCE_REPORT):
+    from tests.test_engine_host_step4_mixed_process import _native_report
+
+    egeria.native_reports.setdefault(SOURCE_REPORT, _native_report(written={"src_cd": 250}))
+    if report == EMPTY_REPORT:
+        empty = _native_report(tables=False)
+        empty["elementHeader"]["guid"] = EMPTY_REPORT
+        egeria.native_reports.setdefault(EMPTY_REPORT, empty)
+    return egeria.add_action(guid, target=target, request_type=REQUEST_TYPE, report=report)
+
 
 def _second_survey(reg, slug="coco_pharma"):
     """A second stored survey of coco_pharma with one table changed, so the step has something to derive."""
@@ -101,7 +119,7 @@ def test_a_step_that_needs_a_connection_is_not_admitted(staleness_installed, mon
 
 def test_a_library_action_is_claimed_run_published_and_completed(staleness_installed, reg, egeria, no_connection):
     _second_survey(reg)
-    egeria.add_action("ea-lib", request_type=REQUEST_TYPE)
+    _lib_action(egeria, "ea-lib")
     assert _sweep(reg).claimed == ["ea-lib"]
     assert _run_queue_once(reg) is not None
 
@@ -119,28 +137,30 @@ def test_a_library_action_is_claimed_run_published_and_completed(staleness_insta
         {k: r[k] for k in ("type", "end1", "end2")} for r in egeria.relationships]
     assert done["targets"] == [{"actionTargetName": "surveyReport", "actionTargetGUID": report_guid}]
 
-    # the step's annotations, as Egeria's ResourceMeasureAnnotation with the envelope in additionalProperties
+    # the step's annotations, as Egeria's ResourceMeasureAnnotation with the envelope in additionalProperties,
+    # derived from the source report's ten table measurements (step 4: the survey that just ran)
     anns = {a["additionalProperties"]["scope"]: a for a in _annotation_bodies(egeria, report_guid)}
-    assert set(anns) == {"public.customer", "public.orders"}
-    orders = anns["public.orders"]
-    assert orders["class"] == "ResourceMeasureAnnotationProperties"
-    assert orders["analysisStep"] == "database_staleness"
-    assert orders["annotationType"] == "Database Staleness"
-    assert orders["resourceProperties"]["rowsChanged"] == "250"
-    assert orders["additionalProperties"]["resultState"] == "measured"
-    assert anns["public.customer"]["additionalProperties"]["resultState"] == "nothing_found"
-    assert len({a["qualifiedName"] for a in anns.values()}) == 2
+    assert len(anns) == 10 and all(k.startswith("public.") for k in anns)
+    src_cd = anns["public.src_cd"]
+    assert src_cd["class"] == "ResourceMeasureAnnotationProperties"
+    assert src_cd["analysisStep"] == "database_staleness"
+    assert src_cd["annotationType"] == "Database Staleness"
+    assert src_cd["resourceProperties"]["rowsWritten"] == "250"
+    assert src_cd["additionalProperties"]["resultState"] == "measured"
+    assert anns["public.weight"]["additionalProperties"]["resultState"] == "nothing_found"
+    assert len({a["qualifiedName"] for a in anns.values()}) == 10
+    assert props["additionalProperties"]["derived_from_report"] == SOURCE_REPORT
 
     # still stored where RE reads them today
     run, rows = reg.query_step_annotations("database", "coco_pharma", "database_staleness")
-    assert run and {r["scope"] for r in rows} == {"public.customer", "public.orders"}
+    assert run and {r["scope"] for r in rows} == set(anns)
 
     row = _row(reg)
     assert row["state"] == "succeeded"
     outcome = row["target"]["outcome"]
     assert (outcome["guard"], outcome["report_guid"], outcome["annotation_count"]) == (
-        "survey-completed", report_guid, 2)
-    assert egeria.annotations_under(report_guid) == 2
+        "survey-completed", report_guid, 10)
+    assert egeria.annotations_under(report_guid) == 10
     assert row["target"]["completion_recorded_at"]
 
     # identity unchanged: every write is the engine host daemon for the requester
@@ -154,16 +174,16 @@ def test_a_library_action_is_claimed_run_published_and_completed(staleness_insta
 
 def test_nothing_to_derive_completes_with_the_declared_guard_and_publishes_nothing(
         staleness_installed, reg, egeria, no_connection):
-    """empty_db was never surveyed: the step says not_established for the database, which is nothing to derive.
-    The manifest declares survey-invalid for that; no report is written."""
-    egeria.add_action("ea-empty", target=EMPTY_DB_GUID, request_type=REQUEST_TYPE)
+    """The source report carries no table measurements: the step says not_established for the database, which is
+    nothing to derive. The manifest declares survey-invalid for that; no report is written."""
+    _lib_action(egeria, "ea-empty", target=EMPTY_DB_GUID, report=EMPTY_REPORT)
     assert _sweep(reg).claimed == ["ea-empty"]
     _run_queue_once(reg)
 
     done = egeria.actions["ea-empty"]["completion"]
     assert done["status"] == "INVALID" and done["guards"] == ["survey-invalid"], done
     assert "nothing to derive" in done["message"]
-    assert "no survey has measured row counts" in done["message"]
+    assert f"survey report {EMPTY_REPORT} carries no table measurements" in done["message"]
     assert done["targets"] == []
     assert egeria.reports() == []
     assert not egeria.method_calls("create_annotation")
@@ -189,7 +209,7 @@ def test_the_declared_nothing_guard_is_the_one_used(staleness_installed, reg, eg
 
     monkeypatch.setattr(survey_step_host, "discover_steps", declares_completed)
     survey_step_host.refresh("database")
-    egeria.add_action("ea-empty2", target=EMPTY_DB_GUID, request_type=REQUEST_TYPE)
+    _lib_action(egeria, "ea-empty2", target=EMPTY_DB_GUID, report=EMPTY_REPORT)
     _sweep(reg)
     _run_queue_once(reg)
 
@@ -202,12 +222,12 @@ def test_the_declared_nothing_guard_is_the_one_used(staleness_installed, reg, eg
 def test_a_failed_publish_never_completes_survey_completed(staleness_installed, reg, egeria, no_connection):
     _second_survey(reg)
     egeria.fail["create_annotation"] = RuntimeError("Egeria said no")
-    egeria.add_action("ea-libfail", request_type=REQUEST_TYPE)
+    _lib_action(egeria, "ea-libfail")
     _sweep(reg)
     _run_queue_once(reg)
     done = egeria.actions["ea-libfail"]["completion"]
     assert done["guards"] == ["survey-failed"], done
-    assert "1 of 2 reached Egeria" in done["message"]
+    assert "9 of 10 reached Egeria" in done["message"]
 
 
 # ── what is left alone ───────────────────────────────────────────────────────
@@ -222,7 +242,7 @@ def test_an_unknown_request_type_is_still_left_unclaimed(staleness_installed, re
 
 
 def test_a_library_request_type_is_left_unclaimed_when_the_step_is_not_installed(reg, egeria):
-    egeria.add_action("ea-notinst", request_type=REQUEST_TYPE)
+    _lib_action(egeria, "ea-notinst")
     result = _sweep(reg)
     assert result.claimed == [] and result.skipped.get("unknown_request_type") == ["ea-notinst"]
 
@@ -320,7 +340,7 @@ def test_a_private_target_with_a_library_request_type_is_left_unclaimed(stalenes
         reg.add_working_set_member(ws["slug"], "database", "alice_db")
     finally:
         current_caller.reset(reset)
-    egeria.add_action("ea-priv", target=PRIVATE_DB_GUID, request_type=REQUEST_TYPE)
+    _lib_action(egeria, "ea-priv", target=PRIVATE_DB_GUID)
     result = _sweep(reg)
     assert result.claimed == [] and "ea-priv" in result.skipped.get("private_target", [])
     assert not egeria.method_calls("claim_engine_action")
@@ -334,7 +354,7 @@ def test_a_step_that_raises_completes_survey_failed(staleness_installed, reg, eg
 
     monkeypatch.setattr(user_code, "run", boom)
     _second_survey(reg)
-    egeria.add_action("ea-boom", request_type=REQUEST_TYPE)
+    _lib_action(egeria, "ea-boom")
     _sweep(reg)
     _run_queue_once(reg)
     done = egeria.actions["ea-boom"]["completion"]
@@ -368,7 +388,7 @@ def test_f2_a_step_gets_no_registry_no_dsn_and_no_egeria_identity(staleness_inst
 
     monkeypatch.setattr(user_code, "run", spy)
     _second_survey(reg)
-    egeria.add_action("ea-narrow", request_type=REQUEST_TYPE)
+    _lib_action(egeria, "ea-narrow")
     _sweep(reg)
     _run_queue_once(reg)
     assert seen["reg"] is False, seen["attrs"]
@@ -386,7 +406,7 @@ def test_f3_a_worker_without_the_package_leaves_a_library_row_queued(staleness_i
     from resource_explorer.surveyors import survey_step_host
 
     _second_survey(reg)
-    egeria.add_action("ea-q", request_type=REQUEST_TYPE)
+    _lib_action(egeria, "ea-q")
     assert _sweep(reg).claimed == ["ea-q"]
     # this worker does not have the package
     monkeypatch.setattr(survey_step_host, "discover_steps", lambda entity_type: {})
@@ -402,7 +422,7 @@ def test_f3_a_row_no_worker_can_run_is_completed_survey_failed_after_the_bound(s
     from resource_explorer.surveyors import survey_step_host
     from tests.test_engine_host_e4 import _restart
 
-    egeria.add_action("ea-stuck", request_type=REQUEST_TYPE)
+    _lib_action(egeria, "ea-stuck")
     assert _sweep(reg).claimed == ["ea-stuck"]
     monkeypatch.setattr(survey_step_host, "discover_steps", lambda entity_type: {})
     survey_step_host.refresh("database")
@@ -433,7 +453,7 @@ def test_understanding_lists_a_library_step_like_a_native_survey(staleness_insta
     monkeypatch.setenv("EGERIA_SECRETS_STORE_LOCAL_PATH", str(tmp_path / "om.omsecrets"))
     config_module._config = None
     _second_survey(reg)
-    egeria.add_action("ea-und-lib", request_type=REQUEST_TYPE)
+    _lib_action(egeria, "ea-und-lib")
     _sweep(reg)
     _run_queue_once(reg)
     with port_session(PyegeriaSurveyPort(identity=Daemon(DaemonReason.SCHEDULER))) as port:
@@ -528,7 +548,7 @@ def test_f2_round2_no_registry_or_dsn_is_reachable_and_reachable_connections_are
 
     monkeypatch.setattr(user_code, "run", probe)
     _second_survey(reg)
-    egeria.add_action("ea-walk", request_type=REQUEST_TYPE)
+    _lib_action(egeria, "ea-walk")
     _sweep(reg)
     _run_queue_once(reg)
     assert found["registries"] == []

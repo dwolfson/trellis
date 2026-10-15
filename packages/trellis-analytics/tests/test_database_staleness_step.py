@@ -132,6 +132,75 @@ def test_never_surveyed_is_one_not_established_for_the_database(staleness_instal
     assert "no survey" in anns["shop"].envelope.result_state_reason
 
 
+# ── engine host step 4: derived from the report the previous process step wrote (`source_report`) ──
+
+def _table_measurement(qualified, table_type="Table", inserted="0", updated="0", deleted="0"):
+    """One native PostgreSQLSurvey table measurement, as RE's reader (`annotations_from_report`) flattens it; the
+    property names are the live ones (2026-10-15)."""
+    props = {"Table Qualified Name": qualified, "Table Name": qualified.rsplit(".", 1)[-1], "Table Type": table_type}
+    for name, v in (("Number Of Rows Inserted", inserted), ("Number Of Rows Updated", updated),
+                    ("Number Of Rows Deleted", deleted)):
+        if v is not None:
+            props[name] = v
+    return {"annotation_type": "Capture Database Table Measurements", "resource_properties": props}
+
+
+def _run_with_report(report, slug="shop"):
+    from trellis_analytics.discovery import discover
+    from trellis_analytics.step import HostContext, SurveyStep
+
+    m = discover()["database_staleness"]
+    host = HostContext(resource_type="database", slug=slug, producing_run="run-x", ods=None, source_report=report)
+    return {a.scope: a for a in SurveyStep(m).run(host)}
+
+
+def test_with_a_source_report_it_derives_from_that_survey_and_names_it(staleness_installed):
+    report = {"guid": "cb92eedc-5e24-4da7-ba5e-fc11d1707d8f", "annotations": [
+        _table_measurement("usda.public.orders", inserted="200", updated="40", deleted="10"),
+        _table_measurement("usda.public.weight"),
+        _table_measurement("usda.public.v_sales", table_type="View", inserted=None, updated=None, deleted=None),
+        _table_measurement("usda.public.odd", deleted=None),
+        {"annotation_type": "Capture Database Column Measurements", "resource_properties": {}},
+    ]}
+    anns = _run_with_report(report)        # no ODS reader at all: the stored inventory is not read
+    assert set(anns) == {"public.orders", "public.weight", "public.v_sales", "public.odd"}
+    orders = anns["public.orders"]
+    assert orders.envelope.result_state.value == "measured"
+    assert orders.resource_properties["rowsWritten"] == "250"
+    assert orders.resource_properties["sourceReport"] == report["guid"]
+    assert "cb92eedc" in orders.summary
+    assert anns["public.weight"].envelope.result_state.value == "nothing_found"
+    assert anns["public.v_sales"].envelope.result_state.value == "not_applicable"
+    odd = anns["public.odd"]
+    assert odd.envelope.result_state.value == "not_established"
+    assert "Number Of Rows Deleted" in odd.envelope.result_state_reason and report["guid"] in \
+        odd.envelope.result_state_reason
+
+
+def test_a_source_report_without_table_measurements_is_one_not_established(staleness_installed):
+    anns = _run_with_report({"guid": "g-1", "annotations": []})
+    assert list(anns) == ["shop"] and anns["shop"].envelope.result_state.value == "not_established"
+    assert "g-1 carries no table measurements" in anns["shop"].envelope.result_state_reason
+
+
+def test_source_report_is_handed_only_to_a_step_that_declares_it():
+    from trellis_analytics.manifest import StepManifest
+    from trellis_analytics.step import HostContext, SurveyStep
+
+    seen = {}
+
+    def code(inputs):
+        seen["report"] = inputs.source_report
+        return [{"scope": "x", "state": "nothing_found"}]
+
+    host = HostContext(resource_type="database", slug="x", producing_run="r", source_report={"guid": "g"})
+    for inputs, expected in ((["ods"], None), (["ods", "source_report"], {"guid": "g"})):
+        m = StepManifest(name="s", function="x.y", description="d", source="ods", version="1",
+                         resource_types=["database"], inputs=inputs)
+        SurveyStep(m, code=code).run(host)
+        assert seen["report"] == expected
+
+
 def test_the_manifest_is_the_wrappers_declaration(staleness_installed):
     from trellis_analytics.discovery import discover
     from trellis_analytics.manifest import StepManifest
@@ -142,7 +211,7 @@ def test_the_manifest_is_the_wrappers_declaration(staleness_installed):
         "step", "ods", ["database"], "ResourceMeasureAnnotation")
     assert m.version == staleness_installed
     assert m.questions == ["Q-0041"] and m.purposes == ["Maintain"]
-    assert m.credential_tier == "none" and m.inputs == ["ods"]
+    assert m.credential_tier == "none" and m.inputs == ["ods", "source_report"]
 
 
 # ── generated, not hand-written ──

@@ -70,6 +70,9 @@ class Fakes:
         self.actions = actions
         self.curation.get_active_engine_actions.side_effect = self._page
         self.expert.get_metadata_guid_by_unique_name.return_value = ENGINE_GUID
+        # Engine host step 4: each candidate's neighbourhood is read before the claim. These actions were started
+        # alone: Egeria's exact "nothing there" (no ControlFlow, so no previous step to wait for).
+        self.expert.get_all_related_elements.return_value = "No elements found"
         self.built: list[tuple[str, str]] = []           # (class name, Egeria user the client was built for)
         self.claims: list[tuple[str, object]] = []       # (engine action guid, principal at the call)
         self.curation.claim_engine_action.side_effect = self._claim

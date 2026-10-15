@@ -64,6 +64,12 @@ those annotations (`LibraryStep.report_annotations`) through the same `_publish`
 derivation, the run completes with the guard the manifest declares for nothing to derive; with a guard other than
 survey-completed no report is written (`NothingToPublish`), as db_derived writes none when it is skipped.
 
+**Mixed processes (step 4, `mixed_process.py`).** An action Egeria creates as a later step of a process (a native
+survey, then RE's step) carries the previous step's report as the `surveyReport` action target. That target is never
+an asset. A library step that declares the `source_report` input is handed the report as plain data, read here, and
+records `derived_from_report`; without the target it completes survey-invalid ("no surveyReport action target;
+nothing to derive from"). An action whose previous step did not complete with the linking guard is left unclaimed.
+
 **Completion only from proof.** The outcome (guard, status, message, report GUID, annotation count) is
 written to the row's `target.outcome` before Egeria is told; `target.completion_recorded_at` marks that
 Egeria accepted it. No DDL: both ride in the existing `runs.target` JSON.
@@ -127,6 +133,14 @@ COMPLETION_RETRY_SECONDS = 60
 #: it claimed for ever (`GovernanceEngineHandler.executeEngineAction`'s catch); RE completes it instead.
 NO_TARGET_SENTENCE = ("no asset action target was supplied, so the survey was not run "
                       "(native: OMES-SURVEY-ACTION-400-003 NO_TARGET_ASSET)")
+
+#: Engine host step 4 (SLICE-ENGINE-HOST-STEP4-MIXED-PROCESS.md): a library step that declares the `source_report`
+#: input derives from the report the previous process step wrote, which Egeria hands it as the `surveyReport` action
+#: target. Without that target it has nothing to derive from: survey-invalid, no report, never survey-completed.
+NO_SOURCE_REPORT_SENTENCE = "no surveyReport action target; nothing to derive from"
+
+#: The input a library step's manifest declares to be handed the previous step's report (trellis_analytics).
+SOURCE_REPORT_INPUT = "source_report"
 
 #: The RE steps admitted to the engine host. One zero-fetch step in the first slice (§5): it never opens a
 #: connection, so no credential question arises. A step is added here on purpose, never by default.
@@ -283,6 +297,10 @@ class RestartResult:
     note: str = ""
 
 
+#: An action of RE's whose previous process step did not complete with the guard that links them: Egeria should never
+#: create it, so RE refuses it (left unclaimed, logged once; SLICE step 4, §5.2 test 4).
+PREVIOUS_STEP_NOT_COMPLETED = "previous_step_not_completed"
+
 #: Skip reasons that are not RE's business (another engine's work, not yet approved, claimed by someone
 #: else, or already queued here): silent. The rest are logged once per action.
 _SILENT = frozenset({"other_engine", "not_approved", "already_claimed", "already_queued", "not_due",
@@ -428,7 +446,16 @@ class EngineHost:
         step_key = supported.get(request_type)
         if not step_key:
             return "unknown_request_type", {"request_type": request_type}
-        targets = _targets(action)
+        if not adopt:
+            # A later step of a process runs only after its previous step completed with the linking guard.
+            why = self._previous_step_refusal(_guid(action), str(action.get("requesterUserId") or "").strip())
+            if why:
+                return PREVIOUS_STEP_NOT_COMPLETED, {"request_type": request_type, "why": why}
+        all_targets = _targets(action)
+        # The previous step's report (engine host step 4): carried by Egeria as the `surveyReport` target, never an
+        # asset to survey. Every other target is an asset, whatever name the process was started with.
+        reports = [t["guid"] for t in all_targets if t["name"] == SURVEY_REPORT_TARGET]
+        targets = [t for t in all_targets if t["name"] != SURVEY_REPORT_TARGET]
         slugs = [self.registry.database_slug_for_asset_guid(t["guid"]) for t in targets]
         # Private first: if ANY target is a resource in a private investigation the action is left unclaimed,
         # whatever else it names (owner, Q-O3; claiming and refusing would write a FAILED action into a
@@ -437,8 +464,8 @@ class EngineHost:
             if slug and self.registry.private_owner_for_entity(ENTITY_TYPE, slug):
                 # `ours`: RE already holds the claim (it was claimed before the target went private).
                 return "private_target", {"slug": slug, "ours": adopt}
-        facts = {"request_type": request_type, "step_key": step_key, "targets": targets, "slug": "",
-                 "asset_guid": "", "refusal": "", "other_targets": []}
+        facts = {"request_type": request_type, "step_key": step_key, "targets": all_targets, "slug": "",
+                 "asset_guid": "", "refusal": "", "other_targets": [], "source_report": reports[0] if reports else ""}
         if not targets:
             facts["refusal"] = NO_TARGET_SENTENCE
         elif not all(slugs):
@@ -456,6 +483,19 @@ class EngineHost:
             # Several database targets: the first is surveyed and the completion message names the rest.
             facts["other_targets"] = [t["guid"] for t in targets[1:]]
         return (ADOPT if adopt else ""), facts
+
+    def _previous_step_refusal(self, guid: str, requester: str) -> str:
+        """Why this action must not run yet as a later process step, or "": its neighbourhood read once
+        (`mixed_process.read_action_graph`), as the engine host for the action's requester, as the claim is made.
+        Raises when unreadable (the sweep fails closed)."""
+        from pyegeria import MetadataExpert
+
+        from resource_explorer import mixed_process
+        from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
+
+        with acting_as(Daemon(DaemonReason.ENGINE_HOST, requested_by=requester or None)):
+            view = mixed_process.read_action_graph(self._client(MetadataExpert), guid)
+        return mixed_process.previous_step_refusal(view)
 
     def sweep_once(self) -> SweepResult:
         """One pass: list, filter, claim, enqueue. Never raises for an Egeria answer; returns what it did."""
@@ -779,6 +819,8 @@ def _row_target(action: dict, guid: str, facts: dict, engine_guid: str) -> dict:
         # Set when the action is claimed only to be completed with a reason (no target, or not registered).
         "refusal": facts.get("refusal", ""),
         "action_targets": facts["targets"],
+        # The previous process step's report (the `surveyReport` target), handed to a step that derives from it.
+        "source_report": facts.get("source_report", ""),
         # Database targets after the first: not surveyed, named in the completion message.
         "other_targets": facts.get("other_targets", []),
         "requester_user_id": str(action.get("requesterUserId") or ""),
@@ -873,6 +915,18 @@ def _decide_one(registry, target: dict) -> dict:
             return _outcome(SURVEY_FAILED, f"step {step_key!r} ({request_type}) is not one Resource Explorer's "
                             "engine runs here" + ("" if library else "; if it is an Analytic Library step, its "
                                                   "package is not installed where the engine host runs"))
+    runner_kwargs: dict = {}
+    report_extra: dict = {}
+    if library is not None and SOURCE_REPORT_INPUT in (getattr(library.manifest, "inputs", None) or []):
+        source_guid = (target.get("source_report") or "").strip()
+        if not source_guid:
+            return _outcome(SURVEY_INVALID, f"{request_type} on {slug}: {NO_SOURCE_REPORT_SENTENCE}")
+        try:
+            runner_kwargs[SOURCE_REPORT_INPUT] = _read_source_report(source_guid)
+        except Exception as exc:  # noqa: BLE001 -- the input could not be read: the survey failed, in its words
+            return _outcome(SURVEY_FAILED, f"{request_type} on {slug}: the surveyReport action target "
+                            f"{source_guid} could not be read: {_short(exc)}", derived_from_report=source_guid)
+        report_extra["derived_from_report"] = source_guid
 
     from resource_explorer.surveyors import result_status
     from resource_explorer.surveyors.survey_definition_executor import NothingToPublish, SurveyDefinitionExecutor
@@ -893,10 +947,10 @@ def _decide_one(registry, target: dict) -> dict:
                        "an absence, not a finding")
                 if library.nothing_to_derive_guard != SURVEY_COMPLETED:
                     published["outcome"] = _outcome(library.nothing_to_derive_guard, why,
-                                                    annotation_count=len(records))
+                                                    annotation_count=len(records), **report_extra)
                     raise NothingToPublish(why)
             annotations = library.report_annotations(records)
-        published["outcome"] = _publish(registry, target, annotations)
+        published["outcome"] = _publish(registry, target, annotations, extra=report_extra)
         if published["outcome"]["guard"] != SURVEY_COMPLETED:
             raise EngineHostPublishFailed(published["outcome"]["message"])
         return published["outcome"]["report_guid"]
@@ -906,7 +960,7 @@ def _decide_one(registry, target: dict) -> dict:
             entity_type=ENTITY_TYPE, slug=slug, re_analysis_step=step_key, executes_at="resource-explorer",
             # In this process, never Prefect (Prefect-only steps are not in the slice, §5.4).
             engine_override="resource-explorer", publisher=publisher,
-            display_name=f"{request_type} (engine action {target.get('engine_action_guid')})")
+            display_name=f"{request_type} (engine action {target.get('engine_action_guid')})", **runner_kwargs)
     except Exception as exc:  # noqa: BLE001 -- the step could not run: survey-failed with its words
         return published.get("outcome") or _outcome(SURVEY_FAILED, f"{step_key} on {slug} could not run: "
                                                     f"{_short(exc)}")
@@ -927,8 +981,36 @@ def _decide_one(registry, target: dict) -> dict:
     return _outcome(SURVEY_FAILED, f"{step_key} failed on {slug}: {errors}"[:1500])
 
 
-def _publish(registry, target: dict, annotations: list) -> dict:
-    """Publish the report through the database survey publisher; the outcome follows the proof."""
+def _read_source_report(report_guid: str) -> dict:
+    """The previous step's SurveyReport as plain data for a step that derives from it: {guid, at, annotations}, the
+    annotations through the existing reader (`egeria_survey_reader.annotations_from_report`). Read as the current
+    principal (the engine host daemon); the step's own code never touches Egeria. Raises for anything that is not a
+    SurveyReport element."""
+    from pyegeria import AssetMaker
+
+    from resource_explorer.egeria_clients import current_principal, egeria_client
+    from resource_explorer.surveyors.egeria_survey_reader import annotations_from_report
+
+    assets = egeria_client(current_principal(), purpose="engine host", shared=False).of(AssetMaker)
+    try:
+        result = assets.get_asset_by_guid(report_guid, body={"class": "GetRequestBody", "graphQueryDepth": 1},
+                                          output_format="JSON")
+    finally:
+        _close_quietly(assets)
+    if not isinstance(result, dict):
+        raise RuntimeError(f"Egeria answered {' '.join(str(result).split())[:160]!r}, not a SurveyReport element")
+    type_name = (((result.get("elementHeader") or {}).get("type") or {}).get("typeName")) or ""
+    if type_name and type_name != "SurveyReport":
+        raise RuntimeError(f"it is a {type_name}, not a SurveyReport")
+    props = result.get("properties") or {}
+    return {"guid": report_guid, "at": str(props.get("completionTime") or props.get("createdTime") or ""),
+            "annotations": annotations_from_report(result)}
+
+
+def _publish(registry, target: dict, annotations: list, extra: dict | None = None) -> dict:
+    """Publish the report through the database survey publisher; the outcome follows the proof. `extra` lands in the
+    report's additionalProperties and on the outcome (`derived_from_report`, engine host step 4)."""
+    extra_props = dict(extra or {})
     from resource_explorer.egeria_clients import current_principal
     from resource_explorer.surveyors.database.egeria_database_surveyor import EgeriaDatabaseSurveyor
 
@@ -942,14 +1024,14 @@ def _publish(registry, target: dict, annotations: list) -> dict:
         pub = EgeriaDatabaseSurveyor(identity=identity).publish_engine_action_report(
             entity, annotations, asset_guid=target.get("asset_guid") or entity.egeria_asset_guid,
             request_type=request_type, engine_action_guid=guid, engine_user=identity.client_user or "",
-            requester=(identity.requested_by or "").strip(), registry=registry)
+            requester=(identity.requested_by or "").strip(), registry=registry, extra_properties=extra_props)
     except Exception as exc:  # noqa: BLE001 -- a publish that raised is a failed survey, said in its words
         return _outcome(SURVEY_FAILED, f"the survey report for {slug} was not published: {_short(exc)}",
-                        annotation_count=len(annotations))
+                        annotation_count=len(annotations), **extra_props)
     report_guid = pub.get("report_guid") or ""
     sent, landed = len(annotations), pub.get("annotations_in_egeria")
     extra = {"annotations_in_egeria": landed, "qualified_name": pub.get("qualified_name", ""),
-             "ownership": (pub.get("governance") or {}).get("ownership")}
+             "ownership": (pub.get("governance") or {}).get("ownership"), **extra_props}
     if not report_guid:
         return _outcome(SURVEY_FAILED, "the survey report for "
                         f"{slug} was not published: {pub.get('report_error') or 'Egeria gave no report GUID'}",

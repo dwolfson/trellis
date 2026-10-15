@@ -117,13 +117,17 @@ async def check_native_survey_pointers(entity_type: str, slug: str) -> dict:
         entity = nsr._resource_entity(registry, entity_type, slug)
         stored = bool((getattr(entity, "egeria_asset_guid", "") or "").strip()) or bool(
             entity is not None and hasattr(entity, "db_type") and cas.server_pointer(registry, entity))
+        declared: dict = {}
         if not stored:
             pointers = {"database": "none", "server": "none", "error": ""}
         else:
             with nsr.port_session(_port()) as port:
                 pointers = cas.check_pointers(registry, port, entity_type, slug)
-        return {"technology_type": tech, "pointers": pointers,
-                "surveys": nsr.native_survey_rows(registry, entity_type, slug, tech, pointers=pointers)}
+                # Engine host step 4: is each mixed process declared in Egeria (read-only, one lookup each)?
+                declared = nsr.check_declared(port, entity_type, tech)
+        return {"technology_type": tech, "pointers": pointers, "declared": declared,
+                "surveys": nsr.native_survey_rows(registry, entity_type, slug, tech, pointers=pointers,
+                                                  declared=declared)}
 
     return await asyncio.to_thread(_do)
 

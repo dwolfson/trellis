@@ -1519,7 +1519,7 @@ database_analyses:
       package: trellis-step-database-staleness
       entry_point: database_staleness
       step: database_staleness
-      version: 0.1.0
+      version: 0.2.0
       kind: step
       source: ods
       credential_tier: none

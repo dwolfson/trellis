@@ -59,6 +59,8 @@ class HostContext:
     ods: Any = None
     connect: Callable[[str], Any] | None = None
     store: Callable[[list["StepAnnotation"]], int] | None = None
+    #: The previous process step's report, as plain data, when the host has one (`source_report` input).
+    source_report: Any = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +70,7 @@ class StepInputs:
     slug: str
     ods: Any = None
     connection: Any = None
+    source_report: Any = None
 
 
 class StepAnnotation(BaseModel):
@@ -127,7 +130,8 @@ class SurveyStep:
                                   f"one at '{self.manifest.credential_tier}'")
             connection = host.connect(self.manifest.credential_tier)
         return StepInputs(resource_type=host.resource_type, slug=host.slug,
-                          ods=host.ods if "ods" in declared else None, connection=connection)
+                          ods=host.ods if "ods" in declared else None, connection=connection,
+                          source_report=host.source_report if "source_report" in declared else None)
 
     def _annotate(self, result: Any, host: HostContext, measured_at: str) -> StepAnnotation:
         name = self.manifest.name

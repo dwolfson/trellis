@@ -451,8 +451,13 @@ class TestRows:
         by = {r["qualified_name"]: r for r in rows}
         # ResourceExplorerSurvey::re-db-derived: RE's engine-host step (engine host step 2, 2026-10-14), listed so
         # its Egeria-dispatched runs read back here like a PostgreSQLSurvey run.
+        # GovActionProcess::ResourceExplorer::PostgresSurveyThenDerived: engine host step 4's mixed process (native
+        # survey then RE's step), started by RE's Run (owner's decision, 2026-10-15); not runnable with the host off.
         assert set(by) == {SURVEY_QN, CATALOG_QN, "PostgreSQLSurvey::survey-postgres-server",
-                           "ResourceExplorerSurvey::re-db-derived"}
+                           "ResourceExplorerSurvey::re-db-derived",
+                           "GovActionProcess::ResourceExplorer::PostgresSurveyThenDerived"}
+        assert by["GovActionProcess::ResourceExplorer::PostgresSurveyThenDerived"]["cannot_run_reason"] == \
+            nsr.ENGINE_HOST_OFF
         assert by[SURVEY_QN]["runnable"] and by[SURVEY_QN]["cannot_run_reason"] == ""
         # the registration row never runs through the survey Run button; the fixture has no stored user
         assert not by[CATALOG_QN]["runnable"] and by[CATALOG_QN]["cannot_run_reason"]

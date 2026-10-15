@@ -65,7 +65,10 @@ CREDENTIAL_TIERS = ("none", "read_only")
 #:   resource   - the resource's type and slug (always handed; declaring it alone hands nothing more)
 #:   ods        - a read-only reader of RE's registry (the ODS)
 #:   connection - a connection to the resource opened at the declared tier, never a password
-STEP_INPUTS = ("resource", "ods", "connection")
+#:   source_report - the report of the step before this one in an Egeria process, as plain data
+#:                   ({guid, at, annotations}), read by the host (RE's engine host: the `surveyReport` action target);
+#:                   a host with none hands None, and RE's engine host refuses to run the step without one
+STEP_INPUTS = ("resource", "ods", "connection", "source_report")
 
 
 #: Egeria's standard survey guards (`SurveyActionGuard`): survey-completed, survey-invalid, survey-failed. A step

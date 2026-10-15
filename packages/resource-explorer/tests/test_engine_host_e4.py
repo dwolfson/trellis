@@ -68,6 +68,14 @@ class FakeEgeria:
         self.fail: dict[str, BaseException] = {}     # method name -> exception to raise (once per entry)
         self.fail_build: dict[str, BaseException] = {}   # client class name -> exception its constructor raises
         self.fail_nth: dict[str, tuple[int, BaseException]] = {}   # method -> (raise on this call number, exc)
+        # Engine host step 4: native SurveyReports (M2 shape, by GUID), element graphs answered by
+        # get_all_related_elements (by GUID; an action not listed answers as a lone action), processes declared in
+        # Egeria (by qualifiedName), assets get_metadata_element_by_guid finds, and the process starts made.
+        self.native_reports: dict[str, dict] = {}
+        self.graphs: dict[str, object] = {}
+        self.declared: set[str] = set()
+        self.assets: set[str] = set()
+        self.process_starts: list[dict] = []
         monkeypatch.setattr(egeria_clients, "_build", self._build)
 
     # -- the constructor seam --------------------------------------------------
@@ -117,6 +125,7 @@ class FakeEgeria:
             wrap("claim_engine_action", self._claim)
             wrap("update_engine_action_status", self._status)
             wrap("record_completion_status", self._complete)
+            wrap("initiate_gov_action_process", self._start_process)
             # By-name lookups: annotations are new (a miss); anything else is the catalogued database element.
             wrap("get_guid_for_name", lambda name, *a, **k:
                  "No elements found" if str(name).startswith("Annotation::") else DB_GUID)
@@ -125,6 +134,8 @@ class FakeEgeria:
             wrap("create_related_elements", self._relate)
             wrap("get_related_metadata_elements", self._related)
             wrap("get_metadata_element_by_guid", self._element)
+            wrap("get_all_related_elements", self._graph)
+            wrap("get_metadata_element_by_unique_name", self._by_unique_name)
         elif name == "AssetMaker":
             wrap("create_asset", self._create_asset)
             wrap("get_asset_by_guid", self._asset)
@@ -142,7 +153,8 @@ class FakeEgeria:
 
     def add_action(self, guid: str, *, target: str | list | None = DB_GUID, status: str = "APPROVED",
                    claimed_by: str | None = None, requester: str = REQUESTER,
-                   request_type: str = "re-db-derived") -> dict:
+                   request_type: str = "re-db-derived", report: str | None = None,
+                   target_name: str = "newAsset") -> dict:
         targets = [] if target is None else ([target] if isinstance(target, str) else list(target))
         action = {
             "class": "EngineActionElement",
@@ -154,7 +166,8 @@ class FakeEgeria:
             "processingEngineUserId": claimed_by,
             "requesterUserId": requester,
             "requestedStartTime": 1_760_400_000_000,
-            "actionTargetElements": [{"actionTargetName": "newAsset", "actionTargetGUID": t} for t in targets],
+            "actionTargetElements": [{"actionTargetName": target_name, "actionTargetGUID": t} for t in targets]
+            + ([{"actionTargetName": "surveyReport", "actionTargetGUID": report}] if report else []),
             # what RE wrote:
             "statusUpdates": [], "completion": None,
         }
@@ -241,13 +254,47 @@ class FakeEgeria:
 
     def _element(self, guid, *args, **kwargs):
         a = self.actions.get(guid)
+        if a is None and guid in self.assets:
+            return {"elementGUID": guid, "elementProperties": {"propertyValueMap": {}}}
         if a is None:
             return "No elements found"
         props = {"activityStatus": {"symbolicName": a["actionStatus"]},
                  "completionMessage": {"primitiveValue": (a["completion"] or {}).get("message", "")}}
         return {"elementGUID": guid, "elementProperties": {"propertyValueMap": props}}
 
+    def _graph(self, guid=None, starting_at_end=0, start_from=0, page_size=500, graph_query_depth=5,
+               relationships_page_size=0, body=None, **kwargs):
+        if guid in self.graphs:
+            return self.graphs[guid]
+        a = self.actions.get(guid)
+        if a is None:
+            return "No elements found"
+        props = {"activityStatus": {"class": "EnumTypePropertyValue", "symbolicName": a["actionStatus"]},
+                 "requestType": {"primitiveValue": a["requestType"]},
+                 "requesterUserId": {"primitiveValue": a["requesterUserId"]}}
+        # A lone action: its targets only, no ControlFlow and no process-instance anchor.
+        return {"startingElement": {"elementGUID": guid, "classifications": [],
+                                    "elementProperties": {"propertyValueMap": props}},
+                "elementList": [{"type": {"typeName": "ActionTarget"}, "elementAtEnd1": False,
+                                 "relationshipProperties": {"propertiesAsStrings": {
+                                     "actionTargetName": t["actionTargetName"]}},
+                                 "element": {"elementGUID": t["actionTargetGUID"]}}
+                                for t in a["actionTargetElements"]]}
+
+    def _by_unique_name(self, name=None, property_name="qualifiedName", *args, **kwargs):
+        if name in self.declared:
+            return {"elementGUID": "decl-" + str(name)[-8:], "elementProperties": {}}
+        return "No elements found"
+
+    def _start_process(self, action_type_qualified_name, request_source_guids=None, action_targets=None,
+                       start_time=None, request_parameters=None, orig_service_name=None, orig_engine_name=None):
+        self.process_starts.append({"process": action_type_qualified_name, "action_targets": action_targets,
+                                    "request_parameters": request_parameters})
+        return f"pi-{len(self.process_starts)}"
+
     def _asset(self, guid, *args, **kwargs):
+        if guid in self.native_reports:
+            return self.native_reports[guid]
         el = self.elements.get(guid)
         if el is None:
             return "No elements found"

@@ -31,6 +31,14 @@ here is refused with its package's name, never silently left out.
 
     uv run python packages/resource-explorer/scripts/generate_engine_host_declaration.py [--check]
 
+**Mixed processes (engine host, step 4).** `--mixed-process` generates (or, with `--check`, checks) only the documents
+of `resource_explorer.mixed_process.MIXED_PROCESSES`, one per process under `docs/dr-egeria/engine-host/processes/`:
+the GovernanceActionProcess, its GovernanceActionProcessSteps, each step's GovernanceActionExecutor (the executor of the
+GovernanceActionType the step stands for: a step cannot point at a type, so the type is named in its Additional
+Properties), the first-step link and each next-step link with its guard. pyegeria 6.2.3's Dr.Egeria has a command for
+every one of these (`commands_action_author.json`), so no pyegeria steps file is written. Without the flag every
+document is generated, these included.
+
 `--check` writes nothing and exits 1 when the committed document or steps file differs from what would be generated.
 tests/test_engine_host_declaration.py holds the committed document to this generator and to the registry.
 """
@@ -288,16 +296,168 @@ ___
     return out
 
 
+PROCESSES = DOC.parent / "processes"
+
+
+def mixed_process_path(key: str) -> Path:
+    return PROCESSES / f"{key.replace('_', '-')}.md"
+
+
+def _table(rows: list[tuple[str, str]]) -> str:
+    return "\n".join(["| Parameter Name | Parameter Value |", "|---|---|"] + [f"| {k} | {v} |" for k, v in rows])
+
+
+def render_mixed_process(process) -> str:
+    """One mixed process's Dr.Egeria document, from its `MIXED_PROCESSES` entry and nothing else."""
+    from resource_explorer import engine_host as eh
+
+    steps = sorted(process.steps, key=lambda s: s.number)
+    re_steps = ", ".join(f"{s.request_type} (step {s.number})" for s in process.re_steps)
+    parts = [f"""<!--
+GENERATED from MIXED_PROCESSES["{process.key}"] (resource_explorer/mixed_process.py) by
+packages/resource-explorer/scripts/generate_engine_host_declaration.py --mixed-process. Do not hand-edit; regenerate.
+Design: docs/design-notes/SLICE-ENGINE-HOST-STEP4-MIXED-PROCESS.md (M1).
+
+Declares {process.qualified_name}: {len(steps)} steps, each run by the engine its executor names, chained by
+NextGovernanceActionProcessStep links whose guards Egeria evaluates. A plain GovernanceActionProcess: Dr.Egeria cannot
+create the SurveyingActionProcess subtype yet (egeria-python ISSUE-150); one line changes when it can.
+
+Needs, already declared: RE's engine {eh.ENGINE_QUALIFIED_NAME} serving {re_steps}
+(engine-host/library/), and the content pack's engines. Every element here has a Dr.Egeria command, so there is no
+pyegeria steps file. Run it with `resource-explorer dr-egeria run engine-host/processes/{mixed_process_path(process.key).name}`;
+RE's bootstrap never runs it. The Link commands are NOT safe to repeat; the runner refuses a second run of the same
+content unless forced. Start a run with Dr.Egeria's Initiate Governance Action Process, or RE's Run on the database.
+-->
+
+## Create Governance Action Process
+### Display Name
+{process.display_name}
+
+### Qualified Name
+{process.qualified_name}
+
+### Description
+{process.description}
+
+### Content Status
+ACTIVE
+
+### Additional Properties
+{_table([("declared_by", "resource-explorer"), ("mixed_process", process.key),
+         ("entity_type", process.entity_type)])}
+
+___
+"""]
+    for step in steps:
+        parts.append(f"""
+## Create Governance Action Process Step
+### Display Name
+{step.display_name}
+
+### Qualified Name
+{step.qualified_name}
+
+### Description
+{step.description}
+
+### Produced Guards
+{", ".join(step.produced_guards)}
+
+### Content Status
+ACTIVE
+
+### Additional Properties
+{_table([("governance_action_type", step.governance_action_type), ("runs_on", step.runs_on),
+         ("request_type", step.request_type), ("process", process.qualified_name),
+         ("step_number", str(step.number))])}
+
+___
+""")
+    for step in steps:
+        parts.append(f"""
+## Link Action to Action Executor
+### Governance Action Type
+{step.qualified_name}
+
+### Governance Engine
+{step.governance_engine}
+
+### Request Type
+{step.request_type}
+
+### Description
+Step {step.number} of {process.qualified_name} runs as {step.governance_action_type} does: engine
+{step.governance_engine}, request type {step.request_type}.
+
+___
+""")
+    parts.append(f"""
+## Link First Process Step
+### Governance Action Process
+{process.qualified_name}
+
+### Governance Action Process Step
+{process.first_step.qualified_name}
+
+___
+""")
+    for link in process.links:
+        parts.append(f"""
+## Link Next Process Step
+### Governance Action Process Step
+{process.step(link.from_step).qualified_name}
+
+### Next Governance Action Process Step
+{process.step(link.to_step).qualified_name}
+
+### Guard
+{link.guard}
+
+### Mandatory Guard
+{"true" if link.mandatory else "false"}
+
+___
+""")
+    return "".join(parts)
+
+
+def render_mixed_processes() -> dict[Path, str]:
+    """{path: text} for every MIXED_PROCESSES entry. Exits naming the step when an RE step of a process is not one
+    RE's engine host can run here (its library package is not installed): the process would be declared with a step
+    nobody claims."""
+    from resource_explorer import engine_host as eh
+    from resource_explorer.mixed_process import MIXED_PROCESSES
+
+    supported = eh.supported_request_types()
+    out: dict[Path, str] = {}
+    for key, process in sorted(MIXED_PROCESSES.items()):
+        missing = [s.request_type for s in process.re_steps if s.request_type not in supported]
+        if missing:
+            raise SystemExit(f"cannot generate {process.qualified_name}: RE's engine host does not run "
+                             f"{', '.join(missing)} here. Install its Analytic Library package "
+                             "(uv run --with-editable <its package>) and run again.")
+        out[mixed_process_path(key)] = render_mixed_process(process)
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--check", action="store_true", help="write nothing; exit 1 when the document is stale")
+    ap.add_argument("--mixed-process", action="store_true",
+                    help="only the mixed-process documents (docs/dr-egeria/engine-host/processes/)")
     args = ap.parse_args(argv)
     stale = 0
-    want = {DOC: render(), STEPS: render_steps(), **render_library()}
-    # A library document whose step is no longer admitted here is stale too (retire it by status, in Egeria).
-    for orphan in sorted(LIBRARY.glob("*")) if LIBRARY.is_dir() else []:
+    if args.mixed_process:
+        want = render_mixed_processes()
+        orphans = sorted(PROCESSES.glob("*")) if PROCESSES.is_dir() else []
+    else:
+        want = {DOC: render(), STEPS: render_steps(), **render_library(), **render_mixed_processes()}
+        orphans = [*(sorted(LIBRARY.glob("*")) if LIBRARY.is_dir() else []),
+                   *(sorted(PROCESSES.glob("*")) if PROCESSES.is_dir() else [])]
+    # A document no admitted step or declared process generates any more is stale too (retire it by status, in Egeria).
+    for orphan in orphans:
         if orphan not in want:
-            print(f"STALE: {orphan} (no admitted library step generates it; remove it)")
+            print(f"STALE: {orphan} (nothing generates it any more; remove it)")
             stale = 1
     for path, text in want.items():
         current = path.read_text() if path.is_file() else None
