@@ -479,7 +479,11 @@ def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callab
 
 
 def _create_annotation(clients: "OutboxClients", payload: dict) -> str:
-    return _guid_of(clients.require("discovery").create_annotation(body=payload))
+    # A ClassificationAnnotation enqueued before 2026-10-15 carries its proposal in a field Egeria drops;
+    # it is sent in Egeria's own fields instead (annotation_props.upgrade_classification_payload).
+    from resource_explorer.surveyors.annotation_props import upgrade_classification_payload
+
+    return _guid_of(clients.require("discovery").create_annotation(body=upgrade_classification_payload(payload)))
 
 
 def _create_collection_membership(clients: "OutboxClients", payload: dict) -> str:

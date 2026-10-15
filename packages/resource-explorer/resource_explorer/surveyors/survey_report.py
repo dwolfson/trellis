@@ -203,10 +203,12 @@ class ClassificationAnnotation(Annotation):
     """Category or label assignments (language, project type, doc presence, etc.)."""
     annotation_type: AnnotationType = field(default=AnnotationType.CLASSIFICATION, init=False)
     candidate_classifications: list[str] = field(default_factory=list)
-    #: Egeria 6.2's own fields for this type (ClassificationAnnotationProperties: `classificationName`, String, and
-    #: `properties`, map<string,string>; typedef OpenMetadataTypesArchive1_2 CLASSIFICATION_NAME, PROPERTIES). When
-    #: `classification_name` is set these are what is published; `candidateClassifications` is not an Egeria field
-    #: on this type and the bean ignores it (an Analytic Library proposal uses these, review 2026-10-15).
+    #: Published in Egeria 6.2's own fields for this type (ClassificationAnnotationProperties: `classificationName`,
+    #: String, and `properties`, map<string,string>; typedef OpenMetadataTypesArchive1_2 CLASSIFICATION_NAME,
+    #: PROPERTIES), by annotation_props.classification_fields: `classificationName` is `classification_name`, else the
+    #: first candidate; `properties` holds `classification_properties` and, when more than one classification is
+    #: proposed, the whole ordered list (name first) as a JSON list under "candidateClassifications". Egeria has no
+    #: top-level `candidateClassifications` on this type and its bean drops one (found 2026-10-15).
     classification_name: str = ""
     classification_properties: dict[str, Any] = field(default_factory=dict)
 
@@ -431,7 +433,9 @@ ANNOTATION_TYPES_REGISTRY = [
         "type": "ClassificationAnnotation",
         "display_name": "Classification",
         "description": "Represents categorization or labels assigned to a resource (e.g. language name, framework/technology detected, project type, file format, etc.).",
-        "properties": ["candidate_classifications (list[str])"],
+        "properties": ["classificationName (str: the proposed classification, the first candidate)",
+                       "properties (map<string,string>; candidateClassifications = JSON list of every candidate, "
+                       "name first, when more than one)"],
         "egeria_type": "ClassificationAnnotationProperties",
         "python_class": "ClassificationAnnotation",
     },
