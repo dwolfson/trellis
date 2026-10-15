@@ -67,11 +67,11 @@ class TestSymbolMembers:
 
 class TestFallbackAndScope:
     def test_unknown_analysis_falls_back_to_its_findings_with_detail(self, db):
-        db.upsert_finding("p", "interface_surface", [
+        db.upsert_finding("p", "ci_quality", [
             {"check_name": "cli", "label": "implied", "summary": "from click", "detail": {"framework": "click"}},
             {"check_name": "http_api", "label": "implied", "summary": "from fastapi"},
         ], surveyed_at="2026-09-01T00:00:00")
-        m = members_for(db, "p", "interface_surface").to_dict()
+        m = members_for(db, "p", "ci_quality").to_dict()
         assert m["total"] == 2 and m["groups"][0]["name"] == "implied"
         assert m["groups"][0]["members"][0]["extra"] == {"framework": "click"}
         # scope is recorded but not honoured -- the caller can see it was
@@ -80,7 +80,7 @@ class TestFallbackAndScope:
         assert m["not_applicable"] is False
 
     def test_bad_scope_is_coerced_not_trusted(self, db):
-        assert members_for(db, "p", "interface_surface", scope="everything").to_dict()["scope"] == "public"
+        assert members_for(db, "p", "ci_quality", scope="everything").to_dict()["scope"] == "public"
 
     def test_children_of_an_unknown_key_is_empty_not_an_error(self, db):
         assert children_for(db, "p", "cve_scan", "nope:x") == []
@@ -152,7 +152,7 @@ class TestAnswerLinkOpensTheStoreTheAnalysisWrote:
     def test_an_empty_list_says_what_is_missing_not_zero_findings(self, db):
         m = members_for(db, "p", "interface_surface").to_dict()
         assert m["empty"] is True
-        assert m["reason"] == "nothing stored by interface_surface for this repo"
+        assert m["reason"].startswith("not measured")  # endpoints: never extracted != zero
         m2 = members_for(db, "p", "api_structure").to_dict()
         assert m2["empty"] is True and m2["reason"] == "nothing stored by api_structure for this repo"
 
@@ -170,4 +170,4 @@ class TestMembersRouteForTheAnswerLink:
         body = r.json()
         assert body["total"] == 1 and body["source"] == "project_code_symbols" and body["empty"] is False
         r2 = TestClient(app).get("/api/projects/p/members/interface_surface?entity_type=repo")
-        assert r2.json()["empty"] is True and "nothing stored by interface_surface" in r2.json()["reason"]
+        assert r2.json()["empty"] is True and r2.json()["reason"].startswith("not measured")

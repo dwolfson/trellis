@@ -573,8 +573,8 @@ def test_the_symbol_drill_down_shows_role_and_commit_or_not_recorded(tmp_path):
     reg.upsert_code_symbols("p", [old, new])
 
     rows = {r["name"]: r["detail"] for r in members._symbols_in_file(reg, "p", "a.py", "all", 50)}
-    assert rows["old_f"] == "function · role not recorded"
-    assert rows["new_f"] == "function · core"
+    assert rows["old_f"].startswith("function · role not recorded")   # then line and signature
+    assert rows["new_f"].startswith("function · core") and "line 3" in rows["new_f"]
 
     assert extraction_commit(reg, "p") is None                             # no extraction run recorded
     assert "commit not recorded" in members._symbol_members(reg, "p", "all", 50).note

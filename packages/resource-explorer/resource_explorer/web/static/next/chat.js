@@ -195,7 +195,7 @@ function extractMermaid(text) {
  *  honestly offer is the list it was answered FROM: the member tree of a
  *  packed evidence section, which the pane already renders in full. */
 const MEMBER_LISTED = new Set(['dependency_analysis', 'cve_scan', 'data_file_profiling', 'api_structure',
-  'code_symbol_extraction', 'architecture_recovery', 'sub_resource_survey', 'manifest_parse']);
+  'code_symbol_extraction', 'architecture_recovery', 'sub_resource_survey', 'manifest_parse', 'interface_surface']);
 function listSources(body) {
   const packed = body?.compiled?.manifest?.packed;
   if (!Array.isArray(packed)) return [];
@@ -249,10 +249,11 @@ function listSentences(body) {
 const LIST_NOUNS = {
   dependency_analysis: 'dependencies', cve_scan: 'advisories', data_file_profiling: 'data files',
   api_structure: 'symbols', code_symbol_extraction: 'symbols', architecture_recovery: 'components',
-  sub_resource_survey: 'files and folders', manifest_parse: 'manifest entries',
+  sub_resource_survey: 'files and folders', manifest_parse: 'manifest entries', interface_surface: 'endpoints',
 };
+const LIST_FIELD_NOUNS = { 'api_structure.classes': 'classes', 'api_structure.functions': 'public functions' };
 function listSentenceHtml(l, i) {
-  const mapped = LIST_NOUNS[l.key];
+  const mapped = LIST_FIELD_NOUNS[`${l.key}.${l.field}`] || LIST_NOUNS[l.key];
   // "68 dependencies · in 3 ecosystems" when the noun is known and the list
   // was grouped; "3 findings · security scan" when it is not.
   const group = l.field.replace(/^by_/, '').replace(/_/g, ' ');

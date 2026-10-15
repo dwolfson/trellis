@@ -715,6 +715,86 @@ def _results_to_rungs(results: dict, analysis_id: str) -> dict[Rung, str]:
     return rungs
 
 
+#: Endpoint lines the model sees per rung. The FULL cap is generous (a service
+#: has tens of endpoints, not thousands; egeria_git has 1,596 and is cut with
+#: the extent said); SUMMARY is a visible prefix.
+MAX_ENDPOINTS_FULL = 120
+MAX_ENDPOINTS_SUMMARY = 20
+
+
+def _with_endpoints(rungs: dict[Rung, str], registry, slug: str):
+    """Add the endpoint LIST to interface_surface's rungs.
+
+    The findings give the model counts ("1869 registration(s) found"), and
+    the 1869 is mostly test mocks; the endpoints themselves are in
+    project_code_markers (resource_explorer/endpoints.py). Returns (rungs,
+    extents): extents is `{"endpoints": {"total", "shown"}}` for
+    manifest["lists"], only when there is a list to be partly shown.
+    A reader that fails adds a note-line, not silence."""
+    from resource_explorer.endpoints import read_endpoints, render_lines
+
+    es = read_endpoints(registry, slug)
+    if es is None:
+        return rungs, {}
+    if not es.measured and not rungs:
+        return rungs, {}
+    heading = ("endpoint list (non-test code registrations from the code markers; it replaces the "
+               "registration counts in the findings above, which include test-path mocks)")
+    full = "\n".join([heading] + render_lines(es, MAX_ENDPOINTS_FULL))
+    summ = "\n".join([heading] + render_lines(es, MAX_ENDPOINTS_SUMMARY))
+    out = dict(rungs)
+    out[Rung.FULL] = (out[Rung.FULL] + "\n" + full) if Rung.FULL in out else f"## interface_surface\n{full}"
+    out[Rung.SUMMARY] = (out[Rung.SUMMARY] + "\n" + summ) if Rung.SUMMARY in out else f"## interface_surface\n{summ}"
+    out.setdefault(Rung.IDENTIFIERS, "## interface_surface\nchecks: endpoints")
+    extents = {}
+    if es.measured:
+        n = es.total
+        extents["endpoints"] = {"total": n, "shown": {
+            "FULL": min(n, MAX_ENDPOINTS_FULL), "SUMMARY": min(n, MAX_ENDPOINTS_SUMMARY)}}
+    return out, extents
+
+
+MAX_CLASSES_FULL, MAX_CLASSES_SUMMARY = 60, 15
+MAX_FUNCTIONS_FULL, MAX_FUNCTIONS_SUMMARY = 40, 10
+
+
+def _with_symbols(rungs: dict[Rung, str], registry, slug: str, question: str):
+    """Add the symbol lists to api_structure's rungs: the question-matched
+    block first (classes the question names with their methods, or the
+    symbols under a module it names, or one line saying nothing matched),
+    then the public classes and top-level functions with N-of-M extents.
+    Counts alone ("5,937 symbols") gave the model nothing to list from
+    (resource_explorer/code_symbols.py)."""
+    from resource_explorer.code_symbols import TYPE_KINDS, left_out_tail, list_line, read_symbols, render_matched
+
+    ss = read_symbols(registry, slug)
+    if ss is None or not ss.measured:
+        return rungs, {}
+    classes = [s for s in ss.rows if s.kind in TYPE_KINDS]
+    funcs = [s for s in ss.rows if s.kind == "function" and not s.parent_class]
+    heading = ("symbol lists (public, non-test symbols from the stored code symbols; ordered by file then line; "
+               "public is inferred from naming)")
+    matched = render_matched(question, ss, ss.rows)
+    tail = left_out_tail(ss)
+
+    def block(nc: int, nf: int) -> str:
+        return "\n".join([heading] + matched + list_line("classes", classes, nc, tail)
+                         + list_line("top-level functions", funcs, nf))
+
+    out = dict(rungs)
+    full, summ = block(MAX_CLASSES_FULL, MAX_FUNCTIONS_FULL), block(MAX_CLASSES_SUMMARY, MAX_FUNCTIONS_SUMMARY)
+    out[Rung.FULL] = (out[Rung.FULL] + "\n" + full) if Rung.FULL in out else f"## api_structure\n{full}"
+    out[Rung.SUMMARY] = (out[Rung.SUMMARY] + "\n" + summ) if Rung.SUMMARY in out else f"## api_structure\n{summ}"
+    out.setdefault(Rung.IDENTIFIERS, "## api_structure\nreports: classes, top-level functions")
+    extents = {
+        "classes": {"total": len(classes), "shown": {"FULL": min(len(classes), MAX_CLASSES_FULL),
+                                                      "SUMMARY": min(len(classes), MAX_CLASSES_SUMMARY)}},
+        "functions": {"total": len(funcs), "shown": {"FULL": min(len(funcs), MAX_FUNCTIONS_FULL),
+                                                      "SUMMARY": min(len(funcs), MAX_FUNCTIONS_SUMMARY)}},
+    }
+    return out, extents
+
+
 #: Which analyses have a real, addressable view to point at. Deliberately
 #: narrow: Backlog "a compiled answer should be able to POINT at a view" notes
 #: deep-linking to a perspective/scope is the *prerequisite* work, and today
@@ -1154,6 +1234,20 @@ def compile_context(
                                        "check": None, "surveyed_at": None},)
                         if extents:
                             list_extents[analysis_id] = extents
+
+        if analysis_id == "interface_surface":
+            rungs, ep_extent = _with_endpoints(rungs, registry, slug)
+            if ep_extent:
+                list_extents.setdefault(analysis_id, {}).update(ep_extent)
+            if rungs and not provenance:
+                provenance = ({"analysis_id": analysis_id, "check": None, "surveyed_at": None},)
+
+        if analysis_id == "api_structure":
+            rungs, sym_extent = _with_symbols(rungs, registry, slug, question)
+            if sym_extent:
+                list_extents.setdefault(analysis_id, {}).update(sym_extent)
+            if rungs and not provenance:
+                provenance = ({"analysis_id": analysis_id, "check": None, "surveyed_at": None},)
 
         if rungs and analysis_id in caveat_ids:
             rungs = _with_caveat(rungs, coverage["caveat"])
