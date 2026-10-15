@@ -9,7 +9,8 @@ MANIFEST = StepManifest(
     function="change_rates.step.run",
     description=("Rows inserted, updated and deleted per day per table between the latest two table activity "
                  "snapshots Resource Explorer stored, over their interval; a counter reset between them gives no "
-                 "rate, never a negative one. Opens no connection to the database."),
+                 "rate, never a negative one. Opens no connection to the database. With one activity snapshot, or a table "
+                 "missing from one, it is shown as \"not measured\", never as a rate of zero."),
     returns="one ResourceMeasureAnnotation per table, each with the interval, both as-ofs and its envelope",
     source="ods",
     version=__version__,

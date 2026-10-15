@@ -25,7 +25,7 @@ Resource Explorer Survey — Table Change Rates
 ResourceExplorerSurvey::re-change-rates
 
 ### Description
-Rows inserted, updated and deleted per day per table between the latest two table activity snapshots Resource Explorer stored, over their interval; a counter reset between them gives no rate, never a negative one. Opens no connection to the database.
+Rows inserted, updated and deleted per day per table between the latest two table activity snapshots Resource Explorer stored, over their interval; a counter reset between them gives no rate, never a negative one. Opens no connection to the database. With one activity snapshot, or a table missing from one, it is shown as "not measured", never as a rate of zero.
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed

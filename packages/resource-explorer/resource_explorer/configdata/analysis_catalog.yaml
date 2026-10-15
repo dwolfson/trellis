@@ -1493,11 +1493,48 @@ database_analyses:
       native_process_ref: ["database", "PostgreSQL Relational Database"]
 
   # BEGIN GENERATED user steps (database): scripts/generate_external_step_entries.py. Do not hand-edit.
+  - id: change_rates
+    name: Table Change Rates
+    description: Rows inserted, updated and deleted per day per table between the latest two table activity
+      snapshots Resource Explorer stored, over their interval; a counter reset between them gives no rate,
+      never a negative one. Opens no connection to the database. With one activity snapshot, or a table
+      missing from one, it is shown as "not measured", never as a rate of zero.
+    resource_types:
+    - database
+    intent: analysis
+    perspectives:
+    - Steward
+    - Data Expert
+    annotation_types:
+    - ResourceMeasureAnnotation
+    source: local
+    run_time: fast
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: true
+      native_process_ref: null
+    provided_by:
+      package: trellis-step-change-rates
+      entry_point: change_rates
+      step: change_rates
+      version: 0.1.0
+      kind: step
+      source: ods
+      credential_tier: none
+      questions:
+      - Q-0086
+      purposes:
+      - Maintain
+      - Assess
   - id: database_staleness
     name: Database Staleness
     description: 'Rows changed per table since the last survey: compares the latest two row-count snapshots
       Resource Explorer stored for the database. Reads only what RE already stored; opens no connection
-      to the database.'
+      to the database. Shown as "not measured", never as zero, when fewer than two row-count snapshots exist,
+      or a table or its count is missing from one.'
     resource_types:
     - database
     intent: analysis
@@ -1525,6 +1562,79 @@ database_analyses:
       credential_tier: none
       questions:
       - Q-0041
+      purposes:
+      - Maintain
+  - id: hub_tables
+    name: Hub Tables
+    description: Foreign-key degree in and out per table, from the keys Resource Explorer stored, and the
+      tables it proposes as hubs (referenced by at least hub_min_referencing other tables, a declared parameter).
+      The proposal is an annotation, never a classification on the table. Opens no connection to the database.
+      With no foreign keys stored it is shown as "not measured", never as a database with no hubs.
+    resource_types:
+    - database
+    intent: analysis
+    perspectives:
+    - Data Expert
+    - Steward
+    annotation_types:
+    - ResourceMeasureAnnotation
+    source: local
+    run_time: fast
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: true
+      native_process_ref: null
+    provided_by:
+      package: trellis-step-hub-tables
+      entry_point: hub_tables
+      step: hub_tables
+      version: 0.1.0
+      kind: step
+      source: ods
+      credential_tier: none
+      questions:
+      - Q-0072
+      - Q-0068
+      purposes:
+      - Explore
+      - Integrate
+  - id: statistics_freshness
+    name: Table Statistics Freshness
+    description: 'How old each table''s planner statistics are: the age of the last ANALYZE and VACUUM,
+      tables never analysed, and tables changed past autovacuum''s analyse trigger, as of the newest table
+      activity snapshot Resource Explorer stored. Opens no connection to the database. A table whose statistics
+      were not read, or a database with none stored, is shown as "not measured", never as fresh.'
+    resource_types:
+    - database
+    intent: analysis
+    perspectives:
+    - Steward
+    - Data Expert
+    annotation_types:
+    - ResourceMeasureAnnotation
+    source: local
+    run_time: fast
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: true
+      native_process_ref: null
+    provided_by:
+      package: trellis-step-statistics-freshness
+      entry_point: statistics_freshness
+      step: statistics_freshness
+      version: 0.1.0
+      kind: step
+      source: ods
+      credential_tier: none
+      questions:
+      - Q-0073
+      - Q-0062
       purposes:
       - Maintain
   # END GENERATED user steps (database)
