@@ -1146,6 +1146,7 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
     stored = _declared(run).get("expected_steps")
     graded = len(stored) if isinstance(stored, list) and stored else len(steps)
     words = mixed_process.trim_words_to_steps(pr.get("words") or "", graded) if steps else (pr.get("words") or "")
+    words = mixed_process.modernise_words(words)
     had_run = bool(pr)
     pr = {**pr, "words": words}
     out.update(line=words, steps=steps, report_guid="", annotation_count=None)
@@ -1185,6 +1186,13 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
         ended_badly = failed_steps[0] if failed_steps else None
     by_type = {st.request_type: st for st in process.steps} if process else {}
 
+    # The run's own plan against the definition as it is now (architect ruling 2026-10-16, item 1): the line counts
+    # the PLAN it was made under, the card header counts the definition. They differ only when the definition changed.
+    current_types = ([st.request_type for st in sorted(process.steps, key=lambda x: x.number)] if process else [])
+    recorded = isinstance(stored, list) and bool(stored)
+    out["plan"] = {"recorded": recorded, "steps": expected, "definition_steps": len(current_types),
+                   "differs": bool(recorded and current_types and list(stored) != current_types)}
+
     def _problems() -> list[dict]:
         """Every step that ended other than completed: its place, name, kind (refused or failed) and the
         launcher's reason, for the run's on-demand detail."""
@@ -1196,13 +1204,16 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
             out_list.append({"step": declared_step.number if declared_step else 0,
                              "label": declared_step.label if declared_step else (s.get("request_type") or ""),
                              "kind": "refused" if mixed_process.is_refused_step(s) else "failed",
-                             "reason": _refusal_reason(s.get("message") or "")})
+                             "reason": _refusal_reason(s.get("message") or ""),
+                             "credential": bool(mixed_process.is_refused_step(s)
+                                                and CREDENTIAL_GAP.search(s.get("message") or ""))})
         return out_list
 
     if ended_badly is not None and not (goes_on and still_going):
         out["state"] = FAILED
         out["message"] = pr.get("words") or out["message"]
         out["problems"] = _problems()
+        out["fixable"] = _fixable(out["problems"])
         return out
     if still_going:
         out["state"] = RUNNING
@@ -1212,8 +1223,16 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
         ran = sum(1 for s in by_index if not _ended_badly(s))
         out["state"] = PARTIAL
         out["message"] = pr.get("words") or out["message"]
-        out["summary"] = f"{ran} of {expected} ran"
+        plan = out["plan"]
+        if not plan["recorded"]:
+            out["summary"] = f"{ran} ran · this run's plan wasn't recorded"     # a count RE did not record is not shown as one
+        elif plan["differs"]:
+            out["summary"] = (f"{ran} of its {expected} steps ran · made under an earlier version of this definition "
+                              f"({expected} steps, now {plan['definition_steps']})")
+        else:
+            out["summary"] = f"{ran} of {expected} ran"
         out["problems"] = _problems()
+        out["fixable"] = _fixable(out["problems"])
         return out
     out["state"] = COMPLETE
     out["message"] = pr.get("words") or out["message"]
@@ -1265,6 +1284,34 @@ def coordinated_last_runs(registry, entity_type: str, slug: str) -> dict[str, di
             if declared.get("started_in") == mixed_process.STARTED_IN_RE else "",
         }
     return out
+
+
+#: A refusal the person can fix: the capability gate said the database credential cannot read enough
+#: ("needs `read`: connected as X, which has SELECT on 3 of 61 relation(s) — ..."), however the step phrases it.
+CREDENTIAL_GAP = re.compile(r"needs `\w+`|\bSELECT on \d+ of \d+|\bstored credential\b", re.IGNORECASE)
+
+
+def _step_range(numbers: list[int]) -> str:
+    nums = sorted(set(n for n in numbers if n))
+    if not nums:
+        return ""
+    if len(nums) == 1:
+        return f"step {nums[0]}"
+    return f"steps {nums[0]}–{nums[-1]}" if nums == list(range(nums[0], nums[-1] + 1)) \
+        else "steps " + ", ".join(str(n) for n in nums)
+
+
+def _fixable(problems: list[dict]) -> dict | None:
+    """The refusal the person can fix, for the run line: which steps were not run, the first clause of why, and what
+    to change. None when no refusal is a credential gap (a failure is never offered as fixable)."""
+    gap = [p for p in problems if p.get("credential")]
+    if not gap:
+        return None
+    reason = re.split(r"\s+[—-]\s+", gap[0].get("reason") or "", maxsplit=1)[0].strip().rstrip(".")
+    reason = re.sub(r"^needs `\w+`:\s*", "", reason)
+    return {"kind": "credential", "steps": [p["step"] for p in gap], "reason": reason,
+            "words": f"{_step_range([p['step'] for p in gap])} not run · {reason}",
+            "action": "set the database credential"}
 
 
 def _refusal_reason(message: str) -> str:

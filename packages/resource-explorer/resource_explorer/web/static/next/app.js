@@ -4994,7 +4994,7 @@ export function bindSurveyRowActions(el, all, slug) {
 
 /** The definition row's button. It OPENS A DIALOG (the run plan, which since G2 offers "Use different
  *  credentials for this run"), so the word ends in an ellipsis, the opener cue every other dialog
- *  opener uses; "re-run →" stays on the analyses rows below, whose button runs at once (brief
+ *  opener uses; "Re-run →" stays on the analyses rows below, whose button runs at once (brief
  *  section 8: same word, same effect). */
 export const DEFINITION_RUN_WORD = (c) => (c.last_run_at ? 'Re-run…' : 'Run…');
 
@@ -5751,12 +5751,12 @@ export function analysisIndexRowHtml(row) {
     ${analysisCredentialHtml(row)}
     <button data-analysis-run="${esc(row.analysis_id)}" ${row.runnable ? '' : 'disabled title="' + esc(row.runnable_reason) + '"'}
       class="shrink-0 cursor-pointer rounded-sm border ${row.runnable ? 'border-accent text-accent-ink' : 'border-rule-strong text-ink-muted'} bg-transparent px-2 py-[2px] text-caveat"
-      >${row.last_run_at ? 're-run' : 'run'} →</button>
+      >${row.last_run_at ? 'Re-run' : 'Run'} →</button>
     ${row.runnable && row.uses_credential === 'stored'
       ? `<button type="button" data-analysis-override="${esc(row.analysis_id)}"
       title="Opens a dialog: run this one analysis once with another credential"
-      class="shrink-0 cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink"
-      >Re-run…</button>` : ''}
+      class="shrink-0 cursor-pointer border-0 bg-transparent p-0 text-caveat text-ink-muted underline"
+      >with options…</button>` : ''}
     <span data-analysis-run-error="${esc(row.analysis_id)}"
       class="hidden w-full text-provenance text-state-warn"></span>
     ${failed ? `<span data-analysis-run-failed="${esc(row.analysis_id)}" role="alert"

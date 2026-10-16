@@ -462,7 +462,7 @@ def test_an_egeria_coordinated_definition_run_reads_as_one_line_with_every_step(
     assert line.process.display_name == "Database Analysis Survey"
     words = mixed_process.run_line_words(line, started_in=mixed_process.STARTED_IN_EGERIA)
     assert words == ("Database Analysis Survey · step 1 postgres_column_profile ✓ report r1aaaaaa · step 2 "
-                     "postgres_nested_columns ✓ report r2bbbbbb · step 3 db_derived ⊘ refused · "
+                     "postgres_nested_columns ✓ report r2bbbbbb · step 3 db_derived ○ not run · "
                      "coordinated by Egeria · started in Egeria by peterprofile")
     # the same line under a stored list that goes on to step 4: that step is the run's own, not reached yet
     stored = [st.request_type for st in mixed_process.definition_process(ANALYSIS).steps]
@@ -974,7 +974,7 @@ def test_refused_steps_read_as_refused_and_failed_ones_keep_their_cross():
              _view("a4", "postgres_operations", "COMPLETED", ["survey-completed", "Any"], "r4dddddd-0000")]
     [line] = mixed_process.group_by_process(views)
     words = mixed_process.run_line_words(line, started_in=mixed_process.STARTED_IN_RE, started_by="dan")
-    assert "step 1 postgres_column_profile ⊘ refused" in words and "step 2 postgres_nested_columns ✗ survey-failed" in words
+    assert "step 1 postgres_column_profile ○ not run" in words and "step 2 postgres_nested_columns ✗ survey-failed" in words
     assert "10-1" not in words                      # no UTC date in the words
 
 
@@ -1174,3 +1174,71 @@ def test_a_legacy_row_never_says_not_started_yet_of_a_step_it_never_had(reg, ege
                                      "step 5 change_rates not started yet · coordinated by Egeria · started by dan")
     out = nsr.derive_mixed_state(dict(row, declared=json.dumps(stale)))["line"]
     assert "not started yet" not in out and out.endswith("coordinated by Egeria · started by dan")
+
+
+# ── designer Q5/Q7/Q8 + architect section 1: a run counts its own plan; a refusal is "not run"; a fixable one says how ──
+
+def test_a_refused_step_reads_not_run_never_the_cancelled_glyph_and_old_stored_lines_follow():
+    from resource_explorer import mixed_process
+    from resource_explorer.native_survey_run import derive_mixed_state
+
+    assert "⊘" not in mixed_process.modernise_words("a · step 3 x ⊘ refused · b")
+    row = _def_row(_steps("refused", "ok", "ok", "ok"))
+    row["declared"] = json.dumps({**json.loads(row["declared"]),
+                                  "process_run": {"words": "x · step 1 y ⊘ refused", "steps": _steps("refused", "ok", "ok", "ok")}})
+    assert derive_mixed_state(row)["line"].endswith("step 1 y ○ not run")
+
+
+def test_when_the_plan_equals_the_definition_the_line_is_unchanged_two_of_n():
+    from resource_explorer.native_survey_run import derive_mixed_state
+
+    d = derive_mixed_state(_def_row(_steps("refused", "refused", "ok", "ok")))
+    assert d["plan"]["differs"] is False and d["plan"]["recorded"] is True
+    assert d["summary"] == f"{d['plan']['steps'] - 2} of {d['plan']['steps']} ran"
+
+
+def test_a_run_made_under_four_steps_says_of_its_four_and_names_the_version_change(reg, monkeypatch):
+    from resource_explorer import mixed_process
+    from resource_explorer import native_survey_run as nsr
+
+    full = mixed_process.definition_process(ANALYSIS)
+    four_types = [s.request_type for s in full.steps[:4]]
+    row = _def_row(_steps("refused", "refused", "ok", "ok", complete=False))
+    row["declared"] = json.dumps({**json.loads(row["declared"]), "expected_steps": four_types})
+    d = nsr.derive_mixed_state(row)
+    assert d["state"] == "partial"
+    assert d["summary"] == (f"2 of its 4 steps ran · made under an earlier version of this definition "
+                            f"(4 steps, now {len(full.steps)})")
+    assert d["plan"] == {"recorded": True, "steps": 4, "definition_steps": len(full.steps), "differs": True}
+    # a reordered or renamed step is a different version too (compared in order, no version number needed)
+    swapped = [four_types[1], four_types[0], *four_types[2:]]
+    row["declared"] = json.dumps({**json.loads(row["declared"]), "expected_steps": swapped})
+    assert nsr.derive_mixed_state(row)["plan"]["differs"] is True
+
+
+def test_a_legacy_run_gets_no_denominator_because_its_plan_was_not_recorded():
+    from resource_explorer import native_survey_run as nsr
+
+    row = _def_row(_steps("refused", "refused", "ok", "ok", complete=False))
+    declared = json.loads(row["declared"])
+    declared.pop("expected_steps")
+    row["declared"] = json.dumps(declared)
+    d = nsr.derive_mixed_state(row)
+    assert d["state"] == "partial" and d["summary"] == "2 ran · this run's plan wasn't recorded"
+    assert d["plan"]["recorded"] is False
+
+
+def test_a_credential_gap_refusal_is_fixable_and_names_the_steps_and_the_reason():
+    from resource_explorer.native_survey_run import derive_mixed_state
+
+    d = derive_mixed_state(_def_row(_steps("refused", "refused", "ok", "ok")))
+    assert d["fixable"]["kind"] == "credential" and d["fixable"]["steps"] == [1, 2]
+    assert d["fixable"]["words"] == "steps 1–2 not run · the stored credential has SELECT on 3 of 61 relations"
+    assert d["fixable"]["action"] == "set the database credential"
+    assert [p["credential"] for p in d["problems"]][:2] == [True, True]
+
+
+def test_a_failure_is_never_offered_as_fixable():
+    from resource_explorer.native_survey_run import derive_mixed_state
+
+    assert derive_mixed_state(_def_row(_steps("failed", "ok", "ok", "ok"))).get("fixable") is None

@@ -26,7 +26,7 @@ async function render(r) {
   return { box, app, document };
 }
 
-test('section 8: the definition row opens a dialog, so its word ends in an ellipsis; the analyses row keeps "re-run →"', async () => {
+test('section 8: the definition row opens a dialog, so its word ends in an ellipsis; the analyses row keeps "Re-run →"', async () => {
   const { document } = makeDomEnvironment();
   const app = await loadAppModule();
   const box = document.createElement('div');
@@ -34,7 +34,7 @@ test('section 8: the definition row opens a dialog, so its word ends in an ellip
   box.innerHTML = app.surveyRowHtml({ display_name: SCAN, qualified_name: 'GovActionProcess::X', steps: [], last_run_at: '2026-09-28T03:15:42Z' });
   assert.equal(box.querySelector('[data-run-survey]').textContent.trim(), 'Re-run…');
   box.innerHTML = app.analysisIndexRowHtml(row({ last_run_at: '2026-09-28T03:15:42Z' }));
-  assert.equal(box.querySelector('[data-analysis-run]').textContent.trim(), 're-run →');
+  assert.equal(box.querySelector('[data-analysis-run]').textContent.trim(), 'Re-run →');
 });
 
 test('section 8: every runnable database analysis row says which credential it uses, with the sentence on hover', async () => {
@@ -52,9 +52,14 @@ test('section 8: a zero-fetch analysis does not claim a stored credential (it op
   assert.equal(box.querySelector('[data-analysis-override]'), null, 'no override offered where no credential is used');
 });
 
-test('section 8 (optional slice): a "Re-run…" opener sits beside "re-run →" on a stored-credential row only', async () => {
+test('designer Q5: "Re-run →" is a button; "with options…" beside it is a quiet link, on a stored-credential row only', async () => {
   const { box } = await render(row());
-  assert.equal(box.querySelector('[data-analysis-override]').textContent.trim(), 'Re-run…');
+  const link = box.querySelector('[data-analysis-override]');
+  assert.equal(link.textContent.trim(), 'with options…');
+  assert.ok(/\bborder-0\b/.test(link.className) && /\bunderline\b/.test(link.className) && /text-ink-muted/.test(link.className),
+    'muted, underlined, no border: a link, not a twin button');
+  assert.ok(/\bborder\b/.test(box.querySelector('[data-analysis-run]').className.replace('border-accent', '')) ||
+    box.querySelector('[data-analysis-run]').className.includes('border-accent'), 'the run control keeps its border');
   const none = await render(row({ runnable: false, runnable_reason: 'no step' }));
   assert.equal(none.box.querySelector('[data-analysis-override]'), null);
 });
