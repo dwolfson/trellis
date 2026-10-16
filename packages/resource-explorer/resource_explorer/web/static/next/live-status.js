@@ -1,10 +1,11 @@
 /** One way to keep a status on screen current: read, show, wait, read again, until the server says it is over.
  *  Backoff: every `fastMs` for the first `fastForMs`, then every `slowMs`. A failed read is not a status, so it is
  *  tried again at the same pace; it never ends the watch. The watch ends only on a terminal answer, on `alive()`
- *  turning false (the pane went away), or on stop(). Time is counted from the delays waited, not a wall clock. */
+ *  turning false (the pane went away), on stop(), or (opt-in `maxMs`) after that long of waiting, once, through
+ *  `onGiveUp` so the page can say it stopped. Time is counted from the delays waited, not a wall clock. */
 export const POLL = { fastMs: 2000, fastForMs: 60000, slowMs: 10000 };
 
-export function followUntil({ read, isDone, onUpdate = () => {}, alive = () => true, cfg = POLL, fixedMs = null }) {
+export function followUntil({ read, isDone, onUpdate = () => {}, alive = () => true, cfg = POLL, fixedMs = null, maxMs = null, onGiveUp = () => {} }) {
   let stopped = false; let timer = null; let waited = 0;
   const step = () => (fixedMs != null ? fixedMs : (waited < cfg.fastForMs ? cfg.fastMs : cfg.slowMs));
   const arm = () => {
@@ -14,6 +15,7 @@ export function followUntil({ read, isDone, onUpdate = () => {}, alive = () => t
       timer = null;
       waited += ms;
       if (stopped || !alive()) return;
+      if (maxMs != null && waited > maxMs) { stopped = true; onGiveUp(); return; }
       let res; let ok = true;
       try { res = await read(); } catch (_) { ok = false; }
       if (stopped || !alive()) return;

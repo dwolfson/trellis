@@ -7524,6 +7524,7 @@ class ProjectRegistry:
         self, entity_type: str, slug: str, process_qualified_name: str,
         surveyed_at: str, *, engine_action_guid: str = "", submit_error: str = "",
         submitted_by: str = "", started_as: str = "", started_by: str = "", started_in: str = "",
+        declared_extra: dict | None = None,
     ) -> None:
         """One step_runs row per SUBMISSION attempt. With a GUID it is proof
         Egeria accepted the action; without one it records that the attempt
@@ -7535,6 +7536,7 @@ class ProjectRegistry:
         "egeria": initiated in Egeria, recorded by RE's engine host when it ran the first step)."""
         declared = {k: v for k, v in (("started_as", started_as), ("started_by", started_by),
                                       ("started_in", started_in)) if v}
+        declared.update(declared_extra or {})
         with self._conn() as conn:
             conn.execute(
                 "INSERT INTO step_runs (slug, entity_type, step_key, surveyed_at, "
@@ -7551,7 +7553,7 @@ class ProjectRegistry:
     def record_native_survey_submission_once(
         self, entity_type: str, slug: str, process_qualified_name: str, surveyed_at: str, *,
         engine_action_guid: str, submitted_by: str = "", started_as: str = "", started_by: str = "",
-        started_in: str = "",
+        started_in: str = "", declared_extra: dict | None = None,
     ) -> bool:
         """Engine host case 3 (review L5): one native-survey row per process instance. Inserts the row only when no
         row holds `engine_action_guid` yet, so the Run press and the engine host's first step cannot both write a run
@@ -7564,6 +7566,7 @@ class ProjectRegistry:
         second writer waits, then sees the first's row. SQLite serialises writers itself."""
         declared = {k: v for k, v in (("started_as", started_as), ("started_by", started_by),
                                       ("started_in", started_in)) if v}
+        declared.update(declared_extra or {})
         with self._conn() as conn:
             if getattr(conn, "is_postgres", False):
                 conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", (engine_action_guid,))
