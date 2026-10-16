@@ -85,6 +85,10 @@ STALE_WORDS = "the Egeria asset RE had stored no longer exists"
 REACH_NOTE = "Egeria connects from its own platform; RE can still survey this database itself"
 REGISTER_LABEL = "Register the server with Egeria →"
 START_AGAIN_LABEL = "Start again →"
+REGISTER_AGAIN_LABEL = "Register again →"
+#: Egeria answered about a pointer RE holds and there is no usable element: said in Egeria's frame, never "deleted"
+#: (RE did not see a delete and cannot tell deleted from purged).
+GONE_WORDS = "no longer in Egeria"
 NO_RECORD_WORDS = "RE has no record of the earlier process, so it cannot check whether it is still running."
 SERVER_NO_ANSWER_WORDS = ("Egeria gave no answer to a server create, so the server may or may not exist; "
                           "RE will not create it again until you start again")
@@ -937,10 +941,31 @@ def catalog_notes(registry, entity_type: str, entity, latest: dict | None, deriv
     return notes
 
 
-def register_control(registry, entity, derived: dict, in_flight: bool, wiring: str) -> dict:
+def stamp(iso: str) -> str:
+    """'10-16 13:02' from a stored ISO time, or '' when there is none to read."""
+    try:
+        return datetime.fromisoformat(str(iso or "").replace("Z", "+00:00")).strftime("%m-%d %H:%M")
+    except ValueError:
+        return ""
+
+
+def gone_line(registry, entity_type: str, slug: str, entity, technology_type: str = "") -> str:
+    """The row's words for a pointer Egeria answered "no longer there" to: "no longer in Egeria · was registered
+    10-15 as 4f2a9c01…". The old GUID is the stored pointer; the date is the newest registration run's own stored
+    time, left out when none is stored (a date RE did not record is not guessed)."""
+    guid = (getattr(entity, "egeria_asset_guid", "") or "").strip() if entity is not None else ""
+    proc = _process_for(entity_type, technology_type or "PostgreSQL Relational Database", KIND_CATALOG_AND_SURVEY)
+    run = next(iter(registry.list_native_survey_runs(entity_type, slug, proc.qualified_name)), None) if proc else None
+    when = stamp((run or {}).get("surveyed_at"))
+    was = " ".join(x for x in (f"was registered {when}" if when else "was registered", f"as {guid[:8]}…" if guid else "") if x)
+    return f"{GONE_WORDS} · {was}"
+
+
+def register_control(registry, entity, derived: dict, in_flight: bool, wiring: str, stale: bool = False) -> dict:
     """The one control: shown for not registered, a failed or refused run, an unconfirmed server, and an
     unresolved earlier run (as "Start again", which says what the earlier run is in the row's notes)."""
-    base = {"label": REGISTER_LABEL, "why_not": wiring, "start_again": False, "available": False, "confirm": ""}
+    first = REGISTER_AGAIN_LABEL if stale else REGISTER_LABEL     # a pointer Egeria lost: one press, nothing to duplicate
+    base = {"label": first, "why_not": wiring, "start_again": False, "available": False, "confirm": ""}
     if wiring or in_flight:
         return base
     holder = server_claim_holder(registry, server_name_for(entity))
@@ -951,7 +976,15 @@ def register_control(registry, entity, derived: dict, in_flight: bool, wiring: s
     if unresolved and derived["state"] != REGISTERED:
         proc = _process_for("database", "PostgreSQL Relational Database", KIND_CATALOG_AND_SURVEY)
         run = _newest_run_with_guid(registry, "database", entity.slug, proc.qualified_name) if proc else None
-        confirm = ("This submits a second registration to Egeria. "
+        failed = derived["state"] in (nsr.FAILED, nsr.SUBMIT_FAILED)
+        if failed:
+            # The earlier process failed: nothing it made can be duplicated, so the claim is cleared by one press.
+            return {**base, "available": True, "label": START_AGAIN_LABEL, "start_again": True, "confirm": "",
+                    "one_press": True}
+        submitted = stamp((run or {}).get("surveyed_at"))
+        earlier = f"An earlier registration (submitted {submitted}) hasn't finished." if submitted \
+            else "An earlier registration hasn't finished."
+        confirm = (f"{earlier} Starting again may create a second database element in Egeria. "
                    + (f"The earlier process {run['engine_action_guid']} was last read as "
                       f"{run.get('engine_action_status') or 'not yet read'}." if run else NO_RECORD_WORDS))
         return {**base, "available": True, "label": START_AGAIN_LABEL, "start_again": True, "confirm": confirm}

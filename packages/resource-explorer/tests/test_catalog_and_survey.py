@@ -422,7 +422,12 @@ class TestNeutralAndStale:
         assert survey["stale"] is True and survey["neutral"] is False
         assert survey["cannot_run_reason"] == cas.STALE_WORDS == (
             "the Egeria asset RE had stored no longer exists")
-        assert survey["register"]["available"] and survey["register"]["label"] == cas.REGISTER_LABEL
+        assert survey["register"]["available"] and survey["register"]["label"] == cas.REGISTER_AGAIN_LABEL
+        # Designer Q10: "no longer in Egeria · was registered … as <old guid>", the old GUID kept in the words.
+        assert survey["gone_line"].startswith("no longer in Egeria · was registered") and DB_GUID[:8] in survey["gone_line"]
+        assert rows[CATALOG_QN]["gone_line"] == survey["gone_line"]
+        assert rows[CATALOG_QN]["register"]["label"] == cas.REGISTER_AGAIN_LABEL
+        assert rows[CATALOG_QN]["register"]["start_again"] is False         # nothing exists to duplicate: one press
         assert rows[CATALOG_QN]["stale"] is True and rows[CATALOG_QN]["run"]["state"] == cas.NOT_REGISTERED
 
     def test_a_failed_read_is_unreadable_never_gone(self, registry):
@@ -780,6 +785,9 @@ class TestNoSecondDatabaseProcess:
         row = {r["qualified_name"]: r for r in nsr.native_survey_rows(registry, "database", "adventureworks", TECH)}[CATALOG_QN]
         assert row["register"]["available"] and row["register"]["label"] == cas.START_AGAIN_LABEL
         assert run["engine_action_guid"] in " ".join(row["notes"])
+        # Designer Q10: the confirm names the risk, not just "press again".
+        assert "hasn't finished" in row["register"]["confirm"]
+        assert "second database element in Egeria" in row["register"]["confirm"]
 
     def test_a_database_found_by_name_needs_no_claim_and_resolves_one(self, registry):
         port = RegPort()

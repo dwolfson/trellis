@@ -1057,7 +1057,9 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
             # The control sits on the "Catalog and Survey" row; a survey row offers it only when its stored
             # pointer is GONE (the same row says so and offers the way back). Never three buttons for one act.
             row["register"] = {"available": not wiring and gone,
-                               "label": cas.REGISTER_LABEL, "why_not": wiring}
+                               "label": cas.REGISTER_AGAIN_LABEL if gone else cas.REGISTER_LABEL, "why_not": wiring}
+            if gone:
+                row["gone_line"] = cas.gone_line(registry, entity_type, slug, entity, technology_type)
         if process.kind == KIND_RE_DEFINITION:
             # The same answer the definition's own card carries, so the row beside Egeria's other runs can press it.
             row["coordinated_by_egeria"] = coordinate_control(registry, entity_type, slug, process.qualified_name)
@@ -1098,8 +1100,9 @@ def _catalog_row(registry, entity_type, slug, technology_type, entity, process, 
         "reach_note": cas.reach_note_for(derived),
         "notes": cas.catalog_notes(registry, entity_type, entity, latest, derived, in_flight) if live else [],
         "asset_guid": (getattr(entity, "egeria_asset_guid", "") or "") if entity is not None else "",
-        "register": cas.register_control(registry, entity, derived, in_flight, wiring) if live
+        "register": cas.register_control(registry, entity, derived, in_flight, wiring, stale=stale) if live
         else {"available": False, "label": cas.REGISTER_LABEL, "why_not": wiring, "start_again": False},
+        **({"gone_line": cas.gone_line(registry, entity_type, slug, entity, technology_type)} if stale else {}),
     }
 
 

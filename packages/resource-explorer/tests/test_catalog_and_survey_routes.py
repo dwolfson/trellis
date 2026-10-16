@@ -104,7 +104,7 @@ def test_check_reports_a_gone_pointer_and_the_rows_offer_the_control(client, por
     assert r.status_code == 200 and r.json()["pointers"]["database"] == "gone"
     row = by_qn(r)["PostgreSQLSurvey::survey-postgres-database"]
     assert row["stale"] is True and row["cannot_run_reason"] == cas.STALE_WORDS
-    assert row["register"] == {"available": True, "label": cas.REGISTER_LABEL, "why_not": ""}
+    assert row["register"] == {"available": True, "label": cas.REGISTER_AGAIN_LABEL, "why_not": ""}
 
 
 def test_check_with_nothing_stored_asks_egeria_nothing(client, port):

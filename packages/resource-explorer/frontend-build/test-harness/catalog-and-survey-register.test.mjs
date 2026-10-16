@@ -18,6 +18,8 @@ const CATALOG = 'PostgreSQLDatabase:CreateAndSurveyGovernanceActionProcess';
 const REGISTER = 'Register the server with Egeria →';
 const NOT_REGISTERED = "Egeria has not been given this database · register it to run Egeria's own survey · optional";
 const STALE = 'the Egeria asset RE had stored no longer exists';
+const GONE = 'no longer in Egeria · was registered 10-15 as dddddddd…';
+const AGAIN = 'Register again →';
 const REACH = 'Egeria connects from its own platform; RE can still survey this database itself';
 
 const blankRun = { state: 'not_run', egeria_status: '', message: '', submitted_at: '', read_at: '',
@@ -105,8 +107,10 @@ test('a never-registered database is NEUTRAL: muted cue, "optional", no error ma
 test('a stored pointer Egeria says is gone: the stale words, and the SAME row offers the control', async () => {
   const { document, app } = await setUp();
   const content = document.createElement('div'); content.id = 'content'; document.body.appendChild(content);
-  const gone = [surveyRow({ cannot_run_reason: STALE, neutral: false, stale: true }),
-    catalogRow({ stale: true, cannot_run_reason: STALE, asset_guid: 'dddddddd-0000-0000-0000-000000000001' })];
+  const gone = [surveyRow({ cannot_run_reason: STALE, neutral: false, stale: true, gone_line: GONE,
+    register: { available: true, label: AGAIN, why_not: '' } }),
+    catalogRow({ stale: true, gone_line: GONE, register: { available: true, label: AGAIN, why_not: '' },
+      cannot_run_reason: STALE, asset_guid: 'dddddddd-0000-0000-0000-000000000001' })];
   stubFetch(paneRoutes([surveyRow({ runnable: true, cannot_run_reason: '', neutral: false,
     register: { available: false, label: REGISTER, why_not: '' } }), catalogRow({
     run: { ...blankRun, state: 'registered' }, asset_guid: 'dddddddd-0000-0000-0000-000000000001',
@@ -117,11 +121,14 @@ test('a stored pointer Egeria says is gone: the stale words, and the SAME row of
   await new Promise((r) => setTimeout(r, 20));      // the one check read, made because a pointer is stored
 
   const row = content.querySelector(`[data-native-survey="${SURVEY}"]`);
-  assert.ok(row.textContent.replace(/\s+/g, ' ').includes(STALE));
-  assert.ok(row.textContent.includes('?'), 'the muted "no longer in Egeria" cue');
+  // Designer Q10: Egeria's answer in its own frame, the old GUID kept in the words, and NO glyph (not the ? family).
+  assert.ok(row.textContent.replace(/\s+/g, ' ').includes(GONE));
+  assert.ok(!row.textContent.includes('?'), 'no ? cue: this was established, Egeria answered');
   assert.ok(!row.textContent.includes('✕'));
+  assert.ok(!/ exists/.test(row.textContent), 'not the old "no longer exists" sentence');
   const control = row.querySelector('[data-native-register]');
-  assert.equal(control.textContent.trim(), REGISTER);
+  assert.equal(control.textContent.trim(), AGAIN);
+  assert.ok(!control.dataset.nativeStartAgain, 'one press: nothing exists to duplicate');
   assert.ok(ownControl(content), "RE's own survey control is unaffected");
 });
 
@@ -263,7 +270,7 @@ test('an unresolved earlier run offers "Start again →", and the press sends th
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(sent, null, 'one click only asks');
   assert.equal(btn.textContent, 'Confirm: start again');
-  assert.match(content.textContent, /submits a second registration to Egeria/);
+  assert.match(content.textContent, /second database element in Egeria/);
   btn.click();
   await new Promise((r) => setTimeout(r, 20));
   assert.deepEqual(sent, { start_again: true });
@@ -330,4 +337,22 @@ test('the "press again to confirm" line is cleared with the disarm', async () =>
   btn._disarm();                                         // what the timer calls
   assert.equal(btn.dataset.confirm, undefined);
   assert.ok(info.classList.contains('hidden') && info.textContent === '', 'the line goes with the disarm');
+});
+
+test('an earlier process that failed is one press: no confirm, the explicit flag still sent', async () => {
+  const { document, app } = await setUp();
+  const content = document.createElement('div'); content.id = 'content'; document.body.appendChild(content);
+  let sent = null;
+  stubFetch(paneRoutes([surveyRow(), catalogRow({
+    run: { ...blankRun, state: 'failed', egeria_status: 'FAILED', message: 'boom' },
+    register: { available: true, label: 'Start again →', why_not: '', start_again: true, one_press: true, confirm: '' } })], {
+    'POST /api/native-surveys/database/adventureworks/register': (url, opts) => {
+      sent = JSON.parse(opts.body);
+      return { registered: { projected: {} }, surveys: [catalogRow({ run: { ...blankRun, state: 'registered' } })] };
+    },
+  }));
+  await app.loadSurveyPane();
+  content.querySelector(`[data-native-survey="${CATALOG}"] [data-native-register]`).click();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(sent, { start_again: true }, 'sent at once: there is nothing to duplicate');
 });

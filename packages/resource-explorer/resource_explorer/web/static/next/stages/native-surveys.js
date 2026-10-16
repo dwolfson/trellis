@@ -185,10 +185,10 @@ export function nativeSurveyStatusHtml(row) {
       return row.cannot_run_reason
         ? `<span class="text-ink-muted">can't be registered from here — ${esc(row.cannot_run_reason)}</span>`
         : (row.stale
-          ? `<span class="text-ink-muted">${esc('the Egeria asset RE had stored no longer exists')}</span>`
+          ? `<span class="text-ink-muted" data-native-gone>${esc(row.gone_line || 'no longer in Egeria')}</span>`
           : '<span class="text-ink-muted">not registered with Egeria · optional</span>');
     default:
-      if (row.stale) return `<span class="text-ink-muted">${esc(row.cannot_run_reason)}</span>`;
+      if (row.stale) return `<span class="text-ink-muted" data-native-gone>${esc(row.gone_line || 'no longer in Egeria')}</span>`;
       if (row.neutral) return `<span class="text-ink-muted">${esc(row.cannot_run_reason)}</span>`;
       return row.runnable
         ? 'not run'
@@ -278,7 +278,7 @@ export function nativeSurveyRowHtml(row) {
       ${(row.description && row.kind !== 're_definition') ? `<div class="mt-[2px] max-w-[70ch] text-provenance text-ink-muted">${esc(row.description)}</div>` : ''}
       ${discoveredDatabasesHtml(row)}
     </div>
-    ${(!row.runnable && row.register && row.register.available) ? `<button type="button" data-native-register="${esc(row.qualified_name)}" ${row.register.start_again ? `data-native-start-again="1" data-native-confirm="${esc(row.register.confirm || '')}"` : ''} ${busy ? 'disabled' : ''}
+    ${(!row.runnable && row.register && row.register.available) ? `<button type="button" data-native-register="${esc(row.qualified_name)}" ${row.register.start_again ? `data-native-start-again="1" ${row.register.one_press ? 'data-native-one-press="1"' : ''} data-native-confirm="${esc(row.register.confirm || '')}"` : ''} ${busy ? 'disabled' : ''}
       class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
       >${esc(row.register.label)}</button>` : ''}
     ${row.kind === 're_definition' ? coordinateControlHtml(row, { ran }) : ''}
@@ -425,13 +425,14 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
       if (slot) { slot.textContent = ''; slot.classList.add('hidden'); }      // the line goes with the disarm
     };
     const register = async (b, targetSlug, qn, startAgain = false) => {
-      if (startAgain && b.dataset.confirm !== '1') {
-        // A second registration can create a second database: ask once, visibly, before sending it.
+      if (startAgain && b.dataset.confirm !== '1' && !b.dataset.nativeOnePress) {
+        // A second registration can create a second database: ask once, visibly, before sending it. When the
+        // server says there is nothing to duplicate (the earlier process failed), it is one press.
         b.dataset.confirm = '1';
         b.dataset.label = b.textContent;
         b.textContent = 'Confirm: start again';
         b.classList.add('border-state-warn');
-        showInfo(qn, `${b.dataset.nativeConfirm || 'This submits a second registration to Egeria.'} Press again to confirm.`);
+        showInfo(qn, `${b.dataset.nativeConfirm || 'Starting again may create a second database element in Egeria.'} Press again to confirm.`);
         b._disarm = () => resetConfirm(b);
         b._confirmTimer = setTimeout(b._disarm, CONFIRM_MS);
         return;
