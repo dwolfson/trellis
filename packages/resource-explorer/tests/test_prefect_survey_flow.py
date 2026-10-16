@@ -15,11 +15,20 @@ import pytest
 
 from resource_explorer.prefect import flows
 
-# Prefect's own run logs are noise here and drown the assertions on failure.
-logging.disable(logging.INFO)
-
-
 pytestmark = pytest.mark.usefixtures("ephemeral_prefect")
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _quiet_prefect_logs():
+    """Prefect's own run logs are noise here and drown the assertions on failure.
+
+    Scoped to this module: a bare `logging.disable` at import time silenced INFO
+    for every test collected after this file, so a later test reading logs off a
+    module-logger handler passed alone and failed in the full suite.
+    """
+    logging.disable(logging.INFO)
+    yield
+    logging.disable(logging.NOTSET)
 
 
 def _plan(*rows):
