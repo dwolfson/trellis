@@ -363,7 +363,7 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
       maxMs: FOLLOW_GIVE_UP_MS,
       onGiveUp: () => {
         if (!host.isConnected || host.querySelector('[data-follow-stopped]')) return;
-        host.insertAdjacentHTML('beforeend', '<div class="sub" data-follow-stopped>Stopped checking · still shown as running · reload to check again</div>');
+        host.insertAdjacentHTML('beforeend', '<div class="mt-s1 text-provenance text-ink-muted" data-follow-stopped>Stopped checking · still shown as running · reload to check again</div>');
       },
     }));
   };
