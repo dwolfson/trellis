@@ -86,6 +86,18 @@ def _main() -> None:
         for entry in result.to_remove:
             print(f"    {entry.reason}: {entry.prev_qualified_name} -> {entry.next_qualified_name}")
 
+        # Engine host case 3, decision 2: each step's executor. REPORT-ONLY, even without --dry-run: an executor is
+        # never added or removed here; drift is a finding for a person (republish, or remove the extra link).
+        try:
+            drift = reader.executor_drift(guid)
+        except Exception as exc:  # noqa: BLE001 -- the link reconciliation above still stands
+            print(f"    executors: could not be checked ({type(exc).__name__}: {exc})")
+            continue
+        if not drift:
+            print("    executors: one per step, to Resource Explorer's engine, with the step's request type")
+        for d in drift:
+            print(f"    executor drift ({d.problem}): {d.step_qualified_name}: {d.detail}")
+
     if not any_changes:
         print("\nAll Survey Definitions already reconciled — nothing to do.")
 

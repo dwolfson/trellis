@@ -8,6 +8,12 @@ GovActionProcessStep::DatabaseScoutingSurvey::postgres_schema_and_stats
 ### Description
 Schema, table and column inventory plus row-count/size statistics.
 
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -27,6 +33,12 @@ GovActionProcessStep::DatabaseScoutingSurvey::postgres_operations
 ### Description
 privilege_audit, db_activity_signals, db_resilience, db_external_dependencies.
 
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
+
 ### Additional Properties
 | Parameter Name | Parameter Value |
 |---|---|
@@ -45,6 +57,12 @@ GovActionProcessStep::DatabaseScoutingSurvey::credential_capability
 
 ### Description
 Read-only catalog/privilege introspection: what this credential can see and do.
+
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
+### Ignore Multiple Triggers
+true
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -103,6 +121,51 @@ GovActionProcessStep::DatabaseScoutingSurvey::credential_capability
 
 ### Guard
 Any
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::DatabaseScoutingSurvey::postgres_schema_and_stats
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-postgres-schema-and-stats
+
+### Description
+Egeria dispatches GovActionProcessStep::DatabaseScoutingSurvey::postgres_schema_and_stats to Resource Explorer's engine, which claims it and runs RE step postgres_schema_and_stats.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::DatabaseScoutingSurvey::postgres_operations
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-postgres-operations
+
+### Description
+Egeria dispatches GovActionProcessStep::DatabaseScoutingSurvey::postgres_operations to Resource Explorer's engine, which claims it and runs RE step postgres_operations.
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+GovActionProcessStep::DatabaseScoutingSurvey::credential_capability
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-credential-capability
+
+### Description
+Egeria dispatches GovActionProcessStep::DatabaseScoutingSurvey::credential_capability to Resource Explorer's engine, which claims it and runs RE step credential_capability.
 
 ___
 

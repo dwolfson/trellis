@@ -7523,12 +7523,18 @@ class ProjectRegistry:
     def record_native_survey_submission(
         self, entity_type: str, slug: str, process_qualified_name: str,
         surveyed_at: str, *, engine_action_guid: str = "", submit_error: str = "",
-        submitted_by: str = "", started_as: str = "",
+        submitted_by: str = "", started_as: str = "", started_by: str = "", started_in: str = "",
     ) -> None:
         """One step_runs row per SUBMISSION attempt. With a GUID it is proof
         Egeria accepted the action; without one it records that the attempt
         failed (`submit_error`), which is a different, honest state -- not a
-        row that quietly claims a submission."""
+        row that quietly claims a submission.
+
+        `started_by` / `started_in` (engine host case 3, no DDL: the `declared` JSON beside `started_as`): who
+        coordinates the run ("egeria") and where it was started ("re": RE's "coordinated by Egeria" control;
+        "egeria": initiated in Egeria, recorded by RE's engine host when it ran the first step)."""
+        declared = {k: v for k, v in (("started_as", started_as), ("started_by", started_by),
+                                      ("started_in", started_in)) if v}
         with self._conn() as conn:
             conn.execute(
                 "INSERT INTO step_runs (slug, entity_type, step_key, surveyed_at, "
@@ -7537,10 +7543,51 @@ class ProjectRegistry:
                 "VALUES (?, ?, ?, ?, 'egeria', 'egeria', ?, '{}', ?, ?, ?, ?)",
                 (self._normalize_slug(slug), entity_type,
                  NATIVE_SURVEY_STEP_PREFIX + process_qualified_name, surveyed_at,
-                 process_qualified_name, json.dumps({"started_as": started_as}) if started_as else "{}",
+                 process_qualified_name, json.dumps(declared) if declared else "{}",
                  engine_action_guid or "",
                  submit_error or "", submitted_by or ""),
             )
+
+    def record_native_survey_submission_once(
+        self, entity_type: str, slug: str, process_qualified_name: str, surveyed_at: str, *,
+        engine_action_guid: str, submitted_by: str = "", started_as: str = "", started_by: str = "",
+        started_in: str = "",
+    ) -> bool:
+        """Engine host case 3 (review L5): one native-survey row per process instance. Inserts the row only when no
+        row holds `engine_action_guid` yet, so the Run press and the engine host's first step cannot both write a run
+        line for the same instance. True when this call wrote it; False when a row was already there (the caller then
+        adopts it with `adopt_native_survey_submission`).
+
+        The insert-if-absent is one statement, but that alone is not atomic on Postgres: under READ COMMITTED two
+        transactions can both see no row (`idx_step_runs_engine_action` is not unique, and making it so is DDL). So on
+        Postgres the transaction first takes `pg_advisory_xact_lock(hashtext(<guid>))`, released at its commit; the
+        second writer waits, then sees the first's row. SQLite serialises writers itself."""
+        declared = {k: v for k, v in (("started_as", started_as), ("started_by", started_by),
+                                      ("started_in", started_in)) if v}
+        with self._conn() as conn:
+            if getattr(conn, "is_postgres", False):
+                conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", (engine_action_guid,))
+            cur = conn.execute(
+                "INSERT INTO step_runs (slug, entity_type, step_key, surveyed_at, "
+                "source, executor, executor_ref, metrics, declared, "
+                "engine_action_guid, submit_error, submitted_by) "
+                "SELECT ?, ?, ?, ?, 'egeria', 'egeria', ?, '{}', ?, ?, '', ? "
+                "WHERE NOT EXISTS (SELECT 1 FROM step_runs WHERE engine_action_guid = ?)",
+                (self._normalize_slug(slug), entity_type,
+                 NATIVE_SURVEY_STEP_PREFIX + process_qualified_name, surveyed_at,
+                 process_qualified_name, json.dumps(declared) if declared else "{}",
+                 engine_action_guid, submitted_by or "", engine_action_guid),
+            )
+            return bool(getattr(cur, "rowcount", 0))
+
+    def adopt_native_survey_submission(self, engine_action_guid: str, *, submitted_by: str,
+                                       declared_patch: dict) -> None:
+        """The person who pressed Run, on the run line the engine host wrote first for the same process instance
+        (review L5): their name and where it was started are recorded on that one row, never on a second."""
+        with self._conn() as conn:
+            conn.execute("UPDATE step_runs SET submitted_by = ? WHERE engine_action_guid = ?",
+                         (submitted_by or "", engine_action_guid))
+        self.merge_native_survey_declared(engine_action_guid, declared_patch)
 
     def record_native_survey_readback(
         self, engine_action_guid: str, *, read_at: str, status: str = "",
@@ -9138,6 +9185,23 @@ class ProjectRegistry:
                 f"SELECT * FROM egeria_outbox WHERE entity_type = ? AND entity_slug = ? "  # noqa: S608
                 f"AND element_kind IN ({marks}) ORDER BY id DESC",
                 (entity_type, entity_slug, *kinds),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_outbox_payloads(self, element_kind: str, payload_contains: str) -> list[dict]:
+        """Every outbox row of one kind whose payload contains `payload_contains`, any status, oldest first.
+
+        Read-only. For a repair that needs what RE asked Egeria to write (scripts/
+        backfill_classification_annotations.py: the ClassificationAnnotation bodies), keyed by the row's
+        `egeria_guid` and `qualified_name`. No limit: the substring is the filter, matched literally (LIKE's
+        wildcards in it are escaped)."""
+        literal = payload_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, entity_type, entity_slug, run_id, element_kind, qualified_name, payload_json, status, "
+                "egeria_guid, created_at, completed_at FROM egeria_outbox "
+                "WHERE element_kind = ? AND payload_json LIKE ? ESCAPE '\\' ORDER BY id",
+                (element_kind, f"%{literal}%"),
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -11616,6 +11680,19 @@ class ProjectRegistry:
             ).fetchone()
         return row["slug"] if row else ""
 
+    def repo_slug_for_asset_guid(self, guid: str) -> str:
+        """The slug of the registered repository whose Egeria Asset is `guid`, or `""` for none. Unscoped, like
+        `database_slug_for_asset_guid`: the engine host asks it before it may claim an action (case 3 claims
+        repository request types), to leave a privately owned target unclaimed."""
+        guid = (guid or "").strip()
+        if not guid:
+            return ""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT slug FROM projects WHERE egeria_asset_guid = ? ORDER BY slug LIMIT 1", (guid,)
+            ).fetchone()
+        return row["slug"] if row else ""
+
     def engine_action_runs(self, engine_action_guid: str) -> list[dict]:
         """Every `engine_action` runs row (any state) whose target names this Egeria engine action, newest
         first. Parsed, not matched as text: the target is JSON."""
@@ -11641,6 +11718,27 @@ class ProjectRegistry:
                                 "counts as that action's run and is left alone", row["id"], guid)
                 out.append({**dict(row), "target_unreadable": True})
             elif target.get("engine_action_guid") == guid:
+                out.append(dict(row))
+        return out
+
+    def engine_action_runs_for_process_step(self, instance_guid: str, process_step_guid: str) -> list[dict]:
+        """Every `engine_action` runs row (any state) for this step of this process run: its target names the same
+        GovernanceActionProcessInstance and GovernanceActionProcessStep. Engine host case 3: a step Egeria started
+        twice in one run (duplicate next-step links) is run once. Parsed, not matched as text."""
+        instance_guid, process_step_guid = (instance_guid or "").strip(), (process_step_guid or "").strip()
+        if not instance_guid or not process_step_guid:
+            return []
+        with self._conn() as conn:
+            rows = conn.execute("SELECT * FROM runs WHERE kind = 'engine_action' AND target LIKE ? "
+                                "ORDER BY enqueued_at", (f"%{instance_guid}%",)).fetchall()
+        out = []
+        for row in rows:
+            try:
+                target = json.loads(row["target"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if (isinstance(target, dict) and target.get("process_instance_guid") == instance_guid
+                    and target.get("process_step_guid") == process_step_guid):
                 out.append(dict(row))
         return out
 
@@ -13259,6 +13357,9 @@ class ProjectRegistry:
                 # persisted data — it survives any re-render and shows up for
                 # historical runs too, not only the one just launched.
                 entry["last_run_engine_note"] = detail.get("engine_note") or ""
+                # Engine host case 3 (C4): who coordinated the run and who pressed Run, as the run wrote them.
+                entry["last_run_started_by"] = detail.get("started_by") or ""
+                entry["last_run_by"] = detail.get("started_by_person") or ""
                 if proof:
                     entry["last_publish_proof"] = proof
                 # SurveyDefinitionExecutor.run() (added 2026-08-27) publishes
