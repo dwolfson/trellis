@@ -1049,6 +1049,7 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
             "cancellable": bool(latest) and cancel_offered(latest),
             "run": derived,
             "reach_note": cas.reach_note_for(derived),
+            "tried": cas.tried_words(derived, entity),
             "notes": (cas.server_credential_notes(registry, entity)
                       if process.target == "server" and hasattr(entity, "db_type") else []),
         }
@@ -1082,6 +1083,7 @@ def _catalog_row(registry, entity_type, slug, technology_type, entity, process, 
     derived = cas.derive_catalog_state(latest, has_pointer=has_ptr)
     in_flight = cas.catalog_in_flight(derived, latest)
     live = entity is not None and hasattr(entity, "db_type") and not wiring
+    addr = cas.address_state(registry, entity_type, slug, entity) if live else {"current": "", "held": "", "will_change": False}
     return {
         "cancellable": False,        # a registration is a process; its identifier is never an engine action
         "qualified_name": process.qualified_name,
@@ -1100,9 +1102,13 @@ def _catalog_row(registry, entity_type, slug, technology_type, entity, process, 
         "reach_note": cas.reach_note_for(derived),
         "notes": cas.catalog_notes(registry, entity_type, entity, latest, derived, in_flight) if live else [],
         "asset_guid": (getattr(entity, "egeria_asset_guid", "") or "") if entity is not None else "",
-        "register": cas.register_control(registry, entity, derived, in_flight, wiring, stale=stale) if live
+        "register": cas.register_control(registry, entity, derived, in_flight, wiring, stale=stale,
+                                         will_change=addr["will_change"]) if live
         else {"available": False, "label": cas.REGISTER_LABEL, "why_not": wiring, "start_again": False},
         **({"gone_line": cas.gone_line(registry, entity_type, slug, entity, technology_type)} if stale else {}),
+        # "Registered" proves the elements exist, not that Egeria can reach the database: what the survey runs prove.
+        "reach": cas.reach_proof(registry, entity_type, slug, technology_type, entity) if live else None,
+        "address": addr,
     }
 
 

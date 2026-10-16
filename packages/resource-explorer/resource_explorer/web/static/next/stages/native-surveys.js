@@ -33,6 +33,7 @@ import { state, esc, apiEntityType } from '/static/next/app.js';
 import { openDialog } from '/static/next/worklist.js';
 import { followUntil } from '/static/next/live-status.js';
 import { onServerRestart } from '/static/next/shell-status.js';
+import { openFindDbServersDialog } from '/static/next/db-server-discovery.js';
 import { reportViewerHtml, bindReportViewer } from '/static/next/stages/native-report.js';
 
 const POLL_MS = 8000;
@@ -173,9 +174,14 @@ export function nativeSurveyStatusHtml(row) {
       }
       return `<span class="text-state-warn"><span class="font-mono">${esc(r.egeria_status)}</span>`
         + ` · ${esc(r.message)}</span> · read ${timeSpan(r.read_at)} · ${guidSpan(r.engine_action_guid)}`;
-    case 'registered':
-      return `registered with Egeria${row.asset_guid
+    case 'registered': {
+      // "Registered" proves only that the elements exist. Until a survey proves Egeria can connect, the row says so,
+      // from the server's `reach` (derived from the persisted survey runs), never from the click.
+      const reach = row.reach && row.reach.state !== 'connected' ? row.reach : null;
+      return `registered with Egeria${reach
+        ? ` · <span data-native-reach-state="${esc(reach.state)}">${esc(reach.words)}${reach.address ? ` (tried <span class="font-mono">${esc(reach.address)}</span>)` : ''}</span>` : ''}${row.asset_guid
         ? ` · database asset <span class="font-mono" title="Egeria database asset">${esc(row.asset_guid)}</span>` : ''}`;
+    }
     case 'awaiting_registration':
       return `Egeria says <span class="font-mono">${esc(r.egeria_status)}</span> · read ${timeSpan(r.read_at)}`
         + ' — the database is not readable in Egeria yet';
@@ -220,6 +226,26 @@ export function discoveredDatabasesHtml(row) {
 function reachNoteHtml(row) {
   return row.reach_note
     ? `<div class="mt-[2px] text-provenance text-ink-muted" data-native-reach>${esc(row.reach_note)}</div>` : '';
+}
+
+/** A survey Egeria could not connect for names the address it tried (Egeria's own sentence stays whole above it).
+ *  The "localhost is Egeria's own machine" clause is the server's, said only for localhost/127.0.0.1. */
+export function triedHtml(row) {
+  const t = row.tried;
+  if (!t || !t.address) return '';
+  return `<div class="mt-[2px] text-provenance text-ink-muted" data-native-tried>Egeria tried
+    <span class="font-mono text-ink">${esc(t.address)}</span>${t.own_machine ? ", and localhost is Egeria's own machine" : ''} ·
+    <button type="button" data-native-change-host class="cursor-pointer bg-transparent p-0 text-accent-ink underline">change the Egeria-visible host ›</button></div>`;
+}
+
+/** The Egeria lane of a registration row: Egeria still holds the database under an older address than the
+ *  one RE would send now. Derived from the server's read-back record, so it stays until a read-back shows the new one. */
+export function willChangeHtml(row) {
+  const a = row.address;
+  if (!a || !a.will_change) return '';
+  return `<div class="mt-[2px] text-provenance text-ink" data-native-will-change><span class="font-glyph" aria-hidden="true">⚠</span>
+    will change · Egeria has <span class="font-mono">${esc(a.held)}</span> · ${esc((row.register && row.register.label) || 'Register again →')} sends
+    <span class="font-mono">${esc(a.current)}</span></div>`;
 }
 
 /** Cancel cues that outlive a repaint: a cancel Egeria did not confirm stays on its row until the next try
@@ -274,6 +300,8 @@ export function nativeSurveyRowHtml(row) {
       ${cancelControlHtml(row)}
       ${row.credentials_note ? `<div class="mt-[2px] text-provenance text-ink-muted"><span class="text-ink-muted" title="not confirmed either way">?</span> ${esc(row.credentials_note)}</div>` : ''}
       ${reachNoteHtml(row)}
+      ${triedHtml(row)}
+      ${willChangeHtml(row)}
       ${(row.notes || []).map((n) => `<div class="mt-[2px] text-provenance text-ink-muted" data-native-note>${esc(n)}</div>`).join('')}
       ${(row.description && row.kind !== 're_definition') ? `<div class="mt-[2px] max-w-[70ch] text-provenance text-ink-muted">${esc(row.description)}</div>` : ''}
       ${discoveredDatabasesHtml(row)}
@@ -470,6 +498,8 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
       () => register(b, slug, b.dataset.nativeRegister, !!b.dataset.nativeStartAgain)));
     host.querySelectorAll('[data-native-register-slug]').forEach((b) => b.addEventListener('click',
       () => register(b, b.dataset.nativeRegisterSlug, '')));
+    // Where the Egeria-visible host is edited (the saved sources, per server and per database).
+    host.querySelectorAll('[data-native-change-host]').forEach((b) => b.addEventListener('click', () => openFindDbServersDialog()));
     host.querySelectorAll('[data-native-report]').forEach((b) => b.addEventListener('click',
       () => openReport(slug, b.dataset.nativeReport)));
     host.querySelectorAll('[data-native-cancel]').forEach((b) => b.addEventListener('click', () => {

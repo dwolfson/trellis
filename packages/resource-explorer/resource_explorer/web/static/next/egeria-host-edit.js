@@ -9,9 +9,17 @@ import { changeDatabaseEgeriaHost, changeServerEgeriaHost } from '/static/re-api
 
 const LABEL = 'Egeria-visible host';
 
-export function egeriaHostLineHtml(kind, slug, value) {
-  return `<div data-eh="${esc(kind)}:${esc(slug)}" class="mt-[2px] text-provenance text-ink-muted">
-    ${LABEL}: <span data-eh-value class="font-mono text-ink">${esc(value || 'not set')}</span>
+/** `inheritFrom` (a database line only): its server's value. A database that takes the server's value shows it
+ *  muted, "(from its server)"; one that differs shows it in ink, "differs from its server" -- inheritance drawn as
+ *  on the scope tree. The server's "use it for them" offer is unchanged. */
+export function egeriaHostLineHtml(kind, slug, value, inheritFrom) {
+  const tracked = kind === 'database' && inheritFrom !== undefined;
+  const inherits = tracked && (!value || value === inheritFrom);
+  const shown = value || (inherits ? inheritFrom : '');
+  return `<div data-eh="${esc(kind)}:${esc(slug)}" ${tracked ? `data-eh-from="${esc(inheritFrom)}"` : ''} class="mt-[2px] text-provenance text-ink-muted">
+    ${LABEL}: <span data-eh-value ${tracked ? `data-eh-inherited="${inherits ? '1' : '0'}"` : ''}
+      class="font-mono ${inherits ? 'text-ink-muted' : 'text-ink'}">${esc(shown || 'not set')}</span>${
+      tracked ? ` <span data-eh-source>${inherits ? '(from its server)' : 'differs from its server'}</span>` : ''}
     <span data-eh-mark class="text-state-ok"></span>
     <button type="button" data-eh-change class="cursor-pointer bg-transparent p-0 text-accent-ink underline">Change…</button>
     <div data-eh-body class="mt-s1"></div>
@@ -48,6 +56,14 @@ export function bindEgeriaHostEdit(host, kind, slug, ctx = {}) {
       try {
         const r = await call(input.value.trim());
         valueEl.textContent = r.egeria_host || 'not set';
+        if (host.hasAttribute('data-eh-from')) {              // the saved value redraws its own inheritance cue
+          const same = !r.egeria_host || r.egeria_host === host.getAttribute('data-eh-from');
+          valueEl.dataset.ehInherited = same ? '1' : '0';
+          valueEl.classList.toggle('text-ink-muted', same);
+          valueEl.classList.toggle('text-ink', !same);
+          const src = host.querySelector('[data-eh-source]');
+          if (src) src.textContent = same ? '(from its server)' : 'differs from its server';
+        }
         markEl.textContent = '✓ saved';
         body.innerHTML = '';
         const notes = [];
