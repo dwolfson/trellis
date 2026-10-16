@@ -1054,6 +1054,7 @@ def build_database_entity(server, database_name: str, display_name: str = ""):
     """The DatabaseEntity for one database on a registered server. The credential
     is copied from the SERVER (never from a CSV); this is the single place the
     Find dialog's add-database route and the CSV import both build it."""
+    from resource_explorer.egeria_host import default_egeria_host
     from resource_explorer.registry import DatabaseEntity
 
     return DatabaseEntity(
@@ -1067,7 +1068,7 @@ def build_database_entity(server, database_name: str, display_name: str = ""):
         group_slug=server.group_slug,
         db_user=server.db_user,
         db_password=server.db_password,
-        egeria_host=server.egeria_host,
+        egeria_host=default_egeria_host(server.host, server.egeria_host),
         egeria_url=server.egeria_url,
         egeria_server=server.egeria_server,
         # per-resource Egeria credentials are no longer copied or used (owner, 2026-10-09)
