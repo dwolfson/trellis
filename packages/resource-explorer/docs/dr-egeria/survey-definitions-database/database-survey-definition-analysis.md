@@ -156,7 +156,7 @@ Database Analysis Survey — Hub Tables
 GovActionProcessStep::DatabaseAnalysisSurvey::hub_tables
 
 ### Description
-Foreign-key degree in and out per table, from the keys Resource Explorer stored, and the tables it proposes as hubs (referenced by at least hub_min_referencing other tables, a declared parameter). The proposal is an annotation, never a classification on the table. Opens no connection to the database. With no foreign keys stored it is shown as "not measured", never as a database with no hubs.
+Foreign-key degree in and out per table, from the keys Resource Explorer stored, and the tables it proposes as hubs (referenced by at least hub_min_referencing other tables, a declared parameter; a count from partly captured keys is a lower bound, reported as at least N). The proposal is an annotation, never a classification on the table. Opens no connection to the database. With no foreign keys stored it is shown as "not measured", never as a database with no hubs.
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any
