@@ -1079,7 +1079,10 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
         out["state"] = UNREADABLE if out.get("error") else SUBMITTED
         return out
     process = mixed_process.declared_process(run.get("executor_ref") or "")
-    expected = len(process.steps) if process else len(steps)
+    # The run's own step list, stored when it started. A row from before that (none stored) is never graded against a
+    # definition that may have changed since: it expects the steps it has, so a run whose steps all ended is over.
+    stored = _declared(run).get("expected_steps")
+    expected = len(stored) if isinstance(stored, list) and stored else len(steps)
     by_index = list(steps)
     def _ended_badly(step: dict) -> bool:
         return (step.get("status") not in ("", None, *ACTIVE_STATUSES)
@@ -1501,7 +1504,8 @@ def submit_native_survey(registry, port: EgeriaSurveyPort, entity_type: str, slu
         # step it ran; then this press is recorded on that row, never as a second one.
         if not registry.record_native_survey_submission_once(
                 entity_type, slug, process_qualified_name, submitted_at, engine_action_guid=engine_action_guid,
-                submitted_by=submitted_by, started_as=started_as, started_by=started_by, started_in=started_in):
+                submitted_by=submitted_by, started_as=started_as, started_by=started_by, started_in=started_in,
+                declared_extra=mixed_process.expected_steps_record(process_qualified_name)):
             registry.adopt_native_survey_submission(
                 engine_action_guid, submitted_by=submitted_by,
                 declared_patch={"started_as": started_as, "started_by": started_by, "started_in": started_in})

@@ -58,6 +58,18 @@ test('followUntil: shows each answer, backs off 2 s then 10 s, survives a failed
   assert.ok(c.delays.every((d) => d === 2000 || d === 10000));
 });
 
+test('followUntil with maxMs: a state stuck in flight stops after the cap and says so once', async (t) => {
+  makeDomEnvironment();
+  const c = clock(t);
+  const { followUntil } = await import('/static/next/live-status.js');
+  let reads = 0; let gaveUp = 0;
+  followUntil({ read: async () => { reads += 1; return 'running'; }, isDone: () => false, maxMs: 600000, onGiveUp: () => { gaveUp += 1; } });
+  await c.advance(3600000);
+  assert.equal(gaveUp, 1);
+  assert.ok(reads < 100, `bounded reads, got ${reads}`);
+  assert.equal(c.pending(), 0);
+});
+
 async function mountRows(first) {
   const mine = globalThis.fetch;
   const { document } = makeDomEnvironment();

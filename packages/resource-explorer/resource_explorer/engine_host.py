@@ -1477,7 +1477,9 @@ def _record_submission(registry, target: dict, principal) -> str:
             registry.record_native_survey_submission_once(ENTITY_TYPE, slug, process_qn, _now_iso(),
                                                           engine_action_guid=guid,
                                                           submitted_by=(principal.requested_by or "").strip(),
-                                                          started_as="engine-host", **extra)
+                                                          started_as="engine-host",
+                                                          declared_extra=mixed_process.expected_steps_record(process_qn),
+                                                          **extra)
             return ""
         if any(r.get("engine_action_guid") == guid
                for r in registry.list_native_survey_runs(ENTITY_TYPE, slug, process_qn)):

@@ -231,6 +231,15 @@ def declared_process(qualified_name: str) -> MixedProcess | None:
     return by_qualified_name(qualified_name) or definition_process(qualified_name)
 
 
+def expected_steps_record(qualified_name: str) -> dict:
+    """What a run stores of its definition AT SUBMISSION (`declared.expected_steps`): the request types of its steps
+    in order, as the definition declares them now. A run is graded against this, never against the definition as it
+    is later (a republished definition with more steps must not make a finished run look unfinished). {} when the
+    process is not one RE declares. The one place that decides the list: every writer of a definition run row uses it."""
+    process = declared_process(qualified_name)
+    return {"expected_steps": [st.request_type for st in process.steps]} if process else {}
+
+
 def process_for_instance_name(process_name: str) -> MixedProcess | None:
     """The declared process an instance's qualifiedName (`<process QN>@<start>::<uuid>`) belongs to."""
     return declared_process((process_name or "").split("@", 1)[0])

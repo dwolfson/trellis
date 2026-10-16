@@ -36,6 +36,7 @@ import { onServerRestart } from '/static/next/shell-status.js';
 import { reportViewerHtml, bindReportViewer } from '/static/next/stages/native-report.js';
 
 const POLL_MS = 8000;
+const FOLLOW_GIVE_UP_MS = 10 * 60 * 1000;
 const CONFIRM_MS = 6000;      // how long "Confirm: start again" stays armed
 
 /** The state -> glyph-family mapping. Words come from the row, not from here:
@@ -358,6 +359,12 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
       onUpdate: (res) => draw(res.surveys),
       isDone: (res) => !(res.surveys || []).some((r) => r.in_flight),
       alive, fixedMs: pollMs === POLL_MS ? null : pollMs,
+      // A state stuck in flight must not be read forever: after 10 minutes the page says it stopped, once.
+      maxMs: FOLLOW_GIVE_UP_MS,
+      onGiveUp: () => {
+        if (!host.isConnected || host.querySelector('[data-follow-stopped]')) return;
+        host.insertAdjacentHTML('beforeend', '<div class="sub" data-follow-stopped>Stopped checking · still shown as running · reload to check again</div>');
+      },
     }));
   };
   // What a row may do (runnable or not) is the server's answer today; a restart or a long absence can change it.
