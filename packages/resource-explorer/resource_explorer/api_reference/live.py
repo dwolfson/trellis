@@ -37,6 +37,9 @@ TIMEOUT_SECONDS = 8.0            # one read or connect may wait this long ...
 TOTAL_SECONDS = 15.0             # ... but the whole fetch, redirects included, never runs longer than this
 MAX_RECORD_BYTES = 8_000_000     # what one fetched document may serialise to
 MAX_REDIRECTS = 3
+MAX_FETCH_THREADS = 6            # workers alive at once; a worker can outlive its caller (see fetch_openapi)
+_FETCH_SLOTS = threading.BoundedSemaphore(MAX_FETCH_THREADS)
+TOO_BUSY = "too many API fetches in progress, try again shortly"
 _HTML_TYPES = ("text/html", "application/xhtml+xml")
 
 
@@ -90,9 +93,13 @@ def fetch_openapi(url: str, *, transport=None, timeout: float = TIMEOUT_SECONDS,
     failure it was and not the raw exception text (which would tell a caller what is listening where).
 
     A HARD wall-clock deadline: the work (name resolution, connecting, headers, body) runs in a worker thread and
-    this function stops waiting at `total_seconds`, closing the client from here so a socket blocked in a read
-    is torn down. A per-read timeout alone cannot do that (a server that dribbles one header every few seconds
-    never trips it), and `getaddrinfo` has no timeout of its own.
+    this function stops waiting at `total_seconds` and closes the client from here. Closing frees the socket but
+    does NOT stop the thread: a worker blocked in a read lingers until the per-read timeout (`timeout`), and one
+    blocked in `getaddrinfo` for as long as the resolver takes. So the number of workers alive is capped
+    (`MAX_FETCH_THREADS`): a slot is taken before a worker starts and given back when the WORKER finishes, not when
+    the caller stops waiting, and with no slot free the call is rejected (TOO_BUSY). A per-read timeout alone
+    cannot give a deadline (a server that dribbles one header every few seconds never trips it), and
+    `getaddrinfo` has no timeout of its own.
 
     Pinning: each hop resolves the name once (`fetch_policy.check_target`) and the request goes to a checked
     address, with the original Host header and (https) the original name as the TLS server name, so a second DNS
@@ -101,6 +108,8 @@ def fetch_openapi(url: str, *, transport=None, timeout: float = TIMEOUT_SECONDS,
     problem = _url_problem(url)
     if problem:
         return _fail(url, problem)
+    if not _FETCH_SLOTS.acquire(blocking=False):
+        return _fail(url, TOO_BUSY)
     holder: dict = {}
     done = threading.Event()
 
@@ -112,9 +121,14 @@ def fetch_openapi(url: str, *, transport=None, timeout: float = TIMEOUT_SECONDS,
             (log.debug if holder.get("abandoned") else log.warning)("API reference fetch failed", exc_info=True)
             holder["result"] = _fail(url, "the request could not be completed")
         finally:
+            _FETCH_SLOTS.release()
             done.set()
 
-    threading.Thread(target=work, name="api-reference-fetch", daemon=True).start()
+    try:
+        threading.Thread(target=work, name="api-reference-fetch", daemon=True).start()
+    except RuntimeError:                       # no thread could be started: the slot was never handed to a worker
+        _FETCH_SLOTS.release()
+        return _fail(url, TOO_BUSY)
     if not done.wait(total_seconds + 0.25):
         holder["abandoned"] = True
         client = holder.get("client")
@@ -152,6 +166,8 @@ def _fetch(url, transport, timeout, max_bytes, total_seconds, allow, resolver, h
                 ext = {"sni_hostname": parsed.hostname} if parsed.scheme == "https" else {}
                 outcome = None
                 for n, ip in enumerate(target.ips):
+                    if time.monotonic() > deadline:
+                        return _fail(url, "no answer in time")
                     try:
                         outcome = _hop(client, current, ip, _host_header(parsed), ext, url, hop, max_bytes, deadline)
                         break
@@ -281,11 +297,12 @@ def refetch_instance(registry, slug: str, *, by: str = "", transport=None, allow
     if res.ok:
         iface = parse_openapi(res.document, source=SOURCE_LIVE, origin=rec["url"], as_of=res.fetched_at)
         if not store.update_instance(registry, slug, iface, fetched_at=res.fetched_at,
-                                     content_type=res.content_type, byte_count=res.bytes, by=by):
+                                     content_type=res.content_type, byte_count=res.bytes, by=by,
+                                     document_id=rec["id"]):
             return {"ok": False, "reason": "the registration was removed or replaced while re-checking"}
         return {"ok": True, "reason": "", "url": rec["url"], "fetched_at": res.fetched_at,
                 "operations": iface.total_operations}
-    if not store.update_instance(registry, slug, None, reason=res.reason, by=by):
+    if not store.update_instance(registry, slug, None, reason=res.reason, by=by, document_id=rec["id"]):
         return {"ok": False, "reason": "the registration was removed or replaced while re-checking"}
     return {"ok": False, "reason": res.reason, "url": rec["url"]}
 

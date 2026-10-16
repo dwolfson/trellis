@@ -157,16 +157,23 @@ def save_instance(registry, slug: str, url: str, iface: Interface, *, fetched_at
 
 
 def update_instance(registry, slug: str, iface: Interface | None, *, fetched_at: str = "", reason: str = "",
-                    content_type: str = "", byte_count: int | None = None, by: str = "") -> bool:
+                    content_type: str = "", byte_count: int | None = None, by: str = "",
+                    document_id: int | str | None = None) -> bool:
     """A re-check of the registered instance, by `by`: success replaces the content; failure keeps it and records
-    why. False when no current registration is left to update (it was cleared or replaced meanwhile)."""
+    why. `document_id` is the row the caller loaded and fetched for: the update touches that row only, so a
+    registration replaced meanwhile (a different URL, a different row) is never written with the old URL's
+    document. False when no current registration is left to update (it was cleared or replaced meanwhile)."""
     slug = _slug(registry, slug)
     now = _now()
     with registry._conn() as conn:
         _lock(registry, conn, f"api_reference:{slug}:running_instance")
-        row = conn.execute("SELECT id FROM api_reference_documents WHERE resource_type = ? AND slug = ? AND "
-                           "source = 'running_instance' AND superseded_at IS NULL AND status IN ('ok', 'failed')",
-                           (RESOURCE_TYPE, slug)).fetchone()
+        sql = ("SELECT id FROM api_reference_documents WHERE resource_type = ? AND slug = ? AND "
+               "source = 'running_instance' AND superseded_at IS NULL AND status IN ('ok', 'failed')")
+        args: tuple = (RESOURCE_TYPE, slug)
+        if document_id is not None:
+            sql += " AND id = ?"
+            args += (document_id,)
+        row = conn.execute(sql, args).fetchone()
         if not row:
             return False
         if iface is None:

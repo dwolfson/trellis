@@ -20,7 +20,9 @@ resolver that answers differently the second time (DNS rebinding) is never asked
 
 Always denied, whatever the list says (even "*"): link-local 169.254.0.0/16 and fe80::/10 (cloud metadata
 services), the Alibaba and AWS-IPv6 metadata addresses, 0.0.0.0/8 and ::/128 (this host), multicast 224.0.0.0/4
-and ff00::/8, broadcast. Loopback and private ranges are allowed only when the list admits them (the default
+and ff00::/8, broadcast, Teredo 2001::/32, IPv4-translated ::ffff:0:0:0/96 and local-use
+NAT64 64:ff9b:1::/48 (RFC 8215; denied rather than unwrapped, the embedded address moves with the prefix length).
+Loopback and private ranges are allowed only when the list admits them (the default
 admits loopback).
 
 An IPv6 address that CARRIES an IPv4 one is judged, and connected to, as that IPv4 address: ::ffff:a.b.c.d
@@ -44,6 +46,9 @@ ALWAYS_DENY = tuple(ipaddress.ip_network(n) for n in (
     "169.254.0.0/16", "fe80::/10", "0.0.0.0/8", "::/128", "224.0.0.0/4", "ff00::/8",
     "100.100.100.200/32",            # Alibaba Cloud metadata
     "fd00:ec2::254/128",             # AWS IPv6 metadata
+    "2001::/32",                     # Teredo: tunnels to an IPv4 server, the target is not what the name says
+    "::ffff:0:0:0/96",               # IPv4-translated (RFC 2765, SIIT), not the mapped ::ffff:0:0/96 unwrapped below
+    "64:ff9b:1::/48",                # local-use NAT64 (RFC 8215): the embedded IPv4 sits at a prefix-dependent offset
     "255.255.255.255/32"))           # broadcast
 NOT_ALLOWED = f"not in the allowed addresses ({ENV})"
 NEVER_ALLOWED = "that address is in a range RE never fetches from"
