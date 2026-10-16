@@ -16,8 +16,9 @@ from fastapi.testclient import TestClient
 from tests.test_login_and_identity import _app_under, _auth_env, _no_caller  # noqa: F401
 from tests.test_login_and_identity import _restore_shared_app  # noqa: F401
 
-REFUSED_WORDS = ("Egeria issued a token for rover but refuses its requests · "
-                 "sign in as a user this Egeria server knows")
+# The designer's words (REPLY-DESIGNER-RUNS-REGISTRATION.md, Q12), verbatim.
+REFUSED_WORDS = ("Egeria accepted rover's password but refuses its requests. "
+                 "Sign in as a user this Egeria server knows.")
 
 
 def _token(sub: str) -> str:

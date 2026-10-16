@@ -69,8 +69,8 @@ async def auth_login(req: LoginRequest) -> Dict[str, Any]:
                     req.username)
         raise HTTPException(
             status_code=401,
-            detail=(f"Egeria issued a token for {req.username} but refuses its requests · "
-                    "sign in as a user this Egeria server knows"),
+            detail=(f"Egeria accepted {req.username}'s password but refuses its requests. "
+                    "Sign in as a user this Egeria server knows."),
         )
     token = create_access_token(user_id=req.username, egeria_token=egeria_token)
     reply = {"access_token": token, "token_type": "bearer", "egeria_user": req.username}
