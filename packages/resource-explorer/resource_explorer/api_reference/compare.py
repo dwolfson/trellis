@@ -48,47 +48,60 @@ def _brief(op: Operation) -> dict:
     return {"key": op.key, "name": op.name, "summary": op.summary, "group": op.group, "location": op.location}
 
 
-def _prefix_of(longer: str, shorter: str) -> str | None:
-    if shorter == "/" or longer == shorter or not longer.endswith(shorter):
-        return None
-    prefix = longer[: len(longer) - len(shorter)]
-    return prefix if prefix.startswith("/") and not prefix.endswith("/") or prefix == "" else None
+def _suffixes(path: str):
+    """(prefix, suffix) for every proper suffix of a normalised path that keeps at least one LITERAL segment
+    ('/{}' alone is not evidence of anything). '/api/v1/jobs/{}' -> ('/api', '/v1/jobs/{}'), ('/api/v1', '/jobs/{}')..."""
+    segs = [x for x in path.split("/") if x]
+    for k in range(1, len(segs)):
+        rest = segs[k:]
+        if any(x != "{}" for x in rest):
+            yield "/" + "/".join(segs[:k]), "/" + "/".join(rest)
 
 
 def compare_interfaces(a: Interface, b: Interface) -> dict:
+    a_ids = [(_ident(op), op) for op in a.operations]       # identities computed once
+    b_ids = [(_ident(op), op) for op in b.operations]
     a_by: dict = {}
     b_by: dict = {}
-    for op in a.operations:
-        a_by.setdefault(_ident(op), []).append(op)
-    for op in b.operations:
-        b_by.setdefault(_ident(op), []).append(op)
+    for ident, op in a_ids:
+        a_by.setdefault(ident, []).append(op)
+    for ident, op in b_ids:
+        b_by.setdefault(ident, []).append(op)
     both = sum(min(len(a_by[k]), len(b_by[k])) for k in a_by.keys() & b_by.keys())
-    only_a = [op for k, v in a_by.items() for op in (v[len(b_by.get(k, [])):] if k in b_by else v)]
-    only_b = [op for k, v in b_by.items() for op in (v[len(a_by.get(k, [])):] if k in a_by else v)]
+    only_a = [op for k, v in a_by.items() for op in (v[len(b_by[k]):] if k in b_by else v)]
+    only_b = [op for k, v in b_by.items() for op in (v[len(a_by[k]):] if k in a_by else v)]
 
-    # Probable matches: same method, one path is the other plus a prefix, and the pairing is unambiguous.
+    # Probable matches: same method, one path is the other plus a prefix. Indexed by (method, path) so each
+    # operation looks up its own suffixes -- no pairwise scan.
+    a_left: dict = {}
+    b_left: dict = {}
+    for op in only_a:
+        a_left.setdefault(_ident(op), []).append(op)
+    for op in only_b:
+        b_left.setdefault(_ident(op), []).append(op)
+    cands_a: dict = {}      # id(a op) -> {id(b op): (b op, prefix)}
+    cands_b: dict = {}
+    for (m, path), ops in a_left.items():          # a is the longer: its suffix is a b path
+        for prefix, suffix in _suffixes(path):
+            for bo in b_left.get((m, suffix), []):
+                for ao in ops:
+                    cands_a.setdefault(id(ao), {})[id(bo)] = (bo, prefix)
+                    cands_b.setdefault(id(bo), {})[id(ao)] = (ao, prefix)
+    for (m, path), ops in b_left.items():          # b is the longer
+        for prefix, suffix in _suffixes(path):
+            for ao in a_left.get((m, suffix), []):
+                for bo in ops:
+                    cands_a.setdefault(id(ao), {})[id(bo)] = (bo, prefix)
+                    cands_b.setdefault(id(bo), {})[id(ao)] = (ao, prefix)
     probable = []
-    cand: dict = {}
-    for ao in only_a:
-        am, ap = _ident(ao)
-        hits = []
-        for bo in only_b:
-            bm, bp = _ident(bo)
-            if bm != am:
-                continue
-            prefix = _prefix_of(ap, bp) if len(ap) >= len(bp) else _prefix_of(bp, ap)
-            if prefix:
-                hits.append((bo, prefix))
-        cand[id(ao)] = hits
-    b_taken: set = set()
     a_taken: set = set()
+    b_taken: set = set()
     for ao in only_a:
-        hits = cand[id(ao)]
+        hits = cands_a.get(id(ao), {})
         if len(hits) != 1:
             continue
-        bo, prefix = hits[0]
-        rivals = [x for x in only_a if x is not ao and any(h[0] is bo for h in cand[id(x)])]
-        if rivals:
+        (bo, prefix), = hits.values()
+        if len(cands_b.get(id(bo), {})) != 1:
             continue
         probable.append({"a": ao.key, "b": bo.key, "prefix": prefix})
         a_taken.add(id(ao))

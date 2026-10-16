@@ -269,3 +269,35 @@ test('Context mounts the block for a repository and the members drill-down offer
   assert.ok(document.querySelector('#rail-evidence [data-api-interface]'));
   assert.match(document.querySelector('#rail-evidence').textContent, /API reference/);
 });
+
+test('a fragment of a split spec is information, not a warning; an unreadable file is a warning', async () => {
+  const { document, mod } = await setUp();
+  const r = clone(REF);
+  r.problems = [{ path: 'openapi/paths.yaml', kind: 'fragment', reason: 'fragment, not a root document' },
+    { path: 'docs/swagger.json', kind: 'unreadable', reason: 'not an OpenAPI document: no \'paths\' object' }];
+  const host = mount(document, mod.referenceHtml(r, {}));
+  assert.match(host.querySelector('[data-api-fragment]').textContent, /fragment, not a root document/);
+  assert.equal(host.querySelectorAll('[data-api-problem]').length, 1);
+});
+
+test('a forgotten registration says who forgot it', async () => {
+  const { document, mod } = await setUp();
+  const r = clone(REF);
+  r.instance = null;
+  r.cleared = { cleared_by: 'dan', cleared_at: new Date().toISOString(), url: URL_ };
+  const host = mount(document, mod.instanceControlHtml(r));
+  assert.match(host.querySelector('[data-api-cleared]').textContent, /forgotten by dan/);
+});
+
+test('Admin shows the effective fetch list read-only, with the never-allowed ranges', async () => {
+  const { document } = await setUp();
+  const { policyHtml } = await import('/static/next/admin/api_fetch.js');
+  const host = mount(document, policyHtml({ setting: 'RE_API_FETCH_ALLOW', source: 'default',
+    allow: ['localhost', '127.0.0.1', '::1'], always_deny: ['169.254.0.0/16', 'fe80::/10'], note: 'An entry without a port admits any port.' }));
+  assert.match(host.querySelector('[data-policy-allow]').textContent, /localhost.*127\.0\.0\.1.*::1/);
+  assert.match(host.querySelector('[data-policy-deny]').textContent, /169\.254\.0\.0\/16/);
+  assert.match(host.querySelector('[data-policy-source]').textContent, /default/);
+  assert.equal(host.querySelectorAll('input, button').length, 0, 'read-only: nothing to press or type in');
+  const empty = mount(document, policyHtml({ setting: 'X', source: 'environment', allow: [], always_deny: [] }));
+  assert.match(empty.querySelector('[data-policy-allow]').textContent, /nothing is allowed/);
+});

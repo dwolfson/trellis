@@ -40,6 +40,7 @@ BUILT_TAB_IDS = [
     "admin-resync",
     "admin-repair",
     "admin-discovery-sources",
+    "admin-api-fetch",
 ]
 
 

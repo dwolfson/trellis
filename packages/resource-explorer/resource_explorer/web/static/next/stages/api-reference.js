@@ -253,7 +253,9 @@ export function referenceHtml(ref, ui = {}) {
       i.source === 'committed_spec' ? ` <span class="font-mono">${esc(i.origin)}</span>` : ''} ${num(i.count)}</button>`).join(' ');
   const sel = ifaces[idx];
   const cmp = sel ? (idx === 0 ? (ref.comparisons || []) : []) : [];
-  const probs = (ref.problems || []).map((p) => `<div class="text-caps text-state-warn-on-dark" data-api-problem>${stateEntry('error').glyph} <span class="font-mono">${esc(p.path)}</span> · ${esc(p.reason)}</div>`).join('');
+  const probs = (ref.problems || []).map((p) => (p.kind === 'fragment'
+    ? `<div class="text-caps text-chrome-muted" data-api-fragment><span class="font-mono">${esc(p.path)}</span> · ${esc(p.reason)}</div>`
+    : `<div class="text-caps text-state-warn-on-dark" data-api-problem>${stateEntry('error').glyph} <span class="font-mono">${esc(p.path)}</span> · ${esc(p.reason)}</div>`)).join('');
   const inst = ref.instance;
   const instLine = inst && inst.status === 'failed'
     ? `<div data-api-instance-failed class="text-caps text-state-warn-on-dark">${stateEntry('error').glyph} last check of ${esc(inst.url)} failed · ${esc(inst.error)}${inst.fetched_at ? ` · showing the copy fetched ${esc(ago(inst.fetched_at))}` : ''}</div>` : '';
@@ -328,6 +330,7 @@ export function instanceControlHtml(ref, status = {}) {
     <div class="mt-[2px] flex flex-wrap items-baseline gap-x-s3 text-provenance" data-api-instance-line>
       ${state}
       ${inst ? '<button type="button" id="api-instance-recheck" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">re-check</button><button type="button" id="api-instance-clear" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">forget</button>' : ''}
+      ${!inst && ref.cleared ? `<span data-api-cleared class="text-ink-muted">forgotten by ${esc(ref.cleared.cleared_by || 'unknown')}${ref.cleared.cleared_at ? ` ${esc(ago(ref.cleared.cleared_at))}` : ''}</span>` : ''}
       ${(ref.interfaces || []).length ? '<button type="button" id="api-reference-open" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">open the API reference ›</button>' : ''}
     </div>`;
 }

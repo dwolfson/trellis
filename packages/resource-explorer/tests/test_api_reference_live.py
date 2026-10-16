@@ -55,7 +55,7 @@ class TestFetch:
         assert not res.ok and "no 'openapi' or 'swagger' key" in res.reason
 
     def test_yaml_content_accepted(self):
-        res = live.fetch_openapi("http://h/openapi.yaml", transport=_transport(
+        res = live.fetch_openapi("http://h/openapi.yaml", allow=["h"], resolver=lambda h, p: ["10.9.9.9"], transport=_transport(
             lambda r: httpx.Response(200, text=(FIX / "petstore-swagger2.yaml").read_text(),
                                      headers={"content-type": "application/yaml"})))
         assert res.ok and res.document["swagger"] == "2.0"
@@ -70,15 +70,15 @@ class TestFetch:
         def boom(request):
             raise httpx.ReadTimeout("slow", request=request)
         res = live.fetch_openapi(URL, timeout=2, transport=_transport(boom))
-        assert not res.ok and res.reason == "no answer within 2s"
+        assert not res.ok and res.reason == "no answer in time"
 
     def test_connection_refused_is_said(self):
         def boom(request):
             raise httpx.ConnectError("refused", request=request)
         res = live.fetch_openapi(URL, transport=_transport(boom))
-        assert not res.ok and res.reason.startswith("could not connect")
+        assert not res.ok and res.reason == "could not connect"
 
-    @pytest.mark.parametrize("status,needle", [(404, "404"), (401, "sign-in"), (500, "500")])
+    @pytest.mark.parametrize("status,needle", [(404, "404"), (401, "sign-in"), (500, "answered 500")])
     def test_http_errors(self, status, needle):
         res = live.fetch_openapi(URL, transport=_transport(lambda r: httpx.Response(status, text="x")))
         assert not res.ok and needle in res.reason
@@ -118,7 +118,14 @@ class TestFetch:
             hits.append(str(request.url))
             return httpx.Response(302, headers={"location": "http://evil.example/openapi.json"})
         res = live.fetch_openapi(URL, transport=_transport(handler))
-        assert not res.ok and "another host" in res.reason and hits == [URL]
+        assert not res.ok and "allowed addresses" in res.reason and len(hits) == 1
+
+    def test_redirect_to_another_allowed_host_is_still_refused_as_another_host(self):
+        def handler(request):
+            return httpx.Response(302, headers={"location": "http://other.test/openapi.json"})
+        res = live.fetch_openapi(URL, allow=["localhost", "other.test"], resolver=lambda h, p: ["127.0.0.1"],
+                                 transport=_transport(handler))
+        assert not res.ok and "another host" in res.reason
 
     def test_redirect_loop_bounded(self):
         res = live.fetch_openapi(URL, transport=_transport(lambda r: httpx.Response(302, headers={"location": "/api/openapi.json"})))
@@ -131,7 +138,7 @@ class TestRegister:
         assert row["ok"] and row["url"] == URL
         stored = live.load_instance(db, "tg")
         assert stored["url"] == URL and stored["fetched_at"] and stored["registered_by"] == "dan"
-        assert stored["document"]["info"]["title"] == "TestGen API" and stored["status"] == "ok"
+        assert live.instance_interface(db, "tg").title == "TestGen API" and stored["status"] == "ok"
 
     def test_rejected_registration_stores_nothing(self, db):
         row = live.register_instance(db, "tg", "http://localhost:8501/x", transport=_transport(
@@ -144,7 +151,7 @@ class TestRegister:
         again = live.refetch_instance(db, "tg", transport=_transport(lambda r: httpx.Response(503, text="down")))
         assert not again["ok"]
         stored = live.load_instance(db, "tg")
-        assert stored["document"]["openapi"] == "3.1.0"             # last good copy survives
+        assert len(live.instance_interface(db, "tg").operations) == 26       # last good copy survives
         assert stored["status"] == "failed" and "503" in stored["error"]
         assert stored["fetched_at"]                                    # the time of the copy shown, not of the failure
         assert stored["attempted_at"] >= stored["fetched_at"]
@@ -152,7 +159,7 @@ class TestRegister:
     def test_refetch_success_replaces(self, db):
         live.register_instance(db, "tg", URL, transport=_transport(_ok))
         live.refetch_instance(db, "tg", transport=_transport(lambda r: httpx.Response(200, json={"openapi": "3.0.0", "paths": {}})))
-        assert live.load_instance(db, "tg")["document"]["openapi"] == "3.0.0"
+        assert live.instance_interface(db, "tg").spec_version == "openapi 3.0.0"
 
     def test_refetch_without_registration(self, db):
         assert live.refetch_instance(db, "tg", transport=_transport(_ok))["reason"] == "no running-instance URL is registered"
@@ -169,10 +176,10 @@ class TestRegister:
         assert "running instance at http://localhost:8530/api/openapi.json, fetched" in iface.source_phrase
         assert len(iface.operations) == 26
 
-    def test_no_new_table_is_needed(self, db):
+    def test_content_lands_in_the_api_reference_tables(self, db):
+        live.register_instance(db, "tg", URL, by="dan", transport=_transport(_ok))
         with db._conn() as c:
-            before = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        live.register_instance(db, "tg", URL, transport=_transport(_ok))
-        with db._conn() as c:
-            after = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        assert before == after
+            assert c.execute("SELECT COUNT(*) FROM api_reference_operations").fetchone()[0] == 26
+            assert c.execute("SELECT COUNT(*) FROM api_reference_schemas").fetchone()[0] == 73
+            d = c.execute("SELECT origin, status, registered_by, source FROM api_reference_documents").fetchone()
+            assert (d["origin"], d["status"], d["registered_by"], d["source"]) == (URL, "ok", "dan", "running_instance")

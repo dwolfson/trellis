@@ -17,6 +17,56 @@ MAX_OPERATIONS = 3000
 MAX_SCHEMA_BYTES = 600_000
 
 
+def _no_alias_loader():
+    """A YAML SafeLoader that refuses aliases. A document of nested aliases ("billion laughs") is a few hundred
+    bytes that expands to gigabytes once it is turned into plain data; an API description has no use for them,
+    so a document that has one is rejected, not expanded."""
+    import yaml
+
+    class NoAliasLoader(yaml.SafeLoader):
+        def compose_node(self, parent, index):
+            if self.check_event(yaml.events.AliasEvent):
+                raise yaml.YAMLError("YAML aliases are not accepted")
+            return super().compose_node(parent, index)
+
+    return NoAliasLoader
+
+
+def json_size(obj, limit: int) -> int:
+    """An upper-bound-ish size of `obj` as JSON text, counted iteratively and abandoned the moment it passes
+    `limit` (ValueError), so measuring a hostile value costs at most `limit`, never its full expansion."""
+    total = 0
+    stack = [obj]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            total += 2
+            for k, v in cur.items():
+                total += len(str(k)) + 4
+                stack.append(v)
+        elif isinstance(cur, (list, tuple)):
+            total += 2 + len(cur)
+            stack.extend(cur)
+        else:
+            total += len(str(cur)) + 2
+        if total > limit:
+            raise ValueError("too large")
+    return total
+
+
+def bounded_dumps(obj, limit: int) -> str:
+    """json.dumps that refuses (ValueError) past `limit` characters instead of building a huge string."""
+    json_size(obj, limit * 2)
+    out: list = []
+    size = 0
+    for piece in json.JSONEncoder(default=str).iterencode(obj):
+        size += len(piece)
+        if size > limit:
+            raise ValueError("too large")
+        out.append(piece)
+    return "".join(out)
+
+
 def load_document(text: str, hint: str = "") -> dict:
     """JSON or YAML text -> the parsed value. Raises ValueError (a sentence) when it is neither; HTML is
     neither. `hint` (a file name or content type) only breaks the tie for text that starts like both."""
@@ -24,19 +74,22 @@ def load_document(text: str, hint: str = "") -> dict:
     if not body:
         raise ValueError("the body is empty")
     value = None
-    if body[0] in "{[":
-        try:
-            value = json.loads(body)
-        except ValueError:
-            value = None
-    if value is None:
-        if body[0] == "<":
-            raise ValueError("the body is markup, not JSON or YAML")
-        try:
+    try:
+        if body[0] in "{[":
+            try:
+                value = json.loads(body)
+            except ValueError:
+                value = None
+        if value is None:
+            if body[0] == "<":
+                raise ValueError("the body is markup, not JSON or YAML")
             import yaml
-            value = yaml.safe_load(body)
-        except Exception as exc:  # yaml.YAMLError and friends
-            raise ValueError(f"the body is not JSON or YAML ({type(exc).__name__})") from exc
+            try:
+                value = yaml.load(body, Loader=_no_alias_loader())
+            except yaml.YAMLError as exc:
+                raise ValueError("the body is not JSON or YAML, or uses YAML aliases, which are not accepted") from exc
+    except RecursionError as exc:
+        raise ValueError("the document is nested too deeply to read") from exc
     if not isinstance(value, (dict, list)):
         raise ValueError("the body is not a JSON or YAML mapping")
     return value
@@ -174,8 +227,8 @@ def _request_body_v3(doc: dict, op: dict):
 def _base_paths(doc: dict, v3: bool) -> list:
     out = []
     if v3:
-        for s in doc.get("servers") or []:
-            path = urlparse(str((s or {}).get("url", ""))).path.rstrip("/")
+        for s in _as_list(doc.get("servers")):
+            path = urlparse(str(_as_dict(s).get("url", ""))).path.rstrip("/")
             if path and path not in out:
                 out.append(path)
     else:
@@ -187,68 +240,97 @@ def _base_paths(doc: dict, v3: bool) -> list:
 
 def parse_openapi(doc: dict, *, source: str, origin: str = "", as_of: str = "",
                   max_operations: int = MAX_OPERATIONS, max_schema_bytes: int = MAX_SCHEMA_BYTES) -> Interface:
-    """The interface a spec describes. Raises ValueError with the rejection sentence when it is not a spec."""
+    """The interface a spec describes. Raises ValueError, and only ValueError, with a sentence when the
+    document is not a spec or is too malformed to read (an operation that cannot be read is skipped and
+    counted in the notes; it does not take the others down)."""
     reason = openapi_rejection(doc)
     if reason:
         raise ValueError(reason)
+    try:
+        return _parse(doc, source, origin, as_of, max_operations, max_schema_bytes)
+    except RecursionError as exc:
+        raise ValueError("not an OpenAPI document: nested too deeply to read") from exc
+    except (TypeError, AttributeError, KeyError, IndexError, UnicodeError) as exc:
+        raise ValueError(f"not an OpenAPI document: malformed ({type(exc).__name__})") from exc
+
+
+def _as_list(v):
+    return v if isinstance(v, list) else []
+
+
+def _as_dict(v):
+    return v if isinstance(v, dict) else {}
+
+
+def _parse_operation(doc, path, meth, op, shared, v3, default_security, doc_consumes, doc_produces) -> Operation:
+    merged: dict = {}
+    for p in shared + [_resolve(doc, p) for p in _as_list(op.get("parameters"))]:
+        if isinstance(p, dict) and p.get("name"):
+            merged[(str(p.get("name")), str(p.get("in")))] = p
+    body = None
+    if v3:
+        body = _request_body_v3(doc, op)
+    else:
+        bp = next((p for p in merged.values() if p.get("in") == "body"), None)
+        if bp:
+            body = {"required": bool(bp.get("required")), "schema_name": schema_name(bp.get("schema")),
+                    "content_types": [str(x) for x in _as_list(op.get("consumes")) or doc_consumes]}
+    params = [_param(p) for p in merged.values() if p.get("in") != "body"]
+    sec = op["security"] if "security" in op else default_security
+    return Operation(
+        key=f"{meth} {path}", name=f"{meth} {path}", kind="http_api", method=meth, path=str(path),
+        summary=str(op.get("summary") or ""), description=str(op.get("description") or ""),
+        operation_id=str(op.get("operationId") or ""),
+        tags=[str(t) for t in _as_list(op.get("tags"))], parameters=params, request_body=body,
+        responses=_responses(doc, op, v3, [str(x) for x in _as_list(op.get("produces")) or doc_produces]),
+        security=_security_names(sec), deprecated=bool(op.get("deprecated")))
+
+
+def _parse(doc, source, origin, as_of, max_operations, max_schema_bytes) -> Interface:
     v3 = "openapi" in doc
-    info = doc.get("info") if isinstance(doc.get("info"), dict) else {}
+    info = _as_dict(doc.get("info"))
     spec_version = f"openapi {doc['openapi']}" if v3 else f"swagger {doc['swagger']}"
     default_security = doc.get("security")
-    doc_consumes = list(doc.get("consumes") or [])
-    doc_produces = list(doc.get("produces") or [])
+    doc_consumes = [str(x) for x in _as_list(doc.get("consumes"))]
+    doc_produces = [str(x) for x in _as_list(doc.get("produces"))]
     ops: list[Operation] = []
     total = 0
+    unreadable = 0
     for path, item in doc["paths"].items():
         item = _resolve(doc, item)
         if not isinstance(item, dict):
             continue
-        shared = [_resolve(doc, p) for p in item.get("parameters") or []]
+        shared = [_resolve(doc, p) for p in _as_list(item.get("parameters"))]
         for method in item:
             if str(method).lower() not in _METHODS or not isinstance(item[method], dict):
                 continue
             total += 1
             if len(ops) >= max_operations:
                 continue
-            op = item[method]
-            meth = str(method).upper()
-            merged: dict = {}
-            for p in shared + [_resolve(doc, p) for p in op.get("parameters") or []]:
-                if isinstance(p, dict) and p.get("name"):
-                    merged[(p.get("name"), p.get("in"))] = p
-            body = None
-            if v3:
-                body = _request_body_v3(doc, op)
-            else:
-                bp = next((p for p in merged.values() if p.get("in") == "body"), None)
-                if bp:
-                    body = {"required": bool(bp.get("required")), "schema_name": schema_name(bp.get("schema")),
-                            "content_types": list(op.get("consumes") or doc_consumes)}
-            params = [_param(p) for p in merged.values() if p.get("in") != "body"]
-            sec = op["security"] if "security" in op else default_security
-            ops.append(Operation(
-                key=f"{meth} {path}", name=f"{meth} {path}", kind="http_api", method=meth, path=str(path),
-                summary=str(op.get("summary") or ""), description=str(op.get("description") or ""),
-                operation_id=str(op.get("operationId") or ""),
-                tags=[str(t) for t in op.get("tags") or []], parameters=params, request_body=body,
-                responses=_responses(doc, op, v3, list(op.get("produces") or doc_produces)),
-                security=_security_names(sec), deprecated=bool(op.get("deprecated"))))
-    raw_schemas = ((doc.get("components") or {}).get("schemas") if v3 else doc.get("definitions")) or {}
+            try:
+                ops.append(_parse_operation(doc, path, str(method).upper(), item[method], shared, v3,
+                                            default_security, doc_consumes, doc_produces))
+            except (TypeError, AttributeError, KeyError, IndexError, ValueError, UnicodeError):
+                unreadable += 1
+    raw_schemas = _as_dict(_as_dict(doc.get("components")).get("schemas") if v3 else doc.get("definitions"))
     schemas: dict = {}
     used = 0
     notes: list = []
+    if unreadable:
+        notes.append(f"{unreadable} operation(s) could not be read and are left out")
     for name, sch in raw_schemas.items():
-        size = len(json.dumps(sch, default=str))
-        if used + size > max_schema_bytes:
+        try:
+            size = json_size(sch, max_schema_bytes - used)
+        except ValueError:
             notes.append(f"schemas cut at {len(schemas)} of {len(raw_schemas)} (size cap); the names are still shown")
             break
         schemas[str(name)] = sch
         used += size
     if total > len(ops):
         notes.append(f"showing {len(ops)} of {total} operations (cap)")
-    raw_sec = ((doc.get("components") or {}).get("securitySchemes") if v3 else doc.get("securityDefinitions")) or {}
+    raw_sec = _as_dict(_as_dict(doc.get("components")).get("securitySchemes") if v3 else doc.get("securityDefinitions"))
     groups = {}
-    for t in doc.get("tags") or []:
+    for t in _as_list(doc.get("tags")):
         if isinstance(t, dict) and t.get("name"):
             groups[str(t["name"])] = str(t.get("description") or "")
     return Interface(

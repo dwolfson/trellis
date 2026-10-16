@@ -7,6 +7,10 @@ PUT    /api/api-reference/{slug}/instance           {url}: fetch read-only, keep
 POST   /api/api-reference/{slug}/instance/refetch   re-check the registered URL
 DELETE /api/api-reference/{slug}/instance           forget the URL and the stored copy
 
+The three writes need a signed-in author (401 otherwise; the name is recorded, and a clear is recorded too, not a
+silent delete) and the same resource-write check the other per-repository writes use (403 with the reason).
+Reading is open.
+
 A rejected URL is an ANSWER (HTTP 200, `ok: false`, `reason`: "not an OpenAPI document: got text/html"), not a
 fault, so the control can show the sentence beside the field.
 """
@@ -17,9 +21,9 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from resource_explorer.api_reference import live, service
-from resource_explorer.auth import get_current_user
+from resource_explorer.api_reference import fetch_policy, live, service, store
 from resource_explorer.registry import ProjectRegistry
+from resource_explorer.web.routes.curate import _require_author, require_resource_write
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -34,6 +38,11 @@ def _transport():
     return None
 
 
+def _resolver():
+    """None in production (the system resolver); tests substitute one."""
+    return None
+
+
 class InstanceBody(BaseModel):
     url: str
 
@@ -41,6 +50,24 @@ class InstanceBody(BaseModel):
 def _repo(registry: ProjectRegistry, slug: str) -> None:
     if registry.get(slug) is None:
         raise HTTPException(status_code=404, detail=f"repository '{slug}' not found")
+
+
+@router.get("/policy")
+def get_policy() -> dict:
+    """The effective address policy for registered API documents, read-only (the Admin page shows it)."""
+    return fetch_policy.describe()
+
+
+@router.get("/{slug}/operations")
+def search_operations(slug: str, q: str = "", path: str = "", method: str = "", source: str = "",
+                      limit: int = 200) -> dict:
+    """Operations of this repository from the stored documents, filtered by a word, a path fragment, a method
+    or a source (committed_spec | running_instance)."""
+    registry = _registry()
+    _repo(registry, slug)
+    rows = store.find_operations(registry, slug, source=source or None, text=q or None,
+                                 path_contains=path or None, method=method or None, limit=max(1, min(limit, 1000)))
+    return {"slug": slug, "count": len(rows), "operations": rows}
 
 
 @router.get("/{slug}")
@@ -54,20 +81,24 @@ def get_reference(slug: str) -> dict:
 def register_instance(slug: str, body: InstanceBody, request: Request) -> dict:
     registry = _registry()
     _repo(registry, slug)
-    user = get_current_user(request) or {}
-    by = user.get("user_id") or user.get("sub") or user.get("username") or ""
-    return live.register_instance(registry, slug, body.url, by=by, transport=_transport())
+    by = _require_author(request, "register an API address")
+    require_resource_write(registry, "repo", slug, "link")
+    return live.register_instance(registry, slug, body.url, by=by, transport=_transport(), resolver=_resolver())
 
 
 @router.post("/{slug}/instance/refetch")
-def refetch_instance(slug: str) -> dict:
+def refetch_instance(slug: str, request: Request) -> dict:
     registry = _registry()
     _repo(registry, slug)
-    return live.refetch_instance(registry, slug, transport=_transport())
+    _require_author(request, "re-check an API address")
+    require_resource_write(registry, "repo", slug, "link")
+    return live.refetch_instance(registry, slug, transport=_transport(), resolver=_resolver())
 
 
 @router.delete("/{slug}/instance")
-def clear_instance(slug: str) -> dict:
+def clear_instance(slug: str, request: Request) -> dict:
     registry = _registry()
     _repo(registry, slug)
-    return {"cleared": live.clear_instance(registry, slug)}
+    by = _require_author(request, "forget an API address")
+    require_resource_write(registry, "repo", slug, "unlink")
+    return {"cleared": live.clear_instance(registry, slug, by=by)}
