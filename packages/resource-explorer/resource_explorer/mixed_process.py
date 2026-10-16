@@ -587,12 +587,18 @@ _STARTED_WORDS = {
 }
 
 
-def run_line_words(line: RunLine, *, started: str = "", started_in: str = "", started_by: str = "") -> str:
+def run_line_words(line: RunLine, *, started: str = "", started_in: str = "", started_by: str = "",
+                   expected_steps: list[str] | None = None) -> str:
     """The run line: "Postgres survey then derived · step 1 PostgreSQLSurvey ✓ report cb92eedc · step 2
     re-database-staleness ✓ report 1a2b3c4d · started by peterprofile 10-15". A step Egeria never created after a
     failed step says "step 2 not started · step 1 failed", never "pending". `started_in` (case 3) says where the run
     was started ("started in Egeria by <requester>", "started in RE by <person>"); `started_by` names the person when
-    RE recorded who pressed, else the actions' requester."""
+    RE recorded who pressed, else the actions' requester.
+
+    `expected_steps` is the run's own stored step list (`declared.expected_steps`, request types in order): the line
+    walks THAT list, the one `derive_mixed_state` grades against, never the definition as it is now. None (a row
+    stored before the list existed) walks the steps the run has, plus the one a failed or active step is waited
+    on for; no "not started yet" is ever said of a step the run never had."""
     process = line.process
     tail = []
     who = started_by or line.requester
@@ -609,22 +615,29 @@ def run_line_words(line: RunLine, *, started: str = "", started_in: str = "", st
         return " · ".join(parts + tail)
     parts = [process.short_name]
     by_request = {s.request_type: s for s in line.steps}
+    declared_by_type = {st.request_type: st for st in process.steps}
+    if expected_steps:
+        walk = [(i + 1, rt, declared_by_type[rt].label if rt in declared_by_type else rt)
+                for i, rt in enumerate(expected_steps)]
+    else:
+        walk = [(st.number, st.request_type, st.label) for st in sorted(process.steps, key=lambda s: s.number)]
     previous: EngineActionView | None = None
     previous_number = 0
-    for step in sorted(process.steps, key=lambda s: s.number):
-        view = by_request.get(step.request_type)
+    for number, request_type, label in walk:
+        view = by_request.get(request_type)
         if (view is None and previous is not None and not previous.active and not previous.succeeded
-                and not _always_follows(process, previous_number, step.number, previous)):
-            parts.append(f"step {step.number} not started · step {previous_number} failed")
+                and not _always_follows(process, previous_number, number, previous)):
+            parts.append(f"step {number} not started · step {previous_number} failed")
             break
         if view is None and previous is not None and previous.active:
-            parts.append(f"step {step.number} {step.label} waits for step {previous_number}")
+            parts.append(f"step {number} {label} waits for step {previous_number}")
             break
         if view is None:
-            parts.append(f"step {step.number} {step.label} not started yet")
-            break
-        parts.append(_step_words(step.number, step.label, view, refusal_ok=_is_definition(process)))
-        previous, previous_number = view, step.number
+            if expected_steps:      # a step this run's own list has and it has not reached yet
+                parts.append(f"step {number} {label} not started yet")
+            break                   # legacy row: it never had this step, so nothing is said of it
+        parts.append(_step_words(number, label, view, refusal_ok=_is_definition(process)))
+        previous, previous_number = view, number
     if line.note:
         parts.append(line.note)
     return " · ".join(parts + tail)
@@ -645,10 +658,22 @@ def _always_follows(process: MixedProcess, from_step: int, to_step: int, previou
     return False
 
 
-def run_line_dict(line: RunLine, *, started: str = "", started_in: str = "", started_by: str = "") -> dict:
+def trim_words_to_steps(words: str, graded: int) -> str:
+    """A run line stored before the fix: drop a "step N ... not started yet" / "waits for step M" part for a step
+    beyond the `graded` steps the run is graded on (the current definition's later steps, which this run never had)."""
+    import re
+
+    keep = [p for p in (words or "").split(" · ")
+            if not ((m := re.match(r"step (\d+) .*(not started yet|waits for step \d+)$", p)) and int(m.group(1)) > graded)]
+    return " · ".join(keep)
+
+
+def run_line_dict(line: RunLine, *, started: str = "", started_in: str = "", started_by: str = "",
+                  expected_steps: list[str] | None = None) -> dict:
     """The run line for a page: its words and each step's action, status, guards and report."""
     return {"instance_guid": line.instance_guid, "process_name": line.process_name, "note": line.note,
-            "words": run_line_words(line, started=started, started_in=started_in, started_by=started_by),
+            "words": run_line_words(line, started=started, started_in=started_in, started_by=started_by,
+                                    expected_steps=expected_steps),
             "steps": [{"action_guid": s.guid, "request_type": s.request_type, "status": s.status,
                        "guards": list(s.completion_guards), "report_guid": s.report_guid,
                        "message": s.message[:500],

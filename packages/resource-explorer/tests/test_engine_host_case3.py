@@ -462,8 +462,11 @@ def test_an_egeria_coordinated_definition_run_reads_as_one_line_with_every_step(
     assert line.process.display_name == "Database Analysis Survey"
     words = mixed_process.run_line_words(line, started_in=mixed_process.STARTED_IN_EGERIA)
     assert words == ("Database Analysis Survey · step 1 postgres_column_profile ✓ report r1aaaaaa · step 2 "
-                     "postgres_nested_columns ✓ report r2bbbbbb · step 3 db_derived ⊘ refused · step 4 "
-                     "postgres_operations not started yet · coordinated by Egeria · started in Egeria by peterprofile")
+                     "postgres_nested_columns ✓ report r2bbbbbb · step 3 db_derived ⊘ refused · "
+                     "coordinated by Egeria · started in Egeria by peterprofile")
+    # the same line under a stored list that goes on to step 4: that step is the run's own, not reached yet
+    stored = [st.request_type for st in mixed_process.definition_process(ANALYSIS).steps]
+    assert "step 4 postgres_operations not started yet" in mixed_process.run_line_words(line, expected_steps=stored)
     from_re = mixed_process.run_line_words(line, started_in=mixed_process.STARTED_IN_RE, started_by="dan")
     assert from_re.endswith("· coordinated by Egeria · started by dan")
     only_re = mixed_process.run_line_words(line, started_in=mixed_process.STARTED_IN_RE_ONLY, started_by="dan")
@@ -1023,3 +1026,89 @@ def test_a_finished_run_is_not_running_again_because_the_definition_grew(reg, eg
     going = dict(row, declared=json.dumps({"expected_steps": [s.request_type for s in full.steps],
                                            "process_run": {"words": "w", "steps": four}}))
     assert nsr.derive_mixed_state(going)["state"] == "running"
+
+
+# ── the run LINE walks the same step list the state is graded on (2026-10-16 live bug) ───────────────────────
+
+class _ViewsPort:
+    """The Egeria client boundary only: the instance's engine actions, as the read-back returns them."""
+    def __init__(self, views):
+        self.views = views
+
+    def read_process_run(self, guid):
+        return self.views
+
+
+def _views(n):
+    from resource_explorer import mixed_process
+    from resource_explorer.mixed_process import EngineActionView, Neighbour
+
+    out = []
+    for i, st in enumerate(mixed_process.definition_process(ANALYSIS).steps[:n]):
+        out.append(EngineActionView(
+            guid=f"ea-{i}", status="COMPLETED", request_type=st.request_type, requester="peterprofile",
+            process_name=f"{ANALYSIS}@2026-10-15::x", instance_guid=INSTANCE,
+            completion_guards=["survey-completed", "Any"], report_guids=[f"b7bdb30b{i}"],
+            previous=[Neighbour(f"ea-{i - 1}", "")] if i and "guid" in Neighbour.__dataclass_fields__ else []))
+    return out
+
+
+def _nsr_line(reg, extra):
+    from resource_explorer import mixed_process, native_survey_run as nsr
+
+    assert reg.record_native_survey_submission_once(
+        "database", "coco_pharma", ANALYSIS, "2026-10-15T09:00:00", engine_action_guid=INSTANCE,
+        submitted_by="dan", started_as="process", started_by="egeria", started_in="re", declared_extra=extra)
+    [run] = reg.list_native_survey_runs("database", "coco_pharma", ANALYSIS)
+    return nsr, run
+
+
+def test_the_run_line_ends_where_the_run_was_graded_not_at_the_grown_definition(reg, egeria, no_connection,
+                                                                              monkeypatch):
+    from resource_explorer import mixed_process
+
+    monkeypatch.setenv("RE_ENGINE_HOST_ENABLED", "true")
+    full = mixed_process.definition_process(ANALYSIS)
+    assert len(full.steps) == 8
+    with monkeypatch.context() as m:
+        _four_step_definition(m)
+        nsr, run = _nsr_line(reg, mixed_process.expected_steps_record(ANALYSIS))
+    assert len(json.loads(run["declared"])["expected_steps"]) == 4
+    # the 4 steps finish; the definition is now 8; the NEXT read
+    nsr.refresh_mixed_run(reg, _ViewsPort(_views(4)), run, entity_type="database", slug="coco_pharma")
+    [row] = reg.list_native_survey_runs("database", "coco_pharma", ANALYSIS)
+    # what the read WROTE (the writer walks the stored list), apart from what the reader trims
+    assert "not started yet" not in json.loads(row["declared"])["process_run"]["words"]
+    derived = nsr.derive_mixed_state(row)
+    ctl = nsr.coordinate_control(reg, "database", "coco_pharma", ANALYSIS)
+    for line in (derived["line"], ctl["line"]):
+        assert line.count("step ") == 4 and "not started yet" not in line and "waits for" not in line, line
+        assert "step 4 " in line and "step 5" not in line
+    assert derived["state"] == "complete"
+
+    # a still-running stored-8 run keeps its "not started yet"
+    reg.merge_native_survey_declared(INSTANCE, {"expected_steps": [s.request_type for s in full.steps]})
+    [row8] = reg.list_native_survey_runs("database", "coco_pharma", ANALYSIS)
+    nsr.refresh_mixed_run(reg, _ViewsPort(_views(4)), row8, entity_type="database", slug="coco_pharma")
+    [row8] = reg.list_native_survey_runs("database", "coco_pharma", ANALYSIS)
+    d8 = nsr.derive_mixed_state(row8)
+    assert d8["state"] == "running" and d8["line"].count("step ") == 5 and "step 5" in d8["line"]
+    assert "not started yet" in d8["line"]
+
+
+def test_a_legacy_row_never_says_not_started_yet_of_a_step_it_never_had(reg, egeria, no_connection, monkeypatch):
+    from resource_explorer import mixed_process, native_survey_run as nsr
+
+    monkeypatch.setenv("RE_ENGINE_HOST_ENABLED", "true")
+    nsr_, run = _nsr_line(reg, {})            # no stored list: a row from before #716
+    assert "expected_steps" not in json.loads(run["declared"])
+    nsr.refresh_mixed_run(reg, _ViewsPort(_views(4)), run, entity_type="database", slug="coco_pharma")
+    [row] = reg.list_native_survey_runs("database", "coco_pharma", ANALYSIS)
+    assert "not started yet" not in nsr.derive_mixed_state(row)["line"]
+    # and a line STORED before the fix is not shown as it was written
+    stale = json.loads(row["declared"])
+    stale["process_run"]["words"] = ("Database Analysis Survey · step 1 a ✓ report b7bdb30b · step 2 b ✓ · "
+                                     "step 3 c ✓ · step 4 postgres_operations ✓ report b7bdb30b · "
+                                     "step 5 change_rates not started yet · coordinated by Egeria · started by dan")
+    out = nsr.derive_mixed_state(dict(row, declared=json.dumps(stale)))["line"]
+    assert "not started yet" not in out and out.endswith("coordinated by Egeria · started by dan")
