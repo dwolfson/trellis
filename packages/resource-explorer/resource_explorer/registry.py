@@ -434,6 +434,7 @@ API_REFERENCE_DDL = (
         byte_count     BIGINT DEFAULT NULL,
         captured_at    TEXT NOT NULL,
         attempted_at   TEXT NOT NULL DEFAULT '',
+        attempted_by   TEXT NOT NULL DEFAULT '',
         captured_by    TEXT NOT NULL DEFAULT '',
         registered_by  TEXT NOT NULL DEFAULT '',
         registered_at  TEXT NOT NULL DEFAULT '',
