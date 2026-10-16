@@ -100,31 +100,6 @@ ___
 
 ## Create Governance Action Process Step
 ### Display Name
-Database Analysis Survey — Sql Analysis
-
-### Qualified Name
-GovActionProcessStep::DatabaseAnalysisSurvey::sql_analysis
-
-### Description
-SQL view dependencies, column-level lineage and complexity scores.
-
-### Produced Guards
-survey-completed, survey-invalid, survey-failed, Any
-
-### Ignore Multiple Triggers
-true
-
-### Additional Properties
-| Parameter Name | Parameter Value |
-|---|---|
-| executes_at | resource-explorer |
-| supported_technology_type | PostgreSQL Database |
-| re_analysis_step | sql_analysis |
-
-___
-
-## Create Governance Action Process Step
-### Display Name
 Database Analysis Survey — Change Rates
 
 ### Qualified Name
@@ -231,7 +206,7 @@ Database Analysis Survey
 GovActionProcess::DatabaseAnalysisSurvey
 
 ### Description
-Every catalog-intent: analysis Postgres database analysis: value sampling and data-class/reference-data matching (postgres_column_profile), nested JSON/JSONB/XML column profiling (postgres_nested_columns), the derived-from-stored-rows analyses (db_derived: schema_conventions, db_change_rates, schema_diff, grant_change), and the operations bundle's analysis-tier member (db_external_dependencies, via postgres_operations — see that step's own note in this CSV for why it is chained into more than one Survey Definition), SQL view dependencies and lineage (sql_analysis), and the installed library steps change_rates, database_staleness, hub_tables and statistics_freshness.
+Every catalog-intent: analysis Postgres database analysis: value sampling and data-class/reference-data matching (postgres_column_profile), nested JSON/JSONB/XML column profiling (postgres_nested_columns), the derived-from-stored-rows analyses (db_derived: schema_conventions, db_change_rates, schema_diff, grant_change), and the operations bundle's analysis-tier member (db_external_dependencies, via postgres_operations — see that step's own note in this CSV for why it is chained into more than one Survey Definition), and the installed library steps change_rates, database_staleness, hub_tables and statistics_freshness.
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -289,18 +264,6 @@ ___
 ## Link Next Process Step
 ### Governance Action Process Step
 GovActionProcessStep::DatabaseAnalysisSurvey::postgres_operations
-
-### Next Governance Action Process Step
-GovActionProcessStep::DatabaseAnalysisSurvey::sql_analysis
-
-### Guard
-Any
-
-___
-
-## Link Next Process Step
-### Governance Action Process Step
-GovActionProcessStep::DatabaseAnalysisSurvey::sql_analysis
 
 ### Next Governance Action Process Step
 GovActionProcessStep::DatabaseAnalysisSurvey::change_rates
@@ -403,21 +366,6 @@ re-postgres-operations
 
 ### Description
 Egeria dispatches GovActionProcessStep::DatabaseAnalysisSurvey::postgres_operations to Resource Explorer's engine, which claims it and runs RE step postgres_operations.
-
-___
-
-## Link Action to Action Executor
-### Governance Action Type
-GovActionProcessStep::DatabaseAnalysisSurvey::sql_analysis
-
-### Governance Engine
-ResourceExplorerSurvey
-
-### Request Type
-re-sql-analysis
-
-### Description
-Egeria dispatches GovActionProcessStep::DatabaseAnalysisSurvey::sql_analysis to Resource Explorer's engine, which claims it and runs RE step sql_analysis.
 
 ___
 

@@ -119,6 +119,13 @@ class SurveyTypesCsvError(ValueError):
     `generate_repo_survey_definition.py`'s identical guard."""
 
 
+# Steps deliberately in no Survey Definition, each with the reason. sql_analysis re-runs the whole default
+# database survey, so the owner left it out of every definition (decision 2026-10-16).
+NOT_IN_ANY_DEFINITION = {
+    "sql_analysis": "re-runs the whole default database survey; left out by owner decision 2026-10-16",
+}
+
+
 def load_specs_from_csv(csv_path: Path = SPECS_CSV) -> list[SurveyDefSpec]:
     groups: dict[tuple[str, str], dict] = {}
     order: list[tuple[str, str]] = []
@@ -166,7 +173,9 @@ def load_specs_from_csv(csv_path: Path = SPECS_CSV) -> list[SurveyDefSpec]:
     # than hard-fail, same reasoning as the repo generator's identical
     # guard.
     referenced = {key for spec in specs for key in spec.step_keys}
-    unreferenced = [key for key in DATABASE_STEP_REGISTRY if key not in referenced]
+    unreferenced = [
+        key for key in DATABASE_STEP_REGISTRY if key not in referenced and key not in NOT_IN_ANY_DEFINITION
+    ]
     if unreferenced:
         print(
             f"WARNING: DATABASE_STEP_REGISTRY step(s) with no Survey Type "
