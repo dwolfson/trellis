@@ -179,6 +179,7 @@ async def list_servers():
                     "database_name": d.database_name,
                     "last_surveyed_at": d.last_surveyed_at,
                     "status": d.status.value,
+                    "egeria_host": d.egeria_host or "",
                 }
                 for d in dbs
             ],
@@ -188,6 +189,7 @@ async def list_servers():
 
 @router.post("/register", response_model=ServerSummary)
 async def register_server(req: ServerRegistration):
+    from resource_explorer.egeria_host import default_egeria_host
     from resource_explorer.registry import DatabaseServer, ProjectRegistry
     from resource_explorer.web.routes._validation import ignore_egeria_credentials
 
@@ -204,7 +206,7 @@ async def register_server(req: ServerRegistration):
         description=req.description,
         db_user=req.db_user,
         db_password=req.db_password,
-        egeria_host=req.egeria_host,
+        egeria_host=default_egeria_host(req.host, req.egeria_host),
         egeria_url=req.egeria_url,
         egeria_server=req.egeria_server,
         group_slug=req.group_slug,
@@ -225,6 +227,48 @@ async def register_server(req: ServerRegistration):
         registered_at=server.registered_at,
         group_slug=server.group_slug or "",
     )
+
+
+class ServerEgeriaHostUpdate(BaseModel):
+    egeria_host: str = ""
+    #: When set, databases of this server whose egeria_host still equals this old value take the new one.
+    #: A database with any other value (its own override) is never touched.
+    carry_databases_from: str | None = None
+
+
+@router.patch("/{slug}/egeria-host")
+async def update_server_egeria_host(slug: str, req: ServerEgeriaHostUpdate) -> dict:
+    """Change ONLY this server's egeria_host. `carriable` lists its databases that still carry the old value;
+    nothing is carried unless `carry_databases_from` names that old value, and each carried database passes
+    the same write check as a database edit (one refusal, 403, and nothing is changed)."""
+    from resource_explorer.egeria_host import NOTE_IN_EGERIA, check_egeria_host, default_egeria_host
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.web.routes.curate import authorize_resource_write
+
+    registry = ProjectRegistry()
+    server = registry.get_server(slug)
+    if not server:
+        raise HTTPException(404, f"Server '{slug}' not found")
+    try:
+        value = default_egeria_host(server.host, check_egeria_host(req.egeria_host))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    previous = server.egeria_host or ""
+    old = previous if req.carry_databases_from is None else req.carry_databases_from.strip()
+    candidates = [d for d in registry.list_databases(server_slug=slug)
+                  if (d.egeria_host or "") == old and old != value]
+    carriable = [{"slug": d.slug, "in_egeria": bool(d.egeria_asset_guid or "")} for d in candidates]
+    carried: list[dict] = []
+    if req.carry_databases_from is not None:
+        for d in candidates:
+            await authorize_resource_write(registry, "database", d.slug, write="publish")
+        carried, carriable = carriable, []
+    registry.update_egeria_host("server", slug, value)
+    for c in carried:
+        registry.update_egeria_host("database", c["slug"], value)
+    return {"slug": server.slug, "previous": previous, "egeria_host": value, "carriable": carriable,
+            "carried": carried,
+            "note": NOTE_IN_EGERIA if any(c["in_egeria"] for c in carried) else ""}
 
 
 @router.delete("/{slug}")
@@ -462,7 +506,7 @@ async def get_server(slug: str) -> ServerSummary:
             len(server.last_run_candidates) if server.last_run_candidates is not None else None),
         databases=[{"slug": d.slug, "display_name": d.display_name,
                     "database_name": d.database_name, "last_surveyed_at": d.last_surveyed_at,
-                    "status": d.status.value} for d in dbs],
+                    "status": d.status.value, "egeria_host": d.egeria_host or ""} for d in dbs],
     )
 
 

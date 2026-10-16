@@ -1162,6 +1162,16 @@ export const getDatabaseRegistration = (slug) =>
 export const changeDatabaseCredentials = (slug, { user, password }) =>
   patch(`/api/databases/${encodeURIComponent(slug)}/credentials`, { db_user: user, db_password: password });
 
+/** Change ONLY the Egeria-visible host of a database / a server. A server's reply lists the databases
+ *  that still carry the old value (`carriable`); pass `carryFrom` (that old value) to carry the new one to
+ *  them. A database with any other value is never touched. */
+export const changeDatabaseEgeriaHost = (slug, egeriaHost) =>
+  patch(`/api/databases/${encodeURIComponent(slug)}/egeria-host`, { egeria_host: egeriaHost });
+export const changeServerEgeriaHost = (slug, egeriaHost, carryFrom) =>
+  patch(`/api/db-servers/${encodeURIComponent(slug)}/egeria-host`,
+    carryFrom === undefined ? { egeria_host: egeriaHost }
+      : { egeria_host: egeriaHost, carry_databases_from: carryFrom });
+
 /** The registry / .omsecrets drift check (collection presence, never a value). */
 export const getCredentialDrift = (slug) =>
   get(`/api/databases/${encodeURIComponent(slug)}/credential-drift`);

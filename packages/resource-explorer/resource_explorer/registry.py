@@ -12853,6 +12853,13 @@ class ProjectRegistry:
                 :status, :registered_at, :error_message, :group_slug
             )""", data)
 
+    def update_egeria_host(self, entity_type: str, slug: str, egeria_host: str) -> None:
+        """Set ONLY egeria_host on a database or a server (no other field, no history touched)."""
+        table = {"database": "databases", "server": "db_servers"}[entity_type]
+        with self._conn() as conn:
+            conn.execute(f"UPDATE {table} SET egeria_host = ? WHERE slug = ?",
+                         (egeria_host, self._normalize_slug(slug)))
+
     def get_server(self, slug: str) -> DatabaseServer | None:
         """Retrieve a database server by slug."""
         normalized = self._normalize_slug(slug)

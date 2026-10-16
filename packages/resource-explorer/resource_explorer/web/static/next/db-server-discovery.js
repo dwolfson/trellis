@@ -53,6 +53,7 @@ import { saveCsv } from '/static/next/download.js';
 import { blankCredentialCells } from '/static/next/csv-guard.js';
 import { credentialChangeHtml, bindCredentialChange } from '/static/next/credential-change.js';
 import { ago } from '/static/next/format.js';
+import { egeriaHostLineHtml, bindEgeriaHostEdit } from '/static/next/egeria-host-edit.js';
 import {
   registerOneDatabaseHtml, bindRegisterOneDatabase, resetRegisterOneDatabase,
 } from '/static/next/db-register.js';
@@ -313,6 +314,7 @@ function savedHtml() {
         </div>
       </div>
       ${serverEgeriaHtml(s)}
+      ${egeriaHostLineHtml('server', s.slug, s.egeria_host)}
       <div class="mt-s2 text-provenance text-ink-muted">
         ${(s.databases || []).length
           ? `${s.databases.length} registered from this server:`
@@ -323,6 +325,7 @@ function savedHtml() {
           d.last_surveyed_at ? `surveyed ${esc(ago(d.last_surveyed_at))}` : 'never surveyed'}
         <button type="button" data-change-cred="${esc(d.slug)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">Change credentials…</button>
         <div data-cred-host="${esc(d.slug)}" class="w-full"></div>
+        <div class="w-full">${egeriaHostLineHtml('database', d.slug, d.egeria_host)}</div>
       </div>`).join('')}
       <div data-test-result="${esc(s.slug)}"></div>
     </div>`;
@@ -1197,6 +1200,15 @@ function bind(el) {
     hostEl.innerHTML = credentialChangeHtml({ slug, db_user: '' });
     bindCredentialChange(hostEl, slug, { onCancel: () => { hostEl.innerHTML = ''; } });
   }));
+  el.querySelectorAll('[data-eh]').forEach((line) => {
+    const [kind, slug] = line.dataset.eh.split(/:(.*)/s);
+    bindEgeriaHostEdit(line, kind, slug, kind === 'server' ? { onCarried: (slugs, value) => {
+      slugs.forEach((sl) => {
+        const v = el.querySelector(`[data-eh="database:${cssEsc(sl)}"] [data-eh-value]`);
+        if (v) v.textContent = value;
+      });
+    } } : {});
+  });
   el.querySelectorAll('[data-test]').forEach((b) =>
     b.addEventListener('click', () => runServerTest(el, b.dataset.test)));
   el.querySelectorAll('[data-run]').forEach((b) =>

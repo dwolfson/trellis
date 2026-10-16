@@ -476,6 +476,7 @@ async def test_database_connection_before_register(req: ConnectionTestRequest) -
 @router.post("/register", response_model=DatabaseSummary)
 async def register_database(req: DatabaseRegistration) -> DatabaseSummary:
     """Register a new database."""
+    from resource_explorer.egeria_host import default_egeria_host
     from resource_explorer.registry import DatabaseEntity, ProjectRegistry, ProjectStatus
     from resource_explorer.web.routes._validation import ignore_egeria_credentials
 
@@ -502,7 +503,7 @@ async def register_database(req: DatabaseRegistration) -> DatabaseSummary:
         last_surveyed_at="",
         db_user=req.db_user,
         db_password=req.db_password,
-        egeria_host=req.egeria_host,
+        egeria_host=default_egeria_host(req.host, req.egeria_host),
         egeria_url=req.egeria_url,
         egeria_server=req.egeria_server,
         group_slug=req.group_slug,
@@ -620,6 +621,36 @@ async def update_database_credentials(slug: str, req: DatabaseCredentialsUpdate)
 
     updated = registry.get_database(slug, allow_unreadable=True)
     return _to_summary(updated)
+
+
+class EgeriaHostUpdate(BaseModel):
+    """Request body for changing a database's Egeria-visible host (and nothing else)."""
+    egeria_host: str = ""
+
+
+@router.patch("/{slug}/egeria-host")
+async def update_database_egeria_host(slug: str, req: EgeriaHostUpdate) -> dict:
+    """Change ONLY this database's egeria_host. Same write check as the other database edits (an update on
+    the database's own element). Says so when Egeria already holds elements under the old address: they
+    are not changed here."""
+    from resource_explorer.egeria_host import NOTE_IN_EGERIA, check_egeria_host, default_egeria_host
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.web.routes.curate import authorize_resource_write
+
+    registry = ProjectRegistry()
+    database = registry.get_database(slug, allow_unreadable=True)
+    if not database:
+        raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
+    try:
+        value = default_egeria_host(database.host, check_egeria_host(req.egeria_host))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    await authorize_resource_write(registry, "database", slug, write="publish")
+    previous = database.egeria_host or ""
+    registry.update_egeria_host("database", slug, value)
+    in_egeria = bool(getattr(database, "egeria_asset_guid", "") or "")
+    return {"slug": database.slug, "previous": previous, "egeria_host": value, "in_egeria": in_egeria,
+            "note": NOTE_IN_EGERIA if in_egeria and previous != value else ""}
 
 
 @router.post("/{slug}/survey", response_model=SurveyResult)
