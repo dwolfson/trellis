@@ -851,8 +851,9 @@ def definition_dispatch_reason(process_qn: str, *, now: float | None = None) -> 
                 if any(d.problem == "unreadable" for d in drift):
                     reason, ttl = COULD_NOT_CHECK_DISPATCH, DISPATCH_FAILED_TTL_SECONDS
                 else:
-                    what = "no executor" if first.problem == "missing" else f"executor {first.problem.replace('_', ' ')}"
-                    reason = f"Egeria can't dispatch {where} · {what}"
+                    what = ("has no executor in Egeria" if first.problem == "missing"
+                            else f"has the wrong executor in Egeria ({first.problem.replace('_', ' ')})")
+                    reason = f"Egeria can't start this · {where} {what}"
     except Exception as exc:  # noqa: BLE001 - "could not check" is its own answer, never "dispatchable"
         log.warning("executors of %s not checked: %s", process_qn, exc)
         reason, ttl = COULD_NOT_CHECK_DISPATCH, DISPATCH_FAILED_TTL_SECONDS

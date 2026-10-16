@@ -281,7 +281,7 @@ export function nativeSurveyRowHtml(row) {
     ${(!row.runnable && row.register && row.register.available) ? `<button type="button" data-native-register="${esc(row.qualified_name)}" ${row.register.start_again ? `data-native-start-again="1" data-native-confirm="${esc(row.register.confirm || '')}"` : ''} ${busy ? 'disabled' : ''}
       class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
       >${esc(row.register.label)}</button>` : ''}
-    ${row.kind === 're_definition' ? coordinateControlHtml(row, { variant: 'row', ran }) : ''}
+    ${row.kind === 're_definition' ? coordinateControlHtml(row, { ran }) : ''}
     ${row.runnable && row.kind !== 're_definition' ? `<button type="button" data-native-run="${esc(row.qualified_name)}" ${busy ? 'disabled' : ''}
       class="shrink-0 cursor-pointer rounded-sm border ${busy ? 'border-rule-strong text-ink-muted' : 'border-accent text-accent-ink'} bg-transparent px-2 py-[2px] text-caveat"
       >${busy ? 'in flight' : (ran ? 'Run again in Egeria →' : 'Run in Egeria →')}</button>` : ''}
@@ -586,13 +586,22 @@ const COORD_IN_FLIGHT = new Set(['submitted', 'running', 'awaiting_report', 'unr
 /** The control for one definition row. `c.coordinated_by_egeria` is the server's {available, why_not, state, line}; the
  *  server leaves it off rows it does not belong to (repository definitions). When it cannot be offered the row draws
  *  nothing: the reason is said once for the pane (`coordinateOffNoteHtml`), not on every row. */
-export function coordinateControlHtml(c, { variant = 'card', ran = true } = {}) {
+export function coordinateControlHtml(c, { ran = null } = {}) {
   const ctl = c && c.coordinated_by_egeria;
-  if (!ctl || !ctl.available) return '';
+  if (!ctl) return '';
   const qn = esc(c.qualified_name || c.guid || '');
-  // Both are buttons that start a run. On a native-survey row it reads like its neighbours' "Run again in Egeria →";
-  // beside a definition's own Re-run… it says who coordinates.
-  const label = variant === 'row' ? (ran ? 'Run again in Egeria →' : 'Run in Egeria →') : 'Run · coordinated by Egeria →';
+  // Never "run in Egeria": Egeria coordinates, Resource Explorer's engine host runs each step.
+  const hasRun = ran == null ? !!(c.last_run_at || ctl.state) : ran;
+  const label = esc(`${hasRun ? 'Re-run' : 'Run'} · coordinated by Egeria →`);
+  if (!ctl.available) {
+    // Shown disabled, never hidden; the reason sits beside it in words, the full sentence on hover.
+    const why = ctl.why_not || 'not offered for this definition';
+    return `<span class="inline-flex shrink-0 items-baseline gap-s1">
+    <button type="button" data-coordinate-egeria="${qn}" disabled aria-disabled="true" title="${esc(why)}"
+      class="cursor-not-allowed rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink-muted"
+      >${label}</button>
+    <span data-coordinate-unavailable="${qn}" class="text-provenance text-ink-muted" title="${esc(why)}">${esc(why)}</span></span>`;
+  }
   const live = COORD_IN_FLIGHT.has(String(ctl.state || ''));
   return `<span class="inline-flex shrink-0 items-baseline gap-s1">
     <button type="button" data-coordinate-egeria="${qn}" ${live ? 'disabled aria-pressed="true"' : 'aria-pressed="false"'}

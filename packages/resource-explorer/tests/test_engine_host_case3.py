@@ -536,7 +536,7 @@ def test_a_definition_with_a_step_that_has_no_executor_is_not_dispatchable(reg, 
     _dispatchable.drift = [ExecutorDrift("S::a", "db_derived", "missing", "no executor")]
     ctl = nsr.coordinate_control(reg, "database", "coco_pharma", ANALYSIS)
     assert ctl["available"] is False
-    assert ctl["why_not"] == "Egeria can't dispatch step 1 · no executor"
+    assert ctl["why_not"] == "Egeria can't start this · step 1 has no executor in Egeria"
     nsr.coordinate_control(reg, "database", "coco_pharma", ANALYSIS)
     assert _dispatchable.calls == 1            # cached: not one Egeria read per candidates call
 
