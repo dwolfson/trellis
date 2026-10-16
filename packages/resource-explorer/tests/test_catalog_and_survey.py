@@ -1313,3 +1313,48 @@ class TestDatabaseProcessSubmitFailures:
         port.process_error = None
         register(registry, port)                         # may be pressed again at once
         assert len(port.processes) == 1
+
+
+def _api_exc(cls_name="PyegeriaAPIException", code=500, msg_id=""):
+    """A real-shaped Egeria failure: the class pyegeria raises, the HTTP code, and the message id Egeria's
+    FFDC body carries in `additional_info` (the shape observed live 2026-10-16)."""
+    import pyegeria.core._exceptions as ex
+    e = Exception.__new__(getattr(ex, cls_name))
+    Exception.__init__(e, "Egeria error")
+    e.related_http_code = code
+    e.context, e.pyegeria_code, e.message, e.system_action, e.user_action = {}, "CLIENT-ERROR", "Egeria refused", "", ""
+    e.response = None
+    e.additional_info = {"exceptionErrorMessageId": msg_id} if msg_id else {}
+    return e
+
+
+class TestNotVisibleIsAbsenceOfAPointer:
+    """Architect ruling 2026-10-16 section 3: for a GUID RE holds as a pointer, 400-010 is `gone`."""
+
+    NOT_VISIBLE = "OMAG-REPOSITORY-HANDLER-400-010"
+
+    def test_a_soft_deleted_database_reads_as_gone(self, registry):
+        registry.set_database_egeria_guid("adventureworks", DB_GUID)
+        port = real_port(FakeExpert(error=_api_exc(msg_id=self.NOT_VISIBLE)))
+        out = cas.check_pointers(registry, port, "database", "adventureworks")
+        assert out["database"] == "gone" and out["error"] == ""
+
+    def test_the_typed_not_found_is_still_gone(self, registry):
+        registry.set_database_egeria_guid("adventureworks", DB_GUID)
+        out = cas.check_pointers(registry, real_port(FakeExpert(error=typed_not_found())), "database", "adventureworks")
+        assert out["database"] == "gone"
+
+    @pytest.mark.parametrize("exc", [
+        _api_exc(msg_id="OMAG-REPOSITORY-HANDLER-500-001"),            # a 500 with another id
+        _api_exc(msg_id=""),                                           # a 500 with no id
+        _api_exc("PyegeriaUnauthorizedException", 401, "OMAG-REPOSITORY-HANDLER-400-010"),   # sign-in refusal
+        TimeoutError("read timed out"),
+    ])
+    def test_everything_else_stays_unreadable(self, registry, exc):
+        registry.set_database_egeria_guid("adventureworks", DB_GUID)
+        out = cas.check_pointers(registry, real_port(FakeExpert(error=exc)), "database", "adventureworks")
+        assert out["database"] == "unreadable"
+
+    def test_not_visible_does_not_widen_the_shared_absence_answer(self):
+        from resource_explorer.egeria_absence import UNREADABLE, is_absent
+        assert is_absent(_api_exc(msg_id=self.NOT_VISIBLE)) == UNREADABLE     # never licenses a create

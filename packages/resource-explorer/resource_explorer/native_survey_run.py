@@ -348,7 +348,10 @@ class PyegeriaSurveyPort:
         try:
             res = self._get_expert().get_metadata_element_by_guid(guid)
         except Exception as exc:  # noqa: BLE001 -- classified below
-            if self._is_not_found(exc):
+            from resource_explorer.egeria_absence import is_not_visible
+
+            # A typed not-found, or Egeria's 400-010 "not visible" (a soft delete) on THIS pointer's own GUID.
+            if self._is_not_found(exc) or is_not_visible(exc):
                 return False
             raise
         if is_exact_absent(res):

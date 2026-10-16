@@ -77,6 +77,27 @@ def egeria_message_id(exc: BaseException) -> str:
     return str(found).strip()
 
 
+#: Egeria's message id for "this instance is not visible" (a SOFT-DELETED element the repository handler declines
+#: to return). Observed 2026-10-16: RelationalDatabase read after delete -> HTTP 500 wrapping this id.
+NOT_VISIBLE_MESSAGE_ID = "OMAG-REPOSITORY-HANDLER-400-010"
+
+
+def is_not_visible(exc: BaseException) -> bool:
+    """True when Egeria answered a read of ONE GUID with 400-010 ("not visible"): matched on the message id,
+    never the sentence, and never for a sign-in or zone refusal (401/403 is not absence).
+
+    This is NOT part of `is_absent`: 400-010 also fires for an instance this caller merely cannot see, so it
+    must never license a create or a forgotten cache. It is only what `asset_exists` reads of a POINTER RE holds
+    (architect ruling 2026-10-16 section 3): the pointer no longer leads anywhere usable."""
+    try:
+        from pyegeria.core._exceptions import PyegeriaUnauthorizedException
+        if isinstance(exc, PyegeriaUnauthorizedException):
+            return False
+    except ImportError:
+        pass
+    return egeria_message_id(exc) == NOT_VISIBLE_MESSAGE_ID
+
+
 def egeria_error_detail(exc: BaseException, limit: int = 1500) -> str:
     """Egeria's own words for a failed call, or '' when the exception carries no Egeria response.
 
