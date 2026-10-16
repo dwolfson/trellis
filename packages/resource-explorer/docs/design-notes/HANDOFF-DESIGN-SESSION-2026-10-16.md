@@ -93,6 +93,12 @@ separate session whose replies the owner pushes.
 
 ## 5. In flight with PR/CI (no design action unless asked)
 
+Superseded on the same day: by the evening of 2026-10-16 the gate build
+served main 14dade2d with #712–#721 merged and no open PRs (coordinator
+handoff review). The live state of play is the top of
+`~/.re-gate/HANDOFF-RE-OPERATIONS.md`; the list below is what was in
+flight when this note was written that morning.
+
 Caller-identity reads PR (built, in review; the two-user live probe is the
 owner's to run); 6.2 header readers and S19 re-include-on-confirmation;
 membership `confidence` rename with the relationship-property audit;
