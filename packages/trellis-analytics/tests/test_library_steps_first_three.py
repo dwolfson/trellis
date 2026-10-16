@@ -340,18 +340,53 @@ def test_hub_tables_with_no_columns_stored_records_the_absence(hubs, make_regist
     assert {a.summary for a in anns.values()} == {"not measured · no columns stored"} and len(anns) == 2
 
 
-def test_hub_tables_partly_captured_keys_establish_out_never_in_and_propose_nothing(hubs, make_registry):
+def test_hub_tables_partly_captured_keys_report_a_lower_bound_and_propose_the_hubs_it_reaches(hubs, make_registry):
     reg, url = make_registry("shop")
     _schema(reg, "shop", SCHEMA, uncaptured=("loyalty",))
     anns = _run(url, "hub_tables")
     customer = anns[("", "public.customer")]
-    assert "Foreign Keys In" not in customer.resource_properties              # never a zero for an unknown
-    assert customer.resource_properties["Foreign Keys Out"] == "0"
-    assert "keys not captured for 1 of 7 tables" in customer.summary
+    p = customer.resource_properties
+    assert p["Foreign Keys In"] == "3" and p["Referenced By Is Lower Bound"] == "true"   # loyalty's keys unread
+    assert p["Foreign Keys Out"] == "0"
+    assert customer.summary.startswith("references 0 other tables; referenced by at least 3 other tables · hub "
+                                       "(lower bound)")
     loyalty = anns[("", "public.loyalty")]
     assert _state(loyalty) == "not_established" and loyalty.summary == "not measured · keys not captured for this table"
-    [proposal] = [a for (m, _s), a in anns.items() if m == "hub_table_proposal"]
-    assert _state(proposal) == "not_established" and "no hub proposed" in proposal.summary
+    # store: 2 captured referencers (orders, returns), below 3: a lower bound, never a confident no
+    store = anns[("", "public.store")]
+    assert store.resource_properties["Foreign Keys In"] == "2" and "could reach the threshold" in store.summary
+    proposals = {s: a for (m, s), a in anns.items() if m == "hub_table_proposal"}
+    assert _state(proposals["public.customer"]) == "measured"
+    assert proposals["public.customer"].candidate_classifications == ["hub table"]
+    assert proposals["public.customer"].resource_properties["Referenced By Is Lower Bound"] == "true"
+    assert "at least 3 other tables, a lower bound" in proposals["public.customer"].summary
+    assert "public.store" not in proposals
+    [verdict] = [a for s, a in proposals.items() if s == "shop"]
+    assert _state(verdict) == "not_established" and "not established" in verdict.summary
+
+
+def test_hub_tables_missing_keys_below_the_threshold_is_never_nothing_found_or_not_a_hub(hubs, make_registry):
+    reg, url = make_registry("shop")
+    _schema(reg, "shop", {"a": [], "b": ["a"], "c": [], "d": []}, uncaptured=("d",))
+    anns = _run(url, "hub_tables")
+    a = anns[("", "public.a")]
+    assert _state(a) == "measured" and a.resource_properties["Foreign Keys In"] == "1"
+    assert "at least 1 other table " in a.summary and "could reach the threshold" in a.summary
+    c = anns[("", "public.c")]                                 # lower bound 0 says nothing about foreign keys in
+    assert "Foreign Keys In" not in c.resource_properties and "referenced-by not established" in c.summary
+    proposals = [(m, s, x) for (m, s), x in anns.items() if m == "hub_table_proposal"]
+    [(_m, scope, verdict)] = proposals
+    assert scope == "shop" and _state(verdict) == "not_established" and verdict.candidate_classifications == []
+    assert "no table is referenced" not in verdict.summary
+
+
+def test_hub_tables_all_keys_captured_stays_exact(hubs, make_registry):
+    reg, url = make_registry("shop")
+    _schema(reg, "shop", SCHEMA)
+    anns = _run(url, "hub_tables")
+    customer = anns[("", "public.customer")]
+    assert "Referenced By Is Lower Bound" not in customer.resource_properties
+    assert "at least" not in customer.summary and "referenced by 4 other tables" in customer.summary
 
 
 def test_hub_tables_reads_its_threshold_from_the_manifest_parameter(hubs, make_registry, monkeypatch):

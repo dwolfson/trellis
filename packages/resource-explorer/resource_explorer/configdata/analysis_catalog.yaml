@@ -1567,9 +1567,10 @@ database_analyses:
   - id: hub_tables
     name: Hub Tables
     description: Foreign-key degree in and out per table, from the keys Resource Explorer stored, and the
-      tables it proposes as hubs (referenced by at least hub_min_referencing other tables, a declared parameter).
-      The proposal is an annotation, never a classification on the table. Opens no connection to the database.
-      With no foreign keys stored it is shown as "not measured", never as a database with no hubs.
+      tables it proposes as hubs (referenced by at least hub_min_referencing other tables, a declared parameter;
+      a count from partly captured keys is a lower bound, reported as at least N). The proposal is an annotation,
+      never a classification on the table. Opens no connection to the database. With no foreign keys stored
+      it is shown as "not measured", never as a database with no hubs.
     resource_types:
     - database
     intent: analysis
@@ -1591,7 +1592,7 @@ database_analyses:
       package: trellis-step-hub-tables
       entry_point: hub_tables
       step: hub_tables
-      version: 0.1.0
+      version: 0.2.0
       kind: step
       source: ods
       credential_tier: none

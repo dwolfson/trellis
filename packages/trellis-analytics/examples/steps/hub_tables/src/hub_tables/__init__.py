@@ -6,4 +6,4 @@ classification on the table's element: facts come only through Curate (owner, 20
 code (`step.run`) and its manifest (`manifest.MANIFEST`) and nothing else: no Egeria, no storage, no credentials, no
 SQL.
 """
-__version__ = "0.1.0"
+__version__ = "0.2.0"

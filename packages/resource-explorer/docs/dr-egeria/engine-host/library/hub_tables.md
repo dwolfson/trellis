@@ -1,5 +1,5 @@
 <!--
-GENERATED from the manifest of 'hub_tables' (trellis-step-hub-tables 0.1.0) by
+GENERATED from the manifest of 'hub_tables' (trellis-step-hub-tables 0.2.0) by
 packages/resource-explorer/scripts/generate_engine_host_declaration.py. Do not hand-edit; regenerate.
 Design: docs/design-notes/DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE.md §4.3 (engine host, step 3).
 
@@ -25,7 +25,7 @@ Resource Explorer Survey — Hub Tables
 ResourceExplorerSurvey::re-hub-tables
 
 ### Description
-Foreign-key degree in and out per table, from the keys Resource Explorer stored, and the tables it proposes as hubs (referenced by at least hub_min_referencing other tables, a declared parameter). The proposal is an annotation, never a classification on the table. Opens no connection to the database. With no foreign keys stored it is shown as "not measured", never as a database with no hubs.
+Foreign-key degree in and out per table, from the keys Resource Explorer stored, and the tables it proposes as hubs (referenced by at least hub_min_referencing other tables, a declared parameter; a count from partly captured keys is a lower bound, reported as at least N). The proposal is an annotation, never a classification on the table. Opens no connection to the database. With no foreign keys stored it is shown as "not measured", never as a database with no hubs.
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed
@@ -43,7 +43,7 @@ ACTIVE
 | nothing_to_derive_guard | survey-completed |
 | kind | step |
 | source | ods |
-| version | 0.1.0 |
+| version | 0.2.0 |
 | resource_types | database |
 | annotation_type | ResourceMeasureAnnotation |
 | questions | Q-0072, Q-0068 |
