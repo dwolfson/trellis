@@ -1242,3 +1242,34 @@ def test_a_failure_is_never_offered_as_fixable():
     from resource_explorer.native_survey_run import derive_mixed_state
 
     assert derive_mixed_state(_def_row(_steps("failed", "ok", "ok", "ok"))).get("fixable") is None
+
+
+# ── designer Q1: every run of a definition, whoever coordinated it, with the version of its plan ───────────────────
+
+def test_the_definition_run_history_merges_egeria_and_re_runs_newest_first_with_the_plan_note(tmp_path):
+    from resource_explorer import mixed_process, native_survey_run as nsr
+    from resource_explorer.activity_logger import log_survey
+    from resource_explorer.registry import ProjectRegistry
+
+    reg = ProjectRegistry(db_path=str(tmp_path / "hist.db"))
+    full = mixed_process.definition_process(ANALYSIS)
+    four = [s.request_type for s in full.steps[:4]]
+    # an RE-coordinated run (the executor's activity row), earlier
+    log_survey(reg, entity_type="database", entity_slug="coco_pharma", entity_name="coco_pharma", entity_location="",
+               intent="analysis", status="ok", summary="ran",
+               detail=json.dumps({"survey_definition_ref": ANALYSIS, "started_by": "re", "started_by_person": "dan"}))
+    # an Egeria-coordinated run made under a 4-step plan, later
+    reg.record_native_survey_submission_once("database", "coco_pharma", ANALYSIS, "2099-01-01T00:00:00",
+                                             engine_action_guid=INSTANCE, submitted_by="peterprofile",
+                                             started_as="process", started_by="egeria", started_in="egeria",
+                                             declared_extra={"expected_steps": four})
+    stored = _steps("refused", "refused", "ok", "ok", complete=False)
+    stored[2]["report_guid"], stored[3]["report_guid"] = "r3cccccc-0000", "r4dddddd-0000"
+    reg.merge_native_survey_declared(INSTANCE, {"process_run": {"words": "w", "steps": stored}})
+    history = nsr.definition_run_history(reg, "database", "coco_pharma")[ANALYSIS]
+    assert [(h["coordinated_by"], h["by"]) for h in history] == [("egeria", "peterprofile"), ("re", "dan")]
+    egeria, re_run = history
+    assert egeria["state"] == "partial" and egeria["ran"] == 2 and egeria["of"] == 4
+    assert egeria["version_note"] == "(4-step version)"
+    assert [r["step"] for r in egeria["reports"]] == [3, 4]
+    assert re_run["state"] == "complete" and re_run["ran"] is None and re_run["version_note"] == ""

@@ -106,7 +106,7 @@ function timingCue(r) {
 /** A mixed process run (engine host step 4): the one run line the server built from what it read of each step
  *  ("Postgres survey then derived · step 1 PostgreSQLSurvey ✓ report cb92eedc · step 2 … ✓ …"), and each step's
  *  report opening as any report does. */
-function processLineHtml(r) {
+export function processLineHtml(r) {
   // Numbered by the step's own place in the run, then filtered: a step-2 report is never "step 1 report".
   const reports = (r.steps || []).map((s, i) => ({ s, n: i + 1 })).filter(({ s }) => s.report_guid)
     .map(({ s, n }) => `<button type="button"
@@ -335,14 +335,50 @@ export function nativeSurveyRowHtml(row, opts = {}) {
 
 const stateGlyph = stateEntry;
 
+/** The rows of Egeria's OWN surveys: native surveys and mixed processes. A Survey Definition's coordinated run is a run
+ *  of the definition RE authored, not a survey of Egeria's, so it is shown on the definition's own card
+ *  (designer 2026-10-16, Q1: one thing, one card) and `re_definition` rows are not listed here. */
+export const ownSurveyRows = (rows) => (rows || []).filter((r) => r.kind !== 're_definition');
+
 export function nativeSurveysSectionHtml(rows) {
   if (!rows || !rows.length) return '';
+  const own = ownSurveyRows(rows);
+  // Only definition runs to follow: the host stays (it drives the follow and the re-read) but nothing is drawn.
+  if (!own.length) return '<div id="native-surveys" hidden></div>';
   return `<div class="mt-s3 mb-s3">
     <div class="text-caps uppercase tracking-caps text-ink-muted">Egeria's own surveys</div>
     <div class="text-caveat text-ink-muted">Run by Egeria's survey action engine; RE submits the
       action and reads back what Egeria says about it.</div>
-    <div id="native-surveys">${rows.map(nativeSurveyRowHtml).join('')}</div>
+    <div id="native-surveys">${own.map((r) => nativeSurveyRowHtml(r)).join('')}</div>
   </div>`;
+}
+
+/** A definition card's run line: the latest run, whoever coordinated it, with the same words either way (the
+ *  server's derived row, not re-derived here). `stopped`: RE gave up following it (state word stays, with "check now"). */
+export function definitionRunLineHtml(row, { stopped = false } = {}) {
+  const g = stateGlyph(glyphFor(row.run || { state: 'not_run' }, row.runnable, row));
+  return `<div class="mt-[2px] text-provenance text-ink-muted" data-def-run-line="${esc(row.qualified_name)}">
+    <span class="${g.tone}" title="${esc(g.word)}" aria-label="${esc(g.word)}">${g.glyph}</span>
+    <span data-native-status>${nativeSurveyStatusHtml(row)}</span>${stopped && row.in_flight ? stoppedFollowingHtml(row) : ''}</div>`;
+}
+
+const RUN_STATE_WORD = { complete: 'complete', partial: 'partial', failed: 'failed', running: 'running', submitted: 'submitted' };
+
+/** "runs · 6 ›": every run of the definition, whoever coordinated it (the server's `runs`, newest first). A run made
+ *  under an earlier version of the definition carries "(4-step version)" after its count. */
+export function definitionRunsListHtml(c) {
+  const runs = c.runs || [];
+  if (!runs.length) return '';
+  const item = (r) => {
+    const who = r.coordinated_by === 'egeria' ? 'coordinated by Egeria' : 'by RE';
+    const count = r.ran != null && r.of != null ? ` · <span class="tnum">${r.ran} of ${r.of}</span> ran${r.version_note ? ` <span data-run-version>${esc(r.version_note)}</span>` : ''}` : '';
+    const reports = (r.reports || []).map((x) => `<button type="button" data-native-report="${esc(x.guid)}"
+      class="cursor-pointer bg-transparent p-0 text-accent-ink underline">step ${x.step} report ›</button>`).join(' · ');
+    return `<li data-def-run class="py-[1px]"><span class="tnum">${esc(localTime(r.when))}</span> · ${who}${r.by ? ` · started by ${esc(r.by)}` : ''}
+      · ${esc(RUN_STATE_WORD[r.state] || r.state || '')}${count}${reports ? ` · ${reports}` : ''}</li>`;
+  };
+  return `<details data-def-runs class="mt-[2px] text-provenance text-ink-muted"><summary class="cursor-pointer">runs · <span class="tnum">${runs.length}</span> ›</summary>
+    <ul class="ml-s3 list-none">${runs.map(item).join('')}</ul></details>`;
 }
 
 /** A failed native-survey read is not "no native surveys": the section keeps
@@ -379,7 +415,7 @@ function wireReturnAndRestart() {
 /** Wire a rendered section: Run buttons, the annotations view, and the poll
  *  that runs only while something is in flight. Safe to call again on a fresh
  *  host; the previous host's timer dies with its detached node. */
-export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } = {}) {
+export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS, onRows = null } = {}) {
   const host = root.querySelector('#native-surveys');
   if (!host) return;
   let rows = initialRows || [];
@@ -387,8 +423,9 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
   let gaveUp = false;                    // RE stopped following the rows in flight: each says so, with "check now"
   const draw = (next) => {
     rows = next;
-    host.innerHTML = rows.map((r) => nativeSurveyRowHtml(r, { stopped: gaveUp })).join('');
+    host.innerHTML = ownSurveyRows(rows).map((r) => nativeSurveyRowHtml(r, { stopped: gaveUp })).join('');
     bindRows();
+    if (onRows) onRows(rows, { stopped: gaveUp });      // the definition cards follow the same rows
     bindCoordinateControls(host, slug, { after: () => { reread(); } });
   };
   const paint = (next) => { gaveUp = false; draw(next); schedule(); };
@@ -429,6 +466,11 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
     if (!slot) return;
     slot.textContent = msg;
     slot.classList.remove('hidden');
+  };
+  // "check now": one read, repainted from the server's rows (which resumes following if the run is still going).
+  const checkNow = async () => {
+    const res = await refreshNativeSurveys(slug, kind());
+    if (alive()) paint(res.surveys);
   };
   const bindRows = () => {
     host.querySelectorAll('[data-native-run]').forEach((b) => b.addEventListener('click', async () => {
@@ -515,29 +557,9 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
       () => register(b, slug, b.dataset.nativeRegister, !!b.dataset.nativeStartAgain)));
     host.querySelectorAll('[data-native-register-slug]').forEach((b) => b.addEventListener('click',
       () => register(b, b.dataset.nativeRegisterSlug, '')));
-    // "check now" on a run RE stopped following: reads once and resumes following if it is still going.
-    host.querySelectorAll('[data-native-check-now]').forEach((b) => b.addEventListener('click', async () => {
-      if (b.disabled) return;
-      b.disabled = true;
-      b.textContent = 'checking…';
-      try {
-        const res = await refreshNativeSurveys(slug, kind());
-        if (alive()) paint(res.surveys);
-      } catch (err) {
-        b.disabled = false;
-        b.textContent = 'check now';
-        showError(b.closest('[data-native-survey]')?.dataset.nativeSurvey || '', `could not check: ${err.message}`);
-      }
-    }));
-    // A fixable refusal: the link goes to where the database credential is set (the resource header's door).
-    host.querySelectorAll('[data-native-fix-credential]').forEach((b) => b.addEventListener('click', () => {
-      const door = document.querySelector('[data-act="change-credentials"]');
-      if (door) { door.scrollIntoView?.({ block: 'center' }); door.click(); }
-    }));
+    bindRunLineControls(host, slug, { checkNow });
     // Where the Egeria-visible host is edited (the saved sources, per server and per database).
     host.querySelectorAll('[data-native-change-host]').forEach((b) => b.addEventListener('click', () => openFindDbServersDialog()));
-    host.querySelectorAll('[data-native-report]').forEach((b) => b.addEventListener('click',
-      () => openReport(slug, b.dataset.nativeReport)));
     host.querySelectorAll('[data-native-cancel]').forEach((b) => b.addEventListener('click', () => {
       const box = b.closest('[data-native-cancel-box]');
       b.hidden = true;
@@ -545,11 +567,6 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
       conf.hidden = false;
       // The confirm is a state of the control: it lapses, as the register confirm does.
       setTimeout(() => { if (box.isConnected && !cancelling.has(box.dataset.nativeCancelBox)) { conf.hidden = true; b.hidden = false; } }, CONFIRM_MS);
-    }));
-    // A partial run's refused steps, with the launcher's reasons: one press on "why" shows them (the sentence on demand).
-    host.querySelectorAll('[data-native-partial-why-open]').forEach((b) => b.addEventListener('click', () => {
-      const text = b.parentElement.querySelector('[data-native-partial-why]');
-      if (text) { text.hidden = !text.hidden; b.setAttribute('aria-expanded', String(!text.hidden)); }
     }));
     host.querySelectorAll('[data-native-cancel-no]').forEach((b) => b.addEventListener('click', () => {
       const box = b.closest('[data-native-cancel-box]');
@@ -619,7 +636,7 @@ function failDialog(reason) {
   d.querySelector('#wl-detail-body').innerHTML = `<p class="text-state-warn" data-native-cancel-error>${esc(reason)}</p>`;
 }
 
-async function openReport(slug, reportGuid) {
+export async function openReport(slug, reportGuid) {
   const d = openDialog('Egeria survey report', reportGuid);
   const body = d.querySelector('#wl-detail-body');
   let rep;
@@ -738,4 +755,33 @@ export function bindCoordinateControls(el, slug, { after = null } = {}) {
     }
     });
   });
+}
+
+/** The controls a run line carries, wherever the line is drawn (the list of Egeria's own surveys or a definition card):
+ *  the report links, "why" on a partial run's refused steps, the credential link of a fixable refusal and "check now".
+ *  Each button binds once. `checkNow` is the caller's one read-and-repaint. */
+export function bindRunLineControls(root, slug, { checkNow = null } = {}) {
+  const once = (b, fn) => { if (b._runLineBound) return; b._runLineBound = true; b.addEventListener('click', fn); };
+  root.querySelectorAll('[data-native-report]').forEach((b) => once(b, () => openReport(slug, b.dataset.nativeReport)));
+  // A partial run's refused steps, with the launcher's reasons: one press on "why" shows them (the sentence on demand).
+  root.querySelectorAll('[data-native-partial-why-open]').forEach((b) => once(b, () => {
+    const text = b.parentElement.querySelector('[data-native-partial-why]');
+    if (text) { text.hidden = !text.hidden; b.setAttribute('aria-expanded', String(!text.hidden)); }
+  }));
+  // A fixable refusal: the link goes to where the database credential is set (the resource header's door).
+  root.querySelectorAll('[data-native-fix-credential]').forEach((b) => once(b, () => {
+    const door = document.querySelector('[data-act="change-credentials"]');
+    if (door) { door.scrollIntoView?.({ block: 'center' }); door.click(); }
+  }));
+  // "check now" on a run RE stopped following: reads once and resumes following if it is still going.
+  root.querySelectorAll('[data-native-check-now]').forEach((b) => once(b, async () => {
+    if (b.disabled || !checkNow) return;
+    b.disabled = true;
+    b.textContent = 'checking…';
+    try { await checkNow(); } catch (err) {
+      b.disabled = false;
+      b.textContent = 'check now';
+      b.insertAdjacentHTML('afterend', ` <span class="text-state-warn" data-native-check-error>could not check: ${esc(err.message || '')}</span>`);
+    }
+  }));
 }

@@ -1224,6 +1224,7 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
         out["state"] = PARTIAL
         out["message"] = pr.get("words") or out["message"]
         plan = out["plan"]
+        out["ran"] = ran
         if not plan["recorded"]:
             out["summary"] = f"{ran} ran · this run's plan wasn't recorded"     # a count RE did not record is not shown as one
         elif plan["differs"]:
@@ -1283,6 +1284,54 @@ def coordinated_last_runs(registry, entity_type: str, slug: str) -> dict[str, di
             "last_run_by": (run.get("submitted_by") or "")
             if declared.get("started_in") == mixed_process.STARTED_IN_RE else "",
         }
+    return out
+
+
+def definition_run_history(registry, entity_type: str, slug: str, limit: int = 30) -> dict[str, list[dict]]:
+    """Every run of each RE Survey Definition on this resource, newest first, WHOEVER coordinated it, for the
+    definition card's "runs · N ›" list (designer 2026-10-16, Q1). An Egeria-coordinated run comes from its
+    native-survey row through the same `derive_mixed_state` the run line uses; a run RE coordinated comes from its
+    activity row. Each: when, coordinated_by ("egeria"|"re"), by, state, ran/of (a count RE recorded, else None),
+    version_note ("(4-step version)" when the run's plan differs from the definition now, architect item 1) and the
+    step reports. A press Egeria did not accept (no GUID) is not a run."""
+    from datetime import datetime as _dt
+
+    from resource_explorer import mixed_process
+
+    def _key(when: str):
+        try:
+            d = _dt.fromisoformat((when or "").replace("Z", "+00:00"))
+        except ValueError:
+            return 0.0
+        return (d if d.tzinfo else d.replace(tzinfo=timezone.utc)).timestamp()
+
+    out: dict[str, list[dict]] = {}
+    for run in registry.list_native_survey_runs(entity_type, slug):
+        ref = run.get("executor_ref") or ""
+        if not ref.startswith(mixed_process.DEFINITION_PREFIX) or not run.get("engine_action_guid") or run.get("submit_error"):
+            continue
+        d = derive_mixed_state(run)
+        plan = d.get("plan") or {}
+        recorded = bool(plan.get("recorded"))
+        if d["state"] == COMPLETE:
+            ran, of = (plan.get("steps") if recorded else None), (plan.get("steps") if recorded else None)
+        else:
+            ran, of = d.get("ran"), (plan.get("steps") if recorded else None)
+        out.setdefault(ref, []).append({
+            "when": run.get("surveyed_at") or "", "coordinated_by": "egeria",
+            "by": (run.get("submitted_by") or ""), "state": d["state"], "ran": ran, "of": of,
+            "version_note": f"({plan['steps']}-step version)" if plan.get("differs") else "",
+            "reports": [{"step": i + 1, "guid": st["report_guid"]} for i, st in enumerate(d.get("steps") or [])
+                        if st.get("report_guid")]})
+    for a in registry.list_survey_definition_runs(entity_type, slug):
+        out.setdefault(a["ref"], []).append({
+            "when": a["when"], "coordinated_by": "re", "by": a["by"],
+            "state": ("complete" if a["status"] == "ok" else "partial" if a["status"] == "partial"
+                      else "running" if str(a["status"]).lower() in ("running", "queued", "pending", "claimed", "submitted") else "failed"),
+            "ran": None, "of": None, "version_note": "", "reports": []})
+    for ref in out:
+        out[ref].sort(key=lambda r: _key(r["when"]), reverse=True)
+        del out[ref][limit:]
     return out
 
 

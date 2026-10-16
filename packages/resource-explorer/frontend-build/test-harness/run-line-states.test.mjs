@@ -84,9 +84,9 @@ test('a run RE stopped following reads "running · as of HH:MM · stopped checki
 
 test('"check now" reads once, repaints from the server rows, and does not read twice on a second press', async () => {
   const inflight = row({ state: 'running', line: '', read_at: '2026-10-16T14:12:00', submitted_at: '2026-10-16T14:00:00',
-    steps: [], problems: [], error: '' }, { in_flight: true });
+    steps: [], problems: [], error: '' }, { in_flight: true, kind: 'survey_existing' });
   const finished = row({ state: 'complete', line: 'Database Analysis Survey · step 1 x ✓ report 4a2771da', steps: [],
-    read_at: '2026-10-16T14:20:00', report_guid: 'r' }, { in_flight: false });
+    read_at: '2026-10-16T14:20:00', report_guid: 'r' }, { in_flight: false, kind: 'survey_existing' });
   const root = document.createElement('div');
   root.innerHTML = `<div id="native-surveys">${ns.nativeSurveyRowHtml(inflight, { stopped: true })}</div>`;
   document.body.appendChild(root);

@@ -72,7 +72,7 @@ import { inPageConfirm, inPageNotice, inPagePrompt } from '/static/next/confirm-
 import { scoutingTilesHtml, scoutingSignalHtml, staleLinkBannerHtml, bindStaleLinkBanner } from '/static/next/stages/repo-header.js';
 import { contextRecordedSpec, contextRecordedState } from '/static/next/context-recorded.js';
 import { followUntil, ACTIVITY_LIVE } from '/static/next/live-status.js';
-import { nativeSurveysSectionHtml, nativeSurveysUnreadableHtml, bindNativeSurveys, coordinateControlHtml, coordinateOffNoteHtml, bindCoordinateControls } from '/static/next/stages/native-surveys.js';
+import { nativeSurveysSectionHtml, nativeSurveysUnreadableHtml, bindNativeSurveys, coordinateControlHtml, coordinateOffNoteHtml, bindCoordinateControls, definitionRunLineHtml, definitionRunsListHtml, bindRunLineControls, ownSurveyRows } from '/static/next/stages/native-surveys.js';
 // The row anatomy shared with Enrichment's judgements/observations rows
 // (ENRICHMENT-E0-ROW-ANATOMY, docs/design-notes/exchange/REPLY-DESIGNER-ENRICHMENT-
 // STAGE-IA.md §0.3/§6 item 1) — who + when + the evidence-moved flag, one
@@ -4990,6 +4990,9 @@ export function bindSurveyRowActions(el, all, slug) {
   // Engine host case 3: "coordinated by Egeria", beside each definition's Run. After a start the pane re-reads, so
   // the Egeria-coordinated run appears in "Egeria's own surveys" from its persisted row.
   bindCoordinateControls(el, slug, { after: () => { if (slug === state.selectedSlug) loadSurveyPane(); } });
+  // The run line on a definition card carries the same controls as any run line: report links, "why", the credential
+  // link of a fixable refusal and "check now" (one read, then the pane repaints from the server's rows).
+  bindRunLineControls(el, slug, { checkNow: async () => { if (slug === state.selectedSlug) await loadSurveyPane(); } });
 }
 
 /** The definition row's button. It OPENS A DIALOG (the run plan, which since G2 offers "Use different
@@ -5011,13 +5014,25 @@ export function definitionRunsHtml(c) {
       ? `<div class="text-provenance text-ink-muted">also produces, from the same steps:</div><ul class="ml-s3 list-disc text-provenance text-ink-muted">${list(also)}</ul>` : ''}</details>`;
 }
 
+/** Whether the card's run line is the Egeria-coordinated run's (the latest run, per the server's merge of the two
+ *  sources) and the server gave that run's derived row. Else the short "ran 2 days ago" cell stands. */
+function coordinatedRunShown(c) {
+  return !!(c.coordinated_row && c.coordinated_row.run && c.last_run_coordinated_by === 'egeria');
+}
+
+/** The run line and the run history, on the definition's own card (designer 2026-10-16, Q1: one thing, one card). */
+function definitionRunBlockHtml(c) {
+  const line = coordinatedRunShown(c) ? definitionRunLineHtml(c.coordinated_row, { stopped: !!c._stopped }) : '';
+  return `${line}${definitionRunsListHtml(c)}`;
+}
+
 export function surveyRowHtml(c) {
   const steps = (c.steps || []).length || c.step_count || 0;
   const produces = producesTypes(c);
   // The text column asks for a 24rem basis (flex: 1 1 24rem), not 0: with a zero basis it was never wrapped onto its
   // own line, it was squeezed to a sliver at ~800 px (one word per line, the title over "6 steps"). Now the
   // step count, last run and button drop to the next line once the pane is too narrow for the text beside them.
-  return `<div data-def-row class="flex flex-wrap items-baseline gap-s3 border-b border-rule py-s2">
+  return `<div data-def-row="${esc(c.qualified_name || '')}" class="flex flex-wrap items-baseline gap-s3 border-b border-rule py-s2">
     <div data-def-text class="min-w-0 flex-1" style="flex:1 1 24rem">
       <div class="text-answer text-ink">${esc(c.display_name || c.qualified_name)}</div>
       ${c.description ? `<div class="text-caveat text-ink-muted">${esc(onePurpose(c.description))}</div>` : ''}
@@ -5027,6 +5042,7 @@ export function surveyRowHtml(c) {
       <div class="mt-[2px] text-provenance text-ink-muted">produces · ${
         produces.length ? `<span class="font-mono">${produces.map((t) => esc(t)).join(', ')}</span>` : 'nothing declared'}</div>
       ${engineNoteHtml(c)}
+      ${definitionRunBlockHtml(c)}
     </div>
     <div class="tnum shrink-0 text-caveat text-ink-muted">${steps} step${steps === 1 ? '' : 's'}${
       // Point 2 (SPEC-THE-STAGE-PAGE.md): the axis tiering itself turns on --
@@ -5035,7 +5051,7 @@ export function surveyRowHtml(c) {
       // every definition row yet (re/stage-page-backend); say nothing rather
       // than a false zero until it is.
       c.fetch_steps == null ? '' : ` · ${c.fetch_steps ? `<span class="tnum">${c.fetch_steps}</span> fetch` : 'none fetch'}`}${definitionRunsHtml(c)}</div>
-    <div class="tnum shrink-0 text-caveat">${lastRunHtml(c)}</div>
+    ${coordinatedRunShown(c) ? '' : `<div class="tnum shrink-0 text-caveat">${lastRunHtml(c)}</div>`}
     ${catalogRetryHtml(c)}
     ${selectedCredentialUnreadable()
       ? `<button data-run-survey="${esc(c.qualified_name || c.guid)}" disabled title="${CREDENTIAL_UNREADABLE_TEXT}"
@@ -5316,7 +5332,25 @@ function nativeSurveysPaneHtml(res) {
 /** Wire a rendered section (rows or the unreadable line). `reload` re-runs the pane. */
 function bindNativeSurveysPane(root, slug, res, reload) {
   root.querySelector('[data-native-recheck]')?.addEventListener('click', () => reload());
-  if (res.rows && res.rows.length) bindNativeSurveys(root, slug, res.rows);
+  if (res.rows && res.rows.length) {
+    // The definition cards follow the same rows: while one's run is in flight its run line is repainted in place from
+    // each read, and when it ends the pane reloads once so the card, its controls and its history agree.
+    let wasLive = res.rows.some((r) => r.kind === 're_definition' && r.in_flight);
+    bindNativeSurveys(root, slug, res.rows, {
+      onRows: (rows, { stopped }) => {
+        for (const r of rows.filter((x) => x.kind === 're_definition')) {
+          const slot = [...root.querySelectorAll('[data-def-run-line]')].find((e) => e.dataset.defRunLine === r.qualified_name);
+          if (!slot) continue;
+          slot.outerHTML = definitionRunLineHtml(r, { stopped });
+        }
+        const card = root.querySelector('[data-def-run-line]');
+        if (card) bindRunLineControls(root, slug, { checkNow: async () => { await loadSurveyPane(); } });
+        const live = rows.some((r) => r.kind === 're_definition' && r.in_flight);
+        if (wasLive && !live) { wasLive = false; if (slug === state.selectedSlug) loadSurveyPane(); }
+        wasLive = wasLive || live;
+      },
+    });
+  }
 }
 
 /** Survey & analyses, on Enrichment: the amendment's map. */
@@ -5512,13 +5546,17 @@ export async function loadSurveyPane() {
   // the pane falls back to the informational block, so a failure of the new
   // read never blanks the list Egeria already reported.
   const nativeRes = await fetchNativeSurveyRows(slug);
+  // Each definition card takes its run line from the server's row for that definition (the latest run, whoever
+  // coordinated it); nothing about the run is re-derived here.
+  const defRows = new Map((nativeRes.rows || []).filter((r) => r.kind === 're_definition').map((r) => [r.qualified_name, r]));
+  for (const c of all) c.coordinated_row = defRows.get(c.qualified_name) || null;
   // A failed read shows the unreadable line AND keeps the informational block
   // Egeria already reported, so the new read's failure blanks nothing.
   const nativeProcessesHtml = nativeRes.failed
     ? nativeSurveysUnreadableHtml() + nativeProcessesSectionHtml(data.egeria_native_processes)
-    : nativeRes.rows && nativeRes.rows.length
+    : ownSurveyRows(nativeRes.rows).length
       ? nativeSurveysSectionHtml(nativeRes.rows)
-      : nativeProcessesSectionHtml(data.egeria_native_processes);
+      : nativeProcessesSectionHtml(data.egeria_native_processes) + nativeSurveysSectionHtml(nativeRes.rows);
 
   const heavy = all.filter((c) => c.survey_kind === 'automate_full');
   const rest = all.filter((c) => c.survey_kind !== 'automate_full');
