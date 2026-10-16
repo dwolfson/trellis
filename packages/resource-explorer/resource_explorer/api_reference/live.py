@@ -107,7 +107,8 @@ def fetch_openapi(url: str, *, transport=None, timeout: float = TIMEOUT_SECONDS,
     def work():
         try:
             holder["result"] = _fetch(url, transport, timeout, max_bytes, total_seconds, allow, resolver, holder)
-        except Exception:  # noqa: BLE001 -- the worker's last line: anything unforeseen is a rejection, not a 500
+        except (httpx.HTTPError, httpx.InvalidURL, ValueError, TypeError, AttributeError, KeyError, IndexError,
+                OSError, RuntimeError, RecursionError, UnicodeError):     # a rejection, never a 500
             (log.debug if holder.get("abandoned") else log.warning)("API reference fetch failed", exc_info=True)
             holder["result"] = _fail(url, "the request could not be completed")
         finally:
@@ -120,7 +121,7 @@ def fetch_openapi(url: str, *, transport=None, timeout: float = TIMEOUT_SECONDS,
         if client is not None:
             try:
                 client.close()
-            except Exception:  # noqa: BLE001 -- best effort: the thread is a daemon and holds nothing else
+            except (OSError, RuntimeError, httpx.HTTPError):    # best effort: the thread is a daemon
                 log.debug("closing the timed-out client failed", exc_info=True)
         return _fail(url, "no answer in time")
     return holder["result"]
