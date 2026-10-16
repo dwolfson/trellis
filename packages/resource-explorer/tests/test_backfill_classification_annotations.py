@@ -79,12 +79,13 @@ class FakeEgeria:
     def find_annotations(self, search_string="*", body=None, starts_with=True, ends_with=False, ignore_case=False,
                          start_from=0, page_size=100, graph_query_depth=3, output_format="JSON",
                          report_spec="Referenceable", **kwargs):
-        assert kwargs.get("sequencing_order") == "CREATION_DATE_OLDEST"
         want = kwargs.get("metadata_element_type")
         hits = sorted((e for e in self.elements.values()
                        if e["properties"].get("qualifiedName", "").startswith(search_string)
                        and (not want or e["elementHeader"]["type"]["typeName"] == want)),
                       key=lambda e: e["elementHeader"]["guid"])
+        if kwargs.get("sequencing_order"):
+            hits = hits[::2]      # measured 2026-10-15 (398 of 598): an ordered search silently drops elements
         page = [json.loads(json.dumps(e)) for e in hits[start_from:start_from + page_size]]
         return page or "No elements found"
 
@@ -271,6 +272,36 @@ class TestFailures:
             published(registry, egeria, f"g{i}", QN.format(i), [f"c{i}"])
         assert len(bf.enumerate_annotations(egeria.discovery, page_size=2)) == 5
 
+    def test_enumeration_finds_all_though_an_ordered_search_would_drop_some(self, egeria, registry, tmp_path):
+        for i in range(6):
+            published(registry, egeria, f"g{i}", QN.format(i), [f"c{i}"])
+        ordered = egeria.find_annotations(search_string=bf.RE_PREFIX, page_size=50,
+                                          sequencing_order="CREATION_DATE_OLDEST")
+        assert len(ordered) < 6                                  # the fake models the drop
+        assert len(bf.enumerate_annotations(egeria.discovery, page_size=2)) == 6
+        for call in egeria.discovery.find_annotations.call_args_list:
+            assert "sequencing_order" not in call.kwargs
+
+    def test_two_passes_that_differ_warn_and_use_the_union(self, egeria, registry, tmp_path):
+        for i in range(3):
+            published(registry, egeria, f"g{i}", QN.format(i), [f"c{i}"])
+        real = egeria.find_annotations
+        calls = {"n": 0}
+
+        def flaky(**kw):
+            calls["n"] += 1
+            page = real(**kw)
+            return page[:-1] if calls["n"] == 1 and isinstance(page, list) else page   # pass 1 misses one
+
+        egeria.discovery.find_annotations.side_effect = flaky
+        warnings = []
+        assert len(bf.enumerate_annotations(egeria.discovery, page_size=50, warn=warnings.append)) == 3
+        assert len(warnings) == 1 and "pass 1 found 2" in warnings[0] and "pass 2 found 3" in warnings[0]
+        warnings.clear()
+        egeria.discovery.find_annotations.side_effect = real
+        bf.enumerate_annotations(egeria.discovery, page_size=50, warn=warnings.append)
+        assert warnings == []
+
 
 def test_pyegerias_update_annotation_sends_nothing(monkeypatch):
     """Why the script does not call DataDiscovery.update_annotation (pyegeria as installed): the wrapper passes the
@@ -336,8 +367,7 @@ class TestReviewRound:
     def test_a_full_page_with_nothing_new_stops_the_enumeration(self, egeria, registry, tmp_path):
         for i in range(3):
             published(registry, egeria, f"g{i}", QN.format(i), [f"c{i}"])
-        first = egeria.find_annotations(search_string=bf.RE_PREFIX, page_size=2,
-                                        sequencing_order="CREATION_DATE_OLDEST")
+        first = egeria.find_annotations(search_string=bf.RE_PREFIX, page_size=2)
         egeria.discovery.find_annotations.side_effect = lambda **kw: json.loads(json.dumps(first))
         with pytest.raises(RuntimeError, match="paging is not advancing"):
             bf.enumerate_annotations(egeria.discovery, page_size=2)
