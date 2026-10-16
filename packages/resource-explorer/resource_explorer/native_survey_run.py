@@ -1072,8 +1072,15 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
         return out
     pr = _declared(run).get("process_run") or {}
     steps = pr.get("steps") or []
-    out.update(line=pr.get("words") or "", steps=steps, report_guid="", annotation_count=None)
-    if not pr or not steps:
+    # The ONE graded list: the run's stored step list, else (legacy row) the steps it has. A line stored before the
+    # words walked that list may still name a step beyond it ("step 5 ... not started yet"): trimmed here at read time.
+    stored = _declared(run).get("expected_steps")
+    graded = len(stored) if isinstance(stored, list) and stored else len(steps)
+    words = mixed_process.trim_words_to_steps(pr.get("words") or "", graded) if steps else (pr.get("words") or "")
+    had_run = bool(pr)
+    pr = {**pr, "words": words}
+    out.update(line=words, steps=steps, report_guid="", annotation_count=None)
+    if not had_run or not steps:
         # Nothing read yet, or Egeria has linked no engine action to the instance yet: submitted (or the last read
         # failed), as derive_native_state says from the row, never "running".
         out["state"] = UNREADABLE if out.get("error") else SUBMITTED
@@ -1257,7 +1264,9 @@ def refresh_mixed_run(registry, port, run: dict, *, entity_type: str, slug: str)
     declared = _declared(run)
     started_in = declared.get("started_in") or ""
     started_by = (run.get("submitted_by") or "") if started_in == mixed_process.STARTED_IN_RE else ""
-    detail = mixed_process.run_line_dict(line, started=started, started_in=started_in, started_by=started_by)
+    stored = declared.get("expected_steps")
+    detail = mixed_process.run_line_dict(line, started=started, started_in=started_in, started_by=started_by,
+                                         expected_steps=stored if isinstance(stored, list) and stored else None)
     detail["words"] = scrub_secret(detail["words"], entity)
     for step in detail["steps"]:
         step["message"] = scrub_secret(step.get("message") or "", entity)
