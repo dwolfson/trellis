@@ -83,6 +83,10 @@
   {
    "id": "page-21",
    "name": "Cataloguing at scale: rules and arrivals"
+  },
+  {
+   "id": "page-22",
+   "name": "Runs and registration"
   }
  ],
  "artboards": [
@@ -358,6 +362,14 @@
    "w": 1560,
    "h": 1360,
    "page": "page-21"
+  },
+  {
+   "file": "RunsAndRegistration.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 1560,
+   "h": 1000,
+   "page": "page-22"
   }
  ],
  "annotations": [
@@ -544,10 +556,18 @@
    "w": 300,
    "page": "page-21",
    "text": "Reply to ASK-DESIGNER-CATALOGUING-AT-SCALE, against main at 08390160.\n\nEgeria catalogs whole schemas today (one schema-kind target per schema, no lists: S1, S11), so a schema rule acts and a table or column rule is kept for when Egeria can (owner, 2026-10-15).\n\nRules are signed events in the scope record, listed in a strip with their match counts; the filter bar is the editor; a hand choice overrides one row and says it differs from the rule.\n\nArrivals: a new schema waits for Publish; a new table in a published schema is added by Egeria's cataloguer on its own refresh, said in Egeria's name; a gone table stays, lowered, until read back."
+  },
+  {
+   "id": "runs-brief",
+   "x": 1660,
+   "y": 0,
+   "w": 300,
+   "page": "page-22",
+   "text": "Reply to ASK-DESIGNER-RUNS-REGISTRATION, against main at df5dbc91.\n\nOne survey definition, one card: its runs (whoever coordinated them) move onto the definition card; RE definitions leave \"Egeria's own surveys\". One verb, Run, with the coordinator named: \"Re-run\u2026\" and \"Re-run \u00b7 coordinated by Egeria \u2192\". A definition Egeria cannot start shows the control off, with the step named.\n\nA refusal the person can fix says how on the run line; \u25cb not run replaces \u2298 refused. Registration states come from what Egeria answered: will change, couldn't connect (naming the address), no longer in Egeria (one press to register again). The signed-in user is never truncated."
   }
  ],
  "launch": {
   "view": "canvas",
-  "page": "page-21"
+  "page": "page-22"
  }
 }
