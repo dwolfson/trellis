@@ -46,6 +46,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterator, Protocol
@@ -79,6 +80,9 @@ RUNNING = "running"
 AWAITING_REPORT = "awaiting_report"
 REPORT_INCOMPLETE = "report_incomplete"
 COMPLETE = "complete"
+#: A definition run in which every step ended and some were REFUSED (survey-invalid: the launcher said the step cannot run
+#: here, e.g. the credential cannot read what it needs). Not a failure of the run; red is for a step that failed.
+PARTIAL = "partial"
 FAILED = "failed"
 UNREADABLE = "unreadable"
 CANNOT_RUN = "cannot_run"
@@ -1077,9 +1081,11 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
     process = mixed_process.declared_process(run.get("executor_ref") or "")
     expected = len(process.steps) if process else len(steps)
     by_index = list(steps)
-    ended_badly = next((s for s in by_index if s.get("status") not in ("", None, *ACTIVE_STATUSES)
-                        and not (s.get("status") == "COMPLETED" and "survey-completed" in (s.get("guards") or []))),
-                       None)
+    def _ended_badly(step: dict) -> bool:
+        return (step.get("status") not in ("", None, *ACTIVE_STATUSES)
+                and not (step.get("status") == "COMPLETED" and "survey-completed" in (step.get("guards") or [])))
+
+    ended_badly = next((s for s in by_index if _ended_badly(s)), None)
     # An RE definition goes on after an invalid or failed step (case 3, review M1: its steps always emit `Any`), so
     # while a step is active or still to come it is running; failed only once nothing more will run.
     goes_on = process is not None and process.qualified_name.startswith(mixed_process.DEFINITION_PREFIX) \
@@ -1092,18 +1098,102 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
                       else PROCESS_ENDED_PREFIX in (s.get("message") or "") for s in by_index)
     still_going = any(s.get("status") in ACTIVE_STATUSES for s in by_index) or (
         len(by_index) < expected and not ended_early)
+    # Refused (survey-invalid) is not failed (survey-failed or any other end): a definition run whose steps all ended
+    # with some refused is PARTIAL, not a failure of the run. Only a definition that ran to its end can be partial.
+    refused = [s for s in by_index if _ended_badly(s) and mixed_process.is_refused_step(s)]
+    failed_steps = [s for s in by_index if _ended_badly(s) and not mixed_process.is_refused_step(s)]
+    if goes_on and not ended_early:
+        ended_badly = failed_steps[0] if failed_steps else None
+    by_type = {st.request_type: st for st in process.steps} if process else {}
+
+    def _problems() -> list[dict]:
+        """Every step that ended other than completed: its place, name, kind (refused or failed) and the
+        launcher's reason, for the run's on-demand detail."""
+        out_list = []
+        for s in by_index:
+            if not _ended_badly(s):
+                continue
+            declared_step = by_type.get(s.get("request_type"))
+            out_list.append({"step": declared_step.number if declared_step else 0,
+                             "label": declared_step.label if declared_step else (s.get("request_type") or ""),
+                             "kind": "refused" if mixed_process.is_refused_step(s) else "failed",
+                             "reason": _refusal_reason(s.get("message") or "")})
+        return out_list
+
     if ended_badly is not None and not (goes_on and still_going):
         out["state"] = FAILED
         out["message"] = pr.get("words") or out["message"]
+        out["problems"] = _problems()
         return out
     if still_going:
         out["state"] = RUNNING
         out["message"] = pr.get("words") or out["message"]
         return out
+    if goes_on and refused:
+        ran = sum(1 for s in by_index if not _ended_badly(s))
+        out["state"] = PARTIAL
+        out["message"] = pr.get("words") or out["message"]
+        out["summary"] = f"{ran} of {expected} ran"
+        out["problems"] = _problems()
+        return out
     out["state"] = COMPLETE
     out["message"] = pr.get("words") or out["message"]
     out["report_guid"] = (by_index[-1].get("report_guid") if by_index else "") or ""
     return out
+
+
+#: The last-run status words (the definition card's ⚠/✓ logic reads these) for a coordinated run's derived state.
+_LAST_RUN_STATUS = {COMPLETE: "ok", PARTIAL: "partial", FAILED: "failed"}
+
+
+def coordinated_last_runs(registry, entity_type: str, slug: str) -> dict[str, dict]:
+    """The latest Egeria-coordinated run of each RE Survey Definition on this resource, in the shape of
+    `registry.get_survey_definition_last_activity`'s entries, from the stored native-survey rows only (a run RE
+    coordinated leaves an activity row; one Egeria coordinated leaves this row and none other). A press Egeria did
+    not accept (no GUID) is not a run. The status word comes from `derive_mixed_state` over the stored steps; a run
+    not yet read back or still going is `recorded` (it ran; nothing yet to call good or bad)."""
+    from datetime import datetime as _dt
+
+    from resource_explorer import mixed_process
+
+    out: dict[str, dict] = {}
+    for run in registry.list_native_survey_runs(entity_type, slug):          # newest first
+        ref = run.get("executor_ref") or ""
+        if (not ref.startswith(mixed_process.DEFINITION_PREFIX) or ref in out
+                or not run.get("engine_action_guid") or run.get("submit_error")):
+            continue
+        derived = derive_mixed_state(run)
+        when = (run.get("surveyed_at") or "").strip()
+        if not when:
+            continue
+        try:
+            parsed = _dt.fromisoformat(when.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        declared = _declared(run)
+        out[ref] = {
+            "last_run_at": parsed.isoformat(),
+            "last_run_status": _LAST_RUN_STATUS.get(derived.get("state"), "recorded"),
+            "last_run_activity_id": "",
+            "last_run_errors": [f"step {p['step']} {p['label']} {p['kind']}: {p['reason']}".strip(": ")
+                                for p in derived.get("problems") or []],
+            "last_run_engine_note": "",
+            "last_run_coordinated_by": "egeria",
+            "last_run_started_by": "",
+            "last_run_by": (run.get("submitted_by") or "")
+            if declared.get("started_in") == mixed_process.STARTED_IN_RE else "",
+        }
+    return out
+
+
+def _refusal_reason(message: str) -> str:
+    """The launcher's reason for refusing a step, from the step's stored message: what follows the engine host's
+    "Resource Explorer did not run <step>: " lead, without the process-ended note it may end with."""
+    text = (message or "").strip()
+    text = re.sub(r"^.*?\bdid not run [^:]*:\s*", "", text, count=1) if "did not run" in text else text
+    return text.split(" · process ended", 1)[0].strip()
 
 
 #: A mixed run whose RE step Egeria created but nobody claimed: said with why, never left as a bare "running".
@@ -1156,7 +1246,9 @@ def refresh_mixed_run(registry, port, run: dict, *, entity_type: str, slug: str)
     line = lines[0] if lines else mixed_process.RunLine(guid, run.get("executor_ref") or "", [])
     if not line.process_name:
         line.process_name = run.get("executor_ref") or ""
-    started = (run.get("surveyed_at") or "")[5:10]
+    # The time is not in the words: it is the reader's local time, drawn on the page from the row's own stored
+    # submission time (a UTC date here read as the wrong day).
+    started = ""
     # Case 3 (C4): a definition's run says where it was started: from RE's control by the person who pressed, or in
     # Egeria by the requester its actions carry. A mixed process run says "started by", as before.
     declared = _declared(run)

@@ -4872,9 +4872,12 @@ export function lastRunHtml(c) {
              title="Click to see what failed">⚠</button> `
         : `<span class="text-state-warn" title="${esc(c.last_run_status)}">⚠</span> `)
     : '';
-  // Engine host case 3 (C4): where the run was started, as the run itself recorded it.
-  const startedIn = c.last_run_started_by === 're' && c.last_run_by
-    ? ` <span data-run-started-in class="text-ink-muted">· started in RE by ${esc(c.last_run_by)}</span>` : '';
+  // Engine host case 3 (C4): who coordinated the run and who pressed Run, as the run itself recorded it.
+  const by = c.last_run_by ? ` · started by ${esc(c.last_run_by)}` : '';
+  const startedIn = c.last_run_coordinated_by === 'egeria'
+    ? ` <span data-run-started-in class="text-ink-muted">· coordinated by Egeria${by}</span>`
+    : (c.last_run_started_by === 're' && c.last_run_by
+      ? ` <span data-run-started-in class="text-ink-muted">· run by RE${by}</span>` : '');
   return `<span title="${esc(when)}${c.last_run_status ? ` · ${esc(c.last_run_status)}` : ''}">
     ${ok ? '<span class="text-state-ok">✓</span> ' : warn}
     <span class="${stale ? 'wl-age-text' : ''}">ran ${esc(ago(when))}</span>${startedIn}</span>${

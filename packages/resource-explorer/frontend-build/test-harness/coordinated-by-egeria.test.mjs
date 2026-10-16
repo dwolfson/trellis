@@ -105,8 +105,8 @@ test('a definition RE ran says where it was started, from the run it recorded', 
   const { lastRunHtml } = await import('/static/next/app.js');
   const when = new Date(Date.now() - 60000).toISOString();
   const h = lastRunHtml({ last_run_at: when, last_run_status: 'ok', last_run_started_by: 're', last_run_by: 'dan' });
-  assert.match(text(h), /started in RE by dan/);
-  assert.doesNotMatch(text(lastRunHtml({ last_run_at: when, last_run_status: 'ok' })), /started in/);
+  assert.match(text(h), /run by RE · started by dan/);
+  assert.doesNotMatch(text(lastRunHtml({ last_run_at: when, last_run_status: 'ok' })), /started|coordinated|run by/);
 });
 
 test('each reason line uses its own row label; a row with no reason still says it is not offered', () => {

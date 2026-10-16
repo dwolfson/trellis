@@ -131,6 +131,9 @@ export const STATES = {
   structure_only:  { glyph: '◐', family: 'limited', word: 'structure only', tone: 'text-state-warn' },
   partly_readable: { glyph: '◐', family: 'limited', word: 'partly readable', tone: 'text-state-warn' },
 
+  // ── ⊘ ended by a decision -- NEUTRAL: a cancel is neither a success nor a fault ──
+  cancelled: { glyph: '⊘', family: 'not-run', word: 'cancelled', tone: 'text-ink-muted' },
+
   // ── ○ not run, and can be ───────────────────────────────────────────
   unrun: { glyph: '○', family: 'not-run', word: 'not run', tone: 'text-state-warn' },
 

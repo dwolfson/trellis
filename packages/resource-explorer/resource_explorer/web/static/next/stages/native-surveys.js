@@ -23,7 +23,7 @@
  * (ENGINE-NOTE-PERSISTENCE-IMPLEMENTED.md) was a status written to a transient
  * DOM node that a whole-pane reload then wiped; nothing here is transient.
  */
-import { ago, storedCopyWords } from '/static/next/format.js';
+import { ago, localTime, storedCopyWords } from '/static/next/format.js';
 import { stateEntry } from '/static/next/glyphs.js';
 import {
   getNativeSurveys, runNativeSurvey, refreshNativeSurveys, getNativeSurveyReport,
@@ -46,7 +46,11 @@ function glyphFor(run, runnable, row = {}) {
   if (row.stale) return 'gone';
   switch (run.state) {
     case 'complete': case 'registered': return 'measured';
-    case 'failed': case 'submit_failed': return 'error';
+    // Every step ended and some were refused: an amber half-filled cue, never the red error.
+    case 'partial': return 'partial';
+    // A cancel Egeria read back is a decision: one neutral cue, neither the tick nor the cross.
+    case 'failed': if (run.egeria_status === 'CANCELLED') return 'cancelled'; return 'error';
+    case 'submit_failed': return 'error';
     case 'submitted': case 'running': case 'awaiting_report': case 'report_incomplete':
     case 'awaiting_registration': return 'running';
     case 'unreadable': return 'unknown';
@@ -109,7 +113,22 @@ function processLineHtml(r) {
   const waiting = r.waiting_for ? ` · <span class="text-state-warn" data-native-waiting><span class="font-glyph" aria-hidden="true">◌</span> ${esc(r.waiting_for)}</span>` : '';
   const err = r.error ? ` · <span class="text-state-warn">last read failed: ${esc(r.error)}</span>` : '';
   const tone = r.state === 'failed' ? 'text-state-warn' : '';
-  return `<span class="${tone}" data-native-process-line>${esc(r.line)}</span>${waiting}`
+  // Where it started, in the reader's local time (the words carry who; the time is drawn from the row's own stored
+  // submission time, so no UTC date is ever shown).
+  const when = r.submitted_at ? localTime(r.submitted_at) : '';
+  const whenHtml = when ? ` · <span class="tnum" data-native-started-at title="${esc(r.submitted_at)}">${esc(when)}</span>` : '';
+  // A partial run: cue plus the short word ("2 of 4 ran"); each refused step's reason is on demand.
+  let partial = '';
+  if (r.state === 'partial') {
+    const reasons = (r.problems || []).map((p) => `step ${p.step} ${p.label}: ${p.reason || 'refused'}`);
+    partial = `<span class="text-state-warn" data-native-partial><span class="font-glyph" aria-hidden="true">◐</span> ${esc(r.summary || 'partial')}</span>`
+      + (reasons.length ? ` <button type="button" data-native-partial-why-open
+          class="cursor-pointer bg-transparent p-0 text-ink-muted underline decoration-dotted"
+          title="${esc(reasons.join('\n'))}">why</button><span hidden data-native-partial-why
+          class="text-ink-muted"> ${reasons.map((x) => `<span class="block">${esc(x)}</span>`).join('')}</span>` : '')
+      + ' · ';
+  }
+  return `${partial}<span class="${tone}" data-native-process-line>${esc(r.line)}</span>${whenHtml}${waiting}`
     + `${r.read_at ? ` · read ${timeSpan(r.read_at)}` : ''}${reports ? ` · ${reports}` : ''}${err}`;
 }
 
@@ -117,7 +136,7 @@ function processLineHtml(r) {
 export function nativeSurveyStatusHtml(row) {
   const r = row.run || { state: 'not_run' };
   const err = r.error ? ` · <span class="text-state-warn">${esc(r.error)}</span>` : '';
-  if (r.line && ['running', 'complete', 'failed'].includes(r.state)) return processLineHtml(r);
+  if (r.line && ['running', 'complete', 'partial', 'failed'].includes(r.state)) return processLineHtml(r);
   switch (r.state) {
     case 'submit_failed':
       return `<span class="text-state-warn">not submitted — Egeria did not accept it: ${esc(r.error)}</span>`;
@@ -148,7 +167,7 @@ export function nativeSurveyStatusHtml(row) {
     case 'failed':
       // A cancel Egeria read back as CANCELLED is a decision, not a fault: its own words, with the check.
       if (r.egeria_status === 'CANCELLED') {
-        return `<span class="font-glyph" aria-hidden="true">✓</span> cancelled in Egeria`
+        return `cancelled in Egeria`
           + ` · read ${timeSpan(r.read_at)} · ${guidSpan(r.engine_action_guid)}`;
       }
       return `<span class="text-state-warn"><span class="font-mono">${esc(r.egeria_status)}</span>`
@@ -255,7 +274,7 @@ export function nativeSurveyRowHtml(row) {
       ${row.credentials_note ? `<div class="mt-[2px] text-provenance text-ink-muted"><span class="text-ink-muted" title="not confirmed either way">?</span> ${esc(row.credentials_note)}</div>` : ''}
       ${reachNoteHtml(row)}
       ${(row.notes || []).map((n) => `<div class="mt-[2px] text-provenance text-ink-muted" data-native-note>${esc(n)}</div>`).join('')}
-      ${row.description ? `<div class="mt-[2px] max-w-[70ch] text-provenance text-ink-muted">${esc(row.description)}</div>` : ''}
+      ${(row.description && row.kind !== 're_definition') ? `<div class="mt-[2px] max-w-[70ch] text-provenance text-ink-muted">${esc(row.description)}</div>` : ''}
       ${discoveredDatabasesHtml(row)}
     </div>
     ${(!row.runnable && row.register && row.register.available) ? `<button type="button" data-native-register="${esc(row.qualified_name)}" ${row.register.start_again ? `data-native-start-again="1" data-native-confirm="${esc(row.register.confirm || '')}"` : ''} ${busy ? 'disabled' : ''}
@@ -451,6 +470,11 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
       // The confirm is a state of the control: it lapses, as the register confirm does.
       setTimeout(() => { if (box.isConnected && !cancelling.has(box.dataset.nativeCancelBox)) { conf.hidden = true; b.hidden = false; } }, CONFIRM_MS);
     }));
+    // A partial run's refused steps, with the launcher's reasons: one press on "why" shows them (the sentence on demand).
+    host.querySelectorAll('[data-native-partial-why-open]').forEach((b) => b.addEventListener('click', () => {
+      const text = b.parentElement.querySelector('[data-native-partial-why]');
+      if (text) { text.hidden = !text.hidden; b.setAttribute('aria-expanded', String(!text.hidden)); }
+    }));
     host.querySelectorAll('[data-native-cancel-no]').forEach((b) => b.addEventListener('click', () => {
       const box = b.closest('[data-native-cancel-box]');
       box.querySelector('[data-native-cancel-confirm]').hidden = true;
@@ -600,7 +624,7 @@ export function bindCoordinateControls(el, slug, { after = null } = {}) {
     try {
       const res = await runNativeSurvey(slug, qn, { entityType: apiEntityType(state.resourceType) });
       const run = (res && res.run) || {};
-      const started = COORD_IN_FLIGHT.has(String(run.state || '')) || run.state === 'complete';
+      const started = COORD_IN_FLIGHT.has(String(run.state || '')) || run.state === 'complete' || run.state === 'partial';
       b.innerHTML = started
         ? '<span class="text-state-ok" aria-hidden="true">●</span> started'
         : `<span class="text-state-warn" aria-hidden="true">✗</span> ${esc(run.state || 'not started')}`;

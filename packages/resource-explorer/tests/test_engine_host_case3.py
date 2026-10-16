@@ -460,12 +460,14 @@ def test_an_egeria_coordinated_definition_run_reads_as_one_line_with_every_step(
              _view("a3", "db_derived", "INVALID", ["survey-invalid", "Any"])]
     [line] = mixed_process.group_by_process(views)
     assert line.process.display_name == "Database Analysis Survey"
-    words = mixed_process.run_line_words(line, started="10-15", started_in=mixed_process.STARTED_IN_EGERIA)
+    words = mixed_process.run_line_words(line, started_in=mixed_process.STARTED_IN_EGERIA)
     assert words == ("Database Analysis Survey · step 1 postgres_column_profile ✓ report r1aaaaaa · step 2 "
-                     "postgres_nested_columns ✓ report r2bbbbbb · step 3 db_derived ✗ survey-invalid · step 4 "
-                     "postgres_operations not started yet · started in Egeria by peterprofile 10-15")
+                     "postgres_nested_columns ✓ report r2bbbbbb · step 3 db_derived ⊘ refused · step 4 "
+                     "postgres_operations not started yet · coordinated by Egeria · started in Egeria by peterprofile")
     from_re = mixed_process.run_line_words(line, started_in=mixed_process.STARTED_IN_RE, started_by="dan")
-    assert from_re.endswith("· started in RE by dan")
+    assert from_re.endswith("· coordinated by Egeria · started by dan")
+    only_re = mixed_process.run_line_words(line, started_in=mixed_process.STARTED_IN_RE_ONLY, started_by="dan")
+    assert only_re.endswith("· run by RE · started by dan")
 
 
 def test_the_engine_host_lists_an_egeria_started_definition_run_once_per_process_instance(reg, egeria, no_connection,
@@ -522,8 +524,8 @@ def test_the_control_starts_the_process_through_egeria_and_records_started_by_eg
     declared = json.loads(row["declared"])
     assert {k: declared[k] for k in ("started_as", "started_by", "started_in")} == {
         "started_as": "process", "started_by": "egeria", "started_in": "re"}
-    assert re.fullmatch(r"Database Analysis Survey · step 1 postgres_column_profile not started yet · started in RE "
-                        r"by dan \d\d-\d\d", declared["process_run"]["words"]), declared["process_run"]["words"]
+    assert declared["process_run"]["words"] == ("Database Analysis Survey · step 1 postgres_column_profile not "
+                                                "started yet · coordinated by Egeria · started by dan")
     # No double running: the press made no RE-coordinated run and no engine action of RE's own.
     assert reg.list_runs(kind="survey_definition_run") == [] and reg.list_runs(kind="engine_action") == []
 
@@ -698,6 +700,7 @@ def test_after_an_invalid_or_failed_step_the_next_is_claimed_run_and_the_run_end
                                                                                  ops_runner, status, guard):
     """HIGH: step 3 ended INVALID or FAILED and (M1) still emitted Any, so Egeria created step 4: RE claims and runs it,
     and the run reaches a terminal state."""
+    from resource_explorer import mixed_process
     from resource_explorer.native_survey_run import FAILED as RUN_FAILED
     from resource_explorer.native_survey_run import derive_mixed_state
 
@@ -711,9 +714,11 @@ def test_after_an_invalid_or_failed_step_the_next_is_claimed_run_and_the_run_end
            "declared": json.dumps({"process_run": {"words": "w", "steps": [
                {"status": "COMPLETED", "guards": ["survey-completed", "Any"]},
                {"status": "COMPLETED", "guards": ["survey-completed", "Any"]},
-               {"status": status, "guards": [guard, "Any"]},
-               {"status": "COMPLETED", "guards": ["survey-completed", "Any"]}]}})}
-    assert derive_mixed_state(row)["state"] == RUN_FAILED           # terminal: every step ran, one did not succeed
+               {"status": status, "guards": [guard, "Any"]}]
+               + [{"status": "COMPLETED", "guards": ["survey-completed", "Any"]}]
+               * (len(mixed_process.definition_process(ANALYSIS).steps) - 3)}})}
+    # terminal: every step ran. A FAILED step fails the run; a REFUSED one (survey-invalid) leaves it partial.
+    assert derive_mixed_state(row)["state"] == (RUN_FAILED if status == "FAILED" else "partial")
 
 
 def test_a_step_that_never_ended_still_holds_the_next_one(reg, egeria):
@@ -834,3 +839,133 @@ def test_a_refused_duplicate_is_skipped_by_the_flag_on_res_own_row(reg, egeria, 
     assert dups == {"ea-d2"}
     [line] = mixed_process.group_by_process(views, duplicates=dups)
     assert [v.guid for v in line.steps] == ["ea-d1"]
+
+
+# ── the words of a coordinated run: partial, started-by, last run ───────────────────────────────────────────────
+
+_REFUSAL = ("Resource Explorer did not run re-postgres-column-profile on coco_pharma: the stored credential has "
+            "SELECT on 3 of 61 relations")
+
+
+def _def_row(steps, status="COMPLETED", surveyed_at="2026-10-16T14:21:00", started_in="egeria", by="peterprofile"):
+    return {"engine_action_guid": INSTANCE, "executor_ref": ANALYSIS, "surveyed_at": surveyed_at,
+            "submitted_by": by, "engine_action_status": status, "engine_action_read_at": "2026-10-16T14:42:00",
+            "declared": json.dumps({"started_in": started_in, "process_run": {"words": "w", "steps": steps}})}
+
+
+def _steps(*specs, complete=True):
+    """Stored steps for the first len(specs) declared steps of ANALYSIS; with `complete` the rest of the declared
+    steps follow, each completed, so the run has every step it declares (the definition has grown beyond four)."""
+    from resource_explorer import mixed_process
+
+    declared = mixed_process.definition_process(ANALYSIS).steps
+    specs = list(specs) + (["ok"] * (len(declared) - len(specs)) if complete else [])
+    out = []
+    for step, kind in zip(declared, specs):
+        out.append({"request_type": step.request_type,
+                    **{"ok": {"status": "COMPLETED", "guards": ["survey-completed", "Any"]},
+                       "refused": {"status": "INVALID", "guards": ["survey-invalid", "Any"], "message": _REFUSAL},
+                       "failed": {"status": "FAILED", "guards": ["survey-failed", "Any"],
+                                  "message": "Resource Explorer did not run x: boom"}}[kind]})
+    return out
+
+
+def test_every_step_ended_and_some_refused_is_partial_with_each_reason_not_a_failure():
+    from resource_explorer.native_survey_run import PARTIAL, derive_mixed_state
+
+    d = derive_mixed_state(_def_row(_steps("refused", "refused", "ok", "ok")))
+    from resource_explorer import mixed_process
+
+    total = len(mixed_process.definition_process(ANALYSIS).steps)
+    assert d["state"] == PARTIAL and d["summary"] == f"{total - 2} of {total} ran"
+    assert [(p["step"], p["label"], p["kind"]) for p in d["problems"]] == [
+        (1, "postgres_column_profile", "refused"), (2, "postgres_nested_columns", "refused")]
+    assert d["problems"][0]["reason"] == "the stored credential has SELECT on 3 of 61 relations"
+
+
+def test_a_failed_step_is_still_a_failed_run_even_beside_refused_ones():
+    from resource_explorer.native_survey_run import FAILED, derive_mixed_state
+
+    d = derive_mixed_state(_def_row(_steps("refused", "failed", "ok", "ok")))
+    assert d["state"] == FAILED and {p["kind"] for p in d["problems"]} == {"refused", "failed"}
+
+
+def test_a_clean_run_is_complete_and_a_run_still_going_is_running_even_with_a_refused_step():
+    from resource_explorer.native_survey_run import COMPLETE, RUNNING, derive_mixed_state
+
+    assert derive_mixed_state(_def_row(_steps("ok", "ok", "ok", "ok")))["state"] == COMPLETE
+    assert derive_mixed_state(_def_row(_steps("refused", "ok", "ok", complete=False)))["state"] == RUNNING
+
+
+def test_refused_steps_read_as_refused_and_failed_ones_keep_their_cross():
+    from resource_explorer import mixed_process
+
+    views = [_view("a1", "postgres_column_profile", "INVALID", ["survey-invalid", "Any"]),
+             _view("a2", "postgres_nested_columns", "FAILED", ["survey-failed", "Any"]),
+             _view("a3", "db_derived", "COMPLETED", ["survey-completed", "Any"], "r3cccccc-0000"),
+             _view("a4", "postgres_operations", "COMPLETED", ["survey-completed", "Any"], "r4dddddd-0000")]
+    [line] = mixed_process.group_by_process(views)
+    words = mixed_process.run_line_words(line, started_in=mixed_process.STARTED_IN_RE, started_by="dan")
+    assert "step 1 postgres_column_profile ⊘ refused" in words and "step 2 postgres_nested_columns ✗ survey-failed" in words
+    assert "10-1" not in words                      # no UTC date in the words
+
+
+def test_the_definition_last_run_is_the_latest_run_however_it_was_coordinated(tmp_path):
+    from resource_explorer.activity_logger import log_survey
+    from resource_explorer.native_survey_run import coordinated_last_runs
+    from resource_explorer.registry import ProjectRegistry
+
+    reg = ProjectRegistry(db_path=str(tmp_path / "lastrun2.db"))
+    log_survey(reg, entity_type="database", entity_slug="coco_pharma", entity_name="coco_pharma", entity_location="",
+               intent="analysis", status="ok", summary="ran",
+               detail=json.dumps({"survey_definition_ref": ANALYSIS, "started_by": "re", "started_by_person": "dan"}))
+    reg.record_native_survey_submission_once("database", "coco_pharma", ANALYSIS, "2099-01-01T00:00:00",
+                                             engine_action_guid=INSTANCE, submitted_by="peterprofile",
+                                             started_as="process", started_by="egeria", started_in="re")
+    reg.merge_native_survey_declared(INSTANCE, {"process_run": {"words": "w", "steps": _steps("refused", "refused", "ok", "ok")}})
+    [run] = reg.list_native_survey_runs("database", "coco_pharma", ANALYSIS)
+    assert run["engine_action_guid"] == INSTANCE
+    got = coordinated_last_runs(reg, "database", "coco_pharma")[ANALYSIS]
+    older = reg.get_survey_definition_last_activity("database", "coco_pharma")[ANALYSIS]["last_run_at"]
+    assert got["last_run_at"].startswith("2099-01-01T00:00:00") and got["last_run_at"] > older
+    assert got["last_run_status"] in ("partial", "recorded")         # 'recorded' until the status was read back
+    assert got["last_run_coordinated_by"] == "egeria" and got["last_run_by"] == "peterprofile"
+
+
+def test_the_definitions_route_takes_the_newer_of_the_two_and_drops_generator_provenance():
+    from resource_explorer.web.routes.survey_definitions import _newer, strip_generator_provenance
+
+    assert _newer("2026-10-16T14:21:00", "2026-09-28T09:00:00+00:00") and not _newer("2026-09-28T09:00:00+00:00", "2026-10-16T14:21:00")
+    assert strip_generator_provenance(
+        "Every catalog-intent: value sampling. Regenerated by scripts/generate_database_survey_definition.py.") \
+        == "Every catalog-intent: value sampling."
+
+
+# Owner decision 2026-10-16: sql_analysis re-runs the whole default database survey, so it stays out of every
+# definition on purpose (the Database Analysis Survey declares eight steps, not nine).
+NOT_IN_ANY_DEFINITION = {"sql_analysis": "re-runs the whole default database survey; left out by owner decision 2026-10-16"}
+
+
+def test_the_database_analysis_survey_declares_eight_steps_and_leaves_sql_analysis_out():
+    import csv
+
+    path = Path(__file__).resolve().parent.parent / "docs" / "dr-egeria" / "database_survey_types.csv"
+    rows = [r for r in csv.DictReader(path.open(newline="", encoding="utf-8")) if r["survey_kind"] == "analysis"]
+    assert [(r["step_order"], r["step_key"]) for r in rows] == [
+        ("1", "postgres_column_profile"), ("2", "postgres_nested_columns"), ("3", "db_derived"),
+        ("4", "postgres_operations"), ("5", "change_rates"), ("6", "database_staleness"), ("7", "hub_tables"),
+        ("8", "statistics_freshness")]
+    assert not any("sql_analysis" in r["description"] for r in rows)
+    assert not any(k in {r["step_key"] for r in rows} for k in NOT_IN_ANY_DEFINITION)
+
+
+def test_every_registry_step_is_referenced_by_a_survey_type_row():
+    import csv
+
+    from resource_explorer.surveyors.database.survey_definition_adapter import DATABASE_STEP_REGISTRY
+
+    path = Path(__file__).resolve().parent.parent / "docs" / "dr-egeria" / "database_survey_types.csv"
+    referenced = {r["step_key"] for r in csv.DictReader(path.open(newline="", encoding="utf-8"))}
+    missing = [k for k in DATABASE_STEP_REGISTRY if k not in referenced and k not in NOT_IN_ANY_DEFINITION]
+    assert not missing, f"DATABASE_STEP_REGISTRY step(s) with no Survey Type reference: {missing}"
+    assert not any("Regenerated by" in r["description"] for r in csv.DictReader(path.open(newline="", encoding="utf-8")))

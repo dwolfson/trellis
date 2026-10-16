@@ -19,6 +19,14 @@ export function whenMs(iso) {
   return Date.parse(zoned ? s : `${s}Z`);
 }
 
+/** A stamp as the READER's local time ("Oct 16, 10:42 AM"), never the UTC date the server stored. Empty when the
+ *  stamp cannot be read. */
+export function localTime(iso) {
+  const ms = whenMs(iso);
+  if (Number.isNaN(ms)) return '';
+  return new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
 export function ago(iso) {
   if (!iso) return '';
   const then = whenMs(iso);
