@@ -130,7 +130,8 @@ test('Yes: acknowledged at once ("◔ cancelling…"), then the row shows what t
   assert.equal(content.querySelector('[data-native-cancel-ack]').hidden, false);
   release(); await wait(30);
   assert.equal(calls.filter((c) => c.startsWith('POST')).length, 1);
-  assert.match(text(content.querySelector('[data-native-status]')), /✓ cancelled in Egeria/);
+  assert.match(text(content.querySelector('[data-native-status]')), /^cancelled in Egeria/);
+  assert.doesNotMatch(text(content.querySelector('[data-native-status]')), /[✓✗✕]/, 'a cancel is neutral: no tick, no cross');
   assert.equal(content.querySelector('[data-native-cancel]'), null, 'no cancel control on a cancelled action');
 });
 

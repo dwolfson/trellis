@@ -531,9 +531,23 @@ def group_by_process(views: list[EngineActionView], *, duplicates: frozenset[str
     return out
 
 
-def _step_words(n: int, label: str, view: EngineActionView | None) -> str:
+SURVEY_INVALID = "survey-invalid"
+
+
+def is_refused_step(step: dict) -> bool:
+    """A stored step (status, guards) that RE's engine host REFUSED: the launcher said it cannot run here (completed
+    `survey-invalid`, never `survey-completed`). A refusal is not a failure; `survey-failed` and any other end is."""
+    guards = step.get("guards") or []
+    return (step.get("status") in (_DONE, "INVALID") and SURVEY_INVALID in guards
+            and SURVEY_COMPLETED not in guards)
+
+
+def _step_words(n: int, label: str, view: EngineActionView | None, *, refusal_ok: bool = False) -> str:
     if view is None:
         return f"step {n} {label}"
+    if refusal_ok and view.status in (_DONE, "INVALID") and SURVEY_INVALID in view.completion_guards \
+            and SURVEY_COMPLETED not in view.completion_guards:
+        return f"step {n} {label} ⊘ refused"
     if view.status == _DONE:
         rep = view.report_guid
         # The routing guard an RE definition's step also completes with (case 3) is not news to a reader.
@@ -545,13 +559,23 @@ def _step_words(n: int, label: str, view: EngineActionView | None) -> str:
             return f"step {n} {label} not claimed yet"
         return f"step {n} {label} {'running' if view.status == 'IN_PROGRESS' else 'waiting'}"
     guard = ", ".join(g for g in view.completion_guards if g != _ROUTING_GUARD)
+    if refusal_ok and view.status in (_DONE, "INVALID") and SURVEY_INVALID in view.completion_guards \
+            and SURVEY_COMPLETED not in view.completion_guards:
+        return f"step {n} {label} ⊘ refused"         # not a failure: the launcher said it cannot run here
     return f"step {n} {label} ✗ {guard or view.status or 'status unknown'}"
 
 
 #: Case 3, C4: where a definition's Egeria-coordinated run was started, for its run line.
 STARTED_IN_EGERIA = "egeria"     # initiated in Egeria (Dr.Egeria, or another process): RE only ran its steps
 STARTED_IN_RE = "re"             # initiated from RE ("coordinated by Egeria"), then coordinated by Egeria
-_STARTED_WORDS = {STARTED_IN_EGERIA: "started in Egeria by", STARTED_IN_RE: "started in RE by"}
+STARTED_IN_RE_ONLY = "re-only"   # run by RE alone (RE's own executor), not through an Egeria process
+#: Who coordinated the run, then who started it. The time is the reader's local time, added on the page from the
+#: row's own stored submission time (never a UTC date in the words).
+_STARTED_WORDS = {
+    STARTED_IN_EGERIA: ("coordinated by Egeria", "started in Egeria by"),
+    STARTED_IN_RE: ("coordinated by Egeria", "started by"),
+    STARTED_IN_RE_ONLY: ("run by RE", "started by"),
+}
 
 
 def run_line_words(line: RunLine, *, started: str = "", started_in: str = "", started_by: str = "") -> str:
@@ -563,8 +587,11 @@ def run_line_words(line: RunLine, *, started: str = "", started_in: str = "", st
     process = line.process
     tail = []
     who = started_by or line.requester
+    coordinated, started_word = _STARTED_WORDS.get(started_in, ("", "started by"))
+    if coordinated:
+        tail.append(coordinated)
     if who:
-        tail.append(f"{_STARTED_WORDS.get(started_in, 'started by')} {who}" + (f" {started}" if started else ""))
+        tail.append(f"{started_word} {who}" + (f" {started}" if started else ""))
     if process is None:
         parts = [line.process_name.split("@", 1)[0] or (line.steps[0].request_type if line.steps else "engine action")]
         parts += [_step_words(i + 1, s.request_type, s) for i, s in enumerate(line.steps)]
@@ -587,11 +614,16 @@ def run_line_words(line: RunLine, *, started: str = "", started_in: str = "", st
         if view is None:
             parts.append(f"step {step.number} {step.label} not started yet")
             break
-        parts.append(_step_words(step.number, step.label, view))
+        parts.append(_step_words(step.number, step.label, view, refusal_ok=_is_definition(process)))
         previous, previous_number = view, step.number
     if line.note:
         parts.append(line.note)
     return " · ".join(parts + tail)
+
+
+def _is_definition(process: MixedProcess) -> bool:
+    """An RE Survey Definition run as a process (its refused steps are not a failure of the run)."""
+    return process.qualified_name.startswith(DEFINITION_PREFIX) and by_qualified_name(process.qualified_name) is None
 
 
 def _always_follows(process: MixedProcess, from_step: int, to_step: int, previous: EngineActionView) -> bool:
