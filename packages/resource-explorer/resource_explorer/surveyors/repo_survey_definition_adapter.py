@@ -1044,7 +1044,8 @@ STEP_REGISTRY: dict[str, StepInfo] = {
         "the bug where those tables were only ever populated by RAG "
         "ingestion, never by a survey step. Also extracts decorator/"
         "annotation registrations (route/rpc/resolver/message-handler) for "
-        "Python and Java into project_code_markers.",
+        "Python and Java into project_code_markers, and parses any committed "
+        "OpenAPI/Swagger file from the same checkout into the API reference.",
         ["ResourceMeasureAnnotation"],
         accepts_surveyed_at=True,
         requires_resources={"zipball_root": "local_path"},

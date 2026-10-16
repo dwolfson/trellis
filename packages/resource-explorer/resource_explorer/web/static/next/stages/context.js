@@ -33,6 +33,7 @@ import {
   JUDGEMENTS, OBSERVATIONS, fieldRowHtml, wireEnrichmentFieldControls,
   renderEnrichmentEvidence, renderEnrichmentEvidenceLoading, fetchEnrichmentEvidence, renderDocSources,
 } from '/static/next/stages/enrichment.js';
+import { renderApiReferenceBlock } from '/static/next/stages/api-reference.js';
 
 /** §1: "feeds → Curate (Confidentiality) · Assessment: 'is it safe to use'"
  *  — who reads this field, derived from what the catalog already records
@@ -228,6 +229,17 @@ function docSourcesSlotHtml() {
   </div>`;
 }
 
+/** The API reference block (repositories only): the three sources, the registration control for a running
+ *  instance's OpenAPI URL, and the way into the full reference. */
+function apiReferenceSlotHtml() {
+  if (state.resourceType !== 'repo') return '';
+  return `<div class="mt-s4">
+    <h3 class="m-0 mb-s1 mt-s4 font-heading text-name font-normal text-ink">API reference</h3>
+    <div class="mb-s2 text-provenance text-ink-muted">where each list came from, and a running instance to read it from</div>
+    <div id="api-reference-block"></div>
+  </div>`;
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 // preliminary_fit: the lens row. database_owner: the measured database owner
@@ -323,6 +335,7 @@ export async function renderContext(slug) {
     <div id="context-human-questions"></div>
 
     ${docSourcesSlotHtml()}
+    ${apiReferenceSlotHtml()}
   `;
 
   wireEnrichmentFieldControls(host, slug, () => renderContext(slug));
@@ -331,4 +344,5 @@ export async function renderContext(slug) {
   renderEnrichmentEvidence(slug);
   // Documentation sources, mounted as #348 built it (db and filesystem).
   if (DOC_SOURCE_KINDS.includes(state.resourceType)) renderDocSources(slug, { title: false });
+  if (state.resourceType === 'repo') renderApiReferenceBlock(slug);
 }

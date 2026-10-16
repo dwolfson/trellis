@@ -733,13 +733,17 @@ def _with_endpoints(rungs: dict[Rung, str], registry, slug: str):
     A reader that fails adds a note-line, not silence."""
     from resource_explorer.endpoints import read_endpoints, render_lines
 
+    spec = _spec_endpoints(rungs, registry, slug)
+    if spec is not None:
+        return spec
     es = read_endpoints(registry, slug)
     if es is None:
         return rungs, {}
     if not es.measured and not rungs:
         return rungs, {}
-    heading = ("endpoint list (non-test code registrations from the code markers; it replaces the "
-               "registration counts in the findings above, which include test-path mocks)")
+    heading = ("endpoint list (non-test code registrations from the code markers; derived from code, not a "
+               "published contract; it replaces the registration counts in the findings above, which include "
+               "test-path mocks)")
     full = "\n".join([heading] + render_lines(es, MAX_ENDPOINTS_FULL))
     summ = "\n".join([heading] + render_lines(es, MAX_ENDPOINTS_SUMMARY))
     out = dict(rungs)
@@ -752,6 +756,43 @@ def _with_endpoints(rungs: dict[Rung, str], registry, slug: str):
         extents["endpoints"] = {"total": n, "shown": {
             "FULL": min(n, MAX_ENDPOINTS_FULL), "SUMMARY": min(n, MAX_ENDPOINTS_SUMMARY)}}
     return out, extents
+
+
+def _spec_endpoints(rungs: dict[Rung, str], registry, slug: str):
+    """interface_surface's endpoint block from the best DESCRIBED source (a committed spec, else a registered
+    running instance), saying which; None when only code (or nothing) is known, so the code path above runs.
+    The code-derived routes are then a one-line comparison, not a second list competing with the first."""
+    from resource_explorer.api_reference.compare import compare_interfaces
+    from resource_explorer.api_reference.derived import derive_from_code
+    from resource_explorer.api_reference.service import best_spec_interface, render_spec_lines, spec_heading
+    from resource_explorer.endpoints import read_endpoints
+
+    iface = best_spec_interface(registry, slug)      # stored reads; unreadable parts are logged and skipped there
+    if iface is None:
+        return None
+    derived = derive_from_code(registry, slug)
+    others = [compare_interfaces(iface, derived)] if derived is not None else []
+
+    def block(limit: int) -> str:
+        lines = [spec_heading(iface)] + render_spec_lines(iface, limit, others)
+        es = read_endpoints(registry, slug)
+        kinds: dict = {}
+        for e in (es.rows if es else []):
+            if e.kind != "http_api":
+                kinds[e.kind] = kinds.get(e.kind, 0) + 1
+        if kinds:
+            lines.append("- other registrations in code (not part of the HTTP API): "
+                         + ", ".join(f"{k} {v}" for k, v in sorted(kinds.items())))
+        return "\n".join(lines)
+
+    out = dict(rungs)
+    full, summ = block(MAX_ENDPOINTS_FULL), block(MAX_ENDPOINTS_SUMMARY)
+    out[Rung.FULL] = (out[Rung.FULL] + "\n" + full) if Rung.FULL in out else f"## interface_surface\n{full}"
+    out[Rung.SUMMARY] = (out[Rung.SUMMARY] + "\n" + summ) if Rung.SUMMARY in out else f"## interface_surface\n{summ}"
+    out.setdefault(Rung.IDENTIFIERS, "## interface_surface\nchecks: endpoints")
+    n = len(iface.operations)
+    return out, {"endpoints": {"total": n, "shown": {"FULL": min(n, MAX_ENDPOINTS_FULL),
+                                                      "SUMMARY": min(n, MAX_ENDPOINTS_SUMMARY)}}}
 
 
 MAX_CLASSES_FULL, MAX_CLASSES_SUMMARY = 60, 15

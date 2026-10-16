@@ -2140,3 +2140,12 @@ export const listOutbox = ({ status = '', limit = 200 } = {}) => {
 };
 /** Returns one DEAD row to the queue. The server refuses an archive, delete or detach kind (409). */
 export const retryOutboxRow = (rowId) => adminPost(`/api/outbox/${encodeURIComponent(rowId)}/retry`);
+
+/* ── API reference (a repository's operations, from up to three sources) ──
+ * GET reads every known source, which is best, the comparisons and what is missing and why. PUT registers a
+ * running instance's OpenAPI URL: a rejected URL is an ANSWER (`ok: false`, `reason`), not an error. */
+export const getApiReference = (slug) => get(`/api/api-reference/${encodeURIComponent(slug)}`);
+export const putApiInstance = (slug, url) => put(`/api/api-reference/${encodeURIComponent(slug)}/instance`, { url });
+export const refetchApiInstance = (slug) => post(`/api/api-reference/${encodeURIComponent(slug)}/instance/refetch`);
+export const clearApiInstance = (slug) => del(`/api/api-reference/${encodeURIComponent(slug)}/instance`);
+export const getApiFetchPolicy = () => get('/api/api-reference/policy');

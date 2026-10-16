@@ -396,6 +396,110 @@ STEP_ANNOTATIONS_DDL = (
 )
 
 
+#: DDL for the API reference of a repository (owner ruling 2026-10-15: the fetched and committed specs live in
+#: proper tables so elements can be filtered and analysed by path and string). Same rules as the two blocks
+#: above: ONE additive, idempotent block, CREATE ... IF NOT EXISTS only, no ALTER of an existing table, no data
+#: migration, no foreign keys (children are deleted by document id in the same transaction that replaces them),
+#: no question mark or colon-name token (the Postgres translator rewrites both; AUTOINCREMENT becomes SERIAL).
+#:
+#: api_reference_documents  one row per described document: a committed spec file (`source` committed_spec), the
+#:     registered running instance (`running_instance`: at most one current row per repository, its `origin` is
+#:     the registered URL; `registered_by/at`, `cleared_by/at` and `status` cleared keep the audit), or a capture
+#:     marker (`status` captured, origin __capture__, so "never looked" and "looked, found none" differ).
+#:     `superseded_at` IS NULL marks the current rows. `meta_json` carries the document-level facts that are not
+#:     rows (base paths, security schemes, tag descriptions, notes).
+#: api_reference_operations one row per operation (an HTTP operation now; an MCP tool/prompt/resource later via
+#:     `kind`/`kind_detail`), with the filterable columns lifted out (`path`, `normalised_path`, `method`,
+#:     `operation_id`, `summary`, `tags_json`, `search_text` lower-cased) and the structured parts as JSON.
+#: api_reference_schemas    one row per named schema of a document (capped per schema before it is stored).
+#: Code-derived routes are NOT stored here: they are read live from project_code_markers.
+API_REFERENCE_DDL = (
+    """
+    CREATE TABLE IF NOT EXISTS api_reference_documents (
+        id             TEXT PRIMARY KEY,
+        resource_type  TEXT NOT NULL DEFAULT 'repo',
+        slug           TEXT NOT NULL,
+        source         TEXT NOT NULL,
+        origin         TEXT NOT NULL DEFAULT '',
+        kind           TEXT NOT NULL DEFAULT 'http_api',
+        status         TEXT NOT NULL DEFAULT 'ok',
+        reason         TEXT NOT NULL DEFAULT '',
+        spec_version   TEXT NOT NULL DEFAULT '',
+        title          TEXT NOT NULL DEFAULT '',
+        api_version    TEXT NOT NULL DEFAULT '',
+        description    TEXT NOT NULL DEFAULT '',
+        operation_count INTEGER NOT NULL DEFAULT 0,
+        total_operations INTEGER NOT NULL DEFAULT 0,
+        content_type   TEXT NOT NULL DEFAULT '',
+        byte_count     BIGINT DEFAULT NULL,
+        captured_at    TEXT NOT NULL,
+        attempted_at   TEXT NOT NULL DEFAULT '',
+        attempted_by   TEXT NOT NULL DEFAULT '',
+        captured_by    TEXT NOT NULL DEFAULT '',
+        registered_by  TEXT NOT NULL DEFAULT '',
+        registered_at  TEXT NOT NULL DEFAULT '',
+        cleared_by     TEXT NOT NULL DEFAULT '',
+        cleared_at     TEXT NOT NULL DEFAULT '',
+        superseded_at  TEXT DEFAULT NULL,
+        meta_json      TEXT NOT NULL DEFAULT '{}'
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_api_ref_documents_current "
+    "ON api_reference_documents(resource_type, slug, source, superseded_at)",
+    """
+    CREATE TABLE IF NOT EXISTS api_reference_operations (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        document_id      TEXT NOT NULL,
+        resource_type    TEXT NOT NULL DEFAULT 'repo',
+        slug             TEXT NOT NULL,
+        source           TEXT NOT NULL,
+        seq              INTEGER NOT NULL DEFAULT 0,
+        kind             TEXT NOT NULL DEFAULT 'http_api',
+        kind_detail      TEXT NOT NULL DEFAULT '',
+        op_key           TEXT NOT NULL,
+        name             TEXT NOT NULL DEFAULT '',
+        method           TEXT NOT NULL DEFAULT '',
+        path             TEXT NOT NULL DEFAULT '',
+        normalised_path  TEXT NOT NULL DEFAULT '',
+        operation_id     TEXT NOT NULL DEFAULT '',
+        summary          TEXT NOT NULL DEFAULT '',
+        description      TEXT NOT NULL DEFAULT '',
+        tags_json        TEXT NOT NULL DEFAULT '[]',
+        deprecated       INTEGER NOT NULL DEFAULT 0,
+        security_json    TEXT NOT NULL DEFAULT '[]',
+        parameters_json  TEXT NOT NULL DEFAULT '[]',
+        request_body_json TEXT DEFAULT NULL,
+        request_schema   TEXT NOT NULL DEFAULT '',
+        responses_json   TEXT NOT NULL DEFAULT '[]',
+        response_schemas TEXT NOT NULL DEFAULT '',
+        input_schema_json TEXT DEFAULT NULL,
+        handler          TEXT NOT NULL DEFAULT '',
+        handler_signature TEXT NOT NULL DEFAULT '',
+        location         TEXT NOT NULL DEFAULT '',
+        search_text      TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_api_ref_operations_slug_source "
+    "ON api_reference_operations(resource_type, slug, source)",
+    "CREATE INDEX IF NOT EXISTS idx_api_ref_operations_path "
+    "ON api_reference_operations(normalised_path)",
+    "CREATE INDEX IF NOT EXISTS idx_api_ref_operations_document "
+    "ON api_reference_operations(document_id, seq)",
+    "CREATE INDEX IF NOT EXISTS idx_api_ref_operations_operation_id "
+    "ON api_reference_operations(operation_id)",
+    """
+    CREATE TABLE IF NOT EXISTS api_reference_schemas (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        document_id  TEXT NOT NULL,
+        name         TEXT NOT NULL,
+        schema_json  TEXT NOT NULL DEFAULT '{}'
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_api_ref_schemas_document "
+    "ON api_reference_schemas(document_id, name)",
+)
+
+
 class PostgresCursorWrapper:
     def __init__(self, raw_cursor):
         self.raw_cursor = raw_cursor
@@ -3202,6 +3306,9 @@ class ProjectRegistry:
                 conn.execute(_ddl)
             # step_annotations: ONE additive, idempotent block (see STEP_ANNOTATIONS_DDL).
             for _ddl in STEP_ANNOTATIONS_DDL:
+                conn.execute(_ddl)
+            # api_reference_*: ONE additive, idempotent block (see API_REFERENCE_DDL).
+            for _ddl in API_REFERENCE_DDL:
                 conn.execute(_ddl)
             # ── doc_sources — declared documentation sources (Enrichment) ──
             #
