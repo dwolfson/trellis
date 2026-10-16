@@ -490,8 +490,70 @@ def test_the_engine_host_lists_an_egeria_started_definition_run_once_per_process
     assert declared["started_by"] == "egeria" and declared["started_in"] == "egeria"
     listed = [r for r in nsr.native_survey_rows(reg, "database", "coco_pharma", TECH) if r["kind"] == "re_definition"]
     assert [(r["qualified_name"], r["display_name"]) for r in listed] == [(ANALYSIS, "Database Analysis Survey")]
+    # the row beside Egeria's other runs presses the same server answer as the definition's own card
+    assert listed[0]["coordinated_by_egeria"] == nsr.coordinate_control(reg, "database", "coco_pharma", ANALYSIS)
     # Each step's own GovernanceActionType row is NOT listed for a definition step: one run, one row.
     assert reg.list_native_survey_runs("database", "coco_pharma", "ResourceExplorerSurvey::re-db-derived") == []
+
+
+class _FakeExecutorReader:
+    """The Egeria boundary of the dispatch check: what the reconcile script's reader answers."""
+
+    def __init__(self, drift=None, error=None, guid="proc-1", steps=("S::a", "S::b")):
+        self.drift, self.error, self.guid, self.steps, self.calls = drift or [], error, guid, steps, 0
+
+    def find_process_guid_by_name(self, qn):
+        return self.guid
+
+    def executor_drift(self, guid):
+        self.calls += 1
+        if self.error:
+            raise self.error
+        return self.drift
+
+    def fetch(self, guid):
+        from types import SimpleNamespace
+        return SimpleNamespace(steps=[SimpleNamespace(qualified_name=n) for n in self.steps])
+
+
+@pytest.fixture(autouse=True)
+def _dispatchable(monkeypatch):
+    """Every step has its executor unless a test says otherwise (and the per-process cache starts empty)."""
+    from resource_explorer import native_survey_run as nsr
+
+    nsr._dispatch_cache.clear()
+    fake = _FakeExecutorReader()
+    monkeypatch.setattr(nsr, "_executor_reader", lambda: fake)
+    yield fake
+    nsr._dispatch_cache.clear()
+
+
+def test_a_definition_with_a_step_that_has_no_executor_is_not_dispatchable(reg, monkeypatch, _dispatchable):
+    from resource_explorer import native_survey_run as nsr
+    from resource_explorer.surveyors.survey_definition_reconciler import ExecutorDrift
+
+    monkeypatch.setenv("RE_ENGINE_HOST_ENABLED", "true")
+    _dispatchable.drift = [ExecutorDrift("S::a", "db_derived", "missing", "no executor")]
+    ctl = nsr.coordinate_control(reg, "database", "coco_pharma", ANALYSIS)
+    assert ctl["available"] is False
+    assert ctl["why_not"] == "Egeria can't start this · step 1 has no executor in Egeria"
+    nsr.coordinate_control(reg, "database", "coco_pharma", ANALYSIS)
+    assert _dispatchable.calls == 1            # cached: not one Egeria read per candidates call
+
+
+def test_a_failed_executor_read_is_never_dispatchable(reg, monkeypatch, _dispatchable):
+    from resource_explorer import native_survey_run as nsr
+    from resource_explorer.surveyors.survey_definition_reconciler import ExecutorDrift
+
+    monkeypatch.setenv("RE_ENGINE_HOST_ENABLED", "true")
+    _dispatchable.error = RuntimeError("egeria down")
+    ctl = nsr.coordinate_control(reg, "database", "coco_pharma", ANALYSIS)
+    assert ctl["available"] is False and "could not check" in ctl["why_not"]
+    nsr._dispatch_cache.clear()
+    _dispatchable.error = None
+    _dispatchable.drift = [ExecutorDrift("S::a", "db_derived", "unreadable", "boom")]
+    ctl = nsr.coordinate_control(reg, "database", "coco_pharma", ANALYSIS)
+    assert ctl["available"] is False and "could not check" in ctl["why_not"]
 
 
 # ── the "coordinated by Egeria" control (owner, 2026-10-15) ─────────────────────────────────────────────────────

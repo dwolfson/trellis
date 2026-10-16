@@ -807,6 +807,60 @@ def _definition_processes(entity_type: str) -> list[NativeProcess]:
 COORDINATE_LABEL = "coordinated by Egeria"
 
 
+#: How long a "can Egeria dispatch every step" answer is kept (seconds). It is an Egeria read per step, so one
+#: candidates call must not repeat it; a failed read is kept only briefly.
+DISPATCH_TTL_SECONDS = 60.0
+DISPATCH_FAILED_TTL_SECONDS = 10.0
+COULD_NOT_CHECK_DISPATCH = "could not check with Egeria"
+_dispatch_cache: dict[str, tuple[float, str]] = {}
+
+
+def _executor_reader():
+    """The reader that checks executors (one place, so a test fakes only the Egeria boundary)."""
+    from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReader
+
+    return SurveyDefinitionReader()
+
+
+def definition_dispatch_reason(process_qn: str, *, now: float | None = None) -> str:
+    """"" when Egeria can dispatch every step of this definition (each step has its executor to RE's engine), else
+    a short reason. One source with `scripts/reconcile_database_survey_definition_links.py`:
+    `SurveyDefinitionReader.executor_drift`. A failed read is never "dispatchable": it says it could not check."""
+    import time
+
+    t = time.monotonic() if now is None else now
+    hit = _dispatch_cache.get(process_qn)
+    if hit and hit[0] > t:
+        return hit[1]
+    try:
+        reader = _executor_reader()
+        guid = reader.find_process_guid_by_name(process_qn)
+        if not guid:
+            reason, ttl = PROCESS_NOT_DECLARED, DISPATCH_FAILED_TTL_SECONDS
+        else:
+            drift = reader.executor_drift(guid)
+            reason, ttl = "", DISPATCH_TTL_SECONDS
+            if drift:
+                first = drift[0]
+                try:
+                    names = [st.qualified_name for st in reader.fetch(guid).steps]
+                    n = names.index(first.step_qualified_name) + 1
+                    where = f"step {n}"
+                except Exception:  # noqa: BLE001 - the step's key names it as well
+                    where = f"step {first.step_key}"
+                if any(d.problem == "unreadable" for d in drift):
+                    reason, ttl = COULD_NOT_CHECK_DISPATCH, DISPATCH_FAILED_TTL_SECONDS
+                else:
+                    what = ("has no executor in Egeria" if first.problem == "missing"
+                            else f"has the wrong executor in Egeria ({first.problem.replace('_', ' ')})")
+                    reason = f"Egeria can't start this · {where} {what}"
+    except Exception as exc:  # noqa: BLE001 - "could not check" is its own answer, never "dispatchable"
+        log.warning("executors of %s not checked: %s", process_qn, exc)
+        reason, ttl = COULD_NOT_CHECK_DISPATCH, DISPATCH_FAILED_TTL_SECONDS
+    _dispatch_cache[process_qn] = (t + ttl, reason)
+    return reason
+
+
 def coordinate_control(registry, entity_type: str, slug: str, process_qn: str) -> dict | None:
     """The "coordinated by Egeria" control for one Survey Definition on one resource, from the registry only:
     `available`, `why_not` (the short sentence shown, once for the pane, when it cannot be offered), and the state of
@@ -822,7 +876,7 @@ def coordinate_control(registry, entity_type: str, slug: str, process_qn: str) -
     entity = _resource_entity(registry, entity_type, slug)
     process = NativeProcess(qualified_name=process_qn, display_name=declared.display_name, kind=KIND_RE_DEFINITION,
                             description="", action_target_name="newAsset", target="asset", needs_credentials=False)
-    out["why_not"] = _definition_cannot_run_reason(process, entity)
+    out["why_not"] = _definition_cannot_run_reason(process, entity) or definition_dispatch_reason(process_qn)
     out["available"] = not out["why_not"]
     runs = registry.list_native_survey_runs(entity_type, slug, process_qn) if entity is not None else []
     if runs:
@@ -1001,6 +1055,9 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
             # pointer is GONE (the same row says so and offers the way back). Never three buttons for one act.
             row["register"] = {"available": not wiring and gone,
                                "label": cas.REGISTER_LABEL, "why_not": wiring}
+        if process.kind == KIND_RE_DEFINITION:
+            # The same answer the definition's own card carries, so the row beside Egeria's other runs can press it.
+            row["coordinated_by_egeria"] = coordinate_control(registry, entity_type, slug, process.qualified_name)
         if process.target == "server" and entity is not None:
             row["discovered"] = cas.discovered_databases(registry, entity, latest)
         rows.append(row)

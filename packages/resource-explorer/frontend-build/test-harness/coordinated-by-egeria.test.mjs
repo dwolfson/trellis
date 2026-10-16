@@ -14,16 +14,43 @@ const QN = 'GovActionProcess::DatabaseAnalysisSurvey';
 const cand = (ctl) => ({ qualified_name: QN, display_name: 'Database Analysis Survey',
   coordinated_by_egeria: { label: 'coordinated by Egeria', available: true, why_not: '', state: '', line: '', ...ctl } });
 
-test('available: one button labelled "coordinated by Egeria", never "run in Egeria"', () => {
+test('available: the lower card button reads "Run · coordinated by Egeria →" (Re-run once it has run) and is a bordered button', () => {
   const h = ns.coordinateControlHtml(cand({}));
+  assert.equal(text(ns.coordinateControlHtml({ ...cand({}), last_run_at: '2026-10-15T09:00:00' })), 'Re-run · coordinated by Egeria →');
   assert.match(h, /data-coordinate-egeria="GovActionProcess::DatabaseAnalysisSurvey"/);
-  assert.equal(text(h), 'coordinated by Egeria');
-  assert.doesNotMatch(text(h).toLowerCase(), /run in egeria/);
+  assert.equal(text(h), 'Run · coordinated by Egeria →');
+  assert.match(h, /border-accent/);
+});
+
+const reRow = (ctl, run) => ({ ...cand(ctl), kind: 're_definition', runnable: true, run: run || { state: 'complete' } });
+
+test('the top card (re_definition row) carries the same control, labelled like its neighbours', () => {
+  const h = ns.nativeSurveyRowHtml(reRow({}));
+  assert.match(h, /data-coordinate-egeria="GovActionProcess::DatabaseAnalysisSurvey"/);
+  assert.match(text(h), /Re-run · coordinated by Egeria →/);
+  assert.doesNotMatch(h, /data-native-run=/);
+  const fresh = ns.nativeSurveyRowHtml(reRow({}, { state: 'not_run' }));
+  assert.match(text(fresh), /Run · coordinated by Egeria →/);
+  assert.doesNotMatch(text(fresh), /Re-run|run in egeria/i);
+});
+
+test('the top card shows the in-flight state, and a DISABLED button with the reason beside it when not dispatchable', () => {
+  const live = ns.nativeSurveyRowHtml(reRow({ state: 'running', line: 'step 1' }));
+  assert.match(live, /data-coordinate-egeria="[^"]*"[^>]*disabled/);
+  assert.match(text(live), /◔ Re-run · coordinated by Egeria → · running/);
+  const why = "Egeria can't start this · step 1 has no executor in Egeria";
+  const off = ns.nativeSurveyRowHtml(reRow({ available: false, why_not: why }));
+  assert.match(off, /data-coordinate-egeria="[^"]*"[^>]*disabled/);
+  assert.match(text(off), /Re-run · coordinated by Egeria → Egeria can.{1,6}t start this · step 1 has no executor in Egeria/);
+  assert.match(off, /title="Egeria can.{1,6}t start this · step 1 has no executor in Egeria"/);
+  const lower = ns.coordinateControlHtml(cand({ available: false, why_not: 'could not check with Egeria' }));
+  assert.match(lower, /disabled/);
+  assert.match(text(lower), /could not check with Egeria/);
 });
 
 test('engine host off: no button on any row, the short reason once for the pane', () => {
   const off = cand({ available: false, why_not: 'engine host off' });
-  assert.equal(ns.coordinateControlHtml(off), '');
+  assert.match(ns.coordinateControlHtml(off), /disabled/);      // disabled on the card, never hidden
   const note = ns.coordinateOffNoteHtml([off, { ...off, qualified_name: 'GovActionProcess::DatabaseScoutingSurvey' }]);
   assert.equal((note.match(/data-coordinate-off/g) || []).length, 1);
   assert.match(text(note), /^◌ coordinated by Egeria · engine host off$/);
@@ -45,7 +72,7 @@ test('a run Egeria is coordinating shows on the control, from the persisted stat
   const h = ns.coordinateControlHtml(cand({ state: 'running', line: 'Database Analysis Survey · step 1 ... running' }));
   assert.match(h, /disabled/);
   assert.match(h, /aria-pressed="true"/);
-  assert.match(text(h), /◔ coordinated by Egeria · running/);
+  assert.match(text(h), /◔ Re-run · coordinated by Egeria → · running/);
 });
 
 test('no server answer about the control: nothing is drawn', () => {
