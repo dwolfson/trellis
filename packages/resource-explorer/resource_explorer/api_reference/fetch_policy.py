@@ -19,8 +19,13 @@ The check resolves the name ONCE and the fetch connects to the address that was 
 resolver that answers differently the second time (DNS rebinding) is never asked a second time.
 
 Always denied, whatever the list says (even "*"): link-local 169.254.0.0/16 and fe80::/10 (cloud metadata
-services), 0.0.0.0/8 and ::/128 (this host), multicast 224.0.0.0/4 and ff00::/8. Loopback and private ranges are
-allowed only when the list admits them (the default admits loopback).
+services), the Alibaba and AWS-IPv6 metadata addresses, 0.0.0.0/8 and ::/128 (this host), multicast 224.0.0.0/4
+and ff00::/8, broadcast. Loopback and private ranges are allowed only when the list admits them (the default
+admits loopback).
+
+An IPv6 address that CARRIES an IPv4 one is judged, and connected to, as that IPv4 address: ::ffff:a.b.c.d
+(mapped), ::a.b.c.d (compatible), 64:ff9b::a.b.c.d (NAT64) and 2002:aabb:ccdd:: (6to4). Otherwise
+::ffff:169.254.169.254 would walk past a v4 deny list, and ::ffff:127.0.0.1 would reach a v4-only listener.
 """
 from __future__ import annotations
 
@@ -36,7 +41,10 @@ log = logging.getLogger(__name__)
 ENV = "RE_API_FETCH_ALLOW"
 DEFAULT_ALLOW = ("localhost", "127.0.0.1", "::1")
 ALWAYS_DENY = tuple(ipaddress.ip_network(n) for n in (
-    "169.254.0.0/16", "fe80::/10", "0.0.0.0/8", "::/128", "224.0.0.0/4", "ff00::/8"))
+    "169.254.0.0/16", "fe80::/10", "0.0.0.0/8", "::/128", "224.0.0.0/4", "ff00::/8",
+    "100.100.100.200/32",            # Alibaba Cloud metadata
+    "fd00:ec2::254/128",             # AWS IPv6 metadata
+    "255.255.255.255/32"))           # broadcast
 NOT_ALLOWED = f"not in the allowed addresses ({ENV})"
 NEVER_ALLOWED = "that address is in a range RE never fetches from"
 
@@ -51,12 +59,19 @@ class Rule:
 
 
 def _split_port(entry: str):
+    """(host, port text) or None for a malformed entry ('[::1]x', '[::1', 'host:')."""
     if entry.startswith("["):
-        host, _, rest = entry[1:].partition("]")
-        return host, (rest[1:] if rest.startswith(":") else "")
+        host, close, rest = entry[1:].partition("]")
+        if not close or not host:
+            return None
+        if not rest:
+            return host, ""
+        if rest.startswith(":") and len(rest) > 1:
+            return host, rest[1:]
+        return None
     if entry.count(":") == 1:
         host, _, port = entry.partition(":")
-        return host, port
+        return (host, port) if host and port else None
     return entry, ""
 
 
@@ -64,7 +79,10 @@ def parse_entry(entry) -> Rule | None:
     if not isinstance(entry, str) or not entry.strip():
         return None
     text = entry.strip()
-    host, port_s = _split_port(text)
+    split = _split_port(text)
+    if split is None:
+        return None
+    host, port_s = split
     port = None
     if port_s:
         if not port_s.isdigit() or not 0 < int(port_s) < 65536:
@@ -136,13 +154,34 @@ def system_resolver(host: str, port: int) -> list:
     return [info[4][0].split("%")[0] for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)]
 
 
+def unwrap(ip):
+    """The IPv4 address an IPv6 address carries, or the address itself. Mapped, compatible (above ::ffff so ::1
+    stays ::1), NAT64 and 6to4."""
+    if ip.version != 6:
+        return ip
+    if ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    if ip.sixtofour is not None:
+        return ip.sixtofour
+    n = int(ip)
+    if ip in _NAT64:
+        return ipaddress.ip_address(n & 0xFFFFFFFF)
+    if 0xFFFF < n < (1 << 32):
+        return ipaddress.ip_address(n)
+    return ip
+
+
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
+
 @dataclass
 class Target:
     ok: bool
     reason: str = ""
     host: str = ""
     port: int = 0
-    ip: str = ""              # the address that was checked: connect to THIS, not to the name again
+    ip: str = ""              # the first address that was checked: connect to THESE, not to the name again
+    ips: tuple = ()           # every checked address, in resolver order, unwrapped to IPv4 where one is carried
     unresolved: bool = False
 
 
@@ -163,23 +202,34 @@ def _rule_admits_ip(rule: Rule, ip, port: int) -> bool:
             and ip.version == rule.net.version and ip in rule.net)
 
 
+def _denied(ip) -> bool:
+    return any(ip.version == n.version and ip in n for n in ALWAYS_DENY)
+
+
 def check_target(host: str, port: int, *, allow=None, resolver=None) -> Target:
-    """Decide whether `host`:`port` may be fetched, resolving it ONCE. Reasons name the rule, never the answers."""
+    """Decide whether `host`:`port` may be fetched, resolving it ONCE. Reasons name the rule, never the answers.
+    Every address is unwrapped (see the module doc) BEFORE the always-deny list and the rules look at it, and the
+    unwrapped address is the one returned for connecting."""
     host = (host or "").strip("[]").lower()
     rules = effective_rules(allow)
     try:
-        ips = [ipaddress.ip_address(host)]
+        raw = [ipaddress.ip_address(host)]
     except ValueError:
         try:
-            ips = [ipaddress.ip_address(a) for a in (resolver or system_resolver)(host, port)]
+            raw = [ipaddress.ip_address(a) for a in (resolver or system_resolver)(host, port)]
         except (OSError, ValueError):
-            ips = []
-    if any(ip.version == n.version and ip in n for ip in ips for n in ALWAYS_DENY):
-        return Target(False, NEVER_ALLOWED, host, port)
+            raw = []
+    ips = []
+    for ip in raw:
+        eff = unwrap(ip)
+        if _denied(ip) or _denied(eff):
+            return Target(False, NEVER_ALLOWED, host, port)
+        if eff not in ips:
+            ips.append(eff)
     named = any(_rule_admits_name(r, host, port) for r in rules)
     by_ip = bool(ips) and all(any(_rule_admits_ip(r, ip, port) for r in rules) for ip in ips)
     if not (named or by_ip):
         return Target(False, NOT_ALLOWED, host, port)
     if not ips:
         return Target(True, "", host, port, unresolved=True)       # allowed by name; the connect will fail by itself
-    return Target(True, "", host, port, str(ips[0]))
+    return Target(True, "", host, port, str(ips[0]), tuple(str(i) for i in ips))

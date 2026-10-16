@@ -298,3 +298,115 @@ class TestCompareScale:
         b = Interface(kind="http_api", source=SOURCE_LIVE, operations=[Operation(key="k", name="n", method="GET", path="/{id}")])
         c = compare.compare_interfaces(a, b)
         assert c["probable"] == [] and len(c["only_a"]) == 1 and len(c["only_b"]) == 1
+
+
+class TestHardDeadline:
+    def test_trickling_headers_are_cut_off_at_the_wall_clock(self):
+        import socket
+        import threading
+        s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", 0)); s.listen(5)
+        stop = threading.Event()
+
+        def loop():
+            c, _ = s.accept()
+            c.recv(65536)
+            try:
+                c.sendall(b"HTTP/1.1 200 OK\r\n")
+                for i in range(100):
+                    if stop.is_set():
+                        break
+                    time.sleep(0.3)
+                    c.sendall(b"X-A%d: b\r\n" % i)
+            except OSError:
+                pass
+            c.close()
+        threading.Thread(target=loop, daemon=True).start()
+        t0 = time.monotonic()
+        res = live.fetch_openapi(f"http://127.0.0.1:{s.getsockname()[1]}/x", total_seconds=1.0, timeout=5.0)
+        took = time.monotonic() - t0
+        stop.set(); s.close()
+        assert not res.ok and res.reason == "no answer in time" and took < 3
+
+    def test_a_resolver_that_hangs_is_covered_by_the_same_deadline(self):
+        t0 = time.monotonic()
+        res = live.fetch_openapi("http://slow.test/x", allow=["slow.test"], total_seconds=0.5,
+                                 resolver=lambda h, p: time.sleep(5) or ["10.1.1.1"], transport=_t(lambda r: httpx.Response(200)))
+        assert not res.ok and res.reason == "no answer in time" and time.monotonic() - t0 < 2
+
+
+class TestCompareBlowUp:
+    def test_many_operations_of_one_shape_on_each_side_are_cheap(self):
+        import tracemalloc
+        a = Interface(kind="http_api", source=SOURCE_LIVE, operations=[
+            Operation(key=f"a{i}", name="x", method="GET", path=f"/v1/p/{{a{i}}}") for i in range(3000)])
+        b = Interface(kind="http_api", source=SOURCE_LIVE, operations=[
+            Operation(key=f"b{i}", name="x", method="GET", path=f"/p/{{x{i}}}") for i in range(3000)])
+        tracemalloc.start()
+        t0 = time.monotonic()
+        c = compare.compare_interfaces(a, b)
+        took = time.monotonic() - t0
+        peak = tracemalloc.get_traced_memory()[1]
+        tracemalloc.stop()
+        assert took < 0.5 and peak < 100_000_000
+        assert c["probable"] == [] and len(c["only_a"]) == 3000 and len(c["only_b"]) == 3000
+
+
+class TestSearchEscaping:
+    def _seed(self, db):
+        live.register_instance(db, "tg", URL, allow=["*"], resolver=lambda h, p: ["10.1.1.1"], transport=_t(lambda r: httpx.Response(200, json={
+            "openapi": "3.0.0", "paths": {"/a_b": {"get": {"summary": "100% done"}}, "/axb": {"get": {"summary": "plain"}},
+                                          "/Upper": {"get": {}}, "/back\\slash": {"get": {}}}})))
+
+    def test_wildcards_in_a_term_match_themselves(self, db):
+        from resource_explorer.api_reference import store
+        self._seed(db)
+        assert [r["path"] for r in store.find_operations(db, "tg", path_contains="a_b")[0]] == ["/a_b"]
+        assert [r["path"] for r in store.find_operations(db, "tg", text="100%")[0]] == ["/a_b"]
+        assert [r["path"] for r in store.find_operations(db, "tg", path_contains="\\")[0]] == ["/back\\slash"]
+        assert [r["path"] for r in store.find_operations(db, "tg", path_contains="UPPER")[0]] == ["/Upper"]
+
+    def test_the_statement_survives_the_postgres_translation(self):
+        from resource_explorer.registry import PostgresCursorWrapper
+        from resource_explorer.api_reference import store
+        sent = []
+
+        class Raw:
+            def execute(self, sql, params=None):
+                sent.append((sql, params))
+
+            def fetchall(self):
+                return []
+        w = PostgresCursorWrapper(Raw())
+        sql = ("SELECT 1 WHERE LOWER(o.normalised_path) LIKE ? ESCAPE '\\\\'")
+        w.execute(sql, (store._like("a_b%"),))
+        assert "LIKE %s ESCAPE" in sent[0][0] and sent[0][1][0] == "%a\\_b\\%%"
+
+
+class TestInstanceLifecycle:
+    def test_two_registrations_leave_one_current_row(self, db):
+        for u in (URL, URL + "?x=1"):
+            live.register_instance(db, "tg", u, allow=["*"], resolver=lambda h, p: ["10.1.1.1"],
+                                   transport=_t(lambda r: httpx.Response(200, json={"openapi": "3.0.0", "paths": {}})))
+        with db._conn() as c:
+            assert c.execute("SELECT COUNT(*) FROM api_reference_documents WHERE source = 'running_instance' "
+                             "AND superseded_at IS NULL").fetchone()[0] == 1
+
+    def test_a_refetch_after_a_clear_is_not_ok(self, db):
+        ok = _t(lambda r: httpx.Response(200, json={"openapi": "3.0.0", "paths": {}}))
+        live.register_instance(db, "tg", URL, transport=ok)
+        res_holder = {}
+        real = live.fetch_openapi
+
+        def clearing_fetch(*a, **k):
+            live.clear_instance(db, "tg", by="someone")        # cleared while the re-check was in flight
+            return real(*a, **k)
+        import unittest.mock as m
+        with m.patch.object(live, "fetch_openapi", clearing_fetch):
+            res_holder["r"] = live.refetch_instance(db, "tg", by="dan", transport=ok)
+        assert res_holder["r"]["ok"] is False and "removed or replaced" in res_holder["r"]["reason"]
+
+    def test_reasons_cap_the_version_value(self):
+        from resource_explorer.api_reference.openapi import openapi_rejection
+        r = openapi_rejection({"openapi": "9" * 500, "paths": {}})
+        assert len(r) < 200

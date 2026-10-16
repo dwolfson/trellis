@@ -127,12 +127,12 @@ class TestFetchHops:
     def test_redirect_to_a_disallowed_host_is_refused_at_that_hop(self):
         r, seen = _fetch("http://good.test/o", ["good.test"], {"good.test": ["10.1.1.1"], "evil.test": ["10.2.2.2"]},
                          handler=lambda q: httpx.Response(302, headers={"location": "http://evil.test/o"}))
-        assert not r.ok and "allowed addresses" in r.reason and len(seen) == 1
+        assert not r.ok and "another host" in r.reason and len(seen) == 1
 
     def test_redirect_into_metadata_is_refused(self):
         r, seen = _fetch("http://good.test/o", ["*"], {"good.test": ["10.1.1.1"]},
                          handler=lambda q: httpx.Response(302, headers={"location": "http://169.254.169.254/x"}))
-        assert not r.ok and r.reason == fp.NEVER_ALLOWED and len(seen) == 1
+        assert not r.ok and "another host" in r.reason and len(seen) == 1
 
     def test_the_connection_is_pinned_to_the_checked_address_and_the_name_kept(self):
         r, seen = _fetch("http://good.test:8530/o", ["good.test"], {"good.test": ["10.1.1.1"]})
@@ -171,3 +171,96 @@ class TestFetchHops:
             assert r.ok, (u, r.reason)
         r, _ = _fetch("http://10.0.0.5/o", None)
         assert not r.ok
+
+
+class TestEmbeddedIPv4:
+    """H1: an IPv6 address that carries an IPv4 one is judged, and connected to, as that IPv4 address."""
+
+    @pytest.mark.parametrize("ip", [
+        "::ffff:169.254.169.254", "::a9fe:a9fe", "64:ff9b::a9fe:a9fe", "2002:a9fe:a9fe::", "::ffff:0.0.0.0",
+        "::ffff:100.100.100.200", "::ffff:255.255.255.255", "::ffff:224.0.0.1"])
+    @pytest.mark.parametrize("allow", [["*"], ["::/0"], ["localhost", "*.evil.test"]])
+    def test_denied_forms_are_denied_as_literals(self, ip, allow):
+        assert not fp.check_target(ip, 80, allow=allow).ok
+
+    @pytest.mark.parametrize("ip", ["::ffff:169.254.169.254", "::a9fe:a9fe", "64:ff9b::a9fe:a9fe", "2002:a9fe:a9fe::"])
+    def test_an_attacker_aaaa_on_an_allowed_wildcard_is_denied(self, ip):
+        t = fp.check_target("x.evil.test", 80, allow=["*.evil.test"], resolver=lambda h, p: [ip])
+        assert not t.ok and t.reason == fp.NEVER_ALLOWED
+
+    def test_mapped_loopback_is_judged_and_pinned_as_ipv4(self):
+        t = fp.check_target("::ffff:127.0.0.1", 8530, allow=["127.0.0.1"])
+        assert t.ok and t.ips == ("127.0.0.1",)
+        assert not fp.check_target("::ffff:127.0.0.1", 8530, allow=["::1"]).ok     # a v6 rule does not admit a v4 address
+        t = fp.check_target("v4only.test", 80, allow=["v4only.test"], resolver=lambda h, p: ["::ffff:10.1.1.1"])
+        assert t.ok and t.ip == "10.1.1.1"
+
+    def test_ipv6_loopback_and_unspecified_are_not_unwrapped(self):
+        assert fp.check_target("::1", 80, allow=["::1"]).ok
+        assert not fp.check_target("::", 80, allow=["*"]).ok
+
+    def test_new_always_deny_entries(self):
+        for ip in ("100.100.100.200", "fd00:ec2::254", "255.255.255.255"):
+            t = fp.check_target(ip, 80, allow=["*"])
+            assert not t.ok and t.reason == fp.NEVER_ALLOWED, ip
+
+    def test_the_fetch_connects_to_the_unwrapped_address(self):
+        r, seen = _fetch("http://v4only.test:8530/o", ["v4only.test"], {"v4only.test": ["::ffff:10.1.1.1"]})
+        assert r.ok and seen[0].url.host == "10.1.1.1"
+
+
+class TestMalformedEntries:
+    @pytest.mark.parametrize("entry", ["[::1]x", "[::1", "host:", "[]", "[::1]:", "[::1]:99999", ":80", "a.com:0"])
+    def test_refused_not_broadened(self, entry):
+        assert fp.parse_entry(entry) is None
+
+    @pytest.mark.parametrize("entry", ["[::1]", "[::1]:8530", "a.com:80", "::1", "10.0.0.0/8:80"])
+    def test_well_formed_still_parse(self, entry):
+        assert fp.parse_entry(entry) is not None
+
+
+class TestAddressOrderAndHeaders:
+    def _fetch(self, url, ips, refuse):
+        seen = []
+
+        def h(request):
+            seen.append(request.url.host)
+            if request.url.host in refuse:
+                raise httpx.ConnectError("refused")
+            return httpx.Response(200, json=OK_DOC)
+        r = live.fetch_openapi(url, allow=["*"], resolver=lambda host, port: list(ips), transport=httpx.MockTransport(h))
+        return r, seen
+
+    def test_ipv6_first_then_ipv4_listener(self):
+        r, seen = self._fetch("http://localhost:8530/o", ["::1", "127.0.0.1"], {"::1"})
+        assert r.ok and seen == ["::1", "127.0.0.1"]
+
+    def test_ipv4_first_then_ipv6_listener(self):
+        r, seen = self._fetch("http://localhost:8530/o", ["127.0.0.1", "::1"], {"127.0.0.1"})
+        assert r.ok and seen == ["127.0.0.1", "::1"]
+
+    def test_all_refusing_is_could_not_connect(self):
+        r, seen = self._fetch("http://localhost:8530/o", ["::1", "127.0.0.1"], {"::1", "127.0.0.1"})
+        assert not r.ok and r.reason == "could not connect" and len(seen) == 2
+
+    def test_no_second_lookup_while_trying_addresses(self):
+        calls = []
+        live.fetch_openapi("http://localhost:8530/o", allow=["*"], resolver=lambda h, p: calls.append(h) or ["::1", "127.0.0.1"],
+                           transport=httpx.MockTransport(lambda r: (_ for _ in ()).throw(httpx.ConnectError("x"))))
+        assert calls == ["localhost"]
+
+    def test_host_header_brackets_an_ipv6_literal(self):
+        seen = []
+        live.fetch_openapi("http://[::1]:8530/o", allow=["::1"], transport=httpx.MockTransport(
+            lambda r: seen.append(r.headers["host"]) or httpx.Response(200, json=OK_DOC)))
+        assert seen == ["[::1]:8530"]
+
+    def test_a_cross_host_redirect_does_no_lookup_of_the_target(self):
+        calls = []
+
+        def resolver(h, p):
+            calls.append(h)
+            return ["10.1.1.1"]
+        r = live.fetch_openapi("http://good.test/o", allow=["good.test", "evil.test"], resolver=resolver,
+                               transport=httpx.MockTransport(lambda q: httpx.Response(302, headers={"location": "http://evil.test/x"})))
+        assert not r.ok and "another host" in r.reason and calls == ["good.test"]

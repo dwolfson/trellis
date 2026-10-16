@@ -31,6 +31,21 @@ def _real(registry) -> bool:
     return isinstance(registry, ProjectRegistry)
 
 
+def _lock(registry, conn, key: str) -> None:
+    """Serialise writers of one repository's documents. SQLite already serialises writers; on Postgres a
+    transaction-scoped advisory lock keyed on the repository and source does it, so two registrations cannot both
+    leave a current row."""
+    if str(getattr(registry, "database_url", "")).startswith("postgresql"):
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", (key,))
+
+
+def _like(term: str) -> str:
+    """A lower-cased LIKE pattern for a literal term: backslash, percent and underscore are matched as
+    themselves (used with ESCAPE of a backslash)."""
+    t = " ".join(term.lower().split())
+    return "%" + t.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
 def _slug(registry, slug: str) -> str:
     return registry._normalize_slug(slug)
 
@@ -116,6 +131,7 @@ def replace_committed(registry, slug: str, results: list, *, captured_at: str, c
     {origin, status ('ok'|'unreadable'|'fragment'), reason, interface}. A marker row is always written."""
     slug = _slug(registry, slug)
     with registry._conn() as conn:
+        _lock(registry, conn, f"api_reference:{slug}:committed_spec")
         _supersede(conn, slug, "committed_spec", captured_at)
         for r in results:
             _insert_doc(conn, slug=slug, source="committed_spec", origin=r["origin"], status=r["status"],
@@ -133,6 +149,7 @@ def save_instance(registry, slug: str, url: str, iface: Interface, *, fetched_at
     slug = _slug(registry, slug)
     now = _now()
     with registry._conn() as conn:
+        _lock(registry, conn, f"api_reference:{slug}:running_instance")
         _supersede(conn, slug, "running_instance", now)
         _insert_doc(conn, slug=slug, source="running_instance", origin=url, status="ok", reason="",
                     captured_at=fetched_at, iface=iface, captured_by=by, registered_by=by, registered_at=now,
@@ -140,27 +157,30 @@ def save_instance(registry, slug: str, url: str, iface: Interface, *, fetched_at
 
 
 def update_instance(registry, slug: str, iface: Interface | None, *, fetched_at: str = "", reason: str = "",
-                    content_type: str = "", byte_count: int | None = None) -> None:
-    """A re-check of the registered instance: success replaces the content; failure keeps it and records why."""
+                    content_type: str = "", byte_count: int | None = None, by: str = "") -> bool:
+    """A re-check of the registered instance, by `by`: success replaces the content; failure keeps it and records
+    why. False when no current registration is left to update (it was cleared or replaced meanwhile)."""
     slug = _slug(registry, slug)
     now = _now()
     with registry._conn() as conn:
+        _lock(registry, conn, f"api_reference:{slug}:running_instance")
         row = conn.execute("SELECT id FROM api_reference_documents WHERE resource_type = ? AND slug = ? AND "
                            "source = 'running_instance' AND superseded_at IS NULL AND status IN ('ok', 'failed')",
                            (RESOURCE_TYPE, slug)).fetchone()
         if not row:
-            return
+            return False
         if iface is None:
-            conn.execute("UPDATE api_reference_documents SET status = 'failed', reason = ?, attempted_at = ? WHERE id = ?",
-                         (reason, now, row["id"]))
-            return
+            conn.execute("UPDATE api_reference_documents SET status = 'failed', reason = ?, attempted_at = ?, "
+                         "attempted_by = ? WHERE id = ?", (reason, now, by, row["id"]))
+            return True
         conn.execute(
-            "UPDATE api_reference_documents SET status = 'ok', reason = '', attempted_at = ?, captured_at = ?, "
-            "spec_version = ?, title = ?, api_version = ?, description = ?, operation_count = ?, total_operations = ?, "
-            "content_type = ?, byte_count = ?, meta_json = ? WHERE id = ?",
-            (now, fetched_at, iface.spec_version, iface.title, iface.version, iface.description[:2000],
+            "UPDATE api_reference_documents SET status = 'ok', reason = '', attempted_at = ?, attempted_by = ?, "
+            "captured_at = ?, captured_by = ?, spec_version = ?, title = ?, api_version = ?, description = ?, "
+            "operation_count = ?, total_operations = ?, content_type = ?, byte_count = ?, meta_json = ? WHERE id = ?",
+            (now, by, fetched_at, by, iface.spec_version, iface.title, iface.version, iface.description[:2000],
              len(iface.operations), iface.total_operations, content_type, byte_count, _meta(iface), row["id"]))
         _write_children(conn, row["id"], slug, "running_instance", iface)
+        return True
 
 
 def clear_instance(registry, slug: str, by: str) -> bool:
@@ -168,6 +188,7 @@ def clear_instance(registry, slug: str, by: str) -> bool:
     slug = _slug(registry, slug)
     now = _now()
     with registry._conn() as conn:
+        _lock(registry, conn, f"api_reference:{slug}:running_instance")
         row = conn.execute("SELECT id FROM api_reference_documents WHERE resource_type = ? AND slug = ? AND "
                            "source = 'running_instance' AND superseded_at IS NULL AND status IN ('ok', 'failed')",
                            (RESOURCE_TYPE, slug)).fetchone()
@@ -235,11 +256,13 @@ def committed_state(registry, slug: str) -> dict:
 
 
 def find_operations(registry, slug: str | None = None, *, source: str | None = None, text: str | None = None,
-                    path_contains: str | None = None, method: str | None = None, limit: int = 200) -> list:
-    """Operations across repositories, filtered by source, a path fragment, a method or a word anywhere in the
-    searchable text. Current documents only. The analysis hook the tables exist for."""
+                    path_contains: str | None = None, method: str | None = None, limit: int = 200,
+                    offset: int = 0) -> tuple:
+    """(rows, more): operations across repositories, filtered by source, a path fragment, a method or a word
+    anywhere in the searchable text; current documents only. `%`, `_` and backslash in a term match themselves.
+    The analysis hook the tables exist for."""
     if not _real(registry):
-        return []
+        return [], False
     where = ["o.document_id = d.id", "d.superseded_at IS NULL", "d.status IN ('ok', 'failed')"]
     args: list = []
     if slug:
@@ -249,12 +272,14 @@ def find_operations(registry, slug: str | None = None, *, source: str | None = N
     if method:
         where.append("o.method = ?"); args.append(method.upper())
     if path_contains:
-        where.append("o.normalised_path LIKE ?"); args.append("%" + path_contains.lower().replace("%", "") + "%")
+        where.append("LOWER(o.normalised_path) LIKE ? ESCAPE '\\'"); args.append(_like(path_contains))
     if text:
-        where.append("o.search_text LIKE ?"); args.append("%" + " ".join(text.lower().split()).replace("%", "") + "%")
-    args.append(int(limit))
+        where.append("LOWER(o.search_text) LIKE ? ESCAPE '\\'"); args.append(_like(text))
+    limit = max(1, int(limit))
+    args += [limit + 1, max(0, int(offset))]
     with registry._conn() as conn:
-        return _rows(conn.execute(
+        rows = _rows(conn.execute(
             "SELECT o.slug, o.source, d.origin, o.method, o.path, o.operation_id, o.summary, o.tags_json, o.deprecated "
             "FROM api_reference_operations o, api_reference_documents d WHERE " + " AND ".join(where)
-            + " ORDER BY o.slug, o.source, o.seq LIMIT ?", tuple(args)))
+            + " ORDER BY o.slug, o.source, o.seq LIMIT ? OFFSET ?", tuple(args)))
+    return rows[:limit], len(rows) > limit

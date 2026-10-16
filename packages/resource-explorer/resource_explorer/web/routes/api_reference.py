@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from resource_explorer.api_reference import fetch_policy, live, service, store
 from resource_explorer.registry import ProjectRegistry
+from resource_explorer.web import admin_auth
 from resource_explorer.web.routes.curate import _require_author, require_resource_write
 
 log = logging.getLogger(__name__)
@@ -53,21 +54,24 @@ def _repo(registry: ProjectRegistry, slug: str) -> None:
 
 
 @router.get("/policy")
-def get_policy() -> dict:
-    """The effective address policy for registered API documents, read-only (the Admin page shows it)."""
+def get_policy(request: Request) -> dict:
+    """The effective address policy for registered API documents, read-only (the Admin page shows it). Admin
+    only, like the other Admin routes: it describes the network RE can reach."""
+    admin_auth.require_admin(request)
     return fetch_policy.describe()
 
 
 @router.get("/{slug}/operations")
 def search_operations(slug: str, q: str = "", path: str = "", method: str = "", source: str = "",
-                      limit: int = 200) -> dict:
+                      limit: int = 200, offset: int = 0) -> dict:
     """Operations of this repository from the stored documents, filtered by a word, a path fragment, a method
     or a source (committed_spec | running_instance)."""
     registry = _registry()
     _repo(registry, slug)
-    rows = store.find_operations(registry, slug, source=source or None, text=q or None,
-                                 path_contains=path or None, method=method or None, limit=max(1, min(limit, 1000)))
-    return {"slug": slug, "count": len(rows), "operations": rows}
+    rows, more = store.find_operations(registry, slug, source=source or None, text=q or None,
+                                       path_contains=path or None, method=method or None,
+                                       limit=max(1, min(limit, 1000)), offset=max(0, offset))
+    return {"slug": slug, "count": len(rows), "offset": max(0, offset), "more": more, "operations": rows}
 
 
 @router.get("/{slug}")
@@ -90,9 +94,9 @@ def register_instance(slug: str, body: InstanceBody, request: Request) -> dict:
 def refetch_instance(slug: str, request: Request) -> dict:
     registry = _registry()
     _repo(registry, slug)
-    _require_author(request, "re-check an API address")
+    by = _require_author(request, "re-check an API address")
     require_resource_write(registry, "repo", slug, "link")
-    return live.refetch_instance(registry, slug, transport=_transport(), resolver=_resolver())
+    return live.refetch_instance(registry, slug, by=by, transport=_transport(), resolver=_resolver())
 
 
 @router.delete("/{slug}/instance")

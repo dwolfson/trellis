@@ -17,6 +17,7 @@ failed: <reason>"). A clear keeps a tombstone row (cleared_by, cleared_at).
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -88,49 +89,77 @@ def fetch_openapi(url: str, *, transport=None, timeout: float = TIMEOUT_SECONDS,
     """Never raises: every way this can go wrong is a FetchResult with a reason. Reasons say what kind of
     failure it was and not the raw exception text (which would tell a caller what is listening where).
 
-    Pinning: each hop resolves the name once (`fetch_policy.check_target`) and the request goes to the address
-    that was checked, with the original Host header and (https) the original name as the TLS server name, so a
-    second DNS answer is never consulted. Only the first address is tried; there is no fallback to the others."""
+    A HARD wall-clock deadline: the work (name resolution, connecting, headers, body) runs in a worker thread and
+    this function stops waiting at `total_seconds`, closing the client from here so a socket blocked in a read
+    is torn down. A per-read timeout alone cannot do that (a server that dribbles one header every few seconds
+    never trips it), and `getaddrinfo` has no timeout of its own.
+
+    Pinning: each hop resolves the name once (`fetch_policy.check_target`) and the request goes to a checked
+    address, with the original Host header and (https) the original name as the TLS server name, so a second DNS
+    answer is never consulted. The checked addresses are tried in order, only on a failed connect."""
     url = (url or "").strip()
     problem = _url_problem(url)
     if problem:
         return _fail(url, problem)
+    holder: dict = {}
+    done = threading.Event()
+
+    def work():
+        try:
+            holder["result"] = _fetch(url, transport, timeout, max_bytes, total_seconds, allow, resolver, holder)
+        except Exception:  # noqa: BLE001 -- the worker's last line: anything unforeseen is a rejection, not a 500
+            (log.debug if holder.get("abandoned") else log.warning)("API reference fetch failed", exc_info=True)
+            holder["result"] = _fail(url, "the request could not be completed")
+        finally:
+            done.set()
+
+    threading.Thread(target=work, name="api-reference-fetch", daemon=True).start()
+    if not done.wait(total_seconds + 0.25):
+        holder["abandoned"] = True
+        client = holder.get("client")
+        if client is not None:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001 -- best effort: the thread is a daemon and holds nothing else
+                log.debug("closing the timed-out client failed", exc_info=True)
+        return _fail(url, "no answer in time")
+    return holder["result"]
+
+
+def _host_header(parsed) -> str:
+    host = f"[{parsed.hostname}]" if ":" in (parsed.hostname or "") else parsed.hostname
+    return host + (f":{parsed.port}" if parsed.port else "")
+
+
+def _fetch(url, transport, timeout, max_bytes, total_seconds, allow, resolver, holder) -> FetchResult:
     deadline = time.monotonic() + total_seconds
     current = url
     try:
         with httpx.Client(transport=transport, follow_redirects=False, timeout=timeout, trust_env=False,
                           headers={"Accept": "application/json, application/yaml;q=0.9, */*;q=0.1",
                                    "User-Agent": "resource-explorer-api-reference/1"}) as client:
+            holder["client"] = client
             for hop in range(MAX_REDIRECTS + 1):
                 if time.monotonic() > deadline:
                     return _fail(url, "no answer in time")
-                target = fetch_policy.check_target(urlparse(current).hostname, _port(current),
-                                                   allow=allow, resolver=resolver)
+                parsed = urlparse(current)
+                target = fetch_policy.check_target(parsed.hostname, _port(current), allow=allow, resolver=resolver)
                 if not target.ok:
                     return _fail(url, target.reason)
-                if not target.ip:
+                if not target.ips:
                     return _fail(url, "could not connect")
-                parsed = urlparse(current)
-                pinned = httpx.URL(current).copy_with(host=target.ip)
-                host_header = parsed.hostname + (f":{parsed.port}" if parsed.port else "")
                 ext = {"sni_hostname": parsed.hostname} if parsed.scheme == "https" else {}
-                with client.stream("GET", pinned, headers={"Host": host_header}, extensions=ext) as resp:
-                    if resp.status_code in (301, 302, 303, 307, 308) and resp.headers.get("location"):
-                        if hop >= MAX_REDIRECTS:
-                            return _fail(url, "too many redirects")
-                        nxt = urljoin(current, resp.headers["location"])
-                        bad = _url_problem(nxt)
-                        if bad == "not a valid address":
-                            return _fail(url, "the address redirects to an address that is not valid")
-                        if bad:
-                            return _fail(url, "the address redirects to somewhere RE does not fetch from")
-                        if _origin(nxt) != _origin(url):
-                            t2 = fetch_policy.check_target(urlparse(nxt).hostname, _port(nxt), allow=allow, resolver=resolver)
-                            return _fail(url, t2.reason or "the address redirects to another host; RE follows "
-                                                             "redirects only within the same host")
-                        current = nxt
-                        continue
-                    return _read(url, resp, max_bytes, deadline)
+                outcome = None
+                for n, ip in enumerate(target.ips):
+                    try:
+                        outcome = _hop(client, current, ip, _host_header(parsed), ext, url, hop, max_bytes, deadline)
+                        break
+                    except httpx.ConnectError:
+                        if n == len(target.ips) - 1:
+                            raise
+                if isinstance(outcome, FetchResult):
+                    return outcome
+                current = outcome            # a redirect target that already passed the same-host test
     except httpx.TimeoutException:
         return _fail(url, "no answer in time")
     except httpx.ConnectError:
@@ -138,6 +167,25 @@ def fetch_openapi(url: str, *, transport=None, timeout: float = TIMEOUT_SECONDS,
     except (httpx.HTTPError, httpx.InvalidURL, ValueError, OSError):
         return _fail(url, "the request could not be completed")
     return _fail(url, "too many redirects")
+
+
+def _hop(client, current, ip, host_header, ext, url, hop, max_bytes, deadline):
+    """One request to one checked address. Returns a FetchResult, or the next URL for a redirect."""
+    pinned = httpx.URL(current).copy_with(host=ip)
+    with client.stream("GET", pinned, headers={"Host": host_header}, extensions=ext) as resp:
+        if resp.status_code in (301, 302, 303, 307, 308) and resp.headers.get("location"):
+            if hop >= MAX_REDIRECTS:
+                return _fail(url, "too many redirects")
+            nxt = urljoin(current, resp.headers["location"])
+            bad = _url_problem(nxt)
+            if bad == "not a valid address":
+                return _fail(url, "the address redirects to an address that is not valid")
+            if bad or _origin(nxt) != _origin(url):
+                # Generic, and no lookup of the target: a redirect must not turn RE into a DNS prober.
+                return _fail(url, "the address redirects to another host; RE follows redirects only within the "
+                                  "same host")
+            return nxt
+        return _read(url, resp, max_bytes, deadline)
 
 
 def _read(url: str, resp, max_bytes: int, deadline: float) -> FetchResult:
@@ -224,18 +272,20 @@ def register_instance(registry, slug: str, url: str, *, by: str = "", transport=
             "operations": iface.total_operations}
 
 
-def refetch_instance(registry, slug: str, *, transport=None, allow=None, resolver=None) -> dict:
+def refetch_instance(registry, slug: str, *, by: str = "", transport=None, allow=None, resolver=None) -> dict:
     rec = load_instance(registry, slug)
     if not rec:
         return {"ok": False, "reason": "no running-instance URL is registered"}
     res = fetch_openapi(rec["url"], transport=transport, allow=allow, resolver=resolver)
     if res.ok:
         iface = parse_openapi(res.document, source=SOURCE_LIVE, origin=rec["url"], as_of=res.fetched_at)
-        store.update_instance(registry, slug, iface, fetched_at=res.fetched_at, content_type=res.content_type,
-                              byte_count=res.bytes)
+        if not store.update_instance(registry, slug, iface, fetched_at=res.fetched_at,
+                                     content_type=res.content_type, byte_count=res.bytes, by=by):
+            return {"ok": False, "reason": "the registration was removed or replaced while re-checking"}
         return {"ok": True, "reason": "", "url": rec["url"], "fetched_at": res.fetched_at,
                 "operations": iface.total_operations}
-    store.update_instance(registry, slug, None, reason=res.reason)
+    if not store.update_instance(registry, slug, None, reason=res.reason, by=by):
+        return {"ok": False, "reason": "the registration was removed or replaced while re-checking"}
     return {"ok": False, "reason": res.reason, "url": rec["url"]}
 
 

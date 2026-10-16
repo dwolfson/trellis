@@ -195,17 +195,22 @@ class TestDrillDown:
         assert m["source"] == "project_code_markers" and m["total"] == 5
 
 
+def store_find(m):
+    from resource_explorer.api_reference import store
+    return store.find_operations(m, "x")
+
+
 class TestTablesForAnalysis:
     def test_operations_are_filterable_by_path_word_method_and_source(self, db, tmp_path):
         _instance(db)
         committed.capture_committed_specs(db, "tg", _tree(tmp_path), surveyed_at="2026-10-15T10:00:00")
         from resource_explorer.api_reference import store
-        rows = store.find_operations(db, "tg", path_contains="/jobs/{}")
+        rows, more = store.find_operations(db, "tg", path_contains="/jobs/{}")
         assert rows and all("jobs" in r["path"] for r in rows) and {r["source"] for r in rows} == {SOURCE_LIVE}
-        assert [r["path"] for r in store.find_operations(db, "tg", text="place an order")] == ["/orders"]
-        assert {r["method"] for r in store.find_operations(db, "tg", method="delete")} == {"DELETE"}
-        assert {r["source"] for r in store.find_operations(db, "tg", source=SOURCE_COMMITTED)} == {SOURCE_COMMITTED}
-        assert store.find_operations(db, "tg", text="no such thing anywhere") == []
+        assert [r["path"] for r in store.find_operations(db, "tg", text="place an order")[0]] == ["/orders"]
+        assert {r["method"] for r in store.find_operations(db, "tg", method="delete")[0]} == {"DELETE"}
+        assert {r["source"] for r in store.find_operations(db, "tg", source=SOURCE_COMMITTED)[0]} == {SOURCE_COMMITTED}
+        assert store.find_operations(db, "tg", text="no such thing anywhere") == ([], False)
 
     def test_a_recapture_replaces_rows_instead_of_growing_them(self, db, tmp_path):
         root = _tree(tmp_path)
@@ -221,3 +226,4 @@ class TestTablesForAnalysis:
         assert committed.load_committed(m, "x") == ([], [])
         assert committed.capture_state(m, "x") == {"captured": False, "at": ""}
         assert live.load_instance(m, "x") is None
+        assert store_find(m) == ([], False)

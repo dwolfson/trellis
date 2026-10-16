@@ -2148,3 +2148,4 @@ export const getApiReference = (slug) => get(`/api/api-reference/${encodeURIComp
 export const putApiInstance = (slug, url) => put(`/api/api-reference/${encodeURIComponent(slug)}/instance`, { url });
 export const refetchApiInstance = (slug) => post(`/api/api-reference/${encodeURIComponent(slug)}/instance/refetch`);
 export const clearApiInstance = (slug) => del(`/api/api-reference/${encodeURIComponent(slug)}/instance`);
+export const getApiFetchPolicy = () => get('/api/api-reference/policy');

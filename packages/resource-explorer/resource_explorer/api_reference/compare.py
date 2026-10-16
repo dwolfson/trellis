@@ -79,20 +79,34 @@ def compare_interfaces(a: Interface, b: Interface) -> dict:
         a_left.setdefault(_ident(op), []).append(op)
     for op in only_b:
         b_left.setdefault(_ident(op), []).append(op)
-    cands_a: dict = {}      # id(a op) -> {id(b op): (b op, prefix)}
+    cands_a: dict = {}      # id(a op) -> {id(b op): (b op, prefix)}   at most 2 kept: 2 already means "ambiguous"
     cands_b: dict = {}
+
+    def note(ao, bo, prefix):
+        ca = cands_a.setdefault(id(ao), {})
+        cb = cands_b.setdefault(id(bo), {})
+        if len(ca) < 2:
+            ca[id(bo)] = (bo, prefix)
+        if len(cb) < 2:
+            cb[id(ao)] = (ao, prefix)
+
+    # A path shape that more than one operation has, on either side, cannot be paired uniquely: skip it outright
+    # (3000 operations that all normalise to /v1/p/{} against 3000 that all normalise to /p/{} would otherwise
+    # be 9M candidate pairs).
     for (m, path), ops in a_left.items():          # a is the longer: its suffix is a b path
+        if len(ops) != 1:
+            continue
         for prefix, suffix in _suffixes(path):
-            for bo in b_left.get((m, suffix), []):
-                for ao in ops:
-                    cands_a.setdefault(id(ao), {})[id(bo)] = (bo, prefix)
-                    cands_b.setdefault(id(bo), {})[id(ao)] = (ao, prefix)
+            hit = b_left.get((m, suffix), [])
+            if len(hit) == 1:
+                note(ops[0], hit[0], prefix)
     for (m, path), ops in b_left.items():          # b is the longer
+        if len(ops) != 1:
+            continue
         for prefix, suffix in _suffixes(path):
-            for ao in a_left.get((m, suffix), []):
-                for bo in ops:
-                    cands_a.setdefault(id(ao), {})[id(bo)] = (bo, prefix)
-                    cands_b.setdefault(id(bo), {})[id(ao)] = (ao, prefix)
+            hit = a_left.get((m, suffix), [])
+            if len(hit) == 1:
+                note(hit[0], ops[0], prefix)
     probable = []
     a_taken: set = set()
     b_taken: set = set()

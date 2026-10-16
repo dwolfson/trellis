@@ -130,8 +130,28 @@ class TestAuthorisation:
 
 def test_policy_is_readable_and_operations_searchable(client, monkeypatch):
     c, _ = client
+    from resource_explorer.web import admin_auth
+    monkeypatch.setattr(admin_auth, "require_admin", lambda request: None)
     p = c.get("/api/api-reference/policy").json()
     assert p["setting"] == "RE_API_FETCH_ALLOW" and "169.254.0.0/16" in p["always_deny"]
     c.put("/api/api-reference/tg/instance", json={"url": URL})
     r = c.get("/api/api-reference/tg/operations", params={"q": "profiling", "method": "post"}).json()
-    assert r["count"] >= 1 and all(o["method"] == "POST" for o in r["operations"])
+    assert r["count"] >= 1 and all(o["method"] == "POST" for o in r["operations"]) and r["more"] is False
+    page = c.get("/api/api-reference/tg/operations", params={"limit": 5}).json()
+    assert page["count"] == 5 and page["more"] is True
+    nxt = c.get("/api/api-reference/tg/operations", params={"limit": 5, "offset": 5}).json()
+    assert nxt["offset"] == 5 and nxt["operations"][0] != page["operations"][0]
+
+
+def test_policy_is_admin_only(client):
+    c, _ = client
+    assert c.get("/api/api-reference/policy").status_code == 403         # signed in, but not an admin
+
+
+def test_refetch_records_who_pressed_it_and_reports_a_concurrent_clear(client):
+    c, reg = client
+    c.put("/api/api-reference/tg/instance", json={"url": URL})
+    assert c.post("/api/api-reference/tg/instance/refetch").json()["ok"] is True
+    with reg._conn() as conn:
+        row = conn.execute("SELECT attempted_by, captured_by FROM api_reference_documents WHERE superseded_at IS NULL").fetchone()
+    assert row["attempted_by"] == "dan" and row["captured_by"] == "dan"

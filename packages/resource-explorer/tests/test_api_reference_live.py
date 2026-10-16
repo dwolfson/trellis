@@ -118,7 +118,7 @@ class TestFetch:
             hits.append(str(request.url))
             return httpx.Response(302, headers={"location": "http://evil.example/openapi.json"})
         res = live.fetch_openapi(URL, transport=_transport(handler))
-        assert not res.ok and "allowed addresses" in res.reason and len(hits) == 1
+        assert not res.ok and "another host" in res.reason and len(hits) == 1
 
     def test_redirect_to_another_allowed_host_is_still_refused_as_another_host(self):
         def handler(request):

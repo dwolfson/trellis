@@ -95,6 +95,11 @@ def load_document(text: str, hint: str = "") -> dict:
     return value
 
 
+def _short(v: str, cap: int = 40) -> str:
+    t = " ".join(str(v).split())
+    return t if len(t) <= cap else t[: cap - 1] + "…"
+
+
 def openapi_rejection(doc) -> str | None:
     """None when `doc` is an OpenAPI 3.x / Swagger 2.0 document; otherwise the sentence saying what it is not."""
     if not isinstance(doc, dict):
@@ -102,11 +107,11 @@ def openapi_rejection(doc) -> str | None:
     if "openapi" in doc:
         v = str(doc.get("openapi"))
         if not v.startswith("3."):
-            return f"not an OpenAPI document: openapi {v} is not a version this reader knows (3.x)"
+            return f"not an OpenAPI document: openapi {_short(v)} is not a version this reader knows (3.x)"
     elif "swagger" in doc:
         v = str(doc.get("swagger"))
         if v != "2.0":
-            return f"not an OpenAPI document: swagger {v} is not a version this reader knows (2.0)"
+            return f"not an OpenAPI document: swagger {_short(v)} is not a version this reader knows (2.0)"
     else:
         return "not an OpenAPI document: no 'openapi' or 'swagger' key"
     if not isinstance(doc.get("paths"), dict):
