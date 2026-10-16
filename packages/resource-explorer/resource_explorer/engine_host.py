@@ -553,6 +553,8 @@ class EngineHost:
         targets = _unique_targets([t for t in all_targets if t["name"] != SURVEY_REPORT_TARGET])
         # A later step of a process runs only after its previous step completed with the linking guard, and the
         # report it is handed must be that previous step's own (ReportOriginator).
+        from resource_explorer import mixed_process
+
         why, predecessor_reports, instance = self._previous_step(_guid(action),
                                                                  str(action.get("requesterUserId") or "").strip())
         if why and not adopt:
@@ -561,7 +563,11 @@ class EngineHost:
         # Only a step that derives from the previous step's report is handed one, so only such a step can be handed
         # a wrong one. A step of an RE definition (case 3) takes no report: in an N-step process Egeria carries every
         # earlier step's surveyReport forward (step 3 arrives with two), and they are not its input.
-        if _consumes_source_report(request_type, step_key):
+        # Whether a step consumes a report depends on the PROCESS it runs in, not only its request type: inside a
+        # declared RE Survey Definition no step takes one, so it runs standalone (owner, 2026-10-16). If the process
+        # cannot be told, the request type alone decides, as before (ambiguity is refused, never silently dropped).
+        in_definition = bool(mixed_process.definition_qn_for_instance_name(str(action.get("processName") or "")))
+        if _consumes_source_report(request_type, step_key) and not in_definition:
             if len(set(reports)) > 1:
                 report_refusal = (f"{len(set(reports))} {SURVEY_REPORT_TARGET} action targets "
                                   f"({', '.join(sorted(set(reports)))}); not choosing one")
