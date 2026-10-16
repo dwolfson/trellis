@@ -39,7 +39,12 @@ async def auth_login(req: LoginRequest) -> Dict[str, Any]:
     It is never stored and never signed into the JWT (contract, 2026-09-04).
     """
     from resource_explorer.auth import create_access_token, login_with_password
-    from resource_explorer.egeria_clients import DaemonSignInRefused, refuse_daemon_sign_in
+    from resource_explorer import egeria_clients
+    from resource_explorer.egeria_clients import (
+        TOKEN_REFUSED, TOKEN_UNREACHABLE, DaemonSignInRefused, refuse_daemon_sign_in,
+    )
+
+    check_token_accepted = egeria_clients.check_token_accepted   # looked up per call: tests swap it
 
     if not req.username or not req.password:
         raise HTTPException(status_code=400, detail="username and password required")
@@ -54,8 +59,27 @@ async def auth_login(req: LoginRequest) -> Dict[str, Any]:
         raise HTTPException(
             status_code=401, detail="Invalid credentials or Egeria is unreachable."
         )
+    # Egeria mints a token for any user id, then refuses every request made with it (2026-10-16,
+    # 'rover'). One authorized read tells the two apart before a session exists.
+    verdict = await asyncio.get_event_loop().run_in_executor(
+        None, check_token_accepted, req.username, egeria_token
+    )
+    if verdict == TOKEN_REFUSED:
+        log.warning("auth: Egeria issued a token for %r but refused its first read; login refused",
+                    req.username)
+        raise HTTPException(
+            status_code=401,
+            detail=(f"Egeria issued a token for {req.username} but refuses its requests · "
+                    "sign in as a user this Egeria server knows"),
+        )
     token = create_access_token(user_id=req.username, egeria_token=egeria_token)
-    return {"access_token": token, "token_type": "bearer", "egeria_user": req.username}
+    reply = {"access_token": token, "token_type": "bearer", "egeria_user": req.username}
+    if verdict == TOKEN_UNREACHABLE:
+        # Not a refusal: the old behaviour (signed in, live calls may fail), said out loud.
+        log.warning("auth: could not check with Egeria that %r's token is honoured; "
+                    "login accepted as before", req.username)
+        reply["check"] = "could not check with Egeria"
+    return reply
 
 
 @router.post("/portal")

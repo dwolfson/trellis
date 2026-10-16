@@ -604,3 +604,50 @@ def egeria_client(identity: EgeriaIdentity, *, purpose: str,
         else:
             clients.purpose = purpose
     return clients
+
+
+# ---------------------------------------------------------------------------
+# Login check: does Egeria honour the token it just issued?
+# ---------------------------------------------------------------------------
+
+TOKEN_ACCEPTED = "accepted"
+TOKEN_REFUSED = "refused"
+TOKEN_UNREACHABLE = "unreachable"
+
+
+def classify_token_check_failure(exc: BaseException) -> str:
+    """`TOKEN_REFUSED` when Egeria answered and said this user is not authorized (a 401/403, or
+    its AUTHORIZATION_ERROR_401 / security-403 text, wrapped or bare); else `TOKEN_UNREACHABLE`.
+    A timeout, a refused connection or any error that is not Egeria's answer is not a refusal."""
+    from resource_explorer.egeria_outbox import _http_code_of, is_security_refusal
+
+    for e in (exc, getattr(exc, "__cause__", None)):
+        if not isinstance(e, BaseException):
+            continue
+        if type(e).__name__ == "PyegeriaUnauthorizedException":
+            return TOKEN_REFUSED
+        text = str(e)
+        if "AUTHORIZATION_ERROR_401" in text or "User not authorized" in text:
+            return TOKEN_REFUSED
+        if _http_code_of(e) in (401, 403):
+            return TOKEN_REFUSED
+    if isinstance(exc, Exception) and is_security_refusal(exc):
+        return TOKEN_REFUSED
+    return TOKEN_UNREACHABLE
+
+
+def check_token_accepted(user_id: str, token: str) -> str:
+    """ONE cheap read on the view server that needs authorization, made as `user_id` with the
+    token just issued, through the same factory every caller call uses. Blocking: run it in an
+    executor. Returns `TOKEN_ACCEPTED`, `TOKEN_REFUSED` or `TOKEN_UNREACHABLE`; never raises."""
+    try:
+        from pyegeria import AutomatedCuration
+
+        identity = EgeriaIdentity(user_id=user_id, token=token, kind=KIND_CALLER)
+        client = egeria_client(identity, purpose="login check", shared=False).of(AutomatedCuration)
+        client.find_technology_types("*", page_size=1)
+        return TOKEN_ACCEPTED
+    except Exception as exc:                      # noqa: BLE001 - classified, never swallowed silently
+        verdict = classify_token_check_failure(exc)
+        log.info("auth: login check for %r read as %s — %s: %s", user_id, verdict, type(exc).__name__, exc)
+        return verdict
