@@ -53,20 +53,16 @@ test('a credential-gap refusal shows on the run line with the way to where the c
   assert.doesNotMatch(none, /data-native-fix-credential/);
 });
 
-test('the credential link presses the resource header\'s own "Change credentials" door', async () => {
-  const door = document.createElement('button');
-  door.dataset.act = 'change-credentials';
-  let pressed = 0;
-  door.addEventListener('click', () => { pressed += 1; });
-  document.body.appendChild(door);
+test('the credential link opens the credential form in place under the run line (not via the header door)', async () => {
   const root = document.createElement('div');
   root.innerHTML = `<div id="native-surveys">${ns.nativeSurveyRowHtml(row(run()))}</div>`;
   document.body.appendChild(root);
   app.state.selectedSlug = 'coco_pharma'; app.state.subTab = 'survey'; app.state.resourceType = 'db';
+  app.state.databases = [{ slug: 'coco_pharma', db_user: 'u' }];
   globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ surveys: [] }) });
   ns.bindNativeSurveys(root, 'coco_pharma', [row(run())]);
   root.querySelector('[data-native-fix-credential]').click();
-  assert.equal(pressed, 1);
+  assert.ok(root.querySelector('[data-native-credential-slot] [data-cred-change="coco_pharma"]'));
 });
 
 test('a run RE stopped following reads "running · as of HH:MM · stopped checking · check now"', () => {
