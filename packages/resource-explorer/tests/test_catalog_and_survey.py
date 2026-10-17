@@ -24,7 +24,7 @@ from resource_explorer import native_survey_run as nsr
 from resource_explorer.catalogue_gateway import database_qualified_name, server_qualified_name
 from resource_explorer.registry import DatabaseEntity, ProjectRegistry
 from resource_explorer.surveyors import technology_type_processes as ttp
-from tests.test_native_survey_run import CATALOG_QN, FakePort
+from tests.test_native_survey_run import CATALOG_QN, FakePort, ann
 
 TECH = "PostgreSQL Relational Database"
 PASSWORD = "S3cretPW!-do-not-leak"
@@ -422,7 +422,12 @@ class TestNeutralAndStale:
         assert survey["stale"] is True and survey["neutral"] is False
         assert survey["cannot_run_reason"] == cas.STALE_WORDS == (
             "the Egeria asset RE had stored no longer exists")
-        assert survey["register"]["available"] and survey["register"]["label"] == cas.REGISTER_LABEL
+        assert survey["register"]["available"] and survey["register"]["label"] == cas.REGISTER_AGAIN_LABEL
+        # Designer Q10: "no longer in Egeria · was registered … as <old guid>", the old GUID kept in the words.
+        assert survey["gone_line"].startswith("no longer in Egeria · was registered") and DB_GUID[:8] in survey["gone_line"]
+        assert rows[CATALOG_QN]["gone_line"] == survey["gone_line"]
+        assert rows[CATALOG_QN]["register"]["label"] == cas.REGISTER_AGAIN_LABEL
+        assert rows[CATALOG_QN]["register"]["start_again"] is False         # nothing exists to duplicate: one press
         assert rows[CATALOG_QN]["stale"] is True and rows[CATALOG_QN]["run"]["state"] == cas.NOT_REGISTERED
 
     def test_a_failed_read_is_unreadable_never_gone(self, registry):
@@ -780,6 +785,9 @@ class TestNoSecondDatabaseProcess:
         row = {r["qualified_name"]: r for r in nsr.native_survey_rows(registry, "database", "adventureworks", TECH)}[CATALOG_QN]
         assert row["register"]["available"] and row["register"]["label"] == cas.START_AGAIN_LABEL
         assert run["engine_action_guid"] in " ".join(row["notes"])
+        # Designer Q10: the confirm names the risk, not just "press again".
+        assert "hasn't finished" in row["register"]["confirm"]
+        assert "second database element in Egeria" in row["register"]["confirm"]
 
     def test_a_database_found_by_name_needs_no_claim_and_resolves_one(self, registry):
         port = RegPort()
@@ -1313,3 +1321,145 @@ class TestDatabaseProcessSubmitFailures:
         port.process_error = None
         register(registry, port)                         # may be pressed again at once
         assert len(port.processes) == 1
+
+
+def _api_exc(cls_name="PyegeriaAPIException", code=500, msg_id=""):
+    """A real-shaped Egeria failure: the class pyegeria raises, the HTTP code, and the message id Egeria's
+    FFDC body carries in `additional_info` (the shape observed live 2026-10-16)."""
+    import pyegeria.core._exceptions as ex
+    e = Exception.__new__(getattr(ex, cls_name))
+    Exception.__init__(e, "Egeria error")
+    e.related_http_code = code
+    e.context, e.pyegeria_code, e.message, e.system_action, e.user_action = {}, "CLIENT-ERROR", "Egeria refused", "", ""
+    e.response = None
+    e.additional_info = {"exceptionErrorMessageId": msg_id} if msg_id else {}
+    return e
+
+
+class TestNotVisibleIsAbsenceOfAPointer:
+    """Architect ruling 2026-10-16 section 3: for a GUID RE holds as a pointer, 400-010 is `gone`."""
+
+    NOT_VISIBLE = "OMAG-REPOSITORY-HANDLER-400-010"
+
+    def test_a_soft_deleted_database_reads_as_gone(self, registry):
+        registry.set_database_egeria_guid("adventureworks", DB_GUID)
+        port = real_port(FakeExpert(error=_api_exc(msg_id=self.NOT_VISIBLE)))
+        out = cas.check_pointers(registry, port, "database", "adventureworks")
+        assert out["database"] == "gone" and out["error"] == ""
+
+    def test_the_typed_not_found_is_still_gone(self, registry):
+        registry.set_database_egeria_guid("adventureworks", DB_GUID)
+        out = cas.check_pointers(registry, real_port(FakeExpert(error=typed_not_found())), "database", "adventureworks")
+        assert out["database"] == "gone"
+
+    @pytest.mark.parametrize("exc", [
+        _api_exc(msg_id="OMAG-REPOSITORY-HANDLER-500-001"),            # a 500 with another id
+        _api_exc(msg_id=""),                                           # a 500 with no id
+        _api_exc("PyegeriaUnauthorizedException", 401, "OMAG-REPOSITORY-HANDLER-400-010"),   # sign-in refusal
+        TimeoutError("read timed out"),
+    ])
+    def test_everything_else_stays_unreadable(self, registry, exc):
+        registry.set_database_egeria_guid("adventureworks", DB_GUID)
+        out = cas.check_pointers(registry, real_port(FakeExpert(error=exc)), "database", "adventureworks")
+        assert out["database"] == "unreadable"
+
+    def test_not_visible_does_not_widen_the_shared_absence_answer(self):
+        from resource_explorer.egeria_absence import UNREADABLE, is_absent
+        assert is_absent(_api_exc(msg_id=self.NOT_VISIBLE)) == UNREADABLE     # never licenses a create
+
+
+# ── designer Q9: registration states derive from proof rows ──────────────────
+
+def _rows(registry):
+    return {r["qualified_name"]: r for r in nsr.native_survey_rows(registry, "database", "adventureworks", TECH)}
+
+
+def _fail_server_survey(registry, port, sentence):
+    sruns = registry.list_native_survey_runs("database", "adventureworks", SERVER_SURVEY_QN)
+    port.actions[sruns[0]["engine_action_guid"]] = ("FAILED", sentence)
+    nsr.refresh_resource(registry, port, "database", "adventureworks")
+
+
+class TestRegistrationStatesFromProof:
+    def _registered(self, registry):
+        port = RegPort()
+        port.have(SERVER_GUID, SQN)
+        port.have(DB_GUID, DQN)
+        register(registry, port)
+        return port
+
+    def test_registered_alone_says_egeria_has_not_connected_yet(self, registry):
+        self._registered(registry)
+        row = _rows(registry)[CATALOG_QN]
+        assert row["run"]["state"] == cas.REGISTERED
+        assert row["reach"] == {"state": "not_yet", "words": "Egeria hasn't connected yet"}
+
+    def test_a_refused_survey_says_couldnt_connect_and_names_the_address_egeria_tried(self, registry):
+        port = self._registered(registry)
+        _fail_server_survey(registry, port, "Connection to localhost:5442 refused")
+        rows = _rows(registry)
+        assert rows[CATALOG_QN]["reach"] == {"state": "failed", "words": "Egeria couldn't connect",
+                                             "address": "localhost:5442"}
+        tried = rows[SERVER_SURVEY_QN]["tried"]
+        assert tried["address"] == "localhost:5442" and tried["own_machine"] is True
+        assert tried["words"] == "Egeria tried localhost:5442, and localhost is Egeria's own machine"
+
+    def test_without_an_address_in_the_sentence_the_stored_host_and_port_are_named(self, registry):
+        port = self._registered(registry)
+        _fail_server_survey(registry, port, "Connection refused (UnknownHostException)")
+        tried = _rows(registry)[SERVER_SURVEY_QN]["tried"]
+        assert tried["address"] == "host.docker.internal:5432" and tried["own_machine"] is False
+        assert "own machine" not in tried["words"]            # a fact about localhost, not a guess about Docker
+
+    def test_a_credential_failure_is_not_a_reach_failure(self, registry):
+        port = self._registered(registry)
+        _fail_server_survey(registry, port, 'password authentication failed for user "x"')
+        rows = _rows(registry)
+        assert rows[SERVER_SURVEY_QN]["tried"] == {}
+        assert rows[CATALOG_QN]["reach"]["state"] == "not_yet"
+
+    def test_only_a_completed_survey_with_its_report_proves_the_reach(self, registry):
+        port = self._registered(registry)
+        guid = registry.list_native_survey_runs("database", "adventureworks", SERVER_SURVEY_QN)[0]["engine_action_guid"]
+        port.actions[guid] = ("COMPLETED", "")             # the action ended, but no report is stored yet
+        nsr.refresh_resource(registry, port, "database", "adventureworks")
+        assert _rows(registry)[CATALOG_QN]["reach"]["state"] == "not_yet"
+        port.finish(guid, report="rrrrrrrr-0000-0000-0000-000000000001", annotations=[ann(1)])
+        nsr.refresh_resource(registry, port, "database", "adventureworks")
+        assert _rows(registry)[SERVER_SURVEY_QN]["run"]["state"] == nsr.COMPLETE
+        assert _rows(registry)[CATALOG_QN]["reach"] == {"state": "connected", "words": "Egeria has connected"}
+
+
+class TestHeldAddressWillChange:
+    def _registered_and_read_back(self, registry):
+        port = RegPort()
+        port.have(SERVER_GUID, SQN)
+        port.have(DB_GUID, DQN)
+        register(registry, port)
+        out = cas.check_pointers(registry, port, "database", "adventureworks")
+        assert out["database"] == "resolves"
+        return port
+
+    def test_the_read_back_records_the_address_egeria_holds(self, registry):
+        self._registered_and_read_back(registry)
+        assert cas.address_state(registry, "database", "adventureworks", registry.get_database("adventureworks")) == {
+            "current": SERVER_NAME, "held": SERVER_NAME, "will_change": False}
+        assert _rows(registry)[CATALOG_QN]["register"]["available"] is False
+
+    def test_a_changed_egeria_host_is_will_change_until_a_read_back_shows_the_new_address(self, registry):
+        port = self._registered_and_read_back(registry)
+        registry.update_egeria_host("database", "adventureworks", "localhost")
+        row = _rows(registry)[CATALOG_QN]
+        assert row["address"] == {"current": "localhost:5432", "held": SERVER_NAME, "will_change": True}
+        assert row["register"]["available"] is True and row["register"]["label"] == cas.REGISTER_AGAIN_LABEL
+        assert row["register"]["start_again"] is False
+        # Egeria now holds it under the new address (a read-back of the new element): the state clears.
+        port.have(DB_GUID, database_qualified_name("localhost:5432", "adventureworks"))
+        cas.check_pointers(registry, port, "database", "adventureworks")
+        assert _rows(registry)[CATALOG_QN]["address"]["will_change"] is False
+
+    def test_a_database_never_read_back_has_no_held_address_so_no_claim_of_change(self, registry):
+        registry.set_database_egeria_guid("adventureworks", DB_GUID)
+        registry.update_egeria_host("database", "adventureworks", "localhost")
+        row = _rows(registry)[CATALOG_QN]
+        assert row["address"]["held"] == "" and row["address"]["will_change"] is False

@@ -12,7 +12,7 @@ const ns = await import('/static/next/stages/native-surveys.js');
 const { localTime } = await import('/static/next/format.js');
 const text = (h) => h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 
-const LINE = 'Database Analysis Survey · step 1 postgres_column_profile ⊘ refused · step 2 postgres_nested_columns ⊘ refused'
+const LINE = 'Database Analysis Survey · step 1 postgres_column_profile ○ not run · step 2 postgres_nested_columns ○ not run'
   + ' · step 3 db_derived ✓ report 4a2771da · step 4 postgres_operations ✓ report b7bdb30b · coordinated by Egeria · started by peterprofile';
 const SUBMITTED = '2026-10-16T14:42:00';
 const REFUSAL = 'the stored credential has SELECT on 3 of 61 relations';

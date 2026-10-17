@@ -397,8 +397,9 @@ async def list_candidates(
         last_activity_by_ref = _reg.get_survey_definition_last_activity(entity_type, slug)
         # A definition's last run is the latest run however it was coordinated: RE's own executor leaves an
         # activity row; an Egeria-coordinated process run leaves only its native-survey row. Take the newer.
-        from resource_explorer.native_survey_run import coordinated_last_runs
+        from resource_explorer.native_survey_run import coordinated_last_runs, definition_run_history
 
+        _runs_by_ref = definition_run_history(_reg, entity_type, slug)
         for _ref, _run in coordinated_last_runs(_reg, entity_type, slug).items():
             _mine = last_activity_by_ref.get(_ref) or {}
             if _mine.get("last_run_at") and not _newer(_run["last_run_at"], _mine["last_run_at"]):
@@ -509,6 +510,8 @@ async def list_candidates(
             detailed.append({
                 **c, "description": strip_generator_provenance(survey_def.description), "error": None, "steps": steps,
                 "survey_kind": survey_def.survey_kind,
+                # Every run of this definition, whoever coordinated it, for the card's "runs · N ›" list.
+                "runs": _runs_by_ref.get(c["qualified_name"], []),
                 "last_run_at": last_activity.get("last_run_at", ""),
                 "last_run_status": last_activity.get("last_run_status", ""),
                 "last_run_activity_id": last_activity.get("last_run_activity_id", ""),

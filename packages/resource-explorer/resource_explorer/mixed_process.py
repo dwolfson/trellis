@@ -556,7 +556,7 @@ def _step_words(n: int, label: str, view: EngineActionView | None, *, refusal_ok
         return f"step {n} {label}"
     if refusal_ok and view.status in (_DONE, "INVALID") and SURVEY_INVALID in view.completion_guards \
             and SURVEY_COMPLETED not in view.completion_guards:
-        return f"step {n} {label} ⊘ refused"
+        return f"step {n} {label} ○ not run"        # ⊘ is cancelled (glyphs.js); a refusal is nothing failed
     if view.status == _DONE:
         rep = view.report_guid
         # The routing guard an RE definition's step also completes with (case 3) is not news to a reader.
@@ -570,7 +570,7 @@ def _step_words(n: int, label: str, view: EngineActionView | None, *, refusal_ok
     guard = ", ".join(g for g in view.completion_guards if g != _ROUTING_GUARD)
     if refusal_ok and view.status in (_DONE, "INVALID") and SURVEY_INVALID in view.completion_guards \
             and SURVEY_COMPLETED not in view.completion_guards:
-        return f"step {n} {label} ⊘ refused"         # not a failure: the launcher said it cannot run here
+        return f"step {n} {label} ○ not run"         # not a failure: the launcher said it cannot run here
     return f"step {n} {label} ✗ {guard or view.status or 'status unknown'}"
 
 
@@ -656,6 +656,12 @@ def _always_follows(process: MixedProcess, from_step: int, to_step: int, previou
         if link.from_step == from_step and link.to_step == to_step:
             return link.guard in ("", _ROUTING_GUARD) and (not link.guard or link.guard in previous.completion_guards)
     return False
+
+
+def modernise_words(words: str) -> str:
+    """A run line stored before 2026-10-16 says "⊘ refused" for a step the launcher would not run. ⊘ is "cancelled"
+    in the glyph table and a refusal is neither a failure nor a cancel: it is "○ not run" (designer Q7)."""
+    return (words or "").replace(" ⊘ refused", " ○ not run")
 
 
 def trim_words_to_steps(words: str, graded: int) -> str:

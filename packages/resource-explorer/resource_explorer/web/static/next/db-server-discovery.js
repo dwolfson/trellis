@@ -325,7 +325,7 @@ function savedHtml() {
           d.last_surveyed_at ? `surveyed ${esc(ago(d.last_surveyed_at))}` : 'never surveyed'}
         <button type="button" data-change-cred="${esc(d.slug)}" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">Change credentials…</button>
         <div data-cred-host="${esc(d.slug)}" class="w-full"></div>
-        <div class="w-full">${egeriaHostLineHtml('database', d.slug, d.egeria_host)}</div>
+        <div class="w-full">${egeriaHostLineHtml('database', d.slug, d.egeria_host, s.egeria_host || '')}</div>
       </div>`).join('')}
       <div data-test-result="${esc(s.slug)}"></div>
     </div>`;

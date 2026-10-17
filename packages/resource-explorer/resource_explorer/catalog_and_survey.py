@@ -85,6 +85,10 @@ STALE_WORDS = "the Egeria asset RE had stored no longer exists"
 REACH_NOTE = "Egeria connects from its own platform; RE can still survey this database itself"
 REGISTER_LABEL = "Register the server with Egeria →"
 START_AGAIN_LABEL = "Start again →"
+REGISTER_AGAIN_LABEL = "Register again →"
+#: Egeria answered about a pointer RE holds and there is no usable element: said in Egeria's frame, never "deleted"
+#: (RE did not see a delete and cannot tell deleted from purged).
+GONE_WORDS = "no longer in Egeria"
 NO_RECORD_WORDS = "RE has no record of the earlier process, so it cannot check whether it is still running."
 SERVER_NO_ANSWER_WORDS = ("Egeria gave no answer to a server create, so the server may or may not exist; "
                           "RE will not create it again until you start again")
@@ -453,6 +457,53 @@ def reach_note_for(run_state: dict) -> str:
     return REACH_NOTE if _CONNECTION_WORDS.search(text) else ""
 
 
+#: The address Egeria's own sentence names ("Connection to localhost:5442 refused").
+_ADDRESS_IN_SENTENCE = re.compile(r"\b(?:to|at)\s+(?:host\s+)?[\"'`]?((?:[A-Za-z0-9_\-]+\.)*[A-Za-z0-9_\-]+:\d{2,5})\b")
+OWN_MACHINE_HOSTS = ("localhost", "127.0.0.1", "::1")
+
+
+def tried_words(run_state: dict, entity) -> dict:
+    """For a failed or refused survey that reads as a CONNECTION problem (the same test as `reach_note_for`): the
+    address Egeria tried, from its own sentence when it names one, else the stored egeria_host:port. The
+    "localhost is Egeria's own machine" clause is a fact about the address, said only for localhost/127.0.0.1.
+    {} when it is not a connection failure."""
+    if not reach_note_for(run_state) or entity is None:
+        return {}
+    text = " ".join(str(run_state.get(k) or "") for k in ("message", "error"))
+    m = _ADDRESS_IN_SENTENCE.search(text)
+    address = m.group(1) if m else server_name_for(entity)
+    own = address.rsplit(":", 1)[0].strip("[]").lower() in OWN_MACHINE_HOSTS
+    return {"address": address, "own_machine": own,
+            "words": f"Egeria tried {address}" + (", and localhost is Egeria's own machine" if own else "")}
+
+
+def reach_proof(registry, entity_type: str, slug: str, technology_type: str, entity) -> dict:
+    """What the persisted survey runs prove about Egeria REACHING this database -- the registration alone proves
+    only that the elements exist. `state`: `connected` (a survey of it completed), `failed` (the newest survey
+    failed on a connection problem, with the address it tried), else `not_yet`."""
+    quals = [DATABASE_SURVEY_QN]
+    sp = server_survey_process(entity_type, technology_type)
+    if sp is not None:
+        quals.append(sp.qualified_name)
+    failed: dict = {}
+    for qn in quals:
+        runs = registry.list_native_survey_runs(entity_type, slug, qn)
+        latest = runs[0] if runs else None
+        if not latest:
+            continue
+        stored = (registry.count_native_survey_annotations(latest["survey_report_guid"])
+                  if latest.get("survey_report_guid") else None)
+        st = nsr.derive_native_state(latest, stored_annotation_count=stored)
+        if st["state"] in (nsr.COMPLETE, nsr.PARTIAL):      # either survey reaching the server or the database
+            return {"state": "connected", "words": "Egeria has connected"}
+        t = tried_words(st, entity)
+        if t and not failed:
+            failed = t
+    if failed:
+        return {"state": "failed", "words": "Egeria couldn't connect", "address": failed["address"]}
+    return {"state": "not_yet", "words": "Egeria hasn't connected yet"}
+
+
 # ── pointer checks (the only read that decides "stale") ─────────────────────
 
 def check_pointers(registry, port, entity_type: str, slug: str) -> dict:
@@ -466,10 +517,45 @@ def check_pointers(registry, port, entity_type: str, slug: str) -> dict:
     ptr = (getattr(entity, "egeria_asset_guid", "") or "").strip()
     if ptr:
         out["database"] = _classify(port, ptr, out)
+        if out["database"] == "resolves":
+            _record_held_address(registry, port, entity_type, slug, ptr)
     sptr = server_pointer(registry, entity)
     if sptr:
         out["server"] = _classify(port, sptr, out)
     return out
+
+
+def held_address_key(entity_type: str, slug: str) -> str:
+    return f"egeria_held_address::{entity_type}::{slug}"
+
+
+def address_in_name(qualified_name: str) -> str:
+    """'host.docker.internal:5442' from 'PostgreSQL Relational Database::host.docker.internal:5442::adventureworks'
+    ('' for a name that does not carry one). The address Egeria holds is what its own element is NAMED, not a
+    guess from RE's side."""
+    parts = str(qualified_name or "").split("::")
+    return parts[1].strip() if len(parts) >= 3 else ""
+
+
+def _record_held_address(registry, port, entity_type: str, slug: str, guid: str) -> None:
+    """After a pointer READ BACK, keep the address Egeria's element carries (a persisted proof; the key/value
+    table, no DDL). A failed read-back changes nothing: what was proven earlier stays."""
+    try:
+        back = port.read_element(guid)
+    except Exception:  # noqa: BLE001 -- not proof either way
+        return
+    held = address_in_name(getattr(back, "qualified_name", "")) if back is not None else ""
+    if held:
+        registry.set_setting(held_address_key(entity_type, slug), held)
+
+
+def address_state(registry, entity_type: str, slug: str, entity) -> dict:
+    """{current, held, will_change}: `current` is the address RE would send now (egeria_host or host, with the
+    port); `held` the address Egeria's database element was last READ BACK under ('' when never read);
+    `will_change` only when both are known and differ -- Egeria still has the old one until Register again."""
+    current = server_name_for(entity) if entity is not None else ""
+    held = (registry.get_setting(held_address_key(entity_type, slug), "") or "").strip()
+    return {"current": current, "held": held, "will_change": bool(held and current and held != current)}
 
 
 def _classify(port, guid: str, out: dict) -> str:
@@ -740,6 +826,7 @@ def _register_steps(registry, port, entity_type, slug, technology_type, submitte
             except Exception as exc:  # noqa: BLE001
                 raise nsr.NativeSurveyError(_egeria_sentence(exc, entity)) from exc
             registry.set_database_egeria_guid(slug, dback.guid)           # AFTER the read
+            registry.set_setting(held_address_key(entity_type, slug), server_name)
             release_claim(registry, slug)
             out["database"] = {"guid": dback.guid, "how": "adopted"}
             _record_survey_action(registry, port, entity_type, slug, dback.guid, submitted_by)
@@ -937,10 +1024,32 @@ def catalog_notes(registry, entity_type: str, entity, latest: dict | None, deriv
     return notes
 
 
-def register_control(registry, entity, derived: dict, in_flight: bool, wiring: str) -> dict:
+def stamp(iso: str) -> str:
+    """'10-16 13:02' from a stored ISO time, or '' when there is none to read."""
+    try:
+        return datetime.fromisoformat(str(iso or "").replace("Z", "+00:00")).strftime("%m-%d %H:%M")
+    except ValueError:
+        return ""
+
+
+def gone_line(registry, entity_type: str, slug: str, entity, technology_type: str = "") -> str:
+    """The row's words for a pointer Egeria answered "no longer there" to: "no longer in Egeria · was registered
+    10-15 as 4f2a9c01…". The old GUID is the stored pointer; the date is the newest registration run's own stored
+    time, left out when none is stored (a date RE did not record is not guessed)."""
+    guid = (getattr(entity, "egeria_asset_guid", "") or "").strip() if entity is not None else ""
+    proc = _process_for(entity_type, technology_type or "PostgreSQL Relational Database", KIND_CATALOG_AND_SURVEY)
+    run = next(iter(registry.list_native_survey_runs(entity_type, slug, proc.qualified_name)), None) if proc else None
+    when = stamp((run or {}).get("surveyed_at"))
+    was = " ".join(x for x in (f"was registered {when}" if when else "was registered", f"as {guid[:8]}…" if guid else "") if x)
+    return f"{GONE_WORDS} · {was}"
+
+
+def register_control(registry, entity, derived: dict, in_flight: bool, wiring: str, stale: bool = False,
+                     will_change: bool = False) -> dict:
     """The one control: shown for not registered, a failed or refused run, an unconfirmed server, and an
     unresolved earlier run (as "Start again", which says what the earlier run is in the row's notes)."""
-    base = {"label": REGISTER_LABEL, "why_not": wiring, "start_again": False, "available": False, "confirm": ""}
+    first = REGISTER_AGAIN_LABEL if stale else REGISTER_LABEL     # a pointer Egeria lost: one press, nothing to duplicate
+    base = {"label": first, "why_not": wiring, "start_again": False, "available": False, "confirm": ""}
     if wiring or in_flight:
         return base
     holder = server_claim_holder(registry, server_name_for(entity))
@@ -951,12 +1060,24 @@ def register_control(registry, entity, derived: dict, in_flight: bool, wiring: s
     if unresolved and derived["state"] != REGISTERED:
         proc = _process_for("database", "PostgreSQL Relational Database", KIND_CATALOG_AND_SURVEY)
         run = _newest_run_with_guid(registry, "database", entity.slug, proc.qualified_name) if proc else None
-        confirm = ("This submits a second registration to Egeria. "
+        failed = derived["state"] in (nsr.FAILED, nsr.SUBMIT_FAILED)
+        if failed:
+            # The earlier process failed: nothing it made can be duplicated, so the claim is cleared by one press.
+            return {**base, "available": True, "label": START_AGAIN_LABEL, "start_again": True, "confirm": "",
+                    "one_press": True}
+        submitted = stamp((run or {}).get("surveyed_at"))
+        earlier = f"An earlier registration (submitted {submitted}) hasn't finished." if submitted \
+            else "An earlier registration hasn't finished."
+        confirm = (f"{earlier} Starting again may create a second database element in Egeria. "
                    + (f"The earlier process {run['engine_action_guid']} was last read as "
                       f"{run.get('engine_action_status') or 'not yet read'}." if run else NO_RECORD_WORDS))
         return {**base, "available": True, "label": START_AGAIN_LABEL, "start_again": True, "confirm": confirm}
     if derived["state"] in (NOT_REGISTERED, nsr.FAILED, nsr.SUBMIT_FAILED) or unconfirmed:
         return {**base, "available": True}
+    if will_change and derived["state"] == REGISTERED:
+        # Egeria holds this database under an older address: one press sends the current one (a new element; the
+        # old ones stay, which the row says -- deleting them is the owner's job).
+        return {**base, "available": True, "label": REGISTER_AGAIN_LABEL}
     return base
 
 

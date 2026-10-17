@@ -348,7 +348,10 @@ class PyegeriaSurveyPort:
         try:
             res = self._get_expert().get_metadata_element_by_guid(guid)
         except Exception as exc:  # noqa: BLE001 -- classified below
-            if self._is_not_found(exc):
+            from resource_explorer.egeria_absence import is_not_visible
+
+            # A typed not-found, or Egeria's 400-010 "not visible" (a soft delete) on THIS pointer's own GUID.
+            if self._is_not_found(exc) or is_not_visible(exc):
                 return False
             raise
         if is_exact_absent(res):
@@ -1046,6 +1049,7 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
             "cancellable": bool(latest) and cancel_offered(latest),
             "run": derived,
             "reach_note": cas.reach_note_for(derived),
+            "tried": cas.tried_words(derived, entity),
             "notes": (cas.server_credential_notes(registry, entity)
                       if process.target == "server" and hasattr(entity, "db_type") else []),
         }
@@ -1054,7 +1058,9 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
             # The control sits on the "Catalog and Survey" row; a survey row offers it only when its stored
             # pointer is GONE (the same row says so and offers the way back). Never three buttons for one act.
             row["register"] = {"available": not wiring and gone,
-                               "label": cas.REGISTER_LABEL, "why_not": wiring}
+                               "label": cas.REGISTER_AGAIN_LABEL if gone else cas.REGISTER_LABEL, "why_not": wiring}
+            if gone:
+                row["gone_line"] = cas.gone_line(registry, entity_type, slug, entity, technology_type)
         if process.kind == KIND_RE_DEFINITION:
             # The same answer the definition's own card carries, so the row beside Egeria's other runs can press it.
             row["coordinated_by_egeria"] = coordinate_control(registry, entity_type, slug, process.qualified_name)
@@ -1077,6 +1083,7 @@ def _catalog_row(registry, entity_type, slug, technology_type, entity, process, 
     derived = cas.derive_catalog_state(latest, has_pointer=has_ptr)
     in_flight = cas.catalog_in_flight(derived, latest)
     live = entity is not None and hasattr(entity, "db_type") and not wiring
+    addr = cas.address_state(registry, entity_type, slug, entity) if live else {"current": "", "held": "", "will_change": False}
     return {
         "cancellable": False,        # a registration is a process; its identifier is never an engine action
         "qualified_name": process.qualified_name,
@@ -1095,8 +1102,13 @@ def _catalog_row(registry, entity_type, slug, technology_type, entity, process, 
         "reach_note": cas.reach_note_for(derived),
         "notes": cas.catalog_notes(registry, entity_type, entity, latest, derived, in_flight) if live else [],
         "asset_guid": (getattr(entity, "egeria_asset_guid", "") or "") if entity is not None else "",
-        "register": cas.register_control(registry, entity, derived, in_flight, wiring) if live
+        "register": cas.register_control(registry, entity, derived, in_flight, wiring, stale=stale,
+                                         will_change=addr["will_change"]) if live
         else {"available": False, "label": cas.REGISTER_LABEL, "why_not": wiring, "start_again": False},
+        **({"gone_line": cas.gone_line(registry, entity_type, slug, entity, technology_type)} if stale else {}),
+        # "Registered" proves the elements exist, not that Egeria can reach the database: what the survey runs prove.
+        "reach": cas.reach_proof(registry, entity_type, slug, technology_type, entity) if live else None,
+        "address": addr,
     }
 
 
@@ -1134,6 +1146,7 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
     stored = _declared(run).get("expected_steps")
     graded = len(stored) if isinstance(stored, list) and stored else len(steps)
     words = mixed_process.trim_words_to_steps(pr.get("words") or "", graded) if steps else (pr.get("words") or "")
+    words = mixed_process.modernise_words(words)
     had_run = bool(pr)
     pr = {**pr, "words": words}
     out.update(line=words, steps=steps, report_guid="", annotation_count=None)
@@ -1173,6 +1186,13 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
         ended_badly = failed_steps[0] if failed_steps else None
     by_type = {st.request_type: st for st in process.steps} if process else {}
 
+    # The run's own plan against the definition as it is now (architect ruling 2026-10-16, item 1): the line counts
+    # the PLAN it was made under, the card header counts the definition. They differ only when the definition changed.
+    current_types = ([st.request_type for st in sorted(process.steps, key=lambda x: x.number)] if process else [])
+    recorded = isinstance(stored, list) and bool(stored)
+    out["plan"] = {"recorded": recorded, "steps": expected, "definition_steps": len(current_types),
+                   "differs": bool(recorded and current_types and list(stored) != current_types)}
+
     def _problems() -> list[dict]:
         """Every step that ended other than completed: its place, name, kind (refused or failed) and the
         launcher's reason, for the run's on-demand detail."""
@@ -1184,13 +1204,16 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
             out_list.append({"step": declared_step.number if declared_step else 0,
                              "label": declared_step.label if declared_step else (s.get("request_type") or ""),
                              "kind": "refused" if mixed_process.is_refused_step(s) else "failed",
-                             "reason": _refusal_reason(s.get("message") or "")})
+                             "reason": _refusal_reason(s.get("message") or ""),
+                             "credential": bool(mixed_process.is_refused_step(s)
+                                                and CREDENTIAL_GAP.search(s.get("message") or ""))})
         return out_list
 
     if ended_badly is not None and not (goes_on and still_going):
         out["state"] = FAILED
         out["message"] = pr.get("words") or out["message"]
         out["problems"] = _problems()
+        out["fixable"] = _fixable(out["problems"])
         return out
     if still_going:
         out["state"] = RUNNING
@@ -1200,8 +1223,17 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
         ran = sum(1 for s in by_index if not _ended_badly(s))
         out["state"] = PARTIAL
         out["message"] = pr.get("words") or out["message"]
-        out["summary"] = f"{ran} of {expected} ran"
+        plan = out["plan"]
+        out["ran"] = ran
+        if not plan["recorded"]:
+            out["summary"] = f"{ran} ran · this run's plan wasn't recorded"     # a count RE did not record is not shown as one
+        elif plan["differs"]:
+            out["summary"] = (f"{ran} of its {expected} steps ran · made under an earlier version of this definition "
+                              f"({expected} steps, now {plan['definition_steps']})")
+        else:
+            out["summary"] = f"{ran} of {expected} ran"
         out["problems"] = _problems()
+        out["fixable"] = _fixable(out["problems"])
         return out
     out["state"] = COMPLETE
     out["message"] = pr.get("words") or out["message"]
@@ -1253,6 +1285,82 @@ def coordinated_last_runs(registry, entity_type: str, slug: str) -> dict[str, di
             if declared.get("started_in") == mixed_process.STARTED_IN_RE else "",
         }
     return out
+
+
+def definition_run_history(registry, entity_type: str, slug: str, limit: int = 30) -> dict[str, list[dict]]:
+    """Every run of each RE Survey Definition on this resource, newest first, WHOEVER coordinated it, for the
+    definition card's "runs · N ›" list (designer 2026-10-16, Q1). An Egeria-coordinated run comes from its
+    native-survey row through the same `derive_mixed_state` the run line uses; a run RE coordinated comes from its
+    activity row. Each: when, coordinated_by ("egeria"|"re"), by, state, ran/of (a count RE recorded, else None),
+    version_note ("(4-step version)" when the run's plan differs from the definition now, architect item 1) and the
+    step reports. A press Egeria did not accept (no GUID) is not a run."""
+    from datetime import datetime as _dt
+
+    from resource_explorer import mixed_process
+
+    def _key(when: str):
+        try:
+            d = _dt.fromisoformat((when or "").replace("Z", "+00:00"))
+        except ValueError:
+            return 0.0
+        return (d if d.tzinfo else d.replace(tzinfo=timezone.utc)).timestamp()
+
+    out: dict[str, list[dict]] = {}
+    for run in registry.list_native_survey_runs(entity_type, slug):
+        ref = run.get("executor_ref") or ""
+        if not ref.startswith(mixed_process.DEFINITION_PREFIX) or not run.get("engine_action_guid") or run.get("submit_error"):
+            continue
+        d = derive_mixed_state(run)
+        plan = d.get("plan") or {}
+        recorded = bool(plan.get("recorded"))
+        if d["state"] == COMPLETE:
+            ran, of = (plan.get("steps") if recorded else None), (plan.get("steps") if recorded else None)
+        else:
+            ran, of = d.get("ran"), (plan.get("steps") if recorded else None)
+        out.setdefault(ref, []).append({
+            "when": run.get("surveyed_at") or "", "coordinated_by": "egeria",
+            "by": (run.get("submitted_by") or ""), "state": d["state"], "ran": ran, "of": of,
+            "version_note": f"({plan['steps']}-step version)" if plan.get("differs") else "",
+            "reports": [{"step": i + 1, "guid": st["report_guid"]} for i, st in enumerate(d.get("steps") or [])
+                        if st.get("report_guid")]})
+    for a in registry.list_survey_definition_runs(entity_type, slug):
+        out.setdefault(a["ref"], []).append({
+            "when": a["when"], "coordinated_by": "re", "by": a["by"],
+            "state": ("complete" if a["status"] == "ok" else "partial" if a["status"] == "partial"
+                      else "running" if str(a["status"]).lower() in ("running", "queued", "pending", "claimed", "submitted") else "failed"),
+            "ran": None, "of": None, "version_note": "", "reports": []})
+    for ref in out:
+        out[ref].sort(key=lambda r: _key(r["when"]), reverse=True)
+        del out[ref][limit:]
+    return out
+
+
+#: A refusal the person can fix: the capability gate said the database credential cannot read enough
+#: ("needs `read`: connected as X, which has SELECT on 3 of 61 relation(s) — ..."), however the step phrases it.
+CREDENTIAL_GAP = re.compile(r"needs `\w+`|\bSELECT on \d+ of \d+|\bstored credential\b", re.IGNORECASE)
+
+
+def _step_range(numbers: list[int]) -> str:
+    nums = sorted(set(n for n in numbers if n))
+    if not nums:
+        return ""
+    if len(nums) == 1:
+        return f"step {nums[0]}"
+    return f"steps {nums[0]}–{nums[-1]}" if nums == list(range(nums[0], nums[-1] + 1)) \
+        else "steps " + ", ".join(str(n) for n in nums)
+
+
+def _fixable(problems: list[dict]) -> dict | None:
+    """The refusal the person can fix, for the run line: which steps were not run, the first clause of why, and what
+    to change. None when no refusal is a credential gap (a failure is never offered as fixable)."""
+    gap = [p for p in problems if p.get("credential")]
+    if not gap:
+        return None
+    reason = re.split(r"\s+[—-]\s+", gap[0].get("reason") or "", maxsplit=1)[0].strip().rstrip(".")
+    reason = re.sub(r"^needs `\w+`:\s*", "", reason)
+    return {"kind": "credential", "steps": [p["step"] for p in gap], "reason": reason,
+            "words": f"{_step_range([p['step'] for p in gap])} not run · {reason}",
+            "action": "set the database credential"}
 
 
 def _refusal_reason(message: str) -> str:

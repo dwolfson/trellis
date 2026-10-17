@@ -33,6 +33,7 @@ import { state, esc, apiEntityType } from '/static/next/app.js';
 import { openDialog } from '/static/next/worklist.js';
 import { followUntil } from '/static/next/live-status.js';
 import { onServerRestart } from '/static/next/shell-status.js';
+import { openFindDbServersDialog } from '/static/next/db-server-discovery.js';
 import { reportViewerHtml, bindReportViewer } from '/static/next/stages/native-report.js';
 
 const POLL_MS = 8000;
@@ -105,7 +106,7 @@ function timingCue(r) {
 /** A mixed process run (engine host step 4): the one run line the server built from what it read of each step
  *  ("Postgres survey then derived · step 1 PostgreSQLSurvey ✓ report cb92eedc · step 2 … ✓ …"), and each step's
  *  report opening as any report does. */
-function processLineHtml(r) {
+export function processLineHtml(r) {
   // Numbered by the step's own place in the run, then filtered: a step-2 report is never "step 1 report".
   const reports = (r.steps || []).map((s, i) => ({ s, n: i + 1 })).filter(({ s }) => s.report_guid)
     .map(({ s, n }) => `<button type="button"
@@ -121,7 +122,7 @@ function processLineHtml(r) {
   // A partial run: cue plus the short word ("2 of 4 ran"); each refused step's reason is on demand.
   let partial = '';
   if (r.state === 'partial') {
-    const reasons = (r.problems || []).map((p) => `step ${p.step} ${p.label}: ${p.reason || 'refused'}`);
+    const reasons = (r.problems || []).map((p) => `step ${p.step} ${p.label}: ${p.reason || (p.kind === 'refused' ? 'not run' : 'failed')}`);
     partial = `<span class="text-state-warn" data-native-partial><span class="font-glyph" aria-hidden="true">◐</span> ${esc(r.summary || 'partial')}</span>`
       + (reasons.length ? ` <button type="button" data-native-partial-why-open
           class="cursor-pointer bg-transparent p-0 text-ink-muted underline decoration-dotted"
@@ -129,8 +130,12 @@ function processLineHtml(r) {
           class="text-ink-muted"> ${reasons.map((x) => `<span class="block">${esc(x)}</span>`).join('')}</span>` : '')
       + ' · ';
   }
+  // A refusal the person can fix says how, on the run line, with the way to where the credential is set.
+  const fix = r.fixable
+    ? `<span class="block" data-native-fixable>${esc(r.fixable.words)} · <button type="button" data-native-fix-credential
+        class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${esc(r.fixable.action)} ›</button></span>` : '';
   return `${partial}<span class="${tone}" data-native-process-line>${esc(r.line)}</span>${whenHtml}${waiting}`
-    + `${r.read_at ? ` · read ${timeSpan(r.read_at)}` : ''}${reports ? ` · ${reports}` : ''}${err}`;
+    + `${r.read_at ? ` · read ${timeSpan(r.read_at)}` : ''}${reports ? ` · ${reports}` : ''}${err}${fix}`;
 }
 
 /** The one line of status. Pure over `row.run`. */
@@ -173,9 +178,14 @@ export function nativeSurveyStatusHtml(row) {
       }
       return `<span class="text-state-warn"><span class="font-mono">${esc(r.egeria_status)}</span>`
         + ` · ${esc(r.message)}</span> · read ${timeSpan(r.read_at)} · ${guidSpan(r.engine_action_guid)}`;
-    case 'registered':
-      return `registered with Egeria${row.asset_guid
+    case 'registered': {
+      // "Registered" proves only that the elements exist. Until a survey proves Egeria can connect, the row says so,
+      // from the server's `reach` (derived from the persisted survey runs), never from the click.
+      const reach = row.reach && row.reach.state !== 'connected' ? row.reach : null;
+      return `registered with Egeria${reach
+        ? ` · <span data-native-reach-state="${esc(reach.state)}">${esc(reach.words)}${reach.address ? ` (tried <span class="font-mono">${esc(reach.address)}</span>)` : ''}</span>` : ''}${row.asset_guid
         ? ` · database asset <span class="font-mono" title="Egeria database asset">${esc(row.asset_guid)}</span>` : ''}`;
+    }
     case 'awaiting_registration':
       return `Egeria says <span class="font-mono">${esc(r.egeria_status)}</span> · read ${timeSpan(r.read_at)}`
         + ' — the database is not readable in Egeria yet';
@@ -185,10 +195,10 @@ export function nativeSurveyStatusHtml(row) {
       return row.cannot_run_reason
         ? `<span class="text-ink-muted">can't be registered from here — ${esc(row.cannot_run_reason)}</span>`
         : (row.stale
-          ? `<span class="text-ink-muted">${esc('the Egeria asset RE had stored no longer exists')}</span>`
+          ? `<span class="text-ink-muted" data-native-gone>${esc(row.gone_line || 'no longer in Egeria')}</span>`
           : '<span class="text-ink-muted">not registered with Egeria · optional</span>');
     default:
-      if (row.stale) return `<span class="text-ink-muted">${esc(row.cannot_run_reason)}</span>`;
+      if (row.stale) return `<span class="text-ink-muted" data-native-gone>${esc(row.gone_line || 'no longer in Egeria')}</span>`;
       if (row.neutral) return `<span class="text-ink-muted">${esc(row.cannot_run_reason)}</span>`;
       return row.runnable
         ? 'not run'
@@ -222,6 +232,26 @@ function reachNoteHtml(row) {
     ? `<div class="mt-[2px] text-provenance text-ink-muted" data-native-reach>${esc(row.reach_note)}</div>` : '';
 }
 
+/** A survey Egeria could not connect for names the address it tried (Egeria's own sentence stays whole above it).
+ *  The "localhost is Egeria's own machine" clause is the server's, said only for localhost/127.0.0.1. */
+export function triedHtml(row) {
+  const t = row.tried;
+  if (!t || !t.address) return '';
+  return `<div class="mt-[2px] text-provenance text-ink-muted" data-native-tried>Egeria tried
+    <span class="font-mono text-ink">${esc(t.address)}</span>${t.own_machine ? ", and localhost is Egeria's own machine" : ''} ·
+    <button type="button" data-native-change-host class="cursor-pointer bg-transparent p-0 text-accent-ink underline">change the Egeria-visible host ›</button></div>`;
+}
+
+/** The Egeria lane of a registration row: Egeria still holds the database under an older address than the
+ *  one RE would send now. Derived from the server's read-back record, so it stays until a read-back shows the new one. */
+export function willChangeHtml(row) {
+  const a = row.address;
+  if (!a || !a.will_change) return '';
+  return `<div class="mt-[2px] text-provenance text-ink" data-native-will-change><span class="font-glyph" aria-hidden="true">⚠</span>
+    will change · Egeria has <span class="font-mono">${esc(a.held)}</span> · ${esc((row.register && row.register.label) || 'Register again →')} sends
+    <span class="font-mono">${esc(a.current)}</span></div>`;
+}
+
 /** Cancel cues that outlive a repaint: a cancel Egeria did not confirm stays on its row until the next try
  *  (guid -> the words). A cancel that worked needs none: the row's own status then says CANCELLED. */
 const cancelCues = new Map();
@@ -253,8 +283,18 @@ export function cancelControlHtml(row) {
     ${keep}</div>`;
 }
 
-/** One survey row: glyph, name, kind, status, and Run when RE can run it. */
-export function nativeSurveyRowHtml(row) {
+/** A run RE stopped following: the state word stays (the run's state has not changed, only RE stopped looking),
+ *  the line says when it was last read, and "check now" reads once. Replaces the old "reload to check again". */
+export function stoppedFollowingHtml(row) {
+  const r = row.run || {};
+  const asOf = r.read_at ? new Date(Date.parse(r.read_at)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+  return `<div class="mt-[2px] text-provenance text-ink-muted" data-native-stopped><span class="font-glyph" aria-hidden="true">◔</span>
+    ${esc(r.state === 'submitted' ? 'submitted' : 'running')}${asOf ? ` · as of <span class="tnum">${esc(asOf)}</span>` : ''} · stopped checking after 10 minutes ·
+    <button type="button" data-native-check-now class="cursor-pointer bg-transparent p-0 text-accent-ink underline">check now</button></div>`;
+}
+
+/** One survey row: glyph, name, kind, status, and Run when RE can run it. `stopped`: RE gave up following it. */
+export function nativeSurveyRowHtml(row, opts = {}) {
   const run = row.run || { state: 'not_run' };
   const g = stateGlyph(glyphFor(run, row.runnable, row));
   const busy = !!row.in_flight;
@@ -271,14 +311,17 @@ export function nativeSurveyRowHtml(row) {
             : "Egeria's own survey engine"}</span>
       </div>
       <div class="mt-[2px] text-provenance text-ink-muted" data-native-status>${nativeSurveyStatusHtml(row)}</div>
+      ${opts.stopped === true && row.in_flight ? stoppedFollowingHtml(row) : ''}
       ${cancelControlHtml(row)}
       ${row.credentials_note ? `<div class="mt-[2px] text-provenance text-ink-muted"><span class="text-ink-muted" title="not confirmed either way">?</span> ${esc(row.credentials_note)}</div>` : ''}
       ${reachNoteHtml(row)}
+      ${triedHtml(row)}
+      ${willChangeHtml(row)}
       ${(row.notes || []).map((n) => `<div class="mt-[2px] text-provenance text-ink-muted" data-native-note>${esc(n)}</div>`).join('')}
       ${(row.description && row.kind !== 're_definition') ? `<div class="mt-[2px] max-w-[70ch] text-provenance text-ink-muted">${esc(row.description)}</div>` : ''}
       ${discoveredDatabasesHtml(row)}
     </div>
-    ${(!row.runnable && row.register && row.register.available) ? `<button type="button" data-native-register="${esc(row.qualified_name)}" ${row.register.start_again ? `data-native-start-again="1" data-native-confirm="${esc(row.register.confirm || '')}"` : ''} ${busy ? 'disabled' : ''}
+    ${(!row.runnable && row.register && row.register.available) ? `<button type="button" data-native-register="${esc(row.qualified_name)}" ${row.register.start_again ? `data-native-start-again="1" ${row.register.one_press ? 'data-native-one-press="1"' : ''} data-native-confirm="${esc(row.register.confirm || '')}"` : ''} ${busy ? 'disabled' : ''}
       class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
       >${esc(row.register.label)}</button>` : ''}
     ${row.kind === 're_definition' ? coordinateControlHtml(row, { ran }) : ''}
@@ -292,14 +335,50 @@ export function nativeSurveyRowHtml(row) {
 
 const stateGlyph = stateEntry;
 
+/** The rows of Egeria's OWN surveys: native surveys and mixed processes. A Survey Definition's coordinated run is a run
+ *  of the definition RE authored, not a survey of Egeria's, so it is shown on the definition's own card
+ *  (designer 2026-10-16, Q1: one thing, one card) and `re_definition` rows are not listed here. */
+export const ownSurveyRows = (rows) => (rows || []).filter((r) => r.kind !== 're_definition');
+
 export function nativeSurveysSectionHtml(rows) {
   if (!rows || !rows.length) return '';
+  const own = ownSurveyRows(rows);
+  // Only definition runs to follow: the host stays (it drives the follow and the re-read) but nothing is drawn.
+  if (!own.length) return '<div id="native-surveys" hidden></div>';
   return `<div class="mt-s3 mb-s3">
     <div class="text-caps uppercase tracking-caps text-ink-muted">Egeria's own surveys</div>
     <div class="text-caveat text-ink-muted">Run by Egeria's survey action engine; RE submits the
       action and reads back what Egeria says about it.</div>
-    <div id="native-surveys">${rows.map(nativeSurveyRowHtml).join('')}</div>
+    <div id="native-surveys">${own.map((r) => nativeSurveyRowHtml(r)).join('')}</div>
   </div>`;
+}
+
+/** A definition card's run line: the latest run, whoever coordinated it, with the same words either way (the
+ *  server's derived row, not re-derived here). `stopped`: RE gave up following it (state word stays, with "check now"). */
+export function definitionRunLineHtml(row, { stopped = false } = {}) {
+  const g = stateGlyph(glyphFor(row.run || { state: 'not_run' }, row.runnable, row));
+  return `<div class="mt-[2px] text-provenance text-ink-muted" data-def-run-line="${esc(row.qualified_name)}">
+    <span class="${g.tone}" title="${esc(g.word)}" aria-label="${esc(g.word)}">${g.glyph}</span>
+    <span data-native-status>${nativeSurveyStatusHtml(row)}</span>${stopped && row.in_flight ? stoppedFollowingHtml(row) : ''}</div>`;
+}
+
+const RUN_STATE_WORD = { complete: 'complete', partial: 'partial', failed: 'failed', running: 'running', submitted: 'submitted' };
+
+/** "runs · 6 ›": every run of the definition, whoever coordinated it (the server's `runs`, newest first). A run made
+ *  under an earlier version of the definition carries "(4-step version)" after its count. */
+export function definitionRunsListHtml(c) {
+  const runs = c.runs || [];
+  if (!runs.length) return '';
+  const item = (r) => {
+    const who = r.coordinated_by === 'egeria' ? 'coordinated by Egeria' : 'by RE';
+    const count = r.ran != null && r.of != null ? ` · <span class="tnum">${r.ran} of ${r.of}</span> ran${r.version_note ? ` <span data-run-version>${esc(r.version_note)}</span>` : ''}` : '';
+    const reports = (r.reports || []).map((x) => `<button type="button" data-native-report="${esc(x.guid)}"
+      class="cursor-pointer bg-transparent p-0 text-accent-ink underline">step ${x.step} report ›</button>`).join(' · ');
+    return `<li data-def-run class="py-[1px]"><span class="tnum">${esc(localTime(r.when))}</span> · ${who}${r.by ? ` · started by ${esc(r.by)}` : ''}
+      · ${esc(RUN_STATE_WORD[r.state] || r.state || '')}${count}${reports ? ` · ${reports}` : ''}</li>`;
+  };
+  return `<details data-def-runs class="mt-[2px] text-provenance text-ink-muted"><summary class="cursor-pointer">runs · <span class="tnum">${runs.length}</span> ›</summary>
+    <ul class="ml-s3 list-none">${runs.map(item).join('')}</ul></details>`;
 }
 
 /** A failed native-survey read is not "no native surveys": the section keeps
@@ -336,18 +415,20 @@ function wireReturnAndRestart() {
 /** Wire a rendered section: Run buttons, the annotations view, and the poll
  *  that runs only while something is in flight. Safe to call again on a fresh
  *  host; the previous host's timer dies with its detached node. */
-export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } = {}) {
+export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS, onRows = null } = {}) {
   const host = root.querySelector('#native-surveys');
   if (!host) return;
   let rows = initialRows || [];
 
+  let gaveUp = false;                    // RE stopped following the rows in flight: each says so, with "check now"
   const draw = (next) => {
     rows = next;
-    host.innerHTML = rows.map(nativeSurveyRowHtml).join('');
+    host.innerHTML = ownSurveyRows(rows).map((r) => nativeSurveyRowHtml(r, { stopped: gaveUp })).join('');
     bindRows();
+    if (onRows) onRows(rows, { stopped: gaveUp });      // the definition cards follow the same rows
     bindCoordinateControls(host, slug, { after: () => { reread(); } });
   };
-  const paint = (next) => { draw(next); schedule(); };
+  const paint = (next) => { gaveUp = false; draw(next); schedule(); };
   const alive = () => host.isConnected && state.selectedSlug === slug && state.subTab === 'survey';
   const kind = () => ({ entityType: apiEntityType(state.resourceType) });
   // Follow the rows while any is in flight (2 s for the first minute, then 10 s), repainting each answer, and stop
@@ -364,8 +445,9 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
       // A state stuck in flight must not be read forever: after 10 minutes the page says it stopped, once.
       maxMs: FOLLOW_GIVE_UP_MS,
       onGiveUp: () => {
-        if (!host.isConnected || host.querySelector('[data-follow-stopped]')) return;
-        host.insertAdjacentHTML('beforeend', '<div class="mt-s1 text-provenance text-ink-muted" data-follow-stopped>Stopped checking · still shown as running · reload to check again</div>');
+        if (!host.isConnected || gaveUp) return;
+        gaveUp = true;
+        draw(rows);
       },
     }));
   };
@@ -384,6 +466,11 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
     if (!slot) return;
     slot.textContent = msg;
     slot.classList.remove('hidden');
+  };
+  // "check now": one read, repainted from the server's rows (which resumes following if the run is still going).
+  const checkNow = async () => {
+    const res = await refreshNativeSurveys(slug, kind());
+    if (alive()) paint(res.surveys);
   };
   const bindRows = () => {
     host.querySelectorAll('[data-native-run]').forEach((b) => b.addEventListener('click', async () => {
@@ -425,13 +512,14 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
       if (slot) { slot.textContent = ''; slot.classList.add('hidden'); }      // the line goes with the disarm
     };
     const register = async (b, targetSlug, qn, startAgain = false) => {
-      if (startAgain && b.dataset.confirm !== '1') {
-        // A second registration can create a second database: ask once, visibly, before sending it.
+      if (startAgain && b.dataset.confirm !== '1' && !b.dataset.nativeOnePress) {
+        // A second registration can create a second database: ask once, visibly, before sending it. When the
+        // server says there is nothing to duplicate (the earlier process failed), it is one press.
         b.dataset.confirm = '1';
         b.dataset.label = b.textContent;
         b.textContent = 'Confirm: start again';
         b.classList.add('border-state-warn');
-        showInfo(qn, `${b.dataset.nativeConfirm || 'This submits a second registration to Egeria.'} Press again to confirm.`);
+        showInfo(qn, `${b.dataset.nativeConfirm || 'Starting again may create a second database element in Egeria.'} Press again to confirm.`);
         b._disarm = () => resetConfirm(b);
         b._confirmTimer = setTimeout(b._disarm, CONFIRM_MS);
         return;
@@ -469,8 +557,9 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
       () => register(b, slug, b.dataset.nativeRegister, !!b.dataset.nativeStartAgain)));
     host.querySelectorAll('[data-native-register-slug]').forEach((b) => b.addEventListener('click',
       () => register(b, b.dataset.nativeRegisterSlug, '')));
-    host.querySelectorAll('[data-native-report]').forEach((b) => b.addEventListener('click',
-      () => openReport(slug, b.dataset.nativeReport)));
+    bindRunLineControls(host, slug, { checkNow });
+    // Where the Egeria-visible host is edited (the saved sources, per server and per database).
+    host.querySelectorAll('[data-native-change-host]').forEach((b) => b.addEventListener('click', () => openFindDbServersDialog()));
     host.querySelectorAll('[data-native-cancel]').forEach((b) => b.addEventListener('click', () => {
       const box = b.closest('[data-native-cancel-box]');
       b.hidden = true;
@@ -478,11 +567,6 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS } 
       conf.hidden = false;
       // The confirm is a state of the control: it lapses, as the register confirm does.
       setTimeout(() => { if (box.isConnected && !cancelling.has(box.dataset.nativeCancelBox)) { conf.hidden = true; b.hidden = false; } }, CONFIRM_MS);
-    }));
-    // A partial run's refused steps, with the launcher's reasons: one press on "why" shows them (the sentence on demand).
-    host.querySelectorAll('[data-native-partial-why-open]').forEach((b) => b.addEventListener('click', () => {
-      const text = b.parentElement.querySelector('[data-native-partial-why]');
-      if (text) { text.hidden = !text.hidden; b.setAttribute('aria-expanded', String(!text.hidden)); }
     }));
     host.querySelectorAll('[data-native-cancel-no]').forEach((b) => b.addEventListener('click', () => {
       const box = b.closest('[data-native-cancel-box]');
@@ -552,7 +636,7 @@ function failDialog(reason) {
   d.querySelector('#wl-detail-body').innerHTML = `<p class="text-state-warn" data-native-cancel-error>${esc(reason)}</p>`;
 }
 
-async function openReport(slug, reportGuid) {
+export async function openReport(slug, reportGuid) {
   const d = openDialog('Egeria survey report', reportGuid);
   const body = d.querySelector('#wl-detail-body');
   let rep;
@@ -671,4 +755,33 @@ export function bindCoordinateControls(el, slug, { after = null } = {}) {
     }
     });
   });
+}
+
+/** The controls a run line carries, wherever the line is drawn (the list of Egeria's own surveys or a definition card):
+ *  the report links, "why" on a partial run's refused steps, the credential link of a fixable refusal and "check now".
+ *  Each button binds once. `checkNow` is the caller's one read-and-repaint. */
+export function bindRunLineControls(root, slug, { checkNow = null } = {}) {
+  const once = (b, fn) => { if (b._runLineBound) return; b._runLineBound = true; b.addEventListener('click', fn); };
+  root.querySelectorAll('[data-native-report]').forEach((b) => once(b, () => openReport(slug, b.dataset.nativeReport)));
+  // A partial run's refused steps, with the launcher's reasons: one press on "why" shows them (the sentence on demand).
+  root.querySelectorAll('[data-native-partial-why-open]').forEach((b) => once(b, () => {
+    const text = b.parentElement.querySelector('[data-native-partial-why]');
+    if (text) { text.hidden = !text.hidden; b.setAttribute('aria-expanded', String(!text.hidden)); }
+  }));
+  // A fixable refusal: the link goes to where the database credential is set (the resource header's door).
+  root.querySelectorAll('[data-native-fix-credential]').forEach((b) => once(b, () => {
+    const door = document.querySelector('[data-act="change-credentials"]');
+    if (door) { door.scrollIntoView?.({ block: 'center' }); door.click(); }
+  }));
+  // "check now" on a run RE stopped following: reads once and resumes following if it is still going.
+  root.querySelectorAll('[data-native-check-now]').forEach((b) => once(b, async () => {
+    if (b.disabled || !checkNow) return;
+    b.disabled = true;
+    b.textContent = 'checking…';
+    try { await checkNow(); } catch (err) {
+      b.disabled = false;
+      b.textContent = 'check now';
+      b.insertAdjacentHTML('afterend', ` <span class="text-state-warn" data-native-check-error>could not check: ${esc(err.message || '')}</span>`);
+    }
+  }));
 }

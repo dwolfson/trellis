@@ -13413,6 +13413,31 @@ class ProjectRegistry:
                     entry["last_published_scope"] = "repo"
         return result
 
+    def list_survey_definition_runs(self, entity_type: str, entity_slug: str, limit: int = 500) -> list[dict]:
+        """Every run RE's own executor logged for a Survey Definition on this resource, newest first, from the same
+        activity rows `get_survey_definition_last_activity` reads (the 'survey' operation, tagged with the
+        definition's ref): {ref, when, status, activity_id, started_by, by}. A read; the Egeria-coordinated runs
+        live in the native-survey rows and are merged on top by `native_survey_run.definition_run_history`."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, ts, status, detail FROM activity_log "
+                "WHERE entity_type = ? AND entity_slug = ? AND operation = 'survey' ORDER BY ts DESC LIMIT ?",
+                (entity_type, entity_slug, limit)).fetchall()
+        out = []
+        for row in rows:
+            try:
+                detail = json.loads(row["detail"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(detail, dict):
+                continue
+            ref = detail.get("survey_definition_ref") or detail.get("process_qualified_name")
+            if not ref:
+                continue
+            out.append({"ref": ref, "when": row["ts"], "status": row["status"], "activity_id": row["id"],
+                        "started_by": detail.get("started_by") or "", "by": detail.get("started_by_person") or ""})
+        return out
+
     # ── board_summary — the By-analysis fast-read path ──────────────────
     #
     # See board_summary's CREATE TABLE comment above for the full design.

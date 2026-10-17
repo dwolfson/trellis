@@ -161,8 +161,10 @@ export const STATES = {
   // than a paraphrase, so a schema row's title/aria-label matches its
   // visible word one-for-one.
   not_established: { glyph: '?', family: 'not-established', word: 'not established', tone: 'text-ink-muted' },
-  // A registration that existed: Egeria answered that the element RE had stored no longer exists.
-  gone:            { glyph: '?', family: 'not-established', word: 'no longer in Egeria', tone: 'text-ink-muted' },
+  // A registration that existed: Egeria answered that the element RE had stored is no longer there. NO GLYPH
+  // (designer 2026-10-16, Q10): the ? family means "couldn't establish", and this WAS established -- Egeria
+  // answered. The words carry it.
+  gone:            { glyph: '', family: 'established', word: 'no longer in Egeria', tone: 'text-ink-muted' },
   not_measured:    { glyph: '?', family: 'not-established', word: 'rows not measured', tone: 'text-ink-muted' },
   no_access:       { glyph: '?', family: 'not-established', word: 'no access', tone: 'text-ink-muted' },
 
