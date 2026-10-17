@@ -1,6 +1,6 @@
 # Engine host on the Governance Engine view service
 
-Status: **design note, not built.** Written 2026-10-17 for the project owner's go (ops note item 3). The build
+Status: **design note, not built; owner answered Q1–Q3 2026-10-17, Q4 (designer words) open.** Written 2026-10-17 (ops note item 3). The build
 goes to one Opus builder; review is the full multi-round tier (it changes an Egeria write path).
 
 Builds on `DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE.md` (the engine host's contract with Egeria) and
@@ -69,7 +69,7 @@ The sweep interval stays 5 s, matching native.
 * The action: `update_engine_action_status(guid, "IN_PROGRESS")` at run start, as today, on the new client.
   Egeria's engine-action status is an enum. There is no percentage, so "progress" for the action means this one
   transition. A failed update is logged and the run goes on, as today.
-* **Each action target RE works on** (new): `update_action_target_status(<target>, "IN_PROGRESS", start_date=now)`
+* **Each action target RE works on** (new): `update_action_target_status(<ActionTarget relationship GUID>, "IN_PROGRESS", start_date=now)` (§4 Q1)
   when the step starts on it, and the final status with `completion_date` and `completion_message` when the step
   ends: `ACTIONED` (completed), `INVALID` (survey-invalid: refused, out of scope, not registered), `FAILED`.
   * Only asset targets RE surveys. The `surveyReport` target (a predecessor's report, step 4) is read, not worked on,
@@ -86,7 +86,7 @@ The definition card gains **Cancel** next to the run line while a coordinated ru
 * **What it calls:** `AutomatedCuration.cancel_governance_action_process(<process instance GUID>)`, with the instance
   GUID the run stored when RE started it (`initiate_process_run`'s return, the GUID `coordinated_last_runs` already
   matches on). It is offered only for an instance RE started and holds a GUID for. A run started elsewhere
-  (another tool, Egeria's own UI) shows no Cancel. Words for that case come from the designer.
+  (another tool, Egeria's own UI) shows no Cancel, for admins too (owner, Q3).
 * **Who it runs as:** the signed-in person who presses it (owner rule, 2026-10-14: actions run as the initiating
   user; the service account only when automated with no known user). Who may press it: the run's starter or an
   admin. Anyone else sees no button.
@@ -117,16 +117,25 @@ The definition card gains **Cancel** next to the run line while a coordinated ru
 6. **Live read-only probe before the PR** (peer round first): `get_approved_engine_actions(<RE engine GUID>)` against
    the quickstart, to confirm the response shape (`elements`, `elementHeader.guid`, `actionTargetElements`).
 
-## 4. Open questions (answer before the builder starts)
+## 4. Questions and answers
 
-* **Q1, owner/source check.** Which GUID does `update_action_target_status` take: the target element's GUID (what
-  `actionTargetElements[].actionTargetGUID` holds, what RE reads today) or the ActionTarget relationship's GUID?
-  The builder reads `GovernanceEngineRESTServices` / `EngineActionHandler.updateActionTargetStatus` on Egeria main
-  and states which, with the line. If it is the relationship GUID, the field it lives in on the listing must be
-  named too.
-* **Q2, owner.** Cancel: run starter or admin only (proposed), or anyone who may start the definition?
-* **Q3, owner.** Cancel for a coordinated run RE did **not** start: hidden (proposed), or offered to admins?
-* **Q4, designer.** Words for "cancelling…", the refused-cancel line, and the confirm.
+**Decision (project owner, 2026-10-17):** "action_target_guid" (Q1); "run's starter and admin" (Q2); "no" (Q3).
+
+* **Q1. `update_action_target_status` takes `action_target_guid`, and that is the ActionTarget *relationship's*
+  GUID, not the target element's.** Egeria source (checkout af400039c2):
+  `EngineActionHandler.updateActionTargetStatus` (generic-handlers, line 3872) loads the value with
+  `repositoryHandler.getRelationshipByGUID(…, ACTION_TARGET_RELATIONSHIP …)` and sets `activityStatus`, `startTime`
+  and `completionTime` on that relationship. Its Javadoc says "unique identifier of the target element", but the
+  code reads a relationship. Native's survey engine passes `actionTargetElement.getActionTargetRelationshipGUID()`
+  (`SurveyActionEngineHandler`, line 235). RE's `_targets()` reads `actionTargetElements[].actionTargetGUID`, and
+  live matching shows that field is the **element** GUID (it resolves to the registered database). So the builder
+  must carry the relationship GUID separately. The live read-only probe (§3 test 6) names the JSON field the
+  View Server uses for it (framework bean: `actionTargetRelationshipGUID`). If the listing does not carry it, stop
+  and report: that is a pyegeria/Egeria gap for the owner, not something to work around.
+* **Q2. Cancel: the run's starter and admins only.** Everyone else sees no button.
+* **Q3. No Cancel for a coordinated run RE did not start**, admins included.
+* **Q4, designer (open).** Words for "cancelling…", the refused-cancel line, and the confirm. The builder uses
+  placeholders until they arrive.
 
 ## 5. Not in this slice
 
