@@ -30,6 +30,7 @@ import {
   registerWithEgeria, checkNativeSurveyPointers, cancelNativeAction,
 } from '/static/re-api.js';
 import { state, esc, apiEntityType } from '/static/next/app.js';
+import { openCredentialForm } from '/static/next/credential-change.js';
 import { openDialog } from '/static/next/worklist.js';
 import { followUntil } from '/static/next/live-status.js';
 import { onServerRestart } from '/static/next/shell-status.js';
@@ -133,7 +134,8 @@ export function processLineHtml(r) {
   // A refusal the person can fix says how, on the run line, with the way to where the credential is set.
   const fix = r.fixable
     ? `<span class="block" data-native-fixable>${esc(r.fixable.words)} · <button type="button" data-native-fix-credential
-        class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${esc(r.fixable.action)} ›</button></span>` : '';
+        class="cursor-pointer bg-transparent p-0 text-accent-ink underline"
+        title="Replaces the stored credential RE uses for this database, and Egeria's native surveys use too (through the re-projected secrets file).">${esc(r.fixable.action)} ›</button></span>` : '';
   return `${partial}<span class="${tone}" data-native-process-line>${esc(r.line)}</span>${whenHtml}${waiting}`
     + `${r.read_at ? ` · read ${timeSpan(r.read_at)}` : ''}${reports ? ` · ${reports}` : ''}${err}${fix}`;
 }
@@ -768,10 +770,26 @@ export function bindRunLineControls(root, slug, { checkNow = null } = {}) {
     const text = b.parentElement.querySelector('[data-native-partial-why]');
     if (text) { text.hidden = !text.hidden; b.setAttribute('aria-expanded', String(!text.hidden)); }
   }));
-  // A fixable refusal: the link goes to where the database credential is set (the resource header's door).
+  // A fixable refusal: the link opens the same test-before-save credential form, in place under the run line that
+  // carries it, on whatever stage the line is drawn (the header's door is not on every stage). Never a silent press.
   root.querySelectorAll('[data-native-fix-credential]').forEach((b) => once(b, () => {
-    const door = document.querySelector('[data-act="change-credentials"]');
-    if (door) { door.scrollIntoView?.({ block: 'center' }); door.click(); }
+    const p = (state.databases || []).find((x) => x.slug === slug);
+    const anchor = b.closest('[data-native-fixable]') || b;
+    let slot = anchor.parentElement.querySelector(':scope > [data-native-credential-slot]');
+    if (!p) {
+      b.textContent = 'open Scouting to change the credential';
+      b.title = 'This stage has no copy of the database row; the Scouting stage has the credential door.';
+      return;
+    }
+    if (!slot) {
+      slot = document.createElement('div');
+      slot.setAttribute('data-native-credential-slot', '');
+      slot.className = 'mt-s1';
+      anchor.insertAdjacentElement('afterend', slot);
+    }
+    openCredentialForm(slot, p, {
+      onSaved: () => { slot.innerHTML = '<span class="text-ink" data-native-credential-saved>credential saved · re-run to use it</span>'; },
+    });
   }));
   // "check now" on a run RE stopped following: reads once and resumes following if it is still going.
   root.querySelectorAll('[data-native-check-now]').forEach((b) => once(b, async () => {

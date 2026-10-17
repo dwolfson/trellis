@@ -93,3 +93,19 @@ export function bindCredentialChange(host, slug, ctx = {}) {
     }
   });
 }
+
+/** The one opener for the form, wherever it is asked for (the resource header's door, a run line's credential link).
+ *  Fills `slot` with the form for `p` (a database row) and wires it. The row follows what the server saved (never a
+ *  password). `onSaved(summary)` and `onCancel()` are the caller's extra reactions; with no onCancel Cancel empties the slot. */
+export function openCredentialForm(slot, p, { onSaved = null, onCancel = null } = {}) {
+  slot.innerHTML = credentialChangeHtml(p);
+  bindCredentialChange(slot, p.slug, {
+    onSaved: (summary) => {
+      p.db_user = summary.db_user || p.db_user;
+      p.credential_changed_at = summary.credential_changed_at || p.credential_changed_at;
+      p.credential_status = 'ok';
+      if (onSaved) onSaved(summary);
+    },
+    onCancel: () => { slot.innerHTML = ''; if (onCancel) onCancel(); },
+  });
+}

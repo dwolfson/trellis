@@ -210,7 +210,7 @@ import {
 import { CREDENTIAL_UNREADABLE_TEXT, credentialMarkHtml, isCredentialUnreadable } from '/static/next/credential.js';
 import { rememberedCredential, setRemembered } from '/static/next/run-credential.js';
 import { mountDependencyTable } from '/static/next/stages/dependencies.js';
-import { credentialChangeHtml, bindCredentialChange } from '/static/next/credential-change.js';
+import { openCredentialForm } from '/static/next/credential-change.js';
 import { installSessionBanner } from '/static/next/session-banner.js';
 import { isFreshnessSkip, offerRunAnyway, UP_TO_DATE_WORD } from '/static/next/run-anyway.js';
 
@@ -3733,16 +3733,7 @@ export function bindResourceHeader() {
 
   el.querySelector('[data-act="change-credentials"]')?.addEventListener('click', () => {
     if (!p) return;
-    slot.innerHTML = credentialChangeHtml(p);
-    bindCredentialChange(slot, p.slug, {
-      onSaved: (summary) => {
-        // The list row follows what the server saved (never a password).
-        p.db_user = summary.db_user || p.db_user;
-        p.credential_changed_at = summary.credential_changed_at || p.credential_changed_at;
-        p.credential_status = 'ok';
-      },
-      onCancel: () => { slot.innerHTML = ''; },
-    });
+    openCredentialForm(slot, p);
   });
 
   el.querySelector('[data-act="disposition"]')?.addEventListener('click', () => {
