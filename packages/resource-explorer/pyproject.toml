@@ -127,7 +127,10 @@ dependencies = [
     # needs fastapi>=0.141.1; the lock moved altair 6.2.2 -> 6.3.0 with it.
     # Raised to 6.2.3: AssetMaker's action/process queries default activity_status_list to None (ISSUE-148), and
     # AutomatedCuration.get_engine_actions is gone (ISSUE-151); neither is called by RE (AUDIT-PYEGERIA-6.2.3.md).
-    "pyegeria>=6.2.3",
+    # Raised to 6.2.5 (2026-10-16): Egeria main (odpi/egeria#9371) moved the engine-action claim/status/completion/
+    # active-claimed calls to the Governance Engine view service; 6.2.5 adds the GovernanceEngine client and routes
+    # the old AutomatedCuration methods there (ISSUE-153). Without it the engine host's calls 404.
+    "pyegeria>=6.2.5",
     "mcp>=2.0.0",
     # nest-asyncio removed 2026-09-04 with the shared-pool refactor: RE no
     # longer imports it anywhere. Its one site, surveyors/prefect_adapter.py's
