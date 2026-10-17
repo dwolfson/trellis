@@ -1,4 +1,5 @@
 """Multi-turn conversation agent — persistent BeeAI agent with TokenMemory."""
+
 from __future__ import annotations
 
 import logging
@@ -6,7 +7,6 @@ import logging
 import asyncio
 
 from resource_explorer.agents.base import BaseExplorerAgent
-
 
 logger = logging.getLogger(__name__)
 
@@ -115,8 +115,15 @@ class ConversationAgent(BaseExplorerAgent):
             get_symbol_detail,
             query_databases,
             query_database_schema,
+            compare_database_schemas,
+            query_cross_asset_links,
+            delegate_to_compare_agent,
+            delegate_to_integration_agent,
+            query_egeria_lineage,
             query_filesystems,
+            create_rfa_from_finding,
         )
+
         return [
             vector_search,
             query_project_stats,
@@ -127,7 +134,13 @@ class ConversationAgent(BaseExplorerAgent):
             get_symbol_detail,
             query_databases,
             query_database_schema,
+            compare_database_schemas,
+            query_cross_asset_links,
+            delegate_to_compare_agent,
+            delegate_to_integration_agent,
+            query_egeria_lineage,
             query_filesystems,
+            create_rfa_from_finding,
         ]
 
     def _get_agent(self):
@@ -135,6 +148,7 @@ class ConversationAgent(BaseExplorerAgent):
         if self._agent is None:
             from beeai_framework.agents.requirement import RequirementAgent
             from beeai_framework.memory.token_memory import TokenMemory
+
             self._agent = RequirementAgent(
                 llm=self._llm_name(),
                 tools=self.tools(),
@@ -166,23 +180,41 @@ class ConversationAgent(BaseExplorerAgent):
                 asyncio.get_running_loop()
                 from resource_explorer.concurrency import run_sync
 
-                run_sync(lambda: asyncio.run(_inject()), timeout=10)   # the pool carries the caller
+                run_sync(lambda: asyncio.run(_inject()), timeout=10)  # the pool carries the caller
             except RuntimeError:
                 asyncio.run(_inject())
         except Exception:
             pass
 
-    def handle(self, query: str, resource_slug: str | None = None,
-               resource_type: str | None = None, **kwargs) -> str:
+    def handle(
+        self,
+        query: str,
+        resource_slug: str | None = None,
+        resource_type: str | None = None,
+        **kwargs,
+    ) -> str:
         slug = resource_slug or self.resource_slug or self._infer_project_slug(query)
         entity_type = resource_type or self.resource_type
 
         # Delegate example generation to the specialist — BeeAI + small models produce
         # incomplete responses for this intent without the dedicated context/fallback loop.
         from resource_explorer.query_processor import QueryProcessor, QueryIntent
-        if QueryProcessor().classify(query) == QueryIntent.EXAMPLES:
+
+        classified_intent = QueryProcessor().classify(query)
+        if classified_intent == QueryIntent.EXAMPLES:
             from resource_explorer.agents.examples_agent import ExamplesAgent
+
             return ExamplesAgent().handle(query, resource_slug=slug)
+
+        if classified_intent == QueryIntent.COMPARISON:
+            from resource_explorer.agents.compare_agent import CompareAgent
+
+            return CompareAgent().handle(query, resource_slug=slug)
+
+        if classified_intent == QueryIntent.INTEGRATION:
+            from resource_explorer.agents.integration_agent import IntegrationAgent
+
+            return IntegrationAgent().handle(query, resource_slug=slug)
 
         # Reset per turn, not just on failure -- a question with no resource
         # in scope must not show the previous turn's compiled evidence as if
@@ -194,11 +226,15 @@ class ConversationAgent(BaseExplorerAgent):
             lines.append(f"Project: {slug}")
             # Tell the agent which collection names exist so it can call vector_search correctly
             from resource_explorer.collection_router import CollectionRouter
+
             collections = CollectionRouter().select(query, slug)
             if collections:
                 lines.append(f"Available collections: {', '.join(collections)}")
-            lines.extend(self._compiled_evidence(query, slug, kwargs.get("perspectives"),
-                                                  resource_type=entity_type))
+            lines.extend(
+                self._compiled_evidence(
+                    query, slug, kwargs.get("perspectives"), resource_type=entity_type
+                )
+            )
         lines.append(f"Question: {query}")
         prompt = "\n".join(lines)
 
@@ -207,11 +243,13 @@ class ConversationAgent(BaseExplorerAgent):
         except Exception:
             if self._rag is None:
                 from resource_explorer.rag_system import RAGSystem
+
                 self._rag = RAGSystem()
             return self._rag.query(query, resource_slug=slug)
 
-    def _compiled_evidence(self, query: str, slug: str, perspectives,
-                            resource_type: str = "repo") -> list[str]:
+    def _compiled_evidence(
+        self, query: str, slug: str, perspectives, resource_type: str = "repo"
+    ) -> list[str]:
         """Packed evidence for the prompt, plus the names of what is missing.
 
         This is the difference between naming collections and supplying evidence.
@@ -254,7 +292,9 @@ class ConversationAgent(BaseExplorerAgent):
 
             compiled = compile_context(
                 self.registry if hasattr(self, "registry") else _registry(),
-                slug, query, resource_type=resource_type,
+                slug,
+                query,
+                resource_type=resource_type,
                 perspectives=list(perspectives or []),
                 # Deliberately a fraction of the model window: this is evidence
                 # to reason over, not the whole prompt, and the agent still has
@@ -320,8 +360,7 @@ class ConversationAgent(BaseExplorerAgent):
                 return await asyncio.wait_for(_inner(), timeout=timeout)
             except asyncio.TimeoutError as exc:
                 raise TimeoutError(
-                    f"chat agent did not respond within {timeout}s "
-                    "(a tool call is likely stuck)"
+                    f"chat agent did not respond within {timeout}s " "(a tool call is likely stuck)"
                 ) from exc
 
         try:

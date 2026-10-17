@@ -21,14 +21,17 @@ class IntegrationAgent(BaseExplorerAgent):
 
     def system_prompt(self) -> str:
         return (
-            "You are an expert on LF AI & Data projects and their ecosystem relationships. "
-            "Your job is to determine whether two or more projects can be used together and how. "
+            "You are an expert on LF AI & Data projects, databases, and ecosystem relationships. "
+            "Your job is to determine whether two or more resources can be used together and how. "
             "Focus on: explicit integration documentation, shared contributors (collaboration signal), "
+            "cross-asset linkages (code repositories to database schemas via query_cross_asset_links), "
+            "upstream Egeria Open Metadata Highway data lineage (via query_egeria_lineage), "
             "compatible data formats and interfaces, complementary feature sets, and architectural fit. "
-            "Be concrete — cite specific APIs, data formats, or documentation passages. "
-            "If integration is not well-documented, say so clearly rather than speculating. "
+            "Be concrete — cite specific APIs, schemas, data formats, or documentation passages. "
+            "If integration is not well-documented or lineage is not yet established, say so clearly rather than speculating. "
             "Structure your response as: (1) Integration summary, (2) How they connect technically, "
-            "(3) Shared contributors if any, (4) Getting started recommendation."
+            "(3) Cross-asset dependencies or Egeria lineage if any, (4) Shared contributors if any, "
+            "(5) Getting started recommendation."
         )
 
     def tools(self) -> list:
@@ -36,14 +39,23 @@ class IntegrationAgent(BaseExplorerAgent):
             vector_search,
             query_project_stats,
             query_top_committers,
-            query_commit_activity,
             query_code_symbols,
+            query_databases,
+            query_database_schema,
+            query_cross_asset_links,
+            query_egeria_lineage,
+            create_rfa_from_finding,
         )
         return [
             vector_search,
             query_project_stats,
             query_top_committers,
             query_code_symbols,
+            query_databases,
+            query_database_schema,
+            query_cross_asset_links,
+            query_egeria_lineage,
+            create_rfa_from_finding,
         ]
 
     def handle(self, query: str, resource_slug: str | None = None, **kwargs) -> str:
@@ -90,7 +102,13 @@ class IntegrationAgent(BaseExplorerAgent):
 
     def _fallback(self, query: str, slugs: list[str]) -> str:
         """Direct tool-call fallback when BeeAI is unavailable."""
-        from resource_explorer.agents.tools import query_project_stats, vector_search, query_top_committers
+        from resource_explorer.agents.tools import (
+            query_project_stats,
+            vector_search,
+            query_top_committers,
+            query_cross_asset_links_raw,
+            query_egeria_lineage_raw,
+        )
         from resource_explorer.collection_router import CollectionRouter
         from resource_explorer.llm_client import get_llm
 
@@ -103,10 +121,15 @@ class IntegrationAgent(BaseExplorerAgent):
             doc_text = vector_search("integration connector compatible together", ",".join(collections)) if collections else "(no content)"
             sections.append(f"## {slug}\n{stat_text}\n\n### Top contributors\n{committers}\n\n### Docs\n{doc_text}")
 
+        cross_links = query_cross_asset_links_raw()
+        lineage_info = query_egeria_lineage_raw(slugs[0], slugs[1] if len(slugs) > 1 else "")
+
         combined = "\n\n---\n\n".join(sections)
         prompt = (
             f"{self.system_prompt()}\n\n"
             f"Project data:\n\n{combined}\n\n"
+            f"Cross-Asset Dependencies:\n{cross_links}\n\n"
+            f"Lineage Information:\n{lineage_info}\n\n"
             f"Question: {query}\n\nIntegration analysis:"
         )
         return get_llm().complete(prompt)

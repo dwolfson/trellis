@@ -124,6 +124,7 @@ class QueryResponse(BaseModel):
     #: fewer for the frontend to special-case. None when there was no
     #: resource in scope, or the compile itself produced nothing.
     compiled: dict | None = None
+    disambiguation_chips: list[dict] | None = None
 
 
 def _compiled_payload(agent) -> dict | None:
@@ -238,12 +239,17 @@ async def ask(request: QueryRequest) -> QueryResponse:
         )
 
     chart = _pick_chart(request.query, intent.value, request.resource_slug or "")
+    chips = None
+    if intent.value in ("comparison", "integration"):
+        chips = _disambiguation_chips(request.query)
+
     return QueryResponse(
         response=response,
         intent=intent.value,
         query_hash=query_hash,
         chart=chart,
         compiled=compiled,
+        disambiguation_chips=chips,
     )
 
 
@@ -349,6 +355,11 @@ async def stream(request: QueryRequest) -> StreamingResponse:
                 # Side-by-side symbol comparison for comparison queries about API surface
                 if intent_val == "comparison":
                     done["compare_symbols"] = _compare_symbols_table(request.query)
+                # Disambiguation chips for cross-resource queries with missing or ambiguous targets
+                if intent_val in ("comparison", "integration"):
+                    chips = _disambiguation_chips(request.query)
+                    if chips:
+                        done["disambiguation_chips"] = chips
                 if checked and "resource_check_error" in checked:
                     done["resource_check_error"] = checked["resource_check_error"]
                 # Suggest an alias when no project was resolved but a fuzzy match exists
@@ -630,4 +641,33 @@ def _fuzzy_alias_suggestion(query: str) -> dict | None:
     except Exception as exc:
         # Observable, not swallowed: a registry error here used to read as "nothing to suggest".
         log.warning("alias suggestion failed: %s", exc, exc_info=True)
+        return None
+
+
+def _disambiguation_chips(query: str) -> list[dict] | None:
+    """Return candidate resource chips when a cross-resource question has fewer than 2 inferred resources."""
+    try:
+        from resource_explorer.registry import ProjectRegistry
+
+        named = _NameProbe.make()._infer_all_project_slugs(query)
+        if len(named) >= 2:
+            return None
+
+        reg = ProjectRegistry()
+        chips: list[dict] = []
+        for p in reg.list_all()[:6]:
+            chips.append({
+                "slug": p.slug,
+                "name": p.display_name or p.slug,
+                "type": "repo",
+            })
+        for db in reg.list_databases()[:4]:
+            chips.append({
+                "slug": db.slug,
+                "name": db.display_name or db.slug,
+                "type": "database",
+            })
+        return chips if chips else None
+    except Exception as exc:
+        log.warning("disambiguation chips lookup failed: %s", exc, exc_info=True)
         return None
