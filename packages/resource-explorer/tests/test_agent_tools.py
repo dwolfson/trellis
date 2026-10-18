@@ -889,3 +889,83 @@ def test_rfa_guardrails(db):
         props = create_rfa_from_finding.input_schema.model_json_schema()["properties"]
         assert props["confirm"]["default"] is False
         assert "status" not in props
+
+
+def _matcher_fixture(db, repo_slug, class_names, function_names=(), deps=()):
+    from resource_explorer.ingestion.code_symbol_extractor import CodeSymbol
+    from resource_explorer.registry import Project
+
+    db.add(Project(slug=repo_slug, display_name=repo_slug, github_url=f"https://github.com/o/{repo_slug}"))
+
+    def _sym(name, kind):
+        return CodeSymbol(
+            resource_slug=repo_slug, file_path=f"{name}.py", language="python", kind=kind,
+            name=name, qualified_name=name, signature="", docstring="", start_line=1, end_line=2,
+        )
+
+    db.upsert_code_symbols(
+        repo_slug,
+        [_sym(n, "class") for n in class_names] + [_sym(n, "function") for n in function_names],
+    )
+    if deps:
+        db.upsert_dependencies(repo_slug, [
+            {"dep_name": d, "dep_version": "1", "dep_type": "runtime", "ecosystem": "pip",
+             "source_file": "requirements.txt"} for d in deps
+        ])
+
+
+def _matcher_db(db, tables):
+    from resource_explorer.registry import DatabaseEntity
+
+    db.register_database(DatabaseEntity(
+        slug="shop_db", display_name="Shop", db_type="postgresql", host="h", port=5432,
+        database_name="shop",
+    ))
+    db.record_database_survey(
+        slug="shop_db", schema_count=1, table_count=len(tables), column_count=1,
+        survey_data={"schema_info": {"schemas": [{"name": "public", "tables": [{"name": t} for t in tables]}]}},
+    )
+
+
+def test_cross_asset_matcher_matches_model_classes_to_tables(db):
+    from resource_explorer.surveyors.cross_asset_matcher import find_cross_asset_links
+
+    _matcher_db(db, ["order_items", "categories", "invoices"])
+    # OrderItem -> order_items (separators + plural), Category -> categories (ies -> y).
+    _matcher_fixture(db, "shop_api", ["OrderItem", "Category"], deps=["sqlalchemy", "psycopg2-binary"])
+    (link,) = find_cross_asset_links(db)
+    assert link["matched_tables"] == ["categories", "order_items"]
+    assert link["confidence"] == "high"
+
+
+def test_cross_asset_matcher_ignores_non_class_symbols_and_beats_the_old_limit(db):
+    from resource_explorer.surveyors.cross_asset_matcher import find_cross_asset_links
+
+    _matcher_db(db, ["invoices"])
+    # A function named like the table is not a model, however many other symbols come first.
+    filler = [f"Helper{i}" for i in range(600)]
+    _matcher_fixture(db, "shop_api", filler, function_names=["invoices"], deps=["sqlalchemy"])
+    assert find_cross_asset_links(db) == []
+
+    # And a model past the old 500-symbol window is still found.
+    _matcher_fixture(db, "shop_core", filler + ["Invoice"], deps=["sqlalchemy"])
+    (link,) = find_cross_asset_links(db, repo_slug="shop_core")
+    assert link["matched_tables"] == ["invoices"]
+
+
+def test_cross_asset_matcher_orm_alone_is_not_a_link(db):
+    from resource_explorer.surveyors.cross_asset_matcher import find_cross_asset_links
+
+    _matcher_db(db, ["invoices"])
+    _matcher_fixture(db, "unrelated", ["Widget"], deps=["sqlalchemy"])
+    assert find_cross_asset_links(db) == []
+
+
+def test_cross_asset_matcher_generic_names_and_bare_class_matches_stay_low(db):
+    from resource_explorer.surveyors.cross_asset_matcher import find_cross_asset_links
+
+    _matcher_db(db, ["users", "roles", "sessions", "events", "tasks"])
+    # Five generic-named classes and no driver or ORM behind them: a coincidence, not a "high" link.
+    _matcher_fixture(db, "app", ["User", "Role", "Session", "Event", "Task"])
+    links = find_cross_asset_links(db)
+    assert all(l["confidence"] == "low" for l in links)

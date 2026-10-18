@@ -18,6 +18,49 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+#: Table names common enough that a class of the same name proves little on its own.
+_GENERIC_TABLE_NAMES = frozenset({
+    "user", "role", "group", "session", "event", "task", "item", "log", "file", "type", "status",
+    "state", "config", "setting", "data", "name", "order", "account", "message", "token", "job",
+})
+_MIN_NAME_LEN = 4
+_TABLE_WEIGHT = 0.15
+_GENERIC_TABLE_WEIGHT = 0.05
+
+_DB_DRIVER_DEPS = {
+    "postgresql": {"psycopg2", "psycopg2-binary", "psycopg", "psycopg-binary", "asyncpg", "org.postgresql:postgresql", "r2dbc-postgresql"},
+    "mysql": {"mysql-connector-python", "mysqlclient", "pymysql", "mysql:mysql-connector-java"},
+    "sqlite": {"sqlite3", "org.xerial:sqlite-jdbc"},
+    "oracle": {"cx-oracle", "oracledb", "com.oracle.database.jdbc:ojdbc8"},
+}
+_ORM_DEPS = {
+    "sqlalchemy", "sqlmodel", "django", "tortoise-orm", "peewee", "hibernate",
+    "org.springframework.boot:spring-boot-starter-data-jpa",
+    "flyway", "liquibase", "alembic",
+}
+
+
+def _squash(name: str) -> str:
+    """Lowercase with separators removed, so table `order_items` meets class `OrderItem`."""
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+def _singular(word: str) -> str:
+    if word.endswith("ies") and len(word) > 4:
+        return word[:-3] + "y"
+    if word.endswith(("sses", "xes", "ches", "shes")):
+        return word[:-2]
+    if word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
+def _table_variants(table: str) -> set[str]:
+    """Spellings a class for `table` plausibly has: the table itself and its singular, separators dropped."""
+    squashed = _squash(table)
+    return {v for v in (squashed, _singular(squashed)) if len(v) >= _MIN_NAME_LEN}
+
+
 def find_cross_asset_links(
     registry: ProjectRegistry,
     repo_slug: str | None = None,
@@ -69,37 +112,23 @@ def find_cross_asset_links(
     for repo in repos:
         # 1. Inspect repository dependencies
         deps = registry.query_dependencies(repo.slug)
-        dep_names = {d.get("dep_name", "").lower() for d in deps} if deps else set()
+        dep_names = {d.get("dep_name", "").lower().replace("_", "-") for d in deps} if deps else set()
+        has_orm = bool(dep_names & _ORM_DEPS)
 
-        db_driver_deps = {
-            "postgresql": {"psycopg2", "psycopg2-binary", "asyncpg", "org.postgresql:postgresql", "r2dbc-postgresql"},
-            "mysql": {"mysql-connector-python", "mysqlclient", "pymysql", "mysql:mysql-connector-java"},
-            "sqlite": {"sqlite3", "org.xerial:sqlite-jdbc"},
-            "oracle": {"cx_oracle", "oracledb", "com.oracle.database.jdbc:ojdbc8"},
-        }
-        orm_deps = {
-            "sqlalchemy", "django", "tortoise-orm", "peewee", "hibernate",
-            "org.springframework.boot:spring-boot-starter-data-jpa",
-            "flyway", "liquibase", "alembic"
-        }
-
-        has_orm = bool(dep_names & orm_deps)
-
-        # 2. Inspect repository code symbols
-        symbol_names = set()
+        # 2. Class names. An ORM model or entity is a class; matching every symbol, as an earlier
+        # version did, let any function called `orders` vouch for a table, and the 500-row LIMIT with
+        # no ORDER BY made the answer depend on which rows the database returned first.
+        class_names: set[str] = set()
         try:
             with registry._conn() as conn:
                 rows = conn.execute(
-                    "SELECT name, qualified_name FROM project_code_symbols WHERE project_slug = ? LIMIT 500",
+                    "SELECT DISTINCT name FROM project_code_symbols "
+                    "WHERE project_slug = ? AND kind = 'class'",
                     (repo.slug,),
                 ).fetchall()
-                for r in rows:
-                    if r["name"]:
-                        symbol_names.add(r["name"].lower())
-                    if r["qualified_name"]:
-                        symbol_names.add(r["qualified_name"].lower())
-        except Exception:
-            pass
+            class_names = {_squash(r["name"]) for r in rows if r["name"]}
+        except Exception as exc:
+            log.warning("could not read code symbols for %s: %s", repo.slug, exc)
 
         for db_s, db_info in db_tables_map.items():
             matched_tables: list[str] = []
@@ -110,37 +139,38 @@ def find_cross_asset_links(
             db_type = db_info["db_type"].lower()
             db_name = db_info["db_name"]
 
-            # Check driver dependency match
-            driver_set = db_driver_deps.get(db_type, set())
-            matched_drivers = dep_names & driver_set
+            matched_drivers = dep_names & _DB_DRIVER_DEPS.get(db_type, set())
             if matched_drivers:
                 score += 0.3
-                matched_evidence.append(f"Matching DB drivers in dependencies: {', '.join(matched_drivers)}")
+                matched_evidence.append(f"Matching DB drivers in dependencies: {', '.join(sorted(matched_drivers))}")
 
-            if has_orm:
+            for tbl in db_tables:
+                if class_names & _table_variants(tbl):
+                    matched_tables.append(tbl)
+
+            # ORM use is evidence only alongside something tying this repo to this database;
+            # on its own it says the repo uses *a* database, which is true of every ORM repo.
+            if has_orm and (matched_drivers or matched_tables):
                 score += 0.1
                 matched_evidence.append("ORM / Migration framework detected in dependencies")
 
-            # Check table name matches in code symbols / classes
-            for tbl in db_tables:
-                # Direct match (e.g. table 'users', symbol 'users')
-                # Singular/plural variations (e.g. table 'orders' vs class 'order')
-                singular = tbl[:-1] if tbl.endswith("s") else tbl
-                plural = tbl + "s" if not tbl.endswith("s") else tbl
-
-                if tbl in symbol_names or singular in symbol_names or plural in symbol_names:
-                    matched_tables.append(tbl)
-
             if matched_tables:
-                score += min(0.6, len(matched_tables) * 0.15)
+                table_score = sum(
+                    _GENERIC_TABLE_WEIGHT if _squash(t) in _GENERIC_TABLE_NAMES else _TABLE_WEIGHT
+                    for t in matched_tables
+                )
+                table_score = min(0.6, table_score)
+                # Class names alone, with no driver or ORM behind them, are coincidence-prone: cap.
+                if not (matched_drivers or has_orm):
+                    table_score = min(table_score, 0.3)
+                score += table_score
                 matched_evidence.append(
-                    f"Code symbols match {len(matched_tables)} database tables: {', '.join(sorted(matched_tables)[:8])}"
+                    f"Model classes match {len(matched_tables)} database tables: {', '.join(sorted(matched_tables)[:8])}"
                 )
 
-            # Check database name match in repo or symbols
-            if db_name and (db_name in repo.slug.lower() or db_name in symbol_names):
+            if len(db_name) >= _MIN_NAME_LEN and db_name in repo.slug.lower():
                 score += 0.2
-                matched_evidence.append(f"Database name '{db_name}' referenced in repository context")
+                matched_evidence.append(f"Database name '{db_name}' referenced in repository name")
 
             if score >= 0.25:
                 confidence = "high" if score >= 0.6 else "medium" if score >= 0.4 else "low"
