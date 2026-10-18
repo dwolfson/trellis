@@ -88,6 +88,16 @@ test('each cue reads from the row: pending, finishing, done, done outside, too l
   assert.equal(out.getAttribute('title'), 'RE can cancel only runs it started; cancel this one in Egeria');
 });
 
+test('fix round 1: a refused, not-permitted or unsent cancel line draws no glyph (designer: no glyph on any of them)', async () => {
+  const { document, ns } = await setUp();
+  for (const cancel of [{ state: 'refused', kind: 'refused', by: 'dan', reason: 'OMAG-400 bad' },
+    { state: 'refused', kind: 'not_permitted', by: 'peter', reason: 'OMAG-403' },
+    { state: 'refused', kind: 'too_late', by: 'dan' }, { state: 'unsent', by: 'dan' }]) {
+    const box = draw(document, ns, row(run({ cancel })));
+    assert.ok(!/[◐◔◌⊘✕]/.test(box.querySelector('[data-process-cancel-refused], [data-process-cancel-unsent], [data-process-cancel-too-late]').textContent), JSON.stringify(cancel));
+  }
+});
+
 test('review round 1: step identifiers are never capitalised in the confirm', async () => {
   const { ns } = await setUp();
   const words = ns.PROCESS_CANCEL_WORDS.confirm({ running: { step: 1, label: 'postgres_column_profile' }, later: [], finished: ['db_derived'] });

@@ -182,6 +182,9 @@ def test_check_pointers_genuine_404_is_gone(tmp_path, monkeypatch):
     expert = _fake(MetadataExpert)
     gone = _egeria_error(PyegeriaNotFoundException, 404, "OMRS-METADATA-COLLECTION-404-001")
     expert.get_metadata_element_by_guid.side_effect = lambda *a, **k: (_ for _ in ()).throw(gone)
+    # A gone pointer is followed by one by-name lookup (caution row, owner ruling 2026-10-18); a genuinely deleted
+    # element has no name either, so Egeria answers that lookup with the same typed not-found.
+    expert.get_metadata_element_by_unique_name.side_effect = lambda *a, **k: (_ for _ in ()).throw(gone)
     monkeypatch.setattr("resource_explorer.egeria_clients.egeria_client",
                         lambda *a, **k: _Clients({MetadataExpert: expert}))
     assert check_pointers(reg, PyegeriaRegistrationPort(), "database", "db")["database"] == "gone"

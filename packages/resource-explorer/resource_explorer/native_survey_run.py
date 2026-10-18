@@ -109,6 +109,11 @@ class NativeSurveyCannotRun(NativeSurveyError):
     what the row shows -- it is a reason, not an error."""
 
 
+class NativeActionNotActive(NativeSurveyCannotRun):
+    """Egeria's own fresh read says the action is no longer waiting or running (the cancel is too late). Distinct from
+    RE's own gate refusals, which are not Egeria's answer."""
+
+
 class NativeSurveyStale(NativeSurveyCannotRun):
     """The Egeria element RE had stored a pointer to no longer exists (Egeria answered that it
     does not -- a failed read is never this). A registration that existed and is gone, said
@@ -1013,6 +1018,9 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
 
     entity = _resource_entity(registry, entity_type, slug)
     pointers = pointers or {}
+    # Both derived from what the reads returned (check_pointers), not from the branch the code took.
+    taken = pointers.get("database") == cas.NAME_TAKEN_UNREADABLE
+    again = pointers.get("database") == cas.REGISTERED_AGAIN
     rows = []
     for process in _processes_for_rows(entity_type, technology_type):
         if process.kind == KIND_DELETE:
@@ -1026,13 +1034,20 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
             continue  # Egeria's PostgreSQL survey (alone, or as a process's first step) is offered for PostgreSQL only
         if process.kind == KIND_CATALOG_AND_SURVEY:
             rows.append(_catalog_row(registry, entity_type, slug, technology_type, entity,
-                                     process, latest, stale=(pointers.get("database") == "gone")))
+                                     process, latest, stale=(pointers.get("database") == "gone"),
+                                     name_taken=taken, registered_again=again))
             continue
         reason = cannot_run_reason(process, entity, registry=registry, technology_type=technology_type)
         gone_key = "server" if process.target == "server" else "database"
         gone = pointers.get(gone_key) == "gone"
+        taken_here = taken and gone_key == "database"
+        again_here = again and gone_key == "database"
         if gone:
             reason = cas.STALE_WORDS
+        elif taken_here:
+            reason = cas.NAME_TAKEN_WORDS
+        elif again_here:
+            reason = cas.REGISTERED_AGAIN_WORDS
         if process.kind == KIND_MIXED_PROCESS and not reason and (declared or {}).get(process.qualified_name) is False:
             reason = PROCESS_NOT_DECLARED
         creds = (credentials_state(entity)
@@ -1056,6 +1071,8 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
             "cannot_run_reason": reason,
             "neutral": row_is_neutral(reason),
             "stale": gone,
+            "name_taken": taken_here,
+            "registered_again": again_here,
             "credentials": creds,
             "credentials_note": UNCONFIRMED_CREDENTIALS if creds == NOT_CONFIGURED else "",
             "in_flight": derived["state"] in (SUBMITTED, RUNNING, AWAITING_REPORT, UNREADABLE),
@@ -1070,10 +1087,15 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
             wiring = cas.wiring_reason(entity_type, technology_type, entity)
             # The control sits on the "Catalog and Survey" row; a survey row offers it only when its stored
             # pointer is GONE (the same row says so and offers the way back). Never three buttons for one act.
-            row["register"] = {"available": not wiring and gone,
-                               "label": cas.REGISTER_AGAIN_LABEL if gone else cas.REGISTER_LABEL, "why_not": wiring}
+            row["register"] = {"available": not wiring and (gone or again_here),
+                               "label": cas.REGISTER_AGAIN_LABEL if (gone or again_here) else cas.REGISTER_LABEL,
+                               "why_not": wiring}
             if gone:
                 row["gone_line"] = cas.gone_line(registry, entity_type, slug, entity, technology_type)
+            if taken_here:
+                row["name_taken_line"] = cas.NAME_TAKEN_WORDS      # no register control: it would make a second element
+            if again_here:
+                row["registered_again_line"] = cas.REGISTERED_AGAIN_WORDS     # the register press adopts it by name
         if process.kind == KIND_RE_DEFINITION:
             # The same answer the definition's own card carries, so the row beside Egeria's other runs can press it.
             row["coordinated_by_egeria"] = coordinate_control(registry, entity_type, slug, process.qualified_name)
@@ -1097,7 +1119,8 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
 
 
 def _catalog_row(registry, entity_type, slug, technology_type, entity, process, latest, *,
-                 stale: bool = False) -> dict:
+                 stale: bool = False, name_taken: bool = False,
+                 registered_again: bool = False) -> dict:
     """The "Catalog and Survey" row: registering the SERVER with Egeria (then the database it
     holds). Optional; a never-registered database is a neutral state, not a fault."""
     from resource_explorer import catalog_and_survey as cas
@@ -1105,7 +1128,7 @@ def _catalog_row(registry, entity_type, slug, technology_type, entity, process, 
     wiring = cas.wiring_reason(entity_type, technology_type, entity)
     has_ptr = bool((getattr(entity, "egeria_asset_guid", "") or "").strip()) if entity is not None else False
     # A pointer Egeria answered "no such element" to is not a registration.
-    has_ptr = has_ptr and not stale
+    has_ptr = has_ptr and not stale and not name_taken and not registered_again
     derived = cas.derive_catalog_state(latest, has_pointer=has_ptr)
     in_flight = cas.catalog_in_flight(derived, latest)
     live = entity is not None and hasattr(entity, "db_type") and not wiring
@@ -1121,6 +1144,8 @@ def _catalog_row(registry, entity_type, slug, technology_type, entity, process, 
         "cannot_run_reason": wiring,
         "neutral": False,
         "stale": stale,
+        "name_taken": name_taken,
+        "registered_again": registered_again,
         "credentials": PRESENT,
         "credentials_note": "",
         "in_flight": in_flight,
@@ -1128,10 +1153,15 @@ def _catalog_row(registry, entity_type, slug, technology_type, entity, process, 
         "reach_note": cas.reach_note_for(derived),
         "notes": cas.catalog_notes(registry, entity_type, entity, latest, derived, in_flight) if live else [],
         "asset_guid": (getattr(entity, "egeria_asset_guid", "") or "") if entity is not None else "",
-        "register": cas.register_control(registry, entity, derived, in_flight, wiring, stale=stale,
-                                         will_change=addr["will_change"]) if live
-        else {"available": False, "label": cas.REGISTER_LABEL, "why_not": wiring, "start_again": False},
+        "register": ({"available": False, "label": cas.REGISTER_LABEL, "why_not": cas.NAME_TAKEN_WORDS,
+                      "start_again": False, "confirm": ""} if name_taken
+                     else cas.register_control(registry, entity, derived, in_flight, wiring,
+                                               stale=stale or registered_again,
+                                               will_change=addr["will_change"]) if live
+                     else {"available": False, "label": cas.REGISTER_LABEL, "why_not": wiring, "start_again": False}),
         **({"gone_line": cas.gone_line(registry, entity_type, slug, entity, technology_type)} if stale else {}),
+        **({"name_taken_line": cas.NAME_TAKEN_WORDS} if name_taken else {}),
+        **({"registered_again_line": cas.REGISTERED_AGAIN_WORDS} if registered_again else {}),
         # "Registered" proves the elements exist, not that Egeria can reach the database: what the survey runs prove.
         "reach": cas.reach_proof(registry, entity_type, slug, technology_type, entity) if live else None,
         "address": addr,
@@ -1896,7 +1926,7 @@ def cancel_gate(registry, port: EgeriaSurveyPort, entity_type: str, slug: str, e
         raise NativeStatusUnreadable(UNREADABLE_STATUS_WORDS)
     status = fresh.get("engine_action_status") or ""
     if status not in ACTIVE_STATUSES:
-        raise NativeSurveyCannotRun(
+        raise NativeActionNotActive(
             f"Only a waiting or running action can be cancelled; Egeria now says {status or 'nothing yet'}.")
     return fresh
 
@@ -2218,7 +2248,7 @@ def cancel_native_action(registry, port: EgeriaSurveyPort, entity_type: str, slu
         engine_action_guid, read_at=_now(), status=last.status,
         message=scrub_secret(last.message, _resource_entity(registry, entity_type, slug)))
     if last.status not in ACTIVE_STATUSES:
-        raise NativeSurveyCannotRun(
+        raise NativeActionNotActive(
             f"Only a waiting or running action can be cancelled; Egeria now says {last.status}.")
     try:
         port.cancel(engine_action_guid)

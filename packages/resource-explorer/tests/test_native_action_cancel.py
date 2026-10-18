@@ -247,6 +247,33 @@ def test_an_egeria_error_is_a_502_with_the_reason_and_the_row_still_says_running
     assert last["status"] == "error" and "engine host unreachable" in last["summary"] and last["detail"]["cancelled_by"] == USER
 
 
+def _egeria_http_error(code: int, sentence: str):
+    """A real-shaped pyegeria failure: its class, the HTTP code, and Egeria's own sentence in `additional_info`."""
+    import pyegeria.core._exceptions as ex
+    e = Exception.__new__(ex.PyegeriaAPIException)
+    Exception.__init__(e, "Egeria error")
+    e.related_http_code = code
+    e.context, e.pyegeria_code, e.message, e.system_action, e.user_action = {}, "CLIENT-ERROR", sentence, "", ""
+    e.response = None
+    e.additional_info = {"exceptionErrorMessage": sentence}
+    return e
+
+
+def test_a_4xx_refusal_Egeria_gives_is_a_422_in_its_words_not_an_unreachable_502(web, egeria, access):
+    """Designer (REPLY-DESIGNER-ENGINE-HOST-CANCEL-WORDS, 6): a refused cancel and an unreachable Egeria are different
+    lines. The route classifies with `classify_cancel_answer` (the definition card's classifier), so the page can too."""
+    client, _ = web
+    egeria.cancel_error = _egeria_http_error(400, "the engine action is not in a state that can be cancelled")
+    r = client.post(URL.format(G_OURS))
+    assert r.status_code == 422 and "not in a state that can be cancelled" in r.json()["detail"]
+
+
+def test_a_5xx_from_Egeria_stays_the_502_the_page_words_as_not_sent(web, egeria, access):
+    client, _ = web
+    egeria.cancel_error = _egeria_http_error(503, "the engine host is down")
+    assert client.post(URL.format(G_OURS)).status_code == 502
+
+
 def test_egeria_security_refusal_is_a_403_in_egerias_words(web, egeria, access):
     client, _ = web
     egeria.cancel_error = RuntimeError("OPEN-METADATA-SECURITY-403-002 user dana is not authorized to update")
@@ -450,3 +477,47 @@ def test_declared_that_is_already_a_dict_is_read_as_stamped():
     assert nsr.cancellable_kind({**ok, "declared": '{"started_as": "gov_action_type"}'}) is True
     assert nsr.cancellable_kind({**ok, "declared": "{}"}) is False
     assert nsr.cancellable_kind({**ok, "declared": {"started_as": "process"}}) is False
+
+
+# ── who answered: `by: "egeria"` only where Egeria itself answered (fix round 1, item 5) ────────────────────────
+
+def test_a_4xx_refusal_Egeria_gives_carries_by_egeria(web, egeria, access):
+    client, _ = web
+    egeria.cancel_error = _egeria_http_error(400, "the engine action is not in a state that can be cancelled")
+    assert client.post(URL.format(G_OURS)).json()["by"] == "egeria"
+
+
+def test_a_finished_action_is_Egerias_answer_so_by_egeria(web, egeria, access):
+    client, _ = web
+    r = client.post(URL.format(G_DONE))
+    assert r.status_code == 409 and r.json()["by"] == "egeria"
+
+
+def test_an_unreachable_Egeria_is_flagged_unsent_and_is_not_by_egeria(web, egeria, access):
+    client, _ = web
+    egeria.cancel_error = _egeria_http_error(503, "the engine host is down")
+    body = client.post(URL.format(G_OURS)).json()
+    assert body["unsent"] is True and "by" not in body
+
+
+def test_the_REs_own_access_rule_denial_is_not_by_egeria(web, egeria, access):
+    client, _ = web
+    access.elements[G_OURS] = _element(G_OURS, zones=["sales-zone"])
+    access.controls["sales-zone"] = {"associatedSecurityList": {"DEFAULT": ["salesTeam"]}}
+    r = client.post(URL.format(G_OURS))
+    assert r.status_code == 403 and "by" not in r.json()
+
+
+def test_the_REs_own_sign_in_gate_is_not_by_egeria(web, egeria, access):
+    client, who = web
+    who["identity"] = False
+    r = client.post(URL.format(G_OURS))
+    assert r.status_code == 401 and "by" not in r.json()
+
+
+def test_the_REs_own_single_action_gate_is_a_409_that_is_not_by_egeria(web, egeria, access, registry):
+    client, _ = web
+    egeria.status[G_PROC] = "IN_PROGRESS"
+    _add_row(registry, G_PROC, "SomeDiscoveredProcess::unlisted", "process")
+    r = client.post(URL.format(G_PROC))
+    assert r.status_code == 409 and "Only a single-action survey" in r.json()["detail"] and "by" not in r.json()

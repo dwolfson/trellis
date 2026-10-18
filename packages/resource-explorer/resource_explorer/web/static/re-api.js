@@ -53,11 +53,15 @@ async function apiErrorFrom(res, path) {
   let detail = res.statusText;
   let code = '';
   let refusedBy = '';
+  let by = '';
+  let unsent = false;
   try {
     const body = await res.json();
     detail = body.detail || body.message || detail;
     code = body.error || '';
     refusedBy = body.refused_by || '';
+    by = body.by || '';          // 'egeria' only where Egeria itself answered (a cancel refusal)
+    unsent = body.unsent === true;
   } catch (_) { /* a non-JSON error body is still an error */ }
   // Brief I: Egeria refused THIS person (its security connector, per person now). A refusal, shown
   // as one: the short word first, Egeria's own sentence after it. Never retried as anyone else.
@@ -90,7 +94,10 @@ async function apiErrorFrom(res, path) {
     dead.loginRequired = true;
     return dead;
   }
-  return new ApiError(res.status, detail, path);
+  const err = new ApiError(res.status, detail, path);
+  if (by) err.by = by;
+  if (unsent) err.unsent = true;
+  return err;
 }
 
 async function request(path, options = {}) {
