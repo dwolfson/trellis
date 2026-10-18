@@ -1,6 +1,6 @@
 # Cross-resource and conversational intelligence extensions — design and implementation plan
 
-**Status:** In progress (Group 1 implemented and verified, Groups 2–4 planned).  
+**Status:** In progress (Groups 1–3 implemented and verified, Group 4 planned).  
 **Written:** 2026-10-16  
 **Branch:** `re/cross-resource-chat-extensions`  
 **Referenced from:** `docs/Architecture.md`, `CLAUDE.md`, `AGENTS.md`
@@ -105,7 +105,7 @@ To preserve system determinism, auditability, and token efficiency, this work ad
 
 ---
 
-## 5. Group 2: Multi-Resource Context Compilation & Budgeting (Planned)
+## 5. Group 2: Multi-Resource Context Compilation & Budgeting (Implemented)
 
 ### 5.1 Objectives
 Extend `context_compile.py` and `trellis-context` integration to compile structured comparative context for two or more resource slugs within a single token budget.
@@ -136,7 +136,7 @@ Extend `context_compile.py` and `trellis-context` integration to compile structu
 
 ---
 
-## 6. Group 3: Cross-Asset Static Linkage & Agent Delegation (Planned)
+## 6. Group 3: Cross-Asset Static Linkage & Agent Delegation (Implemented)
 
 ### 6.1 Objectives
 Bridge application code repositories to cataloged databases and enable `ConversationAgent` to dynamically delegate complex comparative/integration sub-goals.
@@ -157,6 +157,52 @@ Bridge application code repositories to cataloged databases and enable `Conversa
 - `resource_explorer/surveyors/cross_asset_matcher.py`: Deterministic table-to-repo reference matcher.
 - Delegation tool implementations in `resource_explorer/agents/conversation_agent.py`.
 - Tests verifying cross-asset discovery and intent delegation handoffs.
+
+### 6.4 Matcher scoring and tuning notes
+
+Implemented in `resource_explorer/surveyors/cross_asset_matcher.py`; tests are the
+`test_cross_asset_matcher*` functions in `tests/test_agent_tools.py`.
+
+**What it matches.** For each repo/database pair it adds up evidence, keeps pairs scoring at least
+0.25, and labels them `low` (< 0.4), `medium` (0.4 – 0.6) or `high` (>= 0.6).
+
+| Signal | Score | Notes |
+|---|---|---|
+| Database driver in the repo's dependencies, for that database's type | +0.30 | Not enough alone for `medium`. |
+| Model class name matches a table name | +0.15 each, capped at 0.60 total | Generic table names count +0.05 (below). |
+| Class-name match with no driver and no ORM dependency | table score capped at 0.30 | Keeps a bare name coincidence at `low`. |
+| ORM or migration framework in dependencies | +0.10 | Only when a driver or a table also matched. |
+| Database name (>= 4 characters) appears in the repo slug | +0.20 | Slug only; symbols are not searched. |
+
+**How names are compared.**
+- Only symbols of kind `class` are used (ORM models and entities). Functions, methods and constants
+  never count, and there is no cap on how many classes are read.
+- Both sides are lowercased with separators removed, so table `order_items` meets class `OrderItem`.
+- A table is compared as itself and as a singular (`ies` -> `y`, `sses`/`xes`/`ches`/`shes` drop `es`,
+  a trailing `s` is dropped). Names shorter than 4 characters after this are ignored.
+- "Generic" table names (`user`, `role`, `group`, `session`, `event`, `task`, `item`, `log`, `file`,
+  `type`, `status`, `state`, `config`, `setting`, `data`, `name`, `order`, `account`, `message`,
+  `token`, `job`) score 0.05 instead of 0.15, because a class with that name proves little.
+
+**Tuning status.** The weights, the 0.25 threshold, the 0.30 cap and the generic-name list are
+judgment calls, checked only against the synthetic fixtures in the tests. They have not been
+validated against real surveys. Before relying on the confidence labels:
+1. Run `query_cross_asset_links` over the real registry and review the pairs by hand. Note false
+   positives (a `high` link that is wrong) and false negatives (a known repo/database pair missing).
+2. Adjust the module-level constants (`_TABLE_WEIGHT`, `_GENERIC_TABLE_WEIGHT`, `_GENERIC_TABLE_NAMES`,
+   `_MIN_NAME_LEN`) rather than the scoring code, and update the expectations in the matcher tests.
+3. A change that moves a `high` to `medium` for a pair a person has confirmed is a regression; add that
+   pair as a test fixture.
+
+**Known limits.**
+- Name-based only. Tables referenced through raw SQL strings, migration files or `@Table` /
+  `__tablename__` annotations are not read, so a repo that talks to a database without a same-named
+  model class scores on drivers alone.
+- Pluralization is English-only and rule-based; irregular plurals (`person` / `people`) are missed.
+- It finds that a repo and a database are related, not which direction data flows or which columns are
+  used. Impact analysis at column level would need a different source (parsed queries).
+- Database surveys must have been run; a database with no `schema_info` has no tables and can only
+  match on its driver or name.
 
 ---
 
@@ -188,9 +234,9 @@ Integrate upstream Egeria Open Metadata Highway lineage and governance classific
 |---|---|---|---|---|
 | **Group 1** | Actionable RFA Tool | `create_rfa_from_finding` | **Done** | `tests/test_agent_tools.py` |
 | **Group 1** | Database Schema Diff | `compare_database_schemas` | **Done** | `tests/test_agent_tools.py` |
-| **Group 2** | Multi-Resource Context | `compile_multi_resource_context` | Planned | Unit tests + token invariant tests |
-| **Group 2** | Epistemological Matrix | Cross-slug `FactLayer` diff | Planned | Coverage diff test suite |
-| **Group 3** | Code-to-DB Matcher | Static table-to-repo matcher | Planned | Repository AST join tests |
-| **Group 3** | Dynamic Sub-Agent Delegation | `ConversationAgent` delegation tools | Planned | Delegation handoff test suite |
+| **Group 2** | Multi-Resource Context | `compile_multi_resource_context` | **Done** | `test_multi_resource_context_compilation`, `test_compare_and_integration_agents_use_multi_resource_evidence` (no token-budget invariant test yet) |
+| **Group 2** | Epistemological Matrix | Cross-slug `FactLayer` diff | **Done** | `test_multi_resource_context_compilation` |
+| **Group 3** | Code-to-DB Matcher | Static table-to-repo matcher | **Done** | `test_cross_asset_matcher*` (synthetic fixtures; not validated on real surveys, see 6.4) |
+| **Group 3** | Dynamic Sub-Agent Delegation | `ConversationAgent` delegation tools | **Done** | `test_dynamic_delegation_and_lineage_tools` |
 | **Group 4** | Egeria Lineage Traversal | `IntegrationAgent` lineage tools | Planned | PyEgeria mock contract tests |
 | **Group 4** | Web UI Interactive Chips | Disambiguation chip rendering | Planned | Frontend UI integration tests |
