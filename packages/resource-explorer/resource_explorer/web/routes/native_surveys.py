@@ -16,6 +16,7 @@ import json
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from resource_explorer import native_survey_run as nsr
@@ -222,6 +223,12 @@ async def refresh_native_surveys(entity_type: str, slug: str, request: Request) 
     return {"technology_type": tech, "surveys": await asyncio.to_thread(_do)}
 
 
+def _egeria_said(status: int, detail: str) -> JSONResponse:
+    """A cancel refusal that is EGERIA'S answer (`by: egeria`). Refusals RE's own gate gives before Egeria is asked
+    (sign-in, the access rule, "only a single-action survey") carry no `by`, and the page shows them verbatim."""
+    return JSONResponse(status_code=status, content={"detail": detail, "by": "egeria"})
+
+
 @router.post("/{entity_type}/{slug}/egeria-actions/{engine_action_guid}/cancel")
 async def cancel_egeria_action(entity_type: str, slug: str, engine_action_guid: str, request: Request) -> dict:
     """Cancel one of this resource's waiting or running Egeria survey actions. An Egeria WRITE, and a person's
@@ -261,6 +268,9 @@ async def cancel_egeria_action(entity_type: str, slug: str, engine_action_guid: 
     # The liveness gate (a fresh read) comes BEFORE the access check: a finished action is a 409, not a 403.
     try:
         await asyncio.to_thread(_gate)
+    except nsr.NativeActionNotActive as exc:
+        refuse(process_qn, str(exc))
+        return _egeria_said(409, str(exc))       # Egeria's own fresh read said the action is over: "too late"
     except nsr.NativeSurveyCannotRun as exc:
         refuse(process_qn, str(exc))
         raise HTTPException(status_code=409, detail=str(exc))
@@ -280,6 +290,9 @@ async def cancel_egeria_action(entity_type: str, slug: str, engine_action_guid: 
         out = await asyncio.to_thread(_do)
     except nsr.NativeActionNotOurs as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except nsr.NativeActionNotActive as exc:
+        refuse(process_qn, str(exc))
+        return _egeria_said(409, str(exc))
     except nsr.NativeSurveyCannotRun as exc:
         refuse(process_qn, str(exc))
         raise HTTPException(status_code=409, detail=str(exc))
@@ -298,8 +311,9 @@ async def cancel_egeria_action(entity_type: str, slug: str, engine_action_guid: 
         cause = exc.__cause__
         if cause is not None and nsr.classify_cancel_answer(cause) == nsr.REFUSED:
             code = 403 if nsr._refusal_kind(cause) == nsr.CANCEL_NOT_PERMITTED else 422
-            raise HTTPException(status_code=code, detail=nsr._egeria_reason(cause))
-        raise HTTPException(status_code=502, detail=str(exc))
+            return _egeria_said(code, nsr._egeria_reason(cause))
+        # Not sent: Egeria gave no answer. The flag tells the page to say so, whatever the status text is.
+        return JSONResponse(status_code=502, content={"detail": str(exc), "unsent": True})
 
     _log_activity(
         registry, entity_type, slug, out["process_qualified_name"] or process_qn,

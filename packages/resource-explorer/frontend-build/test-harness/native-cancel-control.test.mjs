@@ -144,13 +144,16 @@ test('a cancel Egeria does not confirm is not "cancelled": a pop-up with the rea
   await wait(30);
   assert.match(text(document.getElementById('wl-detail')), /asked Egeria to cancel; it still says IN_PROGRESS/);
   assert.doesNotMatch(text(content.querySelector('[data-native-status]')), /cancelled/);
-  assert.match(text(content.querySelector('[data-native-cancel-cue]')), /^asked Egeria to cancel; it still says IN_PROGRESS/);
+  // Pending, not refused: the definition card's pending cue ◔, never ◐ ("measured, within a limit").
+  const cue = content.querySelector('[data-native-cancel-cue]');
+  assert.match(text(cue), /^◔ asked Egeria to cancel; it still says IN_PROGRESS/);
+  assert.ok(!cue.textContent.includes('◐'));
 });
 
 test('an Egeria error is the pop-up and the cue; the cue survives a repaint; a new attempt clears it', async () => {
   const { document, ns, content } = await setUp();
   let fail = true;
-  stub({ [CANCEL_URL]: () => (fail ? { __status: 502, body: { detail: 'Egeria did not cancel the action: engine host unreachable' } }
+  stub({ [CANCEL_URL]: () => (fail ? { __status: 502, body: { detail: 'Egeria did not cancel the action: engine host unreachable', unsent: true } }
     : { cancelled: true, egeria_status: 'CANCELLED', surveys: [CANCELLED] }) });
   mount(ns, content, [RUNNING]);
   content.querySelector('[data-native-cancel]').click();
@@ -175,19 +178,23 @@ test('an Egeria error is the pop-up and the cue; the cue survives a repaint; a n
 
 // Designer REPLY-DESIGNER-ENGINE-HOST-CANCEL-WORDS §6: the three outcome words, no glyph on any of them (◐ means
 // "measured, within a limit" in glyphs.js, not "your request didn't go through"). Same block as the definition card.
-for (const [name, status, detail, words] of [
+for (const [name, status, detail, words, extra = { by: 'egeria' }] of [
   ['too late', 409, 'Only a waiting or running action can be cancelled; Egeria now says COMPLETED.',
     'too late to cancel · the run had already finished'],
   ['not permitted', 403, 'user dana is not authorized to update',
     "Egeria won't let you cancel this run · user dana is not authorized to update"],
+  // A real Egeria security refusal: the server marks it `refused_by: egeria` and re-api.js prefixes "refused by
+  // Egeria: ". The words must carry the unprefixed sentence once, never the doubled line.
+  ['not permitted, a real Egeria 403', 403, 'user dana is not authorized to update',
+    "Egeria won't let you cancel this run · user dana is not authorized to update", { refused_by: 'egeria' }],
   ['refused with a reason', 422, 'the action is not in a state that can be cancelled',
     'Egeria refused the cancel: the action is not in a state that can be cancelled'],
   ['not sent', 502, 'Egeria did not cancel the action: engine host unreachable',
-    "cancel not sent · couldn't reach Egeria · try again"],
+    "cancel not sent · couldn't reach Egeria · try again", { unsent: true }],
 ]) {
   test(`a refused native cancel (${name}) uses the designer's words and draws no glyph`, async () => {
     const { ns, content } = await setUp();
-    stub({ [CANCEL_URL]: { __status: status, body: { detail } } });
+    stub({ [CANCEL_URL]: { __status: status, body: { detail, ...extra } } });
     mount(ns, content, [RUNNING]);
     content.querySelector('[data-native-cancel]').click();
     content.querySelector('[data-native-cancel-yes]').click();
@@ -196,7 +203,29 @@ for (const [name, status, detail, words] of [
     assert.equal(text(cue), words);
     assert.ok(!/[◐◔◌⊘✕?]/.test(cue.textContent), 'no glyph on a refused or unsent cancel');
     assert.equal(cue.querySelector('.font-glyph'), null);
+    assert.ok(!/refused by Egeria/i.test(cue.textContent), 'the prefix is not doubled onto the designer words');
     // the run's own cue is unchanged by the refusal: still the running row, Cancel still offered
     assert.ok(content.querySelector('[data-native-cancel]'));
+  });
+}
+
+// RE's own gate refusals (no `by: egeria`) are shown verbatim, never as Egeria's answer.
+for (const [name, status, detail] of [
+  ['the access rule', 403, 'zone sales-zone does not grant dana update'],
+  ['the single-action gate', 409, 'Only a single-action survey can be cancelled from here; this one was started as a process or a registration, whose identifier is not an engine action.'],
+  ['the unreadable fresh read', 502, "could not read Egeria's current status · not cancelled"],
+  ['the sign-in gate', 403, 'sign in to curate'],
+]) {
+  test(`an RE-gate refusal (${name}) is shown verbatim, not as an Egeria answer`, async () => {
+    const { ns, content } = await setUp();
+    stub({ [CANCEL_URL]: { __status: status, body: { detail } } });
+    mount(ns, content, [RUNNING]);
+    content.querySelector('[data-native-cancel]').click();
+    content.querySelector('[data-native-cancel-yes]').click();
+    await wait(30);
+    const cue = content.querySelector('[data-native-cancel-cue]');
+    assert.equal(text(cue), detail);
+    assert.ok(!/too late|won't let you|Egeria refused|cancel not sent/.test(cue.textContent));
+    assert.equal(cue.querySelector('.font-glyph'), null);
   });
 }

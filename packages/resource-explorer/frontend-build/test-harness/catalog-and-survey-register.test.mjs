@@ -161,6 +161,44 @@ test("a pointer that reads gone while Egeria holds the name: the ruling's words,
   assert.equal(content.querySelector('[data-native-register]'), null);
 });
 
+const AGAIN_WORDS = 'registered again under another GUID';
+
+test("a pointer that reads gone while the name finds ANOTHER GUID: 'registered again under another GUID' and the existing Register press", async () => {
+  const { document, app } = await setUp();
+  const content = document.createElement('div'); content.id = 'content'; document.body.appendChild(content);
+  const again = [surveyRow({ cannot_run_reason: AGAIN_WORDS, neutral: false, registered_again: true, registered_again_line: AGAIN_WORDS,
+    register: { available: true, label: AGAIN, why_not: '' } }),
+    catalogRow({ registered_again: true, registered_again_line: AGAIN_WORDS, asset_guid: 'dddddddd-0000-0000-0000-000000000001',
+      register: { available: true, label: AGAIN, why_not: '', start_again: false, confirm: '' } })];
+  stubFetch(paneRoutes([surveyRow({ runnable: true, cannot_run_reason: '', neutral: false,
+    register: { available: false, label: REGISTER, why_not: '' } }), catalogRow({
+    run: { ...blankRun, state: 'registered' }, asset_guid: 'dddddddd-0000-0000-0000-000000000001',
+    register: { available: false, label: REGISTER, why_not: '' } })], {
+    'POST /api/native-surveys/database/adventureworks/check': { pointers: { database: 'registered_again' }, surveys: again },
+  }));
+  await app.loadSurveyPane();
+  await new Promise((r) => setTimeout(r, 20));
+
+  const row = content.querySelector(`[data-native-survey="${SURVEY}"]`);
+  const words = row.textContent.replace(/\s+/g, ' ');
+  assert.ok(words.includes(AGAIN_WORDS));
+  assert.ok(!words.includes('no longer in Egeria') && !words.includes(TAKEN));
+  assert.ok(!words.includes('?') && !words.includes('✕'));
+  const control = row.querySelector('[data-native-register]');
+  assert.equal(control.textContent.trim(), AGAIN, 'the existing Register press, one press');
+});
+
+test('the caution row never names a Register press it does not draw (will change)', async () => {
+  const { document } = await setUp();
+  const ns = await import('/static/next/stages/native-surveys.js');
+  const addr = { held: 'old:5432', current: 'new:5432', will_change: true };
+  const withPress = ns.willChangeHtml({ address: addr, register: { label: AGAIN }, name_taken: false });
+  assert.ok(withPress.includes(AGAIN) && withPress.includes('old:5432'));
+  assert.equal(ns.willChangeHtml({ address: addr, register: { label: AGAIN, available: false }, name_taken: true }), '');
+  // registered_again DOES draw the press, so its note stays
+  assert.ok(ns.willChangeHtml({ address: addr, register: { label: AGAIN }, registered_again: true }).includes(AGAIN));
+});
+
 test('a database with nothing stored makes no check read at all', async () => {
   const { document, app } = await setUp();
   const content = document.createElement('div'); content.id = 'content'; document.body.appendChild(content);

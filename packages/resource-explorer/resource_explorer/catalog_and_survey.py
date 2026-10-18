@@ -51,6 +51,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
+from resource_explorer import egeria_absence
 from resource_explorer import native_survey_run as nsr
 from resource_explorer.catalogue_gateway import (
     GatewayError, PyegeriaCatalogueGateway, Relationship, database_qualified_name,
@@ -89,11 +90,15 @@ REGISTER_AGAIN_LABEL = "Register again →"
 #: Egeria answered about a pointer RE holds and there is no usable element: said in Egeria's frame, never "deleted"
 #: (RE did not see a delete and cannot tell deleted from purged).
 GONE_WORDS = "no longer in Egeria"
-#: The architect's caution (RULING-RUNS-REGISTRATION-ARCHITECT): the GUID RE holds reads back as absent, but a
-#: qualifiedName lookup, as the same signed-in user, finds a DIFFERENT element. 400-010 also fires for an element this
-#: user cannot see, so this is not "gone", and Register again would make a second element.
+#: The architect's caution (RULING-RUNS-REGISTRATION-ARCHITECT): the GUID RE holds reads back as absent, yet a
+#: qualifiedName lookup, as the same signed-in user, finds an element with THE SAME GUID. 400-010 also fires for an
+#: element this user cannot see, so this is not "gone", and Register again would make a second element.
 NAME_TAKEN_UNREADABLE = "name_taken_unreadable"
 NAME_TAKEN_WORDS = "Egeria has a database of this name RE can't read · ask its owner"
+#: The GUID RE holds reads back as absent and the same lookup finds a DIFFERENT GUID: the database was registered
+#: again. The register press looks the element up by name and adopts it. (Placeholder words; the designer may reword.)
+REGISTERED_AGAIN = "registered_again"
+REGISTERED_AGAIN_WORDS = "registered again under another GUID"
 NO_RECORD_WORDS = "RE has no record of the earlier process, so it cannot check whether it is still running."
 SERVER_NO_ANSWER_WORDS = ("Egeria gave no answer to a server create, so the server may or may not exist; "
                           "RE will not create it again until you start again")
@@ -523,7 +528,7 @@ def check_pointers(registry, port, entity_type: str, slug: str) -> dict:
     if ptr:
         out["database"] = _classify(port, ptr, out)
         if out["database"] == "gone" and hasattr(entity, "db_type"):
-            out["database"] = _classify_gone_by_name(port, entity, ptr, out)
+            out["database"] = _classify_gone_by_name(registry, port, entity_type, slug, entity, ptr, out)
         if out["database"] == "resolves":
             _record_held_address(registry, port, entity_type, slug, ptr)
     sptr = server_pointer(registry, entity)
@@ -532,21 +537,30 @@ def check_pointers(registry, port, entity_type: str, slug: str) -> dict:
     return out
 
 
-def _classify_gone_by_name(port, entity, ptr: str, out: dict) -> str:
+def _classify_gone_by_name(registry, port, entity_type: str, slug: str, entity, ptr: str, out: dict) -> str:
     """The pointer's GUID read as absent. Look the element up by qualifiedName, as the same signed-in user, through
-    the register press's own `find_element` and name (one lookup, read-only). Another GUID under that name means
-    Egeria has the database and this user cannot read it (not "gone"); nothing found keeps `gone`; a lookup that
-    fails is `unreadable`, never `gone`. What the lookup returned is recorded in `out` for the row."""
+    the register press's own `find_element` and name (one lookup, read-only):
+    - the SAME GUID as the pointer -> `name_taken_unreadable` (Egeria has it and this user cannot read it);
+    - a DIFFERENT GUID -> `registered_again` (the register press adopts it);
+    - nothing found, or a 500 carrying 400-010 (the GUID read's own absence test) -> `gone`;
+    - any other failure -> `unreadable`, never `gone`.
+    The lookup uses the address RE would send TODAY (`server_name_for`). When the address Egeria's element was last
+    read back under differs from today's, that name is not the held element's, so the lookup is skipped and the
+    pointer stays `gone`. What the lookup returned is recorded in `out` for the row."""
+    if address_state(registry, entity_type, slug, entity)["will_change"]:
+        return "gone"
     dqn = database_qualified_name(server_name_for(entity), entity.database_name)
     try:
         found = port.find_element(dqn)
     except Exception as exc:  # noqa: BLE001
+        if egeria_absence.is_not_visible(exc):
+            return "gone"
         out["error"] = nsr._short_error(exc)
         return "unreadable"
-    if found is not None and found.guid and found.guid != ptr:
-        out["name_taken_guid"] = found.guid
-        return NAME_TAKEN_UNREADABLE
-    return "gone"
+    if found is None or not found.guid:
+        return "gone"
+    out["name_found_guid"] = found.guid
+    return NAME_TAKEN_UNREADABLE if found.guid == ptr else REGISTERED_AGAIN
 
 
 def held_address_key(entity_type: str, slug: str) -> str:

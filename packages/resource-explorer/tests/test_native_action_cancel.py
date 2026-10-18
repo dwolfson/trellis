@@ -477,3 +477,47 @@ def test_declared_that_is_already_a_dict_is_read_as_stamped():
     assert nsr.cancellable_kind({**ok, "declared": '{"started_as": "gov_action_type"}'}) is True
     assert nsr.cancellable_kind({**ok, "declared": "{}"}) is False
     assert nsr.cancellable_kind({**ok, "declared": {"started_as": "process"}}) is False
+
+
+# ── who answered: `by: "egeria"` only where Egeria itself answered (fix round 1, item 5) ────────────────────────
+
+def test_a_4xx_refusal_Egeria_gives_carries_by_egeria(web, egeria, access):
+    client, _ = web
+    egeria.cancel_error = _egeria_http_error(400, "the engine action is not in a state that can be cancelled")
+    assert client.post(URL.format(G_OURS)).json()["by"] == "egeria"
+
+
+def test_a_finished_action_is_Egerias_answer_so_by_egeria(web, egeria, access):
+    client, _ = web
+    r = client.post(URL.format(G_DONE))
+    assert r.status_code == 409 and r.json()["by"] == "egeria"
+
+
+def test_an_unreachable_Egeria_is_flagged_unsent_and_is_not_by_egeria(web, egeria, access):
+    client, _ = web
+    egeria.cancel_error = _egeria_http_error(503, "the engine host is down")
+    body = client.post(URL.format(G_OURS)).json()
+    assert body["unsent"] is True and "by" not in body
+
+
+def test_the_REs_own_access_rule_denial_is_not_by_egeria(web, egeria, access):
+    client, _ = web
+    access.elements[G_OURS] = _element(G_OURS, zones=["sales-zone"])
+    access.controls["sales-zone"] = {"associatedSecurityList": {"DEFAULT": ["salesTeam"]}}
+    r = client.post(URL.format(G_OURS))
+    assert r.status_code == 403 and "by" not in r.json()
+
+
+def test_the_REs_own_sign_in_gate_is_not_by_egeria(web, egeria, access):
+    client, who = web
+    who["identity"] = False
+    r = client.post(URL.format(G_OURS))
+    assert r.status_code == 401 and "by" not in r.json()
+
+
+def test_the_REs_own_single_action_gate_is_a_409_that_is_not_by_egeria(web, egeria, access, registry):
+    client, _ = web
+    egeria.status[G_PROC] = "IN_PROGRESS"
+    _add_row(registry, G_PROC, "SomeDiscoveredProcess::unlisted", "process")
+    r = client.post(URL.format(G_PROC))
+    assert r.status_code == 409 and "Only a single-action survey" in r.json()["detail"] and "by" not in r.json()
