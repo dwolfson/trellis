@@ -318,11 +318,14 @@ async def cancel_process_run(entity_type: str, slug: str, instance_guid: str, re
 
     Before Egeria hears of it, from RE's own rows (`nsr.process_cancel_refusal`, the same decision the button uses):
     sign-in (401); the GUID is a process instance RE recorded for THIS resource (404); RE started the run (409, owner
-    Q3, admins included); the person is its starter or an admin (403, owner Q2); it is in flight (409). Then
+    Q3, admins included); the person is its starter or an admin (403, owner Q2); it is in flight (409). Then a FRESH
+    read-back of the instance (`nsr.fresh_cancel_gate`): a read that fails is 502 ("cancel not sent · couldn't reach
+    Egeria"), a run it shows over is 409 ("too late"), and neither sends anything. Then
     `cancel_governance_action_process`, the proof row (`declared.cancel`) and one read-back. The answer says
-    `cancelled` only when that read-back shows CANCELLED; a refusal is Egeria's reason (`refused_kind`: too_late when
-    the read-back shows the run already over, else not_permitted); no HTTP answer is `unsent` ("not sent"). Each is
-    stored on the row as the press's proof and drawn from it."""
+    `cancelled` only when that read-back shows CANCELLED; a 4xx is Egeria's refusal (`refused_kind`: not_permitted
+    only from 401/403 or UserNotAuthorized, too_late when the read-back shows the run over, else refused); 5xx, 404 or
+    no answer is `unsent`; a timeout is `unknown` and its read-back decides. Each is stored on the row as the press's
+    proof and drawn from it."""
     from resource_explorer.egeria_clients import Caller
 
     registry = ProjectRegistry()
@@ -350,11 +353,23 @@ async def cancel_process_run(entity_type: str, slug: str, instance_guid: str, re
 
     def _do() -> dict:
         with nsr.port_session(_port()) as port:
+            # A fresh read-back first, never the stored state: no cancel is sent to a run Egeria already finished,
+            # and a read that fails sends nothing (review round 1, item 4).
+            gate = nsr.fresh_cancel_gate(registry, port, entity_type, slug, run)
+            if gate is not None:
+                return {"gate": gate}
             return nsr.cancel_process_run(registry, port, entity_type, slug, run, by=person)
 
     out = await asyncio.to_thread(_do)
-    if out["unsent"]:
+    if "gate" in out:
+        code, why = out["gate"]
+        refuse(process_qn, why)
+        raise HTTPException(status_code=code, detail=why)
+    if out["unsent"] and not out.get("unknown"):
         summary = f"Cancel of process run {instance_guid} on {slug} not sent: could not reach Egeria ({out['unsent']})"
+    elif out.get("unknown"):
+        summary = (f"Cancel of process run {instance_guid} on {slug}: Egeria's answer is unknown ({out['unsent']}); "
+                   + ("its read-back now shows CANCELLED" if out["cancelled"] else "its read-back decides"))
     elif out["refused"]:
         summary = f"Egeria refused the cancel of process run {instance_guid} on {slug}: {out['refused']}"
     elif out["cancelled"]:
@@ -363,12 +378,13 @@ async def cancel_process_run(entity_type: str, slug: str, instance_guid: str, re
         summary = (f"Asked Egeria to cancel process run {instance_guid} on {slug}; accepted, its read-back does not "
                    "show CANCELLED yet")
     _log_activity(registry, entity_type, slug, process_qn,
-                  status="ok" if out["cancelled"] else ("error" if out["refused"] or out["unsent"] else "unconfirmed"),
+                  status="ok" if out["cancelled"] else ("error" if out["refused"] or (out["unsent"] and not out.get("unknown"))
+                                                        else "unconfirmed"),
                   summary=summary, detail={"process_instance_guid": instance_guid, "cancelled_by": person,
                                            "accepted": out["accepted"], "refused": out["refused"],
                                            "refused_kind": out["refused_kind"], "unsent": out["unsent"]})
     return {"accepted": out["accepted"], "refused": out["refused"], "refused_kind": out["refused_kind"],
-            "unsent": out["unsent"], "cancelled": out["cancelled"],
+            "unsent": out["unsent"], "unknown": bool(out.get("unknown")), "cancelled": out["cancelled"],
             "surveys": await asyncio.to_thread(
                 lambda: nsr.native_survey_rows(registry, entity_type, slug, tech, **reader))}
 

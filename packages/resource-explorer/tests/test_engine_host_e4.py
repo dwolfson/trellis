@@ -51,12 +51,30 @@ EGERIA_PROPERTIES_FIELDS = ACCEPTED_FIELDS
 
 # ── the fake Egeria behind the autospecs ───────────────────────────────────────
 
-def _refusal(message_id: str, text: str):
-    from pyegeria.core._exceptions import PyegeriaUnauthorizedException
+def _refusal(message_id: str, text: str, *, http: int = 403):
+    """Egeria's refusal as pyegeria 6.2.5 raises it: `PyegeriaUnauthorizedException` for a 401/403, else
+    `PyegeriaAPIException` (built the way pyegeria builds it, from the Egeria-wrapped response body)."""
+    from pyegeria.core._exceptions import PyegeriaAPIException, PyegeriaUnauthorizedException
 
-    return PyegeriaUnauthorizedException(None, context={"caller method": "fake"}, additional_info={
-        "relatedHTTPCode": 403, "exceptionErrorMessageId": message_id,
-        "exceptionErrorMessage": f"{message_id} {text}"})
+    info = {"relatedHTTPCode": http, "exceptionErrorMessageId": message_id,
+            "exceptionErrorMessage": f"{message_id} {text}"}
+    if http in (401, 403):
+        return PyegeriaUnauthorizedException(None, context={"caller method": "fake"}, additional_info=info)
+
+    class _Response:                       # the Egeria-wrapped 200 pyegeria reads `relatedHTTPCode` from
+        status_code, url, reason_phrase = 200, "https://fake/egeria", "OK"
+
+        def json(self):
+            return info
+
+    return PyegeriaAPIException(_Response(), context={"caller method": "fake"}, additional_info=info)
+
+
+#: Egeria's `ActivityStatus` (`ActionTargetStatusRequestBody.status`): the only values a target status may carry.
+ACTIVITY_STATUS = frozenset({"REQUESTED", "APPROVED", "WAITING", "ACTIVATING", "IN_PROGRESS", "PAUSED", "FOR_INFO",
+                             "COMPLETED", "INVALID", "IGNORED", "FAILED", "CANCELLED", "ABANDONED", "OTHER"})
+#: The completionTime Egeria stamps on a cancelled action (epoch ms, as a DATE primitive serialises).
+CANCEL_TIME_MS = 1_792_000_000_000
 
 
 def _rel_guid(action_guid: str, element_guid: str) -> str:
@@ -233,7 +251,10 @@ class FakeEgeria:
     def _target_status(self, action_target_guid, status, start_date=None, completion_date=None,
                        completion_message=None, body=None):
         """`ActionTargetStatusRequestBody`: Egeria loads the ActionTarget RELATIONSHIP by this GUID
-        (`EngineActionHandler.updateActionTargetStatus` -> getRelationshipByGUID), so an element GUID is refused."""
+        (`EngineActionHandler.updateActionTargetStatus` -> getRelationshipByGUID), so an element GUID is refused; its
+        `status` is an `ActivityStatus`, so a CompletionStatus word (ACTIONED) does not deserialise."""
+        if status not in ACTIVITY_STATUS:
+            raise _refusal("OMAG-COMMON-400-016", f"{status!r} is not an ActivityStatus value", http=400)
         owner = next((a for a in self.actions.values() for t in a["actionTargetElements"]
                       if t.get("actionTargetRelationshipGUID") == action_target_guid), None)
         if owner is None:
@@ -252,10 +273,16 @@ class FakeEgeria:
         for guid, a in self.actions.items():
             if a.get("instance") == process_instance_guid and a["actionStatus"] not in self.TERMINAL.values():
                 a["actionStatus"] = "CANCELLED"
+                # EngineActionBuilder.getCancelInstanceProperties: CANCELLED, and the completionTime of the cancel.
+                a["completionTime"] = CANCEL_TIME_MS
                 start = (self.graphs.get(guid) or {}).get("startingElement") or {}
-                status = ((start.get("elementProperties") or {}).get("propertyValueMap") or {}).get("activityStatus")
+                pvm = (start.get("elementProperties") or {}).get("propertyValueMap")
+                status = (pvm or {}).get("activityStatus")
                 if isinstance(status, dict):
                     status["symbolicName"] = "CANCELLED"
+                    pvm["completionTime"] = {"class": "PrimitiveTypePropertyValue",
+                                             "primitiveDefCategory": "OM_PRIMITIVE_TYPE_DATE",
+                                             "primitiveValue": CANCEL_TIME_MS}
 
     def _active_claimed(self, governance_engine_guid, start_from=0, page_size=0):
         mine = [a for a in self.actions.values()

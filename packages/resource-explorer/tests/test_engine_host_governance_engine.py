@@ -76,10 +76,11 @@ def test_completed_claims_runs_sets_each_target_and_completes_on_the_governance_
     assert a["statusUpdates"] == ["IN_PROGRESS"]
     done = a["completion"]
     assert done["status"] == "ACTIONED" and done["guards"] == ["survey-completed"]
-    # The ActionTarget's status, on the RELATIONSHIP (owner Q1): IN_PROGRESS at the start, ACTIONED at the end, with
-    # the completion's own words.
+    # The ActionTarget's status, on the RELATIONSHIP (owner Q1): IN_PROGRESS at the start, and at the end the
+    # ActivityStatus the completion maps to (ACTIONED -> COMPLETED; ACTIONED is a CompletionStatus, not an
+    # ActivityStatus, and the fake refuses it as Egeria does), with the completion's own words.
     statuses = _target_statuses(egeria, "ea-ok", DB_GUID)
-    assert [s["status"] for s in statuses] == ["IN_PROGRESS", "ACTIONED"], egeria.target_statuses
+    assert [s["status"] for s in statuses] == ["IN_PROGRESS", "COMPLETED"], egeria.target_statuses
     assert statuses[0]["start_date"] and not statuses[0]["completion_date"]
     assert statuses[1]["completion_date"] and statuses[1]["message"] == done["message"]
     assert all(s["relationship"] != DB_GUID for s in egeria.target_statuses), "never the element's GUID"
@@ -124,8 +125,8 @@ def test_failed_sets_the_target_failed_with_the_completion_words(reg, egeria, no
 
 def test_cancelled_mid_run_publishes_nothing_sends_no_completion_and_marks_the_target(reg, egeria, no_connection):
     """§2.4: Egeria cancels the process while RE runs step 2. The step runs to its end; before publishing RE reads the
-    action back, sees CANCELLED, publishes no report, sends no completion, sets the worked target INVALID "cancelled in
-    Egeria" and stores the outcome cancelled."""
+    action back, sees CANCELLED, publishes no report, sends no completion, sets the worked target CANCELLED "cancelled
+    in Egeria" and stores the outcome cancelled."""
     a = _process_action(egeria, "ea-mid", "db_derived")
     a["instance"] = INSTANCE
     assert _sweep(reg).claimed == ["ea-mid"]
@@ -142,7 +143,7 @@ def test_cancelled_mid_run_publishes_nothing_sends_no_completion_and_marks_the_t
     assert egeria.actions["ea-mid"]["completion"] is None and not _gev_calls(egeria, "record_completion_status")
     statuses = _target_statuses(egeria, "ea-mid", DB_GUID)
     assert [(s["status"], s["message"]) for s in statuses] == [("IN_PROGRESS", None),
-                                                              ("INVALID", "cancelled in Egeria")]
+                                                              ("CANCELLED", "cancelled in Egeria")]
     row = _row(reg)
     assert row["state"] == "cancelled"
     outcome = row["target"]["outcome"]
@@ -160,7 +161,7 @@ def test_the_governance_engine_fake_refuses_a_keyword_pyegeria_does_not_have(reg
     _sweep(reg)
     engine = egeria.of("GovernanceEngine")
     with pytest.raises(TypeError):
-        engine.update_action_target_status(_rel_guid("ea-sig", DB_GUID), "ACTIONED", completionMessage="camel")
+        engine.update_action_target_status(_rel_guid("ea-sig", DB_GUID), "COMPLETED", completionMessage="camel")
     with pytest.raises(TypeError):
         engine.get_approved_engine_actions(ENGINE_GUID, startFrom=0)
 
@@ -226,16 +227,15 @@ def test_the_governance_engine_client_never_falls_back_to_the_old_urls():
     assert engine_host.governance_engine_client(Client()).legacy_fallback is False
 
 
-class _NotFound(Exception):
-    related_http_code = 404
-
-
 def test_a_view_server_without_the_service_is_said_once_and_nothing_falls_back(reg, egeria, caplog):
     egeria.add_action("ea-404")
     host = _host(reg)
     try:
         host.sweep_once()                                     # builds the specs
-        egeria.of("GovernanceEngine").get_approved_engine_actions.side_effect = _NotFound("HTTP 404 Not Found")
+        from pyegeria.core._exceptions import PyegeriaNotFoundException
+
+        egeria.of("GovernanceEngine").get_approved_engine_actions.side_effect = PyegeriaNotFoundException(
+            None, context={"caller method": "get_approved_engine_actions"}, additional_info={"relatedHTTPCode": 404})
         with caplog.at_level(logging.WARNING, logger="resource_explorer.engine_host"):
             first = host.sweep_once()
             second = host.sweep_once()
@@ -273,7 +273,7 @@ def test_a_target_status_egeria_refuses_is_recorded_and_never_blocks_the_complet
     [err] = row["target"]["target_status_errors"]
     assert err["status"] == "IN_PROGRESS" and "read timeout" in err["error"]
     # The end status still went (one failure does not stop the next update).
-    assert [s["status"] for s in _target_statuses(egeria, "ea-tsfail", DB_GUID)] == ["ACTIONED"]
+    assert [s["status"] for s in _target_statuses(egeria, "ea-tsfail", DB_GUID)] == ["COMPLETED"]
 
 
 # ── §2.4: Cancel on the definition card (owner Q2, Q3), end to end through the route ───────────────────────────────
@@ -338,6 +338,27 @@ def mixed_process_plan() -> list:
 CANCEL_URL = f"/api/native-surveys/database/coco_pharma/process-runs/{INSTANCE}/cancel"
 
 
+def _step1_ends_the_run(egeria, status: str = "FAILED") -> None:
+    """Egeria's read of step 1 now says it ended and the process ended there (RE's engine host appends the note):
+    the run is over, with no step active."""
+    from resource_explorer.step_outcome import PROCESS_ENDED_PREFIX
+
+    pvm = egeria.graphs["ea-step1"]["startingElement"]["elementProperties"]["propertyValueMap"]
+    pvm["activityStatus"]["symbolicName"] = status
+    pvm["completionMessage"] = {"class": "PrimitiveTypePropertyValue", "primitiveDefCategory": "OM_PRIMITIVE_TYPE_STRING",
+                                "primitiveValue": f"step 1 ended · {PROCESS_ENDED_PREFIX} step 1"}
+
+
+def _on_cancel(egeria, fn) -> None:
+    """Egeria's answer to the next process cancel is `fn` (on the built Automated Curation spec, or the one built next)."""
+    try:
+        spec = egeria.of("AutomatedCuration")
+    except StopIteration:
+        egeria._cancel_process = fn
+        return
+    spec.cancel_governance_action_process.side_effect = fn
+
+
 def test_the_starter_cancels_as_themself_and_the_line_reads_cancelled_only_from_egerias_read_back(reg, egeria, web):
     client, _who = web
     _running_definition_run(reg, egeria)
@@ -393,24 +414,83 @@ def test_a_cancel_egeria_refuses_shows_egerias_reason_and_changes_nothing_else(r
     assert row["process_cancel"]["offered"] is True, "not permitted: Cancel run stays"
 
 
-def test_a_cancel_refused_because_the_run_had_finished_is_too_late(reg, egeria, web):
+def test_a_cancel_is_never_sent_to_a_run_the_fresh_read_shows_finished(reg, egeria, web):
+    """Review round 1, item 4: the route reads the run back BEFORE it writes. Stored state says running; Egeria's
+    fresh read says step 1 FAILED and nothing is active: 409 "too late", and no cancel reaches Egeria."""
+    client, _who = web
+    _running_definition_run(reg, egeria)
+    _step1_ends_the_run(egeria)                                   # it ended before the press reached Egeria
+    r = client.post(CANCEL_URL)
+    assert r.status_code == 409 and r.json()["detail"] == "too late to cancel · the run had already finished"
+    assert egeria.cancels == [], "no cancel is sent to a finished run"
+    assert _def_row(client)["process_cancel"]["offered"] is False
+
+
+def test_a_fresh_read_that_fails_sends_no_cancel_and_says_couldnt_reach_egeria(reg, egeria, web):
+    from pyegeria.core._exceptions import PyegeriaConnectionException
+
+    client, _who = web
+    _running_definition_run(reg, egeria)
+    egeria.fail["get_all_related_elements"] = PyegeriaConnectionException(
+        context={"caller method": "get_all_related_elements"}, additional_info={"endpoint": "https://fake"})
+    r = client.post(CANCEL_URL)
+    assert r.status_code == 502 and r.json()["detail"] == "cancel not sent · couldn't reach Egeria · try again"
+    assert egeria.cancels == []
+
+
+def test_a_refusal_then_a_read_back_showing_the_run_over_is_too_late(reg, egeria, web):
+    """A 409 from Egeria (not 401/403): its kind is from the read-back. The run had finished meanwhile: too late."""
     from tests.test_engine_host_e4 import _refusal
 
     client, _who = web
     _running_definition_run(reg, egeria)
-    start = egeria.graphs["ea-step1"]["startingElement"]["elementProperties"]["propertyValueMap"]
-    start["activityStatus"]["symbolicName"] = "FAILED"            # it ended before the press reached Egeria
-    egeria.fail["cancel_governance_action_process"] = _refusal("OMAG-GENERIC-HANDLERS-400-001", "not active")
+    def refused_after_it_finished(process_instance_guid):
+        _step1_ends_the_run(egeria)                                 # it finished as the press arrived
+        raise _refusal("OMAG-GENERIC-HANDLERS-409-001", "the process instance is not active", http=409)
+
+    _on_cancel(egeria, refused_after_it_finished)
     body = client.post(CANCEL_URL).json()
-    assert body["refused_kind"] == "too_late"
+    assert body["refused_kind"] == "too_late" and body["accepted"] is False
     row = _def_row(client)
-    assert row["run"]["cancel"]["kind"] == "too_late" and row["process_cancel"]["offered"] is False
+    assert row["run"]["cancel"]["state"] == "too_late" and row["process_cancel"]["offered"] is False
+
+
+def test_a_4xx_refusal_that_is_not_401_or_403_is_never_not_permitted(reg, egeria, web):
+    """Item 5(b): not permitted only from Egeria's 401/403 or a UserNotAuthorized message id. A 400 on a run still
+    active is a plain refusal with Egeria's reason."""
+    from tests.test_engine_host_e4 import _refusal
+
+    client, _who = web
+    _running_definition_run(reg, egeria)
+    egeria.fail["cancel_governance_action_process"] = _refusal("OMAG-COMMON-400-009", "bad instance", http=400)
+    body = client.post(CANCEL_URL).json()
+    assert body["refused_kind"] == "refused" and "bad instance" in body["refused"]
+    c = _def_row(client)["run"]["cancel"]
+    assert c["state"] == "refused" and c["kind"] == "refused"
+
+
+def test_an_accepted_cancel_on_a_run_that_then_finishes_reads_too_late_not_pending_forever(reg, egeria, web):
+    """Item 5(a): "cancel requested … waiting for Egeria" only while the run is in flight. Egeria accepted, applied
+    nothing, and the run then finished on its own: the press row reads too late."""
+    client, _who = web
+    _running_definition_run(reg, egeria)
+    egeria.ignore_cancel = True
+    assert client.post(CANCEL_URL).json()["accepted"] is True
+    assert _def_row(client)["run"]["cancel"]["state"] == "pending"
+    _step1_ends_the_run(egeria)
+    client.post("/api/native-surveys/database/coco_pharma/refresh")
+    row = _def_row(client)
+    assert row["run"]["state"] not in ("running", "submitted")
+    assert row["run"]["cancel"]["state"] == "too_late"
 
 
 def test_an_unreachable_egeria_is_not_sent_never_refused_and_cancel_comes_back(reg, egeria, web):
     client, _who = web
     _running_definition_run(reg, egeria)
-    egeria.fail["cancel_governance_action_process"] = ConnectionError("connection refused")   # no HTTP answer
+    from pyegeria.core._exceptions import PyegeriaConnectionException
+
+    egeria.fail["cancel_governance_action_process"] = PyegeriaConnectionException(   # no HTTP answer
+        context={"caller method": "cancel_governance_action_process"}, additional_info={"endpoint": "https://fake"})
     body = client.post(CANCEL_URL).json()
     assert body["unsent"] and body["refused"] == "" and body["accepted"] is False
     row = _def_row(client)
@@ -465,4 +545,212 @@ def test_a_run_cancelled_outside_re_says_so_and_a_step_re_still_runs_is_finishin
     row = _def_row(client)
     c = row["run"]["cancel"]
     assert c["state"] == "done" and c["outside"] is True and "by" not in c
+    # Item 7: Egeria's own completionTime on the cancelled action, never RE's read time.
+    from tests.test_engine_host_e4 import CANCEL_TIME_MS
+    from datetime import UTC, datetime
+
+    assert c["at"] == datetime.fromtimestamp(CANCEL_TIME_MS / 1000, UTC).isoformat(timespec="seconds").replace(
+        "+00:00", "Z")
+    [step] = [st for st in row["run"]["steps"] if st["status"] == "CANCELLED"]
+    assert step["completion_time"] == c["at"]
     assert row["process_cancel"]["finishing"]["step"] == 1
+
+
+# ── review round 1 ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+def test_the_target_status_fake_refuses_a_completion_status_word(reg, egeria):
+    """Item 1: `ActionTargetStatusRequestBody.status` is an ActivityStatus; ACTIONED is not one."""
+    egeria.add_action("ea-enum")
+    _sweep(reg)
+    engine = egeria.of("GovernanceEngine")
+    with pytest.raises(Exception, match="not an ActivityStatus"):
+        engine.update_action_target_status(_rel_guid("ea-enum", DB_GUID), "ACTIONED")
+    from resource_explorer.engine_host import target_activity_status
+
+    assert [target_activity_status({"status": s}) for s in ("ACTIONED", "INVALID", "FAILED")] == \
+        ["COMPLETED", "INVALID", "FAILED"]
+    assert target_activity_status({"status": "INVALID", "cancelled": True}) == "CANCELLED"
+
+
+def test_a_step_cancelled_while_queued_is_never_set_in_progress_and_publishes_nothing(reg, egeria, no_connection):
+    """Item 2: Egeria's updateEngineActionStatus checks only the claimant, so an IN_PROGRESS after a cancel would
+    un-cancel it. Cancelled between the claim and the run: no IN_PROGRESS, no step, no report, no completion."""
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
+
+    a = _process_action(egeria, "ea-queued", "db_derived")
+    a["instance"] = INSTANCE
+    assert _sweep(reg).claimed == ["ea-queued"]
+    with acting_as(Daemon(DaemonReason.SCHEDULER)):
+        egeria._cancel_process(INSTANCE)
+    _run_queue_once(reg)
+
+    assert not _gev_calls(egeria, "update_engine_action_status"), "IN_PROGRESS is never sent to a cancelled action"
+    assert egeria.actions["ea-queued"]["actionStatus"] == "CANCELLED", "still cancelled in Egeria"
+    assert egeria.reports() == [] and not _gev_calls(egeria, "record_completion_status")
+    assert [s["status"] for s in _target_statuses(egeria, "ea-queued", DB_GUID)] == ["CANCELLED"]
+    row = _row(reg)
+    assert row["state"] == "cancelled"
+    assert row["target"]["outcome"]["cancelled"] is True
+    assert row["target"]["completion_not_sent"] == "cancelled in Egeria"
+
+
+def test_a_cancel_after_the_report_is_published_keeps_the_report_and_sends_no_completion(reg, egeria, no_connection):
+    """Item 3: Egeria cancels while the report is being published. The report is in Egeria; the outcome keeps it with
+    `cancelled_after_publish`, no completion is sent and the worked target ends CANCELLED. The run line is the done
+    line (never "will publish nothing")."""
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
+
+    a = _process_action(egeria, "ea-late", "db_derived")
+    a["instance"] = INSTANCE
+    assert _sweep(reg).claimed == ["ea-late"]
+    create_asset = egeria._create_asset
+
+    def cancel_as_the_report_lands(asset_type=None, body=None):
+        guid = create_asset(asset_type, body)
+        with acting_as(Daemon(DaemonReason.SCHEDULER)):
+            egeria._cancel_process(INSTANCE)
+        return guid
+
+    egeria._create_asset = cancel_as_the_report_lands      # wired when the run first builds its AssetMaker
+    _run_queue_once(reg)
+
+    [(report_guid, _body)] = egeria.reports()
+    assert egeria.actions["ea-late"]["completion"] is None and not _gev_calls(egeria, "record_completion_status")
+    row = _row(reg)
+    outcome = row["target"]["outcome"]
+    assert outcome["report_guid"] == report_guid and outcome["cancelled_after_publish"] is True
+    assert outcome["guard"] == "survey-completed" and not outcome.get("cancelled")
+    assert row["state"] == "cancelled" and "will publish nothing" not in (row.get("error") or "")
+    assert [s["status"] for s in _target_statuses(egeria, "ea-late", DB_GUID)] == ["IN_PROGRESS", "CANCELLED"]
+    assert _restart(reg).completed == []
+    from resource_explorer import native_survey_run as nsr
+
+    derived = {"cancelled": True, "steps": [{"status": "CANCELLED", "action_guid": "ea-late"}],
+               "cancel_context": {"cancelled_step": {"step": 2, "label": "db_derived"}}}
+    assert nsr._finishing_step(reg, derived) is None, "a step that published is never 'finishing'"
+
+
+@pytest.mark.parametrize("make, expected", [
+    ("timeout", "unknown"), ("connection", "unreachable"), ("not_found", "unreachable"), ("server_500", "unreachable"),
+    ("bad_400", "refused"), ("conflict_409", "refused"), ("forbidden_403", "refused"), ("unauthorised_401", "refused"),
+])
+def test_the_cancel_answer_classifier_on_pyegerias_own_exceptions(make, expected):
+    """Item 6, with pyegeria 6.2.5's real exception classes: only Egeria's 4xx is a refusal; 5xx, 404, a connection
+    error and no answer are "not sent"; a timeout is its own unknown outcome."""
+    import httpx
+    from pyegeria.core._exceptions import (PyegeriaConnectionException, PyegeriaNotFoundException,
+                                           PyegeriaTimeoutException)
+    from tests.test_engine_host_e4 import _refusal
+
+    from resource_explorer import native_survey_run as nsr
+
+    exc = {
+        "timeout": lambda: PyegeriaTimeoutException(context={}, additional_info={"endpoint": "https://fake"},
+                                                    e=httpx.ReadTimeout("read timed out")),
+        "connection": lambda: PyegeriaConnectionException(context={}, additional_info={"endpoint": "https://fake"}),
+        "not_found": lambda: PyegeriaNotFoundException(None, context={}, additional_info={"relatedHTTPCode": 404}),
+        "server_500": lambda: _refusal("OMAG-COMMON-500-001", "repository down", http=500),
+        "bad_400": lambda: _refusal("OMAG-COMMON-400-009", "bad", http=400),
+        "conflict_409": lambda: _refusal("OMAG-COMMON-409-001", "conflict", http=409),
+        "forbidden_403": lambda: _refusal("OMAG-COMMON-403-001", "no", http=403),
+        "unauthorised_401": lambda: _refusal("OMAG-COMMON-401-001", "no", http=401),
+    }[make]()
+    assert nsr.classify_cancel_answer(exc) == expected
+    if expected == "refused":
+        assert nsr._refusal_kind(exc) == ("not_permitted" if make in ("forbidden_403", "unauthorised_401")
+                                          else "refused")
+
+
+def test_a_5xx_answer_to_cancel_is_not_sent_never_refused(reg, egeria, web):
+    from tests.test_engine_host_e4 import _refusal
+
+    client, _who = web
+    _running_definition_run(reg, egeria)
+    egeria.fail["cancel_governance_action_process"] = _refusal("OMAG-COMMON-500-001", "repository down", http=500)
+    body = client.post(CANCEL_URL).json()
+    assert body["refused"] == "" and body["unsent"] and body["accepted"] is False
+    row = _def_row(client)
+    assert row["run"]["cancel"]["state"] == "unsent" and row["process_cancel"]["offered"] is True
+
+
+def test_a_timed_out_cancel_is_decided_by_the_read_back_and_reads_cancelled_by_the_presser(reg, egeria, web):
+    """Item 6: a timeout may have reached Egeria. It applied the cancel and the answer never came back: the read-back
+    decides, and the line is "cancelled by <who>", never "cancelled in Egeria · not from Resource Explorer"."""
+    import httpx
+    from pyegeria.core._exceptions import PyegeriaTimeoutException
+
+    client, _who = web
+    _running_definition_run(reg, egeria)
+    apply = egeria._cancel_process
+
+    def applied_then_timed_out(process_instance_guid):
+        apply(process_instance_guid)
+        raise PyegeriaTimeoutException(context={}, additional_info={"endpoint": "https://fake"},
+                                       e=httpx.ReadTimeout("read timed out"))
+
+    _on_cancel(egeria, applied_then_timed_out)
+    body = client.post(CANCEL_URL).json()
+    assert body["unknown"] is True and body["refused"] == "" and body["cancelled"] is True
+    c = _def_row(client)["run"]["cancel"]
+    assert c["state"] == "done" and c["by"] == STARTER and not c.get("outside")
+
+
+def test_any_press_row_makes_a_later_cancelled_cancelled_by_the_presser(reg, egeria, web):
+    """Item 6: an unreachable press, then Egeria cancels (perhaps that press after all): "cancelled by", not outside."""
+    from pyegeria.core._exceptions import PyegeriaConnectionException
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
+
+    client, _who = web
+    _running_definition_run(reg, egeria)
+    egeria.fail["cancel_governance_action_process"] = PyegeriaConnectionException(
+        context={}, additional_info={"endpoint": "https://fake"})
+    assert client.post(CANCEL_URL).json()["unsent"]
+    with acting_as(Daemon(DaemonReason.SCHEDULER)):
+        egeria._cancel_process(INSTANCE)
+    client.post("/api/native-surveys/database/coco_pharma/refresh")
+    c = _def_row(client)["run"]["cancel"]
+    assert c["state"] == "done" and c["by"] == STARTER and not c.get("outside")
+
+
+def test_a_worker_that_died_after_in_progress_leaves_the_target_to_the_restart_pass(reg, egeria, no_connection,
+                                                                                   monkeypatch):
+    """Item 8: the restart pass's completion (E5, from the ended row) ends the worked target too: FAILED, with the
+    completion's own words."""
+    from resource_explorer import engine_host
+
+    class WorkerDied(BaseException):
+        pass
+
+    def died(*a, **k):
+        raise WorkerDied()
+
+    egeria.add_action("ea-died")
+    _sweep(reg)
+    decide = engine_host._decide
+    monkeypatch.setattr(engine_host, "_decide", died)
+    with pytest.raises(WorkerDied):
+        _run_queue_once(reg)
+    monkeypatch.setattr(engine_host, "_decide", decide)
+    statuses = _target_statuses(egeria, "ea-died", DB_GUID)
+    assert [s["status"] for s in statuses] == ["IN_PROGRESS"]
+    row = _row(reg)
+    reg.finish_run(row["id"], "failed", error="interrupted: the worker process ended")   # the reconciler
+    assert _restart(reg).completed == ["ea-died"]
+    done = egeria.actions["ea-died"]["completion"]
+    statuses = _target_statuses(egeria, "ea-died", DB_GUID)
+    assert [s["status"] for s in statuses] == ["IN_PROGRESS", "FAILED"]
+    assert statuses[1]["message"] == done["message"] and statuses[1]["completion_date"]
+    assert _row(reg)["target"].get("final_target_status_sent_at")
+    _restart(reg)
+    assert len(_target_statuses(egeria, "ea-died", DB_GUID)) == 2, "sent once"
+
+
+def test_worked_targets_are_once_per_action_target_relationship():
+    """Item 9: two ActionTarget relationships to one element are two targets; one listed twice is one."""
+    from resource_explorer.engine_host import worked_targets
+
+    target = {"action_targets": [{"name": "newAsset", "guid": DB_GUID, "relationship_guid": "rel-1"},
+                                 {"name": "otherAsset", "guid": DB_GUID, "relationship_guid": "rel-2"},
+                                 {"name": "newAsset", "guid": DB_GUID, "relationship_guid": "rel-1"}],
+              "asset_guid": DB_GUID}
+    assert [t["relationship_guid"] for t in worked_targets(target)] == ["rel-1", "rel-2"]

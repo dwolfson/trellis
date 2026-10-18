@@ -45,7 +45,7 @@ test('"Cancel run" is on its own line, only when the server offers it to this re
 test('the confirm names the step, what will not start and what keeps its report; unknown step has its own words', async () => {
   const { ns } = await setUp();
   assert.equal(ns.PROCESS_CANCEL_WORDS.confirm(ctx),
-    "Cancel this run? Step 2, postgres_operations, finishes but publishes nothing, and db_derived and nested_columns won't start. Postgres_column_profile keeps its report.");
+    "Cancel this run? Step 2, postgres_operations, finishes but publishes nothing, and db_derived and nested_columns won't start. postgres_column_profile keeps its report.");
   assert.equal(ns.PROCESS_CANCEL_WORDS.confirm({ running: null }),
     'Cancel this run? The running step finishes but publishes nothing, and no later step starts. Finished steps keep their reports.');
 });
@@ -86,4 +86,53 @@ test('each cue reads from the row: pending, finishing, done, done outside, too l
   const out = draw(document, ns, row(run(), { outside: true })).querySelector('[data-process-cancel-outside]');
   assert.equal(norm(out), 'started outside Resource Explorer');
   assert.equal(out.getAttribute('title'), 'RE can cancel only runs it started; cancel this one in Egeria');
+});
+
+test('review round 1: step identifiers are never capitalised in the confirm', async () => {
+  const { ns } = await setUp();
+  const words = ns.PROCESS_CANCEL_WORDS.confirm({ running: { step: 1, label: 'postgres_column_profile' }, later: [], finished: ['db_derived'] });
+  assert.match(words, /Step 1, postgres_column_profile, finishes/);
+  assert.match(words, / db_derived keeps its report\./);
+  assert.doesNotMatch(words, /Postgres_column_profile|Db_derived/);
+});
+
+test('review round 1: a cancelled run line is drawn in the neutral tone, never the warn one', async () => {
+  const { document, ns } = await setUp();
+  const cancelled = run({ state: 'failed', egeria_status: 'CANCELLED', line: 'Database Analysis Survey · step 1 ⊘ cancelled',
+    cancel: { state: 'done', by: 'dan', at: '2026-10-17T09:06:00', finished: 0, of: 4 } });
+  const line = draw(document, ns, row(cancelled)).querySelector('[data-native-process-line]');
+  assert.equal(line.classList.contains('text-state-warn'), false);
+  assert.equal(line.classList.contains('text-ink-muted'), true);
+  const failed = run({ state: 'failed', egeria_status: 'FAILED', line: 'Database Analysis Survey · step 1 failed' });
+  assert.equal(draw(document, ns, row(failed)).querySelector('[data-native-process-line]').classList.contains('text-state-warn'), true);
+});
+
+test('review round 1: too late (from a read-back) and a plain refusal each have their own words', async () => {
+  const { document, ns } = await setUp();
+  assert.match(norm(draw(document, ns, row(run({ state: 'failed', egeria_status: 'FAILED', cancel: { state: 'too_late', by: 'dan' } })))),
+    /too late to cancel · the run had already finished/);
+  const refused = norm(draw(document, ns, row(run({ cancel: { state: 'refused', kind: 'refused', by: 'dan', reason: 'OMAG-400 bad instance' } }))));
+  assert.match(refused, /Egeria refused the cancel: OMAG-400 bad instance/);
+  assert.doesNotMatch(refused, /won't let/);
+});
+
+test("review round 1: RE's gate refusal stays on the line across checkNow's repaint until the next press", async () => {
+  const { document, ns } = await setUp();
+  const app = await import('/static/next/app.js');
+  Object.assign(app.state, { resourceType: 'db', selectedSlug: 'coco_pharma' });
+  globalThis.fetch = async () => ({ ok: false, status: 409, statusText: 'Conflict',
+    json: async () => ({ detail: 'too late to cancel · the run had already finished' }) });
+  const host = document.createElement('div');
+  document.body.appendChild(host);
+  const paint = () => { host.innerHTML = ns.definitionRunLineHtml(row(run(), { offered: true })); bind(); };
+  let repaints = 0;
+  const bind = () => ns.bindRunLineControls(host, 'coco_pharma', { checkNow: async () => { repaints += 1; paint(); } });
+  paint();
+  host.querySelector('[data-process-cancel]').click();
+  await host.querySelector('[data-process-cancel-yes]').click();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(repaints, 1, 'checkNow repainted the line');
+  assert.match(norm(host), /too late to cancel · the run had already finished/, 'kept across the repaint');
+  host.querySelector('[data-process-cancel]').click();          // the next press clears it
+  assert.doesNotMatch(norm(host), /too late to cancel/);
 });

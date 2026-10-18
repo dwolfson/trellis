@@ -209,9 +209,16 @@ CLAIM_REFUSED_MESSAGE_ID = "OMAG-GENERIC-HANDLERS-403-003"
 #: `legacy_fallback`). A 404 means the View Server lacks the service, and RE says so once.
 GOVERNANCE_ENGINE_LEGACY_FALLBACK = False
 
-#: §2.4: the words an action Egeria cancelled mid-run completes its worked targets with (status INVALID). They are the
-#: stored outcome's message, so the target status and the run row say the same thing.
+#: §2.4: the words an action Egeria cancelled mid-run completes its worked targets with (status CANCELLED). They are
+#: the stored outcome's message, so the target status and the run row say the same thing.
 CANCELLED_IN_EGERIA_SENTENCE = "cancelled in Egeria"
+
+#: §2.3: an action target's status is Egeria's `ActivityStatus` (`ActionTargetStatusRequestBody.status`), NOT the
+#: `CompletionStatus` the completion takes. These are its values; nothing else is ever sent as a target status.
+ACTIVITY_STATUSES = frozenset({"REQUESTED", "APPROVED", "WAITING", "ACTIVATING", "IN_PROGRESS", "PAUSED", "FOR_INFO",
+                               "COMPLETED", "INVALID", "IGNORED", "FAILED", "CANCELLED", "ABANDONED", "OTHER"})
+#: A completion status's target ActivityStatus (`target_activity_status`).
+_COMPLETION_TO_ACTIVITY = {"ACTIONED": "COMPLETED", "INVALID": "INVALID", "FAILED": "FAILED"}
 
 #: The action target a run only reads (the previous step's report): its status is left alone (§2.3).
 _READ_ONLY_TARGETS = frozenset({"surveyReport"})
@@ -452,8 +459,7 @@ PREVIOUS_STEP_NOT_COMPLETED = "previous_step_not_completed"
 
 #: Skip reasons that are not RE's business (another engine's work, not yet approved, claimed by someone
 #: else, or already queued here): silent. The rest are logged once per action.
-_SILENT = frozenset({"other_engine", "not_approved", "already_claimed", "already_queued", "not_due",
-                     "completed_now_private"})
+_SILENT = frozenset({"other_engine", "not_approved", "already_claimed", "already_queued", "not_due"})
 
 #: The `_screen` verdict for an action RE's own user already claimed in Egeria but RE has no runs row for:
 #: queue it without claiming again.
@@ -794,10 +800,6 @@ class EngineHost:
                 # if one ever did, the sweep leaves it to `restart_pass` (within COMPLETION_RETRY_SECONDS).
                 result.skip("already_claimed", guid)
                 continue
-            if reason == "private_target" and facts.get("ours"):
-                recorded, _error = self._complete_now_private(action, guid)
-                result.skip("completed_now_private" if recorded else "private_target", guid)
-                continue
             if reason:
                 result.skip(reason, guid)
                 if reason not in _SILENT:
@@ -836,8 +838,15 @@ class EngineHost:
         requester = str(action.get("requesterUserId") or "").strip()
         outcome = _outcome(SURVEY_INVALID, f"Resource Explorer did not run {action.get('requestType')}: "
                            f"{NOW_PRIVATE_SENTENCE}")
+        errors: list[dict] = []
         with acting_as(Daemon(DaemonReason.ENGINE_HOST, requested_by=requester or None)):
-            recorded, error = _record_completion(self._engine(), guid, outcome)
+            engine = self._engine()
+            # No run row: its targets are every asset target the action names (refused, so all of them are invalid).
+            _send_final_target_statuses(engine, {"action_targets": _targets(action), "refusal": NOW_PRIVATE_SENTENCE},
+                                        outcome, errors)
+            recorded, error = _record_completion(engine, guid, outcome)
+        if errors:
+            log.warning("engine host: engine action %s's target statuses not all sent: %s", guid, errors)
         if recorded:
             log.info("engine host: completed engine action %s survey-invalid (%s)", guid, NOW_PRIVATE_SENTENCE)
         else:
@@ -954,7 +963,7 @@ class EngineHost:
                               "outcome that is not one RE writes (%r); left alone", row["id"], guid,
                               str(stored)[:120], level=logging.WARNING)
             return
-        if isinstance(stored, dict) and stored.get("cancelled"):
+        if isinstance(stored, dict) and (stored.get("cancelled") or stored.get("cancelled_after_publish")):
             # §2.4: Egeria cancelled it mid-run; RE sends no completion for it. A listing that still shows it active
             # is Egeria's to explain, never a reason to complete a cancelled action.
             result.pending.append(guid)
@@ -964,7 +973,11 @@ class EngineHost:
             return
         outcome = stored or _outcome_from_ended_row(row)
         with acting_as(Daemon(DaemonReason.ENGINE_HOST, requested_by=(row.get("requested_by") or None))):
-            recorded, error = _record_completion(self._engine(), guid, outcome)
+            engine = self._engine()
+            # The worked targets end too, from the same outcome (a worker that died after their IN_PROGRESS left them
+            # there); a failure is recorded on the row and never blocks the completion.
+            _finish_targets(engine, self.registry, row["id"], target, outcome, [])
+            recorded, error = _record_completion(engine, guid, outcome)
         if not recorded:
             result.errors.append(guid)
             log.warning("engine host restart: completion of engine action %s from run %s not recorded: %s",
@@ -1009,7 +1022,9 @@ class EngineHost:
         from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
 
         with acting_as(Daemon(DaemonReason.ENGINE_HOST, requested_by=(row.get("requested_by") or None))):
-            recorded, error = _record_completion(self._engine(), guid, outcome)
+            engine = self._engine()
+            _finish_targets(engine, self.registry, row["id"], target, outcome, [])
+            recorded, error = _record_completion(engine, guid, outcome)
         if not recorded:
             result.errors.append(guid)        # the next pass completes it from the stored outcome
             log.warning("engine host restart: engine action %s (unrunnable here) not completed: %s", guid, error)
@@ -1217,16 +1232,76 @@ def worked_targets(target: dict) -> list[dict]:
     seen: set[str] = set()
     out = []
     for t in assets:
-        if t["guid"] not in seen:
-            seen.add(t["guid"])
+        # Once per ActionTarget RELATIONSHIP when the listing named one (two relationships to one element are two
+        # targets, each with its own status); by element GUID only when it did not.
+        key = (t.get("relationship_guid") or "").strip() or f"element:{t['guid']}"
+        if key not in seen:
+            seen.add(key)
             out.append(t)
     return out
+
+
+def target_activity_status(outcome: dict) -> str:
+    """THE target status a stored outcome ends each worked target with (§2.3): Egeria's `ActivityStatus`, never the
+    completion's `CompletionStatus` word. ACTIONED -> COMPLETED, INVALID -> INVALID, FAILED -> FAILED; a run Egeria
+    cancelled (before, during or after its publish) -> CANCELLED."""
+    outcome = outcome or {}
+    if outcome.get("cancelled") or outcome.get("cancelled_after_publish"):
+        return "CANCELLED"
+    return _COMPLETION_TO_ACTIVITY[outcome["status"]]
+
+
+def _send_final_target_statuses(engine, target: dict, outcome: dict, errors: list[dict]) -> None:
+    """Every completion path's end of the worked targets (§2.3): the stored outcome's ActivityStatus
+    (`target_activity_status`) and the completion's own words (`outcome_words`). Never raises; failures are in
+    `errors`."""
+    try:
+        status = target_activity_status(outcome)
+    except Exception as exc:  # noqa: BLE001 -- an outcome RE does not write: recorded, nothing sent
+        errors.append({"target": "", "status": "", "error": f"no target status for this outcome: {_short(exc, 200)}"})
+        return
+    _set_target_statuses(engine, worked_targets(target), status, errors=errors, completion_date=_egeria_time(),
+                         completion_message=outcome_words(outcome))
+
+
+#: `runs.target` key: when the worked targets' final statuses were sent (so a later completion pass never sends them
+#: a second time).
+FINAL_TARGET_STATUS_SENT = "final_target_status_sent_at"
+
+
+def _finish_targets(engine, registry, run_id, target: dict, outcome: dict, errors: list[dict]) -> None:
+    """Every completion path, once per run: the final target statuses from the stored outcome
+    (`_send_final_target_statuses`), the errors on the row, and the marker that they were sent. Never raises."""
+    if target.get(FINAL_TARGET_STATUS_SENT):
+        return
+    _send_final_target_statuses(engine, target, outcome, errors)
+    _record_target_errors(registry, run_id, target, errors)
+    try:
+        registry.merge_run_target(run_id, {FINAL_TARGET_STATUS_SENT: _now_iso()})
+    except Exception as exc:  # noqa: BLE001 -- a courtesy marker; at worst the statuses are sent again
+        log.warning("engine host: run %s's target-status marker not recorded: %s", run_id, _short(exc, 200))
+
+
+def _record_target_errors(registry, run_id, target: dict, errors: list[dict]) -> None:
+    """Adds `errors` to the row's `target_status_errors` (kept with any earlier ones). A courtesy record: never raises."""
+    if not errors:
+        return
+    try:
+        earlier = [e for e in (target.get("target_status_errors") or []) if isinstance(e, dict)]
+        registry.merge_run_target(run_id, {"target_status_errors": earlier + errors})
+    except Exception as exc:  # noqa: BLE001 -- the completion is the record
+        log.warning("engine host: run %s's target-status errors not recorded: %s", run_id, _short(exc, 200))
 
 
 def _set_target_statuses(engine, targets: list[dict], status: str, *, errors: list[dict], **dates_and_words) -> None:
     """`update_action_target_status` for each worked target, keyed on its ActionTarget RELATIONSHIP GUID (owner,
     Q1). A target the listing gave no relationship GUID for gets no call (never the element's GUID) and one recorded
-    error; a call that raises is recorded and the run goes on (a courtesy to Egeria's viewers, §2.3)."""
+    error; a call that raises is recorded and the run goes on (a courtesy to Egeria's viewers, §2.3). `status` is an
+    `ActivityStatus`; anything else is never sent (`target_activity_status` maps a completion)."""
+    if status not in ACTIVITY_STATUSES:
+        errors.append({"target": "", "status": status, "error": f"{status!r} is not an ActivityStatus; not sent"})
+        log.error("engine host: refused to send target status %r: not an ActivityStatus", status)
+        return
     for t in targets:
         rel = (t.get("relationship_guid") or "").strip()
         if not rel:
@@ -1257,11 +1332,12 @@ def _cancelled_in_egeria(expert, guid: str) -> tuple[bool, str]:
     return status == "CANCELLED", ""
 
 
-def _cancelled_outcome(request_type: str, slug: str) -> dict:
+def _cancelled_outcome(request_type: str, slug: str, *, before_start: bool = False) -> dict:
     """§2.4: the outcome a run Egeria cancelled stores. Its guard is survey-invalid only so every reader of stored
-    outcomes keeps working; `cancelled` is what says no completion is sent."""
+    outcomes keeps working; `cancelled` is what says no completion is sent (and its targets end CANCELLED)."""
+    when = "before it started (nothing ran)" if before_start else "while it ran"
     return _outcome(SURVEY_INVALID, CANCELLED_IN_EGERIA_SENTENCE, cancelled=True,
-                    detail=f"{request_type} on {slug or '-'}: Egeria cancelled the engine action while it ran; "
+                    detail=f"{request_type} on {slug or '-'}: Egeria cancelled the engine action {when}; "
                            "nothing was published")
 
 
@@ -1668,19 +1744,13 @@ def _record_submission(registry, target: dict, principal) -> str:
 
 def _run_with(engine, registry, run_id: str, target: dict, principal, *, expert=None) -> tuple[str, str]:
     """The run, on the Governance Engine client `engine` (§2.1). `expert` (a MetadataExpert) reads the action back
-    for a cancel (§2.4); without one no cancel is looked for."""
+    for a cancel (§2.4); without one no cancel is looked for.
+
+    Egeria's `updateEngineActionStatus` checks only that the caller is the claimant, never the current status, and a
+    cancel leaves `processingEngineUserId` set: an IN_PROGRESS sent after a cancel would UN-cancel the action. So the
+    action is read back FIRST, and a cancelled one gets no IN_PROGRESS, no step, no publish and no completion."""
     guid = target["engine_action_guid"]
-    status_error = ""
-    try:
-        engine.update_engine_action_status(guid, "IN_PROGRESS")
-    except Exception as exc:  # noqa: BLE001 -- a status line, not the work: recorded on the outcome, run goes on
-        status_error = _short(exc)
-        log.warning("engine host: could not set engine action %s IN_PROGRESS (%s); running it anyway",
-                    guid, status_error)
-    worked = worked_targets(target)
-    target_errors: list[dict] = []
-    _set_target_statuses(engine, worked, "IN_PROGRESS", errors=target_errors, start_date=_egeria_time())
-    listing_error = _record_submission(registry, target, principal)
+    request_type, slug = target.get("request_type") or "", target.get("slug") or ""
     cancel_reads: list[str] = []
 
     def cancelled() -> bool:
@@ -1691,31 +1761,55 @@ def _run_with(engine, registry, run_id: str, target: dict, principal, *, expert=
             cancel_reads.append(error)
         return said
 
+    target_errors: list[dict] = []
+    if cancelled():
+        # §2.4: cancelled while it waited in RE's queue (between the claim and this run).
+        outcome = _cancelled_outcome(request_type, slug, before_start=True)
+        return _end_cancelled(engine, registry, run_id, target, outcome, target_errors,
+                              f"{CANCELLED_IN_EGERIA_SENTENCE} before it started: nothing ran or was published")
+    status_error = ""
+    try:
+        engine.update_engine_action_status(guid, "IN_PROGRESS")
+    except Exception as exc:  # noqa: BLE001 -- a status line, not the work: recorded on the outcome, run goes on
+        status_error = _short(exc)
+        log.warning("engine host: could not set engine action %s IN_PROGRESS (%s); running it anyway",
+                    guid, status_error)
+    worked = worked_targets(target)
+    _set_target_statuses(engine, worked, "IN_PROGRESS", errors=target_errors, start_date=_egeria_time())
+    if target_errors:
+        # Recorded now, so a worker that dies before the end leaves them for the restart pass to add to.
+        _record_target_errors(registry, run_id, {}, target_errors)
+    listing_error = _record_submission(registry, target, principal)
+
     outcome = _decide(registry, target, cancelled)
+    # The last cancel check before the completion. A cancel that lands after it, before `record_completion_status`
+    # reaches Egeria, is the one window left: Egeria then ignores the completion (no else branch in
+    # `EngineActionHandler.recordCompletionStatus` for a terminal action), so Egeria says CANCELLED while this row says
+    # it completed. The next read-back of the run shows Egeria's CANCELLED; nothing here can close that window.
     if not outcome.get("cancelled") and cancelled():
-        # A path that published nothing (a refusal, a failure): Egeria cancelled it meanwhile, so no completion.
-        outcome = _cancelled_outcome(target.get("request_type") or "", target.get("slug") or "")
+        if outcome.get("report_guid"):
+            # Published before the cancel: the report stays (it is in Egeria) and the outcome keeps it; only the
+            # completion is not sent.
+            outcome["cancelled_after_publish"] = True
+        else:
+            # A path that published nothing (a refusal, a failure): Egeria cancelled it meanwhile, so no completion.
+            outcome = _cancelled_outcome(request_type, slug)
     if status_error:
         outcome["in_progress_error"] = status_error
     if listing_error:
         outcome["listing_error"] = listing_error
     if cancel_reads:
         outcome["cancel_check_error"] = cancel_reads[-1]
-    registry.merge_run_target(run_id, {"outcome": outcome})      # raises: nothing is sent unstored
-    # Each worked target ends with the outcome's status and the completion's own words (one rendering, §2.3).
-    _set_target_statuses(engine, worked, outcome["status"], errors=target_errors, completion_date=_egeria_time(),
-                         completion_message=outcome_words(outcome))
-    if target_errors:
-        try:
-            registry.merge_run_target(run_id, {"target_status_errors": target_errors})
-        except Exception as exc:  # noqa: BLE001 -- a courtesy record; the completion is the record
-            log.warning("engine host: run %s's target-status errors not recorded: %s", run_id, _short(exc, 200))
+    if outcome.get("cancelled_after_publish"):
+        return _end_cancelled(engine, registry, run_id, target, outcome, target_errors,
+                              f"{CANCELLED_IN_EGERIA_SENTENCE} after its survey report {outcome['report_guid']} was "
+                              "published: the report stays, no completion was sent")
     if outcome.get("cancelled"):
-        # §2.4: no completion (Egeria ignores one on a terminal action anyway); the row says why none was sent.
-        registry.merge_run_target(run_id, {"completion_not_sent": CANCELLED_IN_EGERIA_SENTENCE})
-        log.info("engine host: engine action %s was cancelled in Egeria while it ran; nothing published, no "
-                 "completion sent", guid)
-        return "cancelled", f"{CANCELLED_IN_EGERIA_SENTENCE}: nothing was published"
+        return _end_cancelled(engine, registry, run_id, target, outcome, target_errors,
+                              f"{CANCELLED_IN_EGERIA_SENTENCE}: nothing was published")
+    registry.merge_run_target(run_id, {"outcome": outcome})      # raises: nothing is sent unstored
+    # Each worked target ends with the outcome's ActivityStatus and the completion's own words (one rendering, §2.3).
+    _finish_targets(engine, registry, run_id, target, outcome, target_errors)
     recorded, error = _record_completion(engine, guid, outcome)
     log.info("engine host: engine action %s ran: %s (%s)%s", guid, outcome["guard"], outcome["message"],
              "" if recorded else f"; completion NOT recorded in Egeria: {error}")
@@ -1733,6 +1827,17 @@ def _run_with(engine, registry, run_id: str, target: dict, principal, *, expert=
     if outcome["guard"] == SURVEY_COMPLETED:
         return "succeeded", marker_note
     return "failed", " · ".join(x for x in (f"{outcome['guard']}: {outcome['message']}", marker_note) if x)[:1500]
+
+
+def _end_cancelled(engine, registry, run_id: str, target: dict, outcome: dict, target_errors: list[dict],
+                   words: str) -> tuple[str, str]:
+    """§2.4: a run Egeria cancelled ends here. The outcome is stored, every worked target ends CANCELLED with the
+    outcome's words, and NO completion is sent (Egeria ignores one on a terminal action anyway); the row says why."""
+    registry.merge_run_target(run_id, {"outcome": outcome})      # raises: nothing is sent unstored
+    _finish_targets(engine, registry, run_id, target, outcome, target_errors)
+    registry.merge_run_target(run_id, {"completion_not_sent": CANCELLED_IN_EGERIA_SENTENCE})
+    log.info("engine host: engine action %s: %s", target.get("engine_action_guid"), words)
+    return "cancelled", words
 
 
 # ── the worker loop ────────────────────────────────────────────────────────────

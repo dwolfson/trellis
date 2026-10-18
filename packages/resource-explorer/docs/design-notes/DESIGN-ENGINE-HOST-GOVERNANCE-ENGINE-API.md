@@ -71,7 +71,11 @@ The sweep interval stays 5 s, matching native.
   transition. A failed update is logged and the run goes on, as today.
 * **Each action target RE works on** (new): `update_action_target_status(<ActionTarget relationship GUID>, "IN_PROGRESS", start_date=now)` (§4 Q1)
   when the step starts on it, and the final status with `completion_date` and `completion_message` when the step
-  ends: `ACTIONED` (completed), `INVALID` (survey-invalid: refused, out of scope, not registered), `FAILED`.
+  ends. The target status is an `ActivityStatus` (`ActionTargetStatusRequestBody.status`), not a `CompletionStatus`,
+  so the completion status is mapped (one helper, `engine_host.target_activity_status`): ACTIONED → `COMPLETED`,
+  INVALID → `INVALID` (survey-invalid: refused, out of scope, not registered), FAILED → `FAILED`, and a run Egeria
+  cancelled → `CANCELLED`. Every completion path sends it (the run, the restart pass's completions, an unrunnable
+  queued row), from the stored outcome.
   * Only asset targets RE surveys. The `surveyReport` target (a predecessor's report, step 4) is read, not worked on,
     so its status is left alone.
   * The message comes from the **same stored outcome** the completion is built from (`target.outcome`), never
@@ -147,7 +151,7 @@ The definition card gains **Cancel** next to the run line while a coordinated ru
 ## 6. Live proof after merge (needs the owner's direct word, an Egeria write)
 
 One coordinated Database Scouting Scan on coco_pharma (3 steps, executors declared 2026-10-17). Expected: 3 claims
-via the approved listing, IN_PROGRESS on each, target status IN_PROGRESS then ACTIONED or INVALID per step, and
+via the approved listing, IN_PROGRESS on each, target status IN_PROGRESS then COMPLETED or INVALID per step, and
 completions. No deprecation warnings in 8813's log for engine-action calls. Then a second run cancelled from the
 card mid-step 2. Expected: step 2 publishes nothing, step 3 is never dispatched, and the line reads ⊘ cancelled from
 Egeria's read-back.
