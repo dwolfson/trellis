@@ -87,7 +87,8 @@ async def list_native_surveys(entity_type: str, slug: str, request: Request) -> 
 def _run_credential(body: RunRequest, submitted_by: str) -> tuple[str, str] | None:
     """The one-run credential in the start call's body, or None when none was given (DESIGN-COORDINATED-RUN-CREDENTIAL
     .md §2.5). Only the signed-in person starting this run can supply one: nobody signed in is a 401 (`Caller()`), RE's
-    own daemon account is a 403, and half a credential is a 400. Checked before Egeria hears of the run."""
+    own daemon account is a 403, and half a credential, or a password shorter than
+    `RUN_CREDENTIAL_MIN_LENGTH`, is a 400. Checked before Egeria hears of the run."""
     user, pwd = (body.db_user or "").strip(), body.db_pwd or ""
     if not user and not pwd:
         return None
@@ -101,6 +102,10 @@ def _run_credential(body: RunRequest, submitted_by: str) -> tuple[str, str] | No
                                                     "with a credential for this run.")
     if not user or not pwd:
         raise HTTPException(status_code=400, detail=nsr.RUN_CREDENTIAL_NEEDS_BOTH)
+    if len(pwd) < nsr.RUN_CREDENTIAL_MIN_LENGTH:
+        # A short password is a common substring: the process-wide log redaction that masks it would then mask (and so
+        # reveal) it inside unrelated words in every log line of the run.
+        raise HTTPException(status_code=400, detail=nsr.RUN_CREDENTIAL_TOO_SHORT)
     return user, pwd
 
 

@@ -10,7 +10,11 @@ from __future__ import annotations
 import ast
 import json
 import logging
+import os
 import sqlite3
+import subprocess
+import sys
+import urllib.parse
 from pathlib import Path
 from unittest.mock import create_autospec
 
@@ -49,6 +53,9 @@ SRC = PKG / "resource_explorer"
 #: the one-run scope reaches the redaction (any length), and it has no shape `scrub_text` would recognise.
 ONE_RUN_USER = "elevated_reader"
 ONE_RUN_PASSWORD = "Zq7#wK!"
+#: Invented. What a route test sends: the start route refuses a one-run password shorter than 8 characters (review fix
+#: round 1, item 2), so the route tests use a long one.
+ROUTE_PASSWORD = "Zq7#wK!route-9"
 STARTER = "dan"
 
 
@@ -95,17 +102,26 @@ def _start_with_credential(reg, egeria) -> str:
     return state["engine_action_guid"]
 
 
-def _marker_row(reg, instance: str, *, marker: bool = True) -> dict:
+def _marker_row(reg, instance: str, *, marker: bool = True, holder: dict | None = None) -> dict:
     from resource_explorer import mixed_process
 
     extra = mixed_process.expected_steps_record(ANALYSIS)
     if marker:
         extra["run_credential"] = {"user": ONE_RUN_USER, "scope": "this run"}
+        if holder is not None:
+            extra["run_credential"]["holder"] = holder
     assert reg.record_native_survey_submission_once(
         "database", "coco_pharma", ANALYSIS, "2026-10-18T09:00:00", engine_action_guid=instance, submitted_by=STARTER,
         started_as="process", started_by="egeria", started_in="re", declared_extra=extra)
     return next(r for r in reg.list_native_survey_runs("database", "coco_pharma", ANALYSIS)
                 if r["engine_action_guid"] == instance)
+
+
+def _leak_forms(secret: str) -> list[str]:
+    """Every spelling a leak scan looks for: as typed, JSON-escaped, repr-escaped, percent-encoded (a DSN) and
+    form-encoded."""
+    return sorted({secret, json.dumps(secret)[1:-1], repr(secret)[1:-1], urllib.parse.quote(secret, safe=""),
+                   urllib.parse.quote(secret), urllib.parse.quote_plus(secret)})
 
 
 def _all_rows_json(reg) -> str:
@@ -137,7 +153,8 @@ def test_a_step_that_raises_with_the_password_leaves_no_trace_in_logs_rows_or_eg
     _with_credential(reg)
     instance = _start_with_credential(reg, egeria)
     runner.side_effect = RuntimeError(f"FATAL: could not log in as {ONE_RUN_USER} using {ONE_RUN_PASSWORD} "
-                                      f"(echo {ONE_RUN_PASSWORD!r})")
+                                      f"(echo {ONE_RUN_PASSWORD!r}; dsn postgresql://{ONE_RUN_USER}:"
+                                      f"{urllib.parse.quote(ONE_RUN_PASSWORD, safe='')}@db.invalid/coco)")
     _process_action(egeria, "ea-leak", "postgres_operations", instance=instance, next_guards=())
     caplog.set_level(logging.DEBUG)
     assert _sweep(reg).claimed == ["ea-leak"]
@@ -148,7 +165,7 @@ def test_a_step_that_raises_with_the_password_leaves_no_trace_in_logs_rows_or_eg
     assert row["target"]["outcome"]["guard"] == "survey-failed", row["target"]["outcome"]
     assert "***" in row["target"]["outcome"]["message"]                    # the words are kept, the secret masked
     everything = _all_rows_json(reg)                                       # runs.target, step_runs.declared, activity
-    for form in (ONE_RUN_PASSWORD, json.dumps(ONE_RUN_PASSWORD)[1:-1], repr(ONE_RUN_PASSWORD)[1:-1]):
+    for form in _leak_forms(ONE_RUN_PASSWORD):
         assert form not in everything
         assert form not in caplog.text
         assert all(form not in (r.getMessage() + (r.exc_text or "")) for r in caplog.records)
@@ -335,10 +352,13 @@ def test_after_a_restart_a_step_of_a_run_that_asked_for_one_is_refused_and_never
     assert _sweep(reg).claimed == ["ea-after"]
     _run_queue_once(reg)
 
+    from resource_explorer import engine_host
+
     runner.assert_not_called()                    # neither the stored login nor anything else
     done = egeria.actions["ea-after"]["completion"]
     assert done["status"] == "INVALID"
-    assert "the one-run credential was lost when Resource Explorer restarted; re-run with options" in done["message"]
+    # A marker with no holder identity proves nothing about why: the neutral words (fix round 1, item 5).
+    assert engine_host.RUN_CREDENTIAL_LOST_NEUTRAL in done["message"]
     [row] = _rows(reg)
     assert row["target"]["outcome"]["guard"] == "survey-invalid"
     assert STORED_PASSWORD not in _all_rows_json(reg)
@@ -392,7 +412,9 @@ def test_a_native_step_never_reads_the_holder(reg, monkeypatch, runner, no_conne
 
 # ── threat: someone else supplies or reads it ────────────────────────────────────────────────────────────────
 
-_ALLOWED = {"put", "take", "clear", "SCOPE", "RunCredential", "configured_ttl", "TTL_ENV", "DEFAULT_TTL_SECONDS"}
+_ALLOWED = {"put", "take", "clear", "SCOPE", "RunCredential", "configured_ttl", "TTL_ENV", "DEFAULT_TTL_SECONDS",
+            # fix round 1: facts with no secret in them (items 5 and 6)
+            "process_identity", "expired", "starting", "start_pending"}
 
 
 def test_nothing_lists_or_reads_the_holder_but_take_and_only_the_engine_host_takes():
@@ -400,9 +422,11 @@ def test_nothing_lists_or_reads_the_holder_but_take_and_only_the_engine_host_tak
     tree = ast.parse((SRC / "run_credential_holder.py").read_text())
     holder = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "_Holder")
     methods = {n.name for n in holder.body if isinstance(n, ast.FunctionDef)}
-    assert methods == {"__init__", "__repr__", "_expire", "put", "take", "clear", "_clear_all"}, methods
+    assert methods == {"__init__", "__repr__", "_expire", "put", "take", "clear", "_clear_all", "expired",
+                       "begin_start", "end_start", "start_pending"}, methods
     public = {n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.ClassDef)) and not n.name.startswith("_")}
-    assert public == {"configured_ttl", "RunCredential", "put", "take", "clear"}, public
+    assert public == {"configured_ttl", "RunCredential", "put", "take", "clear", "process_identity", "expired",
+                      "starting", "start_pending"}, public
 
     # Every other module: only the three functions and the constants; `take` only in the engine host; `put` only in
     # the coordinated start path; never the private holder; no route reads it.
@@ -427,7 +451,7 @@ def test_nothing_lists_or_reads_the_holder_but_take_and_only_the_engine_host_tak
     assert all(not ({"put", "take", "clear"} & n) for p, n in uses.items() if p.startswith("web/")), uses
 
 
-def _start_route(monkeypatch, *, who: str | None, user: str = ONE_RUN_USER, pwd: str = ONE_RUN_PASSWORD,
+def _start_route(monkeypatch, *, who: str | None, user: str = ONE_RUN_USER, pwd: str = ROUTE_PASSWORD,
                  daemon: bool = False):
     """POST the coordinated start with a credential, as `who` (None: nobody signed in). The start path itself is an
     autospec of the real `submit_native_survey`, so the route's gate is all that is under test here."""
@@ -474,7 +498,7 @@ def test_only_the_signed_in_starter_can_supply_one(monkeypatch):
     assert resp.status_code == 403 and submit.call_count == 0
     resp, submit, _ = _start_route(monkeypatch, who=STARTER, pwd="")
     assert resp.status_code == 400 and submit.call_count == 0
-    assert ONE_RUN_PASSWORD not in resp.text
+    assert ROUTE_PASSWORD not in resp.text
 
 
 def test_the_route_gate_itself_refuses_res_own_service_account(monkeypatch):
@@ -491,13 +515,13 @@ def test_the_route_gate_itself_refuses_res_own_service_account(monkeypatch):
 
     token = signed_in("re-daemon")
     try:
-        body = route.RunRequest(process_qualified_name=ANALYSIS, db_user=ONE_RUN_USER, db_pwd=ONE_RUN_PASSWORD)
+        body = route.RunRequest(process_qualified_name=ANALYSIS, db_user=ONE_RUN_USER, db_pwd=ROUTE_PASSWORD)
         with pytest.raises(HTTPException) as refused:
             route._run_credential(body, "re-daemon")
         assert refused.value.status_code == 403
-        assert route._run_credential(body, STARTER) == (ONE_RUN_USER, ONE_RUN_PASSWORD)
+        assert route._run_credential(body, STARTER) == (ONE_RUN_USER, ROUTE_PASSWORD)
         assert route._run_credential(route.RunRequest(process_qualified_name=ANALYSIS), STARTER) is None
-        assert ONE_RUN_PASSWORD not in repr(body)
+        assert ROUTE_PASSWORD not in repr(body)
     finally:
         current_caller.reset(token)
 
@@ -506,10 +530,10 @@ def test_the_start_route_passes_it_down_as_the_signed_in_person_and_logs_no_secr
     resp, submit, db = _start_route(monkeypatch, who=STARTER)
     assert resp.status_code == 200, resp.text
     kwargs = submit.call_args.kwargs
-    assert kwargs["submitted_by"] == STARTER and kwargs["run_credential"] == (ONE_RUN_USER, ONE_RUN_PASSWORD)
-    assert ONE_RUN_PASSWORD not in resp.text
+    assert kwargs["submitted_by"] == STARTER and kwargs["run_credential"] == (ONE_RUN_USER, ROUTE_PASSWORD)
+    assert ROUTE_PASSWORD not in resp.text
     everything = _all_rows_json(db)
-    assert ONE_RUN_PASSWORD not in everything
+    assert ROUTE_PASSWORD not in everything
     with db._conn() as conn:
         details = [json.loads(dict(r)["detail"] or "{}") for r in conn.execute("SELECT detail FROM activity_log").fetchall()]
     assert {"user": ONE_RUN_USER, "scope": "this run"} in [d.get("run_credential") for d in details], details
@@ -571,7 +595,9 @@ def test_start_with_a_credential_then_claim_then_the_step_runs_with_it_and_the_r
     assert h.take(instance) is not None
     [row] = reg.list_native_survey_runs("database", "coco_pharma", ANALYSIS)
     declared = json.loads(row["declared"])
-    assert declared["run_credential"] == {"user": ONE_RUN_USER, "scope": "this run"}
+    from resource_explorer.run_credential_holder import process_identity
+
+    assert declared["run_credential"] == {"user": ONE_RUN_USER, "scope": "this run", "holder": process_identity()}
     assert nsr.derive_mixed_state(row)["ran_as"] is None              # asked for, not yet used: no "ran as"
 
     _process_action(egeria, "ea-e2e", "postgres_operations", instance=instance, next_guards=())
@@ -584,12 +610,366 @@ def test_start_with_a_credential_then_claim_then_the_step_runs_with_it_and_the_r
     assert run_row["target"]["outcome"]["ran_as"] == {"user": ONE_RUN_USER, "scope": "this run"}
     [row] = reg.list_native_survey_runs("database", "coco_pharma", ANALYSIS)
     derived = nsr.derive_mixed_state(row)
-    assert derived["ran_as"] == {"user": ONE_RUN_USER, "scope": "this run"}
+    assert derived["ran_as"] == {"user": ONE_RUN_USER, "scope": "this run",
+                                 "capability": "not assessed for this run's credential"}
     assert derived["run_credential"] == {"user": ONE_RUN_USER, "scope": "this run"}
     assert derived["native_steps"] == [] and derived["credential_lost"] is False
     # the row the page draws carries it (the words are the page's: RUN_CREDENTIAL_WORDS.ranAs)
     listed = next(r for r in nsr.native_survey_rows(reg, "database", "coco_pharma", TECH)
                   if r["qualified_name"] == ANALYSIS)
-    assert listed["run"]["ran_as"] == {"user": ONE_RUN_USER, "scope": "this run"}
+    assert listed["run"]["ran_as"]["user"] == ONE_RUN_USER and listed["run"]["ran_as"]["scope"] == "this run"
     everything = _all_rows_json(reg)
     assert ONE_RUN_PASSWORD not in everything and STORED_PASSWORD not in everything
+
+
+# ── fix round 1 ──────────────────────────────────────────────────────────────────────────────────────────────
+
+def _client(monkeypatch):
+    """The web app as a signed-in person, for request-validation answers (nothing behind the routes is reached)."""
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("TRELLIS_ANONYMOUS_READ", "true")
+    monkeypatch.setattr("resource_explorer.auth.get_current_user",
+                        lambda request: {"user_id": STARTER, "egeria_token": "tok", "role": "user"})
+    from resource_explorer.web.app import app
+
+    return TestClient(app)
+
+
+@pytest.mark.parametrize("path, missing", [
+    ("/api/native-surveys/database/coco_pharma/run", "process_qualified_name"),
+    ("/api/survey-definitions/database/coco_pharma/run", "survey_definition_ref"),
+    ("/api/databases/coco_pharma/analyses/privilege_audit/run", None),
+])
+@pytest.mark.parametrize("pwd", [ROUTE_PASSWORD, 12345])
+def test_item1_a_422_never_echoes_the_password(monkeypatch, path, missing, pwd):
+    """Item 1: the 422 keeps which field and why (`loc`, `msg`, `type`), never `input` or `ctx`. The databases
+    override has no required field, so its 422 comes from a password that is not a string."""
+    body = {"db_user": ONE_RUN_USER, "db_pwd": pwd}
+    if missing is None:
+        body["db_pwd"] = 12345 if pwd == ROUTE_PASSWORD else [pwd]
+    resp = _client(monkeypatch).post(path, json=body)
+    assert resp.status_code == 422, resp.text
+    for form in _leak_forms(str(pwd)) + ["12345"]:
+        assert form not in resp.text, (form, resp.text)
+    errors = resp.json()["detail"]
+    assert errors and all(set(e) <= {"loc", "msg", "type"} for e in errors), errors
+    if missing:
+        assert any(e["loc"][-1] == missing and e["type"] == "missing" for e in errors), errors
+    else:
+        assert any(e["loc"][-1] == "db_pwd" for e in errors), errors
+
+
+def test_item2_the_start_route_refuses_a_one_run_password_shorter_than_eight(monkeypatch):
+    from resource_explorer import native_survey_run as nsr
+
+    resp, submit, _ = _start_route(monkeypatch, who=STARTER, pwd="Zq7#wK!")       # 7 characters
+    assert resp.status_code == 400 and submit.call_count == 0
+    assert resp.json()["detail"] == nsr.RUN_CREDENTIAL_TOO_SHORT == "that password is too short to keep out of logs safely"
+    assert "Zq7#wK!" not in resp.text
+    resp, submit, _ = _start_route(monkeypatch, who=STARTER, pwd="Zq7#wK!8")      # 8: taken
+    assert resp.status_code == 200 and submit.call_count == 1
+
+
+def _start_with(reg, egeria, password: str) -> str:
+    from resource_explorer import catalog_and_survey as cas
+    from resource_explorer.egeria_clients import Daemon, DaemonReason
+    from resource_explorer.native_survey_run import port_session, submit_native_survey
+
+    egeria.declared.add(ANALYSIS)
+    egeria.assets.add(DB_GUID)
+    with port_session(cas.PyegeriaRegistrationPort(identity=Daemon(DaemonReason.SCHEDULER))) as port:
+        state = submit_native_survey(reg, port, "database", "coco_pharma", ANALYSIS, technology_type=TECH,
+                                     submitted_by=STARTER, run_credential=(ONE_RUN_USER, password))
+    return state["engine_action_guid"]
+
+
+@pytest.mark.parametrize("password", ["survey", "e", "2024"])
+def test_item2_masking_scrubs_the_words_never_the_guards_guids_or_ran_as(reg, egeria, no_connection, runner,
+                                                                          password):
+    """A short password is a substring of the machine-read fields ("survey" of every guard, "e" of a GUID): only the
+    free-text fields are scrubbed."""
+    _with_credential(reg)
+    instance = _start_with(reg, egeria, password)
+    _process_action(egeria, "ea-short", "postgres_operations", instance=instance, next_guards=())
+    assert _sweep(reg).claimed == ["ea-short"]
+    _run_queue_once(reg)
+
+    assert _creds_handed(runner) == [(ONE_RUN_USER, password)]
+    [row] = _rows(reg)
+    outcome = row["target"]["outcome"]
+    [(report_guid, _)] = egeria.reports()
+    assert outcome["guard"] == "survey-completed"
+    assert outcome["guards"] == ["survey-completed", "Any"]
+    assert outcome["report_guid"] == report_guid
+    assert outcome["ran_as"] == {"user": ONE_RUN_USER, "scope": "this run"}
+    done = egeria.actions["ea-short"]["completion"]
+    assert done["status"] == "ACTIONED" and done["guards"] == ["survey-completed", "Any"]
+    assert password not in outcome["message"]
+
+
+def test_item2_free_text_fields_are_scrubbed_and_machine_fields_are_not():
+    from resource_explorer import engine_host
+
+    outcome = {"guard": "survey-failed", "guards": ["survey-failed", "Any"], "report_guid": "ee-2024",
+               "ran_as": {"user": "e-user", "scope": "this run"}, "message": "survey e 2024 failed",
+               "process_note": "after survey", "listing_error": "survey", "finishing_words": "survey"}
+    out = engine_host._scrub_outcome(outcome, "survey")
+    assert {k: out[k] for k in ("guard", "guards", "report_guid", "ran_as")} == \
+        {k: outcome[k] for k in ("guard", "guards", "report_guid", "ran_as")}
+    assert all("survey" not in out[k] for k in ("message", "process_note", "listing_error", "finishing_words"))
+
+
+def test_item3_a_wrong_password_records_no_ran_as(reg, egeria, no_connection, runner):
+    from resource_explorer import native_survey_run as nsr
+
+    _with_credential(reg)
+    instance = _start_with_credential(reg, egeria)
+    runner.side_effect = RuntimeError(f'FATAL: password authentication failed for user "{ONE_RUN_USER}"')
+    _process_action(egeria, "ea-wrong", "postgres_operations", instance=instance, next_guards=())
+    _sweep(reg)
+    _run_queue_once(reg)
+
+    [row] = _rows(reg)
+    assert row["target"]["outcome"]["guard"] == "survey-failed"
+    assert "ran_as" not in row["target"]["outcome"]
+    [run] = reg.list_native_survey_runs("database", "coco_pharma", ANALYSIS)
+    assert "ran_as" not in json.loads(run["declared"])
+    derived = nsr.derive_mixed_state(run)
+    assert derived["ran_as"] is None and "ran as" not in json.dumps(derived)
+
+
+def test_item3_a_step_that_raises_records_no_ran_as(reg, monkeypatch, no_connection):
+    from resource_explorer import engine_host
+    from resource_explorer import run_credential_holder as h
+    from resource_explorer.surveyors.survey_definition_executor import SurveyDefinitionExecutor
+
+    _with_credential(reg)
+    h.put(INSTANCE, ONE_RUN_USER, ONE_RUN_PASSWORD, STARTER)
+    monkeypatch.setattr(SurveyDefinitionExecutor, "run_synthetic_step", create_autospec(
+        SurveyDefinitionExecutor.run_synthetic_step, side_effect=RuntimeError("connection refused")))
+    out = engine_host._decide_one(reg, {"slug": "coco_pharma", "step_key": "postgres_operations",
+                                        "request_type": "re-postgres-operations", "process_instance_guid": INSTANCE,
+                                        "definition": ANALYSIS, "engine_action_guid": "ea-raise",
+                                        "asset_guid": DB_GUID})
+    assert out["guard"] == "survey-failed" and "ran_as" not in out
+
+
+def test_item4_a_held_credential_step_is_never_stamped_with_the_stored_logins_capability(reg, egeria, no_connection,
+                                                                                         runner):
+    """The stored login cannot read stats (its probe says so); the step ran as the one-run user, so the stored probe
+    says nothing about it: not assessed, never the stored login's shortfall."""
+    from resource_explorer import native_survey_run as nsr
+
+    _with_credential(reg, stats_role=False)
+    instance = _start_with_credential(reg, egeria)
+    _process_action(egeria, "ea-cap1", "postgres_operations", instance=instance, next_guards=())
+    _sweep(reg)
+    _run_queue_once(reg)
+
+    assert _creds_handed(runner) == [(ONE_RUN_USER, ONE_RUN_PASSWORD)]   # it ran, as the one-run user
+    [row] = _rows(reg)
+    outcome = row["target"]["outcome"]
+    assert outcome["guard"] == "survey-completed", outcome
+    assert outcome["capability"] == "not assessed for this run's credential"
+    [run] = reg.list_native_survey_runs("database", "coco_pharma", ANALYSIS)
+    assert nsr.derive_mixed_state(run)["ran_as"]["capability"] == "not assessed for this run's credential"
+    everything = _all_rows_json(reg)
+    assert "connected as egeria_user" not in everything and "needs `stats`" not in everything
+
+
+def test_item4_the_stored_login_keeps_its_own_capability_gate(reg, egeria, no_connection, runner):
+    """Pins existing behaviour: without a one-run credential the stored login's shortfall still refuses the step."""
+    _with_credential(reg, stats_role=False)
+    _marker_row(reg, INSTANCE, marker=False)
+    _process_action(egeria, "ea-cap2", "postgres_operations", instance=INSTANCE, next_guards=())
+    _sweep(reg)
+    _run_queue_once(reg)
+    runner.assert_not_called()
+    assert "connected as egeria_user" in egeria.actions["ea-cap2"]["completion"]["message"]
+
+
+def _refusal(reg, instance: str = INSTANCE) -> str:
+    from resource_explorer import engine_host
+
+    held, refusal = engine_host._one_run_credential(reg, {"request_type": "re-postgres-operations",
+                                                         "process_instance_guid": instance, "slug": "coco_pharma",
+                                                         "definition": ANALYSIS})
+    assert held is None
+    return refusal
+
+
+def test_item5_lost_words_timed_out_when_this_process_dropped_it_at_its_ttl(reg, _empty_holder):
+    from resource_explorer import engine_host
+    from resource_explorer import run_credential_holder as h
+
+    _marker_row(reg, INSTANCE, holder=h.process_identity())
+    h.put(INSTANCE, ONE_RUN_USER, ONE_RUN_PASSWORD, STARTER)
+    _empty_holder["now"] += 7200
+    assert _refusal(reg) == engine_host.RUN_CREDENTIAL_LOST_TIMED_OUT
+    assert h.take(INSTANCE) is None and h.expired(INSTANCE)
+
+
+def test_item5_lost_words_neutral_when_this_process_cleared_it_without_a_ttl(reg):
+    from resource_explorer import engine_host
+    from resource_explorer import run_credential_holder as h
+
+    _marker_row(reg, INSTANCE, holder=h.process_identity())
+    assert _refusal(reg) == engine_host.RUN_CREDENTIAL_LOST_NEUTRAL
+
+
+def test_item5_lost_words_restarted_when_the_same_pid_started_at_another_time(reg):
+    from resource_explorer import engine_host
+
+    _marker_row(reg, INSTANCE, holder={"pid": os.getpid(), "started": "2026-10-18T01:02:03.000004+00:00"})
+    assert _refusal(reg) == engine_host.RUN_CREDENTIAL_LOST_RESTARTED
+
+
+def test_item5_lost_words_another_process_when_the_holder_is_alive(reg):
+    from resource_explorer import engine_host
+
+    _marker_row(reg, INSTANCE, holder={"pid": os.getppid(), "started": "2026-10-18T01:02:03.000004+00:00"})
+    assert _refusal(reg) == engine_host.RUN_CREDENTIAL_LOST_OTHER_PROCESS
+
+
+def test_item5_lost_words_neutral_when_the_holder_is_gone_or_unnamed(reg):
+    from resource_explorer import engine_host
+
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    _marker_row(reg, INSTANCE, holder={"pid": gone.pid, "started": "2026-10-18T01:02:03.000004+00:00"})
+    assert _refusal(reg) == engine_host.RUN_CREDENTIAL_LOST_NEUTRAL
+    _marker_row(reg, INSTANCE_2)                                    # a marker from before fix round 1
+    assert _refusal(reg, INSTANCE_2) == engine_host.RUN_CREDENTIAL_LOST_NEUTRAL
+
+
+def test_item5_the_start_records_which_process_holds_it_and_the_run_line_carries_the_proven_words(reg, egeria):
+    from resource_explorer import engine_host
+    from resource_explorer import native_survey_run as nsr
+    from resource_explorer import run_credential_holder as h
+
+    instance = _start_with_credential(reg, egeria)
+    [row] = reg.list_native_survey_runs("database", "coco_pharma", ANALYSIS)
+    assert json.loads(row["declared"])["run_credential"]["holder"] == h.process_identity()
+    words = f"Resource Explorer did not run re-postgres-operations on coco_pharma: {engine_host.RUN_CREDENTIAL_LOST_RESTARTED}"
+    row = {**row, "declared": json.dumps({**json.loads(row["declared"]), "process_run": {
+        "words": "step 1 refused", "steps": [{"request_type": "re-postgres-operations", "status": "INVALID",
+                                              "message": words}]}})}
+    derived = nsr.derive_mixed_state(row)
+    assert derived["credential_lost"] is True
+    assert derived["credential_lost_words"] == engine_host.RUN_CREDENTIAL_LOST_RESTARTED
+    assert instance
+
+
+def test_item6_a_claim_between_initiate_and_put_is_refused_never_given_the_stored_login(reg, egeria, no_connection,
+                                                                                         runner):
+    from resource_explorer import engine_host
+    from resource_explorer import run_credential_holder as h
+
+    _with_credential(reg)
+    real_start = egeria._start_process
+    seen: dict = {}
+
+    def start_then_claim(*a, **k):
+        guid = real_start(*a, **k)
+        # Egeria has the run and dispatches its first step before the start request has held the credential.
+        seen["held_yet"] = h.take(guid)
+        seen["outcome"] = engine_host._decide_one(reg, {
+            "slug": "coco_pharma", "step_key": "postgres_operations", "request_type": "re-postgres-operations",
+            "process_instance_guid": guid, "definition": ANALYSIS, "engine_action_guid": "ea-race",
+            "asset_guid": DB_GUID})
+        return guid
+
+    egeria._start_process = start_then_claim
+    instance = _start_with_credential(reg, egeria)
+    assert seen["held_yet"] is None
+    runner.assert_not_called()                                   # never the stored login
+    assert seen["outcome"]["guard"] == "survey-invalid"
+    assert engine_host.RUN_CREDENTIAL_START_PENDING_SENTENCE in seen["outcome"]["message"]
+    assert not h.start_pending("coco_pharma", ANALYSIS)          # the mark is left once put + marker are written
+    assert h.take(instance) is not None
+
+
+def test_item6_the_mark_is_left_when_the_start_fails(reg, egeria):
+    from resource_explorer import run_credential_holder as h
+    from resource_explorer.native_survey_run import NativeSurveyError
+
+    def refuse(*a, **k):
+        assert h.start_pending("coco_pharma", ANALYSIS)
+        raise RuntimeError("Egeria said no")
+
+    egeria._start_process = refuse
+    with pytest.raises(NativeSurveyError):
+        _start_with_credential(reg, egeria)
+    assert not h.start_pending("coco_pharma", ANALYSIS)
+
+
+def test_item7_a_marker_write_that_fails_twice_says_started_and_keeps_the_credential(reg, egeria, monkeypatch):
+    from resource_explorer import native_survey_run as nsr
+    from resource_explorer import run_credential_holder as h
+
+    write = create_autospec(reg.record_native_survey_submission_once, side_effect=OSError("registry gone"))
+    monkeypatch.setattr(reg, "record_native_survey_submission_once", write)
+    from resource_explorer import catalog_and_survey as cas
+    from resource_explorer.egeria_clients import Daemon, DaemonReason
+
+    egeria.declared.add(ANALYSIS)
+    egeria.assets.add(DB_GUID)
+    with nsr.port_session(cas.PyegeriaRegistrationPort(identity=Daemon(DaemonReason.SCHEDULER))) as port:
+        state = nsr.submit_native_survey(reg, port, "database", "coco_pharma", ANALYSIS, technology_type=TECH,
+                                         submitted_by=STARTER, run_credential=(ONE_RUN_USER, ONE_RUN_PASSWORD))
+    assert write.call_count == 2                                 # tried once more
+    assert state["engine_action_guid"] == "pi-1"
+    assert state["run_credential_marker_error"].startswith("started; one-run credential marker not recorded")
+    assert h.take("pi-1") is not None                            # the holder entry is kept
+    assert ONE_RUN_PASSWORD not in json.dumps(state)
+
+
+def test_item7_a_marker_write_that_fails_once_is_retried_and_recorded(reg, egeria, monkeypatch):
+    real = reg.record_native_survey_submission_once
+    calls = {"n": 0}
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("registry blinked")
+        return real(*a, **k)
+
+    monkeypatch.setattr(reg, "record_native_survey_submission_once", create_autospec(real, side_effect=flaky))
+    _start_with_credential(reg, egeria)
+    [row] = reg.list_native_survey_runs("database", "coco_pharma", ANALYSIS)
+    assert json.loads(row["declared"])["run_credential"]["user"] == ONE_RUN_USER
+
+
+def test_item8_a_definition_step_with_no_instance_guid_is_refused_never_the_stored_login(reg, no_connection, runner):
+    from resource_explorer import engine_host
+
+    _with_credential(reg)
+    target = {"slug": "coco_pharma", "step_key": "postgres_operations", "request_type": "re-postgres-operations",
+              "process_instance_guid": "", "definition": ANALYSIS, "engine_action_guid": "ea-noinst",
+              "asset_guid": DB_GUID}
+    assert engine_host._one_run_credential(reg, target) == (None, engine_host.RUN_CREDENTIAL_NO_INSTANCE_SENTENCE)
+    out = engine_host._decide_one(reg, target)
+    runner.assert_not_called()
+    assert out["guard"] == "survey-invalid" and "cannot tell which run this step belongs to" in out["message"]
+    # A standalone action (no definition) is not a step of a run: the stored login, as before (pins).
+    assert engine_host._one_run_credential(reg, {**target, "definition": ""}) == (None, "")
+
+
+def test_item9_a_refused_first_step_of_a_run_with_no_plan_does_not_clear_it_for_step_2(reg):
+    from resource_explorer import native_survey_run as nsr
+    from resource_explorer import run_credential_holder as h
+
+    retired = "GovActionProcess::RetiredSurvey"                 # declares no process, stores no step list
+    assert reg.record_native_survey_submission_once(
+        "database", "coco_pharma", retired, "2026-10-18T09:00:00", engine_action_guid=INSTANCE, submitted_by=STARTER,
+        started_as="process", started_by="egeria", started_in="re",
+        declared_extra={"run_credential": {"user": ONE_RUN_USER, "scope": "this run"}})
+    [run] = reg.list_native_survey_runs("database", "coco_pharma", retired)
+    h.put(INSTANCE, ONE_RUN_USER, ONE_RUN_PASSWORD, STARTER)
+    views = _views(1)
+    views[0].status = "INVALID"
+    views[0].completion_guards = ["survey-invalid", "Any"]
+    out = nsr.refresh_mixed_run(reg, _port(views), run, entity_type="database", slug="coco_pharma")
+    assert out["state"] in ("failed", "complete", "partial"), out["state"]   # the line reads as over
+    assert h.take(INSTANCE) is not None                                     # and the credential is kept for step 2

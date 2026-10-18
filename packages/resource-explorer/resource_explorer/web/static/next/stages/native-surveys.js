@@ -111,24 +111,35 @@ export const RUN_CREDENTIAL_WORDS = {
   // PLACEHOLDER: the second control beside "Run · coordinated by Egeria →"; it opens the existing credential dialog.
   optionsLabel: 'with options…',
   optionsTitle: 'Opens a dialog: run this definition once, coordinated by Egeria, with another credential',
-  // The run line, from the run row's proof that a step ran as it (the same shape RE's own override runs record).
-  ranAs: (user) => `ran as ${user} · this run`,
+  // PLACEHOLDER: the existing dialog's lead line, for the coordinated case (its definition-card copy is unchanged).
+  dialogSubtitle: 'Egeria runs this definition; RE\'s own steps use this credential once; it is not stored',
   // PLACEHOLDER: a step Egeria runs itself reads Egeria's secrets store, never the one-run credential.
   nativeStep: (n) => `step ${n} runs in Egeria with the stored credential`,
-  // PLACEHOLDER: a later step refused because Resource Explorer restarted (or the credential's time ran out).
-  lost: 'the one-run credential was lost when Resource Explorer restarted; re-run with options',
+  // PLACEHOLDER: a later step refused because this process does not hold the credential. The neutral words; the run
+  // line shows the step's own, more specific words when the server proved which (restarted, timed out, another process).
+  lost: 'this Resource Explorer process no longer holds the one-run credential (restarted, timed out, or the step ran in another process)',
+  // PLACEHOLDER: the stored login's capability probe says nothing about the one-run credential.
+  capabilityNotAssessed: 'not assessed for this run\'s credential',
 };
+
+/** "ran as <user> (scope)": the same form RE's own override runs show (`analysisRanAsHtml`, app.js). */
+export function ranAsHtml(a) {
+  if (!a || !a.user) return '';
+  return `ran as <span class="font-mono">${esc(a.user)}</span> (${esc(a.scope || 'this run')})`;
+}
 
 /** The one-run credential's part of a run line, from the server's derived row only (`run_credential`, `ran_as`,
  *  `native_steps`, `credential_lost`). Nothing when the run was not started with one. */
 export function runCredentialHtml(r) {
   if (!r || !r.run_credential) return '';
   const w = RUN_CREDENTIAL_WORDS;
+  const capability = r.ran_as && r.ran_as.capability
+    ? ` · <span data-run-credential-capability>capability ${esc(r.ran_as.capability)}</span>` : '';
   const ranAs = r.ran_as && r.ran_as.user
-    ? ` · <span data-run-credential-ran-as class="text-ink-muted">${esc(w.ranAs(r.ran_as.user))}</span>` : '';
+    ? ` · <span data-run-credential-ran-as class="text-ink-muted">${ranAsHtml(r.ran_as)}${capability}</span>` : '';
   const native = (r.native_steps || []).map((n) => `<span class="block text-ink-muted" data-run-credential-native-step="${esc(n)}">${esc(w.nativeStep(n))}</span>`).join('');
   const lost = r.credential_lost
-    ? `<span class="block text-state-warn" data-run-credential-lost><span class="font-glyph" aria-hidden="true">◐</span> ${esc(w.lost)}</span>` : '';
+    ? `<span class="block text-state-warn" data-run-credential-lost><span class="font-glyph" aria-hidden="true">◐</span> ${esc(r.credential_lost_words || w.lost)}</span>` : '';
   return `${ranAs}${native}${lost}`;
 }
 
@@ -837,7 +848,9 @@ export function coordinateControlHtml(c, { ran = null } = {}) {
   const live = COORD_IN_FLIGHT.has(String(ctl.state || ''));
   // "with options…" (DESIGN-COORDINATED-RUN-CREDENTIAL.md §2.1): the same credential dialog RE's own runs use, for this
   // one coordinated run. Not while a run is in flight (the control is pressed).
+  const nativeSteps = (ctl.native_steps || []).map((n) => String(n)).join(',');
   const options = live ? '' : `<button type="button" data-coordinate-egeria-options="${qn}"
+      data-coordinate-native-steps="${esc(nativeSteps)}"
       title="${esc(RUN_CREDENTIAL_WORDS.optionsTitle)}"
       class="shrink-0 cursor-pointer border-0 bg-transparent p-0 text-caveat text-ink-muted underline"
       >${esc(RUN_CREDENTIAL_WORDS.optionsLabel)}</button>`;
@@ -922,8 +935,14 @@ export function bindCoordinateControls(el, slug, { after = null } = {}) {
       const b = o.parentElement && o.parentElement.querySelector('[data-coordinate-egeria]');
       if (!b || b.disabled) return;
       const qn = o.dataset.coordinateEgeriaOptions;
-      // The EXISTING dialog and its browser memory (run-credential.js), unchanged.
-      openAnalysisOverrideDialog({ name: qn, analysis_id: qn }, slug, (credential) => start(b, credential));
+      const w = RUN_CREDENTIAL_WORDS;
+      const native = String(o.dataset.coordinateNativeSteps || '').split(',').filter(Boolean);
+      // The EXISTING dialog and its browser memory (run-credential.js), with the coordinated case's own lead line and,
+      // when Egeria runs any step itself, which steps the credential does not reach.
+      openAnalysisOverrideDialog({ name: qn, analysis_id: qn }, slug, (credential) => start(b, credential), {
+        subtitle: w.dialogSubtitle,
+        notes: native.map((n) => w.nativeStep(n)),
+      });
     });
   });
 }

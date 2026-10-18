@@ -13,6 +13,16 @@ The whole surface is three functions, and nothing else in RE may read the holder
   instance's later steps. An entry past its TTL is dropped here and never returned;
 * `clear(instance_guid)`: the run's terminal state, Cancel run, and the TTL.
 
+Three small facts with no secret in them sit beside it, for the engine host's refusal words and the start's race:
+
+* `process_identity()`: this process's pid and start time, recorded on the run row's marker, so a step refused for
+  want of the credential can say whether it ran in another process or after a restart;
+* `expired(instance_guid)`: whether THIS process dropped that instance's entry at its TTL (a bounded memory of GUIDs,
+  never the credential);
+* `start_pending(slug, definition)` / `starting(slug, definition)`: a mark the start holds from before
+  `initiate_process_run` until the credential and the marker are written, so a step claimed inside that window is
+  refused (retryable), never given the stored login.
+
 There is NO listing, NO iteration and NO route. Process exit clears it (`atexit`), and in any case it was only ever
 in memory: nothing here is written to the registry, a run row, the activity log, Egeria, a log line or an exception
 message. Nothing here formats the password: `RunCredential.__repr__` hides it, and the holder's own `__repr__` says
@@ -28,7 +38,9 @@ import math
 import os
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 #: Owner, Q1 (2026-10-18): two hours from the start.
 DEFAULT_TTL_SECONDS = 7200
@@ -36,6 +48,16 @@ TTL_ENV = "RE_RUN_CREDENTIAL_TTL_SECONDS"
 #: The scope word a one-run credential is recorded with (`ran_as`, the run row's `run_credential`), the same word RE's
 #: own override runs record (`web/routes/survey_definitions.OVERRIDE_SCOPE`).
 SCOPE = "this run"
+#: How many expired instance GUIDs this process remembers (only to say "timed out"); the oldest is forgotten first.
+_EXPIRED_MEMORY = 1000
+#: This process, as the run row's marker records it: pid and the time this module was first imported (a pid alone is
+#: reused across restarts, a container's pid 1 every time). No secret.
+_PROCESS = {"pid": os.getpid(), "started": datetime.now(timezone.utc).isoformat(timespec="microseconds")}
+
+
+def process_identity() -> dict:
+    """{pid, started}: which process holds the credentials it was given. Recorded on the marker; never secret."""
+    return dict(_PROCESS)
 
 
 def configured_ttl() -> float:
@@ -78,6 +100,8 @@ class _Holder:
         self._clock = clock
         self._lock = threading.Lock()
         self._entries: dict[str, RunCredential] = {}
+        self._expired: dict[str, float] = {}            # instance GUID -> when its entry was dropped at its TTL
+        self._pending: dict[tuple[str, str], int] = {}  # (slug, definition) -> starts in flight
 
     def __repr__(self) -> str:
         with self._lock:
@@ -88,6 +112,34 @@ class _Holder:
     def _expire(self, now: float) -> None:
         for key in [k for k, v in self._entries.items() if v.expires_at <= now]:
             del self._entries[key]
+            self._expired[key] = now
+        while len(self._expired) > _EXPIRED_MEMORY:
+            del self._expired[next(iter(self._expired))]
+
+    def expired(self, instance_guid: str) -> bool:
+        key = (instance_guid or "").strip()
+        with self._lock:
+            self._expire(self._clock())
+            return bool(key) and key in self._expired
+
+    def begin_start(self, slug: str, definition: str) -> None:
+        key = ((slug or "").strip(), (definition or "").strip())
+        with self._lock:
+            self._pending[key] = self._pending.get(key, 0) + 1
+
+    def end_start(self, slug: str, definition: str) -> None:
+        key = ((slug or "").strip(), (definition or "").strip())
+        with self._lock:
+            left = self._pending.get(key, 0) - 1
+            if left > 0:
+                self._pending[key] = left
+            else:
+                self._pending.pop(key, None)
+
+    def start_pending(self, slug: str, definition: str) -> bool:
+        key = ((slug or "").strip(), (definition or "").strip())
+        with self._lock:
+            return self._pending.get(key, 0) > 0
 
     def put(self, instance_guid: str, user: str, pwd: str, starter: str, ttl: float | None = None) -> None:
         key = (instance_guid or "").strip()
@@ -105,6 +157,7 @@ class _Holder:
             self._expire(now)
             self._entries[key] = RunCredential(user=user.strip(), password=pwd, starter=starter.strip(),
                                                expires_at=now + seconds)
+            self._expired.pop(key, None)
 
     def take(self, instance_guid: str) -> RunCredential | None:
         key = (instance_guid or "").strip()
@@ -123,6 +176,7 @@ class _Holder:
     def _clear_all(self) -> None:
         with self._lock:
             self._entries.clear()
+            self._pending.clear()
 
 
 _HOLDER = _Holder()
@@ -143,6 +197,28 @@ def take(instance_guid: str) -> RunCredential | None:
 def clear(instance_guid: str) -> None:
     """Forget the credential held for this process instance (nothing when none is held)."""
     _HOLDER.clear(instance_guid)
+
+
+def expired(instance_guid: str) -> bool:
+    """Whether this process held a credential for this instance and dropped it at its TTL. Never the credential."""
+    return _HOLDER.expired(instance_guid)
+
+
+@contextmanager
+def starting(slug: str, definition: str):
+    """Held by the coordinated start from before `initiate_process_run` until the credential and the run row's marker
+    are written (left in a `finally`): while it is held, `start_pending(slug, definition)` is True and the engine host
+    refuses an `re-*` step of that definition on that resource rather than run it with the stored login."""
+    _HOLDER.begin_start(slug, definition)
+    try:
+        yield
+    finally:
+        _HOLDER.end_start(slug, definition)
+
+
+def start_pending(slug: str, definition: str) -> bool:
+    """Whether a start of `definition` on `slug` with a one-run credential is between asking Egeria and recording it."""
+    return _HOLDER.start_pending(slug, definition)
 
 
 def _at_exit() -> None:

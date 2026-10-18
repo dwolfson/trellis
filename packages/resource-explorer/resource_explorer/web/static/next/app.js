@@ -5975,12 +5975,19 @@ async function renderAnalysesIndexSection(slug, stage) {
  *  credential dialog the definition run offers, for ONE analysis. The credential is held in browser
  *  memory (run-credential.js, per database), sent in the body of this one call, and the server runs
  *  the analysis in its own process: not queued, not stored, not retried. */
-export function openAnalysisOverrideDialog(row, slug, onGo) {
+/** `opts.subtitle` replaces the lead line (the coordinated run's, where Egeria runs the definition and RE's own steps
+ *  use the credential); `opts.notes` adds one line each under it (the steps Egeria runs itself). Without them the
+ *  definition card's copy is unchanged. */
+export function openAnalysisOverrideDialog(row, slug, onGo, opts = {}) {
   const el = openDialog(row.name || row.analysis_id, `${slug} · run once with another credential`);
   const body = el.querySelector('#wl-detail-body');
+  const lead = opts.subtitle
+    ? `<p class="max-w-[70ch]" data-run-override-subtitle>${esc(opts.subtitle)}</p>`
+    : `<p class="max-w-[70ch]">Runs <span class="font-mono">${esc(row.analysis_id)}</span> once, here, with the credential below
+      instead of the one saved for this database. It is not queued and not retried, and nothing is stored.</p>`;
+  const notes = (opts.notes || []).map((n) => `<p class="max-w-[70ch] text-caveat text-ink-muted" data-run-override-note>${esc(n)}</p>`).join('');
   body.innerHTML = `
-    <p class="max-w-[70ch]">Runs <span class="font-mono">${esc(row.analysis_id)}</span> once, here, with the credential below
-      instead of the one saved for this database. It is not queued and not retried, and nothing is stored.</p>
+    ${lead}${notes}
     <div class="mt-s2 flex flex-wrap items-center gap-s2">
       <input data-run-override-user type="text" autocomplete="off" placeholder="user"
         class="rounded-sm border border-rule bg-transparent px-2 py-[3px] text-caveat text-ink">

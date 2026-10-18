@@ -139,6 +139,31 @@ def _install_egeria_identity_handlers() -> None:
 _install_egeria_identity_handlers()
 
 
+#: The fields of a request-validation error a 422 keeps. FastAPI's default answer also carries `input` (the value that
+#: failed, or the whole body when a field is missing) and `ctx`: a body holding a password (`db_pwd`, RE's own
+#: override runs and the coordinated run's one-run credential) would be echoed back in the 422 and in anything that
+#: logs it (DESIGN-COORDINATED-RUN-CREDENTIAL.md §2.2).
+VALIDATION_ERROR_FIELDS = ("loc", "msg", "type")
+
+
+def _validation_refused(request, exc):
+    """Every 422 from request validation, app-wide: which field and why, never the value sent."""
+    from fastapi.encoders import jsonable_encoder
+
+    errors = [{k: e[k] for k in VALIDATION_ERROR_FIELDS if k in e}
+              for e in (exc.errors() or []) if isinstance(e, dict)]
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
+
+
+def _install_validation_handler() -> None:
+    from fastapi.exceptions import RequestValidationError
+
+    app.add_exception_handler(RequestValidationError, _validation_refused)
+
+
+_install_validation_handler()
+
+
 @app.middleware("http")
 async def _phase_timing_middleware(request, call_next):
     """Per-request total wall time, logged at INFO as `phase_timing`.

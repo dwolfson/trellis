@@ -63,26 +63,73 @@ const line = (over = {}) => ({ state: 'running', line: 'Database Analysis Survey
   steps: [], run_credential: { user: 'elevated_reader', scope: 'this run' }, ran_as: null, native_steps: [],
   credential_lost: false, ...over });
 
-test('the run line says "ran as <user> · this run" only once a step ran as it', () => {
+test('the run line says "ran as <user> (scope)" only once a step ran as it, in the override runs\' own form', async () => {
+  const { analysisRanAsHtml } = await import('/static/next/app.js');
   assert.doesNotMatch(text(ns.processLineHtml(line())), /ran as/);
   const h = ns.processLineHtml(line({ ran_as: { user: 'elevated_reader', scope: 'this run' } }));
-  assert.match(text(h), /ran as elevated_reader · this run/);
+  assert.match(text(h), /ran as elevated_reader \(this run\)/);
+  assert.match(h, /ran as <span class="font-mono">elevated_reader<\/span> \(this run\)/);
   assert.match(h, /data-run-credential-ran-as/);
-  assert.doesNotMatch(text(ns.processLineHtml(line({ run_credential: null, ran_as: null }))), /ran as|stored credential|lost/);
+  // the same words RE's own override rows draw (app.js analysisRanAsHtml)
+  const own = analysisRanAsHtml({ last_run_ran_as: { user: 'elevated_reader', scope: 'this run' } });
+  assert.ok(own.includes(ns.ranAsHtml({ user: 'elevated_reader', scope: 'this run' })));
+  assert.doesNotMatch(text(ns.processLineHtml(line({ run_credential: null, ran_as: null }))), /ran as|stored credential|longer holds/);
 });
 
-test('a step Egeria runs itself says it uses the stored credential; a lost credential says so', () => {
+test('a held-credential run line says its capability was not assessed, never the stored login\'s', () => {
+  const h = ns.processLineHtml(line({ ran_as: { user: 'elevated_reader', scope: 'this run',
+    capability: 'not assessed for this run\'s credential' } }));
+  assert.match(text(h), /ran as elevated_reader \(this run\) · capability not assessed for this run(&apos;|')s credential/);
+  assert.match(h, /data-run-credential-capability/);
+});
+
+test('a step Egeria runs itself says it uses the stored credential; a lost credential says so in the proven words', () => {
   const native = ns.processLineHtml(line({ native_steps: [1] }));
   assert.match(text(native), /step 1 runs in Egeria with the stored credential/);
   const lost = ns.processLineHtml(line({ state: 'partial', credential_lost: true }));
-  assert.match(text(lost), /the one-run credential was lost when Resource Explorer restarted; re-run with options/);
+  assert.match(text(lost), /this Resource Explorer process no longer holds the one-run credential \(restarted, timed out, or the step ran in another process\)/);
   assert.match(lost, /data-run-credential-lost/);
+  const restarted = ns.processLineHtml(line({ state: 'partial', credential_lost: true,
+    credential_lost_words: 'this Resource Explorer process no longer holds the one-run credential (Resource Explorer restarted)' }));
+  assert.match(text(restarted), /no longer holds the one-run credential \(Resource Explorer restarted\)/);
+  assert.doesNotMatch(text(restarted), /timed out/);
+});
+
+test('"with options…" opens the existing dialog with the coordinated subtitle and the native-steps note', () => {
+  const host = document.createElement('div');
+  host.innerHTML = ns.coordinateControlHtml(cand({ native_steps: [1, 3] }));
+  document.body.appendChild(host);
+  ns.bindCoordinateControls(host, 'coco_pharma');
+  host.querySelector('[data-coordinate-egeria-options]').click();
+  const body = document.querySelector('#wl-detail-body');
+  assert.equal(body.querySelector('[data-run-override-subtitle]').textContent,
+    "Egeria runs this definition; RE's own steps use this credential once; it is not stored");
+  assert.deepEqual([...body.querySelectorAll('[data-run-override-note]')].map((n) => n.textContent),
+    ['step 1 runs in Egeria with the stored credential', 'step 3 runs in Egeria with the stored credential']);
+  assert.doesNotMatch(body.textContent, /once, here/, 'not the definition card\'s copy');
+  assert.ok(body.querySelector('[data-run-override-user]'), 'the existing inputs');
+});
+
+test('the definition card\'s dialog copy is unchanged; no native step, no note', async () => {
+  const { openAnalysisOverrideDialog } = await import('/static/next/app.js');
+  openAnalysisOverrideDialog({ name: 'privilege_audit', analysis_id: 'privilege_audit' }, 'coco_pharma', () => {});
+  const body = document.querySelector('#wl-detail-body');
+  assert.match(body.textContent, /Runs privilege_audit once, here, with the credential below/);
+  assert.equal(body.querySelector('[data-run-override-subtitle]'), null);
+  assert.equal(body.querySelector('[data-run-override-note]'), null);
+  const host = document.createElement('div');
+  host.innerHTML = ns.coordinateControlHtml(cand({ native_steps: [] }));
+  document.body.appendChild(host);
+  ns.bindCoordinateControls(host, 'coco_pharma');
+  host.querySelector('[data-coordinate-egeria-options]').click();
+  assert.equal(document.querySelector('#wl-detail-body [data-run-override-note]'), null);
 });
 
 test('every word is in one block (designer placeholders, Q3 open)', () => {
   const w = ns.RUN_CREDENTIAL_WORDS;
   assert.equal(w.optionsLabel, 'with options…');
-  assert.equal(w.ranAs('u'), 'ran as u · this run');
   assert.equal(w.nativeStep(2), 'step 2 runs in Egeria with the stored credential');
-  assert.equal(w.lost, 'the one-run credential was lost when Resource Explorer restarted; re-run with options');
+  assert.equal(w.lost, 'this Resource Explorer process no longer holds the one-run credential (restarted, timed out, or the step ran in another process)');
+  assert.equal(w.dialogSubtitle, "Egeria runs this definition; RE's own steps use this credential once; it is not stored");
+  assert.equal(w.capabilityNotAssessed, "not assessed for this run's credential");
 });
