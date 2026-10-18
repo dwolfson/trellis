@@ -146,12 +146,45 @@ _install_egeria_identity_handlers()
 VALIDATION_ERROR_FIELDS = ("loc", "msg", "type")
 
 
+#: The words a 422 says in place of a validation message that could carry a password (fix round 2): a validator's own
+#: message may quote the value it refused.
+VALIDATION_MSG_WITHHELD = "the value was not accepted (its message is not shown: it could carry a password)"
+
+
+def _secret_named(name) -> bool:
+    text = str(name or "").casefold()
+    return "pwd" in text or "password" in text or "secret" in text
+
+
+def _secret_values(body) -> list[str]:
+    """Every value under a password-like key anywhere in the request body, as text (a number too)."""
+    out: list[str] = []
+    if isinstance(body, dict):
+        for k, v in body.items():
+            if _secret_named(k) and v not in (None, "") and not isinstance(v, (dict, list)):
+                out.append(str(v))
+            out.extend(_secret_values(v))
+    elif isinstance(body, list):
+        for v in body:
+            out.extend(_secret_values(v))
+    return out
+
+
 def _validation_refused(request, exc):
-    """Every 422 from request validation, app-wide: which field and why, never the value sent."""
+    """Every 422 from request validation, app-wide: which field and why, never the value sent. A `msg` is withheld for
+    a password-like field, and wherever it contains a password-like value of the body (a validator may quote it)."""
     from fastapi.encoders import jsonable_encoder
 
-    errors = [{k: e[k] for k in VALIDATION_ERROR_FIELDS if k in e}
-              for e in (exc.errors() or []) if isinstance(e, dict)]
+    secrets = _secret_values(getattr(exc, "body", None))
+    errors = []
+    for e in exc.errors() or []:
+        if not isinstance(e, dict):
+            continue
+        kept = {k: e[k] for k in VALIDATION_ERROR_FIELDS if k in e}
+        msg = str(kept.get("msg") or "")
+        if any(_secret_named(part) for part in kept.get("loc") or ()) or any(v in msg for v in secrets):
+            kept["msg"] = VALIDATION_MSG_WITHHELD
+        errors.append(kept)
     return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
 
 

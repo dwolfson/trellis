@@ -47,6 +47,7 @@ import contextlib
 import functools
 import logging
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterator, Protocol
@@ -107,6 +108,11 @@ class NativeSurveyError(RuntimeError):
 class NativeSurveyCannotRun(NativeSurveyError):
     """RE knows why this survey cannot be run for this resource. The message is
     what the row shows -- it is a reason, not an error."""
+
+
+class NativeSurveyNotStarted(RuntimeError):
+    """A start with a one-run credential whose start entry could not be written: Egeria was not asked (fix round 2,
+    F2). The route answers 503."""
 
 
 class NativeSurveyStale(NativeSurveyCannotRun):
@@ -1244,8 +1250,9 @@ def _run_credential_fields(out: dict, run: dict | None) -> None:
     out["native_steps"] = [i + 1 for i, rt in enumerate(plan) if rt and not str(rt).startswith("re-")]
     from resource_explorer import engine_host
 
-    lost = [w for w in (engine_host.RUN_CREDENTIAL_LOST_TIMED_OUT, engine_host.RUN_CREDENTIAL_LOST_RESTARTED,
-                        engine_host.RUN_CREDENTIAL_LOST_OTHER_PROCESS, engine_host.RUN_CREDENTIAL_LOST_NEUTRAL)
+    lost = [w for w in (engine_host.RUN_CREDENTIAL_LOST_TIMED_OUT, engine_host.RUN_CREDENTIAL_LOST_CLEARED,
+                        engine_host.RUN_CREDENTIAL_LOST_RESTARTED, engine_host.RUN_CREDENTIAL_LOST_OTHER_PROCESS,
+                        engine_host.RUN_CREDENTIAL_LOST_NEUTRAL)
             if any(w in (s.get("message") or "") for s in out.get("steps") or [] if isinstance(s, dict))]
     out["credential_lost"] = bool(lost) or any(engine_host.RUN_CREDENTIAL_LOST_SENTENCE in (s.get("message") or "")
                                                for s in out.get("steps") or [] if isinstance(s, dict))
@@ -1889,28 +1896,72 @@ def submit_native_survey(registry, port: EgeriaSurveyPort, entity_type: str, slu
 
             started_by, started_in = engine_host.STARTED_BY_EGERIA, mixed_process.STARTED_IN_RE
 
+    started = dict(asset_guid=asset_guid, started_as=started_as, started_by=started_by, started_in=started_in,
+                   submitted_by=submitted_by)
     if run_credential is not None:
         # Review fix round 1, item 6: from before Egeria is asked until the credential and the marker are written, a
-        # step of this definition on this database is refused (retryable), never run with the stored login.
+        # step of this definition on this database is held back, never run with the stored login. Fix round 2: the
+        # persisted start entry (`run_credential_start`) is what decides; this in-memory mark is the fast path, and it
+        # is left straight after the row and marker are written, BEFORE the read-back (F1).
         from resource_explorer import run_credential_holder
 
         with run_credential_holder.starting(slug, process_qualified_name):
-            return _submit_started(registry, port, entity_type, slug, process_qualified_name, process,
-                                   asset_guid=asset_guid, started_as=started_as, started_by=started_by,
-                                   started_in=started_in, submitted_by=submitted_by, run_credential=run_credential)
-    return _submit_started(registry, port, entity_type, slug, process_qualified_name, process, asset_guid=asset_guid,
-                           started_as=started_as, started_by=started_by, started_in=started_in,
-                           submitted_by=submitted_by, run_credential=None)
+            engine_action_guid, marker_error = _submit_started(
+                registry, port, entity_type, slug, process_qualified_name, process, **started,
+                run_credential=run_credential)
+    else:
+        engine_action_guid, marker_error = _submit_started(
+            registry, port, entity_type, slug, process_qualified_name, process, **started, run_credential=None)
+
+    # The dispatch is proven by reading the action back, read-only. If that one
+    # read fails, the row says exactly that (submitted, last read failed) rather
+    # than pretending the read happened.
+    if marker_error:
+        return _started_without_marker(registry, port, entity_type, slug, process_qualified_name,
+                                       engine_action_guid, marker_error)
+    run = registry.list_native_survey_runs(entity_type, slug, process_qualified_name)[0]
+    return refresh_run(registry, port, run, entity_type=entity_type, slug=slug)
+
+
+def _write_start_entry(registry, slug: str, process_qualified_name: str) -> str:
+    """Fix round 2, F2: the persisted start entry, written BEFORE Egeria is asked. When it cannot be written the run is
+    not started (`NativeSurveyNotStarted`, 503): without it a restart before the marker would leave the run's steps to
+    the stored login."""
+    from resource_explorer import run_credential_start
+
+    try:
+        return run_credential_start.write_start(registry, slug, process_qualified_name)
+    except Exception as exc:  # noqa: BLE001 -- not started, said
+        raise NativeSurveyNotStarted(f"{RUN_CREDENTIAL_START_NOT_RECORDED} ({_short_error(exc)})") from exc
+
+
+def _settle_start_entry(registry, slug: str, process_qualified_name: str, nonce: str, *, instance: str = "",
+                        remove: bool) -> None:
+    """Remove this start's entry (its marker is written), or name the instance on it (the marker is not). A write that
+    fails is logged and leaves the entry as it was until the TTL: over-refusal at worst, never a fallback."""
+    from resource_explorer import run_credential_start
+
+    try:
+        if remove:
+            run_credential_start.remove_start(registry, slug, process_qualified_name, nonce)
+        else:
+            run_credential_start.name_instance(registry, slug, process_qualified_name, nonce, instance)
+    except Exception as exc:  # noqa: BLE001 -- the entry stays; the TTL ends it
+        log.warning("native survey %s: start entry for %s not %s (%s); it stays until its TTL",
+                    process_qualified_name, instance or "a start", "removed" if remove else "updated",
+                    _short_error(exc))
 
 
 def _submit_started(registry, port: EgeriaSurveyPort, entity_type: str, slug: str, process_qualified_name: str,
                     process, *, asset_guid: str, started_as: str, started_by: str, started_in: str,
-                    submitted_by: str, run_credential: tuple[str, str] | None) -> dict:
-    """`submit_native_survey` from asking Egeria on: initiate, record the run row (and, for a one-run credential, hold
-    it and write the row's marker), then read the dispatch back."""
+                    submitted_by: str, run_credential: tuple[str, str] | None) -> tuple[str, str]:
+    """`submit_native_survey` from asking Egeria on: for a one-run credential write the start entry first, initiate,
+    record the run row (and, for a one-run credential, hold it, write the row's marker and settle the start entry).
+    Returns (engine action or process instance GUID, the marker's error words or "")."""
     from resource_explorer import mixed_process
 
     entity = _resource_entity(registry, entity_type, slug)
+    nonce = _write_start_entry(registry, slug, process_qualified_name) if run_credential is not None else ""
     submitted_at = _now()
     try:
         if process.kind in _PROCESS_KINDS:
@@ -1921,6 +1972,10 @@ def _submit_started(registry, port: EgeriaSurveyPort, entity_type: str, slug: st
             engine_action_guid = port.initiate(
                 process_qualified_name, process.action_target_name, asset_guid)
     except Exception as exc:  # noqa: BLE001
+        if nonce and not _is_timeout(exc):
+            # Egeria answered, and it was not a start: nothing to hold back. After a timeout the answer is unknown
+            # (Egeria may have started it), so the entry stays until its TTL.
+            _settle_start_entry(registry, slug, process_qualified_name, nonce, remove=True)
         error = scrub_secret(_short_error(exc), entity)
         registry.record_native_survey_submission(
             entity_type, slug, process_qualified_name, submitted_at,
@@ -1964,11 +2019,16 @@ def _submit_started(registry, port: EgeriaSurveyPort, entity_type: str, slug: st
             except Exception as first:  # noqa: BLE001 -- retried once, then said
                 log.warning("native survey %s: run row for %s not written (%s); retrying once",
                             process_qualified_name, engine_action_guid, _short_error(first))
+                time.sleep(MARKER_RETRY_PAUSE_SECONDS)      # F7: a blink of the registry, not the same instant
                 try:
                     _record_row()
                 except Exception as second:  # noqa: BLE001 -- said in the answer, never a 500
                     marker_error = f"{RUN_CREDENTIAL_MARKER_NOT_RECORDED} ({_short_error(second)})"
                     log.warning("native survey %s: %s", process_qualified_name, marker_error)
+            # F2: the marker is written, so the start entry has done its work; if it is not, the entry names this
+            # instance and stands in for it.
+            _settle_start_entry(registry, slug, process_qualified_name, nonce, instance=engine_action_guid,
+                                remove=not marker_error)
     else:
         registry.record_native_survey_submission(
             entity_type, slug, process_qualified_name, submitted_at,
@@ -1976,15 +2036,7 @@ def _submit_started(registry, port: EgeriaSurveyPort, entity_type: str, slug: st
             started_by=started_by, started_in=started_in)
     log.info("submitted native survey %s for %s/%s: engine action %s",
              process_qualified_name, entity_type, slug, engine_action_guid)
-
-    # The dispatch is proven by reading the action back, read-only. If that one
-    # read fails, the row says exactly that (submitted, last read failed) rather
-    # than pretending the read happened.
-    if marker_error:
-        return _started_without_marker(registry, port, entity_type, slug, process_qualified_name,
-                                       engine_action_guid, marker_error)
-    run = registry.list_native_survey_runs(entity_type, slug, process_qualified_name)[0]
-    return refresh_run(registry, port, run, entity_type=entity_type, slug=slug)
+    return engine_action_guid, marker_error
 
 
 def _started_without_marker(registry, port, entity_type: str, slug: str, process_qualified_name: str,
@@ -2355,6 +2407,12 @@ RUN_CREDENTIAL_TOO_SHORT = "that password is too short to keep out of logs safel
 #: PLACEHOLDER (designer, Q3 open): the start's answer when Egeria started the run and the run row's marker could not be
 #: written (item 7). The credential is held; a step after a restart would not know to refuse.
 RUN_CREDENTIAL_MARKER_NOT_RECORDED = "started; one-run credential marker not recorded"
+#: PLACEHOLDER (designer, Q3 open): the start's answer when the start entry could not be written before Egeria was
+#: asked (fix round 2, F2). Nothing was started.
+RUN_CREDENTIAL_START_NOT_RECORDED = ("not started: Resource Explorer could not record that this run is starting with a "
+                                     "one-run credential")
+#: F7: the pause before the run row's one retry.
+MARKER_RETRY_PAUSE_SECONDS = 0.5
 FINISHED_MAYBE_WORDS = "Egeria may already have finished · the report may exist"
 
 

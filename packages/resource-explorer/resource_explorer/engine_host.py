@@ -459,7 +459,12 @@ PREVIOUS_STEP_NOT_COMPLETED = "previous_step_not_completed"
 
 #: Skip reasons that are not RE's business (another engine's work, not yet approved, claimed by someone
 #: else, or already queued here): silent. The rest are logged once per action.
-_SILENT = frozenset({"other_engine", "not_approved", "already_claimed", "already_queued", "not_due"})
+_SILENT = frozenset({"other_engine", "not_approved", "already_claimed", "already_queued", "not_due", "start_pending"})
+
+#: Fix round 2, F1: an `re-*` step of a run that may be the one a start of THIS process is recording with a one-run
+#: credential right now (`_held_for_start`). Left APPROVED and unclaimed, silently; the next sweep takes it once the
+#: start has recorded its marker (or refuses it once the start is overdue).
+START_PENDING = "start_pending"
 
 #: The `_screen` verdict for an action RE's own user already claimed in Egeria but RE has no runs row for:
 #: queue it without claiming again.
@@ -692,6 +697,12 @@ class EngineHost:
             facts["slug"], facts["asset_guid"] = slugs[0], targets[0]["guid"]
             # Several database targets: the first is surveyed and the completion message names the rest.
             facts["other_targets"] = [t["guid"] for t in targets[1:]]
+            # F1: a step of a run a start here is still recording with a one-run credential waits, unclaimed, for the
+            # next sweep: claiming it now would have to complete it (refused) before the credential is held.
+            if not adopt and request_type.startswith("re-") and _held_for_start(
+                    self.registry, facts["slug"], facts.get("definition") or "",
+                    facts.get("process_instance_guid") or ""):
+                return START_PENDING, {"request_type": request_type, "slug": facts["slug"]}
         return (ADOPT if adopt else ""), facts
 
     def _previous_step(self, guid: str, requester: str) -> tuple[str, set[str] | None, str]:
@@ -1431,6 +1442,8 @@ RUN_CREDENTIAL_LOST_TIMED_OUT = f"{RUN_CREDENTIAL_LOST_SENTENCE} (its time ran o
 RUN_CREDENTIAL_LOST_RESTARTED = f"{RUN_CREDENTIAL_LOST_SENTENCE} (Resource Explorer restarted)"
 RUN_CREDENTIAL_LOST_OTHER_PROCESS = (f"{RUN_CREDENTIAL_LOST_SENTENCE} (the step ran in another Resource Explorer "
                                      "process)")
+#: Fix round 2, F4: this process cleared it itself.
+RUN_CREDENTIAL_LOST_CLEARED = f"{RUN_CREDENTIAL_LOST_SENTENCE} (cleared when the run read as over or was cancelled)"
 #: The run row's marker could not be read, so whether the run asked for a one-run credential is unknown: never the
 #: stored login on a guess (§2.4).
 RUN_CREDENTIAL_UNKNOWN_SENTENCE = ("could not tell whether this run was given a one-run credential, so it was not "
@@ -1439,33 +1452,103 @@ RUN_CREDENTIAL_UNKNOWN_SENTENCE = ("could not tell whether this run was given a 
 #: credential cannot be looked up, so it is not run with the stored one (review fix round 1, item 8).
 RUN_CREDENTIAL_NO_INSTANCE_SENTENCE = ("cannot tell which run this step belongs to, so it was not run with the stored "
                                        "credential")
-#: A step claimed while a run of the same definition on the same database is being started with a one-run credential
-#: (between asking Egeria and recording it): which run it belongs to is not settled yet. Retryable (item 6).
-RUN_CREDENTIAL_START_PENDING_SENTENCE = ("a run of this definition is being started with a one-run credential right "
-                                         "now; run this step again in a moment")
+#: A step that reached the run time while a start of THIS process was still recording its one-run credential (the
+#: sweep's `start_pending` skip normally holds it back unclaimed, F1): it is not run with the stored login, and as it
+#: has been claimed it cannot wait, so the run has to be started again (fix round 2, F1).
+RUN_CREDENTIAL_START_PENDING_SENTENCE = ("a run of this definition was still being started with a one-run credential "
+                                         "when this step was claimed, so it was not run with the stored credential; "
+                                         "start the run again")
 #: PLACEHOLDER (designer, Q3 open): a step run with a one-run credential was not measured against what that credential
 #: can read; the stored login's probe is about the stored login (item 4). The screen's copy is
 #: `RUN_CREDENTIAL_WORDS.capabilityNotAssessed`.
 RUN_CREDENTIAL_CAPABILITY_NOT_ASSESSED = "not assessed for this run's credential"
 
 
-def _run_credential_marker(registry, target: dict) -> dict | None:
-    """The start call's `run_credential` marker (no secret: user, scope and the holding process's identity) on the run
-    this action is a step of: the native-survey row keyed by the process instance GUID. None when the row carries none.
-    Raises when the row cannot be read; the caller then refuses (never the stored login on a guess)."""
-    instance = (target.get("process_instance_guid") or "").strip()
-    slug = target.get("slug") or ""
+def _instance_rows(registry, slug: str, definition: str, instance: str) -> list[dict]:
+    """The native-survey rows of this process instance (normally one). Raises when they cannot be read."""
     if not instance or not slug:
-        return None
-    for row in registry.list_native_survey_runs(ENTITY_TYPE, slug, target.get("definition") or None):
-        if (row.get("engine_action_guid") or "") != instance:
-            continue
+        return []
+    return [r for r in registry.list_native_survey_runs(ENTITY_TYPE, slug, definition or None)
+            if (r.get("engine_action_guid") or "") == instance]
+
+
+def _marker_of(rows: list[dict]) -> dict | None:
+    for row in rows:
         declared = row.get("declared")
         if isinstance(declared, str):
             declared = json.loads(declared or "{}")
         if isinstance(declared, dict) and isinstance(declared.get("run_credential"), dict):
             return declared["run_credential"]
     return None
+
+
+def _run_credential_marker(registry, target: dict) -> dict | None:
+    """The start call's `run_credential` marker (no secret: user, scope and the holding process's identity) on the run
+    this action is a step of: the native-survey row keyed by the process instance GUID. None when the row carries none.
+    Raises when the row cannot be read; the caller then refuses (never the stored login on a guess)."""
+    return _marker_of(_instance_rows(registry, target.get("slug") or "",
+                                     (target.get("definition") or "").strip(),
+                                     (target.get("process_instance_guid") or "").strip()))
+
+
+def _row_before(rows: list[dict], entry: dict) -> bool:
+    """Whether this instance already had a row before the start entry was written: an older run, never the start's."""
+    from resource_explorer.run_credential_start import parse_when
+
+    at = parse_when(entry.get("at"))
+    if at is None:
+        return False
+    return any((when := parse_when(r.get("surveyed_at"))) is not None and when < at for r in rows)
+
+
+def _start_hold(registry, slug: str, definition: str, instance: str, rows: list[dict]) -> tuple[str, dict | None]:
+    """Fix round 2, F2: what the persisted start entries (`run_credential_start`) say about an `re-*` step of this
+    instance that has no holder entry and no marker. ("defer", entry): a start of THIS process, younger than the
+    initiate timeout, may be this run's and is still recording it. ("refuse", entry): a start that names this instance
+    (its marker was not written), or one that may be this run's and is another process's, a restarted one's or overdue.
+    ("", None): no start can be this run's. A start may be this run's when it names no instance yet and the instance
+    had no row before it was written. Raises when the entries cannot be read (the caller refuses)."""
+    from resource_explorer import run_credential_holder, run_credential_start
+
+    entries = run_credential_start.live_starts(registry, slug, definition)
+    named = [e for e in entries if (e.get("instance") or "") == instance]
+    if named:
+        return "refuse", named[0]
+    me = run_credential_holder.process_identity()
+    open_starts = [e for e in entries if not (e.get("instance") or "") and not _row_before(rows, e)]
+    for e in open_starts:
+        if e.get("holder") == me and e.get("age") is not None and e["age"] < run_credential_start.START_DEFER_SECONDS:
+            return "defer", e
+    return ("refuse", open_starts[0]) if open_starts else ("", None)
+
+
+def _held_for_start(registry, slug: str, definition: str, instance: str) -> bool:
+    """F1, the sweep's question: should this `re-*` step of (slug, definition, instance) wait, unclaimed, for a start
+    of this process that may be its run's and has not recorded its one-run credential yet? Never for an instance whose
+    credential is held or whose row carries the marker, and the in-memory mark only for an instance with no row (an
+    older run of the same definition has one and is never held back)."""
+    from resource_explorer import run_credential_holder
+
+    if not (slug and definition and instance) or run_credential_holder.take(instance) is not None:
+        return False
+    rows = _instance_rows(registry, slug, definition, instance)
+    if not rows and run_credential_holder.start_pending(slug, definition):
+        return True
+    if _marker_of(rows) is not None:
+        return False
+    return _start_hold(registry, slug, definition, instance, rows)[0] == "defer"
+
+
+def _stamp_marker(registry, instance: str, entry: dict) -> None:
+    """A step refused on a start entry's word leaves that word on the run's row as its marker, so the run's later steps
+    are refused by the row itself after the entry is gone (TTL). No secret. A failed write is logged."""
+    from resource_explorer.run_credential_holder import SCOPE
+
+    try:
+        registry.merge_native_survey_declared(instance, {"run_credential": {
+            "user": "", "scope": SCOPE, "holder": entry.get("holder") or {}, "from": "start entry"}})
+    except Exception as exc:  # noqa: BLE001 -- this step is refused either way
+        log.warning("engine host: run %s: start-entry marker not written (%s)", instance, _short(exc, 200))
 
 
 def _pid_alive(pid: int) -> bool:
@@ -1486,7 +1569,8 @@ def _pid_alive(pid: int) -> bool:
 def _lost_words(marker: dict, instance: str) -> str:
     """Why this process has no entry for a run whose marker says it was given one, said only from proof:
 
-    * the marker names THIS process and this process dropped the entry at its TTL: timed out;
+    * the marker names THIS process and this process dropped the entry at its TTL: timed out; or cleared it (the run
+      read as over, or Cancel run): cleared;
     * the marker names this pid with another start time: this process is a new one in the same place, restarted;
     * the marker names another pid that is alive here: the step ran in another process (a pid is reused, so this is
       the one guess: the words then say another process, never that the credential was used);
@@ -1503,7 +1587,9 @@ def _lost_words(marker: dict, instance: str) -> str:
     if pid is None or not started:
         return RUN_CREDENTIAL_LOST_NEUTRAL
     if pid == me["pid"] and started == me["started"]:
-        return RUN_CREDENTIAL_LOST_TIMED_OUT if run_credential_holder.expired(instance) else RUN_CREDENTIAL_LOST_NEUTRAL
+        if run_credential_holder.expired(instance):
+            return RUN_CREDENTIAL_LOST_TIMED_OUT
+        return RUN_CREDENTIAL_LOST_CLEARED if run_credential_holder.cleared(instance) else RUN_CREDENTIAL_LOST_NEUTRAL
     if pid == me["pid"]:
         return RUN_CREDENTIAL_LOST_RESTARTED
     if _pid_alive(pid):
@@ -1519,13 +1605,14 @@ def _one_run_credential(registry, target: dict):
       never "the latest";
     * a step of a definition with no process instance GUID: (None, the no-instance words). Which run it belongs to,
       and so whether that run was given a credential, cannot be known;
-    * a start of the same definition on the same database is between asking Egeria and recording its credential:
-      (None, the retryable start-pending words);
     * no entry, and the run's row carries the `run_credential` marker (a restart, the TTL, another process): (None,
       the lost words, as specific as the marker proves). The stored login is NOT used (owner, Q2: "refuse after
       restart");
-    * no entry and no marker: (None, ""): the stored login, as before;
-    * the marker cannot be read: (None, the unknown words).
+    * no entry and no marker, and a persisted start entry may be this run's (`_start_hold`, fix round 2, F2): a start of
+      this process still recording it: (None, the start-again words); any other: (None, the lost words), and the
+      entry's word is left on the run's row as its marker;
+    * no entry, no marker, no start entry: (None, ""): the stored login, as before;
+    * the marker or the start entries cannot be read: (None, the unknown words).
 
     A non-`re-*` request type (Egeria's own native steps) never reaches the holder."""
     request_type = target.get("request_type") or ""
@@ -1540,13 +1627,22 @@ def _one_run_credential(registry, target: dict):
     held = run_credential_holder.take(instance)
     if held is not None:
         return held, ""
-    if definition and run_credential_holder.start_pending(target.get("slug") or "", definition):
-        return None, RUN_CREDENTIAL_START_PENDING_SENTENCE
+    slug = target.get("slug") or ""
     try:
-        marker = _run_credential_marker(registry, target)
+        rows = _instance_rows(registry, slug, definition, instance)
+        marker = _marker_of(rows)
+        hold, entry = ("", None) if marker is not None or not (definition and slug) else \
+            _start_hold(registry, slug, definition, instance, rows)
     except Exception as exc:  # noqa: BLE001 -- unknown is refused, never guessed
         return None, f"{RUN_CREDENTIAL_UNKNOWN_SENTENCE} ({_short(exc, 200)})"
-    return None, (_lost_words(marker, instance) if marker is not None else "")
+    if marker is not None:
+        return None, _lost_words(marker, instance)
+    if hold == "defer":
+        return None, RUN_CREDENTIAL_START_PENDING_SENTENCE
+    if hold == "refuse":
+        _stamp_marker(registry, instance, entry or {})
+        return None, _lost_words({"holder": (entry or {}).get("holder")}, instance)
+    return None, ""
 
 
 def _stored_credentials(registry, slug: str) -> dict:

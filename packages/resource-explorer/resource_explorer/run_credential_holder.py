@@ -17,8 +17,8 @@ Three small facts with no secret in them sit beside it, for the engine host's re
 
 * `process_identity()`: this process's pid and start time, recorded on the run row's marker, so a step refused for
   want of the credential can say whether it ran in another process or after a restart;
-* `expired(instance_guid)`: whether THIS process dropped that instance's entry at its TTL (a bounded memory of GUIDs,
-  never the credential);
+* `expired(instance_guid)` / `cleared(instance_guid)`: whether THIS process dropped that instance's entry at its TTL, or
+  cleared it when the run read as over or was cancelled (one bounded memory of GUIDs and why, never the credential);
 * `start_pending(slug, definition)` / `starting(slug, definition)`: a mark the start holds from before
   `initiate_process_run` until the credential and the marker are written, so a step claimed inside that window is
   refused (retryable), never given the stored login.
@@ -48,16 +48,27 @@ TTL_ENV = "RE_RUN_CREDENTIAL_TTL_SECONDS"
 #: The scope word a one-run credential is recorded with (`ran_as`, the run row's `run_credential`), the same word RE's
 #: own override runs record (`web/routes/survey_definitions.OVERRIDE_SCOPE`).
 SCOPE = "this run"
-#: How many expired instance GUIDs this process remembers (only to say "timed out"); the oldest is forgotten first.
+#: How many dropped instance GUIDs this process remembers, and why each went (only to say "timed out" or "cleared");
+#: the oldest is forgotten first. Never the credential.
 _EXPIRED_MEMORY = 1000
-#: This process, as the run row's marker records it: pid and the time this module was first imported (a pid alone is
-#: reused across restarts, a container's pid 1 every time). No secret.
-_PROCESS = {"pid": os.getpid(), "started": datetime.now(timezone.utc).isoformat(timespec="microseconds")}
+#: Why an entry went, as `_Holder._gone` records it.
+GONE_EXPIRED = "expired"
+GONE_CLEARED = "cleared"
+#: This process, as the run row's marker records it: pid and the time this process first asked who it is (a pid alone
+#: is reused across restarts, a container's pid 1 every time). Computed lazily and cached per `os.getpid()` (fix round
+#: 2, F5): a worker forked after import is a process of its own, never its parent. No secret.
+_PROCESS: dict = {}
+_PROCESS_LOCK = threading.Lock()
 
 
 def process_identity() -> dict:
     """{pid, started}: which process holds the credentials it was given. Recorded on the marker; never secret."""
-    return dict(_PROCESS)
+    pid = os.getpid()
+    with _PROCESS_LOCK:
+        if _PROCESS.get("pid") != pid:
+            _PROCESS.clear()
+            _PROCESS.update(pid=pid, started=datetime.now(timezone.utc).isoformat(timespec="microseconds"))
+        return dict(_PROCESS)
 
 
 def configured_ttl() -> float:
@@ -100,7 +111,7 @@ class _Holder:
         self._clock = clock
         self._lock = threading.Lock()
         self._entries: dict[str, RunCredential] = {}
-        self._expired: dict[str, float] = {}            # instance GUID -> when its entry was dropped at its TTL
+        self._gone: dict[str, str] = {}                 # instance GUID -> why its entry went (expired / cleared)
         self._pending: dict[tuple[str, str], int] = {}  # (slug, definition) -> starts in flight
 
     def __repr__(self) -> str:
@@ -109,18 +120,22 @@ class _Holder:
 
     __str__ = __repr__
 
+    def _forget(self, key: str, why: str) -> None:
+        self._gone.pop(key, None)
+        self._gone[key] = why
+        while len(self._gone) > _EXPIRED_MEMORY:
+            del self._gone[next(iter(self._gone))]
+
     def _expire(self, now: float) -> None:
         for key in [k for k, v in self._entries.items() if v.expires_at <= now]:
             del self._entries[key]
-            self._expired[key] = now
-        while len(self._expired) > _EXPIRED_MEMORY:
-            del self._expired[next(iter(self._expired))]
+            self._forget(key, GONE_EXPIRED)
 
-    def expired(self, instance_guid: str) -> bool:
+    def gone(self, instance_guid: str) -> str:
         key = (instance_guid or "").strip()
         with self._lock:
             self._expire(self._clock())
-            return bool(key) and key in self._expired
+            return self._gone.get(key, "") if key else ""
 
     def begin_start(self, slug: str, definition: str) -> None:
         key = ((slug or "").strip(), (definition or "").strip())
@@ -157,7 +172,7 @@ class _Holder:
             self._expire(now)
             self._entries[key] = RunCredential(user=user.strip(), password=pwd, starter=starter.strip(),
                                                expires_at=now + seconds)
-            self._expired.pop(key, None)
+            self._gone.pop(key, None)
 
     def take(self, instance_guid: str) -> RunCredential | None:
         key = (instance_guid or "").strip()
@@ -170,8 +185,9 @@ class _Holder:
     def clear(self, instance_guid: str) -> None:
         key = (instance_guid or "").strip()
         with self._lock:
-            self._entries.pop(key, None)
             self._expire(self._clock())
+            if self._entries.pop(key, None) is not None:
+                self._forget(key, GONE_CLEARED)
 
     def _clear_all(self) -> None:
         with self._lock:
@@ -201,7 +217,13 @@ def clear(instance_guid: str) -> None:
 
 def expired(instance_guid: str) -> bool:
     """Whether this process held a credential for this instance and dropped it at its TTL. Never the credential."""
-    return _HOLDER.expired(instance_guid)
+    return _HOLDER.gone(instance_guid) == GONE_EXPIRED
+
+
+def cleared(instance_guid: str) -> bool:
+    """Whether this process held a credential for this instance and cleared it (the run read as over, or Cancel run).
+    Never the credential."""
+    return _HOLDER.gone(instance_guid) == GONE_CLEARED
 
 
 @contextmanager

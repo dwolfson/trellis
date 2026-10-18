@@ -132,6 +132,9 @@ async def run_native_survey(entity_type: str, slug: str, body: RunRequest, reque
 
     try:
         state = await asyncio.to_thread(_do)
+    except nsr.NativeSurveyNotStarted as exc:
+        # Fix round 2, F2: the start entry could not be written, so Egeria was never asked.
+        raise HTTPException(status_code=503, detail=str(exc))
     except nsr.NativeSurveyBusy as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except nsr.NativeSurveyCannotRun as exc:
@@ -153,8 +156,15 @@ async def run_native_survey(entity_type: str, slug: str, body: RunRequest, reque
                  f"engine action {state['engine_action_guid']}"
                  + (f" · as {run_credential[0]} (this run)" if run_credential is not None else "")),
         detail=detail)
-    return {"run": state, "surveys": await asyncio.to_thread(
-        lambda: nsr.native_survey_rows(registry, entity_type, slug, tech, **reader))}
+    # Fix round 2, F3: Egeria has started the run. A registry that fails while the rows are read must not turn that into
+    # a 500 the page reads as "not started": the answer says started, with no rows (the page reads them again).
+    try:
+        surveys = await asyncio.to_thread(lambda: nsr.native_survey_rows(registry, entity_type, slug, tech, **reader))
+    except Exception as exc:  # noqa: BLE001 -- the start stands; the rows are read again later
+        log.warning("native survey %s started on %s; its rows could not be read (%s)",
+                    body.process_qualified_name, slug, nsr._short_error(exc))
+        surveys = None
+    return {"run": state, "surveys": surveys}
 
 
 @router.post("/{entity_type}/{slug}/check")

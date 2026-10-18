@@ -133,3 +133,27 @@ test('every word is in one block (designer placeholders, Q3 open)', () => {
   assert.equal(w.dialogSubtitle, "Egeria runs this definition; RE's own steps use this credential once; it is not stored");
   assert.equal(w.capabilityNotAssessed, "not assessed for this run's credential");
 });
+
+test('a start whose marker was not recorded shows a warn cue with its words, never the plain "started" tick', async () => {
+  const { state } = await import('/static/next/app.js');
+  state.resourceType = 'db';
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({
+    run: { state: 'submitted', engine_action_guid: 'pi-1',
+      run_credential_marker_error: 'started; one-run credential marker not recorded (registry gone)' },
+    surveys: null }) });
+  const host = document.createElement('div');
+  host.innerHTML = ns.coordinateControlHtml(cand({}));
+  document.body.appendChild(host);
+  ns.bindCoordinateControls(host, 'coco_pharma');
+  host.querySelector('[data-coordinate-egeria]').click();
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  const b = host.querySelector('[data-coordinate-egeria]');
+  const cue = b.querySelector('[data-coordinate-marker-warn]');
+  assert.ok(cue, 'the warn cue is drawn');
+  assert.match(cue.className, /text-state-warn/);
+  assert.equal(cue.textContent, ns.RUN_CREDENTIAL_WORDS.markerNotRecorded);
+  assert.match(b.textContent, /◐/);
+  assert.doesNotMatch(b.innerHTML, /text-state-ok/);
+  assert.match(b.title, /marker not recorded/);
+});

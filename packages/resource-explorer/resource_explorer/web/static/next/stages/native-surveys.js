@@ -120,6 +120,8 @@ export const RUN_CREDENTIAL_WORDS = {
   lost: 'this Resource Explorer process no longer holds the one-run credential (restarted, timed out, or the step ran in another process)',
   // PLACEHOLDER: the stored login's capability probe says nothing about the one-run credential.
   capabilityNotAssessed: 'not assessed for this run\'s credential',
+  // PLACEHOLDER: Egeria started the run, the credential is held, and the run row's marker could not be written.
+  markerNotRecorded: 'started · the one-run credential\'s marker wasn\'t recorded',
 };
 
 /** "ran as <user> (scope)": the same form RE's own override runs show (`analysisRanAsHtml`, app.js). */
@@ -901,10 +903,15 @@ export function bindCoordinateControls(el, slug, { after = null } = {}) {
       const res = await runNativeSurvey(slug, qn, { entityType: apiEntityType(state.resourceType), credential });
       const run = (res && res.run) || {};
       const started = COORD_IN_FLIGHT.has(String(run.state || '')) || run.state === 'complete' || run.state === 'partial';
-      b.innerHTML = started
-        ? '<span class="text-state-ok" aria-hidden="true">●</span> started'
-        : `<span class="text-state-warn" aria-hidden="true">✗</span> ${esc(run.state || 'not started')}`;
-      b.title = run.line || run.message || (run.engine_action_guid ? `process ${run.engine_action_guid}` : '');
+      // Egeria started it and the run row's marker was not written: a warn cue with its words, never the plain tick
+      // (the run line cannot yet say this run asked for a one-run credential).
+      const unmarked = run.run_credential_marker_error;
+      b.innerHTML = unmarked
+        ? `<span class="font-glyph text-state-warn" aria-hidden="true">◐</span> <span data-coordinate-marker-warn class="text-state-warn">${esc(RUN_CREDENTIAL_WORDS.markerNotRecorded)}</span>`
+        : started
+          ? '<span class="text-state-ok" aria-hidden="true">●</span> started'
+          : `<span class="text-state-warn" aria-hidden="true">✗</span> ${esc(run.state || 'not started')}`;
+      b.title = unmarked || run.line || run.message || (run.engine_action_guid ? `process ${run.engine_action_guid}` : '');
       if (typeof after === 'function') after();
     } catch (err) {
       b.disabled = false;
