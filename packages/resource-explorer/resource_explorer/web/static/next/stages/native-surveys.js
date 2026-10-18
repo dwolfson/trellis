@@ -27,7 +27,7 @@ import { ago, localTime, storedCopyWords } from '/static/next/format.js';
 import { stateEntry } from '/static/next/glyphs.js';
 import {
   getNativeSurveys, runNativeSurvey, refreshNativeSurveys, getNativeSurveyReport,
-  registerWithEgeria, checkNativeSurveyPointers, cancelNativeAction,
+  registerWithEgeria, checkNativeSurveyPointers, cancelNativeAction, cancelProcessRun,
 } from '/static/re-api.js';
 import { state, esc, apiEntityType } from '/static/next/app.js';
 import { openCredentialForm } from '/static/next/credential-change.js';
@@ -115,7 +115,8 @@ export function processLineHtml(r) {
       >step ${n} report ›</button>`).join(' · ');
   const waiting = r.waiting_for ? ` · <span class="text-state-warn" data-native-waiting><span class="font-glyph" aria-hidden="true">◌</span> ${esc(r.waiting_for)}</span>` : '';
   const err = r.error ? ` · <span class="text-state-warn">last read failed: ${esc(r.error)}</span>` : '';
-  const tone = r.state === 'failed' ? 'text-state-warn' : '';
+  // A run Egeria cancelled is a decision, not a fault: the neutral tone the ⊘ cancelled glyph has, never the warn one.
+  const tone = r.state === 'failed' ? (r.egeria_status === 'CANCELLED' ? 'text-ink-muted' : 'text-state-warn') : '';
   // Where it started, in the reader's local time (the words carry who; the time is drawn from the row's own stored
   // submission time, so no UTC date is ever shown).
   const when = r.submitted_at ? localTime(r.submitted_at) : '';
@@ -355,13 +356,107 @@ export function nativeSurveysSectionHtml(rows) {
   </div>`;
 }
 
+/** "a, b and c" */
+const listWords = (xs) => (xs.length < 2 ? (xs[0] || '') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
+/** HH:MM in the reader's local time, from a stored UTC instant. */
+const hhmm = (iso) => {
+  if (!iso) return '';
+  const t = Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(iso) ? iso : `${iso}Z`);
+  return Number.isNaN(t) ? '' : new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+};
+const stepWords = (s) => `step ${s.step}, ${s.label}`;
+
+/** The words of Cancel on a definition's coordinated run (§2.4): the designer's (Q4, 2026-10-17). Every word the
+ *  control and its cues draw is here, so one edit changes them. Each takes only what the server's row gives. */
+export const PROCESS_CANCEL_WORDS = {
+  button: 'Cancel run',
+  confirm: (ctx) => {
+    const r = ctx && ctx.running;
+    if (!r) return 'Cancel this run? The running step finishes but publishes nothing, and no later step starts. Finished steps keep their reports.';
+    // Step identifiers (postgres_column_profile) stay exactly as written: only the word "step" opens a sentence.
+    const later = ctx.later && ctx.later.length ? `, and ${listWords(ctx.later)} won't start` : '';
+    const kept = ctx.finished && ctx.finished.length ? ` ${listWords(ctx.finished)} keep${ctx.finished.length === 1 ? 's its report' : ' their reports'}.` : '';
+    return `Cancel this run? S${stepWords(r).slice(1)}, finishes but publishes nothing${later}.${kept}`;
+  },
+  confirmYes: 'Yes, cancel',
+  confirmNo: 'keep running',
+  pending: (who, at, ctx) => `cancel requested by ${who} · ${hhmm(at)} · waiting for Egeria${ctx && ctx.running ? ` · ${stepWords(ctx.running)}, finishes first` : ''}`,
+  finishing: (step) => `cancelled · ${stepWords(step)}, is finishing and will publish nothing`,
+  done: (c) => `cancelled by ${c.by} · ${hhmm(c.at)} · ${c.finished} of ${c.of} steps finished`,
+  doneOutside: (c) => `cancelled in Egeria · ${hhmm(c.at)} · not from Resource Explorer`,
+  tooLate: 'too late to cancel · the run had already finished',
+  notPermitted: (who, reason) => `Egeria won't let ${who} cancel this run · ${reason}`,
+  refused: (reason) => `Egeria refused the cancel: ${reason}`,
+  unsent: "cancel not sent · couldn't reach Egeria · try again",
+  outside: 'started outside Resource Explorer',
+  outsideHover: 'RE can cancel only runs it started; cancel this one in Egeria',
+};
+
+/** The cue under a definition's run line, from the server's row only: `run.cancel` (the press's proof row, and the
+ *  read-back for done) and `process_cancel` (finishing, outside). Never from the click. */
+export function processCancelCueHtml(row) {
+  const r = row.run || {};
+  const c = r.cancel || {};
+  const pc = row.process_cancel || {};
+  const w = PROCESS_CANCEL_WORDS;
+  const who = (by) => (by && by === pc.viewer ? 'you' : (by || 'someone'));
+  const line = (attr, tone, glyph, words, title = '') => `<div class="mt-[2px] text-provenance ${tone}" ${attr}${
+    title ? ` title="${esc(title)}"` : ''}>${glyph ? `<span class="font-glyph" aria-hidden="true">${glyph}</span> ` : ''}${esc(words)}</div>`;
+  if (c.state === 'done') {
+    if (pc.finishing) return line('data-process-cancel-finishing', 'text-ink-muted', '⊘', w.finishing(pc.finishing));
+    return c.outside ? line('data-process-cancel-done-outside', 'text-ink-muted', '⊘', w.doneOutside(c))
+      : line('data-process-cancel-done', 'text-ink-muted', '⊘', w.done(c));
+  }
+  if (c.state === 'pending') return line('data-process-cancel-pending', 'text-ink-muted', '◔', w.pending(who(c.by), c.at, r.cancel_context));
+  if (c.state === 'too_late' || (c.state === 'refused' && c.kind === 'too_late')) {
+    return line('data-process-cancel-too-late', 'text-ink-muted', '', w.tooLate);
+  }
+  if (c.state === 'refused') {
+    return c.kind === 'not_permitted'
+      ? line('data-process-cancel-refused', 'text-state-warn', '◐', w.notPermitted(who(c.by), c.reason || ''))
+      : line('data-process-cancel-refused', 'text-state-warn', '◐', w.refused(c.reason || ''));
+  }
+  // Not sent, or sent with no answer (a timeout): the same words until a read-back shows its effect.
+  if (c.state === 'unsent') return line('data-process-cancel-unsent', 'text-state-warn', '◐', w.unsent);
+  if (pc.outside) return line('data-process-cancel-outside', 'text-ink-muted', '', w.outside, w.outsideHover);
+  return '';
+}
+
+/** A refusal RE's own gate gave before Egeria was asked (403 / 409, or 502 when the fresh read failed), per process
+ *  instance: shown in place on the line and kept across `checkNow` repaints until the next press of Cancel. */
+const gateRefusals = new Map();
+function gateRefusalHtml(guid) {
+  const words = guid && gateRefusals.get(guid);
+  return words ? `<span class="block text-state-warn" data-process-cancel-error>${esc(words)}</span>` : '';
+}
+
+/** "Cancel run" on its own line under a definition's coordinated run line: only when the server offers it to THIS
+ *  reader (a run RE started, its starter or an admin, while it runs: `row.process_cancel.offered`). The confirm is a
+ *  state of the line, in place, never a dialog. */
+export function processCancelControlHtml(row) {
+  const r = row.run || {};
+  const guid = r.engine_action_guid;
+  if (!guid || !(row.process_cancel && row.process_cancel.offered === true)) return '';
+  const w = PROCESS_CANCEL_WORDS;
+  return `<div class="mt-[2px]" data-process-cancel-box="${esc(guid)}">
+    <button type="button" data-process-cancel="${esc(guid)}"
+      class="cursor-pointer border-0 bg-transparent p-0 text-provenance text-accent-ink underline">${esc(w.button)}</button>
+    <span hidden data-process-cancel-confirm class="text-provenance text-ink">
+      <span class="font-glyph" aria-hidden="true">◌</span> ${esc(w.confirm(r.cancel_context))}
+      <button type="button" data-process-cancel-yes="${esc(guid)}" class="cursor-pointer rounded-sm border border-state-warn bg-transparent px-2 text-provenance text-state-warn">${esc(w.confirmYes)}</button>
+      <button type="button" data-process-cancel-no class="cursor-pointer border-0 bg-transparent p-0 text-provenance text-ink-muted underline">${esc(w.confirmNo)}</button>
+    </span>
+    <span hidden data-process-cancel-ack class="text-provenance text-ink-muted"></span>${gateRefusalHtml(guid)}</div>`;
+}
+
 /** A definition card's run line: the latest run, whoever coordinated it, with the same words either way (the
  *  server's derived row, not re-derived here). `stopped`: RE gave up following it (state word stays, with "check now"). */
 export function definitionRunLineHtml(row, { stopped = false } = {}) {
   const g = stateGlyph(glyphFor(row.run || { state: 'not_run' }, row.runnable, row));
   return `<div class="mt-[2px] text-provenance text-ink-muted" data-def-run-line="${esc(row.qualified_name)}">
     <span class="${g.tone}" title="${esc(g.word)}" aria-label="${esc(g.word)}">${g.glyph}</span>
-    <span data-native-status>${nativeSurveyStatusHtml(row)}</span>${stopped && row.in_flight ? stoppedFollowingHtml(row) : ''}</div>`;
+    <span data-native-status>${nativeSurveyStatusHtml(row)}</span>${stopped && row.in_flight ? stoppedFollowingHtml(row) : ''}${processCancelCueHtml(row)}${processCancelControlHtml(row)}${
+  row.process_cancel && row.process_cancel.offered === true ? '' : gateRefusalHtml((row.run || {}).engine_action_guid)}</div>`;
 }
 
 const RUN_STATE_WORD = { complete: 'complete', partial: 'partial', failed: 'failed', running: 'running', submitted: 'submitted' };
@@ -790,6 +885,40 @@ export function bindRunLineControls(root, slug, { checkNow = null } = {}) {
     openCredentialForm(slot, p, {
       onSaved: () => { slot.innerHTML = '<span class="text-ink" data-native-credential-saved>credential saved · re-run to use it</span>'; },
     });
+  }));
+  // Cancel on a definition's coordinated run (§2.4): press -> confirm -> the request. The line then repaints from the
+  // server's rows only ("cancelling…" from the press's proof row, ⊘ cancelled from Egeria's read-back); a refusal is
+  // Egeria's reason on the line. `checkNow` repaints; nothing here decides a state.
+  root.querySelectorAll('[data-process-cancel]').forEach((b) => once(b, () => {
+    const box = b.closest('[data-process-cancel-box]');
+    gateRefusals.delete(b.dataset.processCancel);       // the next press clears the last gate refusal
+    box.querySelectorAll('[data-process-cancel-error]').forEach((e) => e.remove());
+    b.hidden = true;
+    const conf = box.querySelector('[data-process-cancel-confirm]');
+    conf.hidden = false;
+    setTimeout(() => { if (box.isConnected && !box.dataset.sent) { conf.hidden = true; b.hidden = false; } }, CONFIRM_MS);
+  }));
+  root.querySelectorAll('[data-process-cancel-no]').forEach((b) => once(b, () => {
+    const box = b.closest('[data-process-cancel-box]');
+    box.querySelector('[data-process-cancel-confirm]').hidden = true;
+    box.querySelector('[data-process-cancel]').hidden = false;
+  }));
+  root.querySelectorAll('[data-process-cancel-yes]').forEach((b) => once(b, async () => {
+    const box = b.closest('[data-process-cancel-box]');
+    const ack = box.querySelector('[data-process-cancel-ack]');
+    box.dataset.sent = '1';
+    box.querySelector('[data-process-cancel-confirm]').hidden = true;
+    ack.hidden = false;
+    ack.innerHTML = '<span class="font-glyph" aria-hidden="true">◔</span> …';   // the press is seen at once; the words come from the row
+    const guid = b.dataset.processCancelYes;
+    try {
+      await cancelProcessRun(slug, guid, { entityType: apiEntityType(state.resourceType) });
+    } catch (err) {
+      // RE's gate said no before Egeria was asked: kept per run, so the repaint below draws it in place.
+      if ([403, 409, 502].includes(err && err.status)) gateRefusals.set(guid, err.message || '');
+      ack.innerHTML = `<span class="text-state-warn" data-process-cancel-error>${esc(err.message || '')}</span>`;
+    }
+    if (checkNow) await checkNow();      // the server's rows: its words (pending, refused, not sent), never this click's
   }));
   // "check now" on a run RE stopped following: reads once and resumes following if it is still going.
   root.querySelectorAll('[data-native-check-now]').forEach((b) => once(b, async () => {

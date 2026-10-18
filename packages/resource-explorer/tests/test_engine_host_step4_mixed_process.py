@@ -775,7 +775,7 @@ def test_7_step_2_runs_as_the_engine_host_daemon_for_the_requester(staleness_ins
     _sweep(reg)
     _run_queue_once(reg)
     daemon = _daemon_user()
-    sweep_reads = {"get_metadata_guid_by_unique_name", "get_active_engine_actions"}
+    sweep_reads = {"get_metadata_guid_by_unique_name", "get_approved_engine_actions"}
     mine = [c for c in egeria.calls if c[0] != "ActorManager" and c[1] not in sweep_reads]
     methods = {m for _, m, _ in mine}
     assert {"get_all_related_elements", "claim_engine_action", "get_asset_by_guid", "create_asset",

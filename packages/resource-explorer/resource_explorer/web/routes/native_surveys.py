@@ -15,7 +15,7 @@ import asyncio
 import json
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from resource_explorer import native_survey_run as nsr
@@ -44,6 +44,21 @@ def _technology_type(entity_type: str) -> str:
     return get_adapter(entity_type).egeria_technology_type_name
 
 
+def _reader(request: Request) -> dict:
+    """Who is reading, read HERE in the request: the signed-in person and whether they are an admin. It decides only
+    whether a definition's coordinated run offers Cancel to them (owner Q2); a reader that cannot be told is nobody."""
+    from resource_explorer.config import get_config
+    from resource_explorer.run_queue import requested_by
+    from resource_explorer.web import admin_auth
+
+    try:
+        return {"viewer": requested_by(),
+                "viewer_is_admin": bool(admin_auth.is_admin_request(request, get_config().feedback))}
+    except Exception as exc:  # noqa: BLE001 -- nobody: no Cancel is offered
+        log.warning("native surveys: could not tell who is reading (%s); no Cancel offered", exc)
+        return {"viewer": "", "viewer_is_admin": False}
+
+
 def _check(entity_type: str, slug: str, registry: ProjectRegistry) -> str:
     if entity_type not in _ENTITY_TYPES:
         raise HTTPException(status_code=404,
@@ -54,23 +69,25 @@ def _check(entity_type: str, slug: str, registry: ProjectRegistry) -> str:
 
 
 @router.get("/{entity_type}/{slug}")
-async def list_native_surveys(entity_type: str, slug: str) -> dict:
+async def list_native_surveys(entity_type: str, slug: str, request: Request) -> dict:
     """The native surveys for this resource, each with what RE can do about it
     and its derived state. Registry-only: no Egeria call."""
     registry = ProjectRegistry()
+    reader = _reader(request)      # who reads, read HERE in the request
     tech = _check(entity_type, slug, registry)
-    rows = await asyncio.to_thread(nsr.native_survey_rows, registry, entity_type, slug, tech)
+    rows = await asyncio.to_thread(lambda: nsr.native_survey_rows(registry, entity_type, slug, tech, **reader))
     return {"technology_type": tech, "surveys": rows}
 
 
 @router.post("/{entity_type}/{slug}/run")
-async def run_native_survey(entity_type: str, slug: str, body: RunRequest) -> dict:
+async def run_native_survey(entity_type: str, slug: str, body: RunRequest, request: Request) -> dict:
     """Submit one native survey to Egeria and prove the dispatch by reading the
     engine action back. Returns as soon as Egeria has accepted it -- a native
     survey can take many minutes, so completion is `refresh`'s job."""
     from resource_explorer.run_queue import requested_by
 
     registry = ProjectRegistry()
+    reader = _reader(request)      # who reads, read HERE in the request
     tech = _check(entity_type, slug, registry)
     submitted_by = requested_by()      # read HERE, in the request, then passed down
     from resource_explorer.web.routes.curate import authorize_resource_write
@@ -100,17 +117,18 @@ async def run_native_survey(entity_type: str, slug: str, body: RunRequest) -> di
         detail={"engine_action_guid": state["engine_action_guid"],
                 "submitted_by": submitted_by})
     return {"run": state, "surveys": await asyncio.to_thread(
-        nsr.native_survey_rows, registry, entity_type, slug, tech)}
+        lambda: nsr.native_survey_rows(registry, entity_type, slug, tech, **reader))}
 
 
 @router.post("/{entity_type}/{slug}/check")
-async def check_native_survey_pointers(entity_type: str, slug: str) -> dict:
+async def check_native_survey_pointers(entity_type: str, slug: str, request: Request) -> dict:
     """Read the stored Egeria pointers (the database asset, the server) back from Egeria and return the
     rows with what that read established. One read per stored pointer; nothing is written. A pointer is
     reported gone only when Egeria answered that no such element exists -- a failed read is 'unreadable'."""
     from resource_explorer import catalog_and_survey as cas
 
     registry = ProjectRegistry()
+    reader = _reader(request)      # who reads, read HERE in the request
     tech = _check(entity_type, slug, registry)
 
     def _do() -> dict:
@@ -127,7 +145,7 @@ async def check_native_survey_pointers(entity_type: str, slug: str) -> dict:
                 declared = nsr.check_declared(port, entity_type, tech)
         return {"technology_type": tech, "pointers": pointers, "declared": declared,
                 "surveys": nsr.native_survey_rows(registry, entity_type, slug, tech, pointers=pointers,
-                                                  declared=declared)}
+                                                  declared=declared, **reader)}
 
     return await asyncio.to_thread(_do)
 
@@ -139,7 +157,8 @@ class RegisterRequest(BaseModel):
 
 
 @router.post("/{entity_type}/{slug}/register")
-async def register_with_egeria(entity_type: str, slug: str, body: RegisterRequest = RegisterRequest()) -> dict:
+async def register_with_egeria(entity_type: str, slug: str, request: Request,
+                               body: RegisterRequest = RegisterRequest()) -> dict:
     """The one press that WRITES to Egeria here: register this database's SERVER (adopting it if it is
     already there), submit Egeria's server survey, and have Egeria's own process create the database.
     Optional -- nothing else in RE needs it. See `catalog_and_survey.py` for each write and read-back."""
@@ -147,6 +166,7 @@ async def register_with_egeria(entity_type: str, slug: str, body: RegisterReques
     from resource_explorer.run_queue import requested_by
 
     registry = ProjectRegistry()
+    reader = _reader(request)      # who reads, read HERE in the request
     tech = _check(entity_type, slug, registry)
     submitted_by = requested_by()       # read HERE, in the request, then passed down
     from resource_explorer.web.routes.curate import authorize_resource_write
@@ -179,15 +199,16 @@ async def register_with_egeria(entity_type: str, slug: str, body: RegisterReques
                 "secrets_file_reprojected": bool(result["projected"]["written"]),
                 "start_again": body.start_again, "submitted_by": submitted_by})
     return {"registered": result, "surveys": await asyncio.to_thread(
-        nsr.native_survey_rows, registry, entity_type, slug, tech)}
+        lambda: nsr.native_survey_rows(registry, entity_type, slug, tech, **reader))}
 
 
 @router.post("/{entity_type}/{slug}/refresh")
-async def refresh_native_surveys(entity_type: str, slug: str) -> dict:
+async def refresh_native_surveys(entity_type: str, slug: str, request: Request) -> dict:
     """Read back every in-flight native survey on this resource, read-only,
     and return the rows as they now stand. The UI polls this while anything is
     in flight; with nothing in flight it is a registry read and no Egeria call."""
     registry = ProjectRegistry()
+    reader = _reader(request)      # who reads, read HERE in the request
     tech = _check(entity_type, slug, registry)
 
     def _do() -> list[dict]:
@@ -196,13 +217,13 @@ async def refresh_native_surveys(entity_type: str, slug: str) -> dict:
         if any(r["in_flight"] for r in nsr.native_survey_rows(registry, entity_type, slug, tech)):
             with nsr.port_session(_port()) as port:
                 nsr.refresh_resource(registry, port, entity_type, slug)
-        return nsr.native_survey_rows(registry, entity_type, slug, tech)
+        return nsr.native_survey_rows(registry, entity_type, slug, tech, **reader)
 
     return {"technology_type": tech, "surveys": await asyncio.to_thread(_do)}
 
 
 @router.post("/{entity_type}/{slug}/egeria-actions/{engine_action_guid}/cancel")
-async def cancel_egeria_action(entity_type: str, slug: str, engine_action_guid: str) -> dict:
+async def cancel_egeria_action(entity_type: str, slug: str, engine_action_guid: str, request: Request) -> dict:
     """Cancel one of this resource's waiting or running Egeria survey actions. An Egeria WRITE, and a person's
     direct act, so it runs as the signed-in CALLER (Brief I; never the daemon): nobody signed in is a 401.
 
@@ -216,6 +237,7 @@ async def cancel_egeria_action(entity_type: str, slug: str, engine_action_guid: 
     from resource_explorer.run_queue import requested_by
 
     registry = ProjectRegistry()
+    reader = _reader(request)      # who reads, read HERE in the request
     _check(entity_type, slug, registry)
     Caller()                                  # NoCallerIdentity / CallerTokenExpired -> 401 (not logged)
     person = requested_by()                   # read HERE, in the request, as the run route does
@@ -285,7 +307,86 @@ async def cancel_egeria_action(entity_type: str, slug: str, engine_action_guid: 
                 "access_basis": decision.basis, "cancelled_by": person})
     tech = _technology_type(entity_type)
     return {**out, "access_basis": decision.basis, "surveys": await asyncio.to_thread(
-        nsr.native_survey_rows, registry, entity_type, slug, tech)}
+        lambda: nsr.native_survey_rows(registry, entity_type, slug, tech, **reader))}
+
+
+@router.post("/{entity_type}/{slug}/process-runs/{instance_guid}/cancel")
+async def cancel_process_run(entity_type: str, slug: str, instance_guid: str, request: Request) -> dict:
+    """Cancel an Egeria-coordinated run of an RE Survey Definition that RE started (design
+    DESIGN-ENGINE-HOST-GOVERNANCE-ENGINE-API.md §2.4). An Egeria WRITE, made as the signed-in person who pressed it
+    (owner rule, 2026-10-14: actions run as the initiating user), never the service account.
+
+    Before Egeria hears of it, from RE's own rows (`nsr.process_cancel_refusal`, the same decision the button uses):
+    sign-in (401); the GUID is a process instance RE recorded for THIS resource (404); RE started the run (409, owner
+    Q3, admins included); the person is its starter or an admin (403, owner Q2); it is in flight (409). Then a FRESH
+    read-back of the instance (`nsr.fresh_cancel_gate`): a read that fails is 502 ("cancel not sent · couldn't reach
+    Egeria"), a run it shows over is 409 ("too late"), and neither sends anything. Then
+    `cancel_governance_action_process`, the proof row (`declared.cancel`) and one read-back. The answer says
+    `cancelled` only when that read-back shows CANCELLED; a 4xx is Egeria's refusal (`refused_kind`: not_permitted
+    only from 401/403 or UserNotAuthorized, too_late when the read-back shows the run over, else refused); 5xx, 404 or
+    no answer is `unsent`; a timeout is `unknown` and its read-back decides. Each is stored on the row as the press's
+    proof and drawn from it."""
+    from resource_explorer.egeria_clients import Caller
+
+    registry = ProjectRegistry()
+    reader = _reader(request)      # who reads, read HERE in the request
+    tech = _check(entity_type, slug, registry)
+    Caller()                                  # NoCallerIdentity / CallerTokenExpired -> 401 (not logged)
+    person = reader["viewer"]
+
+    def refuse(process_qn: str, why: str) -> None:
+        _log_activity(registry, entity_type, slug, process_qn, status="error",
+                      summary=f"Cancel of Egeria process run {instance_guid} refused: {why}",
+                      detail={"process_instance_guid": instance_guid, "cancelled_by": person, "refused": why})
+
+    try:
+        run = nsr.own_action_run(registry, entity_type, slug, instance_guid)
+    except nsr.NativeActionNotOurs as exc:
+        refuse("", str(exc))
+        raise HTTPException(status_code=404, detail=str(exc))
+    process_qn = run.get("executor_ref") or ""
+    refusal = nsr.process_cancel_refusal(run, viewer=person, viewer_is_admin=reader["viewer_is_admin"])
+    if refusal is not None:
+        code, why = refusal
+        refuse(process_qn, why)
+        raise HTTPException(status_code=code, detail=why)
+
+    def _do() -> dict:
+        with nsr.port_session(_port()) as port:
+            # A fresh read-back first, never the stored state: no cancel is sent to a run Egeria already finished,
+            # and a read that fails sends nothing (review round 1, item 4).
+            gate = nsr.fresh_cancel_gate(registry, port, entity_type, slug, run)
+            if gate is not None:
+                return {"gate": gate}
+            return nsr.cancel_process_run(registry, port, entity_type, slug, run, by=person)
+
+    out = await asyncio.to_thread(_do)
+    if "gate" in out:
+        code, why = out["gate"]
+        refuse(process_qn, why)
+        raise HTTPException(status_code=code, detail=why)
+    if out["unsent"] and not out.get("unknown"):
+        summary = f"Cancel of process run {instance_guid} on {slug} not sent: could not reach Egeria ({out['unsent']})"
+    elif out.get("unknown"):
+        summary = (f"Cancel of process run {instance_guid} on {slug}: Egeria's answer is unknown ({out['unsent']}); "
+                   + ("its read-back now shows CANCELLED" if out["cancelled"] else "its read-back decides"))
+    elif out["refused"]:
+        summary = f"Egeria refused the cancel of process run {instance_guid} on {slug}: {out['refused']}"
+    elif out["cancelled"]:
+        summary = f"Cancelled Egeria process run {instance_guid} on {slug}: Egeria now says CANCELLED"
+    else:
+        summary = (f"Asked Egeria to cancel process run {instance_guid} on {slug}; accepted, its read-back does not "
+                   "show CANCELLED yet")
+    _log_activity(registry, entity_type, slug, process_qn,
+                  status="ok" if out["cancelled"] else ("error" if out["refused"] or (out["unsent"] and not out.get("unknown"))
+                                                        else "unconfirmed"),
+                  summary=summary, detail={"process_instance_guid": instance_guid, "cancelled_by": person,
+                                           "accepted": out["accepted"], "refused": out["refused"],
+                                           "refused_kind": out["refused_kind"], "unsent": out["unsent"]})
+    return {"accepted": out["accepted"], "refused": out["refused"], "refused_kind": out["refused_kind"],
+            "unsent": out["unsent"], "unknown": bool(out.get("unknown")), "cancelled": out["cancelled"],
+            "surveys": await asyncio.to_thread(
+                lambda: nsr.native_survey_rows(registry, entity_type, slug, tech, **reader))}
 
 
 @router.get("/{entity_type}/{slug}/reports/{report_guid}")

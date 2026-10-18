@@ -212,6 +212,7 @@ class EgeriaSurveyPort(Protocol):
                  target_guid: str) -> str: ...
     def read_action(self, engine_action_guid: str) -> ActionRead: ...
     def cancel(self, engine_action_guid: str) -> None: ...
+    def cancel_process_run(self, process_instance_guid: str) -> None: ...
     def report_guid_for_action(self, engine_action_guid: str) -> str | None: ...
     def read_report(self, report_guid: str) -> ReportRead: ...
 
@@ -401,6 +402,14 @@ class PyegeriaSurveyPort:
         stops work already running is not verified. Whether it took effect is read back by the caller."""
         self._enter()
         self._get_curation().cancel_engine_action(engine_action_guid)
+
+    def cancel_process_run(self, process_instance_guid: str) -> None:
+        """Ask Egeria to cancel a governance action process instance (pyegeria 6.2.5
+        `AutomatedCuration.cancel_governance_action_process(process_instance_guid) -> None`; it did not move to the
+        Governance Engine view service). A WRITE, as the port's principal: the signed-in person who pressed Cancel
+        on a route (owner, 2026-10-14). Whether it took effect is read back by the caller."""
+        self._enter()
+        self._get_curation().cancel_governance_action_process(process_instance_guid)
 
     def report_guid_for_action(self, engine_action_guid: str) -> str | None:
         self._enter()
@@ -984,7 +993,8 @@ def _processes_for_rows(entity_type: str, technology_type: str) -> list[NativePr
 
 
 def native_survey_rows(registry, entity_type: str, slug: str, technology_type: str, *,
-                       pointers: dict | None = None, declared: dict | None = None) -> list[dict]:
+                       pointers: dict | None = None, declared: dict | None = None,
+                       viewer: str = "", viewer_is_admin: bool = False) -> list[dict]:
     """One row per native survey process known for this resource's technology
     type: what it is, whether RE can run it (and if not, why), and the state
     derived from the newest persisted run. Registry-only -- no Egeria call --
@@ -995,7 +1005,10 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
     claims anything about whether a stored pointer still resolves.
 
     `declared` ({process qualifiedName: True/False}) is what a caller READ from Egeria about the mixed processes
-    (`check_declared`); only then can a mixed row say "process not declared"."""
+    (`check_declared`); only then can a mixed row say "process not declared".
+
+    `viewer` / `viewer_is_admin` (the signed-in person reading, and whether they are an admin) decide only whether a
+    definition's coordinated run offers Cancel to THIS reader (`process_cancel_refusal`, owner Q2/Q3)."""
     from resource_explorer import catalog_and_survey as cas
 
     entity = _resource_entity(registry, entity_type, slug)
@@ -1064,6 +1077,17 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
         if process.kind == KIND_RE_DEFINITION:
             # The same answer the definition's own card carries, so the row beside Egeria's other runs can press it.
             row["coordinated_by_egeria"] = coordinate_control(registry, entity_type, slug, process.qualified_name)
+            # §2.4: Cancel beside the run line, only for a run RE started, to its starter or an admin, while it runs.
+            refused = process_cancel_refusal(latest, derived, viewer=viewer, viewer_is_admin=viewer_is_admin) \
+                if latest else CANCEL_NOT_RE_STARTED
+            row["process_cancel"] = {
+                "offered": bool(latest) and refused is None,
+                # Q3, designer: a run RE did not start says so while it runs, in place of a control.
+                "outside": bool(latest) and refused == CANCEL_NOT_RE_STARTED and derived.get("state") in (SUBMITTED, RUNNING),
+                # Where a running step is being cancelled while RE still runs it (§2.4): "is finishing".
+                "finishing": _finishing_step(registry, derived),
+                # The reader, so a press's own words can say "you" (designer Q4).
+                "viewer": viewer}
         if process.target == "server" and entity is not None:
             row["discovered"] = cas.discovered_databases(registry, entity, latest)
         rows.append(row)
@@ -1125,7 +1149,108 @@ def _declared(run: dict) -> dict:
     return out if isinstance(out, dict) else {}
 
 
+#: §2.4 (DESIGN-ENGINE-HOST-GOVERNANCE-ENGINE-API.md): what a Cancel press on a definition's coordinated run left on
+#: its row (`declared.cancel`, the proof row), with Egeria's read-back. The words are the page's; these are the states.
+CANCEL_PENDING = "pending"          # Egeria accepted the cancel; its read-back has not shown CANCELLED yet, run in flight
+CANCEL_REFUSED = "refused"          # Egeria answered the cancel with a refusal (its reason is stored)
+CANCEL_DONE = "done"                # a read of the instance's actions shows Egeria recorded CANCELLED
+CANCEL_UNSENT = "unsent"            # Egeria could not be reached, or the answer is unknown (a timeout) and no read
+#                                     has shown its effect yet: drawn with the "couldn't reach Egeria" words
+CANCEL_TOO_LATE_STATE = "too_late"  # a press, then a read-back showing the run over without CANCELLED
+#: A refusal's kind. not_permitted ONLY from Egeria's own answer (HTTP 401/403, or a UserNotAuthorized message id),
+#: never from a read-back; any other 4xx refusal is `refused`. too_late is the read-back's (the run is over).
+CANCEL_TOO_LATE = "too_late"
+CANCEL_NOT_PERMITTED = "not_permitted"
+CANCEL_REFUSED_KIND = "refused"
+#: The press's stored `answer` values (`declared.cancel.answer`).
+ANSWER_ACCEPTED, ANSWER_REFUSED, ANSWER_UNREACHABLE, ANSWER_UNKNOWN = "accepted", "refused", "unreachable", "unknown"
+#: A run whose state is one of these is not over: a press on it may still take effect.
+_IN_FLIGHT = (SUBMITTED, RUNNING, UNREADABLE)
+
+
 def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict:
+    """`_derive_mixed_state`, plus `cancel` (§2.4) from the press's proof row and Egeria's read-back, never from the
+    press alone:
+
+    * Egeria read back CANCELLED: done. "by <who>" whenever ANY press of RE's is on the row for this instance (whatever
+      its answer: a timed-out or refused press may still have been the cancel); else outside RE, at the CANCELLED
+      step's own `completionTime` (Egeria's; none shown when it carried none, never RE's read time);
+    * the run is over without CANCELLED after a press that may have reached Egeria (accepted, refused other than
+      not-permitted, or unknown): too late;
+    * in flight: accepted -> pending; refused -> its kind; unreachable or unknown -> unsent (the unreachable words)."""
+    out = _derive_mixed_state(run, now=now)
+    press = _declared(run).get("cancel") if run else None
+    ours = isinstance(press, dict) and press.get("instance_guid") == (run or {}).get("engine_action_guid")
+    ctx = out.get("cancel_context") or {}
+    if out.get("cancelled"):
+        if ours:
+            out["cancel"] = {"state": CANCEL_DONE, "by": press.get("by", ""), "at": press.get("at", ""),
+                             "finished": ctx.get("finished_count", 0), "of": ctx.get("of", 0)}
+        else:
+            out["cancel"] = {"state": CANCEL_DONE, "outside": True, "at": _cancelled_at(out.get("steps")),
+                             "finished": ctx.get("finished_count", 0), "of": ctx.get("of", 0)}
+        return out
+    if not ours:
+        return out
+    answer = press.get("answer")
+    base = {"by": press.get("by", ""), "at": press.get("at", "")}
+    over = out.get("state") not in _IN_FLIGHT
+    kind = press.get("kind") or ""
+    if answer == ANSWER_REFUSED and kind == CANCEL_NOT_PERMITTED:
+        # Egeria's own "not permitted": it stays, whatever a read-back shows later.
+        out["cancel"] = {"state": CANCEL_REFUSED, **base, "reason": press.get("reason", ""), "kind": kind}
+    elif over and answer in (ANSWER_ACCEPTED, ANSWER_REFUSED, ANSWER_UNKNOWN):
+        out["cancel"] = {"state": CANCEL_TOO_LATE_STATE, **base}
+    elif over:
+        pass                               # never sent, and the run ended on its own: nothing to say
+    elif answer == ANSWER_ACCEPTED:
+        out["cancel"] = {"state": CANCEL_PENDING, **base}
+    elif answer == ANSWER_REFUSED:
+        out["cancel"] = {"state": CANCEL_REFUSED, **base, "reason": press.get("reason", ""),
+                         "kind": kind or CANCEL_REFUSED_KIND}
+    elif answer in (ANSWER_UNREACHABLE, ANSWER_UNKNOWN):
+        out["cancel"] = {"state": CANCEL_UNSENT, **base, "reason": press.get("reason", ""),
+                         "unknown": answer == ANSWER_UNKNOWN}
+    return out
+
+
+def _cancelled_at(steps) -> str:
+    """When Egeria cancelled the run: the CANCELLED step's own `completionTime` as Egeria recorded it, "" when the
+    read carried none (the line then shows no time, never RE's read time)."""
+    for s in steps or []:
+        if isinstance(s, dict) and s.get("status") == "CANCELLED" and s.get("completion_time"):
+            return str(s["completion_time"])
+    return ""
+
+
+def _cancel_context(steps: list[dict], process, stored) -> dict:
+    """What a Cancel would stop, named for the page's words (§2.4, designer Q4), from the stored steps only: the step
+    running now ({step, label}, or the one Egeria cancelled while RE still ran it: `cancelled_step`), the steps after it
+    not started, the finished ones, and the plan's size. Labels are the definition's; a step the definition no longer
+    has keeps its request type."""
+    labels = {st.request_type: (st.number, st.label) for st in (process.steps if process else [])}
+    if isinstance(stored, list) and stored:
+        plan = list(stored)
+    elif process is not None:
+        plan = [st.request_type for st in sorted(process.steps, key=lambda x: x.number)]
+    else:
+        plan = [s.get("request_type") or "" for s in steps]
+    status = {s.get("request_type"): s.get("status") for s in steps}
+
+    def named(i: int, rt: str) -> dict:
+        return {"step": i + 1, "label": labels.get(rt, (0, rt))[1]}
+
+    running = next((named(i, rt) for i, rt in enumerate(plan) if status.get(rt) in ACTIVE_STATUSES), None)
+    cancelled = next((named(i, rt) for i, rt in enumerate(plan) if status.get(rt) == "CANCELLED"), None)
+    pivot = running or cancelled
+    later = [named(i, rt)["label"] for i, rt in enumerate(plan)
+             if pivot and i + 1 > pivot["step"] and rt not in status]
+    finished = [named(i, rt)["label"] for i, rt in enumerate(plan) if status.get(rt) == "COMPLETED"]
+    return {"running": running, "cancelled_step": cancelled, "later": later, "finished": finished,
+            "finished_count": len(finished), "of": len(plan)}
+
+
+def _derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict:
     """A mixed process run's row state, from persisted proof only: the row (process instance GUID, the last read's
     time and error) and what that read stored of each step (`declared.process_run`: action, Egeria's status, guards,
     report). Same shape as `derive_native_state`, plus `line` (the one run line) and `steps`.
@@ -1161,6 +1286,17 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
     stored = _declared(run).get("expected_steps")
     expected = len(stored) if isinstance(stored, list) and stored else len(steps)
     by_index = list(steps)
+    out["cancel_context"] = _cancel_context(by_index, process, stored)
+    if any(s.get("status") == "CANCELLED" for s in by_index) \
+            and not any(s.get("status") in ACTIVE_STATUSES for s in by_index):
+        # §2.4: Egeria recorded CANCELLED (read back, never inferred from a press) and nothing still runs: the run is
+        # over, with the ⊘ cancelled cue (`egeria_status`), whatever steps it had not reached.
+        out["state"] = FAILED
+        out["egeria_status"] = "CANCELLED"
+        out["cancelled"] = True
+        out["message"] = pr.get("words") or "cancelled in Egeria"
+        return out
+
     def _ended_badly(step: dict) -> bool:
         return (step.get("status") not in ("", None, *ACTIVE_STATUSES)
                 and not (step.get("status") == "COMPLETED" and "survey-completed" in (step.get("guards") or [])))
@@ -1402,7 +1538,8 @@ def _waiting_for_engine_host(registry, entity_type: str, slug: str, derived: dic
     return f"{WAITING_FOR_ENGINE_HOST} · {why}"
 
 
-def refresh_mixed_run(registry, port, run: dict, *, entity_type: str, slug: str) -> dict:
+def refresh_mixed_run(registry, port, run: dict, *, entity_type: str, slug: str,
+                      errors: list | None = None) -> dict:
     """Read one mixed process run back (read-only): the instance's engine actions in run order, grouped into its one
     run line (`mixed_process.group_by_process`). Stores what it read on the row (`declared.process_run`) and the
     newest step's Egeria status as the row's; a failed read is recorded as one and never becomes a status."""
@@ -1414,7 +1551,10 @@ def refresh_mixed_run(registry, port, run: dict, *, entity_type: str, slug: str)
     try:
         views = port.read_process_run(guid)
     except Exception as exc:  # noqa: BLE001 -- recorded, not raised
-        registry.record_native_survey_readback(guid, read_at=read_at, error=scrub_secret(_short_error(exc), entity))
+        why = scrub_secret(_short_error(exc), entity)
+        registry.record_native_survey_readback(guid, read_at=read_at, error=why)
+        if errors is not None:
+            errors.append(why)            # THIS read failed (a caller deciding a write must not use stored steps)
         return _refetch_mixed(registry, entity_type, slug, run)
     lines = [ln for ln in mixed_process.group_by_process(views, duplicates=_refused_duplicates(registry, views))
              if ln.instance_guid == guid]
@@ -1743,6 +1883,239 @@ def cancel_gate(registry, port: EgeriaSurveyPort, entity_type: str, slug: str, e
         raise NativeSurveyCannotRun(
             f"Only a waiting or running action can be cancelled; Egeria now says {status or 'nothing yet'}.")
     return fresh
+
+
+# ── §2.4: Cancel a definition's Egeria-coordinated run ──────────────────────────────────────────────────────────
+
+#: Why a Cancel is not offered / refused before Egeria is asked: (HTTP status, words). Q3: a run RE did not start
+#: has no Cancel, admins included. Q2: only the run's starter or an admin.
+CANCEL_NOT_RE_STARTED = (409, "this run was not started from Resource Explorer, so it is not cancelled from here")
+CANCEL_NOT_YOURS = (403, "only the person who started this run, or an admin, can cancel it")
+CANCEL_NOT_RUNNING = (409, "this run is not running")
+CANCEL_ALREADY_ASKED = (409, "Egeria has already accepted a cancel of this run")
+CANCEL_SIGN_IN = (401, "sign in to cancel a run")
+
+
+def _finishing_step(registry, derived: dict) -> dict | None:
+    """The step Egeria cancelled while RE's engine host still runs it ({step, label}), from RE's own run row for that
+    action (queued, claimed or running), else None."""
+    if not derived.get("cancelled"):
+        return None
+    lookup = getattr(registry, "engine_action_runs", None)
+    if not callable(lookup):
+        return None
+    for s in derived.get("steps") or []:
+        if s.get("status") != "CANCELLED" or not s.get("action_guid"):
+            continue
+        try:
+            rows = lookup(s["action_guid"])
+        except Exception:  # noqa: BLE001 - a row not read says nothing is finishing
+            continue
+        if any(_published(r) for r in rows):
+            return None                # it published before the cancel: the done line, with its report link
+        if any(r.get("state") in ("queued", "claimed", "running") for r in rows):
+            return (derived.get("cancel_context") or {}).get("cancelled_step")
+    return None
+
+
+def _published(row: dict) -> bool:
+    """RE's engine-host run row for an action stored an outcome with a survey report (published before any cancel)."""
+    import json
+
+    try:
+        target = json.loads(row.get("target") or "{}")
+    except (TypeError, ValueError):
+        return False
+    outcome = target.get("outcome") if isinstance(target, dict) else None
+    return isinstance(outcome, dict) and bool(outcome.get("report_guid"))
+
+
+def process_cancel_refusal(run: dict, derived: dict | None = None, *, viewer: str,
+                           viewer_is_admin: bool) -> tuple[int, str] | None:
+    """Why `viewer` may not cancel this Egeria-coordinated definition run, or None when they may. ONE decision for
+    the button (`native_survey_rows`) and the route. Registry-only: no Egeria call.
+
+    * the row is a run of an RE Survey Definition that RE started and holds the process instance GUID of
+      (`declared.started_in == re`); anything else is CANCEL_NOT_RE_STARTED, whoever asks (owner, Q3);
+    * the reader is signed in and is the run's starter (`submitted_by`) or an admin (owner, Q2);
+    * the run is in flight (submitted or running, from persisted proof) and no accepted cancel is pending."""
+    from resource_explorer import mixed_process
+
+    declared = _declared(run)
+    if (not (run.get("executor_ref") or "").startswith(mixed_process.DEFINITION_PREFIX)
+            or declared.get("started_in") != mixed_process.STARTED_IN_RE
+            or not (run.get("engine_action_guid") or "").strip() or run.get("submit_error")):
+        return CANCEL_NOT_RE_STARTED
+    who = (viewer or "").strip()
+    if not who:
+        return CANCEL_SIGN_IN
+    if not viewer_is_admin and who != (run.get("submitted_by") or "").strip():
+        return CANCEL_NOT_YOURS
+    derived = derived if derived is not None else derive_mixed_state(run)
+    if derived.get("state") not in (SUBMITTED, RUNNING):
+        return CANCEL_NOT_RUNNING
+    press = derived.get("cancel") or {}
+    if press.get("state") == CANCEL_PENDING:
+        return CANCEL_ALREADY_ASKED
+    return None
+
+
+#: The cancel's answer, classified (`classify_cancel_answer`).
+REFUSED, UNREACHABLE, UNKNOWN = "refused", "unreachable", "unknown"
+#: Egeria's HTTP answers that are a REFUSAL of the cancel (it heard it and said no). 5xx and 404 are not: Egeria
+#: (or the View Server's route) could not act on it, so nothing was refused.
+_REFUSAL_HTTP = frozenset({400, 401, 403, 409})
+_NOT_PERMITTED_HTTP = frozenset({401, 403})
+
+
+def _self_and_causes(exc: BaseException) -> list:
+    out, seen, e = [], set(), exc
+    while isinstance(e, BaseException) and id(e) not in seen and len(out) < 4:
+        out.append(e)
+        seen.add(id(e))
+        e = getattr(e, "e", None) if isinstance(getattr(e, "e", None), BaseException) else (
+            e.__cause__ or e.__context__)
+    return out
+
+
+def _http_code(exc: BaseException) -> int | None:
+    from resource_explorer.egeria_outbox import _http_code_of
+
+    for e in _self_and_causes(exc):
+        code = _http_code_of(e)
+        if code is not None:
+            return code
+    return None
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """The request may have reached Egeria and its answer is unknown: pyegeria's `PyegeriaTimeoutException`, or a
+    read/write/pool timeout under it. A CONNECT timeout never reached Egeria, so it is unreachable, not unknown."""
+    from pyegeria.core._exceptions import PyegeriaTimeoutException
+
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover - pyegeria depends on it
+        httpx = None
+    for e in _self_and_causes(exc):
+        if httpx is not None and isinstance(e, httpx.ConnectTimeout):
+            return False
+        if isinstance(e, PyegeriaTimeoutException):
+            inner = getattr(e, "e", None)
+            return not (httpx is not None and isinstance(inner, httpx.ConnectTimeout))
+        if isinstance(e, TimeoutError) or (httpx is not None and isinstance(e, httpx.TimeoutException)):
+            return True
+    return False
+
+
+def classify_cancel_answer(exc: BaseException) -> str:
+    """What an exception from the cancel call means (designer Q4, review round 1):
+
+    * REFUSED: Egeria answered with a 4xx refusal (400, 401, 403, 409);
+    * UNKNOWN: a timeout, or anything after which the request may have reached Egeria: its effect is for a read-back
+      to decide, and until one shows it the line reads as unreachable;
+    * UNREACHABLE: 5xx, 404, a connection error, or no HTTP answer at all: nothing was refused."""
+    if _is_timeout(exc):
+        return UNKNOWN
+    code = _http_code(exc)
+    if code in _REFUSAL_HTTP:
+        return REFUSED
+    return UNREACHABLE
+
+
+def _refusal_kind(exc: BaseException) -> str:
+    """not_permitted ONLY from Egeria's own answer: HTTP 401/403, or a UserNotAuthorized message id / class in it.
+    Any other refusal is `refused` (a read-back may later show it too late)."""
+    if _http_code(exc) in _NOT_PERMITTED_HTTP:
+        return CANCEL_NOT_PERMITTED
+    for e in _self_and_causes(exc):
+        info = getattr(e, "additional_info", None) or {}
+        if not isinstance(info, dict):
+            continue
+        said = " ".join(str(info.get(k) or "") for k in ("exceptionClassName", "exceptionErrorMessageId",
+                                                         "exceptionErrorMessage"))
+        if "UserNotAuthorized" in said or "-403-" in str(info.get("exceptionErrorMessageId") or ""):
+            return CANCEL_NOT_PERMITTED
+    return CANCEL_REFUSED_KIND
+
+
+def _egeria_reason(exc: BaseException) -> str:
+    """Egeria's own sentence for a refusal (its `exceptionErrorMessage`), else the exception's text."""
+    for e in _self_and_causes(exc):
+        info = getattr(e, "additional_info", None) or {}
+        if isinstance(info, dict) and info.get("exceptionErrorMessage"):
+            return " ".join(str(info["exceptionErrorMessage"]).split())[:300]
+    return _short_error(exc)
+
+
+#: The fresh read before a cancel is sent (review item 4): the designer's words for each refusal.
+CANCEL_TOO_LATE_WORDS = "too late to cancel · the run had already finished"
+CANCEL_UNREACHABLE_WORDS = "cancel not sent · couldn't reach Egeria · try again"
+CANCEL_NOTHING_RUNNING = (409, "nothing of this run is running in Egeria yet · try again in a moment")
+
+
+def fresh_cancel_gate(registry, port: EgeriaSurveyPort, entity_type: str, slug: str,
+                      run: dict) -> tuple[int, str] | None:
+    """A fresh read-back of the process instance BEFORE a cancel is sent (never the stored state). None when it shows a
+    step Egeria still has active; else why not: the read failed (502, unreachable words), the run is over (409, too
+    late), or no step is active yet (409)."""
+    errors: list = []
+    fresh = refresh_mixed_run(registry, port, run, entity_type=entity_type, slug=slug, errors=errors)
+    if errors:
+        return 502, CANCEL_UNREACHABLE_WORDS
+    if any(st.get("status") in ACTIVE_STATUSES for st in fresh.get("steps") or []):
+        return None
+    if fresh.get("state") in _IN_FLIGHT and not fresh.get("cancelled"):
+        return CANCEL_NOTHING_RUNNING
+    return 409, CANCEL_TOO_LATE_WORDS
+
+
+def cancel_process_run(registry, port: EgeriaSurveyPort, entity_type: str, slug: str, run: dict, *,
+                       by: str) -> dict:
+    """Ask Egeria to cancel the process instance this run holds, as the port's principal (the person who pressed),
+    and write the press's proof row on the run (`declared.cancel`: who, when, instance GUID, Egeria's answer). The
+    caller has just read the run back (`fresh_cancel_gate`). The answer, classified (`classify_cancel_answer`):
+
+    * accepted: then ONE read-back of the instance (`refresh_mixed_run`). The line says ⊘ cancelled only if that read
+      shows CANCELLED; otherwise pending from the proof row;
+    * refused (a 4xx): Egeria's reason; its kind is not_permitted only from Egeria's answer (401/403, UserNotAuthorized),
+      else refused; a read-back follows, and a run it shows over reads too late (`derive_mixed_state`);
+    * unknown (a timeout): the unreachable words, then a read-back decides: CANCELLED is done, a finished run is too
+      late, a running one stays "not sent";
+    * unreachable (5xx, 404, connection error, no answer): nothing was asked; Cancel stays offered.
+
+    Returns {accepted, refused, refused_kind, unsent, unknown, cancelled, run}."""
+    guid = run["engine_action_guid"]
+    entity = _resource_entity(registry, entity_type, slug)
+    press = {"by": by, "at": _now(), "instance_guid": guid}
+    try:
+        port.cancel_process_run(guid)
+    except Exception as exc:  # classified: a refusal, an unknown outcome, or not sent
+        reason = scrub_secret(_egeria_reason(exc), entity)
+        answer = classify_cancel_answer(exc)
+        if answer == UNREACHABLE:
+            registry.merge_native_survey_declared(guid, {"cancel": {**press, "answer": ANSWER_UNREACHABLE,
+                                                                     "reason": reason}})
+            return {"accepted": False, "refused": "", "refused_kind": "", "unsent": reason, "unknown": False,
+                    "cancelled": False, "run": _refetch_mixed(registry, entity_type, slug, run)}
+        if answer == UNKNOWN:
+            registry.merge_native_survey_declared(guid, {"cancel": {**press, "answer": ANSWER_UNKNOWN,
+                                                                     "reason": reason}})
+            after = refresh_mixed_run(registry, port, run, entity_type=entity_type, slug=slug)
+            return {"accepted": False, "refused": "", "refused_kind": "", "unsent": reason, "unknown": True,
+                    "cancelled": bool(after.get("cancelled")), "run": after}
+        kind = _refusal_kind(exc)
+        registry.merge_native_survey_declared(guid, {"cancel": {**press, "answer": ANSWER_REFUSED, "reason": reason,
+                                                                 "kind": kind}})
+        after = refresh_mixed_run(registry, port, run, entity_type=entity_type, slug=slug)
+        shown = (after.get("cancel") or {})
+        return {"accepted": False, "refused": reason,
+                "refused_kind": CANCEL_TOO_LATE if shown.get("state") == CANCEL_TOO_LATE_STATE else kind,
+                "unsent": "", "unknown": False, "cancelled": bool(after.get("cancelled")), "run": after}
+    registry.merge_native_survey_declared(guid, {"cancel": {**press, "answer": ANSWER_ACCEPTED}})
+    after = refresh_mixed_run(registry, port, run, entity_type=entity_type, slug=slug)
+    return {"accepted": True, "refused": "", "refused_kind": "", "unsent": "", "unknown": False,
+            "cancelled": bool(after.get("cancelled")), "run": after}
 
 
 UNREADABLE_STATUS_WORDS = "could not read Egeria's current status · not cancelled"

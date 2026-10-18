@@ -315,6 +315,9 @@ class EngineActionView:
     next: list[Neighbour] = field(default_factory=list)
     #: Set when the action's process could not be read: it renders alone, with "process unknown".
     unreadable: str = ""
+    #: Egeria's `completionTime` on the action (ISO-8601 UTC), "" when it carried none. A cancel sets it
+    #: (`EngineActionBuilder.getCancelInstanceProperties`), so it is the time a CANCELLED step was cancelled.
+    completion_time: str = ""
 
     @property
     def report_guid(self) -> str:
@@ -372,6 +375,21 @@ def _guards(value) -> list[str]:
     return []
 
 
+def _iso_time(value) -> str:
+    """An Egeria date property as ISO-8601 UTC (`...Z`): its epoch milliseconds (a date primitive's value), or a
+    string kept as Egeria gave it. "" when absent or unreadable: never a time RE made up."""
+    from datetime import UTC, datetime
+
+    if value in (None, ""):
+        return ""
+    if isinstance(value, (int, float)) or (isinstance(value, str) and value.strip().lstrip("-").isdigit()):
+        try:
+            return datetime.fromtimestamp(int(value) / 1000, UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+        except (OverflowError, OSError, ValueError):
+            return ""
+    return str(value).strip()
+
+
 def instance_of(element: dict) -> str:
     """The GovernanceActionProcessInstance an engine action is anchored to, or ""."""
     for c in (element or {}).get("classifications") or []:
@@ -395,7 +413,7 @@ def parse_action_graph(answer) -> EngineActionView:
         request_type=str(p.get("requestType") or ""), requester=str(p.get("requesterUserId") or ""),
         process_name=str(p.get("processName") or ""), step_name=str(p.get("processStepName") or ""),
         instance_guid=instance_of(start), completion_guards=_guards(p.get("completionGuards")),
-        message=str(p.get("completionMessage") or ""))
+        message=str(p.get("completionMessage") or ""), completion_time=_iso_time(p.get("completionTime")))
     for entry in answer.get("elementList") or []:
         rel = ((entry.get("type") or {}).get("typeName")) or ""
         other = entry.get("element") or {}
@@ -567,6 +585,8 @@ def _step_words(n: int, label: str, view: EngineActionView | None, *, refusal_ok
         if view.status in ("APPROVED", "REQUESTED"):
             return f"step {n} {label} not claimed yet"
         return f"step {n} {label} {'running' if view.status == 'IN_PROGRESS' else 'waiting'}"
+    if view.status == "CANCELLED":
+        return f"step {n} {label} ⊘ cancelled"       # Egeria's own CANCELLED, read back (engine host §2.4)
     guard = ", ".join(g for g in view.completion_guards if g != _ROUTING_GUARD)
     if refusal_ok and view.status in (_DONE, "INVALID") and SURVEY_INVALID in view.completion_guards \
             and SURVEY_COMPLETED not in view.completion_guards:
@@ -625,6 +645,9 @@ def run_line_words(line: RunLine, *, started: str = "", started_in: str = "", st
     previous_number = 0
     for number, request_type, label in walk:
         view = by_request.get(request_type)
+        if view is None and previous is not None and previous.status == "CANCELLED":
+            parts.append(f"step {number} not started · step {previous_number} cancelled")
+            break
         if (view is None and previous is not None and not previous.active and not previous.succeeded
                 and not _always_follows(process, previous_number, number, previous)):
             parts.append(f"step {number} not started · step {previous_number} failed")
@@ -682,6 +705,6 @@ def run_line_dict(line: RunLine, *, started: str = "", started_in: str = "", sta
                                     expected_steps=expected_steps),
             "steps": [{"action_guid": s.guid, "request_type": s.request_type, "status": s.status,
                        "guards": list(s.completion_guards), "report_guid": s.report_guid,
-                       "message": s.message[:500],
+                       "message": s.message[:500], "completion_time": s.completion_time,
                        # From the FULL message, before it is cut: the engine host appends this note at its end.
                        "process_ended": s.process_ended} for s in line.steps]}

@@ -12,12 +12,13 @@ outcome stored on the run row, then `record_completion_status` with a `SurveyAct
 completes, from the stored outcome, those whose run ended without telling Egeria. An action not yet due
 (`requestedStartTime` in the future) is left unclaimed until it is.
 
-**Discovery is option A (§3.1).** The View Server has no per-engine "approved" listing yet (Q-M1: Mandy will
-add one), so the sweep reads the whole server's active list, `AutomatedCuration.get_active_engine_actions`,
-and filters client-side, every `SWEEP_INTERVAL_SECONDS` (5 s, the native engine host's own sweep interval).
-`find_engine_actions` was considered and not used: it is a search-string asset search (EngineAction is an
-Asset in 6.2) that cannot filter on status or executor, so it would return every terminal action too.
-`get_engine_actions` no longer exists (pyegeria 6.2.3, ISSUE-151).
+**Discovery: the Governance Engine view service's approved listing** (DESIGN-ENGINE-HOST-GOVERNANCE-ENGINE-API.md
+§2.2). Every `SWEEP_INTERVAL_SECONDS` (5 s, the native engine host's own sweep interval) the sweep pages
+`GovernanceEngine.get_approved_engine_actions(<RE's engine>)`: Egeria returns only RE's engine's APPROVED, unclaimed
+actions. `_screen` keeps every check it had all the same; the server's filter is an optimisation, never the gate.
+Every engine-action call (claim, IN_PROGRESS, per-target status, the claimed listing, completion) is on
+`GovernanceEngine` (odpi/egeria#9371, pyegeria 6.2.5), built with `legacy_fallback=False`: a View Server without the
+service answers 404, which is reported once (`_report_once`) and never retried on the Automated Curation URLs.
 
 **What is claimed.** An action is claimed only when all of these hold; anything else is left for its owner,
 exactly as native leaves it:
@@ -87,6 +88,16 @@ Every engine-action row records `started_by: egeria`; RE's own Run records `re`.
 **Completion only from proof.** The outcome (guard, status, message, report GUID, annotation count) is
 written to the row's `target.outcome` before Egeria is told; `target.completion_recorded_at` marks that
 Egeria accepted it. No DDL: both ride in the existing `runs.target` JSON.
+
+**A status per action target (§2.3).** Each asset target the run works on gets `IN_PROGRESS` when the step starts on
+it and the outcome's status (ACTIONED, INVALID, FAILED) when it ends, keyed on the ActionTarget RELATIONSHIP's GUID
+(`actionTargetRelationshipGUID`; owner, Q1), never the target element's. Its message is the completion's own words
+(`outcome_words`, one routine for both). A failed update is recorded on the row (`target.target_status_errors`) and
+never blocks the completion; nothing retries it.
+
+**Cancelled in Egeria (§2.4).** The step is never preempted. Before publishing, and again before completing, the run
+re-reads the action; if Egeria says CANCELLED it publishes nothing, sends no completion, sets each worked target
+INVALID "cancelled in Egeria" and stores the outcome with `cancelled: true` (run state `cancelled`).
 """
 from __future__ import annotations
 
@@ -193,6 +204,24 @@ PAGE_SIZE = 100
 
 #: Egeria's "another claimant already holds this action" (C5; live-confirmed in ISSUE-78).
 CLAIM_REFUSED_MESSAGE_ID = "OMAG-GENERIC-HANDLERS-403-003"
+
+#: §2.1: the Governance Engine client never falls back to the Automated Curation URL family (pyegeria's
+#: `legacy_fallback`). A 404 means the View Server lacks the service, and RE says so once.
+GOVERNANCE_ENGINE_LEGACY_FALLBACK = False
+
+#: §2.4: the words an action Egeria cancelled mid-run completes its worked targets with (status CANCELLED). They are
+#: the stored outcome's message, so the target status and the run row say the same thing.
+CANCELLED_IN_EGERIA_SENTENCE = "cancelled in Egeria"
+
+#: §2.3: an action target's status is Egeria's `ActivityStatus` (`ActionTargetStatusRequestBody.status`), NOT the
+#: `CompletionStatus` the completion takes. These are its values; nothing else is ever sent as a target status.
+ACTIVITY_STATUSES = frozenset({"REQUESTED", "APPROVED", "WAITING", "ACTIVATING", "IN_PROGRESS", "PAUSED", "FOR_INFO",
+                               "COMPLETED", "INVALID", "IGNORED", "FAILED", "CANCELLED", "ABANDONED", "OTHER"})
+#: A completion status's target ActivityStatus (`target_activity_status`).
+_COMPLETION_TO_ACTIVITY = {"ACTIONED": "COMPLETED", "INVALID": "INVALID", "FAILED": "FAILED"}
+
+#: The action target a run only reads (the previous step's report): its status is left alone (§2.3).
+_READ_ONLY_TARGETS = frozenset({"surveyReport"})
 
 _GUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
@@ -337,6 +366,26 @@ def is_claim_refused(exc: BaseException) -> bool:
     return False
 
 
+def governance_engine_client(client):
+    """`client` (a pyegeria `GovernanceEngine`) with `legacy_fallback` off (§2.1). pyegeria's default is already
+    False; this keeps it so if a caller or a later default ever turned it on."""
+    if getattr(client, "legacy_fallback", GOVERNANCE_ENGINE_LEGACY_FALLBACK) != GOVERNANCE_ENGINE_LEGACY_FALLBACK:
+        client.legacy_fallback = GOVERNANCE_ENGINE_LEGACY_FALLBACK
+    return client
+
+
+def is_service_missing(exc: BaseException) -> bool:
+    """An HTTP 404 on a Governance Engine listing URL: the View Server has no governance-engine service. Used only
+    around the two per-engine listings, whose engine GUID was just resolved, so a 404 there is the URL, not an
+    element."""
+    from resource_explorer.egeria_outbox import _http_code_of
+
+    for e in (exc, getattr(exc, "__cause__", None)):
+        if isinstance(e, BaseException) and _http_code_of(e) == 404:
+            return True
+    return False
+
+
 # ── reading one EngineActionElement ────────────────────────────────────────────
 
 def _daemon_user() -> str:
@@ -357,11 +406,20 @@ def _status(action: dict) -> str:
     return str(status or "").upper()
 
 
+#: The JSON field of an `actionTargetElements` entry that names the ActionTarget RELATIONSHIP (Egeria's
+#: `ActionTargetElement.actionTargetRelationshipGUID`, set by `EngineActionConverter`). `actionTargetGUID` is the
+#: target ELEMENT's GUID. `update_action_target_status` takes the relationship's (owner, Q1).
+ACTION_TARGET_RELATIONSHIP_FIELD = "actionTargetRelationshipGUID"
+
+
 def _targets(action: dict) -> list[dict]:
+    """The action's targets: name, element GUID (`guid`) and ActionTarget relationship GUID (`relationship_guid`, ""
+    when Egeria's listing did not carry one: then no target status is sent for it, never the element's GUID)."""
     out = []
     for t in action.get("actionTargetElements") or []:
         if isinstance(t, dict) and t.get("actionTargetGUID"):
-            out.append({"name": str(t.get("actionTargetName") or ""), "guid": str(t["actionTargetGUID"])})
+            out.append({"name": str(t.get("actionTargetName") or ""), "guid": str(t["actionTargetGUID"]),
+                        "relationship_guid": str(t.get(ACTION_TARGET_RELATIONSHIP_FIELD) or "")})
     return out
 
 
@@ -401,8 +459,7 @@ PREVIOUS_STEP_NOT_COMPLETED = "previous_step_not_completed"
 
 #: Skip reasons that are not RE's business (another engine's work, not yet approved, claimed by someone
 #: else, or already queued here): silent. The rest are logged once per action.
-_SILENT = frozenset({"other_engine", "not_approved", "already_claimed", "already_queued", "not_due",
-                     "completed_now_private"})
+_SILENT = frozenset({"other_engine", "not_approved", "already_claimed", "already_queued", "not_due"})
 
 #: The `_screen` verdict for an action RE's own user already claimed in Egeria but RE has no runs row for:
 #: queue it without claiming again.
@@ -474,6 +531,23 @@ class EngineHost:
             self._clients[key] = clients
         return clients.of(cls)
 
+    def _engine(self):
+        """The Governance Engine client for the identity this code is acting as (§2.1)."""
+        from pyegeria import GovernanceEngine
+
+        return governance_engine_client(self._client(GovernanceEngine))
+
+    def _listing_unavailable(self, exc: BaseException, what: str) -> bool:
+        """A 404 on a Governance Engine listing: the View Server lacks the service (§2.1). Said once, never retried
+        on another URL family. True when handled (the caller does nothing more this pass)."""
+        if not is_service_missing(exc):
+            return False
+        self._report_once("governance_engine_service_missing", what,
+                          "engine host: the View Server answered the Governance Engine %s with 404; it lacks the "
+                          "governance-engine view service (odpi/egeria#9371), so nothing is claimed or completed "
+                          "until it has it (%s)", what, _short(exc, 300), level=logging.WARNING)
+        return True
+
     def _report_once(self, reason: str, guid: str, message: str, *args, level: int = logging.INFO) -> None:
         if (reason, guid) in self._reported:
             return
@@ -503,18 +577,17 @@ class EngineHost:
 
     # -- the sweep -------------------------------------------------------------
 
-    def _active_actions(self) -> list[dict]:
-        from pyegeria import AutomatedCuration
-
-        curation = self._client(AutomatedCuration)
+    def _approved_actions(self, engine_guid: str) -> list[dict]:
+        """§2.2: RE's engine's APPROVED, unclaimed actions, paged from the Governance Engine view service."""
+        engine = self._engine()
         out: list[dict] = []
         start = 0
         while True:
-            page = curation.get_active_engine_actions(start_from=start, page_size=PAGE_SIZE)
+            page = engine.get_approved_engine_actions(engine_guid, start_from=start, page_size=PAGE_SIZE)
             if isinstance(page, str):         # pyegeria's "No elements found": the end of the list
                 return out
             if not isinstance(page, list):
-                raise RuntimeError(f"Egeria answered the active engine-action listing with {type(page).__name__}")
+                raise RuntimeError(f"Egeria answered the approved engine-action listing with {type(page).__name__}")
             out.extend(a for a in page if isinstance(a, dict))
             if len(page) < PAGE_SIZE:
                 return out
@@ -706,7 +779,13 @@ class EngineHost:
             if not engine_guid:
                 result.note = "engine not declared in Egeria"
                 return result
-            actions = self._active_actions()
+            try:
+                actions = self._approved_actions(engine_guid)
+            except Exception as exc:  # a missing service is said once; anything else propagates
+                if not self._listing_unavailable(exc, "approved engine-action listing"):
+                    raise
+                result.note = "the View Server has no governance-engine service"
+                return result
 
         for action in actions:
             guid = _guid(action)
@@ -717,11 +796,9 @@ class EngineHost:
             except Exception as exc:  # noqa: BLE001 -- fail closed: an unreadable check claims nothing
                 reason, facts = "screen_failed", {"error": f"{type(exc).__name__}: {exc}"}
             if reason == ADOPT:
-                self._enqueue(action, guid, facts, engine_guid, result, adopted=True)
-                continue
-            if reason == "private_target" and facts.get("ours"):
-                recorded, _error = self._complete_now_private(action, guid)
-                result.skip("completed_now_private" if recorded else "private_target", guid)
+                # §2.2: adoption is the restart pass's alone. An approved-only listing never shows a claimed action;
+                # if one ever did, the sweep leaves it to `restart_pass` (within COMPLETION_RETRY_SECONDS).
+                result.skip("already_claimed", guid)
                 continue
             if reason:
                 result.skip(reason, guid)
@@ -737,15 +814,12 @@ class EngineHost:
 
     def _claimed_actions(self, engine_guid: str) -> list[dict]:
         """The actions RE's user has claimed for RE's engine that Egeria still holds active (WAITING,
-        ACTIVATING, IN_PROGRESS): native's restart listing (C11), the one per-engine listing the View Server
-        has."""
-        from pyegeria import AutomatedCuration
-
-        curation = self._client(AutomatedCuration)
+        ACTIVATING, IN_PROGRESS): native's restart listing (C11), on the Governance Engine view service."""
+        engine = self._engine()
         out: list[dict] = []
         start = 0
         while True:
-            page = curation.get_active_claimed_engine_actions(engine_guid, start_from=start, page_size=PAGE_SIZE)
+            page = engine.get_active_claimed_engine_actions(engine_guid, start_from=start, page_size=PAGE_SIZE)
             if isinstance(page, str):         # pyegeria's "No elements found": the end of the list
                 return out
             if not isinstance(page, list):
@@ -759,15 +833,20 @@ class EngineHost:
     def _complete_now_private(self, action: dict, guid: str) -> tuple[bool, str]:
         """An action RE already claimed whose target is now in a private investigation: completed once,
         survey-invalid, as the engine host for its requester; nothing is run. Egeria then stops listing it."""
-        from pyegeria import AutomatedCuration
-
         from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
 
         requester = str(action.get("requesterUserId") or "").strip()
         outcome = _outcome(SURVEY_INVALID, f"Resource Explorer did not run {action.get('requestType')}: "
                            f"{NOW_PRIVATE_SENTENCE}")
+        errors: list[dict] = []
         with acting_as(Daemon(DaemonReason.ENGINE_HOST, requested_by=requester or None)):
-            recorded, error = _record_completion(self._client(AutomatedCuration), guid, outcome)
+            engine = self._engine()
+            # No run row: its targets are every asset target the action names (refused, so all of them are invalid).
+            _send_final_target_statuses(engine, {"action_targets": _targets(action), "refusal": NOW_PRIVATE_SENTENCE},
+                                        outcome, errors)
+            recorded, error = _record_completion(engine, guid, outcome)
+        if errors:
+            log.warning("engine host: engine action %s's target statuses not all sent: %s", guid, errors)
         if recorded:
             log.info("engine host: completed engine action %s survey-invalid (%s)", guid, NOW_PRIVATE_SENTENCE)
         else:
@@ -802,7 +881,13 @@ class EngineHost:
             if not engine_guid:
                 result.note = "engine not declared in Egeria"
                 return result
-            claimed = self._claimed_actions(engine_guid)
+            try:
+                claimed = self._claimed_actions(engine_guid)
+            except Exception as exc:  # a missing service is said once; anything else propagates
+                if not self._listing_unavailable(exc, "claimed engine-action listing"):
+                    raise
+                result.note = "the View Server has no governance-engine service"
+                return result
 
         for action in claimed:
             guid = _guid(action)
@@ -878,11 +963,21 @@ class EngineHost:
                               "outcome that is not one RE writes (%r); left alone", row["id"], guid,
                               str(stored)[:120], level=logging.WARNING)
             return
+        if isinstance(stored, dict) and (stored.get("cancelled") or stored.get("cancelled_after_publish")):
+            # §2.4: Egeria cancelled it mid-run; RE sends no completion for it. A listing that still shows it active
+            # is Egeria's to explain, never a reason to complete a cancelled action.
+            result.pending.append(guid)
+            self._report_once("cancelled_still_active", guid, "engine host restart: engine action %s is still active "
+                              "in Egeria although run %s read it CANCELLED; left alone", guid, row["id"],
+                              level=logging.WARNING)
+            return
         outcome = stored or _outcome_from_ended_row(row)
         with acting_as(Daemon(DaemonReason.ENGINE_HOST, requested_by=(row.get("requested_by") or None))):
-            from pyegeria import AutomatedCuration
-
-            recorded, error = _record_completion(self._client(AutomatedCuration), guid, outcome)
+            engine = self._engine()
+            # The worked targets end too, from the same outcome (a worker that died after their IN_PROGRESS left them
+            # there); a failure is recorded on the row and never blocks the completion.
+            _finish_targets(engine, self.registry, row["id"], target, outcome, [])
+            recorded, error = _record_completion(engine, guid, outcome)
         if not recorded:
             result.errors.append(guid)
             log.warning("engine host restart: completion of engine action %s from run %s not recorded: %s",
@@ -924,12 +1019,12 @@ class EngineHost:
             return False                      # a worker claimed it meanwhile: it runs
         outcome = _outcome(SURVEY_FAILED, f"Resource Explorer did not run {request_type}: {why}")
         self.registry.merge_run_target(row["id"], {"outcome": outcome})
-        from pyegeria import AutomatedCuration
-
         from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
 
         with acting_as(Daemon(DaemonReason.ENGINE_HOST, requested_by=(row.get("requested_by") or None))):
-            recorded, error = _record_completion(self._client(AutomatedCuration), guid, outcome)
+            engine = self._engine()
+            _finish_targets(engine, self.registry, row["id"], target, outcome, [])
+            recorded, error = _record_completion(engine, guid, outcome)
         if not recorded:
             result.errors.append(guid)        # the next pass completes it from the stored outcome
             log.warning("engine host restart: engine action %s (unrunnable here) not completed: %s", guid, error)
@@ -940,14 +1035,12 @@ class EngineHost:
         return True
 
     def _claim(self, action: dict, guid: str, facts: dict, engine_guid: str, result: SweepResult) -> None:
-        from pyegeria import AutomatedCuration
-
         from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
 
         requester = str(action.get("requesterUserId") or "").strip()
         with acting_as(Daemon(DaemonReason.ENGINE_HOST, requested_by=requester or None)):
             try:
-                self._client(AutomatedCuration).claim_engine_action(guid)
+                self._engine().claim_engine_action(guid)
             except Exception as exc:  # noqa: BLE001 -- classified: a lost race is ordinary, the rest is logged
                 if is_claim_refused(exc):
                     result.refused.append(guid)
@@ -957,8 +1050,9 @@ class EngineHost:
 
                 result.errors.append(guid)
                 log.warning("engine host: claim of engine action %s raised; outcome unknown (Egeria may have "
-                            "recorded it: if so the next sweep adopts it, if not it claims again): %s",
-                            guid, scrub_text(" ".join(str(exc).split()))[:400])
+                            "recorded it: if so the restart pass adopts it within %ss, if not the next sweep "
+                            "claims again): %s", guid, COMPLETION_RETRY_SECONDS,
+                            scrub_text(" ".join(str(exc).split()))[:400])
                 return
         result.claimed.append(guid)
         self._enqueue(action, guid, facts, engine_guid, result, adopted=False)
@@ -971,7 +1065,7 @@ class EngineHost:
                                                requested_by=requester)
         except Exception as exc:  # noqa: BLE001 -- the action is RE's in Egeria with no row; say so loudly
             log.error("engine host: engine action %s is claimed by RE in Egeria but could not be queued "
-                      "(%s: %s); the next sweep adopts it", guid, type(exc).__name__, exc)
+                      "(%s: %s); the restart pass adopts it", guid, type(exc).__name__, exc)
             result.errors.append(guid)
             return
         if adopted:
@@ -1096,21 +1190,155 @@ def _outcome_from_ended_row(row: dict) -> dict:
     return _outcome(SURVEY_FAILED, f"Resource Explorer's run {row.get('id')} ended before it finished: {why}")
 
 
-def _record_completion(curation, guid: str, outcome: dict) -> tuple[bool, str]:
-    """`record_completion_status` from a stored outcome. (recorded, error). The `surveyReport` action target
-    is added only when a report exists. Egeria ignores a completion on an action that is no longer active
-    (no else branch in `EngineActionHandler.recordCompletionStatus`), so a repeat is harmless."""
+def outcome_words(outcome: dict) -> str:
+    """THE words a stored outcome is told to Egeria with: the completion message AND every worked target's status
+    message (§2.3, builder rule 1). Nothing shown or sent re-derives them beside this."""
+    return str((outcome or {}).get("message") or "")
+
+
+def _record_completion(engine, guid: str, outcome: dict) -> tuple[bool, str]:
+    """`GovernanceEngine.record_completion_status` from a stored outcome. (recorded, error). The `surveyReport`
+    action target is added only when a report exists. Egeria ignores a completion on an action that is no longer
+    active (no else branch in `EngineActionHandler.recordCompletionStatus`), so a repeat is harmless."""
     report_guid = outcome.get("report_guid") or ""
     try:
-        curation.record_completion_status(
+        engine.record_completion_status(
             # Case 3: a definition step's guards (its survey guard, and the routing guard when the process goes on).
             guid, outcome["status"], output_guards=list(outcome.get("guards") or [outcome["guard"]]),
             new_action_targets=([{"actionTargetName": SURVEY_REPORT_TARGET, "actionTargetGUID": report_guid}]
                                 if report_guid else None),
-            completion_message=outcome.get("message") or "")
+            completion_message=outcome_words(outcome))
     except Exception as exc:  # noqa: BLE001 -- returned: the run says so and E5 sends it at the next start
         return False, _short(exc)
     return True, ""
+
+
+def _egeria_time() -> str:
+    """Now, as the ISO-8601 instant Egeria's Date fields deserialise (UTC, milliseconds, `Z`)."""
+    from datetime import datetime
+
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def worked_targets(target: dict) -> list[dict]:
+    """The action targets this run works on (§2.3): the database it surveys, or, when it refuses the action, every
+    asset target it was handed (they are what is invalid). Never the `surveyReport` target (read, not worked on).
+    Each once, by element GUID, as the claim recorded them (`_targets`)."""
+    assets = [t for t in (target.get("action_targets") or [])
+              if isinstance(t, dict) and t.get("guid") and t.get("name") not in _READ_ONLY_TARGETS]
+    surveyed = (target.get("asset_guid") or "").strip()
+    if surveyed and not (target.get("refusal") or "").strip():
+        assets = [t for t in assets if t["guid"] == surveyed]
+    seen: set[str] = set()
+    out = []
+    for t in assets:
+        # Once per ActionTarget RELATIONSHIP when the listing named one (two relationships to one element are two
+        # targets, each with its own status); by element GUID only when it did not.
+        key = (t.get("relationship_guid") or "").strip() or f"element:{t['guid']}"
+        if key not in seen:
+            seen.add(key)
+            out.append(t)
+    return out
+
+
+def target_activity_status(outcome: dict) -> str:
+    """THE target status a stored outcome ends each worked target with (§2.3): Egeria's `ActivityStatus`, never the
+    completion's `CompletionStatus` word. ACTIONED -> COMPLETED, INVALID -> INVALID, FAILED -> FAILED; a run Egeria
+    cancelled (before, during or after its publish) -> CANCELLED."""
+    outcome = outcome or {}
+    if outcome.get("cancelled") or outcome.get("cancelled_after_publish"):
+        return "CANCELLED"
+    return _COMPLETION_TO_ACTIVITY[outcome["status"]]
+
+
+def _send_final_target_statuses(engine, target: dict, outcome: dict, errors: list[dict]) -> None:
+    """Every completion path's end of the worked targets (§2.3): the stored outcome's ActivityStatus
+    (`target_activity_status`) and the completion's own words (`outcome_words`). Never raises; failures are in
+    `errors`."""
+    try:
+        status = target_activity_status(outcome)
+    except Exception as exc:  # noqa: BLE001 -- an outcome RE does not write: recorded, nothing sent
+        errors.append({"target": "", "status": "", "error": f"no target status for this outcome: {_short(exc, 200)}"})
+        return
+    _set_target_statuses(engine, worked_targets(target), status, errors=errors, completion_date=_egeria_time(),
+                         completion_message=outcome_words(outcome))
+
+
+#: `runs.target` key: when the worked targets' final statuses were sent (so a later completion pass never sends them
+#: a second time).
+FINAL_TARGET_STATUS_SENT = "final_target_status_sent_at"
+
+
+def _finish_targets(engine, registry, run_id, target: dict, outcome: dict, errors: list[dict]) -> None:
+    """Every completion path, once per run: the final target statuses from the stored outcome
+    (`_send_final_target_statuses`), the errors on the row, and the marker that they were sent. Never raises."""
+    if target.get(FINAL_TARGET_STATUS_SENT):
+        return
+    _send_final_target_statuses(engine, target, outcome, errors)
+    _record_target_errors(registry, run_id, target, errors)
+    try:
+        registry.merge_run_target(run_id, {FINAL_TARGET_STATUS_SENT: _now_iso()})
+    except Exception as exc:  # noqa: BLE001 -- a courtesy marker; at worst the statuses are sent again
+        log.warning("engine host: run %s's target-status marker not recorded: %s", run_id, _short(exc, 200))
+
+
+def _record_target_errors(registry, run_id, target: dict, errors: list[dict]) -> None:
+    """Adds `errors` to the row's `target_status_errors` (kept with any earlier ones). A courtesy record: never raises."""
+    if not errors:
+        return
+    try:
+        earlier = [e for e in (target.get("target_status_errors") or []) if isinstance(e, dict)]
+        registry.merge_run_target(run_id, {"target_status_errors": earlier + errors})
+    except Exception as exc:  # noqa: BLE001 -- the completion is the record
+        log.warning("engine host: run %s's target-status errors not recorded: %s", run_id, _short(exc, 200))
+
+
+def _set_target_statuses(engine, targets: list[dict], status: str, *, errors: list[dict], **dates_and_words) -> None:
+    """`update_action_target_status` for each worked target, keyed on its ActionTarget RELATIONSHIP GUID (owner,
+    Q1). A target the listing gave no relationship GUID for gets no call (never the element's GUID) and one recorded
+    error; a call that raises is recorded and the run goes on (a courtesy to Egeria's viewers, §2.3). `status` is an
+    `ActivityStatus`; anything else is never sent (`target_activity_status` maps a completion)."""
+    if status not in ACTIVITY_STATUSES:
+        errors.append({"target": "", "status": status, "error": f"{status!r} is not an ActivityStatus; not sent"})
+        log.error("engine host: refused to send target status %r: not an ActivityStatus", status)
+        return
+    for t in targets:
+        rel = (t.get("relationship_guid") or "").strip()
+        if not rel:
+            if not any(e.get("target") == t["guid"] and e.get("status") == "" for e in errors):
+                errors.append({"target": t["guid"], "status": "",
+                               "error": f"Egeria's listing carried no {ACTION_TARGET_RELATIONSHIP_FIELD} for this "
+                                        "target; no target status was sent"})
+            continue
+        try:
+            engine.update_action_target_status(rel, status, **dates_and_words)
+        except Exception as exc:  # noqa: BLE001 -- recorded on the row; never blocks the completion
+            errors.append({"target": t["guid"], "relationship": rel, "status": status, "error": _short(exc, 300)})
+            log.warning("engine host: action target %s (relationship %s) not set %s: %s", t["guid"], rel, status,
+                        _short(exc, 300))
+
+
+def _cancelled_in_egeria(expert, guid: str) -> tuple[bool, str]:
+    """(Egeria now says the action is CANCELLED, why the read failed or ""). Read-only, as the run's principal, the
+    same element read the native-survey read-back uses. A failed read is not a cancel: the run goes on and says so."""
+    try:
+        element = expert.get_metadata_element_by_guid(guid)
+    except Exception as exc:  # noqa: BLE001 -- returned
+        return False, _short(exc, 300)
+    props = ((element if isinstance(element, dict) else {}).get("elementProperties") or {}).get("propertyValueMap") or {}
+    status = ((props.get("activityStatus") or {}).get("symbolicName") or "") if isinstance(props, dict) else ""
+    if not status:
+        return False, "Egeria's engine-action element carried no activityStatus"
+    return status == "CANCELLED", ""
+
+
+def _cancelled_outcome(request_type: str, slug: str, *, before_start: bool = False) -> dict:
+    """§2.4: the outcome a run Egeria cancelled stores. Its guard is survey-invalid only so every reader of stored
+    outcomes keeps working; `cancelled` is what says no completion is sent (and its targets end CANCELLED)."""
+    when = "before it started (nothing ran)" if before_start else "while it ran"
+    return _outcome(SURVEY_INVALID, CANCELLED_IN_EGERIA_SENTENCE, cancelled=True,
+                    detail=f"{request_type} on {slug or '-'}: Egeria cancelled the engine action {when}; "
+                           "nothing was published")
 
 
 class EngineHostPublishFailed(RuntimeError):
@@ -1118,10 +1346,14 @@ class EngineHostPublishFailed(RuntimeError):
     complete, linked report: the executor's run words then say "publish failed · <these words>"."""
 
 
-def _decide(registry, target: dict) -> dict:
+def _decide(registry, target: dict, cancelled=None) -> dict:
     """Run the step and publish its report; return the outcome to store. Never raises for a step or Egeria
-    answer: each becomes a guard with its words. Runs as the current principal (the engine host daemon)."""
-    outcome = _decide_one(registry, target)
+    answer: each becomes a guard with its words. Runs as the current principal (the engine host daemon).
+    `cancelled()` (§2.4), when given, is asked right before the report would be published: True publishes nothing
+    and returns `_cancelled_outcome`."""
+    outcome = _decide_one(registry, target, cancelled)
+    if outcome.get("cancelled"):
+        return outcome
     others = [g for g in target.get("other_targets") or [] if g]
     if others:
         outcome["message"] = (f"{outcome['message'].rstrip('.')}. Only the first database target was surveyed; "
@@ -1206,7 +1438,7 @@ def _step_output_annotations(entity, step_outputs: list, registry) -> list:
     return annotations_from_step_outputs(entity, [o for o in step_outputs if isinstance(o, dict)], registry)
 
 
-def _decide_one(registry, target: dict) -> dict:
+def _decide_one(registry, target: dict, cancelled=None) -> dict:
     refusal = (target.get("refusal") or "").strip()
     if refusal:
         # Owner ruling, 2026-10-14: survey-invalid ("the supplied information (such as the asset) is invalid").
@@ -1264,6 +1496,10 @@ def _decide_one(registry, target: dict) -> dict:
     def publisher(entity, step_outputs, surveyed_at, _registry):
         """The executor's publish step for this run: ONE native-shaped report, linked to the action. The
         executor records what this returns (the report GUID) or raises as the run's publish words."""
+        if cancelled is not None and cancelled():
+            # §2.4: Egeria cancelled the action while the step ran. Nothing is published.
+            published["outcome"] = _cancelled_outcome(request_type, slug)
+            raise NothingToPublish(CANCELLED_IN_EGERIA_SENTENCE)
         if library is None:
             annotations = [a for out in step_outputs if isinstance(out, dict)
                            for a in (out.get("annotations") or [])]
@@ -1433,17 +1669,22 @@ def run_engine_action(registry, run_id: str, target: dict) -> tuple[str, str]:
 
 
 def _run_engine_action(registry, run_id: str, target: dict) -> tuple[str, str]:
-    from pyegeria import AutomatedCuration
+    from pyegeria import GovernanceEngine, MetadataExpert
 
     from resource_explorer.egeria_clients import current_principal, egeria_client
 
     principal = current_principal()
-    # Not scope-shared: this client is closed when the run ends (it is bound to this run's event loop).
-    curation = egeria_client(principal, purpose="engine host", shared=False).of(AutomatedCuration)
+    # Not scope-shared: these clients are closed when the run ends (they are bound to this run's event loop).
+    clients = egeria_client(principal, purpose="engine host", shared=False)
+    engine = governance_engine_client(clients.of(GovernanceEngine))
+    expert = None
     try:
-        return _run_with(curation, registry, run_id, target, principal)
+        expert = clients.of(MetadataExpert)
+        return _run_with(engine, registry, run_id, target, principal, expert=expert)
     finally:
-        _close_quietly(curation)
+        _close_quietly(engine)
+        if expert is not None:
+            _close_quietly(expert)
 
 
 def _close_quietly(client) -> None:
@@ -1501,23 +1742,75 @@ def _record_submission(registry, target: dict, principal) -> str:
     return ""
 
 
-def _run_with(curation, registry, run_id: str, target: dict, principal) -> tuple[str, str]:
+def _run_with(engine, registry, run_id: str, target: dict, principal, *, expert=None) -> tuple[str, str]:
+    """The run, on the Governance Engine client `engine` (§2.1). `expert` (a MetadataExpert) reads the action back
+    for a cancel (§2.4); without one no cancel is looked for.
+
+    Egeria's `updateEngineActionStatus` checks only that the caller is the claimant, never the current status, and a
+    cancel leaves `processingEngineUserId` set: an IN_PROGRESS sent after a cancel would UN-cancel the action. So the
+    action is read back FIRST, and a cancelled one gets no IN_PROGRESS, no step, no publish and no completion."""
     guid = target["engine_action_guid"]
+    request_type, slug = target.get("request_type") or "", target.get("slug") or ""
+    cancel_reads: list[str] = []
+
+    def cancelled() -> bool:
+        if expert is None:
+            return False
+        said, error = _cancelled_in_egeria(expert, guid)
+        if error:
+            cancel_reads.append(error)
+        return said
+
+    target_errors: list[dict] = []
+    if cancelled():
+        # §2.4: cancelled while it waited in RE's queue (between the claim and this run).
+        outcome = _cancelled_outcome(request_type, slug, before_start=True)
+        return _end_cancelled(engine, registry, run_id, target, outcome, target_errors,
+                              f"{CANCELLED_IN_EGERIA_SENTENCE} before it started: nothing ran or was published")
     status_error = ""
     try:
-        curation.update_engine_action_status(guid, "IN_PROGRESS")
+        engine.update_engine_action_status(guid, "IN_PROGRESS")
     except Exception as exc:  # noqa: BLE001 -- a status line, not the work: recorded on the outcome, run goes on
         status_error = _short(exc)
         log.warning("engine host: could not set engine action %s IN_PROGRESS (%s); running it anyway",
                     guid, status_error)
+    worked = worked_targets(target)
+    _set_target_statuses(engine, worked, "IN_PROGRESS", errors=target_errors, start_date=_egeria_time())
+    if target_errors:
+        # Recorded now, so a worker that dies before the end leaves them for the restart pass to add to.
+        _record_target_errors(registry, run_id, {}, target_errors)
     listing_error = _record_submission(registry, target, principal)
-    outcome = _decide(registry, target)
+
+    outcome = _decide(registry, target, cancelled)
+    # The last cancel check before the completion. A cancel that lands after it, before `record_completion_status`
+    # reaches Egeria, is the one window left: Egeria then ignores the completion (no else branch in
+    # `EngineActionHandler.recordCompletionStatus` for a terminal action), so Egeria says CANCELLED while this row says
+    # it completed. The next read-back of the run shows Egeria's CANCELLED; nothing here can close that window.
+    if not outcome.get("cancelled") and cancelled():
+        if outcome.get("report_guid"):
+            # Published before the cancel: the report stays (it is in Egeria) and the outcome keeps it; only the
+            # completion is not sent.
+            outcome["cancelled_after_publish"] = True
+        else:
+            # A path that published nothing (a refusal, a failure): Egeria cancelled it meanwhile, so no completion.
+            outcome = _cancelled_outcome(request_type, slug)
     if status_error:
         outcome["in_progress_error"] = status_error
     if listing_error:
         outcome["listing_error"] = listing_error
+    if cancel_reads:
+        outcome["cancel_check_error"] = cancel_reads[-1]
+    if outcome.get("cancelled_after_publish"):
+        return _end_cancelled(engine, registry, run_id, target, outcome, target_errors,
+                              f"{CANCELLED_IN_EGERIA_SENTENCE} after its survey report {outcome['report_guid']} was "
+                              "published: the report stays, no completion was sent")
+    if outcome.get("cancelled"):
+        return _end_cancelled(engine, registry, run_id, target, outcome, target_errors,
+                              f"{CANCELLED_IN_EGERIA_SENTENCE}: nothing was published")
     registry.merge_run_target(run_id, {"outcome": outcome})      # raises: nothing is sent unstored
-    recorded, error = _record_completion(curation, guid, outcome)
+    # Each worked target ends with the outcome's ActivityStatus and the completion's own words (one rendering, §2.3).
+    _finish_targets(engine, registry, run_id, target, outcome, target_errors)
+    recorded, error = _record_completion(engine, guid, outcome)
     log.info("engine host: engine action %s ran: %s (%s)%s", guid, outcome["guard"], outcome["message"],
              "" if recorded else f"; completion NOT recorded in Egeria: {error}")
     if not recorded:
@@ -1534,6 +1827,17 @@ def _run_with(curation, registry, run_id: str, target: dict, principal) -> tuple
     if outcome["guard"] == SURVEY_COMPLETED:
         return "succeeded", marker_note
     return "failed", " · ".join(x for x in (f"{outcome['guard']}: {outcome['message']}", marker_note) if x)[:1500]
+
+
+def _end_cancelled(engine, registry, run_id: str, target: dict, outcome: dict, target_errors: list[dict],
+                   words: str) -> tuple[str, str]:
+    """§2.4: a run Egeria cancelled ends here. The outcome is stored, every worked target ends CANCELLED with the
+    outcome's words, and NO completion is sent (Egeria ignores one on a terminal action anyway); the row says why."""
+    registry.merge_run_target(run_id, {"outcome": outcome})      # raises: nothing is sent unstored
+    _finish_targets(engine, registry, run_id, target, outcome, target_errors)
+    registry.merge_run_target(run_id, {"completion_not_sent": CANCELLED_IN_EGERIA_SENTENCE})
+    log.info("engine host: engine action %s: %s", target.get("engine_action_guid"), words)
+    return "cancelled", words
 
 
 # ── the worker loop ────────────────────────────────────────────────────────────

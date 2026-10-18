@@ -179,7 +179,7 @@ def test_a_library_action_is_claimed_run_published_and_completed(staleness_insta
     # identity unchanged: every write is the engine host daemon for the requester
     daemon = _daemon_user()
     for cls, method, who in egeria.calls:
-        if method in ("get_metadata_guid_by_unique_name", "get_active_engine_actions") or cls == "ActorManager":
+        if method in ("get_metadata_guid_by_unique_name", "get_approved_engine_actions") or cls == "ActorManager":
             continue
         assert (who.kind, who.reason, who.requested_by, who.client_user) == \
             ("daemon", "engine_host", REQUESTER, daemon), f"{cls}.{method} ran as {who}"

@@ -1117,6 +1117,10 @@ export const checkNativeSurveyPointers = (slug, { entityType } = {}) =>
  *  person). The answer's `cancelled` is true only when the read-back after the cancel says CANCELLED. */
 export const cancelNativeAction = (slug, engineActionGuid, { entityType } = {}) =>
   post(`${nativePath(slug, requireKind('cancelNativeAction', entityType))}/egeria-actions/${encodeURIComponent(engineActionGuid)}/cancel`);
+/** Cancel an Egeria-coordinated run of an RE Survey Definition that RE started (DESIGN-ENGINE-HOST-GOVERNANCE-ENGINE-API
+ *  §2.4), as the signed-in person. `instanceGuid` is the process instance GUID the run row holds. */
+export const cancelProcessRun = (slug, instanceGuid, { entityType } = {}) =>
+  post(`${nativePath(slug, requireKind('cancelProcessRun', entityType))}/process-runs/${encodeURIComponent(instanceGuid)}/cancel`);
 export const getNativeSurveyReport = (slug, reportGuid, { entityType } = {}) =>
   get(`${nativePath(slug, requireKind('getNativeSurveyReport', entityType))}/reports/${encodeURIComponent(reportGuid)}`);
 
