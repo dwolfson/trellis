@@ -206,15 +206,24 @@ class ConversationAgent(BaseExplorerAgent):
 
             return ExamplesAgent().handle(query, resource_slug=slug)
 
-        if classified_intent == QueryIntent.COMPARISON:
-            from resource_explorer.agents.compare_agent import CompareAgent
+        # The specialists compile evidence across every resource the question names; the
+        # route reads the manifest off THIS agent, so carry it back after delegating.
+        self._last_compiled = None
+        for intent, module, cls in (
+            (QueryIntent.COMPARISON, "compare_agent", "CompareAgent"),
+            (QueryIntent.INTEGRATION, "integration_agent", "IntegrationAgent"),
+        ):
+            if classified_intent == intent:
+                import importlib
 
-            return CompareAgent().handle(query, resource_slug=slug)
-
-        if classified_intent == QueryIntent.INTEGRATION:
-            from resource_explorer.agents.integration_agent import IntegrationAgent
-
-            return IntegrationAgent().handle(query, resource_slug=slug)
+                specialist = getattr(
+                    importlib.import_module(f"resource_explorer.agents.{module}"), cls
+                )()
+                answer = specialist.handle(
+                    query, resource_slug=slug, perspectives=kwargs.get("perspectives")
+                )
+                self._last_compiled = specialist._last_compiled
+                return answer
 
         # Reset per turn, not just on failure -- a question with no resource
         # in scope must not show the previous turn's compiled evidence as if

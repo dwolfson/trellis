@@ -138,9 +138,15 @@ class CompareAgent(BaseExplorerAgent):
                 "a brief stats snapshot to provide context."
             )
 
+        self._evidence_lines = self._multi_resource_evidence(
+            query, slugs, kwargs.get("perspectives")
+        )
+        evidence = "\n".join(self._evidence_lines)
+        evidence_block = f"{evidence}\n\n" if evidence else ""
         prompt = (
             f"Compare these resources: {', '.join(slugs)}\n\n"
             f"Available metadata per resource:\n" + "\n".join(resource_info) + "\n\n"
+            f"{evidence_block}"
             f"Comparison guidance: {guidance}\n\n"
             f"Question: {query}\n\n"
             "Structure your response with:\n"
@@ -193,6 +199,7 @@ class CompareAgent(BaseExplorerAgent):
                         f"## {slug}\n\n### Stats\n{stat_text}\n\n### Content\n{doc_text}"
                     )
 
+        sections.extend(getattr(self, "_evidence_lines", []))
         combined = "\n\n---\n\n".join(sections)
         fallback_prompt = (
             f"{self.system_prompt()}\n\n"

@@ -780,3 +780,62 @@ def test_dynamic_delegation_and_lineage_tools(db):
         with patch.dict("os.environ", {}, clear=True):
             lineage_resp = query_egeria_lineage_raw("repo_one", "db_one")
             assert "Egeria platform URL not configured" in lineage_resp
+
+
+def test_compare_and_integration_agents_use_multi_resource_evidence(db):
+    from resource_explorer.agents.compare_agent import CompareAgent
+    from resource_explorer.agents.conversation_agent import ConversationAgent
+    from resource_explorer.agents.integration_agent import IntegrationAgent
+    from resource_explorer.registry import Project
+
+    db.add(Project(slug="app_alpha", display_name="App Alpha", github_url="https://github.com/org/alpha"))
+    db.add(Project(slug="app_beta", display_name="App Beta", github_url="https://github.com/org/beta"))
+
+    seen: list[str] = []
+
+    def _capture(self, prompt):
+        seen.append(prompt)
+        return "ok"
+
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db), patch(
+        "resource_explorer.agents.base.BaseExplorerAgent._run_agent", _capture
+    ), patch(
+        "resource_explorer.agents.base.BaseExplorerAgent._infer_all_project_slugs",
+        return_value=["app_alpha", "app_beta"],
+    ), patch(
+        "resource_explorer.context_compile.compile_multi_resource_context",
+        wraps=None,
+    ) as multi:
+        from resource_explorer.context_compile import CompiledContext
+
+        multi.return_value = CompiledContext(
+            text="=== MULTI-RESOURCE EVIDENCE COMPILATION ===",
+            compile_id="abc",
+            manifest={
+                "mode": "multi_resource",
+                "gaps": [{"key": "security_scan", "reason": "no stored result", "resource_slug": "app_beta"}],
+            },
+            derivation=[],
+        )
+        for agent_cls in (CompareAgent, IntegrationAgent):
+            seen.clear()
+            agent = agent_cls()
+            assert agent.handle("compare app_alpha and app_beta") == "ok"
+            assert "MULTI-RESOURCE EVIDENCE COMPILATION" in seen[0]
+            assert "[app_beta] Analyses that no stored result: security_scan." in seen[0]
+            assert agent._last_compiled.manifest["mode"] == "multi_resource"
+
+        # ConversationAgent hands the compile back for the route's payload.
+        with patch(
+            "resource_explorer.query_processor.QueryProcessor.classify",
+            return_value=__import__("resource_explorer.query_processor", fromlist=["QueryIntent"]).QueryIntent.COMPARISON,
+        ):
+            conv = ConversationAgent()
+            assert conv.handle("compare app_alpha and app_beta") == "ok"
+            assert conv._last_compiled.compile_id == "abc"
+
+        # A compiler that fails must not cost the answer.
+        multi.side_effect = RuntimeError("boom")
+        agent = CompareAgent()
+        assert agent.handle("compare app_alpha and app_beta") == "ok"
+        assert agent._last_compiled is None

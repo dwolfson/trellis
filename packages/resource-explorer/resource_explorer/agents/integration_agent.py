@@ -82,9 +82,15 @@ class IntegrationAgent(BaseExplorerAgent):
             else:
                 project_info.append(f"  {slug}: (no collections indexed — stats only)")
 
+        self._evidence_lines = self._multi_resource_evidence(
+            query, slugs, kwargs.get("perspectives")
+        )
+        evidence = "\n".join(self._evidence_lines)
+        evidence_block = f"{evidence}\n\n" if evidence else ""
         prompt = (
             f"Investigate whether these projects can be integrated: {', '.join(slugs)}\n\n"
             f"Available collections per project:\n" + "\n".join(project_info) + "\n\n"
+            f"{evidence_block}"
             "Steps to follow:\n"
             "1. For each project, search its docs/README for any mention of the other project(s).\n"
             "2. Compare primary languages and data interfaces (query_project_stats).\n"
@@ -124,6 +130,7 @@ class IntegrationAgent(BaseExplorerAgent):
         cross_links = query_cross_asset_links_raw()
         lineage_info = query_egeria_lineage_raw(slugs[0], slugs[1] if len(slugs) > 1 else "")
 
+        sections.extend(getattr(self, "_evidence_lines", []))
         combined = "\n\n---\n\n".join(sections)
         prompt = (
             f"{self.system_prompt()}\n\n"
