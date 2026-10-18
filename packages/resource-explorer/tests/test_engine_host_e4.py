@@ -59,10 +59,23 @@ def _refusal(message_id: str, text: str):
         "exceptionErrorMessage": f"{message_id} {text}"})
 
 
+def _rel_guid(action_guid: str, element_guid: str) -> str:
+    """A stable ActionTarget relationship GUID for (action, target element): never equal to either."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"ActionTarget/{action_guid}/{element_guid}"))
+
+
+def _deprecated(name: str):
+    def refuse(*args, **kwargs):
+        raise AssertionError(f"AutomatedCuration.{name} is the deprecated engine-action wrapper; RE uses "
+                             "GovernanceEngine (odpi/egeria#9371)")
+    return refuse
+
+
 class FakeEgeria:
     """Engine actions, elements and relationships, with Egeria's own gates (C5, C7, C8)."""
 
-    TERMINAL = {"ACTIONED": "COMPLETED", "INVALID": "INVALID", "FAILED": "FAILED", "OTHER": "OTHER"}
+    TERMINAL = {"ACTIONED": "COMPLETED", "INVALID": "INVALID", "FAILED": "FAILED", "OTHER": "OTHER",
+                "CANCELLED": "CANCELLED"}
 
     def __init__(self, monkeypatch):
         from resource_explorer import egeria_clients
@@ -87,6 +100,14 @@ class FakeEgeria:
         self.declared: set[str] = set()
         self.assets: set[str] = set()
         self.process_starts: list[dict] = []
+        #: What RE sent per action target ({relationship, status, start_date, completion_date, message}).
+        self.target_statuses: list[dict] = []
+        #: Process cancels (instance GUID, principal at the call).
+        self.cancels: list[tuple] = []
+        #: The approved listing returns more than it should (every active action): RE's screen must still gate.
+        self.overreturn = False
+        #: Egeria accepts a process cancel and does not apply it (yet).
+        self.ignore_cancel = False
         monkeypatch.setattr(egeria_clients, "_build", self._build)
 
     # -- the constructor seam --------------------------------------------------
@@ -130,13 +151,21 @@ class FakeEgeria:
                 return fn(*args, **kwargs)
             getattr(spec, method).side_effect = inner
 
-        if name == "AutomatedCuration":
-            wrap("get_active_engine_actions", self._active)
+        if name == "GovernanceEngine":
+            # The engine-action calls (odpi/egeria#9371): the Governance Engine view service.
+            wrap("get_approved_engine_actions", self._approved)
             wrap("get_active_claimed_engine_actions", self._active_claimed)
             wrap("claim_engine_action", self._claim)
             wrap("update_engine_action_status", self._status)
+            wrap("update_action_target_status", self._target_status)
             wrap("record_completion_status", self._complete)
+        elif name == "AutomatedCuration":
+            # The deprecated wrappers of the engine-action calls: RE must never use them again.
+            for old in ("get_active_engine_actions", "get_active_claimed_engine_actions", "claim_engine_action",
+                        "update_engine_action_status", "record_completion_status"):
+                wrap(old, _deprecated(old))
             wrap("initiate_gov_action_process", self._start_process)
+            wrap("cancel_governance_action_process", self._cancel_process)
             # By-name lookups: annotations are new (a miss); anything else is the catalogued database element.
             wrap("get_guid_for_name", lambda name, *a, **k:
                  "No elements found" if str(name).startswith("Annotation::") else DB_GUID)
@@ -177,18 +206,56 @@ class FakeEgeria:
             "processingEngineUserId": claimed_by,
             "requesterUserId": requester,
             "requestedStartTime": 1_760_400_000_000,
-            "actionTargetElements": [{"actionTargetName": target_name, "actionTargetGUID": t} for t in targets]
-            + ([{"actionTargetName": "surveyReport", "actionTargetGUID": report}] if report else []),
+            # Each entry as Egeria's ActionTargetElement serialises: the target ELEMENT's GUID and the ActionTarget
+            # RELATIONSHIP's (EngineActionConverter sets actionTargetRelationshipGUID).
+            "actionTargetElements": [{"actionTargetName": target_name, "actionTargetGUID": t,
+                                      "actionTargetRelationshipGUID": _rel_guid(guid, t)} for t in targets]
+            + ([{"actionTargetName": "surveyReport", "actionTargetGUID": report,
+                 "actionTargetRelationshipGUID": _rel_guid(guid, report)}] if report else []),
             # what RE wrote:
             "statusUpdates": [], "completion": None,
         }
         self.actions[guid] = action
         return action
 
-    def _active(self, start_from=0, page_size=0, output_format="JSON", report_spec="EngineAction", **kwargs):
-        live = [a for a in self.actions.values() if a["actionStatus"] not in self.TERMINAL.values()]
+    def _approved(self, governance_engine_guid, start_from=0, page_size=0):
+        """`GET …/governance-engines/{guid}/engine-actions/approved`: that engine's APPROVED, unclaimed actions. With
+        `overreturn` set the listing misbehaves and returns every active action (any engine, any status), so a test
+        can prove RE's own screen is still the gate."""
+        if self.overreturn:
+            live = [a for a in self.actions.values() if a["actionStatus"] not in self.TERMINAL.values()]
+        else:
+            live = [a for a in self.actions.values() if a["governanceEngineGUID"] == governance_engine_guid
+                    and a["actionStatus"] == "APPROVED" and not a["processingEngineUserId"]]
         chunk = live[start_from:start_from + page_size] if page_size else live[start_from:]
         return chunk or "No elements found"
+
+    def _target_status(self, action_target_guid, status, start_date=None, completion_date=None,
+                       completion_message=None, body=None):
+        """`ActionTargetStatusRequestBody`: Egeria loads the ActionTarget RELATIONSHIP by this GUID
+        (`EngineActionHandler.updateActionTargetStatus` -> getRelationshipByGUID), so an element GUID is refused."""
+        owner = next((a for a in self.actions.values() for t in a["actionTargetElements"]
+                      if t.get("actionTargetRelationshipGUID") == action_target_guid), None)
+        if owner is None:
+            raise _refusal("OMAG-REPOSITORY-HANDLER-404-002", f"no ActionTarget relationship {action_target_guid}")
+        self.target_statuses.append({"relationship": action_target_guid, "status": status, "start_date": start_date,
+                                     "completion_date": completion_date, "message": completion_message})
+
+    def _cancel_process(self, process_instance_guid):
+        """Egeria cancels the instance's active engine actions (status CANCELLED), and its element graphs then say so.
+        With `ignore_cancel` it accepts the call and the actions keep going (its read-back not yet changed)."""
+        from resource_explorer.egeria_clients import current_principal
+
+        self.cancels.append((process_instance_guid, current_principal()))
+        if self.ignore_cancel:
+            return
+        for guid, a in self.actions.items():
+            if a.get("instance") == process_instance_guid and a["actionStatus"] not in self.TERMINAL.values():
+                a["actionStatus"] = "CANCELLED"
+                start = (self.graphs.get(guid) or {}).get("startingElement") or {}
+                status = ((start.get("elementProperties") or {}).get("propertyValueMap") or {}).get("activityStatus")
+                if isinstance(status, dict):
+                    status["symbolicName"] = "CANCELLED"
 
     def _active_claimed(self, governance_engine_guid, start_from=0, page_size=0):
         mine = [a for a in self.actions.values()
@@ -498,7 +565,7 @@ def test_a_failed_publish_completes_survey_failed_with_the_error_and_no_report_g
     assert "the repository is unavailable" in done["message"]
     assert "was not published" in done["message"], "with no report GUID the words say no report exists"
     assert "surveyReport" not in json.dumps(done["targets"])
-    sent = egeria.of("AutomatedCuration").record_completion_status.call_args_list
+    sent = egeria.of("GovernanceEngine").record_completion_status.call_args_list
     assert sent and all(c.kwargs.get("output_guards") == ["survey-failed"] for c in sent), sent
     row = _row(reg)
     assert row["state"] == "failed"
@@ -511,13 +578,13 @@ def test_completion_is_recorded_only_after_the_outcome_is_stored_on_the_row(reg,
     egeria.add_action("ea-order")
     _sweep(reg)
     seen = {}
-    complete = egeria.of("AutomatedCuration").record_completion_status.side_effect
+    complete = egeria.of("GovernanceEngine").record_completion_status.side_effect
 
     def check_row_first(engine_action_guid, *args, **kwargs):
         seen.update(_row(reg)["target"].get("outcome") or {})
         return complete(engine_action_guid, *args, **kwargs)
 
-    egeria.of("AutomatedCuration").record_completion_status.side_effect = check_row_first
+    egeria.of("GovernanceEngine").record_completion_status.side_effect = check_row_first
     _run_queue_once(reg)
     assert seen.get("report_guid") and seen.get("annotation_count"), seen
 
@@ -533,7 +600,7 @@ def test_every_egeria_call_is_the_engine_host_daemon_for_the_requester(reg, eger
     assert egeria.built and all(user == daemon for _, user in egeria.built), egeria.built
     # The shared Ownership-shape lookup (ActorManager) is a read under its own daemon reason; the engine lookup
     # and the listing serve every action, so they run as Daemon(ENGINE_HOST) with nobody recorded.
-    sweep_reads = {"get_metadata_guid_by_unique_name", "get_active_engine_actions"}
+    sweep_reads = {"get_metadata_guid_by_unique_name", "get_approved_engine_actions"}
     for cls, method, who in egeria.calls:
         if method in sweep_reads:
             assert (who.kind, who.reason, who.requested_by) == ("daemon", "engine_host", ""), (method, who)
@@ -693,8 +760,8 @@ def test_restart_queues_a_claimed_action_with_no_row_once(reg, egeria):
     second = _restart(reg)
     assert first.adopted == ["ea-orphan"] and second.adopted == []
     assert [r["target"]["engine_action_guid"] for r in _rows(reg)] == ["ea-orphan"]
-    egeria.of("AutomatedCuration").claim_engine_action.assert_not_called()
-    call = egeria.of("AutomatedCuration").get_active_claimed_engine_actions.call_args
+    egeria.of("GovernanceEngine").claim_engine_action.assert_not_called()
+    call = egeria.of("GovernanceEngine").get_active_claimed_engine_actions.call_args
     assert ENGINE_GUID in (*call.args, *call.kwargs.values())
 
 
@@ -902,7 +969,7 @@ def test_restart_does_not_send_a_completion_the_row_already_recorded(reg, egeria
     reg.finish_run(run_id, "succeeded")
     result = _restart(reg)
     assert result.completed == [] and result.pending == ["ea-marked"]
-    egeria.of("AutomatedCuration").record_completion_status.assert_not_called()
+    egeria.of("GovernanceEngine").record_completion_status.assert_not_called()
 
 
 def test_a_publisher_that_raises_completes_survey_failed_with_its_words(reg, egeria, no_connection):
@@ -1194,9 +1261,9 @@ def test_several_database_targets_survey_the_first_and_say_so(reg, egeria, no_co
 def test_the_run_closes_the_client_it_built(reg, egeria, no_connection):
     egeria.add_action("ea-close")
     _sweep(reg)
-    egeria.of("AutomatedCuration").close_session.reset_mock()
+    egeria.of("GovernanceEngine").close_session.reset_mock()
     _run_queue_once(reg)
-    egeria.of("AutomatedCuration").close_session.assert_called()
+    egeria.of("GovernanceEngine").close_session.assert_called()
 
 
 def test_a_registry_read_that_raises_for_one_action_does_not_stop_the_pass(reg, egeria, monkeypatch):

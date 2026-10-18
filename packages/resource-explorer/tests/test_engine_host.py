@@ -61,22 +61,26 @@ class Fakes:
     """The pyegeria boundary: one autospec per client class, plus who each client was built for."""
 
     def __init__(self, monkeypatch, actions: list[dict]):
-        from pyegeria import AutomatedCuration, MetadataExpert
+        from pyegeria import GovernanceEngine, MetadataExpert
 
         from resource_explorer import egeria_clients
 
-        self.curation = create_autospec(AutomatedCuration, spec_set=True, instance=True)
+        # The engine-action calls are on the Governance Engine view service (odpi/egeria#9371).
+        self.engine = create_autospec(GovernanceEngine, spec_set=True, instance=True)
         self.expert = create_autospec(MetadataExpert, spec_set=True, instance=True)
         self.actions = actions
-        self.curation.get_active_engine_actions.side_effect = self._page
+        # The listing returns exactly `actions`, whatever they are: a listing that returns more than Egeria's approved
+        # filter would, so these tests pin RE's own screen (engine, status, claimant), not the server's filter.
+        self.engine.get_approved_engine_actions.side_effect = self._page
+        self.engine.get_active_claimed_engine_actions.side_effect = self._claimed
         self.expert.get_metadata_guid_by_unique_name.return_value = ENGINE_GUID
         # Engine host step 4: each candidate's neighbourhood is read before the claim. These actions were started
         # alone: Egeria's exact "nothing there" (no ControlFlow, so no previous step to wait for).
         self.expert.get_all_related_elements.return_value = "No elements found"
         self.built: list[tuple[str, str]] = []           # (class name, Egeria user the client was built for)
         self.claims: list[tuple[str, object]] = []       # (engine action guid, principal at the call)
-        self.curation.claim_engine_action.side_effect = self._claim
-        by_cls = {AutomatedCuration: self.curation, MetadataExpert: self.expert}
+        self.engine.claim_engine_action.side_effect = self._claim
+        by_cls = {GovernanceEngine: self.engine, MetadataExpert: self.expert}
 
         def build(cls, view_server, platform_url, user_id, password):
             self.built.append((cls.__name__, user_id))
@@ -84,12 +88,21 @@ class Fakes:
 
         monkeypatch.setattr(egeria_clients, "_build", build)
 
-    def _page(self, start_from=0, page_size=0, output_format="JSON", report_spec="EngineAction", **kwargs):
+    def _page(self, governance_engine_guid, start_from=0, page_size=0):
         if page_size:
             chunk = self.actions[start_from:start_from + page_size]
         else:
             chunk = self.actions[start_from:]
         return chunk or "No elements found"
+
+    def _claimed(self, governance_engine_guid, start_from=0, page_size=0):
+        """`…/engine-actions/active-claimed`: the engine's active actions the caller's user has claimed."""
+        from resource_explorer.egeria_clients import _daemon_credential
+
+        mine = [a for a in self.actions if a["governanceEngineGUID"] == governance_engine_guid
+                and a["processingEngineUserId"] == _daemon_credential()[0]
+                and a["actionStatus"] in ("WAITING", "ACTIVATING", "IN_PROGRESS")]
+        return mine[start_from:] or "No elements found"
 
     def _claim(self, engine_action_guid):
         """Egeria's claim gate (C5): APPROVED and unclaimed, else 403-003; a claim sets ACTIVATING."""
@@ -104,7 +117,7 @@ class Fakes:
             action["processingEngineUserId"] = _daemon_credential()[0]
 
     def egeria_calls(self) -> list[str]:
-        return [c[0] for m in (self.curation, self.expert) for c in m.mock_calls if c[0]]
+        return [c[0] for m in (self.engine, self.expert) for c in m.mock_calls if c[0]]
 
 
 def _host(reg):
@@ -145,7 +158,7 @@ def test_only_res_approved_work_of_a_known_type_is_claimed_once(reg, enabled, mo
     claimed = [g for g, _ in fakes.claims]
     assert claimed == ["a-good"], f"claimed {claimed}; only RE's APPROVED, unclaimed, known-type action may be"
     # Not even ATTEMPTED: RE filters before asking (as native does), it does not lean on Egeria's claim gate.
-    attempted = [c.args[0] for c in fakes.curation.claim_engine_action.call_args_list]
+    attempted = [c.args[0] for c in fakes.engine.claim_engine_action.call_args_list]
     assert attempted == ["a-good"], f"claim attempted on {attempted}"
     assert result.claimed == ["a-good"]
     assert "a-unknown" in result.skipped.get("unknown_request_type", [])
@@ -186,7 +199,7 @@ def test_with_no_engine_declared_in_egeria_nothing_is_claimed(reg, enabled, monk
         host.close()
     assert fakes.claims == []
     assert result.claimed == []
-    fakes.curation.get_active_engine_actions.assert_not_called()
+    fakes.engine.get_approved_engine_actions.assert_not_called()
     assert _engine_rows(reg) == []
 
 
@@ -205,14 +218,14 @@ def _refused_claim():
 def test_a_refused_claim_writes_nothing_logs_no_error_and_the_next_sweep_continues(reg, enabled, monkeypatch,
                                                                                     caplog):
     fakes = Fakes(monkeypatch, [_action("a-raced")])
-    original = fakes.curation.claim_engine_action.side_effect
+    original = fakes.engine.claim_engine_action.side_effect
 
     def first_refused(engine_action_guid):
         if engine_action_guid == "a-raced":
             raise _refused_claim()
         return original(engine_action_guid)
 
-    fakes.curation.claim_engine_action.side_effect = first_refused
+    fakes.engine.claim_engine_action.side_effect = first_refused
     host = _host(reg)
     try:
         with caplog.at_level(logging.DEBUG, logger="resource_explorer.engine_host"):
@@ -337,32 +350,35 @@ def _daemon_user() -> str:
     return _daemon_credential()[0]
 
 
-def test_a_claim_that_errored_but_was_committed_is_adopted_once(reg, enabled, monkeypatch):
+def test_a_claim_that_errored_but_was_committed_is_adopted_once_by_the_restart_pass(reg, enabled, monkeypatch):
     """A timeout or 5xx after Egeria committed the claim leaves the action ACTIVATING under RE's user and no
-    runs row. The next sweep adopts it: exactly one row, and no second claim attempt."""
+    runs row. The sweep never adopts it (an approved-only listing cannot show it, design §2.2); the restart pass
+    does: exactly one row, and no second claim attempt."""
     fakes = Fakes(monkeypatch, [_action("a-orphan")])
-    commit_then_fail = fakes.curation.claim_engine_action.side_effect
+    commit_then_fail = fakes.engine.claim_engine_action.side_effect
 
     def timeout_after_commit(engine_action_guid):
         commit_then_fail(engine_action_guid)
         raise RuntimeError("read timeout")
 
-    fakes.curation.claim_engine_action.side_effect = timeout_after_commit
+    fakes.engine.claim_engine_action.side_effect = timeout_after_commit
     host = _host(reg)
     try:
         first = host.sweep_once()
         assert first.errors == ["a-orphan"] and _engine_rows(reg) == []
-        second = host.sweep_once()
-        third = host.sweep_once()
+        swept = host.sweep_once()
+        assert swept.adopted == [] and _engine_rows(reg) == [], "the sweep never adopts (design §2.2)"
+        second = host.restart_pass()
+        third = host.restart_pass()
     finally:
         host.close()
     assert second.adopted == ["a-orphan"]
     assert third.adopted == []
     assert [r["target"]["engine_action_guid"] for r in _engine_rows(reg)] == ["a-orphan"]
-    assert fakes.curation.claim_engine_action.call_count == 1
+    assert fakes.engine.claim_engine_action.call_count == 1
 
 
-def test_a_claim_whose_row_could_not_be_written_is_adopted_by_the_next_sweep(reg, enabled, monkeypatch):
+def test_a_claim_whose_row_could_not_be_written_is_adopted_by_the_restart_pass(reg, enabled, monkeypatch):
     fakes = Fakes(monkeypatch, [_action("a-norow")])
     real_enqueue = reg.enqueue_run
     calls = {"n": 0}
@@ -378,15 +394,16 @@ def test_a_claim_whose_row_could_not_be_written_is_adopted_by_the_next_sweep(reg
     try:
         first = host.sweep_once()
         assert first.claimed == ["a-norow"] and _engine_rows(reg) == []
-        second = host.sweep_once()
-        host.sweep_once()
+        assert host.sweep_once().adopted == [] and _engine_rows(reg) == []
+        second = host.restart_pass()
+        host.restart_pass()
     finally:
         host.close()
     assert second.adopted == ["a-norow"]
     rows = _engine_rows(reg)
     assert [r["target"]["engine_action_guid"] for r in rows] == ["a-norow"]
     assert rows[0]["requested_by"] == REQUESTER
-    assert fakes.curation.claim_engine_action.call_count == 1
+    assert fakes.engine.claim_engine_action.call_count == 1
 
 
 def test_an_action_another_engine_user_claimed_is_never_adopted(reg, enabled, monkeypatch):
@@ -400,7 +417,7 @@ def test_an_action_another_engine_user_claimed_is_never_adopted(reg, enabled, mo
         host.close()
     assert result.adopted == [] and "a-theirs" in result.skipped.get("already_claimed", [])
     assert _engine_rows(reg) == []
-    fakes.curation.claim_engine_action.assert_not_called()
+    fakes.engine.claim_engine_action.assert_not_called()
 
 
 def test_an_own_claim_that_already_has_a_row_is_not_adopted_again(reg, enabled, monkeypatch):
@@ -445,7 +462,7 @@ def test_a_failing_private_owner_check_claims_nothing(reg, enabled, monkeypatch)
         host.sweep_once()
     finally:
         host.close()
-    fakes.curation.claim_engine_action.assert_not_called()
+    fakes.engine.claim_engine_action.assert_not_called()
     assert _engine_rows(reg) == []
 
 
@@ -454,7 +471,7 @@ def test_close_closes_the_clients_http_sessions(reg, enabled, monkeypatch):
     host = _host(reg)
     host.sweep_once()
     host.close()
-    fakes.curation.close_session.assert_called()
+    fakes.engine.close_session.assert_called()
     fakes.expert.close_session.assert_called()
 
 

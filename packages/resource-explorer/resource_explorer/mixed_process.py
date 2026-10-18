@@ -567,6 +567,8 @@ def _step_words(n: int, label: str, view: EngineActionView | None, *, refusal_ok
         if view.status in ("APPROVED", "REQUESTED"):
             return f"step {n} {label} not claimed yet"
         return f"step {n} {label} {'running' if view.status == 'IN_PROGRESS' else 'waiting'}"
+    if view.status == "CANCELLED":
+        return f"step {n} {label} ⊘ cancelled"       # Egeria's own CANCELLED, read back (engine host §2.4)
     guard = ", ".join(g for g in view.completion_guards if g != _ROUTING_GUARD)
     if refusal_ok and view.status in (_DONE, "INVALID") and SURVEY_INVALID in view.completion_guards \
             and SURVEY_COMPLETED not in view.completion_guards:
@@ -625,6 +627,9 @@ def run_line_words(line: RunLine, *, started: str = "", started_in: str = "", st
     previous_number = 0
     for number, request_type, label in walk:
         view = by_request.get(request_type)
+        if view is None and previous is not None and previous.status == "CANCELLED":
+            parts.append(f"step {number} not started · step {previous_number} cancelled")
+            break
         if (view is None and previous is not None and not previous.active and not previous.succeeded
                 and not _always_follows(process, previous_number, number, previous)):
             parts.append(f"step {number} not started · step {previous_number} failed")
