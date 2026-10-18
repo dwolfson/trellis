@@ -8,6 +8,7 @@ non-user or an undocumented table, and the answer says how many were left out an
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -19,13 +20,29 @@ _LIST_LIMIT = 25
 DATABASE_METRICS = ("tables", "columns", "undocumented_tables")
 
 
-def repos_using_dependency(registry: "ProjectRegistry", name: str, ecosystem: str = "") -> str:
-    """Repositories whose latest recorded dependencies include `name` (substring, case-insensitive)."""
+def _canonical(name: str) -> str:
+    """Package-name spelling folded the way pip folds it: `Foo_Bar`, `foo.bar` and `foo-bar` are one name."""
+    return re.sub(r"[-_.]+", "-", name.strip().lower())
+
+
+def repos_using_dependency(
+    registry: "ProjectRegistry", name: str, ecosystem: str = "", contains: bool = False
+) -> str:
+    """Repositories whose latest recorded dependencies include `name`.
+
+    An exact package name by default (spelling-folded), because `sql` is not `sqlalchemy`; `contains`
+    widens it to a substring for exploratory questions.
+    """
     needle = (name or "").strip().lower()
     if not needle:
         return "Give a dependency name to look for."
     like = "%" + needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
 
+    # Exact matching folds `-`, `_` and `.`, which SQL LIKE cannot, so it filters in Python; only the
+    # substring search narrows in SQL.
+    narrow = "AND LOWER(d.dep_name) LIKE ? ESCAPE '\\' " if contains else ""
+    eco = "AND LOWER(d.ecosystem) = ? " if ecosystem else ""
+    params = ([like] if contains else []) + ([ecosystem.strip().lower()] if ecosystem else [])
     with registry._conn() as conn:
         rows = conn.execute(
             "SELECT d.project_slug, d.dep_name, d.dep_version, d.ecosystem "
@@ -33,9 +50,9 @@ def repos_using_dependency(registry: "ProjectRegistry", name: str, ecosystem: st
             "JOIN (SELECT project_slug, MAX(indexed_at) AS latest FROM project_dependencies "
             "      GROUP BY project_slug) l "
             "  ON l.project_slug = d.project_slug AND l.latest = d.indexed_at "
-            "WHERE LOWER(d.dep_name) LIKE ? ESCAPE '\\'" + (" AND LOWER(d.ecosystem) = ?" if ecosystem else "")
-            + " ORDER BY d.project_slug, d.dep_name",
-            (like, ecosystem.strip().lower()) if ecosystem else (like,),
+            f"WHERE 1=1 {narrow}{eco}"
+            "ORDER BY d.project_slug, d.dep_name",
+            tuple(params),
         ).fetchall()
         with_deps = {
             r[0] for r in conn.execute("SELECT DISTINCT project_slug FROM project_dependencies").fetchall()
@@ -43,11 +60,14 @@ def repos_using_dependency(registry: "ProjectRegistry", name: str, ecosystem: st
 
     repos = [p.slug for p in registry.list_all()]
     unknown = sorted(s for s in repos if s not in with_deps)
+    wanted = _canonical(needle)
     by_repo: dict[str, list[str]] = {}
     for r in rows:
+        if not contains and _canonical(r["dep_name"]) != wanted:
+            continue
         by_repo.setdefault(r["project_slug"], []).append(f"{r['dep_name']} {r['dep_version'] or ''}".strip())
 
-    scope = f" ({ecosystem} only)" if ecosystem else ""
+    scope = (f" ({ecosystem} only)" if ecosystem else "") + (" (name contains)" if contains else "")
     lines = [f"Repositories whose latest dependencies match '{name}'{scope}: {len(by_repo)} of {len(repos)} registered."]
     for slug in sorted(by_repo)[:_LIST_LIMIT]:
         lines.append(f"- `{slug}`: {', '.join(by_repo[slug][:5])}")

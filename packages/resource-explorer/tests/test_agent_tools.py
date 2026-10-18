@@ -1183,7 +1183,16 @@ def test_find_repos_by_dependency(db):
         assert "0 of 3" in find_repos_by_dependency_raw("sqlalchemy", "npm")
         assert "Give a dependency name" in find_repos_by_dependency_raw("  ")
         # '_' and '%' are literals, not wildcards.
-        assert "0 of 3" in find_repos_by_dependency_raw("sql_lchemy")
+        assert "0 of 3" in find_repos_by_dependency_raw("sql_lchemy", contains=True)
+
+        # Exact by default: a fragment is not the package; spelling variants are.
+        assert "0 of 3" in find_repos_by_dependency_raw("sql")
+        assert "1 of 3" in find_repos_by_dependency_raw("SQLAlchemy")
+        db.upsert_dependencies("no_deps", [dep("python_dateutil", "2.9")])
+        assert "`no_deps`" in find_repos_by_dependency_raw("python-dateutil")
+        # contains=true is the loose search.
+        assert "(name contains)" in find_repos_by_dependency_raw("alchemy", contains=True)
+        assert "`uses_it`" in find_repos_by_dependency_raw("alchemy", contains=True)
 
 
 def test_rank_databases(db):
@@ -1231,9 +1240,7 @@ def test_list_rfas_is_read_only_and_honest(db):
     from resource_explorer.registry import Project
 
     db.add(Project(slug="rfa_repo", display_name="RFA Repo", github_url="https://github.com/o/r"))
-    with patch("resource_explorer.registry.ProjectRegistry", return_value=db), patch(
-        "resource_explorer.web.routes.activity._registry", return_value=db
-    ):
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
         assert "No open RequestForAction" in list_rfas_raw("rfa_repo")
         create_rfa_from_finding_raw("rfa_repo", "Missing docs", analysis_name="doc_coverage")
         create_rfa_from_finding_raw("rfa_repo", "No tests")

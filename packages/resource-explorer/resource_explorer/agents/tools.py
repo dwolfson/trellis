@@ -1464,22 +1464,23 @@ def coverage_sweep(analysis: str, resource_type: str = "", only_gaps: bool = Fal
     return coverage_sweep_raw(analysis, resource_type, only_gaps)
 
 
-def find_repos_by_dependency_raw(dependency: str, ecosystem: str = "") -> str:
+def find_repos_by_dependency_raw(dependency: str, ecosystem: str = "", contains: bool = False) -> str:
     from resource_explorer.discovery import repos_using_dependency
     from resource_explorer.registry import ProjectRegistry
 
-    return repos_using_dependency(ProjectRegistry(), dependency, ecosystem)
+    return repos_using_dependency(ProjectRegistry(), dependency, ecosystem, contains)
 
 
 @tool(
     description=(
-        "Find which registered repositories use a dependency (case-insensitive substring of the package "
-        "name, e.g. 'sqlalchemy'), from each repo's latest recorded dependencies. ecosystem narrows it "
-        "(e.g. 'pip'). Repositories with no recorded dependencies are listed as unknown, not as non-users."
+        "Find which registered repositories use a dependency, by exact package name (case and -/_/. "
+        "spelling ignored, e.g. 'sqlalchemy'), from each repo's latest recorded dependencies. Set "
+        "contains=true to match any package whose name contains the text. ecosystem narrows it (e.g. 'pip'). "
+        "Repositories with no recorded dependencies are listed as unknown, not as non-users."
     )
 )
-def find_repos_by_dependency(dependency: str, ecosystem: str = "") -> str:
-    return find_repos_by_dependency_raw(dependency, ecosystem)
+def find_repos_by_dependency(dependency: str, ecosystem: str = "", contains: bool = False) -> str:
+    return find_repos_by_dependency_raw(dependency, ecosystem, contains)
 
 
 def rank_databases_raw(metric: str = "tables", limit: int = 10) -> str:
@@ -1504,11 +1505,11 @@ def rank_databases(metric: str = "tables", limit: int = 10) -> str:
 def list_rfas_raw(resource_slug: str = "", include_closed: bool = False) -> str:
     """Read-only view of the RFA drawer, with each RFA's workflow state and any dismissal."""
     from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.web.routes.activity import list_rfas
+    from resource_explorer.rfas import flatten_rfas
 
     registry = ProjectRegistry()
     slug = registry._normalize_slug(resource_slug) if resource_slug else None
-    rfas = list_rfas(entity_type=None, entity_slug=slug, limit=500)
+    rfas = flatten_rfas(registry, entity_slug=slug)
     total = len(rfas)
     shown = [
         r for r in rfas
