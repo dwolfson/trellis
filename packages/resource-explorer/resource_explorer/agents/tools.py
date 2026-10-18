@@ -1442,6 +1442,28 @@ def dependency_changes(resource_slug: str) -> str:
     return dependency_changes_raw(resource_slug)
 
 
+def coverage_sweep_raw(analysis: str, resource_type: str = "", only_gaps: bool = False) -> str:
+    from resource_explorer.coverage_sweep import coverage_sweep
+    from resource_explorer.registry import ProjectRegistry
+
+    return coverage_sweep(ProjectRegistry(), analysis, resource_type, only_gaps)
+
+
+@tool(
+    description=(
+        "Sweep EVERY registered resource for one analysis and group them by what is known: has a result, "
+        "ran and found nothing, never run, or cannot be established. Use for 'which repos have no license "
+        "classification?', 'which databases have never been checked for X?'. analysis is an analysis id "
+        "(license_classification, security_scan, cve_scan, secret_scan, documentation_coverage, "
+        "dependency_analysis, ci_quality, database_owner, schema_inventory, ...) or a plain word such as "
+        "'license' or 'security'. resource_type is 'repo', 'database' or 'filesystem' (optional). "
+        "only_gaps=true lists just the resources with nothing known. 'Never run' is not a pass."
+    )
+)
+def coverage_sweep(analysis: str, resource_type: str = "", only_gaps: bool = False) -> str:
+    return coverage_sweep_raw(analysis, resource_type, only_gaps)
+
+
 def query_cross_asset_links_raw(resource_slug: str = "") -> str:
     from resource_explorer.surveyors.cross_asset_matcher import query_cross_asset_links_raw as _matcher_raw
     return _matcher_raw(resource_slug=resource_slug)

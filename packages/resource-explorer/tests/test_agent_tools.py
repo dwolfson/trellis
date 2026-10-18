@@ -635,7 +635,7 @@ def test_conversation_agent_has_new_tools():
     assert "delegate_to_compare_agent" in tools
     assert "delegate_to_integration_agent" in tools
     # Deferred: the lineage tool is a stub and must not be offered to the agent.
-    assert "database_schema_changes" in tools and "dependency_changes" in tools
+    assert {"database_schema_changes", "dependency_changes", "coverage_sweep"} <= set(tools)
     assert "query_egeria_lineage" not in tools
 
 
@@ -1110,3 +1110,50 @@ def test_dependency_changes(db):
         out = dependency_changes_raw("dep_repo")
         assert "Added (1): new 3" in out and "Removed (1): old 1" in out
         assert "requests: 2.0 -> 2.1" in out and "3 -> 3 dependencies" in out
+
+
+def test_coverage_sweep(db):
+    from resource_explorer.agents.tools import coverage_sweep_raw
+    from resource_explorer.facts import Fact, MEASURED, NEVER_RUN, NOTHING_FOUND
+    from resource_explorer.registry import DatabaseEntity, Project
+
+    for slug in ("repo_a", "repo_b", "repo_c"):
+        db.add(Project(slug=slug, display_name=slug, github_url=f"https://github.com/o/{slug}"))
+    db.register_database(DatabaseEntity(
+        slug="shop_db", display_name="Shop", db_type="postgresql", host="h", port=5432,
+        database_name="shop",
+    ))
+    states = {"repo_a": MEASURED, "repo_b": NOTHING_FOUND, "repo_c": NEVER_RUN}
+
+    def fake_fact(self, slug, analysis_id, level="resource"):
+        return Fact(analysis_id=analysis_id, state=states.get(slug, NEVER_RUN))
+
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db), patch(
+        "resource_explorer.facts.FactLayer.fact", fake_fact
+    ):
+        # A plain word resolves to its analysis; only resource types that declare it are swept.
+        out = coverage_sweep_raw("license")
+        assert "`license_classification` across 3 of 3 repo" in out
+        assert "has a result (1): repo_a" in out
+        assert "ran, found nothing (1): repo_b" in out
+        assert "never run (1): repo_c" in out
+        assert "not passes" in out and "shop_db" not in out
+
+        # Gaps only: resources with a result are counted, not listed.
+        gaps = coverage_sweep_raw("license_classification", only_gaps=True)
+        assert "has a result: 1" in gaps and "repo_a" not in gaps and "never run (1): repo_c" in gaps
+
+        # Database-only analysis reaches the database, not the repos.
+        assert "across 1 of 1 database" in coverage_sweep_raw("schema_inventory")
+
+        # Unknown analysis and mismatched type say what is available instead of guessing.
+        assert "not an analysis I can sweep" in coverage_sweep_raw("bogus")
+        assert "does not apply to database" in coverage_sweep_raw("license_classification", "database")
+        assert "Unknown resource type" in coverage_sweep_raw("license", "thing")
+
+    # A spent time budget reports unchecked resources rather than calling them covered.
+    from resource_explorer.coverage_sweep import coverage_sweep
+
+    with patch("resource_explorer.facts.FactLayer.fact", fake_fact):
+        out = coverage_sweep(db, "license", time_budget=-1)
+    assert "across 0 of 3" in out and "3 resource(s) were not checked" in out
