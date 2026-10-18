@@ -1405,6 +1405,43 @@ def create_rfa_from_finding(
     )
 
 
+def database_schema_changes_raw(database_slug: str) -> str:
+    from resource_explorer.history_diff import database_changes
+    from resource_explorer.registry import ProjectRegistry
+
+    return database_changes(ProjectRegistry(), database_slug)
+
+
+@tool(
+    description=(
+        "Show what changed in a registered database's schema between its two most recent surveys: "
+        "tables added or removed, and per table the columns added or removed and any column whose type, "
+        "nullability or primary-key status changed. Use for 'what changed in X since the last survey?'. "
+        "Says so plainly when the database was never surveyed or only surveyed once."
+    )
+)
+def database_schema_changes(database_slug: str) -> str:
+    return database_schema_changes_raw(database_slug)
+
+
+def dependency_changes_raw(resource_slug: str) -> str:
+    from resource_explorer.history_diff import dependency_changes
+    from resource_explorer.registry import ProjectRegistry
+
+    return dependency_changes(ProjectRegistry(), resource_slug)
+
+
+@tool(
+    description=(
+        "Show how a repository's dependencies drifted between its two most recent ingests: dependencies "
+        "added, removed, and version changes. Use for 'has the dependency set of X changed?'. Says so "
+        "plainly when dependencies were never recorded or recorded only once."
+    )
+)
+def dependency_changes(resource_slug: str) -> str:
+    return dependency_changes_raw(resource_slug)
+
+
 def query_cross_asset_links_raw(resource_slug: str = "") -> str:
     from resource_explorer.surveyors.cross_asset_matcher import query_cross_asset_links_raw as _matcher_raw
     return _matcher_raw(resource_slug=resource_slug)

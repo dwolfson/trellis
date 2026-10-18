@@ -635,6 +635,7 @@ def test_conversation_agent_has_new_tools():
     assert "delegate_to_compare_agent" in tools
     assert "delegate_to_integration_agent" in tools
     # Deferred: the lineage tool is a stub and must not be offered to the agent.
+    assert "database_schema_changes" in tools and "dependency_changes" in tools
     assert "query_egeria_lineage" not in tools
 
 
@@ -1039,3 +1040,73 @@ def test_a2a_input_required_offers_ranked_repos_and_databases(db):
         status = _choice_status("Which two?", "'a and b'.", "compare", [], ctx)
     assert "none registered" in _text(status.message)
     assert not [p for p in status.message.parts if hasattr(p.root, "data")]
+
+
+def _schema(*tables):
+    return {"schema_info": {"schemas": [{"name": "public", "tables": [
+        {"name": n, "columns": [dict(c) for c in cols]} for n, cols in tables
+    ]}]}}
+
+
+def test_database_schema_changes(db):
+    from resource_explorer.agents.tools import database_schema_changes_raw
+    from resource_explorer.registry import DatabaseEntity
+
+    db.register_database(DatabaseEntity(
+        slug="shop_db", display_name="Shop", db_type="postgresql", host="h", port=5432,
+        database_name="shop",
+    ))
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
+        assert "not registered" in database_schema_changes_raw("nope")
+        assert "never been surveyed" in database_schema_changes_raw("shop_db")
+
+        v1 = _schema(
+            ("orders", [{"name": "id", "type": "int", "nullable": False, "is_primary_key": True},
+                        {"name": "note", "type": "text", "nullable": True}]),
+            ("legacy", [{"name": "id", "type": "int"}]),
+        )
+        db.record_database_survey(slug="shop_db", schema_count=1, table_count=2, column_count=3, survey_data=v1)
+        assert "surveyed once" in database_schema_changes_raw("shop_db")
+
+        v2 = _schema(
+            ("orders", [{"name": "id", "type": "bigint", "nullable": False, "is_primary_key": True},
+                        {"name": "total", "type": "numeric", "nullable": True}]),
+            ("customers", [{"name": "id", "type": "int"}]),
+        )
+        db.record_database_survey(slug="shop_db", schema_count=1, table_count=2, column_count=3, survey_data=v2)
+        out = database_schema_changes_raw("shop_db")
+        assert "Tables added (1): public.customers" in out
+        assert "Tables removed (1): public.legacy" in out
+        assert "columns added: total" in out and "columns removed: note" in out
+        assert "`id`: type int -> bigint" in out
+
+        # Identical re-survey: an explicit "no differences", not silence.
+        db.record_database_survey(slug="shop_db", schema_count=1, table_count=2, column_count=3, survey_data=v2)
+        assert "No differences" in database_schema_changes_raw("shop_db")
+
+        # A publish-only record (no schema_info) is not a measurement and is skipped.
+        db.record_database_survey(
+            slug="shop_db", schema_count=0, table_count=0, column_count=0, survey_data={}, source="egeria-published",
+        )
+        assert "No differences" in database_schema_changes_raw("shop_db")
+
+
+def test_dependency_changes(db):
+    from resource_explorer.agents.tools import dependency_changes_raw
+    from resource_explorer.registry import Project
+
+    db.add(Project(slug="dep_repo", display_name="Dep Repo", github_url="https://github.com/o/d"))
+
+    def dep(name, version):
+        return {"dep_name": name, "dep_version": version, "dep_type": "runtime", "ecosystem": "pip",
+                "source_file": "requirements.txt"}
+
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
+        assert "not registered" in dependency_changes_raw("nope")
+        assert "nothing to compare" in dependency_changes_raw("dep_repo")
+        db.upsert_dependencies("dep_repo", [dep("requests", "2.0"), dep("flask", "2.0"), dep("old", "1")])
+        assert "recorded once" in dependency_changes_raw("dep_repo")
+        db.upsert_dependencies("dep_repo", [dep("requests", "2.1"), dep("flask", "2.0"), dep("new", "3")])
+        out = dependency_changes_raw("dep_repo")
+        assert "Added (1): new 3" in out and "Removed (1): old 1" in out
+        assert "requests: 2.0 -> 2.1" in out and "3 -> 3 dependencies" in out
