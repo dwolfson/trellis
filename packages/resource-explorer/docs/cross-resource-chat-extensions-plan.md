@@ -1,6 +1,6 @@
 # Cross-resource and conversational intelligence extensions — design and implementation plan
 
-**Status:** In progress (Groups 1–3 implemented and verified, Group 4 planned).  
+**Status:** In progress (Groups 1–3 implemented and verified; Group 4 chips and A2A `input_required` implemented, lineage deferred).  
 **Written:** 2026-10-16  
 **Branch:** `re/cross-resource-chat-extensions`  
 **Referenced from:** `docs/Architecture.md`, `CLAUDE.md`, `AGENTS.md`
@@ -206,7 +206,7 @@ validated against real surveys. Before relying on the confidence labels:
 
 ---
 
-## 7. Group 4: Upstream Governance Traversal & Frontend UX (Planned)
+## 7. Group 4: Upstream Governance Traversal & Frontend UX (Partly implemented; lineage deferred)
 
 ### 7.1 Objectives
 Integrate upstream Egeria Open Metadata Highway lineage and governance classifications, and provide interactive multi-resource disambiguation in the Web UI.
@@ -220,6 +220,17 @@ Integrate upstream Egeria Open Metadata Highway lineage and governance classific
 2. **Interactive UI Disambiguation Chips:**
    - When `QueryProcessor` detects a comparative or integration query with ambiguous or missing targets, return candidate resource chips in the Web UI chat drawer (mirroring the A2A `input_required` protocol).
    - Allow users to click resource chips to populate the comparison targets directly.
+
+**Decision (project owner, 2026-10-18):** "Skip lineage for now. If the data is all in Egeria we can already use the lineage tool within the portal. Gathering lineage from a Marquez deployment that is not integrated with Egeria is a different initiative; we may come back to it later."
+
+**Consequences of that decision.**
+- `query_egeria_lineage` is no longer offered to `ConversationAgent` or `IntegrationAgent`, and the integration fallback no longer asks for it. The function remains in `agents/tools.py` with a docstring explaining why.
+- Reason: it never queried lineage. After the platform URL and asset GUIDs check out it returned a fixed "no edges indexed" sentence, which an agent would relay as a finding. It should not come back to an agent until it makes a real `pyegeria` call and distinguishes "could not query" from "queried, found none".
+- `IntegrationAgent`'s prompt now says lineage is unavailable and must not be inferred.
+
+**Disambiguation chips (implemented).** Shown for comparison and integration questions that name fewer than two resources. Resources the question already names are left out; the resource open in the UI is listed first; the rest rank by words shared with the question (a named resource's own words are ignored), then by slug; at most 8 are shown. The open resource is ranked, not counted as named, because the agents infer their targets from the question text alone. Chip text is set with `textContent`, not `innerHTML`. The ranking lives in `resource_explorer/resource_chips.py`, shared with the A2A agents.
+
+**A2A `input_required` (implemented).** When the compare or integration agent is asked about fewer than two resources, `agentstack_server._choice_status` replies `input_required` with the same ranked candidates, repos and databases alike (it used to list repo slugs only). The text names them for text-only clients; a second, `DataPart` message part carries `{"kind": "resource_choices", "choices": [{"slug", "name", "type"}]}` for clients that can render choices. The part is omitted when nothing is registered. Existing clients that read only text parts are unaffected; the text itself changed wording ("Candidates: …" replaces "Available: …"). Covered by `test_a2a_input_required_offers_ranked_repos_and_databases`; no A2A client has been tried against it.
 
 ### 7.3 Planned Deliverables
 - `resource_explorer/agents/integration_agent.py`: Add Egeria lineage traversal tool with safe fallback.
@@ -238,5 +249,5 @@ Integrate upstream Egeria Open Metadata Highway lineage and governance classific
 | **Group 2** | Epistemological Matrix | Cross-slug `FactLayer` diff | **Done** | `test_multi_resource_context_compilation` |
 | **Group 3** | Code-to-DB Matcher | Static table-to-repo matcher | **Done** | `test_cross_asset_matcher*` (synthetic fixtures; not validated on real surveys, see 6.4) |
 | **Group 3** | Dynamic Sub-Agent Delegation | `ConversationAgent` delegation tools | **Done** | `test_dynamic_delegation_and_lineage_tools` |
-| **Group 4** | Egeria Lineage Traversal | `IntegrationAgent` lineage tools | Planned | PyEgeria mock contract tests |
-| **Group 4** | Web UI Interactive Chips | Disambiguation chip rendering | Planned | Frontend UI integration tests |
+| **Group 4** | Egeria Lineage Traversal | `IntegrationAgent` lineage tools | **Deferred** (2026-10-18) | n/a until lineage is revisited |
+| **Group 4** | Web UI Interactive Chips | Disambiguation chip rendering | **Done** (no browser test) | `test_disambiguation_chips_rank_and_cap` covers the payload; the rendering is untested |

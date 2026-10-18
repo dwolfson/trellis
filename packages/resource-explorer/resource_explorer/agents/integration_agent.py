@@ -25,12 +25,11 @@ class IntegrationAgent(BaseExplorerAgent):
             "Your job is to determine whether two or more resources can be used together and how. "
             "Focus on: explicit integration documentation, shared contributors (collaboration signal), "
             "cross-asset linkages (code repositories to database schemas via query_cross_asset_links), "
-            "upstream Egeria Open Metadata Highway data lineage (via query_egeria_lineage), "
             "compatible data formats and interfaces, complementary feature sets, and architectural fit. "
             "Be concrete — cite specific APIs, schemas, data formats, or documentation passages. "
-            "If integration is not well-documented or lineage is not yet established, say so clearly rather than speculating. "
+            "If integration is not well-documented, say so clearly rather than speculating. Data lineage is not available to you; do not infer or claim anything about it. "
             "Structure your response as: (1) Integration summary, (2) How they connect technically, "
-            "(3) Cross-asset dependencies or Egeria lineage if any, (4) Shared contributors if any, "
+            "(3) Cross-asset dependencies if any, (4) Shared contributors if any, "
             "(5) Getting started recommendation."
         )
 
@@ -43,7 +42,6 @@ class IntegrationAgent(BaseExplorerAgent):
             query_databases,
             query_database_schema,
             query_cross_asset_links,
-            query_egeria_lineage,
             create_rfa_from_finding,
         )
         return [
@@ -54,7 +52,6 @@ class IntegrationAgent(BaseExplorerAgent):
             query_databases,
             query_database_schema,
             query_cross_asset_links,
-            query_egeria_lineage,
             create_rfa_from_finding,
         ]
 
@@ -113,7 +110,6 @@ class IntegrationAgent(BaseExplorerAgent):
             vector_search_raw,
             query_top_committers_raw,
             query_cross_asset_links_raw,
-            query_egeria_lineage_raw,
         )
         from resource_explorer.collection_router import CollectionRouter
         from resource_explorer.llm_client import get_llm
@@ -128,7 +124,6 @@ class IntegrationAgent(BaseExplorerAgent):
             sections.append(f"## {slug}\n{stat_text}\n\n### Top contributors\n{committers}\n\n### Docs\n{doc_text}")
 
         cross_links = query_cross_asset_links_raw()
-        lineage_info = query_egeria_lineage_raw(slugs[0], slugs[1] if len(slugs) > 1 else "")
 
         sections.extend(getattr(self, "_evidence_lines", []))
         combined = "\n\n---\n\n".join(sections)
@@ -136,7 +131,6 @@ class IntegrationAgent(BaseExplorerAgent):
             f"{self.system_prompt()}\n\n"
             f"Project data:\n\n{combined}\n\n"
             f"Cross-Asset Dependencies:\n{cross_links}\n\n"
-            f"Lineage Information:\n{lineage_info}\n\n"
             f"Question: {query}\n\nIntegration analysis:"
         )
         return get_llm().complete(prompt)

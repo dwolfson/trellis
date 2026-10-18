@@ -1454,7 +1454,15 @@ def delegate_to_integration_agent(query: str, resource_slug: str = "") -> str:
 
 
 def query_egeria_lineage_raw(slug_a: str, slug_b: str = "") -> str:
-    """Query Egeria Open Metadata Highway for lineage or process relationships between resources."""
+    """Query Egeria Open Metadata Highway for lineage or process relationships between resources.
+
+    NOT REGISTERED WITH ANY AGENT (deferred 2026-10-18, project owner: lineage is already available in
+    the Egeria portal; a Marquez-based source is a separate initiative -- see
+    docs/cross-resource-chat-extensions-plan.md section 7). It never queries lineage: once the platform
+    URL and asset GUIDs check out it returns a fixed "no edges indexed" sentence, which an agent would
+    relay as fact. Give it a real pyegeria call, and a distinct "could not query" result, before an
+    agent is given it again.
+    """
     from resource_explorer.registry import ProjectRegistry
     import os
 

@@ -14447,7 +14447,14 @@ async function runQuery(query, projectSlug, databaseSlug) {
             event.disambiguation_chips.forEach(chip => {
               const btn = document.createElement('button');
               btn.className = 'px-2 py-1 rounded bg-slate-700 hover:bg-emerald-600/60 text-xs text-slate-200 hover:text-white transition-colors flex items-center gap-1 border border-slate-600';
-              btn.innerHTML = `<span>${chip.type === 'database' ? '🗄️' : '📦'}</span> <strong>${chip.name}</strong> <span class="text-slate-400">(${chip.slug})</span>`;
+              const icon = document.createElement('span');
+              icon.textContent = chip.type === 'database' ? '🗄️' : '📦';
+              const nameEl = document.createElement('strong');
+              nameEl.textContent = chip.name;
+              const slugEl = document.createElement('span');
+              slugEl.className = 'text-slate-400';
+              slugEl.textContent = `(${chip.slug})`;
+              btn.append(icon, ' ', nameEl, ' ', slugEl);
               btn.onclick = () => {
                 const inp = document.getElementById('chat-input') || document.querySelector('input[name="chat"]');
                 if (inp) {

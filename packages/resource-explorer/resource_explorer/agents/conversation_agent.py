@@ -119,7 +119,6 @@ class ConversationAgent(BaseExplorerAgent):
             query_cross_asset_links,
             delegate_to_compare_agent,
             delegate_to_integration_agent,
-            query_egeria_lineage,
             query_filesystems,
             create_rfa_from_finding,
         )
@@ -138,7 +137,6 @@ class ConversationAgent(BaseExplorerAgent):
             query_cross_asset_links,
             delegate_to_compare_agent,
             delegate_to_integration_agent,
-            query_egeria_lineage,
             query_filesystems,
             create_rfa_from_finding,
         ]

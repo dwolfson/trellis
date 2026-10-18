@@ -634,7 +634,8 @@ def test_conversation_agent_has_new_tools():
     assert "query_cross_asset_links" in tools
     assert "delegate_to_compare_agent" in tools
     assert "delegate_to_integration_agent" in tools
-    assert "query_egeria_lineage" in tools
+    # Deferred: the lineage tool is a stub and must not be offered to the agent.
+    assert "query_egeria_lineage" not in tools
 
 
 def test_cross_asset_matcher(db):
@@ -969,3 +970,72 @@ def test_cross_asset_matcher_generic_names_and_bare_class_matches_stay_low(db):
     _matcher_fixture(db, "app", ["User", "Role", "Session", "Event", "Task"])
     links = find_cross_asset_links(db)
     assert all(l["confidence"] == "low" for l in links)
+
+
+def test_disambiguation_chips_rank_and_cap(db):
+    from resource_explorer.resource_chips import CHIP_LIMIT as _CHIP_LIMIT, rank_chip_candidates as _rank_chip_candidates
+    from resource_explorer.web.routes.query import _disambiguation_chips
+
+    cands = [{"slug": f"repo_{c}", "name": f"Repo {c}", "type": "repo"} for c in "abcdefghijkl"]
+    cands.append({"slug": "sales_db", "name": "Sales Warehouse", "type": "database"})
+
+    # Named resources are not a choice; the open one is first; query words rank next; list is capped.
+    ranked = _rank_chip_candidates(
+        "compare the warehouse against repo_a", cands, named=["repo_a"], scope_slug="repo_k"
+    )
+    assert [c["slug"] for c in ranked[:2]] == ["repo_k", "sales_db"]
+    assert "repo_a" not in [c["slug"] for c in ranked]
+    assert len(ranked) == _CHIP_LIMIT
+
+    # Two resources already named: no chips at all.
+    from resource_explorer.registry import Project
+
+    db.add(Project(slug="app_alpha", display_name="App Alpha", github_url="https://github.com/o/a"))
+    db.add(Project(slug="app_beta", display_name="App Beta", github_url="https://github.com/o/b"))
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db), patch(
+        "resource_explorer.agents.base.BaseExplorerAgent._infer_all_project_slugs",
+        return_value=["app_alpha", "app_beta"],
+    ):
+        assert _disambiguation_chips("compare app_alpha and app_beta") is None
+
+    # One named: the other candidates are offered, the named one is not.
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db), patch(
+        "resource_explorer.agents.base.BaseExplorerAgent._infer_all_project_slugs",
+        return_value=["app_alpha"],
+    ):
+        chips = _disambiguation_chips("compare app_alpha with something")
+        assert [c["slug"] for c in chips] == ["app_beta"]
+
+
+def test_a2a_input_required_offers_ranked_repos_and_databases(db):
+    from types import SimpleNamespace
+
+    from resource_explorer.agentstack_server import _choice_status, _text
+    from resource_explorer.registry import DatabaseEntity, Project
+
+    db.add(Project(slug="app_alpha", display_name="App Alpha", github_url="https://github.com/o/a"))
+    db.register_database(DatabaseEntity(
+        slug="sales_db", display_name="Sales Warehouse", db_type="postgresql", host="h", port=5432,
+        database_name="sales",
+    ))
+    ctx = SimpleNamespace(task_id="t1", context_id="c1")
+
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
+        status = _choice_status(
+            "Which two?", "'a and b'.", "compare app_alpha with the warehouse", ["app_alpha"], ctx
+        )
+
+    assert status.state.value == "input-required"
+    text = _text(status.message)
+    assert "sales_db (database)" in text and "app_alpha" not in text
+    data = [p.root.data for p in status.message.parts if hasattr(p.root, "data")]
+    assert data == [{
+        "kind": "resource_choices",
+        "choices": [{"slug": "sales_db", "name": "Sales Warehouse", "type": "database"}],
+    }]
+
+    # Nothing registered: still a valid question, with no data part.
+    with patch("resource_explorer.resource_chips.candidate_chips", return_value=[]):
+        status = _choice_status("Which two?", "'a and b'.", "compare", [], ctx)
+    assert "none registered" in _text(status.message)
+    assert not [p for p in status.message.parts if hasattr(p.root, "data")]

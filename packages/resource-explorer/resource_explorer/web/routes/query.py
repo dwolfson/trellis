@@ -241,7 +241,7 @@ async def ask(request: QueryRequest) -> QueryResponse:
     chart = _pick_chart(request.query, intent.value, request.resource_slug or "")
     chips = None
     if intent.value in ("comparison", "integration"):
-        chips = _disambiguation_chips(request.query)
+        chips = _disambiguation_chips(request.query, request.resource_slug or request.database_slug)
 
     return QueryResponse(
         response=response,
@@ -357,7 +357,7 @@ async def stream(request: QueryRequest) -> StreamingResponse:
                     done["compare_symbols"] = _compare_symbols_table(request.query)
                 # Disambiguation chips for cross-resource queries with missing or ambiguous targets
                 if intent_val in ("comparison", "integration"):
-                    chips = _disambiguation_chips(request.query)
+                    chips = _disambiguation_chips(request.query, request.resource_slug or request.database_slug)
                     if chips:
                         done["disambiguation_chips"] = chips
                 if checked and "resource_check_error" in checked:
@@ -644,30 +644,19 @@ def _fuzzy_alias_suggestion(query: str) -> dict | None:
         return None
 
 
-def _disambiguation_chips(query: str) -> list[dict] | None:
-    """Return candidate resource chips when a cross-resource question has fewer than 2 inferred resources."""
+def _disambiguation_chips(query: str, scope_slug: str | None = None) -> list[dict] | None:
+    """Candidate resource chips when a cross-resource question names fewer than 2 resources.
+
+    The agents infer their targets from the question text alone, so the resource open in the UI
+    does not count as named -- it is only ranked first.
+    """
     try:
-        from resource_explorer.registry import ProjectRegistry
+        from resource_explorer.resource_chips import candidate_chips
 
         named = _NameProbe.make()._infer_all_project_slugs(query)
         if len(named) >= 2:
             return None
-
-        reg = ProjectRegistry()
-        chips: list[dict] = []
-        for p in reg.list_all()[:6]:
-            chips.append({
-                "slug": p.slug,
-                "name": p.display_name or p.slug,
-                "type": "repo",
-            })
-        for db in reg.list_databases()[:4]:
-            chips.append({
-                "slug": db.slug,
-                "name": db.display_name or db.slug,
-                "type": "database",
-            })
-        return chips if chips else None
+        return candidate_chips(query, named, scope_slug) or None
     except Exception as exc:
         log.warning("disambiguation chips lookup failed: %s", exc, exc_info=True)
         return None
