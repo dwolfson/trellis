@@ -165,6 +165,11 @@ export const STATES = {
   // (designer 2026-10-16, Q10): the ? family means "couldn't establish", and this WAS established -- Egeria
   // answered. The words carry it.
   gone:            { glyph: '', family: 'established', word: 'no longer in Egeria', tone: 'text-ink-muted' },
+  // The architect's caution: the pointer reads as absent but Egeria holds a database of this name under another
+  // GUID that this signed-in user cannot read. Egeria answered both reads, so no ? glyph; the words carry it.
+  // The pointer reads as absent and a lookup by name finds a different GUID: the database was registered again.
+  registered_again: { glyph: '', family: 'established', word: 'registered again under another GUID', tone: 'text-ink-muted' },
+  name_taken_unreadable: { glyph: '', family: 'established', word: "Egeria has a database of this name RE can't read", tone: 'text-ink-muted' },
   not_measured:    { glyph: '?', family: 'not-established', word: 'rows not measured', tone: 'text-ink-muted' },
   no_access:       { glyph: '?', family: 'not-established', word: 'no access', tone: 'text-ink-muted' },
 

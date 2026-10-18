@@ -47,6 +47,8 @@ function glyphFor(run, runnable, row = {}) {
   // A registration that existed and is gone, and a database never given to Egeria, are NOT errors:
   // each has its own muted cue (registering with Egeria is optional; nothing is owed).
   if (row.stale) return 'gone';
+  if (row.name_taken) return 'name_taken_unreadable';
+  if (row.registered_again) return 'registered_again';
   switch (run.state) {
     case 'complete': case 'registered': return 'measured';
     // Every step ended and some were refused: an amber half-filled cue, never the red error.
@@ -62,6 +64,18 @@ function glyphFor(run, runnable, row = {}) {
       if (row.neutral) return 'optional';
       return runnable ? 'unrun' : 'no-surveyor';
   }
+}
+
+/** A pointer that reads as absent while Egeria holds a database of this name that this user cannot read: the
+ *  server's words (`name_taken_line`), no register control (it would make a second element). */
+function nameTakenHtml(row) {
+  return `<span class="text-ink-muted" data-native-name-taken>${esc(row.name_taken_line || "Egeria has a database of this name RE can't read · ask its owner")}</span>`;
+}
+
+/** The pointer reads as absent and the lookup by name found a DIFFERENT GUID: registered again. The register
+ *  press (the existing one) looks the element up by name and adopts it. */
+function registeredAgainHtml(row) {
+  return `<span class="text-ink-muted" data-native-registered-again>${esc(row.registered_again_line || 'registered again under another GUID')}</span>`;
 }
 
 function timeSpan(iso) {
@@ -240,9 +254,15 @@ export function nativeSurveyStatusHtml(row) {
         ? `<span class="text-ink-muted">can't be registered from here — ${esc(row.cannot_run_reason)}</span>`
         : (row.stale
           ? `<span class="text-ink-muted" data-native-gone>${esc(row.gone_line || 'no longer in Egeria')}</span>`
-          : '<span class="text-ink-muted">not registered with Egeria · optional</span>');
+          : row.name_taken
+            ? nameTakenHtml(row)
+            : row.registered_again
+              ? registeredAgainHtml(row)
+              : '<span class="text-ink-muted">not registered with Egeria · optional</span>');
     default:
       if (row.stale) return `<span class="text-ink-muted" data-native-gone>${esc(row.gone_line || 'no longer in Egeria')}</span>`;
+      if (row.name_taken) return nameTakenHtml(row);
+      if (row.registered_again) return registeredAgainHtml(row);
       if (row.neutral) return `<span class="text-ink-muted">${esc(row.cannot_run_reason)}</span>`;
       return row.runnable
         ? 'not run'
@@ -290,7 +310,8 @@ export function triedHtml(row) {
  *  one RE would send now. Derived from the server's read-back record, so it stays until a read-back shows the new one. */
 export function willChangeHtml(row) {
   const a = row.address;
-  if (!a || !a.will_change) return '';
+  // A caution row draws no Register press, so it must not name one.
+  if (!a || !a.will_change || row.name_taken) return '';
   return `<div class="mt-[2px] text-provenance text-ink" data-native-will-change><span class="font-glyph" aria-hidden="true">⚠</span>
     will change · Egeria has <span class="font-mono">${esc(a.held)}</span> · ${esc((row.register && row.register.label) || 'Register again →')} sends
     <span class="font-mono">${esc(a.current)}</span></div>`;
@@ -299,6 +320,25 @@ export function willChangeHtml(row) {
 /** Cancel cues that outlive a repaint: a cancel Egeria did not confirm stays on its row until the next try
  *  (guid -> the words). A cancel that worked needs none: the row's own status then says CANCELLED. */
 const cancelCues = new Map();
+
+/** The line for a native survey's cancel that did not go through, in the definition card's three outcome words
+ *  (PROCESS_CANCEL_WORDS; one block, never copied): the run was over (409), Egeria won't let this person (403),
+ *  Egeria refused with its reason (422), or the cancel was not sent (502, or no answer at all). */
+export function nativeCancelWords(err) {
+  const w = PROCESS_CANCEL_WORDS;
+  const st = err && err.status;
+  // The unprefixed reason: a real Egeria 403 arrives as "refused by Egeria: <sentence>" (re-api.js).
+  const msg = (err && (err.sentence || err.message)) || '';
+  // RE's own gate refusals (sign-in, the access rule, "only a single-action survey") are shown verbatim; only
+  // Egeria's answers (`by: egeria`, or a security refusal `refusedBy`) take the designer's words.
+  const egeria = !!err && (err.by === 'egeria' || err.refusedBy === 'egeria');
+  if (!st || (err && err.unsent)) return w.unsent;
+  if (!egeria) return msg;
+  if (st === 409) return w.tooLate;
+  if (st === 403) return w.notPermitted('you', msg);
+  if (st === 422) return w.refused(msg);
+  return msg;
+}
 /** Cancels in flight (guid): a poll repaint mid-request keeps "cancelling…" on the row. */
 const cancelling = new Set();
 
@@ -311,8 +351,10 @@ export function cancelControlHtml(row) {
   // running). A process run, a registration or a failed last read never offers it.
   const live = row.cancellable === true && r.state === 'running' && !r.error;
   const cue = guid && cancelCues.get(guid);
+  // No ◐ (it means "measured, within a limit", designer §6). Only "asked Egeria; it still says X" is pending, so ◔.
   const keep = cue && live
-    ? `<div class="mt-[2px] text-provenance text-state-warn" data-native-cancel-cue><span class="font-glyph" aria-hidden="true">◐</span> ${esc(cue)}</div>` : '';
+    ? `<div class="mt-[2px] text-provenance text-state-warn" data-native-cancel-cue>${
+      cue.pending ? '<span class="font-glyph" aria-hidden="true">◔</span> ' : ''}${esc(cue.words)}</div>` : '';
   if (!live || !guid) return '';
   return `<div class="mt-[2px]" data-native-cancel-box="${esc(guid)}">
     <button type="button" data-native-cancel="${esc(guid)}"
@@ -470,11 +512,11 @@ export function processCancelCueHtml(row) {
   }
   if (c.state === 'refused') {
     return c.kind === 'not_permitted'
-      ? line('data-process-cancel-refused', 'text-state-warn', '◐', w.notPermitted(who(c.by), c.reason || ''))
-      : line('data-process-cancel-refused', 'text-state-warn', '◐', w.refused(c.reason || ''));
+      ? line('data-process-cancel-refused', 'text-state-warn', '', w.notPermitted(who(c.by), c.reason || ''))
+      : line('data-process-cancel-refused', 'text-state-warn', '', w.refused(c.reason || ''));
   }
   // Not sent, or sent with no answer (a timeout): the same words until a read-back shows its effect.
-  if (c.state === 'unsent') return line('data-process-cancel-unsent', 'text-state-warn', '◐', w.unsent);
+  if (c.state === 'unsent') return line('data-process-cancel-unsent', 'text-state-warn', '', w.unsent);
   if (pc.outside) return line('data-process-cancel-outside', 'text-ink-muted', '', w.outside, w.outsideHover);
   return '';
 }
@@ -759,13 +801,13 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS, o
         const why = res.read_error
           ? `asked Egeria to cancel; the read-back failed (${res.read_error})`
           : `asked Egeria to cancel; it still says ${res.egeria_status || 'nothing'}`;
-        cancelCues.set(guid, why);
+        cancelCues.set(guid, { words: why, pending: true });
         paint(res.surveys);
         failDialog(why);
       } catch (err) {
         done();
-        const why = `not cancelled: ${err.message}`;
-        cancelCues.set(guid, why);
+        const why = nativeCancelWords(err);
+        cancelCues.set(guid, { words: why, pending: false });
         paint(rows);
         failDialog(why);
       }
