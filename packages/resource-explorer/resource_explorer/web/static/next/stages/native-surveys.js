@@ -384,6 +384,8 @@ export const PROCESS_CANCEL_WORDS = {
   finishing: (step) => `cancelled · ${stepWords(step)}, is finishing and will publish nothing`,
   // PLACEHOLDER (designer asked): Egeria cancelled while the step was publishing; the engine host keeps that report.
   finishingKept: (step) => `cancelled · ${stepWords(step)}, is finishing · its report is kept`,
+  // PLACEHOLDER (designer asked): publishing has begun but the report element is not yet proven to exist.
+  finishingWriting: (step) => `cancelled · ${stepWords(step)}, is finishing · its report is being written`,
   done: (c) => `cancelled by ${c.by} · ${hhmm(c.at)} · ${c.finished} of ${c.of} steps finished`,
   // PLACEHOLDER: the link a cancelled step's kept report carries on the done line ("K of M finished" is unchanged).
   doneKept: (n) => `step ${n}'s report kept ›`,
@@ -411,9 +413,9 @@ export function processCancelCueHtml(row) {
   if (c.state === 'done') {
     if (pc.finishing) {
       // From the run row's proof (publish_started_at), never the branch the engine host took.
-      return pc.finishing.report_kept
-        ? line('data-process-cancel-finishing data-process-cancel-report-kept', 'text-ink-muted', '⊘', w.finishingKept(pc.finishing))
-        : line('data-process-cancel-finishing', 'text-ink-muted', '⊘', w.finishing(pc.finishing));
+      if (pc.finishing.report_kept) return line('data-process-cancel-finishing data-process-cancel-report-kept', 'text-ink-muted', '⊘', w.finishingKept(pc.finishing));
+      if (pc.finishing.publish_started_at) return line('data-process-cancel-finishing data-process-cancel-report-writing', 'text-ink-muted', '⊘', w.finishingWriting(pc.finishing));
+      return line('data-process-cancel-finishing', 'text-ink-muted', '⊘', w.finishing(pc.finishing));
     }
     // A cancelled step's kept report opens as any report does (bindRunLineControls).
     const kept = (pc.kept || []).filter((k) => k && k.guid).map((k) => ` · <button type="button" data-native-report="${esc(k.guid)}"
@@ -478,7 +480,6 @@ const RUN_STATE_WORD = { complete: 'complete', partial: 'partial', failed: 'fail
 /** A history entry's state word: a fault is warn-toned, a cancel is a decision (muted, like the rest of the list). */
 const runStateHtml = (state) => {
   const word = esc(RUN_STATE_WORD[state] || state || '');
-  if (state === 'failed') return `<span class="text-state-warn" data-run-state="failed">${word}</span>`;
   if (state === 'cancelled') return `<span class="text-ink-muted" data-run-state="cancelled">${word}</span>`;
   return word;
 };

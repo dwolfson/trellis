@@ -861,3 +861,68 @@ def test_d3_a_run_that_failed_still_reads_failed_in_the_runs_history(reg, egeria
     client.post("/api/native-surveys/database/coco_pharma/refresh")
     [entry] = nsr.definition_run_history(reg, "database", "coco_pharma")[ANALYSIS]
     assert entry["state"] == "failed"
+
+
+# ── review fix round (2026-10-18) ────────────────────────────────────────────────────────────────────────────────────
+
+def test_fix1_publish_started_without_a_report_guid_reads_being_written_not_kept(reg, egeria, web):
+    """A row with `publish_started_at` and no `report_guid` proves publishing began, not that a report exists: the
+    cue carries no `report_kept` (the JS then says "its report is being written")."""
+    client, _who = web
+    row = _cancelled_definition_run_with_step_row(
+        reg, egeria, client, {"publish_started_at": "2026-10-18T07:40:10Z"}, state="queued")
+    fin = row["process_cancel"]["finishing"]
+    assert fin["step"] == 1 and fin["report_kept"] is False and fin["report_guid"] == ""
+    assert fin["publish_started_at"] == "2026-10-18T07:40:10Z"
+
+
+def test_fix2_the_last_run_summary_of_a_cancelled_run_reads_cancelled_not_failed(reg, egeria, web):
+    from resource_explorer import native_survey_run as nsr
+
+    client, _who = web
+    _running_definition_run(reg, egeria)
+    assert client.post(CANCEL_URL).json()["cancelled"] is True
+    [last] = nsr.coordinated_last_runs(reg, "database", "coco_pharma").values()
+    assert last["last_run_status"] == "cancelled"
+
+
+def test_fix2_the_last_run_summary_of_a_real_failure_still_reads_failed(reg, egeria, web):
+    from resource_explorer import native_survey_run as nsr
+
+    client, _who = web
+    _running_definition_run(reg, egeria)
+    _step1_ends_the_run(egeria)
+    client.post("/api/native-surveys/database/coco_pharma/refresh")
+    [last] = nsr.coordinated_last_runs(reg, "database", "coco_pharma").values()
+    assert last["last_run_status"] == "failed"
+
+
+def test_fix3_a_kept_report_falls_back_to_the_rows_own_report_guid_proof(reg, egeria, web):
+    """The cancelled step's outcome has no report_guid (publish raised after create, or the worker died then) but the
+    row's top-level proof names the report that exists: the done line links it."""
+    client, _who = web
+    row = _cancelled_definition_run_with_step_row(
+        reg, egeria, client,
+        {"report_guid": "becae45f-rep", "publish_started_at": "2026-10-18T07:40:10Z",
+         "outcome": {"guard": "survey-failed", "report_guid": "", "cancelled_after_publish": True}},
+        state="cancelled")
+    assert row["process_cancel"]["kept"] == [{"step": 1, "guid": "becae45f-rep"}]
+
+
+def test_fix5a_a_proof_row_that_cannot_be_written_leaves_the_publish_completed(reg, egeria, no_connection, monkeypatch):
+    """merge_run_target raising inside publish_proof never stops or fails the publish."""
+    egeria.add_action("ea-noproof")
+    assert _sweep(reg).claimed == ["ea-noproof"]
+
+    real = reg.merge_run_target
+
+    def boom(run_id, patch):
+        if set(patch) & {"publish_started_at", "report_guid"}:       # the proof writes only; the outcome still lands
+            raise RuntimeError("registry unavailable")
+        return real(run_id, patch)
+
+    monkeypatch.setattr(reg, "merge_run_target", boom)
+    _run_queue_once(reg)
+    [(report_guid, _body)] = egeria.reports()
+    outcome = _row(reg)["target"]["outcome"]
+    assert outcome["guard"] == "survey-completed" and outcome["report_guid"] == report_guid

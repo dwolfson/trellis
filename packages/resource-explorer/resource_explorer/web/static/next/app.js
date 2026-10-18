@@ -4856,7 +4856,7 @@ export function lastRunHtml(c) {
   const errors = c.last_run_errors || [];
   // "recorded" = a step_runs row proves it ran, not that it succeeded: no
   // success cue, but not a failure either, so no warning glyph.
-  const warn = !ok && c.last_run_status && c.last_run_status !== 'recorded'
+  const warn = !ok && c.last_run_status && c.last_run_status !== 'recorded' && c.last_run_status !== 'cancelled'
     ? (errors.length
         ? `<button type="button" data-run-errors="${esc(c.qualified_name || '')}"
              class="cursor-pointer bg-transparent text-state-warn underline decoration-dotted"
@@ -4870,7 +4870,8 @@ export function lastRunHtml(c) {
     : (c.last_run_started_by === 're' && c.last_run_by
       ? ` <span data-run-started-in class="text-ink-muted">· run by RE${by}</span>` : '');
   return `<span title="${esc(when)}${c.last_run_status ? ` · ${esc(c.last_run_status)}` : ''}">
-    ${ok ? '<span class="text-state-ok">✓</span> ' : warn}
+    ${ok ? '<span class="text-state-ok">✓</span> ' : (c.last_run_status === 'cancelled'
+      ? '<span class="text-ink-muted" data-run-cancelled aria-hidden="true">⊘</span> ' : warn)}
     <span class="${stale ? 'wl-age-text' : ''}">ran ${esc(ago(when))}</span>${startedIn}</span>${
     c.last_publish_proof ? ` ${publishProofHtml(c.last_publish_proof)}` : ''}`;
 }

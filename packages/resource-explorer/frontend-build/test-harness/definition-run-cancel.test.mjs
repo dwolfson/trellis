@@ -4,7 +4,7 @@
  *  read-back), never from the click. */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { makeDomEnvironment, ensureLoaderRegistered } from './dom-harness.mjs';
+import { makeDomEnvironment, ensureLoaderRegistered, loadAppModule } from './dom-harness.mjs';
 
 const QN = 'GovActionProcess::DatabaseAnalysisSurvey';
 const GUID = '06994d5d-a228-408c-8842-fd6256db4c34';
@@ -149,6 +149,12 @@ test('D1: a step cancelled after its publish began reads "its report is kept", n
   assert.equal(norm(cue), '⊘ cancelled · step 2, postgres_operations, is finishing · its report is kept');
   assert.ok(cue.hasAttribute('data-process-cancel-report-kept'));
   assert.doesNotMatch(norm(kept), /will publish nothing/);
+  // Publishing began, no report element proven yet: "being written", not "kept".
+  const writing = draw(document, ns, row(cancelledRun(), { finishing: { step: 2, label: 'postgres_operations', report_kept: false,
+    publish_started_at: '2026-10-18T07:40:08Z', report_guid: '' } }));
+  assert.equal(norm(writing.querySelector('[data-process-cancel-finishing]')),
+    '⊘ cancelled · step 2, postgres_operations, is finishing · its report is being written');
+  assert.doesNotMatch(norm(writing), /report is kept|will publish nothing/);
   // No publish proof on the row: the earlier words stay.
   assert.match(norm(draw(document, ns, row(cancelledRun(), { finishing: { step: 2, label: 'postgres_operations' } }))),
     /⊘ cancelled · step 2, postgres_operations, is finishing and will publish nothing/);
@@ -168,7 +174,7 @@ test("D2: the done line carries a cancelled step's kept report as a report link;
   assert.equal(ns.PROCESS_CANCEL_WORDS.doneKept(2), "step 2's report kept ›");
 });
 
-test('D3: the runs history says "cancelled" (muted) for a cancelled run and "failed" (warn) for a real failure', async () => {
+test('D3: the runs history says "cancelled" (muted) for a cancelled run and plain "failed" for a real failure', async () => {
   const { document, ns } = await setUp();
   const box = document.createElement('div');
   box.innerHTML = ns.definitionRunsListHtml({ runs: [
@@ -179,6 +185,20 @@ test('D3: the runs history says "cancelled" (muted) for a cancelled run and "fai
   assert.doesNotMatch(norm(cancelled), /failed/);
   const cw = cancelled.querySelector('[data-run-state="cancelled"]');
   assert.ok(cw.classList.contains('text-ink-muted') && !cw.classList.contains('text-state-warn'));
-  assert.ok(failed.querySelector('[data-run-state="failed"]').classList.contains('text-state-warn'));
+  // "failed" stays the list's plain muted text (no warn tone, no marker): only the cancel is drawn apart.
+  assert.equal(failed.querySelector('.text-state-warn'), null);
+  assert.equal(failed.querySelector('[data-run-state]'), null);
   assert.equal(ns.PROCESS_CANCEL_WORDS.historyCancelled, 'cancelled');
+});
+
+test('fix 2: the last-run summary of a cancelled run is muted ⊘ "cancelled", never ⚠ or a failure', async () => {
+  makeDomEnvironment();
+  const app = await loadAppModule();
+  const when = new Date(Date.now() - 2 * 86400000).toISOString();
+  const out = app.lastRunHtml({ last_run_at: when, last_run_status: 'cancelled', last_run_coordinated_by: 'egeria',
+    last_run_errors: ['step 1 x failed: y'] });
+  assert.ok(out.includes('⊘') && !out.includes('⚠') && !out.includes('✓'), out);
+  assert.match(out, /text-ink-muted/);
+  assert.match(out, /· cancelled"/);
+  assert.ok(app.lastRunHtml({ last_run_at: when, last_run_status: 'failed' }).includes('⚠'));
 });

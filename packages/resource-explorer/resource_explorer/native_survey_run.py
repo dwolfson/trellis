@@ -1383,6 +1383,13 @@ def _derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dic
 _LAST_RUN_STATUS = {COMPLETE: "ok", PARTIAL: "partial", FAILED: "failed"}
 
 
+def _last_run_status(derived: dict) -> str:
+    """The last-run status word: a cancelled run is "cancelled" (the run line's own `cancelled`), never "failed"."""
+    if derived.get("cancelled"):
+        return "cancelled"
+    return _LAST_RUN_STATUS.get(derived.get("state"), "recorded")
+
+
 def coordinated_last_runs(registry, entity_type: str, slug: str) -> dict[str, dict]:
     """The latest Egeria-coordinated run of each RE Survey Definition on this resource, in the shape of
     `registry.get_survey_definition_last_activity`'s entries, from the stored native-survey rows only (a run RE
@@ -1412,7 +1419,7 @@ def coordinated_last_runs(registry, entity_type: str, slug: str) -> dict[str, di
         declared = _declared(run)
         out[ref] = {
             "last_run_at": parsed.isoformat(),
-            "last_run_status": _LAST_RUN_STATUS.get(derived.get("state"), "recorded"),
+            "last_run_status": _last_run_status(derived),
             "last_run_activity_id": "",
             "last_run_errors": [f"step {p['step']} {p['label']} {p['kind']}: {p['reason']}".strip(": ")
                                 for p in derived.get("problems") or []],
@@ -1924,8 +1931,10 @@ def _finishing_step(registry, derived: dict) -> dict | None:
             proof = next((t for t in (_row_target(r) for r in running) if t.get("publish_started_at")), None)
             if proof is None:
                 return step
-            return {**step, "report_kept": True, "publish_started_at": proof["publish_started_at"],
-                    "report_guid": str(proof.get("report_guid") or "")}
+            guid = str(proof.get("report_guid") or "")
+            # The report is kept only once the element exists (report_guid); publishing begun without it is "writing".
+            return {**step, "report_kept": bool(guid), "publish_started_at": proof["publish_started_at"],
+                    "report_guid": guid}
     return None
 
 
@@ -1940,9 +1949,13 @@ def _kept_reports(registry, derived: dict) -> list[dict]:
     out = []
     for s, rows in _cancelled_step_rows(registry, derived):
         for r in rows:
-            outcome = _row_target(r).get("outcome")
-            guid = str(outcome.get("report_guid") or "") if isinstance(outcome, dict) else ""
-            if guid and outcome.get("cancelled_after_publish") and guid not in shown:
+            target = _row_target(r)
+            outcome = target.get("outcome")
+            if not (isinstance(outcome, dict) and outcome.get("cancelled_after_publish")):
+                continue
+            # The outcome's report; else the row's own proof (publish raised after create, or the worker died then).
+            guid = str(outcome.get("report_guid") or target.get("report_guid") or "")
+            if guid and guid not in shown:
                 out.append({"step": s["_n"], "guid": guid})
                 shown.add(guid)
                 break
