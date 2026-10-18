@@ -309,3 +309,21 @@ def test_a_fresh_report_short_of_its_annotations_is_failed_with_a_failure_row(wo
     assert [p for p in proofs if p["proof"] == cc.P_REPORT] == []
     failed = [p for p in proofs if p["proof"] == cc.P_READ_FAILED and p["detail"].get("what") == "RE's own survey report"]
     assert len(failed) == 1 and "0 of 76 annotations published" in failed[0]["detail"]["error"]
+
+
+def test_a_409_reuse_tells_on_report_created_the_reused_guid_and_a_failed_create_does_not():
+    maker = FakeAssetMaker()
+    s, _ = _surveyor(maker)
+    told: list[str] = []
+    first = s._publish_survey_report(BODY, QN, ANNS, "db", "2026-10-03T18:07:08", on_report_created=told.append)
+    again = s._publish_survey_report(BODY, QN, ANNS, "db", "2026-10-03T18:07:08", on_report_created=told.append)
+    assert again["reused"] is True
+    assert told == [first["report_guid"], again["report_guid"]] and told[0] == told[1]
+
+    class Boom(FakeAssetMaker):
+        def create_asset(self, body):
+            raise RuntimeError("SERVER_ERROR_500 something else broke")
+    s2, _ = _surveyor(Boom())
+    failed_told: list[str] = []
+    out = s2._publish_survey_report(BODY, QN, ANNS, "db", "2026-10-03T18:07:08", on_report_created=failed_told.append)
+    assert out["report_guid"] == "" and failed_told == []

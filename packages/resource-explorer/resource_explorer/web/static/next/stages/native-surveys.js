@@ -382,7 +382,15 @@ export const PROCESS_CANCEL_WORDS = {
   confirmNo: 'keep running',
   pending: (who, at, ctx) => `cancel requested by ${who} · ${hhmm(at)} · waiting for Egeria${ctx && ctx.running ? ` · ${stepWords(ctx.running)}, finishes first` : ''}`,
   finishing: (step) => `cancelled · ${stepWords(step)}, is finishing and will publish nothing`,
+  // PLACEHOLDER (designer asked): Egeria cancelled while the step was publishing; the engine host keeps that report.
+  finishingKept: (step) => `cancelled · ${stepWords(step)}, is finishing · its report is kept`,
+  // PLACEHOLDER (designer asked): publishing has begun but the report element is not yet proven to exist.
+  finishingWriting: (step) => `cancelled · ${stepWords(step)}, is finishing · its report is being written`,
   done: (c) => `cancelled by ${c.by} · ${hhmm(c.at)} · ${c.finished} of ${c.of} steps finished`,
+  // PLACEHOLDER: the link a cancelled step's kept report carries on the done line ("K of M finished" is unchanged).
+  doneKept: (n) => `step ${n}'s report kept ›`,
+  // PLACEHOLDER: a cancelled run in "runs · N ›", drawn muted, never as a fault.
+  historyCancelled: 'cancelled',
   doneOutside: (c) => `cancelled in Egeria · ${hhmm(c.at)} · not from Resource Explorer`,
   tooLate: 'too late to cancel · the run had already finished',
   notPermitted: (who, reason) => `Egeria won't let ${who} cancel this run · ${reason}`,
@@ -400,12 +408,20 @@ export function processCancelCueHtml(row) {
   const pc = row.process_cancel || {};
   const w = PROCESS_CANCEL_WORDS;
   const who = (by) => (by && by === pc.viewer ? 'you' : (by || 'someone'));
-  const line = (attr, tone, glyph, words, title = '') => `<div class="mt-[2px] text-provenance ${tone}" ${attr}${
-    title ? ` title="${esc(title)}"` : ''}>${glyph ? `<span class="font-glyph" aria-hidden="true">${glyph}</span> ` : ''}${esc(words)}</div>`;
+  const line = (attr, tone, glyph, words, title = '', tail = '') => `<div class="mt-[2px] text-provenance ${tone}" ${attr}${
+    title ? ` title="${esc(title)}"` : ''}>${glyph ? `<span class="font-glyph" aria-hidden="true">${glyph}</span> ` : ''}${esc(words)}${tail}</div>`;
   if (c.state === 'done') {
-    if (pc.finishing) return line('data-process-cancel-finishing', 'text-ink-muted', '⊘', w.finishing(pc.finishing));
-    return c.outside ? line('data-process-cancel-done-outside', 'text-ink-muted', '⊘', w.doneOutside(c))
-      : line('data-process-cancel-done', 'text-ink-muted', '⊘', w.done(c));
+    if (pc.finishing) {
+      // From the run row's proof (publish_started_at), never the branch the engine host took.
+      if (pc.finishing.report_kept) return line('data-process-cancel-finishing data-process-cancel-report-kept', 'text-ink-muted', '⊘', w.finishingKept(pc.finishing));
+      if (pc.finishing.publish_started_at) return line('data-process-cancel-finishing data-process-cancel-report-writing', 'text-ink-muted', '⊘', w.finishingWriting(pc.finishing));
+      return line('data-process-cancel-finishing', 'text-ink-muted', '⊘', w.finishing(pc.finishing));
+    }
+    // A cancelled step's kept report opens as any report does (bindRunLineControls).
+    const kept = (pc.kept || []).filter((k) => k && k.guid).map((k) => ` · <button type="button" data-native-report="${esc(k.guid)}"
+      data-process-cancel-kept-report class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${esc(w.doneKept(k.step))}</button>`).join('');
+    return c.outside ? line('data-process-cancel-done-outside', 'text-ink-muted', '⊘', w.doneOutside(c), '', kept)
+      : line('data-process-cancel-done', 'text-ink-muted', '⊘', w.done(c), '', kept);
   }
   if (c.state === 'pending') return line('data-process-cancel-pending', 'text-ink-muted', '◔', w.pending(who(c.by), c.at, r.cancel_context));
   if (c.state === 'too_late' || (c.state === 'refused' && c.kind === 'too_late')) {
@@ -459,7 +475,14 @@ export function definitionRunLineHtml(row, { stopped = false } = {}) {
   row.process_cancel && row.process_cancel.offered === true ? '' : gateRefusalHtml((row.run || {}).engine_action_guid)}</div>`;
 }
 
-const RUN_STATE_WORD = { complete: 'complete', partial: 'partial', failed: 'failed', running: 'running', submitted: 'submitted' };
+const RUN_STATE_WORD = { complete: 'complete', partial: 'partial', failed: 'failed', running: 'running', submitted: 'submitted',
+  cancelled: PROCESS_CANCEL_WORDS.historyCancelled };
+/** A history entry's state word: a fault is warn-toned, a cancel is a decision (muted, like the rest of the list). */
+const runStateHtml = (state) => {
+  const word = esc(RUN_STATE_WORD[state] || state || '');
+  if (state === 'cancelled') return `<span class="text-ink-muted" data-run-state="cancelled">${word}</span>`;
+  return word;
+};
 
 /** "runs · 6 ›": every run of the definition, whoever coordinated it (the server's `runs`, newest first). A run made
  *  under an earlier version of the definition carries "(4-step version)" after its count. */
@@ -472,7 +495,7 @@ export function definitionRunsListHtml(c) {
     const reports = (r.reports || []).map((x) => `<button type="button" data-native-report="${esc(x.guid)}"
       class="cursor-pointer bg-transparent p-0 text-accent-ink underline">step ${x.step} report ›</button>`).join(' · ');
     return `<li data-def-run class="py-[1px]"><span class="tnum">${esc(localTime(r.when))}</span> · ${who}${r.by ? ` · started by ${esc(r.by)}` : ''}
-      · ${esc(RUN_STATE_WORD[r.state] || r.state || '')}${count}${reports ? ` · ${reports}` : ''}</li>`;
+      · ${runStateHtml(r.state)}${count}${reports ? ` · ${reports}` : ''}</li>`;
   };
   return `<details data-def-runs class="mt-[2px] text-provenance text-ink-muted"><summary class="cursor-pointer">runs · <span class="tnum">${runs.length}</span> ›</summary>
     <ul class="ml-s3 list-none">${runs.map(item).join('')}</ul></details>`;

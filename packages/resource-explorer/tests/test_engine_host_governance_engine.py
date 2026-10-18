@@ -754,3 +754,175 @@ def test_worked_targets_are_once_per_action_target_relationship():
                                  {"name": "newAsset", "guid": DB_GUID, "relationship_guid": "rel-1"}],
               "asset_guid": DB_GUID}
     assert [t["relationship_guid"] for t in worked_targets(target)] == ["rel-1", "rel-2"]
+
+
+# ── card fixes after the live Cancel test (BRIEF-ENGINE-HOST-CANCEL-CARD-FIXES, 2026-10-18) ──────────────────────────
+
+def test_d1_the_publish_path_records_publish_started_and_the_report_guid_before_the_report_is_filled(
+        reg, egeria, no_connection):
+    """(a) The run row proves the publish began (`publish_started_at`) before anything is written to Egeria, and names
+    the report (`report_guid`) the moment its element exists, before the first annotation fills it. Observed only at
+    the Egeria client boundary."""
+    egeria.add_action("ea-proof")
+    assert _sweep(reg).claimed == ["ea-proof"]
+    seen: dict = {}
+    create_asset, create_annotation = egeria._create_asset, egeria._create_annotation
+
+    def at_create(asset_type=None, body=None):
+        if ((body or {}).get("properties") or {}).get("typeName") == "SurveyReport":
+            seen.setdefault("at_create", dict(_row(reg)["target"]))
+        return create_asset(asset_type, body)
+
+    def at_first_annotation(body=None):
+        seen.setdefault("at_fill", dict(_row(reg)["target"]))
+        return create_annotation(body)
+
+    egeria._create_asset, egeria._create_annotation = at_create, at_first_annotation
+    _run_queue_once(reg)
+
+    [(report_guid, _body)] = egeria.reports()
+    assert seen["at_create"].get("publish_started_at"), "publish_started_at is written before the report is created"
+    assert not seen["at_create"].get("report_guid"), "no report GUID before the element exists"
+    assert seen["at_fill"]["report_guid"] == report_guid, "the GUID is on the row before the report is filled"
+    final = _row(reg)["target"]
+    assert final["report_guid"] == report_guid and final["outcome"]["report_guid"] == report_guid
+
+
+def _cancelled_definition_run_with_step_row(reg, egeria, client, step_target: dict, *, state: str = "running"):
+    """A definition run the starter cancelled (Egeria read back CANCELLED on step 1), with RE's engine-host run row for
+    step 1's action in `state` and carrying `step_target` (the proof the engine host wrote)."""
+    _running_definition_run(reg, egeria)
+    assert client.post(CANCEL_URL).json()["cancelled"] is True
+    run_id = reg.enqueue_run("engine_action", {"engine_action_guid": "ea-step1", **step_target}, requested_by="")
+    if state != "queued":
+        reg.finish_run(run_id, state)
+    client.post("/api/native-surveys/database/coco_pharma/refresh")
+    return _def_row(client)
+
+
+def test_d1_a_cancel_after_publish_started_reads_report_kept_never_will_publish_nothing(reg, egeria, web):
+    """(b) The step is still finishing and its row proves the publish began: the finishing cue carries `report_kept`
+    and the report, so the card says the report is kept. Without the proof it stays "will publish nothing"."""
+    client, _who = web
+    row = _cancelled_definition_run_with_step_row(
+        reg, egeria, client, {"publish_started_at": "2026-10-18T07:40:10Z", "report_guid": "becae45f-rep"},
+        state="queued")
+    assert row["run"]["cancel"]["state"] == "done"
+    fin = row["process_cancel"]["finishing"]
+    assert fin["step"] == 1 and fin["report_kept"] is True and fin["report_guid"] == "becae45f-rep"
+    assert fin["publish_started_at"] == "2026-10-18T07:40:10Z"
+
+
+def test_d1_without_the_publish_proof_the_finishing_step_is_not_said_to_keep_a_report(reg, egeria, web):
+    client, _who = web
+    row = _cancelled_definition_run_with_step_row(reg, egeria, client, {}, state="queued")
+    fin = row["process_cancel"]["finishing"]
+    assert fin["step"] == 1 and not fin.get("report_kept")
+
+
+def test_d2_the_done_line_carries_the_report_a_cancelled_after_publish_step_kept(reg, egeria, web):
+    """(c) The step ended `cancelled_after_publish` with its report: the done cue carries that step's report link;
+    "K of M steps finished" still does not count it."""
+    client, _who = web
+    row = _cancelled_definition_run_with_step_row(
+        reg, egeria, client,
+        {"outcome": {"guard": "survey-completed", "report_guid": "becae45f-rep", "cancelled_after_publish": True}},
+        state="cancelled")
+    assert row["process_cancel"]["finishing"] is None
+    assert row["process_cancel"]["kept"] == [{"step": 1, "guid": "becae45f-rep"}]
+    assert row["run"]["cancel"]["state"] == "done" and row["run"]["cancel"]["finished"] == 0
+
+
+def test_d2_a_step_cancelled_before_it_published_keeps_no_report(reg, egeria, web):
+    client, _who = web
+    row = _cancelled_definition_run_with_step_row(
+        reg, egeria, client, {"outcome": {"guard": "survey-invalid", "report_guid": "", "cancelled": True}},
+        state="cancelled")
+    assert row["process_cancel"]["kept"] == []
+
+
+def test_d3_the_runs_history_says_cancelled_for_a_cancelled_run(reg, egeria, web):
+    """(d) One source: the history entry reads the same `derive_mixed_state` the run line does."""
+    from resource_explorer import native_survey_run as nsr
+
+    client, _who = web
+    _running_definition_run(reg, egeria)
+    assert client.post(CANCEL_URL).json()["cancelled"] is True
+    [entry] = nsr.definition_run_history(reg, "database", "coco_pharma")[ANALYSIS]
+    assert entry["state"] == "cancelled"
+
+
+def test_d3_a_run_that_failed_still_reads_failed_in_the_runs_history(reg, egeria, web):
+    from resource_explorer import native_survey_run as nsr
+
+    client, _who = web
+    _running_definition_run(reg, egeria)
+    _step1_ends_the_run(egeria)
+    client.post("/api/native-surveys/database/coco_pharma/refresh")
+    [entry] = nsr.definition_run_history(reg, "database", "coco_pharma")[ANALYSIS]
+    assert entry["state"] == "failed"
+
+
+# ── review fix round (2026-10-18) ────────────────────────────────────────────────────────────────────────────────────
+
+def test_fix1_publish_started_without_a_report_guid_reads_being_written_not_kept(reg, egeria, web):
+    """A row with `publish_started_at` and no `report_guid` proves publishing began, not that a report exists: the
+    cue carries no `report_kept` (the JS then says "its report is being written")."""
+    client, _who = web
+    row = _cancelled_definition_run_with_step_row(
+        reg, egeria, client, {"publish_started_at": "2026-10-18T07:40:10Z"}, state="queued")
+    fin = row["process_cancel"]["finishing"]
+    assert fin["step"] == 1 and fin["report_kept"] is False and fin["report_guid"] == ""
+    assert fin["publish_started_at"] == "2026-10-18T07:40:10Z"
+
+
+def test_fix2_the_last_run_summary_of_a_cancelled_run_reads_cancelled_not_failed(reg, egeria, web):
+    from resource_explorer import native_survey_run as nsr
+
+    client, _who = web
+    _running_definition_run(reg, egeria)
+    assert client.post(CANCEL_URL).json()["cancelled"] is True
+    [last] = nsr.coordinated_last_runs(reg, "database", "coco_pharma").values()
+    assert last["last_run_status"] == "cancelled"
+
+
+def test_fix2_the_last_run_summary_of_a_real_failure_still_reads_failed(reg, egeria, web):
+    from resource_explorer import native_survey_run as nsr
+
+    client, _who = web
+    _running_definition_run(reg, egeria)
+    _step1_ends_the_run(egeria)
+    client.post("/api/native-surveys/database/coco_pharma/refresh")
+    [last] = nsr.coordinated_last_runs(reg, "database", "coco_pharma").values()
+    assert last["last_run_status"] == "failed"
+
+
+def test_fix3_a_kept_report_falls_back_to_the_rows_own_report_guid_proof(reg, egeria, web):
+    """The cancelled step's outcome has no report_guid (publish raised after create, or the worker died then) but the
+    row's top-level proof names the report that exists: the done line links it."""
+    client, _who = web
+    row = _cancelled_definition_run_with_step_row(
+        reg, egeria, client,
+        {"report_guid": "becae45f-rep", "publish_started_at": "2026-10-18T07:40:10Z",
+         "outcome": {"guard": "survey-failed", "report_guid": "", "cancelled_after_publish": True}},
+        state="cancelled")
+    assert row["process_cancel"]["kept"] == [{"step": 1, "guid": "becae45f-rep"}]
+
+
+def test_fix5a_a_proof_row_that_cannot_be_written_leaves_the_publish_completed(reg, egeria, no_connection, monkeypatch):
+    """merge_run_target raising inside publish_proof never stops or fails the publish."""
+    egeria.add_action("ea-noproof")
+    assert _sweep(reg).claimed == ["ea-noproof"]
+
+    real = reg.merge_run_target
+
+    def boom(run_id, patch):
+        if set(patch) & {"publish_started_at", "report_guid"}:       # the proof writes only; the outcome still lands
+            raise RuntimeError("registry unavailable")
+        return real(run_id, patch)
+
+    monkeypatch.setattr(reg, "merge_run_target", boom)
+    _run_queue_once(reg)
+    [(report_guid, _body)] = egeria.reports()
+    outcome = _row(reg)["target"]["outcome"]
+    assert outcome["guard"] == "survey-completed" and outcome["report_guid"] == report_guid
