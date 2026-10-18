@@ -636,6 +636,7 @@ def test_conversation_agent_has_new_tools():
     assert "delegate_to_integration_agent" in tools
     # Deferred: the lineage tool is a stub and must not be offered to the agent.
     assert {"database_schema_changes", "dependency_changes", "coverage_sweep"} <= set(tools)
+    assert {"find_repos_by_dependency", "rank_databases", "list_rfas"} <= set(tools)
     assert "query_egeria_lineage" not in tools
 
 
@@ -1157,3 +1158,94 @@ def test_coverage_sweep(db):
     with patch("resource_explorer.facts.FactLayer.fact", fake_fact):
         out = coverage_sweep(db, "license", time_budget=-1)
     assert "across 0 of 3" in out and "3 resource(s) were not checked" in out
+
+
+def test_find_repos_by_dependency(db):
+    from resource_explorer.agents.tools import find_repos_by_dependency_raw
+    from resource_explorer.registry import Project
+
+    for slug in ("uses_it", "dropped_it", "no_deps"):
+        db.add(Project(slug=slug, display_name=slug, github_url=f"https://github.com/o/{slug}"))
+
+    def dep(name, version="1", eco="pip"):
+        return {"dep_name": name, "dep_version": version, "dep_type": "runtime", "ecosystem": eco,
+                "source_file": "f"}
+
+    db.upsert_dependencies("uses_it", [dep("SQLAlchemy", "2.0"), dep("flask")])
+    db.upsert_dependencies("dropped_it", [dep("sqlalchemy")])
+    db.upsert_dependencies("dropped_it", [dep("flask")])  # latest batch no longer has it
+
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
+        out = find_repos_by_dependency_raw("sqlalchemy")
+        assert "1 of 3 registered" in out and "`uses_it`: SQLAlchemy 2.0" in out
+        assert "dropped_it`:" not in out
+        assert "Unknown (1): no dependencies are recorded for no_deps" in out
+        assert "0 of 3" in find_repos_by_dependency_raw("sqlalchemy", "npm")
+        assert "Give a dependency name" in find_repos_by_dependency_raw("  ")
+        # '_' and '%' are literals, not wildcards.
+        assert "0 of 3" in find_repos_by_dependency_raw("sql_lchemy")
+
+
+def test_rank_databases(db):
+    from resource_explorer.agents.tools import rank_databases_raw
+    from resource_explorer.registry import DatabaseEntity
+
+    for slug in ("big_db", "small_db", "unsurveyed_db"):
+        db.register_database(DatabaseEntity(
+            slug=slug, display_name=slug, db_type="postgresql", host="h", port=5432, database_name=slug,
+        ))
+
+    def col(n):
+        return {"name": n, "type": "int"}
+
+    big = {"schema_info": {"schemas": [
+        {"name": "public", "tables": [
+            {"name": "a", "description": "documented", "columns": [col("x"), col("y")]},
+            {"name": "b", "description": "", "columns": [col("x")]},
+            {"name": "c", "description": "", "columns": [col("x")]},
+            {"name": "d", "description": "", "source": "catalog_fallback", "columns": [col("x")]},
+        ]},
+        {"name": "locked", "access": "not_readable", "tables": [{"name": "e", "columns": []}]},
+    ]}}
+    small = {"schema_info": {"schemas": [{"name": "public", "tables": [
+        {"name": "a", "description": "", "columns": [col("x")]},
+    ]}]}}
+    db.record_database_survey(slug="big_db", schema_count=2, table_count=5, column_count=5, survey_data=big)
+    db.record_database_survey(slug="small_db", schema_count=1, table_count=1, column_count=1, survey_data=small)
+
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
+        out = rank_databases_raw("tables")
+        assert out.index("`big_db`: 5") < out.index("`small_db`: 1")
+        assert "2 of 3 have a measured survey" in out
+        assert "Not ranked (1): no measured survey for unsurveyed_db" in out
+
+        # Only readable tables with no description count; catalog-only and locked tables are unknown.
+        und = rank_databases_raw("undocumented_tables")
+        assert "`big_db`: 2 of 3 readable; 2 table(s) not readable" in und
+        assert "`small_db`: 1 of 1 readable" in und
+        assert "Unknown metric" in rank_databases_raw("beauty")
+
+
+def test_list_rfas_is_read_only_and_honest(db):
+    from resource_explorer.agents.tools import create_rfa_from_finding_raw, list_rfas_raw
+    from resource_explorer.registry import Project
+
+    db.add(Project(slug="rfa_repo", display_name="RFA Repo", github_url="https://github.com/o/r"))
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db), patch(
+        "resource_explorer.web.routes.activity._registry", return_value=db
+    ):
+        assert "No open RequestForAction" in list_rfas_raw("rfa_repo")
+        create_rfa_from_finding_raw("rfa_repo", "Missing docs", analysis_name="doc_coverage")
+        create_rfa_from_finding_raw("rfa_repo", "No tests")
+        out = list_rfas_raw("rfa_repo")
+        assert "2 RequestForAction entries for 'rfa_repo'" in out
+        assert "[open]" in out and "Missing docs" in out and "No tests" in out
+        assert "only read them" in out
+
+        entry = next(e for e in db.list_activity(limit=10) if e["summary"] == "No tests")
+        db.upsert_rfa_action(
+            rfa_id=f"{entry['id']}::0", entry_id=entry["id"], annotation_index=0,
+            status="completed", activity_status="completed",
+        )
+        assert "No tests" not in list_rfas_raw("rfa_repo")
+        assert "No tests" in list_rfas_raw("rfa_repo", include_closed=True)

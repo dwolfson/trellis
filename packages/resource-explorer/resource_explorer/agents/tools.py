@@ -1464,6 +1464,83 @@ def coverage_sweep(analysis: str, resource_type: str = "", only_gaps: bool = Fal
     return coverage_sweep_raw(analysis, resource_type, only_gaps)
 
 
+def find_repos_by_dependency_raw(dependency: str, ecosystem: str = "") -> str:
+    from resource_explorer.discovery import repos_using_dependency
+    from resource_explorer.registry import ProjectRegistry
+
+    return repos_using_dependency(ProjectRegistry(), dependency, ecosystem)
+
+
+@tool(
+    description=(
+        "Find which registered repositories use a dependency (case-insensitive substring of the package "
+        "name, e.g. 'sqlalchemy'), from each repo's latest recorded dependencies. ecosystem narrows it "
+        "(e.g. 'pip'). Repositories with no recorded dependencies are listed as unknown, not as non-users."
+    )
+)
+def find_repos_by_dependency(dependency: str, ecosystem: str = "") -> str:
+    return find_repos_by_dependency_raw(dependency, ecosystem)
+
+
+def rank_databases_raw(metric: str = "tables", limit: int = 10) -> str:
+    from resource_explorer.discovery import rank_databases
+    from resource_explorer.registry import ProjectRegistry
+
+    return rank_databases(ProjectRegistry(), metric, limit)
+
+
+@tool(
+    description=(
+        "Rank registered databases by a figure from their latest measured survey. metric is 'tables', "
+        "'columns' or 'undocumented_tables' (tables with no description; tables the survey could not read "
+        "are reported separately, not counted as undocumented). Databases with no measured survey are listed "
+        "as not ranked. Use for 'which databases are largest?' or 'which have the most undocumented tables?'."
+    )
+)
+def rank_databases(metric: str = "tables", limit: int = 10) -> str:
+    return rank_databases_raw(metric, limit)
+
+
+def list_rfas_raw(resource_slug: str = "", include_closed: bool = False) -> str:
+    """Read-only view of the RFA drawer, with each RFA's workflow state and any dismissal."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.web.routes.activity import list_rfas
+
+    registry = ProjectRegistry()
+    slug = registry._normalize_slug(resource_slug) if resource_slug else None
+    rfas = list_rfas(entity_type=None, entity_slug=slug, limit=500)
+    total = len(rfas)
+    shown = [
+        r for r in rfas
+        if not r.get("dismissed") and (include_closed or r.get("rfa_status") != "completed")
+    ]
+    scope = f" for '{slug}'" if slug else ""
+    if not shown:
+        return f"No open RequestForAction entries{scope} ({total} in total, including closed or dismissed)."
+    lines = [f"{len(shown)} RequestForAction entr{'y' if len(shown) == 1 else 'ies'}{scope} ({total} in total):"]
+    for r in shown[:25]:
+        who = f", assigned to {r['assignee']}" if r.get("assignee") else ""
+        lines.append(
+            f"- [{r.get('rfa_status', 'open')}{who}] `{r['entity_slug']}` {r['summary']} "
+            f"({r.get('analysis_name') or 'RFA'}, {r['ts'][:10]}, id {r['id']})"
+        )
+    if len(shown) > 25:
+        lines.append(f"- ... and {len(shown) - 25} more")
+    lines.append("To change an RFA's status, use the RFA drawer; the chat can only read them.")
+    return "\n".join(lines)
+
+
+@tool(
+    description=(
+        "List RequestForAction (RFA) entries from the RFA drawer, optionally for one resource: workflow "
+        "status (open, deferred, reassigned), assignee, summary and date. Closed (completed) and dismissed "
+        "RFAs are hidden unless include_closed=true. Read-only: changing an RFA is done in the drawer."
+    )
+)
+def list_rfas(resource_slug: str = "", include_closed: bool = False) -> str:
+    return list_rfas_raw(resource_slug, include_closed)
+
+
 def query_cross_asset_links_raw(resource_slug: str = "") -> str:
     from resource_explorer.surveyors.cross_asset_matcher import query_cross_asset_links_raw as _matcher_raw
     return _matcher_raw(resource_slug=resource_slug)
