@@ -18,7 +18,9 @@ So the start writes this entry BEFORE asking Egeria, through the existing `app_s
 * an entry older than the TTL (`run_credential_holder.configured_ttl`) is ignored and pruned on the next write.
 
 The engine host reads it (`live_starts`) for an `re-*` step of that definition on that resource that has no holder entry
-and no marker (`engine_host._one_run_credential`, `EngineHost._screen`).
+and no marker (`engine_host._one_run_credential`, `EngineHost._screen`). An entry that names no instance holds back only
+an instance Egeria created inside the start's window (`created_in_window`); one created provably outside it is an
+ordinary run (owner, 2026-10-18).
 
 Known limit: the value is read, changed and written back. Two PROCESSES starting the same definition on the same
 resource in the same instant could each write over the other's entry; a lock serialises this within one process.
@@ -36,7 +38,69 @@ KEY_PREFIX = "run_credential_start::"
 #: connect) plus the row write, with room to spare.
 START_DEFER_SECONDS = 90.0
 
+#: The start window (owner, 2026-10-18: "That seems more useable"). A run the failed or unknown start began was CREATED
+#: in Egeria during its initiate call, so an entry that names no instance holds back only an instance whose Egeria
+#: creation time lies in [entry.at - skew, entry.at + initiate window + skew] (`engine_host._start_hold`).
+#:
+#: The initiate window: RE calls `initiate_gov_action_process` once (no retry of its own). pyegeria bounds that call
+#: by its client timeout (`settings.Debug.timeout_seconds`, env PYEGERIA_TIMEOUT_SECONDS, default 30 s; RE passes no
+#: timeout of its own), and on a 401 makes exactly one token re-mint and one retry, each bounded by the same timeout:
+#: at most three timeouts, 90 s by default. `RE_RUN_CREDENTIAL_INITIATE_WINDOW_SECONDS` overrides it.
+INITIATE_WINDOW_ENV = "RE_RUN_CREDENTIAL_INITIATE_WINDOW_SECONDS"
+INITIATE_ATTEMPTS = 3
+PYEGERIA_DEFAULT_TIMEOUT_SECONDS = 30.0
+DEFAULT_INITIATE_WINDOW_SECONDS = INITIATE_ATTEMPTS * PYEGERIA_DEFAULT_TIMEOUT_SECONDS
+#: The clock skew allowed between RE (which stamps entry.at) and Egeria (which stamps the instance's createTime), on
+#: both sides of the window. `RE_RUN_CREDENTIAL_CLOCK_SKEW_SECONDS` overrides it.
+CLOCK_SKEW_ENV = "RE_RUN_CREDENTIAL_CLOCK_SKEW_SECONDS"
+DEFAULT_CLOCK_SKEW_SECONDS = 60.0
+
 _LOCK = threading.Lock()
+
+
+def _seconds_env(name: str, default: float, *, allow_zero: bool = False) -> float:
+    """A finite non-negative (or positive) number of seconds from env `name`, else `default`."""
+    import math
+    import os
+
+    raw = (os.environ.get(name) or "").strip()
+    try:
+        value = float(raw) if raw else default
+    except ValueError:
+        return default
+    if not math.isfinite(value) or value < 0 or (value == 0 and not allow_zero):
+        return default
+    return value
+
+
+def initiate_window_seconds() -> float:
+    """How long after entry.at a run the start began can have been created: the env override, else three of
+    pyegeria's configured client timeouts (see `INITIATE_WINDOW_ENV`)."""
+    try:
+        from pyegeria.core.config import settings
+
+        timeout = float(settings.Debug.timeout_seconds or PYEGERIA_DEFAULT_TIMEOUT_SECONDS)
+    except Exception:  # noqa: BLE001 -- pyegeria's own default when its settings cannot be read
+        timeout = PYEGERIA_DEFAULT_TIMEOUT_SECONDS
+    return _seconds_env(INITIATE_WINDOW_ENV, INITIATE_ATTEMPTS * timeout)
+
+
+def clock_skew_seconds() -> float:
+    """The skew margin on both sides of the start window (0 allowed)."""
+    return _seconds_env(CLOCK_SKEW_ENV, DEFAULT_CLOCK_SKEW_SECONDS, allow_zero=True)
+
+
+def created_in_window(entry: dict, created) -> bool:
+    """Whether an instance created at `created` (naive UTC) may be the run this start entry's initiate call began.
+    True (may be) when the entry's time or `created` is unknown: only a creation time PROVEN outside the window says
+    no."""
+    from datetime import timedelta
+
+    at = parse_when(entry.get("at"))
+    if at is None or created is None:
+        return True
+    skew = timedelta(seconds=clock_skew_seconds())
+    return at - skew <= created <= at + timedelta(seconds=initiate_window_seconds()) + skew
 
 
 def start_key(slug: str, definition: str) -> str:

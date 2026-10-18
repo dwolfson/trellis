@@ -1501,13 +1501,86 @@ def _row_before(rows: list[dict], entry: dict) -> bool:
     return any((when := parse_when(r.get("surveyed_at"))) is not None and when < at for r in rows)
 
 
+#: Process instance GUID -> its Egeria creation time (naive UTC), for the process lifetime: every step of a run asks.
+#: Bounded (oldest dropped first). Only a successful read is remembered; a failed one is asked again next time.
+_CREATED_CACHE_MAX = 1000
+_CREATED: dict[str, Any] = {}
+_CREATED_LOCK = threading.Lock()
+
+
+def _read_instance_element(instance: str):
+    """The GovernanceActionProcessInstance element, read-only, as the engine host's daemon, through the Metadata Expert
+    client RE uses for its other element reads. Raises on any failure."""
+    from pyegeria import MetadataExpert
+
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, egeria_client
+
+    expert = egeria_client(Daemon(DaemonReason.ENGINE_HOST), purpose="engine host", shared=False).of(MetadataExpert)
+    try:
+        return expert.get_metadata_element_by_guid(instance)
+    finally:
+        _close_quietly(expert)
+
+
+def _created_of(element):
+    """The element's creation time (naive UTC) from its header, as `get_metadata_element_by_guid` answers it:
+    `versions.createTime` at the top level (live 2026-10-18; an `elementHeader.versions` spelling is accepted too).
+    None when absent or unparsable."""
+    from datetime import datetime
+
+    from resource_explorer.run_credential_start import parse_when
+
+    if not isinstance(element, dict):
+        return None
+    versions = element.get("versions")
+    if not isinstance(versions, dict):
+        versions = (element.get("elementHeader") or {}).get("versions") if isinstance(
+            element.get("elementHeader"), dict) else None
+    raw = (versions or {}).get("createTime") if isinstance(versions, dict) else None
+    if isinstance(raw, bool) or raw is None or raw == "":
+        return None
+    if isinstance(raw, (int, float)):           # epoch milliseconds, Egeria's other Date spelling
+        try:
+            return datetime.fromtimestamp(raw / 1000, UTC).replace(tzinfo=None)
+        except (OverflowError, OSError, ValueError):
+            return None
+    return parse_when(raw)
+
+
+def _instance_created_at(instance: str):
+    """When Egeria created this process instance (naive UTC), or None when it cannot be told (the read failed, or the
+    field is absent or unparsable): the caller then treats the instance as possibly the start's (fail closed)."""
+    with _CREATED_LOCK:
+        if instance in _CREATED:
+            return _CREATED[instance]
+    try:
+        created = _created_of(_read_instance_element(instance))
+    except Exception as exc:  # noqa: BLE001 -- unknown: held, as before the window existed
+        log.warning("engine host: run %s: creation time not read (%s); a start entry may still hold it", instance,
+                    _short(exc, 200))
+        return None
+    if created is None:
+        log.warning("engine host: run %s: Egeria's element carried no readable creation time; a start entry may still "
+                    "hold it", instance)
+        return None
+    with _CREATED_LOCK:
+        _CREATED[instance] = created
+        while len(_CREATED) > _CREATED_CACHE_MAX:
+            _CREATED.pop(next(iter(_CREATED)))
+    return created
+
+
 def _start_hold(registry, slug: str, definition: str, instance: str, rows: list[dict]) -> tuple[str, dict | None]:
     """Fix round 2, F2: what the persisted start entries (`run_credential_start`) say about an `re-*` step of this
     instance that has no holder entry and no marker. ("defer", entry): a start of THIS process, younger than the
     initiate timeout, may be this run's and is still recording it. ("refuse", entry): a start that names this instance
     (its marker was not written), or one that may be this run's and is another process's, a restarted one's or overdue.
-    ("", None): no start can be this run's. A start may be this run's when it names no instance yet and the instance
-    had no row before it was written. Raises when the entries cannot be read (the caller refuses)."""
+    ("", None): no start can be this run's. A start may be this run's when it names no instance yet, the instance had
+    no row before it was written, and Egeria did not create the instance provably outside the start's window
+    (`run_credential_start.created_in_window`; owner, 2026-10-18). The creation time is read only when an entry
+    otherwise holds, once per instance per process; an unreadable one holds. The one predicate both the sweep
+    (`_held_for_start`) and the run (`_one_run_credential`) use. Raises when the entries cannot be read (the caller
+    refuses)."""
     from resource_explorer import run_credential_holder, run_credential_start
 
     entries = run_credential_start.live_starts(registry, slug, definition)
@@ -1516,6 +1589,9 @@ def _start_hold(registry, slug: str, definition: str, instance: str, rows: list[
         return "refuse", named[0]
     me = run_credential_holder.process_identity()
     open_starts = [e for e in entries if not (e.get("instance") or "") and not _row_before(rows, e)]
+    if open_starts:
+        created = _instance_created_at(instance)
+        open_starts = [e for e in open_starts if run_credential_start.created_in_window(e, created)]
     for e in open_starts:
         if e.get("holder") == me and e.get("age") is not None and e["age"] < run_credential_start.START_DEFER_SECONDS:
             return "defer", e

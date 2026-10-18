@@ -70,6 +70,23 @@ def _empty_holder(monkeypatch):
     return clock
 
 
+@pytest.fixture(autouse=True)
+def _no_egeria_unless_faked(monkeypatch):
+    """The start window reads the process instance's creation time from Egeria. A fresh creation-time cache per test,
+    and no real pyegeria client: a test without the `egeria` fixture (which replaces this seam with its autospecs) gets
+    a client build that raises, so the read fails and the instance is held, exactly as before the window existed."""
+    from resource_explorer import egeria_clients, engine_host
+
+    monkeypatch.setattr(engine_host, "_CREATED", {}, raising=False)
+    monkeypatch.delenv("RE_RUN_CREDENTIAL_INITIATE_WINDOW_SECONDS", raising=False)
+    monkeypatch.delenv("RE_RUN_CREDENTIAL_CLOCK_SKEW_SECONDS", raising=False)
+
+    def _no_build(cls, *a, **k):
+        raise ConnectionError(f"no Egeria in this test ({cls.__name__})")
+
+    monkeypatch.setattr(egeria_clients, "_build", _no_build)
+
+
 @pytest.fixture
 def runner(monkeypatch):
     """`postgres_operations`' runner at its connection boundary: an autospec of the real one (the signature is
@@ -1363,3 +1380,219 @@ def test_m1_egeria_answering_action_not_initiated_removes_the_start_entry(reg, e
         _start_with_credential(reg, egeria)
     assert isinstance(failed.value.__cause__, NativeSurveyNotInitiated)
     assert rs.live_starts(reg, "coco_pharma", ANALYSIS) == []
+
+
+# ── the start window: only an instance Egeria created during the start's initiate call is held ──────────────────
+# Owner, 2026-10-18: "That seems more useable". The fake answers the process instance read with the LIVE shape
+# (tests/fixtures/egeria_6_2/process_instance__create_and_survey__by_guid.json, the same route and identity, whose top-level
+# keys the 2026-10-18 probe of the 07:39 cancelled Scouting run's instance matched): `versions.createTime` at the top
+# level, no `elementHeader`.
+
+_INSTANCE_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "egeria_6_2" / \
+    "process_instance__create_and_survey__by_guid.json"
+
+
+def _instance_answer(created: str | None, guid: str = INSTANCE) -> dict:
+    """The live answer of `get_metadata_element_by_guid` for a process instance, created at `created` (None: the
+    field is missing)."""
+    import copy
+
+    answer = copy.deepcopy(json.loads(_INSTANCE_FIXTURE.read_text())["answer"])
+    answer["elementGUID"] = guid
+    if created is None:
+        answer["versions"].pop("createTime")
+    else:
+        answer["versions"]["createTime"] = created
+    return answer
+
+
+def _entry_at(reg):
+    from resource_explorer import run_credential_start as rs
+
+    [entry] = json.loads(reg.get_setting(rs.start_key("coco_pharma", ANALYSIS)))
+    return rs.parse_when(entry["at"])
+
+
+def _created(reg, seconds: float) -> str:
+    """Egeria's spelling of a time `seconds` after the start entry's `at`."""
+    from datetime import timedelta
+
+    return (_entry_at(reg) + timedelta(seconds=seconds)).isoformat(timespec="milliseconds") + "+00:00"
+
+
+def _egeria_instances(egeria, answers: dict) -> None:
+    """The fake Egeria answers a by-GUID read of each instance in `answers` with that element (set before any client is
+    built, so the autospec is wired to it; a later call adds to the same answers); everything else as before."""
+    known = getattr(egeria, "instance_answers", None)
+    if known is not None:
+        known.update(answers)
+        return
+    egeria.instance_answers = known = dict(answers)
+    plain = egeria._element
+
+    def element(guid, *a, **k):
+        return known[guid] if guid in known else plain(guid, *a, **k)
+
+    egeria._element = element
+
+
+def _instance_reads(egeria, guid: str = INSTANCE) -> int:
+    return sum(1 for c in egeria.calls if c[:2] == ("MetadataExpert", "get_metadata_element_by_guid"))
+
+
+_OTHER = {"pid": os.getppid(), "started": "2026-10-18T01:02:03.000004+00:00"}
+
+
+def test_window_the_live_shape_is_read_from_versions_create_time():
+    """Pins the JSON path the probe found (the recorded live answer of the same route)."""
+    from datetime import datetime
+
+    from resource_explorer import engine_host
+
+    answer = json.loads(_INSTANCE_FIXTURE.read_text())["answer"]
+    assert "elementHeader" not in answer
+    assert engine_host._created_of(answer) == datetime(2026, 10, 13, 1, 10, 50, 874000)
+    assert engine_host._created_of({"versions": {}}) is None
+    assert engine_host._created_of({"versions": {"createTime": "not a time"}}) is None
+    assert engine_host._created_of("No elements found") is None
+
+
+def test_window_1_an_instance_created_ten_minutes_after_the_start_is_an_ordinary_run(
+        reg, egeria, no_connection, runner):
+    """Fails on 67e8d6ef: any instance with no row before the entry was refused for the whole TTL, and stamped."""
+    from resource_explorer import engine_host
+
+    _with_credential(reg)
+    _entry(reg, age=1200, holder=_OTHER)
+    _egeria_instances(egeria, {INSTANCE: _instance_answer(_created(reg, 600))})
+    assert engine_host._one_run_credential(reg, _target(INSTANCE)) == (None, "")
+    out = engine_host._decide_one(reg, _target(INSTANCE))
+    assert out["guard"] != "survey-invalid", out
+    assert _creds_handed(runner) == [("egeria_user", STORED_PASSWORD)]      # the stored login: no marker, no stamp
+    assert all("run_credential" not in json.loads(r.get("declared") or "{}")
+               for r in reg.list_native_survey_runs("database", "coco_pharma", ANALYSIS))
+    assert '"from": "start entry"' not in _all_rows_json(reg)
+
+
+def test_window_2_an_instance_created_five_seconds_after_the_start_is_still_held(reg, egeria, no_connection, runner):
+    """Pins behaviour that already worked (held as today), now through the creation time."""
+    from resource_explorer import engine_host
+    from resource_explorer import run_credential_holder as h
+
+    _with_credential(reg)
+    _entry(reg, age=300, holder=_OTHER)                                       # another process: refused
+    _egeria_instances(egeria, {INSTANCE: _instance_answer(_created(reg, 5)),
+                               INSTANCE_2: _instance_answer(_created(reg, 5), INSTANCE_2)})
+    assert engine_host._one_run_credential(reg, _target(INSTANCE)) == (
+        None, engine_host.RUN_CREDENTIAL_LOST_OTHER_PROCESS)
+    runner.assert_not_called()
+    _entry(reg, age=10, holder=h.process_identity())                          # this process, young: deferred
+    _egeria_instances(egeria, {INSTANCE_2: _instance_answer(_created(reg, 5), INSTANCE_2)})
+    assert engine_host._one_run_credential(reg, _target(INSTANCE_2)) == (
+        None, engine_host.RUN_CREDENTIAL_START_PENDING_SENTENCE)
+
+
+def test_window_3_an_instance_created_30s_before_the_entry_is_held_within_the_skew(reg, egeria):
+    """Pins behaviour that already worked: 30 s of clock skew is inside the 60 s margin."""
+    from resource_explorer import engine_host
+
+    _entry(reg, age=300, holder=_OTHER)
+    _egeria_instances(egeria, {INSTANCE: _instance_answer(_created(reg, -30))})
+    assert engine_host._one_run_credential(reg, _target(INSTANCE)) == (
+        None, engine_host.RUN_CREDENTIAL_LOST_OTHER_PROCESS)
+
+
+def test_window_the_edges_follow_the_initiate_window_and_the_skew(reg, egeria):
+    """90 s initiate window (three of pyegeria's 30 s timeouts) + 60 s skew: 149 s after is held, 151 s is not; 61 s
+    before is not."""
+    from resource_explorer import engine_host
+    from resource_explorer import run_credential_start as rs
+
+    assert rs.initiate_window_seconds() == 90.0 and rs.clock_skew_seconds() == 60.0
+    _entry(reg, age=3000, holder=_OTHER)
+    guids = {"a" * 8 + INSTANCE[8:]: 149, "b" * 8 + INSTANCE[8:]: 151, "c" * 8 + INSTANCE[8:]: -61}
+    _egeria_instances(egeria, {g: _instance_answer(_created(reg, s), g) for g, s in guids.items()})
+    held = {s: engine_host._one_run_credential(reg, _target(g))[1] != "" for g, s in guids.items()}
+    assert held == {149: True, 151: False, -61: False}
+
+
+def test_window_the_env_overrides_widen_it(reg, egeria, monkeypatch):
+    from resource_explorer import engine_host
+    from resource_explorer import run_credential_start as rs
+
+    monkeypatch.setenv(rs.INITIATE_WINDOW_ENV, "600")
+    monkeypatch.setenv(rs.CLOCK_SKEW_ENV, "0")
+    _entry(reg, age=3000, holder=_OTHER)
+    _egeria_instances(egeria, {INSTANCE: _instance_answer(_created(reg, 590))})
+    assert engine_host._one_run_credential(reg, _target(INSTANCE))[1] == engine_host.RUN_CREDENTIAL_LOST_OTHER_PROCESS
+    monkeypatch.setenv(rs.INITIATE_WINDOW_ENV, "garbage")
+    assert rs.initiate_window_seconds() == 90.0
+
+
+@pytest.mark.parametrize("how", ["raises", "missing", "unparsable", "no element"])
+def test_window_4_an_unreadable_creation_time_holds_as_today(reg, egeria, no_connection, runner, how):
+    """Pins behaviour that already worked: fail closed, never the stored login."""
+    from resource_explorer import engine_host
+
+    _with_credential(reg)
+    _entry(reg, age=1200, holder=_OTHER)
+    if how == "raises":
+        egeria.fail["get_metadata_element_by_guid"] = RuntimeError("Egeria unreachable")
+    elif how == "missing":
+        _egeria_instances(egeria, {INSTANCE: _instance_answer(None)})
+    elif how == "unparsable":
+        _egeria_instances(egeria, {INSTANCE: _instance_answer("yesterday-ish")})
+    # "no element": the fake answers "No elements found" for an instance it does not know
+    assert engine_host._one_run_credential(reg, _target(INSTANCE)) == (
+        None, engine_host.RUN_CREDENTIAL_LOST_OTHER_PROCESS)
+    runner.assert_not_called()
+    assert _instance_reads(egeria) == 1
+
+
+def test_window_5_two_steps_of_one_instance_read_it_once(reg, egeria, no_connection, runner):
+    """Fails on 67e8d6ef (no read at all). The read is the engine host daemon's."""
+    from resource_explorer import engine_host
+
+    _with_credential(reg)
+    _entry(reg, age=1200, holder=_OTHER)
+    _egeria_instances(egeria, {INSTANCE: _instance_answer(_created(reg, 600))})
+    first = dict(_target(INSTANCE), engine_action_guid="ea-step1")
+    second = dict(_target(INSTANCE), engine_action_guid="ea-step2", step_key="postgres_operations")
+    assert engine_host._one_run_credential(reg, first) == (None, "")
+    assert engine_host._one_run_credential(reg, second) == (None, "")
+    assert engine_host._held_for_start(reg, "coco_pharma", ANALYSIS, INSTANCE) is False
+    assert _instance_reads(egeria) == 1
+    from tests.test_engine_host_e4 import _daemon_user
+
+    assert egeria.built == [("MetadataExpert", _daemon_user())]                 # read as RE's service account
+
+
+@pytest.mark.parametrize("case,created,held", [
+    ("1: ten minutes after", 600, False), ("2: five seconds after", 5, True), ("3: 30 s before", -30, True),
+    ("4: unreadable", None, True)])
+def test_window_6_the_sweep_and_the_run_agree(reg, egeria, case, created, held):
+    """Case 1 fails on 67e8d6ef; 2-4 pin. One predicate (`_start_hold`): the sweep's silent skip and the run's
+    refusal say the same."""
+    from resource_explorer import engine_host
+    from resource_explorer import run_credential_holder as h
+
+    _entry(reg, age=10, holder=h.process_identity())                  # this process, young: the sweep would defer
+    _egeria_instances(egeria, {INSTANCE: _instance_answer(None if created is None else _created(reg, created))})
+    assert engine_host._held_for_start(reg, "coco_pharma", ANALYSIS, INSTANCE) is held
+    assert engine_host._one_run_credential(reg, _target(INSTANCE)) == (
+        None, engine_host.RUN_CREDENTIAL_START_PENDING_SENTENCE if held else "")
+
+
+def test_window_the_sweep_claims_an_ordinary_run_started_after_a_failed_start(reg, egeria, no_connection, runner):
+    """Fails on 67e8d6ef: end to end through the sweep and the run queue, an ordinary run in the 2 h after a failed
+    start was claimed, refused, stamped and lost."""
+    from resource_explorer import run_credential_holder as h
+
+    _with_credential(reg)
+    _entry(reg, age=20, holder=h.process_identity())
+    _egeria_instances(egeria, {INSTANCE_2: _instance_answer(_created(reg, 900), INSTANCE_2)})
+    _process_action(egeria, "ea-ord", "postgres_operations", instance=INSTANCE_2, next_guards=())
+    assert _sweep(reg).claimed == ["ea-ord"]
+    _run_queue_once(reg)
+    assert _creds_handed(runner) == [("egeria_user", STORED_PASSWORD)]
+    assert egeria.actions["ea-ord"]["completion"]["status"] == "ACTIONED"
