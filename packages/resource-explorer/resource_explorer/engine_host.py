@@ -1346,12 +1346,14 @@ class EngineHostPublishFailed(RuntimeError):
     complete, linked report: the executor's run words then say "publish failed · <these words>"."""
 
 
-def _decide(registry, target: dict, cancelled=None) -> dict:
+def _decide(registry, target: dict, cancelled=None, on_publish=None) -> dict:
     """Run the step and publish its report; return the outcome to store. Never raises for a step or Egeria
     answer: each becomes a guard with its words. Runs as the current principal (the engine host daemon).
     `cancelled()` (§2.4), when given, is asked right before the report would be published: True publishes nothing
-    and returns `_cancelled_outcome`."""
-    outcome = _decide_one(registry, target, cancelled)
+    and returns `_cancelled_outcome`. `on_publish(fields)`, when given, is told the publish's proof as it happens
+    (`publish_started_at`, then `report_guid` the moment the report element exists): `_run_with` stores it on the run
+    row, so a cancel read back mid-publish says the report is kept (fix D1)."""
+    outcome = _decide_one(registry, target, cancelled, on_publish)
     if outcome.get("cancelled"):
         return outcome
     others = [g for g in target.get("other_targets") or [] if g]
@@ -1438,7 +1440,7 @@ def _step_output_annotations(entity, step_outputs: list, registry) -> list:
     return annotations_from_step_outputs(entity, [o for o in step_outputs if isinstance(o, dict)], registry)
 
 
-def _decide_one(registry, target: dict, cancelled=None) -> dict:
+def _decide_one(registry, target: dict, cancelled=None, on_publish=None) -> dict:
     refusal = (target.get("refusal") or "").strip()
     if refusal:
         # Owner ruling, 2026-10-14: survey-invalid ("the supplied information (such as the asset) is invalid").
@@ -1517,7 +1519,7 @@ def _decide_one(registry, target: dict, cancelled=None) -> dict:
                                                     annotation_count=len(records), **report_extra)
                     raise NothingToPublish(why)
             annotations = library.report_annotations(records)
-        published["outcome"] = _publish(registry, target, annotations, extra=report_extra)
+        published["outcome"] = _publish(registry, target, annotations, extra=report_extra, on_publish=on_publish)
         if published["outcome"]["guard"] != SURVEY_COMPLETED:
             raise EngineHostPublishFailed(published["outcome"]["message"])
         return published["outcome"]["report_guid"]
@@ -1598,9 +1600,11 @@ def _read_source_report(report_guid: str, asset_guid: str) -> dict:
             "annotations": annotations_from_report(result)}
 
 
-def _publish(registry, target: dict, annotations: list, extra: dict | None = None) -> dict:
+def _publish(registry, target: dict, annotations: list, extra: dict | None = None, on_publish=None) -> dict:
     """Publish the report through the database survey publisher; the outcome follows the proof. `extra` lands in the
-    report's additionalProperties and on the outcome (`derived_from_report`, engine host step 4)."""
+    report's additionalProperties and on the outcome (`derived_from_report`, engine host step 4). `on_publish(fields)`
+    is told `publish_started_at` before anything is written to Egeria, and `report_guid` as soon as the report element
+    exists, before it is filled (the surveyor's `on_report_created`), never re-derived afterwards."""
     extra_props = dict(extra or {})
     from resource_explorer.egeria_clients import current_principal
     from resource_explorer.surveyors.database.egeria_database_surveyor import EgeriaDatabaseSurveyor
@@ -1612,10 +1616,13 @@ def _publish(registry, target: dict, annotations: list, extra: dict | None = Non
         entity = registry.get_database(slug, allow_unreadable=True)     # never connects: no credential needed
         if entity is None:
             return _outcome(SURVEY_FAILED, f"database {slug!r} is no longer registered in Resource Explorer")
+        if on_publish is not None:
+            on_publish({"publish_started_at": _now_iso()})
         pub = EgeriaDatabaseSurveyor(identity=identity).publish_engine_action_report(
             entity, annotations, asset_guid=target.get("asset_guid") or entity.egeria_asset_guid,
             request_type=request_type, engine_action_guid=guid, engine_user=identity.client_user or "",
-            requester=(identity.requested_by or "").strip(), registry=registry, extra_properties=extra_props)
+            requester=(identity.requested_by or "").strip(), registry=registry, extra_properties=extra_props,
+            on_report_created=(None if on_publish is None else (lambda g: on_publish({"report_guid": g}))))
     except Exception as exc:  # noqa: BLE001 -- a publish that raised is a failed survey, said in its words
         return _outcome(SURVEY_FAILED, f"the survey report for {slug} was not published: {_short(exc)}",
                         annotation_count=len(annotations), **extra_props)
@@ -1781,7 +1788,15 @@ def _run_with(engine, registry, run_id: str, target: dict, principal, *, expert=
         _record_target_errors(registry, run_id, {}, target_errors)
     listing_error = _record_submission(registry, target, principal)
 
-    outcome = _decide(registry, target, cancelled)
+    def publish_proof(fields: dict) -> None:
+        # Fix D1: the run row's proof that the publish began (and of the report it made), written as it happens. A
+        # proof that could not be written leaves the card on its earlier words; it never stops the publish.
+        try:
+            registry.merge_run_target(run_id, fields)
+        except Exception as exc:  # noqa: BLE001 -- a proof row, not the work
+            log.warning("engine host: run %s: publish proof %s not written (%s)", run_id, sorted(fields), _short(exc))
+
+    outcome = _decide(registry, target, cancelled, on_publish=publish_proof)
     # The last cancel check before the completion. A cancel that lands after it, before `record_completion_status`
     # reaches Egeria, is the one window left: Egeria then ignores the completion (no else branch in
     # `EngineActionHandler.recordCompletionStatus` for a terminal action), so Egeria says CANCELLED while this row says

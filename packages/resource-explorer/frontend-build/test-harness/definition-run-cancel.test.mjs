@@ -136,3 +136,49 @@ test("review round 1: RE's gate refusal stays on the line across checkNow's repa
   host.querySelector('[data-process-cancel]').click();          // the next press clears it
   assert.doesNotMatch(norm(host), /too late to cancel/);
 });
+
+// ── card fixes after the live Cancel test (2026-10-18) ─────────────────────────────────────────────────────────────
+const cancelledRun = (over = {}) => run({ state: 'failed', egeria_status: 'CANCELLED',
+  cancel: { state: 'done', by: 'peterprofile', at: '2026-10-18T07:41:00', finished: 0, of: 3 }, ...over });
+
+test('D1: a step cancelled after its publish began reads "its report is kept", never "will publish nothing"', async () => {
+  const { document, ns } = await setUp();
+  const kept = draw(document, ns, row(cancelledRun(), { finishing: { step: 2, label: 'postgres_operations', report_kept: true,
+    publish_started_at: '2026-10-18T07:40:08Z', report_guid: 'becae45f' } }));
+  const cue = kept.querySelector('[data-process-cancel-finishing]');
+  assert.equal(norm(cue), '⊘ cancelled · step 2, postgres_operations, is finishing · its report is kept');
+  assert.ok(cue.hasAttribute('data-process-cancel-report-kept'));
+  assert.doesNotMatch(norm(kept), /will publish nothing/);
+  // No publish proof on the row: the earlier words stay.
+  assert.match(norm(draw(document, ns, row(cancelledRun(), { finishing: { step: 2, label: 'postgres_operations' } }))),
+    /⊘ cancelled · step 2, postgres_operations, is finishing and will publish nothing/);
+});
+
+test("D2: the done line carries a cancelled step's kept report as a report link; the count is unchanged", async () => {
+  const { document, ns } = await setUp();
+  const box = draw(document, ns, row(cancelledRun(), { kept: [{ step: 2, guid: 'becae45f' }] }));
+  const done = box.querySelector('[data-process-cancel-done]');
+  assert.match(norm(done), /^⊘ cancelled by peterprofile · \d\d:\d\d · 0 of 3 steps finished · step 2's report kept ›$/);
+  const link = done.querySelector('[data-native-report]');
+  assert.equal(link.dataset.nativeReport, 'becae45f');
+  assert.ok(link.hasAttribute('data-process-cancel-kept-report'));
+  // None kept: the plain done line, no link.
+  const plain = draw(document, ns, row(cancelledRun())).querySelector('[data-process-cancel-done]');
+  assert.equal(plain.querySelector('[data-native-report]'), null);
+  assert.equal(ns.PROCESS_CANCEL_WORDS.doneKept(2), "step 2's report kept ›");
+});
+
+test('D3: the runs history says "cancelled" (muted) for a cancelled run and "failed" (warn) for a real failure', async () => {
+  const { document, ns } = await setUp();
+  const box = document.createElement('div');
+  box.innerHTML = ns.definitionRunsListHtml({ runs: [
+    { when: '2026-10-18T07:39:59', coordinated_by: 'egeria', by: 'peterprofile', state: 'cancelled', ran: null, of: null, reports: [] },
+    { when: '2026-10-17T07:39:59', coordinated_by: 'egeria', by: 'dan', state: 'failed', ran: null, of: null, reports: [] }] });
+  const [cancelled, failed] = [...box.querySelectorAll('[data-def-run]')];
+  assert.match(norm(cancelled), /coordinated by Egeria · started by peterprofile · cancelled$/);
+  assert.doesNotMatch(norm(cancelled), /failed/);
+  const cw = cancelled.querySelector('[data-run-state="cancelled"]');
+  assert.ok(cw.classList.contains('text-ink-muted') && !cw.classList.contains('text-state-warn'));
+  assert.ok(failed.querySelector('[data-run-state="failed"]').classList.contains('text-state-warn'));
+  assert.equal(ns.PROCESS_CANCEL_WORDS.historyCancelled, 'cancelled');
+});

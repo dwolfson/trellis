@@ -1353,6 +1353,7 @@ class EgeriaDatabaseSurveyor:
         requester: str,
         registry=None,
         extra_properties: dict | None = None,
+        on_report_created=None,
     ) -> dict:
         """Publish the SurveyReport of an Egeria engine action RE ran as an engine host (engine_host.py, E4),
         shaped like a native survey action service's report (DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE C9):
@@ -1368,7 +1369,9 @@ class EgeriaDatabaseSurveyor:
         same name reuses the report). Returns what happened, never raises for an Egeria answer: `report_error`
         is set when the report could not be written (then `report_guid` is ""), `originator_error` when the
         report exists but could not be linked to the action. The caller decides the completion from these.
-        Everything runs as the current principal (the engine host's `Daemon(ENGINE_HOST, requested_by)`)."""
+        Everything runs as the current principal (the engine host's `Daemon(ENGINE_HOST, requested_by)`).
+        `on_report_created(report_guid)`, when given, is called the moment the report element exists (created, or the
+        one a 409 reuses), before its annotations are written: the engine host's proof of a publish in progress."""
         from datetime import timezone
 
         from resource_explorer.private_publish import refuse_unsupported_private
@@ -1408,7 +1411,8 @@ class EgeriaDatabaseSurveyor:
                 "additionalProperties": additional,
             },
         }
-        out = self._publish_survey_report(body, qualified_name, annotations, db_entity.slug, stamp)
+        out = self._publish_survey_report(body, qualified_name, annotations, db_entity.slug, stamp,
+                                          on_report_created=on_report_created)
         out.update(qualified_name=qualified_name, annotation_count=len(annotations), originator_guid="",
                    originator_error="", governance={})
         report_guid = out["report_guid"]
@@ -1442,6 +1446,14 @@ class EgeriaDatabaseSurveyor:
         return out
 
     @staticmethod
+    def _tell_report_created(callback, report_guid: str) -> None:
+        """The caller's proof hook: a hook that fails is logged, never a failed publish (the report exists)."""
+        try:
+            callback(report_guid)
+        except Exception as exc:  # noqa: BLE001 - a proof row, not the publish
+            log.warning("report %s created, but the caller's proof hook failed: %s", report_guid, exc)
+
+    @staticmethod
     def _is_duplicate_qualified_name(exc: Exception) -> bool:
         """Egeria's 409 for a create whose qualifiedName is already taken (OMAG-COMMON-409-001)."""
         text = " ".join(str(exc).split())
@@ -1461,7 +1473,7 @@ class EgeriaDatabaseSurveyor:
             return None
 
     def _publish_survey_report(self, body: dict, qualified_name: str, annotations: list,
-                               db_slug: str, surveyed_at: str) -> dict:
+                               db_slug: str, surveyed_at: str, *, on_report_created=None) -> dict:
         """Create RE's SurveyReport and its annotations, or reuse the one Egeria already holds.
 
         The report's qualifiedName is keyed on the survey run's timestamp, so publishing the SAME run
@@ -1473,6 +1485,8 @@ class EgeriaDatabaseSurveyor:
         try:
             out["report_guid"] = self._asset_maker.create_asset(body=body)
             log.info(f"Published SurveyReport in Egeria: {out['report_guid']}")
+            if on_report_created is not None and out["report_guid"]:
+                self._tell_report_created(on_report_created, out["report_guid"])
             made = self._create_annotations(annotations, out["report_guid"], db_slug, surveyed_at)
             # Counted from what Egeria returned a GUID for (a failed or un-checkable one is None), not from
             # how many were sent; no list back means RE cannot tell, which is None, never a number.
@@ -1497,6 +1511,8 @@ class EgeriaDatabaseSurveyor:
             return out
         out.update(report_guid=existing, reused=True)
         log.info("SurveyReport %s already in Egeria (same survey run %s): reusing it", existing, surveyed_at)
+        if on_report_created is not None:
+            self._tell_report_created(on_report_created, existing)
         held = self._annotations_held_by(existing)
         if held is None or held < len(annotations):
             try:

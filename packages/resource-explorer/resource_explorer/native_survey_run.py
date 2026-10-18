@@ -1086,6 +1086,8 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
                 "outside": bool(latest) and refused == CANCEL_NOT_RE_STARTED and derived.get("state") in (SUBMITTED, RUNNING),
                 # Where a running step is being cancelled while RE still runs it (§2.4): "is finishing".
                 "finishing": _finishing_step(registry, derived),
+                # Fix D2: a report a cancelled step kept, linked on the done line (the run line's own links aside).
+                "kept": _kept_reports(registry, derived),
                 # The reader, so a press's own words can say "you" (designer Q4).
                 "viewer": viewer}
         if process.target == "server" and entity is not None:
@@ -1423,6 +1425,10 @@ def coordinated_last_runs(registry, entity_type: str, slug: str) -> dict[str, di
     return out
 
 
+#: A cancelled run's state in the definition card's run history (fix D3).
+HISTORY_CANCELLED = "cancelled"
+
+
 def definition_run_history(registry, entity_type: str, slug: str, limit: int = 30) -> dict[str, list[dict]]:
     """Every run of each RE Survey Definition on this resource, newest first, WHOEVER coordinated it, for the
     definition card's "runs · N ›" list (designer 2026-10-16, Q1). An Egeria-coordinated run comes from its
@@ -1455,7 +1461,10 @@ def definition_run_history(registry, entity_type: str, slug: str, limit: int = 3
             ran, of = d.get("ran"), (plan.get("steps") if recorded else None)
         out.setdefault(ref, []).append({
             "when": run.get("surveyed_at") or "", "coordinated_by": "egeria",
-            "by": (run.get("submitted_by") or ""), "state": d["state"], "ran": ran, "of": of,
+            # Fix D3: the run line's own reading (`derive_mixed_state`'s `cancelled`, from Egeria's CANCELLED read-back)
+            # names a cancelled run; its `state` stays FAILED only for the glyph's sake and is not a fault here.
+            "by": (run.get("submitted_by") or ""), "state": HISTORY_CANCELLED if d.get("cancelled") else d["state"],
+            "ran": ran, "of": of,
             "version_note": f"({plan['steps']}-step version)" if plan.get("differs") else "",
             "reports": [{"step": i + 1, "guid": st["report_guid"]} for i, st in enumerate(d.get("steps") or [])
                         if st.get("report_guid")]})
@@ -1898,35 +1907,81 @@ CANCEL_SIGN_IN = (401, "sign in to cancel a run")
 
 def _finishing_step(registry, derived: dict) -> dict | None:
     """The step Egeria cancelled while RE's engine host still runs it ({step, label}), from RE's own run row for that
-    action (queued, claimed or running), else None."""
+    action (queued, claimed or running), else None. Fix D1: when that row proves the publish had begun
+    (`publish_started_at`, written by the engine host as it starts publishing), the step carries `report_kept` (and
+    the `report_guid` once the element exists): the engine host keeps a report it began, so the card never says
+    "will publish nothing" then. Words from the proof row, never from which branch the engine host took."""
     if not derived.get("cancelled"):
         return None
+    for s, rows in _cancelled_step_rows(registry, derived):
+        if any(_published(r) for r in rows):
+            return None                # it published before the cancel: the done line, with its report link
+        running = [r for r in rows if r.get("state") in ("queued", "claimed", "running")]
+        if running:
+            step = (derived.get("cancel_context") or {}).get("cancelled_step")
+            if not step:
+                return None
+            proof = next((t for t in (_row_target(r) for r in running) if t.get("publish_started_at")), None)
+            if proof is None:
+                return step
+            return {**step, "report_kept": True, "publish_started_at": proof["publish_started_at"],
+                    "report_guid": str(proof.get("report_guid") or "")}
+    return None
+
+
+def _kept_reports(registry, derived: dict) -> list[dict]:
+    """Fix D2: the reports a cancelled run kept ({step, guid}): a step whose engine-host run row stored an outcome
+    `cancelled_after_publish` with its `report_guid` (it published, then Egeria's cancel was read). Numbered by the
+    step's place in the run, as the run line numbers "step N report ›"; a report the read-back already links on the
+    run line is not repeated."""
+    if not derived.get("cancelled"):
+        return []
+    shown = {st.get("report_guid") for st in derived.get("steps") or [] if st.get("report_guid")}
+    out = []
+    for s, rows in _cancelled_step_rows(registry, derived):
+        for r in rows:
+            outcome = _row_target(r).get("outcome")
+            guid = str(outcome.get("report_guid") or "") if isinstance(outcome, dict) else ""
+            if guid and outcome.get("cancelled_after_publish") and guid not in shown:
+                out.append({"step": s["_n"], "guid": guid})
+                shown.add(guid)
+                break
+    return out
+
+
+def _cancelled_step_rows(registry, derived: dict):
+    """Each CANCELLED step of the read-back (with its 1-based place in the run as `_n`) and RE's engine-host run rows
+    for its action. A step whose rows cannot be read is skipped (a row not read proves nothing)."""
     lookup = getattr(registry, "engine_action_runs", None)
     if not callable(lookup):
-        return None
-    for s in derived.get("steps") or []:
+        return
+    for i, s in enumerate(derived.get("steps") or []):
         if s.get("status") != "CANCELLED" or not s.get("action_guid"):
             continue
         try:
             rows = lookup(s["action_guid"])
-        except Exception:  # noqa: BLE001 - a row not read says nothing is finishing
+        except Exception:  # noqa: BLE001 - a row not read says nothing
             continue
-        if any(_published(r) for r in rows):
-            return None                # it published before the cancel: the done line, with its report link
-        if any(r.get("state") in ("queued", "claimed", "running") for r in rows):
-            return (derived.get("cancel_context") or {}).get("cancelled_step")
-    return None
+        yield {**s, "_n": i + 1}, rows
+
+
+def _row_target(row: dict) -> dict:
+    """A runs row's `target` JSON as a dict ({} when it cannot be read)."""
+    import json
+
+    raw = row.get("target")
+    if isinstance(raw, dict):
+        return raw
+    try:
+        target = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return target if isinstance(target, dict) else {}
 
 
 def _published(row: dict) -> bool:
     """RE's engine-host run row for an action stored an outcome with a survey report (published before any cancel)."""
-    import json
-
-    try:
-        target = json.loads(row.get("target") or "{}")
-    except (TypeError, ValueError):
-        return False
-    outcome = target.get("outcome") if isinstance(target, dict) else None
+    outcome = _row_target(row).get("outcome")
     return isinstance(outcome, dict) and bool(outcome.get("report_guid"))
 
 
