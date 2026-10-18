@@ -97,7 +97,8 @@ class CompareAgent(BaseExplorerAgent):
                 "This is a DATABASE schema comparison. Call compare_database_schemas to diff "
                 "the schemas, tables, and columns between the databases, or query_database_schema "
                 "for deeper inspections of specific tables. If an actionable issue or discrepancy is "
-                "found, you can file a RequestForAction using create_rfa_from_finding."
+                "found, you can propose a RequestForAction using create_rfa_from_finding "
+                "(it previews first; file it with confirm=true only if the user agrees)."
             )
         elif has_db:
             guidance = (

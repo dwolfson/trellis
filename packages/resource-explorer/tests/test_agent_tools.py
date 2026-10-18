@@ -839,3 +839,53 @@ def test_compare_and_integration_agents_use_multi_resource_evidence(db):
         agent = CompareAgent()
         assert agent.handle("compare app_alpha and app_beta") == "ok"
         assert agent._last_compiled is None
+
+
+def test_rfa_guardrails(db):
+    from resource_explorer.agents.tools import create_rfa_from_finding_raw
+    from resource_explorer.registry import Project
+
+    db.add(Project(slug="rfa-repo", display_name="RFA Repo", github_url="https://github.com/o/r"))
+
+    def _rfas():
+        return [e for e in db.list_activity(limit=50) if e["operation"] == "rfa"]
+
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
+        # Unknown resource is refused, not filed as a repo.
+        assert "not a registered" in create_rfa_from_finding_raw("nowhere", "Something")
+        # Delivery status is not the agent's to choose.
+        assert "not allowed" in create_rfa_from_finding_raw("rfa-repo", "Gap", status="pending")
+        # Size limits.
+        assert "keep it under" in create_rfa_from_finding_raw("rfa-repo", "x" * 201)
+        assert "limit is" in create_rfa_from_finding_raw("rfa-repo", "Gap", detail="d" * 4001)
+        assert _rfas() == []
+
+        # Unconfirmed: preview only, nothing written.
+        preview = create_rfa_from_finding_raw("rfa-repo", "Missing docs", confirm=False)
+        assert "NOT FILED YET" in preview
+        assert _rfas() == []
+
+        # Confirmed: written once, as a local RFA.
+        assert "Successfully created" in create_rfa_from_finding_raw("rfa-repo", "Missing docs")
+        assert len(_rfas()) == 1 and _rfas()[0]["status"] == "local"
+
+        # Same summary again (any case/whitespace) is not duplicated.
+        again = create_rfa_from_finding_raw("rfa-repo", "  missing   DOCS ")
+        assert "Not filed" in again
+        assert len(_rfas()) == 1
+
+        # Once a person has completed it, the same finding may be filed again.
+        entry = _rfas()[0]
+        db.upsert_rfa_action(
+            rfa_id=f"{entry['id']}::0", entry_id=entry["id"], annotation_index=0,
+            status="completed", activity_status="completed",
+        )
+        assert "Successfully created" in create_rfa_from_finding_raw("rfa-repo", "Missing docs")
+        assert len(_rfas()) == 2
+
+        # The agent-facing tool previews by default and does not expose delivery status.
+        from resource_explorer.agents.tools import create_rfa_from_finding
+
+        props = create_rfa_from_finding.input_schema.model_json_schema()["properties"]
+        assert props["confirm"]["default"] is False
+        assert "status" not in props
