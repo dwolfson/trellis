@@ -1,6 +1,6 @@
 # One-run credential for Egeria-coordinated runs
 
-Status: **design note, not built.** Written 2026-10-18 by the RE coordinator session ("do the next items"). It covers
+Status: **design note, not built; owner answered Q1, Q2 and Q4 on 2026-10-18, Q3 (designer words) open.** Written 2026-10-18 by the RE coordinator session ("do the next items"). It covers
 the design-queue item recorded 2026-10-16. Build tier: **full review** (credential handling), Opus builder.
 
 **Decision (project owner, 2026-10-16):** "I want a per-run elevated credential that doesn't replace the stored one."
@@ -104,15 +104,18 @@ A process-local, in-memory **run-credential holder** in the 8813 process, keyed 
 | Applied to a native Egeria step | Never consulted for non-`re-*` request types. Test. Words on screen say so. |
 | Someone else supplies or reads it | Start route requires the signed-in starter. No read API. Test: the holder has no listing or read route. |
 
-## 4. Open questions
+## 4. Questions and answers
 
-- **Q1 (owner):** TTL default, 2 hours proposed.
-- **Q2 (owner):** after a restart, refuse the remaining steps (proposed) or fall back to the stored login with a
-  visible "ran with the stored credential after a restart"?
-- **Q3 (designer):** the label for "coordinated by Egeria · with options…", the per-step "runs in Egeria with the
-  stored credential" words, and the lost-after-restart words.
-- **Q4 (owner):** is this still wanted, or will coco_pharma's stored credential simply be changed (ops item 8)? This
-  note is the "wait for" option; changing the stored login needs no build.
+**Decision (project owner, 2026-10-18):** "Keep the one-run credential design: I'll answer Q1-Q3 (TTL 2h ok, refuse
+after restart), open the docs PR."
+
+- **Q1. TTL:** 2 hours, as proposed. It stays configurable and is never unbounded.
+- **Q2. After a restart:** refuse the remaining steps with the lost-after-restart words. Never fall back to the stored
+  login (§2.4).
+- **Q3, designer (open):** the label for "coordinated by Egeria · with options…", the per-step "runs in Egeria with
+  the stored credential" words, and the lost-after-restart words. The builder uses the placeholders in this note
+  until they arrive.
+- **Q4. Still wanted:** yes. This design is kept; coco_pharma's stored credential is not changed instead.
 
 ## 5. Not in this note
 
