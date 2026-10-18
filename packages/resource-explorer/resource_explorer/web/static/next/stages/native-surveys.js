@@ -47,6 +47,7 @@ function glyphFor(run, runnable, row = {}) {
   // A registration that existed and is gone, and a database never given to Egeria, are NOT errors:
   // each has its own muted cue (registering with Egeria is optional; nothing is owed).
   if (row.stale) return 'gone';
+  if (row.name_taken) return 'name_taken_unreadable';
   switch (run.state) {
     case 'complete': case 'registered': return 'measured';
     // Every step ended and some were refused: an amber half-filled cue, never the red error.
@@ -62,6 +63,12 @@ function glyphFor(run, runnable, row = {}) {
       if (row.neutral) return 'optional';
       return runnable ? 'unrun' : 'no-surveyor';
   }
+}
+
+/** A pointer that reads as absent while Egeria holds a database of this name that this user cannot read: the
+ *  server's words (`name_taken_line`), no register control (it would make a second element). */
+function nameTakenHtml(row) {
+  return `<span class="text-ink-muted" data-native-name-taken>${esc(row.name_taken_line || "Egeria has a database of this name RE can't read · ask its owner")}</span>`;
 }
 
 function timeSpan(iso) {
@@ -199,9 +206,12 @@ export function nativeSurveyStatusHtml(row) {
         ? `<span class="text-ink-muted">can't be registered from here — ${esc(row.cannot_run_reason)}</span>`
         : (row.stale
           ? `<span class="text-ink-muted" data-native-gone>${esc(row.gone_line || 'no longer in Egeria')}</span>`
-          : '<span class="text-ink-muted">not registered with Egeria · optional</span>');
+          : row.name_taken
+            ? nameTakenHtml(row)
+            : '<span class="text-ink-muted">not registered with Egeria · optional</span>');
     default:
       if (row.stale) return `<span class="text-ink-muted" data-native-gone>${esc(row.gone_line || 'no longer in Egeria')}</span>`;
+      if (row.name_taken) return nameTakenHtml(row);
       if (row.neutral) return `<span class="text-ink-muted">${esc(row.cannot_run_reason)}</span>`;
       return row.runnable
         ? 'not run'
@@ -258,6 +268,20 @@ export function willChangeHtml(row) {
 /** Cancel cues that outlive a repaint: a cancel Egeria did not confirm stays on its row until the next try
  *  (guid -> the words). A cancel that worked needs none: the row's own status then says CANCELLED. */
 const cancelCues = new Map();
+
+/** The line for a native survey's cancel that did not go through, in the definition card's three outcome words
+ *  (PROCESS_CANCEL_WORDS; one block, never copied): the run was over (409), Egeria won't let this person (403),
+ *  Egeria refused with its reason (422), or the cancel was not sent (502, or no answer at all). */
+export function nativeCancelWords(err) {
+  const w = PROCESS_CANCEL_WORDS;
+  const st = err && err.status;
+  const msg = (err && err.message) || '';
+  if (st === 409) return w.tooLate;
+  if (st === 403) return w.notPermitted('you', msg);
+  if (st === 422) return w.refused(msg);
+  if (st === 502 || !st) return w.unsent;
+  return msg;
+}
 /** Cancels in flight (guid): a poll repaint mid-request keeps "cancelling…" on the row. */
 const cancelling = new Set();
 
@@ -271,7 +295,7 @@ export function cancelControlHtml(row) {
   const live = row.cancellable === true && r.state === 'running' && !r.error;
   const cue = guid && cancelCues.get(guid);
   const keep = cue && live
-    ? `<div class="mt-[2px] text-provenance text-state-warn" data-native-cancel-cue><span class="font-glyph" aria-hidden="true">◐</span> ${esc(cue)}</div>` : '';
+    ? `<div class="mt-[2px] text-provenance text-state-warn" data-native-cancel-cue>${esc(cue)}</div>` : '';   // no glyph: ◐ means "measured, within a limit" (designer §6)
   if (!live || !guid) return '';
   return `<div class="mt-[2px]" data-native-cancel-box="${esc(guid)}">
     <button type="button" data-native-cancel="${esc(guid)}"
@@ -723,7 +747,7 @@ export function bindNativeSurveys(root, slug, initialRows, { pollMs = POLL_MS, o
         failDialog(why);
       } catch (err) {
         done();
-        const why = `not cancelled: ${err.message}`;
+        const why = nativeCancelWords(err);
         cancelCues.set(guid, why);
         paint(rows);
         failDialog(why);

@@ -144,7 +144,7 @@ test('a cancel Egeria does not confirm is not "cancelled": a pop-up with the rea
   await wait(30);
   assert.match(text(document.getElementById('wl-detail')), /asked Egeria to cancel; it still says IN_PROGRESS/);
   assert.doesNotMatch(text(content.querySelector('[data-native-status]')), /cancelled/);
-  assert.match(text(content.querySelector('[data-native-cancel-cue]')), /◐ asked Egeria to cancel; it still says IN_PROGRESS/);
+  assert.match(text(content.querySelector('[data-native-cancel-cue]')), /^asked Egeria to cancel; it still says IN_PROGRESS/);
 });
 
 test('an Egeria error is the pop-up and the cue; the cue survives a repaint; a new attempt clears it', async () => {
@@ -156,11 +156,12 @@ test('an Egeria error is the pop-up and the cue; the cue survives a repaint; a n
   content.querySelector('[data-native-cancel]').click();
   content.querySelector('[data-native-cancel-yes]').click();
   await wait(30);
-  assert.match(text(document.getElementById('wl-detail')), /engine host unreachable/);
-  assert.match(text(content.querySelector('[data-native-cancel-cue]')), /◐ not cancelled: .*engine host unreachable/);
+  // Designer (cancel words §6): a cancel that was not sent says so in the definition card's words, with no glyph.
+  assert.match(text(document.getElementById('wl-detail')), /cancel not sent · couldn't reach Egeria · try again/);
+  assert.equal(text(content.querySelector('[data-native-cancel-cue]')), "cancel not sent · couldn't reach Egeria · try again");
   // a repaint from the server's rows keeps the cue while the action is still live
   content.querySelector('#native-surveys').innerHTML = ns.nativeSurveyRowHtml(RUNNING);
-  assert.match(text(content.querySelector('[data-native-cancel-cue]')), /not cancelled/);
+  assert.match(text(content.querySelector('[data-native-cancel-cue]')), /cancel not sent/);
   // trying again, and succeeding, leaves no stale cue on the cancelled row
   fail = false;
   document.getElementById('wl-detail').remove();
@@ -170,3 +171,32 @@ test('an Egeria error is the pop-up and the cue; the cue survives a repaint; a n
   await wait(30);
   assert.equal(content.querySelector('[data-native-cancel-cue]'), null);
 });
+
+
+// Designer REPLY-DESIGNER-ENGINE-HOST-CANCEL-WORDS §6: the three outcome words, no glyph on any of them (◐ means
+// "measured, within a limit" in glyphs.js, not "your request didn't go through"). Same block as the definition card.
+for (const [name, status, detail, words] of [
+  ['too late', 409, 'Only a waiting or running action can be cancelled; Egeria now says COMPLETED.',
+    'too late to cancel · the run had already finished'],
+  ['not permitted', 403, 'user dana is not authorized to update',
+    "Egeria won't let you cancel this run · user dana is not authorized to update"],
+  ['refused with a reason', 422, 'the action is not in a state that can be cancelled',
+    'Egeria refused the cancel: the action is not in a state that can be cancelled'],
+  ['not sent', 502, 'Egeria did not cancel the action: engine host unreachable',
+    "cancel not sent · couldn't reach Egeria · try again"],
+]) {
+  test(`a refused native cancel (${name}) uses the designer's words and draws no glyph`, async () => {
+    const { ns, content } = await setUp();
+    stub({ [CANCEL_URL]: { __status: status, body: { detail } } });
+    mount(ns, content, [RUNNING]);
+    content.querySelector('[data-native-cancel]').click();
+    content.querySelector('[data-native-cancel-yes]').click();
+    await wait(30);
+    const cue = content.querySelector('[data-native-cancel-cue]');
+    assert.equal(text(cue), words);
+    assert.ok(!/[◐◔◌⊘✕?]/.test(cue.textContent), 'no glyph on a refused or unsent cancel');
+    assert.equal(cue.querySelector('.font-glyph'), null);
+    // the run's own cue is unchanged by the refusal: still the running row, Cancel still offered
+    assert.ok(content.querySelector('[data-native-cancel]'));
+  });
+}

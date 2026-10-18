@@ -578,11 +578,16 @@ from resource_explorer.registry import ProjectRegistry  # noqa: E402
 
 
 class FakeExpert:
-    def __init__(self, result=None, error=None):
-        self.result, self.error, self.calls = result, error, []
+    _SAME = object()
+
+    def __init__(self, result=None, error=None, by_name=_SAME):
+        # `by_name`: what the qualifiedName lookup answers when it differs from the GUID read (default: the same).
+        self.result, self.error, self.by_name, self.calls = result, error, by_name, []
 
     def get_metadata_element_by_unique_name(self, **kw):
         self.calls.append(kw)
+        if self.by_name is not FakeExpert._SAME:
+            return self.by_name
         if self.error:
             raise self.error
         return self.result
@@ -1343,7 +1348,8 @@ class TestNotVisibleIsAbsenceOfAPointer:
 
     def test_a_soft_deleted_database_reads_as_gone(self, registry):
         registry.set_database_egeria_guid("adventureworks", DB_GUID)
-        port = real_port(FakeExpert(error=_api_exc(msg_id=self.NOT_VISIBLE)))
+        # The GUID read says 400-010; the qualifiedName lookup finds no element (the database is gone for everyone).
+        port = real_port(FakeExpert(error=_api_exc(msg_id=self.NOT_VISIBLE), by_name=ABSENT_ANSWER))
         out = cas.check_pointers(registry, port, "database", "adventureworks")
         assert out["database"] == "gone" and out["error"] == ""
 
@@ -1463,3 +1469,73 @@ class TestHeldAddressWillChange:
         registry.update_egeria_host("database", "adventureworks", "localhost")
         row = _rows(registry)[CATALOG_QN]
         assert row["address"]["held"] == "" and row["address"]["will_change"] is False
+
+
+# ── the architect's caution: a name Egeria holds that THIS user cannot read ──────────────────────────────
+
+NAME_TAKEN_ROW_WORDS = "Egeria has a database of this name RE can't read · ask its owner"
+OTHER_GUID = "eeeeeeee-0000-0000-0000-000000000009"
+
+
+def _autospec_port(*, exists=False, find=None, find_error=None):
+    """The real port's signatures, enforced (create_autospec spec_set): a wrong argument is a TypeError."""
+    from unittest.mock import create_autospec
+    port = create_autospec(cas.PyegeriaRegistrationPort, instance=True, spec_set=True)
+    port.asset_exists.return_value = exists
+    if find_error is not None:
+        port.find_element.side_effect = find_error
+    else:
+        port.find_element.return_value = find
+    return port
+
+
+class TestGoneButTheNameIsTakenAndUnreadable:
+    """Architect ruling (RULING-RUNS-REGISTRATION-ARCHITECT, the caution): 400-010 also fires for an element
+    THIS user cannot see. When the GUID read says gone but a qualifiedName lookup finds another GUID, the row says
+    so and offers no Register again (it would create a second element)."""
+
+    def test_guid_gone_and_the_name_finds_another_guid_is_the_new_state(self, registry):
+        registry.set_database_egeria_guid("adventureworks", DB_GUID)
+        port = _autospec_port(find=cas.ElementBack(OTHER_GUID, DQN))
+        out = cas.check_pointers(registry, port, "database", "adventureworks")
+        assert out["database"] == cas.NAME_TAKEN_UNREADABLE == "name_taken_unreadable"
+        assert out["name_taken_guid"] == OTHER_GUID
+        port.find_element.assert_called_once_with(DQN)       # ONE read-only lookup, by the register press's own name
+
+    def test_the_row_has_the_ruling_words_and_no_register_control(self, registry):
+        registry.set_database_egeria_guid("adventureworks", DB_GUID)
+        pointers = cas.check_pointers(registry, _autospec_port(find=cas.ElementBack(OTHER_GUID, DQN)),
+                                      "database", "adventureworks")
+        rows = {r["qualified_name"]: r for r in nsr.native_survey_rows(
+            registry, "database", "adventureworks", TECH, pointers=pointers)}
+        for qn in (CATALOG_QN, cas.DATABASE_SURVEY_QN):
+            row = rows[qn]
+            assert row["name_taken"] is True and row["stale"] is False
+            assert row["name_taken_line"] == NAME_TAKEN_ROW_WORDS
+            assert row["register"]["available"] is False
+            assert "no longer in Egeria" not in json.dumps(row)
+        assert "gone_line" not in rows[CATALOG_QN]
+        assert rows[CATALOG_QN]["run"]["state"] == cas.NOT_REGISTERED
+
+    def test_guid_gone_and_the_name_finds_nothing_is_gone_as_today(self, registry):
+        registry.set_database_egeria_guid("adventureworks", DB_GUID)
+        out = cas.check_pointers(registry, _autospec_port(find=None), "database", "adventureworks")
+        assert out["database"] == "gone" and "name_taken_guid" not in out
+
+    def test_the_name_finding_the_same_guid_is_not_a_second_element(self, registry):
+        registry.set_database_egeria_guid("adventureworks", DB_GUID)
+        out = cas.check_pointers(registry, _autospec_port(find=cas.ElementBack(DB_GUID, DQN)),
+                                 "database", "adventureworks")
+        assert out["database"] == "gone"
+
+    def test_guid_gone_and_the_name_lookup_raising_is_unreadable_never_gone(self, registry):
+        registry.set_database_egeria_guid("adventureworks", DB_GUID)
+        out = cas.check_pointers(registry, _autospec_port(find_error=RuntimeError("Egeria is unreachable")),
+                                 "database", "adventureworks")
+        assert out["database"] == "unreadable" and out["error"]
+
+    def test_a_pointer_that_resolves_makes_no_name_lookup(self, registry):
+        registry.set_database_egeria_guid("adventureworks", DB_GUID)
+        port = _autospec_port(exists=True)
+        assert cas.check_pointers(registry, port, "database", "adventureworks")["database"] == "resolves"
+        port.find_element.assert_not_called()

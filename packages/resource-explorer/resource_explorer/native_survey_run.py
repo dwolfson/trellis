@@ -1013,6 +1013,7 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
 
     entity = _resource_entity(registry, entity_type, slug)
     pointers = pointers or {}
+    taken = pointers.get("database") == cas.NAME_TAKEN_UNREADABLE     # derived from the reads, not the branch taken
     rows = []
     for process in _processes_for_rows(entity_type, technology_type):
         if process.kind == KIND_DELETE:
@@ -1026,13 +1027,17 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
             continue  # Egeria's PostgreSQL survey (alone, or as a process's first step) is offered for PostgreSQL only
         if process.kind == KIND_CATALOG_AND_SURVEY:
             rows.append(_catalog_row(registry, entity_type, slug, technology_type, entity,
-                                     process, latest, stale=(pointers.get("database") == "gone")))
+                                     process, latest, stale=(pointers.get("database") == "gone"),
+                                     name_taken=taken))
             continue
         reason = cannot_run_reason(process, entity, registry=registry, technology_type=technology_type)
         gone_key = "server" if process.target == "server" else "database"
         gone = pointers.get(gone_key) == "gone"
+        taken_here = taken and gone_key == "database"
         if gone:
             reason = cas.STALE_WORDS
+        elif taken_here:
+            reason = cas.NAME_TAKEN_WORDS
         if process.kind == KIND_MIXED_PROCESS and not reason and (declared or {}).get(process.qualified_name) is False:
             reason = PROCESS_NOT_DECLARED
         creds = (credentials_state(entity)
@@ -1056,6 +1061,7 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
             "cannot_run_reason": reason,
             "neutral": row_is_neutral(reason),
             "stale": gone,
+            "name_taken": taken_here,
             "credentials": creds,
             "credentials_note": UNCONFIRMED_CREDENTIALS if creds == NOT_CONFIGURED else "",
             "in_flight": derived["state"] in (SUBMITTED, RUNNING, AWAITING_REPORT, UNREADABLE),
@@ -1074,6 +1080,8 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
                                "label": cas.REGISTER_AGAIN_LABEL if gone else cas.REGISTER_LABEL, "why_not": wiring}
             if gone:
                 row["gone_line"] = cas.gone_line(registry, entity_type, slug, entity, technology_type)
+            if taken_here:
+                row["name_taken_line"] = cas.NAME_TAKEN_WORDS      # no register control: it would make a second element
         if process.kind == KIND_RE_DEFINITION:
             # The same answer the definition's own card carries, so the row beside Egeria's other runs can press it.
             row["coordinated_by_egeria"] = coordinate_control(registry, entity_type, slug, process.qualified_name)
@@ -1097,7 +1105,7 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
 
 
 def _catalog_row(registry, entity_type, slug, technology_type, entity, process, latest, *,
-                 stale: bool = False) -> dict:
+                 stale: bool = False, name_taken: bool = False) -> dict:
     """The "Catalog and Survey" row: registering the SERVER with Egeria (then the database it
     holds). Optional; a never-registered database is a neutral state, not a fault."""
     from resource_explorer import catalog_and_survey as cas
@@ -1105,7 +1113,7 @@ def _catalog_row(registry, entity_type, slug, technology_type, entity, process, 
     wiring = cas.wiring_reason(entity_type, technology_type, entity)
     has_ptr = bool((getattr(entity, "egeria_asset_guid", "") or "").strip()) if entity is not None else False
     # A pointer Egeria answered "no such element" to is not a registration.
-    has_ptr = has_ptr and not stale
+    has_ptr = has_ptr and not stale and not name_taken
     derived = cas.derive_catalog_state(latest, has_pointer=has_ptr)
     in_flight = cas.catalog_in_flight(derived, latest)
     live = entity is not None and hasattr(entity, "db_type") and not wiring
@@ -1121,6 +1129,7 @@ def _catalog_row(registry, entity_type, slug, technology_type, entity, process, 
         "cannot_run_reason": wiring,
         "neutral": False,
         "stale": stale,
+        "name_taken": name_taken,
         "credentials": PRESENT,
         "credentials_note": "",
         "in_flight": in_flight,
@@ -1128,10 +1137,13 @@ def _catalog_row(registry, entity_type, slug, technology_type, entity, process, 
         "reach_note": cas.reach_note_for(derived),
         "notes": cas.catalog_notes(registry, entity_type, entity, latest, derived, in_flight) if live else [],
         "asset_guid": (getattr(entity, "egeria_asset_guid", "") or "") if entity is not None else "",
-        "register": cas.register_control(registry, entity, derived, in_flight, wiring, stale=stale,
-                                         will_change=addr["will_change"]) if live
-        else {"available": False, "label": cas.REGISTER_LABEL, "why_not": wiring, "start_again": False},
+        "register": ({"available": False, "label": cas.REGISTER_LABEL, "why_not": cas.NAME_TAKEN_WORDS,
+                      "start_again": False, "confirm": ""} if name_taken
+                     else cas.register_control(registry, entity, derived, in_flight, wiring, stale=stale,
+                                               will_change=addr["will_change"]) if live
+                     else {"available": False, "label": cas.REGISTER_LABEL, "why_not": wiring, "start_again": False}),
         **({"gone_line": cas.gone_line(registry, entity_type, slug, entity, technology_type)} if stale else {}),
+        **({"name_taken_line": cas.NAME_TAKEN_WORDS} if name_taken else {}),
         # "Registered" proves the elements exist, not that Egeria can reach the database: what the survey runs prove.
         "reach": cas.reach_proof(registry, entity_type, slug, technology_type, entity) if live else None,
         "address": addr,

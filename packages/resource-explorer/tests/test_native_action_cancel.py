@@ -247,6 +247,33 @@ def test_an_egeria_error_is_a_502_with_the_reason_and_the_row_still_says_running
     assert last["status"] == "error" and "engine host unreachable" in last["summary"] and last["detail"]["cancelled_by"] == USER
 
 
+def _egeria_http_error(code: int, sentence: str):
+    """A real-shaped pyegeria failure: its class, the HTTP code, and Egeria's own sentence in `additional_info`."""
+    import pyegeria.core._exceptions as ex
+    e = Exception.__new__(ex.PyegeriaAPIException)
+    Exception.__init__(e, "Egeria error")
+    e.related_http_code = code
+    e.context, e.pyegeria_code, e.message, e.system_action, e.user_action = {}, "CLIENT-ERROR", sentence, "", ""
+    e.response = None
+    e.additional_info = {"exceptionErrorMessage": sentence}
+    return e
+
+
+def test_a_4xx_refusal_Egeria_gives_is_a_422_in_its_words_not_an_unreachable_502(web, egeria, access):
+    """Designer (REPLY-DESIGNER-ENGINE-HOST-CANCEL-WORDS, 6): a refused cancel and an unreachable Egeria are different
+    lines. The route classifies with `classify_cancel_answer` (the definition card's classifier), so the page can too."""
+    client, _ = web
+    egeria.cancel_error = _egeria_http_error(400, "the engine action is not in a state that can be cancelled")
+    r = client.post(URL.format(G_OURS))
+    assert r.status_code == 422 and "not in a state that can be cancelled" in r.json()["detail"]
+
+
+def test_a_5xx_from_Egeria_stays_the_502_the_page_words_as_not_sent(web, egeria, access):
+    client, _ = web
+    egeria.cancel_error = _egeria_http_error(503, "the engine host is down")
+    assert client.post(URL.format(G_OURS)).status_code == 502
+
+
 def test_egeria_security_refusal_is_a_403_in_egerias_words(web, egeria, access):
     client, _ = web
     egeria.cancel_error = RuntimeError("OPEN-METADATA-SECURITY-403-002 user dana is not authorized to update")

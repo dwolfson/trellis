@@ -293,6 +293,12 @@ async def cancel_egeria_action(entity_type: str, slug: str, engine_action_guid: 
         refused = refusal(exc.__cause__) if exc.__cause__ is not None else None
         if isinstance(refused, EgeriaRefused):
             raise refused
+        # The definition card's classifier, not a second one: a 4xx answer is a refusal (422, Egeria's reason; 403 when it
+        # is a not-permitted), anything else -- 5xx, a timeout, no answer -- stays the 502 the page words as "not sent".
+        cause = exc.__cause__
+        if cause is not None and nsr.classify_cancel_answer(cause) == nsr.REFUSED:
+            code = 403 if nsr._refusal_kind(cause) == nsr.CANCEL_NOT_PERMITTED else 422
+            raise HTTPException(status_code=code, detail=nsr._egeria_reason(cause))
         raise HTTPException(status_code=502, detail=str(exc))
 
     _log_activity(

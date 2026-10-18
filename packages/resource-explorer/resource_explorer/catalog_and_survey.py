@@ -89,6 +89,11 @@ REGISTER_AGAIN_LABEL = "Register again →"
 #: Egeria answered about a pointer RE holds and there is no usable element: said in Egeria's frame, never "deleted"
 #: (RE did not see a delete and cannot tell deleted from purged).
 GONE_WORDS = "no longer in Egeria"
+#: The architect's caution (RULING-RUNS-REGISTRATION-ARCHITECT): the GUID RE holds reads back as absent, but a
+#: qualifiedName lookup, as the same signed-in user, finds a DIFFERENT element. 400-010 also fires for an element this
+#: user cannot see, so this is not "gone", and Register again would make a second element.
+NAME_TAKEN_UNREADABLE = "name_taken_unreadable"
+NAME_TAKEN_WORDS = "Egeria has a database of this name RE can't read · ask its owner"
 NO_RECORD_WORDS = "RE has no record of the earlier process, so it cannot check whether it is still running."
 SERVER_NO_ANSWER_WORDS = ("Egeria gave no answer to a server create, so the server may or may not exist; "
                           "RE will not create it again until you start again")
@@ -517,12 +522,31 @@ def check_pointers(registry, port, entity_type: str, slug: str) -> dict:
     ptr = (getattr(entity, "egeria_asset_guid", "") or "").strip()
     if ptr:
         out["database"] = _classify(port, ptr, out)
+        if out["database"] == "gone" and hasattr(entity, "db_type"):
+            out["database"] = _classify_gone_by_name(port, entity, ptr, out)
         if out["database"] == "resolves":
             _record_held_address(registry, port, entity_type, slug, ptr)
     sptr = server_pointer(registry, entity)
     if sptr:
         out["server"] = _classify(port, sptr, out)
     return out
+
+
+def _classify_gone_by_name(port, entity, ptr: str, out: dict) -> str:
+    """The pointer's GUID read as absent. Look the element up by qualifiedName, as the same signed-in user, through
+    the register press's own `find_element` and name (one lookup, read-only). Another GUID under that name means
+    Egeria has the database and this user cannot read it (not "gone"); nothing found keeps `gone`; a lookup that
+    fails is `unreadable`, never `gone`. What the lookup returned is recorded in `out` for the row."""
+    dqn = database_qualified_name(server_name_for(entity), entity.database_name)
+    try:
+        found = port.find_element(dqn)
+    except Exception as exc:  # noqa: BLE001
+        out["error"] = nsr._short_error(exc)
+        return "unreadable"
+    if found is not None and found.guid and found.guid != ptr:
+        out["name_taken_guid"] = found.guid
+        return NAME_TAKEN_UNREADABLE
+    return "gone"
 
 
 def held_address_key(entity_type: str, slug: str) -> str:

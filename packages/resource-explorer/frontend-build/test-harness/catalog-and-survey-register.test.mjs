@@ -132,6 +132,35 @@ test('a stored pointer Egeria says is gone: the stale words, and the SAME row of
   assert.ok(ownControl(content), "RE's own survey control is unaffected");
 });
 
+const TAKEN = "Egeria has a database of this name RE can't read · ask its owner";
+
+test("a pointer that reads gone while Egeria holds the name: the ruling's words, no Register control, not 'no longer in Egeria'", async () => {
+  const { document, app } = await setUp();
+  const content = document.createElement('div'); content.id = 'content'; document.body.appendChild(content);
+  const taken = [surveyRow({ cannot_run_reason: TAKEN, neutral: false, name_taken: true, name_taken_line: TAKEN,
+    register: { available: false, label: REGISTER, why_not: TAKEN } }),
+    catalogRow({ name_taken: true, name_taken_line: TAKEN, asset_guid: 'dddddddd-0000-0000-0000-000000000001',
+      register: { available: false, label: REGISTER, why_not: TAKEN, start_again: false, confirm: '' } })];
+  stubFetch(paneRoutes([surveyRow({ runnable: true, cannot_run_reason: '', neutral: false,
+    register: { available: false, label: REGISTER, why_not: '' } }), catalogRow({
+    run: { ...blankRun, state: 'registered' }, asset_guid: 'dddddddd-0000-0000-0000-000000000001',
+    register: { available: false, label: REGISTER, why_not: '' } })], {
+    'POST /api/native-surveys/database/adventureworks/check': { pointers: { database: 'name_taken_unreadable' }, surveys: taken },
+  }));
+  await app.loadSurveyPane();
+  await new Promise((r) => setTimeout(r, 20));
+
+  for (const qn of [SURVEY, CATALOG]) {
+    const row = content.querySelector(`[data-native-survey="${qn}"]`);
+    const words = row.textContent.replace(/\s+/g, ' ');
+    assert.ok(words.includes(TAKEN), 'the ruling words');
+    assert.ok(!words.includes('no longer in Egeria'), 'never the gone words');
+    assert.equal(row.querySelector('[data-native-register]'), null, 'no Register again: it would create a second element');
+    assert.ok(!words.includes('?') && !words.includes('✕'), 'Egeria answered both reads: no cue glyph');
+  }
+  assert.equal(content.querySelector('[data-native-register]'), null);
+});
+
 test('a database with nothing stored makes no check read at all', async () => {
   const { document, app } = await setUp();
   const content = document.createElement('div'); content.id = 'content'; document.body.appendChild(content);
