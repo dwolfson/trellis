@@ -10,6 +10,8 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
+from resource_explorer.registry import _survey_schema_info
+
 if TYPE_CHECKING:
     from resource_explorer.registry import ProjectRegistry
 
@@ -40,22 +42,21 @@ def find_cross_asset_links(
         survey = registry.get_latest_database_survey(db.slug)
         tables = set()
         schemas = set()
-        if survey and isinstance(survey.get("survey_data"), dict):
-            sdata = survey["survey_data"]
-            for sch in sdata.get("schemas", []):
-                sname = sch.get("schema_name", "")
-                if sname:
-                    schemas.add(sname.lower())
-                for tbl in sch.get("tables", []):
-                    tname = tbl.get("table_name", "")
-                    if tname:
-                        tables.add(tname.lower())
+        info = _survey_schema_info(survey) if survey else {}
+        for sch in info.get("schemas", []):
+            sname = sch.get("name", "")
+            if sname:
+                schemas.add(sname.lower())
+            for tbl in sch.get("tables", []):
+                tname = tbl.get("name", "")
+                if tname:
+                    tables.add(tname.lower())
         db_tables_map[db.slug] = {
             "entity": db,
             "schemas": schemas,
             "tables": tables,
             "db_type": db.db_type,
-            "db_name": (db.db_name or "").lower(),
+            "db_name": (db.database_name or "").lower(),
         }
 
     repos = registry.list_all()
@@ -68,7 +69,7 @@ def find_cross_asset_links(
     for repo in repos:
         # 1. Inspect repository dependencies
         deps = registry.query_dependencies(repo.slug)
-        dep_names = {d.get("name", "").lower() for d in deps} if deps else set()
+        dep_names = {d.get("dep_name", "").lower() for d in deps} if deps else set()
 
         db_driver_deps = {
             "postgresql": {"psycopg2", "psycopg2-binary", "asyncpg", "org.postgresql:postgresql", "r2dbc-postgresql"},

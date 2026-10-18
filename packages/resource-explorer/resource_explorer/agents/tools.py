@@ -47,15 +47,7 @@ def _absence(resource_slug: str, analysis_id: str, subject: str) -> str:
     )
 
 
-@tool(
-    description=(
-        "Search indexed project content (code, docs, API specs) for text relevant to the query. "
-        "collection_names is a comma-separated list of fully-qualified collection names, "
-        "e.g. 'unitycatalog_python_code,unitycatalog_markdown_docs'. "
-        "Call multiple times with different queries or collections to gather more context."
-    )
-)
-def vector_search(query: str, collection_names: str) -> str:
+def vector_search_raw(query: str, collection_names: str) -> str:
     from resource_explorer.vector_store_pg import MultiCollectionStore
 
     collections = [c.strip() for c in collection_names.split(",") if c.strip()]
@@ -70,13 +62,17 @@ def vector_search(query: str, collection_names: str) -> str:
 
 @tool(
     description=(
-        "Get GitHub statistics for a project: stars, forks, watchers, open issues, contributors, "
-        "commits, releases, lines of code, file count, primary language, language breakdown, "
-        "license, topics, repo size, creation date, last pushed date. "
-        "days controls the commit-count window (default 90; use 30 for 30-day counts, 180 for 6-month, etc.)."
+        "Search indexed project content (code, docs, API specs) for text relevant to the query. "
+        "collection_names is a comma-separated list of fully-qualified collection names, "
+        "e.g. 'unitycatalog_python_code,unitycatalog_markdown_docs'. "
+        "Call multiple times with different queries or collections to gather more context."
     )
 )
-def query_project_stats(resource_slug: str, days: int = 90) -> str:
+def vector_search(query: str, collection_names: str) -> str:
+    return vector_search_raw(query, collection_names)
+
+
+def query_project_stats_raw(resource_slug: str, days: int = 90) -> str:
     import sqlite3
     from datetime import datetime, timedelta
     from resource_explorer.registry import ProjectRegistry
@@ -191,11 +187,17 @@ def query_project_stats(resource_slug: str, days: int = 90) -> str:
 
 @tool(
     description=(
-        "Get the top committers to a project by commit count over the last 90 days. "
-        "Returns a ranked list with commit counts and email addresses."
+        "Get GitHub statistics for a project: stars, forks, watchers, open issues, contributors, "
+        "commits, releases, lines of code, file count, primary language, language breakdown, "
+        "license, topics, repo size, creation date, last pushed date. "
+        "days controls the commit-count window (default 90; use 30 for 30-day counts, 180 for 6-month, etc.)."
     )
 )
-def query_top_committers(resource_slug: str, limit: int = 10) -> str:
+def query_project_stats(resource_slug: str, days: int = 90) -> str:
+    return query_project_stats_raw(resource_slug, days)
+
+
+def query_top_committers_raw(resource_slug: str, limit: int = 10) -> str:
     import sqlite3
     from collections import Counter
     from resource_explorer.registry import ProjectRegistry
@@ -222,6 +224,16 @@ def query_top_committers(resource_slug: str, limit: int = 10) -> str:
     for i, (name, count) in enumerate(top, 1):
         lines.append(f"  {i}. {name}: {count} commit{'s' if count != 1 else ''}")
     return "\n".join(lines)
+
+
+@tool(
+    description=(
+        "Get the top committers to a project by commit count over the last 90 days. "
+        "Returns a ranked list with commit counts and email addresses."
+    )
+)
+def query_top_committers(resource_slug: str, limit: int = 10) -> str:
+    return query_top_committers_raw(resource_slug, limit)
 
 
 def _query_code_symbols_raw(

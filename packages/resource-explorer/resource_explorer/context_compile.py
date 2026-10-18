@@ -1452,7 +1452,7 @@ def build_epistemological_matrix(
         for s in normalized_slugs:
             rtype = slug_types[s]
             fl = FactLayer(registry, resource_type=rtype)
-            fact = fl.query(s, analysis_id)
+            fact = fl.fact(s, analysis_id)
             state = fact.state
             headline = fact.headline or fact.note
 
@@ -1496,7 +1496,7 @@ def compile_multi_resource_context(
     registry: ProjectRegistry,
     slugs: list[str],
     question: str,
-    budget: int = DEFAULT_BUDGET,
+    budget: int = 8000,
     perspectives: list[str] | None = None,
     purposes: list[str] | None = None,
     target_model: str = "default",
@@ -1590,6 +1590,8 @@ def compile_multi_resource_context(
 
     # Create multi-resource compile ID
     id_input = f"{':'.join(normalized_slugs)}|{budget}|" + "|".join(c.compile_id for c in compiled_list)
+    import hashlib
+
     multi_compile_id = hashlib.sha256(id_input.encode("utf-8")).hexdigest()[:16]
 
     total_used = sum(c.manifest.get("used", 0) for c in compiled_list) + len(matrix_md) // 4

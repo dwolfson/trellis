@@ -157,8 +157,8 @@ class CompareAgent(BaseExplorerAgent):
     def _fallback(self, query: str, slugs: list[str]) -> str:
         """Direct tool-call fallback when BeeAI is unavailable."""
         from resource_explorer.agents.tools import (
-            query_project_stats,
-            vector_search,
+            query_project_stats_raw,
+            vector_search_raw,
             compare_database_schemas_raw,
             query_database_schema_raw,
         )
@@ -183,10 +183,10 @@ class CompareAgent(BaseExplorerAgent):
                     schema_text = query_database_schema_raw(slug)
                     sections.append(f"## {slug} (Database)\n\n### Schema\n{schema_text}")
                 else:
-                    stat_text = query_project_stats(slug)
+                    stat_text = query_project_stats_raw(slug)
                     collections = router.select(query, slug)
                     if collections:
-                        doc_text = vector_search(query, ",".join(collections))
+                        doc_text = vector_search_raw(query, ",".join(collections))
                     else:
                         doc_text = "(no indexed content)"
                     sections.append(

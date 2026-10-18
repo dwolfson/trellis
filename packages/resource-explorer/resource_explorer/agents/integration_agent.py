@@ -103,9 +103,9 @@ class IntegrationAgent(BaseExplorerAgent):
     def _fallback(self, query: str, slugs: list[str]) -> str:
         """Direct tool-call fallback when BeeAI is unavailable."""
         from resource_explorer.agents.tools import (
-            query_project_stats,
-            vector_search,
-            query_top_committers,
+            query_project_stats_raw,
+            vector_search_raw,
+            query_top_committers_raw,
             query_cross_asset_links_raw,
             query_egeria_lineage_raw,
         )
@@ -115,10 +115,10 @@ class IntegrationAgent(BaseExplorerAgent):
         router = CollectionRouter()
         sections: list[str] = []
         for slug in slugs:
-            stat_text = query_project_stats(slug)
-            committers = query_top_committers(slug, 5)
+            stat_text = query_project_stats_raw(slug)
+            committers = query_top_committers_raw(slug, 5)
             collections = router.select("integration documentation connector", slug)
-            doc_text = vector_search("integration connector compatible together", ",".join(collections)) if collections else "(no content)"
+            doc_text = vector_search_raw("integration connector compatible together", ",".join(collections)) if collections else "(no content)"
             sections.append(f"## {slug}\n{stat_text}\n\n### Top contributors\n{committers}\n\n### Docs\n{doc_text}")
 
         cross_links = query_cross_asset_links_raw()

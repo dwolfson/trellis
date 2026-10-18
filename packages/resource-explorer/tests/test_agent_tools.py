@@ -646,7 +646,7 @@ def test_cross_asset_matcher(db):
 
     # 1. Register a project and database
     repo = Project(slug="ecommerce_service", display_name="E-Commerce Service", github_url="https://github.com/org/ecommerce")
-    db.register(repo)
+    db.add(repo)
 
     db_entity = DatabaseEntity(
         slug="ecommerce_db",
@@ -660,16 +660,18 @@ def test_cross_asset_matcher(db):
 
     # Record database survey with tables
     survey_data = {
-        "schemas": [
-            {
-                "schema_name": "public",
-                "tables": [
-                    {"table_name": "users"},
-                    {"table_name": "orders"},
-                    {"table_name": "order_items"},
-                ],
-            }
-        ]
+        "schema_info": {
+            "schemas": [
+                {
+                    "name": "public",
+                    "tables": [
+                        {"name": "users"},
+                        {"name": "orders"},
+                        {"name": "order_items"},
+                    ],
+                }
+            ]
+        }
     }
     db.record_database_survey(
         slug="ecommerce_db",
@@ -681,8 +683,10 @@ def test_cross_asset_matcher(db):
 
     # Add repo dependency on psycopg2 and sqlalchemy
     db.upsert_dependencies("ecommerce_service", [
-        {"name": "psycopg2-binary", "version": "2.9.9", "type": "pip"},
-        {"name": "sqlalchemy", "version": "2.0.0", "type": "pip"},
+        {"dep_name": "psycopg2-binary", "dep_version": "2.9.9", "dep_type": "runtime",
+         "ecosystem": "pip", "source_file": "requirements.txt"},
+        {"dep_name": "sqlalchemy", "dep_version": "2.0.0", "dep_type": "runtime",
+         "ecosystem": "pip", "source_file": "requirements.txt"},
     ])
 
     with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
@@ -708,31 +712,30 @@ def test_multi_resource_context_compilation(db):
 
     repo1 = Project(slug="app_alpha", display_name="App Alpha", github_url="https://github.com/org/alpha")
     repo2 = Project(slug="app_beta", display_name="App Beta", github_url="https://github.com/org/beta")
-    db.register(repo1)
-    db.register(repo2)
+    db.add(repo1)
+    db.add(repo2)
 
-    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
-        # 1. Test epistemological asymmetry matrix
-        md_table, records = build_epistemological_matrix(db, ["app_alpha", "app_beta"])
-        assert "| Dimension" in md_table
-        assert "app_alpha" in md_table
-        assert "app_beta" in md_table
-        assert len(records) > 0
+    # 1. Test epistemological asymmetry matrix
+    md_table, records = build_epistemological_matrix(db, ["app_alpha", "app_beta"])
+    assert "| Dimension" in md_table
+    assert "app_alpha" in md_table
+    assert "app_beta" in md_table
+    assert len(records) > 0
 
-        # 2. Test multi-resource compile
-        compiled = compile_multi_resource_context(
-            registry=db,
-            slugs=["app_alpha", "app_beta"],
-            question="Compare security scan and dependencies",
-            budget=2000,
-        )
-        assert compiled.text != ""
-        assert "MULTI-RESOURCE EVIDENCE COMPILATION" in compiled.text
-        assert "app_alpha" in compiled.text
-        assert "app_beta" in compiled.text
-        assert compiled.manifest["mode"] == "multi_resource"
-        assert len(compiled.manifest["slugs"]) == 2
-        assert "coverage_matrix" in compiled.manifest
+    # 2. Test multi-resource compile
+    compiled = compile_multi_resource_context(
+        registry=db,
+        slugs=["app_alpha", "app_beta"],
+        question="Compare security scan and dependencies",
+        budget=2000,
+    )
+    assert compiled.text != ""
+    assert "MULTI-RESOURCE EVIDENCE COMPILATION" in compiled.text
+    assert "app_alpha" in compiled.text
+    assert "app_beta" in compiled.text
+    assert compiled.manifest["mode"] == "multi_resource"
+    assert len(compiled.manifest["slugs"]) == 2
+    assert "coverage_matrix" in compiled.manifest
 
 
 def test_dynamic_delegation_and_lineage_tools(db):
@@ -744,7 +747,7 @@ def test_dynamic_delegation_and_lineage_tools(db):
     from resource_explorer.registry import Project, DatabaseEntity
 
     repo = Project(slug="repo_one", display_name="Repo One", github_url="https://github.com/org/one")
-    db.register(repo)
+    db.add(repo)
     db_ent = DatabaseEntity(
         slug="db_one",
         display_name="DB One",
@@ -755,7 +758,11 @@ def test_dynamic_delegation_and_lineage_tools(db):
     )
     db.register_database(db_ent)
 
-    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
+    # Force the direct-tool fallback: otherwise the real BeeAI agent runs against a live LLM.
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db), patch(
+        "resource_explorer.agents.base.BaseExplorerAgent._run_agent",
+        side_effect=RuntimeError("agent unavailable"),
+    ):
         # 1. Compare agent delegation fallback
         mock_llm = MagicMock()
         mock_llm.complete.return_value = "Delegated comparison response."
