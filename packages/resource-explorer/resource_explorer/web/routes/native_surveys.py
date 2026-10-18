@@ -16,7 +16,7 @@ import json
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from resource_explorer import native_survey_run as nsr
 from resource_explorer.registry import ProjectRegistry
@@ -29,6 +29,11 @@ _ENTITY_TYPES = ("database", "filesystem")
 
 class RunRequest(BaseModel):
     process_qualified_name: str
+    #: A credential for THIS coordinated run only (DESIGN-COORDINATED-RUN-CREDENTIAL.md §2.1): sent in the body of this
+    #: one call by the "with options…" dialog, held in this process's memory for the run's process instance, never
+    #: stored. The password is left out of the model's own repr.
+    db_user: str = ""
+    db_pwd: str = Field(default="", repr=False)
 
 
 def _port() -> nsr.EgeriaSurveyPort:
@@ -79,6 +84,26 @@ async def list_native_surveys(entity_type: str, slug: str, request: Request) -> 
     return {"technology_type": tech, "surveys": rows}
 
 
+def _run_credential(body: RunRequest, submitted_by: str) -> tuple[str, str] | None:
+    """The one-run credential in the start call's body, or None when none was given (DESIGN-COORDINATED-RUN-CREDENTIAL
+    .md §2.5). Only the signed-in person starting this run can supply one: nobody signed in is a 401 (`Caller()`), RE's
+    own daemon account is a 403, and half a credential is a 400. Checked before Egeria hears of the run."""
+    user, pwd = (body.db_user or "").strip(), body.db_pwd or ""
+    if not user and not pwd:
+        return None
+    from resource_explorer.egeria_clients import Caller, is_daemon_user
+
+    Caller()                                  # NoCallerIdentity / CallerTokenExpired -> 401 (not logged)
+    if not (submitted_by or "").strip():
+        raise HTTPException(status_code=401, detail=nsr.RUN_CREDENTIAL_NEEDS_STARTER)
+    if is_daemon_user(submitted_by):
+        raise HTTPException(status_code=403, detail="Resource Explorer's own service account cannot start a run "
+                                                    "with a credential for this run.")
+    if not user or not pwd:
+        raise HTTPException(status_code=400, detail=nsr.RUN_CREDENTIAL_NEEDS_BOTH)
+    return user, pwd
+
+
 @router.post("/{entity_type}/{slug}/run")
 async def run_native_survey(entity_type: str, slug: str, body: RunRequest, request: Request) -> dict:
     """Submit one native survey to Egeria and prove the dispatch by reading the
@@ -90,6 +115,7 @@ async def run_native_survey(entity_type: str, slug: str, body: RunRequest, reque
     reader = _reader(request)      # who reads, read HERE in the request
     tech = _check(entity_type, slug, registry)
     submitted_by = requested_by()      # read HERE, in the request, then passed down
+    run_credential = _run_credential(body, submitted_by)
     from resource_explorer.web.routes.curate import authorize_resource_write
     await authorize_resource_write(registry, entity_type, slug, write="start_action")    # Brief Z2
 
@@ -97,7 +123,7 @@ async def run_native_survey(entity_type: str, slug: str, body: RunRequest, reque
         with nsr.port_session(_port()) as port:
             return nsr.submit_native_survey(
                 registry, port, entity_type, slug, body.process_qualified_name,
-                technology_type=tech, submitted_by=submitted_by)
+                technology_type=tech, submitted_by=submitted_by, run_credential=run_credential)
 
     try:
         state = await asyncio.to_thread(_do)
@@ -110,12 +136,18 @@ async def run_native_survey(entity_type: str, slug: str, body: RunRequest, reque
                       status="error", summary=f"Egeria did not accept the survey: {exc}")
         raise HTTPException(status_code=502, detail=str(exc))
 
+    detail = {"engine_action_guid": state["engine_action_guid"], "submitted_by": submitted_by}
+    if run_credential is not None:
+        from resource_explorer.run_credential_holder import SCOPE
+
+        # Who it runs as and the scope; never the password.
+        detail["run_credential"] = {"user": run_credential[0], "scope": SCOPE}
     _log_activity(
         registry, entity_type, slug, body.process_qualified_name, status="triggered",
         summary=(f"Submitted Egeria survey {body.process_qualified_name} on {slug}: "
-                 f"engine action {state['engine_action_guid']}"),
-        detail={"engine_action_guid": state["engine_action_guid"],
-                "submitted_by": submitted_by})
+                 f"engine action {state['engine_action_guid']}"
+                 + (f" · as {run_credential[0]} (this run)" if run_credential is not None else "")),
+        detail=detail)
     return {"run": state, "surveys": await asyncio.to_thread(
         lambda: nsr.native_survey_rows(registry, entity_type, slug, tech, **reader))}
 

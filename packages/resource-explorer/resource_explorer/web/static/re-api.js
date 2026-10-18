@@ -1103,8 +1103,17 @@ const nativePath = (slug, entityType) =>
   `/api/native-surveys/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}`;
 export const getNativeSurveys = (slug, { entityType } = {}) =>
   get(nativePath(slug, requireKind('getNativeSurveys', entityType)));
-export const runNativeSurvey = (slug, processQualifiedName, { entityType } = {}) =>
-  post(`${nativePath(slug, requireKind('runNativeSurvey', entityType))}/run`, { process_qualified_name: processQualifiedName });
+/** `credential` ({user, password}): a credential for THIS coordinated run only (DESIGN-COORDINATED-RUN-CREDENTIAL.md
+ *  §2.1). It rides in the POST body of this one call (never the URL); the server holds it in memory for the run's
+ *  process instance and never stores it. */
+export const runNativeSurvey = (slug, processQualifiedName, { entityType, credential = null } = {}) => {
+  const body = { process_qualified_name: processQualifiedName };
+  if (credential && credential.user && credential.password) {
+    body.db_user = credential.user;
+    body.db_pwd = credential.password;
+  }
+  return post(`${nativePath(slug, requireKind('runNativeSurvey', entityType))}/run`, body);
+};
 export const refreshNativeSurveys = (slug, { entityType } = {}) =>
   post(`${nativePath(slug, requireKind('refreshNativeSurveys', entityType))}/refresh`);
 /** Register this database's SERVER with Egeria (optional; a press, never automatic) and read the stored

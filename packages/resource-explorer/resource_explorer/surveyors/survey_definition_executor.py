@@ -1566,6 +1566,7 @@ class SurveyDefinitionExecutor:
         demanded_by: str = "",
         capability_consented: bool = False,
         publisher: Callable | None = None,
+        credential_scope: str = "",
         **runner_kwargs: Any,
     ) -> dict:
         """Run ONE step through the same dispatch loop `run()` uses, without
@@ -1642,6 +1643,10 @@ class SurveyDefinitionExecutor:
             # shortfall the user just accepted and skip the step.
             capability_consented=capability_consented,
             publisher=publisher,
+            # "this run" when `db_user`/`db_pwd` are a credential for this run only (the engine host's one-run
+            # credential, DESIGN-COORDINATED-RUN-CREDENTIAL.md): the step's entry records `ran_as`, and the password is
+            # kept out of every stored and logged string whatever its length (`_redactable`).
+            credential_scope=credential_scope,
         )
 
     def _run_via_prefect(self, entity_type, entity, survey_def, runner_kwargs,

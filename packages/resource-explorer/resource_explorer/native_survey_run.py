@@ -1181,6 +1181,7 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
       not-permitted, or unknown): too late;
     * in flight: accepted -> pending; refused -> its kind; unreachable or unknown -> unsent (the unreachable words)."""
     out = _derive_mixed_state(run, now=now)
+    _run_credential_fields(out, run)
     press = _declared(run).get("cancel") if run else None
     ours = isinstance(press, dict) and press.get("instance_guid") == (run or {}).get("engine_action_guid")
     ctx = out.get("cancel_context") or {}
@@ -1214,6 +1215,32 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
         out["cancel"] = {"state": CANCEL_UNSENT, **base, "reason": press.get("reason", ""),
                          "unknown": answer == ANSWER_UNKNOWN}
     return out
+
+
+def _run_credential_fields(out: dict, run: dict | None) -> None:
+    """DESIGN-COORDINATED-RUN-CREDENTIAL.md §2.3, §2.4, from the run's own row only (never the password, never the
+    press): `run_credential` (the start asked for one: user, scope), `ran_as` (a step of RE's engine host DID run as
+    it), `native_steps` (the places in the run's own step list of steps Egeria runs itself, which use the stored
+    credential whatever was given) and `credential_lost` (a step was refused because this process no longer held it)."""
+    out.update(run_credential=None, ran_as=None, native_steps=[], credential_lost=False)
+    if not run:
+        return
+    declared = _declared(run)
+    asked = declared.get("run_credential")
+    if not isinstance(asked, dict):
+        return
+    out["run_credential"] = {"user": str(asked.get("user") or ""), "scope": str(asked.get("scope") or "")}
+    ran = declared.get("ran_as")
+    if isinstance(ran, dict) and ran.get("user"):
+        out["ran_as"] = {"user": str(ran.get("user") or ""), "scope": str(ran.get("scope") or "")}
+    plan = declared.get("expected_steps")
+    if not (isinstance(plan, list) and plan):
+        plan = [s.get("request_type") or "" for s in out.get("steps") or [] if isinstance(s, dict)]
+    out["native_steps"] = [i + 1 for i, rt in enumerate(plan) if rt and not str(rt).startswith("re-")]
+    from resource_explorer.engine_host import RUN_CREDENTIAL_LOST_SENTENCE
+
+    out["credential_lost"] = any(RUN_CREDENTIAL_LOST_SENTENCE in (s.get("message") or "")
+                                 for s in out.get("steps") or [] if isinstance(s, dict))
 
 
 def _cancelled_at(steps) -> str:
@@ -1571,7 +1598,7 @@ def refresh_mixed_run(registry, port, run: dict, *, entity_type: str, slug: str,
         registry.record_native_survey_readback(guid, read_at=read_at, error=why)
         if errors is not None:
             errors.append(why)            # THIS read failed (a caller deciding a write must not use stored steps)
-        return _refetch_mixed(registry, entity_type, slug, run)
+        return _release_run_credential_if_over(guid, _refetch_mixed(registry, entity_type, slug, run))
     lines = [ln for ln in mixed_process.group_by_process(views, duplicates=_refused_duplicates(registry, views))
              if ln.instance_guid == guid]
     line = lines[0] if lines else mixed_process.RunLine(guid, run.get("executor_ref") or "", [])
@@ -1594,7 +1621,22 @@ def refresh_mixed_run(registry, port, run: dict, *, entity_type: str, slug: str,
     registry.merge_native_survey_declared(guid, {"process_run": {**detail, "read_at": read_at}})
     newest = line.steps[-1].status if line.steps else ""
     registry.record_native_survey_readback(guid, read_at=read_at, status=newest, message=detail["words"])
-    return _refetch_mixed(registry, entity_type, slug, run)
+    return _release_run_credential_if_over(guid, _refetch_mixed(registry, entity_type, slug, run))
+
+
+#: The run line's own terminal states (`derive_mixed_state`): completed, partial, failed, and cancelled (which derives
+#: failed with `cancelled`). No second classifier: the holder is cleared when the run line says the run is over.
+_RUN_OVER = (COMPLETE, PARTIAL, FAILED)
+
+
+def _release_run_credential_if_over(instance_guid: str, derived: dict) -> dict:
+    """DESIGN-COORDINATED-RUN-CREDENTIAL.md §2.2: a one-run credential is cleared when its run reaches a terminal
+    state, by the run line's own derivation. Returns `derived` unchanged."""
+    if (derived or {}).get("state") in _RUN_OVER or (derived or {}).get("cancelled"):
+        from resource_explorer import run_credential_holder
+
+        run_credential_holder.clear(instance_guid)
+    return derived
 
 
 def _refused_duplicates(registry, views: list) -> set[str]:
@@ -1740,7 +1782,7 @@ def _refetch(registry, entity_type: str, slug: str, process_qn: str) -> dict:
 
 def submit_native_survey(registry, port: EgeriaSurveyPort, entity_type: str, slug: str,
                          process_qualified_name: str, *, technology_type: str,
-                         submitted_by: str = "") -> dict:
+                         submitted_by: str = "", run_credential: tuple[str, str] | None = None) -> dict:
     """Submit one native survey and prove the dispatch by reading it back.
 
     Returns the derived row state. Raises `NativeSurveyCannotRun` (a reason RE
@@ -1766,6 +1808,15 @@ def submit_native_survey(registry, port: EgeriaSurveyPort, entity_type: str, slu
     reason = cannot_run_reason(process, entity, registry=registry, technology_type=technology_type)
     if reason:
         raise NativeSurveyCannotRun(reason)
+    if run_credential is not None:
+        # DESIGN-COORDINATED-RUN-CREDENTIAL.md §2.1, §2.5: only a run of RE's own Survey Definition coordinated by
+        # Egeria, started by a signed-in person, takes one.
+        if process.kind != KIND_RE_DEFINITION:
+            raise NativeSurveyCannotRun(RUN_CREDENTIAL_NOT_OFFERED)
+        if not (submitted_by or "").strip():
+            raise NativeSurveyCannotRun(RUN_CREDENTIAL_NEEDS_STARTER)
+        if not (run_credential[0] or "").strip() or not run_credential[1]:
+            raise NativeSurveyCannotRun(RUN_CREDENTIAL_NEEDS_BOTH)
 
     runs = registry.list_native_survey_runs(entity_type, slug, process_qualified_name)
     if runs:
@@ -1830,15 +1881,24 @@ def submit_native_survey(registry, port: EgeriaSurveyPort, entity_type: str, slu
         raise NativeSurveyError(error) from exc
 
     if process.kind == KIND_RE_DEFINITION:
+        marker: dict = {}
+        if run_credential is not None:
+            # §2.2: held only now, after Egeria returned the instance GUID, in this same request; then the row's
+            # marker (no secret), so a later step can tell "asked for one" (refuse if it is gone) from "never did".
+            from resource_explorer import run_credential_holder
+
+            run_credential_holder.put(engine_action_guid, run_credential[0], run_credential[1], submitted_by)
+            marker = {"run_credential": {"user": run_credential[0].strip(), "scope": run_credential_holder.SCOPE}}
         # One run line per process instance (review L5): RE's engine host may already have listed it from the first
         # step it ran; then this press is recorded on that row, never as a second one.
         if not registry.record_native_survey_submission_once(
                 entity_type, slug, process_qualified_name, submitted_at, engine_action_guid=engine_action_guid,
                 submitted_by=submitted_by, started_as=started_as, started_by=started_by, started_in=started_in,
-                declared_extra=mixed_process.expected_steps_record(process_qualified_name)):
+                declared_extra={**mixed_process.expected_steps_record(process_qualified_name), **marker}):
             registry.adopt_native_survey_submission(
                 engine_action_guid, submitted_by=submitted_by,
-                declared_patch={"started_as": started_as, "started_by": started_by, "started_in": started_in})
+                declared_patch={"started_as": started_as, "started_by": started_by, "started_in": started_in,
+                                **marker})
     else:
         registry.record_native_survey_submission(
             entity_type, slug, process_qualified_name, submitted_at,
@@ -2181,12 +2241,23 @@ def cancel_process_run(registry, port: EgeriaSurveyPort, entity_type: str, slug:
                 "refused_kind": CANCEL_TOO_LATE if shown.get("state") == CANCEL_TOO_LATE_STATE else kind,
                 "unsent": "", "unknown": False, "cancelled": bool(after.get("cancelled")), "run": after}
     registry.merge_native_survey_declared(guid, {"cancel": {**press, "answer": ANSWER_ACCEPTED}})
+    # §2.2: Cancel run clears the run's one-run credential as soon as Egeria accepted it; no later step may use it.
+    from resource_explorer import run_credential_holder
+
+    run_credential_holder.clear(guid)
     after = refresh_mixed_run(registry, port, run, entity_type=entity_type, slug=slug)
     return {"accepted": True, "refused": "", "refused_kind": "", "unsent": "", "unknown": False,
             "cancelled": bool(after.get("cancelled")), "run": after}
 
 
 UNREADABLE_STATUS_WORDS = "could not read Egeria's current status · not cancelled"
+
+#: DESIGN-COORDINATED-RUN-CREDENTIAL.md §2.1, §2.5: who and what may carry a one-run credential.
+RUN_CREDENTIAL_NOT_OFFERED = ("A credential for this run is offered only for a run of Resource Explorer's own Survey "
+                              "Definition coordinated by Egeria.")
+RUN_CREDENTIAL_NEEDS_STARTER = "Sign in to start a run with a credential for this run."
+RUN_CREDENTIAL_NEEDS_BOTH = ("A credential for this run needs both a user and a password; the password alone is not "
+                             "enough.")
 FINISHED_MAYBE_WORDS = "Egeria may already have finished · the report may exist"
 
 

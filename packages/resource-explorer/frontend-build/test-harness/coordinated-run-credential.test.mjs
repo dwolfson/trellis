@@ -1,0 +1,88 @@
+/** One-run credential for an Egeria-coordinated run (DESIGN-COORDINATED-RUN-CREDENTIAL.md §2.1, §2.3, §2.4).
+ *  "with options…" beside "Run · coordinated by Egeria →" opens the EXISTING credential dialog, and Go sends the
+ *  credential in the body of the coordinated start call only. The run line draws "ran as <user> · this run", the
+ *  per-step stored-credential words for steps Egeria runs itself, and the lost-after-restart line, from the server's
+ *  derived row only. Every value here is invented. */
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { makeDomEnvironment, ensureLoaderRegistered } from './dom-harness.mjs';
+
+ensureLoaderRegistered();
+makeDomEnvironment();
+const ns = await import('/static/next/stages/native-surveys.js');
+const text = (h) => h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+const QN = 'GovActionProcess::DatabaseAnalysisSurvey';
+const cand = (ctl) => ({ qualified_name: QN, display_name: 'Database Analysis Survey',
+  coordinated_by_egeria: { label: 'coordinated by Egeria', available: true, why_not: '', state: '', line: '', ...ctl } });
+
+test('"with options…" sits beside the coordinated control, and not while a run is in flight', () => {
+  const h = ns.coordinateControlHtml(cand({}));
+  assert.match(h, /data-coordinate-egeria-options="GovActionProcess::DatabaseAnalysisSurvey"/);
+  assert.match(text(h), /coordinated by Egeria → with options…$/);
+  assert.doesNotMatch(ns.coordinateControlHtml(cand({ state: 'running' })), /data-coordinate-egeria-options/);
+  assert.doesNotMatch(ns.coordinateControlHtml(cand({ available: false, why_not: 'engine host off' })), /data-coordinate-egeria-options/);
+});
+
+test('Go in the existing dialog posts {db_user, db_pwd} in the start call body only; a plain Run sends none', async () => {
+  const { state } = await import('/static/next/app.js');
+  state.resourceType = 'db';
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), body: init && init.body ? JSON.parse(init.body) : null });
+    return { ok: true, status: 200, json: async () => ({ run: { state: 'submitted', engine_action_guid: 'pi-1' }, surveys: [] }) };
+  };
+  const host = document.createElement('div');
+  host.innerHTML = ns.coordinateControlHtml(cand({}));
+  document.body.appendChild(host);
+  ns.bindCoordinateControls(host, 'coco_pharma');
+  host.querySelector('[data-coordinate-egeria-options]').click();
+  const body = document.querySelector('#wl-detail-body');
+  assert.ok(body.querySelector('[data-run-override-user]'), 'the existing credential dialog opened');
+  assert.equal(calls.length, 0, 'nothing is sent until Go');
+  body.querySelector('[data-run-override-user]').value = 'one_off_user';
+  body.querySelector('[data-run-override-password]').value = 'invented-pw';
+  body.querySelector('[data-act="go"]').click();
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /\/api\/native-surveys\/database\/coco_pharma\/run$/);
+  assert.doesNotMatch(calls[0].url, /invented-pw|one_off_user/, 'never in the URL');
+  assert.deepEqual(calls[0].body, { process_qualified_name: QN, db_user: 'one_off_user', db_pwd: 'invented-pw' });
+  assert.doesNotMatch(document.body.innerHTML, /invented-pw/, 'never in the markup');
+  assert.match(host.querySelector('[data-coordinate-egeria]').textContent, /● started/);
+
+  const plain = document.createElement('div');
+  plain.innerHTML = ns.coordinateControlHtml(cand({}));
+  ns.bindCoordinateControls(plain, 'coco_pharma');
+  plain.querySelector('[data-coordinate-egeria]').click();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(calls[1].body, { process_qualified_name: QN });
+});
+
+const line = (over = {}) => ({ state: 'running', line: 'Database Analysis Survey · step 1 postgres_column_profile running',
+  steps: [], run_credential: { user: 'elevated_reader', scope: 'this run' }, ran_as: null, native_steps: [],
+  credential_lost: false, ...over });
+
+test('the run line says "ran as <user> · this run" only once a step ran as it', () => {
+  assert.doesNotMatch(text(ns.processLineHtml(line())), /ran as/);
+  const h = ns.processLineHtml(line({ ran_as: { user: 'elevated_reader', scope: 'this run' } }));
+  assert.match(text(h), /ran as elevated_reader · this run/);
+  assert.match(h, /data-run-credential-ran-as/);
+  assert.doesNotMatch(text(ns.processLineHtml(line({ run_credential: null, ran_as: null }))), /ran as|stored credential|lost/);
+});
+
+test('a step Egeria runs itself says it uses the stored credential; a lost credential says so', () => {
+  const native = ns.processLineHtml(line({ native_steps: [1] }));
+  assert.match(text(native), /step 1 runs in Egeria with the stored credential/);
+  const lost = ns.processLineHtml(line({ state: 'partial', credential_lost: true }));
+  assert.match(text(lost), /the one-run credential was lost when Resource Explorer restarted; re-run with options/);
+  assert.match(lost, /data-run-credential-lost/);
+});
+
+test('every word is in one block (designer placeholders, Q3 open)', () => {
+  const w = ns.RUN_CREDENTIAL_WORDS;
+  assert.equal(w.optionsLabel, 'with options…');
+  assert.equal(w.ranAs('u'), 'ran as u · this run');
+  assert.equal(w.nativeStep(2), 'step 2 runs in Egeria with the stored credential');
+  assert.equal(w.lost, 'the one-run credential was lost when Resource Explorer restarted; re-run with options');
+});
