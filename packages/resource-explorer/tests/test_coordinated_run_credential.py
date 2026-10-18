@@ -1303,3 +1303,63 @@ def test_a_422_never_echoes_a_password_a_validator_quoted_in_its_message():
         for form in _leak_forms(body["db_pwd"]):
             assert form not in resp.text, (form, resp.text)
         assert all(set(e) <= {"loc", "msg", "type"} for e in errors)
+
+
+# ── verification round 3, M1: only a PROVEN no-start removes the start entry ─────────────────────────────────
+
+class _Answered(Exception):
+    """A failure carrying an HTTP status the way pyegeria's exceptions do (`related_http_code`)."""
+
+    def __init__(self, code: int) -> None:
+        super().__init__(f"Egeria answered {code}")
+        self.related_http_code = code
+
+
+def _initiate_fails_with(reg, egeria, exc):
+    from resource_explorer import run_credential_start as rs
+    from resource_explorer.native_survey_run import NativeSurveyError
+
+    def fail(*a, **k):
+        raise exc
+
+    egeria._start_process = fail
+    with pytest.raises(NativeSurveyError):
+        _start_with_credential(reg, egeria)
+    return rs.live_starts(reg, "coco_pharma", ANALYSIS)
+
+
+@pytest.mark.parametrize("exc", [
+    RuntimeError("connection reset after the request was sent"),
+    _Answered(502),                              # a proxy's 5xx after Egeria may have created the process
+    _Answered(500),
+], ids=["unknown-error", "proxy-502", "server-500"])
+def test_m1_an_initiate_failure_whose_answer_is_unknown_keeps_the_start_entry(reg, egeria, exc):
+    # Egeria may have started the run: the entry stays so its re-* steps are refused, never the stored login (Q2).
+    assert _initiate_fails_with(reg, egeria, exc), "the start entry was removed on an unknown answer"
+
+
+def test_m1_a_remote_protocol_error_after_send_keeps_the_start_entry(reg, egeria):
+    import httpx
+
+    assert _initiate_fails_with(reg, egeria, httpx.RemoteProtocolError("peer closed connection"))
+
+
+@pytest.mark.parametrize("make", [
+    lambda: _Answered(403),                      # Egeria refused: nothing was started
+    lambda: _Answered(400),
+    lambda: __import__("httpx").ConnectError("connection refused"),   # the request never reached Egeria
+    lambda: __import__("httpx").ConnectTimeout("connect timed out"),
+], ids=["refused-403", "refused-400", "connect-error", "connect-timeout"])
+def test_m1_a_proven_no_start_removes_the_start_entry(reg, egeria, make):
+    assert _initiate_fails_with(reg, egeria, make()) == []
+
+
+def test_m1_egeria_answering_action_not_initiated_removes_the_start_entry(reg, egeria):
+    from resource_explorer import run_credential_start as rs
+    from resource_explorer.native_survey_run import NativeSurveyError, NativeSurveyNotInitiated
+
+    egeria._start_process = lambda *a, **k: "Action not initiated"
+    with pytest.raises(NativeSurveyError) as failed:      # the submit wraps every initiate failure
+        _start_with_credential(reg, egeria)
+    assert isinstance(failed.value.__cause__, NativeSurveyNotInitiated)
+    assert rs.live_starts(reg, "coco_pharma", ANALYSIS) == []

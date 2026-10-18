@@ -105,6 +105,11 @@ class NativeSurveyError(RuntimeError):
     """A submission that did not produce an engine action."""
 
 
+class NativeSurveyNotInitiated(NativeSurveyError):
+    """Egeria ANSWERED the initiate call and said it started nothing ("Action not initiated" or no GUID): proof that
+    no run exists, unlike a failure whose answer is unknown."""
+
+
 class NativeSurveyCannotRun(NativeSurveyError):
     """RE knows why this survey cannot be run for this resource. The message is
     what the row shows -- it is a reason, not an error."""
@@ -381,7 +386,7 @@ class PyegeriaSurveyPort:
             }],
         )
         if not guid or guid == "Action not initiated":
-            raise NativeSurveyError(
+            raise NativeSurveyNotInitiated(
                 f"Egeria did not initiate {process_qualified_name!r} "
                 f"(it answered {guid!r})")
         return guid
@@ -476,7 +481,7 @@ class PyegeriaSurveyPort:
             action_targets=[{"class": "NewActionTarget", "actionTargetName": action_target_name,
                              "actionTargetGUID": target_guid.strip()}])
         if not guid or guid == "Action not initiated":
-            raise NativeSurveyError(f"Egeria did not initiate {process_qualified_name!r} (it answered {guid!r})")
+            raise NativeSurveyNotInitiated(f"Egeria did not initiate {process_qualified_name!r} (it answered {guid!r})")
         return guid
 
     def read_process_run(self, instance_guid: str) -> list:
@@ -1972,9 +1977,11 @@ def _submit_started(registry, port: EgeriaSurveyPort, entity_type: str, slug: st
             engine_action_guid = port.initiate(
                 process_qualified_name, process.action_target_name, asset_guid)
     except Exception as exc:  # noqa: BLE001
-        if nonce and not _is_timeout(exc):
-            # Egeria answered, and it was not a start: nothing to hold back. After a timeout the answer is unknown
-            # (Egeria may have started it), so the entry stays until its TTL.
+        if nonce and _proven_not_started(exc):
+            # Proven that Egeria started nothing: nothing to hold back. Any other failure (a timeout, a 5xx from a
+            # proxy after the process was created, a connection reset after the request was sent, an unparseable
+            # answer) leaves the answer unknown, so the entry stays until its TTL: over-refusal, never the stored
+            # login (owner Q2; verification round 3, M1).
             _settle_start_entry(registry, slug, process_qualified_name, nonce, remove=True)
         error = scrub_secret(_short_error(exc), entity)
         registry.record_native_survey_submission(
@@ -2255,6 +2262,25 @@ def _http_code(exc: BaseException) -> int | None:
         if code is not None:
             return code
     return None
+
+
+def _proven_not_started(exc: BaseException) -> bool:
+    """True only when the failed initiate PROVES no run exists: Egeria answered with a 4xx refusal, or answered that it
+    initiated nothing (`NativeSurveyNotInitiated`), or the connection was never made (httpx ConnectError /
+    ConnectTimeout: the request never reached Egeria). Everything else is unknown."""
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover - pyegeria depends on it
+        httpx = None
+    code = _http_code(exc)
+    if code is not None and 400 <= code < 500:
+        return True
+    for e in _self_and_causes(exc):
+        if isinstance(e, NativeSurveyNotInitiated):
+            return True
+        if httpx is not None and isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout)):
+            return True
+    return False
 
 
 def _is_timeout(exc: BaseException) -> bool:
