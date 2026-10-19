@@ -248,13 +248,16 @@ class TestProjectsRouter:
 
     @_pygithub_available
     def test_refresh_project_returns_ok(self, client):
+        from resource_explorer.ingestion.incremental import RefreshResult as IndexerRefreshResult
+
         with patch("resource_explorer.ingestion.incremental.IncrementalIndexer") as mock_idx, \
              patch("resource_explorer.query_cache.QueryCache") as mock_cache:
-            mock_idx.return_value.refresh = MagicMock()
+            mock_idx.return_value.refresh = MagicMock(return_value=IndexerRefreshResult.INDEXED)
             mock_cache.return_value.invalidate_project = MagicMock(return_value=0)
             resp = client.post("/api/projects/myproj/refresh")
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
+        assert resp.json()["result"] == "indexed"
 
     def test_refresh_project_not_found(self, client):
         resp = client.post("/api/projects/ghost/refresh")
