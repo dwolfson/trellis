@@ -91,10 +91,12 @@ assume the surveyor's is being used. In place of the "Show 20 rows" button:
 > surveyor's. **Enter your credential ›**
 
 The form is `credential-change.js`'s test-before-save, retitled "Your
-credential for coco_pharma". **How long RE keeps it is open** (session only,
-or stored per person): that's an owner and architect question, listed below.
-The form says whichever is decided in one line ("kept for this session
-only").
+credential for coco_pharma".
+
+**Decision (project owner, 2026-10-19):** RE keeps the person's credential
+**for the session only**. The form says so in one line under its fields:
+"kept for this session only · never stored". After sign-out or a new
+session, the next preview asks again, in the same place.
 
 ## 4. Refusals: three different results
 
@@ -137,12 +139,10 @@ honest result of "unknown is not safe", and the count line will say so.
   in RE · not yet in Egeria · ‹Egeria's first sentence›", with the outbox
   retrying.
 
-**One owner decision is needed here:** whether a preview may run when Egeria
-can't take the record (Egeria unreachable). I'd let it run, with RE's own
-audit row written first and the Egeria record queued. Blocking previews on
-Egeria's uptime would make the audit the reason the tool doesn't work. But
-"audited centrally" might mean the owner wants it to fail closed. It's one
-line in the design either way.
+**Decision (project owner, 2026-10-19):** a preview runs when Egeria can't
+take the record. RE's own audit row is written first, the Egeria record is
+queued through the outbox, and the header says "recorded in RE · not yet in
+Egeria" until the read-back proves it. The same holds for a reveal.
 
 ## Slices
 
@@ -157,8 +157,8 @@ line in the design either way.
 
 ## Left open
 
-1. **Owner:** does a preview run when Egeria can't take its audit record (my
-   recommendation: yes, RE's row first, Egeria queued, the header says so)?
-2. **Owner and architect:** how long RE keeps a person's own database
-   credential: this session, or stored per person.
-3. **Architect** (as the ask lists): the Egeria element for the audit record.
+1. **Architect** (as the ask lists): the Egeria element for the audit record.
+
+Settled since the first draft (project owner, 2026-10-19): a preview runs
+when Egeria can't take its record (§6), and a person's own credential is kept
+for the session only (§3).
