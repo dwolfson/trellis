@@ -410,3 +410,25 @@ class TestItsAnnotationsPublish:
         assert all(keys), f"a per-technology annotation has no item_key: {keys}"
         assert len(set(keys)) == len(keys), f"item_keys are not distinct: {keys}"
         assert set(keys) == {"PostgreSQL", "Apache Kafka", "Redis"}
+
+
+def test_a_dependency_records_its_manifest_path_not_just_the_filename(tmp_path):
+    """A workspace member's `pyegeria` row used to read as the root pyproject.toml's."""
+    from resource_explorer.ingestion.dependency_parser import DependencyParser
+
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "pyegeria"\ndependencies = ["pytest>=8"]\n')
+    member = tmp_path / "my_egeria"
+    member.mkdir()
+    (member / "pyproject.toml").write_text(
+        '[project]\nname = "my-egeria"\ndependencies = ["pyegeria", "pytest>=8"]\n'
+    )
+    (tmp_path / "requirements.txt").write_text("click\n")
+
+    rows = DependencyParser().parse(tmp_path, "x")
+    by = {(d["dep_name"], d["source_file"]) for d in rows}
+
+    assert ("pyegeria", "my_egeria/pyproject.toml") in by
+    assert ("pyegeria", "pyproject.toml") not in by
+    # The same package in two manifests is two rows now, not one collapsed into the first read.
+    assert ("pytest", "pyproject.toml") in by and ("pytest", "my_egeria/pyproject.toml") in by
+    assert ("click", "requirements.txt") in by

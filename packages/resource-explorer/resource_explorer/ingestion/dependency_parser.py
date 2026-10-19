@@ -28,33 +28,33 @@ class DependencyParser:
 
         for manifest in root.rglob("pyproject.toml"):
             if "_test" not in str(manifest) and "vendor" not in str(manifest):
-                deps.extend(self._parse_pyproject(manifest))
+                deps.extend(self._rooted(root, manifest, self._parse_pyproject(manifest)))
 
         for manifest in root.rglob("requirements*.txt"):
             if "vendor" not in str(manifest):
-                deps.extend(self._parse_requirements(manifest))
+                deps.extend(self._rooted(root, manifest, self._parse_requirements(manifest)))
 
         for manifest in root.rglob("setup.py"):
             if "vendor" not in str(manifest):
-                deps.extend(self._parse_setup_py(manifest))
+                deps.extend(self._rooted(root, manifest, self._parse_setup_py(manifest)))
 
         for manifest in root.rglob("package.json"):
             parts = manifest.relative_to(root).parts
             if "node_modules" not in parts and "vendor" not in parts:
-                deps.extend(self._parse_package_json(manifest))
+                deps.extend(self._rooted(root, manifest, self._parse_package_json(manifest)))
 
         for manifest in root.rglob("go.mod"):
             if "vendor" not in str(manifest):
-                deps.extend(self._parse_go_mod(manifest))
+                deps.extend(self._rooted(root, manifest, self._parse_go_mod(manifest)))
 
         for manifest in root.rglob("pom.xml"):
             if "vendor" not in str(manifest):
-                deps.extend(self._parse_pom_xml(manifest))
+                deps.extend(self._rooted(root, manifest, self._parse_pom_xml(manifest)))
 
         for pattern in ("build.gradle", "build.gradle.kts"):
             for manifest in root.rglob(pattern):
                 if "vendor" not in str(manifest):
-                    deps.extend(self._parse_gradle(manifest, gradle_catalog))
+                    deps.extend(self._rooted(root, manifest, self._parse_gradle(manifest, gradle_catalog)))
 
         # Deduplicate by (dep_name, ecosystem, source_file). `source_file` is
         # just the filename (e.g. every build.gradle in a multi-module repo
@@ -75,7 +75,11 @@ class DependencyParser:
         seen: dict[tuple, int] = {}
         unique: list[dict] = []
         for d in deps:
-            key = (d["dep_name"].lower(), d["ecosystem"], d["source_file"])
+            # Gradle keeps its project-wide key (see above); every other manifest is keyed by its own path,
+            # so two pyproject.toml files in one repo no longer collapse into the first one read.
+            src = d["source_file"]
+            key = (d["dep_name"].lower(), d["ecosystem"],
+                   src.rsplit("/", 1)[-1] if src.rsplit("/", 1)[-1].startswith("build.gradle") else src)
             idx = seen.get(key)
             if idx is None:
                 seen[key] = len(unique)
@@ -84,6 +88,19 @@ class DependencyParser:
                 unique[idx] = d
 
         return unique
+
+    @staticmethod
+    def _rooted(root: Path, manifest: Path, deps: list[dict]) -> list[dict]:
+        """Record each row's manifest as its path under the repo root, not just its filename.
+
+        `source_file` was the bare filename, so `my_egeria/pyproject.toml`'s `pyegeria` row read as the
+        root `pyproject.toml`'s. Consumers (deployment_evidence, the dependency surveyor, the file
+        classifier) already treat the value as a repo-relative path with `/` separators.
+        """
+        rel = manifest.relative_to(root).as_posix()
+        for d in deps:
+            d["source_file"] = rel
+        return deps
 
     # ── parsers ───────────────────────────────────────────────────────────────
 
