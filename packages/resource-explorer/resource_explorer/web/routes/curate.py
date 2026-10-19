@@ -315,6 +315,10 @@ def feedback_state(entity_type: str, slug: str, request: Request) -> dict:
 
     user = get_current_user(request)
     viewer = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if entity_type == "investigation" and not _registry().get_investigation(slug):
+        # Not visible to this caller (or no such slug): the same 404 as every investigation route, so a private
+        # investigation's entry ids and authors are not served through this plan.
+        raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
     return plan_as_dict(feedback_plan(_registry(), entity_type, slug, viewer=viewer))
 
 

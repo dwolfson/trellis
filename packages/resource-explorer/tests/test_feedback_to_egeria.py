@@ -844,3 +844,83 @@ def test_r7_a_capped_run_that_also_differs_says_both():
     c = rp.confirmation({"word": "published", "read_at": "2026-10-11T16:36:00", "annotation_count": 5},
                         run={"rows": 3, "done": 2, "dead": 1, "not_sent": 0, "unsettled": 0})
     assert c["state"] == rp.DIFFERS and c["word"] == "published 10-11 · Egeria shows 2 · 2 not sent (capped)"
+
+
+# ── an investigation's journal: Notes on its Egeria Project, only once it has one ─────────────────────────────
+
+PROJECT = "99999999-8888-7777-6666-555555555555"
+
+
+def _investigation(registry, name, *, promoted):
+    kw = {"egeria_project_guid": PROJECT, "egeria_project_qualified_name": "Project::" + name} if promoted else {
+        "egeria_binding": "local"}
+    return registry.create_investigation(name, **kw)["slug"]
+
+
+def test_a_local_investigations_journal_has_nowhere_to_go_and_sends_nothing(registry, egeria):
+    slug = _investigation(registry, "Local study", promoted=False)
+    Journal(registry).write("investigation", slug, author="alice", body="Per chat: a finding.")
+    from resource_explorer.a2a_auth import current_caller
+
+    reset = caller("alice")
+    try:
+        p = fe.plan_as_dict(fe.feedback_plan(registry, "investigation", slug, viewer="alice"))
+        out = fe.publish_my_feedback(registry, "investigation", slug, "", "alice")
+    finally:
+        current_caller.reset(reset)
+    assert p["in_egeria"] is False and p["element_guid"] == ""
+    assert out["skipped"] and egeria.calls == [] and egeria.note_logs == {} and egeria.notes == {}
+
+
+def test_a_promoted_investigations_entries_become_notes_in_a_notelog_on_its_project(registry, egeria):
+    slug = _investigation(registry, "Promoted study", promoted=True)
+    e1 = Journal(registry).write("investigation", slug, author="alice", body="Per chat: marquez emits OpenLineage.")["id"]
+    from resource_explorer.a2a_auth import current_caller
+
+    reset = caller("alice")
+    try:
+        before = fe.feedback_plan(registry, "investigation", slug, viewer="alice")
+        assert before["element_guid"] == PROJECT
+        assert by_id(fe.plan_as_dict(before)["notes"], e1)["word"] == "saved · will publish"
+        fe.publish_my_feedback(registry, "investigation", slug, PROJECT, "alice")
+        again = fe.publish_my_feedback(registry, "investigation", slug, PROJECT, "alice")
+    finally:
+        current_caller.reset(reset)
+    (log_guid, nlog), = egeria.note_logs.items()
+    assert nlog["qn"] == fe.note_log_qualified_name(PROJECT) and nlog["element"] == PROJECT
+    (note_,) = egeria.notes.values()
+    assert note_["qn"] == fe.note_qualified_name(e1) and note_["log"] == log_guid and note_["anchor"] == PROJECT
+    assert "marquez emits OpenLineage" in note_["description"]
+    assert by_id(again["notes"], e1)["state"] == fe.PUBLISHED and len(egeria.notes) == 1, "a re-press adds none"
+
+
+def test_the_publish_route_says_409_for_an_unpromoted_investigation_and_401_when_anonymous(registry, egeria, monkeypatch):
+    from resource_explorer import auth
+    from resource_explorer.web.routes import investigations as inv_routes
+
+    monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
+                        lambda self, db_path=None, **kw: setattr(self, "__dict__", registry.__dict__) or None)
+    monkeypatch.setattr(inv_routes, "_registry", lambda: registry)
+    monkeypatch.setattr("resource_explorer.auth.get_current_user", lambda request: None)
+    from resource_explorer.web.app import app
+    client = TestClient(app)
+    slug = _investigation(registry, "Route study", promoted=False)
+    assert client.post(f"/api/investigations/{slug}/journal/publish").status_code == 401
+    monkeypatch.setattr("resource_explorer.auth.get_current_user", lambda request: {"user_id": "alice"})
+    r = client.post(f"/api/investigations/{slug}/journal/publish")
+    assert r.status_code == 409 and "not been promoted" in r.json()["detail"]
+    assert client.post("/api/investigations/nope/journal/publish").status_code == 404
+    assert egeria.calls == []
+
+
+def test_the_feedback_state_of_an_investigation_you_cannot_see_is_a_404(registry, egeria, monkeypatch):
+    from resource_explorer.web.routes import curate as curate_routes
+
+    monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
+                        lambda self, db_path=None, **kw: setattr(self, "__dict__", registry.__dict__) or None)
+    monkeypatch.setattr(curate_routes, "get_current_user", lambda request: {"user_id": "alice"})
+    from resource_explorer.web.app import app
+    client = TestClient(app)
+    slug = _investigation(registry, "Seen study", promoted=False)
+    assert client.get(f"/api/curate/feedback-state/investigation/{slug}").status_code == 200
+    assert client.get("/api/curate/feedback-state/investigation/nope").status_code == 404

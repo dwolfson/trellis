@@ -80,6 +80,10 @@ def element_guid_for(registry: ProjectRegistry, entity_type: str, slug: str, sco
     """
     scope = (scope_locator or "").strip()
     try:
+        if entity_type == "investigation":
+            # An investigation is an Egeria Project; "" until it is promoted (a local one has nothing to write to).
+            inv = registry.get_investigation(slug) or {}
+            return str(inv.get("egeria_project_guid") or "")
         if entity_type == "database":
             entity = registry.get_database(slug, allow_unreadable=True)
             return str(getattr(entity, "egeria_asset_guid", "") or "")

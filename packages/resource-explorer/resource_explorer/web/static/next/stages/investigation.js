@@ -46,7 +46,7 @@ import {
   bindInvestigationEgeriaProject, promoteInvestigation, reclassifyInvestigation,
   relinkInvestigationMembers, syncInvestigationEgeria, getInvestigationLinkStatus,
   getInvestigationDispositions, setInvestigationDisposition, getInvestigationNextSteps,
-  fetchScopeCsv, getJournal,
+  fetchScopeCsv, getJournal, getCurateFeedbackState, publishInvestigationJournal,
 } from '/static/re-api.js';
 import {
   state, esc, $, icon, setInvestigation, refreshInvestigationsAndSidebar,
@@ -463,17 +463,53 @@ async function loadJournal(inv, stale) {
     return;
   }
   if (stale()) return;
-  const where = inv.egeria_project_guid
-    ? 'Entries are kept in RE; publishing them to the Egeria Project is not built yet.'
+  // Each entry's state in Egeria. A failed read leaves the words off; it never claims "published".
+  let words = {};
+  let toSend = 0;
+  try {
+    const plan = await getCurateFeedbackState('investigation', inv.slug);
+    words = Object.fromEntries((plan.notes || []).map((n) => [n.id, n.word]));
+    toSend = plan.to_send || 0;
+  } catch { /* leaves the words off */ }
+  if (stale()) return;
+  const promoted = Boolean(inv.egeria_project_guid);
+  const where = promoted
+    ? 'Your entries go to the Egeria Project as Notes when you publish them.'
     : 'Kept in RE. They go to Egeria once this investigation is promoted.';
-  host.innerHTML = `<h4 class="m-0 mb-s2 font-heading text-subtab font-normal text-ink">Journal · <span class="tnum">${entries.length}</span></h4>
+  host.innerHTML = `<div class="mb-s2 flex items-center gap-s3">
+      <h4 class="m-0 font-heading text-subtab font-normal text-ink">Journal · <span class="tnum">${entries.length}</span></h4>
+      ${promoted ? `<button data-act="inv-journal-publish" type="button" ${toSend ? '' : 'disabled'}
+        class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60"
+        >Publish my entries${toSend ? ` · ${toSend}` : ''}</button>` : ''}
+      <span data-journal-publish-note class="text-caveat text-ink-muted"></span>
+    </div>
     <p class="mb-s2 text-caveat text-ink-muted">${esc(where)}</p>
     ${entries.length ? entries.map((e) => `
       <div class="mb-s2 rounded-sm border border-rule p-s2">
-        <div class="text-caveat text-ink-muted">${esc(e.author)} · ${esc(String(e.written_at).slice(0, 10))}</div>
+        <div class="text-caveat text-ink-muted">${esc(e.author)} · ${esc(String(e.written_at).slice(0, 10))}${
+          words[e.id] ? ` · ${esc(words[e.id])}` : ''}</div>
         <div class="whitespace-pre-wrap text-answer text-ink">${esc(e.body)}</div>
       </div>`).join('')
       : '<p class="text-caveat text-ink-muted">No entries yet. Use “add to investigation journal” under a chat answer.</p>'}`;
+  host.querySelector('[data-act="inv-journal-publish"]')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const note = host.querySelector('[data-journal-publish-note]');
+    btn.disabled = true;
+    note.textContent = 'Publishing…';
+    try {
+      const res = await publishInvestigationJournal(inv.slug);
+      const bad = (res.not_permitted || []).length + (res.unread || []).length;
+      if (res.refused) note.textContent = res.refused;
+      await loadJournal(inv, stale);
+      if (bad) {
+        const n = host.querySelector('[data-journal-publish-note]');
+        if (n) n.textContent = `${bad} not sent — see each entry's state.`;
+      }
+    } catch (err) {
+      btn.disabled = false;
+      note.textContent = err.loginRequired ? 'Sign in to publish.' : `Not published: ${err.message}`;
+    }
+  });
 }
 
 /** A write failed: a pop-up with the reason (Escape or the backdrop closes it). The button carries its own cue. */
