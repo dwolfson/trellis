@@ -10,6 +10,23 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ---
 
+## Repositories added by scouting or the bulk add are never first-indexed for chat; the Analysis `rag_ingestion` step cannot do it (found 2026-10-18)
+
+**Observed (coordinator, laz, 2026-10-18):** 42 of 73 repositories have no pgvector collections: 34 with a 0-chunk `rag_ingestion` row and 8 with none. docling, marquez and amundsen have `collections = []` and `last_indexed_at = ''`, were created 2026-08-21 by the bulk add, and show no index, ingest or register operation in their activity log at all. For these repositories nothing about the code or documentation is searchable, so chat answers from documents are empty. Per-repo chunk counts for indexed repositories are correct (they include the shared `web_docs_*` collection, so a cross-repo sum double-counts it).
+
+**Cause (read from code):** the first index is made only by the CLI registration wizard (`cli/wizard.py`) and by the repair that follows a repo-URL change. The web scouting add and the bulk add do not index. The catalog entry `rag_ingestion` ("Refresh & Re-ingest") is already in the **Analysis** intent, but `IncrementalIndexer.refresh` re-indexes only collections the project already has, so for a repo with none it records the commit SHA and returns without error.
+
+**Decision (project owner, 2026-10-18):** "Scouting is the wrong stage to index repos - that should probably be Analysis." Not yet designed.
+
+**Open design questions (for the architect):**
+1. Should the Analysis `rag_ingestion` step make the first index itself when a repo has no collections, or should first indexing be a separate step or action?
+2. It is costly (docling alone would be thousands of chunks): should it ask first, with an estimate, as other costly steps do?
+3. How does the UI show "not indexed for chat" so a person can see which repositories chat cannot answer about, and index one?
+4. Does a bulk add queue the index work, or leave it to the person?
+
+**Done so far:** the step now reports "Not indexed for chat (no collections registered)" with outcome `unverified`, instead of "indexed no chunks" (branch `re/rag-never-indexed`).
+**Status:** design question, then slice. Not scheduled.
+
 ## Admin → Discovery Sources is repo-only by name and by behaviour; generalize or rename, and add CSV import/export (logged 2026-10-01, owner)
 
 **Observed (owner, 2026-10-01):** Admin has a panel called "Discovery Sources". It reads as general, but it only manages saved GitHub search and list configs. Per `resource_explorer/web/static/next/admin/discovery_sources.js` and `web/routes/discovery.py`: "Run" returns candidate `DiscoveredRepo` rows (read-only), and a second step, `POST /discovery/import`, imports repositories. The backing `discovery_sources` table has no link to `projects`; deleting a source removes only the saved config. Nothing in it can describe a database, file share, schema or any other resource kind. Classic (`index.html`, label "Discovery Sources" at the Admin tab list and in the Scouting → Discover view) shows the same name.

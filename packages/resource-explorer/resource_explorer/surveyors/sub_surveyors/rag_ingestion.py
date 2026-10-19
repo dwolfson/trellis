@@ -146,6 +146,30 @@ class RagIngestionSurveyor(BaseSurveyor):
                 )
             ]
 
+        if ingested and not collections:
+            # This step refreshes collections the project already has; it cannot make the first
+            # index. An empty list is also where a new-URL repair puts a repo, so "never indexed" is
+            # the honest state either way, not "refreshed and found nothing".
+            return [
+                ResourceMeasureAnnotation(
+                    check_name="rag_ingestion",
+                    summary="Not indexed for chat (no collections registered)",
+                    analysis_step=STEP,
+                    confidence=100,
+                    explanation=(
+                        f"{slug} has no pgvector collections, so Chat and the query router have "
+                        "nothing to search for it. This step refreshes existing collections only; "
+                        "the first index is made by registering the repository with ingestion "
+                        "(the CLI wizard) or after a repair."
+                    ),
+                    resource_properties=properties,
+                    json_properties=StepOutcome(
+                        "unverified",
+                        cause="no collections registered; never indexed for chat",
+                        detail={"last_indexed_at": self.project.last_indexed_at or ""}).as_row(),
+                )
+            ]
+
         return [
             ResourceMeasureAnnotation(
                 check_name="rag_ingestion",
