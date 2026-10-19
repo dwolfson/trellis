@@ -137,7 +137,7 @@ def rank_databases(registry: "ProjectRegistry", metric: str = "tables", limit: i
     ranked.sort(key=lambda kv: (-kv[1][metric], kv[0]))
     lines = [f"Databases ranked by {metric.replace('_', ' ')} ({len(ranked)} of {len(databases)} have a measured survey):"]
     for place, (slug, f) in enumerate(ranked[:limit], start=1):
-        extra = f" (plus {f['views']} view(s), not counted)" if f["views"] and metric != "columns" else ""
+        extra = f" (plus {f['views']} view(s), not counted)" if f["views"] and metric == "tables" else ""
         if metric == "undocumented_tables":
             extra += f" of {f['documented'] + f['undocumented_tables']} readable base tables"
             if f["unmeasured"]:

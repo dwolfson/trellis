@@ -1491,3 +1491,25 @@ def test_building_a_chat_agent_starts_tracing(monkeypatch):
     ConversationAgent()
     MockAgent()
     assert len(started) == 2
+
+
+def test_dependency_questions_carry_the_stored_list_in_the_prompt(db, monkeypatch):
+    """A model that skips query_dependencies still sees what is stored (traced failure 2026-10-19)."""
+    from resource_explorer.agents.conversation_agent import ConversationAgent
+    from resource_explorer.registry import Project
+
+    db.add(Project(slug="deprepo", display_name="Dep Repo", github_url="https://github.com/o/deprepo"))
+    db.upsert_dependencies("deprepo", [
+        {"dep_name": "click", "dep_version": ">=8", "dep_type": "runtime", "ecosystem": "python",
+         "source_file": "pyproject.toml"},
+        {"dep_name": "pytest", "dep_version": "", "dep_type": "dev", "ecosystem": "python",
+         "source_file": "pyproject.toml"},
+    ])
+    prompts = []
+    monkeypatch.setattr(ConversationAgent, "_run_persistent", lambda self, p: prompts.append(p) or "ok")
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
+        ConversationAgent(resource_slug="deprepo").handle("What does it depend on?", resource_slug="deprepo")
+        ConversationAgent(resource_slug="deprepo").handle("how many stars does it have?", resource_slug="deprepo")
+    assert "Stored dependencies for deprepo (2 entries" in prompts[0]
+    assert "pyproject.toml [runtime] (1): click >=8" in prompts[0] and "pyproject.toml [dev] (1): pytest" in prompts[0]
+    assert "Stored dependencies" not in prompts[1]
