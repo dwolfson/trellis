@@ -88,12 +88,17 @@ def repos_using_dependency(
 
 def _database_figures(info: dict) -> dict:
     """Counts from one `schema_info`, separating what was measured from what the survey could not see."""
-    tables = columns = documented = undocumented = unmeasured = 0
+    tables = views = columns = documented = undocumented = unmeasured = 0
     for sch in info.get("schemas", []):
         readable = sch.get("access") != "not_readable"
         for tbl in sch.get("tables", []):
-            tables += 1
             columns += len(tbl.get("columns", []))
+            # `tables` holds views and materialized views too; counting them as tables made adventureworks
+            # (68 base tables, 89 views) read as 157 and "87 undocumented tables" be 87 undocumented views.
+            if "VIEW" in str(tbl.get("type") or "").upper():
+                views += 1
+                continue
+            tables += 1
             # A table seen only through the catalog is unknown, not undocumented, unless its comment was
             # read (`description_read`) -- then an empty one really is undocumented.
             if not readable or (tbl.get("source") == "catalog_fallback" and not tbl.get("description_read")):
@@ -103,7 +108,7 @@ def _database_figures(info: dict) -> dict:
             else:
                 undocumented += 1
     return {
-        "tables": tables, "columns": columns, "documented": documented,
+        "tables": tables, "views": views, "columns": columns, "documented": documented,
         "undocumented_tables": undocumented, "unmeasured": unmeasured,
     }
 
@@ -132,13 +137,13 @@ def rank_databases(registry: "ProjectRegistry", metric: str = "tables", limit: i
     ranked.sort(key=lambda kv: (-kv[1][metric], kv[0]))
     lines = [f"Databases ranked by {metric.replace('_', ' ')} ({len(ranked)} of {len(databases)} have a measured survey):"]
     for place, (slug, f) in enumerate(ranked[:limit], start=1):
-        extra = ""
+        extra = f" (plus {f['views']} view(s), not counted)" if f["views"] and metric != "columns" else ""
         if metric == "undocumented_tables":
-            extra = f" of {f['documented'] + f['undocumented_tables']} readable"
+            extra += f" of {f['documented'] + f['undocumented_tables']} readable base tables"
             if f["unmeasured"]:
                 extra += (
                     f"; {f['unmeasured']} table(s) whose description was not read "
-                    "(found only through the catalog, e.g. materialized views, or in an unreadable schema), "
+                    "(found only through the catalog, or in an unreadable schema), "
                     "so not counted either way"
                 )
         lines.append(f"{place}. `{slug}`: {f[metric]}{extra}")
