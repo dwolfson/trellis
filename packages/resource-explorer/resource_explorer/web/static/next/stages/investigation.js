@@ -46,7 +46,7 @@ import {
   bindInvestigationEgeriaProject, promoteInvestigation, reclassifyInvestigation,
   relinkInvestigationMembers, syncInvestigationEgeria, getInvestigationLinkStatus,
   getInvestigationDispositions, setInvestigationDisposition, getInvestigationNextSteps,
-  fetchScopeCsv,
+  fetchScopeCsv, getJournal,
 } from '/static/re-api.js';
 import {
   state, esc, $, icon, setInvestigation, refreshInvestigationsAndSidebar,
@@ -438,9 +438,39 @@ async function renderDetail(slug) {
     </div>
     <div id="inv-add-menu"></div>
     ${addMemberFormHtml()}
-    ${membersTableHtml(inv, members, dispositions)}`;
+    ${membersTableHtml(inv, members, dispositions)}
+
+    <div class="my-s3 h-px bg-rule"></div>
+    <div id="inv-journal"><p class="text-caveat text-ink-muted">Loading the journal…</p></div>`;
 
   bindDetail(inv, members);
+  loadJournal(inv, stale);
+}
+
+/** The investigation's journal: dated entries, newest first, each saved from a chat answer or written by hand.
+ *  A failed read says so; it is never shown as an empty journal. */
+async function loadJournal(inv, stale) {
+  const host = $('inv-journal');
+  if (!host) return;
+  let entries;
+  try {
+    ({ entries } = await getJournal(inv.slug, 'investigation'));
+  } catch (err) {
+    if (!stale()) host.innerHTML = `<p class="text-caveat text-state-warn">The journal could not be read: ${esc(err.message)}</p>`;
+    return;
+  }
+  if (stale()) return;
+  const where = inv.egeria_project_guid
+    ? 'Entries are kept in RE; publishing them to the Egeria Project is not built yet.'
+    : 'Kept in RE. They go to Egeria once this investigation is promoted.';
+  host.innerHTML = `<h4 class="m-0 mb-s2 font-heading text-subtab font-normal text-ink">Journal · <span class="tnum">${entries.length}</span></h4>
+    <p class="mb-s2 text-caveat text-ink-muted">${esc(where)}</p>
+    ${entries.length ? entries.map((e) => `
+      <div class="mb-s2 rounded-sm border border-rule p-s2">
+        <div class="text-caveat text-ink-muted">${esc(e.author)} · ${esc(String(e.written_at).slice(0, 10))}</div>
+        <div class="whitespace-pre-wrap text-answer text-ink">${esc(e.body)}</div>
+      </div>`).join('')
+      : '<p class="text-caveat text-ink-muted">No entries yet. Use “add to investigation journal” under a chat answer.</p>'}`;
 }
 
 /** A write failed: a pop-up with the reason (Escape or the backdrop closes it). The button carries its own cue. */
