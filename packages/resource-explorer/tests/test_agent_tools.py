@@ -1301,7 +1301,15 @@ def test_cross_asset_matcher_real_data_lessons(db):
     b = links[("app_b", "db_one")]
     assert b["distinctive_tables"] == ["ledgers"] and b["confidence"] == "medium"
     z = links[("zeta_service", "zeta_db")]
-    assert z["matched_tables"] == [] and z["confidence"] == "low" and z["score"] >= 0.6
+    assert z["matched_tables"] == [] and z["confidence"] == "low" and z["raw_score"] >= 0.6
+    # The score shown stays inside the label's band, so a LOW row never outscores a MEDIUM one.
+    assert z["score"] <= 0.39 and any("capped to low" in e for e in z["evidence"])
+    assert a["score"] <= 0.59
+    ordered = find_cross_asset_links(db)
+    ranks = {"low": 0, "medium": 1, "high": 2}
+    assert [ranks[l["confidence"]] for l in ordered] == sorted((ranks[l["confidence"]] for l in ordered), reverse=True)
+    scores_by_conf = {c: [l["score"] for l in ordered if l["confidence"] == c] for c in ranks}
+    assert max(scores_by_conf["low"], default=0) < min(scores_by_conf["medium"] or [1], default=1)
 
     # Scoped to one database the counts still use the whole catalog.
     scoped = find_cross_asset_links(db, database_slug="db_one")
