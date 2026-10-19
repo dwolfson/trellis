@@ -609,7 +609,7 @@ def test_compare_agent_integration(db):
         t.name if hasattr(t, "name") else getattr(t, "__name__", str(t)) for t in agent.tools()
     ]
     assert "compare_database_schemas" in tools
-    assert "create_rfa_from_finding" in tools
+    assert "create_rfa_from_finding" not in tools
     assert "query_database_schema" in tools
 
     with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
@@ -1323,19 +1323,24 @@ def test_cross_asset_matcher_real_data_lessons(db):
         assert "Unknown min_confidence" in query_cross_asset_links_raw("", min_confidence="bogus")
 
 
-def test_a_read_only_agent_is_not_given_the_rfa_tool(db):
-    """The A2A surface sets allow_writes False; neither specialist then carries the filing tool."""
+def test_only_the_conversation_agent_can_file_an_rfa(db):
+    """A traced comparison called create_rfa_from_finding unprompted; the specialists never carry it."""
     from resource_explorer.agents.compare_agent import CompareAgent
+    from resource_explorer.agents.conversation_agent import ConversationAgent
     from resource_explorer.agents.integration_agent import IntegrationAgent
 
+    def names(agent):
+        return [getattr(t, "name", "") for t in agent.tools()]
+
     for cls in (CompareAgent, IntegrationAgent):
-        open_agent, closed_agent = cls(), cls()
-        closed_agent.allow_writes = False
-        assert any("create_rfa" in getattr(t, "name", "") for t in open_agent.tools())
-        assert not any("create_rfa" in getattr(t, "name", "") for t in closed_agent.tools())
-    closed = CompareAgent()
-    closed.allow_writes = False
-    assert "cannot file RequestForActions" in closed.system_prompt()
+        assert not any("create_rfa" in n for n in names(cls())), cls
+    assert "create_rfa_from_finding" not in CompareAgent().system_prompt()
+
+    # The conversation agent keeps it, unless it is serving the read-only A2A surface.
+    open_agent, closed_agent = ConversationAgent(), ConversationAgent()
+    closed_agent.allow_writes = False
+    assert any("create_rfa" in n for n in names(open_agent))
+    assert not any("create_rfa" in n for n in names(closed_agent))
 
 
 def test_database_figures_count_a_read_fallback_comment():

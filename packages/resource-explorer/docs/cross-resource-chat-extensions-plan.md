@@ -98,7 +98,9 @@ To preserve system determinism, auditability, and token efficiency, this work ad
 3. **Agent Integration:**
    - **`CompareAgent` (`resource_explorer/agents/compare_agent.py`):** Enhanced with database detection, schema diffing prompt guidance, and direct fallback execution via `compare_database_schemas_raw`.
    - **`ConversationAgent` (`resource_explorer/agents/conversation_agent.py`):** Registered `compare_database_schemas` and `create_rfa_from_finding` tools in the BeeAI agent toolset.
-   - **Prompt Templates (`resource_explorer/prompt_templates.py`):** Updated system instructions to guide agents on when and how to invoke schema diffing and RFA logging.
+   - **Prompt Templates (`resource_explorer/prompt_templates.py`):** Updated system instructions to guide agents on when and how to invoke schema diffing. RFA logging guidance was removed from the comparison prompt on 2026-10-19 (see below).
+
+   **Decision (project owner, 2026-10-19):** "Option A, remove it from compare and integration." `create_rfa_from_finding` is carried by `ConversationAgent` only. A traced comparison on 8813 called it unprompted, with an empty summary (the tool refused, so nothing was filed); the comparison prompt had invited the call. `CompareAgent` and `IntegrationAgent` describe an actionable finding in their answer instead; the A2A surface still builds `ConversationAgent` with `allow_writes = False`.
 
 ### 4.3 Verification
 - Tested via `tests/test_agent_tools.py` covering tool execution, RFA logging, database diff generation, and agent fallback modes against SQLite fixtures.
