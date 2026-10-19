@@ -24,14 +24,26 @@ ALLOWLIST = {
 
 
 def _calls_sqlite_connect(tree: ast.AST) -> list[int]:
+    """Lines that call sqlite3's `connect`, through the module, an alias of it, or an imported name."""
+    modules, connects = set(), set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules |= {a.asname or a.name for a in node.names if a.name == "sqlite3"}
+        elif isinstance(node, ast.ImportFrom) and node.module == "sqlite3":
+            connects |= {a.asname or a.name for a in node.names if a.name == "connect"}
     lines = []
     for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
         if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "connect"
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "sqlite3"
+            (isinstance(f, ast.Attribute) and f.attr == "connect"
+             and isinstance(f.value, ast.Name) and f.value.id in modules)
+            or (isinstance(f, ast.Name) and f.id in connects)
+            # getattr(sqlite3, "connect")(...) and getattr(sqlite3, "connect") alone
+            or (isinstance(f, ast.Call) and isinstance(f.func, ast.Name) and f.func.id == "getattr"
+                and len(f.args) >= 2 and isinstance(f.args[0], ast.Name) and f.args[0].id in modules
+                and isinstance(f.args[1], ast.Constant) and f.args[1].value == "connect")
         ):
             lines.append(node.lineno)
     return lines
@@ -54,3 +66,14 @@ def test_no_module_opens_the_registry_with_sqlite3_connect():
 def test_the_check_sees_a_call_and_ignores_a_docstring():
     assert _calls_sqlite_connect(ast.parse("import sqlite3\nsqlite3.connect('x')\n")) == [2]
     assert _calls_sqlite_connect(ast.parse('"""sqlite3.connect(x)"""\n')) == []
+
+
+def test_the_check_sees_aliased_and_imported_forms():
+    for src in (
+        "import sqlite3 as s\ns.connect('x')\n",
+        "from sqlite3 import connect\nconnect('x')\n",
+        "from sqlite3 import connect as c\nc('x')\n",
+        "import sqlite3\ngetattr(sqlite3, 'connect')('x')\n",
+    ):
+        assert _calls_sqlite_connect(ast.parse(src)) == [2], src
+    assert _calls_sqlite_connect(ast.parse("import os\nos.connect('x')\n")) == []

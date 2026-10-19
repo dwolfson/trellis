@@ -415,8 +415,8 @@ def _code_inventory_table(query: str, resource_slug: str) -> dict | None:
             filters.append("kind = ?")
             params.append(kind)
         if pattern:
-            filters.append("name LIKE ?")
-            params.append(f"%{pattern}%")
+            filters.append("LOWER(name) LIKE ?")
+            params.append(f"%{pattern.lower()}%")
         where = " AND ".join(filters)
         with registry._conn() as conn:
             rows = conn.execute(
