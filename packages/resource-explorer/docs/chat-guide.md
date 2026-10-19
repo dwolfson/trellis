@@ -41,7 +41,8 @@ selected in the sidebar; with none selected it considers every resource.
   integration and so on). It is a label and it picks a few special displays, such as charts. It does not stop
   other tools from being used, so a question labelled "general" can still call every tool below.
 - **Evidence** (button next to Send) shows what evidence *would* answer the question and what is missing, without
-  asking the model anything. **[V3]** Use it when an answer looks thin.
+  asking the model anything. It does record that a compile happened (an activity row), so it is not
+  free of side effects. **[V3]** Use it when an answer looks thin.
 
 ## 3. What you can ask
 
@@ -174,7 +175,7 @@ listing ranked candidates. They are read-only.
 | A comparison asks "which projects?" | Fewer than two resources were recognised. Click a chip or use the slug. |
 | A cross-asset link looks wrong | See section 5; check the evidence lines and report it with **f**. |
 | A sweep says it stopped early | The 30-second budget ran out; the answer lists what it did not reach. Narrow it ("only repos") **[V5]**. |
-| The answer ignores a document you expect | The documentation was not indexed. Check the resource's RAG ingestion status. **[V6]** |
+| The answer ignores a document you expect | The documentation may not be indexed. Check the **chunk count** of the latest ingestion, not only whether it ran: a run can finish with zero chunks, and then nothing is searchable. **[V6]** |
 
 ## 11. Claims awaiting verification
 
@@ -184,7 +185,7 @@ Each needs a test run against a real registry and a live model, by the coordinat
 |---|---|---|
 | V1 | Each example question in section 3 is answered by the named kind of lookup, and the answer reads as described. | Ask each one on the laz data set; record the tool it called and whether the answer matches the stored data. |
 | V2 | Asking for "include medium and low" makes the chat list more than the high-confidence links. | Ask "which databases does egeria-trellis use, include medium and low links"; the tool call must carry a lower `min_confidence`. |
-| V3 | Evidence shows the coverage without calling the model. | Click it with the model server stopped; it should still return. |
+| V3 | Evidence shows the coverage without calling the model. Checked in code (2026-10-18): `POST /api/context/compile` calls no model, but it writes a compile record. Remaining: click it with the model server stopped. | Confirm it still returns. |
 | V4 | "Including closed" shows completed RFAs. | Ask for RFAs on a resource with a completed one; compare with the drawer. |
 | V5 | "Only repos" narrows a coverage sweep to repositories. | Ask a sweep question both ways; the tool call must carry `resource_type`. |
-| V6 | An un-indexed document is the usual cause of a missing document. | Check against a repo with no RAG ingestion. |
+| V6 | An un-indexed document is the usual cause of a missing document. Checked on laz: 8 repos were never ingested and 34 of 65 ingested repos have a latest ingestion with 0 chunks (a possible defect, not yet investigated). | Re-check after that is understood. |
