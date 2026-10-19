@@ -72,10 +72,12 @@ class IntegrationAgent(BaseExplorerAgent):
         project_info = []
         for slug in slugs:
             project = all_projects.get(slug)
-            if project and project.collections:
+            from resource_explorer.index_state import has_own_index
+            if project and has_own_index(project.slug, project.collections):
                 cols = ", ".join(sorted(project.collections))
                 project_info.append(f"  {slug}: {cols}")
             else:
+                # Only the shared site collections (or none) are listed: the repository's own content is not searchable.
                 project_info.append(f"  {slug}: (no collections indexed — stats only)")
 
         self._evidence_lines = self._multi_resource_evidence(

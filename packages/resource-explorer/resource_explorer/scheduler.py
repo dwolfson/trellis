@@ -623,11 +623,20 @@ def _run_repo_survey(slug: str, analysis_id: str, registry) -> tuple[str, str, l
         from resource_explorer.ingestion.incremental import IncrementalIndexer
         from resource_explorer.query_cache import QueryCache
 
+        from resource_explorer.ingestion.incremental import RefreshResult
+
         try:
-            IncrementalIndexer().refresh(project)
+            result = IncrementalIndexer().refresh(project)
             QueryCache().invalidate_project(slug)
         except Exception as exc:
             return (project.display_name, project.github_url, [str(exc)])
+        if result is RefreshResult.NOT_YET_INDEXED:
+            # Not a success: nothing was refreshed because there is nothing of the repository's own
+            # to refresh. Saying so on the schedule is what keeps a recurring run from reading as
+            # "last run ok" for a repository chat has never been able to search.
+            return (project.display_name, project.github_url, [
+                "Not yet indexed: this repository has no index of its own, so there was nothing to "
+                "refresh. The first index is made separately."])
         return (project.display_name, project.github_url, [])
 
     if entry.get("action") == "profile":

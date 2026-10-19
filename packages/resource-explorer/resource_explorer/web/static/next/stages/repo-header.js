@@ -36,6 +36,20 @@ export const NOT_SURVEYED_WORD = 'not yet surveyed';
 export const ZERO_PROVES_NOTHING_SENTENCE = 'Zero here is also what a repository that was never asked looks like, so it reads as not read. A non-zero value would show.';
 export const NOT_READ_SENTENCE = 'GitHub has not been asked for this yet, or did not answer. Run a scouting scan to read it.';
 
+/** PLACEHOLDER WORDS, flagged for the designer. */
+export const NOT_YET_INDEXED_WORD = 'not yet indexed';
+export const NOT_YET_INDEXED_SENTENCE = "Chat can't search this repository's own content yet.";
+
+/** The repository has no index of its own (`index_state` from the project payload, derived server-side from
+ *  the one `index_state.py` predicate). A visual cue on the header, `○ not yet indexed`, sentence on hover.
+ *  `data-index-state` is the hook the first-index round attaches its action to; there is deliberately no
+ *  link here, because the action it would open does not exist yet. Draws nothing for any other state. */
+export function indexStateCueHtml(p) {
+  if (!p || p.index_state !== 'not_yet_indexed') return '';
+  return `<span data-index-state="not_yet_indexed" class="text-ink-muted" title="${esc(NOT_YET_INDEXED_SENTENCE)}">`
+    + `<span class="font-glyph" aria-hidden="true">${stateEntry('unrun').glyph}</span> ${NOT_YET_INDEXED_WORD}</span>`;
+}
+
 /** `? not read`, a muted cue; the sentence is on hover. */
 export function notReadCue(title = NOT_READ_SENTENCE, word = NOT_READ_WORD) {
   return `<span data-unread class="text-ink-muted" title="${esc(title)}"><span class="font-glyph" aria-hidden="true">${stateEntry('not_established').glyph}</span> ${word}</span>`;
