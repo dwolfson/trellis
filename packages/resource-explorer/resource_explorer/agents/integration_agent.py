@@ -51,7 +51,6 @@ class IntegrationAgent(BaseExplorerAgent):
             query_databases,
             query_database_schema,
             query_cross_asset_links,
-            *self._write_tools(),
         ]
 
     def handle(self, query: str, resource_slug: str | None = None, **kwargs) -> str:

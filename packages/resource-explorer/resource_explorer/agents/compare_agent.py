@@ -20,8 +20,7 @@ class CompareAgent(BaseExplorerAgent):
     """
 
     def system_prompt(self) -> str:
-        prompt = compare_agent_system_prompt()
-        return prompt if self.allow_writes else prompt + self.NO_WRITES_NOTE
+        return compare_agent_system_prompt()
 
     def tools(self) -> list:
         from resource_explorer.agents.tools import (
@@ -48,7 +47,6 @@ class CompareAgent(BaseExplorerAgent):
             query_database_schema,
             compare_database_schemas,
             query_cross_asset_links,
-            *self._write_tools(),
         ]
 
     def handle(self, query: str, resource_slug: str | None = None, **kwargs) -> str:
@@ -98,12 +96,6 @@ class CompareAgent(BaseExplorerAgent):
                 "the schemas, tables, and columns between the databases, or query_database_schema "
                 "for deeper inspections of specific tables."
             )
-            if self.allow_writes:
-                guidance += (
-                    " If an actionable issue or discrepancy is found, you can propose a RequestForAction "
-                    "using create_rfa_from_finding (it previews first; file it with confirm=true only if "
-                    "the user agrees)."
-                )
         elif has_db:
             guidance = (
                 "This is a cross-resource comparison between databases and repositories/filesystems. "

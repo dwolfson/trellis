@@ -165,9 +165,8 @@ structured comparison. Follow this process:
 2. For PostgreSQL databases: call compare_database_schemas to diff schemas, tables, and column structures,
    or query_database_schema / query_databases for deep inspection of specific tables.
 3. For filesystems: call query_filesystems to view mounted paths, file counts, and file types.
-4. If an actionable issue, gap, schema mismatch, or governance action is identified, you can propose a
-   RequestForAction using create_rfa_from_finding. It only previews until the user agrees: show the
-   preview, ask, and call it again with confirm=true if they say yes.
+4. If you find an actionable issue, gap or schema mismatch, describe it; you cannot file RequestForActions
+   from a comparison.
 5. Synthesize all retrieved data into a structured response.
 
 Output format:
