@@ -454,7 +454,10 @@ async function loadJournal(inv, stale) {
   if (!host) return;
   let entries;
   try {
-    ({ entries } = await getJournal(inv.slug, 'investigation'));
+    const res = await getJournal(inv.slug, 'investigation');
+    // A reply with no `entries` list is a failed read, not an empty journal.
+    if (!res || !Array.isArray(res.entries)) throw new Error('the server sent no entries list');
+    entries = res.entries;
   } catch (err) {
     if (!stale()) host.innerHTML = `<p class="text-caveat text-state-warn">The journal could not be read: ${esc(err.message)}</p>`;
     return;
