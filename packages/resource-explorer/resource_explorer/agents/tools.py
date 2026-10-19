@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from beeai_framework.tools import tool
 
+from resource_explorer.name_resolution import ambiguity_message, resolve_database
+
 
 def _absence(resource_slug: str, analysis_id: str, subject: str) -> str:
     """What to say when a table came back empty.
@@ -73,36 +75,36 @@ def vector_search(query: str, collection_names: str) -> str:
 
 
 def query_project_stats_raw(resource_slug: str, days: int = 90) -> str:
-    import sqlite3
     from datetime import datetime, timedelta
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
     slug = registry._normalize_slug(resource_slug)
     try:
-        conn = sqlite3.connect(registry.db_path)
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT * FROM project_stats WHERE project_slug = ? ORDER BY fetched_at DESC LIMIT 1",
-            (slug,),
-        ).fetchone()
-        now = datetime.utcnow()
-        cutoff = (now - timedelta(days=days)).isoformat()
-        cutoff_30 = (now - timedelta(days=30)).isoformat()
-        cutoff_90 = (now - timedelta(days=90)).isoformat()
-        live_n = conn.execute(
-            "SELECT COUNT(*) FROM project_commits WHERE project_slug = ? AND committed_at >= ?",
-            (slug, cutoff),
-        ).fetchone()[0]
-        live_30 = conn.execute(
-            "SELECT COUNT(*) FROM project_commits WHERE project_slug = ? AND committed_at >= ?",
-            (slug, cutoff_30),
-        ).fetchone()[0]
-        live_90 = conn.execute(
-            "SELECT COUNT(*) FROM project_commits WHERE project_slug = ? AND committed_at >= ?",
-            (slug, cutoff_90),
-        ).fetchone()[0]
-        conn.close()
+        with registry._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM project_stats WHERE project_slug = ? ORDER BY fetched_at DESC LIMIT 1",
+                (slug,),
+            ).fetchone()
+            now = datetime.utcnow()
+            cutoff = (now - timedelta(days=days)).isoformat()
+            cutoff_30 = (now - timedelta(days=30)).isoformat()
+            cutoff_90 = (now - timedelta(days=90)).isoformat()
+            live_n = conn.execute(
+                "SELECT COUNT(*) FROM project_commits WHERE project_slug = ? AND committed_at >= ?",
+                (slug, cutoff),
+            ).fetchone()[0]
+            live_30 = conn.execute(
+                "SELECT COUNT(*) FROM project_commits WHERE project_slug = ? AND committed_at >= ?",
+                (slug, cutoff_30),
+            ).fetchone()[0]
+            live_90 = conn.execute(
+                "SELECT COUNT(*) FROM project_commits WHERE project_slug = ? AND committed_at >= ?",
+                (slug, cutoff_90),
+            ).fetchone()[0]
+            live_total = conn.execute(
+                "SELECT COUNT(*) FROM project_commits WHERE project_slug = ?", (slug,)
+            ).fetchone()[0]
     except Exception as e:
         return f"Error reading stats: {e}"
     if not row:
@@ -134,25 +136,24 @@ def query_project_stats_raw(resource_slug: str, days: int = 90) -> str:
 
     # Prefer survey total (all file types) over code-only SQLite count
     try:
-        _cs_conn = sqlite3.connect(registry.db_path)
-        survey_total = _cs_conn.execute(
-            """SELECT SUM(file_count) FROM project_file_type_counts
-               WHERE project_slug = ?
-                 AND surveyed_at = (
-                     SELECT MAX(surveyed_at) FROM project_file_type_counts WHERE project_slug = ?
-                 )""",
-            (slug, slug),
-        ).fetchone()[0]
-        if not survey_total:
-            # Fall back to code-symbols count (Python/JS/Java/Go only)
+        with registry._conn() as _cs_conn:
             survey_total = _cs_conn.execute(
-                "SELECT COUNT(DISTINCT file_path) FROM project_code_symbols WHERE project_slug = ?",
-                (slug,),
+                """SELECT SUM(file_count) FROM project_file_type_counts
+                   WHERE project_slug = ?
+                     AND surveyed_at = (
+                         SELECT MAX(surveyed_at) FROM project_file_type_counts WHERE project_slug = ?
+                     )""",
+                (slug, slug),
             ).fetchone()[0]
-            file_count_note = "code files only — run survey for full count"
-        else:
-            file_count_note = "surveyed"
-        _cs_conn.close()
+            if not survey_total:
+                # Fall back to code-symbols count (Python/JS/Java/Go only)
+                survey_total = _cs_conn.execute(
+                    "SELECT COUNT(DISTINCT file_path) FROM project_code_symbols WHERE project_slug = ?",
+                    (slug,),
+                ).fetchone()[0]
+                file_count_note = "code files only — run survey for full count"
+            else:
+                file_count_note = "surveyed"
     except Exception:
         survey_total = None
         file_count_note = ""
@@ -168,12 +169,22 @@ def query_project_stats_raw(resource_slug: str, days: int = 90) -> str:
     )
 
     lines = [
-        f"Project: {slug}  (stats as of {v('fetched_at')[:19]})",
+        f"Project: {slug}  (snapshot taken {v('fetched_at')[:19]}; commit counts below are counted today)",
         f"Stars: {v('stars')}  Forks: {v('forks')}  Watchers: {v('watchers')}  Open issues: {v('open_issues')}",
-        f"Contributors: {v('contributors_count')}  Commits 30d: {commits_30d}  Commits 90d: {commits_90d}",
+        f"Contributors: {v('contributors_count')}",
     ]
-    if days not in (30, 90):
-        lines.append(f"Commits {days}d: {live_n if have_live else 'N/A (run refresh)'}")
+    if have_live:
+        lines.append(
+            f"Commits, counted {now:%Y-%m-%d} from {live_total} stored commits: "
+            f"30d: {commits_30d}  90d: {commits_90d}"
+            + (f"  {days}d: {live_n}" if days not in (30, 90) else "")
+        )
+    else:
+        lines.append(
+            f"Commits, from the {v('fetched_at')[:10]} snapshot (no stored commits to count): "
+            f"30d: {commits_30d}  90d: {commits_90d}"
+            + (f"  {days}d: N/A (run refresh)" if days not in (30, 90) else "")
+        )
     lines += [
         f"Releases: {v('releases_count')}  Latest: {v('latest_release')} ({v('latest_release_at')[:10]})",
         f"Avg release interval: {v('avg_release_interval_days')} days",
@@ -197,30 +208,32 @@ def query_project_stats(resource_slug: str, days: int = 90) -> str:
     return query_project_stats_raw(resource_slug, days)
 
 
-def query_top_committers_raw(resource_slug: str, limit: int = 10) -> str:
-    import sqlite3
+def query_top_committers_raw(resource_slug: str, limit: int = 10, days: int = 90) -> str:
     from collections import Counter
+    from datetime import datetime, timedelta
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
     slug = registry._normalize_slug(resource_slug)
+    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
     try:
-        conn = sqlite3.connect(registry.db_path)
-        rows = conn.execute(
-            "SELECT author_name, author_email FROM project_commits WHERE project_slug = ?",
-            (slug,),
-        ).fetchall()
-        conn.close()
+        with registry._conn() as conn:
+            rows = conn.execute(
+                "SELECT author_name, author_email FROM project_commits "
+                "WHERE project_slug = ? AND committed_at >= ?",
+                (slug, cutoff),
+            ).fetchall()
     except Exception as e:
         return f"Error reading commits: {e}"
     if not rows:
-        return _absence(slug, "repository_health", "commit data")
+        return _absence(slug, "repository_health", f"commit data for the last {days} days")
     counter: Counter = Counter()
-    for name, email in rows:
+    for row in rows:
+        name, email = row["author_name"], row["author_email"]
         label = name or email or "unknown"
         counter[label] += 1
     top = counter.most_common(limit)
-    lines = [f"Top {min(limit, len(top))} committers to {slug} (last 90 days):"]
+    lines = [f"Top {min(limit, len(top))} committers to {slug} (last {days} days, {len(rows)} stored commits):"]
     for i, (name, count) in enumerate(top, 1):
         lines.append(f"  {i}. {name}: {count} commit{'s' if count != 1 else ''}")
     return "\n".join(lines)
@@ -228,12 +241,12 @@ def query_top_committers_raw(resource_slug: str, limit: int = 10) -> str:
 
 @tool(
     description=(
-        "Get the top committers to a project by commit count over the last 90 days. "
+        "Get the top committers to a project by commit count over the last 90 days (days sets the window). "
         "Returns a ranked list with commit counts and email addresses."
     )
 )
-def query_top_committers(resource_slug: str, limit: int = 10) -> str:
-    return query_top_committers_raw(resource_slug, limit)
+def query_top_committers(resource_slug: str, limit: int = 10, days: int = 90) -> str:
+    return query_top_committers_raw(resource_slug, limit, days)
 
 
 def _query_code_symbols_raw(
@@ -243,14 +256,11 @@ def _query_code_symbols_raw(
     file_path: str = "",
     limit: int = 50,
 ) -> str:
-    import sqlite3
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
     slug = registry._normalize_slug(resource_slug)
     try:
-        conn = sqlite3.connect(registry.db_path)
-        conn.row_factory = sqlite3.Row
         filters = ["project_slug = ?"]
         params: list = [slug]
         if kind and kind != "all":
@@ -263,17 +273,17 @@ def _query_code_symbols_raw(
             filters.append("file_path LIKE ?")
             params.append(f"{file_path}%")
         where = " AND ".join(filters)
-        rows = conn.execute(
-            f"SELECT kind, qualified_name, signature, docstring, file_path, start_line "  # noqa: S608
-            f"FROM project_code_symbols WHERE {where} "
-            f"ORDER BY file_path, start_line LIMIT ?",
-            params + [limit],
-        ).fetchall()
-        total = conn.execute(
-            f"SELECT COUNT(*) FROM project_code_symbols WHERE {where}",  # noqa: S608
-            params,
-        ).fetchone()[0]
-        conn.close()
+        with registry._conn() as conn:
+            rows = conn.execute(
+                f"SELECT kind, qualified_name, signature, docstring, file_path, start_line "  # noqa: S608
+                f"FROM project_code_symbols WHERE {where} "
+                f"ORDER BY file_path, start_line LIMIT ?",
+                params + [limit],
+            ).fetchall()
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM project_code_symbols WHERE {where}",  # noqa: S608
+                params,
+            ).fetchone()[0]
     except Exception as exc:
         return f"Error reading symbol table: {exc}"
     if not rows:
@@ -325,22 +335,19 @@ def query_code_symbols(
     )
 )
 def get_symbol_detail(resource_slug: str, name: str) -> str:
-    import sqlite3
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
     slug = registry._normalize_slug(resource_slug)
     try:
-        conn = sqlite3.connect(registry.db_path)
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT * FROM project_code_symbols "
-            "WHERE project_slug = ? AND (qualified_name = ? OR name = ?) "
-            "ORDER BY CASE kind WHEN 'class' THEN 0 WHEN 'method' THEN 1 ELSE 2 END "
-            "LIMIT 1",
-            (slug, name, name),
-        ).fetchone()
-        conn.close()
+        with registry._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM project_code_symbols "
+                "WHERE project_slug = ? AND (qualified_name = ? OR name = ?) "
+                "ORDER BY CASE kind WHEN 'class' THEN 0 WHEN 'method' THEN 1 ELSE 2 END "
+                "LIMIT 1",
+                (slug, name, name),
+            ).fetchone()
     except Exception as exc:
         return f"Error: {exc}"
     if not row:
@@ -349,7 +356,7 @@ def get_symbol_detail(resource_slug: str, name: str) -> str:
             f"Use query_code_symbols to browse available symbols."
         )
     r = dict(row)
-    summary = r["summary"] or r["docstring"] or _generate_summary(slug, r, registry.db_path)
+    summary = r["summary"] or r["docstring"] or _generate_summary(slug, r, registry)
     lines = [f"[{r['kind']}] {r['qualified_name']}"]
     lines.append(f"File: {r['file_path']}  lines {r['start_line']}–{r['end_line']}")
     if r["signature"]:
@@ -359,13 +366,12 @@ def get_symbol_detail(resource_slug: str, name: str) -> str:
     return "\n".join(lines)
 
 
-def _generate_summary(resource_slug: str, symbol: dict, db_path: str) -> str:
+def _generate_summary(resource_slug: str, symbol: dict, registry) -> str:
     """Search for the symbol's source in pgvector and ask the LLM for a one-sentence summary."""
     try:
         from resource_explorer.vector_store_pg import MultiCollectionStore
         from resource_explorer.collection_router import CollectionRouter
         from resource_explorer.llm_client import get_llm
-        import sqlite3
 
         query = symbol["qualified_name"]
         collections = CollectionRouter().select(query, resource_slug)
@@ -379,7 +385,7 @@ def _generate_summary(resource_slug: str, symbol: dict, db_path: str) -> str:
         prompt = f"Summarize what this {symbol['kind']} does in one sentence:\n\n{snippet}"
         summary = get_llm().complete(prompt).strip().split("\n")[0]
         # Persist so the next call is instant
-        with sqlite3.connect(db_path) as conn:
+        with registry._conn() as conn:
             conn.execute(
                 "UPDATE project_code_symbols SET summary = ? "
                 "WHERE project_slug = ? AND file_path = ? AND qualified_name = ?",
@@ -398,7 +404,6 @@ def _generate_summary(resource_slug: str, symbol: dict, db_path: str) -> str:
     )
 )
 def query_commit_activity(resource_slug: str, weeks: int = 12) -> str:
-    import sqlite3
     from collections import defaultdict
     from datetime import datetime, timedelta
     from resource_explorer.registry import ProjectRegistry
@@ -407,13 +412,12 @@ def query_commit_activity(resource_slug: str, weeks: int = 12) -> str:
     slug = registry._normalize_slug(resource_slug)
     weeks = max(1, min(weeks, 52))
     try:
-        conn = sqlite3.connect(registry.db_path)
-        rows = conn.execute(
-            "SELECT committed_at, additions, deletions FROM project_commits "
-            "WHERE project_slug = ? ORDER BY committed_at DESC",
-            (slug,),
-        ).fetchall()
-        conn.close()
+        with registry._conn() as conn:
+            rows = conn.execute(
+                "SELECT committed_at, additions, deletions FROM project_commits "
+                "WHERE project_slug = ? ORDER BY committed_at DESC",
+                (slug,),
+            ).fetchall()
     except Exception as e:
         return f"Error reading commits: {e}"
     if not rows:
@@ -423,7 +427,8 @@ def query_commit_activity(resource_slug: str, weeks: int = 12) -> str:
     week_adds: defaultdict = defaultdict(int)
     week_dels: defaultdict = defaultdict(int)
     has_churn = False
-    for ts, adds, dels in rows:
+    for row in rows:
+        ts, adds, dels = row[0], row[1], row[2]
         try:
             dt = datetime.fromisoformat(ts[:19])
             w = (now - dt).days // 7
@@ -463,7 +468,6 @@ def query_commit_activity(resource_slug: str, weeks: int = 12) -> str:
     )
 )
 def query_contributor_profile(resource_slug: str, author: str, days: int = 90) -> str:
-    import sqlite3
     from datetime import datetime, timedelta
     from resource_explorer.registry import ProjectRegistry
 
@@ -473,71 +477,67 @@ def query_contributor_profile(resource_slug: str, author: str, days: int = 90) -
     try:
         now = datetime.utcnow()
         cutoff = (now - timedelta(days=days)).isoformat()
-        conn = sqlite3.connect(registry.db_path)
-        conn.row_factory = sqlite3.Row
+        with registry._conn() as conn:
+            # Find matching contributors by name or email substring
+            author_lower = author.lower()
+            all_authors = conn.execute(
+                "SELECT DISTINCT author_name, author_email FROM project_commits WHERE project_slug = ?",
+                (slug,),
+            ).fetchall()
+            matches = [
+                (r["author_name"], r["author_email"])
+                for r in all_authors
+                if author_lower in (r["author_name"] or "").lower()
+                or author_lower in (r["author_email"] or "").lower()
+            ]
+            if not matches:
+                return (
+                    f"No contributor matching '{author}' found in '{slug}'. "
+                    f"Use query_top_committers to see available names."
+                )
 
-        # Find matching contributors by name or email substring
-        author_lower = author.lower()
-        all_authors = conn.execute(
-            "SELECT DISTINCT author_name, author_email FROM project_commits WHERE project_slug = ?",
-            (slug,),
-        ).fetchall()
-        matches = [
-            (r["author_name"], r["author_email"])
-            for r in all_authors
-            if author_lower in (r["author_name"] or "").lower()
-            or author_lower in (r["author_email"] or "").lower()
-        ]
-        if not matches:
-            conn.close()
-            return (
-                f"No contributor matching '{author}' found in '{slug}'. "
-                f"Use query_top_committers to see available names."
-            )
-
-        name, email = matches[0]
-        row = conn.execute(
-            """SELECT COUNT(*) AS commits,
-                      COALESCE(SUM(additions), 0) AS additions,
-                      COALESCE(SUM(deletions), 0) AS deletions
-               FROM project_commits
-               WHERE project_slug = ? AND committed_at >= ?
-               AND (author_name = ? OR author_email = ?)""",
-            (slug, cutoff, name, email),
-        ).fetchone()
-
-        # Project-wide average commits per contributor in this window
-        median_row = conn.execute(
-            """SELECT AVG(c) AS avg_commits FROM (
-                   SELECT COUNT(*) AS c FROM project_commits
+            name, email = matches[0]
+            row = conn.execute(
+                """SELECT COUNT(*) AS commits,
+                          COALESCE(SUM(additions), 0) AS additions,
+                          COALESCE(SUM(deletions), 0) AS deletions
+                   FROM project_commits
                    WHERE project_slug = ? AND committed_at >= ?
-                   GROUP BY author_email
-               )""",
-            (slug, cutoff),
-        ).fetchone()
+                   AND (author_name = ? OR author_email = ?)""",
+                (slug, cutoff, name, email),
+            ).fetchone()
 
-        # Tier from contributor_stats, over the WIDEST window available.
-        #
-        # project_contributor_stats' "periods" are nested trailing windows —
-        # 30d, 90d and 365d, all ending today — not a sequence. So the latest
-        # period_start is the NARROWEST window, and ordering DESC silently
-        # answered "tier over the last 30 days" to a question about the
-        # contributor. Measured 2026-08-27 across the catalogue: 70 of 347
-        # contributors got a different tier that way, every sampled case a
-        # core maintainer downgraded to "regular" (Apache Polaris, sqlglot),
-        # and a further 271 were absent from the 30-day slice altogether — so
-        # the caller was told "unknown (run refresh to compute tiers)" about a
-        # tier that had in fact been computed.
-        #
-        # Earliest period_start = widest window = the tier over the longest
-        # history held. ASC, deliberately.
-        tier_row = conn.execute(
-            """SELECT tier FROM project_contributor_stats
-               WHERE project_slug = ? AND author_email = ?
-               ORDER BY period_start ASC LIMIT 1""",
-            (slug, email or ""),
-        ).fetchone()
-        conn.close()
+            # Project-wide average commits per contributor in this window
+            median_row = conn.execute(
+                """SELECT AVG(c) AS avg_commits FROM (
+                       SELECT COUNT(*) AS c FROM project_commits
+                       WHERE project_slug = ? AND committed_at >= ?
+                       GROUP BY author_email
+                   )""",
+                (slug, cutoff),
+            ).fetchone()
+
+            # Tier from contributor_stats, over the WIDEST window available.
+            #
+            # project_contributor_stats' "periods" are nested trailing windows —
+            # 30d, 90d and 365d, all ending today — not a sequence. So the latest
+            # period_start is the NARROWEST window, and ordering DESC silently
+            # answered "tier over the last 30 days" to a question about the
+            # contributor. Measured 2026-08-27 across the catalogue: 70 of 347
+            # contributors got a different tier that way, every sampled case a
+            # core maintainer downgraded to "regular" (Apache Polaris, sqlglot),
+            # and a further 271 were absent from the 30-day slice altogether — so
+            # the caller was told "unknown (run refresh to compute tiers)" about a
+            # tier that had in fact been computed.
+            #
+            # Earliest period_start = widest window = the tier over the longest
+            # history held. ASC, deliberately.
+            tier_row = conn.execute(
+                """SELECT tier FROM project_contributor_stats
+                   WHERE project_slug = ? AND author_email = ?
+                   ORDER BY period_start ASC LIMIT 1""",
+                (slug, email or ""),
+            ).fetchone()
 
         commits = row["commits"]
         additions = row["additions"]
@@ -671,7 +671,8 @@ def build_example_context(resource_slug: str, topic: str) -> str:
 
 @tool(
     description=(
-        "Query the dependency graph for a project. Returns a markdown table of dependencies. "
+        "Query the dependency graph for a project. Use for 'what does X depend on?', 'what packages does X use?'. "
+        "Returns a markdown table of dependencies. "
         "dep_type can be 'runtime', 'dev', 'optional', 'indirect', 'test', or 'all' (default). "
         "Pass a comma-separated list of project_slugs to find shared dependencies across projects."
     )
@@ -728,8 +729,10 @@ def query_databases_raw(database_slug: str = "") -> str:
 
     registry = ProjectRegistry()
     if database_slug:
-        normalized = registry._normalize_slug(database_slug)
-        db_entity = registry.get_database(normalized, allow_unreadable=True)
+        normalized, ambiguous = resolve_database(registry, database_slug)
+        if ambiguous:
+            return ambiguity_message(database_slug, ambiguous)
+        db_entity = registry.get_database(normalized, allow_unreadable=True) if normalized else None
         if not db_entity:
             return f"Database '{database_slug}' not found in registry."
 
@@ -805,8 +808,12 @@ def query_database_schema_raw(
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
-    normalized = registry._normalize_slug(database_slug)
-    db_entity = registry.get_database(normalized, allow_unreadable=True)
+    if table_name and "." in table_name and not schema_name:
+        schema_name, table_name = table_name.split(".", 1)
+    normalized, ambiguous = resolve_database(registry, database_slug)
+    if ambiguous:
+        return ambiguity_message(database_slug, ambiguous)
+    db_entity = registry.get_database(normalized, allow_unreadable=True) if normalized else None
     if not db_entity:
         return f"Database '{database_slug}' not found."
 
@@ -921,7 +928,9 @@ def query_database_schema_raw(
         "If table_name is provided, returns columns (with types, nullable, primary key, foreign key information) "
         "and row count/size statistics for that table. "
         "If only schema_name is provided, lists tables in that schema. "
-        "If neither is provided, returns a list of all tables in the database with their row counts and sizes."
+        "If neither is provided, returns a list of all tables in the database with their row counts and sizes. "
+        "To describe a table ('describe sales.salesorderheader'), pass table_name (a 'schema.table' name is "
+        "accepted). database_slug may be the database's own name, e.g. 'adventureworks'."
     )
 )
 def query_database_schema(database_slug: str, schema_name: str = "", table_name: str = "") -> str:
@@ -1033,13 +1042,17 @@ def compare_database_schemas_raw(
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
-    slug_a = registry._normalize_slug(database_slug_a)
-    slug_b = registry._normalize_slug(database_slug_b)
+    slug_a, ambiguous_a = resolve_database(registry, database_slug_a)
+    slug_b, ambiguous_b = resolve_database(registry, database_slug_b)
+    if ambiguous_a:
+        return ambiguity_message(database_slug_a, ambiguous_a)
+    if ambiguous_b:
+        return ambiguity_message(database_slug_b, ambiguous_b)
 
-    db_a = registry.get_database(slug_a, allow_unreadable=True)
+    db_a = registry.get_database(slug_a, allow_unreadable=True) if slug_a else None
     if not db_a:
         return f"Database '{database_slug_a}' not found in registry."
-    db_b = registry.get_database(slug_b, allow_unreadable=True)
+    db_b = registry.get_database(slug_b, allow_unreadable=True) if slug_b else None
     if not db_b:
         return f"Database '{database_slug_b}' not found in registry."
 
@@ -1313,7 +1326,8 @@ def coverage_sweep_raw(analysis: str, resource_type: str = "", only_gaps: bool =
     description=(
         "Sweep EVERY registered resource for one analysis and group them by what is known: has a result, "
         "ran and found nothing, never run, or cannot be established. Use for 'which repos have no license "
-        "classification?', 'which databases have never been checked for X?'. analysis is an analysis id "
+        "classification?', 'which databases have never been checked for X?'. The analysis word ('license', "
+        "'security', 'cve') names an ANALYSIS, never a repository that happens to have that name. analysis is an analysis id "
         "(license_classification, security_scan, cve_scan, secret_scan, documentation_coverage, "
         "dependency_analysis, ci_quality, database_owner, schema_inventory, ...) or a plain word such as "
         "'license' or 'security'. resource_type is 'repo', 'database' or 'filesystem' (optional). "
@@ -1378,7 +1392,14 @@ def list_rfas_raw(resource_slug: str = "", include_closed: bool = False) -> str:
     scope = f" for '{slug}'" if slug else ""
     if not shown:
         return f"No open RequestForAction entries{scope} ({total} in total, including closed or dismissed)."
-    lines = [f"{len(shown)} RequestForAction entr{'y' if len(shown) == 1 else 'ies'}{scope} ({total} in total):"]
+    by_status: dict[str, int] = {}
+    for r in shown:
+        by_status[r.get("rfa_status", "open")] = by_status.get(r.get("rfa_status", "open"), 0) + 1
+    breakdown = ", ".join(f"{n} {status}" for status, n in sorted(by_status.items()))
+    lines = [
+        f"{len(shown)} RequestForAction entr{'y' if len(shown) == 1 else 'ies'}{scope} not yet completed "
+        f"({breakdown}; {total} in total). Report each with its status word as shown:"
+    ]
     for r in shown[:25]:
         who = f", assigned to {r['assignee']}" if r.get("assignee") else ""
         target = f"`{r['entity_slug']}`" if r.get("entity_slug") else "(no specific resource)"
@@ -1412,7 +1433,8 @@ def query_cross_asset_links_raw(
 
 @tool(
     description=(
-        "Discover linkages between code repositories and cataloged databases: a repo's model classes sharing "
+        "Discover linkages between code repositories and cataloged databases. Use for 'which databases does X "
+        "use?' (pass the repo as resource_slug) and 'which repos use database Y?'. A repo's model classes sharing "
         "names with a database's tables, plus matching database drivers. Pass resource_slug to filter to one "
         "repository or database, or leave empty for all. Lists only high-confidence links by default, best "
         "first (limit, default 15) and always reports how many medium and low ones exist; pass "

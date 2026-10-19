@@ -1247,7 +1247,7 @@ def test_list_rfas_is_read_only_and_honest(db):
         create_rfa_from_finding_raw("rfa_repo", "Missing docs", analysis_name="doc_coverage")
         create_rfa_from_finding_raw("rfa_repo", "No tests")
         out = list_rfas_raw("rfa_repo")
-        assert "2 RequestForAction entries for 'rfa_repo'" in out
+        assert "2 RequestForAction entries for 'rfa_repo' not yet completed (2 open;" in out
         assert "[open]" in out and "Missing docs" in out and "No tests" in out
         assert "only read them" in out
 
@@ -1337,3 +1337,118 @@ def test_database_figures_count_a_read_fallback_comment():
     ]}]}
     f = _database_figures(info)
     assert (f["documented"], f["undocumented_tables"], f["unmeasured"]) == (1, 1, 1)
+
+
+def test_chat_stat_tools_read_the_registry_not_a_sqlite_file(db, monkeypatch):
+    """On a Postgres registry `db_path` is an empty SQLite file; the tools must not use it."""
+    from datetime import datetime, timedelta
+    from resource_explorer.agents.tools import query_project_stats_raw, query_top_committers_raw
+    from resource_explorer.registry import Project
+
+    db.add(Project(slug="statrepo", display_name="Stat Repo", github_url="https://github.com/o/statrepo"))
+    when = (datetime.utcnow() - timedelta(days=3)).isoformat()
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO project_commits (project_slug, sha, author_name, author_email, committed_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("statrepo", "abc123", "Ada", "ada@example.org", when),
+        )
+    monkeypatch.setattr(db, "db_path", "/nonexistent/empty.db", raising=False)
+
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
+        committers = query_top_committers_raw("statrepo")
+        stats = query_project_stats_raw("statrepo")
+
+    assert "Ada: 1 commit" in committers
+    assert "Error reading" not in stats
+
+
+def test_top_committers_respects_the_window_and_stats_label_their_dates(db):
+    """Old commits must not count toward "last 90 days"; the stats header says which date each figure has."""
+    from datetime import datetime, timedelta
+    from resource_explorer.agents.tools import query_project_stats_raw, query_top_committers_raw
+    from resource_explorer.registry import Project
+
+    db.add(Project(slug="winrepo", display_name="Win Repo", github_url="https://github.com/o/winrepo"))
+    now = datetime.utcnow()
+    rows = [("n1", "Ada", 5), ("n2", "Ada", 40), ("o1", "Bob", 200), ("o2", "Bob", 300), ("o3", "Bob", 400)]
+    with db._conn() as conn:
+        for sha, who, age in rows:
+            conn.execute(
+                "INSERT INTO project_commits (project_slug, sha, author_name, author_email, committed_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("winrepo", sha, who, f"{who}@example.org", (now - timedelta(days=age)).isoformat()),
+            )
+        conn.execute(
+            "INSERT INTO project_stats (project_slug, fetched_at, commits_30d, commits_90d) VALUES (?, ?, ?, ?)",
+            ("winrepo", "2026-01-01T00:00:00", 119, 476),
+        )
+
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
+        recent = query_top_committers_raw("winrepo")
+        wide = query_top_committers_raw("winrepo", days=500)
+        stats = query_project_stats_raw("winrepo", days=500)
+
+    assert "Ada: 2 commits" in recent and "Bob" not in recent
+    assert "last 90 days" in recent
+    assert "Bob: 3 commits" in wide and "last 500 days" in wide
+    # The snapshot date labels the snapshot figures only; commit counts say they were counted today.
+    assert "snapshot taken 2026-01-01" in stats
+    assert "counted today" in stats and "from 5 stored commits" in stats
+    assert "30d: 1  90d: 2  500d: 5" in stats
+
+
+def test_database_names_resolve_and_ambiguity_is_reported(db):
+    from resource_explorer.history_diff import database_changes
+    from resource_explorer.name_resolution import resolve_database
+
+    def add(slug, display, dbname):
+        db.register_database(DatabaseEntity(slug=slug, display_name=display, db_type="postgresql",
+                                            host="h", port=5432, database_name=dbname))
+
+    add("laz_local_adventureworks", "Laz Local Adventureworks", "adventureworks")
+    add("laz_local_coco_pharma", "Laz Local Coco Pharma", "coco_pharma")
+    add("pg_a_orders", "Orders A", "orders")
+    add("pg_b_orders", "Orders B", "orders")
+
+    assert resolve_database(db, "laz_local_adventureworks") == ("laz_local_adventureworks", [])   # slug
+    assert resolve_database(db, "adventureworks") == ("laz_local_adventureworks", [])             # database name
+    assert resolve_database(db, "Coco-Pharma") == ("laz_local_coco_pharma", [])                   # suffix, folded
+    assert resolve_database(db, "orders") == (None, ["pg_a_orders", "pg_b_orders"])               # ambiguous
+    assert resolve_database(db, "nowhere") == (None, [])
+
+    assert "more than one registered database" in database_changes(db, "orders")
+    assert "is not registered" in database_changes(db, "nowhere")
+    assert "never been surveyed" in database_changes(db, "adventureworks")                        # resolved
+
+
+def test_a_database_is_found_in_a_question_by_its_own_name(db):
+    db.register_database(DatabaseEntity(slug="laz_local_adventureworks", display_name="Laz Local Adventureworks",
+                                        db_type="postgresql", host="h", port=5432, database_name="adventureworks"))
+    db.register_database(DatabaseEntity(slug="laz_local_coco_pharma", display_name="Laz Local Coco Pharma",
+                                        db_type="postgresql", host="h", port=5432, database_name="coco_pharma"))
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
+        found = MockAgent()._infer_all_project_slugs("compare the adventureworks and coco_pharma schemas")
+    assert found == ["laz_local_adventureworks", "laz_local_coco_pharma"]
+
+
+def test_an_empty_agent_answer_raises_so_the_fallback_runs():
+    from resource_explorer.agents import base as base_mod
+    from resource_explorer.agents.base import EmptyAgentAnswer
+
+    with patch.object(MockAgent, "_build_agent", return_value=MagicMock()), \
+         patch.object(base_mod.asyncio, "run", side_effect=lambda coro: (coro.close(), "  ")[1]):
+        with pytest.raises(EmptyAgentAnswer):
+            MockAgent()._run_agent("anything")
+
+
+def test_a_database_given_by_its_own_name_is_found_by_the_schema_tool(db):
+    from resource_explorer.agents.tools import query_database_schema_raw
+
+    db.register_database(DatabaseEntity(slug="laz_local_aw", display_name="AW", db_type="postgresql",
+                                        host="h", port=5432, database_name="aw"))
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
+        out = query_database_schema_raw("aw", table_name="sales.salesorderheader")
+    # Resolved to the registered database; only the survey is missing.
+    assert "not found" not in out.lower()
+    assert "No survey data available" in out

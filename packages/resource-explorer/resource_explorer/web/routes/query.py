@@ -64,6 +64,18 @@ def _get_or_create_session(session_id: str, resource_slug: str | None,
     return agent
 
 
+def _ephemeral_session(resource_slug: str | None, resource_type: str | None = None):
+    """A one-request ConversationAgent for a caller that sent no session_id.
+
+    It has every tool the stored sessions have. It is not put in `_sessions` and its turns are not
+    persisted: with no session_id there is no conversation to resume, and writing history rows under
+    an invented id would leave unreachable rows behind.
+    """
+    from resource_explorer.agents.conversation_agent import ConversationAgent
+
+    return ConversationAgent(resource_slug=resource_slug, resource_type=resource_type or "repo")
+
+
 def _persist_turn(
     session_id: str, query: str, response: str, resource_slug: str | None,
     compile_id: str | None = None,
@@ -208,10 +220,9 @@ def _pick_chart(query: str, intent: str, resource_slug: str) -> dict | None:
 async def ask(request: QueryRequest) -> QueryResponse:
     """POST a question, get a response.
 
-    Both branches below are synchronous, potentially-slow code
-    (ConversationAgent.handle / RAGSystem.query, each of which can run
-    LLM calls and tool calls, including a Postgres vector_search) — they
-    run off the event loop via asyncio.to_thread, never awaited directly
+    ConversationAgent.handle is synchronous, potentially-slow code (LLM calls
+    and tool calls, including a Postgres vector_search) — it
+    runs off the event loop via asyncio.to_thread, never awaited directly
     on it. Before 2026-09-13 they were called straight from this `async
     def`, which is exactly how a single stuck vector_search connect froze
     every request the :8810 process was serving: this coroutine runs on
@@ -222,21 +233,18 @@ async def ask(request: QueryRequest) -> QueryResponse:
     intent = QueryProcessor().classify(request.query)
     query_hash = hashlib.sha256(request.query.encode()).hexdigest()[:16]
 
-    compiled = None
     if request.session_id:
         agent = _get_or_create_session(request.session_id, request.resource_slug,
                                         request.entity_type)
-        response = await asyncio.to_thread(
-            agent.handle, request.query, resource_slug=request.resource_slug,
-            resource_type=request.entity_type, perspectives=request.perspectives,
-        )
-        _persist_turn(request.session_id, request.query, response, request.resource_slug)
-        compiled = _compiled_payload(agent)
     else:
-        from resource_explorer.rag_system import RAGSystem
-        response = await asyncio.to_thread(
-            RAGSystem().query, request.query, resource_slug=request.resource_slug,
-        )
+        agent = _ephemeral_session(request.resource_slug, request.entity_type)
+    response = await asyncio.to_thread(
+        agent.handle, request.query, resource_slug=request.resource_slug,
+        resource_type=request.entity_type, perspectives=request.perspectives,
+    )
+    if request.session_id:
+        _persist_turn(request.session_id, request.query, response, request.resource_slug)
+    compiled = _compiled_payload(agent)
 
     chart = _pick_chart(request.query, intent.value, request.resource_slug or "")
     chips = None
@@ -265,7 +273,7 @@ async def stream(request: QueryRequest) -> StreamingResponse:
         POST /api/context/compile's response, sourced from the same compile
         ConversationAgent._compiled_evidence already did to shape this
         answer -- None when there was no resource in scope, or nothing
-        compiled (the RAGSystem fallback path, no session_id).
+        compiled. A request with no session_id runs a fresh ConversationAgent whose turns are not stored.
     """
     def _sse(obj: dict) -> str:
         return f"data: {json.dumps(obj)}\n\n"
@@ -298,24 +306,22 @@ async def stream(request: QueryRequest) -> StreamingResponse:
 
         def _producer() -> None:
             try:
+                from resource_explorer.query_processor import QueryProcessor
+                intent = QueryProcessor().classify(request.query).value
                 if request.session_id:
-                    from resource_explorer.query_processor import QueryProcessor
-                    intent = QueryProcessor().classify(request.query).value
                     agent = _get_or_create_session(request.session_id, request.resource_slug,
                                                     request.entity_type)
-                    text = agent.handle(request.query, resource_slug=request.resource_slug,
-                                        resource_type=request.entity_type,
-                                        perspectives=request.perspectives)
-                    compiled = _compiled_payload(agent)
+                else:
+                    agent = _ephemeral_session(request.resource_slug, request.entity_type)
+                text = agent.handle(request.query, resource_slug=request.resource_slug,
+                                    resource_type=request.entity_type,
+                                    perspectives=request.perspectives)
+                compiled = _compiled_payload(agent)
+                if request.session_id:
                     _persist_turn(request.session_id, request.query, text, request.resource_slug,
                                   compile_id=_compile_id_of(agent))
-                    loop.call_soon_threadsafe(queue.put_nowait, text)
-                    loop.call_soon_threadsafe(queue.put_nowait, {"_done": True, "intent": intent, "hash": hashlib.sha256(request.query.encode()).hexdigest()[:16], "cached": False, "compiled": compiled})
-                else:
-                    from resource_explorer.rag_system import RAGSystem
-                    rag = RAGSystem()
-                    for item in rag.stream(request.query, resource_slug=request.resource_slug):
-                        loop.call_soon_threadsafe(queue.put_nowait, item)
+                loop.call_soon_threadsafe(queue.put_nowait, text)
+                loop.call_soon_threadsafe(queue.put_nowait, {"_done": True, "intent": intent, "hash": hashlib.sha256(request.query.encode()).hexdigest()[:16], "cached": False, "compiled": compiled})
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
 
@@ -391,7 +397,6 @@ def _code_inventory_table(query: str, resource_slug: str) -> dict | None:
     Extracts kind hint from query, returns top 30 matching symbols.
     """
     import re
-    import sqlite3
     try:
         from resource_explorer.registry import ProjectRegistry
         registry = ProjectRegistry()
@@ -410,27 +415,25 @@ def _code_inventory_table(query: str, resource_slug: str) -> dict | None:
         if m:
             pattern = m.group(1)
 
-        conn = sqlite3.connect(registry.db_path)
-        conn.row_factory = sqlite3.Row
         filters = ["project_slug = ?"]
         params: list = [slug]
         if kind != "all":
             filters.append("kind = ?")
             params.append(kind)
         if pattern:
-            filters.append("name LIKE ?")
-            params.append(f"%{pattern}%")
+            filters.append("LOWER(name) LIKE ?")
+            params.append(f"%{pattern.lower()}%")
         where = " AND ".join(filters)
-        rows = conn.execute(
-            f"SELECT kind, name, qualified_name, signature, docstring, file_path, start_line "  # noqa: S608
-            f"FROM project_code_symbols WHERE {where} ORDER BY file_path, start_line LIMIT 30",
-            params,
-        ).fetchall()
-        total = conn.execute(
-            f"SELECT COUNT(*) FROM project_code_symbols WHERE {where}",  # noqa: S608
-            params,
-        ).fetchone()[0]
-        conn.close()
+        with registry._conn() as conn:
+            rows = conn.execute(
+                f"SELECT kind, name, qualified_name, signature, docstring, file_path, start_line "  # noqa: S608
+                f"FROM project_code_symbols WHERE {where} ORDER BY file_path, start_line LIMIT 30",
+                params,
+            ).fetchall()
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM project_code_symbols WHERE {where}",  # noqa: S608
+                params,
+            ).fetchone()[0]
 
         if not rows:
             return None
@@ -461,7 +464,6 @@ def _compare_symbols_table(query: str) -> dict | None:
     projects have symbol data or the query isn't about code structure.
     """
     import re
-    import sqlite3
 
     _SYMBOL_KEYWORDS = ("class", "method", "function", "interface", "api surface", "symbol", "public")
     q = query.lower()
@@ -483,52 +485,48 @@ def _compare_symbols_table(query: str) -> dict | None:
         if len(slugs) < 2:
             return None
 
-        conn = sqlite3.connect(registry.db_path)
-        conn.row_factory = sqlite3.Row
-
         sides = []
-        for slug in slugs[:2]:
-            filters = ["project_slug = ?"]
-            params: list = [slug]
-            if kind != "all":
-                filters.append("kind = ?")
-                params.append(kind)
-            where = " AND ".join(filters)
+        with registry._conn() as conn:
+            for slug in slugs[:2]:
+                filters = ["project_slug = ?"]
+                params: list = [slug]
+                if kind != "all":
+                    filters.append("kind = ?")
+                    params.append(kind)
+                where = " AND ".join(filters)
 
-            counts_rows = conn.execute(
-                f"SELECT kind, COUNT(*) as cnt FROM project_code_symbols WHERE {where} GROUP BY kind",  # noqa: S608
-                params,
-            ).fetchall()
-            counts = {r["kind"]: r["cnt"] for r in counts_rows}
+                counts_rows = conn.execute(
+                    f"SELECT kind, COUNT(*) as cnt FROM project_code_symbols WHERE {where} GROUP BY kind",  # noqa: S608
+                    params,
+                ).fetchall()
+                counts = {r["kind"]: r["cnt"] for r in counts_rows}
 
-            items_rows = conn.execute(
-                f"SELECT kind, qualified_name, signature, docstring, file_path, start_line "  # noqa: S608
-                f"FROM project_code_symbols WHERE {where} ORDER BY kind, file_path, start_line LIMIT 20",
-                params,
-            ).fetchall()
-            total = conn.execute(
-                f"SELECT COUNT(*) FROM project_code_symbols WHERE {where}",  # noqa: S608
-                params,
-            ).fetchone()[0]
+                items_rows = conn.execute(
+                    f"SELECT kind, qualified_name, signature, docstring, file_path, start_line "  # noqa: S608
+                    f"FROM project_code_symbols WHERE {where} ORDER BY kind, file_path, start_line LIMIT 20",
+                    params,
+                ).fetchall()
+                total = conn.execute(
+                    f"SELECT COUNT(*) FROM project_code_symbols WHERE {where}",  # noqa: S608
+                    params,
+                ).fetchone()[0]
 
-            sides.append({
-                "slug": slug,
-                "total": total,
-                "counts": counts,
-                "items": [
-                    {
-                        "kind": r["kind"],
-                        "name": r["qualified_name"],
-                        "signature": r["signature"] or "",
-                        "doc": (r["docstring"] or "")[:80],
-                        "file": r["file_path"],
-                        "line": r["start_line"],
-                    }
-                    for r in items_rows
-                ],
-            })
-
-        conn.close()
+                sides.append({
+                    "slug": slug,
+                    "total": total,
+                    "counts": counts,
+                    "items": [
+                        {
+                            "kind": r["kind"],
+                            "name": r["qualified_name"],
+                            "signature": r["signature"] or "",
+                            "doc": (r["docstring"] or "")[:80],
+                            "file": r["file_path"],
+                            "line": r["start_line"],
+                        }
+                        for r in items_rows
+                    ],
+                })
 
         if not any(s["total"] > 0 for s in sides):
             return None

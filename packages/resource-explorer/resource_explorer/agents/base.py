@@ -8,6 +8,10 @@ from typing import Any
 from resource_explorer.config import ExplorerConfig, get_config
 
 
+class EmptyAgentAnswer(Exception):
+    """The agent ran to completion and produced no text."""
+
+
 class BaseExplorerAgent(ABC):
     """
     Wraps BeeAI RequirementAgent with standard configuration.
@@ -218,7 +222,13 @@ class BaseExplorerAgent(ABC):
                     results.append((pos, project.slug))
 
             # 2. Match databases
-            for db in registry.list_databases():
+            all_databases = registry.list_databases()
+            db_name_counts: dict[str, int] = {}
+            for db in all_databases:
+                if db.database_name:
+                    key = db.database_name.lower()
+                    db_name_counts[key] = db_name_counts.get(key, 0) + 1
+            for db in all_databases:
                 slug = db.slug.lower()
                 slug_pattern = slug.replace("_", r"[-_ ]")
                 m = re.search(r"\b" + slug_pattern + r"\b", q_normalized)
@@ -228,6 +238,13 @@ class BaseExplorerAgent(ABC):
                     if words:
                         m = re.search(r"\b" + re.escape(words[0]) + r"\b", q)
                         if m and all(w in q for w in words):
+                            pos = m.start()
+                if pos is None and db.database_name and db.database_name.lower() in db_name_counts:
+                    # The database's own name ("adventureworks" for laz_local_adventureworks), only
+                    # when no other registered database shares it: otherwise it names no one of them.
+                    if db_name_counts[db.database_name.lower()] == 1:
+                        m = re.search(r"\b" + re.escape(db.database_name.lower()) + r"\b", q_normalized)
+                        if m:
                             pos = m.start()
                 if pos is not None:
                     results.append((pos, db.slug))
@@ -312,7 +329,12 @@ class BaseExplorerAgent(ABC):
 
             # The shared pool carries the caller into its thread (concurrency._CallersContextPool),
             # so an A2A or chat request's agent reads the registry and Egeria as the caller.
-            return run_sync(lambda: asyncio.run(_inner()))
+            text = run_sync(lambda: asyncio.run(_inner()))
         except RuntimeError:
             # No running event loop — safe to call asyncio.run directly
-            return asyncio.run(_inner())
+            text = asyncio.run(_inner())
+        if not (text or "").strip():
+            # final_answer("") is a 200 with nothing in it. Raise so the caller's own fallback runs,
+            # rather than showing the user a blank reply.
+            raise EmptyAgentAnswer("the agent finished with an empty answer")
+        return text

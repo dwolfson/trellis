@@ -98,6 +98,11 @@ class ConversationAgent(BaseExplorerAgent):
             "search and present its results as though they answered the question. A confident "
             "answer built from the wrong source is a worse outcome than admitting the evidence "
             "doesn't cover it."
+            "\n\nWhen you report a tool result, keep its exact labels and counts: use the status "
+            "word the tool printed (open, deferred, ...), report every group a coverage result lists "
+            "(including 'never run' and 'cannot be established'), and give a survey date only as the "
+            "tool labels it ('Latest survey' is the newer date). A result of 'not found' or an error "
+            "is not 'no data': say the lookup failed."
             # Restored 2026-09-09 after experiment run 3: pointing this at a
             # one-shape refusal template in context_compile._INSTRUCTIONS made
             # the 8B model refuse 107 of 156 questions, most with the answering

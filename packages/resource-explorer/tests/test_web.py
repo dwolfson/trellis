@@ -318,25 +318,59 @@ class TestStatsRouter:
 # ── /api/query ────────────────────────────────────────────────────────────────
 
 class TestQueryRouter:
-    def test_query_endpoint(self, client):
-        with patch("resource_explorer.rag_system.RAGSystem") as mock_rag_cls:
-            mock_rag_cls.return_value.query.return_value = "mocked response"
-            resp = client.post("/api/query/", json={"query": "what is this project?"})
+    """A request with no session_id still gets the tool-using ConversationAgent, as a fresh agent
+    that is neither kept in `_sessions` nor written to chat history."""
+
+    @pytest.fixture
+    def fake_llm(self, monkeypatch):
+        """Fake only the model run; routing, agent construction and the tool list are real."""
+        from resource_explorer.agents.conversation_agent import ConversationAgent
+
+        seen = {"prompts": [], "tools": []}
+
+        def _run(self, prompt):
+            seen["prompts"].append(prompt)
+            seen["tools"] = [getattr(t, "name", "") for t in self.tools()]
+            return "agent answer"
+
+        monkeypatch.setattr(ConversationAgent, "_run_persistent", _run)
+        return seen
+
+    def test_query_endpoint(self, client, fake_llm):
+        resp = client.post("/api/query/", json={"query": "what is this project?"})
         assert resp.status_code == 200
         body = resp.json()
-        assert body["response"] == "mocked response"
+        assert body["response"] == "agent answer"
         assert "intent" in body
 
-    def test_query_with_project_scope(self, client):
-        with patch("resource_explorer.rag_system.RAGSystem") as mock_rag_cls:
-            rag_mock = mock_rag_cls.return_value
-            rag_mock.query.return_value = "scoped response"
-            resp = client.post("/api/query/", json={
-                "query": "what is this project?",
-                "project_slug": "myproj",
-            })
+    def test_sessionless_request_reaches_the_tools_not_retrieval_only(self, client, fake_llm):
+        from unittest.mock import patch as _patch
+
+        with _patch("resource_explorer.rag_system.RAGSystem") as rag_cls:
+            resp = client.post("/api/query/", json={"query": "which repos have no license classification?"})
         assert resp.status_code == 200
-        rag_mock.query.assert_called_once_with("what is this project?", resource_slug="myproj")
+        assert resp.json()["response"] == "agent answer"
+        rag_cls.return_value.query.assert_not_called()
+        assert "coverage_sweep" in fake_llm["tools"]
+        assert "Question: which repos have no license classification?" in fake_llm["prompts"][0]
+
+    def test_sessionless_request_is_not_kept_or_persisted(self, client, fake_llm, registry):
+        from resource_explorer.web.routes import query as q
+
+        before = dict(q._sessions)
+        resp = client.post("/api/query/", json={"query": "what is this project?"})
+        assert resp.status_code == 200
+        assert q._sessions == before
+        with registry._conn() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM conversation_history").fetchone()[0] == 0
+
+    def test_query_with_project_scope(self, client, fake_llm):
+        resp = client.post("/api/query/", json={
+            "query": "what is this project?",
+            "resource_slug": "myproj",
+        })
+        assert resp.status_code == 200
+        assert "Project: myproj" in fake_llm["prompts"][0]
 
 
 class TestQueryFeedbackRouter:
