@@ -87,6 +87,10 @@
   {
    "id": "page-22",
    "name": "Runs and registration"
+  },
+  {
+   "id": "page-23",
+   "name": "Table preview and group scheduling"
   }
  ],
  "artboards": [
@@ -370,6 +374,14 @@
    "w": 1560,
    "h": 1000,
    "page": "page-22"
+  },
+  {
+   "file": "PreviewAndScheduling.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 1560,
+   "h": 1140,
+   "page": "page-23"
   }
  ],
  "annotations": [
@@ -564,10 +576,18 @@
    "w": 300,
    "page": "page-22",
    "text": "Reply to ASK-DESIGNER-RUNS-REGISTRATION, against main at df5dbc91.\n\nOne survey definition, one card: its runs (whoever coordinated them) move onto the definition card; RE definitions leave \"Egeria's own surveys\". One verb, Run, with the coordinator named: \"Re-run\u2026\" and \"Re-run \u00b7 coordinated by Egeria \u2192\". A definition Egeria cannot start shows the control off, with the step named.\n\nA refusal the person can fix says how on the run line; \u25cb not run replaces \u2298 refused. Registration states come from what Egeria answered: will change, couldn't connect (naming the address), no longer in Egeria (one press to register again). The signed-in user is never truncated."
+  },
+  {
+   "id": "preview-sched-brief",
+   "x": 1660,
+   "y": 0,
+   "w": 300,
+   "page": "page-23",
+   "text": "Replies to ASK-DESIGNER-TABLE-PREVIEW and ASK-DESIGNER-GROUP-SCHEDULING-AND-FIRST-INDEX (2026-10-19), against main at 55c5c6ea.\n\nA preview is an act, not a view: nothing runs until the press; the header says whose credential, how many rows, not a sample. Masking reasons sit on the column header (PII match, confidential, not profiled); reveal is one column, one confirm, one audit row.\n\nScheduling: the form is always visible with a For picker (resource, selection, Group). A selection is a bulk choice; a Group schedule is a rule that follows membership. Own schedule beats Group. First index asked first, with measured and estimated figures each sourced, one confirm per batch."
   }
  ],
  "launch": {
   "view": "canvas",
-  "page": "page-22"
+  "page": "page-23"
  }
 }
