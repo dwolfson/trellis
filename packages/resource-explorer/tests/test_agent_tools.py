@@ -1337,3 +1337,27 @@ def test_database_figures_count_a_read_fallback_comment():
     ]}]}
     f = _database_figures(info)
     assert (f["documented"], f["undocumented_tables"], f["unmeasured"]) == (1, 1, 1)
+
+
+def test_chat_stat_tools_read_the_registry_not_a_sqlite_file(db, monkeypatch):
+    """On a Postgres registry `db_path` is an empty SQLite file; the tools must not use it."""
+    from datetime import datetime, timedelta
+    from resource_explorer.agents.tools import query_project_stats_raw, query_top_committers_raw
+    from resource_explorer.registry import Project
+
+    db.add(Project(slug="statrepo", display_name="Stat Repo", github_url="https://github.com/o/statrepo"))
+    when = (datetime.utcnow() - timedelta(days=3)).isoformat()
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO project_commits (project_slug, sha, author_name, author_email, committed_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("statrepo", "abc123", "Ada", "ada@example.org", when),
+        )
+    monkeypatch.setattr(db, "db_path", "/nonexistent/empty.db", raising=False)
+
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
+        committers = query_top_committers_raw("statrepo")
+        stats = query_project_stats_raw("statrepo")
+
+    assert "Ada: 1 commit" in committers
+    assert "Error reading" not in stats

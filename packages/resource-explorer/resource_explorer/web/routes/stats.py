@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 
 from fastapi import APIRouter, HTTPException
 
@@ -23,7 +22,7 @@ async def get_stats(slug: str) -> dict:
     if not registry.exists(slug):
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
 
-    row = _latest_stats(registry.db_path, slug)
+    row = _latest_stats(registry, slug)
     if not row:
         raise HTTPException(status_code=404, detail=f"No stats for '{slug}' — run refresh first")
 
@@ -85,7 +84,7 @@ async def get_stats_history(
     if not registry.exists(slug):
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
 
-    rows = _history(registry.db_path, slug, metric, limit)
+    rows = _history(registry, slug, metric, limit)
     return {
         "slug": slug,
         "metric": metric,
@@ -266,30 +265,26 @@ async def database_statistics_currency(slug: str, limit: int = 12) -> dict:
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _latest_stats(db_path: str, slug: str) -> dict:
+def _latest_stats(registry, slug: str) -> dict:
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT * FROM project_stats WHERE project_slug = ? ORDER BY fetched_at DESC LIMIT 1",
-            (slug,),
-        ).fetchone()
-        conn.close()
+        with registry._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM project_stats WHERE project_slug = ? ORDER BY fetched_at DESC LIMIT 1",
+                (slug,),
+            ).fetchone()
         return dict(row) if row else {}
     except Exception:
         return {}
 
 
-def _history(db_path: str, slug: str, metric: str, limit: int) -> list[dict]:
+def _history(registry, slug: str, metric: str, limit: int) -> list[dict]:
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            f"SELECT fetched_at, {metric} FROM project_stats "  # noqa: S608 — metric validated above
-            "WHERE project_slug = ? ORDER BY fetched_at ASC LIMIT ?",
-            (slug, min(limit, 365)),
-        ).fetchall()
-        conn.close()
+        with registry._conn() as conn:
+            rows = conn.execute(
+                f"SELECT fetched_at, {metric} FROM project_stats "  # noqa: S608 — metric validated above
+                "WHERE project_slug = ? ORDER BY fetched_at ASC LIMIT ?",
+                (slug, min(limit, 365)),
+            ).fetchall()
         return [{"date": r["fetched_at"][:10], "value": r[metric]} for r in rows]
     except Exception:
         return []

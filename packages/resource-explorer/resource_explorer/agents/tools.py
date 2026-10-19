@@ -73,36 +73,33 @@ def vector_search(query: str, collection_names: str) -> str:
 
 
 def query_project_stats_raw(resource_slug: str, days: int = 90) -> str:
-    import sqlite3
     from datetime import datetime, timedelta
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
     slug = registry._normalize_slug(resource_slug)
     try:
-        conn = sqlite3.connect(registry.db_path)
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT * FROM project_stats WHERE project_slug = ? ORDER BY fetched_at DESC LIMIT 1",
-            (slug,),
-        ).fetchone()
-        now = datetime.utcnow()
-        cutoff = (now - timedelta(days=days)).isoformat()
-        cutoff_30 = (now - timedelta(days=30)).isoformat()
-        cutoff_90 = (now - timedelta(days=90)).isoformat()
-        live_n = conn.execute(
-            "SELECT COUNT(*) FROM project_commits WHERE project_slug = ? AND committed_at >= ?",
-            (slug, cutoff),
-        ).fetchone()[0]
-        live_30 = conn.execute(
-            "SELECT COUNT(*) FROM project_commits WHERE project_slug = ? AND committed_at >= ?",
-            (slug, cutoff_30),
-        ).fetchone()[0]
-        live_90 = conn.execute(
-            "SELECT COUNT(*) FROM project_commits WHERE project_slug = ? AND committed_at >= ?",
-            (slug, cutoff_90),
-        ).fetchone()[0]
-        conn.close()
+        with registry._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM project_stats WHERE project_slug = ? ORDER BY fetched_at DESC LIMIT 1",
+                (slug,),
+            ).fetchone()
+            now = datetime.utcnow()
+            cutoff = (now - timedelta(days=days)).isoformat()
+            cutoff_30 = (now - timedelta(days=30)).isoformat()
+            cutoff_90 = (now - timedelta(days=90)).isoformat()
+            live_n = conn.execute(
+                "SELECT COUNT(*) FROM project_commits WHERE project_slug = ? AND committed_at >= ?",
+                (slug, cutoff),
+            ).fetchone()[0]
+            live_30 = conn.execute(
+                "SELECT COUNT(*) FROM project_commits WHERE project_slug = ? AND committed_at >= ?",
+                (slug, cutoff_30),
+            ).fetchone()[0]
+            live_90 = conn.execute(
+                "SELECT COUNT(*) FROM project_commits WHERE project_slug = ? AND committed_at >= ?",
+                (slug, cutoff_90),
+            ).fetchone()[0]
     except Exception as e:
         return f"Error reading stats: {e}"
     if not row:
@@ -134,25 +131,24 @@ def query_project_stats_raw(resource_slug: str, days: int = 90) -> str:
 
     # Prefer survey total (all file types) over code-only SQLite count
     try:
-        _cs_conn = sqlite3.connect(registry.db_path)
-        survey_total = _cs_conn.execute(
-            """SELECT SUM(file_count) FROM project_file_type_counts
-               WHERE project_slug = ?
-                 AND surveyed_at = (
-                     SELECT MAX(surveyed_at) FROM project_file_type_counts WHERE project_slug = ?
-                 )""",
-            (slug, slug),
-        ).fetchone()[0]
-        if not survey_total:
-            # Fall back to code-symbols count (Python/JS/Java/Go only)
+        with registry._conn() as _cs_conn:
             survey_total = _cs_conn.execute(
-                "SELECT COUNT(DISTINCT file_path) FROM project_code_symbols WHERE project_slug = ?",
-                (slug,),
+                """SELECT SUM(file_count) FROM project_file_type_counts
+                   WHERE project_slug = ?
+                     AND surveyed_at = (
+                         SELECT MAX(surveyed_at) FROM project_file_type_counts WHERE project_slug = ?
+                     )""",
+                (slug, slug),
             ).fetchone()[0]
-            file_count_note = "code files only — run survey for full count"
-        else:
-            file_count_note = "surveyed"
-        _cs_conn.close()
+            if not survey_total:
+                # Fall back to code-symbols count (Python/JS/Java/Go only)
+                survey_total = _cs_conn.execute(
+                    "SELECT COUNT(DISTINCT file_path) FROM project_code_symbols WHERE project_slug = ?",
+                    (slug,),
+                ).fetchone()[0]
+                file_count_note = "code files only — run survey for full count"
+            else:
+                file_count_note = "surveyed"
     except Exception:
         survey_total = None
         file_count_note = ""
@@ -198,25 +194,24 @@ def query_project_stats(resource_slug: str, days: int = 90) -> str:
 
 
 def query_top_committers_raw(resource_slug: str, limit: int = 10) -> str:
-    import sqlite3
     from collections import Counter
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
     slug = registry._normalize_slug(resource_slug)
     try:
-        conn = sqlite3.connect(registry.db_path)
-        rows = conn.execute(
-            "SELECT author_name, author_email FROM project_commits WHERE project_slug = ?",
-            (slug,),
-        ).fetchall()
-        conn.close()
+        with registry._conn() as conn:
+            rows = conn.execute(
+                "SELECT author_name, author_email FROM project_commits WHERE project_slug = ?",
+                (slug,),
+            ).fetchall()
     except Exception as e:
         return f"Error reading commits: {e}"
     if not rows:
         return _absence(slug, "repository_health", "commit data")
     counter: Counter = Counter()
-    for name, email in rows:
+    for row in rows:
+        name, email = row["author_name"], row["author_email"]
         label = name or email or "unknown"
         counter[label] += 1
     top = counter.most_common(limit)
@@ -243,14 +238,11 @@ def _query_code_symbols_raw(
     file_path: str = "",
     limit: int = 50,
 ) -> str:
-    import sqlite3
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
     slug = registry._normalize_slug(resource_slug)
     try:
-        conn = sqlite3.connect(registry.db_path)
-        conn.row_factory = sqlite3.Row
         filters = ["project_slug = ?"]
         params: list = [slug]
         if kind and kind != "all":
@@ -263,17 +255,17 @@ def _query_code_symbols_raw(
             filters.append("file_path LIKE ?")
             params.append(f"{file_path}%")
         where = " AND ".join(filters)
-        rows = conn.execute(
-            f"SELECT kind, qualified_name, signature, docstring, file_path, start_line "  # noqa: S608
-            f"FROM project_code_symbols WHERE {where} "
-            f"ORDER BY file_path, start_line LIMIT ?",
-            params + [limit],
-        ).fetchall()
-        total = conn.execute(
-            f"SELECT COUNT(*) FROM project_code_symbols WHERE {where}",  # noqa: S608
-            params,
-        ).fetchone()[0]
-        conn.close()
+        with registry._conn() as conn:
+            rows = conn.execute(
+                f"SELECT kind, qualified_name, signature, docstring, file_path, start_line "  # noqa: S608
+                f"FROM project_code_symbols WHERE {where} "
+                f"ORDER BY file_path, start_line LIMIT ?",
+                params + [limit],
+            ).fetchall()
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM project_code_symbols WHERE {where}",  # noqa: S608
+                params,
+            ).fetchone()[0]
     except Exception as exc:
         return f"Error reading symbol table: {exc}"
     if not rows:
@@ -325,22 +317,19 @@ def query_code_symbols(
     )
 )
 def get_symbol_detail(resource_slug: str, name: str) -> str:
-    import sqlite3
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
     slug = registry._normalize_slug(resource_slug)
     try:
-        conn = sqlite3.connect(registry.db_path)
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT * FROM project_code_symbols "
-            "WHERE project_slug = ? AND (qualified_name = ? OR name = ?) "
-            "ORDER BY CASE kind WHEN 'class' THEN 0 WHEN 'method' THEN 1 ELSE 2 END "
-            "LIMIT 1",
-            (slug, name, name),
-        ).fetchone()
-        conn.close()
+        with registry._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM project_code_symbols "
+                "WHERE project_slug = ? AND (qualified_name = ? OR name = ?) "
+                "ORDER BY CASE kind WHEN 'class' THEN 0 WHEN 'method' THEN 1 ELSE 2 END "
+                "LIMIT 1",
+                (slug, name, name),
+            ).fetchone()
     except Exception as exc:
         return f"Error: {exc}"
     if not row:
@@ -349,7 +338,7 @@ def get_symbol_detail(resource_slug: str, name: str) -> str:
             f"Use query_code_symbols to browse available symbols."
         )
     r = dict(row)
-    summary = r["summary"] or r["docstring"] or _generate_summary(slug, r, registry.db_path)
+    summary = r["summary"] or r["docstring"] or _generate_summary(slug, r, registry)
     lines = [f"[{r['kind']}] {r['qualified_name']}"]
     lines.append(f"File: {r['file_path']}  lines {r['start_line']}–{r['end_line']}")
     if r["signature"]:
@@ -359,13 +348,12 @@ def get_symbol_detail(resource_slug: str, name: str) -> str:
     return "\n".join(lines)
 
 
-def _generate_summary(resource_slug: str, symbol: dict, db_path: str) -> str:
+def _generate_summary(resource_slug: str, symbol: dict, registry) -> str:
     """Search for the symbol's source in pgvector and ask the LLM for a one-sentence summary."""
     try:
         from resource_explorer.vector_store_pg import MultiCollectionStore
         from resource_explorer.collection_router import CollectionRouter
         from resource_explorer.llm_client import get_llm
-        import sqlite3
 
         query = symbol["qualified_name"]
         collections = CollectionRouter().select(query, resource_slug)
@@ -379,7 +367,7 @@ def _generate_summary(resource_slug: str, symbol: dict, db_path: str) -> str:
         prompt = f"Summarize what this {symbol['kind']} does in one sentence:\n\n{snippet}"
         summary = get_llm().complete(prompt).strip().split("\n")[0]
         # Persist so the next call is instant
-        with sqlite3.connect(db_path) as conn:
+        with registry._conn() as conn:
             conn.execute(
                 "UPDATE project_code_symbols SET summary = ? "
                 "WHERE project_slug = ? AND file_path = ? AND qualified_name = ?",
@@ -398,7 +386,6 @@ def _generate_summary(resource_slug: str, symbol: dict, db_path: str) -> str:
     )
 )
 def query_commit_activity(resource_slug: str, weeks: int = 12) -> str:
-    import sqlite3
     from collections import defaultdict
     from datetime import datetime, timedelta
     from resource_explorer.registry import ProjectRegistry
@@ -407,13 +394,12 @@ def query_commit_activity(resource_slug: str, weeks: int = 12) -> str:
     slug = registry._normalize_slug(resource_slug)
     weeks = max(1, min(weeks, 52))
     try:
-        conn = sqlite3.connect(registry.db_path)
-        rows = conn.execute(
-            "SELECT committed_at, additions, deletions FROM project_commits "
-            "WHERE project_slug = ? ORDER BY committed_at DESC",
-            (slug,),
-        ).fetchall()
-        conn.close()
+        with registry._conn() as conn:
+            rows = conn.execute(
+                "SELECT committed_at, additions, deletions FROM project_commits "
+                "WHERE project_slug = ? ORDER BY committed_at DESC",
+                (slug,),
+            ).fetchall()
     except Exception as e:
         return f"Error reading commits: {e}"
     if not rows:
@@ -423,7 +409,8 @@ def query_commit_activity(resource_slug: str, weeks: int = 12) -> str:
     week_adds: defaultdict = defaultdict(int)
     week_dels: defaultdict = defaultdict(int)
     has_churn = False
-    for ts, adds, dels in rows:
+    for row in rows:
+        ts, adds, dels = row[0], row[1], row[2]
         try:
             dt = datetime.fromisoformat(ts[:19])
             w = (now - dt).days // 7
@@ -463,7 +450,6 @@ def query_commit_activity(resource_slug: str, weeks: int = 12) -> str:
     )
 )
 def query_contributor_profile(resource_slug: str, author: str, days: int = 90) -> str:
-    import sqlite3
     from datetime import datetime, timedelta
     from resource_explorer.registry import ProjectRegistry
 
@@ -473,71 +459,67 @@ def query_contributor_profile(resource_slug: str, author: str, days: int = 90) -
     try:
         now = datetime.utcnow()
         cutoff = (now - timedelta(days=days)).isoformat()
-        conn = sqlite3.connect(registry.db_path)
-        conn.row_factory = sqlite3.Row
+        with registry._conn() as conn:
+            # Find matching contributors by name or email substring
+            author_lower = author.lower()
+            all_authors = conn.execute(
+                "SELECT DISTINCT author_name, author_email FROM project_commits WHERE project_slug = ?",
+                (slug,),
+            ).fetchall()
+            matches = [
+                (r["author_name"], r["author_email"])
+                for r in all_authors
+                if author_lower in (r["author_name"] or "").lower()
+                or author_lower in (r["author_email"] or "").lower()
+            ]
+            if not matches:
+                return (
+                    f"No contributor matching '{author}' found in '{slug}'. "
+                    f"Use query_top_committers to see available names."
+                )
 
-        # Find matching contributors by name or email substring
-        author_lower = author.lower()
-        all_authors = conn.execute(
-            "SELECT DISTINCT author_name, author_email FROM project_commits WHERE project_slug = ?",
-            (slug,),
-        ).fetchall()
-        matches = [
-            (r["author_name"], r["author_email"])
-            for r in all_authors
-            if author_lower in (r["author_name"] or "").lower()
-            or author_lower in (r["author_email"] or "").lower()
-        ]
-        if not matches:
-            conn.close()
-            return (
-                f"No contributor matching '{author}' found in '{slug}'. "
-                f"Use query_top_committers to see available names."
-            )
-
-        name, email = matches[0]
-        row = conn.execute(
-            """SELECT COUNT(*) AS commits,
-                      COALESCE(SUM(additions), 0) AS additions,
-                      COALESCE(SUM(deletions), 0) AS deletions
-               FROM project_commits
-               WHERE project_slug = ? AND committed_at >= ?
-               AND (author_name = ? OR author_email = ?)""",
-            (slug, cutoff, name, email),
-        ).fetchone()
-
-        # Project-wide average commits per contributor in this window
-        median_row = conn.execute(
-            """SELECT AVG(c) AS avg_commits FROM (
-                   SELECT COUNT(*) AS c FROM project_commits
+            name, email = matches[0]
+            row = conn.execute(
+                """SELECT COUNT(*) AS commits,
+                          COALESCE(SUM(additions), 0) AS additions,
+                          COALESCE(SUM(deletions), 0) AS deletions
+                   FROM project_commits
                    WHERE project_slug = ? AND committed_at >= ?
-                   GROUP BY author_email
-               )""",
-            (slug, cutoff),
-        ).fetchone()
+                   AND (author_name = ? OR author_email = ?)""",
+                (slug, cutoff, name, email),
+            ).fetchone()
 
-        # Tier from contributor_stats, over the WIDEST window available.
-        #
-        # project_contributor_stats' "periods" are nested trailing windows —
-        # 30d, 90d and 365d, all ending today — not a sequence. So the latest
-        # period_start is the NARROWEST window, and ordering DESC silently
-        # answered "tier over the last 30 days" to a question about the
-        # contributor. Measured 2026-08-27 across the catalogue: 70 of 347
-        # contributors got a different tier that way, every sampled case a
-        # core maintainer downgraded to "regular" (Apache Polaris, sqlglot),
-        # and a further 271 were absent from the 30-day slice altogether — so
-        # the caller was told "unknown (run refresh to compute tiers)" about a
-        # tier that had in fact been computed.
-        #
-        # Earliest period_start = widest window = the tier over the longest
-        # history held. ASC, deliberately.
-        tier_row = conn.execute(
-            """SELECT tier FROM project_contributor_stats
-               WHERE project_slug = ? AND author_email = ?
-               ORDER BY period_start ASC LIMIT 1""",
-            (slug, email or ""),
-        ).fetchone()
-        conn.close()
+            # Project-wide average commits per contributor in this window
+            median_row = conn.execute(
+                """SELECT AVG(c) AS avg_commits FROM (
+                       SELECT COUNT(*) AS c FROM project_commits
+                       WHERE project_slug = ? AND committed_at >= ?
+                       GROUP BY author_email
+                   )""",
+                (slug, cutoff),
+            ).fetchone()
+
+            # Tier from contributor_stats, over the WIDEST window available.
+            #
+            # project_contributor_stats' "periods" are nested trailing windows —
+            # 30d, 90d and 365d, all ending today — not a sequence. So the latest
+            # period_start is the NARROWEST window, and ordering DESC silently
+            # answered "tier over the last 30 days" to a question about the
+            # contributor. Measured 2026-08-27 across the catalogue: 70 of 347
+            # contributors got a different tier that way, every sampled case a
+            # core maintainer downgraded to "regular" (Apache Polaris, sqlglot),
+            # and a further 271 were absent from the 30-day slice altogether — so
+            # the caller was told "unknown (run refresh to compute tiers)" about a
+            # tier that had in fact been computed.
+            #
+            # Earliest period_start = widest window = the tier over the longest
+            # history held. ASC, deliberately.
+            tier_row = conn.execute(
+                """SELECT tier FROM project_contributor_stats
+                   WHERE project_slug = ? AND author_email = ?
+                   ORDER BY period_start ASC LIMIT 1""",
+                (slug, email or ""),
+            ).fetchone()
 
         commits = row["commits"]
         additions = row["additions"]

@@ -246,20 +246,14 @@ def add_docs(
 
     if homepage_url:
         # Just update the metadata field — no ingestion needed
-        import sqlite3
-        conn = sqlite3.connect(registry.db_path)
-        conn.execute("UPDATE projects SET homepage_url = ? WHERE slug = ?", (homepage_url, project.slug))
-        conn.commit()
-        conn.close()
+        with registry._conn() as conn:
+            conn.execute("UPDATE projects SET homepage_url = ? WHERE slug = ?", (homepage_url, project.slug))
         console.print(f"[green]Homepage URL updated for '{slug}'.[/green]")
 
     if docs_url:
         # Update stored docs_url
-        import sqlite3
-        conn = sqlite3.connect(registry.db_path)
-        conn.execute("UPDATE projects SET docs_url = ? WHERE slug = ?", (docs_url, project.slug))
-        conn.commit()
-        conn.close()
+        with registry._conn() as conn:
+            conn.execute("UPDATE projects SET docs_url = ? WHERE slug = ?", (docs_url, project.slug))
         console.print(f"[cyan]Ingesting docs from {docs_url}...[/cyan]")
         _ingest_web_docs(project, docs_url, registry)
 

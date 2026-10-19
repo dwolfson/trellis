@@ -391,7 +391,6 @@ def _code_inventory_table(query: str, resource_slug: str) -> dict | None:
     Extracts kind hint from query, returns top 30 matching symbols.
     """
     import re
-    import sqlite3
     try:
         from resource_explorer.registry import ProjectRegistry
         registry = ProjectRegistry()
@@ -410,8 +409,6 @@ def _code_inventory_table(query: str, resource_slug: str) -> dict | None:
         if m:
             pattern = m.group(1)
 
-        conn = sqlite3.connect(registry.db_path)
-        conn.row_factory = sqlite3.Row
         filters = ["project_slug = ?"]
         params: list = [slug]
         if kind != "all":
@@ -421,16 +418,16 @@ def _code_inventory_table(query: str, resource_slug: str) -> dict | None:
             filters.append("name LIKE ?")
             params.append(f"%{pattern}%")
         where = " AND ".join(filters)
-        rows = conn.execute(
-            f"SELECT kind, name, qualified_name, signature, docstring, file_path, start_line "  # noqa: S608
-            f"FROM project_code_symbols WHERE {where} ORDER BY file_path, start_line LIMIT 30",
-            params,
-        ).fetchall()
-        total = conn.execute(
-            f"SELECT COUNT(*) FROM project_code_symbols WHERE {where}",  # noqa: S608
-            params,
-        ).fetchone()[0]
-        conn.close()
+        with registry._conn() as conn:
+            rows = conn.execute(
+                f"SELECT kind, name, qualified_name, signature, docstring, file_path, start_line "  # noqa: S608
+                f"FROM project_code_symbols WHERE {where} ORDER BY file_path, start_line LIMIT 30",
+                params,
+            ).fetchall()
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM project_code_symbols WHERE {where}",  # noqa: S608
+                params,
+            ).fetchone()[0]
 
         if not rows:
             return None
@@ -461,7 +458,6 @@ def _compare_symbols_table(query: str) -> dict | None:
     projects have symbol data or the query isn't about code structure.
     """
     import re
-    import sqlite3
 
     _SYMBOL_KEYWORDS = ("class", "method", "function", "interface", "api surface", "symbol", "public")
     q = query.lower()
@@ -483,52 +479,48 @@ def _compare_symbols_table(query: str) -> dict | None:
         if len(slugs) < 2:
             return None
 
-        conn = sqlite3.connect(registry.db_path)
-        conn.row_factory = sqlite3.Row
-
         sides = []
-        for slug in slugs[:2]:
-            filters = ["project_slug = ?"]
-            params: list = [slug]
-            if kind != "all":
-                filters.append("kind = ?")
-                params.append(kind)
-            where = " AND ".join(filters)
+        with registry._conn() as conn:
+            for slug in slugs[:2]:
+                filters = ["project_slug = ?"]
+                params: list = [slug]
+                if kind != "all":
+                    filters.append("kind = ?")
+                    params.append(kind)
+                where = " AND ".join(filters)
 
-            counts_rows = conn.execute(
-                f"SELECT kind, COUNT(*) as cnt FROM project_code_symbols WHERE {where} GROUP BY kind",  # noqa: S608
-                params,
-            ).fetchall()
-            counts = {r["kind"]: r["cnt"] for r in counts_rows}
+                counts_rows = conn.execute(
+                    f"SELECT kind, COUNT(*) as cnt FROM project_code_symbols WHERE {where} GROUP BY kind",  # noqa: S608
+                    params,
+                ).fetchall()
+                counts = {r["kind"]: r["cnt"] for r in counts_rows}
 
-            items_rows = conn.execute(
-                f"SELECT kind, qualified_name, signature, docstring, file_path, start_line "  # noqa: S608
-                f"FROM project_code_symbols WHERE {where} ORDER BY kind, file_path, start_line LIMIT 20",
-                params,
-            ).fetchall()
-            total = conn.execute(
-                f"SELECT COUNT(*) FROM project_code_symbols WHERE {where}",  # noqa: S608
-                params,
-            ).fetchone()[0]
+                items_rows = conn.execute(
+                    f"SELECT kind, qualified_name, signature, docstring, file_path, start_line "  # noqa: S608
+                    f"FROM project_code_symbols WHERE {where} ORDER BY kind, file_path, start_line LIMIT 20",
+                    params,
+                ).fetchall()
+                total = conn.execute(
+                    f"SELECT COUNT(*) FROM project_code_symbols WHERE {where}",  # noqa: S608
+                    params,
+                ).fetchone()[0]
 
-            sides.append({
-                "slug": slug,
-                "total": total,
-                "counts": counts,
-                "items": [
-                    {
-                        "kind": r["kind"],
-                        "name": r["qualified_name"],
-                        "signature": r["signature"] or "",
-                        "doc": (r["docstring"] or "")[:80],
-                        "file": r["file_path"],
-                        "line": r["start_line"],
-                    }
-                    for r in items_rows
-                ],
-            })
-
-        conn.close()
+                sides.append({
+                    "slug": slug,
+                    "total": total,
+                    "counts": counts,
+                    "items": [
+                        {
+                            "kind": r["kind"],
+                            "name": r["qualified_name"],
+                            "signature": r["signature"] or "",
+                            "doc": (r["docstring"] or "")[:80],
+                            "file": r["file_path"],
+                            "line": r["start_line"],
+                        }
+                        for r in items_rows
+                    ],
+                })
 
         if not any(s["total"] > 0 for s in sides):
             return None
