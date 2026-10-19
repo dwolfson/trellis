@@ -430,12 +430,16 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
     views: list = []
     operations: dict = {}
     credential_capability: dict = {}
+    column_profile: dict = {}
+    nested_columns: dict = {}
     for output in step_outputs:
         schema_info = output.get("schema_info") or schema_info
         statistics = output.get("statistics") or statistics
         views = output.get("views") or views
         operations = output.get("operations") or operations
         credential_capability = output.get("credential_capability") or credential_capability
+        column_profile = output.get("column_profile") or column_profile
+        nested_columns = output.get("nested_columns") or nested_columns
 
     measured_row = None
     if not schema_info:
@@ -457,6 +461,7 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
         entity, schema_info, statistics, surveyed_at, registry,
         views=views, operations=operations,
         credential_capability=credential_capability,
+        column_profile=column_profile, nested_columns=nested_columns,
     )
     report_guid = result.get("report_guid", "")
     try:

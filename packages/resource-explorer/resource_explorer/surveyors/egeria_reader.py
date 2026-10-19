@@ -247,6 +247,15 @@ def _parse_annotation(header: dict, props: dict) -> dict:
         if val is not None:
             subtype_data[field] = val
 
+    # A QualityAnnotation's score map rides in jsonProperties (Egeria's bean has no field for it); readers of the
+    # old native key find it where they always looked.
+    if "qualityScores" not in subtype_data and isinstance(json_props, dict):
+        from resource_explorer.surveyors.annotation_props import QUALITY_SCORES_KEY
+
+        carried = json_props.get(QUALITY_SCORES_KEY)
+        if isinstance(carried, dict):
+            subtype_data["qualityScores"] = carried
+
     # A proposal published in Egeria's own fields reads back as the candidates it is, for readers of the old key:
     # the whole ordered list from `properties` when it proposed several, else its one `classificationName`
     # (annotation_props.classification_fields writes both).

@@ -125,6 +125,10 @@ EGERIA_PROPERTIES_CLASSES = {
 #: list, first = `classificationName`) when it proposes more than one. Read back by egeria_reader.
 CANDIDATES_KEY = "candidateClassifications"
 
+#: The key, inside a QualityAnnotation's `jsonProperties`, that holds RE's {name: score} map. Egeria's bean has no
+#: field for it (only an int `qualityScore`). Read back by egeria_reader into subtype_data under the same name.
+QUALITY_SCORES_KEY = "qualityScores"
+
 
 def classification_fields(ann) -> dict:
     """A ClassificationAnnotation's proposal in the only fields Egeria 6.2 keeps for it.
@@ -236,9 +240,14 @@ def build_annotation_props(ann, qualified_name: str) -> dict:
             props["additionalProperties"] = to_string_map(ap)
 
     elif atype == AnnotationType.QUALITY_SCORE:
+        # Egeria's QualityAnnotationProperties has an int `qualityScore`, not a map, and ignores unknown fields, so a
+        # `qualityScores` field was stored as nothing. The map rides in jsonProperties instead, as numbers (readers
+        # ignore numeric-looking strings); egeria_reader restores it to subtype_data["qualityScores"].
         qs = getattr(ann, "quality_scores", {})
         if qs:
-            props["qualityScores"] = to_string_map(qs)
+            carried = dict(ann.json_properties or {})
+            carried[QUALITY_SCORES_KEY] = qs
+            props["jsonProperties"] = json.dumps(carried)
 
     elif atype == AnnotationType.DATA_CLASS:
         dc = getattr(ann, "candidate_data_class_names", [])

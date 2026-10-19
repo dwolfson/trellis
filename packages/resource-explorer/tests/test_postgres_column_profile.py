@@ -1869,3 +1869,61 @@ class TestExecuteQueryIsolatedDefaultsToExecuteQuery:
         conn = _Bare()
         assert conn.execute_query_isolated("SELECT 1") == [{"ok": True}]
         assert calls == ["SELECT 1"]
+
+
+# ── The step's annotations reach the publish path ────────────────────────────
+
+
+class TestColumnProfileAnnotationsArePublished:
+    """`postgres_column_profile` used to build its DataClass / ResourceMeasure / RFA
+    annotations and then lose them: `_run_postgres_column_profile` nests them under
+    `column_profile["annotations"]`, and `annotations_from_step_outputs` (what both the
+    Survey Definition `_publish` and the engine host publish from) read only the
+    schema, statistics, views, operations and credential_capability parts. So every
+    data_class_match verdict stayed local while the adapter's own comment said it was
+    "only ever turned into Egeria annotations"."""
+
+    @pytest.fixture
+    def db_entity(self, tmp_path):
+        from resource_explorer.registry import DatabaseEntity, ProjectRegistry
+
+        registry = ProjectRegistry(db_path=str(tmp_path / "test.db"))
+        entity = DatabaseEntity(
+            slug="coco_ods", display_name="Coco ODS", db_type="postgresql",
+            host="localhost", port=5432, database_name="coco_ods",
+        )
+        registry.register_database(entity)
+        return entity
+
+    def test_the_profiles_annotations_are_in_what_a_run_publishes(self, db_entity):
+        from resource_explorer.surveyors.database.egeria_database_surveyor import (
+            annotations_from_step_outputs,
+        )
+
+        _, profile = _run()
+        assert profile["annotations"], "the fixture must produce annotations to publish"
+        step_output = {"schema_info": _SCHEMA_INFO, "column_profile": profile}
+
+        published = annotations_from_step_outputs(db_entity, [step_output])
+
+        for ann in profile["annotations"]:
+            assert any(p is ann for p in published), (
+                f"{type(ann).__name__} {getattr(ann, 'item_key', '')!r} was built but is not published"
+            )
+
+    def test_a_profile_alone_still_publishes_its_annotations(self, db_entity):
+        """A step output carrying only the column profile (no inventory) is not 'nothing'."""
+        from resource_explorer.surveyors.database.egeria_database_surveyor import (
+            annotations_from_step_outputs,
+        )
+
+        _, profile = _run()
+        published = annotations_from_step_outputs(db_entity, [{"column_profile": profile}])
+        assert len(published) == len(profile["annotations"])
+
+    def test_one_runs_profile_annotations_have_unique_published_names(self):
+        """A collision would make the whole publish refuse (assert_unique_qualified_names)."""
+        from resource_explorer.surveyors.survey_report import assert_unique_qualified_names
+
+        _, profile = _run()
+        assert_unique_qualified_names("Annotation::PostgreSQL::coco_ods::t", profile["annotations"])
