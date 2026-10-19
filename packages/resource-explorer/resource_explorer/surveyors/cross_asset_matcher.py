@@ -31,6 +31,9 @@ _GENERIC_TABLE_NAMES = frozenset({
 _COMMON_TABLE_DB_COUNT = 3
 #: Distinctive (non-generic, non-common) table matches needed before a link may be HIGH.
 _HIGH_MIN_DISTINCTIVE = 2
+_CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
+#: Highest score a row may show for its label: the score bands are medium [0.4, 0.6) and low [0.25, 0.4).
+_BAND_CEILING = {"medium": 0.59, "low": 0.39}
 _MIN_NAME_LEN = 4
 _TABLE_WEIGHT = 0.15
 _GENERIC_TABLE_WEIGHT = 0.05
@@ -206,6 +209,16 @@ def find_cross_asset_links(
                     confidence = "low"
                 elif confidence == "high" and len(distinctive) < _HIGH_MIN_DISTINCTIVE:
                     confidence = "medium"
+                # The label can be capped below what the raw evidence score implies (no matched table, or
+                # fewer than two distinctive ones). Show a score inside the label's own band, so a LOW row
+                # never reads higher than a MEDIUM one, and keep the raw figure for anyone who wants it.
+                raw_score = round(min(score, 1.0), 2)
+                shown = min(raw_score, _BAND_CEILING.get(confidence, 1.0))
+                if shown < raw_score:
+                    matched_evidence.append(
+                        f"Evidence score {raw_score} is capped to {confidence} "
+                        f"({'no table matched' if not matched_tables else 'fewer than two distinctive tables'})"
+                    )
                 links.append({
                     "repo_slug": repo.slug,
                     "repo_name": repo.display_name or repo.slug,
@@ -213,17 +226,17 @@ def find_cross_asset_links(
                     "database_name": db_info["entity"].display_name or db_s,
                     "database_type": db_info["db_type"],
                     "confidence": confidence,
-                    "score": round(min(score, 1.0), 2),
+                    "score": shown,
+                    "raw_score": raw_score,
                     "matched_tables": sorted(matched_tables),
                     "distinctive_tables": sorted(distinctive),
                     "symbols_error": symbols_error,
                     "evidence": matched_evidence,
                 })
 
-    return sorted(links, key=lambda l: -l["score"])
+    return sorted(links, key=lambda l: (-_CONFIDENCE_RANK[l["confidence"]], -l["score"]))
 
 
-_CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
 DEFAULT_LINK_LIMIT = 15
 
 
