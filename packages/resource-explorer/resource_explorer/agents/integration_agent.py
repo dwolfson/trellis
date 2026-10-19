@@ -42,7 +42,6 @@ class IntegrationAgent(BaseExplorerAgent):
             query_databases,
             query_database_schema,
             query_cross_asset_links,
-            create_rfa_from_finding,
         )
         return [
             vector_search,
@@ -52,7 +51,7 @@ class IntegrationAgent(BaseExplorerAgent):
             query_databases,
             query_database_schema,
             query_cross_asset_links,
-            create_rfa_from_finding,
+            *self._write_tools(),
         ]
 
     def handle(self, query: str, resource_slug: str | None = None, **kwargs) -> str:

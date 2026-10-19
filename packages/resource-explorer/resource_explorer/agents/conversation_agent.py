@@ -126,7 +126,6 @@ class ConversationAgent(BaseExplorerAgent):
             delegate_to_compare_agent,
             delegate_to_integration_agent,
             query_filesystems,
-            create_rfa_from_finding,
         )
 
         return [
@@ -150,7 +149,7 @@ class ConversationAgent(BaseExplorerAgent):
             delegate_to_compare_agent,
             delegate_to_integration_agent,
             query_filesystems,
-            create_rfa_from_finding,
+            *self._write_tools(),
         ]
 
     def _get_agent(self):

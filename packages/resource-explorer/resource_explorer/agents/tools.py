@@ -1265,146 +1265,6 @@ def compare_database_schemas(
     )
 
 
-#: `status` on an RFA is its delivery state (the drawer reads it as `status`, default "local"), not
-#: its workflow state -- that is `rfa_status` ("open"/"deferred"/...), kept in rfa_actions and set by
-#: a person. An agent may only file a local RFA; "pending" is for the publish pipeline.
-_AGENT_RFA_STATUSES = frozenset({"local"})
-_RFA_SUMMARY_MAX = 200
-_RFA_DETAIL_MAX = 4000
-
-
-def _normalize_rfa_summary(summary: str) -> str:
-    return " ".join(summary.lower().split())
-
-
-def _existing_open_rfa(registry, slug: str, summary: str) -> str | None:
-    """Entry id of a not-yet-completed RFA on this resource with the same summary, if any.
-
-    Without this a retry loop, or two turns that reach the same conclusion, file the same request
-    again and the drawer fills with duplicates a person must close one by one.
-    """
-    wanted = _normalize_rfa_summary(summary)
-    overrides = registry.list_rfa_action_overrides()
-    for entry in registry.list_activity(entity_slug=slug, operation="rfa", limit=500):
-        for idx, ann in enumerate(entry.get("annotations") or []):
-            text = ann.get("summary") or entry.get("summary") or ""
-            if _normalize_rfa_summary(text) != wanted:
-                continue
-            override = overrides.get(f"{entry['id']}::{idx}")
-            if override and override.get("rfa_status") == "completed":
-                continue
-            return entry["id"]
-    return None
-
-
-def create_rfa_from_finding_raw(
-    resource_slug: str,
-    summary: str,
-    detail: str = "",
-    analysis_name: str = "",
-    status: str = "local",
-    confirm: bool = True,
-) -> str:
-    from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.activity_logger import log_rfa
-
-    if not summary or not summary.strip():
-        return "Error: summary must not be empty when filing a RequestForAction."
-    summary = summary.strip()
-    if len(summary) > _RFA_SUMMARY_MAX:
-        return (
-            f"Error: summary is {len(summary)} characters; keep it under {_RFA_SUMMARY_MAX} "
-            "and put the rest in detail."
-        )
-    if detail and len(detail) > _RFA_DETAIL_MAX:
-        return f"Error: detail is {len(detail)} characters; the limit is {_RFA_DETAIL_MAX}."
-    if status not in _AGENT_RFA_STATUSES:
-        return (
-            f"Error: status '{status}' is not allowed; an agent files RFAs as "
-            f"{', '.join(sorted(_AGENT_RFA_STATUSES))} only."
-        )
-
-    registry = ProjectRegistry()
-    slug = registry._normalize_slug(resource_slug)
-
-    entity_type = None
-    entity_name = slug
-
-    proj = registry.get(slug)
-    if proj:
-        entity_type = "repo"
-        entity_name = proj.display_name or proj.slug
-    else:
-        db = registry.get_database(slug, allow_unreadable=True)
-        if db:
-            entity_type = "database"
-            entity_name = db.display_name or db.slug
-        else:
-            fs = registry.get_filesystem(slug)
-            if fs:
-                entity_type = "filesystem"
-                entity_name = fs.display_name or fs.slug
-    if entity_type is None:
-        # Previously this fell through as a "repo", filing an RFA against a slug that exists nowhere.
-        return f"Error: '{resource_slug}' is not a registered repository, database or filesystem."
-
-    existing = _existing_open_rfa(registry, slug, summary)
-    if existing:
-        return (
-            f"Not filed: an open RequestForAction with this summary already exists for "
-            f"{entity_type} '{slug}' (entry {existing}). Tell the user about it instead of filing another."
-        )
-
-    if not confirm:
-        return (
-            f"NOT FILED YET. Proposed RequestForAction for {entity_type} '{slug}': {summary}\n"
-            f"{detail.strip()}\n"
-            "Show this to the user and ask whether to file it. Only if they agree, call "
-            "create_rfa_from_finding again with the same arguments and confirm=true."
-        )
-
-    try:
-        entry_id = log_rfa(
-            registry=registry,
-            entity_type=entity_type,
-            entity_slug=slug,
-            entity_name=entity_name,
-            status=status,
-            summary=summary,
-            detail=detail.strip() if detail else "",
-            analysis_name=analysis_name.strip() if analysis_name else "Agent Finding",
-        )
-        return (
-            f"Successfully created RequestForAction (RFA) #{entry_id} for {entity_type} '{slug}': "
-            f"{summary}"
-        )
-    except Exception as e:
-        return f"Error creating RequestForAction: {e}"
-
-
-@tool(
-    description=(
-        "Propose or file a Request For Action (RFA) in the RFA drawer for a registered resource (repo, "
-        "database, or filesystem) when an architectural gap, schema mismatch, missing documentation, or "
-        "governance action item is discovered. summary is a concise title (max 200 chars); detail gives "
-        "context/remediation steps; analysis_name is the category or origin. This writes a persistent record "
-        "a person must handle, so it is two-step: with confirm=false (the default) nothing is written and "
-        "you get a preview to show the user; call again with confirm=true only after the user agrees. "
-        "An open RFA with the same summary on the same resource is never duplicated."
-    )
-)
-def create_rfa_from_finding(
-    resource_slug: str,
-    summary: str,
-    detail: str = "",
-    analysis_name: str = "",
-    confirm: bool = False,
-) -> str:
-    return create_rfa_from_finding_raw(
-        resource_slug, summary, detail, analysis_name, confirm=confirm
-    )
-
-
 def database_schema_changes_raw(database_slug: str) -> str:
     from resource_explorer.history_diff import database_changes
     from resource_explorer.registry import ProjectRegistry
@@ -1493,7 +1353,7 @@ def rank_databases_raw(metric: str = "tables", limit: int = 10) -> str:
 @tool(
     description=(
         "Rank registered databases by a figure from their latest measured survey. metric is 'tables', "
-        "'columns' or 'undocumented_tables' (tables with no description; tables the survey could not read "
+        "'columns' or 'undocumented_tables' (tables with no description; tables whose description the survey could not read "
         "are reported separately, not counted as undocumented). Databases with no measured survey are listed "
         "as not ranked. Use for 'which databases are largest?' or 'which have the most undocumented tables?'."
     )
@@ -1521,8 +1381,9 @@ def list_rfas_raw(resource_slug: str = "", include_closed: bool = False) -> str:
     lines = [f"{len(shown)} RequestForAction entr{'y' if len(shown) == 1 else 'ies'}{scope} ({total} in total):"]
     for r in shown[:25]:
         who = f", assigned to {r['assignee']}" if r.get("assignee") else ""
+        target = f"`{r['entity_slug']}`" if r.get("entity_slug") else "(no specific resource)"
         lines.append(
-            f"- [{r.get('rfa_status', 'open')}{who}] `{r['entity_slug']}` {r['summary']} "
+            f"- [{r.get('rfa_status', 'open')}{who}] {target} {r['summary']} "
             f"({r.get('analysis_name') or 'RFA'}, {r['ts'][:10]}, id {r['id']})"
         )
     if len(shown) > 25:
@@ -1542,20 +1403,28 @@ def list_rfas(resource_slug: str = "", include_closed: bool = False) -> str:
     return list_rfas_raw(resource_slug, include_closed)
 
 
-def query_cross_asset_links_raw(resource_slug: str = "") -> str:
+def query_cross_asset_links_raw(
+    resource_slug: str = "", min_confidence: str = "high", limit: int = 15
+) -> str:
     from resource_explorer.surveyors.cross_asset_matcher import query_cross_asset_links_raw as _matcher_raw
-    return _matcher_raw(resource_slug=resource_slug)
+    return _matcher_raw(resource_slug=resource_slug, min_confidence=min_confidence, limit=limit)
 
 
 @tool(
     description=(
-        "Discover cross-asset linkages and dependencies connecting code repositories to cataloged databases. "
-        "Matches ORM entities, SQL table references, and database drivers to database schemas. "
-        "Pass resource_slug to filter to a specific repository or database, or leave empty for all."
+        "Discover linkages between code repositories and cataloged databases: a repo's model classes sharing "
+        "names with a database's tables, plus matching database drivers. Pass resource_slug to filter to one "
+        "repository or database, or leave empty for all. Lists only high-confidence links by default, best "
+        "first (limit, default 15) and always reports how many medium and low ones exist; pass "
+        "min_confidence='medium' or 'low' to see more. A link means shared names, not that the repo owns the "
+        "database; generic table names (users, config, ...) and names found in many databases do not count "
+        "toward high confidence."
     )
 )
-def query_cross_asset_links(resource_slug: str = "") -> str:
-    return query_cross_asset_links_raw(resource_slug=resource_slug)
+def query_cross_asset_links(
+    resource_slug: str = "", min_confidence: str = "high", limit: int = 15
+) -> str:
+    return query_cross_asset_links_raw(resource_slug=resource_slug, min_confidence=min_confidence, limit=limit)
 
 
 def delegate_to_compare_agent_raw(query: str, resource_slug: str = "") -> str:
@@ -1590,83 +1459,3 @@ def delegate_to_integration_agent(query: str, resource_slug: str = "") -> str:
     return delegate_to_integration_agent_raw(query, resource_slug=resource_slug)
 
 
-def query_egeria_lineage_raw(slug_a: str, slug_b: str = "") -> str:
-    """Query Egeria Open Metadata Highway for lineage or process relationships between resources.
-
-    NOT REGISTERED WITH ANY AGENT (deferred 2026-10-18, project owner: lineage is already available in
-    the Egeria portal; a Marquez-based source is a separate initiative -- see
-    docs/cross-resource-chat-extensions-plan.md section 7). It never queries lineage: once the platform
-    URL and asset GUIDs check out it returns a fixed "no edges indexed" sentence, which an agent would
-    relay as fact. Give it a real pyegeria call, and a distinct "could not query" result, before an
-    agent is given it again.
-    """
-    from resource_explorer.registry import ProjectRegistry
-    import os
-
-    registry = ProjectRegistry()
-    norm_a = registry._normalize_slug(slug_a)
-    norm_b = registry._normalize_slug(slug_b) if slug_b else ""
-
-    platform_url = os.environ.get("EGERIA_PLATFORM_URL")
-    if not platform_url:
-        return (
-            f"Egeria platform URL not configured (`EGERIA_PLATFORM_URL` is empty). "
-            f"Cannot query upstream Open Metadata Highway lineage for '{norm_a}'"
-            + (f" and '{norm_b}'." if norm_b else ".")
-            + " Relying on local survey metadata and static cross-asset links."
-        )
-
-    # Check for Egeria GUIDs on registered entities
-    guid_a = ""
-    proj_a = registry.get(norm_a)
-    if proj_a and getattr(proj_a, "egeria_asset_guid", None):
-        guid_a = proj_a.egeria_asset_guid
-    else:
-        db_a = registry.get_database(norm_a, allow_unreadable=True)
-        if db_a and getattr(db_a, "egeria_asset_guid", None):
-            guid_a = db_a.egeria_asset_guid
-
-    guid_b = ""
-    if norm_b:
-        proj_b = registry.get(norm_b)
-        if proj_b and getattr(proj_b, "egeria_asset_guid", None):
-            guid_b = proj_b.egeria_asset_guid
-        else:
-            db_b = registry.get_database(norm_b, allow_unreadable=True)
-            if db_b and getattr(db_b, "egeria_asset_guid", None):
-                guid_b = db_b.egeria_asset_guid
-
-    if not guid_a:
-        return (
-            f"Resource '{norm_a}' has not been cataloged in Egeria yet (no egeria_asset_guid). "
-            "Run an Egeria catalog/publish step to establish Open Metadata lineage."
-        )
-
-    # Attempt query via pyegeria if available
-    try:
-        from pyegeria import Egeria
-        # Safe query attempt
-        egeria_client = Egeria(platform_url)
-        # Mock/safe fallback if Lineage OMVS is not populated
-        return (
-            f"Egeria Open Metadata Highway queried at {platform_url}:\n"
-            f"- Entity A ('{norm_a}'): Asset GUID `{guid_a}`\n"
-            + (f"- Entity B ('{norm_b}'): Asset GUID `{guid_b}`\n" if guid_b else "")
-            + "- Lineage Relationships: No active OMAG process lineage edges currently indexed in Egeria. "
-            "Lineage may be populated through DataEngineOMAS or manual curation."
-        )
-    except Exception as exc:
-        return (
-            f"Could not connect to Egeria Open Metadata Highway at {platform_url} ({type(exc).__name__}: {exc}). "
-            "Operating in local-first mode."
-        )
-
-
-@tool(
-    description=(
-        "Query Egeria Open Metadata Highway for upstream data lineage, process relationships, and governance classifications. "
-        "Pass one or two resource slugs to trace lineage connections."
-    )
-)
-def query_egeria_lineage(slug_a: str, slug_b: str = "") -> str:
-    return query_egeria_lineage_raw(slug_a, slug_b)

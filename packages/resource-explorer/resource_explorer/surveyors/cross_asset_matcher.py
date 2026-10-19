@@ -18,11 +18,19 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-#: Table names common enough that a class of the same name proves little on its own.
+#: Table names (singular) common enough that a class of the same name proves little. Compared against the
+#: singular of the table name, so `users` and `user` are both caught. Extended after a run on a real registry
+#: (73 repos, 20 databases) where these drove most of the false HIGH links.
 _GENERIC_TABLE_NAMES = frozenset({
     "user", "role", "group", "session", "event", "task", "item", "log", "file", "type", "status",
     "state", "config", "setting", "data", "name", "order", "account", "message", "token", "job",
+    "tag", "owner", "source", "person", "category", "product", "address", "entity", "customer",
+    "configuration", "property", "attribute", "version", "metadata", "permission", "label",
 })
+#: A table name present in this many surveyed databases identifies none of them.
+_COMMON_TABLE_DB_COUNT = 3
+#: Distinctive (non-generic, non-common) table matches needed before a link may be HIGH.
+_HIGH_MIN_DISTINCTIVE = 2
 _MIN_NAME_LEN = 4
 _TABLE_WEIGHT = 0.15
 _GENERIC_TABLE_WEIGHT = 0.05
@@ -80,8 +88,8 @@ def find_cross_asset_links(
     # Map database slug -> set of table names (lowercased) + db properties
     db_tables_map: dict[str, dict] = {}
     for db in databases:
-        if database_slug and db.slug != registry._normalize_slug(database_slug):
-            continue
+        # Read every database, even when one was asked for: how common a table name is across the
+        # catalog decides how much a match on it is worth.
         survey = registry.get_latest_database_survey(db.slug)
         tables = set()
         schemas = set()
@@ -102,6 +110,12 @@ def find_cross_asset_links(
             "db_name": (db.database_name or "").lower(),
         }
 
+    table_db_count: dict[str, int] = {}
+    for info_ in db_tables_map.values():
+        for t in info_["tables"]:
+            table_db_count[t] = table_db_count.get(t, 0) + 1
+    wanted_db = registry._normalize_slug(database_slug) if database_slug else None
+
     repos = registry.list_all()
     if repo_slug:
         norm_repo = registry._normalize_slug(repo_slug)
@@ -119,6 +133,7 @@ def find_cross_asset_links(
         # version did, let any function called `orders` vouch for a table, and the 500-row LIMIT with
         # no ORDER BY made the answer depend on which rows the database returned first.
         class_names: set[str] = set()
+        symbols_error = ""
         try:
             with registry._conn() as conn:
                 rows = conn.execute(
@@ -128,9 +143,13 @@ def find_cross_asset_links(
                 ).fetchall()
             class_names = {_squash(r["name"]) for r in rows if r["name"]}
         except Exception as exc:
+            # Say so on the links, so "no class matched" is not read as "checked, none matched".
+            symbols_error = f"{type(exc).__name__}: {exc}"
             log.warning("could not read code symbols for %s: %s", repo.slug, exc)
 
         for db_s, db_info in db_tables_map.items():
+            if wanted_db and db_s != wanted_db:
+                continue
             matched_tables: list[str] = []
             matched_evidence: list[str] = []
             score = 0.0
@@ -154,10 +173,15 @@ def find_cross_asset_links(
                 score += 0.1
                 matched_evidence.append("ORM / Migration framework detected in dependencies")
 
+            distinctive: list[str] = []
             if matched_tables:
+                distinctive = [
+                    t for t in matched_tables
+                    if _singular(_squash(t)) not in _GENERIC_TABLE_NAMES
+                    and table_db_count.get(t, 0) < _COMMON_TABLE_DB_COUNT
+                ]
                 table_score = sum(
-                    _GENERIC_TABLE_WEIGHT if _squash(t) in _GENERIC_TABLE_NAMES else _TABLE_WEIGHT
-                    for t in matched_tables
+                    _TABLE_WEIGHT if t in distinctive else _GENERIC_TABLE_WEIGHT for t in matched_tables
                 )
                 table_score = min(0.6, table_score)
                 # Class names alone, with no driver or ORM behind them, are coincidence-prone: cap.
@@ -165,7 +189,8 @@ def find_cross_asset_links(
                     table_score = min(table_score, 0.3)
                 score += table_score
                 matched_evidence.append(
-                    f"Model classes match {len(matched_tables)} database tables: {', '.join(sorted(matched_tables)[:8])}"
+                    f"Model classes match {len(matched_tables)} database tables "
+                    f"({len(distinctive)} distinctive): {', '.join(sorted(matched_tables)[:8])}"
                 )
 
             if len(db_name) >= _MIN_NAME_LEN and db_name in repo.slug.lower():
@@ -174,6 +199,13 @@ def find_cross_asset_links(
 
             if score >= 0.25:
                 confidence = "high" if score >= 0.6 else "medium" if score >= 0.4 else "low"
+                # Driver, ORM and name evidence says "this repo talks to a database like this one",
+                # not "this one": without a matched table it cannot rise above low, and HIGH needs
+                # more than one table that identifies the database.
+                if not matched_tables:
+                    confidence = "low"
+                elif confidence == "high" and len(distinctive) < _HIGH_MIN_DISTINCTIVE:
+                    confidence = "medium"
                 links.append({
                     "repo_slug": repo.slug,
                     "repo_name": repo.display_name or repo.slug,
@@ -181,16 +213,29 @@ def find_cross_asset_links(
                     "database_name": db_info["entity"].display_name or db_s,
                     "database_type": db_info["db_type"],
                     "confidence": confidence,
-                    "score": round(score, 2),
+                    "score": round(min(score, 1.0), 2),
                     "matched_tables": sorted(matched_tables),
+                    "distinctive_tables": sorted(distinctive),
+                    "symbols_error": symbols_error,
                     "evidence": matched_evidence,
                 })
 
     return sorted(links, key=lambda l: -l["score"])
 
 
-def query_cross_asset_links_raw(resource_slug: str = "") -> str:
-    """Format cross-asset linkages between repos and databases as structured markdown."""
+_CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
+DEFAULT_LINK_LIMIT = 15
+
+
+def query_cross_asset_links_raw(
+    resource_slug: str = "", min_confidence: str = "high", limit: int = DEFAULT_LINK_LIMIT
+) -> str:
+    """Format cross-asset linkages between repos and databases as structured markdown.
+
+    Only links at `min_confidence` or above, best first and at most `limit`, are listed; the counts of
+    everything found are always shown. On a real registry (73 repos x 20 databases) the unfiltered list
+    was 359 pairs and 144,000 characters -- more than a chat answer can carry or a person can act on.
+    """
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
@@ -203,8 +248,20 @@ def query_cross_asset_links_raw(resource_slug: str = "") -> str:
     repo_arg = slug if is_repo else None
     db_arg = slug if is_db else None
 
-    links = find_cross_asset_links(registry, repo_slug=repo_arg, database_slug=db_arg)
+    all_links = find_cross_asset_links(registry, repo_slug=repo_arg, database_slug=db_arg)
+    floor = _CONFIDENCE_RANK.get((min_confidence or "high").lower())
+    if floor is None:
+        return f"Unknown min_confidence '{min_confidence}'; use one of: {', '.join(_CONFIDENCE_RANK)}."
+    limit = max(1, int(limit or DEFAULT_LINK_LIMIT))
+    counts = {c: sum(1 for l in all_links if l["confidence"] == c) for c in ("high", "medium", "low")}
+    links = [l for l in all_links if _CONFIDENCE_RANK[l["confidence"]] >= floor][:limit]
 
+    if all_links and not links:
+        scope_str = f" for '{resource_slug}'" if resource_slug else ""
+        return (
+            f"No {min_confidence}-confidence links found{scope_str}; lower-confidence ones exist "
+            f"({counts['medium']} medium, {counts['low']} low). Ask with min_confidence='medium' or 'low' to see them."
+        )
     if not links:
         scope_str = f" for resource '{resource_slug}'" if resource_slug else ""
         return (
@@ -237,4 +294,11 @@ def query_cross_asset_links_raw(resource_slug: str = "") -> str:
         for ev in l["evidence"]:
             lines.append(f"  - {ev}")
 
-    return "\n".join(lines).strip()
+    shown_note = (
+        f"\nShowing {len(links)} of {len(all_links)} links found "
+        f"({counts['high']} high, {counts['medium']} medium, {counts['low']} low); "
+        f"minimum confidence '{min_confidence}', limit {limit}. "
+        "A link means the repo's model classes and the database's tables share names, "
+        "not that the repo owns the database."
+    )
+    return ("\n".join(lines) + shown_note).strip()

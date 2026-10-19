@@ -289,6 +289,7 @@ def _compare_server() -> Server:
         from resource_explorer.agents.compare_agent import CompareAgent
         query = _text(message)
         agent = CompareAgent()
+        agent.allow_writes = False   # the A2A surface is read-only
         slugs = agent._infer_all_project_slugs(query)
 
         if len(slugs) < 2:
@@ -327,6 +328,7 @@ def _integration_server() -> Server:
         from resource_explorer.agents.integration_agent import IntegrationAgent
         query = _text(message)
         agent = IntegrationAgent()
+        agent.allow_writes = False   # the A2A surface is read-only
         slugs = agent._infer_all_project_slugs(query)
 
         if len(slugs) < 2:

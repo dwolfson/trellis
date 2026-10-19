@@ -52,9 +52,10 @@ def _resources(registry: "ProjectRegistry") -> list[tuple[str, str]]:
 def known_analyses(registry: "ProjectRegistry") -> dict[str, list[str]]:
     """Analysis ids that can be read, per resource type."""
     from resource_explorer.facts import FactLayer
+    from resource_explorer.resource_types import SURVEYED_RESOURCE_TYPES
 
     found: dict[str, list[str]] = {}
-    for rtype in ("repo", "database", "filesystem"):
+    for rtype in SURVEYED_RESOURCE_TYPES:
         results_map = FactLayer(registry, resource_type=rtype)._map("analysis_results_map")
         found[rtype] = sorted(results_map or {})
     return found

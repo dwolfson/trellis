@@ -65,7 +65,10 @@ def repos_using_dependency(
     for r in rows:
         if not contains and _canonical(r["dep_name"]) != wanted:
             continue
-        by_repo.setdefault(r["project_slug"], []).append(f"{r['dep_name']} {r['dep_version'] or ''}".strip())
+        spec = f"{r['dep_name']} {r['dep_version'] or ''}".strip()
+        specs = by_repo.setdefault(r["project_slug"], [])
+        if spec not in specs:  # the same pin often appears in several manifests of one repo
+            specs.append(spec)
 
     scope = (f" ({ecosystem} only)" if ecosystem else "") + (" (name contains)" if contains else "")
     lines = [f"Repositories whose latest dependencies match '{name}'{scope}: {len(by_repo)} of {len(repos)} registered."]
@@ -132,7 +135,10 @@ def rank_databases(registry: "ProjectRegistry", metric: str = "tables", limit: i
         if metric == "undocumented_tables":
             extra = f" of {f['documented'] + f['undocumented_tables']} readable"
             if f["unmeasured"]:
-                extra += f"; {f['unmeasured']} table(s) not readable, so not counted either way"
+                extra += (
+                    f"; {f['unmeasured']} table(s) whose description could not be read "
+                    "(catalog-only or in an unreadable schema), so not counted either way"
+                )
         lines.append(f"{place}. `{slug}`: {f[metric]}{extra}")
     if len(ranked) > limit:
         lines.append(f"... and {len(ranked) - limit} more")

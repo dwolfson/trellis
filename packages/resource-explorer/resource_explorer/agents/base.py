@@ -30,6 +30,24 @@ class BaseExplorerAgent(ABC):
     #: shaped the answer (see ConversationAgent._last_compiled).
     _last_compiled = None
 
+    #: Whether this agent may be given the tool that files a RequestForAction. The in-app chat does;
+    #: the A2A surface sets it False because its tools are read-only (see agents/rfa_tools.py).
+    allow_writes = True
+
+    #: Appended to a prompt that names the RFA tool when ``allow_writes`` is False.
+    NO_WRITES_NOTE = (
+        "\n\nYou cannot file RequestForActions in this session. If you find an actionable issue, "
+        "describe it and say it should be raised in the Resource Explorer."
+    )
+
+    def _write_tools(self) -> list:
+        """The tools that write, or none when this agent is read-only."""
+        if not self.allow_writes:
+            return []
+        from resource_explorer.agents.rfa_tools import create_rfa_from_finding
+
+        return [create_rfa_from_finding]
+
     def __init__(self, config: ExplorerConfig | None = None) -> None:
         self.config = config or get_config()
 

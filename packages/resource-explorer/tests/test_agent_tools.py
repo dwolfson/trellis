@@ -340,7 +340,7 @@ def test_contributor_tier_reads_the_widest_window_not_the_latest(tmp_path, monke
 
 
 def test_create_rfa_from_finding_tool(db):
-    from resource_explorer.agents.tools import create_rfa_from_finding_raw
+    from resource_explorer.agents.rfa_tools import create_rfa_from_finding_raw
     from resource_explorer.registry import Project
 
     with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
@@ -700,7 +700,11 @@ def test_cross_asset_matcher(db):
         assert link["database_slug"] == "ecommerce_db"
         assert link["score"] >= 0.3
 
-        output = query_cross_asset_links_raw("ecommerce_service")
+        # Default view lists high-confidence links only, and says what it left out.
+        default = query_cross_asset_links_raw("ecommerce_service")
+        assert "No high-confidence links" in default and "1 low" in default
+
+        output = query_cross_asset_links_raw("ecommerce_service", min_confidence="low")
         assert "Discovered Cross-Asset Dependencies" in output
         assert "ecommerce_service" in output
         assert "ecommerce_db" in output
@@ -741,11 +745,10 @@ def test_multi_resource_context_compilation(db):
     assert "coverage_matrix" in compiled.manifest
 
 
-def test_dynamic_delegation_and_lineage_tools(db):
+def test_dynamic_delegation_tools(db):
     from resource_explorer.agents.tools import (
         delegate_to_compare_agent_raw,
         delegate_to_integration_agent_raw,
-        query_egeria_lineage_raw,
     )
     from resource_explorer.registry import Project, DatabaseEntity
 
@@ -779,10 +782,6 @@ def test_dynamic_delegation_and_lineage_tools(db):
             integ_resp = delegate_to_integration_agent_raw("how do repo_one and db_one work together?")
             assert integ_resp == "Delegated integration response."
 
-        # 3. Egeria lineage query tool offline behavior
-        with patch.dict("os.environ", {}, clear=True):
-            lineage_resp = query_egeria_lineage_raw("repo_one", "db_one")
-            assert "Egeria platform URL not configured" in lineage_resp
 
 
 def test_compare_and_integration_agents_use_multi_resource_evidence(db):
@@ -845,7 +844,7 @@ def test_compare_and_integration_agents_use_multi_resource_evidence(db):
 
 
 def test_rfa_guardrails(db):
-    from resource_explorer.agents.tools import create_rfa_from_finding_raw
+    from resource_explorer.agents.rfa_tools import create_rfa_from_finding_raw
     from resource_explorer.registry import Project
 
     db.add(Project(slug="rfa-repo", display_name="RFA Repo", github_url="https://github.com/o/r"))
@@ -887,7 +886,7 @@ def test_rfa_guardrails(db):
         assert len(_rfas()) == 2
 
         # The agent-facing tool previews by default and does not expose delivery status.
-        from resource_explorer.agents.tools import create_rfa_from_finding
+        from resource_explorer.agents.rfa_tools import create_rfa_from_finding
 
         props = create_rfa_from_finding.input_schema.model_json_schema()["properties"]
         assert props["confirm"]["default"] is False
@@ -933,11 +932,12 @@ def _matcher_db(db, tables):
 def test_cross_asset_matcher_matches_model_classes_to_tables(db):
     from resource_explorer.surveyors.cross_asset_matcher import find_cross_asset_links
 
-    _matcher_db(db, ["order_items", "categories", "invoices"])
-    # OrderItem -> order_items (separators + plural), Category -> categories (ies -> y).
-    _matcher_fixture(db, "shop_api", ["OrderItem", "Category"], deps=["sqlalchemy", "psycopg2-binary"])
+    _matcher_db(db, ["order_items", "warranties", "invoices"])
+    # OrderItem -> order_items (separators + plural), Warranty -> warranties (ies -> y).
+    _matcher_fixture(db, "shop_api", ["OrderItem", "Warranty"], deps=["sqlalchemy", "psycopg2-binary"])
     (link,) = find_cross_asset_links(db)
-    assert link["matched_tables"] == ["categories", "order_items"]
+    assert link["matched_tables"] == ["order_items", "warranties"]
+    assert link["distinctive_tables"] == ["order_items", "warranties"]
     assert link["confidence"] == "high"
 
 
@@ -1171,13 +1171,14 @@ def test_find_repos_by_dependency(db):
         return {"dep_name": name, "dep_version": version, "dep_type": "runtime", "ecosystem": eco,
                 "source_file": "f"}
 
-    db.upsert_dependencies("uses_it", [dep("SQLAlchemy", "2.0"), dep("flask")])
+    # The same pin in two manifests is listed once.
+    db.upsert_dependencies("uses_it", [dep("SQLAlchemy", "2.0"), dep("SQLAlchemy", "2.0"), dep("flask")])
     db.upsert_dependencies("dropped_it", [dep("sqlalchemy")])
     db.upsert_dependencies("dropped_it", [dep("flask")])  # latest batch no longer has it
 
     with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
         out = find_repos_by_dependency_raw("sqlalchemy")
-        assert "1 of 3 registered" in out and "`uses_it`: SQLAlchemy 2.0" in out
+        assert "1 of 3 registered" in out and "`uses_it`: SQLAlchemy 2.0\n" in out + "\n"
         assert "dropped_it`:" not in out
         assert "Unknown (1): no dependencies are recorded for no_deps" in out
         assert "0 of 3" in find_repos_by_dependency_raw("sqlalchemy", "npm")
@@ -1230,13 +1231,14 @@ def test_rank_databases(db):
 
         # Only readable tables with no description count; catalog-only and locked tables are unknown.
         und = rank_databases_raw("undocumented_tables")
-        assert "`big_db`: 2 of 3 readable; 2 table(s) not readable" in und
+        assert "`big_db`: 2 of 3 readable; 2 table(s) whose description could not be read" in und
         assert "`small_db`: 1 of 1 readable" in und
         assert "Unknown metric" in rank_databases_raw("beauty")
 
 
 def test_list_rfas_is_read_only_and_honest(db):
-    from resource_explorer.agents.tools import create_rfa_from_finding_raw, list_rfas_raw
+    from resource_explorer.agents.rfa_tools import create_rfa_from_finding_raw
+    from resource_explorer.agents.tools import list_rfas_raw
     from resource_explorer.registry import Project
 
     db.add(Project(slug="rfa_repo", display_name="RFA Repo", github_url="https://github.com/o/r"))
@@ -1256,3 +1258,70 @@ def test_list_rfas_is_read_only_and_honest(db):
         )
         assert "No tests" not in list_rfas_raw("rfa_repo")
         assert "No tests" in list_rfas_raw("rfa_repo", include_closed=True)
+
+
+def test_cross_asset_matcher_real_data_lessons(db):
+    """Failures seen on a real registry: generic plurals, tables shared by many databases, config-only HIGH."""
+    from resource_explorer.registry import DatabaseEntity
+    from resource_explorer.surveyors.cross_asset_matcher import (
+        find_cross_asset_links,
+        query_cross_asset_links_raw,
+    )
+
+    def add_db(slug, db_name, tables):
+        db.register_database(DatabaseEntity(
+            slug=slug, display_name=slug, db_type="postgresql", host="h", port=5432, database_name=db_name,
+        ))
+        db.record_database_survey(
+            slug=slug, schema_count=1, table_count=len(tables), column_count=1,
+            survey_data={"schema_info": {"schemas": [{"name": "public", "tables": [{"name": t} for t in tables]}]}},
+        )
+
+    # `widgets` is in three databases, so it identifies none of them; `users` is generic (plural form).
+    add_db("db_one", "one", ["widgets", "users", "ledgers"])
+    add_db("db_two", "two", ["widgets"])
+    add_db("db_three", "three", ["widgets"])
+    # A database named like the repo.
+    add_db("zeta_db", "zeta", ["unrelated_thing"])
+
+    # Two common/generic matches, a driver and an ORM: score reaches the HIGH band but must not be HIGH.
+    _matcher_fixture(db, "app_a", ["Widget", "User"], deps=["sqlalchemy", "psycopg2-binary"])
+    # One distinctive match is still not enough for HIGH.
+    _matcher_fixture(db, "app_b", ["Ledger", "Widget"], deps=["sqlalchemy", "psycopg2-binary"])
+    # Driver + ORM + database name in the repo slug, but no matching table: never above low.
+    _matcher_fixture(db, "zeta_service", ["Nothing"], deps=["sqlalchemy", "psycopg2-binary"])
+
+    links = {(l["repo_slug"], l["database_slug"]): l for l in find_cross_asset_links(db)}
+    a = links[("app_a", "db_one")]
+    assert a["matched_tables"] == ["users", "widgets"] and a["distinctive_tables"] == []
+    assert a["confidence"] == "medium"
+    b = links[("app_b", "db_one")]
+    assert b["distinctive_tables"] == ["ledgers"] and b["confidence"] == "medium"
+    z = links[("zeta_service", "zeta_db")]
+    assert z["matched_tables"] == [] and z["confidence"] == "low" and z["score"] >= 0.6
+
+    # Scoped to one database the counts still use the whole catalog.
+    scoped = find_cross_asset_links(db, database_slug="db_one")
+    assert {l["database_slug"] for l in scoped} == {"db_one"}
+    assert next(l for l in scoped if l["repo_slug"] == "app_a")["distinctive_tables"] == []
+
+    # Output is tiered and bounded, and always reports what it left out.
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
+        medium = query_cross_asset_links_raw("", min_confidence="medium", limit=2)
+        assert "Showing 2 of" in medium and "limit 2" in medium and "not that the repo owns" in medium
+        assert "Unknown min_confidence" in query_cross_asset_links_raw("", min_confidence="bogus")
+
+
+def test_a_read_only_agent_is_not_given_the_rfa_tool(db):
+    """The A2A surface sets allow_writes False; neither specialist then carries the filing tool."""
+    from resource_explorer.agents.compare_agent import CompareAgent
+    from resource_explorer.agents.integration_agent import IntegrationAgent
+
+    for cls in (CompareAgent, IntegrationAgent):
+        open_agent, closed_agent = cls(), cls()
+        closed_agent.allow_writes = False
+        assert any("create_rfa" in getattr(t, "name", "") for t in open_agent.tools())
+        assert not any("create_rfa" in getattr(t, "name", "") for t in closed_agent.tools())
+    closed = CompareAgent()
+    closed.allow_writes = False
+    assert "cannot file RequestForActions" in closed.system_prompt()

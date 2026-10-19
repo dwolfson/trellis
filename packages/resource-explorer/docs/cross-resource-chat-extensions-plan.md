@@ -169,8 +169,9 @@ Implemented in `resource_explorer/surveyors/cross_asset_matcher.py`; tests are t
 | Signal | Score | Notes |
 |---|---|---|
 | Database driver in the repo's dependencies, for that database's type | +0.30 | Not enough alone for `medium`. |
-| Model class name matches a table name | +0.15 each, capped at 0.60 total | Generic table names count +0.05 (below). |
+| Model class name matches a table name | +0.15 each, capped at 0.60 total | Generic or widely shared table names count +0.05 (below). |
 | Class-name match with no driver and no ORM dependency | table score capped at 0.30 | Keeps a bare name coincidence at `low`. |
+| Confidence rules | n/a | HIGH needs >= 2 distinctive tables; no matched table means `low`. See tuning status. |
 | ORM or migration framework in dependencies | +0.10 | Only when a driver or a table also matched. |
 | Database name (>= 4 characters) appears in the repo slug | +0.20 | Slug only; symbols are not searched. |
 
@@ -184,13 +185,31 @@ Implemented in `resource_explorer/surveyors/cross_asset_matcher.py`; tests are t
   `type`, `status`, `state`, `config`, `setting`, `data`, `name`, `order`, `account`, `message`,
   `token`, `job`) score 0.05 instead of 0.15, because a class with that name proves little.
 
-**Tuning status.** The weights, the 0.25 threshold, the 0.30 cap and the generic-name list are
-judgment calls, checked only against the synthetic fixtures in the tests. They have not been
-validated against real surveys. Before relying on the confidence labels:
-1. Run `query_cross_asset_links` over the real registry and review the pairs by hand. Note false
-   positives (a `high` link that is wrong) and false negatives (a known repo/database pair missing).
+**Tuning status.** The weights, the 0.25 threshold and the 0.30 cap are judgment calls. A first run on a
+real registry (73 repos, 20 databases, 2026-10-18) found them too generous: 359 of 1,460 possible pairs
+scored, 20 of them HIGH, and only about 5 of those 20 were right. The false HIGH links came from generic
+table names (`users`, `config`, `orders`, ...) plus a matching driver, and from driver, ORM and database-name
+evidence with no matching table at all. The matcher now also applies:
+- **Distinctive tables.** A matched table counts fully only if its singular is not in the generic list and its
+  name appears in fewer than 3 surveyed databases (`_COMMON_TABLE_DB_COUNT`); otherwise it scores 0.05. The
+  count is taken over every surveyed database even when the query is scoped to one.
+- **HIGH needs two distinctive tables** (`_HIGH_MIN_DISTINCTIVE`); with fewer, a HIGH-band score is reported
+  as `medium`.
+- **No matched table, no better than `low`**, however much driver, ORM and name evidence there is.
+- **Bounded output.** `query_cross_asset_links` lists only `high` links by default, best first, at most 15,
+  and always reports how many medium and low links exist (`min_confidence`, `limit`). Unfiltered, the real
+  run produced 144,000 characters.
+
+The generic-name list was also found to be compared against plural table names while holding singular
+words, so `users` never matched `user`; it now compares the singular form.
+
+These changes are tested on synthetic fixtures built from the failures above (`test_cross_asset_matcher_real_data_lessons`);
+they have not been re-run on the real registry. Before relying on the confidence labels:
+1. Re-run `query_cross_asset_links` over the real registry and review the HIGH and MEDIUM pairs by hand.
+   Note false positives and false negatives (the first run found no confident misses).
 2. Adjust the module-level constants (`_TABLE_WEIGHT`, `_GENERIC_TABLE_WEIGHT`, `_GENERIC_TABLE_NAMES`,
-   `_MIN_NAME_LEN`) rather than the scoring code, and update the expectations in the matcher tests.
+   `_COMMON_TABLE_DB_COUNT`, `_HIGH_MIN_DISTINCTIVE`, `_MIN_NAME_LEN`) rather than the scoring code, and update
+   the expectations in the matcher tests.
 3. A change that moves a `high` to `medium` for a pair a person has confirmed is a regression; add that
    pair as a test fixture.
 
@@ -224,7 +243,7 @@ Integrate upstream Egeria Open Metadata Highway lineage and governance classific
 **Decision (project owner, 2026-10-18):** "Skip lineage for now. If the data is all in Egeria we can already use the lineage tool within the portal. Gathering lineage from a Marquez deployment that is not integrated with Egeria is a different initiative; we may come back to it later."
 
 **Consequences of that decision.**
-- `query_egeria_lineage` is no longer offered to `ConversationAgent` or `IntegrationAgent`, and the integration fallback no longer asks for it. The function remains in `agents/tools.py` with a docstring explaining why.
+- `query_egeria_lineage` is no longer offered to `ConversationAgent` or `IntegrationAgent`, and the integration fallback no longer asks for it. The stub was removed outright (it read `EGERIA_PLATFORM_URL` and built a bare `Egeria()` client, which the client-factory guard forbids); a real lineage tool must come from `egeria_clients.egeria_client(identity, ...)`.
 - Reason: it never queried lineage. After the platform URL and asset GUIDs check out it returned a fixed "no edges indexed" sentence, which an agent would relay as a finding. It should not come back to an agent until it makes a real `pyegeria` call and distinguishes "could not query" from "queried, found none".
 - `IntegrationAgent`'s prompt now says lineage is unavailable and must not be inferred.
 
