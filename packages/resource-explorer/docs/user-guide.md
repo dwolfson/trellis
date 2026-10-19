@@ -379,6 +379,50 @@ Three things to know:
 - **Egeria rolls forward.** RE does not undo a publish. Removing a tag removes its link; a corrected note is a
   later note; elements RE created stay in Egeria until the owner deletes them by hand.
 
+### What a database's survey report carries
+
+A database's survey report in Egeria holds one annotation per finding. Which findings are included depends on
+how the report was published.
+
+| Published by | What the report includes |
+|---|---|
+| **Running a Survey Definition** on the database (from Discovery, or `database survey-definition`), when it ran column profiling | The schema inventory, statistics, views and operations it measured, **and** the column-profiling results: one **DataClassMatch** annotation per column checked, one **ColumnValueSample** annotation recording how that column was sampled, a **ReferenceDataMatch** annotation for each low-cardinality column compared with a reference set, the JSON and XML column profiles (**NestedSchemaProfile**, **NestedColumnSample**), and any request for action (for example "propose a Data Class" for an unmatched column that follows a clear pattern). |
+| **Publish** on the Curate tab, or `database survey --egeria` | The survey you kept: schema inventory, statistics and views. **Not** the column-profiling results: those are not kept between runs yet, so this path has nothing to send. To put data-class results in Egeria, run a Survey Definition that includes column profiling. |
+
+What to expect from the column-profiling annotations:
+
+- **Every column checked gets an annotation, not only the matches.** Each DataClassMatch annotation names its
+  verdict:
+
+  | Verdict | Meaning |
+  |---|---|
+  | `matched` | the column matches a Data Class |
+  | `partial_match` | the column partly matches a Data Class |
+  | `no_match` | the column matches none of the Data Classes it was compared with |
+  | `unmatched_patterned` | no Data Class fits, but the values follow a clear pattern, so a new Data Class is proposed as a draft |
+  | `inconclusive` | the sample could not settle a verdict |
+  | `not_sampled` | no values were read from the column, so nothing was established; this is never "no match" |
+  | `no_candidates` | Egeria had no Data Classes to compare against, or they could not be read |
+  | `not_applicable` | the column cannot be sampled, for example a column of a view |
+
+  A report on a wide database therefore carries many annotations, roughly two or three per sampled column.
+- **The sample is stated, not implied.** Each ColumnValueSample annotation records the strategy, how many rows were
+  read, out of how many, the seed and the date. A match is a statement about that sample, not about every row.
+- **Reports published before 2026-10-19 do not have these annotations.** Until then, column-profiling results
+  were built but never sent. To add them, run the Survey Definition again; RE does not alter earlier reports.
+
+### Scores in Egeria
+
+Repository health, the FOSS scorecard and the SQL view complexity rating are published as Egeria
+**QualityAnnotations**. Egeria's QualityAnnotation has room for one whole-number score, and RE's ratings are
+several named numbers (for example `activity`, `community`, `freshness`, or `complexity_score` and `join_count`).
+So RE puts them in the annotation's **JSON properties**, under `qualityScores`, as numbers.
+
+- **Read the scores from `qualityScores` in the JSON properties.** Egeria's own `qualityScore` field is not set by
+  RE and shows `0`; that `0` is "not filled in", not a score of zero.
+- **Reports published before 2026-10-19 hold no scores in Egeria.** Earlier versions sent the scores in a field
+  Egeria does not have, and Egeria discarded it without an error. Publishing the resource again sends them.
+
 After a press, the page shows a short cue (**publishing…**) and then what Egeria reports back (**✓ in Egeria ·
 published 10-11 · confirmed**, or a plain statement of what failed). A word on screen comes from what was
 read back from Egeria, never from the fact that you pressed a button.

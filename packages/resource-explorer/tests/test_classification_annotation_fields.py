@@ -73,7 +73,6 @@ FULL = {
 #: Types where RE today sends a field Egeria 6.2 drops. Each fails strictly; fixing one turns its xfail into a
 #: failure that says to remove it from here.
 KNOWN_DROPS = {
-    AnnotationType.QUALITY_SCORE: ["qualityScores"],          # the bean has qualityScore (int), qualityDimension
     AnnotationType.RELATIONSHIP: ["relatedEntityName"],       # the bean has relatedEntityGUID
 }
 
@@ -262,3 +261,29 @@ def test_the_generator_names_fields_as_jackson_legacy_mangling_does():
     spec.loader.exec_module(mod)
     assert [mod._jackson_name(s) for s in ("QualifiedName", "URL", "URLPath", "X")] == \
         ["qualifiedName", "url", "urlpath", "x"]
+
+
+# ── QualityScoreAnnotation: the scores survive Egeria ─────────────────────────
+
+def test_quality_scores_reach_egeria_and_read_back():
+    """`QualityAnnotationProperties` has an int `qualityScore`, not a `qualityScores` map, and ignores unknown
+    fields, so the map RE sent was stored as nothing. The scores now ride in `jsonProperties` (a field every
+    annotation bean keeps) and read back under the same `subtype_data["qualityScores"]` key the readers use."""
+    ann = QualityScoreAnnotation(summary="s", analysis_step="SQLViewAnalysis",
+                                 quality_scores={"complexity_score": 12.0, "join_count": 3.0})
+    egeria = _publish([ann])
+    assert egeria.dropped == []
+    (stored,) = egeria.stored.values()
+    back = _parse_annotation({"guid": "g", "type": {"typeName": "QualityAnnotation"}}, stored)
+    # Numbers, not strings: the materializer's `_numeric_values` deliberately ignores numeric-looking strings.
+    assert back["subtype_data"]["qualityScores"] == {"complexity_score": 12.0, "join_count": 3.0}
+
+
+def test_quality_scores_do_not_overwrite_the_annotations_own_json_properties():
+    ann = QualityScoreAnnotation(summary="s", analysis_step="a", quality_scores={"foss_scorecard": 7.5},
+                                 json_properties={"outcome": "recovered", "checks_unknown": 2})
+    egeria = _publish([ann])
+    (stored,) = egeria.stored.values()
+    carried = json.loads(stored["jsonProperties"])
+    assert carried["outcome"] == "recovered" and carried["checks_unknown"] == 2
+    assert carried["qualityScores"] == {"foss_scorecard": 7.5}

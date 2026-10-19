@@ -784,6 +784,8 @@ class EgeriaDatabaseSurveyor:
         views: list | None = None,
         operations: dict | None = None,
         credential_capability: dict | None = None,
+        column_profile: dict | None = None,
+        nested_columns: dict | None = None,
     ) -> dict:
         """Publish RE-computed annotations to Egeria WITHOUT cataloging the database
         or triggering Egeria's own native survey as a side effect.
@@ -811,7 +813,8 @@ class EgeriaDatabaseSurveyor:
 
         annotations = build_step_annotations(
             db_entity, registry, schema_info=schema_info, statistics=statistics, views=views,
-            operations=operations, credential_capability=credential_capability)
+            operations=operations, credential_capability=credential_capability,
+            column_profile=column_profile, nested_columns=nested_columns)
 
         qualified_name = f"SurveyReport::PostgreSQL::{db_entity.slug}::{surveyed_at}"
         body = {
@@ -1704,10 +1707,15 @@ def can_use_egeria() -> bool:
 
 def build_step_annotations(db_entity, registry=None, *, schema_info: dict | None = None,
                            statistics: dict | None = None, views: list | None = None,
-                           operations: dict | None = None, credential_capability: dict | None = None) -> list:
+                           operations: dict | None = None, credential_capability: dict | None = None,
+                           column_profile: dict | None = None, nested_columns: dict | None = None) -> list:
     """The annotations a database run's results become, in one place: what `publish_step_annotations` publishes,
     and what RE's engine host publishes on its native-shaped report for a credentialed database step (case 3). Pure:
-    builds annotation dicts, opens no connection and calls no Egeria."""
+    builds annotation dicts, opens no connection and calls no Egeria.
+
+    `column_profile` and `nested_columns` are the two value-sampling steps' outputs. Those steps build their own
+    annotations (one per column verdict, the sample's provenance, any RFA) and carry them as `annotations`, so they
+    pass through as built. Before this they were built and never published."""
     from resource_explorer.surveyors.database.database_surveyor import DatabaseSurveyor
 
     annotations: list = []
@@ -1727,6 +1735,9 @@ def build_step_annotations(db_entity, registry=None, *, schema_info: dict | None
         annotations.extend(
             local_surveyor._create_credential_capability_annotations(credential_capability)
         )
+    for sampled in (column_profile, nested_columns):
+        if sampled:
+            annotations.extend(sampled.get("annotations") or [])
     return annotations
 
 
@@ -1737,7 +1748,8 @@ def annotations_from_step_outputs(db_entity, step_outputs: list, registry=None) 
     for output in step_outputs or []:
         if not isinstance(output, dict):
             continue
-        for key in ("schema_info", "statistics", "views", "operations", "credential_capability"):
+        for key in ("schema_info", "statistics", "views", "operations", "credential_capability",
+                    "column_profile", "nested_columns"):
             if output.get(key):
                 parts[key] = output[key]
     if not parts:
