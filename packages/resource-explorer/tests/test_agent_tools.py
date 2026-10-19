@@ -1452,3 +1452,16 @@ def test_a_database_given_by_its_own_name_is_found_by_the_schema_tool(db):
     # Resolved to the registered database; only the survey is missing.
     assert "not found" not in out.lower()
     assert "No survey data available" in out
+
+
+def test_building_a_chat_agent_starts_tracing(monkeypatch):
+    """Agent runs were untraced once the sessionless RAG path (which started Phoenix) was removed."""
+    from resource_explorer.agents.conversation_agent import ConversationAgent
+
+    started = []
+    monkeypatch.setattr(
+        "resource_explorer.observability.phoenix_client.init_phoenix", lambda: started.append(1)
+    )
+    ConversationAgent()
+    MockAgent()
+    assert len(started) == 2

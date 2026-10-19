@@ -54,6 +54,12 @@ class BaseExplorerAgent(ABC):
 
     def __init__(self, config: ExplorerConfig | None = None) -> None:
         self.config = config or get_config()
+        # Tracing used to start only as a side effect of building a RAGSystem, which the chat agents
+        # build only in their failure fallback; with the sessionless RAG path gone, nothing started
+        # it and the agent runs exported no spans. Idempotent, and the reachability probe is cached.
+        from resource_explorer.observability.phoenix_client import init_phoenix
+
+        init_phoenix()
 
     def _multi_resource_evidence(
         self, query: str, slugs: list[str], perspectives=None, budget: int = 6000
