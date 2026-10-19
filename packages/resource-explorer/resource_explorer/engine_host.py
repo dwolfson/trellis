@@ -459,7 +459,12 @@ PREVIOUS_STEP_NOT_COMPLETED = "previous_step_not_completed"
 
 #: Skip reasons that are not RE's business (another engine's work, not yet approved, claimed by someone
 #: else, or already queued here): silent. The rest are logged once per action.
-_SILENT = frozenset({"other_engine", "not_approved", "already_claimed", "already_queued", "not_due"})
+_SILENT = frozenset({"other_engine", "not_approved", "already_claimed", "already_queued", "not_due", "start_pending"})
+
+#: Fix round 2, F1: an `re-*` step of a run that may be the one a start of THIS process is recording with a one-run
+#: credential right now (`_held_for_start`). Left APPROVED and unclaimed, silently; the next sweep takes it once the
+#: start has recorded its marker (or refuses it once the start is overdue).
+START_PENDING = "start_pending"
 
 #: The `_screen` verdict for an action RE's own user already claimed in Egeria but RE has no runs row for:
 #: queue it without claiming again.
@@ -692,6 +697,12 @@ class EngineHost:
             facts["slug"], facts["asset_guid"] = slugs[0], targets[0]["guid"]
             # Several database targets: the first is surveyed and the completion message names the rest.
             facts["other_targets"] = [t["guid"] for t in targets[1:]]
+            # F1: a step of a run a start here is still recording with a one-run credential waits, unclaimed, for the
+            # next sweep: claiming it now would have to complete it (refused) before the credential is held.
+            if not adopt and request_type.startswith("re-") and _held_for_start(
+                    self.registry, facts["slug"], facts.get("definition") or "",
+                    facts.get("process_instance_guid") or ""):
+                return START_PENDING, {"request_type": request_type, "slug": facts["slug"]}
         return (ADOPT if adopt else ""), facts
 
     def _previous_step(self, guid: str, requester: str) -> tuple[str, set[str] | None, str]:
@@ -1420,6 +1431,296 @@ def _credential_unreadable(registry, slug: str) -> bool:
     return entity is not None and getattr(entity, "credential_status", "") == "unreadable"
 
 
+#: PLACEHOLDERS (designer, Q3 open), DESIGN-COORDINATED-RUN-CREDENTIAL.md §2.4: the words a step completes with when
+#: its run asked for a one-run credential that this process does not hold. Every one starts with the stem, which is what
+#: the run line looks for (`native_survey_run._run_credential_fields`); the screen's copy of the neutral sentence is
+#: `RUN_CREDENTIAL_WORDS.lost` (native-surveys.js). The specific words are said only from proof (`_lost_words`).
+RUN_CREDENTIAL_LOST_SENTENCE = "this Resource Explorer process no longer holds the one-run credential"
+RUN_CREDENTIAL_LOST_NEUTRAL = (f"{RUN_CREDENTIAL_LOST_SENTENCE} (restarted, timed out, or the step ran in another "
+                               "process)")
+RUN_CREDENTIAL_LOST_TIMED_OUT = f"{RUN_CREDENTIAL_LOST_SENTENCE} (its time ran out)"
+RUN_CREDENTIAL_LOST_RESTARTED = f"{RUN_CREDENTIAL_LOST_SENTENCE} (Resource Explorer restarted)"
+RUN_CREDENTIAL_LOST_OTHER_PROCESS = (f"{RUN_CREDENTIAL_LOST_SENTENCE} (the step ran in another Resource Explorer "
+                                     "process)")
+#: Fix round 2, F4: this process cleared it itself.
+RUN_CREDENTIAL_LOST_CLEARED = f"{RUN_CREDENTIAL_LOST_SENTENCE} (cleared when the run read as over or was cancelled)"
+#: The run row's marker could not be read, so whether the run asked for a one-run credential is unknown: never the
+#: stored login on a guess (§2.4).
+RUN_CREDENTIAL_UNKNOWN_SENTENCE = ("could not tell whether this run was given a one-run credential, so it was not "
+                                   "run with the stored one")
+#: An `re-*` step of a definition whose process instance GUID is unknown: whether its run was given a one-run
+#: credential cannot be looked up, so it is not run with the stored one (review fix round 1, item 8).
+RUN_CREDENTIAL_NO_INSTANCE_SENTENCE = ("cannot tell which run this step belongs to, so it was not run with the stored "
+                                       "credential")
+#: A step that reached the run time while a start of THIS process was still recording its one-run credential (the
+#: sweep's `start_pending` skip normally holds it back unclaimed, F1): it is not run with the stored login, and as it
+#: has been claimed it cannot wait, so the run has to be started again (fix round 2, F1).
+RUN_CREDENTIAL_START_PENDING_SENTENCE = ("a run of this definition was still being started with a one-run credential "
+                                         "when this step was claimed, so it was not run with the stored credential; "
+                                         "start the run again")
+#: PLACEHOLDER (designer, Q3 open): a step run with a one-run credential was not measured against what that credential
+#: can read; the stored login's probe is about the stored login (item 4). The screen's copy is
+#: `RUN_CREDENTIAL_WORDS.capabilityNotAssessed`.
+RUN_CREDENTIAL_CAPABILITY_NOT_ASSESSED = "not assessed for this run's credential"
+
+
+def _instance_rows(registry, slug: str, definition: str, instance: str) -> list[dict]:
+    """The native-survey rows of this process instance (normally one). Raises when they cannot be read."""
+    if not instance or not slug:
+        return []
+    return [r for r in registry.list_native_survey_runs(ENTITY_TYPE, slug, definition or None)
+            if (r.get("engine_action_guid") or "") == instance]
+
+
+def _marker_of(rows: list[dict]) -> dict | None:
+    for row in rows:
+        declared = row.get("declared")
+        if isinstance(declared, str):
+            declared = json.loads(declared or "{}")
+        if isinstance(declared, dict) and isinstance(declared.get("run_credential"), dict):
+            return declared["run_credential"]
+    return None
+
+
+def _run_credential_marker(registry, target: dict) -> dict | None:
+    """The start call's `run_credential` marker (no secret: user, scope and the holding process's identity) on the run
+    this action is a step of: the native-survey row keyed by the process instance GUID. None when the row carries none.
+    Raises when the row cannot be read; the caller then refuses (never the stored login on a guess)."""
+    return _marker_of(_instance_rows(registry, target.get("slug") or "",
+                                     (target.get("definition") or "").strip(),
+                                     (target.get("process_instance_guid") or "").strip()))
+
+
+def _row_before(rows: list[dict], entry: dict) -> bool:
+    """Whether this instance already had a row before the start entry was written: an older run, never the start's."""
+    from resource_explorer.run_credential_start import parse_when
+
+    at = parse_when(entry.get("at"))
+    if at is None:
+        return False
+    return any((when := parse_when(r.get("surveyed_at"))) is not None and when < at for r in rows)
+
+
+#: Process instance GUID -> its Egeria creation time (naive UTC), for the process lifetime: every step of a run asks.
+#: Bounded (oldest dropped first). Only a successful read is remembered; a failed one is asked again next time.
+_CREATED_CACHE_MAX = 1000
+_CREATED: dict[str, Any] = {}
+_CREATED_LOCK = threading.Lock()
+
+
+def _read_instance_element(instance: str):
+    """The GovernanceActionProcessInstance element, read-only, as the engine host's daemon, through the Metadata Expert
+    client RE uses for its other element reads. Raises on any failure."""
+    from pyegeria import MetadataExpert
+
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, egeria_client
+
+    expert = egeria_client(Daemon(DaemonReason.ENGINE_HOST), purpose="engine host", shared=False).of(MetadataExpert)
+    try:
+        return expert.get_metadata_element_by_guid(instance)
+    finally:
+        _close_quietly(expert)
+
+
+def _created_of(element):
+    """The element's creation time (naive UTC) from its header, as `get_metadata_element_by_guid` answers it:
+    `versions.createTime` at the top level (live 2026-10-18; an `elementHeader.versions` spelling is accepted too).
+    None when absent or unparsable."""
+    from datetime import datetime
+
+    from resource_explorer.run_credential_start import parse_when
+
+    if not isinstance(element, dict):
+        return None
+    versions = element.get("versions")
+    if not isinstance(versions, dict):
+        versions = (element.get("elementHeader") or {}).get("versions") if isinstance(
+            element.get("elementHeader"), dict) else None
+    raw = (versions or {}).get("createTime") if isinstance(versions, dict) else None
+    if isinstance(raw, bool) or raw is None or raw == "":
+        return None
+    if isinstance(raw, (int, float)):           # epoch milliseconds, Egeria's other Date spelling
+        try:
+            return datetime.fromtimestamp(raw / 1000, UTC).replace(tzinfo=None)
+        except (OverflowError, OSError, ValueError):
+            return None
+    return parse_when(raw)
+
+
+def _instance_created_at(instance: str):
+    """When Egeria created this process instance (naive UTC), or None when it cannot be told (the read failed, or the
+    field is absent or unparsable): the caller then treats the instance as possibly the start's (fail closed)."""
+    with _CREATED_LOCK:
+        if instance in _CREATED:
+            return _CREATED[instance]
+    try:
+        created = _created_of(_read_instance_element(instance))
+    except Exception as exc:  # noqa: BLE001 -- unknown: held, as before the window existed
+        log.warning("engine host: run %s: creation time not read (%s); a start entry may still hold it", instance,
+                    _short(exc, 200))
+        return None
+    if created is None:
+        log.warning("engine host: run %s: Egeria's element carried no readable creation time; a start entry may still "
+                    "hold it", instance)
+        return None
+    with _CREATED_LOCK:
+        _CREATED[instance] = created
+        while len(_CREATED) > _CREATED_CACHE_MAX:
+            _CREATED.pop(next(iter(_CREATED)))
+    return created
+
+
+def _start_hold(registry, slug: str, definition: str, instance: str, rows: list[dict]) -> tuple[str, dict | None]:
+    """Fix round 2, F2: what the persisted start entries (`run_credential_start`) say about an `re-*` step of this
+    instance that has no holder entry and no marker. ("defer", entry): a start of THIS process, younger than the
+    initiate timeout, may be this run's and is still recording it. ("refuse", entry): a start that names this instance
+    (its marker was not written), or one that may be this run's and is another process's, a restarted one's or overdue.
+    ("", None): no start can be this run's. A start may be this run's when it names no instance yet, the instance had
+    no row before it was written, and Egeria did not create the instance provably outside the start's window
+    (`run_credential_start.created_in_window`; owner, 2026-10-18). The creation time is read only when an entry
+    otherwise holds, once per instance per process; an unreadable one holds. The one predicate both the sweep
+    (`_held_for_start`) and the run (`_one_run_credential`) use. Raises when the entries cannot be read (the caller
+    refuses)."""
+    from resource_explorer import run_credential_holder, run_credential_start
+
+    entries = run_credential_start.live_starts(registry, slug, definition)
+    named = [e for e in entries if (e.get("instance") or "") == instance]
+    if named:
+        return "refuse", named[0]
+    me = run_credential_holder.process_identity()
+    open_starts = [e for e in entries if not (e.get("instance") or "") and not _row_before(rows, e)]
+    if open_starts:
+        created = _instance_created_at(instance)
+        open_starts = [e for e in open_starts if run_credential_start.created_in_window(e, created)]
+    for e in open_starts:
+        if e.get("holder") == me and e.get("age") is not None and e["age"] < run_credential_start.START_DEFER_SECONDS:
+            return "defer", e
+    return ("refuse", open_starts[0]) if open_starts else ("", None)
+
+
+def _held_for_start(registry, slug: str, definition: str, instance: str) -> bool:
+    """F1, the sweep's question: should this `re-*` step of (slug, definition, instance) wait, unclaimed, for a start
+    of this process that may be its run's and has not recorded its one-run credential yet? Never for an instance whose
+    credential is held or whose row carries the marker, and the in-memory mark only for an instance with no row (an
+    older run of the same definition has one and is never held back)."""
+    from resource_explorer import run_credential_holder
+
+    if not (slug and definition and instance) or run_credential_holder.take(instance) is not None:
+        return False
+    rows = _instance_rows(registry, slug, definition, instance)
+    if not rows and run_credential_holder.start_pending(slug, definition):
+        return True
+    if _marker_of(rows) is not None:
+        return False
+    return _start_hold(registry, slug, definition, instance, rows)[0] == "defer"
+
+
+def _stamp_marker(registry, instance: str, entry: dict) -> None:
+    """A step refused on a start entry's word leaves that word on the run's row as its marker, so the run's later steps
+    are refused by the row itself after the entry is gone (TTL). No secret. A failed write is logged."""
+    from resource_explorer.run_credential_holder import SCOPE
+
+    try:
+        registry.merge_native_survey_declared(instance, {"run_credential": {
+            "user": "", "scope": SCOPE, "holder": entry.get("holder") or {}, "from": "start entry"}})
+    except Exception as exc:  # noqa: BLE001 -- this step is refused either way
+        log.warning("engine host: run %s: start-entry marker not written (%s)", instance, _short(exc, 200))
+
+
+def _pid_alive(pid: int) -> bool:
+    """Whether a process with this pid exists in this process's namespace. Signal 0 checks, it sends nothing."""
+    import os
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _lost_words(marker: dict, instance: str) -> str:
+    """Why this process has no entry for a run whose marker says it was given one, said only from proof:
+
+    * the marker names THIS process and this process dropped the entry at its TTL: timed out; or cleared it (the run
+      read as over, or Cancel run): cleared;
+    * the marker names this pid with another start time: this process is a new one in the same place, restarted;
+    * the marker names another pid that is alive here: the step ran in another process (a pid is reused, so this is
+      the one guess: the words then say another process, never that the credential was used);
+    * anything else (no identity on the marker, another pid that is gone, another host): the neutral words."""
+    from resource_explorer import run_credential_holder
+
+    holder = marker.get("holder") if isinstance(marker.get("holder"), dict) else {}
+    me = run_credential_holder.process_identity()
+    try:
+        pid = int(holder.get("pid"))
+    except (TypeError, ValueError):
+        pid = None
+    started = str(holder.get("started") or "")
+    if pid is None or not started:
+        return RUN_CREDENTIAL_LOST_NEUTRAL
+    if pid == me["pid"] and started == me["started"]:
+        if run_credential_holder.expired(instance):
+            return RUN_CREDENTIAL_LOST_TIMED_OUT
+        return RUN_CREDENTIAL_LOST_CLEARED if run_credential_holder.cleared(instance) else RUN_CREDENTIAL_LOST_NEUTRAL
+    if pid == me["pid"]:
+        return RUN_CREDENTIAL_LOST_RESTARTED
+    if _pid_alive(pid):
+        return RUN_CREDENTIAL_LOST_OTHER_PROCESS
+    return RUN_CREDENTIAL_LOST_NEUTRAL
+
+
+def _one_run_credential(registry, target: dict):
+    """(credential, refusal) for one `re-*` step of an Egeria-coordinated run (DESIGN-COORDINATED-RUN-CREDENTIAL.md
+    §2.3, §2.4):
+
+    * the holder has an entry for exactly this action's process instance GUID: (that credential, ""). Never by slug,
+      never "the latest";
+    * a step of a definition with no process instance GUID: (None, the no-instance words). Which run it belongs to,
+      and so whether that run was given a credential, cannot be known;
+    * no entry, and the run's row carries the `run_credential` marker (a restart, the TTL, another process): (None,
+      the lost words, as specific as the marker proves). The stored login is NOT used (owner, Q2: "refuse after
+      restart");
+    * no entry and no marker, and a persisted start entry may be this run's (`_start_hold`, fix round 2, F2): a start of
+      this process still recording it: (None, the start-again words); any other: (None, the lost words), and the
+      entry's word is left on the run's row as its marker;
+    * no entry, no marker, no start entry: (None, ""): the stored login, as before;
+    * the marker or the start entries cannot be read: (None, the unknown words).
+
+    A non-`re-*` request type (Egeria's own native steps) never reaches the holder."""
+    request_type = target.get("request_type") or ""
+    if not request_type.startswith("re-"):
+        return None, ""
+    instance = (target.get("process_instance_guid") or "").strip()
+    definition = (target.get("definition") or "").strip()
+    if not instance:
+        return None, (RUN_CREDENTIAL_NO_INSTANCE_SENTENCE if definition else "")
+    from resource_explorer import run_credential_holder
+
+    held = run_credential_holder.take(instance)
+    if held is not None:
+        return held, ""
+    slug = target.get("slug") or ""
+    try:
+        rows = _instance_rows(registry, slug, definition, instance)
+        marker = _marker_of(rows)
+        hold, entry = ("", None) if marker is not None or not (definition and slug) else \
+            _start_hold(registry, slug, definition, instance, rows)
+    except Exception as exc:  # noqa: BLE001 -- unknown is refused, never guessed
+        return None, f"{RUN_CREDENTIAL_UNKNOWN_SENTENCE} ({_short(exc, 200)})"
+    if marker is not None:
+        return None, _lost_words(marker, instance)
+    if hold == "defer":
+        return None, RUN_CREDENTIAL_START_PENDING_SENTENCE
+    if hold == "refuse":
+        _stamp_marker(registry, instance, entry or {})
+        return None, _lost_words({"holder": (entry or {}).get("holder")}, instance)
+    return None, ""
+
+
 def _stored_credentials(registry, slug: str) -> dict:
     """The database registration's own stored credential, as RE's queue uses it (decision 4): {db_user, db_pwd} for
     the step runner, or {} when none is stored (the step then fails in its own words)."""
@@ -1440,7 +1741,33 @@ def _step_output_annotations(entity, step_outputs: list, registry) -> list:
     return annotations_from_step_outputs(entity, [o for o in step_outputs if isinstance(o, dict)], registry)
 
 
+#: The free-text fields of an outcome a one-run credential's password is masked out of: the words, never the
+#: machine-read fields (`guard`, `guards`, `report_guid`, `ran_as`), which a short password would corrupt (review fix
+#: round 1, item 2).
+_FREE_TEXT_FIELDS = ("message", "process_note")
+
+
+def _is_free_text(key: str) -> bool:
+    return key in _FREE_TEXT_FIELDS or key.endswith(("_error", "_words"))
+
+
+def _scrub_outcome(outcome: dict, secret: str) -> dict:
+    """`outcome` with `secret` (and its encoded spellings) masked out of its free-text strings only."""
+    from resource_explorer.secret_redaction import scrub
+
+    return {k: (scrub(v, secret) if _is_free_text(k) and isinstance(v, str) else v) for k, v in outcome.items()}
+
+
 def _decide_one(registry, target: dict, cancelled=None, on_publish=None) -> dict:
+    """One step's outcome (`_decide_steps`), with a one-run credential's password masked out of its words, so nothing
+    stored or sent from the outcome can carry it (DESIGN-COORDINATED-RUN-CREDENTIAL.md §2.2)."""
+    used: dict = {}
+    outcome = _decide_steps(registry, target, cancelled, on_publish, used=used)
+    secret = used.get("password") or ""
+    return _scrub_outcome(outcome, secret) if secret else outcome
+
+
+def _decide_steps(registry, target: dict, cancelled=None, on_publish=None, *, used: dict) -> dict:
     refusal = (target.get("refusal") or "").strip()
     if refusal:
         # Owner ruling, 2026-10-14: survey-invalid ("the supplied information (such as the asset) is invalid").
@@ -1449,6 +1776,7 @@ def _decide_one(registry, target: dict, cancelled=None, on_publish=None) -> dict
     request_type = target.get("request_type") or ""
     library = None
     runner_kwargs: dict = {}
+    ran_as: dict | None = None
     builtin = registry_steps().get(step_key)
     if builtin is not None and step_key not in declared_steps():
         # Case 3: a registry step Egeria dispatched as a step of an RE definition (or alone). Out-of-scope steps were
@@ -1456,15 +1784,28 @@ def _decide_one(registry, target: dict, cancelled=None, on_publish=None) -> dict
         scope = out_of_scope_reason(step_key)
         if scope:
             return _outcome(SURVEY_INVALID, f"Resource Explorer did not run {request_type}: {scope}")
-        refusal = _capability_refusal(registry, slug, builtin)
-        if refusal:
-            # Decision 4: the launcher's own gate, with its own sentence, and nothing run or published.
-            return _outcome(SURVEY_INVALID, f"Resource Explorer did not run {request_type} on {slug}: {refusal}")
-        if _credential_unreadable(registry, slug):
-            # Review L4: never a driver error with an empty password; the stored credential is what is wrong.
-            return _outcome(SURVEY_INVALID, f"Resource Explorer did not run {request_type} on {slug}: "
-                            f"{CREDENTIAL_UNREADABLE_SENTENCE}")
-        runner_kwargs.update(_stored_credentials(registry, slug))
+        held, lost = _one_run_credential(registry, target)
+        if lost:
+            # §2.4: the run asked for a one-run credential this process no longer holds. Refused; never the stored login.
+            return _outcome(SURVEY_INVALID, f"Resource Explorer did not run {request_type} on {slug}: {lost}")
+        if held is not None:
+            # §2.3: the credential given for THIS process instance, in place of the stored one. The capability gate and
+            # the unreadable check are about the stored login, so neither applies to it, and neither does the stored
+            # login's capability probe (item 4): the executor is told the capability is consented, and the outcome says
+            # it was not assessed for this credential.
+            runner_kwargs.update(db_user=held.user, db_pwd=held.password)
+            used["password"] = held.password
+            ran_as = held.ran_as()
+        else:
+            refusal = _capability_refusal(registry, slug, builtin)
+            if refusal:
+                # Decision 4: the launcher's own gate, with its own sentence, and nothing run or published.
+                return _outcome(SURVEY_INVALID, f"Resource Explorer did not run {request_type} on {slug}: {refusal}")
+            if _credential_unreadable(registry, slug):
+                # Review L4: never a driver error with an empty password; the stored credential is what is wrong.
+                return _outcome(SURVEY_INVALID, f"Resource Explorer did not run {request_type} on {slug}: "
+                                f"{CREDENTIAL_UNREADABLE_SENTENCE}")
+            runner_kwargs.update(_stored_credentials(registry, slug))
     elif step_key not in declared_steps():
         library = library_steps().get(request_type)
         if library is None or library.step_key != step_key:
@@ -1490,7 +1831,6 @@ def _decide_one(registry, target: dict, cancelled=None, on_publish=None) -> dict
         if source_guid:
             report_extra["derived_from_report"] = source_guid
 
-    from resource_explorer.surveyors import result_status
     from resource_explorer.surveyors.survey_definition_executor import NothingToPublish, SurveyDefinitionExecutor
 
     published: dict = {}
@@ -1524,20 +1864,47 @@ def _decide_one(registry, target: dict, cancelled=None, on_publish=None) -> dict
             raise EngineHostPublishFailed(published["outcome"]["message"])
         return published["outcome"]["report_guid"]
 
+    from resource_explorer.run_credential_holder import SCOPE as ONE_RUN_SCOPE
     from resource_explorer.secret_redaction import redacting_logs
     from resource_explorer.surveyors.survey_definition_executor import _redactable
 
+    scope = ONE_RUN_SCOPE if ran_as else ""
+    # Item 4: a step run with a one-run credential is never stamped with the stored login's capability.
+    not_assessed = {"capability": RUN_CREDENTIAL_CAPABILITY_NOT_ASSESSED} if ran_as else {}
     try:
-        # The stored password, when one is used, is kept out of every log line about the run's own failures.
-        with redacting_logs(_redactable(runner_kwargs.get("db_pwd"), "")):
+        # The password used (stored, or a one-run credential at any length) is kept out of every log line about the
+        # run's own failures.
+        with redacting_logs(_redactable(runner_kwargs.get("db_pwd"), scope)):
             ran = SurveyDefinitionExecutor(registry).run_synthetic_step(
                 entity_type=ENTITY_TYPE, slug=slug, re_analysis_step=step_key, executes_at="resource-explorer",
                 # In this process, never Prefect (Prefect-only steps are not in the slice, §5.4).
-                engine_override="resource-explorer", publisher=publisher,
+                engine_override="resource-explorer", publisher=publisher, credential_scope=scope,
+                capability_consented=bool(ran_as),
                 display_name=f"{request_type} (engine action {target.get('engine_action_guid')})", **runner_kwargs)
     except Exception as exc:  # noqa: BLE001 -- the step could not run: survey-failed with its words
-        return published.get("outcome") or _outcome(SURVEY_FAILED, f"{step_key} on {slug} could not run: "
-                                                    f"{_short(exc)}")
+        # Item 3: no "ran as" on a step that raised; nothing proves it connected.
+        return {**(published.get("outcome") or _outcome(SURVEY_FAILED, f"{step_key} on {slug} could not run: "
+                                                       f"{_short(exc)}")), **not_assessed}
+    outcome = {**_ran_outcome(ran, published, step_key, slug, library), **not_assessed}
+    if ran_as and _step_ran(ran, step_key, outcome):
+        outcome["ran_as"] = ran_as
+    return outcome
+
+
+def _step_ran(ran: dict, step_key: str, outcome: dict) -> bool:
+    """Proof that the step connected and ran (item 3): its own report entry says ok, or the outcome is
+    survey-completed. A failed connect, a skip or an error is not."""
+    if outcome.get("guard") == SURVEY_COMPLETED:
+        return True
+    report = next((r for r in (ran or {}).get("steps") or []
+                   if isinstance(r, dict) and r.get("re_analysis_step") == step_key), {})
+    return report.get("status") == "ok"
+
+
+def _ran_outcome(ran: dict, published: dict, step_key: str, slug: str, library) -> dict:
+    """The outcome of a step the executor ran: the publisher's, else from the step's own report entry."""
+    from resource_explorer.surveyors import result_status
+
     if "outcome" in published:
         return published["outcome"]
     report = next((r for r in ran.get("steps") or [] if r.get("re_analysis_step") == step_key), {})
@@ -1749,6 +2116,22 @@ def _record_submission(registry, target: dict, principal) -> str:
     return ""
 
 
+def _record_ran_as(registry, target: dict, outcome: dict) -> None:
+    """A step that ran with the one-run credential says so on its run's own row (`declared.ran_as`: user and scope,
+    never the password), so the run line's "ran as" comes from a step that did, never from the request alone. A proof
+    that could not be written leaves the line without it; it never stops the run."""
+    ran_as = outcome.get("ran_as")
+    instance = (target.get("process_instance_guid") or "").strip()
+    if not isinstance(ran_as, dict) or not instance:
+        return
+    try:
+        registry.merge_native_survey_declared(instance, {"ran_as": {
+            "user": ran_as.get("user", ""), "scope": ran_as.get("scope", ""),
+            "capability": str(outcome.get("capability") or RUN_CREDENTIAL_CAPABILITY_NOT_ASSESSED)}})
+    except Exception as exc:  # noqa: BLE001 -- a proof row, not the work
+        log.warning("engine host: process run %s: ran_as not recorded (%s)", instance, _short(exc, 200))
+
+
 def _run_with(engine, registry, run_id: str, target: dict, principal, *, expert=None) -> tuple[str, str]:
     """The run, on the Governance Engine client `engine` (§2.1). `expert` (a MetadataExpert) reads the action back
     for a cancel (§2.4); without one no cancel is looked for.
@@ -1797,6 +2180,7 @@ def _run_with(engine, registry, run_id: str, target: dict, principal, *, expert=
             log.warning("engine host: run %s: publish proof %s not written (%s)", run_id, sorted(fields), _short(exc))
 
     outcome = _decide(registry, target, cancelled, on_publish=publish_proof)
+    _record_ran_as(registry, target, outcome)
     # The last cancel check before the completion. A cancel that lands after it, before `record_completion_status`
     # reaches Egeria, is the one window left: Egeria then ignores the completion (no else branch in
     # `EngineActionHandler.recordCompletionStatus` for a terminal action), so Egeria says CANCELLED while this row says

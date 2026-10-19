@@ -47,6 +47,7 @@ import contextlib
 import functools
 import logging
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterator, Protocol
@@ -104,9 +105,19 @@ class NativeSurveyError(RuntimeError):
     """A submission that did not produce an engine action."""
 
 
+class NativeSurveyNotInitiated(NativeSurveyError):
+    """Egeria ANSWERED the initiate call and said it started nothing ("Action not initiated" or no GUID): proof that
+    no run exists, unlike a failure whose answer is unknown."""
+
+
 class NativeSurveyCannotRun(NativeSurveyError):
     """RE knows why this survey cannot be run for this resource. The message is
     what the row shows -- it is a reason, not an error."""
+
+
+class NativeSurveyNotStarted(RuntimeError):
+    """A start with a one-run credential whose start entry could not be written: Egeria was not asked (fix round 2,
+    F2). The route answers 503."""
 
 
 class NativeActionNotActive(NativeSurveyCannotRun):
@@ -380,7 +391,7 @@ class PyegeriaSurveyPort:
             }],
         )
         if not guid or guid == "Action not initiated":
-            raise NativeSurveyError(
+            raise NativeSurveyNotInitiated(
                 f"Egeria did not initiate {process_qualified_name!r} "
                 f"(it answered {guid!r})")
         return guid
@@ -475,7 +486,7 @@ class PyegeriaSurveyPort:
             action_targets=[{"class": "NewActionTarget", "actionTargetName": action_target_name,
                              "actionTargetGUID": target_guid.strip()}])
         if not guid or guid == "Action not initiated":
-            raise NativeSurveyError(f"Egeria did not initiate {process_qualified_name!r} (it answered {guid!r})")
+            raise NativeSurveyNotInitiated(f"Egeria did not initiate {process_qualified_name!r} (it answered {guid!r})")
         return guid
 
     def read_process_run(self, instance_guid: str) -> list:
@@ -889,7 +900,11 @@ def coordinate_control(registry, entity_type: str, slug: str, process_qn: str) -
     declared = mixed_process.definition_process(process_qn)
     if declared is None or declared.entity_type != engine_host.ENTITY_TYPE or entity_type != declared.entity_type:
         return None
-    out = {"label": COORDINATE_LABEL, "available": False, "why_not": "", "state": "", "line": ""}
+    out = {"label": COORDINATE_LABEL, "available": False, "why_not": "", "state": "", "line": "",
+           # The places in the definition's step list of steps Egeria runs itself (not `re-*`): a one-run credential
+           # never reaches them, and the "with options…" dialog says so (review fix round 1, item 10).
+           "native_steps": [i + 1 for i, st in enumerate(declared.steps)
+                            if st.request_type and not str(st.request_type).startswith("re-")]}
     entity = _resource_entity(registry, entity_type, slug)
     process = NativeProcess(qualified_name=process_qn, display_name=declared.display_name, kind=KIND_RE_DEFINITION,
                             description="", action_target_name="newAsset", target="asset", needs_credentials=False)
@@ -1211,6 +1226,7 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
       not-permitted, or unknown): too late;
     * in flight: accepted -> pending; refused -> its kind; unreachable or unknown -> unsent (the unreachable words)."""
     out = _derive_mixed_state(run, now=now)
+    _run_credential_fields(out, run)
     press = _declared(run).get("cancel") if run else None
     ours = isinstance(press, dict) and press.get("instance_guid") == (run or {}).get("engine_action_guid")
     ctx = out.get("cancel_context") or {}
@@ -1244,6 +1260,40 @@ def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict
         out["cancel"] = {"state": CANCEL_UNSENT, **base, "reason": press.get("reason", ""),
                          "unknown": answer == ANSWER_UNKNOWN}
     return out
+
+
+def _run_credential_fields(out: dict, run: dict | None) -> None:
+    """DESIGN-COORDINATED-RUN-CREDENTIAL.md §2.3, §2.4, from the run's own row only (never the password, never the
+    press): `run_credential` (the start asked for one: user, scope), `ran_as` (a step of RE's engine host DID run as
+    it), `native_steps` (the places in the run's own step list of steps Egeria runs itself, which use the stored
+    credential whatever was given) and `credential_lost` (a step was refused because this process no longer held it)."""
+    out.update(run_credential=None, ran_as=None, native_steps=[], credential_lost=False, credential_lost_words="")
+    if not run:
+        return
+    declared = _declared(run)
+    asked = declared.get("run_credential")
+    if not isinstance(asked, dict):
+        return
+    out["run_credential"] = {"user": str(asked.get("user") or ""), "scope": str(asked.get("scope") or "")}
+    ran = declared.get("ran_as")
+    if isinstance(ran, dict) and ran.get("user"):
+        out["ran_as"] = {"user": str(ran.get("user") or ""), "scope": str(ran.get("scope") or ""),
+                         "capability": str(ran.get("capability") or "")}
+    plan = declared.get("expected_steps")
+    if not (isinstance(plan, list) and plan):
+        plan = [s.get("request_type") or "" for s in out.get("steps") or [] if isinstance(s, dict)]
+    out["native_steps"] = [i + 1 for i, rt in enumerate(plan) if rt and not str(rt).startswith("re-")]
+    from resource_explorer import engine_host
+
+    lost = [w for w in (engine_host.RUN_CREDENTIAL_LOST_TIMED_OUT, engine_host.RUN_CREDENTIAL_LOST_CLEARED,
+                        engine_host.RUN_CREDENTIAL_LOST_RESTARTED, engine_host.RUN_CREDENTIAL_LOST_OTHER_PROCESS,
+                        engine_host.RUN_CREDENTIAL_LOST_NEUTRAL)
+            if any(w in (s.get("message") or "") for s in out.get("steps") or [] if isinstance(s, dict))]
+    out["credential_lost"] = bool(lost) or any(engine_host.RUN_CREDENTIAL_LOST_SENTENCE in (s.get("message") or "")
+                                               for s in out.get("steps") or [] if isinstance(s, dict))
+    # The words the refused step completed with (the most specific proof), else the neutral words.
+    out["credential_lost_words"] = (lost[0] if lost else engine_host.RUN_CREDENTIAL_LOST_NEUTRAL) \
+        if out["credential_lost"] else ""
 
 
 def _cancelled_at(steps) -> str:
@@ -1601,7 +1651,7 @@ def refresh_mixed_run(registry, port, run: dict, *, entity_type: str, slug: str,
         registry.record_native_survey_readback(guid, read_at=read_at, error=why)
         if errors is not None:
             errors.append(why)            # THIS read failed (a caller deciding a write must not use stored steps)
-        return _refetch_mixed(registry, entity_type, slug, run)
+        return _release_run_credential_if_over(run, _refetch_mixed(registry, entity_type, slug, run))
     lines = [ln for ln in mixed_process.group_by_process(views, duplicates=_refused_duplicates(registry, views))
              if ln.instance_guid == guid]
     line = lines[0] if lines else mixed_process.RunLine(guid, run.get("executor_ref") or "", [])
@@ -1624,7 +1674,37 @@ def refresh_mixed_run(registry, port, run: dict, *, entity_type: str, slug: str,
     registry.merge_native_survey_declared(guid, {"process_run": {**detail, "read_at": read_at}})
     newest = line.steps[-1].status if line.steps else ""
     registry.record_native_survey_readback(guid, read_at=read_at, status=newest, message=detail["words"])
-    return _refetch_mixed(registry, entity_type, slug, run)
+    return _release_run_credential_if_over(run, _refetch_mixed(registry, entity_type, slug, run))
+
+
+#: The run line's own terminal states (`derive_mixed_state`): completed, partial, failed, and cancelled (which derives
+#: failed with `cancelled`). No second classifier: the holder is cleared when the run line says the run is over.
+_RUN_OVER = (COMPLETE, PARTIAL, FAILED)
+
+
+def _release_run_credential_if_over(run: dict, derived: dict) -> dict:
+    """DESIGN-COORDINATED-RUN-CREDENTIAL.md §2.2: a one-run credential is cleared when its run reaches a terminal
+    state, by the run line's own derivation. Returns `derived` unchanged.
+
+    Not when the run has no step list to be graded against (no stored `expected_steps` and no declared process, review
+    fix round 1, item 9): such a line expects only the steps it has read, so a first step that ended reads as a run
+    that is over while Egeria goes on to step 2. The TTL clears it then. Egeria's own CANCELLED still clears it."""
+    from resource_explorer import mixed_process
+
+    derived = derived or {}
+    if derived.get("cancelled"):
+        over = True
+    elif derived.get("state") in _RUN_OVER:
+        stored = _declared(run).get("expected_steps")
+        over = (isinstance(stored, list) and bool(stored)) \
+            or mixed_process.declared_process(run.get("executor_ref") or "") is not None
+    else:
+        over = False
+    if over:
+        from resource_explorer import run_credential_holder
+
+        run_credential_holder.clear(run.get("engine_action_guid") or "")
+    return derived
 
 
 def _refused_duplicates(registry, views: list) -> set[str]:
@@ -1770,7 +1850,7 @@ def _refetch(registry, entity_type: str, slug: str, process_qn: str) -> dict:
 
 def submit_native_survey(registry, port: EgeriaSurveyPort, entity_type: str, slug: str,
                          process_qualified_name: str, *, technology_type: str,
-                         submitted_by: str = "") -> dict:
+                         submitted_by: str = "", run_credential: tuple[str, str] | None = None) -> dict:
     """Submit one native survey and prove the dispatch by reading it back.
 
     Returns the derived row state. Raises `NativeSurveyCannotRun` (a reason RE
@@ -1796,6 +1876,15 @@ def submit_native_survey(registry, port: EgeriaSurveyPort, entity_type: str, slu
     reason = cannot_run_reason(process, entity, registry=registry, technology_type=technology_type)
     if reason:
         raise NativeSurveyCannotRun(reason)
+    if run_credential is not None:
+        # DESIGN-COORDINATED-RUN-CREDENTIAL.md §2.1, §2.5: only a run of RE's own Survey Definition coordinated by
+        # Egeria, started by a signed-in person, takes one.
+        if process.kind != KIND_RE_DEFINITION:
+            raise NativeSurveyCannotRun(RUN_CREDENTIAL_NOT_OFFERED)
+        if not (submitted_by or "").strip():
+            raise NativeSurveyCannotRun(RUN_CREDENTIAL_NEEDS_STARTER)
+        if not (run_credential[0] or "").strip() or not run_credential[1]:
+            raise NativeSurveyCannotRun(RUN_CREDENTIAL_NEEDS_BOTH)
 
     runs = registry.list_native_survey_runs(entity_type, slug, process_qualified_name)
     if runs:
@@ -1842,6 +1931,72 @@ def submit_native_survey(registry, port: EgeriaSurveyPort, entity_type: str, slu
 
             started_by, started_in = engine_host.STARTED_BY_EGERIA, mixed_process.STARTED_IN_RE
 
+    started = dict(asset_guid=asset_guid, started_as=started_as, started_by=started_by, started_in=started_in,
+                   submitted_by=submitted_by)
+    if run_credential is not None:
+        # Review fix round 1, item 6: from before Egeria is asked until the credential and the marker are written, a
+        # step of this definition on this database is held back, never run with the stored login. Fix round 2: the
+        # persisted start entry (`run_credential_start`) is what decides; this in-memory mark is the fast path, and it
+        # is left straight after the row and marker are written, BEFORE the read-back (F1).
+        from resource_explorer import run_credential_holder
+
+        with run_credential_holder.starting(slug, process_qualified_name):
+            engine_action_guid, marker_error = _submit_started(
+                registry, port, entity_type, slug, process_qualified_name, process, **started,
+                run_credential=run_credential)
+    else:
+        engine_action_guid, marker_error = _submit_started(
+            registry, port, entity_type, slug, process_qualified_name, process, **started, run_credential=None)
+
+    # The dispatch is proven by reading the action back, read-only. If that one
+    # read fails, the row says exactly that (submitted, last read failed) rather
+    # than pretending the read happened.
+    if marker_error:
+        return _started_without_marker(registry, port, entity_type, slug, process_qualified_name,
+                                       engine_action_guid, marker_error)
+    run = registry.list_native_survey_runs(entity_type, slug, process_qualified_name)[0]
+    return refresh_run(registry, port, run, entity_type=entity_type, slug=slug)
+
+
+def _write_start_entry(registry, slug: str, process_qualified_name: str) -> str:
+    """Fix round 2, F2: the persisted start entry, written BEFORE Egeria is asked. When it cannot be written the run is
+    not started (`NativeSurveyNotStarted`, 503): without it a restart before the marker would leave the run's steps to
+    the stored login."""
+    from resource_explorer import run_credential_start
+
+    try:
+        return run_credential_start.write_start(registry, slug, process_qualified_name)
+    except Exception as exc:  # noqa: BLE001 -- not started, said
+        raise NativeSurveyNotStarted(f"{RUN_CREDENTIAL_START_NOT_RECORDED} ({_short_error(exc)})") from exc
+
+
+def _settle_start_entry(registry, slug: str, process_qualified_name: str, nonce: str, *, instance: str = "",
+                        remove: bool) -> None:
+    """Remove this start's entry (its marker is written), or name the instance on it (the marker is not). A write that
+    fails is logged and leaves the entry as it was until the TTL: over-refusal at worst, never a fallback."""
+    from resource_explorer import run_credential_start
+
+    try:
+        if remove:
+            run_credential_start.remove_start(registry, slug, process_qualified_name, nonce)
+        else:
+            run_credential_start.name_instance(registry, slug, process_qualified_name, nonce, instance)
+    except Exception as exc:  # noqa: BLE001 -- the entry stays; the TTL ends it
+        log.warning("native survey %s: start entry for %s not %s (%s); it stays until its TTL",
+                    process_qualified_name, instance or "a start", "removed" if remove else "updated",
+                    _short_error(exc))
+
+
+def _submit_started(registry, port: EgeriaSurveyPort, entity_type: str, slug: str, process_qualified_name: str,
+                    process, *, asset_guid: str, started_as: str, started_by: str, started_in: str,
+                    submitted_by: str, run_credential: tuple[str, str] | None) -> tuple[str, str]:
+    """`submit_native_survey` from asking Egeria on: for a one-run credential write the start entry first, initiate,
+    record the run row (and, for a one-run credential, hold it, write the row's marker and settle the start entry).
+    Returns (engine action or process instance GUID, the marker's error words or "")."""
+    from resource_explorer import mixed_process
+
+    entity = _resource_entity(registry, entity_type, slug)
+    nonce = _write_start_entry(registry, slug, process_qualified_name) if run_credential is not None else ""
     submitted_at = _now()
     try:
         if process.kind in _PROCESS_KINDS:
@@ -1852,6 +2007,12 @@ def submit_native_survey(registry, port: EgeriaSurveyPort, entity_type: str, slu
             engine_action_guid = port.initiate(
                 process_qualified_name, process.action_target_name, asset_guid)
     except Exception as exc:  # noqa: BLE001
+        if nonce and _proven_not_started(exc):
+            # Proven that Egeria started nothing: nothing to hold back. Any other failure (a timeout, a 5xx from a
+            # proxy after the process was created, a connection reset after the request was sent, an unparseable
+            # answer) leaves the answer unknown, so the entry stays until its TTL: over-refusal, never the stored
+            # login (owner Q2; verification round 3, M1).
+            _settle_start_entry(registry, slug, process_qualified_name, nonce, remove=True)
         error = scrub_secret(_short_error(exc), entity)
         registry.record_native_survey_submission(
             entity_type, slug, process_qualified_name, submitted_at,
@@ -1859,16 +2020,52 @@ def submit_native_survey(registry, port: EgeriaSurveyPort, entity_type: str, slu
             started_by=started_by, started_in=started_in)
         raise NativeSurveyError(error) from exc
 
+    marker_error = ""
     if process.kind == KIND_RE_DEFINITION:
-        # One run line per process instance (review L5): RE's engine host may already have listed it from the first
-        # step it ran; then this press is recorded on that row, never as a second one.
-        if not registry.record_native_survey_submission_once(
-                entity_type, slug, process_qualified_name, submitted_at, engine_action_guid=engine_action_guid,
-                submitted_by=submitted_by, started_as=started_as, started_by=started_by, started_in=started_in,
-                declared_extra=mixed_process.expected_steps_record(process_qualified_name)):
-            registry.adopt_native_survey_submission(
-                engine_action_guid, submitted_by=submitted_by,
-                declared_patch={"started_as": started_as, "started_by": started_by, "started_in": started_in})
+        marker: dict = {}
+        if run_credential is not None:
+            # §2.2: held only now, after Egeria returned the instance GUID, in this same request; then the row's
+            # marker (no secret: who, the scope, and which process holds it), so a later step can tell "asked for
+            # one" (refuse if it is gone, and say why from proof) from "never did".
+            from resource_explorer import run_credential_holder
+
+            run_credential_holder.put(engine_action_guid, run_credential[0], run_credential[1], submitted_by)
+            marker = {"run_credential": {"user": run_credential[0].strip(), "scope": run_credential_holder.SCOPE,
+                                         "holder": run_credential_holder.process_identity()}}
+
+        def _record_row() -> None:
+            # One run line per process instance (review L5): RE's engine host may already have listed it from the
+            # first step it ran; then this press is recorded on that row, never as a second one.
+            if not registry.record_native_survey_submission_once(
+                    entity_type, slug, process_qualified_name, submitted_at, engine_action_guid=engine_action_guid,
+                    submitted_by=submitted_by, started_as=started_as, started_by=started_by, started_in=started_in,
+                    declared_extra={**mixed_process.expected_steps_record(process_qualified_name), **marker}):
+                registry.adopt_native_survey_submission(
+                    engine_action_guid, submitted_by=submitted_by,
+                    declared_patch={"started_as": started_as, "started_by": started_by, "started_in": started_in,
+                                    **marker})
+
+        if not marker:
+            _record_row()
+        else:
+            # Review fix round 1, item 7: Egeria has started the run and the credential is held. A failed write of the
+            # row (and its marker) is tried once more; if that fails too the answer says the run started and the
+            # marker was not recorded, never a 500 that says it did not start. The holder entry is kept.
+            try:
+                _record_row()
+            except Exception as first:  # noqa: BLE001 -- retried once, then said
+                log.warning("native survey %s: run row for %s not written (%s); retrying once",
+                            process_qualified_name, engine_action_guid, _short_error(first))
+                time.sleep(MARKER_RETRY_PAUSE_SECONDS)      # F7: a blink of the registry, not the same instant
+                try:
+                    _record_row()
+                except Exception as second:  # noqa: BLE001 -- said in the answer, never a 500
+                    marker_error = f"{RUN_CREDENTIAL_MARKER_NOT_RECORDED} ({_short_error(second)})"
+                    log.warning("native survey %s: %s", process_qualified_name, marker_error)
+            # F2: the marker is written, so the start entry has done its work; if it is not, the entry names this
+            # instance and stands in for it.
+            _settle_start_entry(registry, slug, process_qualified_name, nonce, instance=engine_action_guid,
+                                remove=not marker_error)
     else:
         registry.record_native_survey_submission(
             entity_type, slug, process_qualified_name, submitted_at,
@@ -1876,12 +2073,23 @@ def submit_native_survey(registry, port: EgeriaSurveyPort, entity_type: str, slu
             started_by=started_by, started_in=started_in)
     log.info("submitted native survey %s for %s/%s: engine action %s",
              process_qualified_name, entity_type, slug, engine_action_guid)
+    return engine_action_guid, marker_error
 
-    # The dispatch is proven by reading the action back, read-only. If that one
-    # read fails, the row says exactly that (submitted, last read failed) rather
-    # than pretending the read happened.
-    run = registry.list_native_survey_runs(entity_type, slug, process_qualified_name)[0]
-    return refresh_run(registry, port, run, entity_type=entity_type, slug=slug)
+
+def _started_without_marker(registry, port, entity_type: str, slug: str, process_qualified_name: str,
+                            engine_action_guid: str, words: str) -> dict:
+    """The answer to a start Egeria accepted whose run row (with its one-run credential marker) could not be written:
+    started, with the words saying the marker is missing (item 7). Read back when the row is there after all; else a
+    plain submitted state for this instance."""
+    try:
+        runs = [r for r in registry.list_native_survey_runs(entity_type, slug, process_qualified_name)
+                if r.get("engine_action_guid") == engine_action_guid]
+        state = refresh_run(registry, port, runs[0], entity_type=entity_type, slug=slug) if runs else None
+    except Exception:  # noqa: BLE001 -- the registry is what failed; the answer still says it started
+        state = None
+    if not isinstance(state, dict):
+        state = {"engine_action_guid": engine_action_guid, "state": SUBMITTED, "line": "", "error": ""}
+    return {**state, "engine_action_guid": engine_action_guid, "run_credential_marker_error": words}
 
 
 _IN_FLIGHT = (SUBMITTED, RUNNING, AWAITING_REPORT, UNREADABLE, REPORT_INCOMPLETE)
@@ -2086,6 +2294,25 @@ def _http_code(exc: BaseException) -> int | None:
     return None
 
 
+def _proven_not_started(exc: BaseException) -> bool:
+    """True only when the failed initiate PROVES no run exists: Egeria answered with a 4xx refusal, or answered that it
+    initiated nothing (`NativeSurveyNotInitiated`), or the connection was never made (httpx ConnectError /
+    ConnectTimeout: the request never reached Egeria). Everything else is unknown."""
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover - pyegeria depends on it
+        httpx = None
+    code = _http_code(exc)
+    if code is not None and 400 <= code < 500:
+        return True
+    for e in _self_and_causes(exc):
+        if isinstance(e, NativeSurveyNotInitiated):
+            return True
+        if httpx is not None and isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout)):
+            return True
+    return False
+
+
 def _is_timeout(exc: BaseException) -> bool:
     """The request may have reached Egeria and its answer is unknown: pyegeria's `PyegeriaTimeoutException`, or a
     read/write/pool timeout under it. A CONNECT timeout never reached Egeria, so it is unreachable, not unknown."""
@@ -2211,12 +2438,37 @@ def cancel_process_run(registry, port: EgeriaSurveyPort, entity_type: str, slug:
                 "refused_kind": CANCEL_TOO_LATE if shown.get("state") == CANCEL_TOO_LATE_STATE else kind,
                 "unsent": "", "unknown": False, "cancelled": bool(after.get("cancelled")), "run": after}
     registry.merge_native_survey_declared(guid, {"cancel": {**press, "answer": ANSWER_ACCEPTED}})
+    # §2.2: Cancel run clears the run's one-run credential as soon as Egeria accepted it; no later step may use it.
+    from resource_explorer import run_credential_holder
+
+    run_credential_holder.clear(guid)
     after = refresh_mixed_run(registry, port, run, entity_type=entity_type, slug=slug)
     return {"accepted": True, "refused": "", "refused_kind": "", "unsent": "", "unknown": False,
             "cancelled": bool(after.get("cancelled")), "run": after}
 
 
 UNREADABLE_STATUS_WORDS = "could not read Egeria's current status · not cancelled"
+
+#: DESIGN-COORDINATED-RUN-CREDENTIAL.md §2.1, §2.5: who and what may carry a one-run credential.
+RUN_CREDENTIAL_NOT_OFFERED = ("A credential for this run is offered only for a run of Resource Explorer's own Survey "
+                              "Definition coordinated by Egeria.")
+RUN_CREDENTIAL_NEEDS_STARTER = "Sign in to start a run with a credential for this run."
+RUN_CREDENTIAL_NEEDS_BOTH = ("A credential for this run needs both a user and a password; the password alone is not "
+                             "enough.")
+#: The shortest one-run password the start route takes (review fix round 1, item 2): below it the password is a common
+#: substring, and masking it out of every log line of the run would garble those lines and so reveal it.
+RUN_CREDENTIAL_MIN_LENGTH = 8
+#: PLACEHOLDER (designer, Q3 open).
+RUN_CREDENTIAL_TOO_SHORT = "that password is too short to keep out of logs safely"
+#: PLACEHOLDER (designer, Q3 open): the start's answer when Egeria started the run and the run row's marker could not be
+#: written (item 7). The credential is held; a step after a restart would not know to refuse.
+RUN_CREDENTIAL_MARKER_NOT_RECORDED = "started; one-run credential marker not recorded"
+#: PLACEHOLDER (designer, Q3 open): the start's answer when the start entry could not be written before Egeria was
+#: asked (fix round 2, F2). Nothing was started.
+RUN_CREDENTIAL_START_NOT_RECORDED = ("not started: Resource Explorer could not record that this run is starting with a "
+                                     "one-run credential")
+#: F7: the pause before the run row's one retry.
+MARKER_RETRY_PAUSE_SECONDS = 0.5
 FINISHED_MAYBE_WORDS = "Egeria may already have finished · the report may exist"
 
 

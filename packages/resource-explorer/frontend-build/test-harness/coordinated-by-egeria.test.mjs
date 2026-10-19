@@ -16,9 +16,10 @@ const cand = (ctl) => ({ qualified_name: QN, display_name: 'Database Analysis Su
 
 test('available: the lower card button reads "Run · coordinated by Egeria →" (Re-run once it has run) and is a bordered button', () => {
   const h = ns.coordinateControlHtml(cand({}));
-  assert.equal(text(ns.coordinateControlHtml({ ...cand({}), last_run_at: '2026-10-15T09:00:00' })), 'Re-run · coordinated by Egeria →');
+  // The one-run credential's "with options…" sits beside it (DESIGN-COORDINATED-RUN-CREDENTIAL.md §2.1).
+  assert.equal(text(ns.coordinateControlHtml({ ...cand({}), last_run_at: '2026-10-15T09:00:00' })), 'Re-run · coordinated by Egeria → with options…');
   assert.match(h, /data-coordinate-egeria="GovActionProcess::DatabaseAnalysisSurvey"/);
-  assert.equal(text(h), 'Run · coordinated by Egeria →');
+  assert.equal(text(h), 'Run · coordinated by Egeria → with options…');
   assert.match(h, /border-accent/);
 });
 

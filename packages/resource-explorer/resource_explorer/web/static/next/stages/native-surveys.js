@@ -29,7 +29,7 @@ import {
   getNativeSurveys, runNativeSurvey, refreshNativeSurveys, getNativeSurveyReport,
   registerWithEgeria, checkNativeSurveyPointers, cancelNativeAction, cancelProcessRun,
 } from '/static/re-api.js';
-import { state, esc, apiEntityType } from '/static/next/app.js';
+import { state, esc, apiEntityType, openAnalysisOverrideDialog } from '/static/next/app.js';
 import { openCredentialForm } from '/static/next/credential-change.js';
 import { openDialog } from '/static/next/worklist.js';
 import { followUntil } from '/static/next/live-status.js';
@@ -118,6 +118,47 @@ function timingCue(r) {
   return `<span data-native-timing title="${esc(tip)}">${queued}running ${esc(brief(r.running_s))}</span>`;
 }
 
+/** The words of a coordinated run's one-run credential (DESIGN-COORDINATED-RUN-CREDENTIAL.md §2.1, §2.3, §2.4).
+ *  PLACEHOLDERS: the designer's words are open (Q3); every word the control and the run line draw for it is here, so
+ *  one edit changes them. */
+export const RUN_CREDENTIAL_WORDS = {
+  // PLACEHOLDER: the second control beside "Run · coordinated by Egeria →"; it opens the existing credential dialog.
+  optionsLabel: 'with options…',
+  optionsTitle: 'Opens a dialog: run this definition once, coordinated by Egeria, with another credential',
+  // PLACEHOLDER: the existing dialog's lead line, for the coordinated case (its definition-card copy is unchanged).
+  dialogSubtitle: 'Egeria runs this definition; RE\'s own steps use this credential once; it is not stored',
+  // PLACEHOLDER: a step Egeria runs itself reads Egeria's secrets store, never the one-run credential.
+  nativeStep: (n) => `step ${n} runs in Egeria with the stored credential`,
+  // PLACEHOLDER: a later step refused because this process does not hold the credential. The neutral words; the run
+  // line shows the step's own, more specific words when the server proved which (restarted, timed out, another process).
+  lost: 'this Resource Explorer process no longer holds the one-run credential (restarted, timed out, or the step ran in another process)',
+  // PLACEHOLDER: the stored login's capability probe says nothing about the one-run credential.
+  capabilityNotAssessed: 'not assessed for this run\'s credential',
+  // PLACEHOLDER: Egeria started the run, the credential is held, and the run row's marker could not be written.
+  markerNotRecorded: 'started · the one-run credential\'s marker wasn\'t recorded',
+};
+
+/** "ran as <user> (scope)": the same form RE's own override runs show (`analysisRanAsHtml`, app.js). */
+export function ranAsHtml(a) {
+  if (!a || !a.user) return '';
+  return `ran as <span class="font-mono">${esc(a.user)}</span> (${esc(a.scope || 'this run')})`;
+}
+
+/** The one-run credential's part of a run line, from the server's derived row only (`run_credential`, `ran_as`,
+ *  `native_steps`, `credential_lost`). Nothing when the run was not started with one. */
+export function runCredentialHtml(r) {
+  if (!r || !r.run_credential) return '';
+  const w = RUN_CREDENTIAL_WORDS;
+  const capability = r.ran_as && r.ran_as.capability
+    ? ` · <span data-run-credential-capability>capability ${esc(r.ran_as.capability)}</span>` : '';
+  const ranAs = r.ran_as && r.ran_as.user
+    ? ` · <span data-run-credential-ran-as class="text-ink-muted">${ranAsHtml(r.ran_as)}${capability}</span>` : '';
+  const native = (r.native_steps || []).map((n) => `<span class="block text-ink-muted" data-run-credential-native-step="${esc(n)}">${esc(w.nativeStep(n))}</span>`).join('');
+  const lost = r.credential_lost
+    ? `<span class="block text-state-warn" data-run-credential-lost><span class="font-glyph" aria-hidden="true">◐</span> ${esc(r.credential_lost_words || w.lost)}</span>` : '';
+  return `${ranAs}${native}${lost}`;
+}
+
 /** A mixed process run (engine host step 4): the one run line the server built from what it read of each step
  *  ("Postgres survey then derived · step 1 PostgreSQLSurvey ✓ report cb92eedc · step 2 … ✓ …"), and each step's
  *  report opening as any report does. */
@@ -152,7 +193,7 @@ export function processLineHtml(r) {
         class="cursor-pointer bg-transparent p-0 text-accent-ink underline"
         title="Replaces the stored credential RE uses for this database, and Egeria's native surveys use too (through the re-projected secrets file).">${esc(r.fixable.action)} ›</button></span>` : '';
   return `${partial}<span class="${tone}" data-native-process-line>${esc(r.line)}</span>${whenHtml}${waiting}`
-    + `${r.read_at ? ` · read ${timeSpan(r.read_at)}` : ''}${reports ? ` · ${reports}` : ''}${err}${fix}`;
+    + `${r.read_at ? ` · read ${timeSpan(r.read_at)}` : ''}${reports ? ` · ${reports}` : ''}${runCredentialHtml(r)}${err}${fix}`;
 }
 
 /** The one line of status. Pure over `row.run`. */
@@ -849,11 +890,19 @@ export function coordinateControlHtml(c, { ran = null } = {}) {
     <span data-coordinate-unavailable="${qn}" class="text-provenance text-ink-muted" title="${esc(why)}">${esc(why)}</span></span>`;
   }
   const live = COORD_IN_FLIGHT.has(String(ctl.state || ''));
+  // "with options…" (DESIGN-COORDINATED-RUN-CREDENTIAL.md §2.1): the same credential dialog RE's own runs use, for this
+  // one coordinated run. Not while a run is in flight (the control is pressed).
+  const nativeSteps = (ctl.native_steps || []).map((n) => String(n)).join(',');
+  const options = live ? '' : `<button type="button" data-coordinate-egeria-options="${qn}"
+      data-coordinate-native-steps="${esc(nativeSteps)}"
+      title="${esc(RUN_CREDENTIAL_WORDS.optionsTitle)}"
+      class="shrink-0 cursor-pointer border-0 bg-transparent p-0 text-caveat text-ink-muted underline"
+      >${esc(RUN_CREDENTIAL_WORDS.optionsLabel)}</button>`;
   return `<span class="inline-flex shrink-0 items-baseline gap-s1">
     <button type="button" data-coordinate-egeria="${qn}" ${live ? 'disabled aria-pressed="true"' : 'aria-pressed="false"'}
       title="${esc(live ? (ctl.line || 'Egeria is coordinating a run of this definition') : 'Egeria runs this definition as a process; Resource Explorer\'s engine host runs each step')}"
       class="cursor-pointer rounded-sm border ${live ? 'border-rule-strong text-ink-muted' : 'border-accent text-accent-ink'} bg-transparent px-2 py-[2px] text-caveat"
-      >${live ? `<span aria-hidden="true">◔</span> ${label} · running` : label}</button>
+      >${live ? `<span aria-hidden="true">◔</span> ${label} · running` : label}</button>${options}
     <span data-coordinate-why="${qn}" class="hidden text-provenance"></span></span>`;
 }
 
@@ -880,28 +929,35 @@ function shortWhy(text) {
 
 /** Bind every "coordinated by Egeria" control under `el`. `after` repaints the pane from the server's rows. */
 export function bindCoordinateControls(el, slug, { after = null } = {}) {
-  el.querySelectorAll('[data-coordinate-egeria]').forEach((b) => {
-    if (b._coordBound) return;                              // the definition card and the survey row may share a root
-    b._coordBound = true;
-    b.addEventListener('click', async () => {
+  /** One start of a coordinated run from the control `b`, with `credential` ({user, password}) for this run only when
+   *  the "with options…" dialog gave one: it goes in the body of this one call and nowhere else. */
+  const start = async (b, credential = null) => {
     if (b.disabled) return;                                 // a pressed control ignores a second press
     const qn = b.dataset.coordinateEgeria;
     const why = b.parentElement && b.parentElement.querySelector('[data-coordinate-why]');
+    const opts = b.parentElement && b.parentElement.querySelector('[data-coordinate-egeria-options]');
     b.disabled = true;
+    if (opts) opts.disabled = true;
     b.setAttribute('aria-pressed', 'true');
     b.innerHTML = '<span aria-hidden="true">◔</span> starting…';
     if (why) { why.textContent = ''; why.classList.add('hidden'); }
     try {
-      const res = await runNativeSurvey(slug, qn, { entityType: apiEntityType(state.resourceType) });
+      const res = await runNativeSurvey(slug, qn, { entityType: apiEntityType(state.resourceType), credential });
       const run = (res && res.run) || {};
       const started = COORD_IN_FLIGHT.has(String(run.state || '')) || run.state === 'complete' || run.state === 'partial';
-      b.innerHTML = started
-        ? '<span class="text-state-ok" aria-hidden="true">●</span> started'
-        : `<span class="text-state-warn" aria-hidden="true">✗</span> ${esc(run.state || 'not started')}`;
-      b.title = run.line || run.message || (run.engine_action_guid ? `process ${run.engine_action_guid}` : '');
+      // Egeria started it and the run row's marker was not written: a warn cue with its words, never the plain tick
+      // (the run line cannot yet say this run asked for a one-run credential).
+      const unmarked = run.run_credential_marker_error;
+      b.innerHTML = unmarked
+        ? `<span class="font-glyph text-state-warn" aria-hidden="true">◐</span> <span data-coordinate-marker-warn class="text-state-warn">${esc(RUN_CREDENTIAL_WORDS.markerNotRecorded)}</span>`
+        : started
+          ? '<span class="text-state-ok" aria-hidden="true">●</span> started'
+          : `<span class="text-state-warn" aria-hidden="true">✗</span> ${esc(run.state || 'not started')}`;
+      b.title = unmarked || run.line || run.message || (run.engine_action_guid ? `process ${run.engine_action_guid}` : '');
       if (typeof after === 'function') after();
     } catch (err) {
       b.disabled = false;
+      if (opts) opts.disabled = false;
       b.setAttribute('aria-pressed', 'false');
       b.innerHTML = '<span class="text-state-warn" aria-hidden="true">✗</span> not started';
       if (why) {
@@ -915,6 +971,27 @@ export function bindCoordinateControls(el, slug, { after = null } = {}) {
         });
       }
     }
+  };
+  el.querySelectorAll('[data-coordinate-egeria]').forEach((b) => {
+    if (b._coordBound) return;                              // the definition card and the survey row may share a root
+    b._coordBound = true;
+    b.addEventListener('click', () => start(b));
+  });
+  el.querySelectorAll('[data-coordinate-egeria-options]').forEach((o) => {
+    if (o._coordBound) return;
+    o._coordBound = true;
+    o.addEventListener('click', () => {
+      const b = o.parentElement && o.parentElement.querySelector('[data-coordinate-egeria]');
+      if (!b || b.disabled) return;
+      const qn = o.dataset.coordinateEgeriaOptions;
+      const w = RUN_CREDENTIAL_WORDS;
+      const native = String(o.dataset.coordinateNativeSteps || '').split(',').filter(Boolean);
+      // The EXISTING dialog and its browser memory (run-credential.js), with the coordinated case's own lead line and,
+      // when Egeria runs any step itself, which steps the credential does not reach.
+      openAnalysisOverrideDialog({ name: qn, analysis_id: qn }, slug, (credential) => start(b, credential), {
+        subtitle: w.dialogSubtitle,
+        notes: native.map((n) => w.nativeStep(n)),
+      });
     });
   });
 }
