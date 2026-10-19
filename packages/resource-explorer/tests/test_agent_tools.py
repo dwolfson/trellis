@@ -117,6 +117,7 @@ def test_query_databases_tool(db):
 
         res_survey = query_databases_raw("test-db")
         assert "Schema Count: 1" in res_survey
+        assert "Latest survey record: " in res_survey and "unknown" not in res_survey
         assert "users" in res_survey
 
 
@@ -1257,7 +1258,9 @@ def test_list_rfas_is_read_only_and_honest(db):
             status="completed", activity_status="completed",
         )
         assert "No tests" not in list_rfas_raw("rfa_repo")
-        assert "No tests" in list_rfas_raw("rfa_repo", include_closed=True)
+        everything = list_rfas_raw("rfa_repo", include_closed=True)
+        assert "No tests" in everything and "[completed]" in everything
+        assert "including completed ones" in everything and "not yet completed" not in everything
 
 
 def test_cross_asset_matcher_real_data_lessons(db):
