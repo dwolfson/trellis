@@ -1231,7 +1231,7 @@ def test_rank_databases(db):
 
         # Only readable tables with no description count; catalog-only and locked tables are unknown.
         und = rank_databases_raw("undocumented_tables")
-        assert "`big_db`: 2 of 3 readable; 2 table(s) whose description could not be read" in und
+        assert "`big_db`: 2 of 3 readable; 2 table(s) whose description was not read" in und
         assert "`small_db`: 1 of 1 readable" in und
         assert "Unknown metric" in rank_databases_raw("beauty")
 
@@ -1325,3 +1325,15 @@ def test_a_read_only_agent_is_not_given_the_rfa_tool(db):
     closed = CompareAgent()
     closed.allow_writes = False
     assert "cannot file RequestForActions" in closed.system_prompt()
+
+
+def test_database_figures_count_a_read_fallback_comment():
+    from resource_explorer.discovery import _database_figures
+
+    info = {"schemas": [{"name": "s", "tables": [
+        {"name": "hidden_read_empty", "source": "catalog_fallback", "description_read": True, "description": ""},
+        {"name": "hidden_read_doc", "source": "catalog_fallback", "description_read": True, "description": "x"},
+        {"name": "hidden_unread", "source": "catalog_fallback", "description": ""},
+    ]}]}
+    f = _database_figures(info)
+    assert (f["documented"], f["undocumented_tables"], f["unmeasured"]) == (1, 1, 1)

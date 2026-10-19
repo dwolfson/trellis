@@ -9,6 +9,15 @@ from typing import Any
 from resource_explorer.registry import DatabaseEntity
 
 
+def _description_read_flag(info: dict) -> dict:
+    """`{"description_read": True}` when the catalog summary carried the table comment, else nothing.
+
+    Absent means the comment was not read -- never that there is none -- so a caller counting
+    undocumented tables can tell the two apart.
+    """
+    return {"description_read": True} if info.get("description_read") else {}
+
+
 def _flag(value) -> bool | None:
     """A catalog boolean as a bool; anything else (NULL, absent) is None --
     "not read" -- and never False."""
@@ -565,7 +574,8 @@ class PostgreSQLConnection(DatabaseConnection):
         already-known schema — `pg_class`/`pg_attribute` are catalog
         metadata, not privilege-filtered, so table names, relation kinds,
         and column names/types ARE visible with zero grants; only row data
-        and comments are not. Each such table is tagged `source:
+        is not (a table comment is read from `pg_description`, which is not
+        privilege-filtered; a successful read is marked `description_read`). Each such table is tagged `source:
         "catalog_fallback"`, the same marker `database_rows_from_survey_data`
         (`result_materializer.py`) already recognizes and stores as
         `STATE_CATALOG_ESTIMATE` — no downstream change needed for the
@@ -635,7 +645,8 @@ class PostgreSQLConnection(DatabaseConnection):
                     "name": table_name,
                     "type": info.get("table_type") or "",
                     "relkind": info.get("relkind"),
-                    "description": "",
+                    "description": info.get("description") or "",
+                    **_description_read_flag(info),
                     "columns": self._catalog_columns_for_table(schema_name, table_name),
                     "source": "catalog_fallback",
                     "row_count_estimate": info.get("reltuples"),
@@ -689,7 +700,8 @@ class PostgreSQLConnection(DatabaseConnection):
                 "name": table_name,
                 "type": info.get("table_type") or "",
                 "relkind": info.get("relkind"),
-                "description": "",
+                "description": info.get("description") or "",
+                **_description_read_flag(info),
                 "columns": columns,
                 "source": "catalog_fallback",
                 "row_count_estimate": info.get("reltuples"),
@@ -916,7 +928,8 @@ class PostgreSQLConnection(DatabaseConnection):
                 "name": table_name,
                 "type": info.get("table_type") or "",
                 "relkind": info.get("relkind"),
-                "description": "",
+                "description": info.get("description") or "",
+                **_description_read_flag(info),
                 "columns": columns,
                 "source": "catalog_fallback",
                 # pg_class.reltuples is an ANALYZE-time estimate, never a
@@ -937,7 +950,8 @@ class PostgreSQLConnection(DatabaseConnection):
         """
         query = """
             SELECT c.relname AS table_name, c.relkind, c.reltuples,
-                   c.relhastriggers, c.relhasrules, c.relrowsecurity
+                   c.relhastriggers, c.relhasrules, c.relrowsecurity,
+                   obj_description(c.oid, 'pg_class') AS table_comment
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE n.nspname = %s
@@ -957,6 +971,11 @@ class PostgreSQLConnection(DatabaseConnection):
             out[name] = {
                 "table_type": kind_to_type.get(r.get("relkind"), ""),
                 "relkind": r.get("relkind"),
+                #: pg_description is not privilege-filtered, so the comment is readable for a table the
+                #: login has no grant on. `description_read` is True only when this row carried the
+                #: column, so an empty description means "no comment", never "not read".
+                "description": r.get("table_comment") or "",
+                "description_read": "table_comment" in r,
                 "reltuples": (
                     int(reltuples) if reltuples is not None and reltuples >= 0 else None
                 ),
