@@ -203,6 +203,25 @@ evidence with no matching table at all. The matcher now also applies:
 The generic-name list was also found to be compared against plural table names while holding singular
 words, so `users` never matched `user`; it now compares the singular form.
 
+**Known false positives, left in place for now (2026-10-18 re-check, laz, `edd1d8d2`).** The default view dropped
+from 359 pairs / 20 HIGH to 7 HIGH; four were right, one was related but not the owner (openlineage with the
+Marquez database), and two were wrong, both for the `openmetadata` repo:
+- `openmetadata` with `localhost_docker_egeria_advisor` (0.9; `database_schemas`, `databases`, `projects`,
+  `query_metrics` and two more).
+- `openmetadata` with `egeria_optional_prefect_db` (0.6; `agent`, `event_resources`).
+
+OpenMetadata is a very large Java repo whose model classes cover many ordinary names, and its own catalog tables
+share names with other products' tables. **Decision (project owner, 2026-10-18):** "leave the two rows for now but
+document for future evaluation." Two candidate rules, neither applied, each with a risk to check against a real
+registry first:
+1. *Require a table exclusive to one database* for HIGH (`table_db_count == 1`). It would drop the Prefect row
+   but may keep the Advisor row if `query_metrics` is exclusive to it.
+2. *Penalise a repo that reaches HIGH on several databases.* It would hit both rows, but a repo can legitimately use
+   several databases.
+Evaluate on the next real-data run. The pairs judged right on 2026-10-18 are the regression set: marquez with
+`laz_local_marquez`; egeria_trellis and egeria_advisor_git with `localhost_docker_egeria_advisor`; egeria_git with
+`localhost_docker_egeria`.
+
 These changes are tested on synthetic fixtures built from the failures above (`test_cross_asset_matcher_real_data_lessons`);
 they have not been re-run on the real registry. Before relying on the confidence labels:
 1. Re-run `query_cross_asset_links` over the real registry and review the HIGH and MEDIUM pairs by hand.

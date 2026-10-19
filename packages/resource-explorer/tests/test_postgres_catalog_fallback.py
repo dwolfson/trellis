@@ -127,7 +127,9 @@ class _FakeCursorConnection(PostgreSQLConnection):
             return rows
         if "c.relkind IN ('r', 'p', 'v', 'm')" in query:
             return [
-                {"table_name": name, "relkind": info["relkind"], "reltuples": info["reltuples"]}
+                {"table_name": name, "relkind": info["relkind"], "reltuples": info["reltuples"],
+                 # a "comment" key means the comment query succeeded (None = no comment)
+                 **({"table_comment": info["comment"]} if "comment" in info else {})}
                 for name, info in self._catalog_tables.items()
             ]
         if "FROM pg_attribute a" in query:
@@ -207,6 +209,25 @@ class TestZeroAccessToASchema:
             assert col["type"]  # a real Postgres type name, not blank
 
         assert by_name["line_items"]["row_count_estimate"] == 42000
+
+
+class TestCatalogFallbackReadsTheTableComment:
+    def _tables(self, catalog_tables):
+        conn = _FakeCursorConnection(information_schema_tables={}, catalog_tables=catalog_tables, catalog_columns={})
+        return {t["name"]: t for t in conn._get_tables_for_schema(_schema("coco_ods"))}
+
+    def test_a_comment_is_kept_and_marked_read(self):
+        t = self._tables({"orders": {"relkind": "r", "reltuples": 1, "comment": "Customer orders"}})["orders"]
+        assert t["description"] == "Customer orders" and t["description_read"] is True
+        assert t["source"] == "catalog_fallback"
+
+    def test_a_read_with_no_comment_is_read_and_empty(self):
+        t = self._tables({"orders": {"relkind": "r", "reltuples": 1, "comment": None}})["orders"]
+        assert t["description"] == "" and t["description_read"] is True
+
+    def test_a_row_without_the_comment_column_is_not_marked_read(self):
+        t = self._tables({"orders": {"relkind": "r", "reltuples": 1}})["orders"]
+        assert t["description"] == "" and "description_read" not in t
 
 
 class TestPartialAccess:

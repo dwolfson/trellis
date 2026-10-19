@@ -94,8 +94,9 @@ def _database_figures(info: dict) -> dict:
         for tbl in sch.get("tables", []):
             tables += 1
             columns += len(tbl.get("columns", []))
-            # A table seen only through the catalog never had its comment read: unknown, not undocumented.
-            if not readable or tbl.get("source") == "catalog_fallback":
+            # A table seen only through the catalog is unknown, not undocumented, unless its comment was
+            # read (`description_read`) -- then an empty one really is undocumented.
+            if not readable or (tbl.get("source") == "catalog_fallback" and not tbl.get("description_read")):
                 unmeasured += 1
             elif (tbl.get("description") or "").strip():
                 documented += 1
@@ -136,8 +137,9 @@ def rank_databases(registry: "ProjectRegistry", metric: str = "tables", limit: i
             extra = f" of {f['documented'] + f['undocumented_tables']} readable"
             if f["unmeasured"]:
                 extra += (
-                    f"; {f['unmeasured']} table(s) whose description could not be read "
-                    "(catalog-only or in an unreadable schema), so not counted either way"
+                    f"; {f['unmeasured']} table(s) whose description was not read "
+                    "(found only through the catalog, e.g. materialized views, or in an unreadable schema), "
+                    "so not counted either way"
                 )
         lines.append(f"{place}. `{slug}`: {f[metric]}{extra}")
     if len(ranked) > limit:
