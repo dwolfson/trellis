@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import logging
-
 import asyncio
+import logging
+import re
 
 from resource_explorer.agents.base import BaseExplorerAgent
 
@@ -15,6 +15,13 @@ def _registry():
     from resource_explorer.registry import ProjectRegistry
 
     return ProjectRegistry()
+
+
+#: A question about what a repo itself depends on or uses, as opposed to what depends on it.
+_DEPENDS_ON = re.compile(
+    r"\b(?:does|do|did)\b.{0,60}\bdepend(?:s)? on\b|\bwhat\b.{0,30}\b(?:dependenc(?:y|ies)|packages|libraries)\b",
+    re.IGNORECASE,
+)
 
 
 class ConversationAgent(BaseExplorerAgent):
@@ -258,6 +265,10 @@ class ConversationAgent(BaseExplorerAgent):
                     query, slug, kwargs.get("perspectives"), resource_type=entity_type
                 )
             )
+            # Not only the DEPENDENCY label: "what does egeria_python_git depend on" classifies as
+            # survey_meta (the slug contains "egeria") and "what does it depend on" as general.
+            if classified_intent == QueryIntent.DEPENDENCY or _DEPENDS_ON.search(query):
+                lines.extend(self._dependency_evidence(slug))
         lines.append(f"Question: {query}")
         prompt = "\n".join(lines)
 
@@ -269,6 +280,35 @@ class ConversationAgent(BaseExplorerAgent):
 
                 self._rag = RAGSystem()
             return self._rag.query(query, resource_slug=slug)
+
+    @staticmethod
+    def _dependency_evidence(slug: str, limit: int = 60) -> list[str]:
+        """The stored dependency list, in the prompt, for a question about what a repo depends on.
+
+        Traced on 8813 2026-10-19: "What does it depend on?" on egeria_python_git made no tool call
+        and answered with three packages the model supplied itself (32 are stored). A model that
+        skips the tool must still have the list in front of it.
+        """
+        try:
+            from resource_explorer.registry import ProjectRegistry
+
+            rows = ProjectRegistry().query_dependencies(slug)
+        except Exception as exc:
+            return [f"Stored dependencies for {slug}: could not be read ({type(exc).__name__}: {exc})."]
+        if not rows:
+            return [f"Stored dependencies for {slug}: none recorded (no dependency analysis result)."]
+        groups: dict[tuple[str, str], list[str]] = {}
+        for r in rows:
+            name = f"{r['dep_name']} {r['dep_version']}".strip()
+            groups.setdefault((r["source_file"] or "manifest", r["dep_type"] or "runtime"), []).append(name)
+        lines = [f"Stored dependencies for {slug} ({len(rows)} entries; list every group when answering):"]
+        shown = 0
+        for (src, dtype), names in sorted(groups.items()):
+            take = names[: max(0, limit - shown)]
+            shown += len(take)
+            more = f" (+{len(names) - len(take)} more)" if len(take) < len(names) else ""
+            lines.append(f"- {src} [{dtype}] ({len(names)}): {', '.join(take)}{more}")
+        return lines
 
     def _compiled_evidence(
         self, query: str, slug: str, perspectives, resource_type: str = "repo"
