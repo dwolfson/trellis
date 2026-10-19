@@ -14437,6 +14437,36 @@ async function runQuery(query, projectSlug, databaseSlug) {
             wrap.appendChild(banner);
           }
 
+          if (event.disambiguation_chips && event.disambiguation_chips.length > 0) {
+            const chipsDiv = document.createElement('div');
+            chipsDiv.className = 'mt-2 flex flex-wrap gap-1.5 p-2 rounded bg-slate-800/80 border border-slate-700';
+            const title = document.createElement('div');
+            title.className = 'w-full text-xs text-slate-400 mb-0.5';
+            title.textContent = '💡 Select candidate resources to include in comparison / integration:';
+            chipsDiv.appendChild(title);
+            event.disambiguation_chips.forEach(chip => {
+              const btn = document.createElement('button');
+              btn.className = 'px-2 py-1 rounded bg-slate-700 hover:bg-emerald-600/60 text-xs text-slate-200 hover:text-white transition-colors flex items-center gap-1 border border-slate-600';
+              const icon = document.createElement('span');
+              icon.textContent = chip.type === 'database' ? '🗄️' : '📦';
+              const nameEl = document.createElement('strong');
+              nameEl.textContent = chip.name;
+              const slugEl = document.createElement('span');
+              slugEl.className = 'text-slate-400';
+              slugEl.textContent = `(${chip.slug})`;
+              btn.append(icon, ' ', nameEl, ' ', slugEl);
+              btn.onclick = () => {
+                const inp = document.getElementById('chat-input') || document.querySelector('input[name="chat"]');
+                if (inp) {
+                  inp.value = (inp.value ? inp.value.trim() + ' ' : '') + chip.slug;
+                  inp.focus();
+                }
+              };
+              chipsDiv.appendChild(btn);
+            });
+            wrap.appendChild(chipsDiv);
+          }
+
           // Same compile ConversationAgent._compiled_evidence already ran to
           // shape the answer above -- not a second Evidence-button call.
           // See _evidenceSummaryHtml: empty string (nothing appended) when

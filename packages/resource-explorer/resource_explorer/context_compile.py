@@ -1382,3 +1382,272 @@ def compile_context(
         else:
             compiled.manifest["recorded"] = True
     return compiled
+
+
+def build_epistemological_matrix(
+    registry: ProjectRegistry,
+    slugs: list[str],
+    analyses: list[str] | None = None,
+) -> tuple[str, list[dict]]:
+    """Build an epistemological comparison matrix across multiple resource slugs.
+
+    Surfaces survey coverage and asymmetry explicitly using FactLayer states
+    (measured, nothing_found, never_run, partial, not_established).
+    Returns (markdown_table, matrix_records).
+    """
+    from resource_explorer.facts import (
+        FactLayer,
+        MEASURED,
+        NOTHING_FOUND,
+        NEVER_RUN,
+        PARTIAL,
+        NOT_ESTABLISHED,
+    )
+
+    if not slugs:
+        return "", []
+
+    slug_types: dict[str, str] = {}
+    for s in slugs:
+        norm = registry._normalize_slug(s)
+        if registry.get(norm):
+            slug_types[norm] = "repo"
+        elif registry.get_database(norm, allow_unreadable=True):
+            slug_types[norm] = "database"
+        elif registry.get_filesystem(norm):
+            slug_types[norm] = "filesystem"
+        else:
+            slug_types[norm] = "repo"
+
+    normalized_slugs = [registry._normalize_slug(s) for s in slugs]
+
+    if not analyses:
+        # Default core set covering repos, databases, and general health
+        analyses = [
+            "security_scan",
+            "license_classification",
+            "dependencies",
+            "project_stats",
+            "ci_quality",
+            "repo_conventions",
+            "architecture_recovery",
+            "schema_inventory",
+            "data_profiling",
+            "data_quality",
+        ]
+
+    matrix_records: list[dict] = []
+    lines: list[str] = []
+
+    # Markdown table header
+    header_cols = ["Dimension"] + [f"{s} ({slug_types[s]})" for s in normalized_slugs]
+    lines.append("| " + " | ".join(header_cols) + " |")
+    lines.append("| " + " | ".join(["---"] * len(header_cols)) + " |")
+
+    for analysis_id in analyses:
+        row_slugs: dict[str, dict] = {}
+        row_values: list[str] = []
+        has_any_data = False
+
+        for s in normalized_slugs:
+            rtype = slug_types[s]
+            fl = FactLayer(registry, resource_type=rtype)
+            fact = fl.fact(s, analysis_id)
+            state = fact.state
+            headline = fact.headline or fact.note
+
+            display_state = state.upper()
+            if state == MEASURED:
+                display_state = f"KNOWN ({headline[:35]}...)" if headline and len(headline) > 35 else f"KNOWN ({headline})" if headline else "KNOWN"
+                has_any_data = True
+            elif state == NOTHING_FOUND:
+                display_state = "KNOWN (0 / None found)"
+                has_any_data = True
+            elif state == NEVER_RUN:
+                display_state = "NEVER_RUN"
+            elif state == PARTIAL:
+                display_state = f"PARTIAL ({headline[:25]})" if headline else "PARTIAL"
+                has_any_data = True
+            elif state == NOT_ESTABLISHED:
+                display_state = "NOT_ESTABLISHED"
+
+            row_slugs[s] = {
+                "state": state,
+                "display": display_state,
+                "headline": headline,
+                "is_known": fact.is_known,
+            }
+            row_values.append(display_state.replace("|", "/"))
+
+        # Format dimension name
+        dim_name = analysis_id.replace("_", " ").title()
+        matrix_records.append({
+            "analysis_id": analysis_id,
+            "dimension": dim_name,
+            "slugs": row_slugs,
+        })
+        lines.append(f"| {dim_name} | " + " | ".join(row_values) + " |")
+
+    markdown_table = "\n".join(lines)
+    return markdown_table, matrix_records
+
+
+def compile_multi_resource_context(
+    registry: ProjectRegistry,
+    slugs: list[str],
+    question: str,
+    budget: int = 8000,
+    perspectives: list[str] | None = None,
+    purposes: list[str] | None = None,
+    target_model: str = "default",
+    session_id: str = "",
+    instructions_variant: str = "default",
+    max_sections_per_resource: int | None = None,
+) -> CompiledContext:
+    """Compile structured comparative context across two or more resources.
+
+    Partitions the prompt token budget proportionally across resources and
+    generates an epistemological asymmetry matrix comparing survey coverage.
+    """
+    if not slugs:
+        raise ValueError("At least one resource slug is required for context compilation.")
+
+    normalized_slugs = [registry._normalize_slug(s) for s in slugs]
+
+    # Single-resource fast path
+    if len(normalized_slugs) == 1:
+        slug = normalized_slugs[0]
+        rtype = "repo"
+        if registry.get_database(slug, allow_unreadable=True):
+            rtype = "database"
+        elif registry.get_filesystem(slug):
+            rtype = "filesystem"
+        return compile_context(
+            registry=registry,
+            slug=slug,
+            question=question,
+            budget=budget,
+            resource_type=rtype,
+            perspectives=perspectives,
+            purposes=purposes,
+            target_model=target_model,
+            session_id=session_id,
+            instructions_variant=instructions_variant,
+            max_sections=max_sections_per_resource,
+        )
+
+    # Multi-resource compilation
+    matrix_md, matrix_records = build_epistemological_matrix(registry, normalized_slugs)
+
+    # Allocate budget: reserve 20% for matrix, preamble, and cross-resource synthesis
+    reserved_budget = max(200, int(budget * 0.20))
+    evidence_budget = max(100, budget - reserved_budget)
+    per_resource_budget = max(100, evidence_budget // len(normalized_slugs))
+
+    compiled_list: list[CompiledContext] = []
+    slug_types: dict[str, str] = {}
+
+    for slug in normalized_slugs:
+        rtype = "repo"
+        if registry.get_database(slug, allow_unreadable=True):
+            rtype = "database"
+        elif registry.get_filesystem(slug):
+            rtype = "filesystem"
+        slug_types[slug] = rtype
+
+        c = compile_context(
+            registry=registry,
+            slug=slug,
+            question=question,
+            budget=per_resource_budget,
+            resource_type=rtype,
+            perspectives=perspectives,
+            purposes=purposes,
+            target_model=target_model,
+            session_id=session_id,
+            instructions_variant=instructions_variant,
+            max_sections=max_sections_per_resource,
+        )
+        compiled_list.append(c)
+
+    # Assemble combined text
+    text_parts: list[str] = [
+        "=== MULTI-RESOURCE EVIDENCE COMPILATION ===",
+        f"Target Resources: {', '.join(normalized_slugs)}\n",
+        "## Epistemological Coverage & Asymmetry Matrix",
+        "The following table compares survey findings and knowledge states across resources.",
+        "A state of 'KNOWN' indicates measured facts; 'NEVER_RUN' indicates unmeasured dimensions (do not assume absence).",
+        matrix_md,
+        "",
+    ]
+
+    for slug, c in zip(normalized_slugs, compiled_list):
+        text_parts.append(f"=== RESOURCE EVIDENCE: {slug} ({slug_types[slug]}) ===")
+        text_parts.append(c.text)
+        text_parts.append("")
+
+    combined_text = "\n".join(text_parts).strip()
+
+    # Create multi-resource compile ID
+    id_input = f"{':'.join(normalized_slugs)}|{budget}|" + "|".join(c.compile_id for c in compiled_list)
+    import hashlib
+
+    multi_compile_id = hashlib.sha256(id_input.encode("utf-8")).hexdigest()[:16]
+
+    total_used = sum(c.manifest.get("used", 0) for c in compiled_list) + len(matrix_md) // 4
+    all_gaps = []
+    for slug, c in zip(normalized_slugs, compiled_list):
+        for g in c.manifest.get("gaps", []):
+            gap_copy = dict(g)
+            gap_copy["resource_slug"] = slug
+            all_gaps.append(gap_copy)
+
+    all_notes = []
+    for slug, c in zip(normalized_slugs, compiled_list):
+        for n in c.manifest.get("notes", []):
+            all_notes.append(f"[{slug}] {n}")
+
+    combined_derivation = []
+    for slug, c in zip(normalized_slugs, compiled_list):
+        for d in c.derivation:
+            d_copy = dict(d)
+            d_copy["resource_slug"] = slug
+            combined_derivation.append(d_copy)
+
+    manifest = {
+        "compile_id": multi_compile_id,
+        "mode": "multi_resource",
+        "slugs": normalized_slugs,
+        "budget": budget,
+        "used": total_used,
+        "headroom": max(0, budget - total_used),
+        "coverage_matrix": matrix_records,
+        "per_resource": {slug: c.manifest for slug, c in zip(normalized_slugs, compiled_list)},
+        "gaps": all_gaps,
+        "notes": all_notes,
+        "instructions_variant": instructions_variant,
+    }
+
+    record = getattr(registry, "record_compile", None)
+    if callable(record):
+        try:
+            record(
+                multi_compile_id,
+                ",".join(normalized_slugs),
+                question,
+                manifest,
+                combined_derivation,
+                session_id=session_id,
+            )
+            manifest["recorded"] = True
+        except Exception as exc:
+            log.warning("could not record multi-compile %s: %s", multi_compile_id, exc)
+            manifest["notes"].append(f"compile not recorded ({type(exc).__name__})")
+            manifest["recorded"] = False
+
+    return CompiledContext(
+        text=combined_text,
+        compile_id=multi_compile_id,
+        manifest=manifest,
+        derivation=combined_derivation,
+    )
