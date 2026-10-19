@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from beeai_framework.tools import tool
 
+from resource_explorer.name_resolution import ambiguity_message, resolve_database
+
 
 def _absence(resource_slug: str, analysis_id: str, subject: str) -> str:
     """What to say when a table came back empty.
@@ -653,7 +655,8 @@ def build_example_context(resource_slug: str, topic: str) -> str:
 
 @tool(
     description=(
-        "Query the dependency graph for a project. Returns a markdown table of dependencies. "
+        "Query the dependency graph for a project. Use for 'what does X depend on?', 'what packages does X use?'. "
+        "Returns a markdown table of dependencies. "
         "dep_type can be 'runtime', 'dev', 'optional', 'indirect', 'test', or 'all' (default). "
         "Pass a comma-separated list of project_slugs to find shared dependencies across projects."
     )
@@ -710,8 +713,10 @@ def query_databases_raw(database_slug: str = "") -> str:
 
     registry = ProjectRegistry()
     if database_slug:
-        normalized = registry._normalize_slug(database_slug)
-        db_entity = registry.get_database(normalized, allow_unreadable=True)
+        normalized, ambiguous = resolve_database(registry, database_slug)
+        if ambiguous:
+            return ambiguity_message(database_slug, ambiguous)
+        db_entity = registry.get_database(normalized, allow_unreadable=True) if normalized else None
         if not db_entity:
             return f"Database '{database_slug}' not found in registry."
 
@@ -787,8 +792,12 @@ def query_database_schema_raw(
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
-    normalized = registry._normalize_slug(database_slug)
-    db_entity = registry.get_database(normalized, allow_unreadable=True)
+    if table_name and "." in table_name and not schema_name:
+        schema_name, table_name = table_name.split(".", 1)
+    normalized, ambiguous = resolve_database(registry, database_slug)
+    if ambiguous:
+        return ambiguity_message(database_slug, ambiguous)
+    db_entity = registry.get_database(normalized, allow_unreadable=True) if normalized else None
     if not db_entity:
         return f"Database '{database_slug}' not found."
 
@@ -903,7 +912,9 @@ def query_database_schema_raw(
         "If table_name is provided, returns columns (with types, nullable, primary key, foreign key information) "
         "and row count/size statistics for that table. "
         "If only schema_name is provided, lists tables in that schema. "
-        "If neither is provided, returns a list of all tables in the database with their row counts and sizes."
+        "If neither is provided, returns a list of all tables in the database with their row counts and sizes. "
+        "To describe a table ('describe sales.salesorderheader'), pass table_name (a 'schema.table' name is "
+        "accepted). database_slug may be the database's own name, e.g. 'adventureworks'."
     )
 )
 def query_database_schema(database_slug: str, schema_name: str = "", table_name: str = "") -> str:
@@ -1015,13 +1026,17 @@ def compare_database_schemas_raw(
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
-    slug_a = registry._normalize_slug(database_slug_a)
-    slug_b = registry._normalize_slug(database_slug_b)
+    slug_a, ambiguous_a = resolve_database(registry, database_slug_a)
+    slug_b, ambiguous_b = resolve_database(registry, database_slug_b)
+    if ambiguous_a:
+        return ambiguity_message(database_slug_a, ambiguous_a)
+    if ambiguous_b:
+        return ambiguity_message(database_slug_b, ambiguous_b)
 
-    db_a = registry.get_database(slug_a, allow_unreadable=True)
+    db_a = registry.get_database(slug_a, allow_unreadable=True) if slug_a else None
     if not db_a:
         return f"Database '{database_slug_a}' not found in registry."
-    db_b = registry.get_database(slug_b, allow_unreadable=True)
+    db_b = registry.get_database(slug_b, allow_unreadable=True) if slug_b else None
     if not db_b:
         return f"Database '{database_slug_b}' not found in registry."
 
@@ -1295,7 +1310,8 @@ def coverage_sweep_raw(analysis: str, resource_type: str = "", only_gaps: bool =
     description=(
         "Sweep EVERY registered resource for one analysis and group them by what is known: has a result, "
         "ran and found nothing, never run, or cannot be established. Use for 'which repos have no license "
-        "classification?', 'which databases have never been checked for X?'. analysis is an analysis id "
+        "classification?', 'which databases have never been checked for X?'. The analysis word ('license', "
+        "'security', 'cve') names an ANALYSIS, never a repository that happens to have that name. analysis is an analysis id "
         "(license_classification, security_scan, cve_scan, secret_scan, documentation_coverage, "
         "dependency_analysis, ci_quality, database_owner, schema_inventory, ...) or a plain word such as "
         "'license' or 'security'. resource_type is 'repo', 'database' or 'filesystem' (optional). "
@@ -1360,7 +1376,14 @@ def list_rfas_raw(resource_slug: str = "", include_closed: bool = False) -> str:
     scope = f" for '{slug}'" if slug else ""
     if not shown:
         return f"No open RequestForAction entries{scope} ({total} in total, including closed or dismissed)."
-    lines = [f"{len(shown)} RequestForAction entr{'y' if len(shown) == 1 else 'ies'}{scope} ({total} in total):"]
+    by_status: dict[str, int] = {}
+    for r in shown:
+        by_status[r.get("rfa_status", "open")] = by_status.get(r.get("rfa_status", "open"), 0) + 1
+    breakdown = ", ".join(f"{n} {status}" for status, n in sorted(by_status.items()))
+    lines = [
+        f"{len(shown)} RequestForAction entr{'y' if len(shown) == 1 else 'ies'}{scope} not yet completed "
+        f"({breakdown}; {total} in total). Report each with its status word as shown:"
+    ]
     for r in shown[:25]:
         who = f", assigned to {r['assignee']}" if r.get("assignee") else ""
         target = f"`{r['entity_slug']}`" if r.get("entity_slug") else "(no specific resource)"
@@ -1394,7 +1417,8 @@ def query_cross_asset_links_raw(
 
 @tool(
     description=(
-        "Discover linkages between code repositories and cataloged databases: a repo's model classes sharing "
+        "Discover linkages between code repositories and cataloged databases. Use for 'which databases does X "
+        "use?' (pass the repo as resource_slug) and 'which repos use database Y?'. A repo's model classes sharing "
         "names with a database's tables, plus matching database drivers. Pass resource_slug to filter to one "
         "repository or database, or leave empty for all. Lists only high-confidence links by default, best "
         "first (limit, default 15) and always reports how many medium and low ones exist; pass "

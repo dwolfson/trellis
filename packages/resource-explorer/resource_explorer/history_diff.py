@@ -94,8 +94,12 @@ def database_changes(registry: "ProjectRegistry", database_slug: str) -> str:
     """Schema changes between the two most recent measured surveys of a database."""
     from resource_explorer.registry import _survey_schema_info, is_measured_survey
 
-    slug = registry._normalize_slug(database_slug)
-    if not registry.get_database(slug, allow_unreadable=True):
+    from resource_explorer.name_resolution import ambiguity_message, resolve_database
+
+    slug, ambiguous = resolve_database(registry, database_slug)
+    if ambiguous:
+        return ambiguity_message(database_slug, ambiguous)
+    if not slug:
         return f"Database '{database_slug}' is not registered."
 
     surveys = registry.get_database_surveys(slug)  # newest first, invalid rows excluded
@@ -115,7 +119,10 @@ def database_changes(registry: "ProjectRegistry", database_slug: str) -> str:
 
     new, old = measured[0], measured[1]
     diff = schema_diff(_survey_schema_info(old), _survey_schema_info(new))
-    header = f"Schema changes for `{slug}`: {old['surveyed_at']} -> {new['surveyed_at']}"
+    header = (
+        f"Schema changes for `{slug}`. Latest survey: {new['surveyed_at']}. "
+        f"Previous survey: {old['surveyed_at']}. Changes since the previous survey:"
+    )
     body = render_schema_diff(diff)
     if not body:
         return f"{header}\nNo differences in tables or columns between these two surveys."

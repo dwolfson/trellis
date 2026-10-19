@@ -1247,7 +1247,7 @@ def test_list_rfas_is_read_only_and_honest(db):
         create_rfa_from_finding_raw("rfa_repo", "Missing docs", analysis_name="doc_coverage")
         create_rfa_from_finding_raw("rfa_repo", "No tests")
         out = list_rfas_raw("rfa_repo")
-        assert "2 RequestForAction entries for 'rfa_repo'" in out
+        assert "2 RequestForAction entries for 'rfa_repo' not yet completed (2 open;" in out
         assert "[open]" in out and "Missing docs" in out and "No tests" in out
         assert "only read them" in out
 
@@ -1361,3 +1361,59 @@ def test_chat_stat_tools_read_the_registry_not_a_sqlite_file(db, monkeypatch):
 
     assert "Ada: 1 commit" in committers
     assert "Error reading" not in stats
+
+
+def test_database_names_resolve_and_ambiguity_is_reported(db):
+    from resource_explorer.history_diff import database_changes
+    from resource_explorer.name_resolution import resolve_database
+
+    def add(slug, display, dbname):
+        db.register_database(DatabaseEntity(slug=slug, display_name=display, db_type="postgresql",
+                                            host="h", port=5432, database_name=dbname))
+
+    add("laz_local_adventureworks", "Laz Local Adventureworks", "adventureworks")
+    add("laz_local_coco_pharma", "Laz Local Coco Pharma", "coco_pharma")
+    add("pg_a_orders", "Orders A", "orders")
+    add("pg_b_orders", "Orders B", "orders")
+
+    assert resolve_database(db, "laz_local_adventureworks") == ("laz_local_adventureworks", [])   # slug
+    assert resolve_database(db, "adventureworks") == ("laz_local_adventureworks", [])             # database name
+    assert resolve_database(db, "Coco-Pharma") == ("laz_local_coco_pharma", [])                   # suffix, folded
+    assert resolve_database(db, "orders") == (None, ["pg_a_orders", "pg_b_orders"])               # ambiguous
+    assert resolve_database(db, "nowhere") == (None, [])
+
+    assert "more than one registered database" in database_changes(db, "orders")
+    assert "is not registered" in database_changes(db, "nowhere")
+    assert "never been surveyed" in database_changes(db, "adventureworks")                        # resolved
+
+
+def test_a_database_is_found_in_a_question_by_its_own_name(db):
+    db.register_database(DatabaseEntity(slug="laz_local_adventureworks", display_name="Laz Local Adventureworks",
+                                        db_type="postgresql", host="h", port=5432, database_name="adventureworks"))
+    db.register_database(DatabaseEntity(slug="laz_local_coco_pharma", display_name="Laz Local Coco Pharma",
+                                        db_type="postgresql", host="h", port=5432, database_name="coco_pharma"))
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
+        found = MockAgent()._infer_all_project_slugs("compare the adventureworks and coco_pharma schemas")
+    assert found == ["laz_local_adventureworks", "laz_local_coco_pharma"]
+
+
+def test_an_empty_agent_answer_raises_so_the_fallback_runs():
+    from resource_explorer.agents import base as base_mod
+    from resource_explorer.agents.base import EmptyAgentAnswer
+
+    with patch.object(MockAgent, "_build_agent", return_value=MagicMock()), \
+         patch.object(base_mod.asyncio, "run", side_effect=lambda coro: (coro.close(), "  ")[1]):
+        with pytest.raises(EmptyAgentAnswer):
+            MockAgent()._run_agent("anything")
+
+
+def test_a_database_given_by_its_own_name_is_found_by_the_schema_tool(db):
+    from resource_explorer.agents.tools import query_database_schema_raw
+
+    db.register_database(DatabaseEntity(slug="laz_local_aw", display_name="AW", db_type="postgresql",
+                                        host="h", port=5432, database_name="aw"))
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
+        out = query_database_schema_raw("aw", table_name="sales.salesorderheader")
+    # Resolved to the registered database; only the survey is missing.
+    assert "not found" not in out.lower()
+    assert "No survey data available" in out
