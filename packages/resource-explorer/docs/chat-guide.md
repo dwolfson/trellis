@@ -175,7 +175,7 @@ listing ranked candidates. They are read-only.
 | A comparison asks "which projects?" | Fewer than two resources were recognised. Click a chip or use the slug. |
 | A cross-asset link looks wrong | See section 5; check the evidence lines and report it with **f**. |
 | A sweep says it stopped early | The 30-second budget ran out; the answer lists what it did not reach. Narrow it ("only repos") **[V5]**. |
-| The answer ignores a document you expect | The documentation may not be indexed. Check the **chunk count** of the latest ingestion, not only whether it ran: a run can finish with zero chunks, and then nothing is searchable. **[V6]** |
+| The answer ignores a document you expect | The documentation may not be indexed. Check the **chunk count** of the latest ingestion. A repository added through scouting is not indexed for chat until someone indexes it: it shows 0 chunks and no collections, and nothing about it is searchable. Counts include any shared collection (for example the Egeria web documentation), so do not add them up across repositories. **[V6]** |
 
 ## 11. Claims awaiting verification
 
@@ -188,4 +188,4 @@ Each needs a test run against a real registry and a live model, by the coordinat
 | V3 | Evidence shows the coverage without calling the model. Checked in code (2026-10-18): `POST /api/context/compile` calls no model, but it writes a compile record. Remaining: click it with the model server stopped. | Confirm it still returns. |
 | V4 | "Including closed" shows completed RFAs. | Ask for RFAs on a resource with a completed one; compare with the drawer. |
 | V5 | "Only repos" narrows a coverage sweep to repositories. | Ask a sweep question both ways; the tool call must carry `resource_type`. |
-| V6 | An un-indexed document is the usual cause of a missing document. Checked on laz: 8 repos were never ingested and 34 of 65 ingested repos have a latest ingestion with 0 chunks (a possible defect, not yet investigated). | Re-check after that is understood. |
+| V6 | An un-indexed document is the usual cause of a missing document. Checked on laz (2026-10-18): 42 repos (34 with a 0-chunk ingestion row, 8 with none) have no collections and were never first-indexed; the bulk and scouting paths do not index. Counts are correct per repo and include the shared web-docs collection. | Re-check after that is understood. |
