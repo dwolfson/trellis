@@ -1363,6 +1363,41 @@ def test_chat_stat_tools_read_the_registry_not_a_sqlite_file(db, monkeypatch):
     assert "Error reading" not in stats
 
 
+def test_top_committers_respects_the_window_and_stats_label_their_dates(db):
+    """Old commits must not count toward "last 90 days"; the stats header says which date each figure has."""
+    from datetime import datetime, timedelta
+    from resource_explorer.agents.tools import query_project_stats_raw, query_top_committers_raw
+    from resource_explorer.registry import Project
+
+    db.add(Project(slug="winrepo", display_name="Win Repo", github_url="https://github.com/o/winrepo"))
+    now = datetime.utcnow()
+    rows = [("n1", "Ada", 5), ("n2", "Ada", 40), ("o1", "Bob", 200), ("o2", "Bob", 300), ("o3", "Bob", 400)]
+    with db._conn() as conn:
+        for sha, who, age in rows:
+            conn.execute(
+                "INSERT INTO project_commits (project_slug, sha, author_name, author_email, committed_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("winrepo", sha, who, f"{who}@example.org", (now - timedelta(days=age)).isoformat()),
+            )
+        conn.execute(
+            "INSERT INTO project_stats (project_slug, fetched_at, commits_30d, commits_90d) VALUES (?, ?, ?, ?)",
+            ("winrepo", "2026-01-01T00:00:00", 119, 476),
+        )
+
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
+        recent = query_top_committers_raw("winrepo")
+        wide = query_top_committers_raw("winrepo", days=500)
+        stats = query_project_stats_raw("winrepo", days=500)
+
+    assert "Ada: 2 commits" in recent and "Bob" not in recent
+    assert "last 90 days" in recent
+    assert "Bob: 3 commits" in wide and "last 500 days" in wide
+    # The snapshot date labels the snapshot figures only; commit counts say they were counted today.
+    assert "snapshot taken 2026-01-01" in stats
+    assert "counted today" in stats and "from 5 stored commits" in stats
+    assert "30d: 1  90d: 2  500d: 5" in stats
+
+
 def test_database_names_resolve_and_ambiguity_is_reported(db):
     from resource_explorer.history_diff import database_changes
     from resource_explorer.name_resolution import resolve_database

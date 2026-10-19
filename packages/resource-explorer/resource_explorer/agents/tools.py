@@ -102,6 +102,9 @@ def query_project_stats_raw(resource_slug: str, days: int = 90) -> str:
                 "SELECT COUNT(*) FROM project_commits WHERE project_slug = ? AND committed_at >= ?",
                 (slug, cutoff_90),
             ).fetchone()[0]
+            live_total = conn.execute(
+                "SELECT COUNT(*) FROM project_commits WHERE project_slug = ?", (slug,)
+            ).fetchone()[0]
     except Exception as e:
         return f"Error reading stats: {e}"
     if not row:
@@ -166,12 +169,22 @@ def query_project_stats_raw(resource_slug: str, days: int = 90) -> str:
     )
 
     lines = [
-        f"Project: {slug}  (stats as of {v('fetched_at')[:19]})",
+        f"Project: {slug}  (snapshot taken {v('fetched_at')[:19]}; commit counts below are counted today)",
         f"Stars: {v('stars')}  Forks: {v('forks')}  Watchers: {v('watchers')}  Open issues: {v('open_issues')}",
-        f"Contributors: {v('contributors_count')}  Commits 30d: {commits_30d}  Commits 90d: {commits_90d}",
+        f"Contributors: {v('contributors_count')}",
     ]
-    if days not in (30, 90):
-        lines.append(f"Commits {days}d: {live_n if have_live else 'N/A (run refresh)'}")
+    if have_live:
+        lines.append(
+            f"Commits, counted {now:%Y-%m-%d} from {live_total} stored commits: "
+            f"30d: {commits_30d}  90d: {commits_90d}"
+            + (f"  {days}d: {live_n}" if days not in (30, 90) else "")
+        )
+    else:
+        lines.append(
+            f"Commits, from the {v('fetched_at')[:10]} snapshot (no stored commits to count): "
+            f"30d: {commits_30d}  90d: {commits_90d}"
+            + (f"  {days}d: N/A (run refresh)" if days not in (30, 90) else "")
+        )
     lines += [
         f"Releases: {v('releases_count')}  Latest: {v('latest_release')} ({v('latest_release_at')[:10]})",
         f"Avg release interval: {v('avg_release_interval_days')} days",
@@ -195,29 +208,32 @@ def query_project_stats(resource_slug: str, days: int = 90) -> str:
     return query_project_stats_raw(resource_slug, days)
 
 
-def query_top_committers_raw(resource_slug: str, limit: int = 10) -> str:
+def query_top_committers_raw(resource_slug: str, limit: int = 10, days: int = 90) -> str:
     from collections import Counter
+    from datetime import datetime, timedelta
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
     slug = registry._normalize_slug(resource_slug)
+    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
     try:
         with registry._conn() as conn:
             rows = conn.execute(
-                "SELECT author_name, author_email FROM project_commits WHERE project_slug = ?",
-                (slug,),
+                "SELECT author_name, author_email FROM project_commits "
+                "WHERE project_slug = ? AND committed_at >= ?",
+                (slug, cutoff),
             ).fetchall()
     except Exception as e:
         return f"Error reading commits: {e}"
     if not rows:
-        return _absence(slug, "repository_health", "commit data")
+        return _absence(slug, "repository_health", f"commit data for the last {days} days")
     counter: Counter = Counter()
     for row in rows:
         name, email = row["author_name"], row["author_email"]
         label = name or email or "unknown"
         counter[label] += 1
     top = counter.most_common(limit)
-    lines = [f"Top {min(limit, len(top))} committers to {slug} (last 90 days):"]
+    lines = [f"Top {min(limit, len(top))} committers to {slug} (last {days} days, {len(rows)} stored commits):"]
     for i, (name, count) in enumerate(top, 1):
         lines.append(f"  {i}. {name}: {count} commit{'s' if count != 1 else ''}")
     return "\n".join(lines)
@@ -225,12 +241,12 @@ def query_top_committers_raw(resource_slug: str, limit: int = 10) -> str:
 
 @tool(
     description=(
-        "Get the top committers to a project by commit count over the last 90 days. "
+        "Get the top committers to a project by commit count over the last 90 days (days sets the window). "
         "Returns a ranked list with commit counts and email addresses."
     )
 )
-def query_top_committers(resource_slug: str, limit: int = 10) -> str:
-    return query_top_committers_raw(resource_slug, limit)
+def query_top_committers(resource_slug: str, limit: int = 10, days: int = 90) -> str:
+    return query_top_committers_raw(resource_slug, limit, days)
 
 
 def _query_code_symbols_raw(
