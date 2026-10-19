@@ -73,6 +73,8 @@ Decisions and models. Cited from source where a comment cannot restate them.
   stale. Oldest unrevised reference (2026-08-07); predates the database surveyors and Prefect. Che
 - **[user-guide.md](user-guide.md)** — 2026-10-14  
   live. Investigations, work lists, private work, scouting, Curate, Publish and live status are cu
+- **[chat-guide.md](chat-guide.md)** — 2026-10-18  
+  live. What to ask the chat, how to read its answers (measured, none found, not run, not established), cross-resource and governance questions, RFAs from chat, and its limits.
 
 ## Findings and audits
 

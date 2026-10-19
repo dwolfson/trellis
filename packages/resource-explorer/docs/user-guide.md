@@ -2,7 +2,7 @@
 
 **Status:** live. Investigations, work lists, private work, scouting, Curate, Publish and live status are current.
 
-**Last revised:** 2026-10-14
+**Last revised:** 2026-10-18
 
 Resource Explorer discovers, surveys, and catalogs information resources using Egeria as the metadata catalog. This guide covers the web UI, investigations and work lists, the eight intents, and how to get the most out of each workflow.
 
@@ -551,10 +551,31 @@ The **📊 Activity** link in the header opens the persistent activity log. Ever
 
 ## Chat Panel
 
-The Chat panel provides RAG-backed Q&A scoped to the selected resource (or all resources if none is selected). Queries are classified by intent and routed to the appropriate agent:
+The Chat panel answers questions about your surveyed resources from what Resource Explorer has stored, and says
+what it does not know. It is scoped to the selected resource, or considers all of them if none is selected.
+Questions are classified by intent, shown as a small label under the box. Every question goes to the same chat
+agent, which picks its lookups itself; comparison and integration questions are handed to a specialist that
+first compiles evidence across all the resources named.
 
-| Intent | Agent | What it does |
-|--------|-------|-------------|
+| Intent | What it covers |
+|--------|----------------|
+| survey_meta | Survey and analysis history, RFAs, annotations, context |
+| statistical | Commits, contributors, releases, trends (can draw a chart) |
+| dependency | Packages and requirements |
+| comparison | Side-by-side comparison of two or more resources |
+| integration | Whether and how resources fit together |
+| health | Maintenance and community health |
+| code_inventory | Counts and signatures of classes, methods, functions |
+| code_search | Where and how something is implemented |
+| examples | Runnable Python examples |
+| conceptual | Architecture, concepts, configuration |
+| general | Anything else |
+
+The **Evidence** button shows what evidence would answer the question and what is missing. See the
+[Chat Guide](chat-guide.md) for what to ask, how to read the answers, cross-resource and governance questions,
+RFAs from chat, and the limits.
+
+--------|-------|-------------|
 | survey_meta | SurveyMetaAgent | Questions about surveys, schedules, RFAs, and resource context |
 | statistical | StatsAgent | GitHub metrics, commit trends |
 | comparison | CompareAgent | Side-by-side project comparison |
