@@ -25,6 +25,7 @@ _HIDDEN_DISPOSITIONS = {"ignored", "abandoned"}
 # one edit in run_queue.py, not a sweep of every enqueue site.
 from resource_explorer.run_queue import requested_by as _requested_by  # noqa: E402
 from resource_explorer.auth import get_current_user  # noqa: E402
+from resource_explorer.index_state import index_state  # noqa: E402
 
 
 class ProjectSummary(BaseModel):
@@ -36,6 +37,10 @@ class ProjectSummary(BaseModel):
     collections: list[str]
     last_indexed_at: str
     last_commit_sha: str
+    # "indexed" | "not_yet_indexed", from index_state.index_state() over the persisted collections list:
+    # a project is indexed only if it has a collection of its own (`{slug}_{type}`), never because a
+    # shared site collection is listed. Defaults to not_yet_indexed, the claim that needs proof.
+    index_state: str = "not_yet_indexed"
     group_slug: str = ""
     last_surveyed_at: str = ""  # "" = never surveyed (coarse scan or deep)
     is_published: bool = False  # egeria_asset_guid set AND linkage not stale — see egeria_linkage.describe_publish_status
@@ -65,6 +70,7 @@ def _to_summary(p, registry=None) -> ProjectSummary:
         collections=p.collections,
         last_indexed_at=p.last_indexed_at,
         last_commit_sha=p.last_commit_sha,
+        index_state=index_state(p),
         group_slug=getattr(p, "group_slug", "") or "",
         last_surveyed_at=getattr(p, "last_surveyed_at", "") or "",
         is_published=publish_status["is_published"],
@@ -140,6 +146,7 @@ def _list_projects_sync(include_ignored: bool, include_working_set_hidden: bool)
             collections=p.collections,
             last_indexed_at=p.last_indexed_at,
             last_commit_sha=p.last_commit_sha,
+            index_state=index_state(p),
             group_slug=getattr(p, "group_slug", "") or "",
             last_surveyed_at=getattr(p, "last_surveyed_at", "") or "",
             is_published=publish_status["is_published"],
@@ -1463,6 +1470,8 @@ class RefreshResult(BaseModel):
     slug: str
     message: str = ""
     error: str | None = None
+    # What the indexer actually did: indexed | no_changes | not_yet_indexed | nothing_affected.
+    result: str = ""
 
 
 @router.post("/{slug}/refresh", response_model=RefreshResult)
@@ -1474,6 +1483,7 @@ async def refresh_project(slug: str) -> RefreshResult:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
 
     output_lines: list[str] = []
+    outcome: list[str] = []
 
     def _do_refresh():
         import io, sys
@@ -1483,7 +1493,7 @@ async def refresh_project(slug: str) -> RefreshResult:
         try:
             from resource_explorer.ingestion.incremental import IncrementalIndexer
             from resource_explorer.query_cache import QueryCache
-            IncrementalIndexer().refresh(project)
+            outcome.append(IncrementalIndexer().refresh(project).value)
             QueryCache().invalidate_project(slug)
         finally:
             sys.stdout = old_stdout
@@ -1495,7 +1505,7 @@ async def refresh_project(slug: str) -> RefreshResult:
         return RefreshResult(status="error", slug=slug, error=str(exc))
 
     msg = "; ".join(output_lines) if output_lines else "Done"
-    return RefreshResult(status="ok", slug=slug, message=msg)
+    return RefreshResult(status="ok", slug=slug, message=msg, result=outcome[0] if outcome else "")
 
 
 @router.delete("/{slug}")

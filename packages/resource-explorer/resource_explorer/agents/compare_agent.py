@@ -85,10 +85,12 @@ class CompareAgent(BaseExplorerAgent):
                 )
             else:
                 project = all_projects.get(slug)
-                if project and project.collections:
+                from resource_explorer.index_state import has_own_index
+                if project and has_own_index(project.slug, project.collections):
                     cols = ", ".join(sorted(project.collections))
                     resource_info.append(f"  {slug}: {cols}")
                 else:
+                    # Only the shared site collections (or none) are listed: the repository's own content is not searchable.
                     resource_info.append(f"  {slug}: (no collections indexed — stats only)")
 
         q = query.lower()

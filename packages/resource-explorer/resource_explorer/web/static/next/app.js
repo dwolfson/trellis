@@ -69,7 +69,7 @@ import {
 import { renderContext } from '/static/next/stages/context.js';
 import { openApiReference } from '/static/next/stages/api-reference.js';
 import { inPageConfirm, inPageNotice, inPagePrompt } from '/static/next/confirm-dialog.js';
-import { scoutingTilesHtml, scoutingSignalHtml, staleLinkBannerHtml, bindStaleLinkBanner } from '/static/next/stages/repo-header.js';
+import { scoutingTilesHtml, scoutingSignalHtml, staleLinkBannerHtml, bindStaleLinkBanner, indexStateCueHtml } from '/static/next/stages/repo-header.js';
 import { contextRecordedSpec, contextRecordedState } from '/static/next/context-recorded.js';
 import { followUntil, ACTIVITY_LIVE } from '/static/next/live-status.js';
 import { nativeSurveysSectionHtml, nativeSurveysUnreadableHtml, bindNativeSurveys, coordinateControlHtml, coordinateOffNoteHtml, bindCoordinateControls, definitionRunLineHtml, definitionRunsListHtml, bindRunLineControls, ownSurveyRows } from '/static/next/stages/native-surveys.js';
@@ -3440,7 +3440,7 @@ export function resourceHeaderHtml(slug) {
         </button>
       </span>
     </div>
-    <div class="mt-s1 text-provenance text-ink-muted">${surveyed} · ${published}</div>
+    <div class="mt-s1 text-provenance text-ink-muted">${surveyed} · ${published}${state.resourceType === 'repo' && indexStateCueHtml(p) ? ` · ${indexStateCueHtml(p)}` : ''}</div>
     ${credentialBanner}
     ${staleLinkBannerHtml(staleOv)}${state.resourceType === 'repo' ? scoutingTilesHtml(ov) + scoutingSignalHtml(state.scoutingSignal?.slug === slug ? state.scoutingSignal : null) : ''}
     ${state.resourceType === 'db' ? changeCredentialsLineHtml(p) : ''}
