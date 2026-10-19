@@ -750,6 +750,7 @@ def query_databases_raw(database_slug: str = "") -> str:
 
         latest_survey = registry.get_latest_database_survey(normalized)
         if latest_survey:
+            lines.append(f"  Latest survey record: {latest_survey.get('surveyed_at') or 'unknown'}")
             lines.append(f"  Schema Count: {latest_survey.get('schema_count', 0)}")
             lines.append(f"  Table Count: {latest_survey.get('table_count', 0)}")
             lines.append(f"  Column Count: {latest_survey.get('column_count', 0)}")
@@ -794,7 +795,9 @@ def query_databases_raw(database_slug: str = "") -> str:
     description=(
         "List registered databases, or show detailed info about a specific database. "
         "If database_slug is provided, returns details of that database, its schemas, tables, and column counts. "
-        "If database_slug is empty, lists all registered databases with their slugs, types, hosts, ports, and governance states."
+        "If database_slug is empty, lists all registered databases with their slugs, types, hosts, ports, and governance states. "
+        "Use this for 'when was <database> last surveyed?': the detail shows its last-surveyed date and the date of its "
+        "latest survey record. Repository tools (stats, committers, commits) do not apply to databases."
     )
 )
 def query_databases(database_slug: str = "") -> str:
@@ -1392,13 +1395,14 @@ def list_rfas_raw(resource_slug: str = "", include_closed: bool = False) -> str:
     scope = f" for '{slug}'" if slug else ""
     if not shown:
         return f"No open RequestForAction entries{scope} ({total} in total, including closed or dismissed)."
+    closed_note = "including completed ones" if include_closed else "not yet completed"
     by_status: dict[str, int] = {}
     for r in shown:
         by_status[r.get("rfa_status", "open")] = by_status.get(r.get("rfa_status", "open"), 0) + 1
     breakdown = ", ".join(f"{n} {status}" for status, n in sorted(by_status.items()))
     lines = [
-        f"{len(shown)} RequestForAction entr{'y' if len(shown) == 1 else 'ies'}{scope} not yet completed "
-        f"({breakdown}; {total} in total). Report each with its status word as shown:"
+        f"{len(shown)} RequestForAction entr{'y' if len(shown) == 1 else 'ies'}{scope} {closed_note} "
+        f"({breakdown}; {total} in total). List every entry below, one line each, with its status word as shown:"
     ]
     for r in shown[:25]:
         who = f", assigned to {r['assignee']}" if r.get("assignee") else ""
@@ -1416,8 +1420,9 @@ def list_rfas_raw(resource_slug: str = "", include_closed: bool = False) -> str:
 @tool(
     description=(
         "List RequestForAction (RFA) entries from the RFA drawer, optionally for one resource: workflow "
-        "status (open, deferred, reassigned), assignee, summary and date. Closed (completed) and dismissed "
-        "RFAs are hidden unless include_closed=true. Read-only: changing an RFA is done in the drawer."
+        "status (open, deferred, reassigned), assignee, summary and date. Closed (completed) RFAs are hidden "
+        "unless include_closed=true: set it whenever the question says closed, completed, resolved, all or "
+        "history. Dismissed RFAs are always hidden. Read-only: changing an RFA is done in the drawer."
     )
 )
 def list_rfas(resource_slug: str = "", include_closed: bool = False) -> str:
@@ -1438,7 +1443,8 @@ def query_cross_asset_links_raw(
         "names with a database's tables, plus matching database drivers. Pass resource_slug to filter to one "
         "repository or database, or leave empty for all. Lists only high-confidence links by default, best "
         "first (limit, default 15) and always reports how many medium and low ones exist; pass "
-        "min_confidence='medium' or 'low' to see more. A link means shared names, not that the repo owns the "
+        "min_confidence='medium' (medium and high) or 'low' (every link) to see more: use 'low' when the "
+        "question says medium and low, or all links. A link means shared names, not that the repo owns the "
         "database; generic table names (users, config, ...) and names found in many databases do not count "
         "toward high confidence."
     )

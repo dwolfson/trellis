@@ -117,6 +117,7 @@ def test_query_databases_tool(db):
 
         res_survey = query_databases_raw("test-db")
         assert "Schema Count: 1" in res_survey
+        assert "Latest survey record: " in res_survey and "unknown" not in res_survey
         assert "users" in res_survey
 
 
@@ -1231,7 +1232,7 @@ def test_rank_databases(db):
 
         # Only readable tables with no description count; catalog-only and locked tables are unknown.
         und = rank_databases_raw("undocumented_tables")
-        assert "`big_db`: 2 of 3 readable; 2 table(s) whose description was not read" in und
+        assert "`big_db`: 2 of 3 readable base tables; 2 table(s) whose description was not read" in und
         assert "`small_db`: 1 of 1 readable" in und
         assert "Unknown metric" in rank_databases_raw("beauty")
 
@@ -1257,7 +1258,9 @@ def test_list_rfas_is_read_only_and_honest(db):
             status="completed", activity_status="completed",
         )
         assert "No tests" not in list_rfas_raw("rfa_repo")
-        assert "No tests" in list_rfas_raw("rfa_repo", include_closed=True)
+        everything = list_rfas_raw("rfa_repo", include_closed=True)
+        assert "No tests" in everything and "[completed]" in everything
+        assert "including completed ones" in everything and "not yet completed" not in everything
 
 
 def test_cross_asset_matcher_real_data_lessons(db):
@@ -1337,6 +1340,21 @@ def test_database_figures_count_a_read_fallback_comment():
     ]}]}
     f = _database_figures(info)
     assert (f["documented"], f["undocumented_tables"], f["unmeasured"]) == (1, 1, 1)
+
+
+def test_database_figures_keep_views_out_of_the_table_counts():
+    from resource_explorer.discovery import _database_figures
+
+    info = {"schemas": [{"name": "s", "tables": [
+        {"name": "t1", "type": "BASE TABLE", "description": "x"},
+        {"name": "t2", "type": "BASE TABLE", "description": ""},
+        {"name": "t3", "description": ""},  # no recorded type counts as a table
+        {"name": "v1", "type": "VIEW", "description": ""},
+        {"name": "mv1", "type": "MATERIALIZED VIEW", "source": "catalog_fallback", "description": ""},
+    ]}]}
+    f = _database_figures(info)
+    assert (f["tables"], f["views"]) == (3, 2)
+    assert (f["documented"], f["undocumented_tables"], f["unmeasured"]) == (1, 2, 0)
 
 
 def test_chat_stat_tools_read_the_registry_not_a_sqlite_file(db, monkeypatch):
