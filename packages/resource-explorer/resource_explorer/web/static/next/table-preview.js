@@ -48,10 +48,11 @@ export function hhmm(ts) {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-/** The count line above the grid: "4 of 12 columns masked · 2 PII matches · 1 confidential · 1 not profiled". */
+/** The count line above the grid: "4 of 12 columns masked · 2 matched a data class · 1 confidential · 1 not profiled". */
 export function countLine(counts) {
   const parts = [`${counts.masked} of ${counts.total} columns masked`];
-  if (counts.pii) parts.push(`${counts.pii} PII ${counts.pii === 1 ? 'match' : 'matches'}`);
+  // Neutral on purpose: a matched class is not known to be privacy-relevant (the profile does not say), so it is not "PII".
+  if (counts.pii) parts.push(`${counts.pii} matched a data class`);
   if (counts.confidential) parts.push(`${counts.confidential} confidential`);
   if (counts.not_profiled) parts.push(`${counts.not_profiled} not profiled`);
   if (counts.undecided) parts.push(`${counts.undecided} undecided`);
@@ -179,7 +180,8 @@ export async function mountTablePreview(host, { slug, dbName }) {
       body = `<button type="button" data-pv-run="20" class="cursor-pointer rounded-sm border border-accent bg-transparent px-s3 py-[3px] text-caveat text-accent-ink">${esc(label(20))}</button>
         <button type="button" data-pv-run="100" class="cursor-pointer rounded-sm border border-accent bg-transparent px-s3 py-[3px] text-caveat text-accent-ink">${esc(label(100))}</button>
         <span class="text-ink-muted">as you (${esc(S.cred.user)})</span>
-        <button type="button" data-pv-cred-open class="cursor-pointer bg-transparent text-ink underline">use another credential ›</button>`;
+        <button type="button" data-pv-cred-open class="cursor-pointer bg-transparent text-ink underline">use another credential ›</button>
+        ${S.forgetFailed ? '<span data-pv-forget-failed class="text-state-warn">couldn\'t forget the credential · try again</span>' : ''}`;
     }
     el.innerHTML = `<div class="mb-s1 text-ink"><span class="font-mono">${esc(fq)}</span> <span class="text-ink-muted">${isView ? 'view' : (t.tableType === 'MATERIALIZED VIEW' ? 'materialized view' : 'table')}</span></div>
       ${isView ? '<div data-pv-view-cost class="mb-s1 text-provenance text-ink-muted">a view runs its query on every read · stopped after 10 s</div>' : ''}
@@ -193,7 +195,16 @@ export async function mountTablePreview(host, { slug, dbName }) {
    *  cancelling the form leaves nothing held that the screen says is gone. With none held it only opens the form. */
   async function useAnotherCredential() {
     if (S.cred && S.cred.held) {
-      try { await forgetPreviewCredential(slug); } catch { /* the form still replaces it */ }
+      try {
+        await forgetPreviewCredential(slug);
+      } catch {
+        // The server may still hold it: keep saying so, and say that the forget failed. Never show "gone" for a
+        // credential that is not.
+        S.forgetFailed = true;
+        renderControls();
+        return;
+      }
+      S.forgetFailed = false;
       S.cred = { ...(S.cred || {}), held: false };
       renderControls();
     }
@@ -211,6 +222,7 @@ export async function mountTablePreview(host, { slug, dbName }) {
       saveLabel: 'Test and keep', notWord: 'not kept',
       saveFn: async (user, password) => {
         const r = await holdPreviewCredential(slug, { user, password });
+        S.forgetFailed = false;
         S.cred = { ...(S.cred || {}), held: true, user: r.user };
         renderControls();
         return `<div data-cred-saved class="text-ink">✓ kept for this session only · ${esc(r.user)}</div>`;

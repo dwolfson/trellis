@@ -28,8 +28,10 @@ router = APIRouter()
 
 
 class PreviewCredentialBody(BaseModel):
-    user: str = ""
-    password: str = ""
+    # Bounded: the user lands in the throttle's keys and (when plausible) the audit row, the password in a connect.
+    # A longer value is a 422, and the app-wide 422 handler never echoes the value sent.
+    user: str = Field(default="", max_length=128)
+    password: str = Field(default="", max_length=1024)
 
 
 class PreviewBody(BaseModel):

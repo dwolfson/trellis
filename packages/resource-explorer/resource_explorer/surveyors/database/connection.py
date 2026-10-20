@@ -1304,14 +1304,9 @@ class PostgreSQLConnection(DatabaseConnection):
     def _first_line(exc: Exception) -> str:
         return " ".join(str(exc).strip().splitlines()[:1]).strip()
 
-    #: Types that are small by construction: selected as they are. bytea is replaced by its length; everything else
-    #: (text-like, json, arrays, numeric, a type this list does not know) is cut in the database, so an enormous value
-    #: is never fetched in full only to be cut afterwards.
-    _PREVIEW_PLAIN_TYPES = frozenset({
-        "smallint", "integer", "bigint", "int", "int2", "int4", "int8", "serial", "bigserial", "smallserial",
-        "real", "double precision", "float", "float4", "float8", "boolean", "bool", "date", "time", "timetz",
-        "time without time zone", "time with time zone", "timestamp", "timestamptz",
-        "timestamp without time zone", "timestamp with time zone", "interval", "uuid", "money", "oid"})
+    #: bytea is replaced by its length. Every other column is cut in the database, whatever type the catalogue holds
+    #: for it (N4): the catalogue is a survey, the column may have changed since, so the stored type never decides
+    #: how much is fetched.
     _PREVIEW_BINARY_TYPES = frozenset({"bytea"})
     #: One more than the display cut (`table_preview.MAX_CELL_CHARS`, 500), so the browser can tell "cut" from "fits".
     PREVIEW_FETCH_CHARS = 501
@@ -1322,8 +1317,6 @@ class PostgreSQLConnection(DatabaseConnection):
 
         ident = sql.Identifier(column)
         kind = (column_type or "").strip().lower().split("(")[0].strip()   # "timestamp(6)" -> "timestamp"
-        if kind in cls._PREVIEW_PLAIN_TYPES:
-            return ident
         if kind in cls._PREVIEW_BINARY_TYPES:
             # NULL stays NULL (|| with NULL is NULL); otherwise only the length leaves the database
             return sql.SQL("{} || octet_length({})::text || {} AS {}").format(
@@ -1340,10 +1333,9 @@ class PostgreSQLConnection(DatabaseConnection):
         could reach the statement unquoted. With no selectable column (every column masked) it selects the
         constant 1, so the row count is still known and no masked value leaves the database.
 
-        Large values are cut IN the database (finding 10): a text-like or unknown-typed column is selected as
-        `left(col::text, 501)`, a bytea as its `octet_length` placeholder, both composed from `sql.Identifier` and
-        `sql.Literal` only. `column_types` is the catalogue's type per column; a column it does not name is treated
-        as unknown, which is cut.
+        Large values are cut IN the database (finding 10, N4): EVERY column is selected as `left(col::text, 501)`,
+        whatever the catalogue says its type is, except a catalogued bytea, which is its `octet_length` placeholder.
+        Both are composed from `sql.Identifier` and `sql.Literal` only. `column_types` is consulted for bytea alone.
         """
         from psycopg2 import sql
 

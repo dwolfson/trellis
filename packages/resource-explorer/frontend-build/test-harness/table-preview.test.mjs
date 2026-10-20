@@ -19,7 +19,7 @@ const TREE = { schemas: [
 
 const COLS = [
   { name: 'id', masked: false, reason: null, tag: '', hover: '', revealed: false },
-  { name: 'email', masked: true, reason: 'pii', tag: 'masked · email', hover: 'column profile matched the PII class email · run 10-06', revealed: false },
+  { name: 'email', masked: true, reason: 'pii', tag: 'masked · email', hover: 'column profile matched the class email · run 10-06', revealed: false },
   { name: 'notes', masked: true, reason: 'not_profiled', tag: 'masked · not profiled', hover: "no column profile has read this column, so RE can't say it's safe", revealed: false },
   { name: 'tier', masked: true, reason: 'confidential', tag: 'masked · confidential', hover: 'Confidentiality classification · set by dwolfson 10-12 in Enrichment', revealed: false },
 ];
@@ -31,7 +31,7 @@ function rowsResult(over = {}) {
     columns: COLS, rows: [{ id: 1 }, { id: 2 }], counts: COUNTS, recorded: RECORDED, egeria: { state: 'not_built' }, ...over };
 }
 
-function makeBackend({ held = true, preview = () => rowsResult(), engine = true } = {}) {
+function makeBackend({ held = true, preview = () => rowsResult(), engine = true, forgetFails = false } = {}) {
   const calls = [];
   globalThis.fetch = async (url, options = {}) => {
     const u = String(url);
@@ -43,6 +43,7 @@ function makeBackend({ held = true, preview = () => rowsResult(), engine = true 
     if (u === '/api/databases/coco/preview/credential') {
       if (method === 'GET') return ok({ held, user: held ? 'dan_ro' : null, engine_supported: engine, unsupported: engine ? '' : 'Row preview is built for PostgreSQL only; this database is mysql, which has no adapter for it yet.' });
       if (method === 'PUT') { held = true; return ok({ held: true, user: body.user }); }
+      if (method === 'DELETE' && forgetFails) return err(500, 'boom');
       if (method === 'DELETE') { held = false; return ok({ held: false, user: null }); }
     }
     if (method === 'POST' && u === '/api/databases/coco/preview') {
@@ -158,12 +159,12 @@ test('the press: header names the database user, counts line above the grid, mas
   const header = text(host.querySelector('[data-pv-header]'));
   assert.match(header, /^sales\.orders · first 20 rows as the database returned them · not a sample, not ordered · as you \(dan_ro\) · \d\d:\d\d/);
   assert.match(header, /recorded · RE \d\d:\d\d · Egeria record not built yet$/);
-  assert.equal(text(host.querySelector('[data-pv-counts]')), '3 of 4 columns masked · 1 PII match · 1 confidential · 1 not profiled');
+  assert.equal(text(host.querySelector('[data-pv-counts]')), '3 of 4 columns masked · 1 matched a data class · 1 confidential · 1 not profiled');
   const order = host.querySelector('[data-pv-counts]').compareDocumentPosition(host.querySelector('[data-pv-grid]'));
   assert.ok(order & 4, 'the count line is above the grid');
   const tags = [...host.querySelectorAll('[data-pv-tag]')].map((t) => text(t));
   assert.deepEqual(tags, ['masked · email', 'masked · confidential', 'masked · not profiled'].sort((a, b) => tags.indexOf(a) - tags.indexOf(b)));
-  assert.equal(host.querySelector('[data-pv-tag="pii"]').title, 'column profile matched the PII class email · run 10-06');
+  assert.equal(host.querySelector('[data-pv-tag="pii"]').title, 'column profile matched the class email · run 10-06');
   assert.match(host.querySelector('[data-pv-tag="not_profiled"]').className, /text-ink-muted/);
   assert.doesNotMatch(host.querySelector('[data-pv-tag="pii"]').className, /text-ink-muted/);
   const masked = [...host.querySelectorAll('[data-pv-masked]')];
@@ -250,6 +251,17 @@ test('"use another credential" from the controls drops the held credential first
   await tick(40);
   assert.equal(host.querySelector('[data-pv-run]'), null);
   assert.ok(!ctx.calls.some((c) => c.method === 'PUT'), 'nothing was re-held');
+});
+
+test('if the server cannot forget the credential the screen keeps saying it is held, with a visible cue', async () => {
+  const ctx = await setUp({ forgetFails: true });
+  const host = await mount(ctx, ['sales', 'orders']);
+  host.querySelector('[data-pv-controls] [data-pv-cred-open]').click();
+  await tick(60);
+  assert.ok(ctx.calls.some((c) => c.method === 'DELETE'), 'the forget was attempted');
+  assert.ok(host.querySelector('[data-pv-run]'), 'still held: the presses are still offered');
+  assert.match(text(host.querySelector('[data-pv-forget-failed]')), /couldn't forget the credential · try again/);
+  assert.equal(host.querySelector('[data-pv-cred-slot] [data-cred-cancel]'), null, 'no form replaced a credential that is still held');
 });
 
 test('another engine says so and offers no press', async () => {

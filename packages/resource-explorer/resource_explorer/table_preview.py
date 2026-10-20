@@ -28,6 +28,7 @@ import datetime as _dt
 import decimal
 import json
 import logging
+import re
 import threading
 import time
 import uuid
@@ -73,7 +74,7 @@ _LEVELS = {"public": 0, "internal": 1, "confidential": 2, "restricted": 4}
 #: The verdict names are `column_matching`'s own constants, so they cannot drift from the producer.
 #: The ONLY verdict that unmasks: the values were read, candidates existed, and nothing conformed.
 _VERDICT_NO_MATCH = MATCH_NO_MATCH
-#: Verdicts that name a class the values conform to (fully or partly): masked as PII with the class name. Note that
+#: Verdicts that name a class the values conform to (fully or partly): masked, named by the class (not called PII: see `masking_decisions`). Note that
 #: `ColumnMatch.privacy_relevant` is NOT set on these (it belongs to the value patterns of an unmatched column), so
 #: it can never be the test (finding 1).
 _VERDICTS_MATCHED = (MATCH_MATCHED, MATCH_PARTIAL)
@@ -173,7 +174,8 @@ def masking_decisions(registry, slug: str, schema: str, table: str, column_names
 
     Masked when (first reason wins):
       1. `pii` -- the column profile matched a data class (`matched` or `partial_match`; the matched class is the
-         reason, whatever `privacy_relevant` says: Egeria Data Classes are what RE has for "PII");
+         reason, whatever `privacy_relevant` says: Egeria Data Classes are what RE has for "PII". The reason id keeps
+         the name; the words on screen say "matched the class X", because the class is not known to be PII);
       2. `confidential` -- a Confidentiality classification of `confidential` or above (the database's, or a
          column's once a store exists);
       3. `not_profiled` -- no stored verdict, or the profile never read the column ("unknown is not safe");
@@ -193,9 +195,11 @@ def masking_decisions(registry, slug: str, schema: str, table: str, column_names
         verdict = (ev or {}).get("verdict") or ""
         decision = {"name": name, "masked": True, "reason": None, "tag": "", "hover": ""}
         if ev and verdict in _VERDICTS_MATCHED:
-            cls = ev.get("matched_display_name") or "a PII class"
+            # Neutral wording: nothing on a matched verdict says the class is privacy-relevant (see `_VERDICTS_MATCHED`),
+            # so it is never called "PII" here. Still masked: only `no_match` unmasks.
+            cls = ev.get("matched_display_name") or "(unnamed class)"
             decision.update(reason=REASON_PII, tag=f"masked · {cls}",
-                            hover=f"column profile matched the PII class {cls}" + (f" · run {run}" if run else ""))
+                            hover=f"column profile matched the class {cls}" + (f" · run {run}" if run else ""))
         elif name in col_class or resource_class:
             c = col_class.get(name) or resource_class
             when = _short_date(c.get("at") or "")
@@ -294,7 +298,11 @@ def _last_revealed(registry, db, person: str, schema: str, table: str) -> set[st
     """The columns this person's most recent preview of this table (the audit row of it) had revealed.
 
     The baseline for "one new reveal per request" (finding 11): the server reads it from the RE audit rows rather
-    than trusting what the browser says it already revealed. A fresh preview records none, so it starts masked."""
+    than trusting what the browser says it already revealed. A fresh preview records none, so it starts masked.
+
+    Known and accepted (review N3, "acceptable"): the baseline is per person and table, not per session or time
+    window, so an earlier reveal by this person in another session counts as already revealed. It never lets a
+    request reveal more than one column beyond what that person's own audit trail already shows."""
     try:
         rows = registry.list_activity(entity_type="database", entity_slug=db.slug, operation="preview", limit=100)
     except Exception:                            # noqa: BLE001 - unknown baseline: the strictest one, nothing revealed
@@ -422,41 +430,108 @@ REFUSED_SENTENCE = "Credential not kept: the database refused that user and pass
 THROTTLED_SENTENCE = "Credential not tested: too many refused credentials for this database; try again in 10 minutes."
 
 
+_NOT_A_USER_NAME = "(not a valid user name)"
+_PLAUSIBLE_ROLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$.-]{0,62}$")
+
+
+def audit_user(user: str, outcome: str) -> str:
+    """The database user an attempt row names. Only a `held` credential has a verified user; for every other outcome
+    the text is whatever the caller typed (a pasted "user:password" included), so it is recorded only when it looks
+    like a role name, and otherwise as a fixed phrase."""
+    if outcome == "held" or _PLAUSIBLE_ROLE.match(user or ""):
+        return user
+    return _NOT_A_USER_NAME
+
+
+@dataclass
+class _Reservation:
+    allowed: bool
+    announce: bool = False                     # a refusal that should write the one "throttled" row of its lockout
+    person: str = ""
+    slug: str = ""
+    user: str = ""
+    at: float = 0.0
+
+
 class _Throttle:
+    """Failures per (person, database, db_user), plus a global bucket per (database, db_user) across persons.
+
+    A slot is RESERVED, counted as a provisional failure, before the connect, inside one lock, and settled after: a
+    refusal keeps it, a success or an unreachable server gives it back. Nothing ever clears failures on a success
+    (N1): they age out of the window. A (person, database) is refused once its failures across ALL db_users reach
+    the limit; a (database, db_user) is refused once its failures across all persons do."""
+
     def __init__(self, clock=time.time) -> None:
         self._clock = clock
         self._lock = threading.Lock()
-        self._failures: dict[tuple[str, str], list[float]] = {}
-        self._locked_until: dict[tuple[str, str], float] = {}
+        self._by_person: dict[tuple[str, str], dict[str, list[float]]] = {}
+        self._by_user: dict[tuple[str, str], list[float]] = {}
+        self._locked: dict[tuple, list] = {}      # key -> [until, announced]
 
-    def locked(self, person: str, slug: str) -> bool:
-        with self._lock:
-            until = self._locked_until.get((person, slug))
-            if until is None:
-                return False
-            if until <= self._clock():
-                del self._locked_until[(person, slug)]
-                return False
-            return True
+    def _prune(self, now: float) -> None:
+        for key in list(self._by_person):
+            users = self._by_person[key]
+            for u in list(users):
+                users[u] = [t for t in users[u] if now - t < THROTTLE_WINDOW_SECONDS]
+                if not users[u]:
+                    del users[u]
+            if not users:
+                del self._by_person[key]
+        for key in list(self._by_user):
+            self._by_user[key] = [t for t in self._by_user[key] if now - t < THROTTLE_WINDOW_SECONDS]
+            if not self._by_user[key]:
+                del self._by_user[key]
+        for key in [k for k, v in self._locked.items() if v[0] <= now]:
+            del self._locked[key]
 
-    def failed(self, person: str, slug: str) -> None:
+    def _count_person(self, person: str, slug: str) -> int:
+        return sum(len(v) for v in self._by_person.get((person, slug), {}).values())
+
+    def _refuse(self, key: tuple, now: float) -> _Reservation:
+        entry = self._locked.get(key)
+        if entry is None:
+            entry = self._locked[key] = [now + THROTTLE_LOCKOUT_SECONDS, False]
+        announce = not entry[1]
+        entry[1] = True
+        return _Reservation(False, announce=announce)
+
+    def reserve(self, person: str, slug: str, user: str) -> _Reservation:
         with self._lock:
             now = self._clock()
-            recent = [t for t in self._failures.get((person, slug), []) if now - t < THROTTLE_WINDOW_SECONDS]
-            recent.append(now)
-            if len(recent) >= THROTTLE_FAILURES:
-                self._locked_until[(person, slug)] = now + THROTTLE_LOCKOUT_SECONDS
-                recent = []
-            self._failures[(person, slug)] = recent
+            self._prune(now)
+            pkey, gkey = ("person", person, slug), ("user", slug, user)
+            for key in (pkey, gkey):
+                if key in self._locked:
+                    return self._refuse(key, now)
+            if self._count_person(person, slug) >= THROTTLE_FAILURES:
+                return self._refuse(pkey, now)
+            if len(self._by_user.get((slug, user), [])) >= THROTTLE_FAILURES:
+                return self._refuse(gkey, now)
+            self._by_person.setdefault((person, slug), {}).setdefault(user, []).append(now)
+            self._by_user.setdefault((slug, user), []).append(now)
+            return _Reservation(True, person=person, slug=slug, user=user, at=now)
 
-    def succeeded(self, person: str, slug: str) -> None:
+    def settle(self, res: _Reservation, *, failed: bool) -> None:
+        """A refusal keeps its slot (and may start the lockout); anything else gives the slot back."""
         with self._lock:
-            self._failures.pop((person, slug), None)
+            now = self._clock()
+            if failed:
+                if self._count_person(res.person, res.slug) >= THROTTLE_FAILURES:
+                    self._locked.setdefault(("person", res.person, res.slug),
+                                            [now + THROTTLE_LOCKOUT_SECONDS, False])
+                if len(self._by_user.get((res.slug, res.user), [])) >= THROTTLE_FAILURES:
+                    self._locked.setdefault(("user", res.slug, res.user), [now + THROTTLE_LOCKOUT_SECONDS, False])
+                return
+            for lst in (self._by_person.get((res.person, res.slug), {}).get(res.user, []),
+                        self._by_user.get((res.slug, res.user), [])):
+                if res.at in lst:
+                    lst.remove(res.at)
 
     def reset(self) -> None:
         with self._lock:
-            self._failures.clear()
-            self._locked_until.clear()
+            self._by_person.clear()
+            self._by_user.clear()
+            self._locked.clear()
 
 
 _THROTTLE = _Throttle()
@@ -468,7 +543,8 @@ def _record_credential_attempt(registry, db, person: str, user: str, outcome: st
 
     try:
         log_preview_credential(registry, slug=db.slug, name=db.display_name or db.slug,
-                               location=f"{db.host}:{db.port}", who=person, db_user=user, outcome=outcome)
+                               location=f"{db.host}:{db.port}", who=person, db_user=audit_user(user, outcome),
+                               outcome=outcome)
     except Exception as exc:                     # noqa: BLE001 - type only
         log.error("table preview: the credential attempt could not be recorded (%s)", type(exc).__name__)
         raise NotRecorded("RE could not record this credential attempt, so nothing was kept") from None
@@ -480,24 +556,30 @@ def hold_credential(registry, db, person: str, session: str, user: str, password
 
     EVERY attempt writes an RE activity row first (who, database user, outcome; never the password), and nothing is
     held if that row cannot be written. A wrong password and an unknown user get the same sentence, and five refusals
-    in ten minutes lock the pair out for ten minutes. Raises `PreviewRefusal` (400 refused/unreachable, 429
+    in ten minutes (counted across every database user, and per database user across people) lock out for ten minutes. Raises `PreviewRefusal` (400 refused/unreachable, 429
     throttled) or `NotRecorded`. Blocking: call off the event loop."""
     from resource_explorer.credential_check import CredentialCheckError, check_database_credential
 
-    if _THROTTLE.locked(person, db.slug):
-        _record_credential_attempt(registry, db, person, user, "throttled")
+    res = _THROTTLE.reserve(person, db.slug, user)         # the slot is taken BEFORE the connect (N2)
+    if not res.allowed:
+        if res.announce:                                    # one row per lockout, not one per refused request
+            _record_credential_attempt(registry, db, person, user, "throttled")
         raise PreviewRefusal(429, THROTTLED_SENTENCE, "throttled")
     try:
         check_database_credential(db, user, password)
     except CredentialCheckError as exc:
         if exc.kind == "credential":
-            _THROTTLE.failed(person, db.slug)
+            _THROTTLE.settle(res, failed=True)
             _record_credential_attempt(registry, db, person, user, "refused")
             raise PreviewRefusal(400, REFUSED_SENTENCE, "refused") from None
+        _THROTTLE.settle(res, failed=False)
         _record_credential_attempt(registry, db, person, user, "unreachable")
         raise PreviewRefusal(400, str(exc).replace("Credential not saved", "Credential not kept"),
                              "unreachable") from None
+    except BaseException:
+        _THROTTLE.settle(res, failed=False)
+        raise
+    _THROTTLE.settle(res, failed=False)
     _record_credential_attempt(registry, db, person, user, "held")
-    _THROTTLE.succeeded(person, db.slug)
     holder.put(person, session, db.slug, user, password, not_after=not_after)
     return user

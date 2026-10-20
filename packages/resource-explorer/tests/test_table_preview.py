@@ -88,11 +88,9 @@ class TestBuildPreviewQuery:
         q = PostgreSQLConnection.build_preview_query("sales", "orders", ["id", "email"], 20,
                                                      {"id": "integer", "email": "integer"})
         parts = _flat(q)
-        assert [p.strings for p in parts if isinstance(p, sql.Identifier)] == [
-            ("id",), ("email",), ("sales",), ("orders",)]
-        assert [p.wrapped for p in parts if isinstance(p, sql.Literal)] == [20]
-        text = "".join(p.string for p in parts if isinstance(p, sql.SQL))
-        assert text == "SELECT ,  FROM . LIMIT "
+        idents = [p.strings for p in parts if isinstance(p, sql.Identifier)]
+        assert idents == [("id",), ("id",), ("email",), ("email",), ("sales",), ("orders",)]   # each cut column: name + alias
+        assert [p.wrapped for p in parts if isinstance(p, sql.Literal)] == [501, 501, 20]
 
     def test_hostile_names_stay_inside_identifiers(self):
         evil = 'x"; DROP TABLE t; --'
@@ -250,7 +248,8 @@ class TestMasking:
         d = _by(tp.masking_decisions(registry, "coco", "sales", "orders", ["id", "email", "note", "qty", "odd"]))
         assert d["id"]["masked"] is False and d["id"]["reason"] is None
         assert (d["email"]["reason"], d["email"]["tag"]) == (tp.REASON_PII, "masked · Email Address")
-        assert "PII class Email Address" in d["email"]["hover"] and "run 10-06" in d["email"]["hover"]
+        assert d["email"]["hover"].startswith("column profile matched the class Email Address")
+        assert "PII" not in d["email"]["hover"] and "run 10-06" in d["email"]["hover"]
         assert (d["note"]["reason"], d["note"]["tag"]) == (tp.REASON_NOT_PROFILED, "masked · not profiled")
         assert "can't say it's safe" in d["note"]["hover"]
         assert d["qty"]["reason"] == tp.REASON_NOT_PROFILED       # never profiled at all
@@ -563,11 +562,14 @@ class TestMaskingFromTheRealProducer:
     def test_a_matched_column_is_masked_as_pii_with_the_class_name(self, registry, tmp_path):
         d = self._decide(registry, tmp_path, "matched")
         assert d["masked"] is True and d["reason"] == tp.REASON_PII
-        assert d["tag"] == "masked · Email Address" and "PII class Email Address" in d["hover"]
+        assert d["tag"] == "masked · Email Address" and "PII" not in d["hover"]
+        assert d["hover"].startswith("column profile matched the class Email Address")
 
     def test_a_partial_match_is_masked_as_pii_too(self, registry, tmp_path):
         d = self._decide(registry, tmp_path, "partial_match")
         assert d["masked"] is True and d["reason"] == tp.REASON_PII and d["tag"] == "masked · Colours"
+        # a matched class that is not privacy-relevant must not be called PII: masked, and named neutrally
+        assert d["hover"].startswith("column profile matched the class Colours") and "PII" not in d["hover"]
 
     @pytest.mark.parametrize("verdict,reason", [
         ("unmatched_patterned", tp.REASON_UNDECIDED), ("inconclusive", tp.REASON_UNDECIDED),
@@ -726,23 +728,137 @@ class TestCredentialAttempts:
         assert self._put(env).status_code == 429
         monkeypatch.setattr("resource_explorer.auth.get_current_user",
                             lambda request: {"user_id": "mandy", "exp": 4102444800})
-        assert self._put(env).status_code == 400                      # someone else: refused, not locked
+        assert self._put(env, "mandy_ro").status_code == 400          # someone else, another db user: refused, not locked
+        assert self._put(env).status_code == 429                      # the same db user is the global bucket's
 
-    def test_four_refusals_and_a_success_do_not_lock(self, env):
+    def test_a_success_does_not_reset_the_count_the_reviewers_cycle_locks_by_the_second_pass(self, env):
+        """N1. Four wrong guesses for `postgres`, then the correct `alice_ro`, repeated: the success must not
+        clear the failures, so the fifth failure of the second cycle locks the pair."""
+        from resource_explorer.credential_check import CredentialCheckError
+
+        def check(db, user, password):
+            if user != "alice_ro":
+                raise CredentialCheckError("credential", "Credential not saved: password authentication failed")
+
+        env.checks.side_effect = check
+        codes = []
+        for _cycle in range(2):
+            codes += [self._put(env, "postgres").status_code for _ in range(4)]
+            codes.append(self._put(env, "alice_ro").status_code)
+        assert codes[:5] == [400, 400, 400, 400, 200]
+        # the first wrong guess of cycle two is the fifth failure; the very next request is locked
+        assert codes[5] == 400
+        assert codes[6] == 429, codes
+
+    def test_the_lock_counts_failures_across_every_database_user_for_the_person(self, env):
         self._refuse(env, "Credential not saved: password authentication failed")
-        for _ in range(4):
+        codes = [self._put(env, f"guess{i}").status_code for i in range(6)]
+        assert codes == [400] * 5 + [429]
+
+    def test_several_re_accounts_cannot_multiply_the_budget_for_one_database_user(self, env, monkeypatch):
+        """N1. A global bucket per (database, db_user) across persons, with the same limits."""
+        self._refuse(env, "Credential not saved: password authentication failed")
+        codes = []
+        for who in ("p1", "p2", "p3", "p4", "p5", "p6", "p7"):
+            monkeypatch.setattr("resource_explorer.auth.get_current_user",
+                                lambda request, who=who: {"user_id": who, "exp": 4102444800})
+            codes.append(self._put(env, "postgres").status_code)
+        assert codes == [400] * 5 + [429, 429], codes
+        # a different database user is a different bucket
+        monkeypatch.setattr("resource_explorer.auth.get_current_user",
+                            lambda request: {"user_id": "p8", "exp": 4102444800})
+        assert self._put(env, "someone_else").status_code == 400
+
+    def test_one_throttled_row_per_lockout_not_one_per_refused_request(self, env):
+        self._refuse(env, "Credential not saved: password authentication failed")
+        for _ in range(5):
             self._put(env)
-        env.checks.side_effect = lambda db, u, p: None
-        assert self._put(env).status_code == 200
+        for _ in range(8):
+            assert self._put(env).status_code == 429
+        outcomes = [a["outcome"] for a in self._attempts(env)]
+        assert outcomes.count("throttled") == 1 and outcomes.count("refused") == 5
+
+    def test_a_refused_attempt_records_only_a_plausible_role_name(self, env, tmp_path):
         self._refuse(env, "Credential not saved: password authentication failed")
-        for _ in range(4):
-            assert self._put(env).status_code == 400
+        self._put(env, "dan_ro")
+        self._put(env, "dan:hunter2 secret!")                 # a pasted "user:password"
+        self._put(env, "x" * 64)                              # plausible characters, but too long for a role name
+        users = sorted(a["db_user"] for a in self._attempts(env))
+        assert users == sorted(["dan_ro", "(not a valid user name)", "(not a valid user name)"])
+        stored = _everything_stored(env.registry, tmp_path)
+        assert "hunter2" not in stored and "x" * 64 not in stored
+
+    def test_the_credential_body_is_bounded_and_the_422_never_echoes_the_values(self, env):
+        long_user, long_pw = "u" * 129, "p" * 1025
+        r = env.client.put("/api/databases/coco/preview/credential", json={"user": long_user, "password": "ok"})
+        assert r.status_code == 422 and long_user not in r.text
+        r = env.client.put("/api/databases/coco/preview/credential", json={"user": "dan_ro", "password": long_pw})
+        assert r.status_code == 422 and long_pw not in r.text
+        assert env.checks.call_count == 0
+        assert env.client.put("/api/databases/coco/preview/credential",
+                              json={"user": "u" * 128, "password": "p" * 1024}).status_code == 200
+
 
     def test_if_the_attempt_cannot_be_recorded_nothing_is_kept(self, env, monkeypatch):
         monkeypatch.setattr(ProjectRegistry, "write_activity", lambda self, e: (_ for _ in ()).throw(OSError("disk")))
         r = self._put(env)
         assert r.status_code == 503 and PASSWORD not in r.text
         assert env.client.get("/api/databases/coco/preview/credential").json()["held"] is False
+
+
+class TestThrottleReservesBeforeConnecting:
+    """N2. The slot is taken, counted as a provisional failure, before the connect; then settled."""
+
+    def test_thirty_concurrent_puts_make_at_most_five_attempts(self, env, monkeypatch):
+        import threading
+        import time as _time
+        from resource_explorer.credential_check import CredentialCheckError
+
+        started = []
+        lock = threading.Lock()
+
+        def slow_refusal(db, user, password):
+            with lock:
+                started.append(user)
+            _time.sleep(0.15)                                  # every other thread arrives while this one connects
+            raise CredentialCheckError("credential", "Credential not saved: password authentication failed")
+
+        env.checks.side_effect = slow_refusal
+        monkeypatch.setattr(tp, "_record_credential_attempt", lambda *a, **k: None)
+        results = []
+
+        def go():
+            try:
+                tp.hold_credential(env.registry, _FakeDb(), "dan", "s", "postgres", "x")
+            except tp.PreviewRefusal as exc:
+                results.append(exc.status)
+
+        threads = [threading.Thread(target=go) for _ in range(30)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(started) <= 5, len(started)
+        assert sorted(results) == [400] * len(started) + [429] * (30 - len(started))
+
+    def test_a_success_gives_its_slot_back_but_a_refusal_keeps_it(self):
+        th = tp._Throttle(clock=lambda: 100.0)
+        ok = th.reserve("dan", "coco", "alice_ro")
+        assert ok.allowed
+        th.settle(ok, failed=False)
+        for i in range(5):
+            r = th.reserve("dan", "coco", f"g{i}")
+            assert r.allowed
+            th.settle(r, failed=True)
+        assert not th.reserve("dan", "coco", "g9").allowed
+
+
+class _FakeDb:
+    slug = "coco"
+    display_name = "Coco"
+    host = "h"
+    port = 5432
+    db_type = "postgresql"
 
 
 class TestConnectFailuresAreRecorded:
@@ -843,13 +959,19 @@ class TestLargeValuesAreCutInTheDatabase:
         assert "octet_length(" in self._text(q) and "left(" not in self._text(q)
         assert [p.wrapped for p in parts if isinstance(p, sql.Literal) and isinstance(p.wrapped, str)] == ["<", " bytes>"]
 
-    def test_a_type_with_parameters_is_read_by_its_name(self):
-        q = PostgreSQLConnection.build_preview_query("s", "t", ["a", "b"], 20, {"a": "timestamp(6)", "b": "INTEGER"})
-        assert "left(" not in self._text(q)
+    def test_the_catalogue_type_does_not_decide_the_fetch_size(self):
+        """N4. A column catalogued as small may have become text since the survey: every column is cut."""
+        types = {"a": "timestamp(6)", "b": "INTEGER", "n": "integer", "d": "date", "u": "uuid"}
+        q = PostgreSQLConnection.build_preview_query("s", "t", list(types), 20, types)
+        assert self._text(q).count("left(") == len(types) and "octet_length" not in self._text(q)
+        assert [p.wrapped for p in _flat(q) if isinstance(p, sql.Literal)].count(501) == len(types)
 
-    def test_small_types_are_selected_as_they_are(self):
-        q = PostgreSQLConnection.build_preview_query("s", "t", ["n", "d"], 20, {"n": "integer", "d": "date"})
-        assert "left(" not in self._text(q) and "octet_length" not in self._text(q)
+    def test_no_request_input_enters_the_statement_except_as_identifier_or_literal(self):
+        evil = "x'; DROP TABLE t; --"
+        q = PostgreSQLConnection.build_preview_query(evil, evil, [evil, "b"], 20, {evil: evil, "b": "bytea"})
+        assert "DROP" not in self._text(q) and "'" not in self._text(q)
+        literals = [p.wrapped for p in _flat(q) if isinstance(p, sql.Literal)]
+        assert evil not in literals
 
     def test_hostile_names_stay_inside_identifiers_with_the_cut_in_place(self):
         evil = 'x"; DROP TABLE t; --'
