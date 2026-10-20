@@ -313,6 +313,15 @@ PRECONDITIONS: dict[str, Precondition] = {
         table="database_tables",
         slug_column="database_slug",
         ts_column="surveyed_at"),
+    # `propose_quality_checks` applies the selection rules to a stored value
+    # profile (DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md §5); with none it
+    # proposes nothing, which must not read as "no column qualified".
+    "has_value_profile": Precondition(
+        _needs_rows("database_value_profiles", "value profile",
+                    slug_column="database_slug"),
+        table="database_value_profiles",
+        slug_column="database_slug",
+        ts_column="surveyed_at"),
 }
 
 

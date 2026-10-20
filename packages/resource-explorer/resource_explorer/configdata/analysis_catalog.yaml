@@ -1181,6 +1181,44 @@ database_analyses:
       candidate: false
       native_process_ref: null
 
+  # DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md: value profile -> propose -> run.
+  # The check catalogue is vendored data (configdata/quality/testgen/PROVENANCE.md);
+  # the names shown are Resource Explorer's own, never the upstream product's.
+  - id: value_profile
+    name: "Value Profile"
+    description: "Measured, not estimated: per-column record, value, distinct and null counts, empty and placeholder-text counts, and date bounds with future-dated counts, over the whole table (one aggregate query per table). No sampling: a table over the row ceiling or the statement timeout is reported as not profiled with the reason, a view or foreign table as not applicable, a table the credential cannot read as not permitted — never as zero."
+    resource_types: ["database"]
+    intent: analysis
+    perspectives: ["Steward", "Data Owner", "Admin"]
+    annotation_types: ["ResourceProfileAnnotation", "ResourceMeasureAnnotation"]
+    source: local
+    # api_heavy: it reads every row of every table it profiles.
+    run_time: medium
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: quality_checks
+    name: "Quality Checks"
+    description: "Proposes data-quality checks from the value profile (completeness, uniqueness, past dates, minimum date, row-count range) for a person to accept or reject in Curate, then runs the accepted ones against the database. A check whose inputs were not measured, or whose measure is undefined (an empty table, a zero baseline), is reported as not evaluated with the reason, never as a pass."
+    resource_types: ["database"]
+    intent: assessment
+    perspectives: ["Steward", "Data Owner"]
+    annotation_types: ["ResourceMeasureAnnotation"]
+    source: local
+    run_time: medium
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: db_change_rates
     name: "Change Rates"
     description: >

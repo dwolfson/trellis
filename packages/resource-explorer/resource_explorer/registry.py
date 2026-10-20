@@ -931,6 +931,109 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         FOREIGN KEY (database_slug) REFERENCES databases(slug)
     )
     """,
+    # The value profile (postgres_value_profile; DESIGN-VALUE-PROFILE-AND-
+    # QUALITY-CHECKS.md §4): measured, whole-table counts and date bounds per
+    # column, under the vendored catalogue's own column names (`record_ct`,
+    # `value_ct`, ...) so each ported selection rule reads one-to-one. A
+    # column that was not profiled has a row with every measure NULL, a
+    # `state` saying why (not_measured, not_permitted, not_applicable) and a
+    # `reason`: never a row of zeros. An empty table is `measured` with
+    # record_ct = 0, a real zero. `general_type` is derived from the column's
+    # catalog type, never measured; `sample_ratio` is NULL in slice 1, which
+    # profiles whole tables only. `ran_as` is the account that profiled it.
+    """
+    CREATE TABLE IF NOT EXISTS database_value_profiles (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug     TEXT NOT NULL,
+        surveyed_at       TEXT NOT NULL,
+        source            TEXT NOT NULL DEFAULT 'local',
+        schema_name       TEXT NOT NULL,
+        table_name        TEXT NOT NULL,
+        column_name       TEXT NOT NULL,
+        general_type      TEXT NOT NULL DEFAULT 'X',
+        record_ct         BIGINT DEFAULT NULL,
+        value_ct          BIGINT DEFAULT NULL,
+        distinct_value_ct BIGINT DEFAULT NULL,
+        null_value_ct     BIGINT DEFAULT NULL,
+        zero_length_ct    BIGINT DEFAULT NULL,
+        filled_value_ct   BIGINT DEFAULT NULL,
+        min_date          TEXT DEFAULT NULL,
+        max_date          TEXT DEFAULT NULL,
+        future_date_ct    BIGINT DEFAULT NULL,
+        sample_ratio      REAL DEFAULT NULL,
+        ran_as            TEXT DEFAULT '',
+        state             TEXT NOT NULL DEFAULT 'measured',
+        reason            TEXT DEFAULT '',
+        UNIQUE(database_slug, surveyed_at, source, schema_name, table_name, column_name),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    # Proposed quality checks (propose_quality_checks, design §5): one row per
+    # (column or table, test type) a propose run reached a conclusion about
+    # other than "the selection rule says no". `state` is proposed,
+    # not_established (an input the rule reads was NULL: never a silent
+    # false), accepted (a live accepted verdict exists; `reason` says whether
+    # the profile drifted from the accepted baseline) or suppressed (a live
+    # rejected verdict, and neither the general_type nor the selection outcome
+    # changed since). The latest batch wins, so an open proposal is superseded
+    # by the next run and nothing is deleted. `profile_surveyed_at` is the
+    # value-profile run the proposal came from: when the analysis ran.
+    """
+    CREATE TABLE IF NOT EXISTS database_quality_proposals (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug       TEXT NOT NULL,
+        surveyed_at         TEXT NOT NULL,
+        source              TEXT NOT NULL DEFAULT 'local',
+        check_key           TEXT NOT NULL,
+        schema_name         TEXT NOT NULL,
+        table_name          TEXT NOT NULL,
+        column_name         TEXT NOT NULL DEFAULT '',
+        test_type           TEXT NOT NULL,
+        origin              TEXT NOT NULL,
+        general_type        TEXT DEFAULT '',
+        profile_surveyed_at TEXT NOT NULL,
+        params_json         TEXT NOT NULL,
+        catalogue_ref       TEXT NOT NULL,
+        state               TEXT NOT NULL DEFAULT 'proposed',
+        reason              TEXT DEFAULT '',
+        UNIQUE(database_slug, surveyed_at, source, check_key),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    # Quality-check results (run_quality_checks, design §6): one row per
+    # accepted check per run. `measure` is NULL whenever the check did not
+    # reach a conclusion; `status` says which way (pass, warning, fail,
+    # logged, not_established, error, not_measured) and `reason` why. The
+    # threshold and operator are the ones applied, and `rule_source` says
+    # where they came from (egeria, local_cache, unpublished).
+    """
+    CREATE TABLE IF NOT EXISTS database_quality_results (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug         TEXT NOT NULL,
+        surveyed_at           TEXT NOT NULL,
+        source                TEXT NOT NULL DEFAULT 'local',
+        check_key             TEXT NOT NULL,
+        schema_name           TEXT NOT NULL,
+        table_name            TEXT NOT NULL,
+        column_name           TEXT NOT NULL DEFAULT '',
+        test_type             TEXT NOT NULL,
+        measure               REAL DEFAULT NULL,
+        record_ct             BIGINT DEFAULT NULL,
+        status                TEXT NOT NULL,
+        reason                TEXT DEFAULT '',
+        severity              TEXT DEFAULT '',
+        comparison_operator   TEXT DEFAULT '',
+        threshold_values_json TEXT DEFAULT NULL,
+        params_json           TEXT DEFAULT NULL,
+        baseline_profile_surveyed_at TEXT DEFAULT '',
+        rule_source           TEXT DEFAULT '',
+        rule_guid             TEXT DEFAULT '',
+        ran_as                TEXT DEFAULT '',
+        state                 TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, check_key),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS database_table_activity (
         id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1190,6 +1293,9 @@ _DB_FS_DETAIL_TABLE_INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_db_columns_slug ON database_columns(database_slug, surveyed_at)",
     "CREATE INDEX IF NOT EXISTS idx_db_columns_table ON database_columns(database_slug, schema_name, table_name)",
     "CREATE INDEX IF NOT EXISTS idx_db_col_profiles_slug ON database_column_profiles(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_value_profiles_slug ON database_value_profiles(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_quality_proposals_slug ON database_quality_proposals(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_quality_results_slug ON database_quality_results(database_slug, surveyed_at)",
     "CREATE INDEX IF NOT EXISTS idx_db_table_activity_slug ON database_table_activity(database_slug, surveyed_at)",
     "CREATE INDEX IF NOT EXISTS idx_db_grants_slug ON database_grants(database_slug, surveyed_at)",
     "CREATE INDEX IF NOT EXISTS idx_db_grants_grantee ON database_grants(database_slug, grantee)",
@@ -1314,6 +1420,9 @@ _DETAIL_TABLE_ORDER: dict[str, str] = {
     "database_columns": "schema_name, table_name, ordinal_position, column_name",
     "database_column_profiles": "schema_name, table_name, column_name",
     "database_column_matches": "schema_name, table_name, column_name, question",
+    "database_value_profiles": "schema_name, table_name, column_name",
+    "database_quality_proposals": "schema_name, table_name, column_name, test_type",
+    "database_quality_results": "schema_name, table_name, column_name, test_type",
     "database_table_activity": "schema_name, table_name",
     "database_grants": "schema_name, object_name, grantee, privilege_type",
     "database_sql_objects": "schema_name, object_type, object_name",
@@ -3593,6 +3702,31 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_architecture_component_verdicts_scope "
                 "ON architecture_component_verdicts(entity_type, entity_slug, scope_locator)"
             )
+            # A person's verdict on a proposed quality check (DESIGN-VALUE-
+            # PROFILE-AND-QUALITY-CHECKS.md §5), the same shape as
+            # architecture_component_verdicts: append-only, the latest row per
+            # check_key wins, `decided_by` is attribution. `params_json` is the
+            # parameters AS ACCEPTED (a person may edit a threshold first);
+            # run_quality_checks reads them. Not a structured detail table (no
+            # surveyed_at/source), so it lives here rather than in
+            # _DB_FS_DETAIL_TABLE_DDL, and remove_database deletes it by name.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS database_quality_verdicts (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    database_slug TEXT NOT NULL,
+                    check_key     TEXT NOT NULL,
+                    verdict       TEXT NOT NULL,   -- 'accepted' | 'rejected' | 'retired'
+                    params_json   TEXT NOT NULL,
+                    proposal_id   INTEGER,
+                    note          TEXT DEFAULT '',
+                    decided_by    TEXT NOT NULL,
+                    created_at    TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_database_quality_verdicts_key "
+                "ON database_quality_verdicts(database_slug, check_key)"
+            )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS architecture_materialized_components (
                     id             TEXT PRIMARY KEY,
@@ -5618,6 +5752,91 @@ class ProjectRegistry:
     #: equivalent free-text field to retype. The route validates against
     #: whichever set matches the verdict_target it's recording.
     BLUEPRINT_VERDICTS = {"accepted", "rejected"}
+
+    #: Valid database_quality_verdicts.verdict values (design §5).
+    QUALITY_CHECK_VERDICTS = {"accepted", "rejected", "retired"}
+
+    def record_quality_verdict(
+        self, database_slug: str, check_key: str, verdict: str, params: dict,
+        proposal_id: int | None = None, note: str = "", decided_by: str | None = None,
+    ) -> dict:
+        """A person's accept/reject/retire call on one proposed quality check. Append-only, like
+        `record_component_verdict`: a later verdict is a new row, and `get_quality_verdicts` reads the latest per
+        key. Local only: no Egeria call; Publish is the verb that writes rules to Egeria."""
+        if verdict not in self.QUALITY_CHECK_VERDICTS:
+            raise ValueError(f"verdict must be one of {sorted(self.QUALITY_CHECK_VERDICTS)}, got {verdict!r}")
+        if not isinstance(params, dict):
+            raise ValueError("params must be a JSON object (the check's parameters as accepted)")
+        from datetime import timezone
+        entry = {
+            "database_slug": self._normalize_slug(database_slug),
+            "check_key": check_key,
+            "verdict": verdict,
+            "params_json": json.dumps(params, sort_keys=True),
+            "proposal_id": proposal_id,
+            "note": note,
+            "decided_by": current_user_id() if decided_by is None else decided_by,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO database_quality_verdicts (database_slug, check_key, verdict, params_json, proposal_id, "
+                "note, decided_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                tuple(entry.values()),
+            )
+        return {**entry, "params_json": dict(params)}
+
+    def get_quality_verdicts(self, database_slug: str) -> dict[str, dict]:
+        """{check_key: latest verdict row} for one database, `params_json` decoded. Ties on `created_at` go to the
+        later insert (`id`)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM database_quality_verdicts WHERE database_slug = ? ORDER BY created_at ASC, id ASC",
+                (self._normalize_slug(database_slug),),
+            ).fetchall()
+        latest: dict[str, dict] = {}
+        for r in rows:
+            row = dict(r)
+            try:
+                row["params_json"] = json.loads(row.get("params_json") or "{}")
+            except (ValueError, TypeError):
+                pass  # left as text: a value that will not parse is evidence, not "no parameters"
+            latest[row["check_key"]] = row
+        return latest
+
+    def list_quality_verdict_history(self, database_slug: str, check_key: str) -> list[dict]:
+        """Every verdict recorded for one check, newest first."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM database_quality_verdicts WHERE database_slug = ? AND check_key = ? "
+                "ORDER BY created_at DESC, id DESC",
+                (self._normalize_slug(database_slug), check_key),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_quality_proposal(self, proposal_id: int | None) -> dict | None:
+        """One database_quality_proposals row by id (a verdict's `proposal_id`), `*_json` decoded; None if absent."""
+        if proposal_id is None:
+            return None
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM database_quality_proposals WHERE id = ?", (int(proposal_id),)).fetchone()
+        return _decode_detail_row(dict(row)) if row else None
+
+    def list_detail_batches(self, table: str, slug: str, source: str | None = None) -> list[str]:
+        """Every `surveyed_at` stored in a structured detail table for one slug, oldest first."""
+        if table not in _DETAIL_TABLE_SPECS:
+            raise ValueError(f"{table!r} is not a structured detail table")
+        spec = _DETAIL_TABLE_SPECS[table]
+        where, params = [f"{spec.slug_column} = ?"], [self._normalize_slug(slug)]
+        if source is not None:
+            where.append("source = ?")
+            params.append(source)
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT DISTINCT surveyed_at FROM {table} WHERE {' AND '.join(where)} ORDER BY surveyed_at",
+                tuple(params),
+            ).fetchall()
+        return [dict(r)["surveyed_at"] for r in rows]
 
     def get_resource_sampling(self, entity_type: str, slug: str) -> dict:
         """The per-resource sampling overrides for one resource ({} when none are set)."""
@@ -11928,6 +12147,7 @@ class ProjectRegistry:
                 "DELETE FROM database_survey_coverage WHERE database_slug = ?",
                 (normalized,),
             )
+            conn.execute("DELETE FROM database_quality_verdicts WHERE database_slug = ?", (normalized,))
             conn.execute("DELETE FROM databases WHERE slug = ?", (normalized,))
 
     def record_database_survey(

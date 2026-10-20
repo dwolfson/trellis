@@ -1,7 +1,22 @@
 # Design: value profile and quality checks for databases
 
-**Status:** design, not built. 2026-10-19. Written by the TestGen evaluation session at the
+**Status:** design, 2026-10-19. Written by the TestGen evaluation session at the
 owner's request ("Design value profile & quality checks for RE").
+
+**Built (2026-10-20), slice 1's local steps only:** the vendored catalogue
+(`configdata/quality/testgen/`) and `scripts/sync_quality_catalog.py --check`; the three steps
+(`surveyors/database/quality/`) with `database_value_profiles`, `database_quality_proposals`,
+`database_quality_verdicts` and `database_quality_results`; the analysis-catalog, check-registry and
+engine-host entries. **Not built yet:** Publish (§7: `DataQualityRule`s, the
+`database_quality_rules` cache, `egeria_rules.py`), result annotations (§8: `QualityAnnotation`), so
+`run_quality_checks` labels every result `rule_source = unpublished`; adding `postgres_value_profile`
+to `annotations_from_step_outputs` (§4's known gap); the "Postgres quality" Survey Definition (§6);
+the Curate UI (§10). Choices made while building: a column the profile marked `not_applicable` (a
+view or foreign table) makes its checks not applicable rather than not established; a proposal row
+can also be `accepted` (with the drift sentence) or `suppressed` (a live rejection), so the
+rejected-verdict "selection outcome flipped" rule can be read from the batches; the measure is
+compared with the threshold in Python rather than in a SQL `CASE`, which is what keeps a NULL
+measure from passing.
 
 **Inputs:**
 - `TRELLIS-EVALUATION.md` and `TRELLIS-QUALITY-DESIGN-BRIEF.md`, both in the owner's TestGen
