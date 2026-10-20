@@ -28,19 +28,25 @@ export function driftLine(d) {
   return parts.join(' · ');
 }
 
-/** The form's markup. `db` supplies the current user to prefill (never a password). */
-export function credentialChangeHtml(db) {
+/** The form's markup. `db` supplies the current user to prefill (never a password).
+ *  `opts` re-titles it for another use of the same test-before-save form (Table preview's "Your credential for
+ *  <db>"): `titleHtml`, `noteHtml`, `saveLabel`, `prefill: false` (leave the user blank), `passwordPlaceholder`.
+ *  With no opts the markup is exactly what it always was. */
+export function credentialChangeHtml(db, opts = {}) {
+  const titleHtml = opts.titleHtml || `Change the stored credential for <span class="font-mono">${esc(db.slug)}</span>`;
+  const noteHtml = opts.noteHtml || 'It is tested against the database first; if the database refuses it, nothing is saved.';
+  const prefill = opts.prefill === false ? '' : (db.db_user || '');
   return `<div data-cred-change="${esc(db.slug)}" class="text-caveat text-ink">
-    <div class="mb-s1 text-ink">Change the stored credential for <span class="font-mono">${esc(db.slug)}</span></div>
-    <p class="mb-s2 max-w-[70ch] text-ink-muted">It is tested against the database first; if the database refuses it, nothing is saved.</p>
+    <div class="mb-s1 text-ink">${titleHtml}</div>
+    <p class="mb-s2 max-w-[70ch] text-ink-muted">${noteHtml}</p>
     <div class="flex flex-wrap items-center gap-s2">
-      <input data-cred-user type="text" autocomplete="off" placeholder="user" value="${esc(db.db_user || '')}"
+      <input data-cred-user type="text" autocomplete="off" placeholder="user" value="${esc(prefill)}"
         class="rounded-sm border border-rule bg-transparent px-2 py-[3px] text-caveat text-ink">
-      <input data-cred-password type="password" autocomplete="off" placeholder="new password"
+      <input data-cred-password type="password" autocomplete="off" placeholder="${esc(opts.passwordPlaceholder || 'new password')}"
         class="rounded-sm border border-rule bg-transparent px-2 py-[3px] text-caveat text-ink">
       <button type="button" data-cred-save
         class="cursor-pointer rounded-sm border border-accent bg-transparent px-s3 py-[3px] text-caveat text-accent-ink"
-        >Test and save</button>
+        >${esc(opts.saveLabel || 'Test and save')}</button>
       <button type="button" data-cred-cancel class="cursor-pointer bg-transparent text-ink underline">Cancel</button>
     </div>
     <div data-cred-result class="mt-s2"></div>
@@ -50,6 +56,8 @@ export function credentialChangeHtml(db) {
 /** Wires a rendered form. `ctx.onSaved(summary)` lets the caller refresh its own
  *  copy of the row; `ctx.onCancel()` closes the form. */
 export function bindCredentialChange(host, slug, ctx = {}) {
+  const saveLabel = ctx.saveLabel || 'Test and save';
+  const notWord = ctx.notWord || 'not saved';
   const user = host.querySelector('[data-cred-user]');
   const pw = host.querySelector('[data-cred-password]');
   const save = host.querySelector('[data-cred-save]');
@@ -63,13 +71,22 @@ export function bindCredentialChange(host, slug, ctx = {}) {
     const u = user.value.trim();
     const p = pw.value;
     if (!u || !p) {
-      result.innerHTML = `<span data-cred-error class="text-state-warn">not saved · a user and a password are both required</span>`;
+      result.innerHTML = `<span data-cred-error class="text-state-warn">${notWord} · a user and a password are both required</span>`;
       return;
     }
     save.disabled = true;
     save.textContent = 'Testing, then saving…';
     result.innerHTML = `<span class="text-ink-muted">… testing the new credential</span>`;
     try {
+      if (ctx.saveFn) {
+        // Another use of the form (Table preview): the caller tests and holds the credential, and answers
+        // with the line to show. The password is emptied the same way.
+        const line = await ctx.saveFn(u, p);
+        pw.value = '';
+        result.innerHTML = line || '';
+        if (ctx.onSaved) ctx.onSaved({ db_user: u });
+        return;
+      }
       const summary = await changeDatabaseCredentials(slug, { user: u, password: p });
       pw.value = '';                                    // its job is done
       let drift = '';
@@ -85,11 +102,11 @@ export function bindCredentialChange(host, slug, ctx = {}) {
       if (ctx.onSaved) ctx.onSaved(summary);
     } catch (err) {
       result.innerHTML = `<span data-cred-error class="text-state-warn">${
-        err && err.status === 401 ? 'not saved · sign in to change a credential'
-          : `not saved · ${esc(err && err.message ? err.message : String(err))}`}</span>`;
+        err && err.status === 401 ? `${notWord} · sign in to change a credential`
+          : `${notWord} · ${esc(err && err.message ? err.message : String(err))}`}</span>`;
     } finally {
       save.disabled = false;
-      save.textContent = 'Test and save';
+      save.textContent = saveLabel;
     }
   });
 }

@@ -108,6 +108,12 @@ class EngineCapabilities:
     #: write. Independent of `privileges` above (which audits OTHER roles'
     #: grants): this is about what THIS SESSION's own role can reach.
     credential_introspection: bool = False
+    #: Whether this engine can run RE's typed row preview (`preview_rows`): the first n rows of one
+    #: table, read-only, with a statement timeout (design REPLY-DESIGNER-TABLE-PREVIEW-2026-10-19).
+    #: A preview needs only two engine-specific things, "quote an identifier" and "limit n rows",
+    #: which is why it is the first capability put behind this seam. False for every engine that has
+    #: not written them: the preview then refuses in words rather than guessing a dialect.
+    row_preview: bool = False
 
     def as_dict(self) -> dict[str, bool]:
         return asdict(self)
@@ -117,6 +123,46 @@ class EngineCapabilities:
 #: DatabaseConnection subclass already does via get_schema_info(). The
 #: default for any engine that has not declared otherwise.
 NO_CAPABILITIES = EngineCapabilities()
+
+#: The preview's statement timeout (design: "stopped after 10 s").
+PREVIEW_TIMEOUT_MS = 10_000
+#: The two row counts a person may ask for.
+PREVIEW_LIMITS = (20, 100)
+
+
+class PreviewError(Exception):
+    """A row preview that did not return rows. `kind` names which of the refusals it is; `sentence` is safe to
+    show: it never carries a row value or the credential."""
+
+    kind = "error"
+
+    def __init__(self, sentence: str) -> None:
+        super().__init__(sentence)
+        self.sentence = sentence
+
+
+class PreviewDenied(PreviewError):
+    """The credential cannot read the table (SQLSTATE 42501)."""
+
+    kind = "no_read"
+
+
+class PreviewTimedOut(PreviewError):
+    """The query ran past the statement timeout and the database stopped it; nothing was read."""
+
+    kind = "timeout"
+
+
+class PreviewUnsupported(PreviewError):
+    """This engine has no row preview."""
+
+    kind = "unsupported"
+
+
+class PreviewStale(PreviewError):
+    """The catalogue names a table or column the database no longer has."""
+
+    kind = "stale"
 
 
 @dataclass(frozen=True)
@@ -403,6 +449,18 @@ class DatabaseConnection(ABC):
         the others' failures, which plain `execute_query` cannot give it.
         """
         return self.execute_query(query, params)
+
+    def preview_rows(self, schema: str, table: str, columns: list[str], limit: int,
+                     *, timeout_ms: int = PREVIEW_TIMEOUT_MS) -> list[dict]:
+        """The first `limit` rows of one table, as the engine returns them: THE seam a later engine adapter fills.
+
+        Not abstract, and the default refuses: an engine that has not written "quote an identifier" and
+        "limit n rows" must say so (`PreviewUnsupported`), never fall back to another engine's dialect.
+        Callers check `capabilities.row_preview` first. Raises `PreviewDenied` / `PreviewTimedOut` /
+        `PreviewStale` / `PreviewError`; none of them carries a row value.
+        """
+        raise PreviewUnsupported(
+            "Row preview is built for PostgreSQL only; this engine has no adapter for it yet.")
 
     @abstractmethod
     def get_schema_info(self) -> dict:
@@ -1225,6 +1283,9 @@ class PostgreSQLConnection(DatabaseConnection):
             # has_schema_privilege/has_table_privilege and pg_has_role all
             # exist on every Postgres this codebase supports.
             credential_introspection=True,
+            # `preview_rows` below: a typed SELECT with sql.Identifier quoting, LIMIT n, a read-only
+            # transaction and a statement timeout.
+            row_preview=True,
         )
 
     @property
@@ -1232,6 +1293,82 @@ class PostgreSQLConnection(DatabaseConnection):
         """server → database → schema, per REPLY-SCHEMA-AS-SUB-RESOURCE.md §5's
         first table row. The one engine declared in this slice."""
         return POSTGRES_CONTAINMENT
+
+    # Failures whose server message names only a relation or a column (insufficient_privilege, undefined_table,
+    # undefined_column), never a row value, so its first sentence may be shown. Any other failure is reported by its
+    # SQLSTATE alone, because a data error ("invalid input syntax for type integer: ...") can quote the value it
+    # choked on.
+
+    @staticmethod
+    def _first_line(exc: Exception) -> str:
+        return " ".join(str(exc).strip().splitlines()[:1]).strip()
+
+    @staticmethod
+    def build_preview_query(schema: str, table: str, columns: list[str], limit: int):
+        """The preview's ONE statement, composed from names and a validated integer.
+
+        `schema`, `table` and every column are `sql.Identifier`s (quoted by the driver), `limit` must be one
+        of `PREVIEW_LIMITS` and is rendered as a literal integer. There is no parameter through which text
+        could reach the statement unquoted. With no selectable column (every column masked) it selects the
+        constant 1, so the row count is still known and no masked value leaves the database.
+        """
+        from psycopg2 import sql
+
+        if limit not in PREVIEW_LIMITS:
+            raise ValueError(f"limit must be one of {PREVIEW_LIMITS}")
+        select_list = (
+            sql.SQL(", ").join(sql.Identifier(c) for c in columns) if columns else sql.SQL("1")
+        )
+        return sql.SQL("SELECT {cols} FROM {rel} LIMIT {n}").format(
+            cols=select_list,
+            rel=sql.SQL("{}.{}").format(sql.Identifier(schema), sql.Identifier(table)),
+            n=sql.Literal(int(limit)),
+        )
+
+    def preview_rows(self, schema: str, table: str, columns: list[str], limit: int,
+                     *, timeout_ms: int = PREVIEW_TIMEOUT_MS) -> list[dict]:
+        """The first `limit` rows of `schema.table`, selecting only `columns`.
+
+        One read-only transaction (`SET TRANSACTION READ ONLY`, first statement) with
+        `SET LOCAL statement_timeout`, always rolled back. Rows come back as `{column: value}` dicts keyed
+        by the selected columns (an empty `columns` yields one empty dict per row). Nothing is logged or
+        kept here. Errors are reduced to `PreviewError`s whose sentences never carry a value.
+        """
+        import psycopg2
+        from psycopg2 import errors, sql
+
+        if not self._conn:
+            raise RuntimeError("Not connected to database")
+        query = self.build_preview_query(schema, table, list(columns), limit)
+        conn = self._conn
+        try:
+            conn.rollback()                      # a clean transaction, so SET TRANSACTION is its first statement
+            with conn.cursor() as cur:
+                cur.execute("SET TRANSACTION READ ONLY")
+                cur.execute(sql.SQL("SET LOCAL statement_timeout = {}").format(sql.Literal(int(timeout_ms))))
+                cur.execute(query)
+                fetched = cur.fetchall()
+        except errors.QueryCanceled:
+            raise PreviewTimedOut(
+                f"no rows shown · the query ran longer than {timeout_ms // 1000} s and was stopped · nothing was read"
+            ) from None
+        except errors.InsufficientPrivilege as exc:
+            raise PreviewDenied(self._first_line(exc) or "permission denied") from None
+        except (errors.UndefinedTable, errors.UndefinedColumn) as exc:
+            raise PreviewStale(
+                self._first_line(exc) or "the table or a column is not in the database") from None
+        except psycopg2.Error as exc:
+            code = getattr(exc, "pgcode", None) or ""
+            raise PreviewError(
+                f"the database stopped the query{f' (SQLSTATE {code})' if code else ''}") from None
+        finally:
+            try:
+                conn.rollback()
+            except Exception:                    # noqa: BLE001 - a dead connection is closed by the caller
+                pass
+        if not columns:
+            return [{} for _ in fetched]
+        return [dict(zip(columns, row)) for row in fetched]
 
     def get_column_stats(self) -> list[dict]:
         """Per-column `pg_stats` — populated only after `ANALYZE` has run.

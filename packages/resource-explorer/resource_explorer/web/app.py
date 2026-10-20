@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from resource_explorer.config import WebUIConfig
 from resource_explorer.web.routes import work_lists as work_lists_routes
 from resource_explorer.web.routes import api_reference as api_reference_routes, analytics as analytics_routes, activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, catalogue_scope, curate, databases, first_index as first_index_routes, db_servers as db_servers_routes, diagrams, discovery, doc_sources, egeria, feedback, investigations, journal, logs as logs_routes, prefect_status, prerequisites as prerequisite_routes, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions, native_surveys
+from resource_explorer.web.routes import table_preview as table_preview_routes
 
 
 log = logging.getLogger(__name__)
@@ -337,6 +338,7 @@ app.include_router(auth_routes.router, prefix="/api/auth", tags=["auth"])
 app.include_router(query.router, prefix="/api/query", tags=["query"])
 app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
 app.include_router(databases.router, prefix="/api/databases", tags=["databases"])
+app.include_router(table_preview_routes.router, prefix="/api/databases", tags=["table-preview"])
 app.include_router(filesystems.router, prefix="/api/filesystems", tags=["filesystems"])
 app.include_router(stats.router, prefix="/api/stats", tags=["stats"])
 app.include_router(aliases.router, prefix="/api/aliases", tags=["aliases"])

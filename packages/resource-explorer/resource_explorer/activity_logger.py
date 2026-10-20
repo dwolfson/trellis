@@ -111,6 +111,55 @@ def log_catalog(
     return entry_id
 
 
+def log_preview(
+    registry: "ProjectRegistry",
+    *,
+    slug: str,
+    name: str,
+    location: str,
+    who: str,
+    db_user: str,
+    schema: str,
+    table: str,
+    action: str,
+    limit: int,
+    outcome: str,
+    rows: int,
+    masked: list[str],
+    revealed: list[str],
+) -> str:
+    """One row per table preview or column reveal (docs/design-notes/REPLY-DESIGNER-TABLE-PREVIEW-2026-10-19.md §6).
+
+    Who looked (`who`, the signed-in person), as which database user, at which table, when (`ts`), how many rows
+    came back, which columns were masked and which revealed. COLUMN NAMES ONLY: no row value is ever passed to this
+    function, so none can be stored. `action` is 'preview' or 'reveal'; `outcome` is what the database answered
+    ('rows', 'empty', or a refusal word), and a refusal is recorded as an error row because the attempt happened.
+    """
+    import json
+
+    detail = {"action": action, "who": who, "db_user": db_user, "schema": schema, "table": table, "limit": limit,
+              "outcome": outcome, "rows": rows, "masked": list(masked), "revealed": list(revealed)}
+    verb = "Revealed columns of" if action == "reveal" else "Previewed"
+    summary = (f"{verb} {schema}.{table} · {rows} row(s) · as {db_user} · by {who}"
+               + (f" · revealed {', '.join(revealed)}" if revealed else "")
+               + ("" if outcome in ("rows", "empty") else f" · {outcome}"))
+    entry_id = str(uuid.uuid4())
+    registry.write_activity(ActivityEntry(
+        id=entry_id,
+        ts=_now(),
+        operation="preview",
+        intent="assessment",
+        entity_type="database",
+        entity_slug=slug,
+        entity_name=name,
+        entity_location=location,
+        status="ok" if outcome in ("rows", "empty") else "error",
+        summary=summary,
+        detail=json.dumps(detail),
+    ))
+    return entry_id
+
+
 def log_analysis_run(
     registry: "ProjectRegistry",
     entity_type: str,

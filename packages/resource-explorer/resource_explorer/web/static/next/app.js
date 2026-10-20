@@ -216,6 +216,7 @@ import { CREDENTIAL_UNREADABLE_TEXT, credentialMarkHtml, isCredentialUnreadable 
 import { rememberedCredential, setRemembered } from '/static/next/run-credential.js';
 import { mountDependencyTable } from '/static/next/stages/dependencies.js';
 import { openCredentialForm } from '/static/next/credential-change.js';
+import { mountTablePreview, setPreviewPick } from '/static/next/table-preview.js';
 import { installSessionBanner } from '/static/next/session-banner.js';
 import { isFreshnessSkip, offerRunAnyway, UP_TO_DATE_WORD } from '/static/next/run-anyway.js';
 
@@ -455,6 +456,9 @@ const SUB_TABS = [
   // filter's own `.includes(state.resourceType)` check silently never
   // matched, so this tab never appeared for any database at all.
   { id: 'schema_inventory', label: 'Schema Inventory', does: 'Schemas, tables and columns, with row/byte estimates, keys and comments', built: true, resourceTypes: ['db'] },
+  // Table preview (REPLY-DESIGNER-TABLE-PREVIEW-2026-10-19 §1): database-only, beside Schema Inventory, gated the same
+  // way. A preview is an act, not a view: the pane reads nothing from the database until a person presses.
+  { id: 'table_preview', label: 'Table preview', does: "The first rows of one table, as you, masked by default", built: true, resourceTypes: ['db'] },
 ];
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -4196,6 +4200,35 @@ function bindSubTabsIn(el) {
  * "a match inside a collapsed schema must not stay hidden" rule that list
  * already gets right.
  */
+/** Table preview (database-only). The pane is `table-preview.js`'s; this is only its page frame. */
+async function loadTablePreviewPane() {
+  const el = $('content');
+  if (state.resourceType !== 'db') {
+    state.subTab = stageDefaultSubTab(); writeUrl(); await loadPane();
+    return;
+  }
+  const slug = state.selectedSlug;
+  el.innerHTML = `${subTabsHtml()}
+    <div id="resource-header">${resourceHeaderHtml(slug)}</div>
+    <div class="my-s3 h-px bg-rule"></div>
+    <div id="table-preview-host"></div>`;
+  bindSubTabs();
+  bindResourceHeader();
+  const db = (state.databases || []).find((d) => d.slug === slug);
+  await mountTablePreview($('table-preview-host'), { slug, dbName: (db && (db.display_name || db.slug)) || slug });
+}
+
+/** Schema Inventory's "preview rows ›": opens Table preview with that table picked. One delegated handler on the tree. */
+function bindPreviewRowsLinks(root) {
+  root.addEventListener('click', (e) => {
+    const b = e.target.closest?.('[data-preview-rows]');
+    if (!b) return;
+    e.preventDefault(); e.stopPropagation();                 // the button sits in a <summary>: do not toggle it
+    setPreviewPick(b.dataset.previewSchema, b.dataset.previewRows);
+    state.subTab = 'table_preview'; writeUrl(); loadPane();
+  });
+}
+
 async function loadSchemaInventoryPane() {
   const el = $('content');
   if (state.resourceType !== 'db') {
@@ -4235,6 +4268,7 @@ async function loadSchemaInventoryPane() {
   const countsLine = el.querySelector('[data-schema-counts]');
   if (countsLine) countsLine.textContent = threeNumberLine(tree);
   bindSchemaTreeFilter();
+  bindPreviewRowsLinks($('schema-tree'));
 }
 
 /** The filter input's own wiring: typing filters live, the × button
@@ -4323,13 +4357,16 @@ export function schemaTreeHtml(schemas) {
         ${schemaSrc ? `<span data-tree-source class="text-provenance text-ink-muted"> · ${esc(schemaSrc)}</span>` : ''}
       </summary>
       ${s.reason ? `<div class="ml-s3 mt-[4px] text-provenance text-ink-muted">${esc(s.reason)}</div>` : ''}
-      <div class="ml-s3 mt-s2">${(s.tables || []).map(tableHtml).join('') || '<span class="text-caveat text-ink-muted">No tables.</span>'}</div>
+      <div class="ml-s3 mt-s2">${(s.tables || []).map((t) => tableHtml({ ...t, preview_schema: s.schema })).join('') || '<span class="text-caveat text-ink-muted">No tables.</span>'}</div>
     </details>`;
   });
   return parts.join('');
 }
 
 export function tableHtml(t) {
+  // `preview_schema` is set by schemaTreeHtml (the schema this table sits in): it is what lets the row offer
+  // "preview rows ›". A table drawn without it (a work list's column) offers no door.
+  const schemaName = t.preview_schema || '';
   const rowStamp = t.row_count == null
     ? 'not measured'
     : `${Number(t.row_count).toLocaleString('en-US')} row(s)${t.row_count_state === 'catalog_estimate' ? ' (est.)' : ''}`;
@@ -4349,6 +4386,7 @@ export function tableHtml(t) {
       <span class="text-caveat text-ink-muted"> ${esc(kindLabel)}</span>
       <span class="text-provenance text-ink-muted"> — ${esc(rowStamp)} · ${esc(byteStamp)}${esc(indexStamp)} · ${t.column_count == null ? 'columns not measured' : `${t.column_count} column(s)`}</span>
       ${tableSrc ? `<span data-tree-source class="text-provenance text-ink-muted"> · ${esc(tableSrc)}</span>` : ''}
+      ${schemaName ? `<button type="button" data-preview-rows="${esc(t.name)}" data-preview-schema="${esc(schemaName)}" class="ml-s2 cursor-pointer bg-transparent text-provenance text-accent-ink underline">preview rows ›</button>` : ''}
     </summary>
     <table class="ml-s3 mt-[4px] w-full max-w-[110ch] border-collapse text-caveat">
       ${(t.columns || []).length ? `<thead><tr class="border-b border-rule text-provenance text-ink-muted">
@@ -8697,6 +8735,7 @@ async function loadPane() {
   if (reconcileSubTabForStage()) writeUrl();
   syncRailToSelection();   // the reconcile may have moved the sub-tab
   if (state.subTab === 'schema_inventory') { await loadSchemaInventoryPane(); return; }
+  if (state.subTab === 'table_preview') { await loadTablePreviewPane(); return; }
   // Curate's and Understanding's leading tabs (Brief S0): loader stubs until the slices put the sections in.
   if (isStageTabActive(state.subTab)) { await loadStageTabPane(); return; }
   // ENRICHMENT-E1-CONTEXT-TAB: Context is its own pane, not a Questions-
