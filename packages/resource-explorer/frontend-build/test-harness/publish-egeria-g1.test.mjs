@@ -84,6 +84,7 @@ function makeServer(over = {}) {
       s.inEgeria = false; s.canAgain = false; s.row = { word: 'forgotten', read_at: new Date().toISOString(), sentence: '', first: '' };
       return ok({ ok: true, surveys_deleted: 3, asset_guid_cleared: true });
     }
+    if (u.endsWith('/root-folder')) return ok(s.rootFolder || { state: 'not_attached', guid: '', read_back_at: '', by: '', why: '' });
     if (u.endsWith('/egeria-surveys')) return s.reportsStatus === 200 ? ok(s.reports) : err(s.reportsStatus, 'Egeria is not reachable');
     if (u.includes('/egeria-surveys/') && u.endsWith('/annotations')) return ok(s.annotations);
     if (u.endsWith('/file-type-measurements')) return ok(s.measurements);
@@ -354,11 +355,24 @@ test('a database: one state line (never the registry flag), reports from the dat
   assert.ok(q(document, '[data-egeria-report]'));
 });
 
-test('a file system: the same component on the file-system route', async () => {
-  const { document, server } = await setUp('filesystem', {}, { slug: 'docs_fs', rows: { is_published: true, egeria_asset_guid: 'fs-guid' } });
+test('a file system: the same reports component, its state from the root-folder proof row and not the registry flag', async () => {
+  // The registry row says is_published, but no read-back proof row exists: the band must not say attached,
+  // and must not list reports from an asset nothing proved.
+  const a = await setUp('filesystem', {}, { slug: 'docs_fs', rows: { is_published: true, egeria_asset_guid: 'fs-guid' } });
+  await openCurate(a.document);
+  assert.match(band(a.document).textContent, /root folder not attached/);
+  assert.equal(a.server.calls.filter((c) => c.url.includes('/api/filesystems/docs_fs/egeria-surveys')).length, 0);
+  assert.equal(q(a.document, '[data-publish-go]'), null);
+  assert.ok(q(a.document, '[data-fs-publish-go]'), 'the one file-system Publish');
+});
+
+test('a file system with a read-back proof row: attached, and its reports are read from the file-system route', async () => {
+  const { document, server } = await setUp('filesystem',
+    { rootFolder: { state: 'attached', guid: 'fs-guid', read_back_at: '2026-10-20T09:30:00', by: 'dan', why: '' } },
+    { slug: 'docs_fs', rows: { is_published: false, egeria_asset_guid: 'fs-guid' } });
   await openCurate(document);
+  assert.match(band(document).textContent, /root folder attached/);
   assert.equal(server.calls.filter((c) => c.url.includes('/api/filesystems/docs_fs/egeria-surveys')).length, 1);
-  assert.equal(q(document, '[data-publish-go]'), null);
 });
 
 /* ── PI-004 ──────────────────────────────────────────────────────────── */

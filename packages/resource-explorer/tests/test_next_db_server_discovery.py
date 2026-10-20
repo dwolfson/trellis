@@ -59,10 +59,11 @@ class TestPlacementIsCorpusLevelNotAStage:
         block = block[:block.index("},\n") + 3]
         assert "state.resourceType === 'db'" in block
         assert "openFindDbServersDialog();" in block
-        # Repos keep their own real port; filesystem still falls through to
-        # the old-UI-link stub -- this change must not touch either.
+        # Repos keep their own real port; a file system now has its own register
+        # form (Files step 1) -- no link out to the old UI is left in this action.
         assert "openFindReposDialog();" in block
-        assert "oldUiHref" in block
+        assert "openRegisterFileSystemDialog();" in block
+        assert "oldUiHref" not in block
 
     def test_find_title_comment_no_longer_calls_databases_unbuilt(self):
         # Regression guard for the stale comment this session's own context

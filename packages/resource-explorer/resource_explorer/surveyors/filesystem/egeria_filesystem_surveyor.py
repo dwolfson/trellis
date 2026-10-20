@@ -96,6 +96,82 @@ class EgeriaFileSystemSurveyor:
                 f"Could not connect to Egeria at {self.platform_url}: {exc}"
             ) from exc
 
+    def _find_or_create_root_folder(self, fs_entity: FileSystemEntity) -> tuple[str, bool]:
+        """Find the file system's root folder in Egeria by its canonical path, else create it from the DataFolder
+        template. The one place this is done: `catalog_and_survey` and `attach_root_folder` both call it.
+        Returns `(guid, created)`."""
+        local_mount = fs_entity.local_mount_point.rstrip("/")
+        canonical_mount = (fs_entity.canonical_mount_point or local_mount).rstrip("/")
+        fs_name = fs_entity.display_name or fs_entity.slug
+
+        log.info(f"Cataloging FileSystem root folder in Egeria: name={fs_name}, path={canonical_mount}")
+        fs_guid = self._find_element_guid(canonical_mount)
+        created = False
+        if not fs_guid:
+            try:
+                # Egeria DataFolder template: path_name, folder_name, file_system, description
+                fs_guid = self._automated_curation.create_folder_element_from_template(
+                    path_name=canonical_mount,
+                    folder_name=fs_name,
+                    file_system=fs_entity.slug,
+                    description=fs_entity.description or f"FileSystem root mapping: {local_mount} -> {canonical_mount}",
+                )
+                created = True
+                log.info(f"Created FileSystem root DataFolder in Egeria: {fs_guid}")
+            except Exception as exc:
+                raise EgeriaFileSystemSurveyorError(
+                    f"Could not create FileSystem root folder element for {canonical_mount}: {exc}"
+                ) from exc
+        return fs_guid, created
+
+    def attach_root_folder(self, fs_entity: FileSystemEntity, registry: ProjectRegistry | None = None) -> dict:
+        """Attach the file system's ROOT FOLDER as an Egeria asset and read it back by GUID. Nothing else: no data
+        file, no SurveyReport, no annotation (Files step 1; `catalog_and_survey` is unchanged and still does those).
+
+        Idempotent by the GUID RE already holds for this file system: a cached GUID is read back and never looked
+        up by name or created again. With none cached, the existing look-up-then-create runs once and the GUID is
+        cached. Returns `{guid, created, matched, read_back: {...}}`; `matched` is True only when Egeria's answer
+        for that GUID names that GUID. A read-back that raised (Egeria down, or the GUID unknown) is
+        `matched: False` with `why`, never an exception, so the caller records what was observed.
+        """
+        from resource_explorer.private_publish import refuse_unsupported_private
+
+        refuse_unsupported_private(registry, "filesystem", fs_entity.slug,
+                                   name=fs_entity.display_name or fs_entity.slug)
+        self.connect()
+
+        cached = (fs_entity.egeria_asset_guid or "").strip()
+        created = False
+        if cached:
+            guid = cached
+        else:
+            guid, created = self._find_or_create_root_folder(fs_entity)
+            if registry and guid:
+                registry.set_filesystem_egeria_guid(fs_entity.slug, guid)
+        return {"guid": guid, "created": created, **self._read_back_by_guid(guid)}
+
+    def _read_back_by_guid(self, guid: str) -> dict:
+        """Read one element back from Egeria BY GUID. `matched` only when the answer's own header names that GUID."""
+        from resource_explorer.egeria_linkage import is_unknown_guid_error
+
+        try:
+            result = self._asset_maker.get_asset_by_guid(
+                guid, body={"class": "GetRequestBody", "graphQueryDepth": 0}, output_format="JSON")
+        except Exception as exc:  # noqa: BLE001 - what Egeria said is the observation
+            why = ("Egeria does not hold an element with that GUID" if is_unknown_guid_error(exc)
+                   else f"the read-back could not be made: {exc}")
+            return {"matched": False, "why": why, "qualified_name": "", "type_name": ""}
+        header = (result.get("elementHeader") or {}) if isinstance(result, dict) else {}
+        props = (result.get("properties") or {}) if isinstance(result, dict) else {}
+        got = header.get("guid", "")
+        type_name = ((header.get("type") or {}).get("typeName") or "")
+        if got != guid:
+            return {"matched": False, "qualified_name": props.get("qualifiedName", ""), "type_name": type_name,
+                    "why": (f"Egeria answered with a different element ({got})" if got
+                            else "Egeria's answer did not name an element")}
+        return {"matched": True, "why": "", "qualified_name": props.get("qualifiedName", ""),
+                "type_name": type_name}
+
     def catalog_and_survey(
         self,
         fs_entity: FileSystemEntity,
@@ -116,22 +192,7 @@ class EgeriaFileSystemSurveyor:
         fs_name = fs_entity.display_name or fs_entity.slug
 
         # 1. Catalog/find the filesystem representation (using DataFolder template as compensation)
-        log.info(f"Cataloging FileSystem root folder in Egeria: name={fs_name}, path={canonical_mount}")
-        fs_guid = self._find_element_guid(canonical_mount)
-        if not fs_guid:
-            try:
-                # Egeria DataFolder template: path_name, folder_name, file_system, description
-                fs_guid = self._automated_curation.create_folder_element_from_template(
-                    path_name=canonical_mount,
-                    folder_name=fs_name,
-                    file_system=fs_entity.slug,
-                    description=fs_entity.description or f"FileSystem root mapping: {local_mount} -> {canonical_mount}",
-                )
-                log.info(f"Created FileSystem root DataFolder in Egeria: {fs_guid}")
-            except Exception as exc:
-                raise EgeriaFileSystemSurveyorError(
-                    f"Could not create FileSystem root folder element for {canonical_mount}: {exc}"
-                ) from exc
+        fs_guid, _created = self._find_or_create_root_folder(fs_entity)
 
         # Update registry GUID
         if registry and fs_guid:

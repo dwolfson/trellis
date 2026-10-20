@@ -126,13 +126,11 @@ class TestOrgImportRepoSearchFromListCsvExportLiveAtTheSidebarNotTheStage:
         assert "'find-repos': () => {" in app
         body = app[app.index("'find-repos': () => {"):]
         body = body[:body.index("\n    },")]
-        # Repos: the real port. Other resource types: still the old-UI-link
-        # stub this item originally wrote -- that half is genuinely
-        # unchanged and out of NEXT-DISCOVERY-IMPORT-SEARCH-IMPLEMENTED.md's
-        # scope.
+        # Repos, databases and file systems each have a real dialog now (a file
+        # system's is the register form, Files step 1); no old-UI-link stub is left.
         assert "openFindReposDialog();" in body
-        assert "FIND_TITLE[state.resourceType]" in body
-        assert "oldUiHref()" in body
+        assert "openRegisterFileSystemDialog();" in body
+        assert "oldUiHref()" not in body
 
     def test_discovery_stage_pane_itself_still_has_no_corpus_level_ui(self):
         # The thing this item's own scoping call was actually protecting:

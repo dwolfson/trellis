@@ -212,6 +212,19 @@ export const getSchemaInventoryTree = (slug) =>
   get(`/api/databases/${encodeURIComponent(slug)}/schema-inventory-tree`);
 export const listFilesystems = () => get('/api/filesystems/');
 
+/** Register a file system (Files step 1). The body is the route's own model: slug, display_name,
+ *  local_mount_point, canonical_mount_point, group_slug. The Egeria server and platform come from the platform
+ *  configuration the server already reads, never from this call. The answer is the STORED row. */
+export const registerFilesystem = (payload) => post('/api/filesystems/', payload);
+/** Can the server read this mount path? `{ state: readable | not_a_folder | not_readable | empty }`. A warning only. */
+export const checkFilesystemMount = (path) => post('/api/filesystems/check-mount', { path });
+/** Whether the root folder is attached in Egeria, from the newest read-back proof row. */
+export const getFilesystemRootFolder = (slug) =>
+  get(`/api/filesystems/${encodeURIComponent(slug)}/root-folder`);
+/** Attach the root folder as an Egeria asset, as the signed-in person; the answer is the re-derived state. */
+export const attachFilesystemRoot = (slug) =>
+  post(`/api/filesystems/${encodeURIComponent(slug)}/attach-root`);
+
 /* ── Catalogue scope (Curate, database: what gets catalogued) ────────────
  * web/routes/catalogue_scope.py. A declared, signed, dated choice stored in
  * RE; the scope routes reach nothing of Egeria's (the commit routes below do).
