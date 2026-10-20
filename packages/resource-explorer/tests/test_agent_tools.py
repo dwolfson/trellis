@@ -813,6 +813,36 @@ def test_the_integration_agent_cites_a_declared_dependency_that_names_the_other_
     assert "[openlineage] declares" not in text, "requests names neither marquez nor emptyrepo"
 
 
+def test_the_integration_answer_leads_with_the_declared_dependency_and_the_prompt_puts_it_first(db):
+    from unittest.mock import patch
+
+    from resource_explorer.agents.integration_agent import IntegrationAgent
+    from resource_explorer.registry import Project
+
+    for slug in ("marquez", "openlineage"):
+        db.add(Project(slug=slug, display_name=slug, github_url=f"https://github.com/org/{slug}"))
+    db.upsert_dependencies("marquez", [
+        {"dep_name": "io.openlineage:openlineage-java", "dep_version": "1.2.0", "dep_type": "runtime",
+         "ecosystem": "maven", "source_file": "build.gradle"}])
+    prompts = []
+    agent = IntegrationAgent()
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db), \
+         patch.object(IntegrationAgent, "_infer_all_project_slugs", return_value=["marquez", "openlineage"]), \
+         patch.object(IntegrationAgent, "_multi_resource_evidence", return_value=["MATRIX"]), \
+         patch.object(IntegrationAgent, "_cross_asset_link_lines", return_value=["LINKS TABLE"]), \
+         patch.object(IntegrationAgent, "_run_agent", side_effect=lambda p: prompts.append(p) or "Through PostgreSQL."):
+        answer = agent.handle("Can marquez work with openlineage?")
+    assert answer.startswith("marquez declares 1 dependency naming openlineage (io.openlineage:openlineage-java 1.2.0)")
+    assert answer.endswith("Through PostgreSQL.")
+    prompt = prompts[0]
+    assert prompt.index("Direct evidence") < prompt.index("MATRIX") < prompt.index("LINKS TABLE")
+
+    # No declared dependency: nothing is added to the model's answer.
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
+        assert IntegrationAgent()._direct_answer_lead(["openlineage", "marquez"]) .startswith("marquez declares")
+        assert IntegrationAgent()._direct_answer_lead(["openlineage"]) == ""
+
+
 def test_dynamic_delegation_tools(db):
     from resource_explorer.agents.tools import (
         delegate_to_compare_agent_raw,
