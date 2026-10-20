@@ -211,11 +211,35 @@ Only what the parity rows name, in the Publish-ruling shape:
 
 ## 5. Gate, by use
 
-The owner registers a local file system on /next, runs the survey with
-its price shown, reads F1 to F3 and F8 on Understanding, sees a flagged
-world-readable file with a data-class match, publishes two directories
-and reads them back in Egeria, and never opens Classic. A second walk
-after adding and removing files shows F5 honestly.
+**Path (owner, 2026-10-20): `/Users/dwolfson/localGit/egeria-v6`**, the
+live checkout of every repository, worktree and runtime volume. Three
+cautions follow from that, and the step-1 brief carries them with a test:
+
+1. The tree holds secrets (`.env` files, `.omsecrets`, runtime volumes
+   with platform data, credential files) and git internals. The walk
+   records names, sizes and times only; `folder_narratives` reads only
+   its candidate files; `file_profiles` reads only tabular data files
+   under the cap; nothing else is read or published. Egeria's Folder
+   Survey classifies and counts everything, which is fine; its "Profile
+   File Names to External Log" step stays off at the gate so no path
+   list leaves the machine.
+2. The bulk sits in git object stores, `node_modules` and the docker
+   volumes. That is the honest answer to F1 and a good first test;
+   `analysisLevel` and the walk's limits are set so the first survey
+   finishes in minutes, and the gate records the wall time.
+3. The registered root is the owner's working tree: registration and
+   survey write nothing into the path (no markers, no caches there),
+   proven by a test; the second walk for F5 follows the owner's ordinary
+   work, nothing staged.
+
+The owner registers that path on /next, runs the survey with its price
+shown, reads F1 to F3 on Understanding with the README-stated
+descriptions on the folders that have one (F11), sees a recognised
+layout (F10) and a data-class match on a profiled file (F7), publishes
+two directories and reads them back in Egeria, and never opens Classic.
+A second walk after a day's work shows F5 honestly. The flagged
+world-readable file and the age distribution (F8, F9) are the second
+slice's gate.
 
 ## 6. The owner's picks (2026-10-20) and what stays open
 
