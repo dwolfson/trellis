@@ -108,8 +108,9 @@ nothing.
 - **Live round trip.** One focused live check: publish one `QualityScoreAnnotation` and read
   `jsonProperties.qualityScores` back. The 2026-10-20 run skipped it because of a harness bug.
 - **Quality checks.** `DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md` §7 and §8 stand. The `GovernedBy`
-  target there now follows §0 above: the column element for a committed schema, the database asset with
-  `scope` otherwise.
+  target there now follows §0 above and the owner's answer of 2026-10-20: the column element for a committed
+  schema. Otherwise the person is asked whether to add the object, shown when the profile found it, and a
+  declined object gets no rule.
 
 ## 4. Order
 

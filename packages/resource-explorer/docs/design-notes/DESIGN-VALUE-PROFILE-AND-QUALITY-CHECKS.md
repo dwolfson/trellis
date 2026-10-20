@@ -382,14 +382,18 @@ order:
 
 1. **the column element**, for a column in a committed schema (found by that walk), or one
    Egeria's own survey created;
-2. otherwise **the database Asset**, with the rule's inherited `scope` attribute set to
-   `schema.table.column`. Egeria's Bitol mapper uses `scope` for the governed element's
-   name in the same way.
+2. otherwise, **ask the person whether to add the object to Egeria** (owner, 2026-10-20). The
+   value profile has found a column, or another resource, that Egeria does not know. Publish
+   asks whether to add it, by committing its schema on the Curate **Contents** tab, and says
+   explicitly **when the profile found it** (the profiling run's `surveyed_at`), so a stale
+   object is never added. If the person adds it, the next Publish governs the new column
+   element.
+3. **If the person declines, the object is ignored: no rule is written for it.** The accepted
+   check stays in RE, marked "not added to Egeria · <date>", and is not published. The earlier
+   draft's fallback, the database Asset with `scope` set to the column path, is not used.
 
-The cache records which was used (`governed_at = column | asset`). When a later publish
-finds the column element, it adds a `GovernedBy` to the column and keeps the asset link,
-because removing a governance link is not Publish's job. The rule's qualified name never
-depends on which target was found (below), so this upgrade does not rename anything.
+The cache records the target (`governed_at = column`). The rule's qualified name is rooted at
+the database Asset (below), so it never depends on how the column element came to exist.
 
 **The property mapping.** This follows the Bitol mapper (`DataContractMapper.getDataQualityRuleProperties`)
 wherever ODCS has an equivalent:
@@ -400,7 +404,7 @@ wherever ODCS has an equivalent:
 | `displayName` | e.g. "Unique Values: sales.orders.order_id" (the YAML `test_name_short`) |
 | `summary` / `description` | the YAML `test_description` plus `usage_notes` |
 | `scope` | `schema.table.column` |
-| `qualityDimension` | Completeness → `completeness`, Uniqueness → `uniqueness`, Timeliness → `timeliness`, **Validity → `conformity`** (ODCS has no "validity") |
+| `qualityDimension` | Completeness → `completeness`, Uniqueness → `uniqueness`, Timeliness → `timeliness`, **Validity → `accuracy`** (owner, 2026-10-20: "conformity and validity are not equivalent - accuracy is closer"), with `originalDimension: Validity` in `additionalProperties` until a `validity` valid value is added, which is on the backlog |
 | `checkType` | `library` where an ODCS standard metric means exactly this check (Required, Unique, Required_No_Placeholder); otherwise `custom` |
 | `metric` | Required → `nullValues`; Unique → `duplicateValues`; Required_No_Placeholder → `missingValues`; the others: none |
 | `method` | the test-type code, always. **This is the executor's key.** |
@@ -452,9 +456,11 @@ governed rule is explained by its `QualityCheckNotEvaluated` sibling.
 | `analysisStep` | `run_quality_checks` |
 | `jsonProperties` | `{status, measure, comparisonOperator, thresholdValues, severity, ruleGUID, ruleQualifiedName, ruleSource, checkKey, baselineProfileSurveyedAt, recordCt}` |
 
-- **Linking the annotation to the rule.** No Egeria relationship links an annotation to a
-  governance definition, so the rule is named in `jsonProperties` (§11, question for the
-  Egeria team).
+- **Linking the annotation to the rule.** `AssociatedAnnotation` from the `QualityAnnotation`
+  to the `DataQualityRule` it evaluated (owner, 2026-10-20). `AssociatedAnnotation`'s end 1
+  is any `OpenMetadataRoot`, so a governance definition qualifies. It is linked once, through
+  `egeria_link_once`, as the column links are. The rule is **also** named in `jsonProperties`
+  (`ruleGUID`, `ruleQualifiedName`). A dedicated relationship can be considered later.
 - **Linking the annotation to the column.** `AssociatedAnnotation` to the column element
   only when §7 found one; otherwise the `item_key` and `checkKey` carry the column.
 
@@ -517,8 +523,8 @@ prerequisite resolver. It is never counted as a zero.
 2. **Full-table, no-sampling profile with a 5M-row ceiling and a 60 s timeout?** The owner
    asked why not sample. The answer is now in §4: TestGen itself does not sample these
    measures. **Open until the owner accepts that answer.**
-3. **The `GovernedBy` fallback to the database Asset** with `scope` set to the column path
-   when no column element exists (§7)? **Open.** The owner asked whether the gap comes from
+3. ~~The `GovernedBy` fallback to the database Asset?~~ **Replaced** (owner, 2026-10-20): ask
+   whether to add the object, showing when it was found; if declined, write no rule (§7). The owner asked whether the gap comes from
    TestGen using a more privileged account. It does not: in option C TestGen does not run.
    The gap is smaller than first stated (corrected 2026-10-20): Egeria's cataloguer creates
    the column elements for every schema a Curate catalogue commit chose, so the fallback
@@ -537,14 +543,17 @@ prerequisite resolver. It is never counted as a zero.
 
 **For the Egeria team:**
 
-6. Is there, or should there be, a relationship from an `Annotation` to the governance
-   definition it evaluated? (Today the rule is named in `jsonProperties`.)
-7. Should `QualityAnnotation` gain a pass/fail **status** and a nullable score? `qualityScore`
-   is an `int` defaulting to 0, which forces the "no annotation for an unevaluated check"
-   rule in §8.
-8. Is `scope` on the database Asset an acceptable way to name an uncatalogued column, or is
-   there a preferred element?
-9. There is no ODCS dimension for "validity". Is `conformity` the intended mapping?
+These went to the review with Mandy as Q1-Q4. Answered 2026-10-20 (owner):
+
+6. ~~An annotation-to-rule relationship?~~ **`AssociatedAnnotation` for now**, with
+   `jsonProperties` as well (§8). A dedicated relationship can be considered later.
+7. ~~A status and a nullable score on `QualityAnnotation`?~~ **The plan stands for now**:
+   status in `jsonProperties`, and no `QualityAnnotation` for an unevaluated check. This stays
+   open for future consideration, with A8 and A11.
+8. ~~`scope` for an uncatalogued column?~~ **Replaced**: ask the person, and write no rule if
+   they decline (§7).
+9. ~~"validity" → `conformity`?~~ **No: `accuracy`**, with `originalDimension: Validity`, until
+   a `validity` value is added (§7).
 
 **For pyegeria:** see `SPEC-PYEGERIA-DATA-QUALITY-RULE.md`.
 
