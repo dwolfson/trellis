@@ -4596,6 +4596,10 @@ ANALYSIS_KINDS: dict[str, AnalysisKind] = {
         "dependency_analysis", ["repo_dependency"],
         results=AnalysisKindResults(
             _dependency_results, _dependency_trend, "custom", headline_reader=_dependency_headline,
+            # project_dependencies is written at INGESTION, not by a survey run: marquez has 1,409 rows and no
+            # dependency_analysis run anywhere in the live registry, and read "never run". With rows the fact is
+            # measured; with none (`total` 0 is not content) it still falls through to the run gate.
+            live_read=True,
         ),
     ),
     "security_scan": AnalysisKind(
