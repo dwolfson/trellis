@@ -424,6 +424,12 @@ export function goesOutHtml(s) {
   (g.doc_sources || []).forEach((d) => parts.push(goesItem(`data-goes-out="doc:${esc(d.id ?? d.url)}"`, `doc ${d.label}`, 'saved', d.word)));
   (g.feedback || []).forEach((i) => parts.push(goesItem(`data-goes-out="${esc(i.kind)}:${esc(i.id)}"`,
     i.kind === 'rating' ? 'your rating' : 'your note', i.state, i.word)));
+  // A database's stored column-profile verdicts ride in the report (DESIGN-PUBLISHING-COLUMN-VERDICTS.md §1).
+  if (g.verdicts && g.verdicts.state === 'stored') {
+    parts.push(goesItem('data-goes-out="verdicts"', 'data-class verdicts', 'saved', g.verdicts.word));
+  } else if (g.verdicts && g.verdicts.state === 'unknown') {
+    parts.push(goesItem('data-goes-out="verdicts"', 'data-class verdicts', 'saved', `not sent · ${g.verdicts.word}`));
+  }
   const others = g.waiting_for_others
     ? `<span class="text-ink-muted" data-goes-out-others>· ${num(g.waiting_for_others)} from others · waiting for them</span>` : '';
   return `<div class="mt-[2px] text-provenance" data-publish-goes-out>${parts.join('') || '<span class="text-ink-muted">nothing else to send</span>'}${others}</div>`;

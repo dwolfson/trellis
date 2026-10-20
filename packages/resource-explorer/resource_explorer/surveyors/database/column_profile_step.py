@@ -853,7 +853,7 @@ _MATCH_COLUMNS = ("confidence", "matched_guid", "matched_qualified_name", "match
                   "matched_element_is_draft", "sampled_conformance", "value_coverage", "privacy_relevant",
                   "not_established_reason", "statement")
 _MATCH_DETAIL = ("evidence", "unmatched_values", "detected_patterns", "proposed_specification",
-                 "proposed_values", "other_candidates", "unusable_specifications")
+                 "proposed_specification_prose", "proposed_values", "other_candidates", "unusable_specifications")
 
 
 def column_match_rows(matches: Sequence[dict]) -> list[dict]:
@@ -888,6 +888,98 @@ def column_match_rows(matches: Sequence[dict]) -> list[dict]:
             "state": state,
         })
     return rows
+
+
+def _provenance_from_dict(sample: dict | None) -> SampleProvenance | None:
+    """The inverse of `SampleProvenance.as_dict()` (`total_rows`' "not established" sentinel back to None)."""
+    if not sample:
+        return None
+    from dataclasses import fields
+
+    from resource_explorer.surveyors.database.sampling import TOTAL_ROWS_NOT_ESTABLISHED
+
+    known = {f.name for f in fields(SampleProvenance)}
+    values = {k: v for k, v in sample.items() if k in known}
+    if values.get("total_rows") == TOTAL_ROWS_NOT_ESTABLISHED:
+        values["total_rows"] = None
+    return SampleProvenance(**values)
+
+
+def column_match_from_row(row: dict) -> ColumnMatch:
+    """A database_column_matches row back as the ColumnMatch it was stored from (`column_match_rows`'
+    inverse), so a publish can rebuild its annotations with the step's own builders."""
+    detail = row.get("detail_json") or {}
+    return ColumnMatch(
+        schema_name=row.get("schema_name", ""), table_name=row.get("table_name", ""),
+        column_name=row.get("column_name", ""), question=row.get("question", ""),
+        verdict=row.get("verdict", ""), confidence=row.get("confidence") or 0,
+        matched_guid=row.get("matched_guid") or "", matched_qualified_name=row.get("matched_qualified_name") or "",
+        matched_display_name=row.get("matched_display_name") or "",
+        sampled_conformance=row.get("sampled_conformance"), value_coverage=row.get("value_coverage"),
+        unmatched_values=list(detail.get("unmatched_values") or []),
+        proposed_specification=detail.get("proposed_specification") or "",
+        proposed_specification_prose=detail.get("proposed_specification_prose") or "",
+        proposed_values=list(detail.get("proposed_values") or []),
+        detected_patterns=list(detail.get("detected_patterns") or []),
+        privacy_relevant=bool(row.get("privacy_relevant")),
+        other_candidates=list(detail.get("other_candidates") or []),
+        not_established_reason=row.get("not_established_reason") or "",
+        evidence=detail.get("evidence") or "",
+        provenance=_provenance_from_dict(row.get("sample_json")),
+        unusable_specifications=list(detail.get("unusable_specifications") or []),
+        matched_element_is_draft=bool(row.get("matched_element_is_draft")),
+    )
+
+
+def verdict_annotations_from_rows(rows: Sequence[dict], *, batch_surveyed_at: str,
+                                  inventory: set[str] | None = None) -> dict:
+    """The annotations a stored verdict batch becomes, built by the same functions the step uses
+    (`_measure_annotation`, `_data_class_annotation`, `_reference_data_annotations`, `_rfa_for_match`), for
+    a publish that did not run the step itself (Curate's Publish, DESIGN-PUBLISHING-COLUMN-VERDICTS.md §1).
+
+    - Each annotation's `item_key` gains `@<batch>`: its published identity is `{report}::{check}::{item}`
+      and a republished kept survey reuses its report, so without the batch a NEWER verdict for the same
+      column would be adopted as the old annotation and never reach Egeria.
+    - Each carries `measuredAt` (the batch's own time) in `jsonProperties`: the batch is usually not the
+      survey being published.
+    - A verdict for a column not in `inventory` (the kept survey's columns, `schema.table.column`) is not
+      sent and is counted in `dropped_vanished`. `inventory=None` means "no inventory to check against".
+    - RFAs: `draft_available=False`, because this path creates no DRAFT element, so a proposal travels as
+      its fallback RFA (owner, 2026-10-20: send RFAs, for parity).
+
+    Returns {annotations, column_paths (parallel to annotations, "" for none), sent_columns,
+    dropped_vanished, batch}.
+    """
+    annotations: list = []
+    paths: list[str] = []
+    sent: set[str] = set()
+    dropped: set[str] = set()
+    for row in rows or []:
+        match = column_match_from_row(row)
+        path = match.column_path
+        if inventory is not None and path not in inventory:
+            dropped.add(path)
+            continue
+        built: list = []
+        if match.question == "data_class_match":
+            if match.provenance is not None:
+                built.append(_measure_annotation(match, match.provenance))
+            built.append(_data_class_annotation(match))
+        elif match.question == "reference_data_match":
+            built.extend(_reference_data_annotations(match))
+        else:
+            continue
+        rfa = _rfa_for_match(match, draft_available=False)
+        if rfa is not None:
+            built.append(rfa)
+        for ann in built:
+            ann.item_key = f"{ann.item_key or path}@{batch_surveyed_at}"
+            ann.json_properties = {**(ann.json_properties or {}), "measuredAt": batch_surveyed_at}
+            annotations.append(ann)
+            paths.append(path)
+        sent.add(path)
+    return {"annotations": annotations, "column_paths": paths, "sent_columns": len(sent),
+            "dropped_vanished": len(dropped), "batch": batch_surveyed_at}
 
 
 def publish_proposals(

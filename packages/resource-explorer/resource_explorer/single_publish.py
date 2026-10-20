@@ -48,7 +48,29 @@ def goes_out(registry, entity_type: str, slug: str, viewer: str) -> dict:
     return {"viewer": viewer, "in_egeria": bool(curation["element_guid"]),
             "findable": findable, "feedback": mine, "doc_sources": docs,
             "waiting_for_others": waiting,
+            # Not in `count`: the verdicts travel only inside the survey report, never on their own.
+            "verdicts": stored_verdicts_summary(registry, slug) if entity_type == "database" else None,
             "count": len(findable) + len(mine) + len(docs)}
+
+
+def stored_verdicts_summary(registry, slug: str) -> dict:
+    """What the next Publish of a database adds from the stored column-profile verdicts (#759,
+    DESIGN-PUBLISHING-COLUMN-VERDICTS.md §1): the latest batch's date and how many columns it covers. Read-only.
+
+    `state` is `stored` or `none_stored`, and `unknown` when the read failed: an unread store is never
+    "no verdicts". Columns no longer in the kept inventory are dropped at the press, and the press says how many.
+    """
+    try:
+        rows = registry.query_detail_rows("database_column_matches", slug)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Publish: could not read the stored verdicts for %s: %s", slug, exc)
+        return {"state": "unknown", "word": "verdicts: could not be read"}
+    if not rows:
+        return {"state": "none_stored", "word": "none stored · run Data Class Match to have some"}
+    batch = rows[0].get("surveyed_at", "")
+    columns = len({(r.get("schema_name"), r.get("table_name"), r.get("column_name")) for r in rows})
+    return {"state": "stored", "batch": batch, "columns": columns,
+            "word": f"{columns} columns · measured {batch[5:10]} · will publish"}
 
 
 def send_with_publish(registry, entity_type: str, slug: str, asset_guid: str, presser: str, *,
