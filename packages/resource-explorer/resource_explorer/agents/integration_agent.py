@@ -79,10 +79,10 @@ class IntegrationAgent(BaseExplorerAgent):
                 # Only the shared site collections (or none) are listed: the repository's own content is not searchable.
                 project_info.append(f"  {slug}: (no collections indexed — stats only)")
 
-        self._evidence_lines = self._multi_resource_evidence(
-            query, slugs, kwargs.get("perspectives")
-        )
-        self._evidence_lines += self._dependency_link_lines(slugs) + self._cross_asset_link_lines(slugs)
+        direct = self._dependency_link_lines(slugs)
+        self._evidence_lines = (["Direct evidence (declared dependencies, read first):"] + direct if direct else [])
+        self._evidence_lines += self._multi_resource_evidence(query, slugs, kwargs.get("perspectives"))
+        self._evidence_lines += self._cross_asset_link_lines(slugs)
         evidence = "\n".join(self._evidence_lines)
         evidence_block = f"{evidence}\n\n" if evidence else ""
         prompt = (
@@ -100,15 +100,16 @@ class IntegrationAgent(BaseExplorerAgent):
         )
 
         try:
-            return self._run_agent(prompt)
+            answer = self._run_agent(prompt)
         except Exception:
-            return self._fallback(query, slugs)
+            answer = self._fallback(query, slugs)
+        lead = self._direct_answer_lead(slugs)
+        return f"{lead}\n\n{answer}" if lead else answer
 
-    def _dependency_link_lines(self, slugs: list[str]) -> list[str]:
-        """Which named repository declares a dependency that names another named one (marquez declares
-        io.openlineage:openlineage-java): the direct "can A work with B" evidence. Read from the latest recorded
-        dependencies, so it does not wait on a dependency_analysis run record. A repository with none recorded is
-        said to be unknown, never "does not depend". Fail-soft."""
+    def _declared_dependencies(self, slugs: list[str]) -> tuple[list[tuple[str, str, list[dict]]], list[str]]:
+        """(a, b, dependencies of a naming b) for each ordered pair of named repositories, and the repositories with
+        no dependencies recorded at all. Read from the latest recorded dependencies, so it does not wait on a
+        dependency_analysis run record. Fail-soft: a failed read is no evidence."""
         import re
 
         from resource_explorer.registry import ProjectRegistry
@@ -121,23 +122,47 @@ class IntegrationAgent(BaseExplorerAgent):
             repos = [s for s in slugs if registry.get(registry._normalize_slug(s))]
             deps = {s: registry.query_dependencies(s) for s in repos}
         except Exception:
-            return []
-        out: list[str] = []
+            return [], []
+        found: list[tuple[str, str, list[dict]]] = []
         for a in repos:
-            if not deps[a]:
-                out.append(f"[{a}] No dependencies are recorded for it, so whether it depends on "
-                           f"{', '.join(b for b in repos if b != a) or 'the others'} is unknown, not 'no'.")
-                continue
             for b in repos:
                 key = norm(b)
                 if b == a or len(key) < 4:
                     continue
                 hits = [d for d in deps[a] if key in norm(d["dep_name"])]
                 if hits:
-                    shown = "; ".join(f"{d['dep_name']} {d.get('dep_version') or ''}".strip() for d in hits[:5])
-                    more = f" (+{len(hits) - 5} more)" if len(hits) > 5 else ""
-                    out.append(f"[{a}] declares {len(hits)} dependenc{'y' if len(hits) == 1 else 'ies'} naming {b}: {shown}{more}.")
+                    found.append((a, b, hits))
+        return found, [a for a in repos if not deps[a]]
+
+    @staticmethod
+    def _dependency_names(hits: list[dict]) -> str:
+        shown = "; ".join(f"{d['dep_name']} {d.get('dep_version') or ''}".strip() for d in hits[:5])
+        return shown + (f" (+{len(hits) - 5} more)" if len(hits) > 5 else "")
+
+    def _dependency_link_lines(self, slugs: list[str]) -> list[str]:
+        """Which named repository declares a dependency that names another named one (marquez declares
+        io.openlineage:openlineage-java): the direct "can A work with B" evidence. A repository with none recorded
+        is said to be unknown, never "does not depend". Fail-soft."""
+        found, empty = self._declared_dependencies(slugs)
+        out: list[str] = []
+        for a in empty:
+            out.append(f"[{a}] No dependencies are recorded for it, so whether it depends on "
+                       f"{', '.join(b for b in slugs if b != a) or 'the others'} is unknown, not 'no'.")
+        for a, b, hits in found:
+            out.append(f"[{a}] declares {len(hits)} dependenc{'y' if len(hits) == 1 else 'ies'} naming {b}: "
+                       f"{self._dependency_names(hits)}.")
         return out
+
+    def _direct_answer_lead(self, slugs: list[str]) -> str:
+        """The declared-dependency fact as a sentence to put ahead of the model's answer. The 8B model answered
+        "can marquez work with openlineage?" from the large link tables and ignored the one line saying marquez
+        declares an openlineage dependency, so the fact is stated by code, as the q11 confidence floor is."""
+        found, _ = self._declared_dependencies(slugs)
+        return " ".join(
+            f"{a} declares {len(hits)} dependenc{'y' if len(hits) == 1 else 'ies'} naming {b} "
+            f"({self._dependency_names(hits)}), so the two are already connected."
+            for a, b, hits in found
+        )
 
     def _cross_asset_link_lines(self, slugs: list[str]) -> list[str]:
         """Stored cross-asset links (a repo's model names against a database's tables, plus drivers) for the named
