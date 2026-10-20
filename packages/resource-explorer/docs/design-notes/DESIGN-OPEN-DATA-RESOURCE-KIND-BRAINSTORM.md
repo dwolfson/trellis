@@ -63,12 +63,44 @@ existing use, feedback, licence (O1 answers Q-0012 and Q-0030), fit with
 governance and security, data-product readiness (Q-0058), defined need
 (Q-0059).
 
+## 3a. Narrative files, sought proactively (the same step as Files §2a)
+
+An open dataset's distribution often ships with its own narrative: a
+README in the zip, a data dictionary or codebook as a separate
+distribution, a CITATION file, a licence text, a methodology note. The
+portal's metadata rarely carries their content. The `folder_narratives`
+step from the Files brief runs over a dataset's fetched distributions
+exactly as it runs over a folder:
+
+- **Candidates:** README, INDEX, ABOUT, NOTES, CITATION, LICENSE,
+  CHANGELOG, methodology and quality notes, and any distribution the
+  portal labels documentation, dictionary, codebook, schema or layout
+  (DCAT's `documentation`, CKAN's resource type), plus any text file
+  named after a data file.
+- **Extracted as proposals, each with the file, the distribution and the
+  retrieved-at as evidence:** the stated description and purpose
+  (confirms or corrects O2); the declared variables and their meanings,
+  matched to the sample profile's columns (O6, and the semantic
+  suggestions of Q-0087 on an external dataset); the licence text when
+  the portal's licence field is missing or disagrees (O1, with the
+  disagreement shown); methodology, collection period and coverage (O4,
+  O10); the citation to use (O12); known issues and caveats (O8).
+- **Shown and published** as Files §2a says: "stated by codebook.pdf ·
+  retrieved 10-20" on the field or the dataset, the file catalogued as a
+  document beside the data, proposals never facts. A dataset whose
+  portal metadata and README disagree gets one line naming both, since
+  which to trust is a person's call.
+- **In the surveys:** `ExternalDataProfile` runs it after
+  `external_distributions`; `ExternalDataScout` runs it only on
+  distributions the portal already labels documentation, so the scout
+  stays seconds long.
+
 ## 4. Surveys
 
 | Survey definition | Steps | Fetch |
 |---|---|---|
-| `ExternalDataScout` | `external_metadata`, `external_distributions` | API only, seconds |
-| `ExternalDataProfile` | the scout plus `external_profile` (sample), `data_class_match`, `external_provenance` | one sample per distribution, size-capped, stated |
+| `ExternalDataScout` | `external_metadata`, `external_distributions`, `folder_narratives` on documentation distributions only | API only, seconds |
+| `ExternalDataProfile` | the scout plus `folder_narratives` (§3a), `external_profile` (sample), `data_class_match`, `external_provenance` | one sample per distribution, size-capped, stated |
 | `ExternalDataRefresh` | `external_change` over two scouts | API only |
 | `OpenModelScout` | `model_card` | one page |
 
