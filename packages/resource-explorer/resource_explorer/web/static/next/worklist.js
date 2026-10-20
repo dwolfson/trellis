@@ -895,13 +895,14 @@ function whyUnreadable(msg) {
  */
 
 const DIGEST_TONE = {
-  answered: 'var(--wl-ok, #2f6f4f)',
-  nothing: 'var(--wl-neutral, #6b6b68)',
-  partial: 'var(--wl-warn, #a8712a)',
-  human: 'var(--wl-warn, #a8712a)',
-  stored: 'var(--wl-unread, #8d8a83)',
+  answered: 'var(--wl-ok, rgb(var(--c-state-ok, 47 111 79)))',
+  nothing: 'var(--wl-neutral, rgb(var(--c-ink-muted, 107 107 104)))',
+  partial: 'var(--wl-warn, rgb(var(--c-state-warn, 168 113 42)))',
+  human: 'var(--wl-warn, rgb(var(--c-state-warn, 168 113 42)))',
+  stored: 'var(--wl-unread, rgb(var(--c-rule-strong, 141 138 131)))',
 };
-const DIGEST_REST = 'var(--wl-none, #c9c6bf)';
+// `rule` is a full colour value, not channels (translucent in Dark and Light).
+const DIGEST_REST = 'var(--wl-none, var(--c-rule, rgb(201 198 191)))';
 
 /** State counts for one question across the given members. */
 function columnDigest(members, q) {
@@ -954,7 +955,7 @@ function digestHtml(members, qs) {
       </summary>
       <div class="mt-s2">
         ${rows.map((r) => `<button type="button" data-digest="${r.i}"
-          class="flex w-full items-center gap-s2 border-0 bg-transparent px-0 py-[4px] text-left text-caveat text-ink hover:bg-[rgba(32,31,29,.05)]">
+          class="flex w-full items-center gap-s2 border-0 bg-transparent px-0 py-[4px] text-left text-caveat text-ink hover:bg-ink/5">
           <span class="tnum w-[22px] shrink-0 text-right font-mono text-ink-muted">${r.i + 1}</span>
           <span class="min-w-0 flex-1 truncate">${esc(r.q.question)}</span>
           <span class="wl-bar flex h-[9px] w-[160px] shrink-0 overflow-hidden rounded-[2px]">${bar(r.counts)}</span>

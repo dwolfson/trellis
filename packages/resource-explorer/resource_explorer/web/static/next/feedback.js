@@ -69,7 +69,7 @@ function _buildModal() {
   const overlay = document.createElement('div');
   overlay.id = 'fb-modal-overlay';
   overlay.className = 'fixed inset-0 z-[90] flex items-center justify-center';
-  overlay.style.background = 'rgba(27,26,25,0.55)';
+  overlay.style.background = 'rgb(var(--c-chrome, 27 26 25) / 0.55)';
   // `hidden` attribute loses to the `flex` utility (display:flex wins over
   // preflight's [hidden]); the `hidden` CLASS is ordered after `flex` and wins.
   overlay.classList.add('hidden');
