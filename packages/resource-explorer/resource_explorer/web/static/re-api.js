@@ -529,8 +529,9 @@ export const removeDocSource = (entityType, slug, sourceId) =>
 // 2026-09-22).
 export const getJournal = (slug, entityType) =>
   get(`/api/journal/${encodeURIComponent(requireKind('getJournal', entityType))}/${encodeURIComponent(slug)}`);
-export const writeJournal = (slug, body, suggestTo = [], entityType) =>
-  post(`/api/journal/${encodeURIComponent(requireKind('writeJournal', entityType))}/${encodeURIComponent(slug)}`, { body, suggest_to: suggestTo });
+export const writeJournal = (slug, body, suggestTo = [], entityType, compileId = null) =>
+  post(`/api/journal/${encodeURIComponent(requireKind('writeJournal', entityType))}/${encodeURIComponent(slug)}`,
+    { body, suggest_to: suggestTo, ...(compileId ? { compile_id: compileId } : {}) });
 
 /* ── Curate: tags, ratings (resource feedback) and Classic's curator notes ─
  * CURATE-UI-DATABASES-IMPLEMENTED.md. Every row from tags-detail, feedback

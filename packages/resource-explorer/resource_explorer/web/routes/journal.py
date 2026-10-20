@@ -29,6 +29,7 @@ def _check_investigation(entity_type: str, slug: str) -> None:
 class JournalWrite(BaseModel):
     body: str
     suggest_to: list[str] = Field(default_factory=list)
+    compile_id: str | None = None
 
 
 @router.get("/{entity_type}/{slug}")
@@ -52,6 +53,7 @@ def write_entry(entity_type: str, slug: str, write: JournalWrite, request: Reque
         # Suggestion routes a RESOURCE to an audience's work list; an investigation is not a work-list member.
         raise HTTPException(status_code=422, detail="An investigation's journal entry cannot be suggested to an audience.")
     try:
-        return Journal().write(entity_type, slug, author=author, body=write.body, suggest_to=write.suggest_to)
+        return Journal().write(entity_type, slug, author=author, body=write.body, suggest_to=write.suggest_to,
+                               compile_id=write.compile_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
