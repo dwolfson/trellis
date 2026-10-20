@@ -91,6 +91,10 @@
   {
    "id": "page-23",
    "name": "Table preview and group scheduling"
+  },
+  {
+   "id": "page-24",
+   "name": "Cards and tiles"
   }
  ],
  "artboards": [
@@ -382,6 +386,14 @@
    "w": 1560,
    "h": 1140,
    "page": "page-23"
+  },
+  {
+   "file": "CardsAndTiles.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 1560,
+   "h": 1260,
+   "page": "page-24"
   }
  ],
  "annotations": [
@@ -584,10 +596,18 @@
    "w": 300,
    "page": "page-23",
    "text": "Replies to ASK-DESIGNER-TABLE-PREVIEW and ASK-DESIGNER-GROUP-SCHEDULING-AND-FIRST-INDEX (2026-10-19), against main at 55c5c6ea.\n\nA preview is an act, not a view: nothing runs until the press; the header says whose credential, how many rows, not a sample. Masking reasons sit on the column header (PII match, confidential, not profiled); reveal is one column, one confirm, one audit row.\n\nScheduling: the form is always visible with a For picker (resource, selection, Group). A selection is a bulk choice; a Group schedule is a rule that follows membership. Own schedule beats Group. First index asked first, with measured and estimated figures each sourced, one confirm per batch."
+  },
+  {
+   "id": "cards-tiles-brief",
+   "x": 1660,
+   "y": 0,
+   "w": 300,
+   "page": "page-24",
+   "text": "Plan for bordered cards and big-number tiles (PLAN-CARDS-AND-TILES), after the owner's users voted for the Dark look, 2026-10-20.\n\nA card is one thing to read or act on: header with actions top right, body, provenance footer. One level only; a list is one card. The left edge means needs-you and nothing else.\n\nA tile is one count that is the answer: it opens what it counted, reads the same field at the same precision as the place it opens, and shows absence as a state (? not read, \u25cb not measured, \u25d0 partial), never 0. Slices C1 to C4, starting with At a glance and Survey & analyses."
   }
  ],
  "launch": {
   "view": "canvas",
-  "page": "page-23"
+  "page": "page-24"
  }
 }
