@@ -65,6 +65,8 @@
   *:hover > .rc-handle::after { opacity: 0.25; }
   .rc-handle:hover::after, .rc-handle:focus-visible::after, .rc-handle[data-rc-active]::after { opacity: 0.8; }
   .rc-handle:focus-visible { outline: none; }
+  /* An ordinary <table> once its columns are frozen for resizing: text wraps inside its own cell. */
+  table[data-rc-fixed] th, table[data-rc-fixed] td { overflow-wrap: break-word; }
 
   /* Never the browser default. */
   :focus { outline: none; }

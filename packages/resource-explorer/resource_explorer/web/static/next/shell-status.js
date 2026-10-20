@@ -262,7 +262,7 @@ export async function openConnectionPopover(doc, anchor, { me, getInfo = getWhoa
   pop.id = POPOVER_ID;
   pop.setAttribute('role', 'dialog');
   pop.setAttribute('aria-label', 'Connection details');
-  pop.className = 'fixed right-s4 top-[40px] z-50 w-[360px] rounded-sm border border-rule-strong bg-paper p-s3 text-caveat text-ink shadow-lg';
+  pop.className = 'fixed right-s4 top-[40px] z-50 w-[22.5rem] max-w-[92vw] rounded-sm border border-rule-strong bg-paper p-s3 text-caveat text-ink shadow-lg';
   pop.innerHTML = '<p class="text-ink-muted">reading…</p>';
   doc.body.appendChild(pop);
   const onKey = (e) => { if (e.key === 'Escape') { closeConnectionPopover(doc); doc.removeEventListener('keydown', onKey); } };

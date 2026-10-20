@@ -28,7 +28,7 @@ import {
 } from '/static/next/app.js';
 import { provenanceFromResponse, saveChartImage } from '/static/next/chart-export.js';
 import { mountRepoReport } from '/static/next/stages/repo-report.js';
-import { fitFigure, annotateTicks } from '/static/next/chart-labels.js';
+import { fitFigure, annotateTicks, BASE_H } from '/static/next/chart-labels.js';
 import { attachGrids, historyCols, RANKED_COLS, VIEWS_COLS } from '/static/next/stages/report-tables.js';
 import { statsLineHtml, schemaRollupsHtml, statsOverTimeHtml } from '/static/next/stages/understanding-stats.js';
 import { databaseHeadlineHtml, repoHeadlineHtml } from '/static/next/stages/understanding-glance.js';
@@ -162,7 +162,7 @@ async function drawCard(card, spec, slug, resp, { counts = spec.counts, extraHtm
   }
 
   const fig = resp.figure;
-  body.innerHTML = `<div data-plot style="height:260px"></div>${extraHtml}`;
+  body.innerHTML = `<div data-plot style="height:${BASE_H}px"></div>${extraHtml}`;
   const plot = body.querySelector('[data-plot]');
   provenance.innerHTML = `${provenanceLineHtml(slug, resp, counts)} ·
     <button data-save-image type="button"
@@ -180,11 +180,13 @@ async function drawCard(card, spec, slug, resp, { counts = spec.counts, extraHtm
   };
   const widthNow = () => (plot.clientWidth || 600);
   let { fit, themed } = themedFor(widthNow());
+  // A horizontal bar chart is as tall as its bars need (a row each); the others keep the base height.
+  plot.style.height = `${fit.height}px`;
   try {
     const Plotly = await plotlyGlobal();
     // Not autosized: the fitted margins and tick thinning are for this width,
     // and a resize below refits them.
-    await Plotly.newPlot(plot, fig.data, Object.assign(themed, { width: widthNow(), height: 260 }),
+    await Plotly.newPlot(plot, fig.data, Object.assign(themed, { width: widthNow(), height: fit.height }),
       { displaylogo: false, responsive: false });
     annotateTicks(plot, fit.alt, fit.summary);
     if (typeof window.addEventListener === 'function' && Plotly.react) {
@@ -197,7 +199,8 @@ async function drawCard(card, spec, slug, resp, { counts = spec.counts, extraHtm
         last = w;
         const again = themedFor(w);
         fit = again.fit;
-        Plotly.react(plot, fig.data, Object.assign(again.themed, { width: w, height: 260 }),
+        plot.style.height = `${fit.height}px`;
+        Plotly.react(plot, fig.data, Object.assign(again.themed, { width: w, height: fit.height }),
           { displaylogo: false, responsive: false }).then(() => annotateTicks(plot, fit.alt, fit.summary));
       };
       window.addEventListener('resize', refit);

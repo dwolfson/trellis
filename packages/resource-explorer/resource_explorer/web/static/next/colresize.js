@@ -154,3 +154,145 @@ export function attachColumnResize(host, spec, { onChange } = {}) {
   apply();
   return api;
 }
+
+/* ── every other data table: the default ───────────────────────────────────────────────────────────
+ * The grid-of-cells tables above are drawn with a column spec. Every ordinary `<table>` that has a header row is
+ * made resizable here instead, by one helper applied where tables render (`watchTables`, started once by app.js),
+ * so a table nobody remembered to wire is resizable anyway. Rules:
+ *  - a data table is a `<table>` whose header row (the `thead` row, or a first row of only `th`) has two or more
+ *    cells. A table with no header row is a key/value or layout table and is left alone, as is any table with
+ *    `data-no-resize` on it or on an ancestor (the opt-out);
+ *  - each header cell gets the same `.rc-handle` as above: drag, Left/Right by 10px (Shift 50px), double-click to
+ *    reset that column; the other columns do not move;
+ *  - the first change freezes every column at its drawn width (`table-layout: fixed`) so only the dragged column
+ *    changes; the table's parent scrolls sideways when the columns together outgrow it;
+ *  - widths persist per table in localStorage (`re.colwidths.auto.<id>`, the id being `data-rc-id` or the header
+ *    labels), every access inside try/catch.
+ */
+const AUTO_MIN = 40;
+const AUTO_STORE = (id) => `re.colwidths.auto.${id}`;
+
+/** The header row of a data table, or null when the table is not one. A table with no header row but three or more
+ *  columns (a small grid of figures) still is one: its first full row carries the handles. */
+export function headerRowOf(table) {
+  if (!table || table.hasAttribute('data-rc-auto') || table.closest('[data-no-resize]')) return null;
+  let row = table.tHead && table.tHead.rows[0];
+  if (!row) {
+    const first = table.querySelector('tr');
+    if (first && first.cells.length && [...first.cells].every((c) => c.tagName === 'TH')) row = first;
+  }
+  if (!row) {
+    row = [...table.querySelectorAll('tr')].find((r) => r.cells.length >= 3
+      && [...r.cells].every((c) => !(c.colSpan > 1))) || null;
+    return row;
+  }
+  return row.cells.length >= 2 ? row : null;
+}
+
+const cellWidth = (c) => Math.round((c.getBoundingClientRect && c.getBoundingClientRect().width) || c.offsetWidth || 0);
+
+export function enhanceTable(table) {
+  const row = headerRowOf(table);
+  if (!row) return false;
+  const win = table.ownerDocument.defaultView;
+  const cells = [...row.cells];
+  const id = table.dataset.rcId || cells.map((c) => c.textContent.trim()).join('|');
+  table.setAttribute('data-rc-auto', '');
+  let widths = {};
+  try { widths = JSON.parse(win.localStorage.getItem(AUTO_STORE(id)) || '{}') || {}; } catch (_e) { widths = {}; }
+  let base = null;                                  // the drawn widths, taken at the first change
+  const save = () => {
+    try {
+      if (Object.keys(widths).length) win.localStorage.setItem(AUTO_STORE(id), JSON.stringify(widths));
+      else win.localStorage.removeItem(AUTO_STORE(id));
+    } catch (_e) { /* storage unavailable: widths last for this page only */ }
+  };
+  const freeze = () => {
+    if (base) return;
+    base = cells.map((c) => Math.max(AUTO_MIN, cellWidth(c) || 120));
+    table.setAttribute('data-rc-fixed', '');
+    table.style.tableLayout = 'fixed';
+    if (table.parentElement) table.parentElement.style.overflowX = 'auto';
+  };
+  const paint = () => {
+    freeze();
+    cells.forEach((c, i) => { c.style.width = `${widths[i] ?? base[i]}px`; });
+    table.style.width = `${cells.reduce((a, c, i) => a + (widths[i] ?? base[i]), 0)}px`;
+    table.style.maxWidth = 'none';
+    cells.forEach((c, i) => {
+      const h = c.querySelector('[data-rc-handle]');
+      if (h) h.setAttribute('aria-valuenow', String(widths[i] ?? base[i]));
+    });
+  };
+  const widthOf = (i) => widths[i] ?? (base ? base[i] : Math.max(AUTO_MIN, cellWidth(cells[i]) || 120));
+  const set = (i, w) => { freeze(); widths = { ...widths, [i]: Math.round(Math.min(MAX_WIDTH, Math.max(AUTO_MIN, w))) }; paint(); };
+
+  cells.forEach((c, i) => {
+    const label = c.textContent.trim() || `column ${i + 1}`;
+    if (win.getComputedStyle(c).position === 'static') c.style.position = 'relative';
+    const h = c.ownerDocument.createElement('span');
+    h.className = 'rc-handle';
+    h.setAttribute('data-rc-handle', String(i));
+    h.setAttribute('role', 'separator');
+    h.setAttribute('aria-orientation', 'vertical');
+    h.setAttribute('tabindex', '0');
+    h.setAttribute('aria-label', `Resize the ${label} column (arrow keys; double-click resets)`);
+    h.setAttribute('aria-valuemin', String(AUTO_MIN));
+    c.appendChild(h);
+    // A press on the handle is a resize, never a click on the header (a sortable header would re-sort).
+    h.addEventListener('click', (e) => e.stopPropagation());
+    h.addEventListener('pointerdown', (e) => {
+      if (e.button != null && e.button > 0) return;
+      e.preventDefault();
+      const start = { x: e.clientX, w: widthOf(i) };
+      h.setAttribute('data-rc-active', '');
+      const doc = table.ownerDocument;
+      const move = (m) => set(i, start.w + (m.clientX - start.x));
+      const up = () => {
+        doc.removeEventListener('pointermove', move);
+        doc.removeEventListener('pointerup', up);
+        doc.removeEventListener('pointercancel', up);
+        h.removeAttribute('data-rc-active');
+        save();
+      };
+      doc.addEventListener('pointermove', move);
+      doc.addEventListener('pointerup', up);
+      doc.addEventListener('pointercancel', up);
+    });
+    h.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      if (!base) return;
+      const { [i]: _gone, ...rest } = widths;
+      widths = rest;
+      paint();
+      save();
+    });
+    h.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      e.preventDefault();
+      set(i, widthOf(i) + (e.key === 'ArrowRight' ? 1 : -1) * (e.shiftKey ? STEP_BIG : STEP));
+      save();
+    });
+  });
+  if (Object.keys(widths).length) paint();
+  return true;
+}
+
+/** Make every data table under `root` resizable. Idempotent. Returns how many it enhanced this time. */
+export function enhanceTables(root) {
+  let n = 0;
+  if (!root || !root.querySelectorAll) return n;
+  root.querySelectorAll('table').forEach((t) => { if (enhanceTable(t)) n += 1; });
+  return n;
+}
+
+/** Enhance what is there now and every table drawn under `root` later (a redraw replaces the table, so the new one
+ *  is enhanced as it appears). Returns the observer so a caller can disconnect it. */
+export function watchTables(root) {
+  enhanceTables(root);
+  const Obs = root.ownerDocument.defaultView.MutationObserver;
+  if (!Obs) return null;
+  const obs = new Obs(() => { enhanceTables(root); obs.takeRecords(); });
+  obs.observe(root, { childList: true, subtree: true });
+  return obs;
+}

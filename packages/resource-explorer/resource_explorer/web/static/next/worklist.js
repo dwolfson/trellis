@@ -854,7 +854,7 @@ async function openResourceDetail(member) {
     <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">Verdicts, in order</div>
     <ol class="m-0 list-none p-0">
       ${ordered.map((r, i) => `<li class="flex gap-s2 border-b border-rule py-[5px]">
-        <span class="tnum w-[18px] shrink-0 text-right text-ink-muted">${i + 1}</span>
+        <span class="tnum min-w-[1.2rem] shrink-0 text-right text-ink-muted">${i + 1}</span>
         <span class="min-w-0 text-provenance text-ink-muted">${verdictLineHtml(r, esc)}</span>
       </li>`).join('')}
     </ol>
@@ -956,10 +956,10 @@ function digestHtml(members, qs) {
       <div class="mt-s2">
         ${rows.map((r) => `<button type="button" data-digest="${r.i}"
           class="flex w-full items-center gap-s2 border-0 bg-transparent px-0 py-[4px] text-left text-caveat text-ink hover:bg-ink/5">
-          <span class="tnum w-[22px] shrink-0 text-right font-mono text-ink-muted">${r.i + 1}</span>
+          <span class="tnum min-w-[1.5rem] shrink-0 text-right font-mono text-ink-muted">${r.i + 1}</span>
           <span class="min-w-0 flex-1 truncate">${esc(r.q.question)}</span>
           <span class="wl-bar flex h-[9px] w-[160px] shrink-0 overflow-hidden rounded-[2px]">${bar(r.counts)}</span>
-          <span class="tnum w-[34px] shrink-0 text-right ${
+          <span class="tnum min-w-[2.2rem] shrink-0 text-right ${
             r.unresolved ? 'text-accent-ink' : 'text-ink-muted'}">${r.unresolved}</span>
         </button>`).join('')}
       </div>
@@ -1140,7 +1140,7 @@ function renderGrid() {
       </div>
       <ol class="m-0 flex list-none flex-col gap-[6px] p-0">
         ${qs.map((q, i) => `<li class="flex gap-s2">
-          <span class="tnum w-[22px] shrink-0 text-right text-ink-muted">${i + 1}</span>
+          <span class="tnum min-w-[1.5rem] shrink-0 text-right text-ink-muted">${i + 1}</span>
           <span class="min-w-0">
             <span class="text-answer text-ink">${esc(q.question)}</span>
             ${(q.perspectives || []).length ? `<span class="ml-s2 text-caps text-ink-muted"

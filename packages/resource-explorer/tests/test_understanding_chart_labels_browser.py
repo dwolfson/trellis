@@ -74,13 +74,14 @@ const out = {{}};
 (async () => {{
   for (const [kind, fig] of Object.entries(FIGS)) {{
     const div = document.createElement('div');
-    div.style.cssText = 'width:' + W + 'px;height:260px';
-    document.getElementById('host').appendChild(div);
     const fit = fitFigure(fig, W, kind);
-    const layout = Object.assign(fit.layout, {{ width: W, height: 260,
-      font: {{ size: 12 }}, xaxis: Object.assign({{ tickfont: {{ size: 11 }} }}, fit.layout.xaxis),
-      yaxis: Object.assign({{ tickfont: {{ size: 11 }} }}, fit.layout.yaxis) }});
-    if (layout.xaxis2) layout.xaxis2.tickfont = {{ size: 11 }};
+    div.style.cssText = 'width:' + W + 'px;height:' + fit.height + 'px';
+    document.getElementById('host').appendChild(div);
+    // The app's tick font is 13px (2px up from the first walk); the fit gives the figure its own height.
+    const layout = Object.assign(fit.layout, {{ width: W, height: fit.height,
+      font: {{ size: 12 }}, xaxis: Object.assign({{ tickfont: {{ size: 13 }} }}, fit.layout.xaxis),
+      yaxis: Object.assign({{ tickfont: {{ size: 13 }} }}, fit.layout.yaxis) }});
+    if (layout.xaxis2) layout.xaxis2.tickfont = {{ size: 13 }};
     await Plotly.newPlot(div, fig.data, layout, {{ staticPlot: true }});
     annotateTicks(div, fit.alt, fit.summary);
     const svg = div.querySelector('svg.main-svg').getBoundingClientRect();

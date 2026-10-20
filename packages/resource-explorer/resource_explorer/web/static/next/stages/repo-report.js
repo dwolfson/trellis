@@ -20,10 +20,14 @@ function esc(s) {
 const unread = (title = 'The registry has no value for this yet.') =>
   `<span data-unread class="text-ink-muted" title="${esc(title)}"><span class="font-glyph" aria-hidden="true">${stateEntry('not_established').glyph}</span> not read</span>`;
 
-const card = (key, label, bodyHtml) =>
-  `<div data-report-card="${esc(key)}" class="min-w-0 rounded-sm border border-rule px-2 py-[2px]">`
-  + `<div class="text-provenance uppercase text-ink-muted">${esc(label)}</div>`
-  + `<div class="tnum truncate text-caveat text-ink">${bodyHtml}</div></div>`;
+/* Same fit rules as the scouting tiles: content-sized with a floor, the label wraps inside its own tile, the value
+   stays on one line and is cut with an ellipsis only when the tile is out of room (the hover then has all of it). */
+const card = (key, label, bodyHtml) => {
+  const hover = String(bodyHtml).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+  return `<div data-report-card="${esc(key)}" class="min-w-[7rem] max-w-full rounded-sm border border-rule px-2 py-[2px]"${hover ? ` title="${esc(hover)}"` : ''}>`
+    + `<div class="break-words text-provenance uppercase text-ink-muted [overflow-wrap:anywhere]">${esc(label)}</div>`
+    + `<div class="tnum truncate whitespace-nowrap text-caveat text-ink">${bodyHtml}</div></div>`;
+};
 
 function sizeText(bytes) {
   if (!bytes) return '';
@@ -45,7 +49,7 @@ export function repoReportHtml(d) {
     ? ` · published report${d.latest_survey.annotation_count != null ? `, <span class="tnum">${esc(d.latest_survey.annotation_count)}</span> annotations` : ''}`
     : ' · not published';
 
-  const metrics = `<div data-report-metrics class="mt-s2 grid grid-cols-2 gap-s1 sm:grid-cols-4">
+  const metrics = `<div data-report-metrics class="mt-s2 flex flex-wrap items-start gap-s1">
     ${card('stars', 'Stars', val(h.stars))}${card('forks', 'Forks', val(h.forks))}
     ${card('open_issues', 'Open issues', val(h.open_issues))}${card('contributors', 'Contributors', val(h.contributors))}
     ${card('language', 'Language', d.primary_language ? esc(d.primary_language) : unread())}
