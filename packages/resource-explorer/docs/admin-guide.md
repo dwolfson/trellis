@@ -460,6 +460,37 @@ MLFLOW_TRACKING_URI=http://localhost:5025
 PHOENIX_ENDPOINT=http://localhost:6006
 ```
 
+### Value sampling (optional)
+
+The steps that read real values from a database, data-class and reference-data matching and the JSON/XML
+column profile, sample them. What they sample is resolved from four scopes, narrowest wins:
+
+| Scope | Where it is set |
+|---|---|
+| Global | `SAMPLING_DEFAULTS` |
+| Per resource type | `SAMPLING_BY_RESOURCE_TYPE`, keyed by `database` |
+| Per database | `resource-explorer database sampling <slug> --set '<JSON>'` (and `--clear`) |
+| Per run | the step's `sampling` request parameter, on a Survey Definition step or an engine action |
+
+Each setting is a JSON object with any of these fields:
+- `strategy`: `catalog_stats_only`, `head`, `random`, `systematic`, `stratified` or `full`;
+- `max_rows`, `max_bytes` and `max_values`;
+- `seed`, `time_budget` (seconds) and `strata_column`.
+
+```bash
+SAMPLING_DEFAULTS='{"max_rows": 5000, "time_budget": 30}'
+SAMPLING_BY_RESOURCE_TYPE='{"database": {"strategy": "random"}}'
+```
+
+- **Unreadable deployment settings are ignored, never fatal.** A deployment setting that is not a JSON
+  object is ignored with one warning in the log.
+- **A database's own setting and a run's setting are strict.** An unknown field (for example `stratgy`) or
+  a bad value is refused when it is set, never stored and quietly ignored.
+- **Check what a survey will use.** `resource-explorer database sampling <slug>`, without options, shows
+  each scope and what a run with no override resolves to.
+- **Every result names its scope.** A survey's result records the resolved settings and which scope
+  supplied them (`scope`: `global`, `resource_type`, `resource` or `run`).
+
 ---
 
 ## Starting external services

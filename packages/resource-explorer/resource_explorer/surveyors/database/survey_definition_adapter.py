@@ -555,9 +555,9 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
 # decides is noted on the step it decides.
 def _validate_sampling(value: dict) -> None:
     """A `sampling` request parameter must resolve as a run-scope override (raises SamplingConfigError if not)."""
-    from resource_explorer.surveyors.database.sampling import resolve_sampling_config
+    from resource_explorer.surveyors.database.sampling import check_sampling_overrides
 
-    resolve_sampling_config(purpose="matching", run_settings=value)
+    check_sampling_overrides(value)
 
 
 #: The value-sampling steps' request parameters (step_parameters.py). `sampling` is a run-scope override

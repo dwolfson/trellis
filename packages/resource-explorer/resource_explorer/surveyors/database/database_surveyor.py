@@ -590,6 +590,7 @@ class DatabaseSurveyor:
                         from resource_explorer.surveyors.database.column_profile_step import (
                             run_column_profile,
                         )
+                        from resource_explorer.surveyors.database.sampling import scoped_settings
 
                         profile_result = run_column_profile(
                             conn,
@@ -600,6 +601,7 @@ class DatabaseSurveyor:
                             resource_slug=self.db_entity.slug,
                             reference_catalog=reference_catalog,
                             sampling_overrides=sampling_overrides,
+                            scope_settings=scoped_settings(self.registry, "database", self.db_entity.slug),
                         )
                         results["column_profile"] = profile_result
                         results["annotations"].extend(profile_result["annotations"])
@@ -624,6 +626,7 @@ class DatabaseSurveyor:
                         from resource_explorer.surveyors.database.nested_columns_step import (
                             run_nested_columns,
                         )
+                        from resource_explorer.surveyors.database.sampling import scoped_settings
 
                         nested_result = run_nested_columns(
                             conn,
@@ -632,6 +635,7 @@ class DatabaseSurveyor:
                             results.get("statistics") or {},
                             resource_slug=self.db_entity.slug,
                             sampling_overrides=sampling_overrides,
+                            scope_settings=scoped_settings(self.registry, "database", self.db_entity.slug),
                         )
                         results["nested_columns"] = nested_result["nested_columns"]
                         results["annotations"].extend(nested_result["annotations"])

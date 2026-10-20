@@ -521,6 +521,7 @@ def run_column_profile(
     reference_catalog: ReferenceCatalog | None = None,
     sampling_overrides: dict[str, Any] | None = None,
     run_overrides: dict[str, Any] | None = None,
+    scope_settings: dict[str, dict] | None = None,
     include_draft_elements: bool = False,
     max_columns: int | None = None,
 ) -> dict:
@@ -539,8 +540,10 @@ def run_column_profile(
     config = resolve_sampling_config(
         purpose="matching",
         resource_slug=resource_slug,
-        global_settings=sampling_overrides,
-        run_settings=run_overrides,
+        # The stored scopes (sampling.scoped_settings), then the caller's own override as the RUN scope:
+        # `sampling_overrides` is what a request or a caller passed for this run, never a global setting.
+        **(scope_settings or {}),
+        run_settings={**(sampling_overrides or {}), **(run_overrides or {})} or None,
     )
     budget = SamplingBudget(config)
     annotations: list = []
