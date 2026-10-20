@@ -49,11 +49,11 @@ const FETCH_LIMIT = 300;
 const OPERATION_LABEL = {
   survey: 'Survey', catalog: 'Cataloguer → Egeria', publish: 'Publish → Egeria',
   scout: 'Scout', discover: 'Discover', refresh: 'Refresh', rfa: 'RFA',
-  analysis_run: 'Analysis run',
+  analysis_run: 'Analysis run', look_change: 'Look changed',
 };
 const OPERATION_ICON = {
   survey: '📊', catalog: '☁', publish: '☁', scout: '🔍', discover: '🔍',
-  refresh: '🔄', rfa: '📝', analysis_run: '⚙',
+  refresh: '🔄', rfa: '📝', analysis_run: '⚙', look_change: '◐',
 };
 const ENTITY_ICON = { repo: '📁', database: '🗄', server: '🖥', filesystem: '📂', file: '📄' };
 const STATUS_TONE = {

@@ -83,6 +83,7 @@ import { openInvestigationPicker, scopeActWording } from '/static/next/investiga
 import { addActWording, addListToInvestigation, openStartFromList, START_LABEL } from '/static/next/worklist-actions.js';
 import { loadChartsPane, renderUnderstandingTabs } from '/static/next/stages/understanding.js';
 import { renderCurate, jumpToCurateSection } from '/static/next/stages/curate.js';
+import { wireLook } from '/static/next/look.js';
 import { coverageHtml } from '/static/next/stages/curate-coverage.js';
 // Stage-specific leading tabs (Brief S0, dormant): the gate and ids are a leaf module, the label counts and the
 // running-commit line need `state`.
@@ -1032,6 +1033,7 @@ export function renderIntentNav() {
 
   wireSidebarDrawer();
   wireTextSize();
+  wireLook($('look'));   // RULING-THEMES-PORTAL-DARK-LIGHT.md section 1
 
   nav.querySelectorAll('button[data-stage]').forEach((b) => {
     b.addEventListener('click', () => {
@@ -1331,6 +1333,31 @@ export function tokens() {
     gap: read('state-gap', 'color'),
     font: read('font-diagram', 'fontFamily'),
   };
+}
+
+/** A change of look (Dark / Light / Paper) repaints what was drawn from the
+ *  tokens at draw time: Plotly figures and the server-rendered diagrams.
+ *  Everything styled by a Tailwind class or a CSS variable follows on its own.
+ *  Fired by `setLook()` (look.js) on `document`, bubbling, with `detail.look`. */
+export function retheme(root = document) {
+  const t = tokens();
+  if (window.Plotly && typeof window.Plotly.relayout === 'function') {
+    const axis = { gridcolor: t.rule, zerolinecolor: t.rule, linecolor: t.rule,
+      'tickfont.color': t.inkMuted, 'tickfont.family': t.font };
+    const patch = { paper_bgcolor: t.paper, plot_bgcolor: t.paper,
+      colorway: [t.accent, t.ok, t.gap, t.warn, t.inkMuted],
+      'font.color': t.ink, 'font.family': t.font, 'legend.font.color': t.ink, 'legend.font.family': t.font };
+    for (const k of ['xaxis', 'yaxis']) {
+      for (const [prop, val] of Object.entries(axis)) patch[`${k}.${prop}`] = val;
+    }
+    root.querySelectorAll('.js-plotly-plot').forEach((gd) => {
+      try { window.Plotly.relayout(gd, patch); } catch (_) { /* a figure mid-draw redraws with the new tokens anyway */ }
+    });
+  }
+  root.querySelectorAll(`svg[id="${DIAGRAM_ID}"]`).forEach((svg) => themeSvgElement(svg, t));
+}
+if (typeof document !== 'undefined') {
+  document.addEventListener('re-look-change', () => retheme());
 }
 
 /** Load a vendored script once. Both are already in static/vendor. */
@@ -1867,6 +1894,9 @@ const DIAGRAM_ID = 're-diagram-svg';
 
 export function themeSvgElement(svgEl, t) {
   svgEl.id = DIAGRAM_ID;
+  // Idempotent: a change of look re-themes diagrams already on screen, and
+  // must replace the old rules rather than stack a second set under them.
+  svgEl.querySelectorAll(':scope > style[data-re-theme]').forEach((el) => el.remove());
   const rules = [
     ['', `background:${t.paper}`],
     ['.node rect, .node polygon, .node circle, .node path',
@@ -1892,6 +1922,7 @@ export function themeSvgElement(svgEl, t) {
   style.textContent = rules
     .map(([sel, decl]) => `${sel ? scope(sel) : `#${DIAGRAM_ID}`}{${decl}}`)
     .join('\n');
+  style.setAttribute('data-re-theme', '');
   svgEl.prepend(style);
 }
 /* ════════════════════════════════════════════════════════════════════════
@@ -5599,7 +5630,7 @@ export async function loadSurveyPane() {
       // scheduled choice; a row that argues against being clicked should not
       // be the most default-looking row on the pane.
       const steps = (c.steps || []).length;
-      return `<div class="mt-s4 border border-rule bg-[rgba(32,31,29,.03)] p-s3">
+      return `<div class="mt-s4 border border-rule bg-ink/[.03] p-s3">
         <div class="flex flex-wrap items-baseline gap-s2">
           <span class="text-answer text-ink">${esc(c.display_name)}</span>
           <span class="tnum rounded-sm border border-state-warn px-2 py-[1px] text-provenance text-state-warn"
@@ -7627,7 +7658,7 @@ export function boardCountsHtml(board, disagreeing) {
     <table class="w-full border-collapse text-caveat">
       ${groups[g].map((c) => {
         const disagree = disagreeing.has(c.key);
-        return `<tr class="wl-countrow cursor-pointer border-b border-rule ${disagree ? 'bg-[rgba(168,113,42,.07)]' : ''}"
+        return `<tr class="wl-countrow cursor-pointer border-b border-rule ${disagree ? 'bg-state-warn/[.07]' : ''}"
           data-measure="${esc(c.analysisId)}" data-metric="${esc(c.key)}"
           data-title="${esc(c.key.replace(/_/g, ' '))}" data-when="${esc(c.when || '')}">
           <td class="py-[5px] pr-s3 text-ink">${esc(c.key.replace(/_/g, ' '))}${

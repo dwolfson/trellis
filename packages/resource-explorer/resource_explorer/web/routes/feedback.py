@@ -92,6 +92,18 @@ async def feedback_stats(request: Request) -> dict:
     return store.stats()
 
 
+@router.get("/look-counts")
+async def look_counts_route(request: Request) -> dict:
+    """How many people use each look and how many switched away from each, from the activity rows
+    (RULING-THEMES-PORTAL-DARK-LIGHT.md section 1). Admin-gated like the rest of this page."""
+    _require_admin(request)
+    from resource_explorer.look_stats import OPERATION, look_counts
+    from resource_explorer.registry import ProjectRegistry
+
+    rows = ProjectRegistry().list_activity(operation=OPERATION, limit=100000)
+    return look_counts(rows)
+
+
 @router.patch("/{feedback_id}")
 async def triage_feedback(feedback_id: str, payload: TriageUpdate, request: Request) -> dict:
     _require_admin(request)
