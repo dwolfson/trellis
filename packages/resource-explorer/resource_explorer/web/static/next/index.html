@@ -10,6 +10,11 @@
      frontend-build/build-next-fonts.py. -->
 <link rel="stylesheet" href="/static/next/fonts/fonts.css">
 
+<!-- The three looks (Dark default, Light, Paper): every colour, font and radius
+     as a CSS variable. Loaded BEFORE the Tailwind sheet and the <style> below,
+     which read these variables. RULING-THEMES-PORTAL-DARK-LIGHT.md. -->
+<link rel="stylesheet" href="/static/next/themes.css">
+
 <style>
   /* Base and the handful of things a utility class is the wrong tool for.
      Kept ABOVE the Tailwind link on purpose — index.html learned the hard
