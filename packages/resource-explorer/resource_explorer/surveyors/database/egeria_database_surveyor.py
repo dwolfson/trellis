@@ -1494,9 +1494,10 @@ class EgeriaDatabaseSurveyor:
         """Create RE's SurveyReport and its annotations, or reuse the one Egeria already holds.
 
         The report's qualifiedName is keyed on the survey run's timestamp, so publishing the SAME run
-        twice meets a 409. That one case looks the existing report up by its exact name and reuses it:
-        annotations already under it are counted (and not published again; `publish_annotations` also
-        looks each qualifiedName up before it creates, so a partial set only gains what is missing).
+        twice meets a 409. That one case looks the existing report up by its exact name and reuses it, and
+        publishes its annotations by IDENTITY: `publish_annotations` looks each qualifiedName up before it
+        creates, so what is already there is adopted and only new names are created (a newer verdict batch, a
+        partial set). What Egeria then holds is counted for the caller, never used to decide.
         Every other failure is returned as `report_error` for the caller to FAIL on: never "published"."""
         out = {"report_guid": "", "report_error": "", "annotation_error": "", "reused": False, "annotations_in_egeria": None}
         try:
@@ -1530,15 +1531,16 @@ class EgeriaDatabaseSurveyor:
         log.info("SurveyReport %s already in Egeria (same survey run %s): reusing it", existing, surveyed_at)
         if on_report_created is not None:
             self._tell_report_created(on_report_created, existing)
-        held = self._annotations_held_by(existing)
-        if held is None or held < len(annotations):
-            try:
-                self._create_annotations(annotations, existing, db_slug, surveyed_at)   # adopts what is there
-            except Exception as exc:
-                log.warning("publishing the missing annotations under %s failed: %s", existing, exc)
-                out["annotation_error"] = f"{exc}"[:400]      # observable: the caller shows it
-            held = self._annotations_held_by(existing)
-        out["annotations_in_egeria"] = held
+        # Always by identity, never by count: `publish_annotations` looks each qualifiedName up and adopts what is
+        # there, so a republish of the same set creates nothing. A COUNT shortcut ("held >= sent, skip") was wrong:
+        # a newer stored verdict batch carries new names but the same count as the batch already held, and was
+        # skipped whole (live check 2026-10-20, DESIGN-PUBLISHING-COLUMN-VERDICTS.md §1).
+        try:
+            self._create_annotations(annotations, existing, db_slug, surveyed_at)   # adopts what is there
+        except Exception as exc:
+            log.warning("publishing the missing annotations under %s failed: %s", existing, exc)
+            out["annotation_error"] = f"{exc}"[:400]      # observable: the caller shows it
+        out["annotations_in_egeria"] = self._annotations_held_by(existing)
         return out
 
     @staticmethod
