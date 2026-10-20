@@ -45,6 +45,21 @@ mounts) pre-fills the field later, from Admin; not in this note.
 
 ## 3. Outcome 3: remote file systems
 
+- **Access mechanisms are a user-extensible plugin point** (owner,
+  2026-10-21: "in the long run, yes, we want to handle the common
+  mechanisms (SFTP, S3) but it will need to be user extensible - not
+  urgent but good to record"). SFTP and S3 are the first built-ins. The
+  Analytic Library's packaging is the precedent: a reach mechanism is a
+  package discovered by an entry point, with a manifest that declares
+  its name, the protocol it speaks, the registration fields it needs
+  (host, port, root, credential reference), its credential tier
+  (read-only on the resource), and its cost shape (round trips per
+  directory, bytes per file); it implements one interface, list a
+  directory and stat an entry and read a capped file, and nothing else.
+  The walk, the probe, the price line and the publish sentence are
+  mechanism-agnostic and take the manifest's words. A mechanism that
+  needs to execute commands on the host declares that, and the owner's
+  configuration must allow it; none of the built-ins do.
 - **Access methods, in order.** SFTP over SSH first: it reaches any host,
   lists and stats without executing commands. Then S3-compatible object
   stores, where a "folder" is a prefix and the listing is by prefix. SMB
@@ -75,12 +90,16 @@ mounts) pre-fills the field later, from Admin; not in this note.
 
 ## 4. Backlog: RE's walk as an Egeria survey service
 
-Not urgent (owner). RE's walk declared as a `SurveyActionService` with
-request type `re-folder-survey`, producing Egeria's folder annotation
-types, so Egeria can schedule a folder survey on a path only RE can read
-through the case-3 engine-host wiring. Ties to
-`REQUIREMENTS-RE-DATA-CHANNELS.md`: Egeria's connectors cannot be the
-only channel.
+Not urgent (owner). Two entries:
+
+1. RE's walk declared as a `SurveyActionService` with request type
+   `re-folder-survey`, producing Egeria's folder annotation types, so
+   Egeria can schedule a folder survey on a path only RE can read through
+   the case-3 engine-host wiring. Ties to
+   `REQUIREMENTS-RE-DATA-CHANNELS.md`: Egeria's connectors cannot be the
+   only channel.
+2. Remote access mechanisms as a user-extensible plugin point (§3), SFTP
+   and S3 as the built-ins, packaged and declared like library steps.
 
 ## 5. Slices and gates
 
@@ -99,8 +118,11 @@ only channel.
 
 ## 6. Open for the owner
 
-- [ ] The five positions in §3 (methods order, credential model, pull
-      not command, fields later, the sentence).
+- [x] SFTP and S3 as the first mechanisms, user-extensible (owner,
+      2026-10-21).
+- [ ] The other four positions in §3: the credential model, listings
+      pulled with no remote commands, additive fields later, the publish
+      sentence.
 - [ ] Which remote host is the gate for outcome 3.
 - [ ] Whether S3 comes before SFTP, if the owner's estates are mostly
       object storage.
