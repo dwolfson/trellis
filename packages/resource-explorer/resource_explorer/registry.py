@@ -3508,6 +3508,10 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_resource_journal_entity "
                 "ON resource_journal(entity_type, entity_slug, written_at)"
             )
+            # The chat turn's compile an entry was written from (context_compiles.compile_id); NULL when the entry
+            # was not made from a chat turn or the turn recorded no compile.
+            if "compile_id" not in self._get_table_columns(conn, "resource_journal"):
+                conn.execute("ALTER TABLE resource_journal ADD COLUMN compile_id TEXT")
             # Work lists (work_lists.WorkLists). Moved here from work_lists.py's
             # per-method _ensure_schema, which ran this DDL on every read and
             # write. Shapes are the real registry's (no later ADDs), so applying

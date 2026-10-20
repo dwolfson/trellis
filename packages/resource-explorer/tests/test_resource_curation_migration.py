@@ -136,7 +136,7 @@ def test_curations_reads_issue_no_ddl(registry, monkeypatch):
 # ── resource_journal: same move (journal.py's per-call _ensure_schema) ──────────────────────────
 
 JOURNAL_EXPECTED = [("id", None), ("entity_type", None), ("entity_slug", None), ("author", None),
-                    ("written_at", None), ("body", None), ("suggested_to", "[]")]
+                    ("written_at", None), ("body", None), ("suggested_to", "[]"), ("compile_id", None)]
 
 
 def test_fresh_sqlite_gets_the_journal_table_from_migrations(tmp_path):
@@ -163,7 +163,8 @@ def test_fresh_postgres_schema_gets_the_journal_table_from_migrations(pg_registr
                            "WHERE schemaname = current_schema() AND tablename = 'resource_journal'").fetchall()
     assert [(r["column_name"], None if r["column_default"] is None else r["column_default"].split("::")[0].strip("'"))
             for r in cols] == JOURNAL_EXPECTED
-    assert all(r["is_nullable"] == "NO" for r in cols)
+    # compile_id is the one nullable column: NULL when the entry was not made from a chat turn with a compile.
+    assert {r["column_name"] for r in cols if r["is_nullable"] == "YES"} == {"compile_id"}
     defs = {r["indexname"]: r["indexdef"] for r in idx}
     assert "(entity_type, entity_slug, written_at)" in defs["idx_resource_journal_entity"]
     assert "resource_journal_pkey" in defs
@@ -183,4 +184,4 @@ def test_journal_reads_and_writes_issue_no_ddl_and_output_is_unchanged(registry,
     assert any("resource_journal" in s for s in seen), "control: the spy saw the journal statements"
     assert [s for s in seen if DDL_RE.match(s)] == []
     assert [e["body"] for e in got] == ["second", "first"]
-    assert set(got[0]) == {"id", "author", "written_at", "body", "suggested_to"} and got[0]["suggested_to"] == []
+    assert set(got[0]) == {"id", "author", "written_at", "body", "suggested_to", "compile_id"} and got[0]["suggested_to"] == []
