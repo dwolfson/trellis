@@ -25,9 +25,22 @@ retire the classic interface"). File system, never "file share".
   and the Egeria reports list (F-10, partial). F-11 (run a definition) is
   present on /next.
 
+- **Live state (read-only, 2026-10-20):** no file system is registered on
+  8813 (`GET /api/filesystems/` is empty), so no survey rows, profiles or
+  Egeria reports exist for any file system, and nothing can be gated on
+  stored data today. The parity inventory of 2026-10-11 (`~/.re-gate/`,
+  PI ids) has register (PI-022), per-row survey (PI-087), walk and profile
+  (PI-091, partial), publish (PI-092), reachability (PI-093), the report
+  (PI-094) and per-file profiles (PI-095) missing; list, remove, Egeria
+  reports and run-a-definition done. The 10-11 hold ("file systems after
+  Alpha") is superseded by the owner's 2026-10-20 decision to build the
+  file-system block on /next before retiring Classic.
+
 Classic retires when a person never needs it for a file system: register,
 survey, read the answers, publish, and see what Egeria holds, all on
-/next, with the questions answered from data the survey stores.
+/next, with the questions answered from data the survey stores. Because
+nothing is registered, the first slice is registration plus one walk on a
+real local path, and every analysis below is gated on that walk's rows.
 
 ## 2. The questions to add (file system only, each with its analysis)
 
@@ -83,7 +96,7 @@ half; Q-0080 stays, answered by F7.
 
 Only what the parity rows name, in the Publish-ruling shape:
 
-- Register a file system on /next (F-02): slug, name, mount, canonical
+- Register a file system on /next (F-02, PI-022): slug, name, mount, canonical
   mount, group; the Egeria fields come from the platform configuration,
   never typed per resource.
 - The survey press with its cost line (F-04, F-05) and the per-analysis
