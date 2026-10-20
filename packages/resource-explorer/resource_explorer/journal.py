@@ -69,7 +69,7 @@ class Journal:
         """Newest first. Every entry ever written; there is no delete."""
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT id, author, written_at, body, suggested_to FROM resource_journal "
+                "SELECT id, author, written_at, body, suggested_to, compile_id FROM resource_journal "
                 "WHERE entity_type = ? AND entity_slug = ? ORDER BY written_at DESC",
                 (entity_type, entity_slug),
             ).fetchall()
@@ -84,7 +84,7 @@ class Journal:
         return out
 
     def write(self, entity_type: str, entity_slug: str, *, author: str, body: str,
-              suggest_to: list[str] | None = None) -> dict:
+              suggest_to: list[str] | None = None, compile_id: str | None = None) -> dict:
         """Append one entry, and route it. Returns the entry plus the work
         lists the suggestion landed in, so the UI can say where it went
         rather than "sent"."""
@@ -94,17 +94,18 @@ class Journal:
         if not body:
             raise ValueError("a journal entry needs a body")
         targets = [t.strip() for t in (suggest_to or []) if t and t.strip()]
+        compile_id = (compile_id or "").strip() or None
         entry_id = uuid.uuid4().hex
         now = _now()
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO resource_journal (id, entity_type, entity_slug, author, written_at, body, suggested_to) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (entry_id, entity_type, entity_slug, author, now, body, json.dumps(targets)),
+                "INSERT INTO resource_journal (id, entity_type, entity_slug, author, written_at, body, suggested_to, compile_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (entry_id, entity_type, entity_slug, author, now, body, json.dumps(targets), compile_id),
             )
         landed = [self._route(target, entity_type, entity_slug, author, body) for target in targets]
         return {"id": entry_id, "author": author, "written_at": now, "body": body,
-                "suggested_to": targets, "work_lists": landed}
+                "suggested_to": targets, "compile_id": compile_id, "work_lists": landed}
 
     def _route(self, target: str, entity_type: str, entity_slug: str, author: str, body: str) -> dict:
         """One work list per audience, created on first use; the resource

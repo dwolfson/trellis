@@ -304,6 +304,7 @@ def _payload_for(registry, entity_type: str, slug: str, item: FeedbackItem, guid
     e = entries[item.id]
     return NOTE_KIND, note_qualified_name(item.id), {
         **base, "entry_id": item.id, "body": e.get("body") or "", "written_at": e.get("written_at") or "",
+        "compile_id": e.get("compile_id") or "",
         "note_qualified_name": note_qualified_name(item.id),
         "note_log_qualified_name": note_log_qualified_name(guid),
         "resource_name": _display_name(registry, entity_type, slug)}
@@ -511,6 +512,7 @@ def note_body(payload: dict, note_log_guid: str) -> dict:
                            "description": payload.get("body") or "",
                            "additionalProperties": {"journalEntryId": payload["entry_id"],
                                                     "writtenAt": payload.get("written_at") or "",
+                                                    "compileId": payload.get("compile_id") or "no compile recorded",
                                                     "source": "Resource Explorer journal"}}}
 
 

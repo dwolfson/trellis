@@ -140,6 +140,14 @@ class TestInvestigationJournal:
         listing = client.get(f"/api/journal/investigation/{inv['slug']}").json()
         assert [e["body"] for e in listing["entries"]] == ["Per chat: marquez emits OpenLineage."]
 
+    def test_the_compile_id_survives_save_and_read_back_and_a_missing_one_is_null(self, client, registry):
+        inv = registry.create_investigation("Compile study")
+        url = f"/api/journal/investigation/{inv['slug']}"
+        assert client.post(url, json={"body": "with", "compile_id": "ab12cd34ef56"}).json()["compile_id"] == "ab12cd34ef56"
+        assert client.post(url, json={"body": "without"}).json()["compile_id"] is None
+        got = {e["body"]: e["compile_id"] for e in client.get(url).json()["entries"]}
+        assert got == {"with": "ab12cd34ef56", "without": None}
+
     def test_an_unknown_investigation_is_a_404_not_a_new_journal(self, client):
         assert client.post("/api/journal/investigation/nope", json={"body": "x"}).status_code == 404
         assert client.get("/api/journal/investigation/nope").status_code == 404

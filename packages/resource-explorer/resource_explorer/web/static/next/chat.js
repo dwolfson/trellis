@@ -498,7 +498,10 @@ export function turnAsMarkdown(t) {
  *  never silently. */
 const JOURNAL_SEED_MAX = 4000;
 export function journalSeedFromTurn(t, when = new Date()) {
-  let text = `Per chat (${when.toISOString().slice(0, 10)}):\n\n${turnAsMarkdown(t)}`;
+  // Plain text, not markdown: the journal shows an entry as written, so `**` would be read as asterisks.
+  const bits = [t.slug, t.compileId ? `compile ${String(t.compileId).slice(0, 8)}` : 'no compile recorded', t.source].filter(Boolean);
+  if (t.intent) bits.push(`intent ${t.intent}`);
+  let text = `Per chat (${when.toISOString().slice(0, 10)}):\n\n${t.question}\n\n${t.answer || `${t.error || 'No answer.'}`}\n\n— ${bits.join(' · ')}`;
   if (text.length > JOURNAL_SEED_MAX) {
     text = `${text.slice(0, JOURNAL_SEED_MAX)}\n\n[trimmed: the full answer is ${text.length.toLocaleString()} characters]`;
   }
@@ -525,7 +528,7 @@ function openJournalForm(turn, host) {
     if (!body) { note.textContent = 'An entry needs some text.'; return; }
     e.currentTarget.disabled = true;
     try {
-      await writeJournal(state.investigation, body, [], 'investigation');
+      await writeJournal(state.investigation, body, [], 'investigation', turn.compileId || null);
       form.innerHTML = `<span class="text-caveat text-state-ok">Saved to this investigation's journal. It stays in RE until the investigation is promoted to Egeria.</span>`;
     } catch (err) {
       e.currentTarget.disabled = false;

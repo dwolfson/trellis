@@ -146,3 +146,20 @@ test('a refused publish says why and the button stays usable', async () => {
   assert.match(text(t.document.getElementById('inv-journal')), /Not published/);
   assert.equal(t.document.querySelector('[data-act="inv-journal-publish"]').disabled, false);
 });
+
+test('a chat turn seeds a plain-text entry whose citation line carries the compile, or says none was recorded', async () => {
+  await setUp({ journal: ENTRIES });
+  const { journalSeedFromTurn } = await import('/static/next/chat.js');
+  const turn = { question: 'How often does egeria release?', answer: 'Monthly.', slug: 'egeria_git', source: 'From 13 stored results' };
+  const day = new Date('2026-10-19T12:00:00Z');
+  const withCompile = journalSeedFromTurn({ ...turn, compileId: 'ab12cd34ef56' }, day);
+  assert.match(withCompile, /— egeria_git · compile ab12cd34 · From 13 stored results/);
+  assert.doesNotMatch(withCompile, /\*\*/);
+  assert.match(journalSeedFromTurn({ ...turn, compileId: null }, day), /— egeria_git · no compile recorded · From 13 stored results/);
+});
+
+test('an entry that carries a compile shows it in its header', async () => {
+  const t = await setUp({ journal: { entries: [
+    { id: 'e1', author: 'me', written_at: '2026-10-19T10:00:00+00:00', body: 'x', compile_id: 'ab12cd34ef56', suggested_to: [] }], suggested_to: [] } });
+  assert.match(text(t.document.getElementById('inv-journal')), /me · 2026-10-19 · compile ab12cd34/);
+});

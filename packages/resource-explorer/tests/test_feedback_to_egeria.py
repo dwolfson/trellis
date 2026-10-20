@@ -894,6 +894,26 @@ def test_a_promoted_investigations_entries_become_notes_in_a_notelog_on_its_proj
     assert by_id(again["notes"], e1)["state"] == fe.PUBLISHED and len(egeria.notes) == 1, "a re-press adds none"
 
 
+def test_the_notes_compile_id_follows_the_entry_and_a_missing_one_says_so(registry, egeria):
+    slug = _investigation(registry, "Compile study", promoted=True)
+    with_id = Journal(registry).write("investigation", slug, author="alice", body="a", compile_id="ab12cd34ef56")["id"]
+    without = Journal(registry).write("investigation", slug, author="alice", body="b")["id"]
+    from resource_explorer.a2a_auth import current_caller
+
+    reset = caller("alice")
+    try:
+        plan = fe.feedback_plan(registry, "investigation", slug, viewer="alice")
+        items = {i.id: i for i in plan["notes"]}
+        entries = {e["id"]: e for e in Journal(registry).entries("investigation", slug)}
+        out = {}
+        for eid in (with_id, without):
+            _, _, payload = fe._payload_for(registry, "investigation", slug, items[eid], PROJECT, "alice", {}, entries)
+            out[eid] = fe.note_body(payload, "log-guid")["properties"]["additionalProperties"]["compileId"]
+    finally:
+        current_caller.reset(reset)
+    assert out == {with_id: "ab12cd34ef56", without: "no compile recorded"}
+
+
 def test_the_publish_route_says_409_for_an_unpromoted_investigation_and_401_when_anonymous(registry, egeria, monkeypatch):
     from resource_explorer import auth
     from resource_explorer.web.routes import investigations as inv_routes
