@@ -23,6 +23,40 @@ _DEPENDS_ON = re.compile(
     re.IGNORECASE,
 )
 
+#: A question about dependencies changing between ingests ("which dependencies changed since the last ingest").
+_DEPENDENCY_DRIFT = re.compile(
+    r"\bdependenc(?:y|ies)\b.{0,40}\b(?:chang\w*|drift\w*|added|removed|bumped|upgraded)\b"
+    r"|\b(?:chang\w*|drift\w*)\b.{0,40}\bdependenc(?:y|ies)\b",
+    re.IGNORECASE,
+)
+
+#: A question about the fleet rather than one resource: "which repos have no license classification".
+_FLEET_QUESTION = re.compile(
+    r"^\s*(?:which|what|list|show|name|how many)\b(?:\s+\w+){0,2}?\s+"
+    r"(?:repos|repositories|projects|databases|file ?systems|resources)\b",
+    re.IGNORECASE,
+)
+
+#: Words after which a following word is a common noun, not a name ("no license", "a license", "with docs").
+_COMMON_NOUN_CUES = frozenset(
+    "no without missing lacking any with has have having a an the which what per each every some".split()
+)
+
+
+def _bare_word_binding(query: str, slug: str) -> bool:
+    """True when `slug` was bound only because a common word in a fleet question happens to equal it.
+
+    Traced on 8816 2026-10-20: "Which repos have no license classification?" bound the registered
+    repo `license` (opea-project/License), so the agent answered about that one repo. In a question
+    about many resources, a single-word slug counts only when something other than a determiner or
+    quantifier precedes it ("depend on marquez" binds; "no license" does not).
+    """
+    if not _FLEET_QUESTION.search(query) or any(c in slug for c in "_-"):
+        return False
+    words = re.findall(r"[\w'-]+", query.lower())
+    hits = [i for i, w in enumerate(words) if w == slug.lower()]
+    return bool(hits) and all(i > 0 and words[i - 1] in _COMMON_NOUN_CUES for i in hits)
+
 
 class ConversationAgent(BaseExplorerAgent):
     """
@@ -218,6 +252,8 @@ class ConversationAgent(BaseExplorerAgent):
 
         set_current_question(query)
         slug = resource_slug or self.resource_slug or self._infer_project_slug(query)
+        if slug and not (resource_slug or self.resource_slug) and _bare_word_binding(query, slug):
+            slug = None
         entity_type = resource_type or self.resource_type
 
         # Delegate example generation to the specialist — BeeAI + small models produce
@@ -272,6 +308,8 @@ class ConversationAgent(BaseExplorerAgent):
             # survey_meta (the slug contains "egeria") and "what does it depend on" as general.
             if classified_intent == QueryIntent.DEPENDENCY or _DEPENDS_ON.search(query):
                 lines.extend(self._dependency_evidence(slug))
+            if _DEPENDENCY_DRIFT.search(query):
+                lines.extend(self._dependency_drift_evidence(slug))
         lines.append(f"Question: {query}")
         prompt = "\n".join(lines)
 
@@ -287,6 +325,24 @@ class ConversationAgent(BaseExplorerAgent):
 
         lead = turn_fact_lead()
         return f"{lead}\n\n{answer}" if lead else answer
+
+    @staticmethod
+    def _dependency_drift_evidence(slug: str) -> list[str]:
+        """The dependency drift between the two latest ingests, in the prompt.
+
+        Traced on 8816 2026-10-20 (qwen3.6:35b): "Which dependencies changed in egeria since the last
+        ingest?" made no tool call and answered from the current snapshot that dependencies are not
+        tracked over time; llama3.1:8b and qwen2.5:32b called dependency_changes. Same remedy as
+        _dependency_evidence: a model that skips the tool still has the answer in front of it.
+        """
+        try:
+            from resource_explorer.history_diff import dependency_changes
+            from resource_explorer.registry import ProjectRegistry
+
+            text = dependency_changes(ProjectRegistry(), slug)
+        except Exception as exc:
+            return [f"Dependency changes for {slug}: could not be read ({type(exc).__name__}: {exc})."]
+        return [f"{text}", "(Above: the stored comparison of the two latest ingests; answer from it.)"]
 
     @staticmethod
     def _dependency_evidence(slug: str, limit: int = 60) -> list[str]:
