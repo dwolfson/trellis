@@ -186,6 +186,10 @@ class OllamaConfig(BaseSettings):
     # generate/chat call (resource_explorer/llm_client.py).
     tier: str = DEFAULT_MODEL_TIER
     num_ctx: int = TIER_PRESETS[DEFAULT_MODEL_TIER]["num_ctx"]
+    # Ceiling on generated tokens for the agent path (sent as Ollama's
+    # `num_predict`). The hosted backends are capped at 4096 in llm_client.py;
+    # without a cap here one degenerate answer held the shared Ollama for minutes.
+    max_tokens: int = 4096
 
 
 class OpenAIConfig(BaseSettings):

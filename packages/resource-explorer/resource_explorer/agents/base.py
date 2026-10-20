@@ -165,28 +165,26 @@ class BaseExplorerAgent(ABC):
         resolved-tier ``num_ctx`` (resource_explorer/config.py TIER_PRESETS)
         can be threaded through.
 
-        BeeAI's ``OllamaChatModel`` talks to Ollama via litellm's
-        OpenAI-compatible ``/v1/chat/completions`` endpoint, not Ollama's
-        native ``/api/chat`` — so there is no ``options={"num_ctx": ...}``
-        dict to pass the way llm_client.py's raw ``ollama`` client takes
-        one. Verified empirically (monkeypatching litellm's ``acompletion``
-        and inspecting the outgoing kwargs) that a ``settings={"num_ctx":
-        ...}`` constructor kwarg survives BeeAI's own supported-params
-        filtering and reaches the litellm call as a top-level ``num_ctx``
-        kwarg, which litellm forwards to Ollama's OpenAI-compatible server —
-        Ollama's compat layer reads ``num_ctx`` from the request body the
-        same way it does on the native endpoint.
+        BeeAI's stock ``OllamaChatModel`` talks to Ollama's OpenAI-compatible
+        ``/v1`` endpoint, which silently ignores ``num_ctx`` (measured
+        2026-10-20: ``num_ctx=2048`` still loaded the model at 32768). So
+        this builds ``NativeOllamaChatModel``, which uses the native
+        ``/api/chat`` endpoint where ``num_ctx`` and the ``max_tokens`` cap
+        (as ``num_predict``) are honoured.
         """
         cfg = self.config.llm
         if cfg.backend != "ollama":
             return self._llm_name()
 
-        from beeai_framework.adapters.ollama.backend.chat import OllamaChatModel
+        from beeai_framework.backend import ChatModelParameters
 
-        return OllamaChatModel(
+        from resource_explorer.agents.ollama_native import NativeOllamaChatModel
+
+        return NativeOllamaChatModel(
             cfg.ollama.model,
             base_url=cfg.ollama.base_url,
             settings={"num_ctx": cfg.ollama.num_ctx},
+            parameters=ChatModelParameters(max_tokens=cfg.ollama.max_tokens),
         )
 
     def _infer_project_slug(self, query: str) -> str | None:
