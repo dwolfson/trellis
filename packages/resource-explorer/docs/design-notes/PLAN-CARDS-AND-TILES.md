@@ -126,7 +126,7 @@ In order of how much a person reads the surface, with what each gains.
 | 8 | **Automate · Schedules** | schedules, failing, next run [the rows] | the table as one card; the add-a-schedule form |
 | 9 | **Repository header** | fact tiles (the scouting tiles migrate) | none |
 | 10 | **Admin pages** | only where a page already leads with counts (feedback per look, outbox) | each table as one card |
-| — | **Chat** | none for now | answers stay as they are; revisit with the chat-first application |
+| 11 | **Chat** | none | **each answer is a card** (owner, 2026-10-20): header with the answer's subject and its actions at the top right (save to the journal, open the evidence); body with the answer as written; footer with what it cites and when (the compile id, the records read). The question as asked stays above the card, unboxed, as the person's own words. |
 
 ## 4. Slices
 
@@ -134,7 +134,7 @@ In order of how much a person reads the surface, with what each gains.
 |---|---|---|
 | **C1 · the components** | `ui-cards.js`: `cardHtml({title, meta, actions, body, footer, state})`, `tileHtml({label, figure, sub, opens, state})`, `tileRowHtml(tiles)`, plus `factTileHtml`. The two tokens per look in `themes.css`, with a contrast-test entry for each. A render-harness test per state (ordinary, needs you, lowered, chosen; tile measured, partial, not read, zero, state count). **Applied to surfaces 1 and 2.** | At a glance and Survey & analyses on coco_pharma in Dark: every tile opens what it counted, and "◐ partial" and "? not read" show as states, not blanks. Then once in Light and once in Paper. |
 | **C2 · Curate and Questions** | surfaces 3, 4 and 5 | publishing a schema from Contents with the tiles moving as rows are decided |
-| **C3 · the rest of the daily path** | surfaces 6, 7 and 8, and the repository header's migration to fact tiles | one investigation walked end to end |
+| **C3 · the rest of the daily path** | surfaces 6, 7, 8 and 11 (chat answers), and the repository header's migration to fact tiles | one investigation walked end to end, with two chat answers read as cards |
 | **C4 · sweep** | Admin (10), plus any leftover hairline-separated sections the sweep finds (`border-t border-rule` used as a section divider: 31 in app.js, 20 in curate.js, today) | a list of what was left alone, and why |
 
 Each slice moves existing markup into the components **without changing
@@ -151,11 +151,11 @@ surface today, in a sentence or a header.
 - **Make the tile figure size a token** (`figure`: 30px), so the
   text-size control scales it with everything else.
 
-## Left open
+## Decisions (project owner, 2026-10-20)
 
-1. Whether **Paper** gets cards and tiles too. My recommendation is yes,
-   from the same markup with Paper's tokens. A second markup path for a
-   look that may be retired after this release would double the work.
-2. Whether **chat answers** become cards. They'd be a natural fit for the
-   chat-first application's "about this resource" answer, but that design
-   isn't settled, so I've left chat alone.
+1. **Paper gets cards and tiles too**, from the same markup with Paper's
+   tokens. There's no second markup path.
+2. **Chat answers become cards** (surface 11, slice C3). The card is the
+   answer: the question stays above it in the person's own words, and the
+   footer carries what the answer cites, so the chat-first application's
+   "about this resource" answer reads the same as At a glance.
