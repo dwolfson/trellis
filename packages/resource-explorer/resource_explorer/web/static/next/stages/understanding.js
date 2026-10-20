@@ -189,7 +189,9 @@ async function drawCard(card, spec, slug, resp, { counts = spec.counts, extraHtm
     annotateTicks(plot, fit.alt, fit.summary);
     if (typeof window.addEventListener === 'function' && Plotly.react) {
       let last = widthNow();
-      window.addEventListener('resize', () => {
+      // The card can change width without the window changing (the grid drops to one column), so the plot's own box is
+      // watched too, not only the window.
+      const refit = () => {
         const w = widthNow();
         if (!plot.isConnected || Math.abs(w - last) < 8) return;
         last = w;
@@ -197,7 +199,9 @@ async function drawCard(card, spec, slug, resp, { counts = spec.counts, extraHtm
         fit = again.fit;
         Plotly.react(plot, fig.data, Object.assign(again.themed, { width: w, height: 260 }),
           { displaylogo: false, responsive: false }).then(() => annotateTicks(plot, fit.alt, fit.summary));
-      });
+      };
+      window.addEventListener('resize', refit);
+      if (typeof ResizeObserver === 'function') new ResizeObserver(refit).observe(plot);
     }
   } catch (err) {
     plot.outerHTML = `<div class="text-answer text-state-warn">${esc(spec.title)} could not be drawn: ${esc(err.message)}</div>`;
@@ -421,7 +425,10 @@ const h3 = (t) => `<h3 class="m-0 font-heading text-name font-normal">${t}</h3>`
  *  `tabbed: true` puts the sentence in its own section for At a glance. The sections themselves are the same. */
 function databaseParts(slug, { tabbed }) {
   const slot = (c) => `<div data-slot="${c.kind}"></div>`;
-  const grid = 'style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr))"';
+  // Tabbed: a chart is never narrower than 32rem (one column below that). The gate-off page stays byte-identical to main.
+  const grid = tabbed
+    ? 'style="grid-template-columns:repeat(auto-fit,minmax(min(100%,32rem),1fr))"'
+    : 'style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr))"';
   const sections = tabbed ? [['db-since', 'Since the last run'], ...DB_SECTIONS] : DB_SECTIONS;
   const indexBar = `
     <div class="mb-s3" data-index-bar>

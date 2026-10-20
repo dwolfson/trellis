@@ -107,18 +107,19 @@ export function tileHtml({ label, figure, sub = '', opens, state = 'measured', t
     figureHtml = `${glyphSpan(cue.glyph, true)} <span>${figure}</span>`;
   }
   return `<button type="button" data-ui-tile${key ? ` data-tile-key="${esc(key)}"` : ''} data-tile-state="${state}" data-tile-opens="${esc(opens)}"${title ? ` title="${esc(title)}"` : ''}
-    class="flex min-w-0 cursor-pointer flex-col items-start gap-[2px] rounded-md border border-card-line bg-card p-[14px] text-left text-ink">
+    class="flex min-w-[9rem] max-w-full cursor-pointer flex-col items-start gap-[2px] rounded-md border border-card-line bg-card p-[14px] text-left text-ink">
     <span data-tile-label class="text-caps uppercase tracking-caps text-ink-muted">${label}</span>
-    <span data-tile-figure class="tnum text-figure font-bold text-ink">${figureHtml}</span>${subHtml
+    <span data-tile-figure class="tnum whitespace-nowrap text-figure font-bold text-ink">${figureHtml}</span>${subHtml
     ? `
     <span data-tile-sub class="text-provenance text-ink-muted">${subHtml}</span>` : ''}</button>`;
 }
 
-/** A row of tiles: at most six, wrapping to two columns at narrow widths (four is better). */
+/** A row of tiles: at most six. Each sizes to its content with a 9rem floor, the row wraps rather than squeezing a
+ *  tile, and tiles are not stretched to equal height. */
 export function tileRowHtml(tiles) {
   const list = tiles || [];
   if (list.length > 6) throw new Error(`tileRowHtml: at most six tiles in a row, got ${list.length}`);
-  return `<div data-ui-tile-row class="grid ${list.length <= 4 ? 'grid-cols-2 md:grid-cols-4' : 'grid-cols-2 md:grid-cols-3 lg:grid-cols-6'} gap-s3">${list.join('')}</div>`;
+  return `<div data-ui-tile-row class="flex flex-wrap items-start gap-s3">${list.join('')}</div>`;
 }
 
 /** A fact tile: small, for a value that is not a count (Website, Language, Last pushed). Today's scouting-tile

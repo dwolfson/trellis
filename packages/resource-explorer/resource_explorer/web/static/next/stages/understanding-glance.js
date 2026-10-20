@@ -25,6 +25,21 @@ function stamp(iso) {
   return m ? `${m[1]} ${m[2]}` : String(iso || '');
 }
 
+/** The date for a tile's figure and the time for its sub line: "10-19" and "00:30". */
+function stampParts(iso) {
+  const m = String(iso || '').match(/^\d{4}-(\d{2}-\d{2})[T ](\d{2}:\d{2})/);
+  return m ? { date: m[1], time: m[2] } : { date: String(iso || ''), time: '' };
+}
+
+/** A size for a tile: the number is the figure and the unit sits small beside it ("5.4" and "MB"). */
+function sizeFigure(all, bytes) {
+  const s = String(fmtBytes(bytes));
+  const i = s.lastIndexOf(' ');
+  const num = i > 0 ? s.slice(0, i) : s;
+  const unit = i > 0 ? s.slice(i + 1) : '';
+  return `${all ? '' : '≥ '}${esc(num)}${unit ? ' ' + `<span data-tile-unit>${esc(unit)}</span>` : ''}`;
+}
+
 /** Who ran a survey: RE's own, or Egeria's, from the run's stored `source`. Anything else is shown as stored. */
 export function surveyedByWords(run) {
   if (!run) return '';
@@ -103,7 +118,7 @@ export function databaseHeadlineHtml({ dist, sizes, types } = {}) {
   if (tot && tot.size_bytes !== null && tot.size_bytes !== undefined) {
     const all = tot.size_tables === tot.tables;
     tiles.push(tileHtml({
-      key: 'size', label: 'size', opens: 'table_sizes', state: all ? 'measured' : 'partial', figure: `${all ? '' : '≥ '}${esc(fmtBytes(tot.size_bytes))}`,
+      key: 'size', label: 'size', opens: 'table_sizes', state: all ? 'measured' : 'partial', figure: sizeFigure(all, tot.size_bytes),
       title: `Relation size on disk, summed over ${fmtN(tot.size_tables)} of ${fmtN(tot.tables)} tables.`,
     }));
   } else {
@@ -122,7 +137,8 @@ export function databaseHeadlineHtml({ dist, sizes, types } = {}) {
   tiles.push(run
     ? tileHtml({
       key: 'surveyed', label: 'surveyed', opens: 'survey_history', state: 'measured',
-      figure: `<span title="${esc(run.surveyed_at)}">${esc(stamp(run.surveyed_at))}</span>`, sub: esc(surveyedByWords(run)),
+      figure: `<span title="${esc(run.surveyed_at)}">${esc(stampParts(run.surveyed_at).date)}</span>`,
+      sub: esc([stampParts(run.surveyed_at).time, surveyedByWords(run)].filter(Boolean).join(' · ')),
       title: `Source ${run.source || 'local'}${run.surveyed_as ? `, credential ${run.surveyed_as}` : ''}.`,
     })
     : tileHtml({ key: 'surveyed', label: 'surveyed', opens: 'survey_history', state: 'not_measured', sub: 'never surveyed', title: 'No survey has run for this database.' }));
@@ -136,7 +152,7 @@ export function repoHeadlineHtml(diff) {
   if (!diff || diff.__error || typeof diff.total_curr !== 'number') return '';
   const tiles = [countTile('files', diff.total_curr === 1 ? 'file' : 'files', 'repo-distribution', diff.total_curr, 'measured', 'Files in the latest survey.')];
   if (diff.curr_date) {
-    tiles.push(tileHtml({ key: 'surveyed', label: 'surveyed', opens: 'repo-report', state: 'measured', figure: esc(stamp(diff.curr_date)) }));
+    tiles.push(tileHtml({ key: 'surveyed', label: 'surveyed', opens: 'repo-report', state: 'measured', figure: esc(stampParts(diff.curr_date).date), sub: esc(stampParts(diff.curr_date).time) }));
   }
   return `<div class="mt-s3" data-glance-headline>${tileRowHtml(tiles)}</div>`;
 }

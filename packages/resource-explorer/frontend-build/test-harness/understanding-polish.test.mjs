@@ -63,7 +63,7 @@ test('At a glance: the headline figures, each with a cue and a short word, from 
   assert.match(text(tile('rows')), /rows ● ~1,500,000/);
   assert.match(text(tile('size')), /size ◐ ≥ 3\.0 MB partial/, 'size summed over 8 of 10 tables is a lower bound, marked partial');
   assert.match(text(fig('largest')), /a\.big largest · 1,200,000 rows/);
-  assert.match(text(tile('surveyed')), /surveyed ● 10-03 18:07 RE's own survey, as surveyor/);
+  assert.match(text(tile('surveyed')), /surveyed ● 10-03 18:07 · RE's own survey, as surveyor/);
   // order: the sentence first, then the headline, then the statistics line
   const kids = [...g.children].map((c) => (c.matches('details') ? 'since' : c.hasAttribute('data-glance-slot') ? 'headline' : c.hasAttribute('data-stats-glance') ? 'stats' : '?'));
   assert.deepEqual(kids, ['since', 'headline', 'stats']);

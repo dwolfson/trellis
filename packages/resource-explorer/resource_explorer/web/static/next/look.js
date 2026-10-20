@@ -66,6 +66,21 @@ const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 
 let wired = null;
 
+/** The menu is anchored to the control's LEFT edge (left-0). If it would still run past either side of the viewport,
+ *  shift it back inside, so Dark / Light / Paper and "Tell us ›" can always be read and picked. */
+function clampToViewport(menu) {
+  menu.style.transform = '';
+  if (typeof menu.getBoundingClientRect !== 'function') return;
+  const r = menu.getBoundingClientRect();
+  const vw = (typeof window !== 'undefined' && window.innerWidth) || 0;
+  if (!vw || !r.width) return;
+  const margin = 8;
+  let dx = 0;
+  if (r.right > vw - margin) dx = vw - margin - r.right;
+  if (r.left + dx < margin) dx = margin - r.left;
+  if (dx) menu.style.transform = `translateX(${Math.round(dx)}px)`;
+}
+
 /** Build the "Look: Dark ▾" control into `host` (an empty element beside the
  *  text-size control). Wired once per host; calling again is harmless. */
 export function wireLook(host) {
@@ -77,7 +92,7 @@ export function wireLook(host) {
       class="cursor-pointer bg-transparent px-[5px] text-chrome-muted" title="Choose the look">
       Look: <strong data-look-current class="font-semibold text-chrome-ink"></strong> ▾</button>
     <div data-look-menu role="menu" hidden
-      class="absolute right-0 top-full z-50 mt-[4px] w-[min(320px,86vw)] rounded-md border border-chrome-line bg-chrome-alt p-s2 shadow-md">
+      class="absolute left-0 top-full z-[80] mt-[4px] w-[min(320px,86vw)] rounded-md border border-chrome-line bg-chrome-alt p-s2 shadow-md">
       ${LOOKS.map((l) => `
         <button type="button" role="menuitemradio" data-look-option="${esc(l.id)}" aria-checked="false"
           class="flex w-full cursor-pointer items-baseline gap-s2 rounded-sm border-0 bg-transparent px-s2 py-[5px] text-left text-chrome-ink hover:bg-chrome-surface">
@@ -96,6 +111,7 @@ export function wireLook(host) {
   const menu = host.querySelector('[data-look-menu]');
   const open = (on) => {
     menu.hidden = !on;
+    if (on) clampToViewport(menu);
     toggle.setAttribute('aria-expanded', on ? 'true' : 'false');
   };
   const paint = () => {
