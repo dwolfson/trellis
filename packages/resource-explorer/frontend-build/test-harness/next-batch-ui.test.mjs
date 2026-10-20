@@ -30,20 +30,20 @@ test('2 By-analysis header: run time only when the card has its own result; the 
   const ago = (await import('/static/next/format.js')).ago;
   assert.equal(typeof app.boardRunWords, 'function');
   const surveyed = '2026-10-04T10:00:00Z';
-  // survey ran, this step produced nothing (laz_local_usda / activity_signals)
-  assert.equal(app.boardRunWords({ has_results: false, last_surveyed_at: surveyed, last_run_at: '' }),
-    `survey ran ${ago(surveyed)} · no result for this step`);
-  // never surveyed at all
-  assert.equal(app.boardRunWords({ has_results: false, last_surveyed_at: '', last_run_at: '' }), 'not run');
+  // survey ran, this step was not in it: the header says when the survey was, not that this ran
+  assert.equal(app.boardRunWords({ has_results: false, result_state: 'not_requested', last_surveyed_at: surveyed, last_run_at: '' }),
+    `last survey ${ago(surveyed)}`);
+  // never surveyed at all: the body says "not run yet"; the header says nothing more
+  assert.equal(app.boardRunWords({ has_results: false, result_state: 'never_surveyed', last_surveyed_at: '', last_run_at: '' }), '');
   // has a result: its own run time wins over the resource's survey time
   const own = '2026-10-10T10:00:00Z';
   assert.equal(app.boardRunWords({ has_results: true, last_surveyed_at: surveyed, last_run_at: own }), `run ${ago(own)}`);
   // and the card never says "run <when>" beside the not-run body
   const html = app.byAnalysisCardHtml('s', 'activity_signals', 'Activity Signals', '',
-    { status: 'done', board: { id: 'activity_signals', has_results: false, analyses: [], last_surveyed_at: surveyed } }, new Set(), true);
-  assert.ok(html.includes('Not run yet.'));
+    { status: 'done', board: { id: 'activity_signals', has_results: false, result_state: 'not_requested', analyses: [], last_surveyed_at: surveyed } }, new Set(), true);
+  assert.ok(!html.includes('Not run yet.'), '"Not run yet." is only for a resource never surveyed');
   assert.ok(!/>\s*run \d/.test(html) && !html.includes('run 8d'), 'no "run <when>" next to the not-run cue');
-  assert.ok(html.includes('no result for this step'));
+  assert.ok(html.replace(/&#39;|&#x27;|&apos;/g, "'").includes("its step wasn't requested"));
 });
 
 function chatEnv() { return dom().then(async () => {

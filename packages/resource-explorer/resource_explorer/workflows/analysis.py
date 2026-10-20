@@ -1227,6 +1227,7 @@ def build_survey_results(
                 _board["publish_stale"] = bool(_board.get("last_published_at")) and _status == "stale"
                 _board["publish_uncatalogued"] = _status == "uncatalogued"
                 _stamp_own_run(registry, entity_type, slug, _board)
+                _stamp_result_state(registry, entity_type, slug, _board)
             return fast
 
     from resource_explorer.catalogue_commit import _ts
@@ -1288,6 +1289,7 @@ def build_survey_results(
             })
         for _d in dashboards:
             _stamp_own_run(registry, entity_type, slug, _d)
+            _stamp_result_state(registry, entity_type, slug, _d)
         if board_id and dashboards:
             _persist_board_summary(registry, entity_type, slug, board_id, dashboards[0])
         return {"slug": slug, "stage": stage, "dashboards": dashboards}
@@ -1340,9 +1342,27 @@ def build_survey_results(
             "publish_uncatalogued": publish_uncatalogued,
             "last_surveyed_at": last_surveyed_at,
         })
+    # An analysis in the catalog with a step but no results reader has no board above. Asked for by id, it answers
+    # with a board that says so (`no_results_view`), not with nothing: the pane read a missing board as an error.
+    if board_id and include_empty and board_id not in results_map and board_id in catalog_by_id:
+        entry = catalog_by_id[board_id]
+        this_stage = ((entry or {}).get("intent") or "").strip().lower()
+        if not stage or stage == this_stage:
+            dashboards.append({
+                "id": board_id,
+                "title": entry.get("name") or board_id.replace("_", " ").title(),
+                "description": entry.get("description") or "",
+                "render": "custom", "custom_renderer": "", "perspectives": [],
+                "stages": [this_stage] if this_stage else [],
+                "has_results": False, "no_results_view": True, "analyses": [],
+                "last_published_at": "", **_reset_fields(registry, slug, ""),
+                "publish_stale": False, "publish_uncatalogued": publish_uncatalogued,
+                "last_surveyed_at": last_surveyed_at,
+            })
     for _d in dashboards:
         _stamp_own_run(registry, entity_type, slug, _d)
-    if board_id and dashboards:
+        _stamp_result_state(registry, entity_type, slug, _d)
+    if board_id and dashboards and not dashboards[0].get("no_results_view"):
         _persist_board_summary(registry, entity_type, slug, board_id, dashboards[0])
     return {"slug": slug, "stage": stage, "dashboards": dashboards}
 
@@ -1382,6 +1402,137 @@ def _stamp_own_run(registry, entity_type: str, slug: str, board: dict) -> None:
         board["last_run_at"] = _latest_run_at(registry, entity_type, slug, [i for i in ids if i])
     except Exception:
         board["last_run_at"] = ""
+
+
+#: The result states a board carries (`result_state`), each derived from stored proof rows (activity_log's recorded
+#: step list, step_runs, a section-coverage row, the result rows themselves), never from which branch the code took.
+#: `survey_unattributed` is a sixth the design did not list: a survey whose row records no step list cannot say
+#: whether this analysis's step ran, and "not requested" or "ran, no rows" would each be a guess.
+RESULT_STATES = ("has_results", "not_requested", "ran_no_rows", "predates_storage", "never_surveyed",
+                 "no_results_view", "survey_unattributed")
+
+#: When an analysis's local result store began. A survey that executed the step before this left verdicts only in
+#: Egeria annotations, so "no rows" then says nothing about the step. Only analyses whose store start is known.
+#: database_column_matches: PR #759 merged 2026-10-19 21:04 -0500.
+_COLUMN_MATCH_STORE_START = "2026-10-20T02:04:52+00:00"
+RESULT_STORE_STARTS: dict[str, str] = {
+    "data_class_match": _COLUMN_MATCH_STORE_START,
+    "reference_data_match": _COLUMN_MATCH_STORE_START,
+}
+
+#: Analyses whose step writes a section-coverage row on every completed run, even when it has no rows: that row is
+#: the proof the step ran, so an empty result is "ran, no rows" and not "never run".
+RESULT_COVERAGE_SECTIONS: dict[str, str] = {
+    "data_class_match": "column_matches",
+    "reference_data_match": "column_matches",
+}
+
+#: A recorded step whose status is one of these did not execute.
+_STEP_NOT_EXECUTED = frozenset({
+    "skipped_by_design", "skipped", "unknown_step", "not_executed_no_egeria_handler", "unrecognized_engine",
+})
+
+
+def _parse_ts(value):
+    from datetime import datetime, timezone
+    try:
+        d = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def _latest_survey_record(registry, entity_type: str, slug: str) -> dict | None:
+    """The newest `survey` activity row: {"ts", "steps"}. `steps` is the set of step keys that EXECUTED, read from the
+    row's own recorded list, else from the step_runs snapshot that ended at it; None when neither names any (the
+    survey is on record, its steps are not)."""
+    with registry._conn() as conn:
+        row = conn.execute(
+            "SELECT ts, detail FROM activity_log WHERE entity_type = ? AND entity_slug = ? "
+            "AND operation = 'survey' ORDER BY ts DESC LIMIT 1", (entity_type, slug)).fetchone()
+    if row is None:
+        return None
+    try:
+        detail = json.loads(row["detail"] or "{}")
+    except (TypeError, ValueError):
+        detail = {}
+    listed = (detail.get("steps") or []) if isinstance(detail, dict) else []
+    keys = {
+        s.get("re_analysis_step") or str(s.get("step") or "").rsplit("::", 1)[-1]
+        for s in listed if isinstance(s, dict) and (s.get("status") or "") not in _STEP_NOT_EXECUTED
+    }
+    if listed:
+        return {"ts": row["ts"], "steps": keys}
+    end = _parse_ts(row["ts"])
+    runs = registry._step_run_times(entity_type, slug)
+    for _, t in runs:
+        start = _parse_ts(t)
+        if end is not None and start is not None and 0 <= (end - start).total_seconds() <= 7200:
+            return {"ts": row["ts"], "steps": {k for k, tt in runs if tt == t}}
+    return {"ts": row["ts"], "steps": None}
+
+
+def _coverage_proof(registry, entity_type: str, slug: str, section: str) -> str:
+    """Newest `surveyed_at` of a coverage row for `section`, "" when none was ever written."""
+    try:
+        table, slug_column = registry._coverage_table(entity_type)
+        with registry._conn() as conn:
+            row = conn.execute(
+                f"SELECT MAX(surveyed_at) AS at FROM {table} WHERE {slug_column} = ? AND section = ?",
+                (slug, section)).fetchone()
+        return (dict(row).get("at") if row else "") or ""
+    except Exception:
+        return ""
+
+
+def derive_result_state(registry, entity_type: str, slug: str, board: dict) -> str:
+    """One of RESULT_STATES for a board, from proof rows. See RESULT_STATES."""
+    if board.get("no_results_view"):
+        return "no_results_view"
+    if board.get("has_results"):
+        return "has_results"
+    from resource_explorer.registry import _analysis_step_map
+
+    ids = [i for i in (_board_analysis_ids(entity_type, board.get("id", "")) or [board.get("id", "")]) if i]
+    own_run = board.get("last_run_at") or ""
+    survey = _latest_survey_record(registry, entity_type, slug)
+    if not (board.get("last_surveyed_at") or survey or own_run):
+        return "never_surveyed"
+
+    def _predates(when) -> bool:
+        starts = [RESULT_STORE_STARTS.get(i) for i in ids]
+        t = _parse_ts(when)
+        return bool(starts) and all(starts) and t is not None and t < _parse_ts(min(starts))
+
+    # A section-coverage row is written whenever the step completes, even with no rows.
+    sections = {RESULT_COVERAGE_SECTIONS[i] for i in ids if i in RESULT_COVERAGE_SECTIONS}
+    for section in sections:
+        at = _coverage_proof(registry, entity_type, slug, section)
+        if at:
+            return "ran_no_rows"
+
+    smap = _analysis_step_map(entity_type)
+    owned = {k for i in ids for k in smap.get(i, [])}
+    survey_ts = _parse_ts(survey["ts"]) if survey else None
+    in_survey = None
+    if survey and survey["steps"] is not None and owned:
+        in_survey = bool(owned & survey["steps"])
+    own_t = _parse_ts(own_run) if own_run else None
+    own_after = own_t is not None and (survey_ts is None or own_t > survey_ts)
+    if in_survey or own_after:
+        return "predates_storage" if _predates(survey["ts"] if in_survey else own_run) else "ran_no_rows"
+    if in_survey is False:
+        return "not_requested"
+    return "survey_unattributed"
+
+
+def _stamp_result_state(registry, entity_type: str, slug: str, board: dict) -> None:
+    """`board["result_state"]`, derived NOW from proof rows (also on a persisted summary, like `_reset_fields`)."""
+    try:
+        board["result_state"] = derive_result_state(registry, entity_type, slug, board)
+    except Exception:
+        log.exception("result_state for %s/%s/%s", entity_type, slug, board.get("id"))
+        board["result_state"] = "survey_unattributed"
 
 
 def _reset_fields(registry, slug: str, published_at: str) -> dict:

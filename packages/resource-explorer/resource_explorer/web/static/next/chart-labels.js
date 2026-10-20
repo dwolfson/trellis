@@ -12,6 +12,8 @@ export const CHAR_W = 7.6;       // average glyph width at the 13px chart font
 export const LINE_H = 17;        // one tick-label line
 export const BAR_ROW_H = 22;     // one horizontal bar's own row, so every category label has its own line
 export const BASE_H = 260;       // a chart never draws shorter than this
+/** A pie has no axes; its title sits in the top margin, so the margin is what keeps slices and any label clear of it. */
+export const PIE_TOP_MARGIN = 72;
 const MAX_CAT_CHARS = 16;        // x categories (rotated, so cheap in width)
 const MAX_Y_CHARS = 24;          // y categories (horizontal, in the left margin)
 const TICK_GAP = 12;             // minimum clear space between two labels
@@ -84,7 +86,9 @@ export function fitFigure(fig, width, title = '') {
   layout.xaxis = layout.xaxis || {};
   layout.yaxis = layout.yaxis || {};
 
-  if (horizontal) {
+  if (data.some((t) => t.type === 'pie')) {
+    margin.l = 16; margin.r = 16; margin.t = PIE_TOP_MARGIN; margin.b = 16;
+  } else if (horizontal) {
     const names = (data[0].y || []).map(String);
     const shown = names.map((s) => ellipsize(s, MAX_Y_CHARS));
     names.forEach((full, i) => { if (shown[i] !== full) alt.push({ shown: shown[i], full }); });
