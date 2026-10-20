@@ -278,6 +278,11 @@ class StepInfo:
     #: the inverse map cannot answer "run which one?" and
     #: `step_produces.validate()` raises rather than picking.
     produces: tuple[str, ...] = ()
+    #: The request parameters this step accepts, as {name: step_parameters.StepParameter}. A Survey
+    #: Definition's process step or an engine action may carry request parameters; only the names declared
+    #: here reach the step's runner, coerced to their kind (`step_parameters.coerce_step_parameters`). Empty:
+    #: the step takes none, and any it is sent are reported as ignored.
+    parameters: dict = field(default_factory=dict)
 
     @property
     def requires(self) -> tuple[str, ...]:

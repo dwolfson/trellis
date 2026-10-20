@@ -32,6 +32,7 @@ import logging
 from datetime import datetime, timezone
 
 from resource_explorer.table_kinds import is_table_type
+from resource_explorer.surveyors.step_parameters import BOOL, JSON_OBJECT, StepParameter
 from resource_explorer.surveyors.survey_definition_executor import (
     ResourceTypeAdapter,
     register_adapter,
@@ -552,6 +553,19 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
 # narrows why `postgres_operations` still declares `stats` at all) — now one
 # `catalog`, four `read`, one `stats`, one undeclared, and each judgement it
 # decides is noted on the step it decides.
+def _validate_sampling(value: dict) -> None:
+    """A `sampling` request parameter must resolve as a run-scope override (raises SamplingConfigError if not)."""
+    from resource_explorer.surveyors.database.sampling import resolve_sampling_config
+
+    resolve_sampling_config(purpose="matching", run_settings=value)
+
+
+#: The value-sampling steps' request parameters (step_parameters.py). `sampling` is a run-scope override
+#: for `sampling.resolve_sampling_config`, e.g. {"strategy": "head", "max_rows": 500}.
+_SAMPLING_PARAMETER = StepParameter(
+    JSON_OBJECT, "run-scope sampling override, a JSON object of SamplingConfig fields", validate=_validate_sampling)
+
+
 DATABASE_STEP_REGISTRY: dict[str, StepInfo] = {
     "postgres_schema_and_stats": StepInfo(
         "postgres_schema_and_stats", None,
@@ -664,6 +678,11 @@ DATABASE_STEP_REGISTRY: dict[str, StepInfo] = {
         # The `statistics` ride-along that reaches `stats`-tier views is
         # provenance for the sample, not output — excluded by the rule above.
         requires_capability="read",
+        parameters={
+            "sampling": _SAMPLING_PARAMETER,
+            "read_egeria_catalog": StepParameter(
+                BOOL, "read Egeria's Data Classes and Valid Value Sets to match against (default true)"),
+        },
     ),
     "postgres_nested_columns": StepInfo(
         "postgres_nested_columns", None,
@@ -681,6 +700,7 @@ DATABASE_STEP_REGISTRY: dict[str, StepInfo] = {
         # stored schema catalog, which needs nothing — the sampling is what
         # needs `SELECT`.
         requires_capability="read",
+        parameters={"sampling": _SAMPLING_PARAMETER},
     ),
     "sql_analysis": StepInfo(
         "sql_analysis", None,

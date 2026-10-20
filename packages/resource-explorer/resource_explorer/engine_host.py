@@ -1864,6 +1864,18 @@ def _decide_steps(registry, target: dict, cancelled=None, on_publish=None, *, us
             raise EngineHostPublishFailed(published["outcome"]["message"])
         return published["outcome"]["report_guid"]
 
+    # The action's request parameters (stored on the target at the claim, never read until 2026-10-20). A
+    # registry step forwards the ones it declares (step_parameters.py); one it declares with a value it cannot
+    # use is refused here, before anything runs, in the action's own guard. A library step declares none yet.
+    from resource_explorer.surveyors.step_parameters import coerce_step_parameters
+
+    request_parameters = dict(target.get("request_parameters") or {})
+    checked = coerce_step_parameters(getattr(getattr(builtin, "info", None), "parameters", None) or {},
+                                     request_parameters)
+    if checked.invalid:
+        return _outcome(SURVEY_INVALID, f"Resource Explorer did not run {request_type} on {slug}: "
+                        + "; ".join(checked.invalid))
+
     from resource_explorer.run_credential_holder import SCOPE as ONE_RUN_SCOPE
     from resource_explorer.secret_redaction import redacting_logs
     from resource_explorer.surveyors.survey_definition_executor import _redactable
@@ -1879,13 +1891,19 @@ def _decide_steps(registry, target: dict, cancelled=None, on_publish=None, *, us
                 entity_type=ENTITY_TYPE, slug=slug, re_analysis_step=step_key, executes_at="resource-explorer",
                 # In this process, never Prefect (Prefect-only steps are not in the slice, §5.4).
                 engine_override="resource-explorer", publisher=publisher, credential_scope=scope,
-                capability_consented=bool(ran_as),
+                capability_consented=bool(ran_as), request_parameters=request_parameters,
                 display_name=f"{request_type} (engine action {target.get('engine_action_guid')})", **runner_kwargs)
     except Exception as exc:  # noqa: BLE001 -- the step could not run: survey-failed with its words
         # Item 3: no "ran as" on a step that raised; nothing proves it connected.
         return {**(published.get("outcome") or _outcome(SURVEY_FAILED, f"{step_key} on {slug} could not run: "
                                                        f"{_short(exc)}")), **not_assessed}
     outcome = {**_ran_outcome(ran, published, step_key, slug, library), **not_assessed}
+    if request_parameters:
+        outcome["request_parameters"] = checked.summary()
+        if checked.ignored:
+            # Named, never silently dropped: Egeria's own parameters travel in the same map.
+            outcome["message"] = (f"{outcome.get('message', '')} Request parameters {step_key} does not take, "
+                                  f"not used: {', '.join(sorted(checked.ignored))}.").strip()
     if ran_as and _step_ran(ran, step_key, outcome):
         outcome["ran_as"] = ran_as
     return outcome
