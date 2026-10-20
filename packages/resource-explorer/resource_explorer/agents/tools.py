@@ -1396,8 +1396,22 @@ def list_rfas_raw(resource_slug: str = "", include_closed: bool = False) -> str:
         if not r.get("dismissed") and (include_closed or r.get("rfa_status") != "completed")
     ]
     scope = f" for '{slug}'" if slug else ""
+    # Completed RFAs the default view hides. Said in the result itself because a model that did not set
+    # include_closed (both Qwens on q22, 2026-10-20) otherwise has no way to learn closed ones exist.
+    hidden_closed = 0 if include_closed else sum(
+        1 for r in rfas if not r.get("dismissed") and r.get("rfa_status") == "completed"
+    )
+    closed_hint = (
+        f"{hidden_closed} completed (closed) RFA{'' if hidden_closed == 1 else 's'}{scope} "
+        f"{'is' if hidden_closed == 1 else 'are'} hidden from this list: call list_rfas again with "
+        f"include_closed=true to see {'it' if hidden_closed == 1 else 'them'}, and do that before "
+        f"saying there is no closed or completed RFA."
+    ) if hidden_closed else ""
     if not shown:
-        return f"No open RequestForAction entries{scope} ({total} in total, including closed or dismissed)."
+        return (
+            f"No open RequestForAction entries{scope} ({total} in total, including closed or dismissed)."
+            + (f" {closed_hint}" if closed_hint else "")
+        )
     closed_note = "including completed ones" if include_closed else "not yet completed"
     by_status: dict[str, int] = {}
     for r in shown:
@@ -1416,6 +1430,8 @@ def list_rfas_raw(resource_slug: str = "", include_closed: bool = False) -> str:
         )
     if len(shown) > 25:
         lines.append(f"- ... and {len(shown) - 25} more")
+    if closed_hint:
+        lines.append(closed_hint)
     lines.append("To change an RFA's status, use the RFA drawer; the chat can only read them.")
     return "\n".join(lines)
 

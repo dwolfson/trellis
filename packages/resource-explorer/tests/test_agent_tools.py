@@ -1354,10 +1354,24 @@ def test_list_rfas_is_read_only_and_honest(db):
             rfa_id=f"{entry['id']}::0", entry_id=entry["id"], annotation_index=0,
             status="completed", activity_status="completed",
         )
-        assert "No tests" not in list_rfas_raw("rfa_repo")
+        default = list_rfas_raw("rfa_repo")
+        assert "No tests" not in default
+        # The default view says a closed one exists and how to see it.
+        assert "1 completed (closed) RFA for 'rfa_repo' is hidden" in default and "include_closed=true" in default
         everything = list_rfas_raw("rfa_repo", include_closed=True)
         assert "No tests" in everything and "[completed]" in everything
         assert "including completed ones" in everything and "not yet completed" not in everything
+        assert "hidden from this list" not in everything
+
+        # Nothing open, one closed: the empty answer must not read as "no closed RFAs either".
+        other = db.list_activity(limit=10)
+        entry2 = next(e for e in other if e["summary"] == "Missing docs")
+        db.upsert_rfa_action(
+            rfa_id=f"{entry2['id']}::0", entry_id=entry2["id"], annotation_index=0,
+            status="completed", activity_status="completed",
+        )
+        none_open = list_rfas_raw("rfa_repo")
+        assert none_open.startswith("No open RequestForAction") and "2 completed (closed) RFAs" in none_open
 
 
 def test_cross_asset_matcher_real_data_lessons(db):
