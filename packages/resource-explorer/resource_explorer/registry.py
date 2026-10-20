@@ -4640,6 +4640,9 @@ class ProjectRegistry:
         # run_queue._handle_engine_action (E4 of DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE §5.1); never cancellable
         # from RE (run_queue.UNCANCELLABLE_KINDS).
         "engine_action",
+        # A repository's first index for chat, queued by a person's yes (first_index.py, run by
+        # run_queue._handle_first_index). Not a survey step: a refresh cannot make a first index.
+        "first_index",
     )
 
     #: States that occupy a user's one fairness slot.

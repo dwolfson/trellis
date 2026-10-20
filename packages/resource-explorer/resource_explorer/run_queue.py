@@ -342,6 +342,15 @@ def _publish_architecture(target: dict, result_ref: str) -> RunOutcome:
         f"{r['name']}: {r['status']} · {r['words']}" for r in bad)[:1500])
 
 
+def _handle_first_index(target: dict, result_ref: str) -> RunOutcome:
+    """A repository's first index for chat, the ingestion a new project gets (first_index.run_first_index). The
+    handler is the run's one writer of the activity entry's terminal words; a failure is the first sentence."""
+    from resource_explorer.first_index import run_first_index
+
+    result = run_first_index(target["slug"])
+    return RunOutcome(state="succeeded" if result.status == "ok" else "failed", error=result.error or "")
+
+
 def _handle_engine_action(target: dict, result_ref: str) -> RunOutcome:
     """An Egeria engine action RE claimed as an engine host (engine_host.py, E4). Runs as
     `Daemon(ENGINE_HOST, requested_by)` (see `_run_as`), never as `_run_as_requester`'s RUN_QUEUE."""
@@ -364,6 +373,7 @@ HANDLERS: dict[str, Callable[[dict, str], RunOutcome]] = {
     "survey_definition_run": _handle_survey_definition_run,
     "discovery_expand": _handle_discovery_expand,
     "engine_action": _handle_engine_action,
+    "first_index": _handle_first_index,
 }
 
 
@@ -434,7 +444,7 @@ class _Heartbeat:
 #: requester: queued with none, they fail loudly rather than write anonymously on someone's behalf.
 #: (`materialize_components` is a run kind with a handler but nothing enqueues it today, so it is
 #: not listed; whoever starts queueing it adds it here.)
-PERSON_ACTION_KINDS = frozenset({"publish_architecture", "curate_commit", "catalogue_commit"})
+PERSON_ACTION_KINDS = frozenset({"publish_architecture", "curate_commit", "catalogue_commit", "first_index"})
 
 NO_REQUESTER_SENTENCE = ("this action was queued with no requester recorded; RE does not write to "
                          "Egeria on a person's behalf without saying whose")
@@ -523,6 +533,11 @@ def _activity_words(registry, kind: str, target: dict, outcome: "RunOutcome") ->
             more = f" (and {len(failed) - 1} more step(s) failed)" if len(failed) > 1 else ""
             return status, f"{label} {slug or 'the resource'} failed at step {first.get('name')}: {why}{more}."
         return status, f"{label} {slug or 'the resource'} failed: {_first_sentence(outcome.error) or 'no reason recorded'}."
+    if kind == "first_index":
+        name = slug or "the repository"
+        if ok:
+            return status, f"First index of {name} for chat: done."
+        return status, f"First index of {name} for chat failed: {_first_sentence(outcome.error, 400) or 'no reason recorded'}."
     if kind == "materialize_components":
         n = len(target.get("paths") or []) if isinstance(target, dict) else 0
         if ok:

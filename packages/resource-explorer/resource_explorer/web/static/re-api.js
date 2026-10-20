@@ -2183,3 +2183,20 @@ export const putApiInstance = (slug, url) => put(`/api/api-reference/${encodeURI
 export const refetchApiInstance = (slug) => post(`/api/api-reference/${encodeURIComponent(slug)}/instance/refetch`);
 export const clearApiInstance = (slug) => del(`/api/api-reference/${encodeURIComponent(slug)}/instance`);
 export const getApiFetchPolicy = () => get('/api/api-reference/policy');
+
+/* ── First index, asked first (first_index.py) ─────────────────────────── */
+
+/** The figures the ask shows for these repositories: measured ones with their source, estimated ones or null. */
+export const getFirstIndexAsk = (slugs) =>
+  get(`/api/first-index/ask?${slugs.map((s) => `slug=${encodeURIComponent(s)}`).join('&')}`);
+
+/** A yes that names each repository in `slugs`. `path`: 'single' | 'all' | 'each' (which button was used). */
+export const queueFirstIndex = ({ slugs, batchId = '', batchTotal = 0, path = 'single' }) =>
+  post('/api/first-index/queue', { slugs, batch_id: batchId, batch_total: batchTotal, path });
+
+/** Take a yes back before the repository has started; a 409 means it has. */
+export const withdrawFirstIndex = (runId) =>
+  post(`/api/first-index/withdraw/${encodeURIComponent(runId)}`);
+
+/** The First indexing list: one line per repository, from run rows. */
+export const getFirstIndexProgress = () => get('/api/first-index/progress');
