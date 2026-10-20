@@ -3555,6 +3555,19 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_work_list_runs_set "
                 "ON work_list_runs(set_id)"
             )
+            # Per-resource sampling settings (design §5.8's "per resource" scope), one row per resource.
+            # Its own table rather than a column on `databases`, so a file system can carry one too and
+            # DatabaseEntity is untouched. Read by sampling.scoped_settings; never a measurement.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS resource_sampling_settings (
+                    entity_type    TEXT NOT NULL,
+                    slug           TEXT NOT NULL,
+                    settings_json  TEXT NOT NULL,
+                    updated_at     TEXT NOT NULL,
+                    updated_by     TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (entity_type, slug)
+                )
+            """)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS architecture_component_verdicts (
                     id             TEXT PRIMARY KEY,
@@ -5602,6 +5615,51 @@ class ProjectRegistry:
     #: equivalent free-text field to retype. The route validates against
     #: whichever set matches the verdict_target it's recording.
     BLUEPRINT_VERDICTS = {"accepted", "rejected"}
+
+    def get_resource_sampling(self, entity_type: str, slug: str) -> dict:
+        """The per-resource sampling overrides for one resource ({} when none are set)."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT settings_json FROM resource_sampling_settings WHERE entity_type = ? AND slug = ?",
+                (entity_type, slug),
+            ).fetchone()
+        if row is None:
+            return {}
+        try:
+            value = json.loads(dict(row)["settings_json"] or "{}")
+        except ValueError:
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def set_resource_sampling(self, entity_type: str, slug: str, settings: dict | None,
+                              updated_by: str | None = None) -> dict:
+        """Set (or, with None or {}, clear) one resource's sampling overrides; returns what is now stored.
+
+        Checked before it is stored (`sampling.check_sampling_overrides`: no unknown keys, valid values),
+        so a bad setting is refused here, at the door, rather than found later by a survey."""
+        from datetime import timezone
+
+        from resource_explorer.surveyors.database.sampling import check_sampling_overrides
+
+        slug = self._normalize_slug(slug)
+        if settings and not isinstance(settings, dict):
+            raise ValueError("sampling settings must be a JSON object")
+        if settings:
+            # Before anything is deleted: a refused setting leaves the stored one as it was.
+            check_sampling_overrides(settings)
+        with self._conn() as conn:
+            conn.execute("DELETE FROM resource_sampling_settings WHERE entity_type = ? AND slug = ?",
+                         (entity_type, slug))
+            if not settings:
+                return {}
+            conn.execute(
+                "INSERT INTO resource_sampling_settings (entity_type, slug, settings_json, updated_at, updated_by)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (entity_type, slug, json.dumps(settings, sort_keys=True), datetime.now(timezone.utc).isoformat(),
+                 current_user_id() if updated_by is None else updated_by),
+            )
+        return dict(settings)
 
     def record_component_verdict(
         self, entity_type: str, entity_slug: str, scope_locator: str,

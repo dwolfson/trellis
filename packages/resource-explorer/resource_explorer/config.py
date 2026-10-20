@@ -632,6 +632,52 @@ class RunsConfig(BaseSettings):
     publish_inline: bool = Field(default=False, alias="RUNS_PUBLISH_INLINE")
 
 
+class SamplingSettings(BaseSettings):
+    """Sampling settings for the value-sampling steps (design §5.8: global → per resource type → per resource
+    → per run, narrowest wins; `surveyors/database/sampling.resolve_sampling_config`).
+
+    The two deployment-wide scopes live here, each a JSON object of SamplingConfig fields (`strategy`,
+    `max_rows`, `max_bytes`, `max_values`, `seed`, `time_budget`, `strata_column`):
+
+        SAMPLING_DEFAULTS='{"strategy": "head", "max_rows": 5000}'
+        SAMPLING_BY_RESOURCE_TYPE='{"database": {"time_budget": 30}}'
+
+    The per-resource scope is a registry row (`ProjectRegistry.set_resource_sampling`), and the per-run scope
+    is a step's `sampling` request parameter. Stored as text and parsed defensively, like `parse_str_list`: a
+    value that is not a JSON object logs one warning and is treated as unset, so a typo never stops the process
+    (a list setting once crashed the web process at startup, 2026-10-14). A JSON object with a bad field is
+    refused later, by `resolve_sampling_config`, when a step uses it: the step reports the error rather than
+    sampling with something nobody configured.
+    """
+
+    defaults_json: str = Field(default="", alias="SAMPLING_DEFAULTS")
+    by_resource_type_json: str = Field(default="", alias="SAMPLING_BY_RESOURCE_TYPE")
+
+    model_config = _ENV_FILE_CONFIG
+
+    @staticmethod
+    def _object(text: str, setting: str) -> dict:
+        if not (text or "").strip():
+            return {}
+        try:
+            value = json.loads(text)
+        except ValueError:
+            value = None
+        if not isinstance(value, dict):
+            logging.getLogger(__name__).warning("%s is not a JSON object; ignored", setting)
+            return {}
+        return value
+
+    def defaults(self) -> dict:
+        """The global scope's overrides ({} when unset or unreadable)."""
+        return self._object(self.defaults_json, "SAMPLING_DEFAULTS")
+
+    def for_resource_type(self, resource_type: str) -> dict:
+        """The overrides for one resource type ({} when unset, unreadable, or not an object)."""
+        value = self._object(self.by_resource_type_json, "SAMPLING_BY_RESOURCE_TYPE").get(resource_type)
+        return value if isinstance(value, dict) else {}
+
+
 class RuntimeConfig(BaseSettings):
     """Process-role runtime settings — see docs/process-model.md and
     docs/runtime-architecture-plan.md §2.
@@ -763,6 +809,7 @@ class ExplorerConfig(BaseSettings):
     artifact_tree: ArtifactTreeSettings = Field(default_factory=ArtifactTreeSettings)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     runs: RunsConfig = Field(default_factory=RunsConfig)
+    sampling: SamplingSettings = Field(default_factory=SamplingSettings)
 
     model_config = SettingsConfigDict(
         env_file=_ENV_FILES,

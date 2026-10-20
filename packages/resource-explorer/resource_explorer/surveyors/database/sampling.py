@@ -211,6 +211,42 @@ DEFAULT_MEASURE_SAMPLING = SamplingConfig(strategy=CATALOG_STATS_ONLY)
 DEFAULT_MATCHING_SAMPLING = SamplingConfig(strategy=RANDOM)
 
 
+def check_sampling_overrides(overrides: dict[str, Any]) -> None:
+    """Refuse a per-resource or per-run override with a key `SamplingConfig` does not have, or a bad value.
+
+    `merged_with` ignores unknown keys on purpose (a shared settings blob may carry another resource type's),
+    but a setting a person typed for ONE resource or ONE run has no such excuse: `"stratgy": "head"` would be
+    stored and silently change nothing. Raises SamplingConfigError naming the keys, else resolves the
+    override once, so a bad value raises here rather than in a survey.
+    """
+    if not isinstance(overrides, dict):
+        raise SamplingConfigError("sampling settings must be a JSON object")
+    known = {f for f in DEFAULT_MATCHING_SAMPLING.as_dict() if f != "scope"} | {"time_budget"}
+    unknown = sorted(set(overrides) - known)
+    if unknown:
+        raise SamplingConfigError(
+            f"unknown sampling setting(s) {', '.join(unknown)}; known: {', '.join(sorted(known))}")
+    resolve_sampling_config(purpose="matching", run_settings=overrides)
+
+
+def scoped_settings(registry, resource_type: str, slug: str) -> dict[str, dict]:
+    """The three stored scopes for one resource, as `resolve_sampling_config` keyword arguments.
+
+    Global and per resource type come from RE's settings (`config.SamplingSettings`); per resource from the
+    registry (`ProjectRegistry.set_resource_sampling`). The fourth scope, per run, is the caller's: a step's
+    `sampling` request parameter. Missing scopes are {}, which means "nothing set here".
+    """
+    from resource_explorer.config import get_config
+
+    settings = get_config().sampling
+    resource = {}
+    if registry is not None and slug:
+        resource = registry.get_resource_sampling(resource_type, slug)
+    return {"global_settings": settings.defaults(),
+            "resource_type_settings": settings.for_resource_type(resource_type),
+            "resource_settings": resource}
+
+
 def stable_seed_for(resource_slug: str) -> int:
     """A seed fixed per resource (§5.8's `seed` default), derived from the slug.
 

@@ -2219,6 +2219,57 @@ def database_remove(
     console.print(f"[green]✓ Database '{slug}' removed.[/green]")
 
 
+@database_app.command(name="sampling")
+def database_sampling(
+    slug: str = typer.Argument(help="Database slug"),
+    set_json: str = typer.Option("", "--set", help='JSON object of sampling settings, e.g. \'{"strategy": "head", "max_rows": 500}\''),
+    clear: bool = typer.Option(False, "--clear", help="Remove this database's own sampling settings"),
+):
+    """Show, set or clear one database's sampling settings, and what a value-sampling step would resolve.
+
+    Scopes, narrowest wins: SAMPLING_DEFAULTS, then SAMPLING_BY_RESOURCE_TYPE's "database", then this
+    database's own settings (set here), then a run's `sampling` request parameter. Local only: nothing is
+    written to Egeria.
+    """
+    import json as _json
+
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.database.sampling import (
+        SamplingConfigError,
+        resolve_sampling_config,
+        scoped_settings,
+    )
+
+    registry = ProjectRegistry()
+    if not registry.get_database(slug, allow_unreadable=True):
+        console.print(f"[red]Database '{slug}' not found.[/red]")
+        raise typer.Exit(1)
+    if set_json and clear:
+        console.print("[red]Use --set or --clear, not both.[/red]")
+        raise typer.Exit(2)
+    if set_json:
+        try:
+            registry.set_resource_sampling("database", slug, _json.loads(set_json))
+        except (ValueError, SamplingConfigError) as exc:
+            console.print(f"[red]✗ Not stored: {exc}[/red]")
+            raise typer.Exit(1) from None
+        console.print(f"[green]✓ Sampling settings stored for '{slug}'.[/green]")
+    elif clear:
+        registry.set_resource_sampling("database", slug, None)
+        console.print(f"[green]✓ Sampling settings cleared for '{slug}'.[/green]")
+
+    scopes = scoped_settings(registry, "database", slug)
+    for label, key in (("global (SAMPLING_DEFAULTS)", "global_settings"),
+                       ("database (SAMPLING_BY_RESOURCE_TYPE)", "resource_type_settings"),
+                       (f"this database ({slug})", "resource_settings")):
+        console.print(f"{label}: {_json.dumps(scopes[key]) if scopes[key] else 'not set'}")
+    try:
+        resolved = resolve_sampling_config(purpose="matching", resource_slug=slug, **scopes)
+        console.print(f"resolved for a run with no override: {_json.dumps(resolved.as_dict())}")
+    except SamplingConfigError as exc:
+        console.print(f"[red]resolves to an error, so value-sampling steps will fail: {exc}[/red]")
+
+
 @database_app.command(name="info")
 def database_info(
     slug: str = typer.Argument(help="Database slug"),
