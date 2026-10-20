@@ -490,10 +490,17 @@ def runnable_and_reason(analysis_id: str, entity_type: str = "repo") -> tuple[bo
     via a direct API call that bypasses this check entirely — the run route
     itself (`databases.py::run_single_database_analysis`) was never broken,
     only this precheck's idea of which catalog to resolve against."""
-    from resource_explorer.workflows.analysis import resolve_analysis_plan
+    if entity_type == "database":
+        # One predicate with the run route (databases.py): resolve_analysis_plan's source-step map is not
+        # what that route dispatches from, and two predicates is how a card offered a Run the route refused.
+        from resource_explorer.surveyors.database.database_surveyor import database_analysis_has_runner
 
-    is_ingest, steps = resolve_analysis_plan(analysis_id, entity_type)
-    runnable = bool(is_ingest or steps)
+        runnable = database_analysis_has_runner(analysis_id)
+    else:
+        from resource_explorer.workflows.analysis import resolve_analysis_plan
+
+        is_ingest, steps = resolve_analysis_plan(analysis_id, entity_type)
+        runnable = bool(is_ingest or steps)
     if runnable:
         return True, ""
     return False, (
@@ -572,17 +579,19 @@ def _credential_use(entity_type: str, analysis_id: str) -> str:
 
     `"stored"`  a database analysis that opens a connection: the run is enqueued and uses the
                 credential saved for the database (the run queue refuses to persist any other);
-    `"none"`    a zero-fetch `db_derived` analysis: it reads stored rows and opens no connection,
-                so "uses stored credential" would be false;
+    `"none"`    a zero-fetch `db_derived` analysis, or a library step (`credential_tier: none`): it
+                opens no connection, so "uses stored credential" would be false;
     `""`        not a database analysis, or one with no local runner (nothing to say)."""
     if entity_type != "database":
         return ""
-    from resource_explorer.surveyors.database.database_surveyor import database_analysis_has_runner
-    from resource_explorer.surveyors.database.db_derived import DB_DERIVED_ANALYSES
+    from resource_explorer.surveyors.database.database_surveyor import (
+        database_analysis_has_runner,
+        database_analysis_needs_credentials,
+    )
 
-    if analysis_id in DB_DERIVED_ANALYSES:
-        return "none"
-    return "stored" if database_analysis_has_runner(analysis_id) else ""
+    if not database_analysis_has_runner(analysis_id):
+        return ""
+    return "stored" if database_analysis_needs_credentials(analysis_id) else "none"
 
 
 def build_analyses_index(registry, slug: str, entity_type: str = "repo", *,

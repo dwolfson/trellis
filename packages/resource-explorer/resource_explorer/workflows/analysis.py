@@ -549,6 +549,7 @@ def run_database_analysis(slug: str, analysis_id: str, *, registry=None,
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.surveyors.database.database_surveyor import (
         DATABASE_SURVEYOR_STEP_MAP,
+        database_library_step_key,
         run_database_survey,
     )
     from resource_explorer.surveyors.database.db_derived import (
@@ -588,6 +589,10 @@ def run_database_analysis(slug: str, analysis_id: str, *, registry=None,
             annotations=ann_summary,
         )
 
+    library_key = database_library_step_key(analysis_id)
+    if library_key:
+        return _run_database_library_step(registry, slug, analysis_id, library_key)
+
     if analysis_id not in DATABASE_SURVEYOR_STEP_MAP:
         return DatabaseAnalysisRunResult(
             status="error",
@@ -625,6 +630,42 @@ def run_database_analysis(slug: str, analysis_id: str, *, registry=None,
         ),
         annotations=ann_summary,
     )
+
+
+def _run_database_library_step(registry, slug: str, analysis_id: str, step_key: str) -> DatabaseAnalysisRunResult:
+    """Run ONE Analytic Library step for a database, through the executor that runs one inside a survey.
+
+    `run_synthetic_step` is that path (the engine host's too): cost observed, `step_runs` row written, the run
+    recorded as a survey activity row, the result in `step_annotations`. In this process, on RE's own engine.
+    The step opens no connection and gets no password (`credential_tier: none`), so none is read or passed.
+
+    A per-card run stores its result and does not publish (database publishing stays its own explicit action):
+    the executor's publisher is a recorder that declines, so the step's output is counted and nothing is sent to
+    Egeria. A step whose package is not installed fails with `StepNotInstalled`'s words; a step that did not run
+    is an error with the executor's own reason, never an ok."""
+    from resource_explorer.surveyors.survey_definition_executor import NothingToPublish, SurveyDefinitionExecutor
+
+    outputs: list = []
+
+    def _count_and_decline(entity, step_outputs, surveyed_at, registry):
+        outputs.extend(step_outputs)
+        raise NothingToPublish("a per-card run stores its result; it does not publish")
+
+    try:
+        ran = SurveyDefinitionExecutor(registry).run_synthetic_step(
+            entity_type="database", slug=slug, re_analysis_step=step_key, executes_at="resource-explorer",
+            engine_override="resource-explorer", publisher=_count_and_decline,
+            display_name=f"{analysis_id} (per-card run)")
+    except Exception as exc:
+        return DatabaseAnalysisRunResult(status="error", error=str(exc))
+
+    report = next((r for r in ran.get("steps") or [] if r.get("re_analysis_step") == step_key), {})
+    if report.get("status") != "ok":
+        why = "; ".join(str(e) for e in ran.get("errors") or []) or str(report.get("detail") or "") \
+            or f"step status {report.get('status') or 'unknown'}"
+        return DatabaseAnalysisRunResult(status="error", error=f"{step_key} did not run on {slug}: {why}")
+    count = sum(int(o.get("annotation_count") or 0) for o in outputs if isinstance(o, dict))
+    return DatabaseAnalysisRunResult(status="ok", summary=f"{count} annotation(s).")
 
 
 def execute_and_record_database_analysis(slug: str, analysis_id: str, activity_id: str,

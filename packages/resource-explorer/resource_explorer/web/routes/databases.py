@@ -912,8 +912,8 @@ async def run_single_database_analysis(slug: str, analysis_id: str,
     from resource_explorer.run_queue import requested_by as _requested_by
     from resource_explorer.surveyors.database.database_surveyor import (
         database_analysis_has_runner,
+        database_analysis_needs_credentials,
     )
-    from resource_explorer.surveyors.database.db_derived import DB_DERIVED_ANALYSES
 
     registry = ProjectRegistry()
     db = _get_database_for_use(registry, slug)
@@ -927,16 +927,15 @@ async def run_single_database_analysis(slug: str, analysis_id: str,
     # missing credentials, must be a 400 here, not a queued row that fails a
     # minute later in a different process where nobody is looking (same rule
     # projects.py's run_single_analysis follows).
-    if analysis_id in DB_DERIVED_ANALYSES:
-        pass  # zero-fetch — no credentials check needed
-    elif not database_analysis_has_runner(analysis_id):
+    if not database_analysis_has_runner(analysis_id):
         raise HTTPException(
             status_code=400,
             detail=f"Analysis '{analysis_id}' has no local survey step(s) mapped — "
                    "either it's Egeria-native/publish (use the appropriate dedicated "
                    "action instead) or an unknown id.",
         )
-    elif not db.db_user or not db.db_password:
+    elif database_analysis_needs_credentials(analysis_id) and (not db.db_user or not db.db_password):
+        # A db_derived analysis (stored rows) and a library step (credential_tier none) open no connection.
         raise HTTPException(
             status_code=400,
             detail="No stored database credentials — register the database with "
@@ -972,8 +971,10 @@ def _start_override_analysis(registry, db, slug: str, analysis_id: str,
 
     from resource_explorer.activity_logger import log_analysis_run
     from resource_explorer.run_reconciler import process_identity
-    from resource_explorer.surveyors.database.database_surveyor import database_analysis_has_runner
-    from resource_explorer.surveyors.database.db_derived import DB_DERIVED_ANALYSES
+    from resource_explorer.surveyors.database.database_surveyor import (
+        database_analysis_has_runner,
+        database_analysis_needs_credentials,
+    )
     from resource_explorer.workflows.analysis import (
         NOT_RETRIED_WORDS,
         OVERRIDE_SCOPE,
@@ -985,7 +986,7 @@ def _start_override_analysis(registry, db, slug: str, analysis_id: str,
         raise HTTPException(
             status_code=400,
             detail="A credential for this run needs both a user and a password; the password alone is not enough.")
-    if analysis_id in DB_DERIVED_ANALYSES:
+    if database_analysis_has_runner(analysis_id) and not database_analysis_needs_credentials(analysis_id):
         raise HTTPException(
             status_code=400,
             detail=f"Analysis '{analysis_id}' reads stored rows and opens no connection, so a credential "
