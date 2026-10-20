@@ -1671,3 +1671,57 @@ def test_cross_asset_links_say_when_the_limit_hid_rows(db):
         whole = m.query_cross_asset_links_raw(min_confidence="low", limit=50)
     assert "first 15 of 20" in capped and "5 more are not shown" in capped and "NOT the total" in capped
     assert "Showing all 20 links" in whole and "NOT the total" not in whole
+
+
+def test_the_turn_leads_with_the_link_totals_the_tool_reported(db):
+    from unittest.mock import patch
+
+    from resource_explorer.agents import tools
+    from resource_explorer.surveyors import cross_asset_matcher as m
+
+    links = _fake_links(20)
+    for i, l in enumerate(links):
+        l["confidence"] = "high" if i == 0 else "medium" if i < 4 else "low"
+    with patch.object(m, "find_cross_asset_links", lambda *a, **k: links):
+        tools.set_current_question("which databases does it use, include medium and low links")
+        assert tools.turn_fact_lead() == ""
+        tools.query_cross_asset_links_raw(min_confidence="low", limit=15)
+        lead = tools.turn_fact_lead()
+        tools.set_current_question("a new turn")
+        assert tools.turn_fact_lead() == "", "a new turn does not inherit the last turn's totals"
+    assert lead == ("20 cross-asset links found: 1 high, 3 medium, 16 low; "
+                    "15 of the 20 at 'low' or above are listed.")
+
+
+def test_the_totals_are_not_recorded_outside_a_turn(db):
+    """Called with no turn set (the integration agent's evidence read), nothing accumulates across turns."""
+    import contextvars
+    from unittest.mock import patch
+
+    from resource_explorer.agents import tools
+    from resource_explorer.surveyors import cross_asset_matcher as m
+
+    def run():
+        with patch.object(m, "find_cross_asset_links", lambda *a, **k: _fake_links(3)):
+            tools.query_cross_asset_links_raw(min_confidence="low")
+        return tools.turn_fact_lead()
+
+    assert contextvars.Context().run(run) == ""
+
+
+def test_the_conversation_answer_leads_with_the_link_totals(db):
+    from unittest.mock import patch
+
+    from resource_explorer.agents import tools
+    from resource_explorer.agents.conversation_agent import ConversationAgent
+    from resource_explorer.surveyors import cross_asset_matcher as m
+
+    def fake_run(self, prompt):
+        tools.query_cross_asset_links_raw(min_confidence="low", limit=2)
+        return "There are 2 high-confidence links."
+
+    with patch.object(m, "find_cross_asset_links", lambda *a, **k: _fake_links(5)), \
+         patch.object(ConversationAgent, "_run_persistent", fake_run):
+        answer = ConversationAgent().handle("which databases does it use, include medium and low links")
+    assert answer.startswith("5 cross-asset links found: 0 high, 0 medium, 5 low; 2 of the 5 at 'low' or above")
+    assert answer.endswith("There are 2 high-confidence links.")

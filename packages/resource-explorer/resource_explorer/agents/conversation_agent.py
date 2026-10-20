@@ -276,13 +276,17 @@ class ConversationAgent(BaseExplorerAgent):
         prompt = "\n".join(lines)
 
         try:
-            return self._run_persistent(prompt)
+            answer = self._run_persistent(prompt)
         except Exception:
             if self._rag is None:
                 from resource_explorer.rag_system import RAGSystem
 
                 self._rag = RAGSystem()
             return self._rag.query(query, resource_slug=slug)
+        from resource_explorer.agents.tools import turn_fact_lead
+
+        lead = turn_fact_lead()
+        return f"{lead}\n\n{answer}" if lead else answer
 
     @staticmethod
     def _dependency_evidence(slug: str, limit: int = 60) -> list[str]:

@@ -243,7 +243,14 @@ DEFAULT_LINK_LIMIT = 15
 def query_cross_asset_links_raw(
     resource_slug: str = "", min_confidence: str = "high", limit: int = DEFAULT_LINK_LIMIT
 ) -> str:
-    """Format cross-asset linkages between repos and databases as structured markdown.
+    return query_cross_asset_links_report(resource_slug, min_confidence, limit)[0]
+
+
+def query_cross_asset_links_report(
+    resource_slug: str = "", min_confidence: str = "high", limit: int = DEFAULT_LINK_LIMIT
+) -> tuple[str, str]:
+    """Format cross-asset linkages between repos and databases as structured markdown, with a one-line
+    totals sentence (empty when no link is listed) that a caller can state outright.
 
     Only links at `min_confidence` or above, best first and at most `limit`, are listed; the counts of
     everything found are always shown. On a real registry (73 repos x 20 databases) the unfiltered list
@@ -264,7 +271,7 @@ def query_cross_asset_links_raw(
     all_links = find_cross_asset_links(registry, repo_slug=repo_arg, database_slug=db_arg)
     floor = _CONFIDENCE_RANK.get((min_confidence or "high").lower())
     if floor is None:
-        return f"Unknown min_confidence '{min_confidence}'; use one of: {', '.join(_CONFIDENCE_RANK)}."
+        return f"Unknown min_confidence '{min_confidence}'; use one of: {', '.join(_CONFIDENCE_RANK)}.", ""
     limit = max(1, int(limit or DEFAULT_LINK_LIMIT))
     counts = {c: sum(1 for l in all_links if l["confidence"] == c) for c in ("high", "medium", "low")}
     matching = [l for l in all_links if _CONFIDENCE_RANK[l["confidence"]] >= floor]
@@ -275,13 +282,13 @@ def query_cross_asset_links_raw(
         return (
             f"No {min_confidence}-confidence links found{scope_str}; lower-confidence ones exist "
             f"({counts['medium']} medium, {counts['low']} low). Ask with min_confidence='medium' or 'low' to see them."
-        )
+        ), ""
     if not links:
         scope_str = f" for resource '{resource_slug}'" if resource_slug else ""
         return (
             f"No cross-asset dependencies or linkages found{scope_str}. "
             "Ensure both repositories and databases have been surveyed to discover table and ORM linkages."
-        )
+        ), ""
 
     lines: list[str] = [
         "### Discovered Cross-Asset Dependencies (Code Repositories ↔ Databases)\n",
@@ -323,4 +330,10 @@ def query_cross_asset_links_raw(
         "A link means the repo's model classes and the database's tables share names, "
         "not that the repo owns the database."
     )
-    return ("\n".join(lines) + shown_note).strip()
+    totals = (
+        f"{len(all_links)} cross-asset links found: {counts['high']} high, {counts['medium']} medium, "
+        f"{counts['low']} low"
+        + (f"; {len(links)} of the {len(matching)} at '{min_confidence}' or above are listed." if len(matching) > len(links)
+           else f"; all {len(links)} at '{min_confidence}' or above are listed.")
+    )
+    return ("\n".join(lines) + shown_note).strip(), totals
