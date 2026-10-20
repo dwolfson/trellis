@@ -42,6 +42,52 @@ survey, read the answers, publish, and see what Egeria holds, all on
 nothing is registered, the first slice is registration plus one walk on a
 real local path, and every analysis below is gated on that walk's rows.
 
+## 1a. What Egeria provides, read from its source (origin/main, 2026-10-20)
+
+The first draft of this brief did not inventory Egeria's own file survey
+services; the owner asked, and this section corrects the build order
+below. Egeria's `file-survey-connectors` module ships three survey action
+services, and the follow-Egeria's-lead rule applies: where Egeria
+measures something, RE runs Egeria's survey and reads it back rather
+than measuring it again; RE's own analyses are distinct types on top.
+
+| Egeria service | Analysis steps (annotation types) | What it measures |
+|---|---|---|
+| **Folder Survey Service** (`FolderSurveyService`, request parameter `analysisLevel`) | Capture File Counts (`FileDirectoryMetric`: fileCount, totalFileSize, subDirectoryCount, readable/writeable/executable counts, symLinkFileCount, hiddenFileCount, fileNameCount, fileExtensionCount, fileTypeCount, assetTypeCount, deployedImplementationTypeCount, unclassifiedFileCount, inaccessibleFileCount, lastFileCreationTime, lastFileModificationTime); Profile File Extensions; Profile File Types; Profile Asset Types; Profile Deployed Implementation Types; Profile File Names to External Log (`ResourceProfileLogAnnotation`); Missing File Reference Data; Inaccessible Files (as `RequestForAction`) | the whole tree's counts, bytes, permissions as counts, times, and the classification of every file by Egeria's file reference data (`FileClassifier`: extension, file type, asset type, deployed implementation type), with a request for action when reference data is missing |
+| **File Survey Service** (`FileSurveyService`) | Extract File Properties (`FileMetric` per file: fileName, pathName, fileExtension, fileType, deployedImplementationType, encoding, assetTypeName, canRead, canWrite, canExecute, symLink, hidden, creationTime, lastModifiedTime, fileSize, recordCount); Derive Schema From Data | one file's properties and, for data files, its schema |
+| **CSV Survey Service** (`CSVSurveyService`) | Derive Schema From Data: `DataField` schema attributes per column plus a `ResourceProfileAnnotation` per column | column names, types and value profiles of a CSV |
+
+RE already publishes file types as these folder-survey annotations (the
+file-types note) and reads native survey reports back for file systems
+(`routes/native_surveys.py`). So, against the twelve questions:
+
+- **Egeria answers, RE reads back:** F2 (file kinds, better than RE's
+  extension map because Egeria classifies against reference data and
+  names what it could not classify), the counts half of F1, the counts
+  half of F9 (readable, writeable, executable, hidden, symlinks), F3 for
+  CSV files (schema and column profiles), inaccessible paths, and the
+  folder-level last-created and last-modified times.
+- **Egeria does not measure, RE derives:** per-folder bulk and depth
+  (F1), change since the last walk (F5), duplicates by hash (F6), the
+  per-file age distribution (F8; Egeria gives the folder's latest times
+  only), owner, group and world-readable (F9; Egeria gives counts, not
+  who), layout signals (F10), documentation inside (F11), the price
+  (F12), and the data-class match over profiles (F7, which can run over
+  Egeria's CSV `DataField`s as its input).
+- **RE's walk shrinks to what Egeria does not keep:** per-file rows per
+  run with path, size, mtime, owner, group, mode and a content hash under
+  a limit, so that F5, F6, F8 and F9 are zero-fetch derivations. Where
+  Egeria's File Survey Service already extracts a file's properties, RE's
+  row stores the report GUID it came from, never a second measurement.
+
+The first slice therefore becomes: register the file system on /next,
+attach its root as an Egeria folder asset and run Egeria's Folder Survey
+at the chosen `analysisLevel` through the native-survey port RE already
+has, read it back, and only then run RE's walk extensions for what Egeria
+does not keep. The CSV Survey Service runs per data file on request, as
+the Egeria lever for F3, with RE's pandas profile kept for formats Egeria
+has no service for (Parquet, JSON lines, Excel), labelled as RE's.
+
 ## 2. The questions to add (file system only, each with its analysis)
 
 Numbered as proposals; the catalog assigns ids on the append.
@@ -74,11 +120,19 @@ half; Q-0080 stays, answered by F7.
 
 ## 3. Analyses, in build order
 
+0. **Egeria's Folder Survey as the lever** (no new analysis): the
+   registration attaches the root folder, the survey press runs Egeria's
+   Folder Survey with `analysisLevel`, and the read-back fills F2, the
+   counts of F1 and F9, and the inaccessible list. RE's
+   `filesystem_inventory` keeps only what §1a says Egeria does not.
 1. **Walk extensions** (one step, one PR): per-folder bytes and depth,
    owner/group/mode, content hash under a size limit, per-file rows kept
-   per run with a run id. These feed F1, F5, F6, F8, F9.
-2. **`file_profiles` as its own step** with its cost line; column rows
-   kept per run. Feeds F3, F7.
+   per run with a run id, each row naming the Egeria report it duplicates
+   nothing from. These feed F1, F5, F6, F8, F9.
+2. **`file_profiles` as its own step** with its cost line: Egeria's CSV
+   Survey Service per CSV file, RE's pandas profile for the formats Egeria
+   has no service for, both stored as column rows per run with their
+   source named. Feeds F3, F7.
 3. **`fs_change_rates`, `fs_duplicates`, `fs_activity`, `fs_permissions`**:
    four zero-fetch derived steps over the kept rows, each a library-style
    step with a nothing-to-derive guard ("one walk only", "no hashes",
