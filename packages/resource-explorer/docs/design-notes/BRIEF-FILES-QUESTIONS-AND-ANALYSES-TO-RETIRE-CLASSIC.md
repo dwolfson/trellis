@@ -217,10 +217,19 @@ world-readable file with a data-class match, publishes two directories
 and reads them back in Egeria, and never opens Classic. A second walk
 after adding and removing files shows F5 honestly.
 
-## 6. Open for the owner
+## 6. The owner's picks (2026-10-20) and what stays open
+
+**First slice: F1, F2, F3, F5, F7, F10, F11.** In build terms: register
+on /next and attach the root folder; Egeria's Folder Survey read back
+(F2, the counts of F1); the walk extensions with per-folder bulk and
+depth and per-file rows per run (F1, F5); `folder_narratives` (F11, and
+the licence and provenance it finds); `file_profiles` with Egeria's CSV
+survey plus RE's profile for other formats (F3); `fs_layout_signals`
+(F10); `data_class_match` over the profiles (F7); `fs_change_rates` on
+the second walk (F5). Hashes, duplicates, age distribution, owner and
+mode (F6, F8, F9) and the price line (F12) follow.
 
 - [ ] Hash limit and whether cross-file-system duplicate detection is in
-      the first slice.
-- [ ] Which of F1 to F12 are Alpha; the rest follow.
+      the second slice.
 - [ ] The CSV lister (file systems arrive hand-entered or by CSV today):
       in this brief or the discovery-sources one.
