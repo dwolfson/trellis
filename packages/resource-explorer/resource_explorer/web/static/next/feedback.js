@@ -102,7 +102,11 @@ function _showError(msg) {
   err.hidden = false;
 }
 
-function openFeedbackModal() {
+let _subject = '';
+
+function openFeedbackModal(opts) {
+  // Opened as a click handler this gets an Event; only a `{subject}` object counts.
+  _subject = (opts && typeof opts.subject === 'string') ? opts.subject : '';
   if (!_modalEl) _buildModal();
   // Reset form state on every open — also undoes a previous submission's
   // "Thank you" message if the modal is reopened quickly.
@@ -110,8 +114,18 @@ function openFeedbackModal() {
   _resetForm();
   _modalEl.classList.remove('hidden');
   const textarea = _modalEl.querySelector('#fb-message');
-  if (textarea) textarea.focus();
+  if (textarea) {
+    // "Tell us" on the look control (RULING-THEMES-PORTAL-DARK-LIGHT.md section 1): the subject
+    // leads the message, and travels as element_guid ("look:Paper") so the comments on a look
+    // can be found without reading them all.
+    if (_subject) textarea.value = `${_subject}\n\n`;
+    textarea.focus();
+    if (_subject) textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  }
 }
+
+// The look control (look.js) asks for the form without importing this module.
+document.addEventListener('re-open-feedback', (e) => openFeedbackModal({ subject: (e.detail && e.detail.subject) || '' }));
 
 function _resetForm() {
   if (!_modalEl) return;
@@ -170,7 +184,7 @@ async function submitFeedback() {
   const payload = {
     session_id: _sessionId(),
     page: location.pathname + location.search,
-    element_guid: '',
+    element_guid: _subject ? _subject.toLowerCase().replace(/\s+/g, '') : '',
     rating: _rating > 0 ? _rating : null,
     category,
     message,

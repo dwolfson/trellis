@@ -83,6 +83,38 @@ def _acting_user(request: Request, supplied: str = "") -> str:
     return user.get("user_id") or user.get("sub") or user.get("username") or supplied or ""
 
 
+class LookChange(BaseModel):
+    look: str
+    previous: str = ""
+
+
+@router.post("/look-change")
+def record_look_change(body: LookChange, request: Request) -> dict:
+    """One activity row for one change of look (RULING-THEMES-PORTAL-DARK-LIGHT.md section 1).
+
+    Goes through `write_activity` like every other row: no table of its own. Who, from and to sit in `detail`
+    as JSON, which `look_stats.look_counts` reads for Admin's feedback page. Nobody is refused for lacking a
+    sign-in: the look is a browser preference, and a row with no user is still one change."""
+    import json
+    import uuid
+    from datetime import datetime, timezone
+
+    from resource_explorer.look_stats import LOOKS, OPERATION
+    from resource_explorer.registry import ActivityEntry
+
+    if body.look not in LOOKS:
+        raise HTTPException(status_code=400, detail=f"look must be one of {list(LOOKS)}, got {body.look!r}")
+    previous = body.previous if body.previous in LOOKS else ""
+    who = _acting_user(request)
+    _registry().write_activity(ActivityEntry(
+        id=str(uuid.uuid4()), ts=datetime.now(timezone.utc).isoformat(),
+        operation=OPERATION, intent="ui", entity_type="ui", entity_slug="look",
+        summary=f"look changed to {body.look.capitalize()}",
+        detail=json.dumps({"look": body.look, "previous": previous, "user": who}),
+    ))
+    return {"status": "ok"}
+
+
 @router.get("/")
 def list_activity(
     entity_type: str | None = Query(None),

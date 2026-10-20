@@ -3,6 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Before first paint: the remembered look, so the page never flashes the wrong
+     one. No storage (blocked, private window) means Dark, which is also what
+     themes.css falls back to with no attribute at all. look.js writes the key. -->
+<script>
+(function () {
+  var look = 'dark';
+  try {
+    var v = localStorage.getItem('re-next.look');
+    if (v === 'light' || v === 'paper' || v === 'dark') look = v;
+  } catch (e) { /* storage unavailable: Dark */ }
+  document.documentElement.setAttribute('data-look', look);
+})();
+</script>
 <title>Resource Explorer · /next</title>
 <link rel="icon" href="/static/egeria-logo.png">
 
@@ -373,6 +386,9 @@
          browser cannot rely on the browser's zoom, and should not have to:
          one control removes the whole class of complaint. Three steps off the
          root font size, which every pane size is expressed against. -->
+    <!-- THE LOOK (Dark / Light / Paper), built by look.js. Sits beside the text
+         size: both are "make this readable for me". -->
+    <span id="look" class="flex items-baseline text-[13px]"></span>
     <span id="textsize" class="flex items-baseline gap-[2px] text-[13px]" role="group"
           aria-label="Text size">
       <button data-textsize="100" class="cursor-pointer bg-transparent px-[5px] text-chrome-muted"

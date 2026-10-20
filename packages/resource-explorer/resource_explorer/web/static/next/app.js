@@ -83,6 +83,7 @@ import { openInvestigationPicker, scopeActWording } from '/static/next/investiga
 import { addActWording, addListToInvestigation, openStartFromList, START_LABEL } from '/static/next/worklist-actions.js';
 import { loadChartsPane, renderUnderstandingTabs } from '/static/next/stages/understanding.js';
 import { renderCurate, jumpToCurateSection } from '/static/next/stages/curate.js';
+import { wireLook } from '/static/next/look.js';
 import { coverageHtml } from '/static/next/stages/curate-coverage.js';
 // Stage-specific leading tabs (Brief S0, dormant): the gate and ids are a leaf module, the label counts and the
 // running-commit line need `state`.
@@ -1032,6 +1033,7 @@ export function renderIntentNav() {
 
   wireSidebarDrawer();
   wireTextSize();
+  wireLook($('look'));   // RULING-THEMES-PORTAL-DARK-LIGHT.md section 1
 
   nav.querySelectorAll('button[data-stage]').forEach((b) => {
     b.addEventListener('click', () => {
