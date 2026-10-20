@@ -83,7 +83,7 @@ const out = {{}};
       yaxis: Object.assign({{ tickfont: {{ size: 13 }} }}, fit.layout.yaxis) }});
     if (layout.xaxis2) layout.xaxis2.tickfont = {{ size: 13 }};
     await Plotly.newPlot(div, fig.data, layout, {{ staticPlot: true }});
-    annotateTicks(div, fit.alt, fit.summary);
+    annotateTicks(div, fit.alt, fit.summary, fit.ticks);
     const svg = div.querySelector('svg.main-svg').getBoundingClientRect();
     // The label's own (unrotated) box carried through its transform: four
     // corners, so a rotated label is a parallelogram, not its loose AABB.
