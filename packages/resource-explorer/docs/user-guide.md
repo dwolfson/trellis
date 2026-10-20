@@ -392,7 +392,7 @@ how the report was published.
 | Published by | What the report includes |
 |---|---|
 | **Running a Survey Definition** on the database (from Discovery, or `database survey-definition`), when it ran column profiling | The schema inventory, statistics, views and operations it measured, **and** the column-profiling results: one **DataClassMatch** annotation per column checked, one **ColumnValueSample** annotation recording how that column was sampled, a **ReferenceDataMatch** annotation for each low-cardinality column compared with a reference set, the JSON and XML column profiles (**NestedSchemaProfile**, **NestedColumnSample**), and any request for action (for example "propose a Data Class" for an unmatched column that follows a clear pattern). |
-| **Publish** on the Curate tab, or `database survey --egeria` | The survey you kept: schema inventory, statistics and views. **Not** the column-profiling results: those are not kept between runs yet, so this path has nothing to send. To put data-class results in Egeria, run a Survey Definition that includes column profiling. |
+| **Publish** on the Curate tab, or `database survey --egeria` | The survey you kept: schema inventory, statistics and views. **Not** the column-profiling results. Since 2026-10-20 RE keeps the data-class and reference-data verdicts locally, and shows them on the **Data Class Match** and **Reference Data Match** cards, but this publish path does not send them yet. To put them in Egeria, run a Survey Definition that includes column profiling. |
 
 What to expect from the column-profiling annotations:
 

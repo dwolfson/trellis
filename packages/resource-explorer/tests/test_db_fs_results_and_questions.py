@@ -51,9 +51,9 @@ def fs_reg(pg_registry, slug):
 
 
 class TestDatabaseResultsMapCoverage:
-    """The map's own documented contract: 14 real readers, 3 known-absent
-    (data_class_match/reference_data_match/nested_column_profile -- no local
-    store exists for them yet, see the map's docstring), egeria_db_survey
+    """The map's own documented contract: real readers for every mapped
+    analysis but one known-absent (nested_column_profile -- no local store
+    exists for it yet, see the map's comment), egeria_db_survey
     excluded (a trigger, not a reader, same as repo's own Egeria-triggered
     analyses)."""
 
@@ -84,10 +84,9 @@ class TestDatabaseResultsMapCoverage:
             DATABASE_ANALYSIS_RE_STEP_MAP, DATABASE_ANALYSIS_RESULTS_MAP,
         )
 
-        expected_absent = {
-            "data_class_match", "reference_data_match", "nested_column_profile",
-            "egeria_db_survey",
-        }
+        # data_class_match and reference_data_match left this set on
+        # 2026-10-20: their verdicts are now stored in database_column_matches.
+        expected_absent = {"nested_column_profile", "egeria_db_survey"}
         assert set(DATABASE_ANALYSIS_RE_STEP_MAP) - set(DATABASE_ANALYSIS_RESULTS_MAP) == expected_absent
         # Nineteen: ENRICHMENT-E3 added `database_owner` (the measured datdba,
         # its own fact with its own measured_at).
@@ -103,7 +102,9 @@ class TestDatabaseResultsMapCoverage:
         # library steps, `statistics_freshness`, `hub_tables` and
         # `change_rates`, get the same generic reader from their generated
         # entries, installed or not.
-        assert len(DATABASE_ANALYSIS_RESULTS_MAP) == 25
+        # Twenty-seven (2026-10-20): data_class_match and reference_data_match,
+        # read from database_column_matches.
+        assert len(DATABASE_ANALYSIS_RESULTS_MAP) == 27
 
     def test_every_entry_is_a_reader_pair(self):
         from resource_explorer.surveyors.database.survey_definition_adapter import (
@@ -325,10 +326,14 @@ class TestQuestionHasDataIsGeneralized:
         assert question_has_data(db_reg, slug, [], entity_type="database") is None
 
     def test_database_false_not_raise_for_the_known_gap_analyses(self, db_reg, slug):
-        """data_class_match/reference_data_match/nested_column_profile have
-        no entry in DATABASE_ANALYSIS_RESULTS_MAP yet (see that map's own
-        docstring) -- has_data must degrade to False, not KeyError."""
+        """nested_column_profile has no entry in DATABASE_ANALYSIS_RESULTS_MAP
+        yet (see that map's own comment) -- has_data must degrade to False, not
+        KeyError. data_class_match has a reader now, and on a never-surveyed
+        database it is False for the honest reason: nothing stored."""
         from resource_explorer.workflows.scouting import question_has_data
+        assert question_has_data(
+            db_reg, slug, ["nested_column_profile"], entity_type="database",
+        ) is False
         assert question_has_data(
             db_reg, slug, ["data_class_match"], entity_type="database",
         ) is False

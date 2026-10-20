@@ -712,6 +712,7 @@ SECTION_SCHEMAS = "schemas"
 SECTION_TABLES = "tables"
 SECTION_COLUMNS = "columns"
 SECTION_COLUMN_PROFILES = "column_profiles"
+SECTION_COLUMN_MATCHES = "column_matches"
 SECTION_TABLE_ACTIVITY = "table_activity"
 SECTION_GRANTS = "grants"
 SECTION_SQL_OBJECTS = "sql_objects"
@@ -887,6 +888,46 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         sample_total_rows         BIGINT DEFAULT NULL,
         state                     TEXT NOT NULL DEFAULT 'measured',
         UNIQUE(database_slug, surveyed_at, source, schema_name, table_name, column_name),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    # One verdict per (column, question) from the column-profile step
+    # (column_matching.ColumnMatch): `data_class_match` and
+    # `reference_data_match` can both answer for one column, so this is not
+    # folded into database_column_profiles, whose key is the column alone.
+    # Every column the step considered has a row, including `not_sampled`
+    # and `not_applicable`: those are verdicts, and their absence would read
+    # as "never looked". `established` is 0 for a verdict that says nothing
+    # about the values (not sampled, no candidates, inconclusive).
+    """
+    CREATE TABLE IF NOT EXISTS database_column_matches (
+        id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug             TEXT NOT NULL,
+        surveyed_at               TEXT NOT NULL,
+        source                    TEXT NOT NULL DEFAULT 'local',
+        schema_name               TEXT NOT NULL,
+        table_name                TEXT NOT NULL,
+        column_name               TEXT NOT NULL,
+        question                  TEXT NOT NULL,
+        verdict                   TEXT NOT NULL,
+        established               INTEGER DEFAULT 0,
+        confidence                INTEGER DEFAULT 0,
+        matched_guid              TEXT DEFAULT '',
+        matched_qualified_name    TEXT DEFAULT '',
+        matched_display_name      TEXT DEFAULT '',
+        matched_element_is_draft  INTEGER DEFAULT 0,
+        sampled_conformance       REAL DEFAULT NULL,
+        value_coverage            REAL DEFAULT NULL,
+        privacy_relevant          INTEGER DEFAULT 0,
+        not_established_reason    TEXT DEFAULT '',
+        statement                 TEXT DEFAULT '',
+        -- The rest of the verdict (unmatched/proposed values, detected
+        -- patterns, other candidates, unusable specifications, evidence),
+        -- and the sample it was judged on: strategy, rows, total, seed, date.
+        detail_json               TEXT DEFAULT NULL,
+        sample_json               TEXT DEFAULT NULL,
+        state                     TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, schema_name, table_name, column_name, question),
         FOREIGN KEY (database_slug) REFERENCES databases(slug)
     )
     """,
@@ -1272,6 +1313,7 @@ _DETAIL_TABLE_ORDER: dict[str, str] = {
     "database_tables": "schema_name, table_name",
     "database_columns": "schema_name, table_name, ordinal_position, column_name",
     "database_column_profiles": "schema_name, table_name, column_name",
+    "database_column_matches": "schema_name, table_name, column_name, question",
     "database_table_activity": "schema_name, table_name",
     "database_grants": "schema_name, object_name, grantee, privilege_type",
     "database_sql_objects": "schema_name, object_type, object_name",
