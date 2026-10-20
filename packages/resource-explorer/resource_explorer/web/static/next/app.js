@@ -31,6 +31,7 @@ import { ago, whenMs, verdictLineHtml, changedTimesHtml, savedLine, readBackAt, 
 // declares no glyph-to-meaning mapping of its own any more.
 import { STATES as GLYPH_STATES, stateEntry } from '/static/next/glyphs.js';
 import { publishProofHtml } from '/static/next/publish-proof.js';
+import { cardHtml, cardStackHtml, tileHtml, tileRowHtml, bindTiles } from '/static/next/ui-cards.js';
 // `readEnvelope` and its own private helpers used to live here directly;
 // split into their own module (BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §D,
 // 2026-09-27) so a node-run test can import `readEnvelope` and check it
@@ -4874,6 +4875,16 @@ function onePurpose(text) {
  *  named the bare status word, which stays as the fallback when there is
  *  nothing more specific to show. */
 const RUN_LIVE = ACTIVITY_LIVE;
+
+/** Whether a definition's last run failed in a way that needs a person: not ok, not still going, not merely
+ *  "recorded" (a step_runs row proves it ran, not that it succeeded) and not cancelled (a decision, not a fault).
+ *  The ⚠ in the run cell and the card's left edge both come from this one predicate. */
+export function runNeedsYou(c) {
+  const status = c.last_run_status || '';
+  if (!c.last_run_at || RUN_LIVE.has(String(status).toLowerCase())) return false;
+  return status !== 'ok' && !!status && status !== 'recorded' && status !== 'cancelled';
+}
+
 export function lastRunHtml(c) {
   const when = c.last_run_at || '';
   if (!when) return '<span class="text-ink-muted">never run</span>';
@@ -4887,7 +4898,7 @@ export function lastRunHtml(c) {
   const errors = c.last_run_errors || [];
   // "recorded" = a step_runs row proves it ran, not that it succeeded: no
   // success cue, but not a failure either, so no warning glyph.
-  const warn = !ok && c.last_run_status && c.last_run_status !== 'recorded' && c.last_run_status !== 'cancelled'
+  const warn = runNeedsYou(c)
     ? (errors.length
         ? `<button type="button" data-run-errors="${esc(c.qualified_name || '')}"
              class="cursor-pointer bg-transparent text-state-warn underline decoration-dotted"
@@ -5052,39 +5063,40 @@ function definitionRunBlockHtml(c) {
 export function surveyRowHtml(c) {
   const steps = (c.steps || []).length || c.step_count || 0;
   const produces = producesTypes(c);
-  // The text column asks for a 24rem basis (flex: 1 1 24rem), not 0: with a zero basis it was never wrapped onto its
-  // own line, it was squeezed to a sliver at ~800 px (one word per line, the title over "6 steps"). Now the
-  // step count, last run and button drop to the next line once the pane is too narrow for the text beside them.
-  return `<div data-def-row="${esc(c.qualified_name || '')}" class="flex flex-wrap items-baseline gap-s3 border-b border-rule py-s2">
-    <div data-def-text class="min-w-0 flex-1" style="flex:1 1 24rem">
-      <div class="text-answer text-ink">${esc(c.display_name || c.qualified_name)}</div>
-      ${c.description ? `<div class="text-caveat text-ink-muted">${esc(onePurpose(c.description))}</div>` : ''}
-      <div class="mt-[2px] font-mono text-provenance text-ink-muted">${esc(c.qualified_name || '')}${
-        c.description ? ` · <button type="button" data-defhist="${esc(c.qualified_name)}"
-          class="cursor-pointer bg-transparent underline">definition history</button>` : ''}</div>
-      <div class="mt-[2px] text-provenance text-ink-muted">produces · ${
-        produces.length ? `<span class="font-mono">${produces.map((t) => esc(t)).join(', ')}</span>` : 'nothing declared'}</div>
-      ${engineNoteHtml(c)}
-      ${definitionRunBlockHtml(c)}
-    </div>
-    <div class="tnum shrink-0 text-caveat text-ink-muted">${steps} step${steps === 1 ? '' : 's'}${
+  // One survey definition is one card (PLAN-CARDS-AND-TILES.md): the title and the step count in the header, the
+  // buttons at the top right, the run line and the rest in the body, the definition's name and history as the footer.
+  const unreadable = selectedCredentialUnreadable();
+  const run = unreadable
+    ? `<button data-run-survey="${esc(c.qualified_name || c.guid)}" disabled title="${CREDENTIAL_UNREADABLE_TEXT}"
+      class="shrink-0 cursor-not-allowed rounded-sm border border-rule bg-transparent px-2 py-[2px] text-caveat text-ink-muted"
+      >${DEFINITION_RUN_WORD(c)}</button>`
+    : `<button data-run-survey="${esc(c.qualified_name || c.guid)}"
+      class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
+      >${DEFINITION_RUN_WORD(c)}</button>`;
+  return cardHtml({
+    state: runNeedsYou(c) ? 'needs_you' : 'ordinary',
+    attrs: `data-def-row="${esc(c.qualified_name || '')}"`,
+    title: esc(c.display_name || c.qualified_name),
+    meta: `<span class="tnum">${steps} step${steps === 1 ? '' : 's'}${
       // Point 2 (SPEC-THE-STAGE-PAGE.md): the axis tiering itself turns on --
       // "4 steps · 2 fetch" beside "7 steps · none fetch" reads as peers with
       // one that fetches twice and one that doesn't. `fetch_steps` is not on
       // every definition row yet (re/stage-page-backend); say nothing rather
       // than a false zero until it is.
-      c.fetch_steps == null ? '' : ` · ${c.fetch_steps ? `<span class="tnum">${c.fetch_steps}</span> fetch` : 'none fetch'}`}${definitionRunsHtml(c)}</div>
-    ${coordinatedRunShown(c) ? '' : `<div class="tnum shrink-0 text-caveat">${lastRunHtml(c)}</div>`}
-    ${catalogRetryHtml(c)}
-    ${selectedCredentialUnreadable()
-      ? `<button data-run-survey="${esc(c.qualified_name || c.guid)}" disabled title="${CREDENTIAL_UNREADABLE_TEXT}"
-      class="shrink-0 cursor-not-allowed rounded-sm border border-rule bg-transparent px-2 py-[2px] text-caveat text-ink-muted"
-      >${DEFINITION_RUN_WORD(c)}</button>`
-      : `<button data-run-survey="${esc(c.qualified_name || c.guid)}"
-      class="shrink-0 cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink"
-      >${DEFINITION_RUN_WORD(c)}</button>`}
-    ${coordinateControlHtml(c)}
-  </div>`;
+      c.fetch_steps == null ? '' : ` · ${c.fetch_steps ? `<span class="tnum">${c.fetch_steps}</span> fetch` : 'none fetch'}`}${definitionRunsHtml(c)}</span>`,
+    actions: `${catalogRetryHtml(c)}${run}${coordinateControlHtml(c)}`,
+    body: `<div data-def-text class="min-w-0">
+      ${c.description ? `<div class="text-caveat text-ink-muted">${esc(onePurpose(c.description))}</div>` : ''}
+      <div class="mt-[2px] text-provenance text-ink-muted">produces · ${
+        produces.length ? `<span class="font-mono">${produces.map((t) => esc(t)).join(', ')}</span>` : 'nothing declared'}</div>
+      ${engineNoteHtml(c)}
+      ${definitionRunBlockHtml(c)}
+      ${coordinatedRunShown(c) ? '' : `<div class="tnum mt-[2px] text-caveat">${lastRunHtml(c)}</div>`}
+    </div>`,
+    footer: `<span class="font-mono">${esc(c.qualified_name || '')}</span>${
+      c.description ? ` · <button type="button" data-defhist="${esc(c.qualified_name)}"
+          class="cursor-pointer bg-transparent underline">definition history</button>` : ''}`,
+  });
 }
 
 // Human-readable labels for `NativeProcess.kind` (technology_type_processes.py
@@ -5594,7 +5606,9 @@ export async function loadSurveyPane() {
   const elsewhere = tierOrder.filter((t) => t !== stage);
   const nElsewhere = elsewhere.reduce((n, t) => n + byTier.get(t).length, 0);
 
+  surveyTileDefs = all;
   el.innerHTML = subTabsHtml() + `
+    <div id="survey-tiles" class="mb-s4" data-survey-tiles></div>
     <div class="mb-s3 flex flex-wrap items-baseline gap-s3">
       <span class="text-caps uppercase tracking-caps text-ink-muted">Survey definitions ·
         ${esc(data.technology_type || 'unknown technology type')}</span>
@@ -5610,7 +5624,7 @@ export async function loadSurveyPane() {
     ${here.map((t) => `
       <div class="mt-s3 text-caps uppercase tracking-caps text-ink-muted">${esc(t)} ·
         <span class="tnum">${byTier.get(t).length}</span></div>
-      ${byTier.get(t).map(surveyRowHtml).join('')}`).join('')}
+      ${cardStackHtml(byTier.get(t).map(surveyRowHtml))}`).join('')}
 
     ${nElsewhere ? `
       <details class="mt-s3">
@@ -5621,7 +5635,7 @@ export async function loadSurveyPane() {
         </summary>
         ${elsewhere.map((t) => `
           <div class="mt-s2 text-caps uppercase tracking-caps text-ink-muted">${esc(t)}</div>
-          ${byTier.get(t).map(surveyRowHtml).join('')}`).join('')}
+          ${cardStackHtml(byTier.get(t).map(surveyRowHtml))}`).join('')}
       </details>` : ''}
 
     ${heavy.map((c) => {
@@ -5630,17 +5644,15 @@ export async function loadSurveyPane() {
       // scheduled choice; a row that argues against being clicked should not
       // be the most default-looking row on the pane.
       const steps = (c.steps || []).length;
-      return `<div class="mt-s4 border border-rule bg-ink/[.03] p-s3">
-        <div class="flex flex-wrap items-baseline gap-s2">
-          <span class="text-answer text-ink">${esc(c.display_name)}</span>
-          <span class="tnum rounded-sm border border-state-warn px-2 py-[1px] text-provenance text-state-warn"
-            >${steps} steps · all tiers</span>
-          <button data-plan-survey="${esc(c.qualified_name)}" ${selectedCredentialUnreadable() ? `disabled title="${CREDENTIAL_UNREADABLE_TEXT}"` : ''}
-            class="ml-auto cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink"
-            >Plan a run…</button>
-        </div>
-        <div class="mt-s1 max-w-[60ch] text-caveat text-ink-muted">${esc(onePurpose(c.description))}</div>
-      </div>`;
+      return `<div class="mt-s4">${cardHtml({
+        title: esc(c.display_name),
+        meta: `<span class="tnum rounded-sm border border-state-warn px-2 py-[1px] text-provenance text-state-warn"
+            >${steps} steps · all tiers</span>`,
+        actions: `<button data-plan-survey="${esc(c.qualified_name)}" ${selectedCredentialUnreadable() ? `disabled title="${CREDENTIAL_UNREADABLE_TEXT}"` : ''}
+            class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink"
+            >Plan a run…</button>`,
+        body: `<div class="max-w-[60ch] text-caveat text-ink-muted">${esc(onePurpose(c.description))}</div>`,
+      })}</div>`;
     }).join('')}
 
     ${!all.length ? paneMessage(
@@ -5679,6 +5691,7 @@ export async function loadSurveyPane() {
   }));
   bindSurveyRowActions(el, all, slug);
 
+  renderSurveyTiles(slug, null);       // the last survey is known now; the analyses tiles join when their read lands
   renderAnalysesIndexSection(slug, stage);
 }
 
@@ -5785,7 +5798,7 @@ export function analysisIndexRowHtml(row) {
   const g = analysisRowGlyph(row);
   const qn = (row.questions || []).length;
   const isSubRes = row.analysis_id === SUBRES_ANALYSIS_ID;
-  return `<div class="flex flex-wrap items-baseline gap-s2 border-b border-rule py-s2">
+  return `<div data-analysis-row="${esc(row.analysis_id)}"${analysisNeedsYou(state.selectedSlug, row) ? ' data-needs-you' : ''} class="flex flex-wrap items-baseline gap-s2 border-b border-rule py-s2">
     <span class="w-[16px] shrink-0 ${g.tone}">${g.glyph}</span>
     <div class="min-w-0 flex-1">
       <div class="flex flex-wrap items-baseline gap-s2">
@@ -5869,6 +5882,67 @@ function openAnalysisQuestionsPopover(row) {
   }));
 }
 
+/** The survey definitions of the pane on screen, for the "last survey" tile (set by loadSurveyPane). */
+let surveyTileDefs = [];
+
+/** An analysis row whose last run failed, or whose run just now failed to start: the rows that "need you". */
+export function analysisNeedsYou(slug, row) {
+  return analysisRowGlyph(row).glyph === factGlyph('error').glyph || state.analysisRunFailures.has(`${slug}|${row.analysis_id}`);
+}
+
+/** The tiles at the head of Survey & analyses (PLAN-CARDS-AND-TILES.md section 3, row 2): analyses run, need you,
+ *  last survey. `analyses` is null while the analyses are still being read, `{ error }` when that read failed, else
+ *  `{ rows, counts }` exactly as the list below uses them, so a tile and the list it opens always agree.
+ *  Every tile opens what it counted. A read that failed is "? not read", never a number. */
+export function surveyTilesHtml(slug, defs, analyses) {
+  const tiles = [];
+  if (analyses) {
+    if (analyses.error) {
+      tiles.push(tileHtml({ key: 'analyses_run', label: 'analyses run', opens: 'analyses', state: 'not_read', title: `The analyses could not be read: ${analyses.error}` }));
+      tiles.push(tileHtml({ key: 'need_you', label: 'need you', opens: 'analyses', state: 'not_read', title: `The analyses could not be read: ${analyses.error}` }));
+    } else {
+      const rows = analyses.rows || [];
+      const neverRun = analyses.counts && analyses.counts.never_run;
+      // "13 of 30": the list's own total less its own "never run" count, the two figures the label above the list shows.
+      tiles.push(typeof neverRun !== 'number'
+        ? tileHtml({ key: 'analyses_run', label: 'analyses run', opens: 'analyses', state: 'not_measured', title: 'The server did not say how many analyses have never run.' })
+        : tileHtml({
+          key: 'analyses_run', label: 'analyses run', opens: 'analyses', state: rows.length === 0 ? 'zero' : 'measured',
+          figure: `${rows.length - neverRun} of ${rows.length}`, title: `${rows.length - neverRun} of ${rows.length} analyses have run; ${neverRun} never run.`,
+        }));
+      const need = rows.filter((r) => analysisNeedsYou(slug, r)).length;
+      tiles.push(tileHtml({
+        key: 'need_you', label: 'need you', opens: 'need_you', state: need === 0 ? 'zero' : 'count', figure: String(need),
+        title: 'Analyses whose last run failed.',
+      }));
+    }
+  }
+  // The most recent run among the definitions, as the server merged it (RE's own and Egeria-coordinated runs).
+  const ran = (defs || []).filter((d) => d.last_run_at).sort((a, b) => whenMs(b.last_run_at) - whenMs(a.last_run_at));
+  if ((defs || []).length) {
+    tiles.push(ran.length
+      ? tileHtml({
+        key: 'last_survey', label: 'last survey', opens: `def:${ran[0].qualified_name}`, state: 'measured', figure: esc(ago(ran[0].last_run_at)),
+        sub: esc(ran[0].display_name || ran[0].qualified_name), title: esc(ran[0].last_run_at),
+      })
+      : tileHtml({ key: 'last_survey', label: 'last survey', opens: `def:${defs[0].qualified_name}`, state: 'not_measured', sub: 'never run', title: 'No survey definition here has run.' }));
+  }
+  return tileRowHtml(tiles);
+}
+
+function renderSurveyTiles(slug, analyses) {
+  const host = $('survey-tiles');
+  if (!host || slug !== state.selectedSlug) return;
+  host.innerHTML = surveyTilesHtml(slug, surveyTileDefs, analyses);
+  bindTiles(host, (target) => {
+    const root = $('content');
+    const el = target === 'analyses' ? root.querySelector('[data-analyses-card]')
+      : target === 'need_you' ? (root.querySelector('[data-needs-you]') || root.querySelector('[data-analyses-card]'))
+        : [...root.querySelectorAll('[data-def-row]')].find((d) => d.dataset.defRow === target.replace(/^def:/, ''));
+    if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+}
+
 async function renderAnalysesIndexSection(slug, stage) {
   const host = $('analyses-index-section');
   if (!host) return;
@@ -5878,6 +5952,7 @@ async function renderAnalysesIndexSection(slug, stage) {
   } catch (err) {
     if (slug === state.selectedSlug && state.subTab === 'survey') {
       host.innerHTML = `<span class="text-state-warn">The analyses could not be read: ${esc(err.message)}</span>`;
+      renderSurveyTiles(slug, { error: err.message });
     }
     return;
   }
@@ -5893,25 +5968,28 @@ async function renderAnalysesIndexSection(slug, stage) {
   const here = sorted.filter((r) => r.tier === stage);
   const elsewhere = sorted.filter((r) => r.tier !== stage);
 
+  const sortChips = [['name', 'by name'], ['never_run', 'never run first'], ['cost', 'by what it costs']].map(([k, label]) => `
+          <button type="button" data-analyses-sort="${k}" aria-pressed="${sort === k}"
+            class="wl-chartchip cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[1px] text-caveat">${esc(label)}</button>`).join('');
+  // The label names the group and sits above; the list of analyses is ONE card (never a card per row), its sort
+  // controls at the top right of the card.
   host.innerHTML = `
-    <div class="mb-s3 flex flex-wrap items-baseline gap-s3">
-      <span class="text-caps uppercase tracking-caps text-ink-muted">Analyses ·
+    <div class="mb-s3 text-caps uppercase tracking-caps text-ink-muted">Analyses ·
         <span class="tnum">${rows.length}</span> ·
         <span class="tnum">${data.counts?.never_run ?? 0}</span> never run ·
-        <span class="tnum">${data.counts?.no_question ?? 0}</span> no question asks</span>
-      <span class="ml-auto flex gap-[6px] text-caveat">
-        ${[['name', 'by name'], ['never_run', 'never run first'], ['cost', 'by what it costs']].map(([k, label]) => `
-          <button type="button" data-analyses-sort="${k}" aria-pressed="${sort === k}"
-            class="wl-chartchip cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[1px]">${esc(label)}</button>`).join('')}
-      </span>
-    </div>
-    ${here.map(analysisIndexRowHtml).join('') || `<p class="text-caveat text-ink-muted">No analyses run at this stage.</p>`}
+        <span class="tnum">${data.counts?.no_question ?? 0}</span> no question asks</div>
+    ${cardHtml({
+    attrs: 'data-analyses-card',
+    actions: sortChips,
+    body: `${here.map(analysisIndexRowHtml).join('') || `<p class="text-caveat text-ink-muted">No analyses run at this stage.</p>`}
     ${elsewhere.length ? `
       <details class="mt-s3">
         <summary class="cursor-pointer text-caps uppercase tracking-caps text-ink-muted">
           Other stages · <span class="tnum">${elsewhere.length}</span></summary>
         ${elsewhere.map(analysisIndexRowHtml).join('')}
-      </details>` : ''}`;
+      </details>` : ''}`,
+  })}`;
+  renderSurveyTiles(slug, { rows, counts: data.counts || {} });
 
   host.querySelectorAll('[data-analyses-sort]').forEach((b) => b.addEventListener('click', () => {
     try { localStorage.setItem(ANALYSES_SORT_KEY, b.dataset.analysesSort); } catch { /* per-viewer convenience only */ }

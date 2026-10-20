@@ -40,6 +40,8 @@
   --c-paper-surface: 22 33 62;
   --c-rule: rgba(160, 175, 210, 0.20);
   --c-rule-strong: 107 122 156;
+  --c-card: 22 33 62;
+  --c-card-line: 44 74 124;
   --c-ink: 230 232 239;
   --c-ink-muted: 163 171 192;
   --c-accent-ink: 124 182 255;
@@ -73,6 +75,8 @@
   --c-paper-surface: 255 255 255;
   --c-rule: rgba(31, 35, 51, 0.12);
   --c-rule-strong: 122 131 153;
+  --c-card: 255 255 255;
+  --c-card-line: 180 189 208;
   --c-ink: 31 35 51;
   --c-ink-muted: 76 84 104;
   --c-accent-ink: 29 79 196;
@@ -107,6 +111,8 @@
   --c-paper-surface: 234 233 233;
   --c-rule: rgba(32, 31, 29, 0.16);
   --c-rule-strong: 142 138 138;
+  --c-card: 251 250 250;
+  --c-card-line: 201 198 196;
   --c-ink: 32 31 29;
   --c-ink-muted: 74 70 62;
   --c-accent-ink: 125 84 17;

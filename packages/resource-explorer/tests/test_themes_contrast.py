@@ -30,13 +30,29 @@ TEXT_PAIRS = [
     ("chrome-ink", "chrome"),
     ("chrome-muted", "chrome"),
     ("chrome-muted", "chrome-surface"),
+    # Cards (PLAN-CARDS-AND-TILES.md section 1): every text role a card carries sits on the `card` fill.
+    ("ink", "card"),
+    ("ink-muted", "card"),
+    ("state-warn", "card"),             # the "need you" tile figure and the card's warn text
+    ("state-ok", "card"),
+    ("state-gap", "card"),
+    ("accent-ink", "card"),             # a control inside a card
 ]
 #: Strokes and outlines. Need 3:1. The accent stroke has no Paper figure in the ruling ("n/a"): Paper draws its
 #: accent as a gold underline that the ruling does not measure.
 OUTLINE_PAIRS = [
     ("accent", "paper", {"dark", "light"}),
     ("rule-strong", "paper", {"dark", "light", "paper"}),
+    ("rule-strong", "card", {"dark", "light", "paper"}),     # a control's outline inside a card
+    ("state-warn", "card", {"dark", "light", "paper"}),      # the 3px left edge that means "needs you"
 ]
+
+#: The card border (`card-line`) is a quiet edge, not a control's outline, so it has a floor of its own: the plan's
+#: figures (1.9:1 on the ground in Dark and Light, 1.5:1 in Paper), measured against the ground. A palette edit that
+#: weakens the border below this fails here.
+#: The plan's 1.9:1 for Light holds against the white card fill (1.89), not the grey page ground (1.75), so each look
+#: names the token its figure was measured against.
+CARD_LINE_FLOORS = {"dark": (1.9, "paper"), "light": (1.9, "card"), "paper": (1.5, "paper")}
 
 
 def _blocks() -> dict[str, dict[str, tuple[int, int, int]]]:
@@ -99,6 +115,21 @@ def test_outline_pair_is_at_least_3(blocks, look, fg, bg, applies):
         pytest.skip(f"{fg} on {bg} is not measured for {look}")
     r = ratio(blocks[look][fg], blocks[look][bg])
     assert r >= 3.0, f"{look}: {fg} on {bg} is {r:.2f}:1, an outline needs 3:1"
+
+
+@pytest.mark.parametrize("look", LOOKS)
+def test_card_line_keeps_the_plans_edge_against_the_ground(blocks, look):
+    floor, against = CARD_LINE_FLOORS[look]
+    r = ratio(blocks[look]["card-line"], blocks[look][against])
+    assert r >= floor - 0.05, f"{look}: card-line on {against} is {r:.2f}:1, the plan's floor is {floor}:1"
+
+
+@pytest.mark.parametrize("look", LOOKS)
+def test_card_is_a_step_off_the_ground_and_card_line_is_not_the_card(blocks, look):
+    """The card is a fill one step off the page ground (not identical to it in Dark and Paper) and its border differs from its fill."""
+    assert blocks[look]["card-line"] != blocks[look]["card"]
+    if look != "light":     # Light's card is white on a grey ground; still a step, but the other two are the ones that can collapse
+        assert blocks[look]["card"] != blocks[look]["paper"]
 
 
 def test_the_ratio_function_is_the_wcag_one():
