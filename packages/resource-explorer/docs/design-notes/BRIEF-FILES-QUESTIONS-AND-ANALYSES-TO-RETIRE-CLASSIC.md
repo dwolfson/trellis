@@ -81,10 +81,16 @@ file-types note) and reads native survey reports back for file systems
   row stores the report GUID it came from, never a second measurement.
 
 The first slice therefore becomes: register the file system on /next,
-attach its root as an Egeria folder asset and run Egeria's Folder Survey
-at the chosen `analysisLevel` through the native-survey port RE already
-has, read it back, and only then run RE's walk extensions for what Egeria
-does not keep. The CSV Survey Service runs per data file on request, as
+attach its root as an Egeria folder asset, run the reachability probe,
+and let its outcome choose the lever (`DESIGN-FILES-REMOTE-REACH.md`
+§2, ruled 2026-10-21): where Egeria can read the canonical mount, run
+Egeria's Folder Survey at the chosen `analysisLevel` through the
+native-survey port RE already has and read it back; where only RE can
+read the path (true of the owner's gate path, which Egeria's container
+cannot see), RE's walk leads and publishes the same folder-survey
+annotation types under its own SurveyReport, marked "surveyed by
+Resource Explorer · Egeria could not reach the path". Only then run RE's
+walk extensions for what Egeria does not keep. The CSV Survey Service runs per data file on request, as
 the Egeria lever for F3, with RE's pandas profile kept for formats Egeria
 has no service for (Parquet, JSON lines, Excel), labelled as RE's.
 
@@ -162,11 +168,17 @@ half; Q-0080 stays, answered by F7.
 
 ## 3. Analyses, in build order
 
-0. **Egeria's Folder Survey as the lever** (no new analysis): the
-   registration attaches the root folder, the survey press runs Egeria's
-   Folder Survey with `analysisLevel`, and the read-back fills F2, the
-   counts of F1 and F9, and the inaccessible list. RE's
-   `filesystem_inventory` keeps only what §1a says Egeria does not.
+0. **The reachability fork, then the lever** (no new analysis): the
+   registration attaches the root folder and records the canonical mount
+   as Egeria's container path, verified by a stat through the engine
+   host, never trusted as typed; the probe's outcome names the surveyor.
+   Egeria-reachable: Egeria's Folder Survey with `analysisLevel`, read
+   back, fills F2, the counts of F1 and F9, and the inaccessible list.
+   RE-only: `filesystem_inventory` publishes those same annotation types
+   itself under its own report. In both cases RE's own measurements are
+   only what §1a says Egeria does not keep. The gate registers two file
+   systems, the owner's path (RE-led) and the coco data lake at its
+   container path (Egeria-led), so the fork is proven in one walk.
 1. **Walk extensions** (one step, one PR): per-folder bytes and depth,
    owner/group/mode, content hash under a size limit, per-file rows kept
    per run with a run id, each row naming the Egeria report it duplicates
@@ -232,8 +244,10 @@ cautions follow from that, and the step-1 brief carries them with a test:
    proven by a test; the second walk for F5 follows the owner's ordinary
    work, nothing staged.
 
-The owner registers that path on /next, runs the survey with its price
-shown, reads F1 to F3 on Understanding with the README-stated
+The owner registers that path on /next (RE-led, since Egeria's container
+cannot see it) and the coco data lake at its container path (Egeria-led),
+runs both surveys with their price shown, sees each report name its
+surveyor, reads F1 to F3 on Understanding with the README-stated
 descriptions on the folders that have one (F11), sees a recognised
 layout (F10) and a data-class match on a profiled file (F7), publishes
 two directories and reads them back in Egeria, and never opens Classic.
