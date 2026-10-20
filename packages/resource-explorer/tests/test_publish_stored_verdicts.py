@@ -172,3 +172,97 @@ def test_publish_local_survey_sends_the_verdicts_and_links_them_to_committed_col
     assert all(t == "AssociatedAnnotation" and end == 2 for (t, _, end, _) in links)
     counts = out["verdicts"]["column_links"]
     assert counts["linked"] == len(links) and counts["no_column_element"] > 0  # avatar has none
+
+
+# ── the reuse path: by identity, not by count (live check 2026-10-20) ───────────────────────────────────────
+
+
+class _FakeDiscovery:
+    """Egeria's DataDiscovery at its client boundary: stores each created annotation by its qualifiedName."""
+
+    def __init__(self, maker):
+        self.maker = maker
+
+    def create_annotation(self, body):
+        qn = body["properties"]["qualifiedName"]
+        guid = f"ann-{len(self.maker.annotations)}"
+        self.maker.annotations[qn] = guid
+        return guid
+
+
+def _real_surveyor():
+    """An EgeriaDatabaseSurveyor whose own publish code is real, down to `publish_annotations`; only the pyegeria
+    clients are faked (FakeAssetMaker refuses a second report with the same name, as Egeria does)."""
+    from resource_explorer.surveyors.database.egeria_database_surveyor import EgeriaDatabaseSurveyor
+    from tests.test_catalogue_commit_round3 import FakeAssetMaker
+
+    s = EgeriaDatabaseSurveyor.__new__(EgeriaDatabaseSurveyor)
+    maker = FakeAssetMaker()
+    maker.annotations = {}
+    s._asset_maker, s._discovery = maker, _FakeDiscovery(maker)
+    s._find_element_guid = lambda name: maker.reports.get(name) or maker.annotations.get(name, "")
+    return s, maker
+
+
+def test_a_newer_batch_with_the_same_count_reaches_a_reused_report():
+    """The live failure: the report held 12 annotations, the second publish sent 12 with NEW names, and the old
+    count shortcut ("held >= sent, skip") sent none of them."""
+    s, maker = _real_surveyor()
+    body = {"properties": {"qualifiedName": "SurveyReport::PostgreSQL::coco_ods::2026-10-20T01:00:00"}}
+    qn = body["properties"]["qualifiedName"]
+    first = verdict_annotations_from_rows(_rows(), batch_surveyed_at="2026-10-19T08:00:00")["annotations"]
+    second = verdict_annotations_from_rows(_rows(), batch_surveyed_at="2026-10-20T08:00:00")["annotations"]
+    assert len(first) == len(second)                                   # the same count...
+
+    s._publish_survey_report(body, qn, first, "coco_ods", "2026-10-20T01:00:00")
+    held_after_first = set(maker.annotations)
+    out = s._publish_survey_report(body, qn, second, "coco_ods", "2026-10-20T01:00:00")
+
+    assert out["reused"] is True
+    added = set(maker.annotations) - held_after_first                  # ...but new names: all of them created
+    assert len(added) == len(second)
+    assert all("@2026-10-20T08:00:00" in name for name in added)
+    assert held_after_first <= set(maker.annotations)                  # the first batch is left as it was
+
+
+def test_republishing_the_same_batch_into_a_reused_report_creates_nothing():
+    s, maker = _real_surveyor()
+    body = {"properties": {"qualifiedName": "SurveyReport::PostgreSQL::coco_ods::2026-10-20T01:00:00"}}
+    qn = body["properties"]["qualifiedName"]
+    anns = verdict_annotations_from_rows(_rows(), batch_surveyed_at="2026-10-19T08:00:00")["annotations"]
+    s._publish_survey_report(body, qn, anns, "coco_ods", "2026-10-20T01:00:00")
+    before = dict(maker.annotations)
+    again = verdict_annotations_from_rows(_rows(), batch_surveyed_at="2026-10-19T08:00:00")["annotations"]
+    s._publish_survey_report(body, qn, again, "coco_ods", "2026-10-20T01:00:00")
+    assert maker.annotations == before
+
+
+def test_a_create_failing_mid_batch_on_a_reused_report_is_a_failure_not_done():
+    """Review of #783 (HIGH): publish_annotations returns None for a failed create instead of raising. On a reused
+    report that already holds an earlier batch, the TOTAL held count runs ahead of what this publish sent, so it
+    must not decide: this publish's own GUIDs do."""
+    s, maker = _real_surveyor()
+    body = {"properties": {"qualifiedName": "SurveyReport::PostgreSQL::coco_ods::2026-10-20T01:00:00"}}
+    qn = body["properties"]["qualifiedName"]
+    first = verdict_annotations_from_rows(_rows(), batch_surveyed_at="2026-10-19T08:00:00")["annotations"]
+    s._publish_survey_report(body, qn, first, "coco_ods", "2026-10-20T01:00:00")
+
+    calls = {"n": 0}
+    real_create = s._discovery.create_annotation
+
+    def flaky(body):
+        calls["n"] += 1
+        if calls["n"] in (2, 4):
+            raise RuntimeError("SERVER_ERROR_500 create refused")
+        return real_create(body)
+    s._discovery.create_annotation = flaky
+
+    second = verdict_annotations_from_rows(_rows(), batch_surveyed_at="2026-10-20T08:00:00")["annotations"]
+    out = s._publish_survey_report(body, qn, second, "coco_ods", "2026-10-20T01:00:00")
+    assert out["reused"] is True
+    assert "2 of" in out["annotation_error"]
+    assert out["annotations_this_publish"] == len(second) - 2
+
+    from resource_explorer.catalogue_commit import report_step_words
+    state, _ = report_step_words({**out, "report_reused": True, "annotation_count": len(second)}, "2026-10-20")
+    assert state == "failed"
