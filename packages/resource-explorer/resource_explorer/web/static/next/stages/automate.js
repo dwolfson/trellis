@@ -71,6 +71,8 @@ import {
 } from '/static/re-api.js';
 import { readableDetailHtml } from '/static/next/stages/activity.js';
 import { state, esc, $, icon, oldUiHref, apiEntityType } from '/static/next/app.js';
+import { openFirstIndexAsk, refreshFirstIndex, subscribeFirstIndex } from '/static/next/first-index.js';
+import { ordinal } from '/static/next/stages/repo-header.js';
 
 // Module-local, not on `state`: which of Automate's two sub-tabs is showing,
 // and whether the subscriptions list is filtered to the selected resource.
@@ -83,6 +85,7 @@ function subnavHtml() {
   const tabs = [
     ['subscriptions', '🔔 Subscriptions'],
     ['schedules', '⏱ Schedules'],
+    ['first-index', 'First indexing'],
   ];
   return `<div class="mb-s4 flex items-center gap-s4 font-heading text-subtab text-ink">
     ${tabs.map(([id, label]) => `
@@ -101,6 +104,7 @@ function bindSubnav(rerender) {
 
 export async function renderAutomate() {
   if (_tab === 'schedules') return renderSchedules();
+  if (_tab === 'first-index') return renderFirstIndexing();
   return renderSubscriptions();
 }
 
@@ -328,6 +332,53 @@ async function renderSchedules() {
       b.textContent = `Not removed: ${err.message}`;
     }
   }));
+}
+
+
+/* ── First indexing ────────────────────────────────────────────────────── */
+
+const FI_WORD = { waiting: '◔ waiting', indexing: '◔ indexing', indexed: '✓ indexed', failed: '✕ failed' };
+let _fiUnsub = null;
+
+/** One line per repository that has said yes (waiting · indexing · indexed · failed), "N of M done", and the door
+ *  to the batch ask for everything not yet indexed. Each state is a run row's; the list repaints as they change. */
+async function renderFirstIndexing() {
+  const el = $('content');
+  el.innerHTML = `${subnavHtml()}<p class="text-answer text-ink-muted">Loading…</p>`;
+  bindSubnav(renderAutomate);
+  const fi = await refreshFirstIndex();
+  if (_tab !== 'first-index') return;
+  drawFirstIndexing(fi);
+}
+
+function drawFirstIndexing(fi) {
+  const el = $('content');
+  const notYet = (state.resourceType === 'repo' ? state.projects : []).filter((p) => p.index_state === 'not_yet_indexed');
+  const list = fi.list || [];
+  const rows = list.map((l) => `<tr class="border-b border-rule" data-fi-row="${esc(l.slug)}" data-fi-state="${esc(l.state)}">
+      <td class="py-s2 pr-s3 text-answer text-ink">${esc(l.name)}</td>
+      <td class="py-s2 pr-s3 text-caveat ${l.state === 'failed' ? 'text-state-warn' : l.state === 'indexed' ? 'text-state-ok' : 'text-ink-muted'}">
+        ${esc(FI_WORD[l.state] || l.state)}${l.batch_total && l.position ? ` · ${ordinal(l.position)} of ${l.batch_total}` : ''}</td>
+      <td class="py-s2 pr-s3 text-caveat text-ink-muted">${l.state === 'failed' ? esc(l.reason) : l.state === 'indexed' ? esc(String(l.finished_at || '').slice(0, 16).replace('T', ' ')) : ''}</td>
+    </tr>`).join('');
+  el.innerHTML = `${subnavHtml()}
+    <h3 class="m-0 font-heading text-name font-normal text-ink">First indexing</h3>
+    <p class="max-w-[70ch] text-caveat text-ink-muted">Repositories you said yes to indexing for chat, in the order of the yeses.
+      Each line is the state of that repository's run.</p>
+    <div class="mt-s3 flex items-center gap-s3">
+      <span data-fi-count class="text-answer text-ink">${fi.of ? `${fi.done} of ${fi.of} done` : 'Nothing queued yet'}</span>
+      ${notYet.length ? `<button type="button" data-fi-choose class="cursor-pointer border-0 bg-transparent p-0 text-accent-ink underline">${notYet.length} not yet indexed · choose which ›</button>` : ''}
+    </div>
+    <div class="my-s3 h-px bg-rule"></div>
+    ${list.length ? `<table class="w-full text-left"><tbody data-fi-list>${rows}</tbody></table>` : ''}`;
+  bindSubnav(renderAutomate);
+  el.querySelector('[data-fi-choose]')?.addEventListener('click', () =>
+    openFirstIndexAsk({ slugs: notYet.map((p) => p.slug), listOpen: true }));
+  if (_fiUnsub) _fiUnsub();
+  _fiUnsub = subscribeFirstIndex(() => {
+    if (_tab !== 'first-index' || !el.isConnected || !el.querySelector('[data-fi-count]')) { _fiUnsub?.(); _fiUnsub = null; return; }
+    drawFirstIndexing(state.firstIndex);
+  });
 }
 
 

@@ -266,3 +266,31 @@ def log_scout(
         items=items or [],
     ))
     return entry_id
+
+
+def log_first_index(registry: "ProjectRegistry", slug: str, name: str, status: str, summary: str) -> str:
+    """One row per first-index run (a person's yes to indexing a repository for chat). The run queue closes it."""
+    entry_id = str(uuid.uuid4())
+    registry.write_activity(ActivityEntry(
+        id=entry_id, ts=_now(), operation="first_index", intent="automate", entity_type="repo",
+        entity_slug=slug, entity_name=name, entity_location="", status=status, summary=summary,
+    ))
+    return entry_id
+
+
+def log_first_index_batch(registry: "ProjectRegistry", batch_id: str, who: str, total: int, queued: int,
+                          path: str) -> str:
+    """The ONE activity row of a batch of first-index yeses, keyed by the batch id and rewritten as yeses come in
+    (`write_activity` upserts on id). It records the decision: who, which path, how many said yes so far of how many
+    were offered. It is a record, not a running job, so it is never left 'running'."""
+    import json
+
+    way = {"all": "Index all", "each": "Ask me for each"}.get(path, path)
+    registry.write_activity(ActivityEntry(
+        id=batch_id, ts=_now(), operation="first_index", intent="automate", entity_type="repo",
+        entity_slug="", entity_name="First indexing", entity_location="", status="ok",
+        summary=f"First index for chat, {way}: {queued} of {total} repositories queued by {who}.",
+        detail=json.dumps({"batch_id": batch_id, "asked_by": who, "path": path, "offered": total,
+                           "queued": queued}),
+    ))
+    return batch_id

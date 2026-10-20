@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from resource_explorer.config import WebUIConfig
 from resource_explorer.web.routes import work_lists as work_lists_routes
-from resource_explorer.web.routes import api_reference as api_reference_routes, analytics as analytics_routes, activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, catalogue_scope, curate, databases, db_servers as db_servers_routes, diagrams, discovery, doc_sources, egeria, feedback, investigations, journal, logs as logs_routes, prefect_status, prerequisites as prerequisite_routes, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions, native_surveys
+from resource_explorer.web.routes import api_reference as api_reference_routes, analytics as analytics_routes, activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, catalogue_scope, curate, databases, first_index as first_index_routes, db_servers as db_servers_routes, diagrams, discovery, doc_sources, egeria, feedback, investigations, journal, logs as logs_routes, prefect_status, prerequisites as prerequisite_routes, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions, native_surveys
 
 
 log = logging.getLogger(__name__)
@@ -367,6 +367,7 @@ app.include_router(diagrams.router, prefix="/api/diagrams", tags=["diagrams"])
 app.include_router(investigations.router, prefix="/api/investigations", tags=["investigations"])
 app.include_router(repair.router, prefix="/api/admin/repair", tags=["repair"])
 app.include_router(logs_routes.router, prefix="/api/logs", tags=["logs"])
+app.include_router(first_index_routes.router, prefix="/api/first-index", tags=["first-index"])
 app.include_router(runs_routes.router, prefix="/api/runs", tags=["runs"])
 # Design §17.1 — "answering this needs X first; run it?" The plan is
 # read-only; the run is the user's consent, and goes through the same

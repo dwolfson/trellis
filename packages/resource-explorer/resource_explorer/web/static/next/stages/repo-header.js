@@ -36,18 +36,53 @@ export const NOT_SURVEYED_WORD = 'not yet surveyed';
 export const ZERO_PROVES_NOTHING_SENTENCE = 'Zero here is also what a repository that was never asked looks like, so it reads as not read. A non-zero value would show.';
 export const NOT_READ_SENTENCE = 'GitHub has not been asked for this yet, or did not answer. Run a scouting scan to read it.';
 
-/** PLACEHOLDER WORDS, flagged for the designer. */
+/** The words (REPLY-DESIGNER-GROUP-SCHEDULING-AND-FIRST-INDEX-2026-10-19 §6): "not yet indexed" confirmed; the sentence
+ *  names what is missing (its files) and the link makes it actionable. */
 export const NOT_YET_INDEXED_WORD = 'not yet indexed';
-export const NOT_YET_INDEXED_SENTENCE = "Chat can't search this repository's own content yet.";
+export const NOT_YET_INDEXED_SENTENCE = "Chat can't search its files yet.";
+export const INDEX_IT_WORD = 'index it ›';
 
-/** The repository has no index of its own (`index_state` from the project payload, derived server-side from
- *  the one `index_state.py` predicate). A visual cue on the header, `○ not yet indexed`, sentence on hover.
- *  `data-index-state` is the hook the first-index round attaches its action to; there is deliberately no
- *  link here, because the action it would open does not exist yet. Draws nothing for any other state. */
-export function indexStateCueHtml(p) {
+const ORDINALS = ['th', 'st', 'nd', 'rd'];
+/** 1 -> "1st", 12 -> "12th". */
+export function ordinal(n) {
+  const v = n % 100;
+  return `${n}${ORDINALS[(v - 20) % 10] || ORDINALS[v] || ORDINALS[0]}`;
+}
+
+/** "10-19" from an ISO timestamp. */
+function monthDay(iso) { return String(iso || '').slice(5, 10); }
+
+/** The repository's first-index line from `GET /api/first-index/progress` (or null), drawn in place of the plain cue.
+ *  Every state here comes from a run row, so a line only exists after someone said yes:
+ *    waiting   `◔ queued · 3rd of 12`      indexing `◔ indexing · 3rd of 12`
+ *    indexed   `✓ indexed 10-19`           failed   `✕ index failed · <first sentence>` (and the link to try again) */
+function firstIndexCueHtml(line) {
+  const place = line.position ? ` · ${line.batch_total ? `${ordinal(line.position)} of ${line.batch_total}` : ordinal(line.position)}` : '';
+  const g = (name) => `<span class="font-glyph" aria-hidden="true">${stateEntry(name).glyph}</span>`;
+  if (line.state === 'waiting') return `<span data-index-state="queued" data-first-index-state="waiting" class="text-ink-muted">${g('running')} queued${esc(place)}</span>`;
+  if (line.state === 'indexing') return `<span data-index-state="indexing" data-first-index-state="indexing" class="text-ink-muted">${g('running')} indexing${esc(place)}</span>`;
+  if (line.state === 'indexed') return `<span data-index-state="indexed" data-first-index-state="indexed" class="text-state-ok">${g('answered')} indexed ${esc(monthDay(line.finished_at))}</span>`;
+  return `<span data-index-state="failed" data-first-index-state="failed" class="text-state-warn" title="${esc(line.reason || '')}">${g('error')} index failed${line.reason ? ` · ${esc(line.reason)}` : ''}</span>`;
+}
+
+/** The repository has no index of its own (`index_state` from the project payload, derived server-side from the one
+ *  `index_state.py` predicate). `○ not yet indexed`, the sentence on hover, and `index it ›`, the door to the ask.
+ *  With `line` (this repository's first-index line) the cue shows where that yes has got to, and changes in place as
+ *  the line does. Draws nothing for an indexed repository that has no line of its own. */
+export function indexStateCueHtml(p, line = null) {
+  const idx = p && p.index_state;
+  const retry = ` <button type="button" data-first-index-open class="cursor-pointer border-0 bg-transparent p-0 text-accent-ink underline">${INDEX_IT_WORD}</button>`;
+  if (line && line.state) {
+    // "indexed" is drawn only when the project's own collections agree: the run row alone is not the proof.
+    if (line.state === 'indexed' && idx === 'indexed') return `<span data-index-cue>${firstIndexCueHtml(line)}</span>`;
+    if (line.state === 'waiting' || line.state === 'indexing') return `<span data-index-cue>${firstIndexCueHtml(line)}</span>`;
+    if (line.state === 'failed' && idx === 'not_yet_indexed') return `<span data-index-cue>${firstIndexCueHtml(line)}${retry}</span>`;
+  }
   if (!p || p.index_state !== 'not_yet_indexed') return '';
-  return `<span data-index-state="not_yet_indexed" class="text-ink-muted" title="${esc(NOT_YET_INDEXED_SENTENCE)}">`
-    + `<span class="font-glyph" aria-hidden="true">${stateEntry('unrun').glyph}</span> ${NOT_YET_INDEXED_WORD}</span>`;
+  return `<span data-index-cue><span data-index-state="not_yet_indexed" class="text-ink-muted" title="${esc(NOT_YET_INDEXED_SENTENCE)}">`
+    + `<span class="font-glyph" aria-hidden="true">${stateEntry('unrun').glyph}</span> ${NOT_YET_INDEXED_WORD}</span>`
+    + ` <button type="button" data-first-index-open class="cursor-pointer border-0 bg-transparent p-0 text-accent-ink underline"`
+    + ` title="${esc(NOT_YET_INDEXED_SENTENCE)}">${INDEX_IT_WORD}</button></span>`;
 }
 
 /** `? not read`, a muted cue; the sentence is on hover. */
