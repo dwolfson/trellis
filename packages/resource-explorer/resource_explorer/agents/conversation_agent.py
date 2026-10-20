@@ -205,7 +205,7 @@ class ConversationAgent(BaseExplorerAgent):
             from beeai_framework.memory.token_memory import TokenMemory
 
             self._agent = RequirementAgent(
-                llm=self._llm_name(),
+                llm=self._build_llm(),
                 tools=self.tools(),
                 instructions=self.system_prompt(),
                 memory=TokenMemory(max_tokens=8000),
