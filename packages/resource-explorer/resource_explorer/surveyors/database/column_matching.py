@@ -770,6 +770,7 @@ class ColumnMatch:
             "detected_patterns": list(self.detected_patterns),
             "privacy_relevant": self.privacy_relevant,
             "proposed_specification": self.proposed_specification,
+            "proposed_specification_prose": self.proposed_specification_prose,
             "proposed_values": list(self.proposed_values),
             "other_candidates": list(self.other_candidates),
             "not_established_reason": self.not_established_reason,

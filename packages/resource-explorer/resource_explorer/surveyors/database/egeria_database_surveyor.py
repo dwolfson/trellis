@@ -1270,6 +1270,8 @@ class EgeriaDatabaseSurveyor:
         report_reused = False
         annotations_in_egeria = None
         annotations = []
+        verdicts = {"state": "not_read", "annotations": [], "column_paths": []}
+        verdict_start = 0
         if db_guid:
             # Recreate annotations from local scan data using DatabaseSurveyor helpers
             try:
@@ -1283,6 +1285,11 @@ class EgeriaDatabaseSurveyor:
                     annotations.extend(local_surveyor._create_views_annotations(views))
             except Exception as exc:
                 log.warning(f"Could not reconstruct local annotations: {exc}")
+            # The column-profile step's stored verdicts (DESIGN-PUBLISHING-COLUMN-VERDICTS.md §1). Appended
+            # after the survey's own annotations so their indices, and so their published names, do not move.
+            verdicts = self._stored_verdict_annotations(registry, db_entity.slug, schema_info)
+            verdict_start = len(annotations)
+            annotations.extend(verdicts["annotations"])
 
             qualified_name = f"SurveyReport::PostgreSQL::{db_entity.slug}::{surveyed_at}"
             body = {
@@ -1309,6 +1316,10 @@ class EgeriaDatabaseSurveyor:
             pub = self._publish_survey_report(body, qualified_name, annotations, db_entity.slug, surveyed_at)
             report_guid, report_error = pub["report_guid"], pub["report_error"]
             report_reused, annotations_in_egeria = pub["reused"], pub["annotations_in_egeria"]
+
+        if db_guid and report_guid and verdicts["annotations"]:
+            verdicts["column_links"] = self._link_verdicts_to_columns(
+                db_entity, annotations, verdict_start, verdicts["column_paths"], surveyed_at)
 
         # Use the created report GUID if available, otherwise fall back to Egeria's native action GUID
         effective_report_guid = report_guid or survey_action_guid
@@ -1342,6 +1353,9 @@ class EgeriaDatabaseSurveyor:
             "annotations_in_egeria": annotations_in_egeria,
             "lineage_not_checked": list(self.lineage_not_checked),
             "survey_submissions": result.get("survey_submissions", []),
+            # What the stored column-profile verdicts contributed: never counts alone, always the batch and
+            # whether one was stored at all (`state`: sent / none_stored / not_read).
+            "verdicts": {k: v for k, v in verdicts.items() if k not in ("annotations", "column_paths")},
         }
 
     def publish_engine_action_report(
@@ -1526,6 +1540,95 @@ class EgeriaDatabaseSurveyor:
             held = self._annotations_held_by(existing)
         out["annotations_in_egeria"] = held
         return out
+
+    @staticmethod
+    def _stored_verdict_annotations(registry, slug: str, schema_info: dict | None) -> dict:
+        """The latest stored column-profile verdict batch as annotations (`column_profile_step.
+        verdict_annotations_from_rows`), checked against the kept survey's inventory.
+
+        `state`: `sent` (a batch was read; its annotations are in the result), `none_stored` (read, and no
+        batch exists: never run, not "no verdicts"), `not_read` (no registry, or the read failed: unknown).
+        """
+        if registry is None:
+            return {"state": "not_read", "annotations": [], "column_paths": [], "reason": "no registry"}
+        try:
+            rows = registry.query_detail_rows("database_column_matches", slug)
+        except Exception as exc:  # noqa: BLE001 -- unknown, never "none stored"
+            log.warning("could not read the stored column-profile verdicts for %s: %s", slug, exc)
+            return {"state": "not_read", "annotations": [], "column_paths": [], "reason": str(exc)[:300]}
+        if not rows:
+            return {"state": "none_stored", "annotations": [], "column_paths": []}
+        from resource_explorer.surveyors.database.column_profile_step import verdict_annotations_from_rows
+
+        inventory = None
+        if schema_info and schema_info.get("schemas"):
+            inventory = {f"{sc.get('name')}.{t.get('name')}.{c.get('name')}"
+                         for sc in schema_info.get("schemas") or []
+                         for t in sc.get("tables") or []
+                         for c in t.get("columns") or []}
+        built = verdict_annotations_from_rows(rows, batch_surveyed_at=rows[0].get("surveyed_at", ""),
+                                              inventory=inventory)
+        return {"state": "sent", **built}
+
+    def _link_verdicts_to_columns(self, db_entity, annotations: list, start: int, column_paths: list[str],
+                                  surveyed_at: str) -> dict:
+        """`AssociatedAnnotation` from each published verdict annotation to its `RelationalColumn`, where a
+        Curate catalogue commit had Egeria's JDBC cataloguer create one. The column's qualifiedName is the
+        cataloguer's, confirmed live 2026-10-20: `<schema qualifiedName>::<table>::<column>`. Linked once
+        (`egeria_link_once`): a republish never adds a second link. Never raises; returns counts by outcome.
+        """
+        from resource_explorer.catalogue_gateway import schema_qualified_name, server_name_for
+        from resource_explorer.egeria_link_once import (
+            ALREADY_LINKED,
+            COULD_NOT_CHECK,
+            LINK_FAILED,
+            LINKED,
+            link_once,
+        )
+        from resource_explorer.surveyors.database.egeria_reference_catalog import (
+            build_associated_annotation_body,
+        )
+        from resource_explorer.surveyors.survey_report import annotation_qualified_name
+
+        counts = {"linked": 0, "already_linked": 0, "no_column_element": 0, "not_checked": 0, "failed": 0}
+        prefix = f"Annotation::PostgreSQL::{db_entity.slug}::{surveyed_at}"
+        server = server_name_for(db_entity)
+        column_guids: dict[str, str | None] = {}
+        expert = self._metadata_expert_client()
+        for offset, path in enumerate(column_paths):
+            ann = annotations[start + offset]
+            schema, table, column = (path.split(".", 2) + ["", "", ""])[:3]
+            if path not in column_guids:
+                try:
+                    column_guids[path] = self._find_element_guid(
+                        f"{schema_qualified_name(server, db_entity.database_name, schema)}::{table}::{column}")
+                except EgeriaDatabaseSurveyorError:
+                    column_guids[path] = None
+            column_guid = column_guids[path]
+            if column_guid is None:
+                counts["not_checked"] += 1
+                continue
+            if not column_guid:
+                counts["no_column_element"] += 1
+                continue
+            try:
+                ann_guid = self._find_element_guid(annotation_qualified_name(prefix, start + offset, ann))
+            except EgeriaDatabaseSurveyorError:
+                counts["not_checked"] += 1
+                continue
+            if not ann_guid:
+                counts["failed"] += 1
+                continue
+            body = build_associated_annotation_body(
+                label="column verdict", description=f"{ann.annotation_type_name or 'verdict'} for {path}")
+            outcome = link_once(
+                expert, relationship_type="AssociatedAnnotation", read_guid=ann_guid, read_end=2,
+                far_guid=column_guid, what=f"from {path} to its verdict",
+                create=lambda a=ann_guid, c=column_guid, b=body: self._discovery.link_annotation_to_described_element(
+                    a, c, body=b))
+            counts[{LINKED: "linked", ALREADY_LINKED: "already_linked", COULD_NOT_CHECK: "not_checked",
+                    LINK_FAILED: "failed"}.get(outcome.outcome, "failed")] += 1
+        return counts
 
     def _publish_column_lineage(self, db_entity: "DatabaseEntity", views: list[dict]) -> None:
         """Publish column-level lineage to Egeria as LineageMapping relationships (source column at end 1,

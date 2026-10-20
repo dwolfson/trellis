@@ -393,7 +393,7 @@ how the report was published.
 | Published by | What the report includes |
 |---|---|
 | **Running a Survey Definition** on the database (from Discovery, or `database survey-definition`), when it ran column profiling | The schema inventory, statistics, views and operations it measured, **and** the column-profiling results: one **DataClassMatch** annotation per column checked, one **ColumnValueSample** annotation recording how that column was sampled, a **ReferenceDataMatch** annotation for each low-cardinality column compared with a reference set, the JSON and XML column profiles (**NestedSchemaProfile**, **NestedColumnSample**), and any request for action (for example "propose a Data Class" for an unmatched column that follows a clear pattern). |
-| **Publish** on the Curate tab, or `database survey --egeria` | The survey you kept: schema inventory, statistics and views. **Not** the column-profiling results. Since 2026-10-20 RE keeps the data-class and reference-data verdicts locally, and shows them on the **Data Class Match** and **Reference Data Match** cards, but this publish path does not send them yet. To put them in Egeria, run a Survey Definition that includes column profiling. |
+| **Publish** on the Curate tab, or `database survey --egeria` | The survey you kept: schema inventory, statistics and views, **and** the latest stored data-class and reference-data verdicts (the ones shown on the **Data Class Match** and **Reference Data Match** cards), with their requests for action. The JSON and XML column profiles are not sent from here yet; a Survey Definition run sends those. |
 
 What to expect from the column-profiling annotations:
 
@@ -414,6 +414,14 @@ What to expect from the column-profiling annotations:
   A report on a wide database therefore carries many annotations, roughly two or three per sampled column.
 - **The sample is stated, not implied.** Each ColumnValueSample annotation records the strategy, how many rows were
   read, out of how many, the seed and the date. A match is a statement about that sample, not about every row.
+- **From Curate's Publish, the verdicts come from the latest stored batch, which may be older or newer than the survey
+  you kept.** The **next publish** line names the batch, for example "data-class verdicts · 42 columns · measured
+  10-19". Each verdict says when it was measured, verdicts for columns no longer in the kept inventory are not
+  sent (the press says how many), and a newer batch is published as new annotations rather than replacing the old
+  ones.
+- **A verdict is linked to its column when the column is in Egeria.** For a schema you committed on the
+  **Contents** tab, Egeria's cataloguer created the column elements, and each verdict is linked to its column
+  (`AssociatedAnnotation`), once. For other schemas the verdict stays on the report, named by its column path.
 - **Reports published before 2026-10-19 do not have these annotations.** Until then, column-profiling results
   were built but never sent. To add them, run the Survey Definition again; RE does not alter earlier reports.
 
