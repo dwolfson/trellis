@@ -1422,12 +1422,13 @@ def build_epistemological_matrix(
     normalized_slugs = [registry._normalize_slug(s) for s in slugs]
 
     if not analyses:
-        # Default core set covering repos, databases, and general health
+        # Default core set covering repos, databases, and general health. Every id here must be a real analysis id:
+        # "dependencies" and "project_stats" are not, so FactLayer answered NOT_ESTABLISHED ("produces an action rather
+        # than findings") for every resource whatever its data, and a chat answer read that as "no dependencies".
         analyses = [
             "security_scan",
             "license_classification",
-            "dependencies",
-            "project_stats",
+            "dependency_analysis",
             "ci_quality",
             "repo_conventions",
             "architecture_recovery",

@@ -82,6 +82,7 @@ class IntegrationAgent(BaseExplorerAgent):
         self._evidence_lines = self._multi_resource_evidence(
             query, slugs, kwargs.get("perspectives")
         )
+        self._evidence_lines += self._cross_asset_link_lines(slugs)
         evidence = "\n".join(self._evidence_lines)
         evidence_block = f"{evidence}\n\n" if evidence else ""
         prompt = (
@@ -102,6 +103,23 @@ class IntegrationAgent(BaseExplorerAgent):
             return self._run_agent(prompt)
         except Exception:
             return self._fallback(query, slugs)
+
+    def _cross_asset_link_lines(self, slugs: list[str]) -> list[str]:
+        """Stored cross-asset links (a repo's model names against a database's tables, plus drivers) for the named
+        resources, in the prompt. A small model asked "can X work with Y?" answered from the prompt without calling
+        query_cross_asset_links, then invented links; the stored ones are read here so it does not have to ask.
+        Fail-soft: no links, or a failed read, adds nothing and the agent proceeds with its tools."""
+        from resource_explorer.agents.tools import query_cross_asset_links_raw
+
+        out: list[str] = []
+        for slug in slugs:
+            try:
+                text = query_cross_asset_links_raw(resource_slug=slug, min_confidence="low", limit=8)
+            except Exception:
+                continue
+            if text and text.strip():
+                out.append(f"Cross-asset links stored for {slug} (shared names, not proof of ownership):\n{text.strip()}")
+        return out
 
     def _fallback(self, query: str, slugs: list[str]) -> str:
         """Direct tool-call fallback when BeeAI is unavailable."""
