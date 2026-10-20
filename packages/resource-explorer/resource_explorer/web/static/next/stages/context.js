@@ -104,7 +104,7 @@ function lensRowHtml() {
   const body = declared
     ? `<span class="text-ink">a lens is declared for ${esc(invName)}</span>`
     : `<span class="text-ink">no lens declared for ${esc(invName)}</span> · ${declareLink}`;
-  return `<div class="grid grid-cols-[130px_1fr] items-baseline gap-x-s3 gap-y-[2px] border-b border-rule py-s2">
+  return `<div class="grid grid-cols-[minmax(8.5rem,14rem)_1fr] items-baseline gap-x-s3 gap-y-[2px] border-b border-rule py-s2">
     <div class="text-question font-heading text-ink">What you're looking for</div>
     <div class="min-w-0">
       <div class="text-answer">${body}</div>

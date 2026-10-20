@@ -299,7 +299,7 @@ export function fieldRowHtml(def, kind) {
   // "What we judge" is the larger of the two sets -- the split's whole
   // argument -- so its labels are body size in ink, not caption size muted.
   const labelCls = kind === 'judgement' ? 'text-question font-heading text-ink' : 'text-provenance text-ink-muted';
-  return `<div class="grid grid-cols-[130px_1fr] items-baseline gap-x-s3 gap-y-[2px] border-b border-rule py-s2">
+  return `<div class="grid grid-cols-[minmax(8.5rem,14rem)_1fr] items-baseline gap-x-s3 gap-y-[2px] border-b border-rule py-s2">
     <div class="${labelCls}">${esc(def.label)}</div>
     <div class="min-w-0">
       <div class="flex items-baseline gap-s2">${fieldControlHtml(def, field, kind)}

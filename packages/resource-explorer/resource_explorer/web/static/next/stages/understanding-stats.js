@@ -157,5 +157,5 @@ export function statsOverTimeHtml(resp) {
         p.stale} stale</td><td class="pr-s3 tnum">${p.reset_tables} reset</td><td class="text-ink-muted">${esc(resetWords(p.counters_reset))}</td></tr>`
       : `<tr data-stats-time-row><td class="pr-s3 tnum">${when}</td><td colspan="4" class="text-ink-muted"><span class="font-glyph" aria-hidden="true">?</span> not collected</td></tr>`;
   }).join('');
-  return `<div class="mt-s3" data-stats-time><div class="mb-s1 text-caveat text-ink">Statistics currency by survey</div><table class="text-caveat">${rows}</table></div>`;
+  return `<div class="mt-s3" data-stats-time><div class="mb-s1 text-caveat text-ink">Statistics currency by survey</div><table data-rc-id="stats-currency" class="text-caveat">${rows}</table></div>`;
 }

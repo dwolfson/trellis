@@ -30,6 +30,8 @@ import { ago, whenMs, verdictLineHtml, changedTimesHtml, savedLine, readBackAt, 
 // and `factGlyph` below are thin views over `GLYPH_STATES` -- this file
 // declares no glyph-to-meaning mapping of its own any more.
 import { STATES as GLYPH_STATES, stateEntry } from '/static/next/glyphs.js';
+import { watchTables } from '/static/next/colresize.js';
+import { barChartHeight } from '/static/next/chart-labels.js';
 import { publishProofHtml } from '/static/next/publish-proof.js';
 import { cardHtml, cardStackHtml, tileHtml, tileRowHtml, bindTiles } from '/static/next/ui-cards.js';
 // `readEnvelope` and its own private helpers used to live here directly;
@@ -1034,6 +1036,7 @@ export function renderIntentNav() {
 
   wireSidebarDrawer();
   wireTextSize();
+  watchTables(document.body);   // every data table is resizable by default (colresize.js); `data-no-resize` opts out
   wireLook($('look'));   // RULING-THEMES-PORTAL-DARK-LIGHT.md section 1
 
   nav.querySelectorAll('button[data-stage]').forEach((b) => {
@@ -1593,8 +1596,8 @@ export function chartLayout(layout = {}) {
   const t = tokens();
   const axis = (a = {}) => Object.assign({
     gridcolor: t.rule, zerolinecolor: t.rule, linecolor: t.rule,
-    tickfont: { family: t.font, color: t.inkMuted, size: 11 },
-    titlefont: { family: t.font, color: t.inkMuted, size: 11 },
+    tickfont: { family: t.font, color: t.inkMuted, size: 13 },
+    titlefont: { family: t.font, color: t.inkMuted, size: 13 },
   }, a);
   return Object.assign({}, layout, {
     template: undefined,
@@ -1809,9 +1812,18 @@ export async function promoteToPane(turn) {
     if (form === 'chart') {
       await loadScript('/static/vendor/plotly.min.js');
       const fig = turn.chart;
+      // A horizontal bar chart gets a row per bar and room for its labels, like the stage charts.
+      const horizontal = (fig.data || []).some((t) => t.orientation === 'h');
+      const barCount = horizontal ? Math.max(...(fig.data || []).map((t) => (t.y || []).length)) : 0;
       // Same themed layout as the Understanding pane — one place, so a chat
       // chart and a stage chart cannot drift into two designs.
-      await window.Plotly.newPlot(body, fig.data || [], chartLayout(fig.layout || {}),
+      const themed = chartLayout(fig.layout || {});
+      if (horizontal) {
+        themed.yaxis = Object.assign({}, themed.yaxis, { automargin: true });
+        themed.height = barChartHeight(barCount, { t: 24, b: 48 });
+        body.style.height = `${themed.height}px`;
+      }
+      await window.Plotly.newPlot(body, fig.data || [], themed,
                                   { displaylogo: false, responsive: true });
     } else if (form === 'diagram') {
       await renderDiagramInto(body, turn, 'promoted');
@@ -3841,7 +3853,7 @@ function toggleResourceMenu() {
   menu.id = 'resource-menu';
   menu.dataset.slug = slug;
   menu.setAttribute('role', 'menu');
-  menu.className = 'absolute z-20 w-[290px] rounded-sm border border-rule-strong bg-paper text-caveat text-ink shadow-lg';
+  menu.className = 'absolute z-20 w-[18rem] max-w-[90vw] rounded-sm border border-rule-strong bg-paper text-caveat text-ink shadow-lg';
   menu.style.left = `${btn.offsetLeft || 0}px`;
   menu.style.top = `${(btn.offsetTop || 0) + (btn.offsetHeight || 0) + 4}px`;
   menu.innerHTML = `

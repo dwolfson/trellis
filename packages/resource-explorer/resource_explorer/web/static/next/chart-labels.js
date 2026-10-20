@@ -3,12 +3,15 @@
  * Pure geometry on the figure's LAYOUT. The data is never touched: a long
  * category name is shortened in `ticktext` only (the trace keeps the full
  * name, so hover shows it), and the full names are also returned as a text
- * alternative. Label widths are estimated from the 11px chart font; the
+ * alternative. Label widths are estimated from the 13px chart font; the
  * real-browser test measures the rendered boxes to keep the estimate honest.
  */
 
-export const CHAR_W = 6.4;       // average glyph width at the 11px chart font
-export const LINE_H = 14;        // one tick-label line
+export const TICK_FONT = 13;     // tick label size: 2px up from the 11px of the first walk
+export const CHAR_W = 7.6;       // average glyph width at the 13px chart font
+export const LINE_H = 17;        // one tick-label line
+export const BAR_ROW_H = 22;     // one horizontal bar's own row, so every category label has its own line
+export const BASE_H = 260;       // a chart never draws shorter than this
 const MAX_CAT_CHARS = 16;        // x categories (rotated, so cheap in width)
 const MAX_Y_CHARS = 24;          // y categories (horizontal, in the left margin)
 const TICK_GAP = 12;             // minimum clear space between two labels
@@ -62,8 +65,13 @@ function legendWidth(fig) {
   return Math.min(260, textW('x'.repeat(longest)) + 44);
 }
 
+/** Height of a horizontal bar chart: one ~22px row per bar plus the margins, never under BASE_H. */
+export function barChartHeight(nBars, margin = { t: 12, b: 48 }) {
+  return Math.max(BASE_H, Math.ceil(nBars * BAR_ROW_H + (margin.t || 0) + (margin.b || 0)));
+}
+
 /** Fit one figure to `width` px.
- *  `title` names the chart in its text alternative. Returns { layout, alt: [{shown, full}], summary }. `layout` is `fig.layout`
+ *  `title` names the chart in its text alternative. Returns { layout, alt: [{shown, full}], summary, height }. `layout` is `fig.layout`
  *  with margins, tick arrays, angles and panel domains set; `alt` lists every
  *  label that was shortened or thinned away, with its full text. */
 export function fitFigure(fig, width, title = '') {
@@ -87,6 +95,7 @@ export function fitFigure(fig, width, title = '') {
     margin.l = Math.min(Math.ceil(width * 0.4), Math.max(56, ...shown.map(textW)) + 14);
     margin.r = 24;
     margin.b = LINE_H + 8 + LINE_H + 12;          // tick row + caption row
+    layout.height = barChartHeight(names.length, margin);
     const plotW = Math.max(120, width - margin.l - margin.r);
     const twoPanels = !!layout.xaxis2;
     // Gutter: the left panel's last tick label is centred on its right edge and
@@ -162,7 +171,7 @@ export function fitFigure(fig, width, title = '') {
   title = title || (layout.title && layout.title.text);
   const summary = `${title || 'Chart'}${alt.length
     ? `. Full labels: ${alt.map((a) => a.full).join('; ')}` : ''}`;
-  return { layout, alt, summary };
+  return { layout, alt, summary, height: layout.height || BASE_H };
 }
 
 /** After Plotly draws: put each shortened label's full name in a <title> on its

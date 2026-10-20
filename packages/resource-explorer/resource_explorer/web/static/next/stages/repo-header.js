@@ -68,10 +68,18 @@ export function securityCounts(sa) {
   return { on, total: entries.length, detail: entries.map(([k, v]) => `${k}: ${typeof v === 'object' ? v.status : v}`).join(', ') };
 }
 
-const tile = (key, label, bodyHtml, title = '') =>
-  `<div data-scouting-tile="${esc(key)}" class="min-w-0 rounded-sm border border-rule px-2 py-[2px]"${title ? ` title="${esc(title)}"` : ''}>`
-  + `<div class="text-provenance uppercase text-ink-muted">${esc(label)}</div>`
-  + `<div class="tnum truncate text-caveat text-ink">${bodyHtml}</div></div>`;
+/** The plain text of a tile's value, for the hover that shows what a narrow tile had to cut. */
+const plainText = (html) => String(html).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+
+/* A scouting tile sizes to its content (a 7rem floor, never wider than the row), the label wraps inside its own
+   tile, and the value stays on one line and shrinks with an ellipsis only when the tile itself is out of room; the
+   full value is then in the hover. */
+const tile = (key, label, bodyHtml, title = '') => {
+  const hover = title || plainText(bodyHtml);
+  return `<div data-scouting-tile="${esc(key)}" class="min-w-[7rem] max-w-full rounded-sm border border-rule px-2 py-[2px]"${hover ? ` title="${esc(hover)}"` : ''}>`
+    + `<div data-scouting-label class="break-words text-provenance uppercase text-ink-muted [overflow-wrap:anywhere]">${esc(label)}</div>`
+    + `<div data-scouting-value class="tnum truncate whitespace-nowrap text-caveat text-ink">${bodyHtml}</div></div>`;
+};
 
 /** The documentation link beside the homepage link, with a short cue and no sentence:
  *  "docs ✓" (linked), "docs unreachable" (linked), "no docs found", "docs not checked".
@@ -119,7 +127,7 @@ export function scoutingTilesHtml(ov) {
       : (dep ? `${dep}${ov.latest_deployment_at ? ` · ${esc(ago(ov.latest_deployment_at))}` : ''}` : '0'),
     ov.latest_deployment_environment ? `Latest: ${ov.latest_deployment_environment}${ov.latest_deployment_ref ? ` @ ${ov.latest_deployment_ref}` : ''}` : ''),
   ];
-  return `<div data-scouting-tiles class="mt-s2 grid grid-cols-3 gap-s1 sm:grid-cols-5 lg:grid-cols-9">${tiles.join('')}</div>`;
+  return `<div data-scouting-tiles class="mt-s2 flex flex-wrap items-start gap-s1">${tiles.join('')}</div>`;
 }
 
 /** The scouting signal chips. `sig` is `{tiles}` on success, `{error}` when the read failed, null before the read. */
