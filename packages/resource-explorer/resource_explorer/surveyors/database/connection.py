@@ -451,7 +451,8 @@ class DatabaseConnection(ABC):
         return self.execute_query(query, params)
 
     def preview_rows(self, schema: str, table: str, columns: list[str], limit: int,
-                     *, timeout_ms: int = PREVIEW_TIMEOUT_MS) -> list[dict]:
+                     *, timeout_ms: int = PREVIEW_TIMEOUT_MS,
+                     column_types: dict[str, str] | None = None) -> list[dict]:
         """The first `limit` rows of one table, as the engine returns them: THE seam a later engine adapter fills.
 
         Not abstract, and the default refuses: an engine that has not written "quote an identifier" and
@@ -1303,21 +1304,55 @@ class PostgreSQLConnection(DatabaseConnection):
     def _first_line(exc: Exception) -> str:
         return " ".join(str(exc).strip().splitlines()[:1]).strip()
 
-    @staticmethod
-    def build_preview_query(schema: str, table: str, columns: list[str], limit: int):
+    #: Types that are small by construction: selected as they are. bytea is replaced by its length; everything else
+    #: (text-like, json, arrays, numeric, a type this list does not know) is cut in the database, so an enormous value
+    #: is never fetched in full only to be cut afterwards.
+    _PREVIEW_PLAIN_TYPES = frozenset({
+        "smallint", "integer", "bigint", "int", "int2", "int4", "int8", "serial", "bigserial", "smallserial",
+        "real", "double precision", "float", "float4", "float8", "boolean", "bool", "date", "time", "timetz",
+        "time without time zone", "time with time zone", "timestamp", "timestamptz",
+        "timestamp without time zone", "timestamp with time zone", "interval", "uuid", "money", "oid"})
+    _PREVIEW_BINARY_TYPES = frozenset({"bytea"})
+    #: One more than the display cut (`table_preview.MAX_CELL_CHARS`, 500), so the browser can tell "cut" from "fits".
+    PREVIEW_FETCH_CHARS = 501
+
+    @classmethod
+    def _preview_select_item(cls, column: str, column_type: str | None):
+        from psycopg2 import sql
+
+        ident = sql.Identifier(column)
+        kind = (column_type or "").strip().lower().split("(")[0].strip()   # "timestamp(6)" -> "timestamp"
+        if kind in cls._PREVIEW_PLAIN_TYPES:
+            return ident
+        if kind in cls._PREVIEW_BINARY_TYPES:
+            # NULL stays NULL (|| with NULL is NULL); otherwise only the length leaves the database
+            return sql.SQL("{} || octet_length({})::text || {} AS {}").format(
+                sql.Literal("<"), ident, sql.Literal(" bytes>"), ident)
+        return sql.SQL("left({}::text, {}) AS {}").format(ident, sql.Literal(cls.PREVIEW_FETCH_CHARS), ident)
+
+    @classmethod
+    def build_preview_query(cls, schema: str, table: str, columns: list[str], limit: int,
+                            column_types: dict[str, str] | None = None):
         """The preview's ONE statement, composed from names and a validated integer.
 
         `schema`, `table` and every column are `sql.Identifier`s (quoted by the driver), `limit` must be one
         of `PREVIEW_LIMITS` and is rendered as a literal integer. There is no parameter through which text
         could reach the statement unquoted. With no selectable column (every column masked) it selects the
         constant 1, so the row count is still known and no masked value leaves the database.
+
+        Large values are cut IN the database (finding 10): a text-like or unknown-typed column is selected as
+        `left(col::text, 501)`, a bytea as its `octet_length` placeholder, both composed from `sql.Identifier` and
+        `sql.Literal` only. `column_types` is the catalogue's type per column; a column it does not name is treated
+        as unknown, which is cut.
         """
         from psycopg2 import sql
 
         if limit not in PREVIEW_LIMITS:
             raise ValueError(f"limit must be one of {PREVIEW_LIMITS}")
+        types = column_types or {}
         select_list = (
-            sql.SQL(", ").join(sql.Identifier(c) for c in columns) if columns else sql.SQL("1")
+            sql.SQL(", ").join(cls._preview_select_item(c, types.get(c)) for c in columns)
+            if columns else sql.SQL("1")
         )
         return sql.SQL("SELECT {cols} FROM {rel} LIMIT {n}").format(
             cols=select_list,
@@ -1326,7 +1361,8 @@ class PostgreSQLConnection(DatabaseConnection):
         )
 
     def preview_rows(self, schema: str, table: str, columns: list[str], limit: int,
-                     *, timeout_ms: int = PREVIEW_TIMEOUT_MS) -> list[dict]:
+                     *, timeout_ms: int = PREVIEW_TIMEOUT_MS,
+                     column_types: dict[str, str] | None = None) -> list[dict]:
         """The first `limit` rows of `schema.table`, selecting only `columns`.
 
         One read-only transaction (`SET TRANSACTION READ ONLY`, first statement) with
@@ -1339,7 +1375,7 @@ class PostgreSQLConnection(DatabaseConnection):
 
         if not self._conn:
             raise RuntimeError("Not connected to database")
-        query = self.build_preview_query(schema, table, list(columns), limit)
+        query = self.build_preview_query(schema, table, list(columns), limit, column_types)
         conn = self._conn
         try:
             conn.rollback()                      # a clean transaction, so SET TRANSACTION is its first statement
@@ -1361,6 +1397,10 @@ class PostgreSQLConnection(DatabaseConnection):
             code = getattr(exc, "pgcode", None) or ""
             raise PreviewError(
                 f"the database stopped the query{f' (SQLSTATE {code})' if code else ''}") from None
+        except Exception:                        # noqa: BLE001 - anything that is not a driver error
+            # A decoding or programming error after connecting is not a connect failure and not the database
+            # stopping the query; its text can quote a value, so it is never sent (finding 6).
+            raise PreviewError("the database answer could not be read") from None
         finally:
             try:
                 conn.rollback()

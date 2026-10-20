@@ -6,10 +6,12 @@ person previewing uses their own credential, not the surveyor's, and RE keeps it
 What "the session" is here. RE's session is a signed JWT and the server keeps no session state (`web/routes/auth.py`,
 `auth_logout`), so this holder IS the server-side session state for this one thing. An entry is:
 
-* tied to the signed-in user: the key is (user id, database slug), so another person never reads it;
+* tied to the signed-in user AND to that one sign-in: the key is (user id, session key, database slug). The session
+  key is the token's `jti` when it has one, else a sha256 of the token (`session_key`), so another person never reads
+  it, and a new login or another device is asked again (design: "this session only");
 * dropped at the earliest of the session token's own expiry (`not_after`, a wall-clock time, when the route knows it),
   the TTL (`RE_PREVIEW_CREDENTIAL_TTL_SECONDS`, default 8 hours, never unbounded), the person's sign-out
-  (`clear_user`), "use another credential" (`forget`), and process exit (`atexit`).
+  (`clear_session`, which the logout route calls with the bearer the request carries; `clear_user` drops every session), "use another credential" (`forget`), and process exit (`atexit`).
 
 Nothing here is written to the registry, the secrets store (`.omsecrets`), a run row, the activity log, Egeria, a log
 line or an exception message. `PreviewCredential.__repr__` hides the password, and the holder's own `__repr__` says
@@ -22,6 +24,7 @@ direction to fail in.
 from __future__ import annotations
 
 import atexit
+import hashlib
 import math
 import os
 import threading
@@ -46,6 +49,18 @@ def configured_ttl() -> float:
     return value
 
 
+def session_key(claims: dict | None, token: str = "") -> str:
+    """What identifies ONE sign-in: the JWT `jti` if it has one, else a sha256 of the token. '' when neither exists.
+
+    The digest is a one-way name for the session; the token itself is never kept here."""
+    jti = (claims or {}).get("jti")
+    if jti:
+        return f"jti:{jti}"
+    if token:
+        return "sha256:" + hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return ""
+
+
 @dataclass(frozen=True)
 class PreviewCredential:
     """One held credential. `password` is excluded from every generated text form."""
@@ -64,39 +79,49 @@ class _Holder:
     def __init__(self, clock=time.time) -> None:
         self._clock = clock
         self._lock = threading.Lock()
-        self._entries: dict[tuple[str, str], PreviewCredential] = {}
+        self._entries: dict[tuple[str, str, str], PreviewCredential] = {}
 
     def __repr__(self) -> str:
         with self._lock:
             return f"<preview credential holder: {len(self._entries)} held>"
 
-    def put(self, person: str, slug: str, user: str, password: str, *,
+    def put(self, person: str, session: str, slug: str, user: str, password: str, *,
             not_after: float | None = None, ttl: float | None = None) -> None:
         expires = self._clock() + (configured_ttl() if ttl is None else ttl)
         if not_after is not None:
             expires = min(expires, float(not_after))
         with self._lock:
-            self._entries[(person, slug)] = PreviewCredential(user=user, password=password, expires_at=expires)
+            now = self._clock()
+            for key in [k for k, v in self._entries.items() if v.expires_at <= now]:
+                del self._entries[key]               # an expired sign-in's entry goes, whoever's it was
+            self._entries[(person, session, slug)] = PreviewCredential(
+                user=user, password=password, expires_at=expires)
 
-    def take(self, person: str, slug: str) -> PreviewCredential | None:
+    def take(self, person: str, session: str, slug: str) -> PreviewCredential | None:
         """The held credential, or None. An entry past its expiry is dropped here and never returned."""
         with self._lock:
-            entry = self._entries.get((person, slug))
+            entry = self._entries.get((person, session, slug))
             if entry is None:
                 return None
             if entry.expires_at <= self._clock():
-                del self._entries[(person, slug)]
+                del self._entries[(person, session, slug)]
                 return None
             return entry
 
-    def held_user(self, person: str, slug: str) -> str | None:
+    def held_user(self, person: str, session: str, slug: str) -> str | None:
         """Only the database user's NAME, for the form and the header; never the password."""
-        entry = self.take(person, slug)
+        entry = self.take(person, session, slug)
         return entry.user if entry else None
 
-    def forget(self, person: str, slug: str) -> None:
+    def forget(self, person: str, session: str, slug: str) -> None:
         with self._lock:
-            self._entries.pop((person, slug), None)
+            self._entries.pop((person, session, slug), None)
+
+    def clear_session(self, person: str, session: str) -> None:
+        """Sign-out: drop what THIS sign-in held."""
+        with self._lock:
+            for key in [k for k in self._entries if k[0] == person and k[1] == session]:
+                del self._entries[key]
 
     def clear_user(self, person: str) -> None:
         with self._lock:
@@ -116,5 +141,6 @@ put = _HOLDER.put
 take = _HOLDER.take
 held_user = _HOLDER.held_user
 forget = _HOLDER.forget
+clear_session = _HOLDER.clear_session
 clear_user = _HOLDER.clear_user
 clear_all = _HOLDER.clear_all

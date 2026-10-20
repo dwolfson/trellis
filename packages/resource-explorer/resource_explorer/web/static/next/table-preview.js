@@ -186,7 +186,18 @@ export async function mountTablePreview(host, { slug, dbName }) {
       <div class="flex flex-wrap items-center gap-s2">${body}</div>
       <div class="mt-s1 text-provenance text-ink-muted">shown, never stored · each preview is recorded with your name in RE · Egeria record not built yet</div>`;
     el.querySelectorAll('[data-pv-run]').forEach((b) => b.addEventListener('click', () => run(Number(b.dataset.pvRun), [])));
-    el.querySelector('[data-pv-cred-open]')?.addEventListener('click', openCredential);
+    el.querySelector('[data-pv-cred-open]')?.addEventListener('click', useAnotherCredential);
+  }
+
+  /** EVERY "use another credential" path comes through here: the held credential is dropped on the server first, so
+   *  cancelling the form leaves nothing held that the screen says is gone. With none held it only opens the form. */
+  async function useAnotherCredential() {
+    if (S.cred && S.cred.held) {
+      try { await forgetPreviewCredential(slug); } catch { /* the form still replaces it */ }
+      S.cred = { ...(S.cred || {}), held: false };
+      renderControls();
+    }
+    openCredential();
   }
 
   function openCredential() {
@@ -263,11 +274,7 @@ export async function mountTablePreview(host, { slug, dbName }) {
       renderResult();
     });
     el.querySelector('[data-pv-retry]')?.addEventListener('click', () => run(S.lastLimit || 20, []));
-    el.querySelector('[data-pv-cred-open]')?.addEventListener('click', async () => {
-      try { await forgetPreviewCredential(slug); } catch { /* the form still replaces it */ }
-      S.cred = { ...(S.cred || {}), held: false };
-      renderControls(); openCredential();
-    });
+    el.querySelector('[data-pv-cred-open]')?.addEventListener('click', useAnotherCredential);
   }
 
   // reads: the table list (the Schema Inventory's own call) and whether a credential of this person's is held

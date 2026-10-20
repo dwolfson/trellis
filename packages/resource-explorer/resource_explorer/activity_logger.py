@@ -160,6 +160,41 @@ def log_preview(
     return entry_id
 
 
+def log_preview_credential(
+    registry: "ProjectRegistry",
+    *,
+    slug: str,
+    name: str,
+    location: str,
+    who: str,
+    db_user: str,
+    outcome: str,
+) -> str:
+    """One row per attempt to hold a preview credential, whatever came of it (finding 4).
+
+    Who tried, as which database user, and what happened: `held`, `refused`, `unreachable` or `throttled`. The
+    password is not a parameter of this function, so it cannot be stored. A failed attempt is an error row.
+    """
+    import json
+
+    detail = {"action": "credential", "who": who, "db_user": db_user, "outcome": outcome}
+    entry_id = str(uuid.uuid4())
+    registry.write_activity(ActivityEntry(
+        id=entry_id,
+        ts=_now(),
+        operation="preview",
+        intent="assessment",
+        entity_type="database",
+        entity_slug=slug,
+        entity_name=name,
+        entity_location=location,
+        status="ok" if outcome == "held" else "error",
+        summary=f"Preview credential {outcome} · as {db_user or '(none)'} · by {who}",
+        detail=json.dumps(detail),
+    ))
+    return entry_id
+
+
 def log_analysis_run(
     registry: "ProjectRegistry",
     entity_type: str,

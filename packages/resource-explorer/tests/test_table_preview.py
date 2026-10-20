@@ -16,7 +16,10 @@ from psycopg2 import errors, sql
 from resource_explorer import preview_credential_holder as holder
 from resource_explorer import table_preview as tp
 from resource_explorer.registry import DatabaseEntity, ProjectRegistry
+from resource_explorer.surveyors.database import column_matching as cm
 from resource_explorer.surveyors.database import connection as conn_mod
+from resource_explorer.surveyors.database.column_profile_step import column_match_rows
+from resource_explorer.surveyors.database.sampling import SampleProvenance
 from resource_explorer.surveyors.database.connection import (
     EngineCapabilities,
     PostgreSQLConnection,
@@ -82,7 +85,8 @@ def _pg(rows=None, raises=None):
 
 class TestBuildPreviewQuery:
     def test_names_are_identifiers_and_limit_a_literal_int(self):
-        q = PostgreSQLConnection.build_preview_query("sales", "orders", ["id", "email"], 20)
+        q = PostgreSQLConnection.build_preview_query("sales", "orders", ["id", "email"], 20,
+                                                     {"id": "integer", "email": "integer"})
         parts = _flat(q)
         assert [p.strings for p in parts if isinstance(p, sql.Identifier)] == [
             ("id",), ("email",), ("sales",), ("orders",)]
@@ -109,14 +113,14 @@ class TestBuildPreviewQuery:
     def test_the_only_text_entry_points_take_no_sql(self):
         import inspect
         params = inspect.signature(PostgreSQLConnection.preview_rows).parameters
-        assert list(params) == ["self", "schema", "table", "columns", "limit", "timeout_ms"]
+        assert list(params) == ["self", "schema", "table", "columns", "limit", "timeout_ms", "column_types"]
         assert not hasattr(PostgreSQLConnection, "preview_sql")
 
 
 class TestPreviewRows:
     def test_read_only_transaction_first_then_timeout_then_the_query_then_rollback(self):
         c = _pg(rows=[(1, "a")])
-        out = c.preview_rows("s", "t", ["id", "name"], 20)
+        out = c.preview_rows("s", "t", ["id", "name"], 20, column_types={"id": "integer", "name": "text"})
         assert out == [{"id": 1, "name": "a"}]
         log = c._conn.log
         assert log[0] == ("rollback", None)
@@ -181,15 +185,60 @@ def registry(tmp_path):
          "state": "measured"}
         for t in ("orders", "v_orders") for n, i in cols])
 
-    def match(col, verdict, pii=0, cls=""):
-        return {"schema_name": "sales", "table_name": "orders", "column_name": col, "question": "data_class_match",
-                "verdict": verdict, "established": 1, "privacy_relevant": pii, "matched_display_name": cls,
-                "state": "measured"}
-    r.write_detail_rows("database_column_matches", "coco", SURVEYED, rows=[
-        match("id", "no_match"), match("email", "matched", 1, "email"), match("note", "not_sampled"),
-        match("odd", "unmatched_patterned"),
-    ])                                              # "qty" has no verdict at all
+    r.write_detail_rows("database_column_matches", "coco", SURVEYED, rows=real_match_rows({
+        "id": "no_match", "email": "matched", "note": "not_sampled", "odd": "unmatched_patterned"}))
+    # "qty" has no verdict at all
     return r
+
+
+
+# ── column-match rows from the REAL producer ─────────────────────────────────────────────────────────────────
+
+_PROV = SampleProvenance(strategy="random", sample_rows=25, total_rows=25, sampled_at=SURVEYED)
+_EMAIL_CLASS = cm.KnownDataClass(
+    guid="g-email", qualified_name="DataClass::Email", display_name="Email Address",
+    specification=r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}", data_type="string", match_property_names=("email",))
+_ZIP_CLASS = cm.KnownDataClass(guid="g-zip", qualified_name="DataClass::Zip", display_name="Zip", specification=r"\d{5}")
+_EMAILS = [f"person{i}@example.org" for i in range(25)]
+_WORDS = "mercury venus earth mars jupiter saturn uranus neptune ceres pluto haumea makemake".split() * 2
+_COLOURS = cm.KnownValidValueSet(guid="v-col", qualified_name="VVS::Colours", display_name="Colours",
+                                 values=("red", "green", "blue"))
+
+
+def produce_match(column: str, verdict: str) -> dict:
+    """The `ColumnMatch.as_dict()` of a column that `column_matching`'s real functions give `verdict` to."""
+    base = dict(schema_name="sales", table_name="orders", column_name=column, provenance=_PROV)
+
+    def dc(values, classes=(_EMAIL_CLASS,), column_type="text"):
+        return cm.data_class_match(**base, column_type=column_type, known_classes=list(classes), sampled_values=values)
+
+    if verdict == "matched":
+        m = dc(_EMAILS)
+    elif verdict == "no_match":
+        m = dc(_WORDS)
+    elif verdict == "unmatched_patterned":
+        m = dc(_EMAILS, classes=(_ZIP_CLASS,))
+    elif verdict == "inconclusive":
+        m = dc(_EMAILS[:3])
+    elif verdict == "no_candidates":
+        m = dc(_EMAILS, classes=())
+    elif verdict == "not_sampled":
+        m = dc(None)
+    elif verdict == "not_applicable":
+        m = dc(_EMAILS, column_type="bytea")
+    elif verdict == "partial_match":
+        m = cm.reference_data_match(**base, column_type="text", known_sets=[_COLOURS],
+                                    distinct_values=["red", "green", "purple"], distinct_count=3, total_rows=30)
+        m.question = "data_class_match"          # the stored-row filter reads this question; the verdict is real
+    else:
+        raise AssertionError(verdict)
+    assert m.verdict == verdict, (verdict, m.verdict)
+    return m.as_dict()
+
+
+def real_match_rows(verdicts: dict) -> list[dict]:
+    """`database_column_matches` rows exactly as the column-profile step stores them (`column_match_rows`)."""
+    return column_match_rows([produce_match(c, v) for c, v in verdicts.items()])
 
 
 def _by(decisions):
@@ -200,8 +249,8 @@ class TestMasking:
     def test_each_reason_and_the_one_shown_column(self, registry):
         d = _by(tp.masking_decisions(registry, "coco", "sales", "orders", ["id", "email", "note", "qty", "odd"]))
         assert d["id"]["masked"] is False and d["id"]["reason"] is None
-        assert (d["email"]["reason"], d["email"]["tag"]) == (tp.REASON_PII, "masked · email")
-        assert "PII class email" in d["email"]["hover"] and "run 10-06" in d["email"]["hover"]
+        assert (d["email"]["reason"], d["email"]["tag"]) == (tp.REASON_PII, "masked · Email Address")
+        assert "PII class Email Address" in d["email"]["hover"] and "run 10-06" in d["email"]["hover"]
         assert (d["note"]["reason"], d["note"]["tag"]) == (tp.REASON_NOT_PROFILED, "masked · not profiled")
         assert "can't say it's safe" in d["note"]["hover"]
         assert d["qty"]["reason"] == tp.REASON_NOT_PROFILED       # never profiled at all
@@ -233,27 +282,28 @@ class TestMasking:
 class TestCredentialHolder:
     def test_per_person_and_database_and_never_in_text(self):
         holder.clear_all()
-        holder.put("dan", "coco", "dan_ro", PASSWORD)
-        assert holder.held_user("dan", "coco") == "dan_ro"
-        assert holder.held_user("mandy", "coco") is None and holder.held_user("dan", "other") is None
-        cred = holder.take("dan", "coco")
+        holder.put("dan", "s1", "coco", "dan_ro", PASSWORD)
+        assert holder.held_user("dan", "s1", "coco") == "dan_ro"
+        assert holder.held_user("mandy", "s1", "coco") is None and holder.held_user("dan", "s1", "other") is None
+        assert holder.held_user("dan", "s2", "coco") is None          # another sign-in is asked again
+        cred = holder.take("dan", "s1", "coco")
         assert PASSWORD not in repr(cred) and PASSWORD not in str(cred)
         assert PASSWORD not in repr(holder._HOLDER)
         holder.clear_user("dan")
-        assert holder.take("dan", "coco") is None
+        assert holder.take("dan", "s1", "coco") is None
 
     def test_expires_at_the_session_end_and_the_ttl(self):
         holder.clear_all()
         now = [1000.0]
         h = holder._Holder(clock=lambda: now[0])
-        h.put("dan", "coco", "u", PASSWORD, not_after=1100.0)
+        h.put("dan", "s", "coco", "u", PASSWORD, not_after=1100.0)
         now[0] = 1099.0
-        assert h.take("dan", "coco")
+        assert h.take("dan", "s", "coco")
         now[0] = 1100.0
-        assert h.take("dan", "coco") is None
-        h.put("dan", "coco", "u", PASSWORD, ttl=5)
+        assert h.take("dan", "s", "coco") is None
+        h.put("dan", "s", "coco", "u", PASSWORD, ttl=5)
         now[0] = 1106.0
-        assert h.take("dan", "coco") is None
+        assert h.take("dan", "s", "coco") is None
 
     def test_only_table_preview_reads_the_holder(self):
         import pathlib
@@ -270,7 +320,7 @@ class Spy:
     database_connection), recording what it was asked and never touching a database."""
 
     def __init__(self, rows=None, raises=None):
-        self.asked, self.opened = [], []
+        self.asked, self.opened, self.types = [], [], []
         self.rows, self.raises = rows, raises
         self.conn = mock.create_autospec(PostgreSQLConnection, instance=True, spec_set=True)
         self.conn.capabilities = EngineCapabilities(row_preview=True)
@@ -281,20 +331,22 @@ class Spy:
         self.opened.append((db_entity.slug, credentials["user"], connect_timeout))
         return contextlib.nullcontext(self.conn)
 
-    def _preview(self, schema, table, columns, limit, *, timeout_ms=10000):
+    def _preview(self, schema, table, columns, limit, *, timeout_ms=10000, column_types=None):
+        self.types.append(column_types)
         self.asked.append((schema, table, list(columns), limit))
         if self.raises:
             raise self.raises
         return [{c: f"{VALUE}-{c}" if c != "id" else 1 for c in columns} for _ in range(self.rows or 3)]
 
 
-@pytest.fixture
-def env(registry, monkeypatch, caplog):
+def _make_env(registry, monkeypatch, caplog, *, patch_identity):
     holder.clear_all()
+    getattr(tp, "throttle_reset", lambda: None)()
     monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
                         lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None)
-    monkeypatch.setattr("resource_explorer.auth.get_current_user",
-                        lambda request: {"user_id": "dan", "exp": 4102444800})
+    if patch_identity:
+        monkeypatch.setattr("resource_explorer.auth.get_current_user",
+                            lambda request: {"user_id": "dan", "exp": 4102444800})
     # the credential check connects: stand in for it with a signature-bound fake
     from resource_explorer import credential_check
     checks = mock.create_autospec(credential_check.check_database_credential, side_effect=lambda db, u, p: None)
@@ -309,6 +361,26 @@ def env(registry, monkeypatch, caplog):
     caplog.set_level(logging.DEBUG)
     from resource_explorer.web.app import app
     return type("Env", (), {"client": TestClient(app), "spy": spy, "registry": registry, "checks": checks})
+
+
+@pytest.fixture
+def env(registry, monkeypatch, caplog):
+    return _make_env(registry, monkeypatch, caplog, patch_identity=True)
+
+
+@pytest.fixture
+def real_env(registry, monkeypatch, caplog):
+    """The same, but with NO patched identity: the app's real `get_current_user` reads a real signed token."""
+    return _make_env(registry, monkeypatch, caplog, patch_identity=False)
+
+
+def _token(user="dan"):
+    from resource_explorer.auth import create_access_token
+    return create_access_token(user_id=user, egeria_token="egeria-not-real")
+
+
+def _as(token):
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _hold(env, user="dan_ro"):
@@ -354,9 +426,6 @@ class TestRoute:
         _hold(env)
         env.client.delete("/api/databases/coco/preview/credential")
         assert env.client.get("/api/databases/coco/preview/credential").json()["held"] is False
-        _hold(env)
-        env.client.post("/api/auth/logout")
-        assert holder.held_user("dan", "coco") is None
 
     def test_preview_rows_masks_by_default_and_never_selects_a_masked_column(self, env, tmp_path):
         _hold(env)
@@ -368,7 +437,7 @@ class TestRoute:
         assert env.spy.opened == [("coco", "dan_ro", 5)]
         assert list(out["rows"][0]) == ["id"] and VALUE not in str(out["columns"])
         assert [c["tag"] for c in out["columns"] if c["masked"]] == [
-            "masked · email", "masked · not profiled", "masked · not profiled", "masked · undecided"]
+            "masked · Email Address", "masked · not profiled", "masked · not profiled", "masked · undecided"]
         assert out["counts"]["masked"] == 4 and out["kind"] == "table"
         assert out["egeria"] == {"state": "not_built"}
 
@@ -392,7 +461,8 @@ class TestRoute:
         import json
         d = json.loads(env.registry.get_activity(out["recorded"]["id"])["detail"])
         assert d["action"] == "reveal" and d["revealed"] == ["email"]
-        assert len(env.registry.list_activity(operation="preview")) == 1        # a reveal is one row, not two
+        rows = [r for r in env.registry.list_activity(operation="preview") if '"credential"' not in r["detail"]]
+        assert len(rows) == 1                                                   # a reveal is one row, not two
 
     def test_a_revealed_column_is_not_remembered_by_the_next_preview(self, env):
         _hold(env)
@@ -468,3 +538,361 @@ class TestNothingLeaks:
     def test_a_validation_error_does_not_echo_the_password(self, env):
         r = env.client.put("/api/databases/coco/preview/credential", json={"user": ["bad"], "password": PASSWORD})
         assert r.status_code == 422 and PASSWORD not in r.text
+
+
+# ── fix round 1 (Opus security review, 2026-10-20) ───────────────────────────────────────────────────────────
+
+class TestMaskingFromTheRealProducer:
+    """Finding 1 (critical). Every row here comes from `column_matching`'s real functions through the column-profile
+    step's own row builder, so the fixture cannot drift from the producer again: the matched verdicts do NOT set
+    `privacy_relevant`, and the old rule (`matched` AND `privacy_relevant`) showed a matched PII column in clear."""
+
+    def _decide(self, registry, tmp_path, verdict, mutate=None):
+        m = produce_match("c", verdict)
+        if mutate:
+            mutate(m)
+        rows = column_match_rows([m])
+        registry.write_detail_rows("database_column_matches", "coco", "2026-10-07T10:00:00", rows=rows)
+        return tp.masking_decisions(registry, "coco", "sales", "orders", ["c"])[0]
+
+    def test_the_producer_really_leaves_privacy_relevant_off_a_matched_column(self):
+        m = produce_match("c", "matched")
+        assert m["verdict"] == "matched" and m["matched_display_name"] == "Email Address"
+        assert m["privacy_relevant"] is False           # the fact the old rule overlooked
+
+    def test_a_matched_column_is_masked_as_pii_with_the_class_name(self, registry, tmp_path):
+        d = self._decide(registry, tmp_path, "matched")
+        assert d["masked"] is True and d["reason"] == tp.REASON_PII
+        assert d["tag"] == "masked · Email Address" and "PII class Email Address" in d["hover"]
+
+    def test_a_partial_match_is_masked_as_pii_too(self, registry, tmp_path):
+        d = self._decide(registry, tmp_path, "partial_match")
+        assert d["masked"] is True and d["reason"] == tp.REASON_PII and d["tag"] == "masked · Colours"
+
+    @pytest.mark.parametrize("verdict,reason", [
+        ("unmatched_patterned", tp.REASON_UNDECIDED), ("inconclusive", tp.REASON_UNDECIDED),
+        ("no_candidates", tp.REASON_UNDECIDED), ("not_sampled", tp.REASON_NOT_PROFILED),
+        ("not_applicable", tp.REASON_NOT_PROFILED)])
+    def test_every_other_real_verdict_stays_masked(self, registry, tmp_path, verdict, reason):
+        d = self._decide(registry, tmp_path, verdict)
+        assert d["masked"] is True and d["reason"] == reason
+
+    def test_no_match_is_the_only_verdict_that_shows_a_column(self, registry, tmp_path):
+        assert self._decide(registry, tmp_path, "no_match")["masked"] is False
+
+    @pytest.mark.parametrize("unknown", ["some_future_verdict", "NO_MATCH", "match", "No_Match "])
+    def test_a_verdict_nobody_has_heard_of_stays_masked(self, registry, tmp_path, unknown):
+        d = self._decide(registry, tmp_path, "no_match", mutate=lambda m: m.update(verdict=unknown))
+        assert d["masked"] is True
+
+    def test_a_matched_email_column_never_leaves_the_database_through_the_route(self, env):
+        _hold(env)
+        out = _preview(env).json()
+        assert env.spy.asked == [("sales", "orders", ["id"], 20)]
+        email = next(c for c in out["columns"] if c["name"] == "email")
+        assert email["masked"] is True and email["reason"] == "pii"
+        assert "email" not in out["rows"][0] and "email" not in env.spy.asked[0][2]
+
+
+class TestSignOutDropsTheCredential:
+    """Finding 2. With a REAL signed token and no patched identity, the logout POST reaches `clear_session`."""
+
+    def test_logout_with_the_bearer_drops_what_that_sign_in_held(self, real_env):
+        tok = _token()
+        r = real_env.client.put("/api/databases/coco/preview/credential", headers=_as(tok),
+                                json={"user": "dan_ro", "password": PASSWORD})
+        assert r.status_code == 200
+        assert real_env.client.get("/api/databases/coco/preview/credential", headers=_as(tok)).json()["held"]
+        assert real_env.client.post("/api/auth/logout", headers=_as(tok)).status_code == 200
+        assert holder.held_user("dan", holder.session_key(None, tok), "coco") is None
+        assert real_env.client.get("/api/databases/coco/preview/credential", headers=_as(tok)).json()["held"] is False
+
+    def test_logout_without_a_bearer_drops_nothing_and_says_so_by_doing_nothing(self, real_env):
+        tok = _token()
+        real_env.client.put("/api/databases/coco/preview/credential", headers=_as(tok),
+                            json={"user": "dan_ro", "password": PASSWORD})
+        real_env.client.post("/api/auth/logout")                                  # what the old auth.js sent
+        assert real_env.client.get("/api/databases/coco/preview/credential", headers=_as(tok)).json()["held"]
+
+
+class TestCredentialBelongsToTheSignIn:
+    """Finding 3. The key is (user id, session key, database): a new login or another device is asked again."""
+
+    def test_another_sign_in_of_the_same_person_does_not_see_it(self, real_env):
+        a, b = _token(), _token()
+        import time
+        time.sleep(1.1)                                  # tokens carry iat in whole seconds
+        b = _token()
+        assert a != b
+        real_env.client.put("/api/databases/coco/preview/credential", headers=_as(a),
+                            json={"user": "dan_ro", "password": PASSWORD})
+        assert real_env.client.get("/api/databases/coco/preview/credential", headers=_as(a)).json()["held"]
+        assert real_env.client.get("/api/databases/coco/preview/credential", headers=_as(b)).json()["held"] is False
+        r = real_env.client.post("/api/databases/coco/preview", headers=_as(b), json={"schema": "sales", "table": "orders"})
+        assert r.status_code == 409 and "no credential of yours" in r.json()["detail"]
+        assert real_env.spy.opened == []
+        assert real_env.client.post("/api/databases/coco/preview", headers=_as(a),
+                                    json={"schema": "sales", "table": "orders"}).status_code == 200
+
+    def test_signing_out_of_one_does_not_drop_the_other(self, real_env):
+        import time
+        a = _token()
+        time.sleep(1.1)
+        b = _token()
+        for t in (a, b):
+            real_env.client.put("/api/databases/coco/preview/credential", headers=_as(t),
+                                json={"user": "dan_ro", "password": PASSWORD})
+        real_env.client.post("/api/auth/logout", headers=_as(a))
+        assert real_env.client.get("/api/databases/coco/preview/credential", headers=_as(a)).json()["held"] is False
+        assert real_env.client.get("/api/databases/coco/preview/credential", headers=_as(b)).json()["held"]
+
+    def test_session_key_is_the_jti_else_a_digest_and_never_the_token(self):
+        assert holder.session_key({"jti": "abc"}, "tok") == "jti:abc"
+        k = holder.session_key({}, "tok-secret-value")
+        assert k.startswith("sha256:") and "tok-secret-value" not in k and len(k) == len("sha256:") + 64
+        assert holder.session_key({}, "") == ""
+
+    def test_an_expired_entry_goes_and_is_swept_on_the_next_put(self):
+        now = [1000.0]
+        h = holder._Holder(clock=lambda: now[0])
+        h.put("dan", "s1", "coco", "u", PASSWORD, ttl=5)
+        now[0] = 1010.0
+        h.put("mandy", "s2", "coco", "u", PASSWORD, ttl=5)
+        assert repr(h) == "<preview credential holder: 1 held>"
+
+
+class TestCredentialAttempts:
+    """Finding 4. Every PUT is an RE activity row; five refusals in ten minutes lock the pair for ten minutes; a
+    wrong password and an unknown user get the same sentence."""
+
+    @staticmethod
+    def _put(env, user="dan_ro"):
+        return env.client.put("/api/databases/coco/preview/credential", json={"user": user, "password": PASSWORD})
+
+    @staticmethod
+    def _attempts(env):
+        import json
+        return [json.loads(r["detail"]) for r in env.registry.list_activity(operation="preview")
+                if json.loads(r["detail"]).get("action") == "credential"]
+
+    @staticmethod
+    def _refuse(env, message):
+        from resource_explorer.credential_check import CredentialCheckError
+        env.checks.side_effect = CredentialCheckError("credential", message)
+
+    def test_every_attempt_is_a_row_with_who_user_and_outcome_and_never_the_password(self, env, tmp_path):
+        from resource_explorer.credential_check import CredentialCheckError
+        assert self._put(env).status_code == 200
+        self._refuse(env, "Credential not saved: password authentication failed")
+        self._put(env, "dan_bad")
+        env.checks.side_effect = CredentialCheckError("unreachable", "Credential not saved: could not reach h:5432")
+        self._put(env, "dan_ro")
+        got = sorted((a["db_user"], a["outcome"], a["who"]) for a in self._attempts(env))
+        assert got == [("dan_bad", "refused", "dan"), ("dan_ro", "held", "dan"), ("dan_ro", "unreachable", "dan")]
+        assert PASSWORD not in _everything_stored(env.registry, tmp_path)
+        statuses = {r["status"] for r in env.registry.list_activity(operation="preview")}
+        assert statuses == {"ok", "error"}
+
+    def test_a_wrong_password_and_an_unknown_user_get_the_same_sentence(self, env):
+        self._refuse(env, 'Credential not saved: password authentication failed for user "dan_ro"')
+        wrong = self._put(env, "dan_ro")
+        self._refuse(env, 'Credential not saved: role "nobody" does not exist')
+        unknown = self._put(env, "nobody")
+        assert wrong.status_code == unknown.status_code == 400
+        assert wrong.json() == unknown.json() == {"detail": tp.REFUSED_SENTENCE}
+
+    def test_five_refusals_lock_the_pair_for_ten_minutes_then_it_opens(self, env, monkeypatch):
+        now = [10_000.0]
+        monkeypatch.setattr(tp._THROTTLE, "_clock", lambda: now[0])
+        self._refuse(env, "Credential not saved: password authentication failed")
+        for _ in range(5):
+            assert self._put(env).status_code == 400
+            now[0] += 1
+        asked = env.checks.call_count
+        r = self._put(env)
+        assert r.status_code == 429 and r.json() == {"detail": tp.THROTTLED_SENTENCE}
+        assert env.checks.call_count == asked                       # a locked pair is not even tested
+        assert self._attempts(env)[0]["outcome"] == "throttled"     # newest first: the refusal itself is a row
+        now[0] += 590
+        assert self._put(env).status_code == 429
+        now[0] += 10
+        env.checks.side_effect = lambda db, u, p: None
+        assert self._put(env).status_code == 200
+
+    def test_the_lock_is_per_person_and_database(self, env, monkeypatch, registry):
+        self._refuse(env, "Credential not saved: password authentication failed")
+        for _ in range(5):
+            self._put(env)
+        assert self._put(env).status_code == 429
+        monkeypatch.setattr("resource_explorer.auth.get_current_user",
+                            lambda request: {"user_id": "mandy", "exp": 4102444800})
+        assert self._put(env).status_code == 400                      # someone else: refused, not locked
+
+    def test_four_refusals_and_a_success_do_not_lock(self, env):
+        self._refuse(env, "Credential not saved: password authentication failed")
+        for _ in range(4):
+            self._put(env)
+        env.checks.side_effect = lambda db, u, p: None
+        assert self._put(env).status_code == 200
+        self._refuse(env, "Credential not saved: password authentication failed")
+        for _ in range(4):
+            assert self._put(env).status_code == 400
+
+    def test_if_the_attempt_cannot_be_recorded_nothing_is_kept(self, env, monkeypatch):
+        monkeypatch.setattr(ProjectRegistry, "write_activity", lambda self, e: (_ for _ in ()).throw(OSError("disk")))
+        r = self._put(env)
+        assert r.status_code == 503 and PASSWORD not in r.text
+        assert env.client.get("/api/databases/coco/preview/credential").json()["held"] is False
+
+
+class TestConnectFailuresAreRecorded:
+    """Finding 5. A failed connect has its audit row, and fails closed like the other paths."""
+
+    @pytest.mark.parametrize("exc,outcome", [
+        (psycopg2.OperationalError("FATAL: password authentication failed"), "credential_refused"),
+        (psycopg2.OperationalError("could not connect to server: Connection refused"), "unreachable")])
+    def test_the_row_is_written_with_zero_rows_and_an_error_status(self, env, exc, outcome):
+        import json
+        _hold(env)
+        env.spy.opener.side_effect = exc
+        out = _preview(env).json()
+        assert out["outcome"] == outcome and out["recorded"]["state"] == "recorded"
+        row = env.registry.get_activity(out["recorded"]["id"])
+        d = json.loads(row["detail"])
+        assert row["status"] == "error" and d["outcome"] == outcome and d["rows"] == 0 and d["db_user"] == "dan_ro"
+
+    def test_if_re_cannot_record_a_failed_connect_the_answer_is_503(self, env, monkeypatch):
+        _hold(env)
+        env.spy.opener.side_effect = psycopg2.OperationalError("FATAL: password authentication failed")
+        monkeypatch.setattr(ProjectRegistry, "write_activity", lambda self, e: (_ for _ in ()).throw(OSError("disk")))
+        assert _preview(env).status_code == 503
+
+
+class TestNonDriverErrorsAfterConnecting:
+    """Finding 6. A non-psycopg2 error after the connect is not a connect failure and never sends its text."""
+
+    def test_preview_rows_turns_any_other_exception_into_a_fixed_sentence(self):
+        for exc in (ValueError(f"bad value {VALUE}"), UnicodeDecodeError("utf-8", b"\xff", 0, 1, VALUE),
+                    RuntimeError(VALUE)):
+            with pytest.raises(PreviewError) as ei:
+                _pg(raises=exc).preview_rows("s", "t", ["a"], 20)
+            assert ei.value.sentence == "the database answer could not be read"
+            assert VALUE not in str(ei.value) and ei.value.__cause__ is None and ei.value.__suppress_context__
+
+    def test_the_route_labels_it_an_error_row_not_unreachable_and_sends_no_text(self, env):
+        import json
+        _hold(env)
+        env.spy.conn.preview_rows.side_effect = RuntimeError(f"surprise {VALUE}")
+        out = _preview(env).json()
+        assert out["outcome"] == "error" and out["sentence"] == "the database answer could not be read"
+        assert VALUE not in str(out) and "unreachable" not in str(out)
+        row = env.registry.get_activity(out["recorded"]["id"])
+        assert row["status"] == "error" and json.loads(row["detail"])["outcome"] == "error"
+        assert VALUE not in row["summary"] + row["detail"]
+
+    def test_a_failure_while_closing_the_connection_is_not_a_connect_failure_either(self, env):
+        _hold(env)
+
+        class Closing:
+            def __enter__(self_inner):
+                return env.spy.conn
+
+            def __exit__(self_inner, *a):
+                raise RuntimeError(f"close failed {VALUE}")
+        env.spy.opener.side_effect = lambda *a, **k: Closing()
+        out = _preview(env).json()
+        assert out["outcome"] == "error" and VALUE not in str(out)
+
+
+class TestSlugHandlingMatchesAcrossRoutes:
+    """Finding 9. All four routes resolve the database and key on `db.slug`."""
+
+    def test_a_credential_held_through_one_spelling_is_found_through_another(self, env):
+        r = env.client.put("/api/databases/COCO/preview/credential", json={"user": "dan_ro", "password": PASSWORD})
+        assert r.status_code == 200
+        assert env.client.get("/api/databases/coco/preview/credential").json()["held"] is True
+        assert env.client.get("/api/databases/COCO/preview/credential").json()["held"] is True
+        assert env.client.delete("/api/databases/Coco/preview/credential").status_code == 200
+        assert env.client.get("/api/databases/coco/preview/credential").json()["held"] is False
+
+    def test_delete_of_an_unknown_database_is_404(self, env):
+        assert env.client.delete("/api/databases/nope/preview/credential").status_code == 404
+
+
+class TestLargeValuesAreCutInTheDatabase:
+    """Finding 10. The cut is in the SQL, composed from Identifier and Literal only."""
+
+    @staticmethod
+    def _text(q):
+        return "".join(p.string for p in _flat(q) if isinstance(p, sql.SQL))
+
+    def test_a_text_like_column_is_selected_as_left_501(self):
+        q = PostgreSQLConnection.build_preview_query("s", "t", ["note", "doc"], 20, {"note": "text", "doc": "jsonb"})
+        parts = _flat(q)
+        assert self._text(q).count("left(") == 2 and "::text" in self._text(q)
+        assert [p.wrapped for p in parts if isinstance(p, sql.Literal)].count(501) == 2
+
+    def test_an_unknown_or_missing_type_is_cut_as_well(self):
+        for types in (None, {}, {"c": ""}, {"c": "some_domain_type"}, {"c": "text[]"}):
+            q = PostgreSQLConnection.build_preview_query("s", "t", ["c"], 20, types)
+            assert "left(" in self._text(q)
+
+    def test_bytea_leaves_the_database_as_its_length_only(self):
+        q = PostgreSQLConnection.build_preview_query("s", "t", ["blob"], 20, {"blob": "bytea"})
+        parts = _flat(q)
+        assert "octet_length(" in self._text(q) and "left(" not in self._text(q)
+        assert [p.wrapped for p in parts if isinstance(p, sql.Literal) and isinstance(p.wrapped, str)] == ["<", " bytes>"]
+
+    def test_a_type_with_parameters_is_read_by_its_name(self):
+        q = PostgreSQLConnection.build_preview_query("s", "t", ["a", "b"], 20, {"a": "timestamp(6)", "b": "INTEGER"})
+        assert "left(" not in self._text(q)
+
+    def test_small_types_are_selected_as_they_are(self):
+        q = PostgreSQLConnection.build_preview_query("s", "t", ["n", "d"], 20, {"n": "integer", "d": "date"})
+        assert "left(" not in self._text(q) and "octet_length" not in self._text(q)
+
+    def test_hostile_names_stay_inside_identifiers_with_the_cut_in_place(self):
+        evil = 'x"; DROP TABLE t; --'
+        q = PostgreSQLConnection.build_preview_query(evil, evil, [evil], 100, {evil: "text"})
+        text = self._text(q)
+        assert "DROP" not in text and ";" not in text
+        assert all(p.strings == (evil,) for p in _flat(q) if isinstance(p, sql.Identifier))
+
+    def test_only_identifiers_literals_and_fixed_fragments_make_up_the_statement(self):
+        q = PostgreSQLConnection.build_preview_query("s", "t", ["a", "b"], 20, {"a": "text", "b": "bytea"})
+        assert all(isinstance(p, (sql.SQL, sql.Identifier, sql.Literal)) for p in _flat(q))
+
+    def test_the_route_passes_the_catalogue_types_to_the_connection(self, env):
+        _hold(env)
+        _preview(env, reveal=["email"])
+        assert env.spy.types[-1] == {"id": "text", "email": "text"}
+
+    def test_the_display_cut_is_still_500_with_a_mark(self):
+        assert tp._cell("x" * 501) == "x" * 500 + "…" and tp._cell("x" * 500) == "x" * 500
+
+
+class TestOneNewRevealPerRequest:
+    """Finding 11. The baseline is the last audit row of the same person's preview of this table."""
+
+    def test_two_new_columns_in_one_request_are_refused_before_any_query(self, env):
+        _hold(env)
+        r = _preview(env, reveal=["email", "note"])
+        assert r.status_code == 422 and "one column at a time" in r.json()["detail"]
+        assert env.spy.asked == []
+
+    def test_one_at_a_time_climbs_and_a_fresh_preview_starts_again(self, env):
+        _hold(env)
+        assert _preview(env, reveal=["email"]).status_code == 200
+        assert _preview(env, reveal=["email", "note"]).status_code == 200      # one NEW beyond the last audit row
+        assert _preview(env, reveal=["email", "note", "qty"]).status_code == 200
+        assert _preview(env).status_code == 200                                 # a plain preview records no reveal
+        assert _preview(env, reveal=["email", "note"]).status_code == 422       # two new again
+        assert _preview(env, reveal=["note"]).status_code == 200
+
+    def test_another_person_has_their_own_baseline(self, env, monkeypatch):
+        _hold(env)
+        _preview(env, reveal=["email"])
+        monkeypatch.setattr("resource_explorer.auth.get_current_user",
+                            lambda request: {"user_id": "mandy", "exp": 4102444800})
+        _hold(env)
+        assert _preview(env, reveal=["email", "note"]).status_code == 422

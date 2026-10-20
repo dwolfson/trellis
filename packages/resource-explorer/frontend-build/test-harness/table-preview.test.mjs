@@ -236,6 +236,22 @@ test('"use another credential" forgets the held one and opens the form', async (
   assert.match(text(host.querySelector('[data-pv-cred-slot]')), /Your credential for Coco/);
 });
 
+test('"use another credential" from the controls drops the held credential first, then opens the form', async () => {
+  const ctx = await setUp();                                    // a credential is held
+  const host = await mount(ctx, ['sales', 'orders']);
+  assert.ok(host.querySelector('[data-pv-run]'), 'held: the presses are offered');
+  host.querySelector('[data-pv-controls] [data-pv-cred-open]').click();
+  await tick(60);
+  const del = ctx.calls.findIndex((c) => c.method === 'DELETE' && c.url === '/api/databases/coco/preview/credential');
+  assert.ok(del >= 0, 'the server was told to forget it');
+  assert.match(text(host.querySelector('[data-pv-cred-slot]')), /Your credential for Coco/);
+  assert.equal(host.querySelector('[data-pv-run]'), null, 'and the screen no longer says one is held');
+  host.querySelector('[data-pv-cred-slot] [data-cred-cancel]').click();      // cancelling leaves nothing held
+  await tick(40);
+  assert.equal(host.querySelector('[data-pv-run]'), null);
+  assert.ok(!ctx.calls.some((c) => c.method === 'PUT'), 'nothing was re-held');
+});
+
 test('another engine says so and offers no press', async () => {
   const ctx = await setUp({ engine: false });
   const host = await mount(ctx, ['sales', 'orders']);

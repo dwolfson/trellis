@@ -42,19 +42,26 @@ class PreviewBody(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-def _signed_in(request: Request) -> tuple[str, float | None]:
-    """(person, session expiry). Looked up through the module at call time so tests can swap `get_current_user`."""
+def _signed_in(request: Request) -> tuple[str, str, float | None]:
+    """(person, session key, session expiry). Looked up through the module at call time so tests can swap
+    `get_current_user`. The session key names THIS sign-in (the token's `jti`, else a digest of the bearer token), so
+    a held credential belongs to one sign-in, not to the user id."""
     from resource_explorer import auth
+    from resource_explorer import preview_credential_holder as holder
 
     claims = auth.get_current_user(request)
     person = ((claims or {}).get("user_id") or (claims or {}).get("sub") or (claims or {}).get("username") or "")
     if not person:
         raise HTTPException(status_code=401, detail="Sign in to preview a table: a preview is recorded with your name.")
+    header = request.headers.get("Authorization", "")
+    token = header[len("Bearer "):] if header.startswith("Bearer ") else ""
     exp = (claims or {}).get("exp")
-    return person, float(exp) if isinstance(exp, (int, float)) else None
+    return person, holder.session_key(claims, token), float(exp) if isinstance(exp, (int, float)) else None
 
 
 def _database(slug: str):
+    """The registry and the database for the URL's slug. Every route resolves it and keys on `db.slug` (the stored,
+    normalised slug), never on the raw URL text."""
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
@@ -70,9 +77,9 @@ async def get_preview_credential(slug: str, request: Request) -> dict:
     from resource_explorer import preview_credential_holder as holder
     from resource_explorer import table_preview as tp
 
-    person, _ = _signed_in(request)
+    person, session, _ = _signed_in(request)
     _, db = _database(slug)
-    user = holder.held_user(person, slug)
+    user = holder.held_user(person, session, db.slug)
     return {"held": user is not None, "user": user, "engine_supported": tp.engine_supported(db.db_type),
             "db_type": db.db_type, "unsupported": "" if tp.engine_supported(db.db_type)
             else tp.unsupported_sentence(db.db_type)}
@@ -80,21 +87,24 @@ async def get_preview_credential(slug: str, request: Request) -> dict:
 
 @router.put("/{slug}/preview/credential")
 async def hold_preview_credential(slug: str, body: PreviewCredentialBody, request: Request) -> dict:
-    """Test the credential against the database, THEN hold it for this session. A refusal holds nothing (HTTP 400,
-    the sentence is the reason, password scrubbed). Nothing is written to the registry, the secrets store or a log."""
+    """Test the credential against the database, THEN hold it for this sign-in. A refusal holds nothing (the
+    sentence is the reason, password scrubbed; the same one for a wrong password and an unknown user). Every attempt
+    is an RE activity row, and five refusals in ten minutes lock the person out of this database for ten minutes
+    (429). Nothing is written to the registry's credentials, the secrets store or a log."""
     from resource_explorer import table_preview as tp
-    from resource_explorer.credential_check import CredentialCheckError
 
-    person, not_after = _signed_in(request)
-    _, db = _database(slug)
+    person, session, not_after = _signed_in(request)
+    registry, db = _database(slug)
     if not tp.engine_supported(db.db_type):
         raise HTTPException(status_code=409, detail=tp.unsupported_sentence(db.db_type))
     try:
         user = await asyncio.to_thread(
-            tp.hold_credential, db, person, body.user.strip(), body.password, not_after=not_after)
-    except CredentialCheckError as exc:
-        raise HTTPException(status_code=400, detail=str(exc).replace("Credential not saved", "Credential not kept")) \
-            from None
+            tp.hold_credential, registry, db, person, session, body.user.strip(), body.password,
+            not_after=not_after)
+    except tp.PreviewRefusal as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.sentence) from None
+    except tp.NotRecorded as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
     return {"held": True, "user": user}
 
 
@@ -102,8 +112,9 @@ async def hold_preview_credential(slug: str, body: PreviewCredentialBody, reques
 async def forget_preview_credential(slug: str, request: Request) -> dict:
     from resource_explorer import preview_credential_holder as holder
 
-    person, _ = _signed_in(request)
-    holder.forget(person, slug)
+    person, session, _ = _signed_in(request)
+    _, db = _database(slug)                      # an unknown database is a 404, not a quiet success
+    holder.forget(person, session, db.slug)
     return {"held": False, "user": None}
 
 
@@ -113,12 +124,12 @@ async def preview_table(slug: str, body: PreviewBody, request: Request) -> dict:
     here stores, logs or traces a value. The RE audit row is written before the rows are returned."""
     from resource_explorer import table_preview as tp
 
-    person, _ = _signed_in(request)
+    person, session, _ = _signed_in(request)
     registry, db = _database(slug)
-    req = tp.PreviewRequest(slug=slug, schema=body.schema_name, table=body.table, limit=body.limit,
+    req = tp.PreviewRequest(slug=db.slug, schema=body.schema_name, table=body.table, limit=body.limit,
                             reveal=tuple(body.reveal))
     try:
-        return await asyncio.to_thread(tp.run_preview, registry, db, person, req)
+        return await asyncio.to_thread(tp.run_preview, registry, db, person, session, req)
     except tp.PreviewRefusal as exc:
         raise HTTPException(status_code=exc.status, detail=exc.sentence) from None
     except tp.NotRecorded as exc:
