@@ -385,8 +385,12 @@ order:
 2. otherwise, **ask the person whether to add the object to Egeria** (owner, 2026-10-20). The
    value profile has found a column, or another resource, that Egeria does not know. Publish
    asks whether to add it, by committing its schema on the Curate **Contents** tab, and says
-   explicitly **when the profile found it** (the profiling run's `surveyed_at`), so a stale
-   object is never added. If the person adds it, the next Publish governs the new column
+   explicitly **when the analysis that found it ran** (owner, confirmed with Mandy 2026-10-20:
+   "the time that TestGen ran the analysis not when we imported from Testgen"). In this design
+   that is the value-profile run's own `surveyed_at`. If TestGen is later used as a service
+   channel, it is TestGen's own profiling or test-run timestamp. It is **never** the time RE
+   imported, published or showed the result. The same time is recorded on the accepted check, so
+   a stale object is never added. If the person adds it, the next Publish governs the new column
    element.
 3. **If the person declines, the object is ignored: no rule is written for it.** The accepted
    check stays in RE, marked "not added to Egeria · <date>", and is not published. The earlier
@@ -435,14 +439,17 @@ place.
 
 **One `QualityAnnotation` per check that ran to a conclusion** (`pass`, `warning`, `fail`
 or `logged`), in that run's `SurveyReport`. **Checks that did not reach a conclusion get no
-`QualityAnnotation`.** That covers `not_established`, `error` and `not_measured`. Instead,
-each such check produces a `ResourceMeasureAnnotation` named `QualityCheckNotEvaluated`
-that carries the `check_key` and the reason.
+`QualityAnnotation`.** That covers `not_established`, `error` and `not_measured`. The owner
+agreed after discussing it with Mandy (2026-10-20): "Maybe we shouldn't save the
+QualityAnnotation at all if it can't be run?" **Still open:** whether such a check instead
+produces a `ResourceMeasureAnnotation` named `QualityCheckNotEvaluated` carrying the
+`check_key` and the reason. If it doesn't, the reason is kept only in RE
+(`database_quality_results`, with its `status` and `reason`).
 
 The reason is that `qualityScore` is a Java `int` defaulting to 0. A `QualityAnnotation` for a
 check that never ran would therefore read as "scored zero". With this rule, a consumer that
-reads only `QualityAnnotation`s sees only evaluated checks. The absence of one for a
-governed rule is explained by its `QualityCheckNotEvaluated` sibling.
+reads only `QualityAnnotation`s sees only evaluated checks. Whether Egeria also carries the
+reason, in a `QualityCheckNotEvaluated` sibling, is the open question above.
 
 | Field | Value |
 |---|---|
@@ -456,11 +463,18 @@ governed rule is explained by its `QualityCheckNotEvaluated` sibling.
 | `analysisStep` | `run_quality_checks` |
 | `jsonProperties` | `{status, measure, comparisonOperator, thresholdValues, severity, ruleGUID, ruleQualifiedName, ruleSource, checkKey, baselineProfileSurveyedAt, recordCt}` |
 
-- **Linking the annotation to the rule.** `AssociatedAnnotation` from the `QualityAnnotation`
-  to the `DataQualityRule` it evaluated (owner, 2026-10-20). `AssociatedAnnotation`'s end 1
-  is any `OpenMetadataRoot`, so a governance definition qualifies. It is linked once, through
-  `egeria_link_once`, as the column links are. The rule is **also** named in `jsonProperties`
-  (`ruleGUID`, `ruleQualifiedName`). A dedicated relationship can be considered later.
+- **Linking the annotation to the rule.** **`GovernedBy`** from the `QualityAnnotation` to the
+  `DataQualityRule` it evaluated. The owner revised this on 2026-10-20 after discussing it with
+  Mandy ("Use governedBy for Annotation to Rule"); it replaces the earlier `AssociatedAnnotation`
+  answer.
+  - **Checked against the 6.2 types.** `GovernedBy`'s end 1 is the `GovernanceDefinition` (the
+    rule) and its end 2 is any `Referenceable`. `Annotation` derives from
+    `AuthoredReferenceable`, which derives from `Referenceable` (`OpenMetadataTypesArchive1_2`),
+    so the annotation is a valid end 2 (`OpenMetadataTypesArchive2_4`).
+  - **The call:** pyegeria's
+    `attach_governed_by_definition(element_guid=<annotation>, definition_guid=<rule>)`, linked
+    once through `egeria_link_once`, reading from the annotation.
+  - The rule is **also** named in `jsonProperties` (`ruleGUID`, `ruleQualifiedName`).
 - **Linking the annotation to the column.** `AssociatedAnnotation` to the column element
   only when §7 found one; otherwise the `item_key` and `checkKey` carry the column.
 
@@ -545,11 +559,13 @@ prerequisite resolver. It is never counted as a zero.
 
 These went to the review with Mandy as Q1-Q4. Answered 2026-10-20 (owner):
 
-6. ~~An annotation-to-rule relationship?~~ **`AssociatedAnnotation` for now**, with
-   `jsonProperties` as well (§8). A dedicated relationship can be considered later.
+6. ~~An annotation-to-rule relationship?~~ **`GovernedBy`**, annotation to rule (revised
+   2026-10-20 after the discussion with Mandy; it was `AssociatedAnnotation`), with
+   `jsonProperties` as well (§8).
 7. ~~A status and a nullable score on `QualityAnnotation`?~~ **The plan stands for now**:
-   status in `jsonProperties`, and no `QualityAnnotation` for an unevaluated check. This stays
-   open for future consideration, with A8 and A11.
+   status in `jsonProperties`, and no `QualityAnnotation` for an unevaluated check, which Mandy
+   confirmed. **Open:** whether a `ResourceMeasureAnnotation` saying why is kept in Egeria (§8).
+   The status field and nullable score stay for future consideration, with A8 and A11.
 8. ~~`scope` for an uncatalogued column?~~ **Replaced**: ask the person, and write no rule if
    they decline (§7).
 9. ~~"validity" → `conformity`?~~ **No: `accuracy`**, with `originalDimension: Validity`, until
