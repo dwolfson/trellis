@@ -1653,6 +1653,51 @@ def test_dependency_questions_carry_the_stored_list_in_the_prompt(db, monkeypatc
     assert "Stored dependencies" not in prompts[1]
 
 
+def test_dependency_drift_questions_carry_the_comparison_in_the_prompt(db, monkeypatch):
+    """qwen3.6 made no tool call on "which dependencies changed since the last ingest" (trace 84991db7, 2026-10-20)."""
+    from resource_explorer.agents.conversation_agent import ConversationAgent
+    from resource_explorer.registry import Project
+
+    db.add(Project(slug="driftrepo", display_name="Drift Repo", github_url="https://github.com/o/driftrepo"))
+    prompts = []
+    monkeypatch.setattr(ConversationAgent, "_run_persistent", lambda self, p: prompts.append(p) or "ok")
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db), \
+         patch("resource_explorer.history_diff.dependency_changes",
+               return_value="Dependency changes for `driftrepo`: a -> b\n- Added (1): click 8") as drift:
+        agent = ConversationAgent(resource_slug="driftrepo")
+        agent.handle("Which dependencies changed since the last ingest?", resource_slug="driftrepo")
+        agent.handle("how many stars does it have?", resource_slug="driftrepo")
+    assert "Added (1): click 8" in prompts[0] and "answer from it" in prompts[0]
+    assert "Dependency changes" not in prompts[1]
+    assert drift.call_count == 1
+
+
+def test_a_common_word_in_a_fleet_question_does_not_bind_a_repo_of_that_name():
+    """"Which repos have no license classification?" bound the repo `license` (trace 392880a9, 2026-10-20)."""
+    from resource_explorer.agents.conversation_agent import _bare_word_binding
+
+    assert _bare_word_binding("Which repos have no license classification?", "license")
+    assert _bare_word_binding("which repositories have a license", "license")
+    # A name after a verb or preposition is still a name.
+    assert not _bare_word_binding("Which repos depend on marquez?", "marquez")
+    assert not _bare_word_binding("Which repos use license?", "license")
+    # Not a fleet question, or a multi-part slug: unchanged.
+    assert not _bare_word_binding("Does license have a classification?", "license")
+    assert not _bare_word_binding("Which repos have no egeria_python classification?", "egeria_python")
+
+
+def test_chat_drops_the_bare_word_slug_but_keeps_an_explicit_scope(monkeypatch):
+    from resource_explorer.agents.conversation_agent import ConversationAgent
+
+    prompts = []
+    monkeypatch.setattr(ConversationAgent, "_run_persistent", lambda self, p: prompts.append(p) or "ok")
+    monkeypatch.setattr(ConversationAgent, "_infer_project_slug", lambda self, q: "license")
+    ConversationAgent().handle("Which repos have no license classification?")
+    assert "Project: license" not in prompts[0]
+    ConversationAgent().handle("Which repos have no license classification?", resource_slug="license")
+    assert "Project: license" in prompts[1]
+
+
 def _fake_links(n):
     return [
         {"repo_slug": f"r{i}", "repo_name": f"r{i}", "database_slug": "d", "database_name": "d",
