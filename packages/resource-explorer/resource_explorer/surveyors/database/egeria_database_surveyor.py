@@ -1535,11 +1535,23 @@ class EgeriaDatabaseSurveyor:
         # there, so a republish of the same set creates nothing. A COUNT shortcut ("held >= sent, skip") was wrong:
         # a newer stored verdict batch carries new names but the same count as the batch already held, and was
         # skipped whole (live check 2026-10-20, DESIGN-PUBLISHING-COLUMN-VERDICTS.md §1).
+        made = None
         try:
-            self._create_annotations(annotations, existing, db_slug, surveyed_at)   # adopts what is there
+            made = self._create_annotations(annotations, existing, db_slug, surveyed_at)   # adopts what is there
         except Exception as exc:
             log.warning("publishing the missing annotations under %s failed: %s", existing, exc)
             out["annotation_error"] = f"{exc}"[:400]      # observable: the caller shows it
+        # Judged on THIS publish's own annotations, as the fresh branch does: `publish_annotations` never raises for
+        # one failed create (or a look-up it could not make); it returns None in that annotation's place. The
+        # report's total held count cannot judge it: once a report holds an earlier batch, the total runs ahead of
+        # what this publish sent, and a partial failure would read as success.
+        if isinstance(made, list):
+            missing = sum(1 for g in made if not g)
+            out["annotations_this_publish"] = len(made) - missing
+            if missing and not out["annotation_error"]:
+                out["annotation_error"] = (f"{missing} of {len(made)} annotations of this publish could not be "
+                                           "published or confirmed under the reused report")
+        # What the report now holds in all (earlier batches included), for the words only.
         out["annotations_in_egeria"] = self._annotations_held_by(existing)
         return out
 

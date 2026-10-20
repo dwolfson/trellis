@@ -235,3 +235,34 @@ def test_republishing_the_same_batch_into_a_reused_report_creates_nothing():
     again = verdict_annotations_from_rows(_rows(), batch_surveyed_at="2026-10-19T08:00:00")["annotations"]
     s._publish_survey_report(body, qn, again, "coco_ods", "2026-10-20T01:00:00")
     assert maker.annotations == before
+
+
+def test_a_create_failing_mid_batch_on_a_reused_report_is_a_failure_not_done():
+    """Review of #783 (HIGH): publish_annotations returns None for a failed create instead of raising. On a reused
+    report that already holds an earlier batch, the TOTAL held count runs ahead of what this publish sent, so it
+    must not decide: this publish's own GUIDs do."""
+    s, maker = _real_surveyor()
+    body = {"properties": {"qualifiedName": "SurveyReport::PostgreSQL::coco_ods::2026-10-20T01:00:00"}}
+    qn = body["properties"]["qualifiedName"]
+    first = verdict_annotations_from_rows(_rows(), batch_surveyed_at="2026-10-19T08:00:00")["annotations"]
+    s._publish_survey_report(body, qn, first, "coco_ods", "2026-10-20T01:00:00")
+
+    calls = {"n": 0}
+    real_create = s._discovery.create_annotation
+
+    def flaky(body):
+        calls["n"] += 1
+        if calls["n"] in (2, 4):
+            raise RuntimeError("SERVER_ERROR_500 create refused")
+        return real_create(body)
+    s._discovery.create_annotation = flaky
+
+    second = verdict_annotations_from_rows(_rows(), batch_surveyed_at="2026-10-20T08:00:00")["annotations"]
+    out = s._publish_survey_report(body, qn, second, "coco_ods", "2026-10-20T01:00:00")
+    assert out["reused"] is True
+    assert "2 of" in out["annotation_error"]
+    assert out["annotations_this_publish"] == len(second) - 2
+
+    from resource_explorer.catalogue_commit import report_step_words
+    state, _ = report_step_words({**out, "report_reused": True, "annotation_count": len(second)}, "2026-10-20")
+    assert state == "failed"

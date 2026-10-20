@@ -74,6 +74,13 @@ Definition. The user guide documents this gap.
    the verdicts, would let Curate's Publish send them too. Their verdicts have a different shape
    (`nested_columns_step.py`: inferred schema, sample provenance), so that is its own table and reader,
    not a reuse of `database_column_matches`.
+10. **Open follow-up: superseded batches stay in a reused report** (review of #783, 2026-10-20). A newer batch
+    published into the same kept survey's report is added beside the older one: the older batch's annotations
+    (names ending `@<batch>`) are neither retired nor flagged, including verdicts for columns the newer batch
+    dropped. So "N annotations in Egeria", and any reader of the report, counts superseded verdicts as current.
+    A reader can tell them apart by `jsonProperties.measuredAt`, but nothing does yet. The choice is between
+    retiring the older batch's annotations at publish time, marking them superseded, or having readers take only
+    the newest `measuredAt` per column. To be designed; not fixed by #783.
 
 **Tests.** The ones that matter most:
 - the rebuild is identical to the step's own build for the same `ColumnMatch`;
