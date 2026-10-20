@@ -159,7 +159,7 @@ test('tile rules: no target is refused; an unknown state is refused; at most six
   assert.throws(() => m.tileRowHtml([1, 2, 3, 4, 5, 6, 7].map(t)), /at most six/);
   const row = mount(m.tileRowHtml([1, 2, 3, 4, 5, 6].map(t))).querySelector('[data-ui-tile-row]');
   assert.equal(row.querySelectorAll('[data-ui-tile]').length, 6);
-  assert.ok(cls(row).includes('grid-cols-2'), 'two columns at narrow widths');
+  assert.ok(cls(row).includes('flex-wrap'), 'wraps to the next line rather than squeezing a tile');
 });
 
 test('bindTiles: a click hands the tile\'s target to the opener, once per tile however often it is bound', async () => {

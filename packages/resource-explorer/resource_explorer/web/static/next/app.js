@@ -2045,7 +2045,7 @@ const FIND_LABEL = {
 function findButtonHtml(inRow = false) {
   const title = FIND_TITLE[state.resourceType] || FIND_TITLE.repo;
   return `<button data-act="find-repos" title="${esc(title)}"
-    class="${inRow ? 'ml-auto' : ''} cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-accent-on-dark"
+    class="${inRow ? 'ml-auto min-w-0 max-w-full whitespace-normal' : ''} cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-accent-on-dark"
     >${esc(FIND_LABEL[state.resourceType] || FIND_LABEL.repo)}</button>`;
 }
 
@@ -2207,7 +2207,7 @@ export function renderSidebar() {
   const collapsedSlugs = collapsedGroups();
 
   el.innerHTML = `
-    <div class="mb-s2 flex items-center gap-[5px] text-chip">
+    <div data-sidebar-top-row class="mb-s2 flex min-w-0 flex-wrap items-center gap-[5px] text-chip">
       ${types.map((t) => `<button data-type="${t.id}" class="${chip(state.resourceType === t.id).replace('rounded-pill', 'rounded-sm')}">${t.label}</button>`).join('')}
       ${findButtonHtml(true)}
       <button data-act="mark-key" title="What the marks in this list mean"

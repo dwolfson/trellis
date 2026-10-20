@@ -202,7 +202,7 @@ module.exports = {
         // Dates, ids and analysis names. Informational, so this is the floor.
         provenance: ['0.875rem', '1.45'],  // 14 — was 13, was 11.5 (PLAN-CARDS-AND-TILES.md §5)
         // The big number of a tile. A token, in rem, so the text-size control scales it with everything else.
-        figure: ['1.875rem', '1.1'],       // 30
+        figure: ['1.5rem', '1.1'],         // 24
         caps: ['0.75rem', '1.3'],          // 12 — was 11
       },
 

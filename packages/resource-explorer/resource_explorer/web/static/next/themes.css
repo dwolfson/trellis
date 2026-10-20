@@ -129,3 +129,9 @@
   --r-md: 4px;
   --r-lg: 7px;
 }
+
+/* Tiles: a figure never wraps and never overruns its tile. The row is a size container, so the figure's size is
+   capped by the row width (cqi) as well as by the figure token (which scales with the text-size control). */
+[data-ui-tile-row] { container-type: inline-size; }
+[data-ui-tile] [data-tile-figure] { white-space: nowrap; font-size: min(1.5rem, 14cqi); }
+[data-ui-tile] [data-tile-unit] { font-size: 0.5em; font-weight: 600; }
