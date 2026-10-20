@@ -104,8 +104,50 @@ Numbered as proposals; the catalog assigns ids on the append.
 | F8 | Which files has nobody touched for a long time, and which are hot? | Analysis | `fs_activity` (from access and modify times already walked; "can't tell" when atime is off) | yes, times are walked; the analysis is new |
 | F9 | Who owns or can read what, and are there world-readable sensitive files? | Analysis | `fs_permissions` (owner, group, mode from stat; joined to F7) | no: stat fields to add to the walk |
 | F10 | Does this file system contain a recognisable structure: a project, a dataset layout, an archive, backups? | Discovery | `fs_layout_signals` (README, manifest, schema files, dated folders, backup patterns) | no |
-| F11 | What is the documentation inside it, and what does it say the contents are? | Discovery | reuse the repository docs ingestion over README and docs folders (the ingestion-rules note's "documentation shape") | no for file systems |
+| F11 | What do the narrative files inside it (README, INDEX, ABOUT, NOTES, a data dictionary, a codebook, LICENSE, CHANGELOG) say the contents are, folder by folder? | Discovery | `folder_narratives` (§2a), sought proactively, read as evidence, proposals never facts | no for file systems |
 | F12 | How much would it cost to survey fully, and which parts are not worth it? | Discovery | the launcher's cost line from F1's bytes and file counts (the price-before-you-run rule, X-06) | partly |
+
+### 2a. Narrative files, sought proactively (owner, 2026-10-20)
+
+The owner's point: README-type files often carry the most valuable text
+about a folder's contents, so the survey should look for them rather than
+wait for a person to open them. `folder_narratives` is a zero-fetch step
+over the walk's rows (one read of each candidate file, size-capped):
+
+- **Candidates, by name and type, per folder:** README, READ_ME, INDEX,
+  ABOUT, NOTES, MANIFEST, CONTENTS, CHANGELOG, LICENSE, COPYING,
+  CITATION, a data dictionary or codebook by name (`*dictionary*`,
+  `*codebook*`, `*schema*`, `*layout*`) and any `.md`, `.rst` or `.txt`
+  file whose name matches the folder's or a sibling data file's name.
+  Egeria's file classifier already types them as documents; the step
+  reads the classification, not the extension.
+- **What it extracts, each with the file's path and modified time as its
+  evidence:** the folder's stated description (title and first
+  paragraph); the declared contents (lists of files, columns or fields
+  the text names, matched against the walk's rows and the profiles, so
+  "described in the README" appears on the file and on the column); the
+  licence named (answers Q-0012 and Q-0030 at folder level); a stated
+  owner or contact (a proposal for Q-0003); a stated source or
+  provenance; dates the text gives for collection or coverage (feeds
+  DataScope as a proposal, Q-0056).
+- **How it is shown:** on the folder row, "described by README.md ·
+  modified 10-14 · open"; on the Describe tab of Curate, the description
+  as a proposal "stated by README.md" that a person confirms; on a
+  column, "described in codebook.txt § Variables" with the doc link of
+  the Artifacts design. Nothing from a file becomes a fact without a
+  signature; the two-channel rule holds.
+- **Publishing:** the narrative file is catalogued as a document asset
+  beside the data it describes, linked by Egeria's external-reference or
+  documentation relationship, so the Resource Locator and the answering
+  app can quote it with its source; the extracted statements publish as
+  annotations marked "stated by <file>" until confirmed.
+- **Beyond file systems:** the same step serves open data (a portal's
+  data dictionary and codebook, §6 of the open-data brainstorm) and
+  repositories (the ingestion-rules note's documentation shape), one
+  implementation, three callers.
+- **Where it sits in the order:** with the walk extensions (step 1 of §3),
+  because it needs only the walk's rows and one read per candidate, and
+  because it gives the Describe tab something to say on the first visit.
 
 Questions that already apply (`*` kinds) and need no new analysis on a
 file system: Q-0002, Q-0003, Q-0005, Q-0012 (licence from a LICENSE file,
@@ -128,7 +170,8 @@ half; Q-0080 stays, answered by F7.
 1. **Walk extensions** (one step, one PR): per-folder bytes and depth,
    owner/group/mode, content hash under a size limit, per-file rows kept
    per run with a run id, each row naming the Egeria report it duplicates
-   nothing from. These feed F1, F5, F6, F8, F9.
+   nothing from; plus `folder_narratives` (§2a) over those rows. These
+   feed F1, F5, F6, F8, F9 and F11.
 2. **`file_profiles` as its own step** with its cost line: Egeria's CSV
    Survey Service per CSV file, RE's pandas profile for the formats Egeria
    has no service for, both stored as column rows per run with their
@@ -141,8 +184,8 @@ half; Q-0080 stays, answered by F7.
    (follow Egeria's lead: `ResourceMeasureAnnotation`,
    `ResourceProfileAnnotation`, `RequestForActionAnnotation` for a
    world-readable sensitive file).
-4. **`fs_layout_signals`** and the docs ingestion reuse: F10, F11, and
-   Q-0012's licence.
+4. **`fs_layout_signals`** and the section-chunked docs ingestion of the
+   narrative files found in step 1: F10 and the long-form half of F11.
 5. **`data_class_match` over file profiles**: F7, with the same
    proposal-only rule as databases.
 
