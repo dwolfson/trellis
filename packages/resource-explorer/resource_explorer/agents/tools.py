@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from contextvars import ContextVar
+
 from beeai_framework.tools import tool
 
 from resource_explorer.name_resolution import ambiguity_message, resolve_database
@@ -1436,6 +1439,25 @@ def query_cross_asset_links_raw(
     return _matcher_raw(resource_slug=resource_slug, min_confidence=min_confidence, limit=limit)
 
 
+#: The question being answered, set by the conversation agent at the start of a turn. A tool argument the model
+#: chose can be checked against it; a small model asked for "medium and low" links still passed "medium", and a
+#: reworded description did not move it.
+_current_question: ContextVar[str] = ContextVar("_current_question", default="")
+_LOW_WORD = re.compile(r"\blow\b", re.IGNORECASE)
+
+
+def set_current_question(question: str) -> None:
+    _current_question.set(question or "")
+
+
+def link_confidence_floor(question: str, requested: str) -> str:
+    """A question that says "low" asks for the low links, so the confidence floor is `low` whatever the model
+    passed. A question that does not say it leaves the model's choice alone."""
+    if _LOW_WORD.search(question or "") and (requested or "high").lower() in ("high", "medium"):
+        return "low"
+    return requested
+
+
 @tool(
     description=(
         "Discover linkages between code repositories and cataloged databases. Use for 'which databases does X "
@@ -1452,6 +1474,7 @@ def query_cross_asset_links_raw(
 def query_cross_asset_links(
     resource_slug: str = "", min_confidence: str = "high", limit: int = 15
 ) -> str:
+    min_confidence = link_confidence_floor(_current_question.get(), min_confidence)
     return query_cross_asset_links_raw(resource_slug=resource_slug, min_confidence=min_confidence, limit=limit)
 
 

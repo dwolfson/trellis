@@ -1323,6 +1323,42 @@ def test_cross_asset_matcher_real_data_lessons(db):
         assert "Unknown min_confidence" in query_cross_asset_links_raw("", min_confidence="bogus")
 
 
+def test_a_question_that_says_low_forces_the_low_floor_whatever_the_model_passed():
+    """Traced twice on llama3.1:8b: "include medium and low links" was called with min_confidence="medium"."""
+    from resource_explorer.agents.tools import link_confidence_floor
+
+    q = "Which databases does egeria-trellis use, include medium and low links"
+    assert link_confidence_floor(q, "medium") == "low"
+    assert link_confidence_floor(q, "high") == "low"
+    assert link_confidence_floor(q, "low") == "low"
+    assert link_confidence_floor("Which databases does egeria-trellis use", "medium") == "medium"
+    assert link_confidence_floor("Which repos allow login below the cutoff", "high") == "high", "'low' only as a word"
+    assert link_confidence_floor(q, "bogus") == "bogus", "an unknown value still reaches the tool's own error"
+
+
+def test_the_links_tool_applies_the_floor_from_the_turns_question():
+    import asyncio
+    from unittest.mock import patch
+
+    from resource_explorer.agents import tools
+
+    async def call():
+        out = await tools.query_cross_asset_links.run({"resource_slug": "egeria-trellis", "min_confidence": "medium"})
+        return out
+
+    tools.set_current_question("which databases does it use, include medium and low links")
+    try:
+        with patch.object(tools, "query_cross_asset_links_raw", return_value="ok") as raw:
+            asyncio.run(call())
+        assert raw.call_args.kwargs["min_confidence"] == "low"
+        tools.set_current_question("which databases does it use")
+        with patch.object(tools, "query_cross_asset_links_raw", return_value="ok") as raw:
+            asyncio.run(call())
+        assert raw.call_args.kwargs["min_confidence"] == "medium"
+    finally:
+        tools.set_current_question("")
+
+
 def test_only_the_conversation_agent_can_file_an_rfa(db):
     """A traced comparison called create_rfa_from_finding unprompted; the specialists never carry it."""
     from resource_explorer.agents.compare_agent import CompareAgent

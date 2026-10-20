@@ -214,6 +214,9 @@ class ConversationAgent(BaseExplorerAgent):
         resource_type: str | None = None,
         **kwargs,
     ) -> str:
+        from resource_explorer.agents.tools import set_current_question
+
+        set_current_question(query)
         slug = resource_slug or self.resource_slug or self._infer_project_slug(query)
         entity_type = resource_type or self.resource_type
 
