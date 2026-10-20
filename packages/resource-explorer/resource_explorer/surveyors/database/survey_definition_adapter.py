@@ -1010,19 +1010,58 @@ DATABASE_ANALYSIS_RE_STEP_MAP: dict[str, list[str]] = _build_database_analysis_r
 #   four yet — reading the blob is the honest way to reach data that is
 #   already there rather than re-deriving it). Wrapping either read is a thin
 #   pass-through, again not new domain logic.
-# * data_class_match, reference_data_match and nested_column_profile are NOT
-#   included. Their verdicts are built (column_matching.py /
-#   nested_columns_step.py) but only ever turned into Egeria annotations —
-#   there is no local table a reader could query, and `upsert_finding()` (the
-#   table repo's readers use) hard-requires `registry.get(slug)`, i.e. a
-#   registered *repo* `Project`, so a database survey cannot write to it at
-#   all today. Building that path is the same shape of "needs its own schema
-#   slice" decision item 2 (disposition) hit, so it is logged rather than
-#   rushed — see docs/Backlog.md's "Database per-column match results have no
-#   local store" entry — and these three stay `results=None` (an honest
-#   "no results view yet", same as repo's `repository_health`).
+# * data_class_match and reference_data_match read their verdicts from the
+#   `database_column_matches` detail table, which `DatabaseSurveyor.
+#   _store_results` writes when the column-profile step completes
+#   (`_column_match_reader`, below). Until 2026-10-20 they had no local store
+#   at all: their verdicts were built and turned only into Egeria annotations.
+# * nested_column_profile is still NOT included: its verdicts have a different
+#   shape (nested_columns_step.py) and no table yet, so it stays
+#   `results=None` (an honest "no results view yet", same as repo's
+#   `repository_health`).
 # * egeria_db_survey has no local results either way, same as repo's own
 #   Egeria-triggered analyses — it is a trigger, not a reader.
+def _column_match_reader(question: str):
+    """A results_reader for one column-profile question, over the latest `database_column_matches` batch.
+
+    Every column the step considered is listed with its verdict, so a column that was not sampled reads
+    `not_sampled` (not established), never as "no match". `{}` when no batch is stored: never run.
+    """
+    def _reader(registry, slug: str) -> dict:
+        rows = [r for r in registry.query_detail_rows("database_column_matches", slug)
+                if r.get("question") == question]
+        if not rows:
+            return {}
+        counts: dict[str, int] = {}
+        for r in rows:
+            counts[r.get("verdict", "")] = counts.get(r.get("verdict", ""), 0) + 1
+        return {
+            "surveyed_at": rows[0].get("surveyed_at", ""),
+            "column_count": len(rows),
+            "established_count": sum(1 for r in rows if r.get("established")),
+            "verdict_counts": counts,
+            "columns": [
+                {
+                    "column_path": f"{r.get('schema_name')}.{r.get('table_name')}.{r.get('column_name')}",
+                    "verdict": r.get("verdict", ""),
+                    "established": bool(r.get("established")),
+                    "confidence": r.get("confidence"),
+                    "matched_display_name": r.get("matched_display_name", ""),
+                    "matched_qualified_name": r.get("matched_qualified_name", ""),
+                    "matched_guid": r.get("matched_guid", ""),
+                    "matched_element_is_draft": bool(r.get("matched_element_is_draft")),
+                    "privacy_relevant": bool(r.get("privacy_relevant")),
+                    "not_established_reason": r.get("not_established_reason", ""),
+                    "statement": r.get("statement", ""),
+                    "sample": r.get("sample_json"),
+                    "state": r.get("state", ""),
+                }
+                for r in rows
+            ],
+        }
+    return _reader
+
+
 def _db_derived_field_reader(field: str):
     """A results_reader for one of run_db_derived()'s `derived` keys.
 
@@ -2665,6 +2704,9 @@ DATABASE_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
     # Backlog 7i(b): planner-statistics currency, same reader.
     "db_statistics_freshness": (_db_derived_field_reader("db_statistics_freshness"), None),
     "credential_capability": (_credential_capability_results, None),
+    # The column-profile step's verdicts, from database_column_matches.
+    "data_class_match": (_column_match_reader("data_class_match"), None),
+    "reference_data_match": (_column_match_reader("reference_data_match"), None),
     # ENRICHMENT-E3: the measured `datdba`, its own fact (see the reader).
     "database_owner": (_database_owner_fact_results, None),
 }

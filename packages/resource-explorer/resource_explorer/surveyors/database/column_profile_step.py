@@ -845,6 +845,48 @@ def _profile_row(
     }
 
 
+#: The as_dict() keys that have their own column in database_column_matches; the rest go to detail_json.
+_MATCH_COLUMNS = ("confidence", "matched_guid", "matched_qualified_name", "matched_display_name",
+                  "matched_element_is_draft", "sampled_conformance", "value_coverage", "privacy_relevant",
+                  "not_established_reason", "statement")
+_MATCH_DETAIL = ("evidence", "unmatched_values", "detected_patterns", "proposed_specification",
+                 "proposed_values", "other_candidates", "unusable_specifications")
+
+
+def column_match_rows(matches: Sequence[dict]) -> list[dict]:
+    """`run_column_profile`'s `matches` (ColumnMatch.as_dict()) as database_column_matches rows.
+
+    One row per verdict, whatever the verdict. The row `state` says whether the values were looked at:
+    `not_measured` for a column no value was sampled from, `not_applicable` for one the question rules out,
+    `measured` otherwise. The verdict itself is never rewritten.
+    """
+    from resource_explorer.registry import STATE_NOT_MEASURED
+    from resource_explorer.surveyors.database.column_matching import (
+        MATCH_NOT_APPLICABLE,
+        MATCH_NOT_SAMPLED,
+    )
+
+    rows: list[dict] = []
+    for m in matches or []:
+        verdict = m.get("verdict", "")
+        state = (STATE_NOT_MEASURED if verdict == MATCH_NOT_SAMPLED
+                 else STATE_NOT_APPLICABLE if verdict == MATCH_NOT_APPLICABLE
+                 else STATE_MEASURED)
+        rows.append({
+            "schema_name": m.get("schema", ""),
+            "table_name": m.get("table", ""),
+            "column_name": m.get("column", ""),
+            "question": m.get("question", ""),
+            "verdict": verdict,
+            "established": bool(m.get("established")),
+            **{k: m.get(k) for k in _MATCH_COLUMNS},
+            "detail_json": {k: m.get(k) for k in _MATCH_DETAIL},
+            "sample_json": m.get("sample"),
+            "state": state,
+        })
+    return rows
+
+
 def publish_proposals(
     matches: Sequence[ColumnMatch],
     *,

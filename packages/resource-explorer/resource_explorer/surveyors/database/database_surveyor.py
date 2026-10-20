@@ -10,6 +10,7 @@ log = logging.getLogger(__name__)
 from resource_explorer.registry import (
     DatabaseEntity,
     ProjectRegistry,
+    SECTION_COLUMN_MATCHES,
     SECTION_COLUMN_PROFILES,
     SECTION_TABLE_ACTIVITY,
     STATE_MEASURED,
@@ -2065,6 +2066,25 @@ class DatabaseSurveyor:
                 surveyed_at,
                 rows=table_activity_rows,
                 coverage_section=SECTION_TABLE_ACTIVITY,
+            )
+
+        # The column-profile step's verdicts (data_class_match,
+        # reference_data_match), one row per (column, question). Written only
+        # when the step completed: `column_profile` stays {} when it was not
+        # requested or raised, and then no rows and no coverage row are
+        # written, so "did not run" never reads as "ran, found nothing". A
+        # completed step that considered no columns writes the coverage row
+        # alone (empty), which is that second fact.
+        column_profile = results.get("column_profile") or {}
+        if column_profile:
+            from resource_explorer.surveyors.database.column_profile_step import column_match_rows
+
+            self.registry.write_detail_rows(
+                "database_column_matches",
+                self.db_entity.slug,
+                surveyed_at,
+                rows=column_match_rows(column_profile.get("matches") or []),
+                coverage_section=SECTION_COLUMN_MATCHES,
             )
 
     def _survey_views(self, conn, schema_info: dict) -> list[dict]:

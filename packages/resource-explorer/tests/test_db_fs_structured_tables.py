@@ -235,13 +235,14 @@ def _required_columns_by_table() -> dict[str, set[str]]:
 
 class TestTableRoundTrip:
     def test_every_declared_table_exists_and_round_trips(self, registry):
-        """Each of the ten tables accepts a row and returns it.
+        """Each of the eleven tables accepts a row and returns it.
 
         Driven off `_DETAIL_TABLE_SPECS` rather than a hand-written list, so a
         table added to the DDL without a test fails here instead of shipping
         untested.
         """
-        assert len(_DETAIL_TABLE_SPECS) == 10, sorted(_DETAIL_TABLE_SPECS)
+        # Eleven: database_column_matches (2026-10-20), the column-profile step's verdicts.
+        assert len(_DETAIL_TABLE_SPECS) == 11, sorted(_DETAIL_TABLE_SPECS)
         required = _required_columns_by_table()
         for table, spec in _DETAIL_TABLE_SPECS.items():
             slug = "coco_ods" if spec.resource_type == "database" else "drop_zone"
