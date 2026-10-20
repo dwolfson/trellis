@@ -120,7 +120,7 @@ class EgeriaFileSystemSurveyor:
         if not canonical_mount:
             raise EgeriaFileSystemSurveyorError(
                 "The file system's mount point is the root of the file system ('/'); register the folder to "
-                "catalogue, not the root.")
+                "catalog, not the root.")
         fs_name = fs_entity.display_name or fs_entity.slug
 
         log.info(f"Cataloging FileSystem root folder in Egeria: name={fs_name}, path={canonical_mount}")

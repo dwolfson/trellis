@@ -171,7 +171,7 @@ def register_filesystem(registration: FileSystemRegistration):
         if mount.strip() and not mount.strip().rstrip("/"):
             raise HTTPException(
                 status_code=400,
-                detail=f"The {what} is the root of the file system ('/'). Register the folder to catalogue, not the root.")
+                detail=f"The {what} is the root of the file system ('/'). Register the folder to catalog, not the root.")
 
     if registry.filesystem_exists(registration.slug):
         raise HTTPException(
