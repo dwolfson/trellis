@@ -82,6 +82,7 @@ class IntegrationAgent(BaseExplorerAgent):
         self._evidence_lines = self._multi_resource_evidence(
             query, slugs, kwargs.get("perspectives")
         )
+        self._evidence_lines += self._dependency_link_lines(slugs) + self._cross_asset_link_lines(slugs)
         evidence = "\n".join(self._evidence_lines)
         evidence_block = f"{evidence}\n\n" if evidence else ""
         prompt = (
@@ -102,6 +103,58 @@ class IntegrationAgent(BaseExplorerAgent):
             return self._run_agent(prompt)
         except Exception:
             return self._fallback(query, slugs)
+
+    def _dependency_link_lines(self, slugs: list[str]) -> list[str]:
+        """Which named repository declares a dependency that names another named one (marquez declares
+        io.openlineage:openlineage-java): the direct "can A work with B" evidence. Read from the latest recorded
+        dependencies, so it does not wait on a dependency_analysis run record. A repository with none recorded is
+        said to be unknown, never "does not depend". Fail-soft."""
+        import re
+
+        from resource_explorer.registry import ProjectRegistry
+
+        def norm(text: str) -> str:
+            return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+        try:
+            registry = ProjectRegistry()
+            repos = [s for s in slugs if registry.get(registry._normalize_slug(s))]
+            deps = {s: registry.query_dependencies(s) for s in repos}
+        except Exception:
+            return []
+        out: list[str] = []
+        for a in repos:
+            if not deps[a]:
+                out.append(f"[{a}] No dependencies are recorded for it, so whether it depends on "
+                           f"{', '.join(b for b in repos if b != a) or 'the others'} is unknown, not 'no'.")
+                continue
+            for b in repos:
+                key = norm(b)
+                if b == a or len(key) < 4:
+                    continue
+                hits = [d for d in deps[a] if key in norm(d["dep_name"])]
+                if hits:
+                    shown = "; ".join(f"{d['dep_name']} {d.get('dep_version') or ''}".strip() for d in hits[:5])
+                    more = f" (+{len(hits) - 5} more)" if len(hits) > 5 else ""
+                    out.append(f"[{a}] declares {len(hits)} dependenc{'y' if len(hits) == 1 else 'ies'} naming {b}: {shown}{more}.")
+        return out
+
+    def _cross_asset_link_lines(self, slugs: list[str]) -> list[str]:
+        """Stored cross-asset links (a repo's model names against a database's tables, plus drivers) for the named
+        resources, in the prompt. A small model asked "can X work with Y?" answered from the prompt without calling
+        query_cross_asset_links, then invented links; the stored ones are read here so it does not have to ask.
+        Fail-soft: no links, or a failed read, adds nothing and the agent proceeds with its tools."""
+        from resource_explorer.agents.tools import query_cross_asset_links_raw
+
+        out: list[str] = []
+        for slug in slugs:
+            try:
+                text = query_cross_asset_links_raw(resource_slug=slug, min_confidence="low", limit=8)
+            except Exception:
+                continue
+            if text and text.strip():
+                out.append(f"Cross-asset links stored for {slug} (shared names, not proof of ownership):\n{text.strip()}")
+        return out
 
     def _fallback(self, query: str, slugs: list[str]) -> str:
         """Direct tool-call fallback when BeeAI is unavailable."""

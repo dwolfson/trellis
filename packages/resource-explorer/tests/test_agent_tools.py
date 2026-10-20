@@ -746,6 +746,73 @@ def test_multi_resource_context_compilation(db):
     assert "coverage_matrix" in compiled.manifest
 
 
+def test_the_default_coverage_matrix_asks_only_for_real_analysis_ids(db):
+    """"dependencies" and "project_stats" are not analysis ids: FactLayer answered NOT_ESTABLISHED for every resource,
+    so the integration answer for marquez/openlineage read "Dependencies: not established" whatever the data."""
+    from resource_explorer.context_compile import build_epistemological_matrix
+    from resource_explorer.facts import FactLayer
+    from resource_explorer.registry import Project
+
+    db.add(Project(slug="app_alpha", display_name="App Alpha", github_url="https://github.com/org/alpha"))
+    md_table, records = build_epistemological_matrix(db, ["app_alpha"])
+    ids = [r["analysis_id"] for r in records]
+    assert "dependency_analysis" in ids and "dependencies" not in ids and "project_stats" not in ids
+    known = FactLayer(db, resource_type="repo")._map("analysis_results_map")
+    assert "dependency_analysis" in known
+    # Not run is said as not run, never as "an action rather than findings".
+    dep = next(r for r in records if r["analysis_id"] == "dependency_analysis")["slugs"]["app_alpha"]
+    assert dep["state"] == "never_run" and "action rather than" not in md_table
+
+
+def test_the_integration_agent_puts_stored_cross_asset_links_in_its_evidence(db):
+    from unittest.mock import patch
+
+    from resource_explorer.agents import tools
+    from resource_explorer.agents.integration_agent import IntegrationAgent
+
+    seen = []
+
+    def raw(resource_slug="", min_confidence="high", limit=15):
+        seen.append((resource_slug, min_confidence))
+        return "No links found." if resource_slug == "openlineage" else "marquez -> laz_local_marquez (shared tables)"
+
+    with patch.object(tools, "query_cross_asset_links_raw", raw):
+        lines = IntegrationAgent()._cross_asset_link_lines(["marquez", "openlineage"])
+    assert seen == [("marquez", "low"), ("openlineage", "low")]
+    assert "Cross-asset links stored for marquez" in lines[0] and "laz_local_marquez" in lines[0]
+    assert "No links found." in lines[1], "an absence is said, not dropped"
+
+    def boom(**kw):
+        raise RuntimeError("registry down")
+
+    with patch.object(tools, "query_cross_asset_links_raw", boom):
+        assert IntegrationAgent()._cross_asset_link_lines(["marquez"]) == []
+
+
+def test_the_integration_agent_cites_a_declared_dependency_that_names_the_other_resource(db):
+    from unittest.mock import patch
+
+    from resource_explorer.agents.integration_agent import IntegrationAgent
+    from resource_explorer.registry import Project
+
+    for slug in ("marquez", "openlineage", "emptyrepo"):
+        db.add(Project(slug=slug, display_name=slug, github_url=f"https://github.com/org/{slug}"))
+    db.upsert_dependencies("marquez", [
+        {"dep_name": "io.openlineage:openlineage-java", "dep_version": "1.2.0", "dep_type": "runtime",
+         "ecosystem": "maven", "source_file": "build.gradle"},
+        {"dep_name": "org.postgresql:postgresql", "dep_version": "42", "dep_type": "runtime",
+         "ecosystem": "maven", "source_file": "build.gradle"}])
+    db.upsert_dependencies("openlineage", [
+        {"dep_name": "requests", "dep_version": "2", "dep_type": "runtime", "ecosystem": "pip", "source_file": "r.txt"}])
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
+        lines = IntegrationAgent()._dependency_link_lines(["marquez", "openlineage", "emptyrepo"])
+    text = "\n".join(lines)
+    assert "[marquez] declares 1 dependency naming openlineage: io.openlineage:openlineage-java 1.2.0" in text
+    assert "postgresql" not in text, "only dependencies that name the other resource"
+    assert "[emptyrepo] No dependencies are recorded" in text and "unknown, not 'no'" in text
+    assert "[openlineage] declares" not in text, "requests names neither marquez nor emptyrepo"
+
+
 def test_dynamic_delegation_tools(db):
     from resource_explorer.agents.tools import (
         delegate_to_compare_agent_raw,
