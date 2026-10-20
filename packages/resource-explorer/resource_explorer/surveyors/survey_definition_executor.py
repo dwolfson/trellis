@@ -1002,6 +1002,16 @@ class SurveyDefinitionExecutor:
                     continue
                 info = self._step_info(adapter, step.re_analysis_step)
                 try:
+                    # The process step's (or engine action's) request parameters: only those the step
+                    # declares reach its runner (step_parameters.py); a declared one that does not parse
+                    # refuses the step here, through the error path below, rather than running it with
+                    # defaults that look like what was asked for.
+                    from resource_explorer.surveyors.step_parameters import coerce_step_parameters
+
+                    checked = coerce_step_parameters(getattr(info, "parameters", None) or {},
+                                                     step.request_parameters or {})
+                    checked.raise_if_invalid(step.re_analysis_step)
+                    step_kwargs = {**runner_kwargs, **checked.accepted}
                     with step_cost_observer.observe(
                         step.re_analysis_step,
                         getattr(info, "fetch_cost", ""),
@@ -1015,12 +1025,14 @@ class SurveyDefinitionExecutor:
                         demanded_by=demanded_by,
                         entity_type=entity_type, slug=getattr(entity, "slug", ""), resource=entity,
                     ) as observed:
-                        output = runner(entity, self.registry, **runner_kwargs)
+                        output = runner(entity, self.registry, **step_kwargs)
                     self._record_cost(observed, entity_type, slug, output, surveyed_at)
                     _stamp_definition_provenance(output)
                     step_outputs.append(output)
                     ok_entry = {"step": step.qualified_name,
                                 "re_analysis_step": _step_key(step), "status": "ok"}
+                    if step.request_parameters:
+                        ok_entry["request_parameters"] = checked.summary()
                     # "Run partially AND SAY SO" (REPLY-DATABASE-CREDENTIAL-
                     # CAPABILITY-VISIBILITY.md §7.1). An advisory proposal
                     # does not stop the step — see `Proposal.advisory` — but
@@ -1567,6 +1579,7 @@ class SurveyDefinitionExecutor:
         capability_consented: bool = False,
         publisher: Callable | None = None,
         credential_scope: str = "",
+        request_parameters: dict | None = None,
         **runner_kwargs: Any,
     ) -> dict:
         """Run ONE step through the same dispatch loop `run()` uses, without
@@ -1615,6 +1628,10 @@ class SurveyDefinitionExecutor:
             qualified_name=qualified_name,
             executes_at=executes_at,
             re_analysis_step=re_analysis_step,
+            # The engine action's own request parameters (the engine host): the dispatch loop forwards those the
+            # step declares, exactly as it does a real process step's.
+            request_parameters=dict(request_parameters or {}),
+            executor_present=request_parameters is not None,
         )
         survey_def = SurveyDefinition(
             process_guid="",
