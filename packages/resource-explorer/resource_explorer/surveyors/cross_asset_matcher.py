@@ -267,7 +267,8 @@ def query_cross_asset_links_raw(
         return f"Unknown min_confidence '{min_confidence}'; use one of: {', '.join(_CONFIDENCE_RANK)}."
     limit = max(1, int(limit or DEFAULT_LINK_LIMIT))
     counts = {c: sum(1 for l in all_links if l["confidence"] == c) for c in ("high", "medium", "low")}
-    links = [l for l in all_links if _CONFIDENCE_RANK[l["confidence"]] >= floor][:limit]
+    matching = [l for l in all_links if _CONFIDENCE_RANK[l["confidence"]] >= floor]
+    links = matching[:limit]
 
     if all_links and not links:
         scope_str = f" for '{resource_slug}'" if resource_slug else ""
@@ -307,10 +308,18 @@ def query_cross_asset_links_raw(
         for ev in l["evidence"]:
             lines.append(f"  - {ev}")
 
+    # A small model read "15 rows" as "15 links in total" when the limit was 15 and more existed.
+    if len(matching) > len(links):
+        count_note = (
+            f"Showing the first {len(links)} of {len(matching)} links at '{min_confidence}' or above; "
+            f"{len(matching) - len(links)} more are not shown, so {len(links)} is NOT the total "
+        )
+    else:
+        count_note = f"Showing all {len(links)} links at '{min_confidence}' or above "
     shown_note = (
-        f"\nShowing {len(links)} of {len(all_links)} links found "
-        f"({counts['high']} high, {counts['medium']} medium, {counts['low']} low); "
-        f"minimum confidence '{min_confidence}', limit {limit}. "
+        f"\n{count_note}"
+        f"({len(all_links)} found in all: {counts['high']} high, {counts['medium']} medium, {counts['low']} low); "
+        f"limit {limit}. "
         "A link means the repo's model classes and the database's tables share names, "
         "not that the repo owns the database."
     )
