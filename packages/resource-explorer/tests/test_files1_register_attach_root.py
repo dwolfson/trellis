@@ -107,24 +107,38 @@ def test_check_mount_says_what_this_server_can_read(tmp_path, reg):
 
 # ── 3. attach the root folder: created once, proved by a read-back ───────
 
-def _boundary(monkeypatch, *, lookup=None, read_back=None):
+QN = "FileFolder::nas:file://nas/data"      # the "File System Directory" template's qualifiedName for fs `nas`
+
+
+def _boundary(monkeypatch, *, lookup=None, read_back=None, created=GUID):
     from pyegeria import AssetMaker, AutomatedCuration
     from pyegeria.omvs.data_discovery import DataDiscovery
 
     ac, am, dd = _fake(AutomatedCuration), _fake(AssetMaker), _fake(DataDiscovery)
     ac.get_guid_for_name.side_effect = lookup or (lambda name, *a, **k: MISS)
-    ac.create_folder_element_from_template.return_value = GUID
+    ac.create_folder_element_from_template.return_value = created
 
     def read(guid, *a, **k):
         return {"elementHeader": {"guid": guid, "type": {"typeName": "FileFolder"}},
                 "properties": {"qualifiedName": f"FileFolder::{guid}", "displayName": "NAS data"}}
 
     am.get_asset_by_guid.side_effect = read_back or read
-    monkeypatch.setattr("resource_explorer.egeria_clients.egeria_client",
-                        lambda *a, **k: _Clients({AutomatedCuration: ac, AssetMaker: am, DataDiscovery: dd}))
-    sent = []
-    monkeypatch.setattr("resource_explorer.single_publish.send_with_publish",
-                        lambda *a, **k: sent.append(a))
+    from resource_explorer import egeria_clients
+
+    real_sig = inspect.signature(egeria_clients.egeria_client)
+
+    def factory(*a, **k):
+        real_sig.bind(*a, **k)          # the factory fake binds the real signature
+        return _Clients({AutomatedCuration: ac, AssetMaker: am, DataDiscovery: dd})
+
+    monkeypatch.setattr("resource_explorer.egeria_clients.egeria_client", factory)
+    # send_with_publish bound to its REAL signature; attaching the root folder must never call it
+    from unittest.mock import create_autospec
+
+    from resource_explorer import single_publish
+
+    sent = create_autospec(single_publish.send_with_publish)
+    monkeypatch.setattr("resource_explorer.single_publish.send_with_publish", sent)
     return ac, am, dd, sent
 
 
@@ -172,18 +186,77 @@ def test_attach_root_creates_the_folder_once_and_a_second_press_creates_nothing(
     assert am.create_asset.call_count == 0                            # no SurveyReport
     assert dd.create_annotation.call_count == 0                       # no annotation, no relationship
     assert am.get_asset_by_guid.call_count == 2                       # read back again, by GUID
-    # the page's other saved items go out with the press, once per press, as the signed-in person
-    assert len(sent) == 2 and sent[0][1:4] == ("filesystem", "nas", GUID)
+    # the root folder ONLY: tags, group, documentation sources and feedback do not go out with this press
+    sent.assert_not_called()
+    # the look-up was by the template's qualifiedName, restricted to FileFolder
+    ac.get_guid_for_name.assert_called_once_with(QN, type_name="FileFolder")
 
 
 @pytest.mark.usefixtures("_zone_access_open")
 def test_attach_root_adopts_a_folder_egeria_already_has_by_name_and_creates_nothing(fs, monkeypatch):
-    ac, am, dd, _sent = _boundary(monkeypatch, lookup=lambda name, *a, **k: GUID)
+    def lookup(name, *a, **k):
+        # only the template's qualifiedName, restricted to FileFolder, finds it; the bare mount path does not
+        return GUID if (name == QN and k.get("type_name") == "FileFolder") else MISS
+
+    ac, am, dd, _sent = _boundary(monkeypatch, lookup=lookup)
     r = _client().post("/api/filesystems/nas/attach-root", headers=_headers())
     assert r.status_code == 200, r.text
     assert r.json()["created"] is False and r.json()["state"] == "attached"
     ac.create_folder_element_from_template.assert_not_called()
     assert fs.get_filesystem("nas").egeria_asset_guid == GUID
+
+
+@pytest.mark.usefixtures("_zone_access_open")
+def test_an_element_of_the_wrong_type_does_not_read_attached(fs, monkeypatch):
+    def read(guid, *a, **k):
+        return {"elementHeader": {"guid": guid, "type": {"typeName": "DataFile"}}, "properties": {}}
+
+    _boundary(monkeypatch, read_back=read)
+    c = _client()
+    r = c.post("/api/filesystems/nas/attach-root", headers=_headers())
+    assert r.status_code == 200, r.text
+    assert r.json()["state"] == "not_confirmed" and "not a FileFolder" in r.json()["why"]
+    assert fs.latest_filesystem_root_proof("nas")["proof"] != "folder_attached"
+
+
+@pytest.mark.usefixtures("_zone_access_open")
+def test_a_create_that_returns_no_guid_is_not_cached(fs, monkeypatch):
+    ac, am, dd, _sent = _boundary(monkeypatch, created="None")
+    r = _client().post("/api/filesystems/nas/attach-root", headers=_headers())
+    assert r.status_code >= 400
+    assert fs.get_filesystem("nas").egeria_asset_guid in ("", None)
+    am.get_asset_by_guid.assert_not_called()
+    assert fs.latest_filesystem_root_proof("nas") is None
+
+
+@pytest.mark.usefixtures("_zone_access_open")
+def test_a_stale_cached_guid_is_replaced_by_lookup_or_create_on_the_next_press(fs, monkeypatch):
+    """Egeria holds no element with the cached GUID (a reset): the press falls back to look-up-or-create, caches the
+    new GUID, and reads that back. It does not record `folder_not_confirmed` forever."""
+    stale = "00000000-aaaa-bbbb-cccc-000000000000"
+    fs.set_filesystem_egeria_guid("nas", stale)
+
+    def read(guid, *a, **k):
+        if guid == stale:
+            raise RuntimeError("OMAG-REPOSITORY-HANDLER-404-007 FileFolder entity with unique identifier not found")
+        return {"elementHeader": {"guid": guid, "type": {"typeName": "FileFolder"}}, "properties": {}}
+
+    ac, am, dd, _sent = _boundary(monkeypatch, read_back=read)
+    r = _client().post("/api/filesystems/nas/attach-root", headers=_headers())
+    assert r.status_code == 200, r.text
+    assert r.json()["state"] == "attached" and r.json()["created"] is True and r.json()["guid"] == GUID
+    assert fs.get_filesystem("nas").egeria_asset_guid == GUID
+    ac.create_folder_element_from_template.assert_called_once()
+
+
+@pytest.mark.usefixtures("_zone_access_open")
+def test_a_cached_value_that_is_not_a_guid_is_not_read_back(fs, monkeypatch):
+    fs.set_filesystem_egeria_guid("nas", "None")
+    ac, am, dd, _sent = _boundary(monkeypatch)
+    r = _client().post("/api/filesystems/nas/attach-root", headers=_headers())
+    assert r.status_code == 200, r.text
+    assert r.json()["state"] == "attached" and r.json()["created"] is True
+    assert [c.args[0] for c in am.get_asset_by_guid.call_args_list] == [GUID]
 
 
 @pytest.mark.usefixtures("_zone_access_open")
@@ -268,6 +341,8 @@ def test_the_read_back_matches_on_the_shape_egeria_really_returns(fs, monkeypatc
     assert out["qualified_name"] == rec["properties"]["qualifiedName"]
     assert out["type_name"] == "RelationalDatabase"
     assert s._read_back_by_guid("00000000-0000-0000-0000-000000000000")["matched"] is False
+    wrong = s._read_back_by_guid(guid, expect_type="FileFolder")
+    assert wrong["matched"] is False and "not a FileFolder" in wrong["why"]
 
 
 @pytest.mark.usefixtures("_zone_access_open")
@@ -287,9 +362,14 @@ def test_registering_and_attaching_write_nothing_into_the_registered_path(tmp_pa
                       for p in [tmp_path, *tmp_path.rglob("*")])
 
     before = snap()
+    import builtins
+    import io
+
     opened = []
-    real_open = open
-    monkeypatch.setattr("builtins.open", lambda f, *a, **k: (opened.append(str(f)), real_open(f, *a, **k))[1])
+    real_open, real_io_open, real_os_open = builtins.open, io.open, os.open
+    monkeypatch.setattr(builtins, "open", lambda f, *a, **k: (opened.append(str(f)), real_open(f, *a, **k))[1])
+    monkeypatch.setattr(io, "open", lambda f, *a, **k: (opened.append(str(f)), real_io_open(f, *a, **k))[1])
+    monkeypatch.setattr(os, "open", lambda f, *a, **k: (opened.append(str(f)), real_os_open(f, *a, **k))[1])
     _boundary(monkeypatch)
     c = _client()
     assert c.post("/api/filesystems/check-mount", json={"path": str(tmp_path)}, headers=_headers()).status_code == 200
@@ -297,5 +377,61 @@ def test_registering_and_attaching_write_nothing_into_the_registered_path(tmp_pa
                                              "local_mount_point": str(tmp_path)}, headers=_headers()).status_code == 200
     assert c.post("/api/filesystems/own/attach-root", headers=_headers()).status_code == 200
     assert snap() == before
-    assert not [f for f in opened if str(tmp_path) in f]
+    assert not [f for f in opened if str(tmp_path) in f]       # builtins.open, io.open and os.open all watched
     assert sorted(os.listdir(tmp_path)) == [".env", "sub"]
+
+
+# ── 4. who may register and probe paths ─────────────────────────────────
+
+def test_a_signed_in_user_without_the_right_gets_403_from_register_and_check_mount(reg, monkeypatch, tmp_path):
+    from resource_explorer.workflows.curate import AccessDecision
+
+    monkeypatch.setattr("resource_explorer.workflows.curate.resource_access",
+                        lambda *a, **k: AccessDecision(False, "zone x does not grant files1-tester create in Egeria", "zone"))
+    c = _client()
+    body = {"slug": "no", "display_name": "No", "local_mount_point": str(tmp_path)}
+    r = c.post("/api/filesystems/", json=body, headers=_headers())
+    assert r.status_code == 403 and "does not grant" in r.json()["detail"]
+    assert reg.list_filesystems() == []
+    m = c.post("/api/filesystems/check-mount", json={"path": str(tmp_path)}, headers=_headers())
+    assert m.status_code == 403
+
+
+def test_check_mount_takes_the_path_as_typed_without_expanding_a_tilde(reg, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / "docs").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    r = _client().post("/api/filesystems/check-mount", json={"path": "~/docs"}, headers=_headers())
+    assert r.status_code == 200 and r.json()["state"] == "not_readable"
+
+
+def test_a_mount_of_the_filesystem_root_is_refused_with_a_clear_message(reg):
+    c = _client()
+    for key in ("local_mount_point", "canonical_mount_point"):
+        body = {"slug": "rootfs", "display_name": "Root", "local_mount_point": "/mnt/x", key: "/"}
+        r = c.post("/api/filesystems/", json=body, headers=_headers())
+        assert r.status_code == 400 and "root of the file system" in r.json()["detail"], (key, r.text)
+    assert reg.list_filesystems() == []
+
+
+# ── 5. the root folder state: held GUID, reset marker ───────────────────
+
+def test_a_held_guid_with_no_proof_row_reads_held_not_not_attached(fs):
+    fs.set_filesystem_egeria_guid("nas", GUID)
+    v = _client().get("/api/filesystems/nas/root-folder", headers=_headers()).json()
+    assert v["state"] == "held" and v["guid"] == GUID and v["read_back_at"] == ""
+
+
+def test_a_proof_row_from_before_an_egeria_reset_is_not_live(fs):
+    fs.append_filesystem_root_proof("nas", proof="folder_attached", element_guid=GUID, recorded_by="x",
+                                    read_at="2026-10-01T09:00:00")
+    c = _client()
+    assert c.get("/api/filesystems/nas/root-folder", headers=_headers()).json()["state"] == "attached"
+    # the reset script's marker (written under the plain slug), later than that read
+    fs.append_catalogue_commit_proof("nas", proof="egeria_reset", node_kind="reset", read_at="2026-10-05T12:00:00")
+    v = c.get("/api/filesystems/nas/root-folder", headers=_headers()).json()
+    assert v["state"] == "not_attached" and v["reset_at"] == "2026-10-05T12:00:00"
+    # a read-back made after the reset is live again
+    fs.append_filesystem_root_proof("nas", proof="folder_attached", element_guid=GUID, recorded_by="x",
+                                    read_at="2026-10-06T08:00:00")
+    assert c.get("/api/filesystems/nas/root-folder", headers=_headers()).json()["state"] == "attached"

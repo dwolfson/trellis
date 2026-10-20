@@ -237,6 +237,33 @@ test('"confirmed" never comes from the press: a 200 whose re-read is still not a
   assert.match(text(host.querySelector('[data-fs-root]')), /different element/);
 });
 
+test('the Publish words promise the root folder only, not tags, group or feedback', async () => {
+  const { host } = await publishBand({});
+  const words = text(host);
+  assert.match(words, /attaches the root folder only/);
+  assert.doesNotMatch(words, /tags|group|feedback/i);
+});
+
+test('a GUID held without a read-back proof reads "GUID held · not read back yet", never "not attached", and reports are listed', async () => {
+  const GUID = '11111111-2222-3333-4444-555555555555';
+  const { host, calls } = await publishBand({ rootStates: [{ state: 'held', guid: GUID, read_back_at: '', by: '', why: '' }] });
+  assert.equal(host.querySelector('[data-fs-root]').dataset.fsRoot, 'held');
+  assert.match(text(host.querySelector('[data-fs-root]')), /GUID held · not read back yet/);
+  assert.doesNotMatch(text(host), /not attached/);
+  assert.doesNotMatch(text(host), /no asset to list reports from/);
+  assert.equal(host.querySelector('[data-guid]').dataset.guid, GUID);
+  assert.ok(calls.some((c) => c.method === 'GET' && c.url === '/api/filesystems/nas/egeria-surveys'),
+    'reports are listed from the held GUID');
+});
+
+test('"read back" carries the date when the read-back was not today', async () => {
+  const { readBackWhen } = await import('/static/next/stages/publish.js');
+  const now = new Date('2026-10-20T20:00:00Z');
+  assert.equal(readBackWhen('2026-10-20T14:05:09', now), '14:05');
+  assert.equal(readBackWhen('2026-10-18T14:05:09', now), '2026-10-18 14:05');
+  assert.equal(readBackWhen('', now), '');
+});
+
 test('a failed publish is a pop-up and a cue that stays on the band', async () => {
   const { host, document } = await publishBand({
     attach: (err) => err(500, 'Publish failed: Egeria is unreachable'),

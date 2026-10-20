@@ -14,7 +14,7 @@ mechanism (`AutomatedCuration.initiate_gov_action_type("FileSurvey::
 survey-folder", ..., request_parameters={"finalAnalysisStep": "CHECK_ASSET"})`
 against a folder Asset) but ALSO surfaced a real, previously-unknown gap:
 `EgeriaFileSystemSurveyor.catalog_and_survey`'s own `create_folder_element_
-from_template()` call (the DataFolder template) attaches NO Connection to
+from_template()` call (the FileFolder template) attaches NO Connection to
 the folder Asset it creates -- confirmed live, not inferred from the docs'
 existing "no attached Connection subgraph" comment. Every filesystem RE has
 ever cataloged this way will report `no_connection` from this check, not a

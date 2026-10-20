@@ -1136,7 +1136,7 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
     # Scoped to filesystem/folder resources only, per the same live evidence:
     # probe 7 confirmed the mechanism (initiate_gov_action_type against
     # FileSurvey::survey-folder with finalAnalysisStep=CHECK_ASSET) but ALSO
-    # confirmed RE's own create_folder_element_from_template() DataFolder
+    # confirmed RE's own create_folder_element_from_template() FileFolder
     # template attaches no Connection at all -- every filesystem RE has ever
     # cataloged this way hits the "no_connection" outcome, not a genuine
     # reachability answer, until a real Connection is attached (see the
@@ -13127,10 +13127,29 @@ class ProjectRegistry:
             element_guid=element_guid, qualified_name=qualified_name, detail=detail,
             recorded_by=recorded_by, read_at=read_at)
 
+    def filesystem_reset_at(self, slug: str) -> str:
+        """When Egeria was last reset for this file system: the newest `egeria_reset` marker under the plain slug
+        (where the reset script writes one) or under the namespaced proof key; '' when there is none."""
+        from resource_explorer.catalogue_commit import _ts
+
+        norm = self._normalize_slug(slug)
+        marks = [self.get_egeria_reset_at(norm), self.get_egeria_reset_at(self._filesystem_proof_key(norm))]
+        return max((m for m in marks if m), key=_ts, default="")
+
     def latest_filesystem_root_proof(self, slug: str) -> dict | None:
-        """The newest root-folder observation for a file system, or None when nothing was ever read back."""
-        rows = [r for r in self.list_catalogue_commit_proofs(self._filesystem_proof_key(self._normalize_slug(slug)))
+        """The newest root-folder observation for a file system, or None when nothing was read back SINCE Egeria
+        was last reset. The same tie rule as `catalogue_commit.derive_commit_state`: a proof read AT or after the
+        reset time is live; one read earlier describes what Egeria once held, and one whose time cannot be read
+        is neither live nor earlier, so it makes no claim."""
+        from resource_explorer.catalogue_commit import _ts
+
+        norm = self._normalize_slug(slug)
+        rows = [r for r in self.list_catalogue_commit_proofs(self._filesystem_proof_key(norm))
                 if r.get("node_kind") == self.FS_ROOT_NODE]
+        reset = self.filesystem_reset_at(norm)
+        if reset:
+            cutoff = _ts(reset)
+            rows = [r for r in rows if _ts(r.get("read_at")) >= cutoff]
         return rows[-1] if rows else None
 
     def update_filesystem_status(self, slug: str, status: ProjectStatus, error_message: str = "") -> None:
