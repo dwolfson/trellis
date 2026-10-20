@@ -132,6 +132,11 @@ RE.
 Lists that start with `suggested-to-` are not work lists. They are inboxes for entries other people pointed
 you at from the journal ("suggest to…"), and they have their own **Suggestions** line in the sidebar.
 
+**Saving a chat answer to an investigation.** With an investigation chosen, an answer's footer has **add to
+investigation journal**. It opens an editable entry seeded with a citation, the question and the answer; save it and
+it joins that investigation's journal (shown at the foot of the investigation page). Entries stay in RE until the
+investigation is promoted to Egeria; publishing them to the Project is not built yet.
+
 ---
 
 ## Questions

@@ -115,3 +115,37 @@ class TestTheAudienceIsTheWholeVocabulary:
         from resource_explorer.surveyors.analysis_catalog_reader import EGERIA_PERSPECTIVES, list_perspectives
         assert client.get("/api/analyses/perspectives?scope=all").json() == list(EGERIA_PERSPECTIVES)
         assert client.get("/api/analyses/perspectives").json() == list_perspectives()
+
+
+class TestInvestigationJournal:
+    """A chat answer saved to an investigation: the same journal, keyed `investigation`, local until promoted."""
+
+    @pytest.fixture
+    def client(self, registry, monkeypatch):
+        monkeypatch.setattr(
+            "resource_explorer.registry.ProjectRegistry.__init__",
+            lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None,
+        )
+        monkeypatch.setenv("TRELLIS_ANONYMOUS_READ", "true")
+        monkeypatch.setattr("resource_explorer.web.routes.journal.get_current_user",
+                            lambda request: {"user_id": "peterprofile"})
+        from resource_explorer.web.app import app
+        return TestClient(app)
+
+    def test_an_entry_lands_in_the_investigations_journal(self, client, registry):
+        inv = registry.create_investigation("Lineage study")
+        r = client.post(f"/api/journal/investigation/{inv['slug']}", json={"body": "Per chat: marquez emits OpenLineage."})
+        assert r.status_code == 200, r.text
+        assert r.json()["author"] == "peterprofile"
+        listing = client.get(f"/api/journal/investigation/{inv['slug']}").json()
+        assert [e["body"] for e in listing["entries"]] == ["Per chat: marquez emits OpenLineage."]
+
+    def test_an_unknown_investigation_is_a_404_not_a_new_journal(self, client):
+        assert client.post("/api/journal/investigation/nope", json={"body": "x"}).status_code == 404
+        assert client.get("/api/journal/investigation/nope").status_code == 404
+
+    def test_an_investigation_entry_cannot_be_suggested_to_an_audience(self, client, registry):
+        inv = registry.create_investigation("Lineage study 2")
+        r = client.post(f"/api/journal/investigation/{inv['slug']}", json={"body": "x", "suggest_to": ["Steward"]})
+        assert r.status_code == 422
+        assert client.get(f"/api/journal/investigation/{inv['slug']}").json()["entries"] == []

@@ -42,7 +42,7 @@
  */
 import {
   ask, askStream, sendFeedback, submitAnswerFeedback, compileContext, runAnalysis, pollActivity,
-  activityFailure, failureText, getSchedules, saveSchedule, addAlias, listAliases,
+  activityFailure, failureText, getSchedules, saveSchedule, addAlias, listAliases, writeJournal,
 } from '/static/re-api.js';
 import { stateEntry } from '/static/next/glyphs.js';
 import {
@@ -490,6 +490,48 @@ export function turnAsMarkdown(t) {
   if (t.intent) bits.push(`intent ${t.intent}`);
   out.push(`— ${bits.join(' · ')}`);
   return out.join('\n');
+}
+
+/** The seed for an investigation journal entry made from a chat turn: a citation line, the question and the
+ *  answer as the person saw them. The person edits it before saving (reports seed theirs the same way: the machine
+ *  supplies the citation, the person writes the thought). An answer past the cap is trimmed WITH a visible note,
+ *  never silently. */
+const JOURNAL_SEED_MAX = 4000;
+export function journalSeedFromTurn(t, when = new Date()) {
+  let text = `Per chat (${when.toISOString().slice(0, 10)}):\n\n${turnAsMarkdown(t)}`;
+  if (text.length > JOURNAL_SEED_MAX) {
+    text = `${text.slice(0, JOURNAL_SEED_MAX)}\n\n[trimmed: the full answer is ${text.length.toLocaleString()} characters]`;
+  }
+  return text;
+}
+
+/** "Add to investigation journal": an editable entry seeded from the turn, written to the CURRENT investigation's
+ *  journal. Local until the investigation is promoted (it has no Egeria Project to hold a Note before that). */
+function openJournalForm(turn, host) {
+  const form = host.querySelector('[data-journal-form]');
+  if (!form || !state.investigation) return;
+  form.innerHTML = `
+    <textarea data-journal-text rows="8" aria-label="Journal entry"
+      class="w-full rounded-sm border border-rule-strong bg-paper p-s2 font-mono text-caveat text-ink">${esc(journalSeedFromTurn(turn))}</textarea>
+    <div class="mt-s2 flex items-baseline gap-s3 text-caveat">
+      <button data-journal-save type="button" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink">Save entry</button>
+      <button data-journal-cancel type="button" class="cursor-pointer bg-transparent text-ink-muted underline">Cancel</button>
+      <span data-journal-note class="text-ink-muted"></span>
+    </div>`;
+  const note = form.querySelector('[data-journal-note]');
+  form.querySelector('[data-journal-cancel]').addEventListener('click', () => { form.innerHTML = ''; });
+  form.querySelector('[data-journal-save]').addEventListener('click', async (e) => {
+    const body = form.querySelector('[data-journal-text]').value.trim();
+    if (!body) { note.textContent = 'An entry needs some text.'; return; }
+    e.currentTarget.disabled = true;
+    try {
+      await writeJournal(state.investigation, body, [], 'investigation');
+      form.innerHTML = `<span class="text-caveat text-state-ok">Saved to this investigation's journal. It stays in RE until the investigation is promoted to Egeria.</span>`;
+    } catch (err) {
+      e.currentTarget.disabled = false;
+      note.textContent = err.loginRequired ? 'Sign in to write in the journal.' : `Not saved: ${err.message}`;
+    }
+  });
 }
 
 /** A state cue for this file's two grounds: the glyph from the one glyph table plus a short word, the full
@@ -1101,10 +1143,16 @@ function renderPromotedFooter(turn, i) {
       <button data-act="copy-turn"
         class="cursor-pointer bg-transparent text-caveat text-ink-muted underline"
         >${icon('copy', { size: 13 })} copy as evidence</button>
+      <button data-act="journal-turn" ${state.investigation ? '' : 'disabled'}
+        title="${state.investigation ? 'Save this answer as an entry in the current investigation\'s journal' : 'Choose an investigation first'}"
+        class="cursor-pointer bg-transparent text-caveat text-ink-muted underline disabled:cursor-default disabled:opacity-60"
+        >add to investigation journal</button>
       ${turn.intent ? `<span class="text-ink-muted">intent ${esc(turn.intent)}${turn.cached ? ' · cached' : ''}</span>` : ''}
     </div>
+    <div data-journal-form class="mt-s2"></div>
     ${turn.queryHash ? `<div class="mt-s2">${feedbackHtml(turn, i)}</div>` : ''}`;
 
+  footer.querySelector('[data-act="journal-turn"]')?.addEventListener('click', () => openJournalForm(turn, footer));
   footer.querySelectorAll('[data-list-source]').forEach((b) => b.addEventListener('click', () => {
     const slug = b.dataset.listSlug || state.selectedSlug;
     if (!slug) return;
