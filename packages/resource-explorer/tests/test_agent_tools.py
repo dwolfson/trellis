@@ -1386,7 +1386,7 @@ def test_cross_asset_matcher_real_data_lessons(db):
     # Output is tiered and bounded, and always reports what it left out.
     with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
         medium = query_cross_asset_links_raw("", min_confidence="medium", limit=2)
-        assert "Showing 2 of" in medium and "limit 2" in medium and "not that the repo owns" in medium
+        assert "Showing the first 2 of" in medium and "limit 2" in medium and "not that the repo owns" in medium
         assert "Unknown min_confidence" in query_cross_asset_links_raw("", min_confidence="bogus")
 
 
@@ -1621,3 +1621,23 @@ def test_dependency_questions_carry_the_stored_list_in_the_prompt(db, monkeypatc
     assert "Stored dependencies for deprepo (2 entries" in prompts[0]
     assert "pyproject.toml [runtime] (1): click >=8" in prompts[0] and "pyproject.toml [dev] (1): pytest" in prompts[0]
     assert "Stored dependencies" not in prompts[1]
+
+
+def _fake_links(n):
+    return [
+        {"repo_slug": f"r{i}", "repo_name": f"r{i}", "database_slug": "d", "database_name": "d",
+         "database_type": "postgres", "confidence": "low", "score": 0.1, "matched_tables": ["t"], "evidence": ["e"]}
+        for i in range(n)
+    ]
+
+
+def test_cross_asset_links_say_when_the_limit_hid_rows(db):
+    from unittest.mock import patch
+
+    from resource_explorer.surveyors import cross_asset_matcher as m
+
+    with patch.object(m, "find_cross_asset_links", lambda *a, **k: _fake_links(20)):
+        capped = m.query_cross_asset_links_raw(min_confidence="low", limit=15)
+        whole = m.query_cross_asset_links_raw(min_confidence="low", limit=50)
+    assert "first 15 of 20" in capped and "5 more are not shown" in capped and "NOT the total" in capped
+    assert "Showing all 20 links" in whole and "NOT the total" not in whole
