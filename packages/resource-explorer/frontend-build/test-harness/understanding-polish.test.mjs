@@ -54,14 +54,16 @@ const text = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 test('At a glance: the headline figures, each with a cue and a short word, from the reads already made', async () => {
   const document = await setUp();
   const g = document.querySelector('[data-understanding-tab-panel="glance"]');
+  // The counts are tiles (label, figure, sub); columns and the largest table stay a sentence figure.
+  const tile = (n) => g.querySelector(`[data-ui-tile][data-tile-key="${n}"]`);
   const fig = (n) => g.querySelector(`[data-glance-fig="${n}"]`);
-  assert.match(text(fig('schemas')), /● 3 schemas/);
-  assert.match(text(fig('tables')), /● 10 tables/);
+  assert.match(text(tile('schemas')), /schemas ● 3/);
+  assert.match(text(tile('tables')), /tables ● 10/);
   assert.match(text(fig('columns')), /● 38 columns/);
-  assert.match(text(fig('rows')), /● ~1,500,000 rows/);
-  assert.match(text(fig('size')), /◐ ≥ 3\.0 MB size/, 'size summed over 8 of 10 tables is a lower bound, marked partial');
+  assert.match(text(tile('rows')), /rows ● ~1,500,000/);
+  assert.match(text(tile('size')), /size ◐ ≥ 3\.0 MB partial/, 'size summed over 8 of 10 tables is a lower bound, marked partial');
   assert.match(text(fig('largest')), /a\.big largest · 1,200,000 rows/);
-  assert.match(text(fig('surveyed')), /10-03 18:07 surveyed · RE's own survey, as surveyor/);
+  assert.match(text(tile('surveyed')), /surveyed ● 10-03 18:07 RE's own survey, as surveyor/);
   // order: the sentence first, then the headline, then the statistics line
   const kids = [...g.children].map((c) => (c.matches('details') ? 'since' : c.hasAttribute('data-glance-slot') ? 'headline' : c.hasAttribute('data-stats-glance') ? 'stats' : '?'));
   assert.deepEqual(kids, ['since', 'headline', 'stats']);
@@ -86,14 +88,16 @@ test('"not measured" says why, only from what the stored rows show', async () =>
   assert.doesNotMatch(bare, /credential/, 'no probe on record: no cause is named');
 });
 
-test('glance headline: an unmeasured figure is a dash with an open cue, never zero', async () => {
+test('glance headline: an unmeasured figure is a state with an open cue, never zero', async () => {
   ensureLoaderRegistered();
   makeDomEnvironment();
   const m = await import('/static/next/stages/understanding-glance.js');
   const none = { state: 'not_measured', reasons: ['never_surveyed'], run: null };
   const h = m.databaseHeadlineHtml({ dist: none, sizes: none, types: none });
   assert.doesNotMatch(h, />0</);
-  assert.match(h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' '), /○ – rows/);
+  const flat = h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  assert.match(flat, /rows ○ not measured/, 'the figure slot holds the state, not a number');
+  assert.match(flat, /○ – columns/, 'a count inside the sentence keeps its dash');
   assert.match(h.replace(/<[^>]+>/g, ' '), /never surveyed/);
   assert.equal(m.surveyedByWords({ source: 'egeria-survey' }), "Egeria's survey");
 });
@@ -111,7 +115,8 @@ test('glance: a complete tables or columns count is measured even when the read 
   ensureLoaderRegistered(); makeDomEnvironment();
   const g = await import('/static/next/stages/understanding-glance.js');
   const h = g.databaseHeadlineHtml({ dist: { ...DIST, state: 'partial' }, sizes: { ...SIZES, state: 'partial' }, types: TYPES });
-  const st = (n) => h.match(new RegExp(`data-glance-fig="${n}" data-glance-state="(\\w+)"`))[1];
+  const st = (n) => h.match(new RegExp(`data-tile-key="${n}" data-tile-state="(\\w+)"`) )?.[1]
+    ?? h.match(new RegExp(`data-glance-fig="${n}" data-glance-state="(\\w+)"`))[1];
   assert.equal(st('tables'), 'measured'); assert.equal(st('columns'), 'measured');
   const document = await setUp();
   assert.ok(document.querySelector('[data-glance-slot]'));

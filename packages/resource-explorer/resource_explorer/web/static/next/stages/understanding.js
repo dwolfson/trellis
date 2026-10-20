@@ -32,6 +32,7 @@ import { fitFigure, annotateTicks } from '/static/next/chart-labels.js';
 import { attachGrids, historyCols, RANKED_COLS, VIEWS_COLS } from '/static/next/stages/report-tables.js';
 import { statsLineHtml, schemaRollupsHtml, statsOverTimeHtml } from '/static/next/stages/understanding-stats.js';
 import { databaseHeadlineHtml, repoHeadlineHtml } from '/static/next/stages/understanding-glance.js';
+import { bindTiles } from '/static/next/ui-cards.js';
 import {
   surveyHistoryHtml, readShowInvalid, writeShowInvalid, rankedTablesHtml, viewsSectionHtml,
   viewFlowchartSource,
@@ -576,7 +577,12 @@ function databaseParts(slug, { tabbed }) {
         const [dist, sizes, types] = await readNow();
         if (stale()) return;
         const headline = host.querySelector('[data-glance-slot]');
-        if (headline) headline.innerHTML = databaseHeadlineHtml({ dist, sizes, types });
+        if (headline) {
+          headline.innerHTML = databaseHeadlineHtml({ dist, sizes, types });
+          // Every tile opens what it counted: the chart card it was read from, or the survey history.
+          bindTiles(headline, (target) => gotoTarget(host, null, target === 'survey_history'
+            ? host.querySelector('details[data-collapsible="db-survey-history"]') : cards[target]));
+        }
         await drawStats('[data-stats-glance]', statsLineHtml);
       },
 
@@ -755,6 +761,8 @@ function repoParts(slug) {
         repoBanner.querySelector('[data-since-last-run]').innerHTML = inner;
         if (split && diffForHeadline && !diffForHeadline.__error) {
           repoBanner.insertAdjacentHTML('afterend', repoHeadlineHtml(diffForHeadline));
+          const tiles = repoBanner.nextElementSibling;
+          if (tiles) bindTiles(tiles, (target) => gotoTarget(root, null, root.querySelector(`details[data-collapsible="${target}"]`)));
         }
       },
       // `split`: the tabbed layout. Contents reads the distribution charts and the report, Over time the rest.

@@ -112,20 +112,22 @@ test('item 4: Admin → Egeria Links never calls the native window.confirm; its 
 });
 
 /* ── 6 ────────────────────────────────────────────────────────────────── */
-test('item 6: the definition row text column has a real basis, so it wraps below 24rem instead of being squeezed', async () => {
+test('item 6: the definition card wraps its header and keeps a shrinkable text column, so nothing is squeezed to a sliver', async () => {
+  // Was a flex row with a 24rem basis on the text column; the definition is now a card (PLAN-CARDS-AND-TILES.md):
+  // the header (title, step count, buttons) wraps onto further lines, and the body column may shrink.
   const { document } = makeDomEnvironment();
   const app = await loadAppModule();
   const box = document.createElement('div');
   box.innerHTML = app.surveyRowHtml({ display_name: 'Survey & analyses', qualified_name: 'GovActionProcess::X',
     description: 'A long description that must not wrap one word per line.', steps: [1, 2, 3, 4, 5, 6] });
   const row = box.querySelector('[data-def-row]');
-  assert.ok(row.classList.contains('flex-wrap'), 'the row wraps its columns');
+  assert.ok(row.hasAttribute('data-ui-card'), 'one definition is one card');
+  assert.ok(row.querySelector('header').classList.contains('flex-wrap'), 'the header wraps its columns');
   const col = box.querySelector('[data-def-text]');
-  assert.equal(col.getAttribute('style'), 'flex:1 1 24rem', 'basis 24rem (not 0): below that the column takes its own line');
   assert.ok(col.classList.contains('min-w-0'));
   assert.match(text(box), /6 steps/);
-  // the steps / last run / button columns do not shrink into the text
-  assert.equal([...row.children].filter((c) => c.classList.contains('shrink-0')).length >= 2, true);
+  assert.match(text(box.querySelector('header [data-card-meta]')), /6 steps/, 'the step count sits beside the title');
+  assert.ok(box.querySelector('header [data-card-actions] [data-run-survey]'), 'the run button is in the header actions');
 });
 
 /* ── 7 ───────────────────────────────────────────────────────────────── */
