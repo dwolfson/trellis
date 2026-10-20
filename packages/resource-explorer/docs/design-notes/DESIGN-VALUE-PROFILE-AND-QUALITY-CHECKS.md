@@ -370,12 +370,18 @@ current Curate pattern: the verdict route makes no Egeria call, and Publish is t
 does. Publish runs as the signed-in user, through `egeria_identity.apply_identity`, and stamps
 `Ownership` with that user.
 
-**`GovernedBy` target. RE does not catalogue column elements today.** It looks columns up
-only for lineage (`_lineage_column_guid`), and annotations hang under the report with a
-string `item_key`. So the target is chosen in this order:
+**`GovernedBy` target.** *Corrected 2026-10-20.* RE does not create column elements itself,
+but a Curate **catalogue commit** does lead to them: it attaches a schema-kind catalog target
+per chosen schema, and Egeria's JDBC cataloguer then creates that schema's `RelationalTable`
+and `RelationalColumn` elements. RE's proof rows record schemas and tables, not columns, so a
+column's GUID is found by walking the committed schema at publish time
+(`catalogue_commit._walk_schema`: schema → schema type → table → `NestedSchemaAttribute`).
+See `DESIGN-PUBLISHING-COLUMN-VERDICTS.md` §0. The first draft of this note said RE has no
+column elements at all, which was wrong for committed schemas. The target is chosen in this
+order:
 
-1. **the column element**, if one is found by qualified name: Egeria's own Postgres survey
-   or a cataloguer may have created it;
+1. **the column element**, for a column in a committed schema (found by that walk), or one
+   Egeria's own survey created;
 2. otherwise **the database Asset**, with the rule's inherited `scope` attribute set to
    `schema.table.column`. Egeria's Bitol mapper uses `scope` for the governed element's
    name in the same way.
@@ -514,8 +520,9 @@ prerequisite resolver. It is never counted as a zero.
 3. **The `GovernedBy` fallback to the database Asset** with `scope` set to the column path
    when no column element exists (§7)? **Open.** The owner asked whether the gap comes from
    TestGen using a more privileged account. It does not: in option C TestGen does not run.
-   The gap is that RE does not create column elements, and Egeria's cataloguer creates them
-   only where it is configured. The owner's underlying point stands separately: the account
+   The gap is smaller than first stated (corrected 2026-10-20): Egeria's cataloguer creates
+   the column elements for every schema a Curate catalogue commit chose, so the fallback
+   applies only to columns in schemas that were never committed. The owner's underlying point stands separately: the account
    that profiles a database decides what it can see. The profile and run steps therefore
    record the account they ran as (`ran_as`). Any result is
    `measured_within_credential_scope` when the stored `credential_capability` probe shows
