@@ -1435,8 +1435,15 @@ def list_rfas(resource_slug: str = "", include_closed: bool = False) -> str:
 def query_cross_asset_links_raw(
     resource_slug: str = "", min_confidence: str = "high", limit: int = 15
 ) -> str:
-    from resource_explorer.surveyors.cross_asset_matcher import query_cross_asset_links_raw as _matcher_raw
-    return _matcher_raw(resource_slug=resource_slug, min_confidence=min_confidence, limit=limit)
+    from resource_explorer.surveyors.cross_asset_matcher import query_cross_asset_links_report
+
+    text, totals = query_cross_asset_links_report(
+        resource_slug=resource_slug, min_confidence=min_confidence, limit=limit
+    )
+    facts = _turn_facts.get()
+    if totals and facts is not None:
+        facts.append(totals)
+    return text
 
 
 #: The question being answered, set by the conversation agent at the start of a turn. A tool argument the model
@@ -1446,8 +1453,21 @@ _current_question: ContextVar[str] = ContextVar("_current_question", default="")
 _LOW_WORD = re.compile(r"\blow\b", re.IGNORECASE)
 
 
+#: Facts a tool computed this turn that the answer should state outright. A list, not a value: BeeAI runs tools in
+#: child tasks, whose own `set` would not reach the caller, but an append to this one list does.
+_turn_facts: ContextVar[list | None] = ContextVar("_turn_facts", default=None)
+
+
 def set_current_question(question: str) -> None:
     _current_question.set(question or "")
+    _turn_facts.set([])
+
+
+def turn_fact_lead() -> str:
+    """The totals the links tool reported this turn (the last call's), or "". The 8B model read "first 15 of 20"
+    as "15 high-confidence links" even with the cap labelled, so the sentence is stated by code ahead of its answer."""
+    facts = _turn_facts.get()
+    return facts[-1] if facts else ""
 
 
 def link_confidence_floor(question: str, requested: str) -> str:
