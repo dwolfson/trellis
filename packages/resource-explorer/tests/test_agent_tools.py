@@ -789,6 +789,30 @@ def test_the_integration_agent_puts_stored_cross_asset_links_in_its_evidence(db)
         assert IntegrationAgent()._cross_asset_link_lines(["marquez"]) == []
 
 
+def test_the_integration_agent_cites_a_declared_dependency_that_names_the_other_resource(db):
+    from unittest.mock import patch
+
+    from resource_explorer.agents.integration_agent import IntegrationAgent
+    from resource_explorer.registry import Project
+
+    for slug in ("marquez", "openlineage", "emptyrepo"):
+        db.add(Project(slug=slug, display_name=slug, github_url=f"https://github.com/org/{slug}"))
+    db.upsert_dependencies("marquez", [
+        {"dep_name": "io.openlineage:openlineage-java", "dep_version": "1.2.0", "dep_type": "runtime",
+         "ecosystem": "maven", "source_file": "build.gradle"},
+        {"dep_name": "org.postgresql:postgresql", "dep_version": "42", "dep_type": "runtime",
+         "ecosystem": "maven", "source_file": "build.gradle"}])
+    db.upsert_dependencies("openlineage", [
+        {"dep_name": "requests", "dep_version": "2", "dep_type": "runtime", "ecosystem": "pip", "source_file": "r.txt"}])
+    with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
+        lines = IntegrationAgent()._dependency_link_lines(["marquez", "openlineage", "emptyrepo"])
+    text = "\n".join(lines)
+    assert "[marquez] declares 1 dependency naming openlineage: io.openlineage:openlineage-java 1.2.0" in text
+    assert "postgresql" not in text, "only dependencies that name the other resource"
+    assert "[emptyrepo] No dependencies are recorded" in text and "unknown, not 'no'" in text
+    assert "[openlineage] declares" not in text, "requests names neither marquez nor emptyrepo"
+
+
 def test_dynamic_delegation_tools(db):
     from resource_explorer.agents.tools import (
         delegate_to_compare_agent_raw,
