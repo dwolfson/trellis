@@ -12,7 +12,8 @@ const INDEX_HTML = fs.readFileSync(path.resolve(HERE, '../../resource_explorer/w
 const tick = (ms = 60) => new Promise((r) => setTimeout(r, ms));
 const text = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 
-async function setUp({ journal }) {
+async function setUp({ journal, promoted = false, state, publish }) {
+  const calls = [];
   const { document, window } = makeDomEnvironment();
   globalThis.fetch = async (url) => {
     const u = String(url);
@@ -20,6 +21,15 @@ async function setUp({ journal }) {
     if (u === '/api/journal/investigation/c360') {
       if (journal === 'error') return { ok: false, status: 500, json: async () => ({ detail: 'registry down' }), text: async () => 'registry down' };
       return ok(journal);
+    }
+    if (u === '/api/curate/feedback-state/investigation/c360') {
+      if (state === 'error') return { ok: false, status: 500, json: async () => ({ detail: 'down' }), text: async () => 'down' };
+      return ok(state || { notes: [], to_send: 0 });
+    }
+    if (u === '/api/investigations/c360/journal/publish') {
+      calls.push(u);
+      if (publish && publish.status) return { ok: false, status: publish.status, json: async () => ({ detail: publish.detail }), text: async () => publish.detail };
+      return ok(publish || { sent: 1 });
     }
     if (/\/members$/.test(u)) return ok([]);
     if (/\/next-steps$/.test(u)) return ok({ steps: [], complete: true });
@@ -29,7 +39,7 @@ async function setUp({ journal }) {
     if (u === '/api/investigations/classifications') return ok({ classifications: [], bindings: [] });
     if (/^\/api\/investigations\/([^/?]+)$/.test(u)) {
       return ok({ slug: 'c360', display_name: 'C', status: 'open', description: 'd', project_classification: 'StudyProject',
-        purposes: [], visibility: 'public' });
+        purposes: [], visibility: 'public', egeria_project_guid: promoted ? 'proj-guid' : null });
     }
     if (/^\/api\/investigations\/\?/.test(u)) return ok([]);
     return ok({});
@@ -47,7 +57,7 @@ async function setUp({ journal }) {
   inv.openInvestigationDetail('c360');
   await inv.renderInvestigation();
   await tick();
-  return { document };
+  return { document, calls };
 }
 
 test('the journal lists its entries with author and date, and says they wait for promotion', async () => {
@@ -83,4 +93,56 @@ test('a reply with no entries list is a failed read too', async () => {
   const section = text(t.document.getElementById('inv-journal'));
   assert.match(section, /The journal could not be read/);
   assert.doesNotMatch(section, /No entries yet|Journal · 0/);
+});
+
+const ENTRIES = { entries: [
+  { id: 'e2', author: 'me', written_at: '2026-10-19T10:00:00+00:00', body: 'Mine.', suggested_to: [] },
+  { id: 'e1', author: 'bob', written_at: '2026-10-18T09:00:00+00:00', body: 'Bob.', suggested_to: [] },
+], suggested_to: [] };
+
+test('an unpromoted investigation has no Publish button', async () => {
+  const t = await setUp({ journal: ENTRIES });
+  assert.equal(t.document.querySelector('[data-act="inv-journal-publish"]'), null);
+});
+
+test('a promoted investigation shows the Publish button with the count to send and each entry\'s state', async () => {
+  const t = await setUp({ journal: ENTRIES, promoted: true,
+    state: { to_send: 1, notes: [{ id: 'e2', word: 'not yet sent' }, { id: 'e1', word: 'not yours to send' }] } });
+  const btn = t.document.querySelector('[data-act="inv-journal-publish"]');
+  assert.ok(btn);
+  assert.equal(btn.disabled, false);
+  assert.match(text(btn), /Publish my entries · 1/);
+  const section = text(t.document.getElementById('inv-journal'));
+  assert.match(section, /me · 2026-10-19 · not yet sent/);
+  assert.match(section, /bob · 2026-10-18 · not yours to send/);
+});
+
+test('the Publish button is disabled when nothing is left to send', async () => {
+  const t = await setUp({ journal: ENTRIES, promoted: true, state: { to_send: 0, notes: [] } });
+  assert.equal(t.document.querySelector('[data-act="inv-journal-publish"]').disabled, true);
+});
+
+test('a failed state read leaves the words off and never claims published', async () => {
+  const t = await setUp({ journal: ENTRIES, promoted: true, state: 'error' });
+  const section = text(t.document.getElementById('inv-journal'));
+  assert.match(section, /me · 2026-10-19(?! ·)/);
+  assert.doesNotMatch(section, /published/i);
+});
+
+test('pressing Publish posts once and reports entries that were not sent', async () => {
+  const t = await setUp({ journal: ENTRIES, promoted: true, state: { to_send: 1, notes: [] },
+    publish: { sent: 0, not_permitted: ['e2'], unread: [] } });
+  t.document.querySelector('[data-act="inv-journal-publish"]').click();
+  await tick(150);
+  assert.equal(t.calls.length, 1);
+  assert.match(text(t.document.getElementById('inv-journal')), /1 not sent/);
+});
+
+test('a refused publish says why and the button stays usable', async () => {
+  const t = await setUp({ journal: ENTRIES, promoted: true, state: { to_send: 1, notes: [] },
+    publish: { status: 409, detail: 'Promote the investigation first.' } });
+  t.document.querySelector('[data-act="inv-journal-publish"]').click();
+  await tick(150);
+  assert.match(text(t.document.getElementById('inv-journal')), /Not published/);
+  assert.equal(t.document.querySelector('[data-act="inv-journal-publish"]').disabled, false);
 });

@@ -835,6 +835,9 @@ export const bindInvestigationEgeriaProject = (slug, {
     egeria_project_qualified_name: egeriaProjectQualifiedName, free_text_name: freeTextName,
   });
 
+/** Send the signed-in user's own journal entries to the investigation's Egeria Project (409 until promoted). */
+export const publishInvestigationJournal = (slug) =>
+  post(`/api/investigations/${encodeURIComponent(slug)}/journal/publish`);
 export const promoteInvestigation = (slug) => post(`/api/investigations/${encodeURIComponent(slug)}/promote`);
 
 export const reclassifyInvestigation = (slug, projectClassification, hypothesis = '') =>

@@ -284,6 +284,8 @@ def plan_as_dict(plan: dict) -> dict:
 def _display_name(registry, entity_type: str, slug: str) -> str:
     from resource_explorer.curation_egeria import _entity
 
+    if entity_type == "investigation":
+        return str((registry.get_investigation(slug) or {}).get("display_name") or slug)
     try:
         ent = _entity(registry, entity_type, slug)
     except Exception:  # noqa: BLE001

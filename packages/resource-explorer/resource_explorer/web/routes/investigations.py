@@ -15,7 +15,7 @@ migration.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 router = APIRouter()  # prefix/tags applied in web/app.py, matching every other route module
@@ -438,6 +438,32 @@ async def promote_to_egeria(slug: str) -> dict:
             "egeria_project_qualified_name": result.project_qualified_name,
         })
     return result.as_dict()
+
+
+@router.post("/{slug}/journal/publish")
+async def publish_journal(slug: str, request: Request) -> dict:
+    """Send the signed-in user's own journal entries to the investigation's Egeria Project, one Note each in the
+    Project's NoteLog (`feedback_egeria.publish_my_feedback`, the machinery a resource's Publish uses). Entries
+    stay in RE until the investigation is promoted: with no Project there is nothing to attach a NoteLog to, and
+    this says so (409) rather than queueing writes that cannot land. A person sends only their own entries."""
+    import asyncio
+
+    from resource_explorer.auth import get_current_user
+    from resource_explorer.feedback_egeria import publish_my_feedback
+
+    reg = _registry()
+    inv = reg.get_investigation(slug)
+    if not inv:
+        raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
+    user = get_current_user(request)
+    presser = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not presser:
+        raise HTTPException(status_code=401, detail="Sign in to publish journal entries — an entry is sent by its author.")
+    guid = inv.get("egeria_project_guid") or ""
+    if not guid:
+        raise HTTPException(status_code=409, detail="This investigation has not been promoted to Egeria, so its "
+                            "journal has no Project to go to. The entries stay in RE until it is.")
+    return await asyncio.to_thread(publish_my_feedback, reg, "investigation", slug, guid, presser)
 
 
 @router.patch("/{slug}")
