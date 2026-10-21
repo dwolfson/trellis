@@ -189,7 +189,7 @@ Order of publishing:
 
 | # | Slice | Gate, by use |
 |---|---|---|
-| Q2 | `DatabaseQualitySurvey` definition (three steps, authored, reconciled); results published as `QualityAnnotation`s; the two engine-host declarations unheld with a committed test that a run with zero accepted checks completes `survey-invalid` ("no accepted checks"), never an empty completed report | the owner runs it on coco_pharma from the Survey press, accepts three proposals, re-runs, reads three annotations back in Egeria by GUID |
+| Q2 | `DatabaseQualitySurvey` definition (three steps, authored, reconciled); the 5-minute per-table budget on value profile with the "profile incomplete" sentence; results published as `QualityAnnotation`s; the two engine-host declarations unheld with a committed test that a run with zero accepted checks completes `survey-invalid` ("no accepted checks"), never an empty completed report | the owner runs it on coco_pharma from the Survey press, accepts three proposals, re-runs, reads three annotations back in Egeria by GUID |
 | Q3 | Batch and schedule: the work-list batch run and Automate pointed at the definition, with the per-database price line and the skip-unchanged rule | a work list of coco_pharma and adventureworks run as one batch with two priced rows; a second scheduled run skips the unchanged one and says so |
 | Q4 | Inventory and map TestGen's out-of-the-box test types (design task): one row per type, mapped to an RE slice-1 type, an Egeria dimension and annotation RE could port as data, or "not covered" with the reason; plus the compare harness documented (`seed_examples.py`, `compare_re_testgen.py`) with its calibration report and the import of TestGen-only tests as `origin=testgen` proposals | the inventory reviewed by the owner; one calibration report on coco_pharma; one TestGen-only proposal accepted in Curate and run by RE |
 | Q5 | `DataQualityRule` publish through the generic governance-definition API (2.6), with the no-fallback test and the read-only probe first | one accepted check read back by GUID as a `DataQualityRule` with its attributes, linked `GovernedBy` to its column |
@@ -211,7 +211,10 @@ Answered:
 
 Still open, in plain terms:
 
-- [ ] Who does the TestGen inventory: the design session from the
-      owner's TestGen clone, or the evaluation session that ran it.
-- [ ] The per-table time budget for value profile (the number of
-      minutes after which a table is reported incomplete).
+- [x] The TestGen inventory: done by the design session from the owner's
+      clone, `INVENTORY-TESTGEN-TEST-TYPES-MAPPED.md` (89 types).
+- [x] The per-table time budget for value profile: **5 minutes per
+      table** (owner, 2026-10-21). A table whose whole-table read exceeds
+      it is reported "profile incomplete · exceeded 5 min · counts not
+      measured" and its checks are not proposed, never a sampled count
+      passed off as a count.
