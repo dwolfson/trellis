@@ -367,9 +367,15 @@ def _newest_complete_native_run(registry, slug: str, before: str = "") -> tuple[
     """The newest native survey whose stored annotations are all there: the
     run's `report_annotation_count` equals the rows actually stored. A run that
     never read its report, or lost rows, is not a measurement to build from.
-    With `before`, only runs taken at or before that moment (what was known then)."""
+    With `before`, only runs taken at or before that moment (what was known then).
+
+    Only runs of Egeria's own database survey (`DATABASE_SURVEY_QN`) count: an
+    RE-owned analysis (staleness, derived facts) is a native run too, but it
+    carries no Capture Database* annotations and says nothing about what
+    Egeria's survey saw."""
+    from resource_explorer.catalog_and_survey import DATABASE_SURVEY_QN
     try:
-        runs = registry.list_native_survey_runs("database", slug) or []
+        runs = registry.list_native_survey_runs("database", slug, DATABASE_SURVEY_QN) or []
     except Exception:
         return None
     for run in runs:
@@ -404,6 +410,8 @@ def _native_node_set(registry, slug: str, before: str = "") -> dict | None:
     if not found:
         return None
     run, anns = found
+    if not any((a.get("annotation_type") or "") in (ANN_DATABASE, ANN_SCHEMA, ANN_TABLE) for a in anns):
+        return None          # a report with no Capture Database* annotation measured nothing here
     as_of = (run.get("survey_report_at") or next((a.get("report_at") for a in anns if a.get("report_at")), "")
              or run.get("surveyed_at") or "")
     schemas: dict[str, dict] = {}
@@ -607,7 +615,7 @@ def resolve_node_set(registry, slug: str, tree: dict | None = None) -> dict:
                 "disagree": False, "unreadable": 0, "stats_reset": ""}
     n_s, n_t = _counts(native["schemas"])
     egeria_info = {"state": "measured", "schema_count": n_s, "table_count": n_t,
-                   "surveyed_at": native["as_of"], "report_guid": native["report_guid"]}
+                   "surveyed_at": native["as_of"], "report_guid": native["report_guid"]}   # real Capture Database* rows were read
     native_first = (n_s + n_t, native["as_of"][:19]) >= (l_s + l_t, local_at[:19])
     if not (l_s + l_t):
         native_first = True

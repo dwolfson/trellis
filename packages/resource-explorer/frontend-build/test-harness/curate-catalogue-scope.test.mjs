@@ -217,7 +217,28 @@ test('header, RE local survey the only source: names the source, its date and wh
     local: { state: 'measured', schema_count: 8, table_count: 61, surveyed_at: '2026-10-03T09:00:00', surveyed_as: 'surveyor', sees: 'sees 6' },
     disagree: false, unreadable: 0 } }));
   assert.equal(flat(document.querySelector('[data-scope-header]')),
-    'Your scope: none declared yet · 8 schemas · RE local survey 10-03 · sees 6 of 8');
+    'Your scope: none declared yet · 8 schemas · RE local survey 10-03 · sees 6 of 8 · Egeria\'s survey has not measured schemas');
+});
+
+test('header, Egeria\'s survey not measured: the Curate line says so and never prints a 0', async () => {
+  const { document } = await setUp(baseView({ sources: {
+    chosen: { kind: 'local', as_of: '2026-10-20T09:00:00', schemas: 30, tables: 61, merged: false },
+    egeria: { state: 'not_measured', schema_count: null, table_count: null, surveyed_at: '', report_guid: '' },
+    local: { state: 'measured', schema_count: 30, table_count: 61, surveyed_at: '2026-10-20T09:00:00', surveyed_as: 'surveyor', sees: '' },
+    disagree: false, unreadable: 0 } }));
+  const text = flat(document.querySelector('[data-scope-header]'));
+  assert.equal(text, "Your scope: none declared yet · 30 schemas · RE local survey 10-20 · Egeria's survey has not measured schemas");
+  assert.doesNotMatch(text, /saw 0|covers 0| 0 schemas/);
+});
+
+test('header, Egeria measured 20 schemas and 184 tables while local is chosen: both counts and the survey date', async () => {
+  const { document } = await setUp(baseView({ sources: {
+    chosen: { kind: 'local', as_of: '2026-10-20T09:00:00', schemas: 30, tables: 200, merged: false },
+    egeria: { state: 'measured', schema_count: 20, table_count: 184, surveyed_at: '2026-10-17T06:00:00', report_guid: 'g' },
+    local: { state: 'measured', schema_count: 30, table_count: 200, surveyed_at: '2026-10-20T09:00:00', surveyed_as: 'surveyor', sees: '' },
+    disagree: true, unreadable: 0 } }));
+  assert.equal(flat(document.querySelector('[data-scope-header]')),
+    "Your scope: none declared yet · Egeria's latest survey covers 20 schemas, 184 tables · RE's own survey saw 30 schemas, 200 tables, 10-20");
 });
 
 test('header, the two sources DISAGREE: it names both, with their counts and dates', async () => {

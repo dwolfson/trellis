@@ -433,7 +433,8 @@ class TestNativeReadBackUsesDisplayNames:
             return {"annotation_type": kind, "detail": {"json_properties": _json.dumps(props)}}
 
         class Reg:
-            def list_native_survey_runs(self, *a):
+            def list_native_survey_runs(self, entity_type, slug, process_qualified_name=None):
+                assert process_qualified_name == "PostgreSQLSurvey::survey-postgres-database"
                 return [{"survey_report_guid": "g", "report_annotation_count": 3,
                          "survey_report_at": "2026-10-01T00:00:00"}]
             def count_native_survey_annotations(self, g): return 3

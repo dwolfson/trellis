@@ -37,7 +37,7 @@ import { SCOPE_COLS, MANIFEST_COLS } from '/static/next/stages/scope-columns.js'
 import { cellStyle, handleHtml, innerStyle, headCellStyle, attachColumnResize } from '/static/next/colresize.js';
 import { savedLine } from '/static/next/format.js';
 import {
-  SOURCE_WORD, md, nodeSourceLine, scopeCollapsedText,
+  SOURCE_WORD, EGERIA_NOT_MEASURED, md, nodeSourceLine, scopeCollapsedText,
   readScopePref, writeScopePref, scopeStartsOpen,
 } from '/static/next/stages/scope-sources.js';
 
@@ -132,7 +132,8 @@ export function sourcesClause(view) {
     return `Egeria's latest survey covers ${eg.schema_count} schemas, ${eg.table_count} tables · RE's own survey saw ${lo.schema_count} schemas, ${lo.table_count} tables, ${md(lo.surveyed_at)}`;
   }
   const sees = ch.kind === 'local' && lo.sees ? ` · ${lo.sees} of ${lo.schema_count}` : '';
-  return `${ch.schemas} schemas · ${SOURCE_WORD[ch.kind] || ch.kind} ${md(ch.as_of)}${sees}`;
+  const egNone = ch.kind === 'local' && eg.state === 'not_measured' ? ` · ${EGERIA_NOT_MEASURED}` : '';
+  return `${ch.schemas} schemas · ${SOURCE_WORD[ch.kind] || ch.kind} ${md(ch.as_of)}${sees}${egNone}`;
 }
 
 /** The state-derived marker line: what the proof rows say Egeria holds, never a constant. */

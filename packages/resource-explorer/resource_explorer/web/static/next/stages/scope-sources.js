@@ -7,6 +7,7 @@
  * Egeria native survey. Both now read `catalogue_scope.resolve_node_set`. */
 
 export const SOURCE_WORD = { egeria: 'Egeria survey', local: 'RE local survey' };
+export const EGERIA_NOT_MEASURED = "Egeria's survey has not measured schemas";   // placeholder words for the designer
 export const md = (iso) => String(iso || '').slice(5, 10);
 
 /** One sentence naming the survey a schema list was read from and, when the two
@@ -17,7 +18,10 @@ export function inventoryHeaderText(sources) {
   const ch = sources.chosen; const eg = sources.egeria || {}; const lo = sources.local || {};
   const head = `${ch.schemas} schemas · ${SOURCE_WORD[ch.kind] || ch.kind} ${md(ch.as_of)}`;
   if (lo.state === 'unreadable') return `${head} · RE's own survey could not be read`;
+  // Egeria's survey never measured schemas: say so, never a 0 (a zero is a measurement).
+  if (ch.kind === 'local' && eg.state === 'not_measured') return `${head} · ${EGERIA_NOT_MEASURED}`;
   if (!sources.disagree) return head;
+  if (ch.kind === 'local' && eg.state !== 'measured') return head;
   if (ch.kind === 'local') {
     return `${head} · Egeria's survey saw ${eg.schema_count} schemas, ${eg.table_count} tables, ${md(eg.surveyed_at)}`;
   }

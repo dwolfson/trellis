@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from resource_explorer import catalogue_scope as cs
+from resource_explorer.catalog_and_survey import DATABASE_SURVEY_QN
 from resource_explorer.auth import create_access_token
 from resource_explorer.registry import DatabaseEntity, ProjectRegistry
 
@@ -557,7 +558,7 @@ import json as _json
 
 NATIVE_AT = "2026-10-04T06:00:00"
 LOCAL_AT = "2026-10-03T09:00:00"
-PROC = "survey-postgres-database:coco"
+PROC = DATABASE_SURVEY_QN          # Egeria's own Postgres database survey; the scope reads no other run
 
 
 def _ann(n, kind, props, summary=""):
@@ -1077,3 +1078,76 @@ def test_the_collapsed_line_is_built_from_the_scope_route_json(client, registry,
         assert line.endswith(f"Egeria's latest survey covers {j['survey']['schema_count']} schemas, {j['survey']['table_count']} tables")
     else:   # no measured Egeria survey figures on the route: that clause is omitted, never zero
         assert "survey" not in line and "0 schemas" not in line
+
+
+# ── the scope's "Egeria survey" is Egeria's Postgres survey, never just any native run ───────────
+
+RE_STALENESS = "ResourceExplorerSurvey::re-database-staleness"
+
+
+def _store_run(registry, qn, guid, at, annotations, *, report):
+    registry.record_native_survey_submission("database", "db", qn, at, engine_action_guid=guid)
+    registry.record_native_survey_report(
+        guid, entity_type="database", slug="db", process_qualified_name=qn,
+        report_guid=report, report_at=at, read_at=at, annotations=annotations)
+
+
+def _staleness_run(registry, at="2026-10-20T06:00:00"):
+    anns = [_ann(i, "Table Database Staleness", {"tableName": f"t{i}"}) for i in range(5)]
+    _store_run(registry, RE_STALENESS, "ea-stale", at, anns, report="76048482-staleness")
+
+
+def test_a_newer_re_staleness_run_does_not_hide_egeria_database_survey(world):
+    _native(world["registry"], schemas=3, tables_per=2, at="2026-10-17T06:00:00")      # 3 schemas, 11 tables
+    _staleness_run(world["registry"])                                                   # newer, but RE's own
+    world["tree"] = _local_tree(1, 1)
+    egeria = view(world)["sources"]["egeria"]
+    assert (egeria["state"], egeria["schema_count"], egeria["table_count"]) == ("measured", 3, 11)
+    assert egeria["surveyed_at"] == "2026-10-17T06:00:00" and egeria["report_guid"] == "03b908a5-report"
+    node_set = cs._native_node_set(world["registry"], "db")
+    assert node_set["report_guid"] == "03b908a5-report"
+    run, _ = cs._newest_complete_native_run(world["registry"], "db")
+    assert run["executor_ref"] == DATABASE_SURVEY_QN
+
+
+def test_only_non_database_native_runs_is_not_measured_never_zero(world):
+    _staleness_run(world["registry"])
+    world["tree"] = _local_tree(2, 2)
+    assert cs._newest_complete_native_run(world["registry"], "db") is None
+    assert cs._native_node_set(world["registry"], "db") is None
+    v = view(world)["sources"]
+    assert v["egeria"]["state"] == "not_measured"
+    assert v["egeria"]["schema_count"] is None and v["egeria"]["table_count"] is None
+    assert v["chosen"]["kind"] == "local" and v["disagree"] is False
+
+
+def test_a_database_survey_report_with_no_capture_annotations_is_not_a_zero(world):
+    # a complete run of the right survey whose report carries only unrelated annotations
+    _store_run(world["registry"], DATABASE_SURVEY_QN, "ea-x", "2026-10-17T06:00:00",
+               [_ann(1, "Table Database Staleness", {"tableName": "t"})], report="r-other")
+    assert cs._native_node_set(world["registry"], "db") is None
+    world["tree"] = _local_tree(2, 2)
+    assert view(world)["sources"]["egeria"]["state"] == "not_measured"
+
+
+def test_a_database_survey_that_really_saw_zero_schemas_is_a_measured_zero(world):
+    _store_run(world["registry"], DATABASE_SURVEY_QN, "ea-0", "2026-10-17T06:00:00",
+               [_ann(0, "Capture Database Measurements", {})], report="r-zero")
+    world["tree"] = _local_tree(2, 2)
+    egeria = view(world)["sources"]["egeria"]
+    assert (egeria["state"], egeria["schema_count"], egeria["table_count"]) == ("measured", 0, 0)
+
+
+def test_known_before_reads_the_database_survey_not_a_newer_staleness_run(world):
+    _native(world["registry"], schemas=2, tables_per=1, at="2026-10-01T06:00:00")
+    _staleness_run(world["registry"], at="2026-10-02T06:00:00")
+    schemas, tables, err = cs._known_before(world["registry"], "db", "2026-10-03T00:00:00")
+    assert err == "" and schemas == {"s00", "s01"} and "s00.t00" in tables
+
+
+def test_the_chosen_merge_uses_the_database_survey_run(world):
+    _native(world["registry"], schemas=3, tables_per=2, at="2026-10-17T06:00:00")
+    _staleness_run(world["registry"])
+    world["tree"] = _local_tree(1, 1)
+    chosen = view(world)["sources"]["chosen"]
+    assert chosen["kind"] == "egeria" and chosen["as_of"] == "2026-10-17T06:00:00" and chosen["schemas"] == 3
