@@ -64,6 +64,13 @@ def run(
         if not as_user.strip():
             console.print("[red]refused:[/red] no Egeria identity set; pass --as or sign in")
             raise typer.Exit(1)
+        from resource_explorer.egeria_clients import DaemonSignInRefused, refuse_daemon_sign_in
+
+        try:
+            refuse_daemon_sign_in(as_user)          # --as RE's own service account is refused, not run
+        except DaemonSignInRefused as exc:
+            console.print(f"[red]refused:[/red] {exc}")
+            raise typer.Exit(1)
         password = os.environ.get("RE_DR_EGERIA_PASSWORD") or getpass.getpass(f"Egeria password for {as_user}: ")
         try:
             identity = DrEgeriaIdentity(user=as_user.strip(), source=SOURCE_ADHOC_AS, password=password)

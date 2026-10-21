@@ -8,6 +8,7 @@ degraded Survey tab, and so an admin can trigger a pass without restarting.
 from __future__ import annotations
 
 import asyncio
+import time
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -106,7 +107,8 @@ async def dr_egeria_run(request: Request, body: DrEgeriaRunRequest) -> dict:
     sub = _require_listed_admin(request)
     from resource_explorer import dr_egeria_runner as runner
     from resource_explorer.bootstrap import SOURCE_ADMIN_SESSION, DrEgeriaIdentity
-    from resource_explorer.egeria_clients import Caller
+    from resource_explorer.egeria_clients import (EXPIRED_SENTENCE, Caller, DaemonSignInRefused, _token_expiry,
+                                                  refuse_daemon_sign_in)
 
     identity = None
     if not body.dry_run:
@@ -114,6 +116,17 @@ async def dr_egeria_run(request: Request, body: DrEgeriaRunRequest) -> dict:
             who = Caller()          # the signed-in admin's own Egeria session; never the daemon, never a default
         except PermissionError as exc:
             raise HTTPException(status_code=401, detail=str(exc))
+        if not (who.user_id or "").strip():
+            raise HTTPException(status_code=401, detail=EXPIRED_SENTENCE)
+        try:
+            refuse_daemon_sign_in(who.user_id)      # RE's own service account is never a person's session
+        except DaemonSignInRefused as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        # A document run can last HEAL_TIMEOUT_SECONDS and the token cannot be refreshed mid-run: refuse up front
+        # when it would expire inside that window, instead of failing partway through a document.
+        exp = _token_expiry(who.token or "")
+        if exp is not None and exp - time.time() < bootstrap_mod.HEAL_TIMEOUT_SECONDS:
+            raise HTTPException(status_code=401, detail=EXPIRED_SENTENCE)
         identity = DrEgeriaIdentity(user=who.user_id, source=SOURCE_ADMIN_SESSION, token=who.token or "")
     try:
         return await asyncio.to_thread(runner.run_document, body.path, dry_run=body.dry_run, force=body.force,

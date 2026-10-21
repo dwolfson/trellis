@@ -305,7 +305,9 @@ def Named(user_id: str, password: str, reason: DaemonReason) -> EgeriaIdentity: 
         raise ValueError(f"Named identity refused: {reason!r} is not a DaemonReason")
     if not (user_id or "").strip() or not password:
         raise ValueError("a named Egeria identity needs a user id and a password")
-    return EgeriaIdentity(user_id=user_id, password=password, is_service_account=True, kind=KIND_DAEMON,
+    # A PERSON with a password, not RE's service account: `is_service_account` False, so `_record` labels the run as
+    # theirs. The kind stays KIND_DAEMON because `acting_as` / the factory take a declared job with a reason.
+    return EgeriaIdentity(user_id=user_id, password=password, is_service_account=False, kind=KIND_DAEMON,
                           reason=reason.value, client_user=user_id, requested_by=user_id)
 
 
@@ -486,6 +488,9 @@ def _person_in_request() -> str:
 def _record(identity: EgeriaIdentity, purpose: str) -> None:
     if identity.kind == KIND_CALLER:
         key, as_words = identity.user_id, "you"
+    elif identity.kind == KIND_DAEMON and identity.password and not identity.is_service_account:
+        # A named person with a password (an `--as` run): theirs, not the service account's.
+        key, as_words = identity.user_id, "you (named account, password)"
     elif identity.kind == KIND_DAEMON and identity.requested_by:
         # Queued work for a person (owner's wording, 2026-10-09).
         key, as_words = identity.requested_by, "service account (Resource Explorer) on your behalf"

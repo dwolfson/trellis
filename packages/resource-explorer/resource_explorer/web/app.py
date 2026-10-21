@@ -70,7 +70,7 @@ async def _lifespan(app: FastAPI):
     from resource_explorer.egeria_clients import log_daemon_identity_at_startup
     log_daemon_identity_at_startup()        # INFO: which source the daemon identity came from (Brief L)
     from resource_explorer.bootstrap import log_heal_identity_at_startup
-    log_heal_identity_at_startup()          # the heal's Dr.Egeria identity beside EGERIA_USER_ID; says when they differ
+    log_heal_identity_at_startup()          # who the heal applies Dr.Egeria as, and from where; warns when unset
 
     # Re-project stored credentials if a redeploy deleted the secrets file.
     # Non-fatal by construction (heal_missing never raises) and no network.

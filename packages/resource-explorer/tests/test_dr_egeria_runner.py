@@ -227,7 +227,7 @@ class Fakes:
 
         def fake_run(argv, **kwargs):
             child = "resource_explorer.dr_egeria_child" in argv
-            if argv[0] != "/venv/bin/dr_egeria" and not child:
+            if not child:
                 return real_run(argv, **kwargs)
             self.argvs.append(list(argv))
             self.calls.append("dr_egeria " + " ".join(a for a in argv[1:] if not a.startswith("/")
@@ -236,7 +236,6 @@ class Fakes:
             return SimpleNamespace(returncode=0, stdout=self.output, stderr="")
 
         monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
-        monkeypatch.setattr(bootstrap, "_resolve_dr_egeria_executable", lambda: "/venv/bin/dr_egeria")
 
     def writes(self) -> list[str]:
         return [c for c in self.calls if not c.startswith(("find ", "related "))]
@@ -483,7 +482,7 @@ def test_engine_then_service_then_link_then_the_action_type(root, reg, monkeypat
     fakes = Fakes(monkeypatch)
     runner.run_document("engine-host/decl.md", identity=IDENT, registry=reg)
     assert fakes.writes() == ["create engine", "create service", "link supported service",
-                              "dr_egeria --process --summary-only --server qs-view-server --url https://localhost:9443 --userid tester decl.md"]
+                              "dr_egeria -m resource_explorer.dr_egeria_child --server qs-view-server --url https://localhost:9443 --userid tester decl.md"]
 
 
 def test_a_steps_file_out_of_order_is_refused(root, reg, monkeypatch):
@@ -509,7 +508,8 @@ def test_every_client_and_the_child_run_as_the_supplied_user(root, reg, monkeypa
     out = runner.run_document("engine-host/decl.md", registry=reg, identity=IDENT, announce=lines.append)
     assert fakes.built and {u for _c, u in fakes.built} == {"tester"}
     argv = fakes.argvs[0]
-    assert argv[argv.index("--userid") + 1] == "tester" and argv[argv.index("--user_pass") + 1] == IDENT_PASSWORD
+    assert argv[argv.index("--userid") + 1] == "tester" and IDENT_PASSWORD not in " ".join(argv)
+    assert fakes.subprocess_envs[0]["RE_DR_EGERIA_CHILD_PASSWORD"] == IDENT_PASSWORD
     assert "--server" in argv and "--url" in argv
     env = fakes.subprocess_envs[0]
     assert not {"EGERIA_USER", "EGERIA_USER_PASSWORD", "EGERIA_USER_ID"} & set(env)
@@ -574,7 +574,8 @@ def test_the_heal_passes_the_service_account_explicitly(tmp_path, monkeypatch):
     ok, _detail = bootstrap._run_dr_egeria(doc)
     assert ok
     argv = fakes.argvs[0]
-    assert argv[argv.index("--userid") + 1] == "svc-account" and argv[argv.index("--user_pass") + 1] == "svc-pass"
+    assert argv[argv.index("--userid") + 1] == "svc-account" and "svc-pass" not in " ".join(argv)
+    assert fakes.subprocess_envs[0]["RE_DR_EGERIA_CHILD_PASSWORD"] == "svc-pass"
 
 
 def test_the_heal_refuses_when_the_service_account_is_not_set(tmp_path, monkeypatch):
@@ -589,7 +590,7 @@ def test_the_heal_refuses_when_the_service_account_is_not_set(tmp_path, monkeypa
     assert not ok and "EGERIA_USER_ID not set" in detail and fakes.argvs == []
 
 
-def test_the_startup_check_logs_both_and_says_when_they_differ(monkeypatch, caplog):
+def test_the_startup_check_logs_the_heal_identity_and_its_source_never_the_password(monkeypatch, caplog):
     import logging
 
     from resource_explorer import bootstrap
@@ -597,13 +598,42 @@ def test_the_startup_check_logs_both_and_says_when_they_differ(monkeypatch, capl
 
     monkeypatch.setattr(get_config().egeria, "user_id", "svc-account")
     monkeypatch.setattr(get_config().egeria, "user_password", "svc-pass")
-    monkeypatch.setenv("EGERIA_USER", "other")
     with caplog.at_level(logging.INFO):
         out = bootstrap.log_heal_identity_at_startup()
-    assert out["heal_user"] == "svc-account" == out["egeria_user_id"] and out["env_egeria_user"] == "other"
-    assert "svc-pass" not in caplog.text
-    monkeypatch.setattr(bootstrap, "heal_identity", lambda: bootstrap.DrEgeriaIdentity("x", "start-up heal", "p"))
-    assert bootstrap.log_heal_identity_at_startup()["differs"] is True
+    assert out["heal_user"] == "svc-account" and out["set"] is True and "EGERIA_USER_ID" in out["source"]
+    assert "svc-account" in caplog.text and "svc-pass" not in caplog.text
+    assert "DIFFER" not in caplog.text and "differs" not in out
+
+
+def test_the_startup_check_warns_loudly_when_the_heal_has_no_service_account(monkeypatch, caplog):
+    import logging
+
+    from resource_explorer import bootstrap
+    from resource_explorer.config import get_config
+
+    monkeypatch.setattr(get_config().egeria, "user_id", "")
+    with caplog.at_level(logging.WARNING):
+        out = bootstrap.log_heal_identity_at_startup()
+    assert out["set"] is False and out["heal_user"] == ""
+    assert any(r.levelno == logging.WARNING and "NO service account" in r.getMessage() for r in caplog.records)
+
+
+def test_a_heal_with_no_service_account_records_it_on_the_batch_status(tmp_path, monkeypatch):
+    from resource_explorer import bootstrap
+    from resource_explorer.config import get_config
+
+    fakes = Fakes(monkeypatch)
+    monkeypatch.setattr(get_config().egeria, "user_id", "")
+    batch = bootstrap.Batch(batch_id="b-nosvc", path=tmp_path, display_name="b", canary={}, files=["d.md"])
+    monkeypatch.setattr(bootstrap, "discover_batches", lambda docs_dir: [batch])
+    monkeypatch.setattr(bootstrap, "canary_present", lambda b: False)
+    monkeypatch.setattr(bootstrap, "heal_batch", lambda b: pytest.fail("no service account: nothing is healed"))
+    monkeypatch.setattr(bootstrap, "_status", {})
+    out = bootstrap._check_and_heal_locked(tmp_path, False)
+    assert out["batches"]["b-nosvc"]["action"] == "failed"
+    st = bootstrap._status["b-nosvc"]
+    assert st.last_heal_result.startswith("no service account") and st.consecutive_failures == 0
+    assert fakes.argvs == []
 
 
 def test_the_runner_has_its_own_daemon_reason():
@@ -1008,7 +1038,10 @@ def test_the_cli_takes_the_password_from_getpass_or_the_one_invocation_env(root,
     assert res.exit_code == 0, res.output
     assert "applying as tester from --as" in res.output
     argv = fakes.argvs[0]
-    assert argv[argv.index("--userid") + 1] == "tester" and argv[argv.index("--user_pass") + 1] == IDENT_PASSWORD
+    assert argv[argv.index("--userid") + 1] == "tester" and "--user_pass" not in argv
+    assert IDENT_PASSWORD not in " ".join(argv), "no secret on argv"
+    assert fakes.subprocess_envs[0]["RE_DR_EGERIA_CHILD_PASSWORD"] == IDENT_PASSWORD
+    assert "RE_DR_EGERIA_CHILD_TOKEN" not in fakes.subprocess_envs[0]
     assert IDENT_PASSWORD not in res.output
     assert IDENT_PASSWORD not in json.dumps(_rows(reg), default=str)
 
@@ -1056,3 +1089,124 @@ def test_an_unset_service_account_refuses_and_never_falls_back_to_a_persona(monk
     monkeypatch.setattr(get_config().egeria, "user_password", "")
     with pytest.raises(egeria_clients.NoServiceAccount, match="EGERIA_USER_PASSWORD not set"):
         egeria_clients.Daemon(egeria_clients.DaemonReason.OUTBOX)
+
+
+# ── fix round 1 (2026-10-21) ────────────────────────────────────────────────
+
+def test_no_secret_is_on_argv_for_a_password_or_a_token_identity(tmp_path):
+    from resource_explorer import bootstrap
+    from resource_explorer.bootstrap import DrEgeriaIdentity
+
+    for ident, env_key in ((DrEgeriaIdentity("tester", "--as", password="pw-S3CRET"), "RE_DR_EGERIA_CHILD_PASSWORD"),
+                           (DrEgeriaIdentity("dan", "admin session", token="tok-S3CRET"), "RE_DR_EGERIA_CHILD_TOKEN")):
+        argv, extra = bootstrap.dr_egeria_command("d.md", ident, server="vs", url="https://h:9443")
+        assert "S3CRET" not in " ".join(argv) and "--user_pass" not in argv
+        assert argv[1:3] == ["-m", "resource_explorer.dr_egeria_child"] and argv[-1] == "d.md"
+        assert list(extra) == [env_key] and "S3CRET" in extra[env_key]
+
+
+def test_the_cli_refuses_as_the_services_own_account(root, reg, monkeypatch):
+    from typer.testing import CliRunner
+
+    from resource_explorer import dr_egeria_runner as runner
+    from resource_explorer.cli.main import app as cli_app
+    from resource_explorer.config import get_config
+
+    monkeypatch.setattr(get_config().egeria, "user_id", "svc-account")
+    monkeypatch.setattr(get_config().egeria, "user_password", "svc-pass")
+    monkeypatch.setattr(runner, "run_document", lambda *a, **k: pytest.fail("the daemon is never an --as identity"))
+    res = CliRunner().invoke(cli_app, ["dr-egeria", "run", "plain/only.md", "--as", "SVC-Account"],
+                             env={"RE_DR_EGERIA_PASSWORD": "x"})
+    assert res.exit_code == 1 and "service account" in res.output
+
+
+def test_the_route_refuses_when_the_signed_in_user_is_the_services_own_account(root, reg, monkeypatch):
+    from resource_explorer.config import get_config
+
+    monkeypatch.setattr(get_config().egeria, "user_id", "svc-account")
+    monkeypatch.setattr(get_config().egeria, "user_password", "svc-pass")
+    _as_user(monkeypatch, "svc-account", admins=("svc-account",))
+    fakes = Fakes(monkeypatch)
+    res = _route(monkeypatch, reg).post("/api/bootstrap/dr-egeria/run", json={"path": "plain/only.md"})
+    assert res.status_code == 403 and "service account" in res.json()["detail"]
+    assert fakes.argvs == []
+
+
+def test_the_route_refuses_a_token_that_expires_inside_the_document_timeout(root, reg, monkeypatch):
+    import time
+
+    from resource_explorer import bootstrap, egeria_clients
+
+    _as_user(monkeypatch, "dan")
+    fakes = Fakes(monkeypatch)
+    client = _route(monkeypatch, reg)
+    monkeypatch.setattr(egeria_clients, "_token_expiry", lambda t: int(time.time()) + bootstrap.HEAL_TIMEOUT_SECONDS - 60)
+    res = client.post("/api/bootstrap/dr-egeria/run", json={"path": "plain/only.md"})
+    assert res.status_code == 401 and "sign in again" in res.json()["detail"] and fakes.argvs == []
+    monkeypatch.setattr(egeria_clients, "_token_expiry", lambda t: int(time.time()) + bootstrap.HEAL_TIMEOUT_SECONDS + 600)
+    assert client.post("/api/bootstrap/dr-egeria/run", json={"path": "plain/only.md"}).status_code == 200
+
+
+def test_a_blank_signed_in_user_id_is_401_not_500(root, reg, monkeypatch):
+    from resource_explorer import egeria_clients
+    from resource_explorer.egeria_identity import EgeriaIdentity
+
+    _as_user(monkeypatch, "dan")
+    monkeypatch.setattr(egeria_clients, "Caller", lambda: EgeriaIdentity(user_id=" ", token="t",
+                                                                          kind=egeria_clients.KIND_CALLER))
+    fakes = Fakes(monkeypatch)
+    res = _route(monkeypatch, reg).post("/api/bootstrap/dr-egeria/run", json={"path": "plain/only.md"})
+    assert res.status_code == 401 and fakes.argvs == []
+
+
+def test_a_named_person_is_recorded_as_themselves_not_as_the_service_account(monkeypatch):
+    from resource_explorer import egeria_clients
+
+    ident = egeria_clients.Named("tester", "pw", egeria_clients.DaemonReason.DR_EGERIA)
+    assert ident.is_service_account is False
+    egeria_clients._record(ident, "Dr.Egeria document run")
+    entry = egeria_clients.last_egeria_identity("tester")
+    assert entry is not None and "service account" not in entry["as"] and entry["as"].startswith("you")
+
+
+@pytest.mark.parametrize("secret_env", ["RE_DR_EGERIA_CHILD_TOKEN", "RE_DR_EGERIA_CHILD_PASSWORD"])
+def test_the_child_calls_the_real_process_function_with_arguments_it_accepts(tmp_path, monkeypatch, secret_env):
+    """`create_autospec` of the REAL `process_md_file_v2`: a pyegeria rename or a changed signature fails here."""
+    from unittest.mock import create_autospec
+
+    import md_processing.dr_egeria as dr
+    from resource_explorer import dr_egeria_child, egeria_clients
+
+    spec = create_autospec(dr.process_md_file_v2, spec_set=True)
+    monkeypatch.setattr(dr, "process_md_file_v2", spec)
+    sentinel = object()
+
+    class _Clients:
+        def of(self, cls):
+            return sentinel
+
+    built = []
+    monkeypatch.setattr(egeria_clients, "egeria_client", lambda identity, **k: built.append((identity, k)) or _Clients())
+    for k in ("RE_DR_EGERIA_CHILD_TOKEN", "RE_DR_EGERIA_CHILD_PASSWORD"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv(secret_env, "s3cret")
+    doc = tmp_path / "d.md"
+    doc.write_text("x")
+    rc = dr_egeria_child.main(["--userid", "dan", "--server", "vs", "--url", "https://h:9443", str(doc)])
+    assert rc == 0 and spec.call_count == 1
+    assert spec.call_args.kwargs["client"] is sentinel and spec.call_args.kwargs["input_file"] == str(doc)
+    identity = built[0][0]
+    assert identity.user_id == "dan"
+    assert (identity.token == "s3cret") if secret_env.endswith("TOKEN") else (identity.password == "s3cret")
+
+
+def test_the_child_exits_2_without_exactly_one_secret(tmp_path, monkeypatch):
+    from resource_explorer import dr_egeria_child
+
+    args = ["--userid", "dan", "--server", "vs", "--url", "u", "d.md"]
+    for k in ("RE_DR_EGERIA_CHILD_TOKEN", "RE_DR_EGERIA_CHILD_PASSWORD"):
+        monkeypatch.delenv(k, raising=False)
+    assert dr_egeria_child.main(args) == 2
+    monkeypatch.setenv("RE_DR_EGERIA_CHILD_TOKEN", "a")
+    monkeypatch.setenv("RE_DR_EGERIA_CHILD_PASSWORD", "b")
+    assert dr_egeria_child.main(args) == 2
