@@ -20,7 +20,7 @@ import {
 } from '/static/re-api.js';
 import {
   bandFrameHtml, renderFindableBand, renderPeopleBand, databaseWorkHtml, databaseScopeHtml, databaseStructureHtml,
-  filesystemWorkHtml, renderRulesBlock, UNSIGNED_LABEL,
+  filesystemWorkHtml, renderRulesBlock, renderQualityBlock, UNSIGNED_LABEL,
 } from '/static/next/stages/curate-bands.js';
 import { renderCatalogueScope, setCommitPanelGate, startScopeCommitIfShown } from '/static/next/stages/curate-scope.js';
 import { renderPublishBand, renderPublishRepo, renderPublishDb, paintDbPublishState, showPublishFailure } from '/static/next/stages/publish.js';
@@ -628,6 +628,7 @@ export async function renderCurate(slug) {
       if (rulesStarted) return;
       rulesStarted = true;
       renderRulesBlock(structureHost.querySelector('[data-curate-rules]')).catch(() => {});
+      state.curate.quality = renderQualityBlock(structureHost.querySelector('[data-curate-quality]'), slug);
     };
     state.curate.onTabShown = () => {
       if (superseded() || !frame.isConnected) return;
@@ -652,6 +653,7 @@ export async function renderCurate(slug) {
     if (entityType === 'database') {
       // PI-041: the read-only rules block under the glossary section; it fails inside itself.
       bands.push(renderRulesBlock(host.querySelector('[data-curate-rules]')));
+      state.curate.quality = renderQualityBlock(host.querySelector('[data-curate-quality]'), slug);
       // Band 2's first section: what gets catalogued. A failure says so in
       // its own slot (renderCatalogueScope), never takes the pane down.
       bands.push(renderCatalogueScope(host.querySelector('[data-curate-scope]'), slug)

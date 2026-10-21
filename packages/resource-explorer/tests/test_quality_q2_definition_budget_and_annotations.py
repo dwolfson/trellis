@@ -140,7 +140,10 @@ def test_the_committed_document_is_what_the_generator_writes():
     markdown = generate_survey_definition_markdown(
         survey_group=quality.survey_group, survey_display_name=quality.survey_display_name,
         technology_type=gen.TECHNOLOGY_TYPE, description=quality.description, steps=gen.build_steps(quality.step_keys),
-        survey_kind=quality.survey_kind, answers_questions=[])
+        survey_kind=quality.survey_kind,
+        answers_questions=gen._answered_questions(quality.survey_group, quality.step_keys,
+                                                  gen._build_step_key_to_questions()))
+    assert markdown.count("## Link Element To Scope") == 2                  # Q-0096 and Q-0097
     assert (DEFS / quality.output_filename).read_text() == markdown
     batch = json.loads((DEFS / "_batch.json").read_text())
     assert quality.output_filename in batch["files"]
@@ -407,17 +410,34 @@ def test_the_proposal_step_never_returns_an_empty_report(registry, entity):
 
 # ── the definition names no question the catalog has not asked ──────────────────────────────────────────────
 
-def test_no_catalog_question_names_the_quality_analyses_so_the_definition_links_to_none():
-    """L3: the definition's "Link Element To Scope" blocks come from the question catalog's `answering.analysis_ids`.
-    None names `value_profile` or `quality_checks`, so the DatabaseQualitySurvey document carries none, and the
-    generator would add one the day a question does (the committed-document test then fails until it is committed)."""
-    from resource_explorer.surveyors.question_catalog_reader import get_questions
+def test_two_catalog_questions_name_the_quality_analysis_and_the_definition_links_to_exactly_those():
+    """The definition's "Link Element To Scope" blocks come from the question catalog's `answering.analysis_ids`.
+    Q-0096 (what checks should this database have) and Q-0097 (which hold, which fail) name `quality_checks`, so the
+    DatabaseQualitySurvey document carries exactly their two links, found by `find_candidate_process_guids_by_questions`
+    from the document alone (the one Egeria call, resolving the process GUID, is faked)."""
+    from unittest.mock import patch
 
-    naming = [e["question"] for e in get_questions(resource_type="database")
-              if {"value_profile", "quality_checks"} & set(e["answering"]["analysis_ids"])]
-    assert naming == []
+    from resource_explorer.surveyors.question_catalog_reader import get_questions
+    from resource_explorer.surveyors.survey_definition_docs import documented_definitions
+    from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReader
+
+    named = {e["id"]: e for e in get_questions(resource_type="database")
+             if {"value_profile", "quality_checks"} & set(e["answering"]["analysis_ids"])}
+    assert sorted(named) == ["Q-0096", "Q-0097"]
+    assert all(e["stage"] == "Analysis" and not e["retired"] for e in named.values())
+    questions = [e["question"] for e in named.values()]
     text = (DEFS / "database-survey-definition-quality.md").read_text()
-    assert "## Link Element To Scope" not in text
+    assert text.count("## Link Element To Scope") == 2
+    for q in questions:
+        assert f"### Scope Reference\n{q}\n" in text and "### Target Element\nDatabase Quality Survey\n" in text
+
+    doc = documented_definitions()["DatabaseQualitySurvey"]
+    assert sorted(doc.scoped_by) == sorted(questions)
+    with patch.object(SurveyDefinitionReader, "_process_guid_cached", return_value="g-quality"):
+        found = SurveyDefinitionReader.find_candidate_process_guids_by_questions(
+            SurveyDefinitionReader.__new__(SurveyDefinitionReader), questions, "PostgreSQL Database")
+    [quality] = [c for c in found if c["qualified_name"] == "GovActionProcess::DatabaseQualitySurvey"]
+    assert sorted(quality["matched_questions"]) == sorted(questions)
 
 
 # ── zero accepted checks: survey-invalid with a sentence, never an empty completed report ───────────────────

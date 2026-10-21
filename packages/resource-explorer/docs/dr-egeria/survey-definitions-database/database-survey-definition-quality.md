@@ -167,3 +167,21 @@ re-run-quality-checks
 ### Description
 Egeria dispatches GovActionProcessStep::DatabaseQualitySurvey::run_quality_checks to Resource Explorer's engine, which claims it and runs RE step run_quality_checks.
 
+___
+
+## Link Element To Scope
+### Target Element
+Database Quality Survey
+
+### Scope Reference
+Which data-quality checks should this database have?
+
+___
+
+## Link Element To Scope
+### Target Element
+Database Quality Survey
+
+### Scope Reference
+Which data-quality checks hold on this database's tables, and which fail?
+

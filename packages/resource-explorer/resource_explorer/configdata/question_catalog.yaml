@@ -3173,6 +3173,63 @@ database_questions:
     claim something nobody verified.'
   catalog_history: ''
   retired: false
+- id: Q-0096
+  question: Which data-quality checks should this database have?
+  stage: Analysis
+  perspectives:
+  - Steward
+  - Data Owner
+  purposes:
+  - Assess
+  - Certify
+  levels:
+  - member
+  - field
+  answering:
+    kind: analysis
+    analysis_ids:
+    - quality_checks
+    checks: []
+    note: quality_checks (the propose_quality_checks step)
+  answering_mechanism: Value Profiling + Human-Supplied
+  rationale: 'propose_quality_checks reads the measured value profile and, for every column and table,
+    applies the selection rules to propose a check, each in an Egeria quality dimension: Completeness
+    (is the value there: Required, Missing_Pct, Required_No_Placeholder and Row_Ct_Pct), Uniqueness (Unique),
+    Timeliness (Future_Date) and Conformity (Min_Date). A person accepts or rejects each proposal in Curate;
+    a check whose inputs were not measured is listed as not established with the reason, never silently
+    left out.'
+  catalog_history: '2026-10-21: added with quality slice Q2 (the DatabaseQualitySurvey definition); the
+    Q2 live test found the survey was not offered because no catalog question was scoped to it.'
+  retired: false
+- id: Q-0097
+  question: Which data-quality checks hold on this database's tables, and which fail?
+  stage: Analysis
+  perspectives:
+  - Steward
+  - Data Owner
+  purposes:
+  - Assess
+  - Remediate
+  levels:
+  - member
+  - field
+  answering:
+    kind: analysis
+    analysis_ids:
+    - quality_checks
+    checks: []
+    note: quality_checks (the run_quality_checks step; it runs the checks accepted in Curate)
+  answering_mechanism: Value Profiling + Human-Supplied
+  rationale: 'run_quality_checks runs the checks a person accepted, one aggregate query per table, and
+    records pass, warning or fail per check, or not established with the reason (an empty table, a zero
+    baseline, a column that has gone) and never a pass for a measure that is undefined. Each evaluated
+    check is published as one Egeria QualityAnnotation in its dimension: Completeness (is the value there:
+    Required, Missing_Pct, Required_No_Placeholder and Row_Ct_Pct), Uniqueness (Unique), Timeliness (Future_Date)
+    and Conformity (Min_Date). With no accepted check the step is not run ("no accepted checks"), never
+    an empty report.'
+  catalog_history: '2026-10-21: added with quality slice Q2 (the DatabaseQualitySurvey definition); see
+    Q-0096.'
+  retired: false
 filesystem_questions:
 - id: Q-0002
   question: What is this resource, and what is it for?

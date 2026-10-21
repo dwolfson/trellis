@@ -2259,3 +2259,13 @@ export const withdrawFirstIndex = (runId) =>
 
 /** The First indexing list: one line per repository, from run rows. */
 export const getFirstIndexProgress = () => get('/api/first-index/progress');
+
+/* ── Quality-check review (Curate, Structure tab) ────────────────────────
+ * `web/routes/quality_checks.py`. The read answers groups by table with counts (no rows); with `schema` and `table`
+ * it answers that one group's rows. The write records ONE verdict as the signed-in person and reads it back. */
+export const getQualityProposals = (slug, params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v)).toString();
+  return get(`/api/quality-checks/${encodeURIComponent(slug)}/proposals${q ? `?${q}` : ''}`);
+};
+export const postQualityVerdict = (slug, checkKey, verdict, note = '') =>
+  post(`/api/quality-checks/${encodeURIComponent(slug)}/verdict`, { check_key: checkKey, verdict, note });
