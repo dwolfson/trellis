@@ -131,6 +131,7 @@ import { openFindReposDialog } from '/static/next/discovery-import.js';
 // (fs-register.js, Files step 1: the classic modal minus its Egeria fields).
 import { openFindDbServersDialog } from '/static/next/db-server-discovery.js';
 import { openRegisterFileSystemDialog } from '/static/next/fs-register.js';
+import { mountFolderSurvey } from '/static/next/fs-survey.js';
 // Chat (PLAN-FINISH-REPOS.md item 9) — chrome-level, like worklist.js/rfa.js:
 // the "Ask" rail and the pane it promotes an answer into, beside whichever
 // stage is active rather than one of the eight itself. See next/chat.js's
@@ -5381,6 +5382,19 @@ function nativeSurveysPaneHtml(res) {
 /** Wire a rendered section (rows or the unreadable line). `reload` re-runs the pane. */
 function bindNativeSurveysPane(root, slug, res, reload) {
   root.querySelector('[data-native-recheck]')?.addEventListener('click', () => reload());
+  if (state.resourceType === 'filesystem') {
+    // Files step 2: the folder survey card (the probe's sentence, who leads, the press, the results) sits above
+    // Egeria's own survey rows, whose Folder Survey row names its surveyor.
+    let host = root.querySelector('[data-fs-folder-survey-host]');
+    if (!host) {
+      host = document.createElement('div');
+      host.dataset.fsFolderSurveyHost = '1';
+      const section = root.querySelector('#native-surveys');
+      if (section && section.parentElement && section.parentElement !== root) section.parentElement.before(host);
+      else root.append(host);
+    }
+    mountFolderSurvey(host, slug, { onChange: (act) => { if (act === 'survey') reload(); } });
+  }
   if (res.rows && res.rows.length) {
     // The definition cards follow the same rows: while one's run is in flight its run line is repainted in place from
     // each read, and when it ends the pane reloads once so the card, its controls and its history agree.

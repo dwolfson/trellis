@@ -40,32 +40,47 @@ from resource_explorer.surveyors.survey_definition_executor import (
 log = logging.getLogger(__name__)
 
 
-def _run_filesystem_inventory(fs_entity, registry, **_) -> dict:
-    """Walk the filesystem and PERSIST the result, then return it.
+def _run_filesystem_inventory(fs_entity, registry, fork=None, **_) -> dict:
+    """The file system's folder survey, led by whoever can read the path (Files step 2).
 
-    Persisting here rather than only as a side effect of a successful Egeria
-    publish. Previously this returned the inventory and stored nothing: the only
-    `add_filesystem_survey` call on this path lived inside
-    `_publish_step_annotations`, which raises when the filesystem has no Egeria
-    asset yet — and `SurveyDefinitionExecutor` catches that into `errors`. A
-    freshly-walked inventory was then discarded, with `last_surveyed_at` never
-    touched, so a run that did real work left no trace and the next run had
-    nothing to compare against.
+    The reachability probe runs FIRST, before each survey (`file_reach.probe_filesystem`), and its stored outcome
+    decides who leads:
 
-    The local route (`web/routes/filesystems.py`) has always persisted
-    unconditionally before any Egeria involvement, and the DATABASE adapter does
-    the same inside `DatabaseSurveyor.survey()`. Filesystem was the one path
-    where the write was conditional on cataloguing succeeding — a survey is
-    evidence about the resource whether or not Egeria ever hears about it.
+    * Egeria can read the canonical mount: Egeria's Folder Survey leads. This step measures NOTHING Egeria lists as its
+      own (counts, file types, inaccessible files) and says so; the survey is Egeria's, run from the survey card.
+    * Only Resource Explorer can read the path, or the probe could not tell: the walk runs here, names sizes and times
+      only (no file is opened), and PERSISTS the result. Whether it may be PUBLISHED as "Egeria could not reach the
+      path" is decided at publish, from the stored probe row (`_publish`).
 
-    Best-effort on the write: a persistence failure must not discard the
-    inventory from the step output too, so it is reported and the data still
-    flows to the caller.
+    Persisting here rather than only as a side effect of a successful Egeria publish. Previously this returned the
+    inventory and stored nothing: the only `add_filesystem_survey` call on this path lived inside
+    `_publish_step_annotations`, which raises when the filesystem has no Egeria asset yet, and
+    `SurveyDefinitionExecutor` catches that into `errors`. A freshly-walked inventory was then discarded, with
+    `last_surveyed_at` never touched. The local route (`web/routes/filesystems.py`) has always persisted unconditionally
+    before any Egeria involvement; a survey is evidence about the resource whether or not Egeria ever hears about it.
+
+    Best-effort on the write: a persistence failure must not discard the inventory from the step output too, so it is
+    reported and the data still flows to the caller.
     """
+    from resource_explorer import file_reach
     from resource_explorer.surveyors.filesystem.local_filesystem_surveyor import LocalFileSystemSurveyor
 
+    if fork is None:
+        try:
+            fork = file_reach.probe_filesystem(fs_entity.slug, registry)
+        except Exception:  # noqa: BLE001 -- the probe must never stop a survey; an unprobed path reads "not checked yet"
+            log.warning("%s: the reachability probe could not run", fs_entity.slug, exc_info=True)
+            fork = file_reach.ForkState()
+    if fork.state == file_reach.EGERIA:
+        return {"led_by": "egeria", "surveyed_by": file_reach.SURVEYOR_EGERIA, "reach": fork.as_dict(),
+                "survey_data": None,
+                "message": ("Egeria's Folder Survey leads · it reads counts, file types and the inaccessible files; "
+                            "Resource Explorer measures none of them here")}
+
     surveyor = LocalFileSystemSurveyor(fs_entity, registry)
-    survey_data = surveyor.run()
+    survey_data = surveyor.run(profile_contents=False)
+    # Who led and what the probe proved, kept WITH the result, so the report's sentence comes from stored proof.
+    survey_data["surveyed_by"] = {"surveyor": file_reach.SURVEYOR_RE, "reach": fork.as_dict()}
 
     persisted, persist_error = False, ""
     try:
@@ -81,7 +96,7 @@ def _run_filesystem_inventory(fs_entity, registry, **_) -> dict:
         persist_error = f"{type(exc).__name__}: {exc}"
         log.exception("%s: could not persist filesystem inventory", fs_entity.slug)
 
-    return {"survey_data": survey_data, "persisted": persisted,
+    return {"survey_data": survey_data, "led_by": fork.state, "persisted": persisted,
             **({"persist_error": persist_error} if persist_error else {})}
 
 
@@ -223,11 +238,25 @@ def _run_egeria_adaptive(
 
 
 def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
+    """Publish Resource Explorer's walk under Egeria's own folder-survey annotation types, in RE's own SurveyReport.
+
+    Only when the stored probe row proves Egeria could not reach the path: the report says "surveyed by Resource
+    Explorer · Egeria could not reach the path", and that must be true. A walk with no such proof is kept locally and
+    NOT published (the reason is the probe's own words). An Egeria-led run has nothing of RE's to publish."""
+    from resource_explorer import file_reach
     from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import EgeriaFileSystemSurveyor
+    from resource_explorer.surveyors.survey_definition_executor import NothingToPublish
 
     survey_data: dict = {}
     for output in step_outputs:
         survey_data = output.get("survey_data") or survey_data
+    if not survey_data:
+        raise NothingToPublish("Egeria's Folder Survey leads · there is no Resource Explorer walk to publish")
+
+    fork = file_reach.fork_for(registry, entity)
+    refusal = file_reach.refusal_words(fork, for_egeria_lead=False)
+    if refusal:
+        raise NothingToPublish(f"not published · {refusal}")
 
     surveyor = EgeriaFileSystemSurveyor()
     result = surveyor.publish_step_annotations(entity, survey_data, registry)

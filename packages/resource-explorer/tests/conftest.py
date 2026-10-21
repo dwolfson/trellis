@@ -592,6 +592,22 @@ def ephemeral_prefect(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_live_reachability_probe(request, monkeypatch):
+    """The file system reachability probe asks Egeria's engine host to launch a Folder Survey (a WRITE to Egeria), and
+    since Files step 2 it runs at the top of every `filesystem_inventory` survey. A test that reaches it must hand it a
+    fake; one that forgets gets this refusal (which the probe records as "could not tell") instead of an engine action
+    launched on whatever Egeria this machine can reach. Live-tier tests (`requires_egeria`) are left alone. Only the
+    probe's one live call is replaced; `reachability._get_clients` and the classifier stay the real code."""
+    if request.node.get_closest_marker("requires_egeria"):
+        return
+
+    def _refuse(*_a, **_k):
+        raise RuntimeError("live Egeria is not available in tests: pass the reachability probe a fake")
+
+    monkeypatch.setattr("resource_explorer.file_reach._default_egeria_probe", _refuse)
+
+
+@pytest.fixture(autouse=True)
 def clear_survey_definition_reader_caches():
     """Clear survey_definition_reader's module-level caches before every test.
 

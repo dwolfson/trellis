@@ -396,6 +396,7 @@ export function nativeSurveyRowHtml(row, opts = {}) {
             ? "Resource Explorer's Survey Definition · coordinated by Egeria"
             : "Egeria's own survey engine"}</span>
       </div>
+      ${row.surveyor ? `<div class="mt-[2px] text-provenance text-ink-muted" data-native-surveyor>surveyed by ${esc(row.surveyor)}</div>` : ''}
       <div class="mt-[2px] text-provenance text-ink-muted" data-native-status>${nativeSurveyStatusHtml(row)}</div>
       ${opts.stopped === true && row.in_flight ? stoppedFollowingHtml(row) : ''}
       ${cancelControlHtml(row)}

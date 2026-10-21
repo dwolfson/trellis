@@ -43,7 +43,9 @@ def surveyor(monkeypatch):
         def __init__(self, entity, registry):
             pass
 
-        def run(self):
+        def run(self, *, profile_contents=True):
+            # Files step 2: the folder survey's walk opens no file contents.
+            assert profile_contents is False
             return {"surveyed_at": "2026-08-25T00:00:00", "file_count": 42}
 
     monkeypatch.setattr(mod, "LocalFileSystemSurveyor", _Fake)

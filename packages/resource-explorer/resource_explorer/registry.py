@@ -742,6 +742,11 @@ SECTION_DATA_FILES = "data_files"
 #: no row at all ("never checked") or any of the other five outcomes, which
 #: all mean "checked, and here is what Egeria said." See reachability.py's
 #: classify_check_asset_result().
+#:
+#: `re_only` (Files step 2, DESIGN-FILES-REMOTE-REACH.md section 2, outcome 2) is not something Egeria says: it is
+#: recorded by `file_reach.probe_filesystem` AFTER Egeria's engine host answered `network_unreachable` (the folder is
+#: not visible to it) AND Resource Explorer itself read the path. The two rows are both true and both kept; the newer
+#: one decides who leads. No DDL: `outcome` is free text in the table, validated here.
 REACHABILITY_OUTCOMES: frozenset[str] = frozenset({
     "reachable",
     "no_connection",
@@ -749,6 +754,7 @@ REACHABILITY_OUTCOMES: frozenset[str] = frozenset({
     "network_unreachable",
     "auth_rejected",
     "unknown",
+    "re_only",
 })
 
 _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (

@@ -225,6 +225,20 @@ export const getFilesystemRootFolder = (slug) =>
 export const attachFilesystemRoot = (slug) =>
   post(`/api/filesystems/${encodeURIComponent(slug)}/attach-root`);
 
+/** Files step 2: who can read the path, and so who leads the folder survey. `GET` reads the stored probe rows (no
+ *  Egeria call); `POST` runs the probe now. Both answer `{ state: egeria | re_only | undecided | not_checked,
+ *  sentence, checked_date, surveyor, why, decided }`. */
+export const getFilesystemReach = (slug) => get(`/api/filesystems/${encodeURIComponent(slug)}/reach`);
+export const checkFilesystemReach = (slug) => post(`/api/filesystems/${encodeURIComponent(slug)}/reach`);
+/** The newest folder survey, whoever led it, in one shape. */
+export const getFolderSurvey = (slug) => get(`/api/filesystems/${encodeURIComponent(slug)}/folder-survey`);
+/** Run the folder survey: the probe runs first and decides who leads. `{ publish }` publishes Resource Explorer's walk. */
+export const runFolderSurvey = (slug, body = {}) =>
+  post(`/api/filesystems/${encodeURIComponent(slug)}/folder-survey`, { publish: false, ...body });
+/** Publish the newest stored Resource Explorer walk as its own SurveyReport (nothing is walked again). */
+export const publishFolderSurvey = (slug) =>
+  post(`/api/filesystems/${encodeURIComponent(slug)}/folder-survey/publish`);
+
 /* ── Catalogue scope (Curate, database: what gets catalogued) ────────────
  * web/routes/catalogue_scope.py. A declared, signed, dated choice stored in
  * RE; the scope routes reach nothing of Egeria's (the commit routes below do).

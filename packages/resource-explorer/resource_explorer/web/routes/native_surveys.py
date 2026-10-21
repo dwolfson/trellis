@@ -126,6 +126,12 @@ async def run_native_survey(entity_type: str, slug: str, body: RunRequest, reque
     await authorize_resource_write(registry, entity_type, slug, write="start_action")    # Brief Z2
 
     def _do() -> dict:
+        if entity_type == "filesystem" and body.process_qualified_name == nsr.FOLDER_SURVEY_QN:
+            # Files step 2: the reachability probe runs before each survey, and its stored outcome decides who leads
+            # (a path only Resource Explorer can read is refused below with the probe's own words).
+            from resource_explorer import file_reach
+
+            file_reach.probe_filesystem(slug, registry)
         with nsr.port_session(_port()) as port:
             return nsr.submit_native_survey(
                 registry, port, entity_type, slug, body.process_qualified_name,
@@ -146,6 +152,8 @@ async def run_native_survey(entity_type: str, slug: str, body: RunRequest, reque
         raise HTTPException(status_code=502, detail=str(exc))
 
     detail = {"engine_action_guid": state["engine_action_guid"], "submitted_by": submitted_by}
+    if body.process_qualified_name in nsr.REQUEST_PARAMETERS:
+        detail["request_parameters"] = dict(nsr.REQUEST_PARAMETERS[body.process_qualified_name])
     if run_credential is not None:
         from resource_explorer.run_credential_holder import SCOPE
 
