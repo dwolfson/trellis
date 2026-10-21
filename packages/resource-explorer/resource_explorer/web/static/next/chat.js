@@ -498,7 +498,7 @@ export function turnAsMarkdown(t) {
  *  never silently. */
 const JOURNAL_SEED_MAX = 4000;
 export function journalSeedFromTurn(t, when = new Date()) {
-  // Plain text, not markdown: the journal shows an entry as written, so `**` would be read as asterisks.
+  // A plain-text seed: the person edits it, and the journal renders what they save as markdown.
   const bits = [t.slug, t.compileId ? `compile ${String(t.compileId).slice(0, 8)}` : 'no compile recorded', t.source].filter(Boolean);
   if (t.intent) bits.push(`intent ${t.intent}`);
   let text = `Per chat (${when.toISOString().slice(0, 10)}):\n\n${t.question}\n\n${t.answer || `${t.error || 'No answer.'}`}\n\n— ${bits.join(' · ')}`;
