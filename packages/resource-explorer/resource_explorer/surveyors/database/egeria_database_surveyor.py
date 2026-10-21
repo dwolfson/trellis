@@ -786,6 +786,7 @@ class EgeriaDatabaseSurveyor:
         credential_capability: dict | None = None,
         column_profile: dict | None = None,
         nested_columns: dict | None = None,
+        quality_annotations: list | None = None,
     ) -> dict:
         """Publish RE-computed annotations to Egeria WITHOUT cataloging the database
         or triggering Egeria's own native survey as a side effect.
@@ -814,7 +815,8 @@ class EgeriaDatabaseSurveyor:
         annotations = build_step_annotations(
             db_entity, registry, schema_info=schema_info, statistics=statistics, views=views,
             operations=operations, credential_capability=credential_capability,
-            column_profile=column_profile, nested_columns=nested_columns)
+            column_profile=column_profile, nested_columns=nested_columns,
+            quality_annotations=quality_annotations)
 
         qualified_name = f"SurveyReport::PostgreSQL::{db_entity.slug}::{surveyed_at}"
         body = {
@@ -853,11 +855,23 @@ class EgeriaDatabaseSurveyor:
         # on the measured row it published, via
         # registry.record_database_survey_published().
 
+        # The quality checks' own proof: how many QualityAnnotations RE built and how many Egeria returned a GUID for,
+        # so the run's words are "N of M annotations in Egeria" from what landed, never "published" from the press.
+        quality_proof: dict = {}
+        if quality_annotations:
+            quality_idx = [i for i, a in enumerate(annotations) if any(a is q for q in quality_annotations)]
+            quality_proof = {
+                "quality_annotation_count": len(quality_idx),
+                "quality_annotations_in_egeria": (sum(1 for i in quality_idx if made[i])
+                                                  if isinstance(made, list) and len(made) == len(annotations)
+                                                  else None),
+            }
         return {"asset_guid": db_guid, "report_guid": report_guid,
                 # RE's own count (what it built and sent), as everywhere; Egeria's is `annotations_in_egeria`:
                 # what Egeria returned a GUID for, None when RE cannot tell.
                 "annotation_count": len(annotations),
                 "annotations_in_egeria": sum(1 for g in made if g) if isinstance(made, list) else None,
+                **quality_proof,
                 # Column names whose look-up could not be made, and "source -> target" pairs whose
                 # existing LineageMappings could not be read: their lineage was not linked.
                 "lineage_not_checked": list(self.lineage_not_checked)}
@@ -1875,7 +1889,8 @@ def can_use_egeria() -> bool:
 def build_step_annotations(db_entity, registry=None, *, schema_info: dict | None = None,
                            statistics: dict | None = None, views: list | None = None,
                            operations: dict | None = None, credential_capability: dict | None = None,
-                           column_profile: dict | None = None, nested_columns: dict | None = None) -> list:
+                           column_profile: dict | None = None, nested_columns: dict | None = None,
+                           quality_annotations: list | None = None) -> list:
     """The annotations a database run's results become, in one place: what `publish_step_annotations` publishes,
     and what RE's engine host publishes on its native-shaped report for a credentialed database step (case 3). Pure:
     builds annotation dicts, opens no connection and calls no Egeria.
@@ -1905,6 +1920,8 @@ def build_step_annotations(db_entity, registry=None, *, schema_info: dict | None
     for sampled in (column_profile, nested_columns):
         if sampled:
             annotations.extend(sampled.get("annotations") or [])
+    # One QualityAnnotation per evaluated quality check (run_quality_checks). Appended last, as built.
+    annotations.extend(quality_annotations or [])
     return annotations
 
 
@@ -1916,7 +1933,7 @@ def annotations_from_step_outputs(db_entity, step_outputs: list, registry=None) 
         if not isinstance(output, dict):
             continue
         for key in ("schema_info", "statistics", "views", "operations", "credential_capability",
-                    "column_profile", "nested_columns"):
+                    "column_profile", "nested_columns", "quality_annotations"):
             if output.get(key):
                 parts[key] = output[key]
     if not parts:

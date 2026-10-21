@@ -4,20 +4,24 @@ DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md §4. One aggregate SELECT per table, 
 measure lines (`configdata/quality/testgen/postgresql/profile_measures.sql`) with each column's blocks chosen by
 its `general_type`. Results are stored in `database_value_profiles` under the catalogue's own column names.
 
-No sampling in slice 1: a table is profiled whole, or refused. Two bounds, both settings
+No sampling in slice 1: a table is profiled whole, or refused. Three bounds, all settings
 (`config.ValueProfileSettings`): a row ceiling judged by `pg_class.reltuples` (over it, the table is
 `not_measured` with the reason), and a statement timeout per query (a timeout or error is `not_measured` with
-Postgres's words; a permission error is `not_permitted`). A view, materialized view or foreign table is
+Postgres's words; a permission error is `not_permitted`), and a time budget per TABLE (5 minutes, the total across
+its chunks: past it the whole table is `not_measured` with "profile incomplete · exceeded 5 min · counts not
+measured", every measure NULL, so no check is proposed for it). A view, materialized view or foreign table is
 `not_applicable`. Every column the inventory names gets a row; a column that was not profiled has every measure
 NULL, never zeros.
 """
 from __future__ import annotations
 
 import logging
+import math
 import re
+import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from functools import lru_cache
@@ -146,6 +150,14 @@ def error_text(exc: Exception) -> str:
 class ProfileBounds:
     max_table_rows: int
     statement_timeout_seconds: int
+    #: The whole-table time budget (owner, 2026-10-21: "5 minutes per table"): the total across a table's chunks,
+    #: not a timeout on each chunk. A table that has not finished in this time is "profile incomplete".
+    table_budget_seconds: float = 300.0
+
+
+def incomplete_reason(budget_seconds: float) -> str:
+    """The words a table stopped at its time budget carries (DESIGN-QUALITY-AT-SCALE-AND-TESTGEN.md 2.3)."""
+    return f"profile incomplete · exceeded {budget_seconds / 60:g} min · counts not measured"
 
 
 def _empty_row(schema: str, table: str, column: str, gtype: str, state: str, reason: str, ran_as: str) -> dict:
@@ -238,6 +250,7 @@ def begin_read(conn, bounds: ProfileBounds) -> None:
 def run_value_profile(
     db_entity, registry, connect: Callable[[], AbstractContextManager], *,
     bounds: ProfileBounds, surveyed_at: str | None = None, ran_as: str = "",
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict:
     """Profile every table the stored inventory names; store and return the batch.
 
@@ -278,25 +291,39 @@ def run_value_profile(
                 table_outcomes.append({"table": f"{schema}.{table}", "state": state, "reason": reason})
                 continue
             failures: list[tuple[str, str]] = []
+            table_rows: list[dict] = []
+            # The per-table budget is the TOTAL across this table's chunks. Each chunk's statement timeout is
+            # capped at what is left of it, so one slow chunk cannot run past the budget on its own.
+            started, exceeded = clock(), False
             for start in range(0, len(cols), COLUMNS_PER_QUERY):
+                remaining = bounds.table_budget_seconds - (clock() - started)
+                if remaining <= 0:
+                    exceeded = True
+                    break
+                chunk_bounds = replace(bounds, statement_timeout_seconds=max(
+                    1, min(bounds.statement_timeout_seconds, math.ceil(remaining))))
                 chunk = cols[start:start + COLUMNS_PER_QUERY]
                 sql, aliases = build_table_query(schema, table, chunk, run_date)
                 try:
                     # One read-only transaction per query, ended at once: no lock outlives its table. Params None,
                     # so psycopg2 never reads a "%" in a name as a placeholder.
-                    begin_read(conn, bounds)
+                    begin_read(conn, chunk_bounds)
                     result = conn.execute_query_isolated(sql, None)
                 except Exception as exc:
+                    if clock() - started >= bounds.table_budget_seconds:
+                        exceeded = True
+                        break
                     state, reason = classify_error(exc), error_text(exc)
                     failures.append((state, reason))
-                    rows.extend(_empty_row(schema, table, c, g, state, reason, ran_as) for c, g in chunk)
+                    table_rows.extend(_empty_row(schema, table, c, g, state, reason, ran_as) for c, g in chunk)
                     continue
                 finally:
                     conn.end_transaction()
                 if not result:
                     reason = "the aggregate query returned no row"
                     failures.append(("not_measured", reason))
-                    rows.extend(_empty_row(schema, table, c, g, "not_measured", reason, ran_as) for c, g in chunk)
+                    table_rows.extend(
+                        _empty_row(schema, table, c, g, "not_measured", reason, ran_as) for c, g in chunk)
                     continue
                 values = result[0]
                 record_ct = _value("record_ct", values.get("record_ct"))
@@ -305,7 +332,16 @@ def run_value_profile(
                     row["record_ct"] = record_ct
                 for alias, (i, measure) in aliases.items():
                     chunk_rows[i][measure] = _value(measure, values.get(alias))
-                rows.extend(chunk_rows)
+                table_rows.extend(chunk_rows)
+            if exceeded:
+                # Incomplete means NOT measured, for every column: the counts of the chunks that did finish are
+                # dropped with the rest, so nothing downstream proposes a check from half a table, and no zero is
+                # ever written for a count that was not taken.
+                reason = incomplete_reason(bounds.table_budget_seconds)
+                rows.extend(_empty_row(schema, table, c, g, "not_measured", reason, ran_as) for c, g in cols)
+                table_outcomes.append({"table": f"{schema}.{table}", "state": "not_measured", "reason": reason})
+                continue
+            rows.extend(table_rows)
             if failures:
                 state, reason = failures[0]
                 table_outcomes.append({"table": f"{schema}.{table}", "state": state, "reason": reason})
@@ -324,7 +360,8 @@ def run_value_profile(
             "tables_not_profiled": table_outcomes,
             "ran_as": ran_as,
             "bounds": {"max_table_rows": bounds.max_table_rows,
-                       "statement_timeout_seconds": bounds.statement_timeout_seconds},
+                       "statement_timeout_seconds": bounds.statement_timeout_seconds,
+                       "table_budget_seconds": bounds.table_budget_seconds},
         },
         "annotations": build_annotations(rows, table_outcomes),
     }

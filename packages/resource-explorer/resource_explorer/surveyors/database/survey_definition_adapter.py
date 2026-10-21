@@ -265,7 +265,8 @@ def _quality_bounds():
     from resource_explorer.surveyors.database.quality.value_profile import ProfileBounds
 
     settings = get_config().value_profile
-    return ProfileBounds(settings.max_table_rows, settings.statement_timeout_seconds)
+    return ProfileBounds(settings.max_table_rows, settings.statement_timeout_seconds,
+                         settings.table_budget_seconds)
 
 
 def _run_postgres_value_profile(
@@ -300,8 +301,8 @@ def _run_run_quality_checks(
     scan_surveyed_at: str | None = None, **_,
 ) -> dict:
     """run_quality_checks (design §6): the accepted checks, run with the vendored Postgres SQL, stored in
-    `database_quality_results`. Publishing results as QualityAnnotations is a later change, so this returns no
-    annotations."""
+    `database_quality_results`. Each concluded check is returned as a QualityCheckAnnotation
+    (`quality_annotations`), which the database publish sends to Egeria."""
     from resource_explorer.surveyors.database.connection import database_connection
     from resource_explorer.surveyors.database.quality.run_checks import run_quality_checks
 
@@ -460,7 +461,7 @@ def _run_egeria_adaptive(
     return result
 
 
-def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
+def _publish(entity, step_outputs: list, surveyed_at: str, registry, publish_out: dict | None = None) -> str:
     """Publish a run's results to Egeria WITHOUT writing a survey row.
 
     A publish step measures nothing, so it never writes `database_surveys`
@@ -484,6 +485,7 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
     credential_capability: dict = {}
     column_profile: dict = {}
     nested_columns: dict = {}
+    quality_annotations: list = []
     for output in step_outputs:
         schema_info = output.get("schema_info") or schema_info
         statistics = output.get("statistics") or statistics
@@ -492,9 +494,22 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
         credential_capability = output.get("credential_capability") or credential_capability
         column_profile = output.get("column_profile") or column_profile
         nested_columns = output.get("nested_columns") or nested_columns
+        quality_annotations = output.get("quality_annotations") or quality_annotations
+
+    # A run of the quality steps publishes what they measured and checked, not a re-statement of the schema from the
+    # last stored survey (which is what the fallback below does for a run that carries nothing publishable of its
+    # own). With no QualityAnnotation to send there is nothing to publish: said, never an empty SurveyReport.
+    quality_keys = ("quality_checks", "quality_proposals", "value_profile")
+    quality_run = any(isinstance(o, dict) and any(k in o for k in quality_keys) for o in step_outputs)
+    if quality_run and not (schema_info or statistics or views or operations or credential_capability
+                            or column_profile or nested_columns or quality_annotations):
+        from resource_explorer.surveyors.survey_definition_executor import NothingToPublish
+
+        raise NothingToPublish("the quality steps built no QualityAnnotation: no check was run and concluded in this "
+                               "run (see run_quality_checks' own entry for why)")
 
     measured_row = None
-    if not schema_info:
+    if not schema_info and not quality_annotations:
         measured_row = registry.latest_measured_database_survey(entity.slug)
         if measured_row is None:
             raise EgeriaDatabaseSurveyorError(
@@ -514,8 +529,14 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
         views=views, operations=operations,
         credential_capability=credential_capability,
         column_profile=column_profile, nested_columns=nested_columns,
+        quality_annotations=quality_annotations,
     )
     report_guid = result.get("report_guid", "")
+    if publish_out is not None and result.get("quality_annotation_count"):
+        # What landed of the QualityAnnotations, for the run's words (the executor says "N of M annotations in
+        # Egeria" from this, not from the fact that a publish was pressed).
+        publish_out["quality"] = {"built": result.get("quality_annotation_count"),
+                                  "landed": result.get("quality_annotations_in_egeria")}
     try:
         registry.record_step_run(
             entity.slug, "egeria_publish", surveyed_at, entity_type="database",
@@ -523,6 +544,8 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
             metrics={"report_guid": report_guid,
                      "annotation_count": result.get("annotation_count"),
                      "annotations_in_egeria": result.get("annotations_in_egeria"),
+                     "quality_annotation_count": result.get("quality_annotation_count"),
+                     "quality_annotations_in_egeria": result.get("quality_annotations_in_egeria"),
                      # Columns whose look-up could not be made, so their lineage was not linked (proof, not
                      # silence: an empty list means every lineage look-up was answered).
                      "lineage_not_checked": result.get("lineage_not_checked", []),
@@ -822,7 +845,7 @@ DATABASE_STEP_REGISTRY: dict[str, StepInfo] = {
     "run_quality_checks": StepInfo(
         "run_quality_checks", None,
         "The accepted quality checks, run with the vendored Postgres SQL against the database.",
-        [],
+        ["QualityScoreAnnotation"],
         produces=("database_quality_results",),
         requires_context={
             "has_schema_inventory": "reports an accepted check whose column has gone as not established",
@@ -1020,9 +1043,13 @@ _ADAPTER = ResourceTypeAdapter(
             "description": (
                 "Runs the accepted quality checks with the vendored Postgres SQL, one aggregate SELECT per "
                 "table, every parameter validated by type. A NULL measure is not_established, never a pass; "
-                "results go to database_quality_results with status, measure, threshold and reason."
+                "results go to database_quality_results with status, measure, threshold and reason. Each check "
+                "that reached a conclusion (pass, warning, fail, logged) is published as one QualityAnnotation "
+                "(Egeria qualityDimension, qualityDescription, qualityScore); a check that was not established, "
+                "errored or could not be read is a result row, never an annotation. With no accepted check the "
+                "step is declined (survey-invalid), never run as an empty report."
             ),
-            "annotation_types": [],
+            "annotation_types": ["QualityScoreAnnotation"],
         },
     },
     other_engine_handlers={

@@ -1208,8 +1208,9 @@ database_analyses:
     resource_types: ["database"]
     intent: assessment
     perspectives: ["Steward", "Data Owner"]
-    # None yet: results become QualityAnnotations with the publishing change.
-    annotation_types: []
+    # One QualityAnnotation (RE's AnnotationType.QUALITY_SCORE, published as Egeria's QualityAnnotationProperties)
+    # per evaluated check, when run_quality_checks completes (quality slice Q2).
+    annotation_types: ["QualityScoreAnnotation"]
     source: local
     run_time: medium
     availability: queued

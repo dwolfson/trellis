@@ -180,15 +180,13 @@ SOURCE_REPORT_INPUT = "source_report"
 ENGINE_HOST_STEPS = ("db_derived",)
 
 #: Registry steps held back from the engine-host declaration, with why. The generator leaves them out, and an action
-#: dispatched for one anyway completes survey-invalid with this sentence (`out_of_scope_reason`). Both quality-check
-#: steps produce no annotations until results are published (DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md §7-§8), so
-#: the publisher would complete them with an empty survey-completed report, even for a run that ran nothing.
-HELD_FROM_DECLARATION: dict[str, str] = {
-    "propose_quality_checks": ("propose_quality_checks is not run by Resource Explorer's engine host until quality "
-                               "results are published to Egeria; run it from Resource Explorer's own Run"),
-    "run_quality_checks": ("run_quality_checks is not run by Resource Explorer's engine host until quality results "
-                           "are published to Egeria; run it from Resource Explorer's own Run"),
-}
+#: dispatched for one anyway completes survey-invalid with this sentence (`out_of_scope_reason`). Empty since quality
+#: slice Q2 (DESIGN-QUALITY-AT-SCALE-AND-TESTGEN.md 2.6, 3): `propose_quality_checks` and `run_quality_checks` were
+#: held while their results did not reach Egeria, because the publisher would have completed them with an empty
+#: survey-completed report. `run_quality_checks` now publishes one QualityAnnotation per evaluated check, and with no
+#: accepted check it ends survey-invalid ("no accepted checks"), never an empty completed report. The mapping stays so
+#: a future step can be held the same way.
+HELD_FROM_DECLARATION: dict[str, str] = {}
 
 #: The resource kind every admitted step targets (all are database steps today).
 ENTITY_TYPE = "database"
@@ -1945,8 +1943,8 @@ def _ran_outcome(ran: dict, published: dict, step_key: str, slug: str, library) 
         # "the supplied information (such as the asset) is invalid for this type of survey").
         return _outcome(SURVEY_INVALID, f"{step_key} did not run on {slug}: "
                         f"{report.get('detail') or 'its precondition is not met'}"
-                        + ("" if library else " (no stored schema inventory to derive from: an absence, not a "
-                           "finding)"))
+                        + ("" if library or report.get("declined_by_step") else
+                           " (no stored schema inventory to derive from: an absence, not a finding)"))
     errors = "; ".join(str(e) for e in ran.get("errors") or []) or f"step status {status or 'unknown'}"
     if status == "ok":
         errors = f"the step produced no output to publish ({errors})"

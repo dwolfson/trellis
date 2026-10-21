@@ -53,6 +53,18 @@
       "description": "Measured (not estimated) per-column counts and date bounds, whole table."
     },
     {
+      "command": "Create Survey Action Service",
+      "qualified_name": "SurveyActionService::ResourceExplorerSurvey::propose_quality_checks",
+      "display_name": "Resource Explorer Survey Service — propose_quality_checks",
+      "description": "Zero-fetch: the vendored selection rules over the latest value profile, as proposed checks."
+    },
+    {
+      "command": "Create Survey Action Service",
+      "qualified_name": "SurveyActionService::ResourceExplorerSurvey::run_quality_checks",
+      "display_name": "Resource Explorer Survey Service — run_quality_checks",
+      "description": "The accepted quality checks, run with the vendored Postgres SQL against the database."
+    },
+    {
       "command": "Link Supported Governance Service",
       "governance_engine": "ResourceExplorerSurvey",
       "governance_service": "SurveyActionService::ResourceExplorerSurvey::postgres_schema_and_stats",
@@ -100,6 +112,20 @@
       "governance_service": "SurveyActionService::ResourceExplorerSurvey::postgres_value_profile",
       "request_type": "re-postgres-value-profile",
       "service_request_type": "re-postgres-value-profile"
+    },
+    {
+      "command": "Link Supported Governance Service",
+      "governance_engine": "ResourceExplorerSurvey",
+      "governance_service": "SurveyActionService::ResourceExplorerSurvey::propose_quality_checks",
+      "request_type": "re-propose-quality-checks",
+      "service_request_type": "re-propose-quality-checks"
+    },
+    {
+      "command": "Link Supported Governance Service",
+      "governance_engine": "ResourceExplorerSurvey",
+      "governance_service": "SurveyActionService::ResourceExplorerSurvey::run_quality_checks",
+      "request_type": "re-run-quality-checks",
+      "service_request_type": "re-run-quality-checks"
     }
   ]
 }

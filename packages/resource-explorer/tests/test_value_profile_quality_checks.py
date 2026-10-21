@@ -747,9 +747,11 @@ def test_the_value_profile_runner_uses_the_settings(registry, entity, monkeypatc
     monkeypatch.setattr(connection, "database_connection", lambda *a, **k: _connect(conn)())
     monkeypatch.setattr(get_config().value_profile, "max_table_rows", 100)
     monkeypatch.setattr(get_config().value_profile, "statement_timeout_seconds", 5)
+    monkeypatch.setattr(get_config().value_profile, "table_budget_seconds", 120)
     out = _ADAPTER.re_analysis_steps["postgres_value_profile"](entity, registry, db_user="u", db_pwd="p",
                                                               scan_surveyed_at=PROFILED_AT)
-    assert out["value_profile"]["bounds"] == {"max_table_rows": 100, "statement_timeout_seconds": 5}
+    assert out["value_profile"]["bounds"] == {"max_table_rows": 100, "statement_timeout_seconds": 5,
+                                              "table_budget_seconds": 120}
     assert "SET LOCAL statement_timeout = 5000" in conn.statements
     assert _rows(registry, "database_value_profiles")["sales", "orders", "note"]["state"] == "not_measured"
 
@@ -759,14 +761,15 @@ def test_the_engine_host_declares_the_three_steps():
 
     doc = (Path(__file__).resolve().parent.parent / "docs" / "dr-egeria" / "engine-host" / "steps"
            / "database-steps.md").read_text()
-    assert "postgres_value_profile" in doc
-    # Held: until results are published they would complete with empty survey-completed reports.
-    for key in ("propose_quality_checks", "run_quality_checks"):
-        assert key not in doc, key
+    # Unheld by quality slice Q2: run_quality_checks publishes a QualityAnnotation per evaluated check and ends
+    # survey-invalid with no accepted check, so no step of the three can complete with an empty report.
+    for key in ("postgres_value_profile", "propose_quality_checks", "run_quality_checks"):
+        assert key in doc, key
     from resource_explorer import engine_host
 
-    assert "not run by Resource Explorer's engine host" in engine_host.out_of_scope_reason("run_quality_checks")
-    assert engine_host.out_of_scope_reason("postgres_value_profile") == ""
+    assert engine_host.HELD_FROM_DECLARATION == {}
+    for key in ("postgres_value_profile", "propose_quality_checks", "run_quality_checks"):
+        assert engine_host.out_of_scope_reason(key) == "", key
 
 
 # ── the per-card Run (one predicate since #795) ──────────────────────────────────────────────────────────────

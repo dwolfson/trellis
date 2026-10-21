@@ -695,10 +695,13 @@ class ValueProfileSettings(BaseSettings):
 
     `max_table_rows`: a table whose `pg_class.reltuples` estimate is above this is not profiled, and is recorded as
     `not_measured` with the reason. `statement_timeout_seconds`: the per-table `SET LOCAL statement_timeout`; a
-    timeout is `not_measured` (profile) or `error` (checks) with Postgres's words."""
+    timeout is `not_measured` (profile) or `error` (checks) with Postgres's words. `table_budget_seconds`: the time one
+    table's profile may take in total, across its chunks (owner, 2026-10-21: 5 minutes per table); past it the table
+    is `not_measured` as "profile incomplete", never partly counted."""
 
     max_table_rows: int = Field(default=5_000_000, alias="VALUE_PROFILE_MAX_TABLE_ROWS")
     statement_timeout_seconds: int = Field(default=60, alias="VALUE_PROFILE_STATEMENT_TIMEOUT_SECONDS")
+    table_budget_seconds: int = Field(default=300, alias="VALUE_PROFILE_TABLE_BUDGET_SECONDS")
 
     model_config = _ENV_FILE_CONFIG
 

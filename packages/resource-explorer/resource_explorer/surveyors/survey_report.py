@@ -236,6 +236,19 @@ class QualityScoreAnnotation(Annotation):
 
 
 @dataclass
+class QualityCheckAnnotation(Annotation):
+    """One evaluated data quality check, as Egeria's own `QualityAnnotationProperties` (type `QualityAnnotation`,
+    superclass DataFieldAnnotation): `qualityDimension` (String, an ODCS dimension word), `qualityDescription`
+    (String) and `qualityScore` (int). Egeria's own producer (LovelaceOpenLineageDataQualitySummaryService) sets the
+    score as a pass rate in percent; for one check that is 100 (it held) or 0 (it did not). The check's own detail
+    (test type, measure, threshold, status, rule source) rides in `additional_properties`, which the bean keeps."""
+    annotation_type: AnnotationType = field(default=AnnotationType.QUALITY_SCORE, init=False)
+    quality_dimension: str = ""
+    quality_description: str = ""
+    quality_score: int | None = None
+
+
+@dataclass
 class RelationshipAnnotation(Annotation):
     """Discovered relationship between two components."""
     annotation_type: AnnotationType = field(default=AnnotationType.RELATIONSHIP, init=False)
