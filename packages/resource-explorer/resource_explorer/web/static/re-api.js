@@ -1199,6 +1199,18 @@ export const getDatabaseRegistration = (slug) =>
 export const changeDatabaseCredentials = (slug, { user, password }) =>
   patch(`/api/databases/${encodeURIComponent(slug)}/credentials`, { db_user: user, db_password: password });
 
+/** Table preview (REPLY-DESIGNER-TABLE-PREVIEW-2026-10-19). The person's OWN credential, held by the server for the
+ *  session only; the password travels in a request body and nowhere else. */
+export const getPreviewCredential = (slug) =>
+  get(`/api/databases/${encodeURIComponent(slug)}/preview/credential`);
+export const holdPreviewCredential = (slug, { user, password }) =>
+  put(`/api/databases/${encodeURIComponent(slug)}/preview/credential`, { user, password });
+export const forgetPreviewCredential = (slug) =>
+  del(`/api/databases/${encodeURIComponent(slug)}/preview/credential`);
+/** One preview (or, with `reveal`, a reveal of those columns). The rows are shown and never stored. */
+export const previewTable = (slug, { schema, table, limit = 20, reveal = [] }) =>
+  post(`/api/databases/${encodeURIComponent(slug)}/preview`, { schema, table, limit, reveal });
+
 /** Change ONLY the Egeria-visible host of a database / a server. A server's reply lists the databases
  *  that still carry the old value (`carriable`); pass `carryFrom` (that old value) to carry the new one to
  *  them. A database with any other value is never touched. */
