@@ -85,8 +85,13 @@ def _run_filesystem_inventory(fs_entity, registry, fork=None, **_) -> dict:
                 "Resource Explorer measures none of what that survey lists here")
         raise FolderSurveyNotRunHere(file_reach.refusal_words(fork, for_egeria_lead=False))
 
+    from resource_explorer.surveyors.filesystem import walk_extensions as we
+
     surveyor = LocalFileSystemSurveyor(fs_entity, registry)
-    survey_data = surveyor.run(profile_contents=False)
+    survey_data = surveyor.run(profile_contents=False, walk_extensions=True)
+    # Files build step 1: the per-file rows are kept for THIS run, the narrative files are read, and the walk_extensions
+    # block (counts only for the publish) is added to the result. Before the blob is stored: rows never ride in it.
+    we.attach_extensions(fs_entity, registry, survey_data, led_by=we.LED_BY_RE)
     # Who led and what the probe proved, kept WITH the result, so the report's sentence comes from stored proof.
     survey_data["surveyed_by"] = {"surveyor": file_reach.SURVEYOR_RE, "reach": fork.as_dict()}
 

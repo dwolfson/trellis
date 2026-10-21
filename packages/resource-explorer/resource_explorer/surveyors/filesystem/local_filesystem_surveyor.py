@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from resource_explorer.registry import FileSystemEntity, ProjectRegistry
 from resource_explorer.surveyors.file_classifier.file_classifier_surveyor import classify_file_paths
+from resource_explorer.surveyors.filesystem import walk_extensions as we
 from resource_explorer.surveyors.filesystem.folder_survey_annotations import classify_for_folder_survey
 from resource_explorer.surveyors.sub_surveyors.data_profiler import (
     _DATA_EXTENSIONS,
@@ -114,18 +116,24 @@ class LocalFileSystemSurveyor:
         self.max_depth = max_depth
         self.max_entries = max_entries
 
-    def run(self, *, profile_contents: bool = True) -> dict:
+    def run(self, *, profile_contents: bool = True, walk_extensions: bool = False) -> dict:
         """Scan the filesystem path, profile data files, and return the survey data.
 
         `profile_contents=False` is the folder survey's walk (`filesystem_inventory`): names, sizes and times only, and
         no file is opened (Files step 2, caution 1). The default keeps Classic's modal, which still shows per-file
-        profiles until `file_profiles` is its own step."""
-        survey_data = self._scan_structure()
+        profiles until `file_profiles` is its own step.
+
+        `walk_extensions=True` also builds one per-file row (owner, group, mode, folder depth and a content hash under the
+        size limit; `walk_extensions.build_row`) and returns the rows under `survey_data["walk_files"]`. The CALLER stores
+        them and removes the key before the blob is saved; the blob never carries them. This is the one place the walk
+        opens a file, and only through `walk_extensions.hash_file`'s guards (plain file, under the limit, no secret-looking
+        name)."""
+        survey_data = self._scan_structure(walk_extensions=walk_extensions)
         if profile_contents:
             self._profile_data_files(survey_data)
         return survey_data
 
-    def _scan_structure(self) -> dict:
+    def _scan_structure(self, *, walk_extensions: bool = False) -> dict:
         """Phase 1: one walk, one `stat()` per file. Collects counts, OS-level
         file attributes (hidden/symlink/executable/writable, timestamps),
         Egeria-reference-data classification, and inaccessible-file tracking —
@@ -151,6 +159,8 @@ class LocalFileSystemSurveyor:
         filenames: set[str] = set()
         last_access_time = last_creation_time = last_modification_time = ""
         inaccessible_files: list[dict] = []
+        walk_rows: list[dict] = []
+        hash_limit = we.hash_limit_bytes() if walk_extensions else 0
 
         walk = self._walk(inaccessible_files)
         broken_links = walk["broken_symlinks"]
@@ -197,6 +207,10 @@ class LocalFileSystemSurveyor:
             ext = p.suffix.lstrip(".").lower()
             extensions.add(ext or "(none)")
             filenames.add(p.name)
+
+            if walk_extensions:
+                walk_rows.append(we.build_row(rel_path, p, stat, is_symlink=is_symlink, limit=hash_limit,
+                                              modified_at=modify_iso))
 
             file_info = {
                 "file_path": rel_path,
@@ -274,6 +288,9 @@ class LocalFileSystemSurveyor:
                 # Which of the noise names were actually met and skipped, so the report can say "12 directories not
                 # walked: .git, node_modules, .venv" and never skip silently.
                 "not_walked_names_found": sorted(walk["skipped_names"]),
+                # Per noise name, how many directories were not entered ({".git": 3, "node_modules": 12}): counted and
+                # named, never silent.
+                "not_walked_by_name": dict(sorted(walk["skipped_by_name"].items())),
                 "broken_symlink_count": len(broken_links),
                 "symlinked_directories_not_followed": walk["skipped_symlinks"],
                 "entries_examined": walk["entries"],
@@ -297,6 +314,11 @@ class LocalFileSystemSurveyor:
             "profiling_errors": [],
         }
 
+        # "capped at 100,000 entries": said on every result, so a capped walk never reads as the whole tree.
+        survey_data["walk_limits"]["capped_words"] = we.capped_words(survey_data["walk_limits"])
+        if walk_extensions:
+            survey_data["walk_files"] = walk_rows
+            survey_data["walk_hash_limit_bytes"] = hash_limit
         log.info(
             f"Filesystem structure scan complete for {self.filesystem.slug}: {total_files} files "
             f"({total_data_files} data files, {len(inaccessible_files)} inaccessible), "
@@ -366,6 +388,7 @@ class LocalFileSystemSurveyor:
         files: list[Path] = []
         broken_symlinks: list[str] = []
         skipped_names: set[str] = set()
+        skipped_by_name: Counter = Counter()
         directories = entries = skipped_ignored = skipped_symlinks = deepest = 0
         capped_reasons: list[str] = []
         stack: list[tuple[Path, int]] = [(self.root_path, 0)]
@@ -397,6 +420,7 @@ class LocalFileSystemSurveyor:
                     if entry.name in IGNORE_DIRS:
                         skipped_ignored += 1
                         skipped_names.add(entry.name)
+                        skipped_by_name[entry.name] += 1
                         continue
                     directories += 1
                     if depth + 1 > self.max_depth:
@@ -412,7 +436,7 @@ class LocalFileSystemSurveyor:
                 elif is_symlink:
                     # neither a file nor a folder behind it: a broken link
                     broken_symlinks.append(self._rel(Path(entry.path)))
-        return {"files": files, "broken_symlinks": broken_symlinks, "skipped_names": skipped_names, "directories": directories, "entries": entries, "deepest": deepest,
+        return {"files": files, "broken_symlinks": broken_symlinks, "skipped_names": skipped_names, "skipped_by_name": skipped_by_name, "directories": directories, "entries": entries, "deepest": deepest,
                 "skipped_ignored": skipped_ignored, "skipped_symlinks": skipped_symlinks,
                 "capped": bool(capped_reasons), "capped_reasons": capped_reasons}
 

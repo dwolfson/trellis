@@ -934,13 +934,15 @@ def run_filesystem_folder_survey(slug: str, req: FolderSurveyRequest = FolderSur
     result: dict = {"led_by": "resource_explorer", "surveyor": file_reach.SURVEYOR_RE, "reach": fork.as_dict(),
                     "surveyed_at": sd.get("surveyed_at", ""), "total_files": sd.get("total_files"),
                     "capped": bool(limits.get("capped")), "capped_reasons": limits.get("capped_reasons", []),
+                    "capped_words": limits.get("capped_words", ""),
+                    "rows_kept": (sd.get("walk_extensions") or {}).get("rows_kept"),
                     "persisted": out.get("persisted", False), "published": False, "report_guid": ""}
     if req.publish:
         result.update(_publish_walk(registry, fs, sd, slug))
     return result
 
 
-def _publish_walk(registry, fs, sd: dict, slug: str) -> dict:
+def _publish_walk(registry, fs, sd: dict, slug: str, *, check_reach: bool = True) -> dict:
     """Publish a stored Resource Explorer walk as its own SurveyReport under Egeria's folder-survey annotation types,
     as the signed-in person. Only where the stored probe row proves Egeria could not reach the path (the report says
     so). Returns the publish words to add to an answer; never raises for a refusal (it says why)."""
@@ -954,7 +956,10 @@ def _publish_walk(registry, fs, sd: dict, slug: str) -> dict:
         from resource_explorer.egeria_clients import Caller
         from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import EgeriaFileSystemSurveyor
 
-        refusal = file_reach.refusal_words(file_reach.fork_for(registry, fs), for_egeria_lead=False)
+        # A walk that stands in for the folder survey is published only where the probe proves Egeria could not reach the
+        # path. RE's extensions BESIDE Egeria's own survey (`check_reach=False`) are measures Egeria does not keep, so
+        # that proof is not what they wait for.
+        refusal = file_reach.refusal_words(file_reach.fork_for(registry, fs), for_egeria_lead=False) if check_reach else ""
         if refusal:
             raise NothingToPublish(f"not published · {refusal}")
         surveyor = EgeriaFileSystemSurveyor(
@@ -977,6 +982,64 @@ def _publish_walk(registry, fs, sd: dict, slug: str) -> dict:
         log.exception("Publishing the folder survey failed for %s", slug)
         out["publish_error"] = str(exc)
     return out
+
+
+class WalkExtensionsRequest(BaseModel):
+    #: Publish the extensions as a SurveyReport of Resource Explorer's own after they are measured.
+    publish: bool = False
+
+
+@router.post("/{slug}/walk-extensions")
+def run_filesystem_walk_extensions(slug: str, req: WalkExtensionsRequest = WalkExtensionsRequest()) -> dict:
+    """Resource Explorer's measures BESIDE an Egeria-led folder survey (Files build step 1): per-folder bytes and depth,
+    owner, group and mode, content hashes under a size limit, and the folders' README-type narratives, with the per-file rows
+    kept for this run. Only for a file system Egeria's Folder Survey leads; where Resource Explorer leads, the folder-survey
+    press already measures all of this in the same walk (409 says so). Writes nothing into the path."""
+    from resource_explorer import file_reach
+    from resource_explorer.folder_survey_view import _egeria_candidate
+    from resource_explorer.surveyors.filesystem import walk_extensions as we
+    from resource_explorer.web.routes.curate import require_resource_write
+
+    registry = ProjectRegistry()
+    fs = registry.get_filesystem(slug)
+    if not fs:
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    require_resource_write(registry, "filesystem", slug, "start_action")
+    fork = file_reach.ensure_checked(slug, registry)
+    if fork.state not in (file_reach.EGERIA, file_reach.EXPECTED):
+        if fork.surveyor == file_reach.SURVEYOR_RE:
+            why = "Resource Explorer leads this file system's folder survey: its walk already measures these. Press Survey."
+        else:
+            why = file_reach.refusal_words(fork, for_egeria_lead=True)
+        raise HTTPException(status_code=409, detail=why)
+    egeria = _egeria_candidate(registry, slug) or {}
+    guid = egeria.get("report_guid", "") if not egeria.get("none") else ""
+    try:
+        out = we.run_alongside_egeria(fs, registry, egeria_report_guid=guid)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    ext = out["walk_extensions"]
+    result: dict = {"led_by": "egeria", "surveyor": file_reach.SURVEYOR_RE, "surveyed_at": out["surveyed_at"],
+                    "run_id": ext["run_id"], "files": ext["files"], "capped": bool(out["walk_limits"].get("capped")),
+                    "capped_words": ext.get("capped_words", ""), "rows_kept": ext.get("rows_kept"),
+                    "beside_egeria_report": guid, "published": False, "report_guid": ""}
+    if req.publish:
+        result.update(_publish_walk(registry, fs, out, slug, check_reach=False))
+    return result
+
+
+@router.post("/{slug}/walk-extensions/publish")
+def publish_filesystem_walk_extensions(slug: str) -> dict:
+    """Publish the newest stored beside-Egeria extensions run (nothing is walked again). 409 when there is none."""
+    registry = ProjectRegistry()
+    fs = registry.get_filesystem(slug)
+    if not fs:
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    runs = [r for r in registry.list_filesystem_surveys(slug) if r.get("source") == "walk-extensions"]
+    if not runs:
+        raise HTTPException(status_code=409, detail="No Resource Explorer extensions run to publish. Run it first.")
+    newest = max(runs, key=lambda r: r.get("surveyed_at") or "")
+    return _publish_walk(registry, fs, newest["survey_data"], slug, check_reach=False)
 
 
 @router.post("/{slug}/folder-survey/publish")

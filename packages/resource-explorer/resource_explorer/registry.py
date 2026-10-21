@@ -366,6 +366,48 @@ RESOURCE_SCOPE_EVENTS_DDL = (
     "ON resource_scope_events(resource_type, resource_slug, locator, id)",
 )
 
+#: DDL for the per-file rows of a file system's walk, kept per run (Files build step 1, 2026-10-21). PROPOSED: it needs the
+#: project owner's direct word before it is applied to the shared registry (any `ProjectRegistry()` on a Postgres URL runs it
+#: at startup). Same rules as RESOURCE_SCOPE_EVENTS_DDL: ONE additive, idempotent block, CREATE ... IF NOT EXISTS only, no
+#: ALTER of an existing table, no data migration, no question mark or colon-name token (the Postgres translator rewrites
+#: both; AUTOINCREMENT becomes SERIAL).
+#:
+#: One row per file per walk. `run_id` is the walk's own time (`survey_data["surveyed_at"]`), so a run's rows join its
+#: `filesystem_surveys` row on (filesystem_slug, surveyed_at = run_id). The rows hold what Egeria's Folder Survey does NOT
+#: keep (owner, group, mode, a content hash under a size limit, folder depth); counts, classification and times that Egeria
+#: keeps are not copied. `led_by` says who led that run's folder survey ('re' or 'egeria') and `egeria_report_guid` is the
+#: Egeria folder-survey SurveyReport those counts live in when Egeria led ('' when Resource Explorer led: there is no Egeria
+#: report to point at). `hash_state` says why a row has no hash. Retention: the newest WALK_RUNS_KEPT runs per file system
+#: are kept; writing a run removes older ones in the same transaction, and removing the file system removes them all.
+FILESYSTEM_WALK_FILES_DDL = (
+    """
+    CREATE TABLE IF NOT EXISTS filesystem_walk_files (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        filesystem_slug     TEXT NOT NULL,
+        run_id              TEXT NOT NULL,
+        file_path           TEXT NOT NULL,
+        folder_path         TEXT NOT NULL DEFAULT '',
+        folder_depth        INTEGER NOT NULL DEFAULT 0,
+        size_bytes          BIGINT DEFAULT NULL,
+        modified_at         TEXT DEFAULT '',
+        owner_name          TEXT DEFAULT '',
+        group_name          TEXT DEFAULT '',
+        mode_octal          TEXT DEFAULT '',
+        world_readable      INTEGER DEFAULT NULL,
+        content_hash        TEXT DEFAULT '',
+        hash_state          TEXT NOT NULL DEFAULT 'not_attempted',
+        led_by              TEXT NOT NULL DEFAULT 're',
+        egeria_report_guid  TEXT NOT NULL DEFAULT '',
+        UNIQUE(filesystem_slug, run_id, file_path),
+        FOREIGN KEY (filesystem_slug) REFERENCES file_systems(slug)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_fs_walk_files_folder "
+    "ON filesystem_walk_files(filesystem_slug, run_id, folder_path)",
+    "CREATE INDEX IF NOT EXISTS idx_fs_walk_files_hash "
+    "ON filesystem_walk_files(content_hash, size_bytes)",
+)
+
 #: DDL for the annotations of a user step run by RE (extensibility brief 2c; the project owner chose a dedicated
 #: table, 2026-10-13). Same rules as RESOURCE_SCOPE_EVENTS_DDL: ONE additive, idempotent block, CREATE ... IF
 #: NOT EXISTS only, no ALTER of an existing table, no data migration, no foreign keys, no question mark or
@@ -3517,6 +3559,9 @@ class ProjectRegistry:
             )
             # resource_scope_events: ONE additive, idempotent block (see RESOURCE_SCOPE_EVENTS_DDL below).
             for _ddl in RESOURCE_SCOPE_EVENTS_DDL:
+                conn.execute(_ddl)
+            # filesystem_walk_files: ONE additive, idempotent block (see FILESYSTEM_WALK_FILES_DDL; proposed, owner's word).
+            for _ddl in FILESYSTEM_WALK_FILES_DDL:
                 conn.execute(_ddl)
             # step_annotations: ONE additive, idempotent block (see STEP_ANNOTATIONS_DDL).
             for _ddl in STEP_ANNOTATIONS_DDL:
@@ -13538,6 +13583,8 @@ class ProjectRegistry:
         normalized = self._normalize_slug(slug)
         with self._conn() as conn:
             conn.execute("DELETE FROM filesystem_surveys WHERE filesystem_slug = ?", (normalized,))
+            # The walk's per-file rows carry a real FK too (filesystem_walk_files, Files build step 1).
+            conn.execute("DELETE FROM filesystem_walk_files WHERE filesystem_slug = ?", (normalized,))
             # Same reason as remove_database: these carry real FKs, so
             # skipping them fails the parent delete rather than stranding
             # rows.
@@ -13769,6 +13816,94 @@ class ProjectRegistry:
                 "scripts/backfill_structured_tables.py to recover the rows.",
                 normalized, surveyed_at, source, exc,
             )
+
+    # ── the walk's per-file rows, kept per run (Files build step 1) ─────────────────────────────────────────────────
+
+    #: Runs of per-file rows kept per file system (see walk_extensions.WALK_RUNS_KEPT).
+    _WALK_COLUMNS = ("file_path", "folder_path", "folder_depth", "size_bytes", "modified_at", "owner_name", "group_name",
+                     "mode_octal", "world_readable", "content_hash", "hash_state")
+
+    def add_filesystem_walk_files(self, fs_slug: str, run_id: str, rows: list[dict], *, led_by: str = "re",
+                                  egeria_report_guid: str = "", keep_runs: int | None = None) -> dict:
+        """Store one run's per-file rows (all or none: one transaction), then remove the runs older than the newest
+        `keep_runs`. Returns {rows, run_id, pruned_runs}. The rows hold no content, only names, sizes, owner, mode and a hash."""
+        from resource_explorer.surveyors.filesystem.walk_extensions import WALK_RUNS_KEPT
+
+        keep = WALK_RUNS_KEPT if keep_runs is None else keep_runs
+        normalized = self._normalize_slug(fs_slug)
+        cols = self._WALK_COLUMNS
+        sql = (f"INSERT INTO filesystem_walk_files (filesystem_slug, run_id, {', '.join(cols)}, led_by, egeria_report_guid) "
+               f"VALUES ({', '.join('?' for _ in range(len(cols) + 4))})")
+        with self._conn() as conn:
+            conn.execute("DELETE FROM filesystem_walk_files WHERE filesystem_slug = ? AND run_id = ?", (normalized, run_id))
+            batch: list[tuple] = []
+            for r in rows:
+                batch.append((normalized, run_id, *(r.get(c) for c in cols), led_by, egeria_report_guid))
+                if len(batch) >= 2000:
+                    conn.executemany(sql, batch)
+                    batch = []
+            if batch:
+                conn.executemany(sql, batch)
+            runs = [r[0] for r in conn.execute(
+                "SELECT DISTINCT run_id FROM filesystem_walk_files WHERE filesystem_slug = ? ORDER BY run_id DESC",
+                (normalized,)).fetchall()]
+            pruned = runs[keep:] if keep >= 0 else []
+            for old in pruned:
+                conn.execute("DELETE FROM filesystem_walk_files WHERE filesystem_slug = ? AND run_id = ?", (normalized, old))
+        return {"rows": len(rows), "run_id": run_id, "pruned_runs": pruned}
+
+    def list_filesystem_walk_runs(self, fs_slug: str) -> list[dict]:
+        """The runs that still have per-file rows, newest first, each with what is stored (counted from the rows)."""
+        normalized = self._normalize_slug(fs_slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT run_id, COUNT(*) AS files, COALESCE(SUM(size_bytes), 0) AS bytes,
+                          SUM(CASE WHEN hash_state = 'hashed' THEN 1 ELSE 0 END) AS hashed,
+                          MAX(led_by) AS led_by, MAX(egeria_report_guid) AS egeria_report_guid
+                   FROM filesystem_walk_files WHERE filesystem_slug = ?
+                   GROUP BY run_id ORDER BY run_id DESC""",
+                (normalized,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_filesystem_walk_files(self, fs_slug: str, run_id: str, *, folder: str | None = None,
+                                   limit: int | None = None) -> list[dict]:
+        """One run's per-file rows, by path. `folder` limits to the files directly in that folder ('' = the root's)."""
+        normalized = self._normalize_slug(fs_slug)
+        sql = ("SELECT " + ", ".join(self._WALK_COLUMNS) + ", led_by, egeria_report_guid FROM filesystem_walk_files "
+               "WHERE filesystem_slug = ? AND run_id = ?")
+        params: list = [normalized, run_id]
+        if folder is not None:
+            sql += " AND folder_path = ?"
+            params.append(folder)
+        sql += " ORDER BY file_path"
+        if limit:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        with self._conn() as conn:
+            return [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
+
+    def filesystem_walk_folder_totals(self, fs_slug: str, run_id: str) -> list[dict]:
+        """Files and bytes held DIRECTLY in each folder of one run, derived from the stored rows (a second way to get the
+        walk's folder numbers, used to prove them)."""
+        normalized = self._normalize_slug(fs_slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT folder_path, MIN(folder_depth) AS folder_depth, COUNT(*) AS files, COALESCE(SUM(size_bytes), 0) AS bytes
+                   FROM filesystem_walk_files WHERE filesystem_slug = ? AND run_id = ?
+                   GROUP BY folder_path ORDER BY folder_path""",
+                (normalized, run_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_filesystem_walk_report(self, fs_slug: str, run_id: str, egeria_report_guid: str, *, led_by: str = "egeria") -> int:
+        """Name the Egeria folder-survey report a run's rows complement (read back after Egeria's survey completes)."""
+        normalized = self._normalize_slug(fs_slug)
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE filesystem_walk_files SET egeria_report_guid = ?, led_by = ? WHERE filesystem_slug = ? AND run_id = ?",
+                (egeria_report_guid, led_by, normalized, run_id))
+            return cur.rowcount
 
     def get_latest_filesystem_survey(self, fs_slug: str) -> dict | None:
         """Retrieve the latest filesystem survey run."""
