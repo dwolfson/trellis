@@ -19,7 +19,7 @@
  */
 import {
   REPO_CHARTS, getChart, getDbChart, getDatabaseDiff, getDatabaseSurveys, getDatabaseViews,
-  getRepoDiff, renderMermaidSvg, getSurveyReport, getFolderSurvey,
+  getRepoDiff, renderMermaidSvg, getSurveyReport, getAnalysisResults, listAnalyses, getFolderSurvey,
 } from '/static/re-api.js';
 import { reachLineHtml, folderResultsHtml } from '/static/next/fs-survey.js';
 import {
@@ -29,6 +29,7 @@ import {
 } from '/static/next/app.js';
 import { provenanceFromResponse, saveChartImage } from '/static/next/chart-export.js';
 import { mountRepoReport } from '/static/next/stages/repo-report.js';
+import { mountRepoAnalysisView } from '/static/next/stages/repo-analysis-views.js';
 import { fitFigure, annotateTicks, BASE_H } from '/static/next/chart-labels.js';
 import { attachGrids, historyCols, RANKED_COLS, VIEWS_COLS } from '/static/next/stages/report-tables.js';
 import { statsLineHtml, schemaRollupsHtml, statsOverTimeHtml } from '/static/next/stages/understanding-stats.js';
@@ -741,6 +742,11 @@ function repoParts(slug) {
     <div id="chart-body-distribution" class="mt-s4"></div>`, { attrs: 'class="mt-s4"' });
   const report = collapsibleSectionHtml('repo-report', h3('Survey report'), '',
     '<div id="repo-report-body"></div>', { attrs: 'class="mt-s4" data-repo-report' });
+  // The two results views rebuilt from Classic (owner 2026-10-21): each read the first time its section is open.
+  const classification = collapsibleSectionHtml('repo-classification', h3('Classification'), '',
+    '<div id="repo-classification-body"></div>', { attrs: 'class="mt-s4" data-repo-analysis="repo_classification"' });
+  const depSupport = collapsibleSectionHtml('repo-dependency-support', h3('Dependency support'), '',
+    '<div id="repo-dependency-support-body"></div>', { attrs: 'class="mt-s4" data-repo-analysis="dependency_support"' });
 
   const mount = (root, { canRead = () => true, split = false } = {}) => {
     // PI-053: the full survey report, read when its section is open (and the first time it is opened).
@@ -754,6 +760,21 @@ function repoParts(slug) {
       });
     };
     reportSection.addEventListener('toggle', () => { if (reportSection.open && canRead()) readReport(); });
+    const analysisReads = [];
+    root.querySelectorAll('details[data-repo-analysis]').forEach((sec) => {
+      const kind = sec.dataset.repoAnalysis;
+      let read = false;
+      const go = () => {
+        if (read) return;
+        read = true;
+        mountRepoAnalysisView(sec.querySelector('[id$="-body"]'), slug, kind, {
+          fetchResults: getAnalysisResults, fetchCatalogue: listAnalyses,
+          stale: () => slug !== state.selectedSlug || !sec.isConnected,
+        });
+      };
+      sec.addEventListener('toggle', () => { if (sec.open && canRead()) go(); });
+      analysisReads.push(() => { if (sec.open) go(); });
+    });
 
     return {
       async glance() {
@@ -779,12 +800,13 @@ function repoParts(slug) {
       // `split`: the tabbed layout. Contents reads the distribution charts and the report, Over time the rest.
       async contents() {
         if (reportSection.open) readReport();
+        analysisReads.forEach((r) => r());
         if (split) await drawRepoCharts(slug, { kinds: REPO_DISTRIBUTION_KINDS, indexId: 'chart-index-distribution', bodyId: 'chart-body-distribution' });
       },
       overTime: () => drawRepoCharts(slug, split ? { kinds: REPO_TIME_KINDS } : {}),
     };
   };
-  return { html: { since, charts, distribution, report }, mount };
+  return { html: { since, charts, distribution, report, classification, depSupport }, mount };
 }
 
 const REPO_DISTRIBUTION_KINDS = ['languages', 'file_types', 'top_committers'];
@@ -901,7 +923,7 @@ export async function renderUnderstandingTabs(slug, kind) {
     start = parts.mount(host, { lazy: true });
   } else {
     const parts = repoParts(slug);
-    html = { glance: parts.html.since, contents: parts.html.distribution + parts.html.report, over_time: parts.html.charts };
+    html = { glance: parts.html.since, contents: parts.html.distribution + parts.html.report + parts.html.classification + parts.html.depSupport, over_time: parts.html.charts };
     host.innerHTML = panelsHtml(html);
     bindCollapsibles(host);
     state.charts = [];
