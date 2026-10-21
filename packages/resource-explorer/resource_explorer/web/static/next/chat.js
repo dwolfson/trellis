@@ -360,6 +360,22 @@ function evidenceFooterListsHtml(lists, slug, surface = 'paper') {
  * inside the 290px rail — exactly the shape ASSESSMENT-CHAT.md and
  * SPEC-THE-STAGE-PAGE.md both name as the thing to stop doing.
  */
+/** Longest answer shown whole in the rail; past this the preview is clamped and offers "more ›". */
+const RAIL_PREVIEW_CHARS = 240;
+const RAIL_PREVIEW_LINES = 4;
+
+/** The answer text on a finished rail turn: escaped (never raw HTML), wrapped so it cannot overrun at the
+ *  largest text size, and clamped to a few lines when long, with "more ›" (the click opens the full turn). */
+function answerPreviewHtml(answer) {
+  const text = String(answer);
+  const long = text.length > RAIL_PREVIEW_CHARS || text.split('\n').length > RAIL_PREVIEW_LINES;
+  const style = long
+    ? ` style="display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:${RAIL_PREVIEW_LINES};overflow:hidden"`
+    : '';
+  return `<div data-turn-answer${long ? ' data-turn-clamped' : ''} class="mb-s1 min-w-0 whitespace-pre-wrap break-words text-chip text-chrome-ink"${style}>${esc(text)}</div>${
+    long ? '<div data-turn-more class="text-caps text-chrome-muted">more ›</div>' : ''}`;
+}
+
 function renderTurnList() {
   const log = $('chat-log');
   if (!log) return;
@@ -380,9 +396,10 @@ function renderTurnList() {
         You${t.slug ? ` · ${esc(t.slug)}` : ''}${offScope ? ' · not the current resource' : ''}
       </div>
       <div class="mb-s1 text-subtab text-chrome-ink">${esc(t.question)}</div>
-      ${t.pending ? `<div class="text-chip text-chrome-muted">${t.streaming ? 'Answering…' : 'Asking…'}</div>` : ''}
+      ${t.pending ? `<div data-turn-pending class="text-chip text-chrome-muted">${cue('running', t.streaming ? 'Answering…' : 'Asking…', '', 'chrome')}</div>` : ''}
       ${t.error ? `<div data-turn-failed class="text-chip text-accent-on-dark">failed · ${esc(t.error)}</div>` : ''}
       ${noAnswer ? '<div data-turn-no-answer class="text-chip text-chrome-muted">no answer recorded</div>' : ''}
+      ${t.answer && !t.pending ? answerPreviewHtml(t.answer) : ''}
       ${t.answer && !t.pending ? `<div class="text-caps text-chrome-muted">${esc(t.source || '')}${isOpen ? ' · open in pane' : ' · tap to open'}</div>` : ''}
     </button>`;
   };

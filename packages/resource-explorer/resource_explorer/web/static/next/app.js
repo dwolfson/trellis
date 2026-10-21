@@ -287,6 +287,10 @@ export const state = {
   charts: null,                // Understanding's probed chart index
   workLists: [],               // saved work lists
   workListSlug: null,          // the open one; the pane takes over when set
+  urlTypeMissing: false,       // the URL named a resource without `type=`; resolveUrlKind() settles it
+  unknownResource: '',         // a URL slug no list holds
+  otherKinds: [],              // kinds, besides the open one, that also hold selectedSlug
+  otherKindsSlug: '',
   lastWorkListSlug: null,      // the one you were last in, for the way back
   workListIndex: false,        // showing the list OF work lists
   workListIndexNote: '',       // what the last add/start on the index said, shown once
@@ -3290,6 +3294,41 @@ function writeUrl() {
   history.replaceState(null, '', url);
 }
 
+/** A URL with `resource=` and no `type=` (a pasted slug) is resolved against the lists the sidebar uses: a slug in
+ *  exactly one kind opens as that kind (URL rewritten with its `type`); in none, `state.unknownResource` names it
+ *  (a plain "no resource called" pane, not a repo error); in several, the repo (as before) opens and
+ *  `state.otherKinds` names the others for the chooser cue. A list that failed to load is not evidence of
+ *  absence, so a slug missing only from a failed list is left as it was. Returns the resolution. */
+export async function resolveUrlKind() {
+  if (!state.urlTypeMissing || !state.selectedSlug) return null;
+  state.urlTypeMissing = false;
+  const slug = state.selectedSlug;
+  state.unknownResource = '';
+  state.otherKinds = [];
+  let failed = false;
+  if (!state.databasesLoaded) {
+    try { state.databases = (await listDatabases()) || []; state.databasesLoaded = true; } catch { failed = true; }
+  }
+  if (!state.filesystemsLoaded) {
+    try { state.filesystems = (await listFilesystems()) || []; state.filesystemsLoaded = true; } catch { failed = true; }
+  }
+  const has = (rows) => Array.isArray(rows) && rows.some((r) => r.slug === slug);
+  const kinds = [];
+  if (has(state.projects)) kinds.push('repo');
+  if (has(state.databases)) kinds.push('db');
+  if (has(state.filesystems)) kinds.push('filesystem');
+  if (!kinds.length) {
+    if (!failed) state.unknownResource = slug;
+    return failed ? null : { kind: null, kinds };
+  }
+  const kind = kinds[0];
+  state.resourceType = kind;
+  state.otherKinds = kinds.slice(1);
+  state.otherKindsSlug = slug;
+  if (kinds.length === 1) writeUrl();
+  return { kind, kinds };
+}
+
 /** Read the URL into state. Returns true if it named a resource. */
 export function readUrl() {
   const p = new URLSearchParams(location.search);
@@ -3298,6 +3337,8 @@ export function readUrl() {
   try {
     if (p.get('type')) state.resourceType = p.get('type');
     if (p.get('resource')) state.selectedSlug = p.get('resource');
+    // A link naming a resource but no kind: start() resolves the kind from the loaded lists (resolveUrlKind).
+    state.urlTypeMissing = Boolean(p.get('resource')) && !p.get('type');
     if (p.get('stage')) state.stage = p.get('stage');
     // A `tab=` is kept only when the strip for THIS stage and kind offers it (visibleSubTabs()); a hand-edited
     // or stale id falls to the stage's landing tab, same as no `tab=`. 'dashboard' is the retired id loadPane()
@@ -8575,6 +8616,34 @@ export function paneMessage(title, body) {
     <p class="max-w-[70ch] text-answer text-ink">${esc(body)}</p>`;
 }
 
+/** The small cue above the pane when a slug is held by more than one kind: the kind that opened, and a button
+ *  for each other kind. */
+export const unknownResourcePaneHtml = () => paneMessage('No such resource', `no resource called ${state.unknownResource}`);
+
+export function renderKindChooser() {
+  const content = $('content');
+  let host = document.getElementById('kind-chooser');
+  const others = state.otherKindsSlug === state.selectedSlug ? (state.otherKinds || []) : [];
+  if (!others.length || !content) { host?.remove(); return; }
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'kind-chooser';
+    content.parentNode.insertBefore(host, content);
+  }
+  const label = { repo: 'repository', db: 'database', filesystem: 'file system' };
+  host.setAttribute('data-kind-chooser', '');
+  host.className = 'mb-s2 text-chip text-ink-muted';
+  host.innerHTML = `<span class="font-glyph" aria-hidden="true">◐</span> ${esc(state.selectedSlug)} is also a ${
+    others.map((k, i) => `${i ? ', ' : ''}<button type="button" data-open-kind="${esc(k)}" class="cursor-pointer border-0 bg-transparent p-0 text-accent-ink underline">${esc(label[k] || k)}</button>`).join('')}`;
+  host.querySelectorAll('[data-open-kind]').forEach((b) => b.addEventListener('click', async () => {
+    const kind = b.dataset.openKind;
+    state.otherKinds = [];
+    state.resourceType = kind;
+    await ensureResourceListLoaded(kind);
+    writeUrl(); renderSidebar(); loadPane();
+  }));
+}
+
 async function loadPane() {
   const el = $('content');
   let scopeIntoView = false;
@@ -8592,6 +8661,14 @@ async function loadPane() {
   // is the bug.
   renderPerspectiveRow();
   renderWorkListNav();
+  renderKindChooser();
+
+  // A link to a slug no list holds: say so plainly, rather than a repo's checklist error.
+  if (state.unknownResource && state.unknownResource === state.selectedSlug) {
+    el.innerHTML = unknownResourcePaneHtml();
+    bindSubTabs();
+    return;
+  }
 
   // A work list is a view of a SET, so it replaces the single-resource pane
   // rather than sitting inside it. Everything else in /next reads one
@@ -10618,6 +10695,14 @@ async function start() {
   if (investigations.status === 'fulfilled') state.investigations = investigations.value || [];
   if (projects.status === 'fulfilled') {
     state.projects = projects.value || [];
+  }
+  // A pasted `?resource=<slug>` with no `type=`: find the slug's kind before anything renders as a repo.
+  if (projects.status === 'fulfilled') {
+    const before = state.resourceType;
+    await resolveUrlKind();
+    if (state.resourceType !== before) {
+      try { state.analyses = (await listAnalyses(apiEntityType(state.resourceType))) || []; } catch { /* keeps the repo catalogue */ }
+    }
   }
 
   // The URL may already name a db/filesystem resource (`?type=db&resource=…`)
