@@ -837,7 +837,7 @@ def test_gateway_creates_the_schema_from_the_template_by_guid_under_the_database
 
 def test_gateway_archive_is_the_delete_endpoint_with_lineage_flags_never_the_archive_endpoint(real):
     g, c = real
-    g.delete_element("guid-1", gw.ARCHIVE)
+    g.delete_element("guid-1", gw.ARCHIVE, slug="db")
     args, kwargs = c["MetadataExpert"].delete_metadata_element.call_args
     assert args[0] == "guid-1" and args[1]["deleteMethod"] == "ARCHIVE"
     assert args[1]["forLineage"] is True and args[1]["forDuplicateProcessing"] is True
@@ -847,7 +847,7 @@ def test_gateway_archive_is_the_delete_endpoint_with_lineage_flags_never_the_arc
 
 def test_gateway_soft_delete_is_per_element_with_lineage_true_and_no_cascade(real):
     g, c = real
-    g.delete_element("guid-2", gw.SOFT_DELETE)
+    g.delete_element("guid-2", gw.SOFT_DELETE, slug="db")
     args, kwargs = c["MetadataExpert"].delete_metadata_element.call_args
     assert args[1]["deleteMethod"] == "SOFT_DELETE" and args[1]["forLineage"] is True
     assert kwargs["cascade_delete"] is False

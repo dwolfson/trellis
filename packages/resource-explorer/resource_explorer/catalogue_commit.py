@@ -82,9 +82,9 @@ WHOLE_SCHEMAS_LINE = "Egeria adds whole schemas · table choices are kept for wh
 SURVEY_LINE = "Egeria's survey is limited to your chosen schemas"
 LINGERING_LINE = ("Egeria's cataloguer still lists this schema until its connector restarts "
                   "· nothing is recreated")
-# The ISSUE-117 hard block lives in catalogue_gateway (`issue_117_blocked()`, `ISSUE_117_WORDS`): ON unless the
-# env var RE_ISSUE_117_BLOCK_OFF names a clearance; read at call time so one switch governs the preview, the
-# outbox handler and the real gateway.
+# The archive-cascade block (ISSUE-117) lives in catalogue_gateway (`issue_117_blocked(slug)`, `ISSUE_117_WORDS`): ON
+# unless the env var RE_ISSUE_117_BLOCK_OFF names a fresh override FOR THIS DATABASE SLUG; read at call time so one
+# switch governs the preview, the outbox handler and the real gateway. Every guard passes the slug it acts for.
 CATALOGED_STATES = ("catalogued", "attached_waiting", "queued", "sent", "failed", "restored")
 CANT_CHECK = "couldn't check what hangs off it"
 IN_USE = "in use by a running survey · wait or cancel"
@@ -117,10 +117,10 @@ P_ARCHIVED = "archived"
 #: guid of the element it replaced, `detail["note"]` any free text (all in detail_json: no DDL).
 P_RESTORED = "restored"
 #: One row per destructive call RE sends (archive, soft delete, detach), written AFTER the call returns, is
-#: refused by the ISSUE-117 block, or raises. A record of a call, never of a state: NOT in STATE_PROOFS.
+#: refused by the archive-cascade block, or raises. A record of a call, never of a state: NOT in STATE_PROOFS.
 P_DELETE_CALL = "delete_call"
 P_LEAVE_OUT_BLOCKED = "leave_out_blocked"   # a leave-out that was refused (ISSUE-117): kept, not sent
-KEPT_NOT_SENT = "kept, not sent · ISSUE-117 block"
+KEPT_NOT_SENT = "kept, not sent · archive-cascade block"
 #: Brief Z2: a schema this commit did NOT write because the person may not change it (Egeria's zones, emulated by
 #: `workflows.curate.curation_access`). A record of a refusal, never a state: NOT in STATE_PROOFS.
 P_NOT_PERMITTED = "not_permitted"
@@ -809,7 +809,7 @@ def survey_schema_list(names: list[str]) -> tuple[list[str], list[str]]:
 #   attach    ATTACH                (the CatalogTarget link on the schema: validateUserForElementAttach :1582-1620)
 #   leave out DETACH + DELETE       (the target removal :1639-1694, then the archive / soft delete :2540-2566), and
 #             DELETE on every table, column and schema-type element the delete walks (`read_hangs_off`'s
-#             delete_order) when the ISSUE-117 block is off. With the block on (it is) nothing is deleted, and the
+#             delete_order) when the archive-cascade block is off. With the block on (it is) nothing is deleted, and the
 #             check runs IN FRONT of the block only, so a refusal is said before the block would be.
 # RE writes no table element on an attach: Egeria's cataloguer creates the tables (whole schemas). A part that is
 # not permitted is skipped with its own word ("not permitted · <reason>") and the rest proceed, as Publish does.
@@ -980,7 +980,7 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
                                                     override=False, reader=reader, anchor_guid=anchor)
             _ok, np_leave = parts_check_by_name(registry, gateway, db_entity, slug, leave_cands, LEAVE_OUT_OPS,
                                                 override=False, reader=reader,
-                                                members=not gw.issue_117_blocked())
+                                                members=not gw.issue_117_blocked(slug))
         else:
             # No gateway: Egeria cannot be reached, and the commit cannot run either. RE's own rows name the
             # elements it knows; the rest wait for the run.
@@ -1006,7 +1006,7 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
                                                                   if st.get("state") in ("deleted", "archived") else " · never published"))
             leave.append(row)
             continue
-        # Brief Z2: the access check stands IN FRONT of the ISSUE-117 block (which is unchanged): a person who may
+        # Brief Z2: the access check stands IN FRONT of the archive-cascade block (which is unchanged): a person who may
         # not change the schema is told so, before the block would be.
         np_row = leave_refused.get(name)
         if np_row is not None:
@@ -1014,7 +1014,7 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
             not_permitted.append({**np_row, "write": "leave out"})
             leave.append(row)
             continue
-        if gw.issue_117_blocked() and st.get("state") in CATALOGED_STATES:
+        if gw.issue_117_blocked(slug) and st.get("state") in CATALOGED_STATES:
             row.update(form="issue_117", blocked=True, reason=gw.ISSUE_117_WORDS, text=f"{name}: {gw.ISSUE_117_WORDS}")
             leave.append(row)
             continue
@@ -1128,9 +1128,9 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
     something = bool(attach or [r for r in leave if r["form"] in (SOFT_DELETE, ARCHIVE)])
     all_refused = bool(not something and not_permitted)
     # Round 2 (LOW 7): what ELSE holds this commit, each as a short word with its reason on demand, so a refusal
-    # never hides another blocker (a name collision, a leave-out the ISSUE-117 block keeps).
+    # never hides another blocker (a name collision, a leave-out the archive-cascade block keeps).
     also_blocked = [{"word": "name collision", "reason": b} for b in blockers]
-    also_blocked += [{"word": "ISSUE-117 block", "reason": r["text"]} for r in leave if r.get("form") == "issue_117"]
+    also_blocked += [{"word": "archive-cascade block", "reason": r["text"]} for r in leave if r.get("form") == "issue_117"]
     if all_refused:
         # Nothing the person may change is left: refused whole, with the first reason (Publish's rule), and the
         # other blockers kept beside it.
@@ -1269,7 +1269,7 @@ def _send_destructive(registry, gateway, op: str, *, slug: str, schema: str, ele
                       curation_id: str = "", outbox_id: int | None = None, by: str = "") -> None:
     """Send ONE destructive call (ARCHIVE / SOFT_DELETE through `delete_element`, or `remove_catalog_target`)
     and record it: an INFO line before, a line after, and one `delete_call` proof row written after the call
-    returns, is refused by the ISSUE-117 block, or raises (the row is written, then the exception propagates).
+    returns, is refused by the archive-cascade block, or raises (the row is written, then the exception propagates).
     The cascade of 2026-10-06 was invisible in RE's own record because none of this existed."""
     method = "remove_catalog_target" if op == "remove_catalog_target" else ("ARCHIVE" if form == ARCHIVE else "SOFT_DELETE")
     flags = ({"forLineage": True, "forDuplicateProcessing": True} if method == "remove_catalog_target" else
@@ -1278,10 +1278,10 @@ def _send_destructive(registry, gateway, op: str, *, slug: str, schema: str, ele
     what = (f"{method} element={element_guid} type={typ or 'unknown'} schema={schema}"
             + (f" relationship={relationship_guid}" if relationship_guid else "") + f" flags={flags} {who}")
     outcome, error = DELETE_OK, ""
-    blocked = method != "remove_catalog_target" and gw.issue_117_blocked()
+    blocked = method != "remove_catalog_target" and gw.issue_117_blocked(slug)
     if blocked:
         outcome, error = DELETE_REFUSED, gw.ISSUE_117_WORDS
-        log.warning("destructive call refused by ISSUE-117 block: %s", what)
+        log.warning("destructive call refused by archive-cascade block (slug=%r): %s", slug, what)
     else:
         log.info("destructive call BEFORE: %s", what)
     raised: BaseException | None = None
@@ -1290,7 +1290,7 @@ def _send_destructive(registry, gateway, op: str, *, slug: str, schema: str, ele
             if method == "remove_catalog_target":
                 gateway.remove_catalog_target(relationship_guid)
             else:
-                gateway.delete_element(element_guid, form)
+                gateway.delete_element(element_guid, form, slug=slug)
         except BaseException as exc:                      # the row is written first, then this propagates
             raised = exc
             error = " ".join(str(exc).split())[:gw.MAX_EGERIA_TEXT] or type(exc).__name__
@@ -1551,7 +1551,7 @@ def apply_leave_out(registry, gateway: CatalogueGateway, payload: dict, *, outbo
         return ""
     el = gateway.read_element(qn)
     guid = el.guid if el else ""
-    if gw.issue_117_blocked() and el is not None:
+    if gw.issue_117_blocked(slug) and el is not None:
         # Defence behind the preview: whatever queued this, nothing is sent for a schema Egeria holds,
         # and the refusal is a ROW, so the header derives "0 archived" from it rather than from silence.
         _proof(registry, slug, P_LEAVE_OUT_BLOCKED, schema=schema, element_guid=guid, qualified_name=qn, curation_id=cid,
@@ -2337,7 +2337,7 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
     # 2b ── leave outs
     leave = list(sel.get("leave_out") or [])
     blocked117 = list(sel.get("blocked_117") or [])
-    # Brief Z2: the access check stands in front of the (unchanged) ISSUE-117 block, at run time as at the press.
+    # Brief Z2: the access check stands in front of the (unchanged) archive-cascade block, at run time as at the press.
     blocked117, np_blocked = parts_check_by_name(registry, gateway, db, slug, blocked117, LEAVE_OUT_OPS, override=override)
     _record_not_permitted(registry, slug, curation_id, author, np_blocked, "leave out")
     ok_leave, np_leave = parts_check_by_name(registry, gateway, db, slug, [i["schema"] for i in leave], LEAVE_OUT_OPS,

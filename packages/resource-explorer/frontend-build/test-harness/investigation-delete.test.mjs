@@ -218,8 +218,8 @@ test('with nothing from others on the Project the confirm says so', async () => 
   assert.match(asked.message, /Nothing on the Project was made by anyone else\./);
 });
 
-test('while the ISSUE-117 block is on the Egeria choice is disabled with the block\'s sentence; RE-only still works', async () => {
-  const words = 'Egeria archives the whole database tree when any part of it is archived (ISSUE-117, archiveBeanInRepository) · choice kept, nothing sent';
+test('while the archive-cascade block is on the Egeria choice is disabled with the block\'s sentence; RE-only still works', async () => {
+  const words = 'Egeria archives the whole database tree when any part of it is archived (archive-cascade block, archiveBeanInRepository) · choice kept, nothing sent';
   const t = await setUp({ promoted: true, preview: { ...PREVIEW_OK, blocked: true, blocked_words: words } });
   const asked = answerNext(t.document, 'choice', 'data-choice-re');
   t.document.querySelector('[data-act="inv-delete"]').click();

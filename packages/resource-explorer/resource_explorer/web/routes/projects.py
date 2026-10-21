@@ -309,7 +309,7 @@ async def create_group(body: GroupCreate) -> GroupSummary:
 async def delete_group(slug: str, request: Request) -> dict:
     """Delete an RE group. Its members are ungrouped, and (Brief T) each member's membership of the group's Folio
     is removed in Egeria: Brief F, at that member's next Publish (each member's Findable band says "saved · will
-    publish"). The Folio itself is NEVER deleted: that is a delete under the ISSUE-117 block, so the answer reports
+    publish"). The Folio itself is NEVER deleted: that is a delete under the archive-cascade block, so the answer reports
     it and the owner deletes it by hand."""
     import asyncio
 

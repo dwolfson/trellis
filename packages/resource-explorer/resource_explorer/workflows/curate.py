@@ -321,7 +321,7 @@ def publish_operations(in_egeria: bool, *, attaches: bool = False) -> tuple[str,
 #: `decision` records a choice in RE about it (the scope decisions, forgetting its links: an update);
 #: `start_action` starts an Egeria engine action on it (a native survey: the action's ActionTarget link is an
 #: attach on the element); `link` / `unlink` add or remove one link on it (a documentation source's
-#: ExternalReference); `delete` removes it (behind the ISSUE-117 block).
+#: ExternalReference); `delete` removes it (behind the archive-cascade block).
 RESOURCE_WRITES = ("publish", "decision", "start_action", "link", "unlink", "delete")
 
 

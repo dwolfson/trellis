@@ -20,7 +20,7 @@ the row's `detail`, and the screen shows its first sentence with the rest one ge
                                         nothing is sent to Egeria, nothing is archived or deleted there.
 * `P_FILE_TYPE` (`file_type_read_back`) a file type's DataSet GUID was read back by that GUID.
 
-The ISSUE-117 block is untouched: nothing in this module archives or deletes in Egeria.
+The archive-cascade block is untouched: nothing in this module archives or deletes in Egeria.
 """
 from __future__ import annotations
 

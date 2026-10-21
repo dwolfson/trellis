@@ -261,7 +261,7 @@ export function choiceCellHtml(node, me, commit = null) {
 /** ISSUE-117: Egeria archives a database's WHOLE tree when any part of it is archived, so a leave-out of a
  *  schema that is cataloged in Egeria sends nothing. The choice is kept; the row says so with a mark and a
  *  short word, the sentence on hover. (The server's preview names the same reason on the commit.) */
-const ISSUE_117_TITLE = 'Egeria archives the whole database tree when any part of it is archived (ISSUE-117, archiveBeanInRepository) · choice kept, nothing sent';
+const ISSUE_117_TITLE = 'Egeria archives the whole database tree when any part of it is archived (archive-cascade block, archiveBeanInRepository) · choice kept, nothing sent';
 const CATALOGED = ['catalogued', 'attached_waiting', 'queued', 'sent', 'failed'];
 function blockedMarkHtml(node, commit) {
   if (node.kind !== 'schema' || node.effective !== 'leave_out') return '';

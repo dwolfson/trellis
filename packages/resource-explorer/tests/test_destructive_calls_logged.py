@@ -43,7 +43,7 @@ class Gate:
     def __init__(self, fail=()):
         self.calls, self.fail = [], set(fail)
 
-    def delete_element(self, guid, form):
+    def delete_element(self, guid, form, *, slug):
         self.calls.append(("delete_element", guid, form))
         if guid in self.fail:
             raise GatewayError(SENTENCE)
@@ -108,10 +108,10 @@ def test_the_real_gateway_logs_before_and_after_with_the_flags_and_the_full_sent
     import os
     os.environ["RE_ISSUE_117_BLOCK_OFF"] = "test/2026-10-07T00:00Z"
     try:
-        g.delete_element("gx", gw.ARCHIVE)
+        g.delete_element("gx", gw.ARCHIVE, slug="db")
         me.delete_metadata_element.side_effect = RuntimeError(SENTENCE)
         with pytest.raises(GatewayError):
-            g.delete_element("gy", gw.SOFT_DELETE)
+            g.delete_element("gy", gw.SOFT_DELETE, slug="db")
     finally:
         del os.environ["RE_ISSUE_117_BLOCK_OFF"]
     text = "\n".join(r.getMessage() for r in caplog.records)
@@ -157,7 +157,7 @@ def test_a_call_refused_by_the_issue_117_block_is_logged_recorded_and_never_sent
     assert str(err.value) == gw.ISSUE_117_WORDS and gate.calls == []
     (r,) = rows(registry)
     assert r["element_guid"] == "g1" and r["detail"]["outcome"] == "refused-by-block" and r["detail"]["operation"] == "ARCHIVE"
-    assert any("refused by ISSUE-117 block" in m.getMessage() and "element=g1" in m.getMessage() and "outbox=7" in m.getMessage()
+    assert any("refused by archive-cascade block" in m.getMessage() and "element=g1" in m.getMessage() and "outbox=7" in m.getMessage()
                for m in caplog.records)
 
 
@@ -168,9 +168,9 @@ def test_the_real_gateway_logs_the_issue_117_refusal_and_sends_nothing(caplog, m
     me = MagicMock()
     g._clients["MetadataExpert"] = me
     with pytest.raises(GatewayError):
-        g.delete_element("gz", gw.ARCHIVE)
+        g.delete_element("gz", gw.ARCHIVE, slug="db")
     assert me.method_calls == []
-    assert any("refused by ISSUE-117 block" in r.getMessage() and "element=gz" in r.getMessage()
+    assert any("refused by archive-cascade block" in r.getMessage() and "element=gz" in r.getMessage()
                and "deleteMethod=ARCHIVE" in r.getMessage() for r in caplog.records)
 
 

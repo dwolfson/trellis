@@ -43,7 +43,7 @@ pytestmark = pytest.mark.usefixtures("signed_in_caller")
 
 @pytest.fixture(autouse=True)
 def _block_cleared_for_the_older_delete_tests(monkeypatch):
-    """The older delete_in_egeria tests exercise the delete itself, so they run with the ISSUE-117 block cleared.
+    """The older delete_in_egeria tests exercise the delete itself, so they run with the archive-cascade block cleared.
     TestIssue117BlockOnDeleteInEgeria removes it again to prove the refusal."""
     monkeypatch.setenv("RE_ISSUE_117_BLOCK_OFF", "test-clearance")
 
@@ -220,6 +220,23 @@ class TestIssue117BlockOnDeleteInEgeria:
             assert r.failed == 2 and r.succeeded == 0
             assert all(d["message"] == ISSUE_117_WORDS for d in r.details)
         assert registry.get_egeria_asset_guid("p0") == "guid-0", "the local pointer is untouched"
+
+    def test_the_override_lifts_the_block_for_its_one_slug_only(self, registry, monkeypatch):
+        """Each target is judged by its own slug: p1 is named and goes on (dry run: no client), p0 is refused."""
+        from datetime import datetime, timezone
+
+        from resource_explorer import catalogue_gateway as gw
+        monkeypatch.setattr(gw, "issue_117_blocked", gw._shipped_issue_117_blocked)       # the shipped rules, un-stubbed
+        monkeypatch.setenv("RE_ISSUE_117_BLOCK_OFF", "tester/" + datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") + "/p1")
+        with patch("pyegeria.AssetMaker") as AM:
+            r = delete_in_egeria(registry, _targets("p0", "p1"), dry_run=True)
+        AM.assert_not_called()
+        by = {d["slug"]: d for d in r.details}
+        assert by["p0"]["result"] == "failed" and by["p0"]["message"] == gw.ISSUE_117_WORDS
+        assert by["p1"]["result"] != "failed", by["p1"]
+        monkeypatch.setenv("RE_ISSUE_117_BLOCK_OFF", "tester/2020-01-01T00:00:00Z/p1")      # expired: both refused
+        r = delete_in_egeria(registry, _targets("p0", "p1"), dry_run=True)
+        assert r.failed == 2
 
 
 class TestOnlyStatusStaleIsResolved:
