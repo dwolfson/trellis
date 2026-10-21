@@ -43,14 +43,29 @@ it. There is no cheap stat: the only engine-host call that tests a path
 is a full Folder Survey launch (`FolderSurveyService` ignores
 `CHECK_ASSET`), so a probe must never launch a survey. Verification is in
 two honest parts: at attach-root, a mounted-prefix check against a small
-deployment-level prefix map read once from the platform's compose mounts
-(host prefix to container prefix), recorded as "expected reachable by
-Egeria · under `/deployments/…` · unverified"; then the first Egeria-led
+deployment-level prefix map (host prefix to container prefix), recorded
+as "expected reachable by Egeria · under `/deployments/…` · unverified";
+then the first Egeria-led
 survey is the verification, a completed Folder Survey writing "Egeria can
 read … · verified `<date>`", and `BASIC-FILE-CONNECTOR-404-001` writing
 "Egeria cannot read … · `<date>`" with the lever flipping to RE-led for
 the next run and the failed launch kept as evidence. Mandy item: a stat
 or exists request type for the file survey service.
+
+**The prefix map** (ruled 2026-10-21): configuration is the source, one
+deployment setting of host-prefix to container-prefix pairs, no DDL. Two
+pre-fills, each pair recording its source and date: docker inspect of the
+platform container when it is local and reachable, and, for the
+quickstart, the compose file itself (the owner: "at least in the
+quickstart environment we can cheat and look at the quickstart compose
+script to see what is mounted. May need more from Egeria, but this is a
+way for now"), reading `egeria-quickstart.yaml`'s `egeria-main` volumes
+with relative host paths resolved against the compose directory.
+Precedence: configured, then inspected, then compose. With none, the map
+is empty and every attach records "Egeria's mounts unknown on this
+deployment · RE-led until configured", never a guess. Admin shows the
+map read-only with each pair's source and date; editable later with the
+zone-configuration Admin item.
 
 **The file-name log cannot be turned off.** `FolderSurveyService` adds
 "Profile File Names to External Log" unconditionally and never reads
@@ -121,6 +136,22 @@ Not urgent (owner). Two entries:
    only channel.
 2. Remote access mechanisms as a user-extensible plugin point (§3), SFTP
    and S3 as the built-ins, packaged and declared like library steps.
+3. **An RE-owned folder survey that can skip steps** (owner, 2026-10-21:
+   "if we want to be able to skip analysis steps in an Egeria Survey, we
+   could create our own version that takes a parameter to gate some
+   steps"). Ruling on its shape: it is entry 1 made concrete, not a Java
+   connector. RE's walk, declared through the case-3 wiring as a
+   `SurveyActionService` with request type `re-folder-survey`, takes a
+   request parameter `skipSteps` (the step names from
+   `SurveyFolderAnnotationType`, "Profile File Names to External Log"
+   first among them) and produces Egeria's own folder annotation types
+   under the same step names, so a reader cannot tell the two surveys
+   apart except by the surveyor named on the report. It runs wherever RE
+   has reach, which includes every path only RE can read; for a path
+   only Egeria's container can read, Mandy's M-F2 (honour
+   `ignoreAnalysisSteps`) stays the only way, so the two are
+   complements, not alternatives. Not urgent; after the Files first
+   slice and the case-3 gate.
 
 ## 5. Slices and gates
 
