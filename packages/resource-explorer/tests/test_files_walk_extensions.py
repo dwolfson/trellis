@@ -344,7 +344,7 @@ def test_the_narrative_step_opens_only_its_candidate_files(registry, tmp_path, m
     monkeypatch.setenv(we.HASH_ENV, "0")
     root = _tree(tmp_path)
     (root / "NOTES.md").write_text("# Notes\n\nmore\n")
-    (root / "SECRETS-README.md").write_text("password=hunter2")        # candidate-looking, but secret-named
+    (root / "secrets-readme.md").write_text("password=hunter2")        # candidate-looking, but secret-named
     (root / "README_big.md").write_text("x" * (we.NARRATIVE_MAX_FILE_BYTES + 1))
     opened = _watch_opens(monkeypatch, root)
     fs, sd = _walk(registry, root)
