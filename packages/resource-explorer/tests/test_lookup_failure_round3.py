@@ -54,7 +54,7 @@ def _fs_boundary(monkeypatch, lookup):
 
     ac, am, dd = _fake(AutomatedCuration), _fake(AssetMaker), _fake(DataDiscovery)
     ac.get_guid_for_name.side_effect = lookup
-    ac.create_folder_element_from_template.return_value = GUID
+    ac.get_template_guid_for_technology_type.return_value = GUID
     ac.create_elem_from_template.return_value = GUID
     am.create_asset.return_value = GUID
     dd.create_annotation.return_value = GUID
@@ -78,7 +78,8 @@ def test_fs_publish_route_with_a_skipped_file_is_partial(fs_reg, monkeypatch):
     body = r.json()
     assert body["status"] == "partial"
     assert list(body["files_not_checked"]) == ["a.csv"]
-    names = [c.args[0]["placeholderPropertyValues"]["fileName"] for c in ac.create_elem_from_template.call_args_list]
+    names = [c.args[0]["placeholderPropertyValues"]["fileName"] for c in ac.create_elem_from_template.call_args_list
+             if "fileName" in c.args[0]["placeholderPropertyValues"]]      # the root folder has none
     assert names == ["b.csv"]
 
 
@@ -220,7 +221,7 @@ def test_odd_answer_filesystem_root_creates_nothing():
     s = _fs_surveyor(lambda *a, **k: ODD)
     with pytest.raises(EgeriaFileSystemSurveyorError, match="could not be made"):
         s.catalog_and_survey(_FS, {**dict(_FS_TWO), "inventory": []})
-    s._automated_curation.create_folder_element_from_template.assert_not_called()
+    s._automated_curation.create_elem_from_template.assert_not_called()
 
 
 def test_odd_answer_publisher_sub_resource_creates_nothing(tmp_path):

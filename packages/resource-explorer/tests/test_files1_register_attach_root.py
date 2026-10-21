@@ -107,6 +107,7 @@ def test_check_mount_says_what_this_server_can_read(tmp_path, reg):
 
 # ── 3. attach the root folder: created once, proved by a read-back ───────
 
+TEMPLATE_GUID = "fbdd8efd-1b69-474c-bb6d-0a304b394146"      # FilesTemplateType.FILE_FOLDER_TEMPLATE
 QN = "FileFolder::nas:file://nas/data"      # the "File System Directory" template's qualifiedName for fs `nas`
 
 
@@ -116,7 +117,8 @@ def _boundary(monkeypatch, *, lookup=None, read_back=None, created=GUID):
 
     ac, am, dd = _fake(AutomatedCuration), _fake(AssetMaker), _fake(DataDiscovery)
     ac.get_guid_for_name.side_effect = lookup or (lambda name, *a, **k: MISS)
-    ac.create_folder_element_from_template.return_value = created
+    ac.get_template_guid_for_technology_type.return_value = TEMPLATE_GUID
+    ac.create_elem_from_template.return_value = created
 
     def read(guid, *a, **k):
         return {"elementHeader": {"guid": guid, "type": {"typeName": "FileFolder"}},
@@ -164,9 +166,11 @@ def test_attach_root_creates_the_folder_once_and_a_second_press_creates_nothing(
     assert r.status_code == 200, r.text
     first = r.json()
     assert first["state"] == "attached" and first["created"] is True and first["guid"] == GUID
-    ac.create_folder_element_from_template.assert_called_once()
-    kw = ac.create_folder_element_from_template.call_args.kwargs
-    assert kw["path_name"] == "file://nas/data" and kw["file_system"] == "nas" and kw["folder_name"] == "NAS data"
+    ac.create_elem_from_template.assert_called_once()
+    body = ac.create_elem_from_template.call_args.args[0]
+    ph = body["placeholderPropertyValues"]
+    assert ph["directoryPathName"] == "file://nas/data" and ph["fileSystemName"] == "nas" and ph["directoryName"] == "NAS data"
+    assert body["templateGUID"] == TEMPLATE_GUID
     am.get_asset_by_guid.assert_called_once()
     assert am.get_asset_by_guid.call_args.args[0] == GUID            # read back BY GUID
 
@@ -181,8 +185,8 @@ def test_attach_root_creates_the_folder_once_and_a_second_press_creates_nothing(
     r2 = c.post("/api/filesystems/nas/attach-root", headers=_headers())
     assert r2.status_code == 200, r2.text
     assert r2.json()["state"] == "attached" and r2.json()["created"] is False and r2.json()["guid"] == GUID
-    ac.create_folder_element_from_template.assert_called_once()     # still one folder
-    assert ac.create_elem_from_template.call_count == 0              # no data file
+    ac.create_elem_from_template.assert_called_once()     # still one folder
+    assert ac.create_elem_from_template.call_count == 1              # the folder only: no data file
     assert am.create_asset.call_count == 0                            # no SurveyReport
     assert dd.create_annotation.call_count == 0                       # no annotation, no relationship
     assert am.get_asset_by_guid.call_count == 2                       # read back again, by GUID
@@ -202,7 +206,7 @@ def test_attach_root_adopts_a_folder_egeria_already_has_by_name_and_creates_noth
     r = _client().post("/api/filesystems/nas/attach-root", headers=_headers())
     assert r.status_code == 200, r.text
     assert r.json()["created"] is False and r.json()["state"] == "attached"
-    ac.create_folder_element_from_template.assert_not_called()
+    ac.create_elem_from_template.assert_not_called()
     assert fs.get_filesystem("nas").egeria_asset_guid == GUID
 
 
@@ -246,7 +250,7 @@ def test_a_stale_cached_guid_is_replaced_by_lookup_or_create_on_the_next_press(f
     assert r.status_code == 200, r.text
     assert r.json()["state"] == "attached" and r.json()["created"] is True and r.json()["guid"] == GUID
     assert fs.get_filesystem("nas").egeria_asset_guid == GUID
-    ac.create_folder_element_from_template.assert_called_once()
+    ac.create_elem_from_template.assert_called_once()
 
 
 @pytest.mark.usefixtures("_zone_access_open")
@@ -283,7 +287,7 @@ def test_a_lookup_that_could_not_be_made_creates_nothing(fs, monkeypatch):
     ac, am, dd, _sent = _boundary(monkeypatch, lookup=boom)
     r = _client().post("/api/filesystems/nas/attach-root", headers=_headers())
     assert r.status_code >= 400
-    ac.create_folder_element_from_template.assert_not_called()
+    ac.create_elem_from_template.assert_not_called()
     assert fs.latest_filesystem_root_proof("nas") is None
 
 
@@ -292,8 +296,8 @@ def test_the_fakes_bind_the_real_pyegeria_signatures():
     from pyegeria import AssetMaker, AutomatedCuration
 
     inspect.signature(AutomatedCuration.get_guid_for_name).bind(object(), "file://nas/data")
-    inspect.signature(AutomatedCuration.create_folder_element_from_template).bind(
-        object(), path_name="p", folder_name="f", file_system="s", description="d")
+    inspect.signature(AutomatedCuration.create_elem_from_template).bind(object(), {"class": "TemplateRequestBody"})
+    inspect.signature(AutomatedCuration.get_template_guid_for_technology_type).bind(object(), "File System Directory")
     inspect.signature(AssetMaker.get_asset_by_guid).bind(object(), GUID, body={"class": "GetRequestBody"})
 
 

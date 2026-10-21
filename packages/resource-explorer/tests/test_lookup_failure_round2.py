@@ -183,7 +183,8 @@ def test_filesystem_one_unchecked_file_is_skipped_and_listed_not_fatal():
     s._automated_curation.create_elem_from_template.return_value = GUID
     out = s.catalog_and_survey(_FS, dict(_FS_TWO))
     bodies = [c.args[0] for c in s._automated_curation.create_elem_from_template.call_args_list]
-    assert [b["placeholderPropertyValues"]["fileName"] for b in bodies] == ["b.csv"]
+    # the first template call is the root folder (it has no fileName); the data files follow
+    assert [b["placeholderPropertyValues"]["fileName"] for b in bodies if "fileName" in b["placeholderPropertyValues"]] == ["b.csv"]
     assert list(out["files_not_checked"]) == ["a.csv"]
     assert "could not be made" in out["files_not_checked"]["a.csv"]
     assert out["file_guids"] == {"b.csv": GUID}
