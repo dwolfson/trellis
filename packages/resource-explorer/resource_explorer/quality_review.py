@@ -1,0 +1,163 @@
+"""The review of proposed quality checks on a database's Curate page (DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md §10).
+
+Reads the latest `database_quality_proposals` batch and the latest verdict per `check_key`, and says for each check one
+of four things, always from persisted rows:
+
+    proposed         no verdict yet: a person has not decided
+    accepted         the latest verdict row says accepted
+    rejected         the latest verdict row says rejected
+    retired          the latest verdict row says retired
+    not_established  the selection rule could not be evaluated; NO verdict can be recorded (the reason is shown)
+
+A verdict is a new row every time (append-only; the latest wins), recorded as the signed-in person. It is local: no
+Egeria call here, Publish is the verb that writes rules. There is no bulk verdict: the design speaks of accepting,
+editing and rejecting one check at a time, so this module records one `check_key` per call.
+"""
+from __future__ import annotations
+
+from resource_explorer.surveyors.database.quality.catalogue import egeria_dimension, load_catalogue
+
+PROPOSALS_TABLE = "database_quality_proposals"
+
+#: The two verdicts a person gives here. `retired` belongs to the retire flow, not to this review.
+PERSON_VERDICTS = ("accepted", "rejected")
+#: The states a check shows, in the order the filter lists them.
+STATES = ("proposed", "accepted", "rejected", "retired", "not_established")
+
+
+class ReviewError(Exception):
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status, self.message = status, message
+
+
+def _dimension_of(test_type: str, catalogue: dict) -> str:
+    entry = catalogue.get(test_type)
+    return egeria_dimension(entry.dimension) if entry is not None else ""
+
+
+def _status(proposal: dict, verdict: dict | None) -> str:
+    """The word a check shows. A recorded verdict is what a person decided; without one the proposal's own state
+    decides (not established stays not established: it cannot be decided)."""
+    if verdict and verdict.get("verdict") in ("accepted", "rejected", "retired"):
+        return verdict["verdict"]
+    return "not_established" if proposal.get("state") == "not_established" else "proposed"
+
+
+def _row(proposal: dict, verdict: dict | None, catalogue: dict) -> dict:
+    status = _status(proposal, verdict)
+    return {
+        "id": proposal["id"],
+        "check_key": proposal["check_key"],
+        "schema_name": proposal["schema_name"],
+        "table_name": proposal["table_name"],
+        "column_name": proposal.get("column_name") or "",
+        "test_type": proposal["test_type"],
+        "dimension": _dimension_of(proposal["test_type"], catalogue),
+        "origin": proposal.get("origin") or "",
+        "general_type": proposal.get("general_type") or "",
+        "params": proposal.get("params_json") if isinstance(proposal.get("params_json"), dict) else {},
+        "profile_surveyed_at": proposal.get("profile_surveyed_at") or "",
+        "proposal_state": proposal.get("state") or "",
+        "reason": proposal.get("reason") or "",
+        "status": status,
+        # a not-established check has no selector; every other one can be decided (again)
+        "selectable": status != "not_established",
+        "verdict": ({"id": verdict.get("id"), "verdict": verdict.get("verdict"), "decided_by": verdict.get("decided_by"),
+                     "created_at": verdict.get("created_at"), "note": verdict.get("note") or ""}
+                    if verdict else None),
+    }
+
+
+def _matches(row: dict, *, test_type: str, dimension: str, state: str) -> bool:
+    return ((not test_type or row["test_type"] == test_type)
+            and (not dimension or row["dimension"] == dimension)
+            and (not state or row["status"] == state))
+
+
+def _zero() -> dict:
+    return {"total": 0, **{s: 0 for s in STATES}}
+
+
+def build_review(registry, slug: str, *, test_type: str = "", dimension: str = "", state: str = "",
+                 schema: str = "", table: str = "") -> dict:
+    """The proposals of one database, grouped by table.
+
+    Without `table`: every group with its counts (under the filters) and NO rows, so 233 tables stay cheap to
+    draw. With `schema` and `table`: that one group, with its rows. `filters` always counts the whole batch (not
+    under the filters) so a filter never hides the options that would undo it."""
+    if state and state not in STATES:
+        raise ReviewError(400, f"state must be one of {', '.join(STATES)}, got {state!r}")
+    proposals = registry.query_detail_rows(PROPOSALS_TABLE, slug)
+    verdicts = registry.get_quality_verdicts(slug)
+    catalogue = load_catalogue()
+    rows = [_row(p, verdicts.get(p["check_key"]), catalogue) for p in proposals]
+
+    overall, test_types, dimensions = _zero(), {}, {}
+    for r in rows:
+        overall["total"] += 1
+        overall[r["status"]] += 1
+        test_types[r["test_type"]] = test_types.get(r["test_type"], 0) + 1
+        dimensions[r["dimension"]] = dimensions.get(r["dimension"], 0) + 1
+
+    groups: dict[tuple[str, str], dict] = {}
+    for r in rows:
+        key = (r["schema_name"], r["table_name"])
+        g = groups.setdefault(key, {"schema_name": key[0], "table_name": key[1], "counts": _zero(), "rows": []})
+        if _matches(r, test_type=test_type, dimension=dimension, state=state):
+            g["counts"]["total"] += 1
+            g["counts"][r["status"]] += 1
+            g["rows"].append(r)
+
+    wanted = (schema, table)
+    if table:
+        out = [g for k, g in groups.items() if k == wanted]
+        if not out:
+            raise ReviewError(404, f"no proposals for {schema}.{table} in the latest batch")
+    else:
+        out = [{**g, "rows": None} for g in groups.values() if g["counts"]["total"]]
+    out.sort(key=lambda g: (g["schema_name"], g["table_name"]))
+    shown = _zero()
+    for g in out:
+        for k, v in g["counts"].items():
+            shown[k] += v
+    return {
+        "slug": slug,
+        "surveyed_at": proposals[0]["surveyed_at"] if proposals else "",
+        "profile_surveyed_at": proposals[0].get("profile_surveyed_at", "") if proposals else "",
+        "has_proposals": bool(proposals),
+        "tables": len(groups),
+        "counts": overall,
+        "shown": shown,
+        "filters": {
+            "test_types": [{"value": k, "count": v} for k, v in sorted(test_types.items())],
+            "dimensions": [{"value": k, "count": v} for k, v in sorted(dimensions.items())],
+            "states": [{"value": s, "count": overall[s]} for s in STATES],
+        },
+        "applied": {"test_type": test_type, "dimension": dimension, "state": state},
+        "groups": out,
+    }
+
+
+def record_verdict(registry, slug: str, check_key: str, verdict: str, *, decided_by: str, note: str = "") -> dict:
+    """One person's accept or reject of one proposed check, as a NEW verdict row, then read back.
+
+    The parameters recorded are the proposal's own (read here from the latest batch, never taken from the caller):
+    this is accept-as-proposed. Returns the check as `build_review` would show it plus `recorded`, true only when
+    the latest verdict row, read again, is the one just written."""
+    if verdict not in PERSON_VERDICTS:
+        raise ReviewError(400, f"verdict must be one of {', '.join(PERSON_VERDICTS)}, got {verdict!r}")
+    if not decided_by:
+        raise ReviewError(401, "a verdict needs a person to attribute it to")
+    proposal = next((p for p in registry.query_detail_rows(PROPOSALS_TABLE, slug) if p["check_key"] == check_key), None)
+    if proposal is None:
+        raise ReviewError(404, f"no proposal {check_key!r} in the latest batch for {slug}")
+    if proposal.get("state") == "not_established":
+        raise ReviewError(409, f"not established, so it cannot be decided: {proposal.get('reason') or 'no reason recorded'}")
+    params = proposal.get("params_json") if isinstance(proposal.get("params_json"), dict) else {}
+    written = registry.record_quality_verdict(slug, check_key, verdict, params, proposal_id=proposal["id"],
+                                              note=note, decided_by=decided_by)
+    latest = registry.get_quality_verdicts(slug).get(check_key) or {}
+    recorded = (latest.get("verdict") == verdict and latest.get("decided_by") == decided_by
+                and latest.get("created_at") == written["created_at"])
+    return {"recorded": recorded, "check": _row(proposal, latest or None, load_catalogue())}

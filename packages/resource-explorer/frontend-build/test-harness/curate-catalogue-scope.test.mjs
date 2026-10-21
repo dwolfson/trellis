@@ -190,12 +190,12 @@ const calls = (server, method, frag) => server.calls.filter((c) => c.method === 
 
 /* ── the section, its header, the element ──────────────────────────────── */
 
-test('the scope is on Contents; the two waiting sections and the dependencies line are on Structure', async () => {
+test('the scope is on Contents; the two waiting sections, the quality checks and the dependencies line are on Structure', async () => {
   const { document } = await setUp(baseView());
   const contents = document.querySelector('[data-curate-tab-panel="contents"]');
   const structure = document.querySelector('[data-curate-tab-panel="structure"]');
   assert.deepEqual([...contents.querySelectorAll('[data-curate-work]')].map((e) => e.dataset.curateWork), ['scope']);
-  assert.deepEqual([...structure.querySelectorAll('[data-curate-work]')].map((e) => e.dataset.curateWork), ['glossary', 'schema-match', 'dependencies']);
+  assert.deepEqual([...structure.querySelectorAll('[data-curate-work]')].map((e) => e.dataset.curateWork), ['glossary', 'schema-match', 'quality-checks', 'dependencies']);
   assert.match(flat(contents.querySelector('[data-curate-work="scope"]')), /^What gets published/);
   assert.match(flat(structure.querySelector('[data-curate-work="glossary"]')), /and the tables to be published first \(on Contents\)/);
   assert.match(flat(structure.querySelector('[data-curate-work="schema-match"]')), /and the tables to be published first \(on Contents\)/);

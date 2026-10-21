@@ -25,7 +25,7 @@
 // and it goes when the experiment goes.
 import { listWorkLists, openWorkList, saveAsWorkList, openDialog, closeCellDetail, CELL }
   from '/static/next/worklist.js';
-import { ago, whenMs, verdictLineHtml, changedTimesHtml, savedLine, readBackAt, PUBLISHED_EARLIER_SENTENCE, PUBLISHED_EARLIER_WORD } from '/static/next/format.js';
+import { ago, whenMs, verdictLineHtml, changedTimesHtml, savedLine, readBackAt, stepOutcome, statusToken, PUBLISHED_EARLIER_SENTENCE, PUBLISHED_EARLIER_WORD } from '/static/next/format.js';
 // The one glyph table (REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §1). `GLYPH`
 // and `factGlyph` below are thin views over `GLYPH_STATES` -- this file
 // declares no glyph-to-meaning mapping of its own any more.
@@ -5181,6 +5181,7 @@ export function surveyRowHtml(c) {
     actions: `${catalogRetryHtml(c)}${run}${coordinateControlHtml(c)}`,
     body: `<div data-def-text class="min-w-0">
       ${c.description ? `<div class="text-caveat text-ink-muted">${esc(onePurpose(c.description))}</div>` : ''}
+      ${c.no_catalog_question ? `<div data-def-no-question class="mt-[2px] text-provenance text-ink-muted"><span class="font-glyph" aria-hidden="true">${GLYPH_STATES.undecided_count.glyph}</span> ${esc(c.no_catalog_question)}</div>` : ''}
       <div class="mt-[2px] text-provenance text-ink-muted">produces · ${
         produces.length ? `<span class="font-mono">${produces.map((t) => esc(t)).join(', ')}</span>` : 'nothing declared'}</div>
       ${engineNoteHtml(c)}
@@ -6427,7 +6428,7 @@ export function firstFailureSentence(entry) {
   let msg = '';
   if (d && Array.isArray(d.errors) && d.errors.length) msg = String(d.errors[0]);
   if (!msg && d && Array.isArray(d.steps)) {
-    const bad = d.steps.find((st) => st.status && st.status !== 'ok' && typeof st.detail === 'string');
+    const bad = d.steps.find((st) => st.status && st.status !== 'ok' && st.status !== 'skipped_by_design' && typeof st.detail === 'string');
     if (bad) msg = bad.detail;
   }
   if (!msg) { const f = activityFailure(entry); msg = f ? f.reason : ''; }
@@ -6781,7 +6782,7 @@ function declaredVsReceivedLineHtml(t) {
       const statuses = t.step_statuses || {};
       const failing = (t.declared_by || []).filter((s) => statuses[s] && statuses[s] !== 'ok');
       const detail = (failing.length ? failing : (t.declared_by || []))
-        .map((s) => `${s}${statuses[s] ? ` (${statuses[s]})` : ''}`).join(', ');
+        .map((s) => `${s}${statuses[s] ? ` (${statusToken(statuses[s])})` : ''}`).join(', ');
       phrase = `the declaring step did not finish — ${detail}`;
       break;
     }
@@ -6942,7 +6943,8 @@ export async function openRunsList(slug) {
       runPublish = r.publish_proof ? publishProofHtml(r.publish_proof) : runPublishHtml(d);
     } catch (_) { /* a detail we cannot parse is a run with no step list */ }
     const ok = steps.filter((s) => s.status === 'ok').length;
-    const bad = steps.filter((s) => s.status && s.status !== 'ok');
+    const bad = steps.filter((s) => s.status && s.status !== 'ok' && stepOutcome(s).kind === 'failed');
+    const notRun = steps.filter((s) => stepOutcome(s).kind === 'not_run');
     return `<details class="border-b border-rule py-s2">
       <summary class="cursor-pointer">
         <span class="text-ink">${esc(r.summary || 'survey run')}</span>
@@ -6952,6 +6954,7 @@ export async function openRunsList(slug) {
         <div class="mt-s1 text-provenance text-ink-muted">
           <span class="text-state-ok">${ok} ran</span>${
           bad.length ? ` · <span class="text-state-warn">${bad.length} did not</span>` : ''}${
+          notRun.length ? ` · <span data-steps-not-run class="text-ink-muted">${notRun.length} not run</span>` : ''}${
           runPublish ? ` · <span data-run-publish>${runPublish}</span>` : ''}</div>
         <ul class="m-0 mt-s1 list-none p-0 text-caveat">
           ${steps.map((s) => {
@@ -6960,15 +6963,17 @@ export async function openRunsList(slug) {
             // for a non-ok step, but per REPLY-DESIGNER-ROUND2-DATABASE-
             // SCREENS.md §1, ⚠ now means ONLY "needs a person"; an error
             // uses ✕, so it does not collide with the human-attention glyph.
-            const ok = s.status === 'ok';
-            const g = ok ? GLYPH_STATES.measured : GLYPH_STATES.error;
-            return `<li class="flex gap-s2">
+            const out = stepOutcome(s);
+            const ok = out.kind === 'ok';
+            const g = ok ? GLYPH_STATES.measured : out.kind === 'not_run' ? GLYPH_STATES.unrun : GLYPH_STATES.error;
+            return `<li class="flex gap-s2" data-step-outcome="${out.kind}">
             <span class="${g.tone} font-glyph" title="${esc(g.word)}" aria-label="${esc(g.word)}">${g.glyph}</span>
             <span class="min-w-0 font-mono text-provenance">${
               esc(String(s.step || '').split('::').pop())}</span>
             ${stepSourceHtml(s)}
-            ${!ok && s.detail
-              ? `<span class="text-ink-muted">— ${esc(String(s.detail).slice(0, 120))}</span>` : ''}
+            ${out.kind === 'not_run'
+              ? `<span data-step-not-run class="text-ink-muted" title="${esc(out.title)}">— ${esc(out.words)}</span>`
+              : (!ok && s.detail ? `<span class="text-ink-muted">— ${esc(String(s.detail).slice(0, 120))}</span>` : '')}
           </li>`;
           }).join('')}
         </ul>`

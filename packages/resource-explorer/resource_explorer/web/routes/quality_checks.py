@@ -1,0 +1,68 @@
+"""Quality-check review for a database (Curate, Structure tab).
+
+GET  /api/quality-checks/{slug}/proposals   groups by table with counts; `?schema=&table=` adds one group's rows
+POST /api/quality-checks/{slug}/verdict     one accept or reject of one check, as the signed-in person
+
+The write resolves the person from the session first (401 when nobody is signed in) and never takes the author, the
+parameters or the proposal id from the body. It writes RE's own verdict row only; Publish is what reaches Egeria.
+"""
+from __future__ import annotations
+
+import asyncio
+from typing import Literal
+
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
+
+from resource_explorer import quality_review as review
+from resource_explorer.auth import get_current_user
+from resource_explorer.registry import ProjectRegistry
+
+router = APIRouter()
+
+
+def _require_author(request: Request, action: str) -> str:
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail=f"Sign in to {action}: a verdict needs a person to be recorded as.")
+    return author
+
+
+def _registry_for(slug: str) -> ProjectRegistry:
+    registry = ProjectRegistry()
+    if not registry.get_database(slug, allow_unreadable=True):
+        raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
+    return registry
+
+
+class VerdictBody(BaseModel):
+    check_key: str
+    verdict: Literal["accepted", "rejected"]
+    note: str = ""
+
+
+async def _run(fn, *args, **kwargs):
+    try:
+        return await asyncio.to_thread(fn, *args, **kwargs)
+    except review.ReviewError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.message) from exc
+
+
+@router.get("/{slug}/proposals")
+async def read_proposals(slug: str, test_type: str = "", dimension: str = "", state: str = "",
+                         schema: str = "", table: str = "") -> dict:
+    registry = _registry_for(slug)
+    return await _run(review.build_review, registry, slug, test_type=test_type, dimension=dimension, state=state,
+                      schema=schema, table=table)
+
+
+@router.post("/{slug}/verdict")
+async def post_verdict(slug: str, body: VerdictBody, request: Request) -> dict:
+    author = _require_author(request, "accept or reject a quality check")
+    registry = _registry_for(slug)
+    from resource_explorer.web.routes.curate import authorize_resource_write
+
+    await authorize_resource_write(registry, "database", slug)
+    return await _run(review.record_verdict, registry, slug, body.check_key, body.verdict, decided_by=author,
+                      note=body.note)

@@ -273,6 +273,10 @@ def list_definitions() -> list[dict]:
     return rows
 
 
+#: What a card says when no catalog question is scoped to its definition (the absence is shown, not filtered).
+NO_CATALOG_QUESTION_WORDS = "no catalog question yet · run from Survey & analyses"
+
+
 @router.get("/{entity_type}/{slug}/candidates")
 async def list_candidates(
     entity_type: str, slug: str,
@@ -354,6 +358,27 @@ async def list_candidates(
             # silently show an empty list (D2's own decision: the full-scan
             # path stays an explicit fallback, not removed).
             thin_candidates = reader.find_candidate_process_guids(adapter.technology_type, survey_kind=survey_kind)
+
+        # An unscoped definition never vanishes: one that no catalog question (at any stage) is scoped to cannot be
+        # found through the questions, and used to be dropped whenever any other definition matched. It is added,
+        # runnable, and marked so the card says why it is not under a question. Copies, because the lists above may
+        # be the reader's cached ones.
+        thin_candidates = [dict(c) for c in thin_candidates]
+        try:
+            # Every question the catalog holds for the type, whatever its stage: a definition scoped by a question of
+            # another stage is not "unscoped", it is just not this stage's.
+            every_question = question_rows if phase is None else get_questions(resource_type=entity_type, phase=None)
+            unscoped = reader.find_unscoped_process_guids(
+                [q["question"] for q in every_question], adapter.technology_type, survey_kind=survey_kind)
+        except Exception as exc:  # noqa: BLE001 - the matched list still renders; only the extra rows are missing
+            log.warning("unscoped Survey Definitions for %s not listed: %s", adapter.technology_type, exc)
+            unscoped = []
+        unscoped_names = {c["qualified_name"] for c in unscoped}
+        have = {c["qualified_name"] for c in thin_candidates}
+        thin_candidates.extend(c for c in unscoped if c["qualified_name"] not in have)
+        for c in thin_candidates:
+            if c["qualified_name"] in unscoped_names:
+                c["no_catalog_question"] = NO_CATALOG_QUESTION_WORDS
 
         # Real Egeria-documented "what does a native step actually produce" info,
         # keyed by Egeria's own Technology Type name (deliberately not the same

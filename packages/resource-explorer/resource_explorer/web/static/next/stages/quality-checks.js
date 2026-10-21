@@ -1,0 +1,280 @@
+/* Quality checks on a database's Curate page (Structure tab): proposals grouped by table, each with Accept | Reject.
+ *
+ * Three rules from the designer's and owner's words:
+ *  - every state is a cue ON the element (a glyph and a short word beside the selector), not a sentence elsewhere;
+ *  - a press shows "recording…" at once and "accepted · who · date" only when the verdict row is READ BACK matching
+ *    the press (the server's `recorded`), never from the click; a failure stays on the row until the next press;
+ *  - a check that could not be established has NO selector, and says why on its row.
+ * There is no bulk verdict: one press decides one check (the design speaks of one check at a time).
+ *
+ * The module draws into one slot and takes its API and the signed-in person as arguments, so it loads without the
+ * rest of the app and a test can drive it with a stub. Tables use colresize (report-tables.js). */
+import { esc, gridHtml, attachGrids, stamp } from '/static/next/stages/report-tables.js';
+import { stateEntry } from '/static/next/glyphs.js';
+import { selectorHtml } from '/static/next/stages/curate-scope.js';
+
+export const QC_COLS = {
+  id: 'db-quality-checks', chrome: 60,
+  columns: [
+    { key: 'decision', label: 'Decision', def: 210, min: 150, align: 'left' },
+    { key: 'column', label: 'Column', def: 160, min: 90, align: 'left', breakLong: true },
+    { key: 'test', label: 'Test type', def: 130, min: 90, align: 'left', breakLong: true },
+    { key: 'dimension', label: 'Dimension', def: 110, min: 90, align: 'left' },
+    { key: 'params', label: 'Parameters', def: 260, min: 120, align: 'left', breakLong: true },
+    { key: 'profile', label: 'Profile of', def: 130, min: 100 },
+  ],
+};
+
+export const NO_PROPOSALS_SENTENCE =
+  'No quality checks have been proposed for this database yet. Run the DatabaseQualitySurvey from Survey & analyses.';
+
+/** A cue's glyph and tone come from the one glyph table; the WORDS are this module's (a verdict is not a survey state). */
+const GLYPH_OF = { proposed: 'undecided_count', accepted: 'measured', rejected: 'cancelled', retired: 'cancelled',
+  not_established: 'not_established', pending: 'running', failed: 'error' };
+
+const day = (iso) => String(iso || '').slice(0, 10);
+
+/** The cue under a row's selector. `kind` is one of GLYPH_OF's keys; `words` is the short word; `title` the sentence. */
+export function cueHtml(kind, words, title = '') {
+  const e = stateEntry(GLYPH_OF[kind] || 'unknown');
+  // The tone class is a literal in each branch (the stylesheet is built from the literals it can see).
+  const open = e.tone === 'text-state-ok' ? '<div class="text-state-ok text-provenance"'
+    : e.tone === 'text-state-warn' ? '<div class="text-state-warn text-provenance"' : '<div class="text-ink-muted text-provenance"';
+  return `${open} data-qc-cue="${esc(kind)}" title="${esc(title || words)}"><span class="font-glyph" aria-hidden="true">${e.glyph}</span> ${esc(words)}</div>`;
+}
+
+/** The cue for a row from its persisted fields, the press in flight, or the last failure. Pure. */
+export function rowCueHtml(row, { pending = false, failure = '', me = '' } = {}) {
+  if (pending) return cueHtml('pending', 'recording…');
+  if (failure) return cueHtml('failed', `not recorded · ${failure}`, failure);
+  const v = row.verdict;
+  if (row.status === 'not_established') {
+    return cueHtml('not_established', 'not established', row.reason || 'no reason recorded');
+  }
+  if (v && (row.status === 'accepted' || row.status === 'rejected' || row.status === 'retired')) {
+    const who = v.decided_by && v.decided_by === me ? 'you' : (v.decided_by || 'unknown');
+    return cueHtml(row.status, `${row.status} · ${who} · ${day(v.created_at)}`,
+      `${row.status} by ${v.decided_by || 'unknown'} ${v.created_at || ''} · recorded in Resource Explorer · Egeria changes when you press Publish`);
+  }
+  return cueHtml('proposed', 'proposed', 'no decision recorded yet');
+}
+
+/** The Accept | Reject selector for one check, or '' when the check cannot be decided. */
+export function verdictSelectorHtml(row, { me = '', pending = false } = {}) {
+  if (!row.selectable) return '';
+  const off = !me || pending;
+  const dis = me ? (pending ? 'disabled aria-busy="true"' : '')
+    : 'disabled title="sign in to accept or reject a check · it needs a person to record"';
+  const key = esc(row.check_key);
+  return selectorHtml({
+    own: row.status === 'accepted' || row.status === 'rejected' ? row.status : '', explicit: false, off, dis,
+    segs: [['accepted', 'Accept'], ['rejected', 'Reject']], ariaLabel: 'Accept or reject this check',
+    segAttrs: (choice) => `data-qc-act="verdict" data-qc-verdict="${choice}" data-qc-key="${key}"`,
+    clearAttrs: '',
+  });
+}
+
+const paramsText = (params) => Object.entries(params || {}).filter(([k]) => k !== 'profile_surveyed_at')
+  .map(([k, v]) => `${k}=${typeof v === 'object' && v !== null ? JSON.stringify(v) : v}`).join(' · ');
+
+/** One check as a grid row. `ui` = { pending:Set, failed:Map, me }. */
+export function checkRow(row, ui) {
+  const pending = ui.pending.has(row.check_key);
+  const failure = ui.failed.get(row.check_key) || '';
+  return {
+    attrs: `data-qc-row="${esc(row.check_key)}" data-qc-status="${esc(row.status)}"`,
+    tone: row.status === 'rejected' ? 'lowered' : '',
+    cells: {
+      decision: `${verdictSelectorHtml(row, { me: ui.me, pending })}${rowCueHtml(row, { pending, failure, me: ui.me })}`,
+      column: row.column_name ? esc(row.column_name) : '<span class="text-ink-muted">whole table</span>',
+      test: esc(row.test_type),
+      dimension: row.dimension ? esc(row.dimension) : '<span class="text-ink-muted">none named</span>',
+      params: `<span class="font-mono text-provenance">${esc(paramsText(row.params)) || '<span class="text-ink-muted">none</span>'}</span>`,
+      profile: esc(stamp(row.profile_surveyed_at)),
+    },
+    after: row.status === 'not_established' && row.reason
+      ? `<div data-qc-reason class="pb-[2px] pl-s2 text-provenance text-ink-muted">${esc(row.reason)}</div>` : '',
+  };
+}
+
+export function groupBodyHtml(rows, ui) {
+  if (!rows.length) return '<div class="text-caveat text-ink-muted">No checks in this table match the filters.</div>';
+  return gridHtml(QC_COLS, 'Proposed quality checks', rows.map((r) => checkRow(r, ui)));
+}
+
+const countWords = (c) => [
+  c.proposed ? `${c.proposed} proposed` : '', c.accepted ? `${c.accepted} accepted` : '',
+  c.rejected ? `${c.rejected} rejected` : '', c.retired ? `${c.retired} retired` : '',
+  c.not_established ? `${c.not_established} not established` : '',
+].filter(Boolean).join(' · ');
+
+export function groupHeadHtml(g) {
+  return `<span class="font-mono text-ink">${esc(g.schema_name)}.${esc(g.table_name)}</span>
+    <span data-qc-group-counts class="text-provenance text-ink-muted"> · ${esc(countWords(g.counts))}</span>`;
+}
+
+function filterSelect(name, label, options, value) {
+  return `<label class="text-provenance text-ink-muted">${esc(label)}
+    <select data-qc-filter="${name}" class="ml-[2px] border border-rule-strong bg-transparent text-ink">
+      <option value="">all</option>${options.map((o) =>
+    `<option value="${esc(o.value)}"${o.value === value ? ' selected' : ''}>${esc(o.label || o.value || 'none named')} (${o.count})</option>`).join('')}
+    </select></label>`;
+}
+
+/** The counts line: what the whole batch holds, how many tables match the filters, and where it came from. */
+export function countsLineHtml(d) {
+  const filtered = d.applied.test_type || d.applied.dimension || d.applied.state;
+  const tables = filtered ? `${d.groups.length} of ${d.tables} tables match` : `${d.tables} tables`;
+  return `<div data-qc-counts class="mb-s1 text-caveat text-ink">${esc(countWords(d.counts))}
+    <span class="text-ink-muted"> · ${esc(tables)} · proposed ${esc(stamp(d.surveyed_at))} from the value profile of ${esc(stamp(d.profile_surveyed_at))}</span></div>`;
+}
+
+export function summaryHtml(d) {
+  if (!d.has_proposals) return `<div data-qc-empty class="text-caveat text-ink-muted">${esc(NO_PROPOSALS_SENTENCE)}</div>`;
+  const states = d.filters.states.map((s) => ({ value: s.value, label: s.value.replace('_', ' '), count: s.count }));
+  return `${countsLineHtml(d)}
+    <div class="mb-s1 flex flex-wrap items-baseline gap-x-s3 gap-y-[2px]">
+      ${filterSelect('test_type', 'Test type', d.filters.test_types, d.applied.test_type)}
+      ${filterSelect('dimension', 'Dimension', d.filters.dimensions, d.applied.dimension)}
+      ${filterSelect('state', 'State', states, d.applied.state)}</div>
+    ${d.groups.length ? '' : '<div data-qc-no-match class="text-caveat text-ink-muted">No checks match these filters.</div>'}`;
+}
+
+/** Draw the review into `slot` and wire it. `deps` = { api: { getProposals(slug, params), postVerdict(slug, key, verdict) },
+ *  me: string (the signed-in person, '' when nobody is) }. Returns { reload(), destroy() }. */
+export function mountQualityChecks(slot, slug, deps) {
+  const doc = slot.ownerDocument;
+  const ui = { pending: new Set(), failed: new Map(), me: deps.me || '' };
+  const filters = { test_type: '', dimension: '', state: '' };
+  const open = new Set();                         // "schema.table" keys of groups the person has opened
+  const rowsOf = new Map();                       // key -> rows as last read
+  const loading = new Set();                      // keys whose rows are being read (a toggle must not start a second read)
+  let summary = null;
+  let token = 0;
+
+  const keyOf = (g) => `${g.schema_name}.${g.table_name}`;
+  const groupEl = (key) => [...slot.querySelectorAll('[data-qc-group]')].find((e) => e.dataset.qcGroup === key);
+
+  const paintRows = (key) => {
+    const el = groupEl(key);
+    const host = el && el.querySelector('[data-qc-body]');
+    if (!host) return;
+    host.innerHTML = groupBodyHtml(rowsOf.get(key) || [], ui);
+    attachGrids(host, () => QC_COLS);
+  };
+
+  async function loadRows(g) {
+    const key = keyOf(g);
+    const mine = token;
+    if (loading.has(key)) return;
+    loading.add(key);
+    let d = null;
+    let failure = null;
+    try {
+      d = await deps.api.getProposals(slug, { ...filters, schema: g.schema_name, table: g.table_name });
+    } catch (err) {
+      failure = err;
+    } finally {
+      loading.delete(key);
+    }
+    if (mine !== token) return;
+    if (failure) {
+      const el = groupEl(key);
+      if (el) el.querySelector('[data-qc-body]').innerHTML =
+        `<div data-qc-error class="text-caveat text-state-warn">The checks for this table could not be read: ${esc(failure.message)}</div>`;
+      return;
+    }
+    rowsOf.set(key, d.groups[0].rows);
+    paintRows(key);
+  }
+
+  function paintGroups() {
+    const host = slot.querySelector('[data-qc-groups]');
+    host.innerHTML = summary.groups.map((g) => `<details data-qc-group="${esc(keyOf(g))}"${open.has(keyOf(g)) ? ' open' : ''} class="border-t border-rule py-[3px]">
+      <summary class="cursor-pointer">${groupHeadHtml(g)}</summary>
+      <div data-qc-body class="mt-s1 min-w-0 max-w-full">${open.has(keyOf(g)) ? '<div class="text-caveat text-ink-muted">Reading the checks…</div>' : ''}</div></details>`).join('');
+    host.querySelectorAll('details[data-qc-group]').forEach((el) => {
+      const g = summary.groups.find((x) => keyOf(x) === el.dataset.qcGroup);
+      el.addEventListener('toggle', () => {
+        if (el.open) { open.add(keyOf(g)); if (!rowsOf.has(keyOf(g))) loadRows(g); else paintRows(keyOf(g)); } else open.delete(keyOf(g));
+      });
+      if (el.open) loadRows(g);
+    });
+  }
+
+  async function reload({ keepRows = false } = {}) {
+    const mine = ++token;
+    if (!keepRows) rowsOf.clear();
+    let d;
+    try {
+      d = await deps.api.getProposals(slug, filters);
+    } catch (err) {
+      if (mine !== token) return;
+      slot.innerHTML = `<div data-qc-error class="text-caveat text-state-warn">The quality checks could not be read: ${esc(err.message)}</div>`;
+      return;
+    }
+    if (mine !== token) return;
+    summary = d;
+    slot.innerHTML = `<div data-qc-head>${summaryHtml(d)}</div><div data-qc-groups></div>`;
+    if (!d.has_proposals) return;
+    slot.querySelectorAll('[data-qc-filter]').forEach((sel) => {
+      sel.addEventListener('change', () => { filters[sel.dataset.qcFilter] = sel.value; reload(); });
+    });
+    paintGroups();
+    if (keepRows) open.forEach((k) => { if (rowsOf.has(k)) paintRows(k); });
+  }
+
+  async function press(btn) {
+    const key = btn.dataset.qcKey;
+    const verdict = btn.dataset.qcVerdict;
+    if (ui.pending.has(key)) return;
+    ui.pending.add(key);
+    ui.failed.delete(key);
+    repaintRow(key);
+    try {
+      const out = await deps.api.postVerdict(slug, key, verdict);
+      const check = out && out.check;
+      if (out && out.recorded === true && check && check.verdict && check.status === verdict) {
+        replaceRow(check);
+      } else {
+        ui.failed.set(key, 'the verdict could not be read back');
+      }
+    } catch (err) {
+      ui.failed.set(key, err.message || 'the write failed');
+    }
+    ui.pending.delete(key);
+    repaintRow(key);
+    refreshCounts();
+  }
+
+  function replaceRow(check) {
+    for (const [gk, rows] of rowsOf) {
+      const i = rows.findIndex((r) => r.check_key === check.check_key);
+      if (i >= 0) { rows[i] = check; if (open.has(gk)) paintRows(gk); }
+    }
+  }
+  function repaintRow(key) {
+    for (const [gk, rows] of rowsOf) if (rows.some((r) => r.check_key === key) && open.has(gk)) paintRows(gk);
+  }
+  async function refreshCounts() {
+    try {
+      const d = await deps.api.getProposals(slug, filters);
+      summary = d;
+      const head = slot.querySelector('[data-qc-head]');
+      if (head) head.querySelector('[data-qc-counts]').outerHTML = countsLineHtml(d);
+      d.groups.forEach((g) => {
+        const el = groupEl(keyOf(g));
+        const c = el && el.querySelector('[data-qc-group-counts]');
+        if (c) c.textContent = ` · ${countWords(g.counts)}`;
+      });
+    } catch (_e) { /* the row's own cue already says what was recorded; the counts catch up on the next read */ }
+  }
+
+  const onClick = (ev) => {
+    const btn = ev.target.closest && ev.target.closest('[data-qc-act="verdict"]');
+    if (btn && slot.contains(btn) && !btn.disabled) press(btn);
+  };
+  slot.addEventListener('click', onClick);
+  reload();
+  return { reload, destroy() { token += 1; slot.removeEventListener('click', onClick); } };
+}

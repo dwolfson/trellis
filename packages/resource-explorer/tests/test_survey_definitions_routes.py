@@ -56,6 +56,14 @@ def _fake_survey_def(qn="GovActionProcess::Test", description="A test survey", s
 
 
 class TestListCandidates:
+    @pytest.fixture(autouse=True)
+    def _no_unscoped_lookup(self, monkeypatch):
+        """The unscoped-definition lookup resolves each document's process GUID in Egeria; these tests mock the
+        lookups they name, so the extra one answers nothing here (TestUnscopedDefinitions drives it for real)."""
+        monkeypatch.setattr(
+            "resource_explorer.surveyors.survey_definition_reader.SurveyDefinitionReader.find_unscoped_process_guids",
+            lambda self, *a, **k: [])
+
     def test_unknown_entity_type_returns_400(self, client):
         resp = client.get("/api/survey-definitions/not-a-real-type/mydb/candidates")
         assert resp.status_code == 400
@@ -537,3 +545,85 @@ class TestRunSurveyDefinitionBackground:
         entry = registry.get_activity(activity_id)
         assert entry["status"] == "error"
         assert "crashed" in entry["summary"]
+
+
+class TestUnscopedDefinitions:
+    """An unscoped definition never vanishes: the absence of a catalog question is shown, not a filter."""
+
+    READER = "resource_explorer.surveyors.survey_definition_reader.SurveyDefinitionReader"
+    SCOUT, QUALITY = "GovActionProcess::DatabaseScoutingSurvey", "GovActionProcess::DatabaseQualitySurvey"
+
+    def _get(self, client, catalog_questions, matched, *, phase=None, published=(SCOUT, QUALITY)):
+        """The real route, real reader logic and the real authored documents. Faked: the question catalog, the
+        document-scoped lookup's answer, and the one Egeria call (resolving a process GUID), which answers for the
+        names in `published`."""
+        with patch("resource_explorer.surveyors.question_catalog_reader.get_questions",
+                   return_value=[{"question": q, "answering": {}} for q in catalog_questions]), \
+             patch(f"{self.READER}.find_candidate_process_guids_by_questions", return_value=matched), \
+             patch(f"{self.READER}._process_guid_cached", side_effect=lambda qn: f"g-{qn}" if qn in published else None):
+            return client.get("/api/survey-definitions/database/mydb/candidates" + (f"?phase={phase}" if phase else ""))
+
+    @staticmethod
+    def _scouting_question():
+        from resource_explorer.surveyors.survey_definition_docs import documented_definitions
+
+        docs = documented_definitions()
+        [q, *_] = docs["DatabaseScoutingSurvey"].scoped_by
+        assert q not in docs["DatabaseQualitySurvey"].scoped_by
+        return q
+
+    def _matched_scout(self, q):
+        return [{"qualified_name": self.SCOUT, "display_name": "Scouting", "guid": f"g-{self.SCOUT}",
+                 "matched_questions": [q]}]
+
+    def test_a_definition_no_question_is_scoped_to_is_listed_beside_the_matched_ones(self, client):
+        q = self._scouting_question()
+        resp = self._get(client, [q], self._matched_scout(q))
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        by_name = {c["qualified_name"]: c for c in data["candidates"]}
+        assert data["scoping"] == "questions" and data["scoping_reason"] == ""      # the honesty fields unchanged
+        card = by_name[self.QUALITY]
+        assert card["no_catalog_question"] == "no catalog question yet · run from Survey & analyses"
+        assert card["error"] is None and card["steps"]                              # runnable: its document's steps
+        assert card["guid"] == f"g-{self.QUALITY}" and card["matched_questions"] == []
+        assert "no_catalog_question" not in by_name[self.SCOUT]
+        assert list(by_name)[0] == self.SCOUT                                       # matched first, then the rest
+
+    def test_a_definition_scoped_by_a_question_of_another_stage_is_not_called_unscoped(self, client):
+        from resource_explorer.surveyors.survey_definition_docs import documented_definitions
+
+        quality_q = documented_definitions()["DatabaseQualitySurvey"].scoped_by
+        if not quality_q:
+            pytest.skip("the quality document declares no ScopedBy link yet")
+        q = self._scouting_question()
+        # the catalog (all stages) holds the quality question too: scoped, just not by this stage's matched list
+        resp = self._get(client, [q, quality_q[0]], self._matched_scout(q))
+        names = {c["qualified_name"] for c in resp.json()["candidates"]}
+        assert self.QUALITY not in names
+
+    def test_an_unpublished_unscoped_definition_is_not_offered(self, client):
+        q = self._scouting_question()
+        resp = self._get(client, [q], self._matched_scout(q), published=(self.SCOUT,))
+        assert self.QUALITY not in {c["qualified_name"] for c in resp.json()["candidates"]}
+
+    def test_the_full_scan_marks_the_same_card(self, client):
+        q = self._scouting_question()
+        with patch(f"{self.READER}.find_candidate_process_guids",
+                   return_value=[{"qualified_name": self.QUALITY, "display_name": "Quality", "guid": f"g-{self.QUALITY}"}]):
+            resp = self._get(client, [q], [])
+        data = resp.json()
+        assert data["scoping"] == "full-scan" and data["scoping_reason"] == "none_resolved"
+        [card] = [c for c in data["candidates"] if c["qualified_name"] == self.QUALITY]
+        assert card["no_catalog_question"].startswith("no catalog question yet")
+        assert len([c for c in data["candidates"] if c["qualified_name"] == self.QUALITY]) == 1   # not listed twice
+
+    def test_a_phase_asks_the_catalog_for_every_stage_to_decide_what_is_unscoped(self, client):
+        q = self._scouting_question()
+        with patch("resource_explorer.surveyors.question_catalog_reader.get_questions",
+                   return_value=[{"question": q, "answering": {}}]) as mock_q, \
+             patch(f"{self.READER}.find_candidate_process_guids_by_questions", return_value=self._matched_scout(q)), \
+             patch(f"{self.READER}._process_guid_cached", side_effect=lambda qn: f"g-{qn}"):
+            client.get("/api/survey-definitions/database/mydb/candidates?phase=scouting")
+        assert [c.kwargs for c in mock_q.call_args_list] == [
+            {"resource_type": "database", "phase": "scouting"}, {"resource_type": "database", "phase": None}]

@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from resource_explorer.config import WebUIConfig
 from resource_explorer.web.routes import work_lists as work_lists_routes
-from resource_explorer.web.routes import api_reference as api_reference_routes, analytics as analytics_routes, activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, catalogue_scope, curate, databases, first_index as first_index_routes, db_servers as db_servers_routes, diagrams, discovery, doc_sources, egeria, feedback, investigations, journal, logs as logs_routes, prefect_status, prerequisites as prerequisite_routes, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions, native_surveys
+from resource_explorer.web.routes import api_reference as api_reference_routes, analytics as analytics_routes, activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, catalogue_scope, quality_checks, curate, databases, first_index as first_index_routes, db_servers as db_servers_routes, diagrams, discovery, doc_sources, egeria, feedback, investigations, journal, logs as logs_routes, prefect_status, prerequisites as prerequisite_routes, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions, native_surveys
 from resource_explorer.web.routes import table_preview as table_preview_routes
 
 
@@ -364,6 +364,7 @@ app.include_router(project_context.router, prefix="/api/project-context", tags=[
 app.include_router(automate.router, prefix="/api/automate", tags=["automate"])
 app.include_router(curate.router, prefix="/api/curate", tags=["curate"])
 app.include_router(catalogue_scope.router, prefix="/api/catalogue-scope", tags=["catalogue-scope"])
+app.include_router(quality_checks.router, prefix="/api/quality-checks", tags=["quality-checks"])
 app.include_router(doc_sources.router, prefix="/api/doc-sources", tags=["doc-sources"])
 app.include_router(api_reference_routes.router, prefix="/api/api-reference", tags=["api-reference"])
 app.include_router(native_surveys.router, prefix="/api/native-surveys", tags=["native-surveys"])

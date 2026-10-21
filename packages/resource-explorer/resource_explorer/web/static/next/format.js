@@ -128,3 +128,27 @@ export function storedCopyWords(rep) {
     resetLine: rep && rep.reset_since ? STORED_COPY_RESET_LINE : '',
   };
 }
+
+/* ── a run step's status as the words a person reads ─────────────────────
+ * `skipped_by_design` is the executor's internal state for a step that looked and had nothing it could be asked to
+ * do. It is not a failure and not "ran and found nothing": the screen says "not run", and for run_quality_checks with
+ * no accepted check, why: "not run · no accepted checks". The full sentence the step recorded rides in the title. */
+export const NO_ACCEPTED_CHECKS_WORDS = 'not run · no accepted checks';
+
+/** { kind: 'ok' | 'not_run' | 'failed', words, title } for one entry of a run's `steps`. `words` is '' for ok. */
+export function stepOutcome(step) {
+  const status = String((step && step.status) || '');
+  const detail = typeof (step && step.detail) === 'string' ? step.detail : '';
+  if (status === 'ok') return { kind: 'ok', words: '', title: '' };
+  if (status === 'skipped_by_design') {
+    return {
+      kind: 'not_run',
+      words: /^no accepted checks\b/.test(detail) ? NO_ACCEPTED_CHECKS_WORDS : 'not run',
+      title: detail,
+    };
+  }
+  return { kind: 'failed', words: detail ? String(detail).slice(0, 120) : '', title: detail };
+}
+
+/** The status token as a person reads it, where only the token is known (no detail): the internal state is never shown. */
+export const statusToken = (status) => (status === 'skipped_by_design' ? 'not run' : status);
