@@ -1320,6 +1320,10 @@ class EgeriaDatabaseSurveyor:
         if db_guid and report_guid and verdicts["annotations"]:
             verdicts["column_links"] = self._link_verdicts_to_columns(
                 db_entity, annotations, verdict_start, verdicts["column_paths"], surveyed_at)
+        # A reused report already holds earlier batches beside this one: retire them (DESIGN-PUBLISHING-COLUMN-
+        # VERDICTS.md §1 item 10). A fresh report holds none, so there is nothing to look for.
+        if db_guid and report_guid and report_reused and verdicts.get("state") == "sent" and verdicts.get("batch"):
+            verdicts["superseded"] = self._retire_superseded_verdicts(report_guid, verdicts["batch"])
 
         # Use the created report GUID if available, otherwise fall back to Egeria's native action GUID
         effective_report_guid = report_guid or survey_action_guid
@@ -1499,7 +1503,10 @@ class EgeriaDatabaseSurveyor:
         creates, so what is already there is adopted and only new names are created (a newer verdict batch, a
         partial set). What Egeria then holds is counted for the caller, never used to decide.
         Every other failure is returned as `report_error` for the caller to FAIL on: never "published"."""
-        out = {"report_guid": "", "report_error": "", "annotation_error": "", "reused": False, "annotations_in_egeria": None}
+        # `annotations_this_publish`: how many of THIS publish's annotations Egeria holds (None: could not tell).
+        # `annotations_in_egeria`: all the report holds, which on a reused report includes earlier batches.
+        out = {"report_guid": "", "report_error": "", "annotation_error": "", "reused": False, "annotations_in_egeria": None,
+               "annotations_this_publish": None}
         try:
             out["report_guid"] = self._asset_maker.create_asset(body=body)
             log.info(f"Published SurveyReport in Egeria: {out['report_guid']}")
@@ -1509,6 +1516,7 @@ class EgeriaDatabaseSurveyor:
             # Counted from what Egeria returned a GUID for (a failed or un-checkable one is None), not from
             # how many were sent; no list back means RE cannot tell, which is None, never a number.
             out["annotations_in_egeria"] = sum(1 for g in made if g) if isinstance(made, list) else None
+            out["annotations_this_publish"] = out["annotations_in_egeria"]
             return out
         except Exception as exc:
             if not (not out["report_guid"] and self._is_duplicate_qualified_name(exc)):
@@ -1583,6 +1591,48 @@ class EgeriaDatabaseSurveyor:
         built = verdict_annotations_from_rows(rows, batch_surveyed_at=rows[0].get("surveyed_at", ""),
                                               inventory=inventory)
         return {"state": "sent", **built}
+
+    def _retire_superseded_verdicts(self, report_guid: str, batch: str) -> dict:
+        """Mark the column-profile verdicts of EARLIER batches under a reused report `contentStatus: DEPRECATED`.
+
+        A newer batch published into the same kept survey's report is added beside the older one (its names end
+        `@<batch>`), so without this the report counts superseded verdicts as current, including ones for columns
+        the newer batch dropped. Retired, never deleted: the evidence stays and the change can be undone. A verdict
+        is told apart by its `analysisStep` and its `jsonProperties.measuredAt`; only a batch older than `batch` is
+        touched, and one already DEPRECATED is left alone, so a republish of the same batch changes nothing.
+        Never raises. `state`: `checked`, or `not_checked` when the report could not be read (unknown, never 0).
+        """
+        from resource_explorer.surveyors.database.column_profile_step import ANALYSIS_STEP
+        from resource_explorer.surveyors.egeria_survey_reader import annotations_from_report
+
+        counts = {"state": "checked", "retired": 0, "already_retired": 0, "failed": 0}
+        try:
+            result = self._asset_maker.get_asset_by_guid(
+                report_guid, body={"class": "GetRequestBody", "graphQueryDepth": 1}, output_format="JSON")
+            if not isinstance(result, dict):
+                raise EgeriaDatabaseSurveyorError(f"the report read returned {type(result).__name__}")
+            held = annotations_from_report(result)
+        except Exception as exc:  # noqa: BLE001 -- could not tell which are superseded
+            log.warning("could not read report %s to retire superseded verdicts: %s", report_guid, exc)
+            return {**counts, "state": "not_checked", "reason": f"{exc}"[:300]}
+        for ann in held:
+            measured = str((ann.get("json_properties") or {}).get("measuredAt") or "")
+            if ann.get("analysis_step") != ANALYSIS_STEP or not measured or measured >= batch or not ann.get("guid"):
+                continue
+            if (ann.get("content_status") or "").upper() == "DEPRECATED":
+                counts["already_retired"] += 1
+                continue
+            type_name = ann.get("type_name") or ""
+            body = {"class": "UpdateElementRequestBody", "mergeUpdate": True,
+                    "properties": {"class": f"{type_name}Properties" if type_name else "AnnotationProperties",
+                                   "contentStatus": "DEPRECATED"}}
+            try:
+                self._discovery.update_annotation(ann["guid"], body)
+                counts["retired"] += 1
+            except Exception as exc:  # noqa: BLE001 -- counted; the publish itself stands
+                log.warning("could not retire superseded verdict %s: %s", ann.get("qualified_name"), exc)
+                counts["failed"] += 1
+        return counts
 
     def _link_verdicts_to_columns(self, db_entity, annotations: list, start: int, column_paths: list[str],
                                   surveyed_at: str) -> dict:

@@ -74,13 +74,17 @@ Definition. The user guide documents this gap.
    the verdicts, would let Curate's Publish send them too. Their verdicts have a different shape
    (`nested_columns_step.py`: inferred schema, sample provenance), so that is its own table and reader,
    not a reuse of `database_column_matches`.
-10. **Open follow-up: superseded batches stay in a reused report** (review of #783, 2026-10-20). A newer batch
-    published into the same kept survey's report is added beside the older one: the older batch's annotations
-    (names ending `@<batch>`) are neither retired nor flagged, including verdicts for columns the newer batch
-    dropped. So "N annotations in Egeria", and any reader of the report, counts superseded verdicts as current.
-    A reader can tell them apart by `jsonProperties.measuredAt`, but nothing does yet. The choice is between
-    retiring the older batch's annotations at publish time, marking them superseded, or having readers take only
-    the newest `measuredAt` per column. To be designed; not fixed by #783.
+10. **Superseded batches in a reused report are retired** (review of #783; owner, 2026-10-20: "retire the old
+    annotations"). A newer batch published into the same kept survey's report is added beside the older one (names
+    ending `@<batch>`). After such a publish, `_retire_superseded_verdicts` reads the report and sets
+    `contentStatus: DEPRECATED` on every column-profile verdict (`analysisStep` `DatabasePostgresColumnProfile`)
+    whose `jsonProperties.measuredAt` is older than the batch just sent, including verdicts for columns the newer
+    batch dropped. They are retired, never deleted: the evidence stays and the change is reversible. It is not a
+    one-time sweep: it runs on every publish into a reused report, and finds nothing on a fresh one. A republish
+    of the same batch changes nothing. Survey annotations are never touched. The outcome is counted in
+    `verdicts.superseded` (`retired`, `already_retired`, `failed`; `state: not_checked` when the report could not be
+    read). RE's annotation list shows a DEPRECATED badge; it does not hide them, and "N annotations in Egeria" still
+    counts everything the report holds. The engine host now judges a publish on `annotations_this_publish`.
 
 **Tests.** The ones that matter most:
 - the rebuild is identical to the step's own build for the same `ColumnMatch`;
