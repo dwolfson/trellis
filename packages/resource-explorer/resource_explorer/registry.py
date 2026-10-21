@@ -11424,7 +11424,7 @@ class ProjectRegistry:
         """The delete of this investigation that stopped part-way and has not been followed by a finished one: the
         latest `activity_log` row with operation 'delete' and entity_type 'investigation' for the slug, when its
         status is 'error' (a later 'ok' row clears it). Returns the stop in the shape the delete answers with
-        (`errors`, `deleted`, `remaining`, `left`, `blocking`, `choice`, `ts`), or None."""
+        (`errors`, `archived`, `remaining`, `left`, `foreign`, `choice`, `ts`), or None."""
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT ts, status, detail FROM activity_log WHERE operation = 'delete' AND "
@@ -11436,9 +11436,34 @@ class ProjectRegistry:
         except ValueError:
             d = {}
         return {"ts": row["ts"], "choice": d.get("choice", ""), "errors": d.get("errors") or [],
-                "deleted": d.get("egeria_deleted") or [], "unlinked": d.get("egeria_unlinked") or [],
+                "archived": d.get("egeria_archived") or [], "unlinked": d.get("egeria_unlinked") or [],
                 "remaining": d.get("egeria_remaining") or [], "left": d.get("egeria_left") or [],
-                "blocking": d.get("egeria_blocking") or [], "local_deleted": False}
+                "foreign": d.get("egeria_foreign") or [], "local_deleted": False}
+
+    # ── Archive proof rows for a deleted investigation (no DDL) ──
+    #
+    # One append-only row per Egeria element an investigation delete archived, in the commit-proof table the
+    # catalogue already uses, under the key "investigation/<slug>" (a slash cannot occur in a database slug). They
+    # are NEVER removed with the investigation: they are the history that links the archived Project's GUID, so a
+    # restore stays possible. The status words on screen ("archived in Egeria · <date>") derive from these rows.
+    ARCHIVE_NODE = "investigation_element"
+
+    @staticmethod
+    def investigation_proof_key(slug: str) -> str:
+        return f"investigation/{slug}"
+
+    def append_investigation_archive_proof(self, slug: str, *, proof: str, kind: str, element_guid: str,
+                                           qualified_name: str = "", detail: dict | None = None,
+                                           recorded_by: str = "", read_at: str | None = None) -> int:
+        return self.append_catalogue_commit_proof(
+            self.investigation_proof_key(slug), proof=proof, node_kind=self.ARCHIVE_NODE, schema_name=kind,
+            element_guid=element_guid, qualified_name=qualified_name, detail=detail,
+            recorded_by=recorded_by, read_at=read_at)
+
+    def list_investigation_archive_proofs(self, slug: str) -> list[dict]:
+        """Every archive observation for an investigation's Egeria elements, oldest first (survives its delete)."""
+        return [r for r in self.list_catalogue_commit_proofs(self.investigation_proof_key(slug))
+                if r["node_kind"] == self.ARCHIVE_NODE]
 
     def delete_investigation_local(self, slug: str, activity: "ActivityEntry | None" = None) -> dict:
         """Remove the investigation and everything that exists only for it, in ONE transaction, and write

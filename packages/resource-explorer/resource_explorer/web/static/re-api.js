@@ -853,10 +853,16 @@ export const bindInvestigationEgeriaProject = (slug, {
 export const publishInvestigationJournal = (slug) =>
   post(`/api/investigations/${encodeURIComponent(slug)}/journal/publish`);
 export const promoteInvestigation = (slug) => post(`/api/investigations/${encodeURIComponent(slug)}/promote`);
-/** Delete an investigation, permanently. `egeria: false` deletes in Resource Explorer only (the Egeria Project,
- *  Collection and Notes stay); `egeria: true` removes what RE made in Egeria first. Owner or Portal admin only. */
-export const deleteInvestigation = (slug, { egeria = false } = {}) =>
-  del(`/api/investigations/${encodeURIComponent(slug)}?egeria=${egeria ? 'true' : 'false'}`);
+/** Delete an investigation, permanently in Resource Explorer. `egeria: false` deletes in Resource Explorer only (the
+ *  Egeria Project, Collection and Notes stay); `egeria: true` ARCHIVES the Project in Egeria first (restorable). Owner
+ *  or Portal admin only. */
+export const deleteInvestigation = (slug, { egeria = false, confirmed = '' } = {}) =>
+  del(`/api/investigations/${encodeURIComponent(slug)}?egeria=${egeria ? 'true' : 'false'}${
+    confirmed ? `&confirmed=${encodeURIComponent(confirmed)}` : ''}`);
+/** What the Delete confirm shows for a promoted investigation, from reads only: whether archiving is blocked, and
+ *  every item anchored to the Project that Resource Explorer did not create. `token` goes back with the delete. */
+export const previewInvestigationDelete = (slug) =>
+  get(`/api/investigations/${encodeURIComponent(slug)}/delete-preview`);
 
 export const reclassifyInvestigation = (slug, projectClassification, hypothesis = '') =>
   post(`/api/investigations/${encodeURIComponent(slug)}/reclassify`, {

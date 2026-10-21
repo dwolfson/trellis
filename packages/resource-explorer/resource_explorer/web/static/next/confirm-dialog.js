@@ -31,7 +31,7 @@ function open({ title, message, buttons, attr }) {
       <div data-dialog-title class="text-answer text-ink">${esc(title)}</div>
       <div data-dialog-message class="mt-s1 text-ink" style="white-space:pre-line">${esc(message)}</div>
       <div class="mt-s3 flex flex-wrap gap-s3">${buttons.map((b) =>
-    `<button type="button" ${b.attr} class="cursor-pointer rounded-sm border bg-transparent px-2 py-[2px] text-caveat ${b.primary ? 'border-accent text-accent-ink' : 'border-rule-strong text-ink'}">${esc(b.label)}</button>`).join('')}</div>
+    `<button type="button" ${b.attr} ${b.disabled ? 'disabled aria-disabled="true"' : ''} ${b.title ? `title="${esc(b.title)}"` : ''} class="${b.disabled ? 'cursor-default opacity-60' : 'cursor-pointer'} rounded-sm border bg-transparent px-2 py-[2px] text-caveat ${b.primary ? 'border-accent text-accent-ink' : 'border-rule-strong text-ink'}">${esc(b.label)}</button>`).join('')}</div>
     </div>`;
     const done = (v) => { doc.removeEventListener('keydown', onKey); box.remove(); resolve(v); };
     const onKey = (e) => { if (e.key === 'Escape') done(false); };
@@ -56,13 +56,15 @@ export function inPageConfirm({ title = 'Are you sure?', message = '', confirmLa
 }
 
 /** Ask which of several ways to go. Resolves the pressed choice's `value`, or null on Cancel, Escape or a click
- *  outside. `choices` is [{ value, label }]; each button carries `data-choice-<value>`. */
+ *  outside. `choices` is [{ value, label, disabled?, title? }]; each button carries `data-choice-<value>`, and a
+ *  disabled one cannot be pressed (its `title` says why). */
 export function inPageChoice({ title = 'Choose', message = '', choices = [], cancelLabel = 'Cancel' } = {}) {
   return open({
     title, message, attr: 'data-choice-dialog',
     buttons: [
       { attr: 'data-choice-cancel', label: cancelLabel, value: null },
-      ...choices.map((c) => ({ attr: `data-choice-${c.value}`, label: c.label, value: c.value, primary: true })),
+      ...choices.map((c) => ({ attr: `data-choice-${c.value}`, label: c.label, value: c.value, primary: true,
+        disabled: !!c.disabled, title: c.title || '' })),
     ],
   }).then((v) => (v === false || v === undefined ? null : v));
 }
