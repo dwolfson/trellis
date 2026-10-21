@@ -5,6 +5,8 @@ reference-data verdicts reached Egeria only through a Survey Definition run, alt
 """
 from __future__ import annotations
 
+import inspect
+
 import pytest
 from resource_explorer.registry import DatabaseEntity, ProjectRegistry
 from resource_explorer.surveyors.database.column_profile_step import (
@@ -286,7 +288,11 @@ class _RecordingDiscovery(_FakeDiscovery):
         self.elements[guid] = {"type": props["class"].removesuffix("Properties"), "properties": props}
         return guid
 
-    def update_annotation(self, guid, body):
+    def update_annotation(self, *args, **kwargs):
+        # Bound to the real pyegeria 6.2.7 signature, (self, annotation_guid, body): a call that does not fit raises.
+        from pyegeria import DataDiscovery
+        bound = inspect.signature(DataDiscovery.update_annotation).bind(self, *args, **kwargs)
+        guid, body = bound.arguments["annotation_guid"], bound.arguments["body"]
         if guid in self.refuse:
             raise RuntimeError("SERVER_ERROR_500 update refused")
         self.updates.append((guid, body))

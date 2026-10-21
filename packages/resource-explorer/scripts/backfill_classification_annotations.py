@@ -19,9 +19,9 @@ recomputed on read, not stored, so a recomputation today is not what was publish
 `classificationName`, `properties` and the element's own current primitive values. Egeria's builder
 (OpenMetadataElementBuilder.getElementProperties) writes every primitive of the bean on a merge, so a primitive left
 out would be reset to 0: `confidence` would be lost. They are carried from the element as read. No annotation is
-created or deleted. pyegeria's `DataDiscovery.update_annotation` cannot be used: it passes the body positionally into
-the helper's `prop` slot, so the body is None and nothing is sent (AttributeError, pyegeria 6.1.15/6.2.x). This calls
-the same helper the wrapper means to call, with the body where it belongs.
+created or deleted. It calls pyegeria's `DataDiscovery.update_annotation`, which sends its body from 6.2.7 on
+(ISSUE-152; on 6.1.15 to 6.2.6 it passed the body into the wrong slot and sent nothing, so this script went
+through the private `_async_update_element_body_request` helper until then).
 
 Idempotent: each element's current `classificationName`/`properties` is compared to the planned ones first, so a
 re-run after a partial apply skips what landed. One failure does not stop the batch; failures are listed at the end
@@ -37,7 +37,6 @@ Usage (dry-run is the default; nothing is written without --apply):
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import sys
 from collections import Counter
@@ -249,18 +248,6 @@ def make_plan(elements: list[Element], outbox_rows: list[dict], owner_of=None) -
 
 # ── the write ────────────────────────────────────────────────────────────────
 
-def update_url(discovery, guid: str) -> str:
-    return (f"{discovery.platform_url}/servers/{discovery.view_server}"
-            f"/api/open-metadata/data-discovery/annotations/{guid}/update")
-
-
-def send_update(discovery, guid: str, body: dict) -> None:
-    """POST the body to DataDiscovery's update endpoint through pyegeria's own helper (see the module docstring for
-    why not `update_annotation`). Raises on any Egeria or transport error."""
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(discovery._async_update_element_body_request(update_url(discovery, guid), body=body))
-
-
 def apply_plan(discovery, plan: list[PlanItem], log, limit: int | None = None) -> tuple[int, list[tuple[PlanItem, str]]]:
     """Write every REPAIR item (the first `limit` of them, for a canary); returns (written, failures). One failure
     never stops the batch."""
@@ -278,7 +265,7 @@ def apply_plan(discovery, plan: list[PlanItem], log, limit: int | None = None) -
             if fresh is None:
                 raise RuntimeError("no RE ClassificationAnnotation at this guid just before the write")
             entry["confidence"] = fresh.primitives.get("confidence")
-            send_update(discovery, el.guid, update_body(fresh, item.after))
+            discovery.update_annotation(el.guid, update_body(fresh, item.after))
             back = read_element(discovery, el.guid)
             if back is None:
                 raise RuntimeError("read-back found no RE ClassificationAnnotation at this guid")

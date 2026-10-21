@@ -285,7 +285,7 @@ Integrate upstream Egeria Open Metadata Highway lineage and governance classific
 |---|---|---|---|---|
 | **Group 1** | Actionable RFA Tool | `create_rfa_from_finding` | **Done** | `tests/test_agent_tools.py` |
 | **Group 1** | Database Schema Diff | `compare_database_schemas` | **Done** | `tests/test_agent_tools.py` |
-| **Group 2** | Multi-Resource Context | `compile_multi_resource_context` | **Done** | `test_multi_resource_context_compilation`, `test_compare_and_integration_agents_use_multi_resource_evidence` (no token-budget invariant test yet) |
+| **Group 2** | Multi-Resource Context | `compile_multi_resource_context` | **Done** | `test_multi_resource_context_compilation`, `test_compare_and_integration_agents_use_multi_resource_evidence`, `test_multi_resource_budget_partitioning` |
 | **Group 2** | Epistemological Matrix | Cross-slug `FactLayer` diff | **Done** | `test_multi_resource_context_compilation` |
 | **Group 3** | Code-to-DB Matcher | Static table-to-repo matcher | **Done** | `test_cross_asset_matcher*` (synthetic fixtures; not validated on real surveys, see 6.4) |
 | **Group 3** | Dynamic Sub-Agent Delegation | `ConversationAgent` delegation tools | **Done** | `test_dynamic_delegation_and_lineage_tools` |
