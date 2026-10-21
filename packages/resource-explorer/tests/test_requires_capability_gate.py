@@ -458,6 +458,13 @@ def test_the_database_declarations_match_the_audit():
         "sql_analysis": "read",
         # audit §3 — catalog, live-verified against coco_pharma.
         "credential_capability": "catalog",
+        # Not in the audit (added after it): DESIGN-VALUE-PROFILE-AND-QUALITY-
+        # CHECKS.md. The profile and the run issue SELECT ... FROM <table>, the
+        # same floor as postgres_column_profile; propose opens no connection,
+        # like db_derived.
+        "postgres_value_profile": "read",
+        "propose_quality_checks": "",
+        "run_quality_checks": "read",
     }
 
 

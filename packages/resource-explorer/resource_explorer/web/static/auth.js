@@ -165,9 +165,15 @@ const Auth = (() => {
     }
   }
 
-  function doLogout() {
+  async function doLogout() {
+    // The server drops what this sign-in held (the table-preview credential) only if the request says who is
+    // signing out, so the bearer goes on the POST BEFORE the token is cleared. The reload waits for the answer
+    // (bounded), or the browser could cancel the request before the server had acted on it.
+    const token = getToken();
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    const sent = _origFetch('/api/auth/logout', { method: 'POST', headers, keepalive: true }).catch(() => {});
     clearToken();
-    _origFetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    await Promise.race([sent, new Promise((resolve) => setTimeout(resolve, 1500))]);
     // A full reload rather than a re-render: the page is full of data the
     // signed-out user should no longer be looking at, and clearing it panel by
     // panel is a list nobody keeps up to date.

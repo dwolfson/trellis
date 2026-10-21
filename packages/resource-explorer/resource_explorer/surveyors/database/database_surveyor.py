@@ -104,6 +104,16 @@ DATABASE_SURVEYOR_STEP_MAP: dict[str, list[str]] = {
 }
 
 
+#: Database analyses run by the database adapter's own registry steps rather than by `DatabaseSurveyor.survey()`
+#: (DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md), each step in order through the executor
+#: (`SurveyDefinitionExecutor.run_synthetic_step`), as a library step is. Must agree with the adapter's
+#: `DATABASE_ANALYSIS_RE_STEP_MAP` (tests/test_value_profile_quality_checks.py checks it).
+DATABASE_REGISTRY_STEP_ANALYSES: dict[str, tuple[str, ...]] = {
+    "value_profile": ("postgres_value_profile",),
+    "quality_checks": ("propose_quality_checks", "run_quality_checks"),
+}
+
+
 def database_library_step_key(analysis_id: str) -> str:
     """The step key of an installed-library step that provides this database analysis, or "".
 
@@ -124,7 +134,8 @@ def database_library_step_key(analysis_id: str) -> str:
 
 def database_analysis_has_runner(analysis_id: str) -> bool:
     """True when the per-card Run can dispatch `analysis_id` for a database: it is a zero-fetch `db_derived`
-    analysis, has step(s) in `DATABASE_SURVEYOR_STEP_MAP`, or is provided by a library step.
+    analysis, has step(s) in `DATABASE_SURVEYOR_STEP_MAP` or `DATABASE_REGISTRY_STEP_ANALYSES`, or is provided by a
+    library step.
 
     The single predicate for database: the run route's validation (both its stored-credential and its
     one-run-credential paths), the Enrichment map's "offer a Run control?" and the analyses index's
@@ -133,7 +144,7 @@ def database_analysis_has_runner(analysis_id: str) -> bool:
     from resource_explorer.surveyors.database.db_derived import DB_DERIVED_ANALYSES
 
     return (analysis_id in DB_DERIVED_ANALYSES or analysis_id in DATABASE_SURVEYOR_STEP_MAP
-            or bool(database_library_step_key(analysis_id)))
+            or analysis_id in DATABASE_REGISTRY_STEP_ANALYSES or bool(database_library_step_key(analysis_id)))
 
 
 def database_analysis_needs_credentials(analysis_id: str) -> bool:
@@ -145,6 +156,12 @@ def database_analysis_needs_credentials(analysis_id: str) -> bool:
 
     if analysis_id in DB_DERIVED_ANALYSES:
         return False
+    if analysis_id in DATABASE_REGISTRY_STEP_ANALYSES:
+        # Any step that declares a capability opens a connection (propose_quality_checks declares none).
+        from resource_explorer.surveyors.database.survey_definition_adapter import DATABASE_STEP_REGISTRY
+
+        return any(getattr(DATABASE_STEP_REGISTRY[k], "requires_capability", "")
+                   for k in DATABASE_REGISTRY_STEP_ANALYSES[analysis_id])
     return analysis_id in DATABASE_SURVEYOR_STEP_MAP
 
 

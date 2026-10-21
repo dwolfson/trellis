@@ -3,7 +3,7 @@ GENERATED from the database step registry by packages/resource-explorer/scripts/
 Do not hand-edit; regenerate. Design: docs/design-notes/SLICE-ENGINE-HOST-CASE3-RE-DEFINITIONS-DISPATCHED-BY-EGERIA.md
 (C1, decision 1: one SurveyActionService per step key, never per definition).
 
-Declares 6 database step(s) as services of Resource Explorer's engine, so the GovernanceActionExecutor
+Declares 7 database step(s) as services of Resource Explorer's engine, so the GovernanceActionExecutor
 each Survey Definition step carries (C2, dr_egeria_survey_publisher) names a request type the engine advertises. Each:
 one SurveyActionService, one SupportedGovernanceService {requestType: re-<step key>} (both in
 database-steps.pyegeria-steps.json, run first by `resource-explorer dr-egeria run`, find-or-create), then
@@ -289,5 +289,51 @@ re-credential-capability
 
 ### Description
 Egeria dispatches ResourceExplorerSurvey::re-credential-capability to Resource Explorer's engine, which claims it and runs RE step credential_capability.
+
+___
+
+## Create Governance Action Type
+### Display Name
+Resource Explorer Survey — postgres_value_profile
+
+### Qualified Name
+ResourceExplorerSurvey::re-postgres-value-profile
+
+### Description
+Measured (not estimated) per-column counts and date bounds, whole table.
+
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
+### Content Status
+ACTIVE
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| re_analysis_step | postgres_value_profile |
+| engine_host | resource-explorer-worker |
+| request_type | re-postgres-value-profile |
+| entity_type | database |
+| fetch_cost | api_heavy |
+| compute_cost | medium |
+| requires_capability | read |
+| engine_host_dispatch | runs |
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+ResourceExplorerSurvey::re-postgres-value-profile
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-postgres-value-profile
+
+### Description
+Egeria dispatches ResourceExplorerSurvey::re-postgres-value-profile to Resource Explorer's engine, which claims it and runs RE step postgres_value_profile.
 
 ___

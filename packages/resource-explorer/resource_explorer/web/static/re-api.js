@@ -225,6 +225,20 @@ export const getFilesystemRootFolder = (slug) =>
 export const attachFilesystemRoot = (slug) =>
   post(`/api/filesystems/${encodeURIComponent(slug)}/attach-root`);
 
+/** Files step 2: who can read the path, and so who leads the folder survey. `GET` reads the stored probe rows (no
+ *  Egeria call); `POST` runs the probe now. Both answer `{ state: egeria | re_only | undecided | not_checked,
+ *  sentence, checked_date, surveyor, why, decided }`. */
+export const getFilesystemReach = (slug) => get(`/api/filesystems/${encodeURIComponent(slug)}/reach`);
+export const checkFilesystemReach = (slug) => post(`/api/filesystems/${encodeURIComponent(slug)}/reach`);
+/** The newest folder survey, whoever led it, in one shape. */
+export const getFolderSurvey = (slug) => get(`/api/filesystems/${encodeURIComponent(slug)}/folder-survey`);
+/** Run the folder survey: the probe runs first and decides who leads. `{ publish }` publishes Resource Explorer's walk. */
+export const runFolderSurvey = (slug, body = {}) =>
+  post(`/api/filesystems/${encodeURIComponent(slug)}/folder-survey`, { publish: false, ...body });
+/** Publish the newest stored Resource Explorer walk as its own SurveyReport (nothing is walked again). */
+export const publishFolderSurvey = (slug) =>
+  post(`/api/filesystems/${encodeURIComponent(slug)}/folder-survey/publish`);
+
 /* ── Catalogue scope (Curate, database: what gets catalogued) ────────────
  * web/routes/catalogue_scope.py. A declared, signed, dated choice stored in
  * RE; the scope routes reach nothing of Egeria's (the commit routes below do).
@@ -853,6 +867,16 @@ export const bindInvestigationEgeriaProject = (slug, {
 export const publishInvestigationJournal = (slug) =>
   post(`/api/investigations/${encodeURIComponent(slug)}/journal/publish`);
 export const promoteInvestigation = (slug) => post(`/api/investigations/${encodeURIComponent(slug)}/promote`);
+/** Delete an investigation, permanently in Resource Explorer. `egeria: false` deletes in Resource Explorer only (the
+ *  Egeria Project, Collection and Notes stay); `egeria: true` ARCHIVES the Project in Egeria first (restorable). Owner
+ *  or Portal admin only. */
+export const deleteInvestigation = (slug, { egeria = false, confirmed = '' } = {}) =>
+  del(`/api/investigations/${encodeURIComponent(slug)}?egeria=${egeria ? 'true' : 'false'}${
+    confirmed ? `&confirmed=${encodeURIComponent(confirmed)}` : ''}`);
+/** What the Delete confirm shows for a promoted investigation, from reads only: whether archiving is blocked, and
+ *  every item anchored to the Project that Resource Explorer did not create. `token` goes back with the delete. */
+export const previewInvestigationDelete = (slug) =>
+  get(`/api/investigations/${encodeURIComponent(slug)}/delete-preview`);
 
 export const reclassifyInvestigation = (slug, projectClassification, hypothesis = '') =>
   post(`/api/investigations/${encodeURIComponent(slug)}/reclassify`, {
@@ -1198,6 +1222,18 @@ export const getDatabaseRegistration = (slug) =>
  *  refusal is an ApiError(400) whose message is the sentence to show. */
 export const changeDatabaseCredentials = (slug, { user, password }) =>
   patch(`/api/databases/${encodeURIComponent(slug)}/credentials`, { db_user: user, db_password: password });
+
+/** Table preview (REPLY-DESIGNER-TABLE-PREVIEW-2026-10-19). The person's OWN credential, held by the server for the
+ *  session only; the password travels in a request body and nowhere else. */
+export const getPreviewCredential = (slug) =>
+  get(`/api/databases/${encodeURIComponent(slug)}/preview/credential`);
+export const holdPreviewCredential = (slug, { user, password }) =>
+  put(`/api/databases/${encodeURIComponent(slug)}/preview/credential`, { user, password });
+export const forgetPreviewCredential = (slug) =>
+  del(`/api/databases/${encodeURIComponent(slug)}/preview/credential`);
+/** One preview (or, with `reveal`, a reveal of those columns). The rows are shown and never stored. */
+export const previewTable = (slug, { schema, table, limit = 20, reveal = [] }) =>
+  post(`/api/databases/${encodeURIComponent(slug)}/preview`, { schema, table, limit, reveal });
 
 /** Change ONLY the Egeria-visible host of a database / a server. A server's reply lists the databases
  *  that still carry the old value (`carriable`); pass `carryFrom` (that old value) to carry the new one to
@@ -2195,6 +2231,8 @@ export const getApiReference = (slug) => get(`/api/api-reference/${encodeURIComp
 export const putApiInstance = (slug, url) => put(`/api/api-reference/${encodeURIComponent(slug)}/instance`, { url });
 export const refetchApiInstance = (slug) => post(`/api/api-reference/${encodeURIComponent(slug)}/instance/refetch`);
 export const clearApiInstance = (slug) => del(`/api/api-reference/${encodeURIComponent(slug)}/instance`);
+/** Admin, read-only: the prefix map of what Egeria's platform container can read, each pair with its source and date. */
+export const getEgeriaMounts = () => get('/api/egeria/mounts');
 export const getApiFetchPolicy = () => get('/api/api-reference/policy');
 
 /* ── First index, asked first (first_index.py) ─────────────────────────── */

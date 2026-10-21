@@ -101,6 +101,26 @@ STALL_AFTER_WAITING_S = 60 * 60
 STALL_AFTER_RUNNING_S = 6 * 60 * 60
 
 
+#: Egeria's Folder Survey (the file system's native survey) and the request parameter that sets how much it keeps.
+#: `analysisLevel` (FolderRequestParameter.ANALYSIS_LEVEL): TOP_LEVEL_ONLY writes one set of annotations for the whole
+#: tree (counts, file types, asset types, deployed implementation types, unclassified, inaccessible); ALL_FOLDERS adds one
+#: annotation per folder and the *_AND_FILES levels one per file. The service walks and classifies every file at EVERY
+#: level (FolderSurveyService.profileFolder recurses regardless), so the level only changes how many annotations Egeria
+#: writes: TOP_LEVEL_ONLY is the one that finishes in minutes, and holds everything this step reads back. Per-folder
+#: detail is RE's own walk extensions (a later step), not Egeria's per-folder annotations.
+FOLDER_SURVEY_QN = "FileSurvey::survey-folder"
+FOLDER_ANALYSIS_LEVEL = "TOP_LEVEL_ONLY"
+REQUEST_PARAMETERS: dict[str, dict[str, str]] = {FOLDER_SURVEY_QN: {"analysisLevel": FOLDER_ANALYSIS_LEVEL}}
+
+#: Who surveys, in the words the survey card carries (filesystem native rows).
+FOLDER_SURVEYOR_WORDS = "Egeria's Folder Survey"
+
+#: Egeria's "Profile File Names to External Log" annotation. Egeria writes it on EVERY folder survey (no request
+#: parameter turns it off: FolderSurveyService adds it unconditionally, and `ignoreAnalysisSteps` is declared but read by
+#: no service), so RE's half of "stays off" is that it never reads, stores or shows it (Files brief section 5, caution 1).
+NAMES_LOG_ANNOTATION = "Profile File Names to External Log"
+
+
 class NativeSurveyError(RuntimeError):
     """A submission that did not produce an engine action."""
 
@@ -225,7 +245,7 @@ class EgeriaSurveyPort(Protocol):
 
     def asset_exists(self, guid: str) -> bool: ...
     def initiate(self, process_qualified_name: str, action_target_name: str,
-                 target_guid: str) -> str: ...
+                 target_guid: str, request_parameters: dict | None = None) -> str: ...
     def read_action(self, engine_action_guid: str) -> ActionRead: ...
     def cancel(self, engine_action_guid: str) -> None: ...
     def cancel_process_run(self, process_instance_guid: str) -> None: ...
@@ -379,8 +399,13 @@ class PyegeriaSurveyPort:
                                 + " ".join(str(res).split())[:300])
 
     def initiate(self, process_qualified_name: str, action_target_name: str,
-                 target_guid: str) -> str:
+                 target_guid: str, request_parameters: dict | None = None) -> str:
+        """Start a governance action type on one asset (pyegeria `AutomatedCuration.initiate_gov_action_type(
+        action_type_qualified_name, request_source_guids, action_targets, start_time=None, request_parameters=None,
+        orig_service_name=None, orig_engine_name=None) -> str`). `request_parameters` is sent only when given, so a
+        survey that takes none is started exactly as before."""
         self._enter()
+        extra = {"request_parameters": dict(request_parameters)} if request_parameters else {}
         guid = self._get_curation().initiate_gov_action_type(
             action_type_qualified_name=process_qualified_name,
             request_source_guids=[],
@@ -389,6 +414,7 @@ class PyegeriaSurveyPort:
                 "actionTargetName": action_target_name,
                 "actionTargetGUID": target_guid.strip(),
             }],
+            **extra,
         )
         if not guid or guid == "Action not initiated":
             raise NativeSurveyNotInitiated(
@@ -729,6 +755,12 @@ def cannot_run_reason(process: NativeProcess, entity, *, registry=None, technolo
         return _missing_credentials_reason(entity)
     if not (getattr(entity, "egeria_asset_guid", "") or "").strip():
         return cas.NOT_REGISTERED_WORDS if hasattr(entity, "db_type") else _NEEDS_CATALOGUING
+    if process.qualified_name == FOLDER_SURVEY_QN and not hasattr(entity, "db_type"):
+        # Files step 2: Egeria's Folder Survey leads only where the stored probe proves Egeria's engine host can read
+        # the canonical mount. Registry-only (the newest probe row), so it is safe on a list read.
+        from resource_explorer import file_reach
+
+        return file_reach.refusal_words(file_reach.fork_for(registry, entity), for_egeria_lead=True)
     if not process.needs_credentials:
         return ""
     return _missing_credentials_reason(entity)
@@ -1093,6 +1125,8 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
             "in_flight": derived["state"] in (SUBMITTED, RUNNING, AWAITING_REPORT, UNREADABLE),
             "cancellable": bool(latest) and cancel_offered(latest),
             "run": derived,
+            # Who surveys (Files step 2): named on the card for the file system's folder survey.
+            **({"surveyor": FOLDER_SURVEYOR_WORDS} if process.qualified_name == FOLDER_SURVEY_QN else {}),
             "reach_note": cas.reach_note_for(derived),
             "tried": cas.tried_words(derived, entity),
             "notes": (cas.server_credential_notes(registry, entity)
@@ -1794,7 +1828,18 @@ def refresh_run(registry, port: EgeriaSurveyPort, run: dict, *, entity_type: str
     if action.status in SUCCESS_STATUSES:
         _read_report_in(registry, port, run, action, entity_type=entity_type,
                         slug=slug, process_qn=process_qn)
-    return _refetch(registry, entity_type, slug, process_qn)
+    derived = _refetch(registry, entity_type, slug, process_qn)
+    if entity_type == "filesystem" and process_qn == FOLDER_SURVEY_QN:
+        # The first Egeria-led survey is the verification of the path (Files step 2): record what it proved.
+        try:
+            from resource_explorer import file_reach
+
+            file_reach.settle_from_run(registry, slug, derived)
+        except Exception as exc:  # noqa: BLE001 -- recording the proof must not break the read-back
+            log.warning("%s: could not record what the folder survey proved", slug, exc_info=True)
+            # Observable to the caller: the proof was NOT recorded (the run's own state is unchanged).
+            derived = {**derived, "verification_error": _short_error(exc)}
+    return derived
 
 
 def _read_report_in(registry, port, run, action, *, entity_type, slug, process_qn) -> None:
@@ -1813,10 +1858,14 @@ def _read_report_in(registry, port, run, action, *, entity_type, slug, process_q
             raise NativeSurveyError(
                 f"report {report_guid} says it originated from "
                 f"{report.originator_guid}, not from engine action {guid}")
+        annotations = report.annotations
+        if entity_type == "filesystem":
+            # Egeria always writes its file-names log; RE never reads, stores or shows it (caution 1).
+            annotations = [a for a in annotations if a.get("annotation_type") != NAMES_LOG_ANNOTATION]
         registry.record_native_survey_report(
             guid, entity_type=entity_type, slug=slug, process_qualified_name=process_qn,
             report_guid=report_guid, report_at=report.at, read_at=_now(),
-            annotations=report.annotations)
+            annotations=annotations)
     except Exception as exc:  # noqa: BLE001 -- recorded, not raised
         # Error-only: the action's own status/message, written a moment ago,
         # stay on the row beside the fact that the report could not be read.
@@ -2004,8 +2053,12 @@ def _submit_started(registry, port: EgeriaSurveyPort, entity_type: str, slug: st
             engine_action_guid = port.initiate_process_run(
                 process_qualified_name, process.action_target_name, asset_guid)
         else:
-            engine_action_guid = port.initiate(
-                process_qualified_name, process.action_target_name, asset_guid)
+            params = REQUEST_PARAMETERS.get(process_qualified_name)
+            engine_action_guid = (
+                port.initiate(process_qualified_name, process.action_target_name, asset_guid,
+                              request_parameters=dict(params))
+                if params else
+                port.initiate(process_qualified_name, process.action_target_name, asset_guid))
     except Exception as exc:  # noqa: BLE001
         if nonce and _proven_not_started(exc):
             # Proven that Egeria started nothing: nothing to hold back. Any other failure (a timeout, a 5xx from a

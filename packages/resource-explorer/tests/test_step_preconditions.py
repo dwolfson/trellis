@@ -307,6 +307,11 @@ def _store_rows_and_producer_run(registry, entry, minutes_ago=10):
                 "INSERT INTO database_tables (database_slug, surveyed_at, "
                 "schema_name, table_name) VALUES ('p', ?, 'public', 't')",
                 (datetime.now(timezone.utc).isoformat(),))
+        elif table == "database_value_profiles":
+            conn.execute(
+                "INSERT INTO database_value_profiles (database_slug, surveyed_at, "
+                "schema_name, table_name, column_name) VALUES ('p', ?, 'public', 't', 'c')",
+                (datetime.now(timezone.utc).isoformat(),))
         else:
             conn.execute(_ROW_SQL[table], ("p",))
     when = (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat()
@@ -330,8 +335,8 @@ def test_rows_without_a_producer_run_are_not_fresh(name, tmp_path):
     loaded, or left by something else) are not provenance."""
     registry = _real_registry(tmp_path)
     entry = sp.PRECONDITIONS[name]
-    if entry.table == "database_tables":
-        pytest.skip("database_tables carries its own timestamp column")
+    if entry.table in ("database_tables", "database_value_profiles"):
+        pytest.skip(f"{entry.table} carries its own timestamp column")
     with registry._conn() as conn:
         conn.execute(_ROW_SQL[entry.table], ("p",))
     assert sp.fresh_hit(registry, _P, name)[0] is False

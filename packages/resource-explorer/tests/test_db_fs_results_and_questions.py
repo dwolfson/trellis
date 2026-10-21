@@ -104,7 +104,9 @@ class TestDatabaseResultsMapCoverage:
         # entries, installed or not.
         # Twenty-seven (2026-10-20): data_class_match and reference_data_match,
         # read from database_column_matches.
-        assert len(DATABASE_ANALYSIS_RESULTS_MAP) == 27
+        # Twenty-nine (2026-10-20): value_profile and quality_checks, read from
+        # database_value_profiles and database_quality_results/_proposals.
+        assert len(DATABASE_ANALYSIS_RESULTS_MAP) == 29
 
     def test_every_entry_is_a_reader_pair(self):
         from resource_explorer.surveyors.database.survey_definition_adapter import (

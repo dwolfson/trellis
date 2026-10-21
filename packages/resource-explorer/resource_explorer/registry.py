@@ -264,6 +264,14 @@ class RowWrapper:
 CLAIM_LEASE_SECONDS = 1800
 
 
+class InvestigationPublishRunning(RuntimeError):
+    """A drain is writing one of this investigation's outbox rows to Egeria right now, so it cannot be deleted."""
+
+    def __init__(self, slug: str, running: int):
+        super().__init__(f"{running} publish row(s) for investigation {slug!r} are being written to Egeria now")
+        self.slug, self.running = slug, running
+
+
 class ConnectionWrapper:
     def __init__(self, raw_conn, is_postgres: bool):
         self.raw_conn = raw_conn
@@ -742,6 +750,11 @@ SECTION_DATA_FILES = "data_files"
 #: no row at all ("never checked") or any of the other five outcomes, which
 #: all mean "checked, and here is what Egeria said." See reachability.py's
 #: classify_check_asset_result().
+#:
+#: Files step 2 words (DESIGN-FILES-REMOTE-REACH.md section 2). None is something Egeria "says" about a probe: the
+#: mounted-prefix check (`file_reach.probe_filesystem`, which asks Egeria nothing) writes `expected_reachable`,
+#: `mounts_unknown`, `re_only` and `nobody_can_read`; a settled Egeria-led survey writes `egeria_verified` or
+#: `egeria_cannot_read` (`file_reach.settle_from_run`). No DDL: `outcome` is free text in the table, validated here.
 REACHABILITY_OUTCOMES: frozenset[str] = frozenset({
     "reachable",
     "no_connection",
@@ -749,6 +762,12 @@ REACHABILITY_OUTCOMES: frozenset[str] = frozenset({
     "network_unreachable",
     "auth_rejected",
     "unknown",
+    "re_only",
+    "expected_reachable",
+    "mounts_unknown",
+    "nobody_can_read",
+    "egeria_verified",
+    "egeria_cannot_read",
 })
 
 _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
@@ -928,6 +947,109 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         sample_json               TEXT DEFAULT NULL,
         state                     TEXT NOT NULL DEFAULT 'measured',
         UNIQUE(database_slug, surveyed_at, source, schema_name, table_name, column_name, question),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    # The value profile (postgres_value_profile; DESIGN-VALUE-PROFILE-AND-
+    # QUALITY-CHECKS.md §4): measured, whole-table counts and date bounds per
+    # column, under the vendored catalogue's own column names (`record_ct`,
+    # `value_ct`, ...) so each ported selection rule reads one-to-one. A
+    # column that was not profiled has a row with every measure NULL, a
+    # `state` saying why (not_measured, not_permitted, not_applicable) and a
+    # `reason`: never a row of zeros. An empty table is `measured` with
+    # record_ct = 0, a real zero. `general_type` is derived from the column's
+    # catalog type, never measured; `sample_ratio` is NULL in slice 1, which
+    # profiles whole tables only. `ran_as` is the account that profiled it.
+    """
+    CREATE TABLE IF NOT EXISTS database_value_profiles (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug     TEXT NOT NULL,
+        surveyed_at       TEXT NOT NULL,
+        source            TEXT NOT NULL DEFAULT 'local',
+        schema_name       TEXT NOT NULL,
+        table_name        TEXT NOT NULL,
+        column_name       TEXT NOT NULL,
+        general_type      TEXT NOT NULL DEFAULT 'X',
+        record_ct         BIGINT DEFAULT NULL,
+        value_ct          BIGINT DEFAULT NULL,
+        distinct_value_ct BIGINT DEFAULT NULL,
+        null_value_ct     BIGINT DEFAULT NULL,
+        zero_length_ct    BIGINT DEFAULT NULL,
+        filled_value_ct   BIGINT DEFAULT NULL,
+        min_date          TEXT DEFAULT NULL,
+        max_date          TEXT DEFAULT NULL,
+        future_date_ct    BIGINT DEFAULT NULL,
+        sample_ratio      REAL DEFAULT NULL,
+        ran_as            TEXT DEFAULT '',
+        state             TEXT NOT NULL DEFAULT 'measured',
+        reason            TEXT DEFAULT '',
+        UNIQUE(database_slug, surveyed_at, source, schema_name, table_name, column_name),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    # Proposed quality checks (propose_quality_checks, design §5): one row per
+    # (column or table, test type) a propose run reached a conclusion about
+    # other than "the selection rule says no". `state` is proposed,
+    # not_established (an input the rule reads was NULL: never a silent
+    # false), accepted (a live accepted verdict exists; `reason` says whether
+    # the profile drifted from the accepted baseline) or suppressed (a live
+    # rejected verdict, and neither the general_type nor the selection outcome
+    # changed since). The latest batch wins, so an open proposal is superseded
+    # by the next run and nothing is deleted. `profile_surveyed_at` is the
+    # value-profile run the proposal came from: when the analysis ran.
+    """
+    CREATE TABLE IF NOT EXISTS database_quality_proposals (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug       TEXT NOT NULL,
+        surveyed_at         TEXT NOT NULL,
+        source              TEXT NOT NULL DEFAULT 'local',
+        check_key           TEXT NOT NULL,
+        schema_name         TEXT NOT NULL,
+        table_name          TEXT NOT NULL,
+        column_name         TEXT NOT NULL DEFAULT '',
+        test_type           TEXT NOT NULL,
+        origin              TEXT NOT NULL,
+        general_type        TEXT DEFAULT '',
+        profile_surveyed_at TEXT NOT NULL,
+        params_json         TEXT NOT NULL,
+        catalogue_ref       TEXT NOT NULL,
+        state               TEXT NOT NULL DEFAULT 'proposed',
+        reason              TEXT DEFAULT '',
+        UNIQUE(database_slug, surveyed_at, source, check_key),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    # Quality-check results (run_quality_checks, design §6): one row per
+    # accepted check per run. `measure` is NULL whenever the check did not
+    # reach a conclusion; `status` says which way (pass, warning, fail,
+    # logged, not_established, error, not_measured) and `reason` why. The
+    # threshold and operator are the ones applied, and `rule_source` says
+    # where they came from (egeria, local_cache, unpublished).
+    """
+    CREATE TABLE IF NOT EXISTS database_quality_results (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug         TEXT NOT NULL,
+        surveyed_at           TEXT NOT NULL,
+        source                TEXT NOT NULL DEFAULT 'local',
+        check_key             TEXT NOT NULL,
+        schema_name           TEXT NOT NULL,
+        table_name            TEXT NOT NULL,
+        column_name           TEXT NOT NULL DEFAULT '',
+        test_type             TEXT NOT NULL,
+        measure               DOUBLE PRECISION DEFAULT NULL,
+        record_ct             BIGINT DEFAULT NULL,
+        status                TEXT NOT NULL,
+        reason                TEXT DEFAULT '',
+        severity              TEXT DEFAULT '',
+        comparison_operator   TEXT DEFAULT '',
+        threshold_values_json TEXT DEFAULT NULL,
+        params_json           TEXT DEFAULT NULL,
+        baseline_profile_surveyed_at TEXT DEFAULT '',
+        rule_source           TEXT DEFAULT '',
+        rule_guid             TEXT DEFAULT '',
+        ran_as                TEXT DEFAULT '',
+        state                 TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(database_slug, surveyed_at, source, check_key),
         FOREIGN KEY (database_slug) REFERENCES databases(slug)
     )
     """,
@@ -1190,6 +1312,9 @@ _DB_FS_DETAIL_TABLE_INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_db_columns_slug ON database_columns(database_slug, surveyed_at)",
     "CREATE INDEX IF NOT EXISTS idx_db_columns_table ON database_columns(database_slug, schema_name, table_name)",
     "CREATE INDEX IF NOT EXISTS idx_db_col_profiles_slug ON database_column_profiles(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_value_profiles_slug ON database_value_profiles(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_quality_proposals_slug ON database_quality_proposals(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_quality_results_slug ON database_quality_results(database_slug, surveyed_at)",
     "CREATE INDEX IF NOT EXISTS idx_db_table_activity_slug ON database_table_activity(database_slug, surveyed_at)",
     "CREATE INDEX IF NOT EXISTS idx_db_grants_slug ON database_grants(database_slug, surveyed_at)",
     "CREATE INDEX IF NOT EXISTS idx_db_grants_grantee ON database_grants(database_slug, grantee)",
@@ -1314,6 +1439,9 @@ _DETAIL_TABLE_ORDER: dict[str, str] = {
     "database_columns": "schema_name, table_name, ordinal_position, column_name",
     "database_column_profiles": "schema_name, table_name, column_name",
     "database_column_matches": "schema_name, table_name, column_name, question",
+    "database_value_profiles": "schema_name, table_name, column_name",
+    "database_quality_proposals": "schema_name, table_name, column_name, test_type",
+    "database_quality_results": "schema_name, table_name, column_name, test_type",
     "database_table_activity": "schema_name, table_name",
     "database_grants": "schema_name, object_name, grantee, privilege_type",
     "database_sql_objects": "schema_name, object_type, object_name",
@@ -3593,6 +3721,31 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_architecture_component_verdicts_scope "
                 "ON architecture_component_verdicts(entity_type, entity_slug, scope_locator)"
             )
+            # A person's verdict on a proposed quality check (DESIGN-VALUE-
+            # PROFILE-AND-QUALITY-CHECKS.md §5), the same shape as
+            # architecture_component_verdicts: append-only, the latest row per
+            # check_key wins, `decided_by` is attribution. `params_json` is the
+            # parameters AS ACCEPTED (a person may edit a threshold first);
+            # run_quality_checks reads them. Not a structured detail table (no
+            # surveyed_at/source), so it lives here rather than in
+            # _DB_FS_DETAIL_TABLE_DDL, and remove_database deletes it by name.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS database_quality_verdicts (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    database_slug TEXT NOT NULL,
+                    check_key     TEXT NOT NULL,
+                    verdict       TEXT NOT NULL,   -- 'accepted' | 'rejected' | 'retired'
+                    params_json   TEXT NOT NULL,
+                    proposal_id   INTEGER,
+                    note          TEXT DEFAULT '',
+                    decided_by    TEXT NOT NULL,
+                    created_at    TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_database_quality_verdicts_key "
+                "ON database_quality_verdicts(database_slug, check_key)"
+            )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS architecture_materialized_components (
                     id             TEXT PRIMARY KEY,
@@ -5618,6 +5771,91 @@ class ProjectRegistry:
     #: equivalent free-text field to retype. The route validates against
     #: whichever set matches the verdict_target it's recording.
     BLUEPRINT_VERDICTS = {"accepted", "rejected"}
+
+    #: Valid database_quality_verdicts.verdict values (design §5).
+    QUALITY_CHECK_VERDICTS = {"accepted", "rejected", "retired"}
+
+    def record_quality_verdict(
+        self, database_slug: str, check_key: str, verdict: str, params: dict,
+        proposal_id: int | None = None, note: str = "", decided_by: str | None = None,
+    ) -> dict:
+        """A person's accept/reject/retire call on one proposed quality check. Append-only, like
+        `record_component_verdict`: a later verdict is a new row, and `get_quality_verdicts` reads the latest per
+        key. Local only: no Egeria call; Publish is the verb that writes rules to Egeria."""
+        if verdict not in self.QUALITY_CHECK_VERDICTS:
+            raise ValueError(f"verdict must be one of {sorted(self.QUALITY_CHECK_VERDICTS)}, got {verdict!r}")
+        if not isinstance(params, dict):
+            raise ValueError("params must be a JSON object (the check's parameters as accepted)")
+        from datetime import timezone
+        entry = {
+            "database_slug": self._normalize_slug(database_slug),
+            "check_key": check_key,
+            "verdict": verdict,
+            "params_json": json.dumps(params, sort_keys=True),
+            "proposal_id": proposal_id,
+            "note": note,
+            "decided_by": current_user_id() if decided_by is None else decided_by,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO database_quality_verdicts (database_slug, check_key, verdict, params_json, proposal_id, "
+                "note, decided_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                tuple(entry.values()),
+            )
+        return {**entry, "params_json": dict(params)}
+
+    def get_quality_verdicts(self, database_slug: str) -> dict[str, dict]:
+        """{check_key: latest verdict row} for one database, `params_json` decoded. Ties on `created_at` go to the
+        later insert (`id`)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM database_quality_verdicts WHERE database_slug = ? ORDER BY created_at ASC, id ASC",
+                (self._normalize_slug(database_slug),),
+            ).fetchall()
+        latest: dict[str, dict] = {}
+        for r in rows:
+            row = dict(r)
+            try:
+                row["params_json"] = json.loads(row.get("params_json") or "{}")
+            except (ValueError, TypeError):
+                pass  # left as text: a value that will not parse is evidence, not "no parameters"
+            latest[row["check_key"]] = row
+        return latest
+
+    def list_quality_verdict_history(self, database_slug: str, check_key: str) -> list[dict]:
+        """Every verdict recorded for one check, newest first."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM database_quality_verdicts WHERE database_slug = ? AND check_key = ? "
+                "ORDER BY created_at DESC, id DESC",
+                (self._normalize_slug(database_slug), check_key),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_quality_proposal(self, proposal_id: int | None) -> dict | None:
+        """One database_quality_proposals row by id (a verdict's `proposal_id`), `*_json` decoded; None if absent."""
+        if proposal_id is None:
+            return None
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM database_quality_proposals WHERE id = ?", (int(proposal_id),)).fetchone()
+        return _decode_detail_row(dict(row)) if row else None
+
+    def list_detail_batches(self, table: str, slug: str, source: str | None = None) -> list[str]:
+        """Every `surveyed_at` stored in a structured detail table for one slug, oldest first."""
+        if table not in _DETAIL_TABLE_SPECS:
+            raise ValueError(f"{table!r} is not a structured detail table")
+        spec = _DETAIL_TABLE_SPECS[table]
+        where, params = [f"{spec.slug_column} = ?"], [self._normalize_slug(slug)]
+        if source is not None:
+            where.append("source = ?")
+            params.append(source)
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT DISTINCT surveyed_at FROM {table} WHERE {' AND '.join(where)} ORDER BY surveyed_at",
+                tuple(params),
+            ).fetchall()
+        return [dict(r)["surveyed_at"] for r in rows]
 
     def get_resource_sampling(self, entity_type: str, slug: str) -> dict:
         """The per-resource sampling overrides for one resource ({} when none are set)."""
@@ -11320,6 +11558,185 @@ class ProjectRegistry:
             ).fetchone()
         return (row["created_by"] if row else "") or ""
 
+    # ── Deleting an investigation (permanent; no undo) ──────────────────────────────────────────────────────
+
+    #: Tables that hold rows for an investigation under (entity_type='investigation', entity_slug=<slug>). All of
+    #: them are removed with it: they exist only for it. `activity_log` is NOT here: it is history and stays.
+    INVESTIGATION_KEYED_TABLES: tuple[str, ...] = (
+        "doc_sources", "egeria_linkage_status", "entity_egeria_project_context", "group_changes",
+        "notification_subscriptions", "resource_context", "resource_curation", "resource_curator_notes",
+        "resource_feedback", "resource_journal", "resource_schedules", "resource_tags", "resource_working_set",
+        "rfa_dismissals", "survey_definition_cache", "architecture_component_verdicts",
+        "architecture_materialized_blueprints", "architecture_materialized_components",
+        "architecture_materialized_ports",
+    )
+
+    #: Every other table with an (entity_type|resource_type, slug) pair, and why a delete leaves it alone. A test
+    #: reads the schema and fails when a table appears in neither list, so a new table forces a decision here.
+    INVESTIGATION_NOT_KEYED_TABLES: dict[str, str] = {
+        "activity_log": "history: kept, and the delete writes one more row",
+        "egeria_outbox": "pending and failed rows are removed; done, dead and cancelled rows stay as history",
+        "working_set_members": "keyed by the working set (removed through investigation_resource_lists)",
+        "work_lists": "entity_type is the type of the list's members; the list keeps living, unlinked",
+        "repo_dispositions": "a resource's own disposition, not the investigation's",
+        "repo_disposition_history": "a resource's own disposition history",
+        "api_reference_documents": "per surveyed resource, never an investigation",
+        "api_reference_operations": "per surveyed resource, never an investigation",
+        "board_summary": "per surveyed resource, never an investigation",
+        "native_survey_annotations": "per surveyed resource, never an investigation",
+        "resource_sampling_settings": "per surveyed resource, never an investigation",
+        "resource_scope_events": "per surveyed resource, never an investigation",
+        "step_annotations": "per surveyed resource, never an investigation",
+        "step_runs": "per surveyed resource, never an investigation",
+        "sub_resources": "per surveyed resource, never an investigation",
+    }
+
+    @staticmethod
+    def _investigation_working_set_slugs(conn, slug: str) -> list[str]:
+        """Every working-set slug that belongs to this investigation: the ones its resource-list links name, plus
+        the ORPHANS whose derived slug is `{slug}-folio` or `{slug}-ws-<disposition>` (a working_sets row can outlive
+        its resource-list link: an interrupted cleanup, an earlier delete). An orphan is only taken when no
+        investigation links it, so a neighbour called `{slug}-ws-x` never loses its own sets."""
+        found = [r["working_set_slug"] for r in conn.execute(
+            "SELECT working_set_slug FROM investigation_resource_lists WHERE investigation_slug = ?",
+            (slug,)).fetchall()]
+        like = slug.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "-ws-%"
+        for r in conn.execute(
+                "SELECT slug FROM working_sets WHERE (slug = ? OR slug LIKE ? ESCAPE '\\') AND slug NOT IN "
+                "(SELECT working_set_slug FROM investigation_resource_lists) ORDER BY slug",
+                (f"{slug}-folio", like)).fetchall():
+            if r["slug"] not in found:
+                found.append(r["slug"])
+        return found
+
+    def investigation_egeria_collections(self, slug: str) -> list[dict]:
+        """The Egeria Collections this investigation's working sets recorded (the Folio and any disposition set,
+        orphaned ones included): `[{working_set_slug, collection_kind, disposition, guid}]`, only those with a
+        recorded GUID."""
+        with self._conn() as conn:
+            out = []
+            for ws in self._investigation_working_set_slugs(conn, slug):
+                r = conn.execute(
+                    "SELECT slug, collection_kind, disposition, egeria_collection_guid FROM working_sets "
+                    "WHERE slug = ? AND COALESCE(egeria_collection_guid, '') <> ''", (ws,)).fetchone()
+                if r:
+                    out.append({"working_set_slug": r["slug"], "collection_kind": r["collection_kind"],
+                                "disposition": r["disposition"] or "", "guid": r["egeria_collection_guid"]})
+        return sorted(out, key=lambda d: (d["collection_kind"] or "", d["working_set_slug"]))
+
+    def begin_investigation_delete(self, slug: str) -> int:
+        """The first thing a delete does, in ONE transaction: refuse if a drain is writing one of this
+        investigation's outbox rows right now, otherwise cancel every row still waiting so none can start while the
+        delete runs. Returns how many rows were cancelled.
+
+        Raises `InvestigationPublishRunning` when any row is `running` with an unexpired lease
+        (`CLAIM_LEASE_SECONDS`): a running row may be landing in Egeria this second, so it is never changed here and
+        the delete does not begin. A `running` row whose lease has run out is a dead claim, not a write in progress;
+        it is cancelled with the waiting ones. `pending` and `failed` rows become `cancelled` (history, never
+        deleted); `done`, `dead` and `cancelled` rows are not touched."""
+        now = datetime.now(timezone.utc).isoformat()
+        cutoff = (datetime.utcnow() - timedelta(seconds=CLAIM_LEASE_SECONDS)).isoformat()
+        with self._conn() as conn:
+            running = conn.execute(
+                "SELECT COUNT(*) AS n FROM egeria_outbox WHERE entity_type = 'investigation' AND entity_slug = ? "
+                "AND status = 'running' AND claimed_at > ?", (slug, cutoff)).fetchone()["n"]
+            if running:
+                raise InvestigationPublishRunning(slug, int(running))
+            cur = conn.execute(
+                "UPDATE egeria_outbox SET status = 'cancelled', claimed_at = '', completed_at = ?, "
+                "last_error = 'cancelled: the investigation is being deleted' "
+                "WHERE entity_type = 'investigation' AND entity_slug = ? AND "
+                "(status IN ('pending', 'failed') OR (status = 'running' AND claimed_at <= ?))",
+                (now, slug, cutoff))
+        return int(cur.rowcount or 0)
+
+    def latest_investigation_delete_stop(self, slug: str) -> dict | None:
+        """The delete of this investigation that stopped part-way and has not been followed by a finished one: the
+        latest `activity_log` row with operation 'delete' and entity_type 'investigation' for the slug, when its
+        status is 'error' (a later 'ok' row clears it). Returns the stop in the shape the delete answers with
+        (`errors`, `archived`, `remaining`, `left`, `foreign`, `choice`, `ts`), or None."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT ts, status, detail FROM activity_log WHERE operation = 'delete' AND "
+                "entity_type = 'investigation' AND entity_slug = ? ORDER BY ts DESC LIMIT 1", (slug,)).fetchone()
+        if not row or row["status"] != "error":
+            return None
+        try:
+            d = json.loads(row["detail"] or "{}")
+        except ValueError:
+            d = {}
+        return {"ts": row["ts"], "choice": d.get("choice", ""), "errors": d.get("errors") or [],
+                "archived": d.get("egeria_archived") or [], "unlinked": d.get("egeria_unlinked") or [],
+                "remaining": d.get("egeria_remaining") or [], "left": d.get("egeria_left") or [],
+                "foreign": d.get("egeria_foreign") or [], "local_deleted": False}
+
+    # ── Archive proof rows for a deleted investigation (no DDL) ──
+    #
+    # One append-only row per Egeria element an investigation delete archived, in the commit-proof table the
+    # catalogue already uses, under the key "investigation/<slug>" (a slash cannot occur in a database slug). They
+    # are NEVER removed with the investigation: they are the history that links the archived Project's GUID, so a
+    # restore stays possible. The status words on screen ("archived in Egeria · <date>") derive from these rows.
+    ARCHIVE_NODE = "investigation_element"
+
+    @staticmethod
+    def investigation_proof_key(slug: str) -> str:
+        return f"investigation/{slug}"
+
+    def append_investigation_archive_proof(self, slug: str, *, proof: str, kind: str, element_guid: str,
+                                           qualified_name: str = "", detail: dict | None = None,
+                                           recorded_by: str = "", read_at: str | None = None) -> int:
+        return self.append_catalogue_commit_proof(
+            self.investigation_proof_key(slug), proof=proof, node_kind=self.ARCHIVE_NODE, schema_name=kind,
+            element_guid=element_guid, qualified_name=qualified_name, detail=detail,
+            recorded_by=recorded_by, read_at=read_at)
+
+    def list_investigation_archive_proofs(self, slug: str) -> list[dict]:
+        """Every archive observation for an investigation's Egeria elements, oldest first (survives its delete)."""
+        return [r for r in self.list_catalogue_commit_proofs(self.investigation_proof_key(slug))
+                if r["node_kind"] == self.ARCHIVE_NODE]
+
+    def delete_investigation_local(self, slug: str, activity: "ActivityEntry | None" = None) -> dict:
+        """Remove the investigation and everything that exists only for it, in ONE transaction, and write
+        `activity` (when given) in that same transaction. Returns the rows removed per table.
+
+        Removed: members and dispositions (the working-set members), the working-set and resource-list records
+        (orphans of the derived `{slug}-folio` / `{slug}-ws-*` slugs too), every `INVESTIGATION_KEYED_TABLES` row
+        (journal entries, context, tags, notes, ...) and any outbox row still waiting (pending or failed; the
+        delete already cancelled them, this catches one queued since). Kept: the activity log, and done, dead and
+        cancelled outbox rows (history). A saved work list that named it stays and is unlinked.
+        A `running` outbox row is never deleted here: if a drain is writing one, this raises
+        `InvestigationPublishRunning` before changing anything and the transaction rolls back.
+        Nothing here touches Egeria; the caller has already done whatever Egeria side was asked for."""
+        counts: dict[str, int] = {}
+        cutoff = (datetime.utcnow() - timedelta(seconds=CLAIM_LEASE_SECONDS)).isoformat()
+        with self._conn() as conn:
+            running = conn.execute(
+                "SELECT COUNT(*) AS n FROM egeria_outbox WHERE entity_type = 'investigation' AND entity_slug = ? "
+                "AND status = 'running' AND claimed_at > ?", (slug, cutoff)).fetchone()["n"]
+            if running:
+                raise InvestigationPublishRunning(slug, int(running))
+            for ws in self._investigation_working_set_slugs(conn, slug):
+                counts["working_set_members"] = counts.get("working_set_members", 0) + conn.execute(
+                    "DELETE FROM working_set_members WHERE working_set_slug = ?", (ws,)).rowcount
+                counts["working_sets"] = counts.get("working_sets", 0) + conn.execute(
+                    "DELETE FROM working_sets WHERE slug = ?", (ws,)).rowcount
+            counts["investigation_resource_lists"] = conn.execute(
+                "DELETE FROM investigation_resource_lists WHERE investigation_slug = ?", (slug,)).rowcount
+            for table in self.INVESTIGATION_KEYED_TABLES:
+                counts[table] = conn.execute(
+                    f"DELETE FROM {table} WHERE entity_type = 'investigation' AND entity_slug = ?",  # noqa: S608
+                    (slug,)).rowcount
+            counts["egeria_outbox"] = conn.execute(
+                "DELETE FROM egeria_outbox WHERE entity_type = 'investigation' AND entity_slug = ? "
+                "AND status IN ('pending', 'failed')", (slug,)).rowcount
+            counts["work_lists_unlinked"] = conn.execute(
+                "UPDATE work_lists SET investigation = '' WHERE investigation = ?", (slug,)).rowcount
+            counts["investigations"] = conn.execute(
+                "DELETE FROM investigations WHERE slug = ?", (slug,)).rowcount
+            if activity is not None:
+                self._insert_activity(conn, activity)
+        return {k: v for k, v in counts.items() if v}
+
     def set_working_set_egeria_collection(self, ws_slug: str, guid: str,
                                          qualified_name: str = "") -> dict | None:
         """Record the Egeria Collection this working set became.
@@ -11928,6 +12345,7 @@ class ProjectRegistry:
                 "DELETE FROM database_survey_coverage WHERE database_slug = ?",
                 (normalized,),
             )
+            conn.execute("DELETE FROM database_quality_verdicts WHERE database_slug = ?", (normalized,))
             conn.execute("DELETE FROM databases WHERE slug = ?", (normalized,))
 
     def record_database_survey(
@@ -13355,25 +13773,31 @@ class ProjectRegistry:
 
     def write_activity(self, entry: ActivityEntry) -> None:
         with self._conn() as conn:
-            conn.execute(
-                """INSERT INTO activity_log
-                   (id, ts, operation, intent, entity_type, entity_slug,
-                    entity_name, entity_location, status, summary, detail,
-                    items_json, annotations_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                     status=excluded.status,
-                     summary=excluded.summary,
-                     detail=excluded.detail,
-                     items_json=excluded.items_json,
-                     annotations_json=excluded.annotations_json""",
-                (
-                    entry.id, entry.ts, entry.operation, entry.intent,
-                    entry.entity_type, entry.entity_slug, entry.entity_name,
-                    entry.entity_location, entry.status, entry.summary, entry.detail,
-                    json.dumps(entry.items), json.dumps(entry.annotations),
-                ),
-            )
+            self._insert_activity(conn, entry)
+
+    @staticmethod
+    def _insert_activity(conn, entry: ActivityEntry) -> None:
+        """The activity upsert, on a connection the caller owns (so a write can put its activity row in the same
+        transaction as the change it records)."""
+        conn.execute(
+            """INSERT INTO activity_log
+               (id, ts, operation, intent, entity_type, entity_slug,
+                entity_name, entity_location, status, summary, detail,
+                items_json, annotations_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 status=excluded.status,
+                 summary=excluded.summary,
+                 detail=excluded.detail,
+                 items_json=excluded.items_json,
+                 annotations_json=excluded.annotations_json""",
+            (
+                entry.id, entry.ts, entry.operation, entry.intent,
+                entry.entity_type, entry.entity_slug, entry.entity_name,
+                entry.entity_location, entry.status, entry.summary, entry.detail,
+                json.dumps(entry.items), json.dumps(entry.annotations),
+            ),
+        )
 
     def list_activity(
         self,

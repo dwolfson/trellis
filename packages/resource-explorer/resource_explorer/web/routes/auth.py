@@ -148,8 +148,20 @@ async def auth_me(request: Request) -> Dict[str, Any]:
 
 
 @router.post("/logout")
-async def auth_logout() -> Dict[str, str]:
-    """Client-side logout — the server holds no session state to clear."""
+async def auth_logout(request: Request) -> Dict[str, str]:
+    """Client-side logout. The session is a signed token the server does not track; the one thing it does hold
+    for a session, the person's own database credentials for table previews (in memory only), is dropped here."""
+    from resource_explorer import preview_credential_holder
+    from resource_explorer.auth import get_current_user
+
+    # The request must carry the bearer (the browser sends it BEFORE it forgets the token); without it there is no
+    # identity here and nothing to drop. What is dropped is what THIS sign-in held; another device's is its own.
+    claims = get_current_user(request)
+    person = (claims or {}).get("user_id") or (claims or {}).get("sub") or ""
+    if person:
+        header = request.headers.get("Authorization", "")
+        token = header[len("Bearer "):] if header.startswith("Bearer ") else ""
+        preview_credential_holder.clear_session(person, preview_credential_holder.session_key(claims, token))
     return {"status": "ok"}
 
 
