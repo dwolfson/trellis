@@ -181,6 +181,7 @@ def test_filesystem_one_unchecked_file_is_skipped_and_listed_not_fatal():
 
     s = _fs_surveyor(lookup)
     s._automated_curation.create_elem_from_template.return_value = GUID
+    s._automated_curation.create_folder_element_from_template.return_value = GUID
     out = s.catalog_and_survey(_FS, dict(_FS_TWO))
     bodies = [c.args[0] for c in s._automated_curation.create_elem_from_template.call_args_list]
     # the first template call is the root folder (it has no fileName); the data files follow
