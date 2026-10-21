@@ -7,7 +7,6 @@ file, its outbox rows written by the registry's own enqueue/done calls.
 """
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import json
 import pathlib
@@ -65,7 +64,7 @@ class FakeEgeria:
         d.platform_url, d.view_server = PLATFORM, "qs-view-server"
         d.find_annotations.side_effect = self.find_annotations
         d.get_annotation_by_guid.side_effect = self.get_annotation_by_guid
-        d._async_update_element_body_request.side_effect = self.update
+        d.update_annotation.side_effect = self.update
         self.discovery = d
 
     def create(self, guid: str, body: dict, type_name: str = "ClassificationAnnotation") -> None:
@@ -94,12 +93,9 @@ class FakeEgeria:
         e = self.elements.get(guid)
         return json.loads(json.dumps(e)) if e else "No elements found"
 
-    async def update(self, url, prop=None, body=None):
-        if body is None:
-            raise AttributeError("'NoneType' object has no attribute 'model_dump_json'")   # pyegeria's own failure
-        assert url.startswith(f"{PLATFORM}/servers/qs-view-server/api/open-metadata/data-discovery/annotations/")
-        guid = url.rsplit("/", 2)[-2]
-        assert url.endswith(f"/annotations/{guid}/update")
+    def update(self, annotation_guid, body):
+        """Bound to the real `DataDiscovery.update_annotation(annotation_guid, body)` by the autospec."""
+        guid = annotation_guid
         if guid in self.fail_guids:
             raise RuntimeError("Egeria said no (500)")
         assert body["class"] == "UpdateElementRequestBody" and body["mergeUpdate"] is True
@@ -303,28 +299,29 @@ class TestFailures:
         assert warnings == []
 
 
-def test_pyegerias_update_annotation_sends_nothing(monkeypatch):
-    """Why the script does not call DataDiscovery.update_annotation (pyegeria as installed): the wrapper passes the
-    body positionally into the helper's `prop` slot, so it raises and no request is made. When this fails, pyegeria
-    has been fixed and the script can call the public method."""
+def test_pyegerias_update_annotation_now_sends_the_body(monkeypatch):
+    """pyegeria 6.2.7 (ISSUE-152): the plain `DataDiscovery.update_annotation` puts the body on the request. On
+    6.1.15 to 6.2.6 it passed the body into the helper's `prop` slot and sent nothing, which is why this script
+    once called the private helper. The real method runs; only the HTTP call underneath it is faked."""
     sent = []
 
     async def make_request(self, method, url, payload=None, *a, **k):
-        sent.append(url)
-        return SimpleNamespace(json=lambda: {"class": "BooleanResponse", "relatedHTTPCode": 200})
+        sent.append((method, url, payload))
+        return SimpleNamespace(json=lambda: {"class": "VoidResponse", "relatedHTTPCode": 200})
 
-    monkeypatch.setattr("pyegeria.core._server_client.ServerClient._async_make_request", make_request)
+    monkeypatch.setattr("pyegeria.core._server_client.ServerClient._async_make_request",
+                        make_request)
     client = DataDiscovery.__new__(DataDiscovery)
     client.platform_url, client.view_server = PLATFORM, "vs"
     body = {"class": "UpdateElementRequestBody", "mergeUpdate": True,
             "properties": {"class": CLS, "classificationName": "oltp"}}
-    with pytest.raises(AttributeError):
-        client.update_annotation("g", body)
-    assert sent == []
-    # The helper the script calls, with the body where it belongs, does send it.
-    asyncio.get_event_loop().run_until_complete(
-        client._async_update_element_body_request(f"{PLATFORM}/x/annotations/g/update", body=body))
-    assert sent == [f"{PLATFORM}/x/annotations/g/update"]
+    client.update_annotation("g", body)
+    assert len(sent) == 1
+    method, url, payload = sent[0]
+    assert method == "POST" and url == f"{PLATFORM}/servers/vs/api/open-metadata/data-discovery/annotations/g/update"
+    sent_body = json.loads(payload) if isinstance(payload, (str, bytes)) else payload
+    assert sent_body["mergeUpdate"] is True
+    assert sent_body["properties"]["classificationName"] == "oltp"
 
 
 def test_main_runs_as_the_resync_daemon_and_dry_runs_by_default(egeria, registry, tmp_path, monkeypatch):
