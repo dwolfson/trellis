@@ -46,6 +46,14 @@ cleaned up, `PROBES-2026-09-21.md`'s "Probes 7 and 8, run live" section):
 
 All three completed in single-digit seconds -- confirms the design doc's
 "that probe is cheap" claim for every outcome, not just the reachable one.
+
+**Correction, read from Egeria's source (Files step 2, 2026-10-20).** The three live runs were an empty folder, a missing
+folder and no connection. `FolderSurveyService` does not read `finalAnalysisStep` (only the Atlas and Unity Catalog
+services do), so on a folder Egeria CAN read this call is a full Folder Survey: it walks and classifies the whole tree,
+writes a SurveyReport and its CSV logs, and a large folder will not finish inside `DEFAULT_TIMEOUT_SECONDS` (the result
+is then `unknown`, "could not tell"). It is still the one call that asks Egeria's engine host about a path, and the
+missing-folder and no-connection answers stay fast; `file_reach.probe_filesystem` takes it through a seam so a cheaper
+stat can replace it.
 """
 from __future__ import annotations
 

@@ -77,6 +77,25 @@ def build_sha() -> str | None:
     return _BUILD_SHA
 
 
+@router.get("/mounts")
+def egeria_mounts_map(request: Request) -> dict:
+    """What Egeria's platform container can read (Files step 2): the deployment's host-prefix -> container-prefix map,
+    read-only, each pair with its source and date ("configured", "read from quickstart-egeria-main mounts", "read from
+    the quickstart compose file"). An empty map says so: every file system then reads "Egeria's mounts unknown on this
+    deployment". Admin only, like the other Admin routes: it describes the deployment."""
+    from resource_explorer import egeria_mounts
+    from resource_explorer.config import get_config
+    from resource_explorer.web import admin_auth
+
+    admin_auth.require_admin(request)
+    pairs = egeria_mounts.get_mount_map()
+    return {"pairs": [p.as_dict() for p in pairs], "empty": not pairs,
+            "empty_words": "Egeria's mounts unknown on this deployment · RE-led until configured",
+            "setting": "EGERIA_MOUNT_MAP", "compose_setting": "EGERIA_QUICKSTART_COMPOSE_FILE",
+            "container": egeria_mounts.PLATFORM_CONTAINER,
+            "configured": bool((get_config().egeria.mount_map or "").strip())}
+
+
 @router.get("/whoami")
 def whoami() -> dict:
     """The configured Egeria connection, plus `last_egeria_call`: what THIS process recorded for

@@ -225,6 +225,20 @@ export const getFilesystemRootFolder = (slug) =>
 export const attachFilesystemRoot = (slug) =>
   post(`/api/filesystems/${encodeURIComponent(slug)}/attach-root`);
 
+/** Files step 2: who can read the path, and so who leads the folder survey. `GET` reads the stored probe rows (no
+ *  Egeria call); `POST` runs the probe now. Both answer `{ state: egeria | re_only | undecided | not_checked,
+ *  sentence, checked_date, surveyor, why, decided }`. */
+export const getFilesystemReach = (slug) => get(`/api/filesystems/${encodeURIComponent(slug)}/reach`);
+export const checkFilesystemReach = (slug) => post(`/api/filesystems/${encodeURIComponent(slug)}/reach`);
+/** The newest folder survey, whoever led it, in one shape. */
+export const getFolderSurvey = (slug) => get(`/api/filesystems/${encodeURIComponent(slug)}/folder-survey`);
+/** Run the folder survey: the probe runs first and decides who leads. `{ publish }` publishes Resource Explorer's walk. */
+export const runFolderSurvey = (slug, body = {}) =>
+  post(`/api/filesystems/${encodeURIComponent(slug)}/folder-survey`, { publish: false, ...body });
+/** Publish the newest stored Resource Explorer walk as its own SurveyReport (nothing is walked again). */
+export const publishFolderSurvey = (slug) =>
+  post(`/api/filesystems/${encodeURIComponent(slug)}/folder-survey/publish`);
+
 /* ── Catalogue scope (Curate, database: what gets catalogued) ────────────
  * web/routes/catalogue_scope.py. A declared, signed, dated choice stored in
  * RE; the scope routes reach nothing of Egeria's (the commit routes below do).
@@ -2207,6 +2221,8 @@ export const getApiReference = (slug) => get(`/api/api-reference/${encodeURIComp
 export const putApiInstance = (slug, url) => put(`/api/api-reference/${encodeURIComponent(slug)}/instance`, { url });
 export const refetchApiInstance = (slug) => post(`/api/api-reference/${encodeURIComponent(slug)}/instance/refetch`);
 export const clearApiInstance = (slug) => del(`/api/api-reference/${encodeURIComponent(slug)}/instance`);
+/** Admin, read-only: the prefix map of what Egeria's platform container can read, each pair with its source and date. */
+export const getEgeriaMounts = () => get('/api/egeria/mounts');
 export const getApiFetchPolicy = () => get('/api/api-reference/policy');
 
 /* ── First index, asked first (first_index.py) ─────────────────────────── */

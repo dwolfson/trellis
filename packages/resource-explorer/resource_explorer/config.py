@@ -303,6 +303,13 @@ class EgeriaConfig(BaseSettings):
     platform_url: str = Field(default="https://localhost:9443", alias="EGERIA_PLATFORM_URL")
     view_server: str = Field(default="qs-view-server", alias="EGERIA_VIEW_SERVER")
     engine_host: str = Field(default="engine-host", alias="EGERIA_ENGINE_HOST")
+    #: What Egeria's platform container can see (Files step 2): host-prefix -> container-prefix pairs, as a JSON object
+    #: or `host=container,host2=container2`. A pair set here wins over one read from `docker inspect` or the quickstart
+    #: compose file. Empty by default: the map then starts from those two sources, or stays empty (never guessed).
+    mount_map: str = Field(default="", alias="EGERIA_MOUNT_MAP")
+    #: The quickstart compose file whose `egeria-main` service lists the platform container's volumes (read only to
+    #: pre-fill the map; relative host paths are resolved against the file's own directory). Empty: not read.
+    quickstart_compose_file: str = Field(default="", alias="EGERIA_QUICKSTART_COMPOSE_FILE")
     #: The integration daemon a catalogue commit may ask to refresh the JDBC
     #: cataloguer (never to restart it). The scratch tests ran against this one.
     integration_daemon_server: str = Field(default="qs-integration-daemon", alias="EGERIA_INTEGRATION_DAEMON")

@@ -76,6 +76,15 @@ async def _lifespan(app: FastAPI):
 
     heal_missing()
 
+    # Files step 2: what Egeria's platform container can read (configured pairs, then docker inspect, then the
+    # quickstart compose file). Read once at start; never fails the start.
+    try:
+        from resource_explorer import egeria_mounts
+
+        egeria_mounts.load_at_start()
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).warning("could not build the Egeria mount map", exc_info=True)
+
     worker_stop = None
     if _embed_worker_enabled():
         from resource_explorer.worker import start_embedded_worker

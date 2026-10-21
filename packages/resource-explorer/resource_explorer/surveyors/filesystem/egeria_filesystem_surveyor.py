@@ -37,6 +37,16 @@ class EgeriaFileSystemSurveyorError(RuntimeError):
 # that's a different, unverified concern from the one this fix addresses.
 
 
+def not_walked_words(limits: dict) -> str:
+    """"12 directories not walked: .git, node_modules, .venv": the noise folders the walk met and skipped, counted and
+    named (the names are the walk's fixed noise list, not names found in the tree). '' when none were skipped."""
+    n = int((limits or {}).get("not_walked_directories") or 0)
+    if not n:
+        return ""
+    names = ", ".join((limits or {}).get("not_walked_names_found") or [])
+    return f"{n} director{'y' if n == 1 else 'ies'} not walked" + (f": {names}" if names else "")
+
+
 def _published_count(made):
     """How many annotations Egeria returned a GUID for; None when no per-annotation answer came back."""
     return sum(1 for g in made if g) if isinstance(made, list) else None
@@ -441,102 +451,42 @@ class EgeriaFileSystemSurveyor:
             )
 
         from resource_explorer.surveyors.survey_report import (
-            ClassificationAnnotation,
             RequestForActionAnnotation,
-            ResourceMeasureAnnotation,
             SchemaAnalysisAnnotation,
         )
 
         inventory = survey_data.get("inventory", [])
 
-        # "Capture File Counts" parity with Egeria's native FileDirectory:CreateAndSurvey
-        # (see docs/filesystem-survey-analytics-plan.md §1) — counts plus the
-        # OS-level attributes/timestamps only a metadata pass can provide.
-        annotations = [
-            ResourceMeasureAnnotation(
-                summary=(
-                    f"FileSystem scan: {survey_data['total_files']} files "
-                    f"({survey_data['total_data_files']} data files), "
-                    f"total size: {survey_data['total_size']}"
-                ),
-                analysis_step="FileSystemWalk",
-                confidence=95,
-                resource_properties={
-                    "total_files": survey_data["total_files"],
-                    "total_data_files": survey_data["total_data_files"],
-                    "total_size_bytes": survey_data["total_size_bytes"],
-                    "total_size": survey_data["total_size"],
-                    "formats": survey_data.get("formats", {}),
-                    "hidden_count": survey_data.get("hidden_count", 0),
-                    "symlink_count": survey_data.get("symlink_count", 0),
-                    "executable_count": survey_data.get("executable_count", 0),
-                    "writable_count": survey_data.get("writable_count", 0),
-                    "unique_extension_count": survey_data.get("unique_extension_count", 0),
-                    "unique_filename_count": survey_data.get("unique_filename_count", 0),
-                    "last_access_time": survey_data.get("last_access_time", ""),
-                    "last_creation_time": survey_data.get("last_creation_time", ""),
-                    "last_modification_time": survey_data.get("last_modification_time", ""),
-                    "inaccessible_file_count": survey_data.get("inaccessible_file_count", 0),
-                },
-                json_properties={"source": "local-scan"},
-            )
-        ]
+        # Files step 2: Resource Explorer's walk is published under Egeria's OWN folder-survey annotation types and
+        # names ("Capture File Counts", "Profile File Types", "Inaccessible files" ...), so Egeria's folder survey and
+        # this one read the same way. "Profile File Names to External Log" is never built. See
+        # folder_survey_annotations.py for where every name was read in Egeria's source.
+        from resource_explorer import file_reach
+        from resource_explorer.surveyors.filesystem.folder_survey_annotations import folder_specs, to_annotations
 
-        # "Profile Deployed Implementation Types/Asset Types/File Types" parity —
-        # one ClassificationAnnotation per recognized type group.
-        classification = survey_data.get("classification", {})
-        type_counts = classification.get("type_counts", {})
-        for label, count in sorted(type_counts.items()):
-            annotations.append(
-                ClassificationAnnotation(
-                    summary=f"{count} file(s) classified as '{label}'",
-                    analysis_step="FileSystemClassification",
-                    candidate_classifications=[label],
-                    confidence=90,
-                    json_properties={"file_count": count},
-                )
-            )
-
-        # "Profile File Extensions" parity.
-        if classification.get("extension_counts"):
-            annotations.append(
-                ResourceMeasureAnnotation(
-                    summary=f"File extension breakdown across {survey_data['total_files']} files",
-                    analysis_step="FileSystemClassification",
-                    confidence=95,
-                    resource_properties={"by_extension": classification["extension_counts"]},
-                )
-            )
-
-        # "Missing File Reference Data" parity — files that couldn't be classified.
-        unclassified_count = classification.get("unclassified_count", 0)
-        if unclassified_count:
-            annotations.append(
-                RequestForActionAnnotation(
-                    summary=f"{unclassified_count} file(s) could not be classified against known file reference data",
-                    analysis_step="FileSystemClassification",
-                    confidence=70,
-                    action_requested="Review unclassified file extensions/names and enrich Egeria's file reference data if any are significant.",
-                    json_properties={"sample_paths": classification.get("unclassified_sample", [])},
-                )
-            )
-
-        # "Inaccessible files" parity — files/directories the walk couldn't stat or enter.
-        inaccessible_files = survey_data.get("inaccessible_files", [])
-        if inaccessible_files:
-            annotations.append(
-                RequestForActionAnnotation(
-                    summary=f"{len(inaccessible_files)} file(s)/director(y/ies) could not be accessed during the scan",
-                    analysis_step="FileSystemWalk",
-                    confidence=95,
-                    action_requested="Review file/directory permissions for the listed paths.",
-                    json_properties={"inaccessible": inaccessible_files[:20]},
-                )
-            )
+        limits = survey_data.get("walk_limits") or {}
+        reach = (survey_data.get("surveyed_by") or {}).get("reach") or {}
+        report_sentence = reach.get("report_sentence") or "surveyed by Resource Explorer"
+        envelope = {
+            "surveyor": file_reach.SURVEYOR_RE,
+            "reachChecked": reach.get("checked_at", ""),
+            "walkCapped": str(bool(limits.get("capped"))).lower(),
+            "walkLimits": (f"max depth {limits.get('max_depth')}, max entries {limits.get('max_entries')}"
+                           if limits else "not recorded"),
+        }
+        if limits.get("capped"):
+            envelope["walkCappedBy"] = ", ".join(limits.get("capped_reasons") or [])
+        skipped_words = not_walked_words(limits)
+        if skipped_words:
+            envelope["notWalked"] = skipped_words
+        annotations = to_annotations(folder_specs(survey_data, directory_name=canonical_mount), additional=envelope)
 
         # Data profiling failures — RE-specific (no Egeria native equivalent),
         # surfaced so a run with many malformed files doesn't read as silent.
-        profiling_errors = survey_data.get("profiling_errors", [])
+        # A folder survey (Files step 2) publishes counts only: no path or name leaves for Egeria, so the per-file
+        # schema profiles and the profiling-failure paths below belong to the older walk that opened files.
+        folder_survey = bool(survey_data.get("surveyed_by"))
+        profiling_errors = [] if folder_survey else survey_data.get("profiling_errors", [])
         if profiling_errors:
             annotations.append(
                 RequestForActionAnnotation(
@@ -548,7 +498,7 @@ class EgeriaFileSystemSurveyor:
                 )
             )
 
-        for file_info in inventory:
+        for file_info in ([] if folder_survey else inventory):
             if not file_info.get("is_data_file") or "row_count" not in file_info:
                 continue
             rel_path = file_info["file_path"]
@@ -584,31 +534,40 @@ class EgeriaFileSystemSurveyor:
                 "qualifiedName": qualified_name,
                 "displayName": f"Survey: {fs_name}",
                 "description": (
-                    f"Survey Definition step results for filesystem {fs_name} "
-                    f"run at {surveyed_at}."
+                    f"Folder survey of {fs_name} run at {surveyed_at} · {report_sentence}"
+                    + (f" · capped ({envelope['walkCappedBy']}): not the whole tree"
+                       if limits.get("capped") else "")
+                    + (f" · {skipped_words}" if skipped_words else "")
                 ),
                 "additionalProperties": {
                     "annotation_count": str(len(annotations)),
                     "file_count": str(survey_data["total_files"]),
                     "data_file_count": str(survey_data["total_data_files"]),
+                    **{k: str(v) for k, v in envelope.items()},
                 },
             },
         }
         report_guid = self._asset_maker.create_asset(body=body)
         log.info(f"Published SurveyReport in Egeria: {report_guid}")
         made = self._create_annotations(annotations, report_guid, fs_entity.slug, surveyed_at)
+        landed = _published_count(made)
+        # "Published" is what landed, read back: the SurveyReport must read back from Egeria by its GUID, and the count is
+        # the GUIDs Egeria returned (`annotations_in_egeria`), not the number RE built.
+        read_back = self._read_back_by_guid(report_guid, expect_type="SurveyReport")
+        proof = {"report_guid": report_guid, "annotation_count": len(annotations), "annotations_in_egeria": landed,
+                 "report_read_back": bool(read_back.get("matched")),
+                 "read_back_why": read_back.get("why", ""), "at": datetime.utcnow().isoformat()}
 
         if registry:
             registry.add_filesystem_survey(
                 fs_slug=fs_entity.slug,
                 surveyed_at=surveyed_at,
-                survey_data=survey_data,
+                survey_data={**survey_data, "published_to_egeria": proof},
                 egeria_report_guid=report_guid,
                 source="egeria-published",
             )
 
-        return {"filesystem_guid": fs_guid, "report_guid": report_guid,
-                "annotation_count": len(annotations), "annotations_in_egeria": _published_count(made)}
+        return {"filesystem_guid": fs_guid, **proof}
 
     def get_survey_reports_by_guid(self, fs_guid: str) -> list[dict]:
         """All SurveyReports linked to this filesystem's asset GUID via the real

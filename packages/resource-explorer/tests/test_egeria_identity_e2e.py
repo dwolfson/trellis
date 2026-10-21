@@ -234,17 +234,34 @@ def test_the_resync_loop_runs_as_the_daemon(boundary, reg, monkeypatch):
     assert {c["token"] for c in boundary.clients} == {f"minted-for-{DAEMON_USER}"}
 
 
-# ── reachability → Daemon(REACHABILITY), even with a person signed in ─────────
+# ── reachability: a mounted-prefix check (no Egeria call); the Egeria-led survey launch runs as the Caller ──
+# Files step 2 fix round 1 retired the engine-action probe (and with it Daemon(REACHABILITY) for a person's press).
+# These two tests replace the old "probe runs as the daemon" pin: the probe now builds NO client at all, and the
+# launch that remains runs as the signed-in person.
 
-def test_reachability_runs_as_the_daemon_even_from_a_signed_in_request(boundary, monkeypatch, signed_in_caller):
-    from resource_explorer import reachability
+def test_a_signed_in_reachability_press_makes_no_egeria_call_and_builds_no_client(
+        boundary, reg, client, monkeypatch, signed_in_caller):
+    from resource_explorer.registry import FileSystemEntity
 
-    monkeypatch.setattr("pyegeria.AutomatedCuration", boundary.fake("AutomatedCuration"))
-    monkeypatch.setattr("pyegeria.MetadataExpert", boundary.fake("MetadataExpert"))
-    reachability._get_clients()
-    assert {(c["cls"], c["user"]) for c in boundary.clients} == {
-        ("AutomatedCuration", DAEMON_USER), ("MetadataExpert", DAEMON_USER)}
-    assert not any(c["token"] == "tok-test-caller" for c in boundary.clients)
+    for cls in ("AutomatedCuration", "MetadataExpert", "AssetMaker"):
+        monkeypatch.setattr(f"pyegeria.{cls}", boundary.fake(cls))
+    reg.register_filesystem(FileSystemEntity(slug="fs1", display_name="F", local_mount_point="/nonexistent/fs1",
+                                             canonical_mount_point="/x/fs1",
+                                             egeria_asset_guid="bbbbbbbb-0000-0000-0000-000000000002"))
+    # the conftest guard raises ProbeLaunchedInTest (a BaseException) if anything reaches the old engine-action launch
+    r = client.post("/api/filesystems/fs1/reachability", headers=_token())
+    assert r.status_code == 200, r.text
+    assert r.json()["outcome"] == "mounts_unknown"
+    assert boundary.clients == [] and boundary.calls == [], "the probe reached pyegeria"
+
+
+def test_the_egeria_led_survey_port_acts_as_the_signed_in_caller_never_the_reachability_daemon(signed_in_caller):
+    from resource_explorer.egeria_clients import KIND_CALLER
+    from resource_explorer.native_survey_run import PyegeriaSurveyPort
+
+    who = PyegeriaSurveyPort().principal()
+    assert who.kind == KIND_CALLER and who.token == "tok-test-caller"
+    assert getattr(who, "reason", "") != "reachability"
 
 
 # ── the scheduler tick (RFA sync) → Daemon(SCHEDULER) ─────────────────────────
