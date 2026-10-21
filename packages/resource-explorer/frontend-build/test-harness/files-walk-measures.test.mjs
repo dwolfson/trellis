@@ -115,6 +115,15 @@ test('a capped walk says capped at N and never reads as the whole tree', async (
   assert.equal(host.querySelector('[data-fs-measures-not-capped]'), null);
 });
 
+test('a spent hashing budget is said on the card, and absent when the budget held', async () => {
+  const { host, fs } = await setUp();
+  host.innerHTML = fs.folderSurveyCardHtml(VIEW(REACH.re_only, EXT({ hashing: { ...EXT().hashing, over_budget_files: 14,
+    budget_words: 'hashing stopped at 2.0 GiB: 14 files not hashed' } })));
+  assert.match(text(host.querySelector('[data-fs-measures-hash-budget]')), /hashing stopped at 2\.0 GiB: 14 files not hashed/);
+  host.innerHTML = fs.folderSurveyCardHtml(VIEW(REACH.re_only, EXT()));
+  assert.equal(host.querySelector('[data-fs-measures-hash-budget]'), null);
+});
+
 test('hashing off is said, not shown as zero files hashed', async () => {
   const { host, fs } = await setUp();
   host.innerHTML = fs.folderSurveyCardHtml(VIEW(REACH.re_only, EXT({ hashing: { algorithm: 'SHA-256', limit_bytes: 0, off: true, hashed_files: 0 } })));

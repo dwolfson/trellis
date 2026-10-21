@@ -221,6 +221,7 @@ export function walkMeasuresHtml(ext) {
       ${statRow('Modes', modes || dash)}
       ${statRow('Not walked', notWalked || 'none')}
     </div>
+    ${h.budget_words ? `<div data-fs-measures-hash-budget class="text-caveat text-state-warn"><span class="font-glyph" aria-hidden="true">⚠</span> ${esc(h.budget_words)}</div>` : ''}
     <div class="text-provenance text-ink-muted" data-fs-measures-hash>${esc(h.off ? W.hashesOff : W.hashed(h.hashed_files, h.limit_bytes))}${notHashed ? ` · ${esc(notHashed)}` : ''}</div>
     ${(f.largest_folders || []).length ? measureTableHtml('largest', 'Heaviest folders', ['Folder', 'Depth', 'Files', 'Size'],
       f.largest_folders.map((x) => [x.path, num(x.depth), num(x.files), fmtBytes(x.bytes)])) : ''}

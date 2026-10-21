@@ -506,7 +506,7 @@ class EgeriaFileSystemSurveyor:
         # surfaced so a run with many malformed files doesn't read as silent.
         # A folder survey (Files step 2) publishes counts only: no path or name leaves for Egeria, so the per-file
         # schema profiles and the profiling-failure paths below belong to the older walk that opened files.
-        folder_survey = bool(survey_data.get("surveyed_by"))
+        folder_survey = bool(survey_data.get("surveyed_by")) or extensions_only
         profiling_errors = [] if folder_survey else survey_data.get("profiling_errors", [])
         if profiling_errors:
             annotations.append(

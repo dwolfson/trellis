@@ -161,6 +161,7 @@ class LocalFileSystemSurveyor:
         inaccessible_files: list[dict] = []
         walk_rows: list[dict] = []
         hash_limit = we.hash_limit_bytes() if walk_extensions else 0
+        hash_budget = we.HashBudget() if walk_extensions else None
 
         walk = self._walk(inaccessible_files)
         broken_links = walk["broken_symlinks"]
@@ -178,8 +179,10 @@ class LocalFileSystemSurveyor:
             is_hidden = p.name.startswith(".")
             try:
                 is_symlink = p.is_symlink()
+                link_unknown = False
             except OSError:
-                is_symlink = False
+                # cannot tell: the counts stay as they were, but the per-file row treats it as a link (never opened)
+                is_symlink, link_unknown = False, True
             is_executable = os.access(p, os.X_OK)
             is_writable = os.access(p, os.W_OK)
             if os.access(p, os.R_OK):
@@ -209,8 +212,8 @@ class LocalFileSystemSurveyor:
             filenames.add(p.name)
 
             if walk_extensions:
-                walk_rows.append(we.build_row(rel_path, p, stat, is_symlink=is_symlink, limit=hash_limit,
-                                              modified_at=modify_iso))
+                walk_rows.append(we.build_row(rel_path, p, stat, is_symlink=is_symlink or link_unknown, limit=hash_limit,
+                                              modified_at=modify_iso, budget=hash_budget))
 
             file_info = {
                 "file_path": rel_path,
@@ -319,6 +322,7 @@ class LocalFileSystemSurveyor:
         if walk_extensions:
             survey_data["walk_files"] = walk_rows
             survey_data["walk_hash_limit_bytes"] = hash_limit
+            survey_data["walk_hash_budget"] = hash_budget.as_dict()
         log.info(
             f"Filesystem structure scan complete for {self.filesystem.slug}: {total_files} files "
             f"({total_data_files} data files, {len(inaccessible_files)} inaccessible), "

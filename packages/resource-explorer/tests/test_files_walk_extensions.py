@@ -624,3 +624,293 @@ def test_the_walk_extensions_request_model_is_what_the_screen_posts():
     from resource_explorer.web.routes.filesystems import WalkExtensionsRequest
 
     assert set(WalkExtensionsRequest.model_fields) == {"publish"}
+
+
+# ── 9. fix round 1: links, FIFOs and races are never read; the hashing budget; publish guards ─────────────────────────
+
+def _within(seconds, fn):
+    """Run fn; fail (instead of hanging the suite) if it blocks, as a read-open of a FIFO would."""
+    import signal
+
+    def boom(*_):
+        raise AssertionError(f"blocked for more than {seconds}s")
+
+    old = signal.signal(signal.SIGALRM, boom)
+    signal.alarm(seconds)
+    try:
+        return fn()
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+
+
+def test_with_hashing_off_a_symlinked_readme_is_still_never_read(registry, tmp_path, monkeypatch):
+    """B1: hashing off used to skip the link check, so the narrative step read README.md -> /etc/passwd."""
+    monkeypatch.setenv(we.HASH_ENV, "0")
+    root = _tree(tmp_path)
+    (root / "README.md").unlink()
+    outside = tmp_path / "passwd"
+    outside.write_text("root:x:0:0:SECRET-OUTSIDE\n")
+    os.symlink(outside, root / "README.md")
+    opened = _watch_opens(monkeypatch, root)
+    fs, sd = _walk(registry, root)
+    rows = {r["file_path"]: r for r in registry.list_filesystem_walk_files("walkme", sd["surveyed_at"])}
+    assert rows["README.md"]["hash_state"] == "symlink"                  # a link is a link whether or not hashing is on
+    assert not any(p.endswith("README.md") for p in opened), opened
+    assert "README.md" not in {e["file"] for e in sd["folder_narratives"]}
+    assert "SECRET-OUTSIDE" not in json.dumps(sd["folder_narratives"])
+
+
+def test_a_link_to_a_file_outside_the_mount_is_not_read_with_hashing_on_either(registry, tmp_path, monkeypatch):
+    root = _tree(tmp_path)
+    (root / "NOTES.md").unlink() if (root / "NOTES.md").exists() else None
+    outside = tmp_path / "elsewhere.md"
+    outside.write_text("# Outside\n\nowner: SECRET-OUTSIDE\n")
+    os.symlink(outside, root / "NOTES.md")
+    opened = _watch_opens(monkeypatch, root)
+    fs, sd = _walk(registry, root)
+    assert not any(p.endswith("NOTES.md") for p in opened), opened
+    assert "SECRET-OUTSIDE" not in json.dumps(sd["folder_narratives"])
+
+
+def test_a_fifo_swapped_in_after_the_walks_stat_is_not_opened_for_reading_and_does_not_block(tmp_path):
+    fifo = tmp_path / "pipe.txt"
+    os.mkfifo(fifo)
+    assert _within(5, lambda: we.read_plain_file(fifo, 1024)) is None
+    # the hash step, told it is a plain file (the walk's stat said so a moment ago): the open's own fstat refuses it
+    assert _within(5, lambda: we.hash_file(fifo, 10, is_symlink=False, name="pipe.txt", limit=1024)) == ("", we.UNREADABLE)
+
+
+def test_a_file_swapped_for_a_link_after_the_stat_is_refused_by_the_open_itself(tmp_path):
+    secret = tmp_path / "outside.txt"
+    secret.write_text("SECRET-OUTSIDE")
+    swapped = tmp_path / "doc.txt"
+    os.symlink(secret, swapped)
+    assert we.read_plain_file(swapped, 1024) is None                      # O_NOFOLLOW
+    digest, state = we.hash_file(swapped, 14, is_symlink=False, name="doc.txt", limit=1024)
+    assert (digest, state) == ("", we.UNREADABLE) and digest != hashlib.sha256(b"SECRET-OUTSIDE").hexdigest()
+
+
+def test_the_fifo_in_a_walk_is_not_read_and_the_walk_finishes(registry, tmp_path):
+    root = _tree(tmp_path)
+    os.mkfifo(root / "README_pipe.md")
+    fs, sd = _within(20, lambda: _walk(registry, root))
+    assert "README_pipe.md" not in {e["file"] for e in sd["folder_narratives"]}
+
+
+def test_a_read_never_goes_past_the_statd_size_or_the_limit(tmp_path):
+    f = tmp_path / "a.txt"
+    f.write_bytes(b"x" * 100)
+    assert we.read_plain_file(f, 10) == b"x" * 10
+    assert we.read_plain_file(f, 10, whole=True) is None                  # grew past the limit: no prefix passed off as the file
+    assert we.read_plain_file(f, 1000) == b"x" * 100
+
+
+def test_a_link_whose_state_cannot_be_read_is_treated_as_a_link_and_skipped(registry, tmp_path, monkeypatch):
+    root = _tree(tmp_path)
+    real = Path.is_symlink
+
+    def flaky(self):
+        if self.name == "top.txt":
+            raise OSError("EIO")
+        return real(self)
+
+    monkeypatch.setattr(Path, "is_symlink", flaky)
+    opened = _watch_opens(monkeypatch, root)
+    fs, sd = _walk(registry, root)
+    row = next(r for r in registry.list_filesystem_walk_files("walkme", sd["surveyed_at"]) if r["file_path"] == "top.txt")
+    assert row["hash_state"] == "symlink" and not any(p.endswith("top.txt") for p in opened)
+
+
+class _Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_the_hashing_budget_by_bytes_stops_hashing_and_says_so():
+    budget = we.HashBudget(max_bytes=10, max_seconds=100, clock=_Clock())
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        paths = []
+        for i in range(4):
+            p = Path(d) / f"f{i}.txt"
+            p.write_bytes(b"123456")
+            paths.append(p)
+        states = [we.hash_file(p, 6, is_symlink=False, name=p.name, limit=1000, budget=budget)[1] for p in paths]
+    assert states == ["hashed", "over_budget", "over_budget", "over_budget"]       # 6 fits, 12 does not, and it stays spent
+    assert budget.words() == "hashing stopped at 10 B: 3 files not hashed"
+
+
+def test_the_hashing_budget_by_time_stops_hashing(tmp_path):
+    clock = _Clock()
+    budget = we.HashBudget(max_bytes=10**9, max_seconds=60, clock=clock)
+    a, b = tmp_path / "a.txt", tmp_path / "b.txt"
+    a.write_text("a")
+    b.write_text("b")
+    assert we.hash_file(a, 1, is_symlink=False, name="a.txt", limit=1000, budget=budget)[1] == "hashed"
+    clock.t = 61
+    assert we.hash_file(b, 1, is_symlink=False, name="b.txt", limit=1000, budget=budget) == ("", "over_budget")
+    assert budget.words() == "hashing stopped at 60 seconds: 1 file not hashed"
+
+
+def test_the_budget_defaults_and_env_overrides(monkeypatch):
+    monkeypatch.delenv(we.HASH_BUDGET_BYTES_ENV, raising=False)
+    monkeypatch.delenv(we.HASH_BUDGET_SECONDS_ENV, raising=False)
+    b = we.HashBudget()
+    assert (b.max_bytes, b.max_seconds) == (2 * 1024 ** 3, 300)
+    monkeypatch.setenv(we.HASH_BUDGET_BYTES_ENV, "5000")
+    monkeypatch.setenv(we.HASH_BUDGET_SECONDS_ENV, "7")
+    b = we.HashBudget()
+    assert (b.max_bytes, b.max_seconds) == (5000, 7)
+
+
+def test_a_walk_over_budget_says_how_many_files_were_not_hashed_on_the_result_the_view_and_the_publish(registry, tmp_path, monkeypatch):
+    monkeypatch.setenv(we.HASH_BUDGET_BYTES_ENV, "5")
+    root = _tree(tmp_path)
+    fs, sd = _walk(registry, root)
+    h = sd["walk_extensions"]["hashing"]
+    rows = registry.list_filesystem_walk_files("walkme", sd["surveyed_at"])
+    n = sum(1 for r in rows if r["hash_state"] == "over_budget")
+    assert n > 0 and h["over_budget_files"] == n and h["budget_stopped_by"] == "bytes"
+    assert h["budget_words"] == f"hashing stopped at 5 B: {n} file{'s' if n != 1 else ''} not hashed"
+    props = {s["annotation_type_name"]: s for s in we.extension_specs(sd)}[we.CAPTURE_CONTENT_HASHES]["resource_properties"]
+    assert props["Files not hashed (hashing budget spent)"] == str(n) and props["Hashing stopped by"] == "bytes"
+    assert "budget" not in json.dumps(sd["walk_extensions"]["narratives"])
+
+
+def test_a_walk_inside_the_budget_says_nothing_about_one(registry, tmp_path):
+    fs, sd = _walk(registry, _tree(tmp_path))
+    h = sd["walk_extensions"]["hashing"]
+    assert h["budget_words"] == "" and h["over_budget_files"] == 0 and h["budget_stopped_by"] == ""
+    assert "Hashing stopped by" not in {s["annotation_type_name"]: s for s in we.extension_specs(sd)}[we.CAPTURE_CONTENT_HASHES]["resource_properties"]
+
+
+def test_postgres_rows_go_in_with_execute_values_and_sqlite_keeps_executemany(registry, monkeypatch, tmp_path):
+    import contextlib
+
+    import psycopg2.extras
+
+    calls = {}
+
+    class RawCursor:
+        pass
+
+    class Cur:
+        raw_cursor = RawCursor()
+
+        def execute(self, *a, **k):
+            return self
+
+        def fetchall(self):
+            return []
+
+    class Conn:
+        is_postgres = True
+
+        def execute(self, sql, params=None):
+            return Cur()
+
+        def executemany(self, *a):
+            raise AssertionError("executemany is the sqlite path")
+
+        def cursor(self):
+            return Cur()
+
+    monkeypatch.setattr(psycopg2.extras, "execute_values",
+                        lambda cur, sql, batch, page_size=100: calls.update(cur=cur, sql=sql, rows=list(batch), page=page_size))
+    monkeypatch.setattr(registry, "_conn", contextlib.contextmanager(lambda: (yield Conn())))
+    rows = [{"file_path": f"a{i}", "folder_path": "", "folder_depth": 0, "size_bytes": i, "modified_at": "", "owner_name": "o",
+             "group_name": "g", "mode_octal": "0644", "world_readable": 1, "content_hash": "", "hash_state": "over_limit"}
+            for i in range(3)]
+    out = registry.add_filesystem_walk_files("walkme", "r1", rows)
+    assert out["rows"] == 3 and len(calls["rows"]) == 3 and calls["sql"].rstrip().endswith("VALUES %s") and calls["page"] == 2000
+    assert isinstance(calls["cur"], RawCursor) and "?" not in calls["sql"]
+    # sqlite path unchanged: the real registry still stores them
+    monkeypatch.undo()
+    _register(registry, _tree(tmp_path))
+    assert registry.add_filesystem_walk_files("walkme", "r2", rows)["rows"] == 3
+    assert len(registry.list_filesystem_walk_files("walkme", "r2")) == 3
+
+
+def test_the_view_reads_the_walk_runs_once(registry, tmp_path, monkeypatch):
+    from resource_explorer.folder_survey_view import extensions_view
+
+    fs, sd = _walk(registry, _tree(tmp_path))
+    registry.add_filesystem_survey("walkme", sd["surveyed_at"], {**sd, "surveyed_by": {"surveyor": "Resource Explorer", "reach": {}}},
+                                   source="survey-definition")
+    n = {"c": 0}
+    real = registry.list_filesystem_walk_runs
+
+    def counted(slug):
+        n["c"] += 1
+        return real(slug)
+
+    monkeypatch.setattr(registry, "list_filesystem_walk_runs", counted)
+    view = extensions_view(registry, "walkme")
+    assert n["c"] == 1 and view["rows"]["kept"] is True and view["rows"]["runs_kept"] == 1
+
+
+def test_the_hash_index_is_partial_on_hashed_rows_and_survives_the_translator(tmp_path):
+    import sqlite3
+
+    from resource_explorer.registry import PostgresCursorWrapper
+
+    path = str(tmp_path / "ix.db")
+    ProjectRegistry(db_path=path)
+    con = sqlite3.connect(path)
+    sql = con.execute("SELECT sql FROM sqlite_master WHERE name = 'idx_fs_walk_files_hash'").fetchone()[0]
+    con.close()
+    assert "WHERE hash_state = 'hashed'" in sql
+    stmt = next(s for s in FILESYSTEM_WALK_FILES_DDL if "idx_fs_walk_files_hash" in s)
+    assert PostgresCursorWrapper(None)._translate_sql(stmt) == stmt          # nothing in it for the translator to rewrite
+
+
+def test_an_extensions_only_publish_carries_no_path_or_name_even_if_the_blob_held_them(registry, tmp_path, monkeypatch):
+    """N4: the privacy guard keys on 'extensions only', not on 'surveyed_by' alone."""
+    root = _tree(tmp_path)
+    fs, sd = _walk(registry, root)
+    maker, built = _fake_surveyor(monkeypatch, landed=None)
+    from resource_explorer.surveyors.filesystem import egeria_filesystem_surveyor as mod
+
+    blob = dict(sd)                                  # no surveyed_by: an extensions-only run
+    blob["inventory"] = [{"file_path": "data/payroll.csv", "file_name": "payroll.csv", "is_data_file": True, "row_count": 2,
+                          "col_count": 2, "format": "CSV", "file_size": "8 B", "null_summary": "none", "columns": ["a", "b"]}]
+    blob["profiling_errors"] = [{"path": "data/SECRET-PATH.csv", "error": "bad"}]
+    assert not blob.get("surveyed_by")
+    mod.EgeriaFileSystemSurveyor().publish_step_annotations(fs, blob, registry)
+    dumped = " ".join(repr(a.__dict__) if hasattr(a, "__dict__") else repr(a) for a in built)
+    assert "payroll" not in dumped and "SECRET-PATH" not in dumped
+    assert {a.annotation_type_name for a in built} == set(we.EXTENSION_NAMES)
+
+
+@pytest.mark.usefixtures("signed_in_caller")
+def test_publishing_a_run_twice_is_refused_the_second_time_in_a_plain_sentence(api, registry, tmp_path, monkeypatch):
+    client, headers = api
+    _register(registry, _tree(tmp_path))
+    _probe_row(registry, "egeria_verified")
+    _fake_surveyor(monkeypatch, landed=None)
+    first = client.post("/api/filesystems/walkme/walk-extensions", json={"publish": False}, headers=headers)
+    assert first.status_code == 200
+    ok = client.post("/api/filesystems/walkme/walk-extensions/publish", headers=headers)
+    assert ok.status_code == 200 and ok.json()["published"] is True
+    again = client.post("/api/filesystems/walkme/walk-extensions/publish", headers=headers)
+    assert again.status_code == 409 and "already published" in again.json()["detail"]
+    # a newer run is publishable again
+    client.post("/api/filesystems/walkme/walk-extensions", json={"publish": False}, headers=headers)
+    assert client.post("/api/filesystems/walkme/walk-extensions/publish", headers=headers).status_code in (200,)
+
+
+@pytest.mark.usefixtures("signed_in_caller")
+def test_publishing_a_stored_run_is_refused_once_resource_explorer_leads(api, registry, tmp_path, monkeypatch):
+    client, headers = api
+    _register(registry, _tree(tmp_path))
+    _probe_row(registry, "egeria_verified", at="2026-10-21T08:00:00+00:00")
+    _fake_surveyor(monkeypatch, landed=None)
+    assert client.post("/api/filesystems/walkme/walk-extensions", json={"publish": False}, headers=headers).status_code == 200
+    _probe_row(registry, "re_only", at="2026-10-21T09:00:00+00:00")           # Egeria can no longer reach the path
+    r = client.post("/api/filesystems/walkme/walk-extensions/publish", headers=headers)
+    assert r.status_code == 409 and "now leads" in r.json()["detail"]

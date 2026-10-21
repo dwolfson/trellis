@@ -116,10 +116,11 @@ def extensions_view(registry, slug: str) -> dict | None:
     sd = newest["survey_data"]
     ext = sd["walk_extensions"]
     run_id = ext.get("run_id") or sd.get("surveyed_at") or newest.get("surveyed_at") or ""
-    stored = next((r for r in registry.list_filesystem_walk_runs(slug) if r["run_id"] == run_id), None)
+    walk_runs = registry.list_filesystem_walk_runs(slug)
+    stored = next((r for r in walk_runs if r["run_id"] == run_id), None)
     rows_kept = {
         "kept": stored is not None, "files": (stored or {}).get("files", 0), "hashed": (stored or {}).get("hashed", 0) or 0,
-        "runs_kept": len(registry.list_filesystem_walk_runs(slug)),
+        "runs_kept": len(walk_runs),
         "egeria_report_guid": (stored or {}).get("egeria_report_guid", ""),
         "error": (ext.get("rows_kept") or {}).get("error", ""),
     }

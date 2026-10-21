@@ -1035,10 +1035,23 @@ def publish_filesystem_walk_extensions(slug: str) -> dict:
     fs = registry.get_filesystem(slug)
     if not fs:
         raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
-    runs = [r for r in registry.list_filesystem_surveys(slug) if r.get("source") == "walk-extensions"]
+    from resource_explorer import file_reach
+
+    surveys = registry.list_filesystem_surveys(slug)
+    runs = [r for r in surveys if r.get("source") == "walk-extensions"]
     if not runs:
         raise HTTPException(status_code=409, detail="No Resource Explorer extensions run to publish. Run it first.")
     newest = max(runs, key=lambda r: r.get("surveyed_at") or "")
+    # Who leads NOW: if Resource Explorer leads, its own folder survey carries these measures; this beside-Egeria run is stale.
+    fork = file_reach.ensure_checked(slug, registry)
+    if fork.state not in (file_reach.EGERIA, file_reach.EXPECTED) and fork.surveyor == file_reach.SURVEYOR_RE:
+        raise HTTPException(status_code=409, detail="Resource Explorer now leads this file system's folder survey, "
+                            "so these beside-Egeria measures are out of date. Run the survey and publish that.")
+    # One publish per run: a stored publish row for the same run means it is already in Egeria.
+    if any(r.get("source") == "egeria-published" and r.get("egeria_report_guid")
+           and r.get("surveyed_at") == newest.get("surveyed_at") for r in surveys):
+        raise HTTPException(status_code=409, detail="This extensions run is already published to Egeria. "
+                            "Run it again to publish newer measures.")
     return _publish_walk(registry, fs, newest["survey_data"], slug, check_reach=False)
 
 

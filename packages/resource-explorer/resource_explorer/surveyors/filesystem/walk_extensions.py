@@ -30,6 +30,7 @@ import logging
 import os
 import re
 import stat as stat_mod
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Callable
@@ -53,6 +54,15 @@ LINK = "symlink"
 UNREADABLE = "unreadable"
 HASHING_OFF = "hashing_off"
 NOT_A_FILE = "not_a_file"
+OVER_BUDGET = "over_budget"
+
+#: A total hashing budget per run, so a huge tree cannot hash for hours. Both are environment-overridable (0 = no limit on
+#: that axis is NOT offered: a budget is always set). When either is spent, hashing stops for the rest of the run and the
+#: result says so ("hashing stopped at ...: N files not hashed").
+HASH_BUDGET_BYTES_DEFAULT = 2 * 1024 ** 3        # 2 GiB read in total
+HASH_BUDGET_SECONDS_DEFAULT = 300                # 5 minutes of wall time
+HASH_BUDGET_BYTES_ENV = "RE_WALK_HASH_BUDGET_BYTES"
+HASH_BUDGET_SECONDS_ENV = "RE_WALK_HASH_BUDGET_SECONDS"
 
 #: Narrative reading limits.
 NARRATIVE_READ_BYTES = 64 * 1024            # of each candidate file
@@ -74,6 +84,106 @@ def hash_limit_bytes() -> int:
         except ValueError:
             log.warning("%s=%r is not a whole number of bytes; using the default", HASH_ENV, raw)
     return HASH_MAX_BYTES_DEFAULT
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            log.warning("%s=%r is not a whole number; using the default", name, raw)
+    return default
+
+
+class HashBudget:
+    """Bytes and wall time a run may spend hashing. Once either is spent it stays spent: every later file is `over_budget`."""
+
+    def __init__(self, max_bytes: int | None = None, max_seconds: float | None = None,
+                 clock: Callable[[], float] = time.monotonic):
+        self.max_bytes = _env_int(HASH_BUDGET_BYTES_ENV, HASH_BUDGET_BYTES_DEFAULT) if max_bytes is None else max_bytes
+        self.max_seconds = _env_int(HASH_BUDGET_SECONDS_ENV, HASH_BUDGET_SECONDS_DEFAULT) if max_seconds is None else max_seconds
+        self._clock = clock
+        self._start = clock()
+        self.bytes_used = 0
+        self.stopped_by = ""          # "bytes" | "time" | ""
+        self.not_hashed = 0
+
+    def allow(self, size: int) -> bool:
+        """Whether a file of `size` bytes may be hashed now. Counts the file as not hashed when it may not."""
+        if not self.stopped_by:
+            if self._clock() - self._start >= self.max_seconds:
+                self.stopped_by = "time"
+            elif self.bytes_used + max(0, size) > self.max_bytes:
+                self.stopped_by = "bytes"
+        if self.stopped_by:
+            self.not_hashed += 1
+            return False
+        return True
+
+    def spent(self, n: int) -> None:
+        self.bytes_used += n
+
+    def out_of_time(self) -> bool:
+        return self._clock() - self._start >= self.max_seconds
+
+    def words(self) -> str:
+        """"hashing stopped at 2.0 GiB: 14 files not hashed", or '' when the budget held."""
+        if not self.stopped_by:
+            return ""
+        at = f"{_fmt_bytes(self.max_bytes)}" if self.stopped_by == "bytes" else f"{int(self.max_seconds)} seconds"
+        return f"hashing stopped at {at}: {self.not_hashed:,} file{'s' if self.not_hashed != 1 else ''} not hashed"
+
+    def as_dict(self) -> dict:
+        return {"max_bytes": self.max_bytes, "max_seconds": self.max_seconds, "bytes_hashed": self.bytes_used,
+                "stopped_by": self.stopped_by, "files_not_hashed": self.not_hashed, "words": self.words()}
+
+
+def _fmt_bytes(n: int) -> str:
+    v = float(n)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if v < 1024 or unit == "GiB":
+            return f"{v:.0f} {unit}" if unit == "B" else f"{v:.1f} {unit}"
+        v /= 1024
+    return f"{v:.1f} GiB"
+
+
+# ── safe opening: a plain file or nothing ────────────────────────────────────────────────────────────────────────────
+
+_O_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+
+
+def read_plain_file(path: Path, max_bytes: int, *, chunk: int = 1024 * 1024, whole: bool = False, on_chunk: Callable[[bytes], bool] | None = None) -> bytes | None:
+    """Open `path` without following a link or blocking (O_NOFOLLOW | O_NONBLOCK), require by `fstat` on the OPEN descriptor
+    that it is a regular file, and read at most min(max_bytes, the stat'ed size) (`whole`: refuse a file larger than max_bytes). Returns the bytes read, or None when the
+    path is not a plain file (a link, a FIFO, a device, a directory) or cannot be opened. Checking after opening closes the gap
+    where a file is swapped for a link or FIFO between the walk's stat and the read. `on_chunk` sees each chunk and returns
+    False to stop early (the result is then None)."""
+    try:
+        fd = os.open(path, _O_FLAGS)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat_mod.S_ISREG(st.st_mode):
+            return None
+        if whole and st.st_size > max_bytes:      # grew past the limit since the walk's stat: not a prefix passed off as the file
+            return None
+        remaining = min(max_bytes, st.st_size)
+        out = bytearray()
+        while remaining > 0:
+            data = os.read(fd, min(chunk, remaining))
+            if not data:
+                break
+            remaining -= len(data)
+            if on_chunk is not None and on_chunk(data) is False:
+                return None
+            out += data
+        return bytes(out)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
 
 
 # ── secret-looking names: never hashed, never read as narratives ─────────────────────────────────────────────────────
@@ -127,30 +237,47 @@ def mode_octal(st_mode: int) -> str:
 
 # ── hashing ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-def hash_file(path: Path, size: int, *, is_symlink: bool, name: str, limit: int) -> tuple[str, str]:
-    """(hash, state). Opens the file only if it is a plain file under the limit with a name that does not look secret."""
-    if limit <= 0:
-        return "", HASHING_OFF
+def hash_file(path: Path, size: int, *, is_symlink: bool, name: str, limit: int, budget: HashBudget | None = None) -> tuple[str, str]:
+    """(hash, state). Opens the file only if it is a plain file under the limit with a name that does not look secret, and
+    only while the run's hashing budget holds. A link is refused FIRST (even with hashing off), and the open itself refuses a
+    link or non-regular file (`read_plain_file`), so a file swapped in after the walk's stat is not read either."""
     if is_symlink:
         return "", LINK
+    if limit <= 0:
+        return "", HASHING_OFF
     if looks_secret(name):
         return "", SECRET_NAME
     if size > limit:
         return "", OVER_LIMIT
+    if budget is not None and not budget.allow(size):
+        return "", OVER_BUDGET
     h = hashlib.sha256()
-    try:
-        with open(path, "rb") as fh:
-            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-                h.update(chunk)
-    except OSError:
+    stopped_for_time = []
+
+    def feed(chunk: bytes) -> bool:
+        h.update(chunk)
+        if budget is not None:
+            budget.spent(len(chunk))
+            if budget.out_of_time():
+                stopped_for_time.append(True)
+                return False
+        return True
+
+    data = read_plain_file(path, limit, whole=True, on_chunk=feed)
+    if stopped_for_time:
+        budget.stopped_by = budget.stopped_by or "time"   # type: ignore[union-attr]
+        budget.not_hashed += 1                            # type: ignore[union-attr]
+        return "", OVER_BUDGET
+    if data is None:
         return "", UNREADABLE
     return h.hexdigest(), HASHED
 
 
-def build_row(rel_path: str, path: Path, st: os.stat_result, *, is_symlink: bool, limit: int, modified_at: str) -> dict:
+def build_row(rel_path: str, path: Path, st: os.stat_result, *, is_symlink: bool, limit: int, modified_at: str,
+              budget: HashBudget | None = None) -> dict:
     """One per-file row from a file the walk already stat'ed. Opens the file only through `hash_file`'s guards."""
     folder, _, name = rel_path.rpartition("/")
-    digest, state = hash_file(path, st.st_size, is_symlink=is_symlink, name=name, limit=limit)
+    digest, state = hash_file(path, st.st_size, is_symlink=is_symlink, name=name, limit=limit, budget=budget)
     return {
         "file_path": rel_path,
         "folder_path": folder,
@@ -163,6 +290,7 @@ def build_row(rel_path: str, path: Path, st: os.stat_result, *, is_symlink: bool
         "world_readable": 1 if st.st_mode & stat_mod.S_IROTH else 0,
         "content_hash": digest,
         "hash_state": state,
+        "is_symlink": bool(is_symlink),      # carried on the row (not stored): a link is never opened for any purpose
     }
 
 
@@ -216,7 +344,7 @@ def folder_measures(rows: list[dict]) -> dict:
     }
 
 
-def summaries(rows: list[dict], *, hash_limit: int) -> dict:
+def summaries(rows: list[dict], *, hash_limit: int, budget: dict | None = None) -> dict:
     """Counts only: owners, modes, hashing. Nothing here names a file, a person or a hash, so a publish may read it."""
     states = Counter(r["hash_state"] for r in rows)
     owners = {r["owner_name"] for r in rows if r["owner_name"]}
@@ -236,6 +364,9 @@ def summaries(rows: list[dict], *, hash_limit: int) -> dict:
             "secret_named_files": states.get(SECRET_NAME, 0),
             "symlink_files": states.get(LINK, 0),
             "unreadable_files": states.get(UNREADABLE, 0),
+            "over_budget_files": states.get(OVER_BUDGET, 0),
+            "budget_stopped_by": (budget or {}).get("stopped_by", ""),
+            "budget_words": (budget or {}).get("words", ""),
         },
     }
 
@@ -397,7 +528,7 @@ def folder_narratives(root: Path, rows: list[dict], *, lookup: Callable[[str, st
             name = r["file_path"].rpartition("/")[2]
             if not is_narrative_candidate(name, folder_name, sibling_stems):
                 continue
-            if r["hash_state"] == LINK:
+            if r.get("is_symlink") or r["hash_state"] == LINK:
                 continue
             if taken >= NARRATIVE_MAX_PER_FOLDER:
                 break
@@ -407,11 +538,10 @@ def folder_narratives(root: Path, rows: list[dict], *, lookup: Callable[[str, st
             if reads >= NARRATIVE_MAX_READS:
                 stopped = True
                 break
-            try:
-                with open(root / r["file_path"], "rb") as fh:
-                    text = fh.read(read_bytes).decode("utf-8", errors="replace")
-            except OSError:
+            raw = read_plain_file(root / r["file_path"], read_bytes)
+            if raw is None:                  # a link, FIFO or device swapped in after the walk, or unreadable: not read
                 continue
+            text = raw.decode("utf-8", errors="replace")
             reads += 1
             taken += 1
             ext = name.rpartition(".")[2].lower() if "." in name else ""
@@ -457,7 +587,7 @@ def classifier_lookup() -> Callable[[str, str], dict | None] | None:
 # ── the block stored in survey_data, and the publish specs ──────────────────────────────────────────────────────────
 
 def extension_block(rows: list[dict], narratives: dict, *, run_id: str, hash_limit: int, led_by: str,
-                    limits: dict | None) -> dict:
+                    limits: dict | None, budget: dict | None = None) -> dict:
     """The `walk_extensions` block kept in `survey_data`. Paths are in it (the registry is where paths live); the publish
     reads `extension_specs`, which reads only counts out of it."""
     return {
@@ -465,7 +595,7 @@ def extension_block(rows: list[dict], narratives: dict, *, run_id: str, hash_lim
         "led_by": led_by,
         "capped_words": capped_words(limits),
         "folders": folder_measures(rows),
-        **summaries(rows, hash_limit=hash_limit),
+        **summaries(rows, hash_limit=hash_limit, budget=budget),
         "narratives": narratives["summary"],
     }
 
@@ -564,6 +694,8 @@ def extension_specs(sd: dict) -> list[dict]:
             "Files not hashed (secret-looking name)": hs.get("secret_named_files"),
             "Files not hashed (linked)": hs.get("symlink_files"),
             "Files not hashed (unreadable)": hs.get("unreadable_files"),
+            "Files not hashed (hashing budget spent)": hs.get("over_budget_files"),
+            "Hashing stopped by": hs.get("budget_stopped_by") or None,
             "Hashing off": str(bool(hs.get("off"))).lower(),
         })
         out.append(spec(CAPTURE_CONTENT_HASHES, "measure", resource_properties=props, json_properties=dict(props)))
@@ -604,13 +736,14 @@ def attach_extensions(fs_entity, registry, survey_data: dict, *, led_by: str = L
     back from the registry, not from this record."""
     rows = survey_data.pop("walk_files", None)
     limit = survey_data.pop("walk_hash_limit_bytes", hash_limit_bytes())
+    budget = survey_data.pop("walk_hash_budget", None)
     if rows is None:
         return survey_data
     run_id = survey_data.get("surveyed_at") or ""
     root = Path(fs_entity.local_mount_point)
     narratives = folder_narratives(root, rows, lookup=classifier_lookup())
     block = extension_block(rows, narratives, run_id=run_id, hash_limit=limit, led_by=led_by,
-                            limits=survey_data.get("walk_limits"))
+                            limits=survey_data.get("walk_limits"), budget=budget)
     try:
         stored = registry.add_filesystem_walk_files(fs_entity.slug, run_id, rows, led_by=led_by,
                                                     egeria_report_guid=egeria_report_guid)

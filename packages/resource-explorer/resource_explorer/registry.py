@@ -405,7 +405,7 @@ FILESYSTEM_WALK_FILES_DDL = (
     "CREATE INDEX IF NOT EXISTS idx_fs_walk_files_folder "
     "ON filesystem_walk_files(filesystem_slug, run_id, folder_path)",
     "CREATE INDEX IF NOT EXISTS idx_fs_walk_files_hash "
-    "ON filesystem_walk_files(content_hash, size_bytes)",
+    "ON filesystem_walk_files(content_hash, size_bytes) WHERE hash_state = 'hashed'",
 )
 
 #: DDL for the annotations of a user step run by RE (extensibility brief 2c; the project owner chose a dedicated
@@ -13832,18 +13832,29 @@ class ProjectRegistry:
         keep = WALK_RUNS_KEPT if keep_runs is None else keep_runs
         normalized = self._normalize_slug(fs_slug)
         cols = self._WALK_COLUMNS
-        sql = (f"INSERT INTO filesystem_walk_files (filesystem_slug, run_id, {', '.join(cols)}, led_by, egeria_report_guid) "
-               f"VALUES ({', '.join('?' for _ in range(len(cols) + 4))})")
+        head = f"INSERT INTO filesystem_walk_files (filesystem_slug, run_id, {', '.join(cols)}, led_by, egeria_report_guid) "
+        sql = head + f"VALUES ({', '.join('?' for _ in range(len(cols) + 4))})"
         with self._conn() as conn:
             conn.execute("DELETE FROM filesystem_walk_files WHERE filesystem_slug = ? AND run_id = ?", (normalized, run_id))
+
+            def flush(batch: list[tuple]) -> None:
+                if not batch:
+                    return
+                if conn.is_postgres:
+                    # one multi-row INSERT per page, not one round trip per row
+                    from psycopg2.extras import execute_values
+
+                    execute_values(conn.cursor().raw_cursor, head + "VALUES %s", batch, page_size=2000)
+                else:
+                    conn.executemany(sql, batch)
+
             batch: list[tuple] = []
             for r in rows:
                 batch.append((normalized, run_id, *(r.get(c) for c in cols), led_by, egeria_report_guid))
                 if len(batch) >= 2000:
-                    conn.executemany(sql, batch)
+                    flush(batch)
                     batch = []
-            if batch:
-                conn.executemany(sql, batch)
+            flush(batch)
             runs = [r[0] for r in conn.execute(
                 "SELECT DISTINCT run_id FROM filesystem_walk_files WHERE filesystem_slug = ? ORDER BY run_id DESC",
                 (normalized,)).fetchall()]
