@@ -133,7 +133,10 @@ dependencies = [
     # Raised to 6.2.7 (2026-10-21): ISSUE-152 -- update_annotation, update_context_event, update_schema_type,
     # update_schema_attribute and update_subject_area now send their body (before, they sent nothing); 6.2.6 fixed
     # the add/update_catalog_target bodies (ISSUE-156). No dependency changes; the lock moved only pyegeria.
-    "pyegeria>=6.2.7",
+    # Raised to 6.2.8 (2026-10-21): ISSUE-160 -- create_folder_element_from_template sends directoryAddress and
+    # deployedImplementationType; CSV/secrets-store/Postgres/UC/Kafka template placeholders are filled and unset
+    # optional args no longer leave ~{x}~ literals. The lock moved only pyegeria.
+    "pyegeria>=6.2.8",
     "mcp>=2.0.0",
     # nest-asyncio removed 2026-09-04 with the shared-pool refactor: RE no
     # longer imports it anywhere. Its one site, surveyors/prefect_adapter.py's

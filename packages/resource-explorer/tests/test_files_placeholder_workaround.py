@@ -48,11 +48,39 @@ _FS = SimpleNamespace(slug="lake", display_name="Lake", local_mount_point="/User
                       canonical_mount_point=CANON, description="", egeria_asset_guid="")
 
 
-def test_the_root_folder_body_carries_every_placeholder_the_template_declares():
+def _real_folder_surveyor(sent):
+    """The REAL pyegeria 6.2.8 create_folder_element_from_template, with only the HTTP layer faked: the template look-up
+    and the POST (`_async_create_elem_from_template`) record what reaches the wire."""
+    import asyncio
+
+    from pyegeria import AutomatedCuration
+
     s = _surveyor()
+    ac = AutomatedCuration.__new__(AutomatedCuration)
+
+    async def _tmpl(technology_type):
+        sent["technology_type"] = technology_type
+        return FOLDER_TEMPLATE_GUID
+
+    async def _post(body=None):
+        sent["body"] = body
+        return GUID
+
+    ac._async_get_template_guid_for_technology_type = _tmpl
+    ac._async_create_elem_from_template = _post
+    ac.get_guid_for_name = lambda name, type_name=None: sent.setdefault("lookups", []).append((name, type_name)) or \
+        "No elements found"
+    s._automated_curation = ac
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    return s
+
+
+def test_the_root_folder_body_carries_every_placeholder_the_template_declares():
+    sent = {}
+    s = _real_folder_surveyor(sent)
     assert s._find_or_create_root_folder(_FS) == (GUID, True)
-    s._automated_curation.get_template_guid_for_technology_type.assert_called_once_with("File System Directory")
-    body = s._automated_curation.create_elem_from_template.call_args.args[0]
+    assert sent["technology_type"] == "File System Directory"
+    body = sent["body"]
     ph = body["placeholderPropertyValues"]
     assert body["templateGUID"] == FOLDER_TEMPLATE_GUID and body["isOwnAnchor"] is True
     assert set(ph) == FOLDER_PLACEHOLDERS
@@ -62,7 +90,7 @@ def test_the_root_folder_body_carries_every_placeholder_the_template_declares():
     assert all(isinstance(v, str) and v.strip() and "~{" not in v for v in ph.values())   # none empty, none unfilled
     assert ph["deployedImplementationType"] == "File System Directory" and ph["versionIdentifier"] == "1.0"
     # the look-up the attach path keeps is still by the template's qualifiedName
-    s._automated_curation.get_guid_for_name.assert_called_once_with(f"FileFolder::lake:{CANON}", type_name="FileFolder")
+    assert sent["lookups"] == [(f"FileFolder::lake:{CANON}", "FileFolder")]
 
 
 def test_a_data_file_body_carries_every_placeholder_its_template_declares():

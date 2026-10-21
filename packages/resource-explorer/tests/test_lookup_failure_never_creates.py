@@ -136,6 +136,7 @@ def _fs_surveyor(lookup):
     s._automated_curation.get_guid_for_name.side_effect = lookup
     s._automated_curation.get_template_guid_for_technology_type.return_value = GUID
     s._automated_curation.create_elem_from_template.return_value = GUID
+    s._automated_curation.create_folder_element_from_template.return_value = GUID
     s._asset_maker = _fake(AssetMaker)
     s._asset_maker.create_asset.return_value = "report-guid"
     s._discovery = _fake(DataDiscovery)
@@ -158,14 +159,14 @@ def test_filesystem_failed_lookup_creates_nothing():
     with pytest.raises(EgeriaFileSystemSurveyorError, match="could not be made") as info:
         s.catalog_and_survey(_FS, dict(_FS_DATA))
     assert "nothing was created" in str(info.value)
-    s._automated_curation.create_elem_from_template.assert_not_called()
+    s._automated_curation.create_folder_element_from_template.assert_not_called()
     s._asset_maker.create_asset.assert_not_called()
 
 
 def test_filesystem_real_miss_still_creates():
     s = _fs_surveyor(lambda *a, **k: MISS)
     out = s.catalog_and_survey(_FS, dict(_FS_DATA))
-    s._automated_curation.create_elem_from_template.assert_called_once()
+    s._automated_curation.create_folder_element_from_template.assert_called_once()
     assert out["filesystem_guid"] == GUID
 
 
@@ -174,7 +175,7 @@ def test_filesystem_found_element_is_adopted_not_created():
     blanket except read it as absent: every found root folder was re-created."""
     s = _fs_surveyor(lambda *a, **k: GUID)
     out = s.catalog_and_survey(_FS, dict(_FS_DATA))
-    s._automated_curation.create_elem_from_template.assert_not_called()
+    s._automated_curation.create_folder_element_from_template.assert_not_called()
     assert out["filesystem_guid"] == GUID
 
 

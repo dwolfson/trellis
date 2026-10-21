@@ -56,6 +56,7 @@ def _fs_boundary(monkeypatch, lookup):
     ac.get_guid_for_name.side_effect = lookup
     ac.get_template_guid_for_technology_type.return_value = GUID
     ac.create_elem_from_template.return_value = GUID
+    ac.create_folder_element_from_template.return_value = GUID
     am.create_asset.return_value = GUID
     dd.create_annotation.return_value = GUID
     monkeypatch.setattr("resource_explorer.egeria_clients.egeria_client",
