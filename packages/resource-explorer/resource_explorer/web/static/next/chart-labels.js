@@ -24,6 +24,34 @@ export function ellipsize(s, max) {
   return t.length <= max ? t : `${t.slice(0, Math.max(1, max - 1))}…`;
 }
 
+/** Keep the head and the tail of `s` with a middle ellipsis, `max` characters in all. */
+export function middleEllipsize(s, max, headShare = 0.4) {
+  const t = String(s == null ? '' : s);
+  if (t.length <= max) return t;
+  const room = Math.max(2, max - 1);
+  const head = Math.min(room - 1, Math.floor(room * headShare));
+  return `${t.slice(0, head)}…${t.slice(t.length - (room - head))}`;
+}
+
+/** Shorten every name to `max` characters. A name that stays unique keeps the head ellipsis; names that would
+ *  shorten to the same text keep their distinguishing tail instead (middle ellipsis). */
+export function shortenNames(names, max) {
+  const shown = names.map((s) => ellipsize(s, max));
+  const groups = new Map();
+  shown.forEach((t, i) => groups.set(t, [...(groups.get(t) || []), i]));
+  groups.forEach((idx) => {
+    if (idx.length < 2 || new Set(idx.map((i) => names[i])).size < 2) return;
+    for (const share of [0.4, 0.25, 0.1, 0]) {
+      const tries = idx.map((i) => middleEllipsize(names[i], max, share));
+      if (new Set(tries).size === new Set(idx.map((i) => names[i])).size) {
+        idx.forEach((i, k) => { shown[i] = tries[k]; });
+        return;
+      }
+    }
+  });
+  return shown;
+}
+
 const textW = (s) => Math.ceil(String(s).length * CHAR_W);
 
 /** Indices to label: first and last always, others only when their box (width
@@ -80,6 +108,7 @@ export function fitFigure(fig, width, title = '') {
   const layout = clone((fig && fig.layout) || {});
   const data = (fig && fig.data) || [];
   const alt = [];
+  const ticks = { x: [], y: [] };   // per axis, parallel to tickvals/ticktext: { shown, full }
   const horizontal = data.some((t) => t.orientation === 'h');
   const dateX = !!(layout.xaxis && layout.xaxis.type === 'date');
   const margin = { l: 56, r: 16, t: 12, b: 40 };
@@ -90,8 +119,9 @@ export function fitFigure(fig, width, title = '') {
     margin.l = 16; margin.r = 16; margin.t = PIE_TOP_MARGIN; margin.b = 16;
   } else if (horizontal) {
     const names = (data[0].y || []).map(String);
-    const shown = names.map((s) => ellipsize(s, MAX_Y_CHARS));
+    const shown = shortenNames(names, MAX_Y_CHARS);
     names.forEach((full, i) => { if (shown[i] !== full) alt.push({ shown: shown[i], full }); });
+    ticks.y = names.map((full, i) => ({ shown: shown[i], full }));
     layout.yaxis.tickmode = 'array';
     layout.yaxis.tickvals = names;
     layout.yaxis.ticktext = shown;
@@ -140,7 +170,7 @@ export function fitFigure(fig, width, title = '') {
     }
   } else if (data.length && Array.isArray(data[0].x) && data[0].x.some((v) => typeof v === 'string')) {
     const names = data[0].x.map(String);
-    const shown = names.map((s) => ellipsize(s, MAX_CAT_CHARS));
+    const shown = shortenNames(names, MAX_CAT_CHARS);
     names.forEach((full, i) => { if (shown[i] !== full) alt.push({ shown: shown[i], full }); });
     const maxW = Math.max(...shown.map(textW));
     let plotW = width - margin.l - margin.r;
@@ -164,6 +194,7 @@ export function fitFigure(fig, width, title = '') {
     layout.xaxis.tickmode = 'array';
     layout.xaxis.tickvals = keep.map((i) => names[i]);
     layout.xaxis.ticktext = keep.map((i) => shown[i]);
+    ticks.x = keep.map((i) => ({ shown: shown[i], full: names[i] }));
     layout.xaxis.tickangle = angle;
     layout.xaxis.automargin = true;
     names.forEach((full, i) => { if (!keep.includes(i)) alt.push({ shown: '', full }); });
@@ -175,24 +206,33 @@ export function fitFigure(fig, width, title = '') {
   title = title || (layout.title && layout.title.text);
   const summary = `${title || 'Chart'}${alt.length
     ? `. Full labels: ${alt.map((a) => a.full).join('; ')}` : ''}`;
-  return { layout, alt, summary, height: layout.height || BASE_H };
+  return { layout, alt, ticks, summary, height: layout.height || BASE_H };
 }
 
-/** After Plotly draws: put each shortened label's full name in a <title> on its
- *  SVG text, and the chart's text alternative on the plot element. */
-export function annotateTicks(plot, alt, summary) {
+/** After Plotly draws: put each shortened label's full name in a <title> on its SVG text, and the chart's text
+ *  alternative on the plot element. Ticks are matched by POSITION (the n-th tick of an axis is the n-th entry of
+ *  `ticks[axis]`, which is parallel to tickvals), never by the shortened text, which two names can share. The tick
+ *  labels get pointer-events so the browser's tooltip can reach them; the drag layer is a sibling and is untouched. */
+export function annotateTicks(plot, alt, summary, ticks) {
   if (!plot) return;
   try {
     plot.setAttribute('role', 'img');
     plot.setAttribute('aria-label', summary);
-    if (!plot.querySelectorAll) return;
-    const byShown = new Map(alt.filter((a) => a.shown).map((a) => [a.shown, a.full]));
-    plot.querySelectorAll('.xtick text, .ytick text').forEach((t) => {
-      const full = byShown.get((t.textContent || '').trim());
-      if (!full || t.querySelector('title')) return;
-      const title = t.ownerDocument.createElementNS('http://www.w3.org/2000/svg', 'title');
-      title.textContent = full;
-      t.appendChild(title);
+    if (!plot.querySelectorAll || !ticks) return;
+    ['x', 'y'].forEach((axis) => {
+      const list = ticks[axis] || [];
+      const nodes = [...plot.querySelectorAll(`.${axis}tick text`)];
+      if (nodes.length !== list.length) return;       // cannot pair them with certainty: no tooltip beats a wrong one
+      nodes.forEach((t, n) => {
+        const { shown, full } = list[n];
+        if (shown === full) return;
+        t.style.pointerEvents = 'all';
+        const old = t.querySelector('title');
+        if (old) old.remove();
+        const title = t.ownerDocument.createElementNS('http://www.w3.org/2000/svg', 'title');
+        title.textContent = full;
+        t.appendChild(title);
+      });
     });
   } catch (_) { /* a tooltip is never worth a failed chart */ }
 }
