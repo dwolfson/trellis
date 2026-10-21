@@ -1,9 +1,10 @@
-"""Plaintext database credentials go to Egeria's templates ONLY when the secrets-store save fails.
+"""Database credentials reach Egeria's templates ONLY through the secrets store; plaintext is never sent.
 
-Owner ruling 2026-10-21: "plain text only when saving to secrets file fails". Before, both template calls sent
-databaseUserId + databasePassword unconditionally, next to the secrets pair. Egeria's PostgreSQL Server and
-Database templates declare neither (PostgresPlaceholderProperty.getPostgresServerPlaceholderPropertyTypes /
-getPostgresDatabasePlaceholderPropertyTypes), so the plaintext pair is a last-resort carrier.
+Before, both template calls sent databaseUserId + databasePassword unconditionally, next to the secrets pair.
+Egeria's PostgreSQL Server and Database templates declare neither (PostgresPlaceholderProperty
+.getPostgresServerPlaceholderPropertyTypes / getPostgresDatabasePlaceholderPropertyTypes), so a plaintext pair is
+discarded and gives the element no credentials. Owner decision 2026-10-21: "drop the fallback if it isn't
+useful" -- a failed save sends nothing credential-bearing and logs the failure.
 """
 from __future__ import annotations
 
@@ -57,14 +58,15 @@ def test_secret_saved_means_no_plaintext_on_either_template():
     assert save.call_count == 1
 
 
-def test_save_failed_sends_plaintext_pair_and_no_secrets_pair_and_warns_without_the_password(caplog):
+def test_save_failed_sends_no_credentials_at_all_and_warns_without_the_password(caplog):
     with caplog.at_level(logging.WARNING):
         calls, _ = _run(("", ""))
     for ph in calls.values():
-        assert ph["databaseUserId"] == USER and ph["databasePassword"] == PASSWORD
+        assert "databasePassword" not in ph and "databaseUserId" not in ph
+        assert PASSWORD not in str(ph) and USER not in str(ph)
         assert not (SECRETS & set(ph))
     text = "\n".join(r.getMessage() for r in caplog.records)
-    assert "shop_db" in text and "credentials sent in plaintext: secrets-store save failed" in text
+    assert "shop_db" in text and "secrets-store save failed; element created without credentials" in text
     assert PASSWORD not in text
 
 

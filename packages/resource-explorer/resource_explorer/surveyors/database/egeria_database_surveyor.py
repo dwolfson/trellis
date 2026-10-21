@@ -551,14 +551,14 @@ class EgeriaDatabaseSurveyor:
         # it here would be a wasted live write, not a fix -- see
         # _create_postgres_element_from_template's own docstring on why reuse
         # never re-runs deepCopy.
-        # The credentials go to the templates by exactly ONE route (owner ruling 2026-10-21: "plain text only
-        # when saving to secrets file fails"): the secrets pair when the save worked, the plaintext pair only
-        # when it did not. Egeria's PostgreSQL Server/Database templates declare neither databaseUserId nor
-        # databasePassword (PostgresPlaceholderProperty.getPostgres{Server,Database}PlaceholderPropertyTypes)
-        # and the shipped content pack carries no ~{databaseUserId}~/~{databasePassword}~, so the plaintext
-        # pair is a last-resort carrier, never sent alongside a saved secret.
+        # The credentials reach the templates ONLY through the secrets store. Egeria's PostgreSQL
+        # Server/Database templates declare neither databaseUserId nor databasePassword
+        # (PostgresPlaceholderProperty.getPostgres{Server,Database}PlaceholderPropertyTypes) and the shipped
+        # content pack carries no ~{databaseUserId}~/~{databasePassword}~, so a plaintext pair would be
+        # discarded by Egeria and give the element no credentials. **Decision (project owner, 2026-10-21):**
+        # "drop the fallback if it isn't useful" -- on a failed save nothing credential-bearing is sent; the
+        # element is created without credentials and the failure is logged.
         secret_placeholders: dict = {}
-        credential_placeholders: dict = {}
         if not server_guid or not db_guid_lookup:
             secrets_collection_name, secrets_store_path = self._save_database_secret(
                 db_entity.slug, db_user, db_pwd
@@ -569,9 +569,8 @@ class EgeriaDatabaseSurveyor:
                     "secretsStorePathName": secrets_store_path,
                 }
             else:
-                credential_placeholders = {"databaseUserId": db_user, "databasePassword": db_pwd}
-                log.warning(f"Database {db_entity.slug!r}: credentials sent in plaintext: "
-                            "secrets-store save failed")
+                log.warning(f"Database {db_entity.slug!r}: secrets-store save failed; element created "
+                            "without credentials, so Egeria's native survey cannot connect")
 
         if not server_guid:
             try:
@@ -590,7 +589,6 @@ class EgeriaDatabaseSurveyor:
                         # A second placeholder nothing supplied: it stayed as a literal
                         # `~{versionIdentifier}~` on the server element.
                         "versionIdentifier": "not recorded",
-                        **credential_placeholders,
                         **secret_placeholders,
                     },
                 )
@@ -622,7 +620,6 @@ class EgeriaDatabaseSurveyor:
                         # because RE keeps no PostgreSQL version for the database.
                         "databaseDescription": db_entity.description or f"PostgreSQL database {db_entity.database_name}",
                         "versionIdentifier": "not recorded",
-                        **credential_placeholders,
                         **secret_placeholders,
                     },
                 )
