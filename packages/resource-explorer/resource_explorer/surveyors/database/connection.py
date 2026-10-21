@@ -1402,7 +1402,7 @@ class PostgreSQLConnection(DatabaseConnection):
         finally:
             try:
                 conn.rollback()
-            except Exception:                    # noqa: BLE001 - a dead connection is closed by the caller
+            except psycopg2.Error:               # a dead connection raises a driver error; the caller closes it
                 pass
         if not columns:
             return [{} for _ in fetched]

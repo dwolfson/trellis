@@ -126,7 +126,7 @@ export function refusalHtml(r) {
     case 'empty':
       return `<div data-pv-refusal="empty" class="text-ink"><span class="font-mono">∅</span> 0 rows · ${esc(fq)} is empty, as of ${esc(hhmm(r.recorded && r.recorded.at))}</div>`;
     case 'stale':
-      return `<div data-pv-refusal="stale" class="text-state-warn">the stored catalogue does not match the database · ${esc(r.sentence)} · survey it again to refresh the catalogue</div>`;
+      return `<div data-pv-refusal="stale" class="text-state-warn">the stored catalog does not match the database · ${esc(r.sentence)} · survey it again to refresh the catalog</div>`;
     case 'credential_refused':
       return `<div data-pv-refusal="credential_refused" class="text-state-warn">${esc(r.sentence)}${ctl('data-pv-cred-open', 'use another credential ›')}</div>`;
     default:

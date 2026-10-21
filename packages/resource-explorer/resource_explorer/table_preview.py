@@ -270,13 +270,15 @@ def record_in_egeria(entry: dict) -> dict:
 def _egeria_state(recorded: dict) -> dict:
     """The hook's answer, or `{"state": "failed"}` when it raises: a hook that fails never blocks the rows and never
     becomes a 500. Only the exception's type is logged (it may carry anything)."""
+    failed = "returned no state"
     try:
         state = record_in_egeria(recorded)
         if isinstance(state, dict) and isinstance(state.get("state"), str):
             return state
         log.error("table preview: record_in_egeria returned no state")
     except Exception as exc:                     # noqa: BLE001 - must never reach the caller
-        log.error("table preview: record_in_egeria failed (%s)", type(exc).__name__)
+        failed = type(exc).__name__              # the caller branches on the returned {"state": "failed"}
+        log.error("table preview: record_in_egeria failed (%s)", failed)
     return {"state": "failed"}
 
 
@@ -353,12 +355,12 @@ def run_preview(registry, db, person: str, session: str, req: PreviewRequest) ->
         raise PreviewRefusal(409, unsupported_sentence(db.db_type), "unsupported")
     node = catalogue_table(registry, db.slug, req.schema, req.table)
     if node is None:
-        raise PreviewRefusal(404, f"{req.schema}.{req.table} is not in the stored catalogue for {db.slug}; "
+        raise PreviewRefusal(404, f"{req.schema}.{req.table} is not in the stored catalog for {db.slug}; "
                                   "survey the database first", "not_in_catalogue")
     cols = [c for c in (node.get("columns") or []) if c.get("name")]
     names = [c["name"] for c in cols]
     if not names:
-        raise PreviewRefusal(409, f"the stored catalogue holds no columns for {req.schema}.{req.table}, so there is "
+        raise PreviewRefusal(409, f"the stored catalog holds no columns for {req.schema}.{req.table}, so there is "
                                   "nothing to select; survey the database again", "no_columns")
     types = {c["name"]: (c.get("type") or c.get("base_type") or c.get("data_type") or "") for c in cols}
     cred = holder.take(person, session, db.slug)
@@ -371,7 +373,7 @@ def run_preview(registry, db, person: str, session: str, req: PreviewRequest) ->
     not_shown = len(names) - len(shown_names)
     unknown = [n for n in req.reveal if n not in shown_names]
     if unknown:
-        raise PreviewRefusal(422, "cannot reveal a column the catalogue does not list for this table", "bad_reveal")
+        raise PreviewRefusal(422, "cannot reveal a column the catalog does not list for this table", "bad_reveal")
     revealed = [n for n in shown_names if n in set(req.reveal) and by_name[n]["masked"]]
     if len(set(revealed) - _last_revealed(registry, db, person, req.schema, req.table)) > MAX_NEW_REVEALS:
         raise PreviewRefusal(422, "reveal one column at a time: this request asks for more than one new column",
