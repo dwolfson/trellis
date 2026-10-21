@@ -36,6 +36,9 @@ def client(registry, monkeypatch):
     return TestClient(app)
 
 
+from tests.library_step_install import library_installed  # noqa: E402,F401 - the fixture
+
+
 def _library_ids() -> list[str]:
     from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
 
@@ -57,12 +60,22 @@ def test_the_button_and_the_route_agree_for_every_database_catalog_id():
     assert ids
     for analysis_id in ids:
         runnable, reason = runnable_and_reason(analysis_id, "database")
-        assert runnable == database_analysis_has_runner(analysis_id), analysis_id
+        # A library step whose package is absent has a runner (the route dispatches it) but its card's Run is
+        # disabled with the "not installed here" words, before a press.
+        absent = analysis_id in _library_ids() and not runnable
+        assert runnable == (database_analysis_has_runner(analysis_id) and not absent), analysis_id
         assert bool(reason) == (not runnable), analysis_id
+        if absent:
+            assert reason.startswith("step not installed here"), analysis_id
         # The credential words say "stored" only for a run that opens a connection.
-        assert (_credential_use("database", analysis_id) != "") == runnable, analysis_id
+        assert (_credential_use("database", analysis_id) != "") == database_analysis_has_runner(analysis_id), analysis_id
+
+
+def test_an_installed_library_steps_card_is_runnable_with_no_credential(library_installed):
+    from resource_explorer.workflows.stage_page import _credential_use, runnable_and_reason
+
     for analysis_id in _library_ids():
-        assert runnable_and_reason(analysis_id, "database") == (True, "")
+        assert runnable_and_reason(analysis_id, "database") == (True, ""), analysis_id
         assert _credential_use("database", analysis_id) == "none"
 
 

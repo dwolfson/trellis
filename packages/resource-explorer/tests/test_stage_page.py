@@ -439,6 +439,10 @@ class TestSlice17DbDerivedRunnabilityFromCatalog:
         assert mapped_ids <= set(DATABASE_ANALYSIS_RE_STEP_MAP)
         for analysis_id in mapped_ids:
             runnable, reason = runnable_and_reason(analysis_id, "database")
+            # A library step whose package is not installed here is mapped and has a runner, but its card's Run
+            # is disabled with the "not installed here" words (missing steps test: test_engine_host_missing_steps).
+            if not runnable and reason.startswith("step not installed here"):
+                continue
             assert runnable is True, f"{analysis_id}: {reason}"
         # The stubs' OWN honest state: genuinely not runnable, and the
         # standard route says so rather than crashing or claiming otherwise.

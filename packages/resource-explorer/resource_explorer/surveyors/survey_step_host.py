@@ -91,6 +91,9 @@ _BUILTIN: dict[str, frozenset[str]] = {}
 
 #: Per resource type: the user steps the last attach() attached, so the next one can remove those it no longer has.
 _ATTACHED: dict[str, set[str]] = {}
+#: {entity type: {step key: provided_by}} for catalogued steps whose package is NOT installed (they attach as
+#: `NotInstalledStep`). Set by `attach`, so the engine host and the cards ask one place.
+_MISSING: dict[str, dict[str, dict]] = {}
 
 
 @dataclass(frozen=True)
@@ -584,11 +587,28 @@ class NotInstalledStep:
         self.step_key = step_key
 
     def __call__(self, entity, registry, **_):
-        p = self.provided_by
-        raise StepNotInstalled(
-            f"step not installed here: '{self.step_key}' comes from package {p.get('package') or '(unnamed)'} "
+        raise StepNotInstalled(not_installed_sentence(self.step_key, self.provided_by))
+
+
+def not_installed_sentence(step_key: str, provided_by: dict) -> str:
+    """The one sentence for a catalogued step whose package is absent: the run's error and the card's reason."""
+    p = provided_by or {}
+    return (f"step not installed here: '{step_key}' comes from package {p.get('package') or '(unnamed)'} "
             f"{p.get('version', '')}; install it into this environment (and the Prefect worker's, when one runs "
             "steps): installing it is registering it")
+
+
+def missing_library_steps(entity_type: str = "database") -> dict[str, dict]:
+    """{step key: provided_by} for every catalogued Analytic Library step whose package is not installed here,
+    from the discovery `attach()` last made."""
+    library_steps(entity_type)       # makes sure the adapter has attached
+    return {k: dict(v) for k, v in _MISSING.get(entity_type, {}).items()}
+
+
+def library_step_missing_reason(step_key: str, entity_type: str = "database") -> str:
+    """The `not_installed_sentence` when `step_key` is a catalogued library step whose package is absent, else ""."""
+    provided_by = missing_library_steps(entity_type).get(step_key)
+    return not_installed_sentence(step_key, provided_by) if provided_by is not None else ""
 
 
 def discover_steps(entity_type: str) -> dict:
@@ -659,6 +679,7 @@ def attach(entity_type: str, adapter, step_registry: dict, step_map: dict, resul
     found = discover_steps(entity_type)
     origins = {}
     attached: list[str] = []
+    missing: dict[str, dict] = {}
     for entry in _load().get(entity_type, []):
         if not entry.provided_by:
             continue
@@ -672,6 +693,8 @@ def attach(entity_type: str, adapter, step_registry: dict, step_map: dict, resul
         origins[step_key] = entry.provided_by
         runner = (SurveyStepHost(manifest, entity_type, entry.provided_by) if manifest
                   else NotInstalledStep(entry.provided_by, step_key))
+        if not manifest:
+            missing[step_key] = dict(entry.provided_by)
         adapter.re_analysis_steps[step_key] = runner
         adapter.re_analysis_step_info[step_key] = {"description": entry.description,
                                                    "annotation_types": [annotation_type]}
@@ -708,6 +731,7 @@ def attach(entity_type: str, adapter, step_registry: dict, step_map: dict, resul
         adapter.re_analysis_step_info.pop(gone, None)
         step_registry.pop(gone, None)
     _ATTACHED[entity_type] = set(attached)
+    _MISSING[entity_type] = missing
     _LIBRARY[entity_type], _REFUSED[entity_type] = _admit(entity_type, found, origins)
     return attached
 

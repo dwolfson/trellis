@@ -313,7 +313,7 @@ def test_an_unknown_request_type_is_still_left_unclaimed(staleness_installed, re
 def test_a_library_request_type_is_left_unclaimed_when_the_step_is_not_installed(reg, egeria):
     _lib_action(egeria, "ea-notinst")
     result = _sweep(reg)
-    assert result.claimed == [] and result.skipped.get("unknown_request_type") == ["ea-notinst"]
+    assert result.claimed == [] and result.skipped.get("library_step_not_installed") == ["ea-notinst"]
 
 
 def test_re_db_derived_is_unchanged_with_a_library_step_installed(staleness_installed, reg, egeria, no_connection):
