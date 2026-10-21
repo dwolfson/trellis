@@ -8,12 +8,15 @@ runs a document through the SAME processor the bootstrap heal uses, `bootstrap.r
 * the CLI, `resource-explorer dr-egeria run <path.md> [--dry-run] [--force]` (cli/dr_egeria_commands.py);
 * the admin-only route `POST /api/bootstrap/dr-egeria/run` (web/routes/bootstrap.py).
 
-**Who it runs as.** RE's service account, `Daemon(DaemonReason.DR_EGERIA)`. The pyegeria steps get their clients
-from the factory for that identity; the `dr_egeria` subprocess gets the same user, password, platform and view
-server in its environment, set explicitly, so it never runs as whatever `EGERIA_USER` the parent happened to have.
-(The bootstrap heal still inherits its environment, so its `dr_egeria` runs as whatever `EGERIA_USER` pyegeria
-finds in the environment or .env, which is not necessarily RE's `EGERIA_USER_ID`: a follow-up, not changed here.)
-
+**Who it applies as.** The identity the CALLER supplies, never a default: `bootstrap.DrEgeriaIdentity` (user, source,
+credential). The CLI needs `--as <egeria-user>` (password from getpass, or `RE_DR_EGERIA_PASSWORD` for that one
+invocation) and refuses without it; the admin route supplies the signed-in admin's own Egeria session (their bearer
+token, source "admin session"); the bootstrap heal supplies RE's service account (source "start-up heal") and is the
+only service-account case. `bootstrap.run_dr_egeria_document` passes `--userid` and the credential explicitly on
+every invocation, so RE never relies on what the `dr_egeria` CLI or its environment would choose (the identity
+Egeria recorded once did not match the identity RE had set; a missing EGERIA_USER_ID had fallen back to a person's
+persona, and RE now refuses instead). Before the first command it announces "applying as <user> from <source>"
+and records user and source in the activity row's detail. The pyegeria steps use a client for the same identity.
 **What is logged.** One `activity_log` row per run, operation `dr_egeria`: written `running` with
 `_runner: run_reconciler.process_identity()` BEFORE any work, so the reconciler can resolve it if this process
 dies; finished with a terminal status and one item per command (command, element, ok/error, Egeria's words).
@@ -43,10 +46,11 @@ import os
 import re
 import threading
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +103,10 @@ class RunRefused(RuntimeError):
 
 class RepeatRefused(RunRefused):
     """This document's content was already applied; run it again only with `force`."""
+
+
+class NoIdentity(PermissionError):
+    """No Egeria identity was supplied for a real run. Nothing was run or written."""
 
 
 class StepFailed(RuntimeError):
@@ -650,19 +658,12 @@ def _guard_repeat(registry, plan: DocumentPlan, force: bool, own_id: str = "") -
             "purpose, with force." + (f" Note: {plan.batch_note}." if plan.batch_note else ""))
 
 
-def _daemon_env(clients) -> dict:
-    """The `dr_egeria` child's environment: this process's, with RE's daemon credential and platform set
-    explicitly (pyegeria's CLI reads EGERIA_USER / EGERIA_USER_PASSWORD / EGERIA_VIEW_SERVER(_URL))."""
-    env = dict(os.environ)
-    env.update({
-        "EGERIA_USER": clients.user_id,
-        "EGERIA_USER_PASSWORD": clients.identity.password or "",
-        "EGERIA_VIEW_SERVER": clients.view_server,
-        "EGERIA_VIEW_SERVER_URL": clients.platform_url,
-        "EGERIA_PLATFORM_URL": clients.platform_url,
-        "EGERIA_WIDTH": _CONSOLE_WIDTH,
-        "NO_COLOR": "1",
-    })
+def _child_env() -> dict:
+    """The `dr_egeria` child's environment: this process's, minus any Egeria user or password variable (the
+    identity travels in explicit arguments, never in what a variable happens to hold), with a wide console."""
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("EGERIA_USER", "EGERIA_USER_PASSWORD", "EGERIA_USER_ID") and not k.startswith("RE_DR_EGERIA_P")}
+    env.update({"EGERIA_WIDTH": _CONSOLE_WIDTH, "NO_COLOR": "1"})
     return env
 
 
@@ -688,33 +689,61 @@ def _result_from_row(row: dict, plan: DocumentPlan) -> dict:
         "dry_run": False, "status": row["status"], "summary": row.get("summary", ""), "valid": True, "errors": [],
         "commands": row.get("items") or [], "not_safe_to_repeat": detail.get("not_safe_to_repeat", []),
         "batch_note": detail.get("batch_note", ""), "forced": bool(detail.get("force")),
+        "applying_as": detail.get("applying_as", ""), "identity_source": detail.get("identity_source", ""),
     }
 
 
 def run_document(path: str | os.PathLike, *, dry_run: bool = False, force: bool = False, requested_by: str = "",
-                 registry=None) -> dict:
+                 registry=None, identity: Any = None,
+                 announce: Optional[Callable[[str], None]] = None) -> dict:
     """Run (or, with `dry_run`, only plan) one Dr.Egeria document. THE function the CLI and the route call.
+
+    A real run needs `identity` (a `bootstrap.DrEgeriaIdentity`, supplied by the caller: `--as`, the admin's own
+    session, or the start-up heal); without one it raises `NoIdentity` and nothing is run. `announce` receives
+    "applying as <user> from <source>" before the first command (default: the log).
 
     Raises `DocumentRefused` (bad path or invalid document; nothing written) or `RunRefused` /
     `RepeatRefused` (a run in progress, or the content already applied without `force`)."""
     plan = plan_document(path)
     if dry_run:
         return _plan_view(plan)
+    from resource_explorer.bootstrap import DrEgeriaIdentity
+
+    if not isinstance(identity, DrEgeriaIdentity):
+        raise NoIdentity("no Egeria identity set; pass --as or sign in")
     if plan.errors:
         raise DocumentRefused(f"{plan.rel} is not valid: " + "; ".join(plan.errors))
     if not _run_lock.acquire(blocking=False):
         raise RunRefused("another ad-hoc Dr.Egeria run is in progress in this process")
     try:
-        return _run_locked(plan, force=force, requested_by=requested_by, registry=registry)
+        return _run_locked(plan, force=force, requested_by=requested_by, registry=registry, identity=identity,
+                           announce=announce)
     finally:
         _run_lock.release()
 
 
-def _run_locked(plan: DocumentPlan, *, force: bool, requested_by: str, registry) -> dict:
+@contextmanager
+def _step_scope(identity, acting_as, client_scope, Named, EgeriaIdentity, KIND_CALLER):
+    """The client scope the pyegeria steps run in: the SAME identity as the document. A password identity is
+    declared like a job (as that user, not the service account); a signed-in person's token is a Caller."""
+    from resource_explorer.egeria_clients import DaemonReason
+
+    if identity.password:
+        with acting_as(Named(identity.user, identity.password, DaemonReason.DR_EGERIA)) as who:
+            yield who
+    else:
+        with client_scope():
+            yield EgeriaIdentity(user_id=identity.user, token=identity.token, kind=KIND_CALLER)
+
+
+def _run_locked(plan: DocumentPlan, *, force: bool, requested_by: str, registry, identity,
+                announce: Optional[Callable[[str], None]] = None) -> dict:
     import asyncio
 
     from resource_explorer import bootstrap
-    from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as, egeria_client
+    from resource_explorer.egeria_clients import (DaemonReason, KIND_CALLER, Named, acting_as, client_scope,
+                                                  egeria_client)
+    from resource_explorer.egeria_identity import EgeriaIdentity
     from resource_explorer.registry import ActivityEntry, ProjectRegistry
     from resource_explorer.run_reconciler import process_identity
 
@@ -726,7 +755,7 @@ def _run_locked(plan: DocumentPlan, *, force: bool, requested_by: str, registry)
     entry_id = str(uuid.uuid4())
     detail = {"document": plan.rel, "sha256": plan.sha256, "dry_run": False, "force": force,
               "requested_by": requested_by, "not_safe_to_repeat": plan.not_safe_to_repeat,
-              "batch_note": plan.batch_note, "daemon_reason": DaemonReason.DR_EGERIA.value}
+              "batch_note": plan.batch_note, "applying_as": identity.user, "identity_source": identity.source}
     planned_items = [c.item(NOT_RUN) for c in plan.commands]
 
     def write(status: str, summary: str, items: list[dict], *, running: bool) -> None:
@@ -740,6 +769,7 @@ def _run_locked(plan: DocumentPlan, *, force: bool, requested_by: str, registry)
         return {k: v for k, v in d.items() if v is not None}
 
     started = _now()
+    (announce or (lambda line: log.info("%s", line)))(identity.announcement)
     write(RUNNING, f"Dr.Egeria {plan.rel}: running {len(plan.commands)} command(s)", planned_items, running=True)
     # Another process may have started the same content between the check and the row: the later one stands down.
     try:
@@ -761,8 +791,8 @@ def _run_locked(plan: DocumentPlan, *, force: bool, requested_by: str, registry)
         asyncio.set_event_loop(loop)
         steps = None
         try:
-            with acting_as(Daemon(DaemonReason.DR_EGERIA)) as identity:
-                clients = egeria_client(identity, purpose="Dr.Egeria document run", shared=False)
+            with _step_scope(identity, acting_as, client_scope, Named, EgeriaIdentity, KIND_CALLER) as step_identity:
+                clients = egeria_client(step_identity, purpose="Dr.Egeria document run", shared=False)
                 steps = _Steps(clients)
                 failed = False
                 for n, planned in enumerate(plan.commands):
@@ -777,7 +807,7 @@ def _run_locked(plan: DocumentPlan, *, force: bool, requested_by: str, registry)
                     finally:
                         write(RUNNING, f"Dr.Egeria {plan.rel}: running", items, running=True)
                 if not failed and plan.dr_egeria:
-                    proc = bootstrap.run_dr_egeria_document(plan.path, env=_daemon_env(clients))
+                    proc = bootstrap.run_dr_egeria_document(plan.path, identity=identity, env=_child_env())
                     results = dr_egeria_results(plan.dr_egeria, proc.stdout, proc.detail)
                     indexes = [n for n, c in enumerate(plan.commands) if c.kind == "dr_egeria"]
                     for n, item in zip(indexes, results):

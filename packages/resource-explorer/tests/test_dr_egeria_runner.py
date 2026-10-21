@@ -23,6 +23,16 @@ DAEMON = "resourceexplorernpa"
 ENGINE_GUID = "0a1b2c3d-0000-4000-8000-00000000e001"
 SERVICE_GUID = "0a1b2c3d-0000-4000-8000-00000000f001"
 LINK_GUID = "0a1b2c3d-0000-4000-8000-00000000a001"
+IDENT_PASSWORD = "pw-for-tests-only"
+
+
+def _ident():
+    from resource_explorer.bootstrap import DrEgeriaIdentity
+
+    return DrEgeriaIdentity(user="tester", source="--as", password=IDENT_PASSWORD)
+
+
+IDENT = _ident()
 
 DOC = """<!-- a test declaration -->
 
@@ -108,6 +118,12 @@ def _as_user(monkeypatch, sub, admins=("dan",), admin_token=""):
     monkeypatch.setattr(feedback, "admin_token", admin_token)
     monkeypatch.setattr("resource_explorer.auth.get_current_user",
                         lambda *a, **k: {"sub": sub} if sub else None)
+    if sub:
+        from resource_explorer import egeria_clients
+        from resource_explorer.egeria_identity import EgeriaIdentity
+
+        monkeypatch.setattr(egeria_clients, "Caller", lambda: EgeriaIdentity(
+            user_id=sub, token="caller-token", kind=egeria_clients.KIND_CALLER))
 
 
 OK_OUTPUT_ROWS = [
@@ -149,6 +165,7 @@ class Fakes:
         self.calls: list[str] = []
         self.built: list[tuple[str, str]] = []
         self.subprocess_envs: list[dict] = []
+        self.argvs: list[list[str]] = []
         self.output = output if output is not None else _summary(OK_OUTPUT_ROWS)
         self.expert = create_autospec(MetadataExpert, spec_set=True, instance=True)
         self.maker = create_autospec(AssetMaker, spec_set=True, instance=True)
@@ -209,9 +226,12 @@ class Fakes:
         real_run = bootstrap.subprocess.run      # the stdlib module: `ps` (process_identity) must still work
 
         def fake_run(argv, **kwargs):
-            if argv[0] != "/venv/bin/dr_egeria":
+            child = "resource_explorer.dr_egeria_child" in argv
+            if argv[0] != "/venv/bin/dr_egeria" and not child:
                 return real_run(argv, **kwargs)
-            self.calls.append("dr_egeria " + " ".join(a for a in argv[1:] if not a.startswith("/")))
+            self.argvs.append(list(argv))
+            self.calls.append("dr_egeria " + " ".join(a for a in argv[1:] if not a.startswith("/")
+                                                       and a not in ("--user_pass",) and a != IDENT_PASSWORD))
             self.subprocess_envs.append(dict(kwargs.get("env") or {}))
             return SimpleNamespace(returncode=0, stdout=self.output, stderr="")
 
@@ -232,7 +252,7 @@ def test_dry_run_builds_no_client_runs_nothing_and_writes_no_row(root, reg, monk
     from resource_explorer import dr_egeria_runner as runner
 
     fakes = Fakes(monkeypatch)
-    out = runner.run_document("engine-host/decl.md", dry_run=True, registry=reg)
+    out = runner.run_document("engine-host/decl.md", dry_run=True, identity=IDENT, registry=reg)
 
     assert fakes.calls == [] and fakes.built == [], "a dry run makes no Egeria call and starts no dr_egeria"
     assert _rows(reg) == []
@@ -249,10 +269,10 @@ def test_dry_run_reports_an_unknown_command_as_invalid(root, reg, monkeypatch):
 
     (root / "plain" / "bad.md").write_text("## Create Frobnicator Thing\n### Display Name\nx\n")
     Fakes(monkeypatch)
-    out = runner.run_document("plain/bad.md", dry_run=True, registry=reg)
+    out = runner.run_document("plain/bad.md", dry_run=True, identity=IDENT, registry=reg)
     assert out["valid"] is False and any("Frobnicator" in e for e in out["errors"])
     with pytest.raises(runner.DocumentRefused):
-        runner.run_document("plain/bad.md", registry=reg)
+        runner.run_document("plain/bad.md", identity=IDENT, registry=reg)
     assert _rows(reg) == []
 
 
@@ -262,7 +282,7 @@ def test_a_destructive_command_is_refused(root, reg, monkeypatch):
     (root / "plain" / "del.md").write_text("## Delete Glossary Term\n### Qualified Name\nx\n")
     fakes = Fakes(monkeypatch)
     with pytest.raises(runner.DocumentRefused, match="owner"):
-        runner.run_document("plain/del.md", registry=reg)
+        runner.run_document("plain/del.md", identity=IDENT, registry=reg)
     assert fakes.calls == []
 
 
@@ -281,7 +301,7 @@ def test_a_run_writes_the_running_row_first_then_a_terminal_row_with_per_command
         return real_write(entry)
 
     monkeypatch.setattr(reg, "write_activity", spy)
-    out = runner.run_document("engine-host/decl.md", registry=reg)
+    out = runner.run_document("engine-host/decl.md", identity=IDENT, registry=reg)
 
     first_status, first_detail, _items, calls_before = written[0]
     assert first_status == "running" and calls_before == [], "the running row is written before any work"
@@ -310,7 +330,7 @@ def test_a_failing_command_is_recorded_with_its_error_words(root, reg, monkeypat
          ("Link Action to Action Executor", "FAILURE", "", "", "Execution failed: engine not found")],
         errors={"Link Action to Action Executor ()": ["Governance Engine ResourceExplorerSurvey not found"]})
     Fakes(monkeypatch, output=output)
-    out = runner.run_document("plain/only.md", registry=reg)
+    out = runner.run_document("plain/only.md", identity=IDENT, registry=reg)
 
     row = _rows(reg)[0]
     assert row["status"] == "error" and out["status"] == "error"
@@ -324,7 +344,7 @@ def test_output_that_cannot_be_read_is_unknown_never_ok(root, reg, monkeypatch):
     from resource_explorer import dr_egeria_runner as runner
 
     Fakes(monkeypatch, output="Traceback (most recent call last):\n  boom\n")
-    out = runner.run_document("plain/only.md", registry=reg)
+    out = runner.run_document("plain/only.md", identity=IDENT, registry=reg)
     row = _rows(reg)[0]
     assert row["status"] == "error" and out["status"] == "error"
     assert {i["status"] for i in row["items"]} == {"unknown"}
@@ -337,7 +357,7 @@ def test_a_summary_with_a_missing_row_is_unknown_only_for_that_command(root, reg
     from resource_explorer import dr_egeria_runner as runner
 
     Fakes(monkeypatch, output=_summary(OK_OUTPUT_ROWS[:1]))
-    runner.run_document("plain/only.md", registry=reg)
+    runner.run_document("plain/only.md", identity=IDENT, registry=reg)
     row = _rows(reg)[0]
     assert row["status"] == "error"
     assert [i["status"] for i in row["items"]] == ["ok", "unknown"]
@@ -349,7 +369,7 @@ def test_a_failed_pyegeria_step_stops_the_run_before_dr_egeria(root, reg, monkey
 
     fakes = Fakes(monkeypatch)
     fakes.maker.create_asset.side_effect = RuntimeError("Egeria said no")
-    runner.run_document("engine-host/decl.md", registry=reg)
+    runner.run_document("engine-host/decl.md", identity=IDENT, registry=reg)
     row = _rows(reg)[0]
     assert row["status"] == "error"
     statuses = [(i["command"], i["status"]) for i in row["items"]]
@@ -365,15 +385,15 @@ def test_a_second_run_of_the_same_document_is_refused_without_force(root, reg, m
     from resource_explorer import dr_egeria_runner as runner
 
     fakes = Fakes(monkeypatch)
-    first = runner.run_document("engine-host/decl.md", registry=reg)
+    first = runner.run_document("engine-host/decl.md", identity=IDENT, registry=reg)
     n = len(fakes.calls)
     with pytest.raises(runner.RepeatRefused) as refused:
-        runner.run_document("engine-host/decl.md", registry=reg)
+        runner.run_document("engine-host/decl.md", identity=IDENT, registry=reg)
     assert first["activity_id"] in str(refused.value)
     assert "Link Action to Action Executor" in str(refused.value)
     assert len(fakes.calls) == n and len(_rows(reg)) == 1, "a refused repeat touches nothing"
 
-    again = runner.run_document("engine-host/decl.md", force=True, registry=reg)
+    again = runner.run_document("engine-host/decl.md", force=True, identity=IDENT, registry=reg)
     assert again["status"] == "ok" and len(_rows(reg)) == 2
 
 
@@ -381,19 +401,19 @@ def test_a_changed_document_is_a_new_document(root, reg, monkeypatch):
     from resource_explorer import dr_egeria_runner as runner
 
     Fakes(monkeypatch)
-    runner.run_document("plain/only.md", registry=reg)
+    runner.run_document("plain/only.md", identity=IDENT, registry=reg)
     (root / "plain" / "only.md").write_text(DOC.replace("Zero-fetch", "Zero fetch"))
-    assert runner.run_document("plain/only.md", registry=reg)["status"] == "ok"
+    assert runner.run_document("plain/only.md", identity=IDENT, registry=reg)["status"] == "ok"
 
 
 def test_an_interrupted_run_still_counts_as_applied(root, reg, monkeypatch):
     from resource_explorer import dr_egeria_runner as runner
 
     Fakes(monkeypatch)
-    out = runner.run_document("plain/only.md", registry=reg)
+    out = runner.run_document("plain/only.md", identity=IDENT, registry=reg)
     reg.update_activity_status(out["activity_id"], "interrupted")
     with pytest.raises(runner.RepeatRefused):
-        runner.run_document("plain/only.md", registry=reg)
+        runner.run_document("plain/only.md", identity=IDENT, registry=reg)
 
 
 # ── path ────────────────────────────────────────────────────────────────────
@@ -407,9 +427,9 @@ def test_only_markdown_under_the_docs_directory_is_accepted(root, reg, monkeypat
     (root / "link.md").symlink_to(root.parent / "outside.md")
     fakes = Fakes(monkeypatch)
     with pytest.raises(runner.DocumentRefused):
-        runner.run_document(bad, registry=reg)
+        runner.run_document(bad, identity=IDENT, registry=reg)
     with pytest.raises(runner.DocumentRefused):
-        runner.run_document(bad, dry_run=True, registry=reg)
+        runner.run_document(bad, dry_run=True, identity=IDENT, registry=reg)
     assert fakes.calls == [] and _rows(reg) == []
 
 
@@ -427,7 +447,7 @@ def test_find_or_create_never_creates_what_already_exists(root, reg, monkeypatch
     from resource_explorer import dr_egeria_runner as runner
 
     fakes = Fakes(monkeypatch, engine_exists=True, service_exists=True, link_exists=True)
-    runner.run_document("engine-host/decl.md", registry=reg)
+    runner.run_document("engine-host/decl.md", identity=IDENT, registry=reg)
     fakes.maker.create_software_capability.assert_not_called()
     fakes.maker.create_asset.assert_not_called()
     fakes.maker.link_supported_governance_service.assert_not_called()
@@ -439,7 +459,7 @@ def test_an_engine_that_exists_is_found_and_only_the_missing_parts_are_created(r
     from resource_explorer import dr_egeria_runner as runner
 
     fakes = Fakes(monkeypatch, engine_exists=True)
-    runner.run_document("engine-host/decl.md", registry=reg)
+    runner.run_document("engine-host/decl.md", identity=IDENT, registry=reg)
     fakes.maker.create_software_capability.assert_not_called()
     fakes.maker.create_asset.assert_called_once()
     fakes.maker.link_supported_governance_service.assert_called_once()
@@ -452,7 +472,7 @@ def test_a_lookup_that_cannot_answer_creates_nothing(root, reg, monkeypatch):
 
     fakes = Fakes(monkeypatch)
     fakes.expert.get_metadata_guid_by_unique_name.side_effect = lambda *a, **k: None
-    runner.run_document("engine-host/decl.md", registry=reg)
+    runner.run_document("engine-host/decl.md", identity=IDENT, registry=reg)
     fakes.maker.create_software_capability.assert_not_called()
     assert _rows(reg)[0]["items"][0]["status"] == "error"
 
@@ -461,9 +481,9 @@ def test_engine_then_service_then_link_then_the_action_type(root, reg, monkeypat
     from resource_explorer import dr_egeria_runner as runner
 
     fakes = Fakes(monkeypatch)
-    runner.run_document("engine-host/decl.md", registry=reg)
+    runner.run_document("engine-host/decl.md", identity=IDENT, registry=reg)
     assert fakes.writes() == ["create engine", "create service", "link supported service",
-                              "dr_egeria --process --summary-only decl.md"]
+                              "dr_egeria --process --summary-only --server qs-view-server --url https://localhost:9443 --userid tester decl.md"]
 
 
 def test_a_steps_file_out_of_order_is_refused(root, reg, monkeypatch):
@@ -473,22 +493,117 @@ def test_a_steps_file_out_of_order_is_refused(root, reg, monkeypatch):
     (root / "engine-host" / "decl.pyegeria-steps.json").write_text(json.dumps(steps))
     fakes = Fakes(monkeypatch)
     with pytest.raises(runner.DocumentRefused, match="order"):
-        runner.run_document("engine-host/decl.md", registry=reg)
+        runner.run_document("engine-host/decl.md", identity=IDENT, registry=reg)
     assert fakes.calls == []
 
 
 # ── identity ────────────────────────────────────────────────────────────────
 
-def test_every_client_is_built_for_the_daemon_user(root, reg, monkeypatch):
+def test_every_client_and_the_child_run_as_the_supplied_user(root, reg, monkeypatch):
     from resource_explorer import dr_egeria_runner as runner
 
+    monkeypatch.setenv("EGERIA_USER", "someone-else")                  # the environment must not matter
+    monkeypatch.setenv("EGERIA_USER_PASSWORD", "env-secret")
     fakes = Fakes(monkeypatch)
-    runner.run_document("engine-host/decl.md", registry=reg)
-    assert fakes.built and {u for _c, u in fakes.built} == {DAEMON}
+    lines = []
+    out = runner.run_document("engine-host/decl.md", registry=reg, identity=IDENT, announce=lines.append)
+    assert fakes.built and {u for _c, u in fakes.built} == {"tester"}
+    argv = fakes.argvs[0]
+    assert argv[argv.index("--userid") + 1] == "tester" and argv[argv.index("--user_pass") + 1] == IDENT_PASSWORD
+    assert "--server" in argv and "--url" in argv
     env = fakes.subprocess_envs[0]
-    assert env["EGERIA_USER"] == DAEMON, "dr_egeria runs as the daemon, not the inherited EGERIA_USER"
-    assert env["EGERIA_USER_PASSWORD"] == "daemon-secret"
-    assert env["EGERIA_VIEW_SERVER_URL"] == env["EGERIA_PLATFORM_URL"] == "https://localhost:9443"
+    assert not {"EGERIA_USER", "EGERIA_USER_PASSWORD", "EGERIA_USER_ID"} & set(env)
+    assert lines == ["applying as tester from --as"]
+    row = _rows(reg)[0]
+    detail = json.loads(row["detail"])
+    assert detail["applying_as"] == "tester" and detail["identity_source"] == "--as"
+    assert out["applying_as"] == "tester"
+    assert IDENT_PASSWORD not in json.dumps(row, default=str)
+
+
+def test_a_real_run_with_no_identity_is_refused_even_with_egeria_user_in_the_environment(root, reg, monkeypatch):
+    """Fail on purpose: pyegeria's CLI would pick its own user. RE must never reach that path."""
+    from resource_explorer import dr_egeria_runner as runner
+
+    monkeypatch.setenv("EGERIA_USER", "resourceexplorernpa")
+    fakes = Fakes(monkeypatch)
+    with pytest.raises(runner.NoIdentity, match="no Egeria identity set"):
+        runner.run_document("engine-host/decl.md", registry=reg)
+    assert fakes.calls == [] and fakes.argvs == [] and _rows(reg) == []
+
+
+def test_the_processor_itself_refuses_without_an_identity(tmp_path, monkeypatch):
+    from resource_explorer import bootstrap
+
+    Fakes(monkeypatch)
+    doc = tmp_path / "d.md"
+    doc.write_text("x")
+    with pytest.raises(bootstrap.NoDrEgeriaIdentity):
+        bootstrap.run_dr_egeria_document(doc, identity=None)
+    with pytest.raises(bootstrap.NoDrEgeriaIdentity):
+        bootstrap.DrEgeriaIdentity(user="", source="--as", password="x")
+
+
+def test_a_signed_in_person_runs_the_child_with_the_token_in_env_only(root, reg, monkeypatch):
+    from resource_explorer import dr_egeria_runner as runner
+    from resource_explorer.bootstrap import SOURCE_ADMIN_SESSION, DrEgeriaIdentity
+
+    fakes = Fakes(monkeypatch)
+    ident = DrEgeriaIdentity(user="dan", source=SOURCE_ADMIN_SESSION, token="dans-token")
+    runner.run_document("plain/only.md", registry=reg, identity=ident)
+    argv = fakes.argvs[0]
+    assert "resource_explorer.dr_egeria_child" in argv and argv[argv.index("--userid") + 1] == "dan"
+    assert "dans-token" not in " ".join(argv) and "--user_pass" not in argv
+    assert fakes.subprocess_envs[0]["RE_DR_EGERIA_CHILD_TOKEN"] == "dans-token"
+    assert {u for _c, u in fakes.built} <= {"dan"}
+    assert "dans-token" not in json.dumps(_rows(reg), default=str)
+
+
+def test_the_heal_passes_the_service_account_explicitly(tmp_path, monkeypatch):
+    from resource_explorer import bootstrap
+
+    fakes = Fakes(monkeypatch)
+    monkeypatch.setenv("EGERIA_USER", "someone-else")
+    from resource_explorer.config import get_config
+
+    egeria = get_config().egeria
+    monkeypatch.setattr(egeria, "user_id", "svc-account")
+    monkeypatch.setattr(egeria, "user_password", "svc-pass")
+    doc = tmp_path / "d.md"
+    doc.write_text("x")
+    ok, _detail = bootstrap._run_dr_egeria(doc)
+    assert ok
+    argv = fakes.argvs[0]
+    assert argv[argv.index("--userid") + 1] == "svc-account" and argv[argv.index("--user_pass") + 1] == "svc-pass"
+
+
+def test_the_heal_refuses_when_the_service_account_is_not_set(tmp_path, monkeypatch):
+    from resource_explorer import bootstrap
+    from resource_explorer.config import get_config
+
+    fakes = Fakes(monkeypatch)
+    monkeypatch.setattr(get_config().egeria, "user_id", "")
+    doc = tmp_path / "d.md"
+    doc.write_text("x")
+    ok, detail = bootstrap._run_dr_egeria(doc)
+    assert not ok and "EGERIA_USER_ID not set" in detail and fakes.argvs == []
+
+
+def test_the_startup_check_logs_both_and_says_when_they_differ(monkeypatch, caplog):
+    import logging
+
+    from resource_explorer import bootstrap
+    from resource_explorer.config import get_config
+
+    monkeypatch.setattr(get_config().egeria, "user_id", "svc-account")
+    monkeypatch.setattr(get_config().egeria, "user_password", "svc-pass")
+    monkeypatch.setenv("EGERIA_USER", "other")
+    with caplog.at_level(logging.INFO):
+        out = bootstrap.log_heal_identity_at_startup()
+    assert out["heal_user"] == "svc-account" == out["egeria_user_id"] and out["env_egeria_user"] == "other"
+    assert "svc-pass" not in caplog.text
+    monkeypatch.setattr(bootstrap, "heal_identity", lambda: bootstrap.DrEgeriaIdentity("x", "start-up heal", "p"))
+    assert bootstrap.log_heal_identity_at_startup()["differs"] is True
 
 
 def test_the_runner_has_its_own_daemon_reason():
@@ -509,7 +624,7 @@ def test_the_cli_and_the_route_call_the_same_function(root, monkeypatch):
 
     seen = []
 
-    def fake_run(path, *, dry_run=False, force=False, requested_by="", registry=None):
+    def fake_run(path, *, dry_run=False, force=False, requested_by="", registry=None, identity=None, announce=None):
         seen.append((str(path), dry_run, force))
         return {"status": "planned", "document": str(path), "dry_run": dry_run, "commands": [],
                 "not_safe_to_repeat": [], "errors": [], "summary": "", "valid": True}
@@ -568,10 +683,12 @@ def test_the_cli_refuses_a_repeat_with_exit_1(root, reg, monkeypatch):
     real = runner.run_document
     monkeypatch.setattr(runner, "run_document", lambda path, **k: real(path, **{**k, "registry": reg}))
     Fakes(monkeypatch)
-    first = CliRunner().invoke(cli_app, ["dr-egeria", "run", "plain/only.md"])
+    first = CliRunner().invoke(cli_app, ["dr-egeria", "run", "plain/only.md", "--as", "tester"],
+                               env={"RE_DR_EGERIA_PASSWORD": IDENT_PASSWORD})
     assert first.exit_code == 0, first.output
     assert "not safe to repeat" in first.output and "Link Action to Action Executor" in first.output
-    second = CliRunner().invoke(cli_app, ["dr-egeria", "run", "plain/only.md"])
+    second = CliRunner().invoke(cli_app, ["dr-egeria", "run", "plain/only.md", "--as", "tester"],
+                                env={"RE_DR_EGERIA_PASSWORD": IDENT_PASSWORD})
     assert second.exit_code == 1 and "--force" in second.output
 
 
@@ -618,7 +735,7 @@ def test_a_nul_byte_in_the_path_is_400(root, reg, monkeypatch):
     from resource_explorer import dr_egeria_runner as runner
 
     with pytest.raises(runner.DocumentRefused):
-        runner.run_document("plain/only\x00.md", dry_run=True, registry=reg)
+        runner.run_document("plain/only\x00.md", dry_run=True, identity=IDENT, registry=reg)
     _as_user(monkeypatch, "dan")
     assert _route(monkeypatch, reg).post("/api/bootstrap/dr-egeria/run",
                                          json={"path": "plain/only\x00.md"}).status_code == 400
@@ -636,12 +753,12 @@ def test_a_bootstrap_batch_document_is_refused_without_force(root, reg, monkeypa
                                                    "canary": {"qualified_name": "x"}, "files": ["q.md"],
                                                    "post_heal": {"script": "scripts/fix.py"}}))
     fakes = Fakes(monkeypatch)
-    planned = runner.run_document("questions/q.md", dry_run=True, registry=reg)
+    planned = runner.run_document("questions/q.md", dry_run=True, identity=IDENT, registry=reg)
     assert "bootstrap batch questions" in planned["batch_note"]
     with pytest.raises(runner.RepeatRefused, match="bootstrap batch questions"):
-        runner.run_document("questions/q.md", registry=reg)
+        runner.run_document("questions/q.md", identity=IDENT, registry=reg)
     assert fakes.calls == [] and _rows(reg) == []
-    assert runner.run_document("questions/q.md", force=True, registry=reg)["status"] == "ok"
+    assert runner.run_document("questions/q.md", force=True, identity=IDENT, registry=reg)["status"] == "ok"
 
 
 def test_an_interrupt_finalises_the_row_and_is_re_raised(root, reg, monkeypatch):
@@ -650,12 +767,12 @@ def test_an_interrupt_finalises_the_row_and_is_re_raised(root, reg, monkeypatch)
 
     Fakes(monkeypatch)
 
-    def interrupted(doc, *, env=None):
+    def interrupted(doc, *, identity=None, env=None):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(bootstrap, "run_dr_egeria_document", interrupted)
     with pytest.raises(KeyboardInterrupt):
-        runner.run_document("plain/only.md", registry=reg)
+        runner.run_document("plain/only.md", identity=IDENT, registry=reg)
     row = _rows(reg)[0]
     assert row["status"] == "interrupted"
     assert "_runner" not in json.loads(row["detail"])
@@ -689,9 +806,9 @@ def test_a_running_row_whose_process_is_gone_is_reconciled_and_does_not_block_a_
     sha = runner.plan_document("plain/only.md").sha256
     prior = _running_row(reg, sha, {"pid": _dead_pid(), "started_at": "Tue Oct 14 00:00:00 2026"})
     with pytest.raises(runner.RepeatRefused):            # reconciled to interrupted: it may have written, so applied
-        runner.run_document("plain/only.md", registry=reg)
+        runner.run_document("plain/only.md", identity=IDENT, registry=reg)
     assert reg.get_activity(prior)["status"] == "interrupted"
-    assert runner.run_document("plain/only.md", force=True, registry=reg)["status"] == "ok"
+    assert runner.run_document("plain/only.md", force=True, identity=IDENT, registry=reg)["status"] == "ok"
 
 
 def test_a_running_row_with_a_live_owner_refuses_even_with_force(root, reg, monkeypatch):
@@ -702,7 +819,7 @@ def test_a_running_row_with_a_live_owner_refuses_even_with_force(root, reg, monk
     sha = runner.plan_document("plain/only.md").sha256
     prior = _running_row(reg, sha, process_identity())
     with pytest.raises(runner.RunRefused, match="in progress"):
-        runner.run_document("plain/only.md", force=True, registry=reg)
+        runner.run_document("plain/only.md", force=True, identity=IDENT, registry=reg)
     assert reg.get_activity(prior)["status"] == "running" and not fakes.writes()
 
 
@@ -714,10 +831,10 @@ def test_only_allow_listed_verbs_run(root, reg, monkeypatch, heading):
 
     (root / "plain" / "x.md").write_text(DOC + "\n" + heading + "\n### Qualified Name\nx\n\n___\n")
     fakes = Fakes(monkeypatch)
-    out = runner.run_document("plain/x.md", dry_run=True, registry=reg)
+    out = runner.run_document("plain/x.md", dry_run=True, identity=IDENT, registry=reg)
     assert out["valid"] is False and any("not run by RE" in e for e in out["errors"]), out["errors"]
     with pytest.raises(runner.DocumentRefused):
-        runner.run_document("plain/x.md", registry=reg)
+        runner.run_document("plain/x.md", identity=IDENT, registry=reg)
     assert fakes.calls == []
 
 
@@ -727,7 +844,7 @@ def test_a_link_with_no_guid_back_is_ok_only_when_the_read_back_finds_it(root, r
     fakes = Fakes(monkeypatch)
     fakes.link_answer = None
     fakes.link_visible_after_create = True
-    runner.run_document("engine-host/decl.md", registry=reg)
+    runner.run_document("engine-host/decl.md", identity=IDENT, registry=reg)
     link = _rows(reg)[0]["items"][2]
     assert (link["status"], link["outcome"], link["guid"]) == ("ok", "created", LINK_GUID)
 
@@ -737,7 +854,7 @@ def test_a_link_with_no_guid_back_and_no_read_back_is_unknown(root, reg, monkeyp
 
     fakes = Fakes(monkeypatch)
     fakes.link_answer = None
-    runner.run_document("engine-host/decl.md", registry=reg)
+    runner.run_document("engine-host/decl.md", identity=IDENT, registry=reg)
     row = _rows(reg)[0]
     assert row["items"][2]["status"] == "unknown" and row["status"] == "error"
 
@@ -747,7 +864,7 @@ def test_an_empty_later_page_ends_the_link_read(root, reg, monkeypatch):
 
     fakes = Fakes(monkeypatch)
     fakes.related_pages = [{"elementList": [OTHER_LINK]}, []]
-    runner.run_document("engine-host/decl.md", registry=reg)
+    runner.run_document("engine-host/decl.md", identity=IDENT, registry=reg)
     fakes.maker.link_supported_governance_service.assert_called_once()
     assert _rows(reg)[0]["items"][2]["status"] == "ok"
 
@@ -760,7 +877,7 @@ def test_a_steps_file_that_points_outside_the_docs_directory_is_refused(root, re
     (root / "plain" / "only.pyegeria-steps.json").symlink_to(outside)
     fakes = Fakes(monkeypatch)
     with pytest.raises(runner.DocumentRefused, match="steps"):
-        runner.run_document("plain/only.md", dry_run=True, registry=reg)
+        runner.run_document("plain/only.md", dry_run=True, identity=IDENT, registry=reg)
     assert fakes.calls == []
 
 
@@ -769,9 +886,9 @@ def test_a_refused_repeat_says_how_the_earlier_run_ended(root, reg, monkeypatch)
 
     fakes = Fakes(monkeypatch)
     fakes.maker.create_asset.side_effect = RuntimeError("Egeria said no")
-    runner.run_document("engine-host/decl.md", registry=reg)
+    runner.run_document("engine-host/decl.md", identity=IDENT, registry=reg)
     with pytest.raises(runner.RepeatRefused) as refused:
-        runner.run_document("engine-host/decl.md", registry=reg)
+        runner.run_document("engine-host/decl.md", identity=IDENT, registry=reg)
     words = str(refused.value)
     assert "already applied" not in words
     assert "ended error" in words and "1 ok, 1 error, 3 not run" in words
@@ -852,3 +969,90 @@ def test_a_missing_row_costs_only_its_own_command():
     items = runner.dr_egeria_results(cmds, out, "ok")
     assert _statuses(items) == [("Create A", "ok"), ("Create B", "unknown"), ("Create C", "error")]
     assert "no row for 'Create B'" in items[1]["error"]
+
+
+# ── identity: CLI, route, config ────────────────────────────────────────────
+
+def test_the_cli_refuses_without_as(root, reg, monkeypatch):
+    from typer.testing import CliRunner
+
+    from resource_explorer import dr_egeria_runner as runner
+    from resource_explorer.cli.main import app as cli_app
+
+    monkeypatch.setenv("EGERIA_USER", "resourceexplorernpa")
+    monkeypatch.setattr(runner, "run_document", lambda *a, **k: pytest.fail("nothing runs without an identity"))
+    res = CliRunner().invoke(cli_app, ["dr-egeria", "run", "plain/only.md"], env={"RE_DR_EGERIA_PASSWORD": "x"})
+    assert res.exit_code == 1 and "no Egeria identity set; pass --as or sign in" in res.output
+
+
+@pytest.mark.parametrize("how", ["getpass", "env"])
+def test_the_cli_takes_the_password_from_getpass_or_the_one_invocation_env(root, reg, monkeypatch, how):
+    from typer.testing import CliRunner
+
+    from resource_explorer import dr_egeria_runner as runner
+    from resource_explorer.cli import dr_egeria_commands
+    from resource_explorer.cli.main import app as cli_app
+
+    real = runner.run_document
+    monkeypatch.setattr(runner, "run_document", lambda path, **k: real(path, **{**k, "registry": reg}))
+    fakes = Fakes(monkeypatch)
+    monkeypatch.delenv("RE_DR_EGERIA_PASSWORD", raising=False)
+    env = {}
+    if how == "getpass":
+        monkeypatch.setattr(dr_egeria_commands.getpass, "getpass", lambda prompt="": IDENT_PASSWORD)
+    else:
+        env = {"RE_DR_EGERIA_PASSWORD": IDENT_PASSWORD}
+        monkeypatch.setattr(dr_egeria_commands.getpass, "getpass",
+                            lambda prompt="": pytest.fail("the env var is used when set"))
+    res = CliRunner().invoke(cli_app, ["dr-egeria", "run", "plain/only.md", "--as", "tester"], env=env)
+    assert res.exit_code == 0, res.output
+    assert "applying as tester from --as" in res.output
+    argv = fakes.argvs[0]
+    assert argv[argv.index("--userid") + 1] == "tester" and argv[argv.index("--user_pass") + 1] == IDENT_PASSWORD
+    assert IDENT_PASSWORD not in res.output
+    assert IDENT_PASSWORD not in json.dumps(_rows(reg), default=str)
+
+
+def test_the_route_applies_as_the_callers_own_session_not_the_daemon(root, reg, monkeypatch):
+    _as_user(monkeypatch, "dan")
+    client = _route(monkeypatch, reg)
+    fakes = Fakes(monkeypatch)
+    res = client.post("/api/bootstrap/dr-egeria/run", json={"path": "plain/only.md"})
+    assert res.status_code == 200, res.text
+    argv = fakes.argvs[0]
+    assert argv[argv.index("--userid") + 1] == "dan" and "--user_pass" not in argv
+    assert fakes.subprocess_envs[0]["RE_DR_EGERIA_CHILD_TOKEN"] == "caller-token"
+    assert {u for _c, u in fakes.built} <= {"dan"}
+    detail = json.loads(_rows(reg)[0]["detail"])
+    assert detail["applying_as"] == "dan" and detail["identity_source"] == "admin session"
+    assert res.json()["applying_as"] == "dan"
+
+
+def test_the_route_has_no_signed_in_egeria_session_is_401_and_runs_nothing(root, reg, monkeypatch):
+    from resource_explorer import egeria_clients
+
+    _as_user(monkeypatch, "dan")
+    monkeypatch.setattr(egeria_clients, "Caller", lambda: (_ for _ in ()).throw(egeria_clients.NoCallerIdentity()))
+    client = _route(monkeypatch, reg)
+    fakes = Fakes(monkeypatch)
+    assert client.post("/api/bootstrap/dr-egeria/run", json={"path": "plain/only.md"}).status_code == 401
+    assert fakes.argvs == []
+
+
+def test_an_unset_service_account_refuses_and_never_falls_back_to_a_persona(monkeypatch):
+    """Fail on purpose: EGERIA_USER_ID unset must refuse the daemon path, not become a person."""
+    from resource_explorer import egeria_clients
+    from resource_explorer.config import EgeriaConfig, get_config
+
+    monkeypatch.delenv("EGERIA_USER_ID", raising=False)
+    monkeypatch.delenv("EGERIA_USER_PASSWORD", raising=False)
+    assert EgeriaConfig(_env_file=None).user_id == ""
+    assert EgeriaConfig(_env_file=None).user_password == ""
+    monkeypatch.setattr(get_config().egeria, "user_id", "")
+    with pytest.raises(egeria_clients.NoServiceAccount, match="EGERIA_USER_ID not set"):
+        egeria_clients.Daemon(egeria_clients.DaemonReason.OUTBOX)
+    assert egeria_clients.daemon_identity_status() == {"user_id": None, "source": "unset"}
+    monkeypatch.setattr(get_config().egeria, "user_id", "svc")
+    monkeypatch.setattr(get_config().egeria, "user_password", "")
+    with pytest.raises(egeria_clients.NoServiceAccount, match="EGERIA_USER_PASSWORD not set"):
+        egeria_clients.Daemon(egeria_clients.DaemonReason.OUTBOX)

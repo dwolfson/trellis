@@ -1,11 +1,17 @@
-"""`resource-explorer dr-egeria run <path.md> [--dry-run] [--force]`: the CLI door to the ad-hoc Dr.Egeria runner.
+"""`resource-explorer dr-egeria run <path.md> --as <egeria-user> [--dry-run] [--force]`: the CLI door to the ad-hoc runner.
 
 Thin on purpose: it calls `dr_egeria_runner.run_document`, the same function the admin route calls, and prints what
 that function returns (read from the persisted activity row for a real run).
+
+**Who it applies as: the person named by `--as`, nothing else.** The password is read with `getpass` at the terminal,
+or from `RE_DR_EGERIA_PASSWORD` set for that one invocation (`op run -- resource-explorer dr-egeria run ...`);
+never from the shared .env, never printed or logged. With no `--as` a real run REFUSES ("no Egeria identity set;
+pass --as or sign in"); a dry run needs no identity. "applying as <user> from --as" is printed before the first command.
 """
 from __future__ import annotations
 
 import getpass
+import os
 
 import typer
 from rich.console import Console
@@ -13,7 +19,7 @@ from rich.table import Table
 
 console = Console()
 
-dr_egeria_app = typer.Typer(name="dr-egeria", help="Run Dr.Egeria documents from docs/dr-egeria/ as RE's service account.")
+dr_egeria_app = typer.Typer(name="dr-egeria", help="Run Dr.Egeria documents from docs/dr-egeria/ as the named Egeria user (--as).")
 
 
 def _print(out: dict) -> None:
@@ -46,12 +52,27 @@ def run(
     force: bool = typer.Option(False, "--force",
                                help="Run a document whose content was already applied (commands marked NOT SAFE "
                                     "may create duplicates)"),
+    as_user: str = typer.Option("", "--as", help="The Egeria user to apply the document as (required unless "
+                                                 "--dry-run). Password: prompted, or RE_DR_EGERIA_PASSWORD"),
 ):
-    """Run one Dr.Egeria document (and its pyegeria steps) against Egeria as RE's service account."""
+    """Run one Dr.Egeria document (and its pyegeria steps) against Egeria as the Egeria user named by --as."""
     from resource_explorer import dr_egeria_runner as runner
+    from resource_explorer.bootstrap import SOURCE_ADHOC_AS, DrEgeriaIdentity, NoDrEgeriaIdentity
 
+    identity = None
+    if not dry_run:
+        if not as_user.strip():
+            console.print("[red]refused:[/red] no Egeria identity set; pass --as or sign in")
+            raise typer.Exit(1)
+        password = os.environ.get("RE_DR_EGERIA_PASSWORD") or getpass.getpass(f"Egeria password for {as_user}: ")
+        try:
+            identity = DrEgeriaIdentity(user=as_user.strip(), source=SOURCE_ADHOC_AS, password=password)
+        except NoDrEgeriaIdentity as exc:
+            console.print(f"[red]refused:[/red] {exc}")
+            raise typer.Exit(1)
     try:
-        out = runner.run_document(path, dry_run=dry_run, force=force, requested_by=f"cli:{getpass.getuser()}")
+        out = runner.run_document(path, dry_run=dry_run, force=force, requested_by=f"cli:{getpass.getuser()}",
+                                  identity=identity, announce=lambda line: console.print(line, markup=False))
     except runner.DocumentRefused as exc:
         console.print(f"[red]refused:[/red] {exc}")
         raise typer.Exit(1)

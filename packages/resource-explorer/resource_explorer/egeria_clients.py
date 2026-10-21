@@ -203,6 +203,10 @@ def _daemon_credential() -> tuple[str, str]:
     from resource_explorer.config import get_config
 
     egeria = get_config().egeria
+    if not (egeria.user_id or "").strip():
+        raise NoServiceAccount()
+    if not (egeria.user_password or "").strip():
+        raise NoServiceAccount(NO_SERVICE_PASSWORD_SENTENCE)
     with _source_lock:
         first = not _source_logged
         _source_logged = True
@@ -215,7 +219,10 @@ def _daemon_credential() -> tuple[str, str]:
 
 def log_daemon_identity_at_startup() -> None:
     """Called once from the web app's start, so the INFO source line is in the log at boot."""
-    _daemon_credential()
+    try:
+        _daemon_credential()
+    except NoServiceAccount as exc:
+        log.warning("daemon identity: %s", exc)
 
 
 def daemon_identity_status() -> dict:
@@ -223,11 +230,27 @@ def daemon_identity_status() -> dict:
     the credential seam loaded, and its source. No Egeria call, never a password."""
     from resource_explorer.config import get_config
 
-    user, _password = _daemon_credential()
+    try:
+        user, _password = _daemon_credential()
+    except NoServiceAccount:
+        return {"user_id": None, "source": "unset"}
     return {"user_id": user or None, "source": _daemon_source(get_config().egeria)}
 
 
 DAEMON_SIGN_IN_SENTENCE = "this is Resource Explorer's own service account; sign in as yourself"
+
+
+NO_SERVICE_ACCOUNT_SENTENCE = "EGERIA_USER_ID not set: RE has no service account; set it in .env"
+NO_SERVICE_PASSWORD_SENTENCE = "EGERIA_USER_PASSWORD not set: RE has no service account credential; set it in .env"
+
+
+class NoServiceAccount(PermissionError):
+    """RE's service account is not configured (EGERIA_USER_ID, or its password, is blank). Anything that needs the
+    service account refuses with this; it never falls back to a person's name (a missing EGERIA_USER_ID once
+    fell back to a person's persona)."""
+
+    def __init__(self, message: str = NO_SERVICE_ACCOUNT_SENTENCE) -> None:
+        super().__init__(message)
 
 
 class DaemonSignInRefused(PermissionError):
@@ -242,7 +265,10 @@ class DaemonSignInRefused(PermissionError):
 
 def is_daemon_user(user_id: Optional[str]) -> bool:
     """`user_id` is RE's daemon account (from THE seam, `_daemon_credential()`)."""
-    daemon = (_daemon_credential()[0] or "").strip()
+    try:
+        daemon = (_daemon_credential()[0] or "").strip()
+    except NoServiceAccount:
+        return False
     return bool(daemon) and (user_id or "").strip().casefold() == daemon.casefold()
 
 
@@ -269,6 +295,18 @@ def Daemon(reason: DaemonReason, requested_by: Optional[str] = None) -> EgeriaId
     return EgeriaIdentity(user_id=requester or user, password=password, is_service_account=True,
                           kind=KIND_DAEMON, reason=reason.value, client_user=user,
                           requested_by=requester)
+
+
+def Named(user_id: str, password: str, reason: DaemonReason) -> EgeriaIdentity:  # noqa: N802
+    """A NAMED Egeria user with a password (an ad-hoc `--as` run), declared like a Daemon job so `acting_as`
+    accepts it: the client mints its token as `user_id`, not as RE's service account. `user_id` is never
+    defaulted: blank raises `NoServiceAccount`'s sibling `ValueError`."""
+    if not isinstance(reason, DaemonReason):
+        raise ValueError(f"Named identity refused: {reason!r} is not a DaemonReason")
+    if not (user_id or "").strip() or not password:
+        raise ValueError("a named Egeria identity needs a user id and a password")
+    return EgeriaIdentity(user_id=user_id, password=password, is_service_account=True, kind=KIND_DAEMON,
+                          reason=reason.value, client_user=user_id, requested_by=user_id)
 
 
 # ---------------------------------------------------------------------------

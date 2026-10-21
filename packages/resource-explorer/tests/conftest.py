@@ -117,6 +117,11 @@ _PGVECTOR_AVAILABLE = _pgvector_reachable()
 # Enqueueing, reading and reconciling are unaffected — only claiming.
 os.environ.setdefault("EXPLORER_RUN_QUEUE_ENABLED", "false")
 
+# RE has no code default for its service account (config.EgeriaConfig.user_id is blank when EGERIA_USER_ID is unset
+# and every path that needs it refuses). The tests that act as the daemon get an explicit test account here.
+os.environ.setdefault("EGERIA_USER_ID", "erinoverview")
+os.environ.setdefault("EGERIA_USER_PASSWORD", "secret")
+
 
 def _egeria_reachable() -> bool:
     """Same posture as _pgvector_reachable() — a real Egeria platform is an
