@@ -224,8 +224,12 @@ function setterButtons(node, me) {
  *  `segAttrs(choice)` and `clearAttrs` are the data-attributes the caller's handler reads; `off`/`dis` dim
  *  and disable it while a write is out or nobody is signed in. */
 export function selectorHtml({ own, explicit, off, dis, segs, ariaLabel, segAttrs, clearAttrs, clearTitle = 'back to undecided', segDis = null }) {
-  const seg = ([choice, label]) => `<button type="button" ${segAttrs(choice)} ${segDis ? segDis(choice, dis) : dis} aria-pressed="${own === choice ? 'true' : 'false'}"
-    class="${own === choice ? 'bg-ink text-paper border border-ink' : 'bg-transparent text-ink border border-rule-strong'} ${off ? 'opacity-60' : 'cursor-pointer'} px-[6px] py-[1px] text-provenance">${label}</button>`;
+  const seg = ([choice, label]) => {
+    const d = segDis ? segDis(choice, dis) : dis;
+    const segOff = off || d !== dis;      // a segment disabled on its own looks as disabled as a whole selector
+    return `<button type="button" ${segAttrs(choice)} ${d} aria-pressed="${own === choice ? 'true' : 'false'}"
+    class="${own === choice ? 'bg-ink text-paper border border-ink' : 'bg-transparent text-ink border border-rule-strong'} ${segOff ? 'opacity-60' : 'cursor-pointer'} px-[6px] py-[1px] text-provenance">${label}</button>`;
+  };
   const clear = explicit ? `<button type="button" ${clearAttrs} ${dis}
     aria-label="clear the choice (undecided)" title="${esc(clearTitle)}"
     class="${off ? 'opacity-60' : 'cursor-pointer'} bg-transparent px-[4px] text-provenance text-ink-muted">×</button>` : '';

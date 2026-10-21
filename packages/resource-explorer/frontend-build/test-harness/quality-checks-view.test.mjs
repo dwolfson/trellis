@@ -145,6 +145,10 @@ test('an accept the profile cannot support is disabled with the reason on the ro
   assert.ok(acc.disabled);
   assert.equal(acc.getAttribute('title'), why);
   assert.ok(!rej.disabled, 'Reject needs no parameters');
+  assert.match(acc.className, /opacity-60/);
+  assert.doesNotMatch(acc.className, /cursor-pointer/);
+  assert.match(rej.className, /cursor-pointer/);
+  assert.doesNotMatch(rej.className, /opacity-60/);
   assert.match(text(row.querySelector('[data-qc-accept-blocked]')), /could not evaluate the check/);
   assert.match(text(row), /accepted · you · 2026-10-20/, 'the earlier verdict stays visible');
   assert.equal(acc.getAttribute('aria-pressed'), 'true');
