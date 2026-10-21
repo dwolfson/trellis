@@ -53,6 +53,10 @@ class SurveyDefinitionRunParams:
     #: pressed Run. Both land in the run's activity detail, which Understanding reads ("started in RE by <person>").
     started_by: str = "re"          # engine_host.STARTED_BY_RE
     started_by_person: str = ""
+    #: True = a person pressed this run, so its Egeria PUBLISH runs as them (`presser_hold`: their session, held in
+    #: memory by the press route for the run's lifetime). False for a scheduled, Egeria-dispatched or person-less
+    #: batch run, which keeps the service account. A flag, never a credential: it rides in `runs.target`.
+    publish_as_presser: bool = False
 
     @classmethod
     def from_dict(cls, data: dict) -> SurveyDefinitionRunParams:
@@ -71,6 +75,7 @@ class SurveyDefinitionRunParams:
             "force_custom": self.force_custom,
             "started_by": self.started_by,
             "started_by_person": self.started_by_person,
+            "publish_as_presser": self.publish_as_presser,
         }
 
 

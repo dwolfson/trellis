@@ -225,10 +225,20 @@ def _handle_survey_definition_run(target: dict, result_ref: str) -> RunOutcome:
         execute_and_record_definition,
     )
 
+    from contextlib import nullcontext
+
+    from resource_explorer import presser_hold
+
     params = SurveyDefinitionRunParams.from_dict(target.get("params") or {})
-    result = execute_and_record_definition(
-        target["entity_type"], target["slug"], params, result_ref,
-    )
+    run_id = (current_run.get() or {}).get("id") or ""
+    # A pressed run's publish runs as the person who pressed it (their held session, or the "sign-in expired" words);
+    # any other run keeps what it had.
+    pressed = (presser_hold.pressed_run(run_id, params.started_by_person)
+               if params.publish_as_presser and params.started_by_person else nullcontext())
+    with pressed:
+        result = execute_and_record_definition(
+            target["entity_type"], target["slug"], params, result_ref,
+        )
     return RunOutcome(
         state="succeeded" if result.status == "ok" else "failed",
         error="; ".join(result.errors) if result.errors else "",
@@ -638,6 +648,9 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
                 outcome = handler(target, result_ref)
         finally:
             current_run.reset(run_reset)
+            from resource_explorer import presser_hold
+
+            presser_hold.release(run_id)         # the presser's held session ends with the run, however it ended
     except Exception as exc:  # pragma: no cover — a handler is expected to catch its own
         # Scrubbed by shape before it is logged or stored: a handler's exception can carry a connection
         # string or token, and this catch-all writes the traceback, the run row and the outcome.

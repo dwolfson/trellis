@@ -892,3 +892,16 @@ def fresh_zone_controls_report(monkeypatch):
     from resource_explorer import egeria_identity
 
     monkeypatch.setattr(egeria_identity, "_zone_controls_state", None)
+
+
+@pytest.fixture(autouse=True)
+def no_live_publish_readback(request, monkeypatch):
+    """The run's "published as <identity>" is ONE read of the SurveyReport by GUID (`presser_hold.read_published_by`).
+    A test that fakes the publish has no Egeria to read, and the real read would reach for a platform: here it says
+    "could not tell" (''). ONLY `test_queued_run_publishes_as_presser` exercises the real function, with the pyegeria
+    boundary faked."""
+    if request.module.__name__.endswith("test_queued_run_publishes_as_presser"):
+        return
+    from resource_explorer import presser_hold
+
+    monkeypatch.setattr(presser_hold, "read_published_by", lambda report_guid: "")

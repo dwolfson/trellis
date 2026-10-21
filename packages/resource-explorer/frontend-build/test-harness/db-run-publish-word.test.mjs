@@ -165,3 +165,28 @@ test('a run that recorded no publish_state draws no run word', async () => {
   await app.openRunsList('advisor');
   assert.equal(dlgOf(document).querySelectorAll('[data-run-publish]').length, 0);
 });
+
+/* A queued run publishes AS the person who pressed it (2026-10-21). The card says who Egeria states created the report
+ * (`published_as`, read back by GUID), and a run whose presser's sign-in was gone says so in its own words. */
+test('a published run names who Egeria says created the report; with no stated creator, the plain word', async () => {
+  const withWho = await setUp(scoutingSteps, { publish_state: 'published to Egeria', published: true,
+    egeria_report_guid: 'r-1', published_as: 'peterprofile' });
+  await withWho.app.openRunsList('advisor');
+  assert.match(text(runWord(withWho.document)), /^✓ published as peterprofile$/);
+
+  const without = await setUp(scoutingSteps, { publish_state: 'published to Egeria', published: true,
+    egeria_report_guid: 'r-1' });
+  await without.app.openRunsList('advisor');
+  assert.match(text(runWord(without.document)), /^✓ published$/);
+});
+
+test('an expired presser sign-in is drawn as a warning with its words, never as published', async () => {
+  const words = 'published: no · your sign-in expired · press Publish on the card';
+  const { document, app } = await setUp(scoutingSteps, { publish_state: words, published: false });
+  await app.openRunsList('advisor');
+  const w = runWord(document);
+  assert.equal(w.dataset.stepPublish, 'expired');
+  assert.equal(text(w).replace(/^\S+ /, ''), words);
+  assert.doesNotMatch(text(w), /^✓/);
+  assert.doesNotMatch(text(w), /not established/);
+});

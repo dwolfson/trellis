@@ -388,6 +388,25 @@ def no_identity() -> Iterator[None]:
         _acting.reset(acting)
 
 
+@contextmanager
+def acting_as_held_caller(person: str, token: str) -> Iterator[None]:
+    """Run a block as a PERSON from a session RE held in memory for them (`presser_hold`): no declared Daemon, the
+    caller is `person` with `token`, and the block opens its own client scope. `current_principal()` inside it is
+    `Caller()`, so an expired token raises `CallerTokenExpired` and never falls back to the daemon. The only caller is
+    `presser_hold.publishing_as_presser`: a queued run's publish as the person who pressed it."""
+    from resource_explorer.a2a_auth import CallerIdentity, current_caller
+
+    acting = _acting.set(None)
+    caller = current_caller.set(
+        CallerIdentity(user_id=person, egeria_token=token, auth_source="held-session", role="user"))
+    try:
+        with client_scope():
+            yield
+    finally:
+        current_caller.reset(caller)
+        _acting.reset(acting)
+
+
 #: Set in a Prefect WORKER's flow-run process (Prefect's process worker exports it for every
 #: flow run it starts); never set by RE's own in-process flows, which run in RE's context.
 PREFECT_WORKER_MARKER = "PREFECT__FLOW_RUN_ID"
