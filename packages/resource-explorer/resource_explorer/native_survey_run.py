@@ -1835,8 +1835,10 @@ def refresh_run(registry, port: EgeriaSurveyPort, run: dict, *, entity_type: str
             from resource_explorer import file_reach
 
             file_reach.settle_from_run(registry, slug, derived)
-        except Exception:  # noqa: BLE001 -- recording the proof must not break the read-back
+        except Exception as exc:  # noqa: BLE001 -- recording the proof must not break the read-back
             log.warning("%s: could not record what the folder survey proved", slug, exc_info=True)
+            # Observable to the caller: the proof was NOT recorded (the run's own state is unchanged).
+            derived = {**derived, "verification_error": _short_error(exc)}
     return derived
 
 

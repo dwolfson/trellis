@@ -741,6 +741,7 @@ def attach_root_folder(slug: str) -> dict:
             detail={"why": out.get("why", ""), "type_name": out.get("type_name", ""), "created": out["created"]},
             recorded_by=who)
         reach = None
+        reach_error = ""       # set when the probe could not run: the attach itself still succeeded
         if out["matched"]:
             # Files step 2: the reachability probe runs at registration (here, where the file system first has an
             # Egeria element to ask about) and before each survey. It never fails the attach.
@@ -748,11 +749,12 @@ def attach_root_folder(slug: str) -> dict:
                 from resource_explorer import file_reach
 
                 reach = file_reach.probe_filesystem(slug, registry).as_dict()
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
                 log.warning("Reachability probe after attaching %s failed", slug, exc_info=True)
+                reach_error = f"{type(exc).__name__}: {str(exc)[:200]}"
         return {**_root_folder_view(registry, slug), "created": out["created"],
                 "qualified_name": out.get("qualified_name", ""), "type_name": out.get("type_name", ""),
-                "reach": reach}
+                "reach": reach, "reach_error": reach_error}
     except PermissionError:
         raise      # no caller / expired sign-in: the app's 401 handler, never a 500
     except Exception as exc:
