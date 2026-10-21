@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 from unittest.mock import create_autospec
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from resource_explorer import egeria_mounts, file_reach
@@ -207,7 +209,9 @@ def test_a_check_again_reevaluates_a_failed_egeria_read_and_keeps_the_evidence(r
 def test_a_press_with_no_row_checks_once_and_a_settled_row_is_not_reevaluated(registry, tmp_path):
     _fs(registry, tmp_path)
     assert file_reach.ensure_checked("lake", registry).state == file_reach.MOUNTS_UNKNOWN     # no map under the guard
-    _row(registry, "egeria_cannot_read", at="2026-10-21T10:00:00+00:00")
+    # Newer than the row ensure_checked just wrote (stamped now), whatever day the suite runs.
+    later = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    _row(registry, "egeria_cannot_read", at=later)
     assert file_reach.ensure_checked("lake", registry).state == file_reach.EGERIA_CANNOT
 
 
