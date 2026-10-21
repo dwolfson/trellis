@@ -286,7 +286,19 @@ class _RecordingDiscovery(_FakeDiscovery):
         self.elements[guid] = {"type": props["class"].removesuffix("Properties"), "properties": props}
         return guid
 
+    platform_url, view_server = "https://localhost:9443", "qs-view-server"
+
     def update_annotation(self, guid, body):
+        # pyegeria's own, as shipped: the body lands in the `prop` slot (live check of #791, 2026-10-21).
+        import asyncio
+
+        url = f"{self.platform_url}/servers/{self.view_server}/api/open-metadata/data-discovery/annotations/{guid}/update"
+        asyncio.get_event_loop().run_until_complete(self._async_update_element_body_request(url, body))
+
+    async def _async_update_element_body_request(self, url, prop=None, body=None):
+        if body is None:
+            raise AttributeError("'NoneType' object has no attribute 'model_dump_json'")   # pyegeria's failure
+        guid = url.rsplit("/annotations/", 1)[1].removesuffix("/update")
         if guid in self.refuse:
             raise RuntimeError("SERVER_ERROR_500 update refused")
         self.updates.append((guid, body))
@@ -294,6 +306,16 @@ class _RecordingDiscovery(_FakeDiscovery):
         props = {k: v for k, v in body["properties"].items() if k != "class"}
         assert body["properties"]["class"] == self.elements[guid]["properties"]["class"]  # the element's own bean
         self.elements[guid]["properties"].update(props)
+
+
+def test_pyegerias_update_annotation_drops_the_body_so_re_does_not_call_it():
+    """Pins the bug the workaround exists for; when pyegeria fixes it, this fails and the workaround can go."""
+    import inspect
+
+    from pyegeria.omvs.data_discovery import DataDiscovery
+
+    src = inspect.getsource(DataDiscovery._async_update_annotation)
+    assert "_async_update_element_body_request(url, body)" in src
 
 
 def _retiring_surveyor(refuse=()):

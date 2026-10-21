@@ -1627,12 +1627,24 @@ class EgeriaDatabaseSurveyor:
                     "properties": {"class": f"{type_name}Properties" if type_name else "AnnotationProperties",
                                    "contentStatus": "DEPRECATED"}}
             try:
-                self._discovery.update_annotation(ann["guid"], body)
+                self._update_annotation(ann["guid"], body)
                 counts["retired"] += 1
             except Exception as exc:  # noqa: BLE001 -- counted; the publish itself stands
                 log.warning("could not retire superseded verdict %s: %s", ann.get("qualified_name"), exc)
                 counts["failed"] += 1
         return counts
+
+    def _update_annotation(self, annotation_guid: str, body: dict) -> None:
+        """`DataDiscovery.update_annotation`, minus its bug: pyegeria's `_async_update_annotation` passes the body
+        positionally into `_async_update_element_body_request(url, prop, body)`'s `prop` slot, so `body` arrives as
+        None and every update fails before a request is sent (pyegeria ISSUE-152; live check of #791, 2026-10-21). Same URL, same helper,
+        with the body named. Raises what the request raises."""
+        import asyncio
+
+        dd = self._discovery
+        url = (f"{dd.platform_url}/servers/{dd.view_server}/api/open-metadata/data-discovery/annotations/"
+               f"{annotation_guid}/update")
+        asyncio.get_event_loop().run_until_complete(dd._async_update_element_body_request(url, body=body))
 
     def _link_verdicts_to_columns(self, db_entity, annotations: list, start: int, column_paths: list[str],
                                   surveyed_at: str) -> dict:
