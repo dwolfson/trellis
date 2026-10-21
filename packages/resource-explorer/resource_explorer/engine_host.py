@@ -27,8 +27,9 @@ exactly as native leaves it:
 * its `actionStatus` is `APPROVED` and its `processingEngineUserId` is empty (Egeria's own claim gate, C5);
 * its `requestType` is one RE declares (`supported_request_types()`, the same function the declaration
   generator uses): a built-in step's (`ENGINE_HOST_STEPS`), or an installed Analytic Library step's, read from its
-  manifest through `survey_step_host.library_steps()` (step 3). An unknown type, including a library step's whose
-  package is not installed here, is left unclaimed and logged once (§3.3; Q-M7 is still open);
+  manifest through `survey_step_host.library_steps()` (step 3). An unknown type is left unclaimed and logged once.
+  So is a library step's whose package is not installed here: the start-up line "library steps: N installed, M
+  missing: <names>" names it, and its actions are skipped as `library_step_not_installed` (§3.3; Q-M7 is still open);
 * none of its targets is a database with a private owner (`registry.private_owner_for_entity`). The engine
   host is unattended, so it is a daemon; private work never runs as the service account (owner, Q-O3). The
   owner runs such work attended from RE. Claiming and then refusing would write a FAILED action into a
@@ -352,6 +353,25 @@ def library_steps() -> dict:
     return _library_steps(ENTITY_TYPE)
 
 
+def missing_library_steps() -> dict[str, str]:
+    """{request type: step key} for every catalogued Analytic Library step whose package is not installed where
+    the engine host runs. The catalog does not carry a request type (only an installed manifest does), so it is the
+    manifest default, `request_type_for_step`, the same one `trellis_analytics.default_request_type` gives. The
+    engine host claims none of these: they are left APPROVED and unclaimed, as a native survey with no host is."""
+    from resource_explorer.surveyors.survey_step_host import missing_library_steps as _missing
+
+    return {request_type_for_step(key): key for key in _missing(ENTITY_TYPE)}
+
+
+def library_steps_line() -> str:
+    """The one start-up line: how many library steps are installed (offered to Egeria) and which are missing."""
+    installed = len(library_steps())
+    missing = sorted(missing_library_steps().values())
+    if not missing:
+        return f"library steps: {installed} installed, none missing"
+    return f"library steps: {installed} installed, {len(missing)} missing: {', '.join(missing)}"
+
+
 def supported_request_types() -> dict[str, str]:
     """{request type: step key} RE's engine can run: the admitted built-in steps (`ENGINE_HOST_STEPS`), then the
     installed library steps. A library step can take neither the name nor the `re-<name>` request type of ANY
@@ -634,6 +654,11 @@ class EngineHost:
         request_type = str(action.get("requestType") or "")
         step_key = supported.get(request_type)
         if not step_key:
+            absent = missing_library_steps().get(request_type)
+            if absent:
+                return "library_step_not_installed", {
+                    "request_type": request_type,
+                    "reason": f"the Analytic Library step '{absent}' is not installed where the engine host runs"}
             return "unknown_request_type", {"request_type": request_type}
         all_targets = _targets(action)
         # The previous step's report (engine host step 4): carried by Egeria as the `surveyReport` target, never an
@@ -829,7 +854,8 @@ class EngineHost:
                 if reason not in _SILENT:
                     self._report_once(reason, guid, "engine host: left engine action %s unclaimed (%s: %s)",
                                       guid, reason, facts, level=logging.WARNING
-                                      if reason in ("unknown_request_type", "screen_failed") else logging.INFO)
+                                      if reason in ("unknown_request_type", "screen_failed",
+                                                                            "library_step_not_installed") else logging.INFO)
                 continue
             self._claim(action, guid, facts, engine_guid, result)
         return result
@@ -2320,8 +2346,22 @@ class EngineHostLoop:
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="re-engine-host", daemon=True)
         self._thread.start()
+        log.info("engine host: %s", self._library_line())
         log.info("engine host: sweep started every %ss for engine %s (request types %s)", self.interval,
                  ENGINE_QUALIFIED_NAME, sorted(supported_request_types()))
+
+    @staticmethod
+    def _library_line() -> str:
+        """The start-up line about library steps; never lets a failure to compute it stop the host starting."""
+        try:
+            line = library_steps_line()
+            missing = missing_library_steps()
+        except Exception as exc:  # noqa: BLE001
+            return f"library steps: could not be listed ({type(exc).__name__}: {exc})"
+        if missing:
+            line += (f"; their engine actions ({', '.join(sorted(missing))}) are left APPROVED and unclaimed until "
+                     "the package is installed here")
+        return line
 
     def stop(self, timeout: float = STOP_JOIN_SECONDS) -> None:
         self._stop.set()

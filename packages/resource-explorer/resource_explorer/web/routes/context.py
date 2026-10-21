@@ -285,8 +285,12 @@ def get_enrichment_analyses(entity_type: str, slug: str) -> dict:
         # validates with), so a Run control is never offered for an analysis
         # with no runner (doc_source_ingestion: slice 2 was never built).
         if entity_type == "database":
-            from resource_explorer.surveyors.database.database_surveyor import database_analysis_has_runner
-            runnable = database_analysis_has_runner(entry["id"])
+            from resource_explorer.surveyors.database.database_surveyor import (
+                database_analysis_has_runner,
+                database_library_step_missing_reason,
+            )
+            runnable = (database_analysis_has_runner(entry["id"])
+                        and not database_library_step_missing_reason(entry["id"]))
         else:
             runnable = False
         rows.append({

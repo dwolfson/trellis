@@ -147,6 +147,18 @@ def database_analysis_has_runner(analysis_id: str) -> bool:
             or analysis_id in DATABASE_REGISTRY_STEP_ANALYSES or bool(database_library_step_key(analysis_id)))
 
 
+def database_library_step_missing_reason(analysis_id: str) -> str:
+    """The "step not installed here" sentence when `analysis_id` is a library step whose package is absent from this
+    environment, else "". `database_analysis_has_runner` stays True for it (the card exists and the run route
+    dispatches it); the card's Run is what this disables, before a press."""
+    step_key = database_library_step_key(analysis_id)
+    if not step_key:
+        return ""
+    from resource_explorer.surveyors.survey_step_host import library_step_missing_reason
+
+    return library_step_missing_reason(step_key)
+
+
 def database_analysis_needs_credentials(analysis_id: str) -> bool:
     """True when running `analysis_id` opens a connection with the database's stored credential.
 

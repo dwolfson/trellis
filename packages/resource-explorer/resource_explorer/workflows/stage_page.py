@@ -493,9 +493,15 @@ def runnable_and_reason(analysis_id: str, entity_type: str = "repo") -> tuple[bo
     if entity_type == "database":
         # One predicate with the run route (databases.py): resolve_analysis_plan's source-step map is not
         # what that route dispatches from, and two predicates is how a card offered a Run the route refused.
-        from resource_explorer.surveyors.database.database_surveyor import database_analysis_has_runner
+        from resource_explorer.surveyors.database.database_surveyor import (
+            database_analysis_has_runner,
+            database_library_step_missing_reason,
+        )
 
         runnable = database_analysis_has_runner(analysis_id)
+        if runnable and (missing := database_library_step_missing_reason(analysis_id)):
+            # A library step whose package is absent here: the card says so before the press, never after it.
+            return False, missing
     else:
         from resource_explorer.workflows.analysis import resolve_analysis_plan
 
