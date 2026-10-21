@@ -127,10 +127,10 @@ import { openFindReposDialog } from '/static/next/discovery-import.js';
 // (register a server once, then server-side introspection via
 // POST /api/db-servers/{slug}/discover), ported for `state.resourceType
 // === 'db'` in the same `find-repos` action. Chrome-level, same placement
-// rule as discovery-import.js above. Filesystems still keep the
-// old-UI-link stub — classic's own filesystem registration flow is not
-// this file's scope yet.
+// rule as discovery-import.js above. File systems register one by hand
+// (fs-register.js, Files step 1: the classic modal minus its Egeria fields).
 import { openFindDbServersDialog } from '/static/next/db-server-discovery.js';
+import { openRegisterFileSystemDialog } from '/static/next/fs-register.js';
 // Chat (PLAN-FINISH-REPOS.md item 9) — chrome-level, like worklist.js/rfa.js:
 // the "Ask" rail and the pane it promotes an answer into, beside whichever
 // stage is active rather than one of the eight itself. See next/chat.js's
@@ -2043,12 +2043,12 @@ function markKeyHtml() {
 // both now have real ports of classic's mechanisms (GitHub search +
 // list-import for repos via discovery-import.js; server-side introspection,
 // POST /api/db-servers/{slug}/discover, for databases via
-// db-server-discovery.js) — filesystem is the one that still falls through
-// to the old-UI-link stub below (see Backlog.md).
+// db-server-discovery.js); a file system is registered by hand on
+// /next (fs-register.js).
 const FIND_TITLE = {
   repo: 'Find and import candidate repos',
   db: 'Find databases',
-  filesystem: 'Register a filesystem path',
+  filesystem: 'Add a file system',
 };
 
 /** The Find action's visible words, by the kind shown (REPLY-DESIGNER-
@@ -2688,20 +2688,12 @@ function bindSidebar() {
     // -- GitHub search, the from-list bulk loader, and the inventory CSV
     // export. Databases: a real port too -- register a server, then
     // server-side introspection (POST /api/db-servers/{slug}/discover) to
-    // find and add its databases (db-server-discovery.js). Filesystem keeps
-    // the old-UI-link stub; classic's own filesystem registration flow is a
-    // separate, not-yet-ported affordance.
+    // find and add its databases (db-server-discovery.js). File systems:
+    // register one by hand (fs-register.js, Files step 1).
     'find-repos': () => {
       if (state.resourceType === 'repo') { openFindReposDialog(); return; }
       if (state.resourceType === 'db') { openFindDbServersDialog(); return; }
-      const title = FIND_TITLE[state.resourceType] || FIND_TITLE.repo;
-      const d = openDialog(title, title);
-      d.querySelector('#wl-detail-body').innerHTML = `
-        <p class="max-w-[60ch] text-answer text-ink">${esc(title)}.</p>
-        <p class="max-w-[60ch] text-answer text-ink">
-          <a href="${esc(oldUiHref())}" class="text-accent-ink underline"
-            >Open in the current UI</a> ${icon('external-link', { size: 13, cls: 'text-accent-ink' })}
-        </p>`;
+      if (state.resourceType === 'filesystem') { openRegisterFileSystemDialog(); return; }
     },
     'show-hidden': () => { state.showHidden = !state.showHidden; rerender(); },
     'select-mode': () => {

@@ -3,6 +3,8 @@
  *  against main's tree (before the repository tabs), so the test fails if the tabs change what these two draw.
  *  Regenerated deliberately by Brief F (2026-10-11): its only differences are the band words it means to change
  *  (one rating per person, "sent with Publish", journal entries are public Notes).
+ *  Regenerated again by Files step 1 (2026-10-20): the only difference is the Publish band, which now carries a file
+ *  system's one Publish and its root-folder state instead of the sentence "no publish control here yet".
  *  The stub server is fixed and time-free so the output does not drift. */
 import { makeDomEnvironment, ensureLoaderRegistered } from './dom-harness.mjs';
 

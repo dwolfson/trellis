@@ -84,6 +84,7 @@ function makeServer(over = {}) {
       s.inEgeria = false; s.canAgain = false; s.row = { word: 'forgotten', read_at: new Date().toISOString(), sentence: '', first: '' };
       return ok({ ok: true, surveys_deleted: 3, asset_guid_cleared: true });
     }
+    if (u.endsWith('/root-folder')) return ok(s.rootFolder || { state: 'not_attached', guid: '', read_back_at: '', by: '', why: '' });
     if (u.endsWith('/egeria-surveys')) return s.reportsStatus === 200 ? ok(s.reports) : err(s.reportsStatus, 'Egeria is not reachable');
     if (u.includes('/egeria-surveys/') && u.endsWith('/annotations')) return ok(s.annotations);
     if (u.endsWith('/file-type-measurements')) return ok(s.measurements);
@@ -354,11 +355,35 @@ test('a database: one state line (never the registry flag), reports from the dat
   assert.ok(q(document, '[data-egeria-report]'));
 });
 
-test('a file system: the same component on the file-system route', async () => {
-  const { document, server } = await setUp('filesystem', {}, { slug: 'docs_fs', rows: { is_published: true, egeria_asset_guid: 'fs-guid' } });
+test('a file system whose survey held a GUID but has no proof row: held, not "not attached", reports listed from the GUID', async () => {
+  // Held-GUID case: the survey path published the folder (egeria_asset_guid is set) and no read-back by GUID was
+  // recorded. That is "not measured", which must not read as "not attached" or as "no asset to list reports from".
+  const a = await setUp('filesystem',
+    { rootFolder: { state: 'held', guid: 'fs-guid', read_back_at: '', by: '', why: '' } },
+    { slug: 'docs_fs', rows: { is_published: true, egeria_asset_guid: 'fs-guid' } });
+  await openCurate(a.document);
+  assert.match(band(a.document).textContent, /GUID held · not read back yet/);
+  assert.doesNotMatch(band(a.document).textContent, /root folder not attached/);
+  assert.doesNotMatch(band(a.document).textContent, /no asset to list reports from/);
+  assert.equal(a.server.calls.filter((c) => c.url.includes('/api/filesystems/docs_fs/egeria-surveys')).length, 1);
+  assert.equal(q(a.document, '[data-publish-go]'), null);
+  assert.ok(q(a.document, '[data-fs-publish-go]'), 'the one file-system Publish');
+});
+
+test('a file system with nothing held and no proof row: not attached, and no reports are asked for', async () => {
+  const a = await setUp('filesystem', {}, { slug: 'docs_fs', rows: { is_published: false, egeria_asset_guid: '' } });
+  await openCurate(a.document);
+  assert.match(band(a.document).textContent, /root folder not attached/);
+  assert.equal(a.server.calls.filter((c) => c.url.includes('/api/filesystems/docs_fs/egeria-surveys')).length, 0);
+});
+
+test('a file system with a read-back proof row: attached, and its reports are read from the file-system route', async () => {
+  const { document, server } = await setUp('filesystem',
+    { rootFolder: { state: 'attached', guid: 'fs-guid', read_back_at: '2026-10-20T09:30:00', by: 'dan', why: '' } },
+    { slug: 'docs_fs', rows: { is_published: false, egeria_asset_guid: 'fs-guid' } });
   await openCurate(document);
+  assert.match(band(document).textContent, /root folder attached/);
   assert.equal(server.calls.filter((c) => c.url.includes('/api/filesystems/docs_fs/egeria-surveys')).length, 1);
-  assert.equal(q(document, '[data-publish-go]'), null);
 });
 
 /* ── PI-004 ──────────────────────────────────────────────────────────── */

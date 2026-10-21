@@ -165,6 +165,13 @@ def register_filesystem(registration: FileSystemRegistration):
     ignore_egeria_credentials(registration, where="register filesystem")
 
     registry = ProjectRegistry()
+    _require_registration_right(registry)
+    for what, mount in (("local mount point", registration.local_mount_point),
+                        ("canonical mount point", registration.canonical_mount_point)):
+        if mount.strip() and not mount.strip().rstrip("/"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"The {what} is the root of the file system ('/'). Register the folder to catalog, not the root.")
 
     if registry.filesystem_exists(registration.slug):
         raise HTTPException(
@@ -192,21 +199,62 @@ def register_filesystem(registration: FileSystemRegistration):
             status_code=500,
             detail=f"Failed to write to registry: {exc}"
         )
-        
+
+    # The answer is the STORED row (a slug is stored with dashes as underscores), so a caller that selects the
+    # new file system by the slug it gets back finds the row the list shows.
+    stored = registry.get_filesystem(fs.slug) or fs
     return FileSystemSummary(
-        slug=fs.slug,
-        display_name=fs.display_name,
-        local_mount_point=fs.local_mount_point,
-        canonical_mount_point=fs.canonical_mount_point or "",
-        description=fs.description,
-        status=fs.status.value,
+        slug=stored.slug,
+        display_name=stored.display_name,
+        local_mount_point=stored.local_mount_point,
+        canonical_mount_point=stored.canonical_mount_point or "",
+        description=stored.description,
+        status=stored.status.value,
         last_surveyed_at="",
         egeria_asset_guid="",
         file_count=0,
         data_file_count=0,
-        egeria_url=fs.egeria_url or "",
-        egeria_server=fs.egeria_server or "",
+        egeria_url=stored.egeria_url or "",
+        egeria_server=stored.egeria_server or "",
+        group_slug=getattr(stored, "group_slug", "") or "",
     )
+
+
+class MountCheckRequest(BaseModel):
+    path: str = ""
+
+
+def _require_registration_right(registry: ProjectRegistry) -> None:
+    """Who may register a file system, and probe a path on this server's disk: the person who may CREATE a file
+    system's asset in Egeria, the write registering exists to make. The database registration route checks
+    nothing (it has no element to judge); this reuses the one decision every resource write calls
+    (`workflows.curate.resource_access`, the `publish` write for an element not in Egeria yet): not signed in is
+    refused, a Portal curator/admin is allowed, zones not in use is open, zones in use is Egeria's own answer."""
+    from resource_explorer.web.routes.curate import require_resource_write
+
+    require_resource_write(registry, "filesystem", "", "publish", element_guid="")
+
+
+@router.post("/check-mount")
+def check_mount(req: MountCheckRequest) -> dict:
+    """Can THIS server read a mount path? A warning for the register form, never a gate: the server may see the
+    file system at a different path than the person (or Egeria) does. Answers one of `readable`,
+    `not_a_folder`, `not_readable`, `empty` (nothing typed). Reads nothing inside the folder beyond opening it,
+    and takes the path as typed (no `~` expansion). Gated like registration: it tells the caller what exists on
+    this server's disk."""
+    import os
+
+    _require_registration_right(ProjectRegistry())
+    path = (req.path or "").strip()
+    if not path:
+        return {"state": "empty"}
+    if os.path.isdir(path):
+        if os.access(path, os.R_OK | os.X_OK):
+            return {"state": "readable"}
+        return {"state": "not_readable"}
+    if os.path.exists(path):
+        return {"state": "not_a_folder"}
+    return {"state": "not_readable"}
 
 
 @router.get("/{slug}/", response_model=FileSystemSummary)
@@ -620,6 +668,89 @@ def publish_survey_to_egeria(slug: str, req: FileSystemSurveyRequest):
             status_code=500,
             detail=f"Publish failed: {exc}"
         )
+
+
+# ── Attach the root folder (Files step 1) ────────────────────────────────
+
+def _root_folder_view(registry: ProjectRegistry, slug: str) -> dict:
+    """The root folder's state, derived from the NEWEST live proof row (one read since Egeria's last reset) and
+    the GUID RE holds: `attached` only when the newest row says a read-back by GUID matched; `not_confirmed` when
+    it says it did not (with the words); `held` when a GUID is held (the survey path published the folder) but no
+    read-back was recorded yet, which is "not measured", never "not attached"; `not_attached` when there is
+    neither. `reset_at` is the reset time when one exists."""
+    proof = registry.latest_filesystem_root_proof(slug)
+    reset_at = registry.filesystem_reset_at(slug)
+    if not proof:
+        fs = registry.get_filesystem(slug)
+        held = ((fs.egeria_asset_guid if fs else "") or "").strip()
+        return {"state": "held" if held else "not_attached", "guid": held, "read_back_at": "", "by": "",
+                "why": "", "reset_at": reset_at}
+    attached = proof["proof"] == registry.FS_ROOT_ATTACHED
+    detail = proof.get("detail") or {}
+    return {
+        "state": "attached" if attached else "not_confirmed",
+        "guid": proof.get("element_guid", ""),
+        "read_back_at": proof.get("read_at", ""),
+        "by": proof.get("recorded_by", ""),
+        "why": "" if attached else str(detail.get("why", "")),
+        "reset_at": reset_at,
+    }
+
+
+@router.get("/{slug}/root-folder")
+def get_root_folder(slug: str) -> dict:
+    """Whether this file system's root folder is attached in Egeria, from the proof row (see `_root_folder_view`)."""
+    registry = ProjectRegistry()
+    if not registry.filesystem_exists(slug):
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    return _root_folder_view(registry, slug)
+
+
+@router.post("/{slug}/attach-root")
+def attach_root_folder(slug: str) -> dict:
+    """Attach the file system's ROOT FOLDER as an Egeria asset, as the signed-in person, and read it back by GUID.
+
+    This is the page's one Publish for a file system at this step. It attaches the root folder ONLY (see
+    `EgeriaFileSystemSurveyor.attach_root_folder`): no tags, group, documentation sources or feedback go with it
+    (`single_publish.send_with_publish` is not called); the survey-driven publish above (`/publish`) is unchanged
+    and still sends data files, the SurveyReport and annotations. A press with a GUID already held reads that
+    element back and creates nothing. The proof row records the GUID Egeria's read-back returned and when."""
+    registry = ProjectRegistry()
+    fs_entity = registry.get_filesystem(slug)
+    if not fs_entity:
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+
+    from resource_explorer.web.routes.curate import require_resource_write
+    require_resource_write(registry, "filesystem", slug, "publish")
+
+    try:
+        from resource_explorer.egeria_clients import Caller
+        from resource_explorer.egeria_identity import caller_user_id
+        from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import EgeriaFileSystemSurveyor
+
+        surveyor = EgeriaFileSystemSurveyor(
+            platform_url=fs_entity.egeria_url or None, view_server=fs_entity.egeria_server or None,
+            identity=Caller())
+        out = surveyor.attach_root_folder(fs_entity, registry=registry)
+        who = caller_user_id()
+        registry.append_filesystem_root_proof(
+            slug,
+            proof=registry.FS_ROOT_ATTACHED if out["matched"] else "folder_not_confirmed",
+            element_guid=out["guid"], qualified_name=out.get("qualified_name", ""),
+            detail={"why": out.get("why", ""), "type_name": out.get("type_name", ""), "created": out["created"]},
+            recorded_by=who)
+        return {**_root_folder_view(registry, slug), "created": out["created"],
+                "qualified_name": out.get("qualified_name", ""), "type_name": out.get("type_name", "")}
+    except PermissionError:
+        raise      # no caller / expired sign-in: the app's 401 handler, never a 500
+    except Exception as exc:
+        from resource_explorer.egeria_clients import refusal
+
+        refused = refusal(exc)
+        if refused is not None:
+            raise refused from exc
+        log.exception("Attaching the root folder failed for %s", slug)
+        raise HTTPException(status_code=500, detail=f"Publish failed: {exc}")
 
 
 class ReachabilityResultModel(BaseModel):
