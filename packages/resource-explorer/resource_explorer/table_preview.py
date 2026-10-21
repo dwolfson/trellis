@@ -63,6 +63,9 @@ CONNECT_TIMEOUT_SECONDS = 5
 MAX_NEW_REVEALS = 1
 #: A text cell longer than this is cut, and says so: a preview reads what a column holds, not whole documents.
 MAX_CELL_CHARS = 500
+#: At most this many columns are selected and drawn; the rest are counted ("N more columns not shown"), so the answer
+#: is bounded by rows x columns x (MAX_CELL_CHARS + 1) however wide the table is.
+MAX_PREVIEW_COLUMNS = 200
 
 # Masking reasons: the three the design names, plus one it did not foresee (see `_evidence`).
 REASON_PII = "pii"
@@ -264,6 +267,19 @@ def record_in_egeria(entry: dict) -> dict:
     return {"state": "not_built"}
 
 
+def _egeria_state(recorded: dict) -> dict:
+    """The hook's answer, or `{"state": "failed"}` when it raises: a hook that fails never blocks the rows and never
+    becomes a 500. Only the exception's type is logged (it may carry anything)."""
+    try:
+        state = record_in_egeria(recorded)
+        if isinstance(state, dict) and isinstance(state.get("state"), str):
+            return state
+        log.error("table preview: record_in_egeria returned no state")
+    except Exception as exc:                     # noqa: BLE001 - must never reach the caller
+        log.error("table preview: record_in_egeria failed (%s)", type(exc).__name__)
+    return {"state": "failed"}
+
+
 def _record_in_re(registry, *, slug, db_name, location, person, db_user, schema, table, action, limit, outcome,
                   row_count, masked, revealed) -> dict:
     """Write the one activity row, then read it back: the header's "recorded" comes from what was read back."""
@@ -351,14 +367,16 @@ def run_preview(registry, db, person: str, session: str, req: PreviewRequest) ->
 
     decisions = masking_decisions(registry, db.slug, req.schema, req.table, names)
     by_name = {d["name"]: d for d in decisions}
-    unknown = [n for n in req.reveal if n not in by_name]
+    shown_names = names[:MAX_PREVIEW_COLUMNS]
+    not_shown = len(names) - len(shown_names)
+    unknown = [n for n in req.reveal if n not in shown_names]
     if unknown:
         raise PreviewRefusal(422, "cannot reveal a column the catalogue does not list for this table", "bad_reveal")
-    revealed = [n for n in names if n in set(req.reveal) and by_name[n]["masked"]]
+    revealed = [n for n in shown_names if n in set(req.reveal) and by_name[n]["masked"]]
     if len(set(revealed) - _last_revealed(registry, db, person, req.schema, req.table)) > MAX_NEW_REVEALS:
         raise PreviewRefusal(422, "reveal one column at a time: this request asks for more than one new column",
                              "bad_reveal")
-    selected = [n for n in names if (not by_name[n]["masked"]) or n in revealed]
+    selected = [n for n in shown_names if (not by_name[n]["masked"]) or n in revealed]
     kind = table_kind(node.get("table_type"))
     header = _header(db, req, kind, cred.user)
     masked_names = [d["name"] for d in decisions if d["masked"]]
@@ -395,19 +413,19 @@ def run_preview(registry, db, person: str, session: str, req: PreviewRequest) ->
         else:
             failure = _connect_failure(db, cred, exc)
             recorded = record(failure["outcome"], 0)                # fail closed, like every other path (finding 5)
-            return {**header, **failure, "recorded": recorded, "egeria": record_in_egeria(recorded)}
+            return {**header, **failure, "recorded": recorded, "egeria": _egeria_state(recorded)}
 
     if error is not None:
         recorded = record(error.kind, 0)
         return {**header, "outcome": error.kind, "sentence": error.sentence, "recorded": recorded,
-                "egeria": record_in_egeria(recorded)}
+                "egeria": _egeria_state(recorded)}
 
     recorded = record("rows" if rows else "empty", len(rows))
-    columns = [{**d, "revealed": d["name"] in revealed} for d in decisions]
+    columns = [{**d, "revealed": d["name"] in revealed} for d in decisions[:MAX_PREVIEW_COLUMNS]]
     shown = [{n: _cell(r.get(n)) for n in selected} for r in rows]
     return {**header, "outcome": "rows" if rows else "empty", "row_count": len(rows), "columns": columns,
-            "rows": shown, "counts": masking_counts(decisions), "recorded": recorded,
-            "egeria": record_in_egeria(recorded)}
+            "rows": shown, "counts": masking_counts(decisions), "columns_not_shown": not_shown, "recorded": recorded,
+            "egeria": _egeria_state(recorded)}
 
 
 def _connect_failure(db, cred, exc: Exception) -> dict:

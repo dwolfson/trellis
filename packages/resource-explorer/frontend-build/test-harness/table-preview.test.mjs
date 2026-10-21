@@ -278,3 +278,45 @@ test('a server refusal (no credential held after all) puts the credential line b
   assert.match(text(host.querySelector('[data-pv-error]')), /^no rows shown · no credential of yours is held/);
   assert.ok(host.querySelector('[data-pv-cred-open]') && !host.querySelector('[data-pv-run]'));
 });
+
+test('every non-success Egeria state is a word in the header, not only "not built"', async () => {
+  for (const [state, words] of [['failed', /Egeria record failed$/], ['not_built', /Egeria record not built yet$/], ['queued_for_retry', /Egeria record queued for retry$/]]) {
+    const ctx = await setUp({ preview: () => rowsResult({ egeria: { state } }) });
+    const host = await mount(ctx, ['sales', 'orders']);
+    await press(host);
+    assert.match(text(host.querySelector('[data-pv-header]')), words, state);
+  }
+  const ctx = await setUp({ preview: () => rowsResult({ egeria: { state: 'recorded' } }) });
+  const host = await mount(ctx, ['sales', 'orders']);
+  await press(host);
+  assert.doesNotMatch(text(host.querySelector('[data-pv-header]')), /Egeria record/);
+});
+
+test('the preview grid carries the colresize hook: a handle per column, keyboard resize, widths kept per table', async () => {
+  const ctx = await setUp();
+  const host = await mount(ctx, ['sales', 'orders']);
+  await press(host);
+  const grid = host.querySelector('[data-pv-grid]');
+  assert.equal(grid.dataset.rcId, 'table-preview.sales.orders');
+  assert.ok(grid.hasAttribute('data-rc-auto'), 'enhanced by colresize.js');
+  const handles = [...grid.querySelectorAll('[data-rc-handle]')];
+  assert.equal(handles.length, COLS.length);
+  const before = grid.style.width;
+  handles[0].dispatchEvent(new ctx.window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+  assert.ok(grid.hasAttribute('data-rc-fixed'), 'the first change freezes the drawn widths');
+  assert.notEqual(grid.style.width, before);
+  // a redraw (a reveal prompt) replaces the table; the new one is wired too
+  host.querySelector('[data-pv-reveal="email"]').click();
+  assert.ok(host.querySelector('[data-pv-grid]').hasAttribute('data-rc-auto'));
+});
+
+test('columns past the server cap say how many are not shown', async () => {
+  const ctx = await setUp({ preview: () => rowsResult({ columns_not_shown: 7 }) });
+  const host = await mount(ctx, ['sales', 'orders']);
+  await press(host);
+  assert.equal(text(host.querySelector('[data-pv-more-columns]')), '7 more columns not shown');
+  const ctx2 = await setUp({ preview: () => rowsResult({ columns_not_shown: 0 }) });
+  const host2 = await mount(ctx2, ['sales', 'orders']);
+  await press(host2);
+  assert.equal(host2.querySelector('[data-pv-more-columns]'), null);
+});

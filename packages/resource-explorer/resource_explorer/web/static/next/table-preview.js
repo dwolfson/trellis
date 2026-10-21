@@ -18,6 +18,7 @@ import {
   getSchemaInventoryTree, getPreviewCredential, holdPreviewCredential, forgetPreviewCredential, previewTable,
 } from '/static/re-api.js';
 import { credentialChangeHtml, bindCredentialChange } from '/static/next/credential-change.js';
+import { enhanceTable } from '/static/next/colresize.js';
 
 const MASK = '••••••';                       // fixed width: a value's length leaks nothing
 const PICKER_MAX = 200;
@@ -59,11 +60,21 @@ export function countLine(counts) {
   return parts.join(' · ');
 }
 
+/** What the header says about Egeria's record. EVERY state other than a success is a plain word, never silence:
+ *  "not built" and "failed" have their own sentences, any other state is named as it came. */
+export function egeriaWords(egeria) {
+  const st = egeria && typeof egeria.state === 'string' ? egeria.state : '';
+  if (!st || st === 'recorded' || st === 'ok' || st === 'success') return '';
+  if (st === 'not_built') return ' · Egeria record not built yet';
+  if (st === 'failed') return ' · Egeria record failed';
+  return ` · Egeria record ${st.replace(/_/g, ' ')}`;
+}
+
 /** The header line. Egeria's record is not built, and the header says so as a plain state. */
 export function headerHtml(r) {
   const rec = r.recorded;
   const when = rec ? hhmm(rec.at) : '';
-  const egeria = r.egeria && r.egeria.state === 'not_built' ? ' · Egeria record not built yet' : '';
+  const egeria = egeriaWords(r.egeria);
   const recorded = rec ? ` · <span data-pv-recorded>recorded · RE ${esc(when)}${egeria}</span>` : '';
   return `<div data-pv-header class="mb-s2 text-answer text-ink"><span class="font-semibold">${esc(r.schema)}.${esc(r.table)}</span>`
     + ` · first ${r.limit} rows as the database returned them · not a sample, not ordered`
@@ -89,7 +100,7 @@ function columnHeadHtml(c, confirming) {
         <button type="button" data-pv-confirm-yes class="cursor-pointer bg-transparent text-accent-ink underline">Show</button>
         · <button type="button" data-pv-confirm-no class="cursor-pointer bg-transparent text-ink underline">keep masked</button></div>`
     : '';
-  return `<th data-pv-col="${esc(c.name)}" class="whitespace-nowrap py-[3px] pr-s3 text-left align-top font-mono font-normal text-ink">${esc(c.name)}${tag}${confirm}</th>`;
+  return `<th data-pv-col="${esc(c.name)}" class="py-[3px] pr-s3 text-left align-top font-mono font-normal text-ink">${esc(c.name)}${tag}${confirm}</th>`;
 }
 
 /** The grid. Masked cells are the fixed "••••••" in muted ink. */
@@ -98,7 +109,8 @@ export function gridHtml(r, confirming = '') {
   const body = r.rows.map((row) => `<tr class="border-b border-rule">${r.columns.map((c) => (c.masked && !c.revealed
     ? `<td data-pv-masked class="py-[3px] pr-s3 font-mono text-ink-muted">${MASK}</td>`
     : `<td class="py-[3px] pr-s3 font-mono text-ink">${cellHtml(row[c.name])}</td>`)).join('')}</tr>`).join('');
-  return `<div class="overflow-x-auto"><table data-pv-grid class="border-collapse text-caveat"><thead><tr class="border-b border-rule">${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="overflow-x-auto"><table data-pv-grid data-rc-id="table-preview.${esc(r.schema)}.${esc(r.table)}" class="border-collapse text-caveat"><thead><tr class="border-b border-rule">${head}</tr></thead><tbody>${body}</tbody></table></div>`
+    + (r.columns_not_shown > 0 ? `<div data-pv-more-columns class="mt-s1 text-provenance text-ink-muted">${r.columns_not_shown} more columns not shown</div>` : '');
 }
 
 /** The refusal states. Each keeps the header and offers its own next press; "no rows" is never shown for the first
@@ -272,6 +284,8 @@ export async function mountTablePreview(host, { slug, dbName }) {
     } else {
       el.innerHTML = `${headerHtml(r)}${refusalHtml(r)}`;
     }
+    // the grid's columns resize like every /next table (colresize.js); a redraw replaces the table, so it is wired here
+    el.querySelectorAll('table[data-pv-grid]').forEach((t) => enhanceTable(t));
     el.querySelectorAll('[data-pv-reveal]').forEach((b) => b.addEventListener('click', () => { S.confirming = b.dataset.pvReveal; renderResult(); }));
     el.querySelector('[data-pv-confirm-no]')?.addEventListener('click', () => { S.confirming = ''; renderResult(); });
     el.querySelector('[data-pv-confirm-yes]')?.addEventListener('click', () => {

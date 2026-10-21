@@ -1043,3 +1043,78 @@ class TestRecordInEgeriaHook:
         for text in (tp.__doc__, tp.record_in_egeria.__doc__):
             flat = text.replace("\n", " ").lower()
             assert "hook" in flat and "writes nothing to egeria" in flat
+
+
+# ── fix round 3 (L1, L2, L3, L6) ───────────────────────────────────────────────────────────────────────────────
+
+class TestReadOnlyDoesNotDependOnAutocommit:
+    def test_autocommit_on_is_refused_before_any_statement(self):
+        c = _pg(rows=[(1,)])
+        c._conn.autocommit = True
+        with pytest.raises(PreviewError) as ei:
+            c.preview_rows("s", "t", ["id"], 20)
+        assert "read-only" in ei.value.sentence
+        assert c._conn.log == []                       # no rollback, no SET, no SELECT ran
+
+    def test_autocommit_off_still_runs(self):
+        c = _pg(rows=[(1,)])
+        c._conn.autocommit = False
+        assert c.preview_rows("s", "t", ["id"], 20) == [{"id": 1}]
+
+
+class TestFunctionsAreSchemaQualified:
+    def test_left_and_octet_length_are_pg_catalog_qualified(self):
+        q = PostgreSQLConnection.build_preview_query("s", "t", ["a", "b"], 20, {"a": "text", "b": "bytea"})
+        text = "".join(p.string for p in _flat(q) if isinstance(p, sql.SQL))
+        assert "pg_catalog.left(" in text and "pg_catalog.octet_length(" in text
+        import re as _re
+        assert not _re.search(r"(?<![\w.])left\(", text) and not _re.search(r"(?<![\w.])octet_length\(", text)
+
+
+class TestColumnCap:
+    def test_the_cap_is_200(self):
+        assert tp.MAX_PREVIEW_COLUMNS == 200
+
+    def test_columns_past_the_cap_are_not_selected_and_are_counted(self, env, monkeypatch):
+        _hold(env)
+        monkeypatch.setattr(tp, "MAX_PREVIEW_COLUMNS", 3)
+        out = _preview(env).json()
+        assert len(out["columns"]) == 3 and out["columns_not_shown"] == 2
+        assert len(env.spy.asked[-1][2]) <= 3
+        assert out["counts"]["total"] == 5                  # the count line still speaks for the whole table
+
+    def test_under_the_cap_nothing_is_hidden(self, env):
+        _hold(env)
+        assert _preview(env).json()["columns_not_shown"] == 0
+
+    def test_a_reveal_of_a_column_past_the_cap_is_refused(self, env, monkeypatch):
+        _hold(env)
+        monkeypatch.setattr(tp, "MAX_PREVIEW_COLUMNS", 1)
+        assert _preview(env, reveal=["email"]).status_code == 422
+
+
+class TestFailingHookNeverBlocksTheRows:
+    def test_a_hook_that_raises_gives_state_failed_and_still_returns_rows(self, env, monkeypatch, caplog):
+        _hold(env)
+        monkeypatch.setattr(tp, "record_in_egeria", mock.Mock(side_effect=RuntimeError(f"boom {VALUE}")))
+        r = _preview(env)
+        assert r.status_code == 200
+        out = r.json()
+        assert out["outcome"] == "rows" and out["row_count"] == 3 and out["egeria"] == {"state": "failed"}
+        assert out["recorded"]["state"] == "recorded"
+        assert VALUE not in caplog.text and "RuntimeError" in caplog.text
+
+    def test_a_hook_that_raises_on_the_error_and_empty_paths_too(self, env, monkeypatch):
+        _hold(env)
+        monkeypatch.setattr(tp, "record_in_egeria", mock.Mock(side_effect=RuntimeError("x")))
+        env.spy.conn.preview_rows.side_effect = lambda *a, **k: []
+        r = _preview(env)
+        assert r.status_code == 200 and r.json()["outcome"] == "empty" and r.json()["egeria"] == {"state": "failed"}
+        env.spy.conn.preview_rows.side_effect = PreviewDenied("permission denied for table orders")
+        r = _preview(env)
+        assert r.status_code == 200 and r.json()["egeria"] == {"state": "failed"}
+
+    def test_a_hook_that_answers_nonsense_is_failed_not_trusted(self, env, monkeypatch):
+        _hold(env)
+        monkeypatch.setattr(tp, "record_in_egeria", lambda entry: "done")
+        assert _preview(env).json()["egeria"] == {"state": "failed"}

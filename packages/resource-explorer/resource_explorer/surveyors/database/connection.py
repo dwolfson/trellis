@@ -1319,9 +1319,9 @@ class PostgreSQLConnection(DatabaseConnection):
         kind = (column_type or "").strip().lower().split("(")[0].strip()   # "timestamp(6)" -> "timestamp"
         if kind in cls._PREVIEW_BINARY_TYPES:
             # NULL stays NULL (|| with NULL is NULL); otherwise only the length leaves the database
-            return sql.SQL("{} || octet_length({})::text || {} AS {}").format(
+            return sql.SQL("{} || pg_catalog.octet_length({})::text || {} AS {}").format(
                 sql.Literal("<"), ident, sql.Literal(" bytes>"), ident)
-        return sql.SQL("left({}::text, {}) AS {}").format(ident, sql.Literal(cls.PREVIEW_FETCH_CHARS), ident)
+        return sql.SQL("pg_catalog.left({}::text, {}) AS {}").format(ident, sql.Literal(cls.PREVIEW_FETCH_CHARS), ident)
 
     @classmethod
     def build_preview_query(cls, schema: str, table: str, columns: list[str], limit: int,
@@ -1369,6 +1369,12 @@ class PostgreSQLConnection(DatabaseConnection):
             raise RuntimeError("Not connected to database")
         query = self.build_preview_query(schema, table, list(columns), limit, column_types)
         conn = self._conn
+        # `SET TRANSACTION READ ONLY` and `SET LOCAL` only mean something inside a transaction block. With autocommit
+        # on, Postgres merely warns and the SELECT would run read-write with no timeout, so the read-only guarantee
+        # must not depend on the connection's mode: refuse before any statement (L1).
+        if getattr(conn, "autocommit", False):
+            raise PreviewError("the connection is not in a transaction, so a read-only preview cannot be "
+                               "guaranteed · nothing was read")
         try:
             conn.rollback()                      # a clean transaction, so SET TRANSACTION is its first statement
             with conn.cursor() as cur:
