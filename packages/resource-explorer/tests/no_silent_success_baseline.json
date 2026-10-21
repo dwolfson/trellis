@@ -52,7 +52,6 @@
   "resource_explorer/surveyors/egeria_reader.py::find_asset_guid": 1,
   "resource_explorer/surveyors/egeria_reader.py::get_annotations": 1,
   "resource_explorer/surveyors/egeria_reader.py::get_survey_reports_from_egeria": 1,
-  "resource_explorer/surveyors/egeria_survey_reader.py::get_annotations_by_report_guid": 1,
   "resource_explorer/surveyors/egeria_survey_reader.py::get_survey_reports_by_guid": 1,
   "resource_explorer/surveyors/file_classifier/file_classifier.py::lookup_file_reference_data": 1,
   "resource_explorer/surveyors/file_classifier/file_classifier_surveyor.py::run": 1,

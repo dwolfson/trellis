@@ -209,6 +209,38 @@ CHECK_STATE = {"pass": "passed", "warning": "failed", "fail": "failed", "logged"
                "not_permitted": "not_permitted", "error": "error"}
 
 
+#: Measure units that count things in the table, so "N <uom> of <records>" reads true ("0 future dates of 66").
+#: Every other unit (a difference measure, a percent of baseline) is a figure of its own: "<uom> <value>".
+_MEASURE_IS_NOT_A_COUNT = ("measure", "percent")
+
+
+def outcome_words(row: dict, test_type) -> str:
+    """What the check found, in the words of its test type's own unit: "0 future dates of 66" (a count over the
+    records it read), "difference measure 4.5" (a figure with no record count in it). "" when the check reached no
+    measure (the state word and the reason say why). Pure, for every test type."""
+    value = row.get("measure")
+    if value is None or test_type is None:
+        return ""
+    uom = (test_type.measure_uom or "measure").strip().lower()
+    figure = f"{value:g}" if isinstance(value, (int, float)) else str(value)
+    records = row.get("record_ct")
+    if isinstance(records, int) and not any(w in uom for w in _MEASURE_IS_NOT_A_COUNT):
+        return f"{figure} {uom} of {records}"
+    return f"{uom} {figure}"
+
+
+def check_summary(row: dict, test_type, path: str, state: str, *, reason_limit: int = 120) -> str:
+    """A check's summary names the check (its test type key), the target and the outcome:
+    "Future_Date on lot_status.quar_start: passed (0 future dates of 66)". A check with no measure gives its
+    reason instead, shortened: "Unique on sales.orders.id: error (permission denied ...)"."""
+    found = outcome_words(row, test_type)
+    if not found:
+        reason = " ".join(str(row.get("reason") or "").split())
+        found = reason if len(reason) <= reason_limit else reason[: reason_limit - 1].rstrip() + "…"
+    key = row.get("test_type") or "Quality check"
+    return f"{key} on {path}: {state}" + (f" ({found})" if found else "")
+
+
 def build_quality_annotations(results: list[dict], catalogue: dict | None = None) -> list:
     """One QualityCheckAnnotation (Egeria `QualityAnnotation`) per EVALUATED check, whatever its outcome, in
     check-key order. Pure: no registry, no Egeria.
@@ -243,9 +275,8 @@ def build_quality_annotations(results: list[dict], catalogue: dict | None = None
             "ruleSource": row["rule_source"], "ruleGuid": row["rule_guid"],
             "baselineProfileSurveyedAt": row["baseline_profile_surveyed_at"], "ranAs": row["ran_as"],
         }
-        name = test_type.name_short if test_type is not None else (row["test_type"] or "Quality check")
         out.append(QualityCheckAnnotation(
-            summary=f"{name} on {path}: {state}",
+            summary=check_summary(row, test_type, path, state),
             analysis_step=ANALYSIS_STEP,
             annotation_type_name=ANNOTATION_TYPE_NAME,
             check_name="quality_check",

@@ -282,7 +282,9 @@ def test_accept_three_proposals_press_again_and_read_three_quality_annotations_b
     # the words come from reading the report back: "N of M", every annotation this publish sent, linked to 2 of the
     # 3 elements (sales.orders.note has no element in Egeria, and that is said, not an error)
     assert detail["publish_state"] == (f"published to Egeria · {len(bodies)} of {len(bodies)} annotations in Egeria"
-                                       " · linked to 2 of 3 elements (1 not in Egeria)")
+                                       " · 3 checks on the report · linked to 2 of 3 elements"
+                                       " · 1 column not yet catalogued in Egeria, so not linked to it")
+    assert detail["status"] != "error" and not detail["publish_state"].startswith("publish failed")
 
     # read the three annotations back by GUID, as the live gate does
     quality_guids = [r["end2"] for r in egeria.relationships if r["end1"] == report_guid
@@ -371,7 +373,7 @@ def test_a_read_back_that_cannot_be_made_is_could_not_be_counted_never_published
     """A GUID returned by a create is not a read-back: with the read refused the run does not say it published."""
     _press(client, registry)
     _accept_three_proposals(registry)
-    egeria.fail["get_asset_by_guid"] = RuntimeError("Egeria would not answer the read")
+    egeria.fail["get_related_metadata_elements"] = RuntimeError("Egeria would not answer the read")
     detail = _press(client, registry)
     assert detail["publish_state"].startswith("publish failed · annotations in Egeria could not be counted")
     assert detail["published"] is False

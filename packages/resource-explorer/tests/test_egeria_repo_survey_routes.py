@@ -128,14 +128,13 @@ class TestRepoEgeriaAnnotationsJsonProperties:
         }} for g, jp in props_by_guid.items()]}
 
     def _get(self, client, report):
-        from unittest.mock import MagicMock
         from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
         from resource_explorer.surveyors.egeria_survey_reader import get_annotations_by_report_guid
-        am = MagicMock()
-        am.get_asset_by_guid.return_value = report
-        # the real reader runs against a fake asset maker; nothing reaches Egeria
+        from tests.report_pages import entries_from_graph, paged_expert
+        expert = paged_expert(lambda guid: entries_from_graph(report))
+        # the real reader runs against a fake (autospec) metadata expert; nothing reaches Egeria
         with patch.object(EgeriaPublisher, "get_annotations_by_report_guid",
-                          side_effect=lambda guid: get_annotations_by_report_guid(am, guid)):
+                          side_effect=lambda guid: get_annotations_by_report_guid(expert, guid)):
             return client.get("/api/egeria/myproj/egeria-surveys/report-guid-1/annotations")
 
     def test_string_json_properties_returns_200_with_parsed_dict(self, client):

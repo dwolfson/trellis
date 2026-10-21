@@ -2001,34 +2001,42 @@ def _report_subjects(result: dict) -> set[str]:
 
 def _read_source_report(report_guid: str, asset_guid: str) -> dict:
     """The previous step's SurveyReport as plain data for a step that derives from it: {guid, at, annotations}, the
-    annotations through the existing reader (`egeria_survey_reader.annotations_from_report`). Read as the current
+    annotations through the paged reader (`egeria_survey_reader.reported_annotations`). Read as the current
     principal (the engine host daemon); the step's own code never touches Egeria. Fails closed: the element must
     say it is a SurveyReport, and its subject (ReportSubject or anchor) must be `asset_guid`, else
     `SourceReportRefused` (another database's counters must never be published as this one's)."""
-    from pyegeria import AssetMaker
+    from pyegeria import AssetMaker, MetadataExpert
 
     from resource_explorer.egeria_clients import current_principal, egeria_client
-    from resource_explorer.surveyors.egeria_survey_reader import annotations_from_report
+    from resource_explorer.surveyors.egeria_survey_reader import reported_annotations
 
-    assets = egeria_client(current_principal(), purpose="engine host", shared=False).of(AssetMaker)
+    clients = egeria_client(current_principal(), purpose="engine host", shared=False)
+    assets = clients.of(AssetMaker)
+    expert = None
     try:
         result = assets.get_asset_by_guid(report_guid, body={"class": "GetRequestBody", "graphQueryDepth": 1},
                                           output_format="JSON")
+        if not isinstance(result, dict):
+            raise RuntimeError(f"Egeria answered {' '.join(str(result).split())[:160]!r}, not a SurveyReport element")
+        type_name = (((result.get("elementHeader") or {}).get("type") or {}).get("typeName")) or ""
+        if type_name != "SurveyReport":
+            raise SourceReportRefused(f"is {'a ' + type_name if type_name else 'an element of no stated type'}, "
+                                      "not a SurveyReport")
+        subjects = _report_subjects(result)
+        if not asset_guid or asset_guid not in subjects:
+            raise SourceReportRefused(f"is a survey report of {', '.join(sorted(subjects)) or 'no stated asset'}, "
+                                      f"not of this action's database {asset_guid or '(none)'}")
+        # The header and subjects come from the one graph read; the annotations from the PAGED read of the report's
+        # ReportedAnnotation list (that graph read holds one page of them, 999 live, 2026-10-21).
+        expert = clients.of(MetadataExpert)
+        every = reported_annotations(expert, report_guid)
     finally:
         _close_quietly(assets)
-    if not isinstance(result, dict):
-        raise RuntimeError(f"Egeria answered {' '.join(str(result).split())[:160]!r}, not a SurveyReport element")
-    type_name = (((result.get("elementHeader") or {}).get("type") or {}).get("typeName")) or ""
-    if type_name != "SurveyReport":
-        raise SourceReportRefused(f"is {'a ' + type_name if type_name else 'an element of no stated type'}, "
-                                  "not a SurveyReport")
-    subjects = _report_subjects(result)
-    if not asset_guid or asset_guid not in subjects:
-        raise SourceReportRefused(f"is a survey report of {', '.join(sorted(subjects)) or 'no stated asset'}, "
-                                  f"not of this action's database {asset_guid or '(none)'}")
+        if expert is not None:
+            _close_quietly(expert)
     props = result.get("properties") or {}
     return {"guid": report_guid, "at": str(props.get("completionTime") or props.get("createdTime") or ""),
-            "annotations": annotations_from_report(result)}
+            "annotations": every}
 
 
 def _publish(registry, target: dict, annotations: list, extra: dict | None = None, on_publish=None) -> dict:

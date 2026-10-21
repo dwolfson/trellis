@@ -537,10 +537,22 @@ def test_links_and_ownership_are_said_in_the_words_and_a_missing_element_is_not_
     from resource_explorer.surveyors.database.egeria_database_surveyor import element_link_words
 
     assert element_link_words(None) == "" and element_link_words({"of": 0}) == ""
-    assert element_link_words({"of": 3, "linked": 2, "no_element": 1}) == "linked to 2 of 3 elements (1 not in Egeria)"
-    assert element_link_words({"of": 3, "linked": 1, "already_linked": 1, "not_checked": 1}) == \
-        "linked to 2 of 3 elements (1 could not be checked)"
-    assert element_link_words({"of": 2, "failed": 2}) == "linked to 0 of 2 elements (2 could not be linked)"
+    # An element Egeria does not hold yet is NEUTRAL: the checks belong to the report, and the words say so.
+    assert element_link_words({"of": 3, "checks": 3, "no_element": 3, "no_element_columns": 3}) == \
+        "3 checks on the report · 3 columns not yet catalogued in Egeria, so not linked to them"
+    assert element_link_words({"of": 3, "checks": 3, "linked": 2, "no_element": 1, "no_element_columns": 1}) == \
+        "3 checks on the report · linked to 2 of 3 elements · 1 column not yet catalogued in Egeria, so not linked to it"
+    assert element_link_words({"of": 2, "checks": 2, "no_element": 2, "no_element_tables": 1,
+                               "no_element_columns": 1}) == \
+        "2 checks on the report · 1 column and 1 table not yet catalogued in Egeria, so not linked to them"
+    assert element_link_words({"of": 1, "checks": 1, "no_element": 1, "no_element_tables": 1}) == \
+        "1 check on the report · 1 table not yet catalogued in Egeria, so not linked to it"
+    # a look-up that could not be made, or a link that failed, is NOT about the catalogue and is still said
+    assert element_link_words({"of": 3, "checks": 3, "linked": 1, "already_linked": 1, "not_checked": 1}) == \
+        "3 checks on the report · linked to 2 of 3 elements · 1 could not be checked"
+    assert element_link_words({"of": 2, "checks": 2, "failed": 2}) == "2 checks on the report · 2 could not be linked"
+    # a check with no table to name at all is still a check on the report
+    assert element_link_words({"of": 0, "checks": 1}) == "1 check on the report"
 
 
 # ── the 5-minute per-table budget (owner, 2026-10-21): incomplete, no proposals, never zeros ─────────────────
