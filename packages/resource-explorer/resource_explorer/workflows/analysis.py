@@ -548,6 +548,7 @@ def run_database_analysis(slug: str, analysis_id: str, *, registry=None,
     """
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.surveyors.database.database_surveyor import (
+        DATABASE_REGISTRY_STEP_ANALYSES,
         DATABASE_SURVEYOR_STEP_MAP,
         database_library_step_key,
         run_database_survey,
@@ -593,6 +594,27 @@ def run_database_analysis(slug: str, analysis_id: str, *, registry=None,
     if library_key:
         return _run_database_library_step(registry, slug, analysis_id, library_key)
 
+    if analysis_id in DATABASE_REGISTRY_STEP_ANALYSES:
+        # Each registry step in order, through the executor (prerequisites, step_runs); the first that does not
+        # run stops the rest, since each reads what the one before stored. `run_synthetic_step` has no stored-
+        # credential fallback, so the credential is passed here: this run's when one was typed, else the stored one.
+        if credentials is None and (not db.db_user or not db.db_password):
+            return DatabaseAnalysisRunResult(
+                status="error",
+                error="No stored database credentials — register the database with "
+                      "db_user/db_password, or run a full survey with credentials, first.",
+            )
+        login = credentials or {"user": db.db_user, "password": db.db_password}
+        step_kwargs = {"db_user": login.get("user", ""), "db_pwd": login.get("password", ""),
+                       "credential_scope": "this run" if credentials else ""}
+        summaries = []
+        for step_key in DATABASE_REGISTRY_STEP_ANALYSES[analysis_id]:
+            result = _run_database_library_step(registry, slug, analysis_id, step_key, **step_kwargs)
+            if result.status != "ok":
+                return result
+            summaries.append(f"{step_key}: {result.summary}")
+        return DatabaseAnalysisRunResult(status="ok", summary=" · ".join(summaries))
+
     if analysis_id not in DATABASE_SURVEYOR_STEP_MAP:
         return DatabaseAnalysisRunResult(
             status="error",
@@ -632,8 +654,12 @@ def run_database_analysis(slug: str, analysis_id: str, *, registry=None,
     )
 
 
-def _run_database_library_step(registry, slug: str, analysis_id: str, step_key: str) -> DatabaseAnalysisRunResult:
-    """Run ONE Analytic Library step for a database, through the executor that runs one inside a survey.
+def _run_database_library_step(registry, slug: str, analysis_id: str, step_key: str,
+                               **runner_kwargs) -> DatabaseAnalysisRunResult:
+    """Run ONE Analytic Library step (or one of the adapter's own registry steps, for
+    `DATABASE_REGISTRY_STEP_ANALYSES`) for a database, through the executor that runs one inside a survey.
+    A library step is given no credential; a registry step that opens a connection is given one in `runner_kwargs`
+    (`db_user`, `db_pwd`, `credential_scope`) by its caller.
 
     `run_synthetic_step` is that path (the engine host's too): cost observed, `step_runs` row written, the run
     recorded as a survey activity row, the result in `step_annotations`. In this process, on RE's own engine.
@@ -655,7 +681,7 @@ def _run_database_library_step(registry, slug: str, analysis_id: str, step_key: 
         ran = SurveyDefinitionExecutor(registry).run_synthetic_step(
             entity_type="database", slug=slug, re_analysis_step=step_key, executes_at="resource-explorer",
             engine_override="resource-explorer", publisher=_count_and_decline,
-            display_name=f"{analysis_id} (per-card run)")
+            display_name=f"{analysis_id} (per-card run)", **runner_kwargs)
     except Exception as exc:
         return DatabaseAnalysisRunResult(status="error", error=str(exc))
 

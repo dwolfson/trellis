@@ -767,3 +767,56 @@ def test_the_engine_host_declares_the_three_steps():
 
     assert "not run by Resource Explorer's engine host" in engine_host.out_of_scope_reason("run_quality_checks")
     assert engine_host.out_of_scope_reason("postgres_value_profile") == ""
+
+
+# ── the per-card Run (one predicate since #795) ──────────────────────────────────────────────────────────────
+
+def test_both_analyses_have_a_per_card_runner_that_needs_the_stored_credential():
+    from resource_explorer.surveyors.database.database_surveyor import (
+        DATABASE_REGISTRY_STEP_ANALYSES,
+        database_analysis_has_runner,
+        database_analysis_needs_credentials,
+    )
+    from resource_explorer.surveyors.database.survey_definition_adapter import (
+        DATABASE_ANALYSIS_RE_STEP_MAP,
+    )
+    from resource_explorer.workflows.stage_page import _credential_use, runnable_and_reason
+
+    for analysis_id, steps in DATABASE_REGISTRY_STEP_ANALYSES.items():
+        assert list(steps) == DATABASE_ANALYSIS_RE_STEP_MAP[analysis_id], analysis_id
+        assert database_analysis_has_runner(analysis_id) and database_analysis_needs_credentials(analysis_id)
+        assert runnable_and_reason(analysis_id, "database") == (True, "")
+        assert _credential_use("database", analysis_id) == "stored"
+
+
+def test_a_per_card_value_profile_run_goes_through_the_executor_and_publishes_nothing(registry, monkeypatch):
+    from resource_explorer.surveyors.database import connection
+    from resource_explorer.workflows.analysis import run_database_analysis
+
+    registry.update_database_credentials(SLUG, "surveyor", "pw")
+    fake = FakeConn(profile=PROFILE)
+    seen = {}
+
+    def fake_connection(entity, credentials, **_):
+        seen.update(credentials)
+        return _connect(fake)()
+
+    monkeypatch.setattr(connection, "database_connection", fake_connection)
+    result = run_database_analysis(SLUG, "value_profile", registry=registry)
+    assert result.status == "ok", result.error
+    assert "postgres_value_profile" in result.summary
+    assert seen.get("user") == "surveyor"  # the executor handed the step the stored credential
+    assert _rows(registry, "database_value_profiles")["sales", "orders", "note"]["state"] == "measured"
+
+
+def test_a_per_card_quality_checks_run_stops_when_propose_cannot_run(registry):
+    """With no value profile stored, propose is not run (its prerequisite is unmet): the run says so, it does not
+    go on to run checks or report ok."""
+    from resource_explorer.workflows.analysis import run_database_analysis
+
+    result = run_database_analysis(SLUG, "quality_checks", registry=registry)
+    assert result.status == "error" and "No stored database credentials" in result.error  # refused before any step
+    registry.update_database_credentials(SLUG, "surveyor", "pw")
+    result = run_database_analysis(SLUG, "quality_checks", registry=registry)
+    assert result.status == "error" and "propose_quality_checks" in result.error
+    assert registry.query_detail_rows("database_quality_results", SLUG) == []
