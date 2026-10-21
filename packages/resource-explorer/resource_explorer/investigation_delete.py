@@ -215,13 +215,10 @@ def collection_qualified_name(slug: str, record: dict) -> str:
 
 def _words_of(exc: BaseException) -> str:
     """Egeria's own words for a failure: the security refusal sentence, else the exception as pyegeria raised it."""
-    try:
-        from resource_explorer.egeria_outbox import _refusal_sentence, is_security_refusal
+    from resource_explorer.egeria_outbox import _refusal_sentence, is_security_refusal
 
-        if isinstance(exc, Exception) and is_security_refusal(exc):
-            return f"refused by Egeria: {_refusal_sentence(exc)}"
-    except Exception:  # noqa: BLE001 - the words must still come out
-        pass
+    if isinstance(exc, Exception) and is_security_refusal(exc):
+        return f"refused by Egeria: {_refusal_sentence(exc)}"
     return f"{type(exc).__name__}: {' '.join(str(exc).split())[:400]}"
 
 
@@ -778,15 +775,18 @@ class InvestigationDeleter:
 
 def _memento_sentence(element: dict) -> str:
     """Egeria's own description of the archive, when its Memento carries one (``archiveProcess``), else ''."""
-    try:
-        from resource_explorer.catalogue_gateway import classifications_named
+    from resource_explorer.catalogue_gateway import UnreadableClassification, classifications_named
 
-        for c in classifications_named(element, "Memento"):
-            cp = c.get("classificationProperties") or c.get("properties") or {}
-            if isinstance(cp, dict):
-                text = cp.get("archiveProcess") or (cp.get("propertiesAsStrings") or {}).get("archiveProcess")
-                if text:
-                    return " ".join(str(text).split())[:400]
-    except Exception:  # noqa: BLE001
-        pass
+    try:
+        found = classifications_named(element, "Memento")
+    except UnreadableClassification:
+        return ""  # a Memento field that is not a classification: no sentence to quote (the archive itself is read elsewhere)
+    for c in found:
+        if not isinstance(c, dict):
+            continue
+        cp = c.get("classificationProperties") or c.get("properties") or {}
+        if isinstance(cp, dict):
+            text = cp.get("archiveProcess") or (cp.get("propertiesAsStrings") or {}).get("archiveProcess")
+            if text:
+                return " ".join(str(text).split())[:400]
     return ""
