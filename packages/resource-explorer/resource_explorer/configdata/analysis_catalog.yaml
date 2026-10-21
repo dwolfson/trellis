@@ -1208,8 +1208,10 @@ database_analyses:
     resource_types: ["database"]
     intent: assessment
     perspectives: ["Steward", "Data Owner"]
-    # None yet: results become QualityAnnotations with the publishing change.
-    annotation_types: []
+    # The proposal step leaves ONE RequestForAction ("review N proposed quality checks") or, with none proposed, ONE
+    # ResourceMeasure; run_quality_checks leaves one QualityAnnotation per evaluated check (RE's
+    # AnnotationType.QUALITY_SCORE, published as Egeria's QualityAnnotationProperties) (quality slice Q2).
+    annotation_types: ["RequestForActionAnnotation", "ResourceMeasureAnnotation", "QualityScoreAnnotation"]
     source: local
     run_time: medium
     availability: queued

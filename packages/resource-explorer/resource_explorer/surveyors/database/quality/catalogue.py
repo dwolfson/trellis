@@ -49,6 +49,21 @@ RE_PROPOSED = frozenset({"Row_Ct_Pct"})
 #: TestGen's default_severity -> the ODCS/Egeria severity word a rule carries.
 SEVERITY = {"Fail": "error", "Warning": "warning", "Log": "info"}
 
+#: TestGen's data quality dimension -> the ODCS dimension word Egeria's `qualityDimension` carries
+#: (`DataContractQualityDimension`: accuracy, completeness, conformity, consistency, coverage, timeliness,
+#: uniqueness). Validity is Conformity and Recency is Timeliness; the rest map by name
+#: (INVENTORY-TESTGEN-TEST-TYPES-MAPPED.md).
+EGERIA_DIMENSION = {"Validity": "conformity", "Recency": "timeliness"}
+ODCS_DIMENSIONS = frozenset({"accuracy", "completeness", "conformity", "consistency", "coverage", "timeliness",
+                             "uniqueness"})
+
+
+def egeria_dimension(testgen_dimension: str) -> str:
+    """The ODCS dimension word for a TestGen `dq_dimension`; "" when it is not one Egeria names."""
+    word = EGERIA_DIMENSION.get(testgen_dimension, (testgen_dimension or "").strip().lower())
+    return word if word in ODCS_DIMENSIONS else ""
+
+
 #: TestGen's FAIL-WHEN operator -> the ODCS MUST-BE operator (its inverse), as Publish will write it (design §7).
 MUST_BE = {
     ">": "mustBeLessOrEqualTo",

@@ -248,6 +248,26 @@ def build_annotation_props(ann, qualified_name: str) -> dict:
             carried = dict(ann.json_properties or {})
             carried[QUALITY_SCORES_KEY] = qs
             props["jsonProperties"] = json.dumps(carried)
+        # A QualityCheckAnnotation (one evaluated check) uses Egeria's own three fields, never jsonProperties:
+        # QualityAnnotationProperties.java qualityDimension, qualityDescription, qualityScore. Each is sent only
+        # when stated, so a check that has no score sends none (the bean's int would read an absent one as 0).
+        dimension = getattr(ann, "quality_dimension", "")
+        if dimension:
+            props["qualityDimension"] = dimension
+        description = getattr(ann, "quality_description", "")
+        if description:
+            props["qualityDescription"] = description
+        score = getattr(ann, "quality_score", None)
+        if score is not None:
+            props["qualityScore"] = int(score)
+        # AnnotationProperties.sampleSize (long): the records the check read, sent only where known (0 is a real
+        # count of an empty table, and is sent; None is not known, and is not).
+        sample = getattr(ann, "sample_size", None)
+        if sample is not None:
+            props["sampleSize"] = int(sample)
+        ap = getattr(ann, "additional_properties", None) or {}
+        if ap and (dimension or description or score is not None):
+            props["additionalProperties"] = to_string_map(ap)
 
     elif atype == AnnotationType.DATA_CLASS:
         dc = getattr(ann, "candidate_data_class_names", [])

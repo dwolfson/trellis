@@ -180,15 +180,13 @@ SOURCE_REPORT_INPUT = "source_report"
 ENGINE_HOST_STEPS = ("db_derived",)
 
 #: Registry steps held back from the engine-host declaration, with why. The generator leaves them out, and an action
-#: dispatched for one anyway completes survey-invalid with this sentence (`out_of_scope_reason`). Both quality-check
-#: steps produce no annotations until results are published (DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md §7-§8), so
-#: the publisher would complete them with an empty survey-completed report, even for a run that ran nothing.
-HELD_FROM_DECLARATION: dict[str, str] = {
-    "propose_quality_checks": ("propose_quality_checks is not run by Resource Explorer's engine host until quality "
-                               "results are published to Egeria; run it from Resource Explorer's own Run"),
-    "run_quality_checks": ("run_quality_checks is not run by Resource Explorer's engine host until quality results "
-                           "are published to Egeria; run it from Resource Explorer's own Run"),
-}
+#: dispatched for one anyway completes survey-invalid with this sentence (`out_of_scope_reason`). Empty since quality
+#: slice Q2 (DESIGN-QUALITY-AT-SCALE-AND-TESTGEN.md 2.6, 3): `propose_quality_checks` and `run_quality_checks` were
+#: held while their results did not reach Egeria, because the publisher would have completed them with an empty
+#: survey-completed report. `run_quality_checks` now publishes one QualityAnnotation per evaluated check, and with no
+#: accepted check it ends survey-invalid ("no accepted checks"), never an empty completed report. The mapping stays so
+#: a future step can be held the same way.
+HELD_FROM_DECLARATION: dict[str, str] = {}
 
 #: The resource kind every admitted step targets (all are database steps today).
 ENTITY_TYPE = "database"
@@ -1861,6 +1859,15 @@ def _decide_steps(registry, target: dict, cancelled=None, on_publish=None, *, us
             # Case 3: a credentialed database step's results become annotations exactly as RE's own database
             # publish makes them (`annotations_from_step_outputs`, the code `publish_step_annotations` runs).
             annotations += _step_output_annotations(entity, step_outputs, _registry)
+            if not annotations:
+                # An empty survey-completed report says "ran, found nothing" about a step that built no result at
+                # all: never written. The step's own sentence (a declined step) is used when it gave one; this is
+                # the backstop for any registry step that returns nothing to report.
+                why = (f"{step_key} on {slug} built no annotation, so there is no survey report to write: an "
+                       "absence, not a finding")
+                published["outcome"] = _outcome(SURVEY_INVALID, f"Resource Explorer did not run {request_type}: {why}",
+                                                annotation_count=0, **report_extra)
+                raise NothingToPublish(why)
         else:
             records = [r for out in step_outputs if isinstance(out, dict)
                        for r in (out.get("step_annotations") or [])]
@@ -1945,8 +1952,8 @@ def _ran_outcome(ran: dict, published: dict, step_key: str, slug: str, library) 
         # "the supplied information (such as the asset) is invalid for this type of survey").
         return _outcome(SURVEY_INVALID, f"{step_key} did not run on {slug}: "
                         f"{report.get('detail') or 'its precondition is not met'}"
-                        + ("" if library else " (no stored schema inventory to derive from: an absence, not a "
-                           "finding)"))
+                        + ("" if library or report.get("declined_by_step") else
+                           " (no stored schema inventory to derive from: an absence, not a finding)"))
     errors = "; ".join(str(e) for e in ran.get("errors") or []) or f"step status {status or 'unknown'}"
     if status == "ok":
         errors = f"the step produced no output to publish ({errors})"
@@ -2045,8 +2052,14 @@ def _publish(registry, target: dict, annotations: list, extra: dict | None = Non
                         + (f" ({problem})" if problem else ""),
                         report_guid=report_guid, annotation_count=sent, **extra)
     governance = "" if extra["ownership"] else " (Ownership was not recorded on the report)"
+    # A QualityAnnotation's links to the columns and tables it describes (an element Egeria does not hold is said,
+    # not an error): "linked to N of M elements".
+    from resource_explorer.surveyors.database.egeria_database_surveyor import element_link_words
+
+    link_words = element_link_words(pub.get("element_links"))
+    linked = f" · {link_words}" if link_words else ""
     return _outcome(SURVEY_COMPLETED, f"Resource Explorer ran {request_type} on {slug}: survey report "
-                    f"{report_guid} with {sent} annotation(s){governance}.",
+                    f"{report_guid} with {sent} annotation(s) read back from Egeria{linked}{governance}.",
                     report_guid=report_guid, annotation_count=sent, **extra)
 
 

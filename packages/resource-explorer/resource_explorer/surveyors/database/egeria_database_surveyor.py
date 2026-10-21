@@ -786,6 +786,8 @@ class EgeriaDatabaseSurveyor:
         credential_capability: dict | None = None,
         column_profile: dict | None = None,
         nested_columns: dict | None = None,
+        quality_annotations: list | None = None,
+        step_annotations: list | None = None,
     ) -> dict:
         """Publish RE-computed annotations to Egeria WITHOUT cataloging the database
         or triggering Egeria's own native survey as a side effect.
@@ -796,6 +798,14 @@ class EgeriaDatabaseSurveyor:
         not appropriate when a Survey Definition has already explicitly declared
         this step runs in RE. The database must already be cataloged in Egeria;
         this method does not auto-catalog it.
+
+        `step_annotations`: the annotations a quality step built itself (the value profile's, and the proposal
+        step's one request or measure), published beside the schema ones. `quality_annotations`: one
+        QualityAnnotation per evaluated check.
+
+        What landed is judged by READING the report back by its GUID (`reportedAnnotations`), never from the GUIDs
+        the creates returned: `annotations_this_publish` is how many of this publish's annotations the report
+        holds (None: the read failed), `quality_annotations_in_egeria` the same for the checks.
         """
         from resource_explorer.catalogue_gateway import database_qualified_name, server_name_for
 
@@ -814,7 +824,8 @@ class EgeriaDatabaseSurveyor:
         annotations = build_step_annotations(
             db_entity, registry, schema_info=schema_info, statistics=statistics, views=views,
             operations=operations, credential_capability=credential_capability,
-            column_profile=column_profile, nested_columns=nested_columns)
+            column_profile=column_profile, nested_columns=nested_columns,
+            quality_annotations=quality_annotations, step_annotations=step_annotations)
 
         qualified_name = f"SurveyReport::PostgreSQL::{db_entity.slug}::{surveyed_at}"
         body = {
@@ -853,11 +864,41 @@ class EgeriaDatabaseSurveyor:
         # on the measured row it published, via
         # registry.record_database_survey_published().
 
+        # The run's own proof: what the report holds when READ BACK by its GUID, against what was sent.
+        read_back = self._read_back(report_guid, annotations, db_entity.slug, surveyed_at)
+        quality_idx = [i for i, a in enumerate(annotations) if any(a is q for q in quality_annotations or [])]
+        quality_proof: dict = {}
+        if quality_idx:
+            quality_proof = {"quality_annotation_count": len(quality_idx),
+                             "quality_annotations_in_egeria": read_back["quality"] if read_back else None}
+
+        # Ownership on the report, recorded for the person the work is on behalf of, exactly as the engine host does
+        # (`publish_engine_action_report`): a queued press is `Daemon(RUN_QUEUE, requested_by=<presser>)`, so the
+        # service account never becomes the owner. Best-effort and reported, never a failed publish.
+        governance: dict = {}
+        from resource_explorer.egeria_identity import draft_zones, on_behalf_of, stamp_published
+
+        owner = ""
+        try:
+            owner = on_behalf_of(self.principal()).owner
+            if owner:
+                governance = stamp_published(report_guid, owner, identity=self.principal(), zones=draft_zones())
+        except Exception as exc:  # noqa: BLE001 - a governance gap is reported, never a failed publish
+            governance = {"ownership": False, "zone_membership": False, "owner": owner,
+                          "reason": f"{type(exc).__name__}: {exc}"[:300]}
+
+        element_links: dict = {}
+        if quality_idx:
+            element_links = self._link_quality_checks(db_entity, annotations, surveyed_at)
         return {"asset_guid": db_guid, "report_guid": report_guid,
                 # RE's own count (what it built and sent), as everywhere; Egeria's is `annotations_in_egeria`:
-                # what Egeria returned a GUID for, None when RE cannot tell.
+                # what the report held when read back, None when RE cannot tell.
                 "annotation_count": len(annotations),
-                "annotations_in_egeria": sum(1 for g in made if g) if isinstance(made, list) else None,
+                "annotations_in_egeria": read_back["held"] if read_back else None,
+                "annotations_this_publish": read_back["this_publish"] if read_back else None,
+                **quality_proof,
+                "governance": governance,
+                "element_links": element_links,
                 # Column names whose look-up could not be made, and "source -> target" pairs whose
                 # existing LineageMappings could not be read: their lineage was not linked.
                 "lineage_not_checked": list(self.lineage_not_checked)}
@@ -1464,6 +1505,12 @@ class EgeriaDatabaseSurveyor:
             except Exception as exc:  # noqa: BLE001 - a governance gap is reported, never a failed survey
                 out["governance"] = {"ownership": False, "zone_membership": False, "owner": requester,
                                      "reason": f"{type(exc).__name__}: {exc}"[:300]}
+        # A QualityAnnotation is linked to the column or table it describes (design 2.6), as the press does. An
+        # element not in Egeria is counted, not an error.
+        from resource_explorer.surveyors.survey_report import QualityCheckAnnotation
+
+        if any(isinstance(a, QualityCheckAnnotation) for a in annotations):
+            out["element_links"] = self._link_quality_checks(db_entity, annotations, stamp)
         return out
 
     @staticmethod
@@ -1513,10 +1560,13 @@ class EgeriaDatabaseSurveyor:
             if on_report_created is not None and out["report_guid"]:
                 self._tell_report_created(on_report_created, out["report_guid"])
             made = self._create_annotations(annotations, out["report_guid"], db_slug, surveyed_at)
-            # Counted from what Egeria returned a GUID for (a failed or un-checkable one is None), not from
-            # how many were sent; no list back means RE cannot tell, which is None, never a number.
-            out["annotations_in_egeria"] = sum(1 for g in made if g) if isinstance(made, list) else None
-            out["annotations_this_publish"] = out["annotations_in_egeria"]
+            # Counted from a READ of the report by its GUID (`_read_back`), not from the GUIDs the creates returned
+            # and not from how many were sent. A read that could not be made is None ("could not tell"), never a
+            # number. On a fresh report everything it holds is this publish's.
+            read_back = self._read_back(out["report_guid"], annotations, db_slug, surveyed_at)
+            out["annotations_in_egeria"] = read_back["held"] if read_back else None
+            out["annotations_this_publish"] = read_back["this_publish"] if read_back else None
+            out["quality_annotations_in_egeria"] = read_back["quality"] if read_back else None
             return out
         except Exception as exc:
             if not (not out["report_guid"] and self._is_duplicate_qualified_name(exc)):
@@ -1561,6 +1611,12 @@ class EgeriaDatabaseSurveyor:
                                            "published or confirmed under the reused report")
         # What the report now holds in all (earlier batches included), for the words only.
         out["annotations_in_egeria"] = self._annotations_held_by(existing)
+        # Whether THIS publish's annotations are held, from a read of the report by name (the GUIDs above can be
+        # ones a look-up adopted). When the read cannot be made the counts above stand.
+        read_back = self._read_back(existing, annotations, db_slug, surveyed_at)
+        if read_back is not None:
+            out["annotations_this_publish"] = read_back["this_publish"]
+        out["quality_annotations_in_egeria"] = read_back["quality"] if read_back else None
         return out
 
     @staticmethod
@@ -1641,6 +1697,40 @@ class EgeriaDatabaseSurveyor:
         cataloguer's, confirmed live 2026-10-20: `<schema qualifiedName>::<table>::<column>`. Linked once
         (`egeria_link_once`): a republish never adds a second link. Never raises; returns counts by outcome.
         """
+        counts = self._link_annotations_to_elements(
+            db_entity, annotations, [(start + i, path) for i, path in enumerate(column_paths)], surveyed_at,
+            label="column verdict", what="verdict")
+        counts["no_column_element"] = counts.pop("no_element")
+        return counts
+
+    def _link_quality_checks(self, db_entity, annotations: list, surveyed_at: str) -> dict:
+        """`AssociatedAnnotation` from each published QualityAnnotation to the column (or, for a table check, the
+        table) it describes (DESIGN-QUALITY-AT-SCALE-AND-TESTGEN.md 2.6: "on the column or table elements"), the
+        mechanism the column verdicts use. An element that is not in Egeria is not an error: it is counted
+        (`no_element`) and said in the words. Returns the counts by outcome and `of`, the checks that name an
+        element at all. Never raises."""
+        from resource_explorer.surveyors.survey_report import QualityCheckAnnotation
+
+        targets = []
+        for i, ann in enumerate(annotations):
+            if isinstance(ann, QualityCheckAnnotation) and ann.schema_name and ann.table_name:
+                targets.append((i, ".".join(p for p in (ann.schema_name, ann.table_name, ann.column_name) if p)))
+        counts = self._link_annotations_to_elements(db_entity, annotations, targets, surveyed_at,
+                                                    label="quality check", what="quality check")
+        counts["of"] = len(targets)
+        return counts
+
+    def _link_annotations_to_elements(self, db_entity, annotations: list, targets: list[tuple[int, str]],
+                                      surveyed_at: str, *, label: str, what: str) -> dict:
+        """`AssociatedAnnotation` from `annotations[i]` to the element `path` names ("schema.table.column", or
+        "schema.table" for a table), once each (`egeria_link_once`). The element's qualifiedName is the JDBC
+        cataloguer's: `<schema qualifiedName>::<table>[::<column>]` (the column form confirmed live 2026-10-20; the
+        table form is the same pattern one level up, not yet confirmed live). Counts by outcome, never raises:
+
+        linked / already_linked  a link between exactly these two exists now
+        no_element               Egeria holds no such element (the cataloguer has not made it): not an error
+        not_checked              a look-up could not be made, so nothing was linked
+        failed                   the annotation could not be found by name, or the link create failed"""
         from resource_explorer.catalogue_gateway import schema_qualified_name, server_name_for
         from resource_explorer.egeria_link_once import (
             ALREADY_LINKED,
@@ -1654,29 +1744,33 @@ class EgeriaDatabaseSurveyor:
         )
         from resource_explorer.surveyors.survey_report import annotation_qualified_name
 
-        counts = {"linked": 0, "already_linked": 0, "no_column_element": 0, "not_checked": 0, "failed": 0}
+        counts = {"linked": 0, "already_linked": 0, "no_element": 0, "not_checked": 0, "failed": 0}
         prefix = f"Annotation::PostgreSQL::{db_entity.slug}::{surveyed_at}"
         server = server_name_for(db_entity)
-        column_guids: dict[str, str | None] = {}
+        element_guids: dict[str, str | None] = {}
+        if not targets:
+            return counts
         expert = self._metadata_expert_client()
-        for offset, path in enumerate(column_paths):
-            ann = annotations[start + offset]
+        for index, path in targets:
+            ann = annotations[index]
             schema, table, column = (path.split(".", 2) + ["", "", ""])[:3]
-            if path not in column_guids:
+            if path not in element_guids:
+                name = f"{schema_qualified_name(server, db_entity.database_name, schema)}::{table}"
+                if column:
+                    name += f"::{column}"
                 try:
-                    column_guids[path] = self._find_element_guid(
-                        f"{schema_qualified_name(server, db_entity.database_name, schema)}::{table}::{column}")
+                    element_guids[path] = self._find_element_guid(name)
                 except EgeriaDatabaseSurveyorError:
-                    column_guids[path] = None
-            column_guid = column_guids[path]
-            if column_guid is None:
+                    element_guids[path] = None
+            element_guid = element_guids[path]
+            if element_guid is None:
                 counts["not_checked"] += 1
                 continue
-            if not column_guid:
-                counts["no_column_element"] += 1
+            if not element_guid:
+                counts["no_element"] += 1
                 continue
             try:
-                ann_guid = self._find_element_guid(annotation_qualified_name(prefix, start + offset, ann))
+                ann_guid = self._find_element_guid(annotation_qualified_name(prefix, index, ann))
             except EgeriaDatabaseSurveyorError:
                 counts["not_checked"] += 1
                 continue
@@ -1684,15 +1778,41 @@ class EgeriaDatabaseSurveyor:
                 counts["failed"] += 1
                 continue
             body = build_associated_annotation_body(
-                label="column verdict", description=f"{ann.annotation_type_name or 'verdict'} for {path}")
+                label=label, description=f"{ann.annotation_type_name or what} for {path}")
             outcome = link_once(
                 expert, relationship_type="AssociatedAnnotation", read_guid=ann_guid, read_end=2,
-                far_guid=column_guid, what=f"from {path} to its verdict",
-                create=lambda a=ann_guid, c=column_guid, b=body: self._discovery.link_annotation_to_described_element(
+                far_guid=element_guid, what=f"from {path} to its {what}",
+                create=lambda a=ann_guid, c=element_guid, b=body: self._discovery.link_annotation_to_described_element(
                     a, c, body=b))
             counts[{LINKED: "linked", ALREADY_LINKED: "already_linked", COULD_NOT_CHECK: "not_checked",
                     LINK_FAILED: "failed"}.get(outcome.outcome, "failed")] += 1
         return counts
+
+    def _read_back(self, report_guid: str, annotations: list, db_slug: str, surveyed_at: str) -> dict | None:
+        """What the Egeria report holds, from a READ of the report by its GUID (`reportedAnnotations`), never from
+        the GUIDs the creates returned (a create that returns a GUID has not proved the element is there).
+
+        `{"held": annotations under the report in all, "this_publish": how many of THESE annotations are among them
+        (by their published names), "quality": how many of the QualityAnnotations}`; None when the report could not
+        be read, which is "could not tell", never zero."""
+        from resource_explorer.surveyors.egeria_survey_reader import annotations_from_report
+        from resource_explorer.surveyors.survey_report import QualityCheckAnnotation, annotation_qualified_name
+
+        try:
+            result = self._asset_maker.get_asset_by_guid(
+                report_guid, body={"class": "GetRequestBody", "graphQueryDepth": 1}, output_format="JSON")
+        except Exception as exc:  # noqa: BLE001 -- unknown, said as unknown
+            log.warning("could not read report %s back to count its annotations: %s", report_guid, exc)
+            return None
+        if not isinstance(result, dict):
+            return None
+        held = {a.get("qualified_name") for a in annotations_from_report(result)}
+        prefix = f"Annotation::PostgreSQL::{db_slug}::{surveyed_at}"
+        names = [(annotation_qualified_name(prefix, i, a), isinstance(a, QualityCheckAnnotation))
+                 for i, a in enumerate(annotations)]
+        return {"held": len(held),
+                "this_publish": sum(1 for n, _ in names if n in held),
+                "quality": sum(1 for n, q in names if q and n in held)}
 
     def _publish_column_lineage(self, db_entity: "DatabaseEntity", views: list[dict]) -> None:
         """Publish column-level lineage to Egeria as LineageMapping relationships (source column at end 1,
@@ -1854,6 +1974,20 @@ class EgeriaDatabaseSurveyor:
             return default
 
 
+def element_link_words(links: dict | None) -> str:
+    """The words for a QualityAnnotation's element links (`_link_quality_checks`): "linked to N of M elements", with
+    what did not link and why in brackets. "" when no check names an element. An element Egeria does not hold is
+    said ("not in Egeria"), and is not a failure of the publish."""
+    links = links or {}
+    if not links.get("of"):
+        return ""
+    made = links.get("linked", 0) + links.get("already_linked", 0)
+    gaps = [f"{links[k]} {why}" for k, why in (
+        ("no_element", "not in Egeria"), ("not_checked", "could not be checked"),
+        ("failed", "could not be linked")) if links.get(k)]
+    return f"linked to {made} of {links['of']} elements" + (f" ({', '.join(gaps)})" if gaps else "")
+
+
 def can_use_egeria() -> bool:
     """Check if Egeria is available and configured.
     
@@ -1875,7 +2009,8 @@ def can_use_egeria() -> bool:
 def build_step_annotations(db_entity, registry=None, *, schema_info: dict | None = None,
                            statistics: dict | None = None, views: list | None = None,
                            operations: dict | None = None, credential_capability: dict | None = None,
-                           column_profile: dict | None = None, nested_columns: dict | None = None) -> list:
+                           column_profile: dict | None = None, nested_columns: dict | None = None,
+                           quality_annotations: list | None = None, step_annotations: list | None = None) -> list:
     """The annotations a database run's results become, in one place: what `publish_step_annotations` publishes,
     and what RE's engine host publishes on its native-shaped report for a credentialed database step (case 3). Pure:
     builds annotation dicts, opens no connection and calls no Egeria.
@@ -1905,6 +2040,10 @@ def build_step_annotations(db_entity, registry=None, *, schema_info: dict | None
     for sampled in (column_profile, nested_columns):
         if sampled:
             annotations.extend(sampled.get("annotations") or [])
+    # What the quality steps built themselves (the value profile's annotations, the proposal step's one request or
+    # measure), then one QualityAnnotation per evaluated check (run_quality_checks). Appended last, as built.
+    annotations.extend(step_annotations or [])
+    annotations.extend(quality_annotations or [])
     return annotations
 
 
@@ -1916,7 +2055,7 @@ def annotations_from_step_outputs(db_entity, step_outputs: list, registry=None) 
         if not isinstance(output, dict):
             continue
         for key in ("schema_info", "statistics", "views", "operations", "credential_capability",
-                    "column_profile", "nested_columns"):
+                    "column_profile", "nested_columns", "quality_annotations"):
             if output.get(key):
                 parts[key] = output[key]
     if not parts:

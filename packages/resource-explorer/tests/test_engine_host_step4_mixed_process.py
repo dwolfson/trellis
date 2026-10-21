@@ -356,8 +356,9 @@ def test_3_without_a_survey_report_target_step_2_runs_standalone_and_completes(
     _run_queue_once(reg)
     done = egeria.actions["ea-alone"]["completion"]
     assert done["status"] == "ACTIONED" and done["guards"] == ["survey-completed"], done
-    assert not egeria.method_calls("get_asset_by_guid")           # no report to read, none read
     [(report_guid, body)] = egeria.reports()
+    # no report to read, none read: the only read is the read-back of the report this run made
+    assert {c.args[0] for c in egeria.of("AssetMaker").get_asset_by_guid.call_args_list} <= {report_guid}
     assert "derived_from_report" not in body["properties"].get("additionalProperties", {})
     texts = {}
     for r in egeria.relationships:

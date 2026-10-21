@@ -41,6 +41,9 @@ actually answer (see `_build_step_key_to_questions()` below — the
 step→question join is per (survey_group, step_key), not per bare
 step_key, for exactly this reason).
 
+- **quality**   — "Database Quality Survey" (survey_kind assessment, quality slice Q2): `postgres_value_profile`,
+  `propose_quality_checks`, `run_quality_checks`, in that order. No other definition chains these steps.
+
 Run this whenever DATABASE_STEP_REGISTRY changes (a step added/removed/
 re-described, or an analysis's `intent` tier changes in
 analysis_catalog.yaml), then execute the regenerated doc(s) against Egeria.
@@ -246,6 +249,11 @@ SPEC_ANALYSIS_SCOPE: dict[str, set[str]] = {
         "db_external_dependencies",
     },
     "DatabaseAssessmentSurvey": {"privilege_audit"},
+    # Quality slice Q2: value profile -> propose -> run, authored once (DESIGN-QUALITY-AT-SCALE-AND-TESTGEN.md 2.2).
+    # No question in question_catalog.yaml names `value_profile` or `quality_checks` in its `answering.analysis_ids`
+    # (checked 2026-10-21), so this document carries no "Link Element To Scope" block. The day a question does, this
+    # scope picks it up and the committed document must be regenerated (tests/test_quality_q2_*).
+    "DatabaseQualitySurvey": {"value_profile", "quality_checks"},
 }
 
 

@@ -399,8 +399,15 @@ def test_a_restart_mid_run_reruns_nothing_completed_recovers_the_running_step_an
     ran: list[str] = []
     monkeypatch.setitem(db._ADAPTER.re_analysis_steps, "postgres_column_profile",
                         lambda e, r, **k: ran.append("postgres_column_profile") or {})
-    monkeypatch.setitem(db._ADAPTER.re_analysis_steps, "postgres_nested_columns",
-                        lambda e, r, **k: ran.append("postgres_nested_columns") or {"schema_info": {}})
+    from resource_explorer.surveyors.survey_report import ResourceMeasureAnnotation
+
+    def nested(e, r, **k):
+        ran.append("postgres_nested_columns")
+        # a step that built one result: a step that built none is survey-invalid, never an empty completed report
+        return {"schema_info": {}, "annotations": [ResourceMeasureAnnotation(
+            summary="nested columns", analysis_step="postgres_nested_columns", check_name="nested", item_key="n")]}
+
+    monkeypatch.setitem(db._ADAPTER.re_analysis_steps, "postgres_nested_columns", nested)
     result = _restart(reg)
     assert result.adopted == ["ea-2"]                      # the running one, recovered
     _run_queue_once(reg)

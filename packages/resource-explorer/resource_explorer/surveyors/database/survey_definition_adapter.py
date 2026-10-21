@@ -265,7 +265,7 @@ def _quality_bounds():
     from resource_explorer.surveyors.database.quality.value_profile import ProfileBounds
 
     settings = get_config().value_profile
-    return ProfileBounds(settings.max_table_rows, settings.statement_timeout_seconds)
+    return ProfileBounds(settings.statement_timeout_seconds, settings.table_budget_seconds)
 
 
 def _run_postgres_value_profile(
@@ -290,9 +290,13 @@ def _run_propose_quality_checks(db_entity, registry, scan_surveyed_at: str | Non
     from resource_explorer.config import get_config
     from resource_explorer.surveyors.database.quality.propose import run_propose
 
+    from resource_explorer.work_lists import resource_explorer_url
+
     return run_propose(registry, db_entity.slug,
                        row_ct_pct_threshold=get_config().quality_checks.row_ct_pct_default_threshold,
-                       surveyed_at=scan_surveyed_at or None)
+                       surveyed_at=scan_surveyed_at or None,
+                       # RE's page for this database, where the proposals are reviewed; "" without RE_PUBLIC_URL.
+                       review_link=resource_explorer_url(db_entity.slug, "database"))
 
 
 def _run_run_quality_checks(
@@ -300,8 +304,8 @@ def _run_run_quality_checks(
     scan_surveyed_at: str | None = None, **_,
 ) -> dict:
     """run_quality_checks (design §6): the accepted checks, run with the vendored Postgres SQL, stored in
-    `database_quality_results`. Publishing results as QualityAnnotations is a later change, so this returns no
-    annotations."""
+    `database_quality_results`. Every evaluated check is returned as a QualityCheckAnnotation
+    (`quality_annotations`), which the database publish sends to Egeria."""
     from resource_explorer.surveyors.database.connection import database_connection
     from resource_explorer.surveyors.database.quality.run_checks import run_quality_checks
 
@@ -460,7 +464,7 @@ def _run_egeria_adaptive(
     return result
 
 
-def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
+def _publish(entity, step_outputs: list, surveyed_at: str, registry, publish_out: dict | None = None) -> str:
     """Publish a run's results to Egeria WITHOUT writing a survey row.
 
     A publish step measures nothing, so it never writes `database_surveys`
@@ -484,7 +488,14 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
     credential_capability: dict = {}
     column_profile: dict = {}
     nested_columns: dict = {}
+    quality_annotations: list = []
+    #: What the quality steps built themselves: the value profile's annotations and the proposal step's one request
+    #: or measure. Only an output that is one of THEIRS: another step's `annotations` key can hold Egeria's own
+    #: (the native survey's), which must never be published again.
+    step_annotations: list = []
     for output in step_outputs:
+        if isinstance(output, dict) and ("value_profile" in output or "quality_proposals" in output):
+            step_annotations.extend(output.get("annotations") or [])
         schema_info = output.get("schema_info") or schema_info
         statistics = output.get("statistics") or statistics
         views = output.get("views") or views
@@ -492,9 +503,22 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
         credential_capability = output.get("credential_capability") or credential_capability
         column_profile = output.get("column_profile") or column_profile
         nested_columns = output.get("nested_columns") or nested_columns
+        quality_annotations = output.get("quality_annotations") or quality_annotations
+
+    # A run of the quality steps publishes what they measured and checked, not a re-statement of the schema from the
+    # last stored survey (which is what the fallback below does for a run that carries nothing publishable of its
+    # own). With no QualityAnnotation to send there is nothing to publish: said, never an empty SurveyReport.
+    quality_keys = ("quality_checks", "quality_proposals", "value_profile")
+    quality_run = any(isinstance(o, dict) and any(k in o for k in quality_keys) for o in step_outputs)
+    if quality_run and not (schema_info or statistics or views or operations or credential_capability
+                            or column_profile or nested_columns or quality_annotations or step_annotations):
+        from resource_explorer.surveyors.survey_definition_executor import NothingToPublish
+
+        raise NothingToPublish("the quality steps built no annotation: nothing was profiled, proposed or checked in "
+                               "this run (see each step's own entry for why)")
 
     measured_row = None
-    if not schema_info:
+    if not schema_info and not quality_annotations and not step_annotations:
         measured_row = registry.latest_measured_database_survey(entity.slug)
         if measured_row is None:
             raise EgeriaDatabaseSurveyorError(
@@ -514,8 +538,20 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
         views=views, operations=operations,
         credential_capability=credential_capability,
         column_profile=column_profile, nested_columns=nested_columns,
+        quality_annotations=quality_annotations, step_annotations=step_annotations,
     )
     report_guid = result.get("report_guid", "")
+    if publish_out is not None and quality_run:
+        # What landed, for the run's words: the executor says "N of M annotations in Egeria" from a READ of the
+        # report by GUID (`annotations_this_publish`), never from the fact that a publish was pressed or from the
+        # GUIDs the creates returned. `built` is what this publish sent, `landed` how many of them the read-back
+        # found (None: the read could not be made). `links` is the QualityAnnotations' element links.
+        publish_out["quality"] = {"built": result.get("annotation_count"),
+                                  "landed": result.get("annotations_this_publish"),
+                                  "quality_built": result.get("quality_annotation_count") or 0,
+                                  "quality_landed": result.get("quality_annotations_in_egeria"),
+                                  "links": result.get("element_links") or {},
+                                  "governance": result.get("governance") or {}}
     try:
         registry.record_step_run(
             entity.slug, "egeria_publish", surveyed_at, entity_type="database",
@@ -523,6 +559,11 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry) -> str:
             metrics={"report_guid": report_guid,
                      "annotation_count": result.get("annotation_count"),
                      "annotations_in_egeria": result.get("annotations_in_egeria"),
+                     "annotations_this_publish": result.get("annotations_this_publish"),
+                     "quality_annotation_count": result.get("quality_annotation_count"),
+                     "quality_annotations_in_egeria": result.get("quality_annotations_in_egeria"),
+                     "element_links": result.get("element_links") or {},
+                     "ownership_recorded": (result.get("governance") or {}).get("ownership"),
                      # Columns whose look-up could not be made, so their lineage was not linked (proof, not
                      # silence: an empty list means every lineage look-up was answered).
                      "lineage_not_checked": result.get("lineage_not_checked", []),
@@ -810,7 +851,7 @@ DATABASE_STEP_REGISTRY: dict[str, StepInfo] = {
     "propose_quality_checks": StepInfo(
         "propose_quality_checks", None,
         "Zero-fetch: the vendored selection rules over the latest value profile, as proposed checks.",
-        [],
+        ["RequestForActionAnnotation", "ResourceMeasureAnnotation"],
         produces=("database_quality_proposals",),
         requires_context={
             "has_value_profile":
@@ -822,7 +863,7 @@ DATABASE_STEP_REGISTRY: dict[str, StepInfo] = {
     "run_quality_checks": StepInfo(
         "run_quality_checks", None,
         "The accepted quality checks, run with the vendored Postgres SQL against the database.",
-        [],
+        ["QualityScoreAnnotation"],
         produces=("database_quality_results",),
         requires_context={
             "has_schema_inventory": "reports an accepted check whose column has gone as not established",
@@ -1000,8 +1041,9 @@ _ADAPTER = ResourceTypeAdapter(
                 "Whole-table value profile: record_ct, value_ct, distinct_value_ct, null_value_ct, "
                 "zero_length_ct and filled_value_ct (text), min_date, max_date and future_date_ct (dates), "
                 "measured with the vendored catalog's Postgres measures, one aggregate SELECT per table. "
-                "No sampling: a table over the row ceiling (VALUE_PROFILE_MAX_TABLE_ROWS) or the statement "
-                "timeout is not_measured with the reason, a view or foreign table not_applicable, a table "
+                "No sampling and no size cap: a table is read whole, within 5 minutes per table "
+                "(VALUE_PROFILE_TABLE_BUDGET_SECONDS). A table that does not finish is not_measured as "
+                "\"profile incomplete\" with every count blank, a view or foreign table not_applicable, a table "
                 "the credential cannot read not_permitted; never a row of zeros."
             ),
             "annotation_types": ["ResourceProfileAnnotation", "ResourceMeasureAnnotation"],
@@ -1012,17 +1054,25 @@ _ADAPTER = ResourceTypeAdapter(
                 "they came from) over the latest value profile. Writes proposals for Missing_Pct, Required, "
                 "Required_No_Placeholder, Unique, Future_Date, Min_Date and, on RE's own initiative, "
                 "Row_Ct_Pct; a rule whose inputs were not measured is not_established, never a silent no. "
-                "Accepted checks report drift from their baseline; rejected ones stay suppressed."
+                "Accepted checks report drift from their baseline; rejected ones stay suppressed. A run that "
+                "proposes checks leaves one RequestForAction on the database (\"review N proposed quality checks "
+                "in Resource Explorer\"); a run that proposes none leaves one ResourceMeasure saying so, with "
+                "the number of columns profiled: never an empty report."
             ),
-            "annotation_types": [],
+            "annotation_types": ["RequestForActionAnnotation", "ResourceMeasureAnnotation"],
         },
         "run_quality_checks": {
             "description": (
                 "Runs the accepted quality checks with the vendored Postgres SQL, one aggregate SELECT per "
                 "table, every parameter validated by type. A NULL measure is not_established, never a pass; "
-                "results go to database_quality_results with status, measure, threshold and reason."
+                "results go to database_quality_results with status, measure, threshold and reason. Each check "
+                "that was evaluated is published as one QualityAnnotation (Egeria qualityDimension, "
+                "qualityDescription, qualityScore) with its outcome as a state word (passed, failed, "
+                "not_established, not_measured, not_permitted, error) and the reason; only a check that reached "
+                "a conclusion carries a qualityScore, so one that did not never reads as a failure. With no "
+                "accepted check the step is declined (survey-invalid), never run as an empty report."
             ),
-            "annotation_types": [],
+            "annotation_types": ["QualityScoreAnnotation"],
         },
     },
     other_engine_handlers={

@@ -1,12 +1,12 @@
 """The three steps of DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md, against a fake Postgres connection.
 
 Every absence state the design names has a test here:
-- profile: over the row ceiling and timeout/error (not_measured), no privilege (not_permitted), a view
+- profile: timeout/error (not_measured), no privilege (not_permitted), a view
   (not_applicable), an empty table (measured, a real zero), never a row of zeros, no inventory, no connection;
 - propose: a NULL rule input (not_established, by column), an unprofiled column, an empty table, the
   rejected/accepted verdict rules;
 - run: a NULL measure (not_established, never TestGen's pass), a zero baseline, division by zero, a query error
-  (error), over the ceiling (not_measured), a column gone from the inventory, a parameter that does not
+  (error), a column gone from the inventory, a parameter that does not
   validate, no accepted checks.
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ from resource_explorer.surveyors.database.quality.value_profile import (
 SLUG = "coco_ods"
 INVENTORY_AT = "2026-10-20T09:00:00+00:00"
 PROFILED_AT = "2026-10-20T10:00:00+00:00"
-BOUNDS = ProfileBounds(max_table_rows=5_000_000, statement_timeout_seconds=60)
+BOUNDS = ProfileBounds(statement_timeout_seconds=60)
 
 
 class PgError(Exception):
@@ -62,6 +62,9 @@ PROFILE = {
     ]},
     ("sales", "secret"): PERMISSION,
     ("sales", "slow"): TIMEOUT,
+    # A big table is NOT refused for its size (owner, design 2.3: no cap). Here Postgres cancels its read, as it
+    # would for a table too large for the time left, so its columns are not measured and say why.
+    ("sales", "big"): TIMEOUT,
     ("sales", "empty"): {"record_ct": 0, "columns": [
         {"value_ct": 0, "distinct_value_ct": 0, "null_value_ct": None, "min_date": None, "max_date": None,
          "future_date_ct": None}]},
@@ -161,7 +164,9 @@ def _connect(conn):
 
 def _profile(registry, entity, conn=None, at=PROFILED_AT):
     conn = conn or FakeConn(profile=PROFILE)
-    return run_value_profile(entity, registry, _connect(conn), bounds=BOUNDS, surveyed_at=at, ran_as="surveyor"), conn
+    # A frozen clock: the budget never runs down, so each statement's timeout is the whole 300 s, whatever the machine.
+    return run_value_profile(entity, registry, _connect(conn), bounds=BOUNDS, surveyed_at=at, ran_as="surveyor",
+                             clock=lambda: 0.0), conn
 
 
 def _rows(registry, table):
@@ -199,7 +204,8 @@ def test_a_profiled_table_stores_measured_counts_under_the_catalogue_names(regis
     assert order_id["zero_length_ct"] is None and order_id["min_date"] is None  # not applicable to N: NULL
     assert all(r["sample_ratio"] is None for r in rows.values())  # no sampling in slice 1
     assert order_id["ran_as"] == "surveyor"
-    assert f"SET LOCAL statement_timeout = {60 * 1000}" in conn.statements
+    # the profile's statement timeout is what is left of the table's 5 minutes, not a fixed per-statement figure
+    assert f"SET LOCAL statement_timeout = {300 * 1000}" in conn.statements
     orders_sql = next(s for s in conn.statements if s.endswith('FROM "sales"."orders"'))
     assert orders_sql.count("FROM") == 1  # one aggregate SELECT for the table
     assert "AS filled_value_ct" not in orders_sql and "AS c1__filled_value_ct" in orders_sql
@@ -215,7 +221,6 @@ def test_an_empty_table_is_measured_with_a_real_zero(registry, entity):
 
 @pytest.mark.parametrize("table,state,words", [
     ("v_orders", "not_applicable", "a view, not a table"),
-    ("big", "not_measured", "over the full-profile row ceiling (9,000,000 > 5,000,000)"),
     ("secret", "not_permitted", "permission denied"),
     ("slow", "not_measured", "statement timeout"),
 ])
@@ -228,21 +233,23 @@ def test_a_table_not_profiled_says_why_and_is_never_a_row_of_zeros(registry, ent
         assert row["record_ct"] is None and all(row[m] is None for m in COLUMN_MEASURES)
     assert {"table": f"sales.{table}", "state": state, "reason": rows[0]["reason"]} in \
         out["value_profile"]["tables_not_profiled"]
-    if table in ("v_orders", "big"):
+    if table == "v_orders":
         assert not any(s.endswith(f'FROM "sales"."{table}"') for s in conn.statements)  # refused, not run
 
 
-def test_the_ceiling_falls_back_to_the_stored_row_count_when_reltuples_is_unknown(registry, entity):
-    _profile(registry, entity, FakeConn(profile=PROFILE, reltuples={}))
-    assert _rows(registry, "database_value_profiles")["sales", "big", "id"]["state"] == "not_measured"
-
-
-def test_an_unknown_row_count_is_refused_not_scanned_without_a_bound(registry, entity):
+def test_there_is_no_size_cap_a_table_with_millions_of_rows_or_no_row_count_is_read_whole(registry, entity):
+    """Owner, design 2.3: whole-table counts, bounded only by the time budget. A 9,000,000-row estimate and an
+    unknown count (never analysed) both reach the database; neither is refused for its size."""
     _reinventory(registry, tables={("sales", "orders"): {"row_count": None}})
-    _, conn = _profile(registry, entity, FakeConn(profile=PROFILE, reltuples={("sales", "orders"): -1}))
-    note = _rows(registry, "database_value_profiles")["sales", "orders", "note"]
-    assert note["state"] == "not_measured" and "row count unknown" in note["reason"] and "ANALYZE" in note["reason"]
-    assert not any(s.endswith('FROM "sales"."orders"') for s in conn.statements)
+    profile = {**PROFILE, ("sales", "big"): {"record_ct": 9_000_000, "columns": [
+        {"value_ct": 9_000_000, "distinct_value_ct": 9_000_000, "null_value_ct": 0}]}}
+    _, conn = _profile(registry, entity, FakeConn(profile=profile, reltuples={("sales", "orders"): -1}))
+    rows = _rows(registry, "database_value_profiles")
+    assert (rows["sales", "big", "id"]["state"], rows["sales", "big", "id"]["record_ct"]) == ("measured", 9_000_000)
+    assert rows["sales", "orders", "note"]["state"] == "measured"
+    assert any(s.endswith('FROM "sales"."big"') for s in conn.statements)
+    assert any(s.endswith('FROM "sales"."orders"') for s in conn.statements)
+    assert not any("ceiling" in (r["reason"] or "") or "ANALYZE" in (r["reason"] or "") for r in rows.values())
 
 
 def test_a_partitioned_parent_is_not_read_its_partitions_are(registry, entity):
@@ -270,7 +277,7 @@ def test_each_table_is_read_in_its_own_read_only_transaction(registry, entity):
     reads = [i for i, s in enumerate(conn.statements) if s.startswith("SELECT\n")]
     assert reads
     for i in reads:
-        assert conn.statements[i - 2:i] == ["SET TRANSACTION READ ONLY", "SET LOCAL statement_timeout = 60000"]
+        assert conn.statements[i - 2:i] == ["SET TRANSACTION READ ONLY", "SET LOCAL statement_timeout = 300000"]
         assert conn.statements[i + 1] == "<end transaction>"
 
 
@@ -382,8 +389,8 @@ def test_an_unprofiled_column_is_not_established_by_column_never_a_silent_no(reg
     out = _propose(registry)["quality_proposals"]
     rows = _by_key(registry, "database_quality_proposals")
     big = rows["sales.big.id::Missing_Pct"]
-    assert big["state"] == "not_established" and "not profiled (not_measured: over the full-profile row ceiling" \
-        in big["reason"]
+    assert big["state"] == "not_established" and "not profiled (not_measured: canceling statement due to statement " \
+        "timeout" in big["reason"]
     assert rows["sales.big::Row_Ct_Pct"]["state"] == "not_established"
     assert rows["sales.secret.ssn::Required_No_Placeholder"]["state"] == "not_established"
     assert "sales.slow.id" in out["not_established_by_column"]
@@ -561,18 +568,15 @@ def test_the_rejected_flip_rule_does_not_depend_on_the_wall_clock(registry, enti
     assert _by_key(registry, "database_quality_proposals")[note["check_key"]]["state"] == "proposed"
 
 
-def test_run_refuses_partitioned_rls_and_unknown_size_tables_like_the_profile(registry, entity):
-    _reinventory(registry, tables={("sales", "slow"): {"row_count": None}})
+def test_run_refuses_partitioned_and_rls_tables_like_the_profile(registry, entity):
     _accept(registry, "sales.orders.order_id::Unique", "Unique")
     _accept(registry, "sales.secret.ssn::Required", "Required")
-    _accept(registry, "sales.slow.id::Required", "Required")
     conn = FakeConn(checks={}, facts={("sales", "orders"): {"relkind": "p"}, ("sales", "secret"): {"rls_filters": True}})
     run_quality_checks(entity, registry, _connect(conn), bounds=BOUNDS, surveyed_at="2026-10-20T13:00:00+00:00")
     rows = _by_key(registry, "database_quality_results")
     assert rows["sales.orders.order_id::Unique"]["status"] == "not_measured"
     assert "partitioned parent" in rows["sales.orders.order_id::Unique"]["reason"]
     assert rows["sales.secret.ssn::Required"]["status"] == "not_permitted"
-    assert rows["sales.slow.id::Required"]["status"] == "not_measured"
     assert not any(s.startswith("SELECT COUNT(*)") for s in conn.statements)
 
 
@@ -627,11 +631,12 @@ def test_one_bad_check_does_not_hide_the_others(registry, entity):
     assert sum(s.startswith("SELECT COUNT(*)") for s in conn.statements) == 3  # the batch, then each alone
 
 
-def test_over_the_ceiling_is_not_measured(registry, entity):
+def test_a_check_on_a_big_table_is_run_not_refused_for_its_size(registry, entity):
+    """No size cap for the checks either (owner, design 2.3): a 9,000,000-row estimate does not stop a check."""
     _accept(registry, "sales.big.id::Required", "Required")
-    _, rows, _conn = _run(registry, entity, {})
-    assert rows["sales.big.id::Required"]["status"] == "not_measured"
-    assert "9,000,000 > 5,000,000" in rows["sales.big.id::Required"]["reason"]
+    _, rows, conn = _run(registry, entity, {("sales", "big"): {"record_ct": 9_000_000, "measure": lambda s: 0}})
+    assert rows["sales.big.id::Required"]["status"] == "pass"
+    assert any(s.startswith("SELECT COUNT(*)") for s in conn.statements)
 
 
 def test_a_key_that_does_not_fit_its_test_types_scope_is_not_established(registry, entity):
@@ -745,13 +750,15 @@ def test_the_value_profile_runner_uses_the_settings(registry, entity, monkeypatc
 
     conn = FakeConn(profile=PROFILE)
     monkeypatch.setattr(connection, "database_connection", lambda *a, **k: _connect(conn)())
-    monkeypatch.setattr(get_config().value_profile, "max_table_rows", 100)
     monkeypatch.setattr(get_config().value_profile, "statement_timeout_seconds", 5)
+    monkeypatch.setattr(get_config().value_profile, "table_budget_seconds", 120)
     out = _ADAPTER.re_analysis_steps["postgres_value_profile"](entity, registry, db_user="u", db_pwd="p",
                                                               scan_surveyed_at=PROFILED_AT)
-    assert out["value_profile"]["bounds"] == {"max_table_rows": 100, "statement_timeout_seconds": 5}
-    assert "SET LOCAL statement_timeout = 5000" in conn.statements
-    assert _rows(registry, "database_value_profiles")["sales", "orders", "note"]["state"] == "not_measured"
+    # the profile's bound is the table budget (statement_timeout_seconds belongs to the quality CHECKS)
+    assert out["value_profile"]["bounds"] == {"table_budget_seconds": 120}
+    timeouts = [int(t.rsplit("=", 1)[1]) for t in conn.statements if t.startswith("SET LOCAL statement_timeout")]
+    assert timeouts and all(115_000 <= t <= 120_000 for t in timeouts), timeouts       # what is left of 120 s
+    assert _rows(registry, "database_value_profiles")["sales", "orders", "note"]["state"] == "measured"
 
 
 def test_the_engine_host_declares_the_three_steps():
@@ -759,14 +766,15 @@ def test_the_engine_host_declares_the_three_steps():
 
     doc = (Path(__file__).resolve().parent.parent / "docs" / "dr-egeria" / "engine-host" / "steps"
            / "database-steps.md").read_text()
-    assert "postgres_value_profile" in doc
-    # Held: until results are published they would complete with empty survey-completed reports.
-    for key in ("propose_quality_checks", "run_quality_checks"):
-        assert key not in doc, key
+    # Unheld by quality slice Q2: run_quality_checks publishes a QualityAnnotation per evaluated check and ends
+    # survey-invalid with no accepted check, so no step of the three can complete with an empty report.
+    for key in ("postgres_value_profile", "propose_quality_checks", "run_quality_checks"):
+        assert key in doc, key
     from resource_explorer import engine_host
 
-    assert "not run by Resource Explorer's engine host" in engine_host.out_of_scope_reason("run_quality_checks")
-    assert engine_host.out_of_scope_reason("postgres_value_profile") == ""
+    assert engine_host.HELD_FROM_DECLARATION == {}
+    for key in ("postgres_value_profile", "propose_quality_checks", "run_quality_checks"):
+        assert engine_host.out_of_scope_reason(key) == "", key
 
 
 # ── the per-card Run (one predicate since #795) ──────────────────────────────────────────────────────────────

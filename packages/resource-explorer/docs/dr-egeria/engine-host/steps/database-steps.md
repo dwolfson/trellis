@@ -3,7 +3,7 @@ GENERATED from the database step registry by packages/resource-explorer/scripts/
 Do not hand-edit; regenerate. Design: docs/design-notes/SLICE-ENGINE-HOST-CASE3-RE-DEFINITIONS-DISPATCHED-BY-EGERIA.md
 (C1, decision 1: one SurveyActionService per step key, never per definition).
 
-Declares 7 database step(s) as services of Resource Explorer's engine, so the GovernanceActionExecutor
+Declares 9 database step(s) as services of Resource Explorer's engine, so the GovernanceActionExecutor
 each Survey Definition step carries (C2, dr_egeria_survey_publisher) names a request type the engine advertises. Each:
 one SurveyActionService, one SupportedGovernanceService {requestType: re-<step key>} (both in
 database-steps.pyegeria-steps.json, run first by `resource-explorer dr-egeria run`, find-or-create), then
@@ -335,5 +335,97 @@ re-postgres-value-profile
 
 ### Description
 Egeria dispatches ResourceExplorerSurvey::re-postgres-value-profile to Resource Explorer's engine, which claims it and runs RE step postgres_value_profile.
+
+___
+
+## Create Governance Action Type
+### Display Name
+Resource Explorer Survey — propose_quality_checks
+
+### Qualified Name
+ResourceExplorerSurvey::re-propose-quality-checks
+
+### Description
+Zero-fetch: the vendored selection rules over the latest value profile, as proposed checks.
+
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
+### Content Status
+ACTIVE
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| re_analysis_step | propose_quality_checks |
+| engine_host | resource-explorer-worker |
+| request_type | re-propose-quality-checks |
+| entity_type | database |
+| fetch_cost | none |
+| compute_cost | low |
+| requires_capability | undeclared |
+| engine_host_dispatch | runs |
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+ResourceExplorerSurvey::re-propose-quality-checks
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-propose-quality-checks
+
+### Description
+Egeria dispatches ResourceExplorerSurvey::re-propose-quality-checks to Resource Explorer's engine, which claims it and runs RE step propose_quality_checks.
+
+___
+
+## Create Governance Action Type
+### Display Name
+Resource Explorer Survey — run_quality_checks
+
+### Qualified Name
+ResourceExplorerSurvey::re-run-quality-checks
+
+### Description
+The accepted quality checks, run with the vendored Postgres SQL against the database.
+
+### Produced Guards
+survey-completed, survey-invalid, survey-failed, Any
+
+### Content Status
+ACTIVE
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| executes_at | resource-explorer |
+| re_analysis_step | run_quality_checks |
+| engine_host | resource-explorer-worker |
+| request_type | re-run-quality-checks |
+| entity_type | database |
+| fetch_cost | api_heavy |
+| compute_cost | medium |
+| requires_capability | read |
+| engine_host_dispatch | runs |
+
+___
+
+## Link Action to Action Executor
+### Governance Action Type
+ResourceExplorerSurvey::re-run-quality-checks
+
+### Governance Engine
+ResourceExplorerSurvey
+
+### Request Type
+re-run-quality-checks
+
+### Description
+Egeria dispatches ResourceExplorerSurvey::re-run-quality-checks to Resource Explorer's engine, which claims it and runs RE step run_quality_checks.
 
 ___
