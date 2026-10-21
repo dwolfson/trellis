@@ -77,10 +77,16 @@ log = logging.getLogger(__name__)
 from resource_explorer.registry import TARGET_ANALYSIS, TARGET_SURVEY
 
 _CHECK_INTERVAL_SECONDS = 900  # 15 minutes
+#: The native-survey read-back sweep and the Egeria outbox drain run on their OWN loop, not on the 15-minute tick
+#: (the architect's ruling, 2026-10-21): a scheduled RagIngestion running inline in `_run_due` held the tick for
+#: 14+ minutes and a survey that finished in seconds sat at "waiting" on its card. 60 s; the card's "not checked
+#: since" cue is 2 x this (native_survey_run.NOT_CHECKED_AFTER_S).
+_READBACK_INTERVAL_SECONDS = 60
 _started = False
 _lock = threading.Lock()
 _stop_event: threading.Event | None = None
 _thread: threading.Thread | None = None
+_readback_thread: threading.Thread | None = None
 
 
 def start_scheduler() -> None:
@@ -91,7 +97,7 @@ def start_scheduler() -> None:
     `scheduler` advisory lock, so a second RE process against the same
     registry stands by rather than double-firing every due schedule.
     """
-    global _started, _stop_event, _thread
+    global _started, _stop_event, _thread, _readback_thread
     with _lock:
         if _started and _thread is not None and _thread.is_alive():
             return
@@ -103,8 +109,17 @@ def start_scheduler() -> None:
             daemon=True,
             name="resource-explorer-scheduler",
         )
-        t = _thread
+        # The read-back/outbox loop shares this start, this stop and the `scheduler` advisory lock: only the
+        # leader runs it, and it stops where the tick stops.
+        _readback_thread = threading.Thread(
+            target=_readback_loop,
+            args=(_stop_event,),
+            daemon=True,
+            name="resource-explorer-readback",
+        )
+        t, rt = _thread, _readback_thread
     t.start()
+    rt.start()
     log.info("Background scheduler started (check interval: %ds)", _CHECK_INTERVAL_SECONDS)
 
 
@@ -119,16 +134,20 @@ def stop_scheduler(timeout: float = 5.0) -> None:
     loop still running past that release is exactly the double-fire the
     lock exists to prevent.
     """
-    global _started, _stop_event, _thread
+    global _started, _stop_event, _thread, _readback_thread
     with _lock:
-        stop, thread = _stop_event, _thread
+        stop, thread, readback = _stop_event, _thread, _readback_thread
         _stop_event = None
         _thread = None
+        _readback_thread = None
         _started = False
     if stop is not None:
         stop.set()
-    if thread is not None and thread.is_alive():
-        thread.join(timeout=timeout)
+    # One bounded budget for both threads, not one each.
+    deadline = time.monotonic() + timeout
+    for t in (thread, readback):
+        if t is not None and t.is_alive():
+            t.join(timeout=max(0.0, deadline - time.monotonic()))
 
 
 def _scheduler_loop(stop: threading.Event | None = None) -> None:
@@ -165,14 +184,36 @@ def _tick_body() -> None:
         _reconcile_rfa_actions()
     except Exception:
         log.exception("RFA reconciliation iteration failed")
-    try:
-        _drain_egeria_outbox()
-    except Exception:
-        log.exception("Egeria outbox drain iteration failed")
-    try:
-        _sweep_native_surveys()
-    except Exception:
-        log.exception("Native Egeria survey read-back iteration failed")
+    # The native-survey read-back sweep and the outbox drain are NOT called here: `_readback_loop` owns both, so
+    # a long `_run_due` cannot starve them (and nothing runs them twice).
+
+
+def _readback_loop(stop: threading.Event | None = None) -> None:
+    """Every _READBACK_INTERVAL_SECONDS: the native read-back sweep and the outbox drain, independent of the tick.
+    Sleeps first, like the tick. `stop` is optional so a test can drive one pass with a patched wait."""
+    while stop is None or not stop.is_set():
+        if stop is None:
+            time.sleep(_READBACK_INTERVAL_SECONDS)
+        elif stop.wait(_READBACK_INTERVAL_SECONDS):
+            break
+        _readback_pass()
+
+
+def _readback_pass() -> None:
+    """One pass of the read-back loop. A bare thread has no ContextVars, so the identity is declared here: the
+    sweep runs as `Daemon(SCHEDULER)` (the drain declares its own `Daemon(OUTBOX)`). Idle (nothing awaiting
+    read-back, nothing pending in the outbox) makes no Egeria call."""
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, acting_as
+
+    with acting_as(Daemon(DaemonReason.SCHEDULER)):
+        try:
+            _sweep_native_surveys()
+        except Exception:
+            log.exception("Native Egeria survey read-back iteration failed")
+        try:
+            _drain_egeria_outbox()
+        except Exception:
+            log.exception("Egeria outbox drain iteration failed")
 
 
 def _reconcile_rfa_actions() -> None:

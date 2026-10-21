@@ -8031,7 +8031,7 @@ class ProjectRegistry:
     def record_native_survey_report(
         self, engine_action_guid: str, *, entity_type: str, slug: str,
         process_qualified_name: str, report_guid: str, report_at: str,
-        read_at: str, annotations: list[dict],
+        read_at: str, annotations: list[dict], report_totals: dict | None = None,
     ) -> int:
         """Read one Egeria SurveyReport into RE, idempotently, and stamp the
         step_runs row that originated it.
@@ -8074,6 +8074,10 @@ class ProjectRegistry:
                 "WHERE engine_action_guid = ?",
                 (report_guid, report_at, read_at, count, engine_action_guid),
             )
+        if report_totals:
+            # What the report itself held (before RE's own filter), beside the stored count -- in the row's
+            # existing `declared` JSON, so the card can say "7 on the report; 6 read" without a new column.
+            self.merge_native_survey_declared(engine_action_guid, {"report_totals": dict(report_totals)})
         return int(count)
 
     def list_native_survey_runs(

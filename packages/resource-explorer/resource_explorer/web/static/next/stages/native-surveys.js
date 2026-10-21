@@ -196,8 +196,22 @@ export function processLineHtml(r) {
     + `${r.read_at ? ` · read ${timeSpan(r.read_at)}` : ''}${reports ? ` · ${reports}` : ''}${runCredentialHtml(r)}${err}${fix}`;
 }
 
+/** "◌ not checked since 20:31" when the server found the run still in flight and its proof row's `read_at` more than
+ *  two read-back intervals old (`run.not_checked_since` is that `read_at`; absent otherwise). The cue is on the
+ *  element (warn tone + glyph) as well as in words. */
+function notCheckedCue(r) {
+  if (!r || !r.not_checked_since) return '';
+  const when = localTime(r.not_checked_since);
+  return ` · <span class="text-state-warn" data-native-not-checked title="${esc(`RE last read this from Egeria at ${r.not_checked_since} UTC; its read-back looks every minute.`)}"><span class="font-glyph" aria-hidden="true">◌</span> not checked since ${esc(when || r.not_checked_since)}</span>`;
+}
+
 /** The one line of status. Pure over `row.run`. */
 export function nativeSurveyStatusHtml(row) {
+  const r = row.run || { state: 'not_run' };
+  return statusLineHtml(row) + notCheckedCue(r);
+}
+
+function statusLineHtml(row) {
   const r = row.run || { state: 'not_run' };
   const err = r.error ? ` · <span class="text-state-warn">${esc(r.error)}</span>` : '';
   if (r.line && ['running', 'complete', 'partial', 'failed'].includes(r.state)) return processLineHtml(r);
@@ -226,8 +240,9 @@ export function nativeSurveyStatusHtml(row) {
       return `complete · read ${timeSpan(r.read_at)} · report from ${timeSpan(r.report_at)}`
         + ` · <button type="button" data-native-report="${esc(r.report_guid)}"
             class="cursor-pointer bg-transparent p-0 text-accent-ink underline"
-            ><span class="tnum">${esc(String(r.annotation_count))}</span> annotation${
-              r.annotation_count === 1 ? '' : 's'} ›</button>`;
+            >${r.count_label ? `<span class="tnum" data-native-count-label>${esc(r.count_label)}</span>`
+              : `<span class="tnum">${esc(String(r.annotation_count))}</span> annotation${
+                r.annotation_count === 1 ? '' : 's'}`} ›</button>`;
     case 'failed':
       // A cancel Egeria read back as CANCELLED is a decision, not a fault: its own words, with the check.
       if (r.egeria_status === 'CANCELLED') {

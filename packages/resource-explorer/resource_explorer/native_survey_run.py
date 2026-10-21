@@ -87,6 +87,9 @@ PARTIAL = "partial"
 FAILED = "failed"
 UNREADABLE = "unreadable"
 CANNOT_RUN = "cannot_run"
+#: States whose answer is still being waited for (the card's "not checked since" cue applies to these only).
+_CHECKABLE_STATES = frozenset({SUBMITTED, RUNNING, AWAITING_REPORT, REPORT_INCOMPLETE, UNREADABLE,
+                               "awaiting_registration"})
 
 
 #: Egeria's "not started yet" words; IN_PROGRESS is the one that means the engine has the action.
@@ -627,8 +630,66 @@ def _stall(out: dict, now: datetime | None, requested_at: str = "", started_at: 
     out["stalled"] = None if age is None else age > after
 
 
+#: A run in flight whose proof row was last read more than this long ago says "not checked since <read_at>" (2 x the
+#: read-back loop's 60 s interval). Derived from the proof row's `read_at` only, never from the loop's bookkeeping.
+NOT_CHECKED_AFTER_S = 120
+
+
+def not_checked_since(derived: dict, now: datetime | None = None) -> str:
+    """`read_at` when a run still in flight was last read more than NOT_CHECKED_AFTER_S ago, else ''. A run with no
+    read time stored has nothing to measure from, so it carries no cue (its "submitted" line already says so)."""
+    if derived.get("state") not in _CHECKABLE_STATES or not derived.get("read_at"):
+        return ""
+    age = _age_seconds(derived["read_at"], now)
+    return derived["read_at"] if age is not None and age > NOT_CHECKED_AFTER_S else ""
+
+
+def annotation_count_label(derived: dict, entity_type: str) -> str:
+    """How many annotations the report held and what RE did with them, from the totals stored with the read (never
+    from the ingest loop's own tally). '' when the totals were not stored (a row read before they were): the
+    caller then shows the bare stored count, not a guess.
+
+    File system: "7 annotations on the report; 6 read into RE; 1 not read by design (file-name log)".
+    Nothing dropped (databases): "7 annotations on the report · read into RE"."""
+    on_report, read = derived.get("annotations_on_report"), derived.get("annotation_count")
+    if on_report is None or read is None:
+        return ""
+    by_design = derived.get("annotations_not_read_by_design") or 0
+    word = "annotation" if on_report == 1 else "annotations"
+    gap = on_report - by_design - read
+    if entity_type == "filesystem":
+        out = f"{on_report} {word} on the report; {read} read into RE; {by_design} not read by design (file-name log)"
+    elif by_design == 0 and gap == 0:
+        return f"{on_report} {word} on the report \u00b7 read into RE"
+    else:
+        out = f"{on_report} {word} on the report; {read} read into RE"
+        if by_design:
+            out += f"; {by_design} not read by design"
+    return out + (f"; {gap} not stored" if gap > 0 else "")
+
+
 def derive_native_state(run: dict | None, *, stored_annotation_count: int | None = None,
                         now: datetime | None = None) -> dict:
+    """`_derive_native_state`, plus the two things the card says about the read itself: `not_checked_since` and the
+    annotation `count_label`. Both come from the proof row alone."""
+    out = _derive_native_state(run, stored_annotation_count=stored_annotation_count, now=now)
+    return _with_read_words(out, run, now)
+
+
+def _with_read_words(out: dict, run: dict | None, now: datetime | None) -> dict:
+    out["not_checked_since"] = not_checked_since(out, now)
+    totals = _declared(run).get("report_totals") if run else None
+    totals = totals if isinstance(totals, dict) else {}
+    out["annotations_on_report"] = totals.get("on_report") if isinstance(totals.get("on_report"), int) else None
+    out["annotations_not_read_by_design"] = (totals.get("not_read_by_design")
+                                             if isinstance(totals.get("not_read_by_design"), int) else None)
+    out["count_label"] = (annotation_count_label(out, (run or {}).get("entity_type") or "")
+                          if out.get("state") == COMPLETE else "")
+    return out
+
+
+def _derive_native_state(run: dict | None, *, stored_annotation_count: int | None = None,
+                         now: datetime | None = None) -> dict:
     """The row's status, computed from persisted proof and nothing else.
 
     `run` is the newest `step_runs` row for (resource, process), or None.
@@ -1250,6 +1311,12 @@ _IN_FLIGHT = (SUBMITTED, RUNNING, UNREADABLE)
 
 
 def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict:
+    out = _derive_mixed_with_cancel(run, now=now)
+    out["not_checked_since"] = not_checked_since(out, now)       # state may have moved on from derive_native_state's
+    return out
+
+
+def _derive_mixed_with_cancel(run: dict | None, *, now: datetime | None = None) -> dict:
     """`_derive_mixed_state`, plus `cancel` (§2.4) from the press's proof row and Egeria's read-back, never from the
     press alone:
 
@@ -1859,13 +1926,16 @@ def _read_report_in(registry, port, run, action, *, entity_type, slug, process_q
                 f"report {report_guid} says it originated from "
                 f"{report.originator_guid}, not from engine action {guid}")
         annotations = report.annotations
+        on_report = len(annotations)           # counted BEFORE the filter below: what the report itself holds
         if entity_type == "filesystem":
             # Egeria always writes its file-names log; RE never reads, stores or shows it (caution 1).
             annotations = [a for a in annotations if a.get("annotation_type") != NAMES_LOG_ANNOTATION]
         registry.record_native_survey_report(
             guid, entity_type=entity_type, slug=slug, process_qualified_name=process_qn,
             report_guid=report_guid, report_at=report.at, read_at=_now(),
-            annotations=annotations)
+            annotations=annotations,
+            # Kept in the row's existing `declared` JSON (no DDL): the totals the report itself carried.
+            report_totals={"on_report": on_report, "not_read_by_design": on_report - len(annotations)})
     except Exception as exc:  # noqa: BLE001 -- recorded, not raised
         # Error-only: the action's own status/message, written a moment ago,
         # stay on the row beside the fact that the report could not be read.
