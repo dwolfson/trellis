@@ -73,20 +73,42 @@ _FROM = re.compile(r'FROM "([^"]+)"\."([^"]+)"\s*$')
 class FakeConn:
     """Answers the profile's and the checks' SELECTs from canned values; records every statement."""
 
-    def __init__(self, profile=None, checks=None, reltuples=None):
+    def __init__(self, profile=None, checks=None, reltuples=None, facts=None, catalog_error=None):
         self.profile = profile or {}
         self.checks = checks or {}
         self.reltuples = {("sales", "big"): 9_000_000} if reltuples is None else reltuples
+        self.facts = facts or {}  # (schema, table) -> {"relkind": ..., "rls_filters": ...}
+        self.catalog_error = catalog_error
         self.statements: list[str] = []
+        self.in_read_only = False
+
+    @staticmethod
+    def _psycopg2(sql, params):
+        # psycopg2 applies %-substitution whenever params is not None, even an empty tuple.
+        if params is not None and "%" in sql:
+            raise IndexError("tuple index out of range")
 
     def execute_query(self, sql, params=()):
+        self._psycopg2(sql, params)
         self.statements.append(sql)
+        if sql == "SET TRANSACTION READ ONLY":
+            self.in_read_only = True
         return []
 
+    def end_transaction(self):
+        self.statements.append("<end transaction>")
+        self.in_read_only = False
+
     def execute_query_isolated(self, sql, params=()):
+        self._psycopg2(sql, params)
         self.statements.append(sql)
         if "FROM pg_class" in sql:
-            return [{"schema_name": s, "table_name": t, "reltuples": n} for (s, t), n in self.reltuples.items()]
+            if self.catalog_error:
+                raise self.catalog_error
+            keys = set(self.reltuples) | set(self.facts)
+            return [{"schema_name": s, "table_name": t, "reltuples": self.reltuples.get((s, t), -1),
+                     "relkind": "r", "rls_filters": False, **self.facts.get((s, t), {})} for s, t in keys]
+        assert self.in_read_only, "a table was read outside a read-only transaction"
         table = _FROM.search(sql).groups()
         if sql.startswith("SELECT COUNT(*) AS record_ct, "):
             return self._check(table, sql)
@@ -150,6 +172,20 @@ def _by_key(registry, table):
     return {r["check_key"]: r for r in registry.query_detail_rows(table, SLUG)}
 
 
+def _reinventory(registry, at="2026-10-20T09:30:00+00:00", tables=None, columns=None):
+    """A later inventory batch: the current one with `tables` {(s, t): {field: value}} applied and `columns`
+    [(schema, table, name, type)] added."""
+    rows = registry.query_detail_rows("database_tables", SLUG)
+    for row in rows:
+        row.update((tables or {}).get((row["schema_name"], row["table_name"]), {}))
+    cols = registry.query_detail_rows("database_columns", SLUG)
+    for i, (schema, table, name, data_type) in enumerate(columns or [], start=100):
+        cols.append({"schema_name": schema, "table_name": table, "column_name": name, "ordinal_position": i,
+                     "data_type": data_type, "base_type": data_type, "state": "measured"})
+    registry.write_detail_rows("database_tables", SLUG, at, rows=rows)
+    registry.write_detail_rows("database_columns", SLUG, at, rows=cols)
+
+
 # ── postgres_value_profile ───────────────────────────────────────────────────────────────────────────────────
 
 def test_a_profiled_table_stores_measured_counts_under_the_catalogue_names(registry, entity):
@@ -199,6 +235,84 @@ def test_a_table_not_profiled_says_why_and_is_never_a_row_of_zeros(registry, ent
 def test_the_ceiling_falls_back_to_the_stored_row_count_when_reltuples_is_unknown(registry, entity):
     _profile(registry, entity, FakeConn(profile=PROFILE, reltuples={}))
     assert _rows(registry, "database_value_profiles")["sales", "big", "id"]["state"] == "not_measured"
+
+
+def test_an_unknown_row_count_is_refused_not_scanned_without_a_bound(registry, entity):
+    _reinventory(registry, tables={("sales", "orders"): {"row_count": None}})
+    _, conn = _profile(registry, entity, FakeConn(profile=PROFILE, reltuples={("sales", "orders"): -1}))
+    note = _rows(registry, "database_value_profiles")["sales", "orders", "note"]
+    assert note["state"] == "not_measured" and "row count unknown" in note["reason"] and "ANALYZE" in note["reason"]
+    assert not any(s.endswith('FROM "sales"."orders"') for s in conn.statements)
+
+
+def test_a_partitioned_parent_is_not_read_its_partitions_are(registry, entity):
+    _, conn = _profile(registry, entity, FakeConn(profile=PROFILE, facts={("sales", "orders"): {"relkind": "p"}}))
+    row = _rows(registry, "database_value_profiles")["sales", "orders", "order_id"]
+    assert row["state"] == "not_applicable" and "partitioned parent" in row["reason"]
+    assert not any(s.endswith('FROM "sales"."orders"') for s in conn.statements)
+
+
+def test_row_level_security_that_filters_this_account_is_not_permitted_not_a_count(registry, entity):
+    _profile(registry, entity, FakeConn(profile=PROFILE, facts={("sales", "orders"): {"rls_filters": True}}))
+    row = _rows(registry, "database_value_profiles")["sales", "orders", "order_id"]
+    assert (row["state"], row["record_ct"]) == ("not_permitted", None) and "row-level security" in row["reason"]
+
+
+def test_without_the_catalog_the_stored_row_security_flag_still_refuses(registry, entity):
+    _reinventory(registry, tables={("sales", "orders"): {"has_row_security": 1}})
+    _profile(registry, entity, FakeConn(profile=PROFILE, catalog_error=PgError("permission denied for pg_roles")))
+    assert _rows(registry, "database_value_profiles")["sales", "orders", "note"]["state"] == "not_permitted"
+    assert _rows(registry, "database_value_profiles")["sales", "empty", "d"]["state"] == "measured"
+
+
+def test_each_table_is_read_in_its_own_read_only_transaction(registry, entity):
+    _, conn = _profile(registry, entity)
+    reads = [i for i, s in enumerate(conn.statements) if s.startswith("SELECT\n")]
+    assert reads
+    for i in reads:
+        assert conn.statements[i - 2:i] == ["SET TRANSACTION READ ONLY", "SET LOCAL statement_timeout = 60000"]
+        assert conn.statements[i + 1] == "<end transaction>"
+
+
+def test_a_percent_sign_in_a_name_is_not_a_parameter_marker(registry, entity):
+    _reinventory(registry, columns=[("sales", "empty", "pct%done", "integer")])
+    profile = {**PROFILE, ("sales", "empty"): {"record_ct": 4, "columns": [
+        {"value_ct": 4, "distinct_value_ct": 4, "null_value_ct": 0, "min_date": "2026-01-01",
+         "max_date": "2026-01-04", "future_date_ct": 0},
+        {"value_ct": 4, "distinct_value_ct": 2, "null_value_ct": 0}]}}
+    _profile(registry, entity, FakeConn(profile=profile))
+    row = _rows(registry, "database_value_profiles")["sales", "empty", "pct%done"]
+    assert (row["state"], row["value_ct"]) == ("measured", 4)
+    _accept(registry, "sales.empty.pct%done::Required", "Required")
+    _, rows, _ = _run(registry, entity, {("sales", "empty"): {"record_ct": 4, "measure": lambda s: 0}})
+    assert rows["sales.empty.pct%done::Required"]["status"] == "pass"
+
+
+def test_every_assembled_statement_parses_as_postgres():
+    """No live Postgres in the default tier: sqlglot's Postgres dialect checks the SQL we build is well formed."""
+    import sqlglot
+
+    from resource_explorer.surveyors.database.quality import catalogue as cat
+    from resource_explorer.surveyors.database.quality.run_checks import _select
+    from resource_explorer.surveyors.database.quality.value_profile import (
+        TABLE_FACTS_SQL,
+        build_table_query,
+    )
+
+    cols = [("a", "A"), ("b", "N"), ("c", "D"), ("d", "B"), ("e", "X"), ('we"ird', "A"), ("pct%", "T")]
+    sql, aliases = build_table_query("sales", "orders", cols, "2026-10-20 12:00:00")
+    # value_ct + null_value_ct for all 7, distinct + zero_length + filled for the 2 text columns, 3 date measures,
+    # distinct for B, D, N and T (none for X).
+    assert len(aliases) == 2 * 7 + 3 * 2 + 3 + 4
+    sqlglot.parse_one(sql, read="postgres")
+    sqlglot.parse_one(TABLE_FACTS_SQL, read="postgres")
+    params = {"baseline_ct": 10, "baseline_value_ct": 9, "baseline_value": "2020-01-01", "threshold_value": 2}
+    measures = []
+    for name, test_type in cat.load_catalogue().items():
+        p = dict(params, baseline_value='"",n/a,it\'s' if name == "Required_No_Placeholder" else "2020-01-01")
+        measures.append(cat.render_measure(test_type, "" if test_type.is_table_check else "col", p,
+                                           "2026-10-20 12:00:00"))
+    sqlglot.parse_one(_select("sales", "orders", measures), read="postgres")
 
 
 def test_the_profile_annotations(registry, entity):
@@ -420,6 +534,72 @@ def test_a_zero_baseline_is_not_established_without_running(registry, entity):
     assert not any("sales\".\"empty" in s for s in conn.statements)
 
 
+def test_the_rejected_flip_rule_does_not_depend_on_the_wall_clock(registry, entity, monkeypatch):
+    """H1: "since" is the judged proposal's surveyed_at, so a verdict recorded long after the batches (as on any
+    machine whose clock has passed these fixed scan times) still sees the flip."""
+    import resource_explorer.registry as reg_module
+
+    class Later(reg_module.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return reg_module.datetime(2030, 1, 1, tzinfo=tz)
+
+    _profile(registry, entity)
+    _propose(registry)
+    note = _by_key(registry, "database_quality_proposals")["sales.orders.note::Missing_Pct"]
+    monkeypatch.setattr(reg_module, "datetime", Later)
+    registry.record_quality_verdict(SLUG, note["check_key"], "rejected", {}, proposal_id=note["id"])
+    monkeypatch.undo()
+    full = {("sales", "orders"): {"record_ct": 1000, "columns": [
+        PROFILE["sales", "orders"]["columns"][0],
+        {"value_ct": 1000, "distinct_value_ct": 40, "null_value_ct": 0, "zero_length_ct": 0, "filled_value_ct": 3},
+        *PROFILE["sales", "orders"]["columns"][2:]]}}
+    _profile(registry, entity, FakeConn(profile={**PROFILE, **full}), at="2026-10-22T10:00:00+00:00")
+    _propose(registry, at="2026-10-22T11:00:00+00:00")
+    _profile(registry, entity, at="2026-10-23T10:00:00+00:00")
+    _propose(registry, at="2026-10-23T11:00:00+00:00")
+    assert _by_key(registry, "database_quality_proposals")[note["check_key"]]["state"] == "proposed"
+
+
+def test_run_refuses_partitioned_rls_and_unknown_size_tables_like_the_profile(registry, entity):
+    _reinventory(registry, tables={("sales", "slow"): {"row_count": None}})
+    _accept(registry, "sales.orders.order_id::Unique", "Unique")
+    _accept(registry, "sales.secret.ssn::Required", "Required")
+    _accept(registry, "sales.slow.id::Required", "Required")
+    conn = FakeConn(checks={}, facts={("sales", "orders"): {"relkind": "p"}, ("sales", "secret"): {"rls_filters": True}})
+    run_quality_checks(entity, registry, _connect(conn), bounds=BOUNDS, surveyed_at="2026-10-20T13:00:00+00:00")
+    rows = _by_key(registry, "database_quality_results")
+    assert rows["sales.orders.order_id::Unique"]["status"] == "not_measured"
+    assert "partitioned parent" in rows["sales.orders.order_id::Unique"]["reason"]
+    assert rows["sales.secret.ssn::Required"]["status"] == "not_permitted"
+    assert rows["sales.slow.id::Required"]["status"] == "not_measured"
+    assert not any(s.startswith("SELECT COUNT(*)") for s in conn.statements)
+
+
+def test_an_accepted_check_whose_proposal_names_another_key_is_parsed_from_its_own_key(registry, entity):
+    _profile(registry, entity)
+    _propose(registry)
+    other = _by_key(registry, "database_quality_proposals")["sales.orders.placed::Required"]
+    registry.record_quality_verdict(SLUG, "sales.orders.order_id::Unique", "accepted",
+                                    {"threshold_value": 0, "severity": "error"}, proposal_id=other["id"])
+    _, rows, _ = _run(registry, entity, {("sales", "orders"): {"record_ct": 1000, "measure": _orders_measure}})
+    row = rows["sales.orders.order_id::Unique"]
+    assert (row["column_name"], row["test_type"], row["status"]) == ("order_id", "Unique", "pass")
+
+
+def test_an_empty_result_set_is_an_error_not_an_empty_table(registry, entity):
+    _accept(registry, "sales.orders.order_id::Unique", "Unique")
+
+    class NoRow(FakeConn):
+        def _check(self, table, sql):
+            return []
+
+    conn = NoRow(checks={("sales", "orders"): {}})
+    run_quality_checks(entity, registry, _connect(conn), bounds=BOUNDS, surveyed_at="2026-10-20T13:00:00+00:00")
+    row = _by_key(registry, "database_quality_results")["sales.orders.order_id::Unique"]
+    assert (row["status"], row["reason"]) == ("error", "the aggregate query returned no row")
+
+
 def test_division_by_zero_is_not_established_and_other_errors_are_errors(registry, entity):
     _accept(registry, "sales.orders::Row_Ct_Pct", "Row_Ct_Pct", baseline_ct=1000, threshold_value=10)
     _, rows, _ = _run(registry, entity, {("sales", "orders"): PgError("division by zero", "22012")})
@@ -427,7 +607,7 @@ def test_division_by_zero_is_not_established_and_other_errors_are_errors(registr
     _accept(registry, "sales.secret.ssn::Required", "Required")
     _, rows, _ = _run(registry, entity, {("sales", "orders"): {"record_ct": 1, "measure": lambda s: 0},
                                          ("sales", "secret"): PERMISSION}, at="2026-10-20T14:00:00+00:00")
-    assert rows["sales.secret.ssn::Required"]["status"] == "error"
+    assert rows["sales.secret.ssn::Required"]["status"] == "not_permitted"  # L4: a privilege error
     assert "permission denied" in rows["sales.secret.ssn::Required"]["reason"]
 
 
@@ -579,5 +759,11 @@ def test_the_engine_host_declares_the_three_steps():
 
     doc = (Path(__file__).resolve().parent.parent / "docs" / "dr-egeria" / "engine-host" / "steps"
            / "database-steps.md").read_text()
-    for key in ("postgres_value_profile", "propose_quality_checks", "run_quality_checks"):
-        assert f"re-{key}" in doc or key in doc, key
+    assert "postgres_value_profile" in doc
+    # Held: until results are published they would complete with empty survey-completed reports.
+    for key in ("propose_quality_checks", "run_quality_checks"):
+        assert key not in doc, key
+    from resource_explorer import engine_host
+
+    assert "not run by Resource Explorer's engine host" in engine_host.out_of_scope_reason("run_quality_checks")
+    assert engine_host.out_of_scope_reason("postgres_value_profile") == ""

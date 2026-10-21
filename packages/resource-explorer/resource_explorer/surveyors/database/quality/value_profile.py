@@ -155,17 +155,84 @@ def _empty_row(schema: str, table: str, column: str, gtype: str, state: str, rea
     return row
 
 
-def _estimates(conn) -> dict[tuple[str, str], int]:
-    """{(schema, table): reltuples} for every ordinary table; -1 (never analyzed) is left out."""
+@dataclass(frozen=True)
+class TableFacts:
+    """What the catalog says about one table before it is read: its row estimate (None when never analysed),
+    whether it is a partitioned parent, and whether row-level security would filter what this account sees."""
+
+    estimate: int | None
+    partitioned: bool
+    rls_filters: bool
+
+
+#: One catalog read for every table. `rls_filters`: RLS is on and this account neither bypasses it (superuser,
+#: BYPASSRLS) nor owns the table without FORCE ROW LEVEL SECURITY, so COUNT(*) would count only its rows.
+TABLE_FACTS_SQL = (
+    "SELECT n.nspname AS schema_name, c.relname AS table_name, c.reltuples::BIGINT AS reltuples, "
+    "c.relkind AS relkind, "
+    "(c.relrowsecurity AND NOT (r.rolsuper OR r.rolbypassrls) "
+    "AND (c.relforcerowsecurity OR NOT pg_has_role(c.relowner, 'USAGE'))) AS rls_filters "
+    "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+    "CROSS JOIN (SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user) r "
+    "WHERE c.relkind IN ('r', 'p')"
+)
+
+
+def read_table_facts(conn) -> dict[tuple[str, str], TableFacts] | None:
+    """{(schema, table): TableFacts}, or None when the catalog could not be read (callers then judge from the
+    stored inventory). Ends its own transaction."""
     try:
-        rows = conn.execute_query_isolated(
-            "SELECT n.nspname AS schema_name, c.relname AS table_name, c.reltuples::BIGINT AS reltuples "
-            "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r', 'p')")
-    except Exception as exc:  # the ceiling then falls back to the stored row count
-        log.warning("value profile: could not read pg_class.reltuples: %s", exc)
-        return {}
-    return {(r["schema_name"], r["table_name"]): int(r["reltuples"]) for r in rows
-            if r.get("reltuples") is not None and int(r["reltuples"]) >= 0}
+        rows = conn.execute_query_isolated(TABLE_FACTS_SQL, None)
+    except Exception as exc:
+        log.warning("value profile: could not read pg_class: %s", exc)
+        return None
+    finally:
+        conn.end_transaction()
+    facts = {}
+    for r in rows:
+        tuples = r.get("reltuples")
+        facts[(r["schema_name"], r["table_name"])] = TableFacts(
+            estimate=int(tuples) if tuples is not None and int(tuples) >= 0 else None,
+            partitioned=r.get("relkind") == "p",
+            rls_filters=bool(r.get("rls_filters")),
+        )
+    return facts
+
+
+def refusal(info: dict, facts: TableFacts | None, catalog_read: bool, bounds: ProfileBounds
+            ) -> tuple[str, str] | None:
+    """(state, reason) when a table must not be read, else None. Shared by the profile and the checks, so both
+    refuse the same tables for the same reasons:
+
+    - not a table (view, materialized view, foreign table) -> not_applicable;
+    - a partitioned parent -> not_applicable (its partitions are read; reading the parent would scan them twice);
+    - row-level security would filter this account's view -> not_permitted (a count of some rows is not a count);
+    - size unknown (never analysed, and no stored count) -> not_measured: the scan is bounded, never open-ended;
+    - over the row ceiling -> not_measured."""
+    from resource_explorer.table_kinds import PARTITIONED_TABLE, is_table_type
+
+    table_type = (info.get("table_type") or "").upper().replace("_", " ")
+    if table_type and not is_table_type(table_type):
+        return "not_applicable", f"a {table_type.lower()}, not a table: only tables are read"
+    if table_type == PARTITIONED_TABLE or (facts is not None and facts.partitioned):
+        return "not_applicable", "a partitioned parent: its partitions are read instead"
+    if (facts is not None and facts.rls_filters) or (not catalog_read and info.get("has_row_security")):
+        return "not_permitted", ("row-level security is on and this account does not bypass it, so its counts "
+                                 "would cover only the rows it may see")
+    estimate = facts.estimate if facts is not None and facts.estimate is not None else info.get("row_count")
+    if estimate is None:
+        return "not_measured", ("row count unknown (the table has never been analysed and no count is stored): "
+                                "run ANALYZE so the row ceiling can be checked")
+    if int(estimate) > bounds.max_table_rows:
+        return "not_measured", (f"over the full-profile row ceiling ({int(estimate):,} > {bounds.max_table_rows:,}); "
+                                "slice 1 reads whole tables only, never a sample")
+    return None
+
+
+def begin_read(conn, bounds: ProfileBounds) -> None:
+    """Open one table's transaction: read-only, with the statement timeout. Pair with `conn.end_transaction()`."""
+    conn.execute_query("SET TRANSACTION READ ONLY", None)
+    conn.execute_query(f"SET LOCAL statement_timeout = {int(bounds.statement_timeout_seconds) * 1000}", None)
 
 
 def run_value_profile(
@@ -177,8 +244,6 @@ def run_value_profile(
     `connect()` returns a context manager yielding a DatabaseConnection (the adapter passes
     `database_connection(db_entity, credentials)`; tests pass a fake). A connection failure raises: the step
     failed, and nothing is stored, so the run cannot read as "profiled, nothing found"."""
-    from resource_explorer.table_kinds import is_table_type
-
     slug = db_entity.slug
     surveyed_at = surveyed_at or datetime.now(UTC).isoformat()
     columns = registry.query_detail_rows("database_columns", slug)
@@ -203,35 +268,37 @@ def run_value_profile(
     rows: list[dict] = []
     table_outcomes: list[dict] = []
     with connect() as conn:
-        conn.execute_query(f"SET LOCAL statement_timeout = {int(bounds.statement_timeout_seconds) * 1000}")
-        estimates = _estimates(conn)
+        facts = read_table_facts(conn)
         for (schema, table), cols in sorted(by_table.items()):
             info = tables.get((schema, table)) or {}
-            table_type = info.get("table_type") or ""
-            if table_type and not is_table_type(table_type):
-                reason = f"a {table_type.lower()}, not a table: the value profile reads tables only"
-                rows.extend(_empty_row(schema, table, c, g, "not_applicable", reason, ran_as) for c, g in cols)
-                table_outcomes.append({"table": f"{schema}.{table}", "state": "not_applicable", "reason": reason})
-                continue
-            estimate = estimates.get((schema, table), info.get("row_count"))
-            if estimate is not None and estimate > bounds.max_table_rows:
-                reason = (f"over the full-profile row ceiling ({int(estimate):,} > {bounds.max_table_rows:,}); "
-                          "slice 1 profiles whole tables only, never a sample")
-                rows.extend(_empty_row(schema, table, c, g, "not_measured", reason, ran_as) for c, g in cols)
-                table_outcomes.append({"table": f"{schema}.{table}", "state": "not_measured", "reason": reason})
+            refused = refusal(info, (facts or {}).get((schema, table)), facts is not None, bounds)
+            if refused:
+                state, reason = refused
+                rows.extend(_empty_row(schema, table, c, g, state, reason, ran_as) for c, g in cols)
+                table_outcomes.append({"table": f"{schema}.{table}", "state": state, "reason": reason})
                 continue
             failures: list[tuple[str, str]] = []
             for start in range(0, len(cols), COLUMNS_PER_QUERY):
                 chunk = cols[start:start + COLUMNS_PER_QUERY]
                 sql, aliases = build_table_query(schema, table, chunk, run_date)
                 try:
-                    result = conn.execute_query_isolated(sql)
+                    # One read-only transaction per query, ended at once: no lock outlives its table. Params None,
+                    # so psycopg2 never reads a "%" in a name as a placeholder.
+                    begin_read(conn, bounds)
+                    result = conn.execute_query_isolated(sql, None)
                 except Exception as exc:
                     state, reason = classify_error(exc), error_text(exc)
                     failures.append((state, reason))
                     rows.extend(_empty_row(schema, table, c, g, state, reason, ran_as) for c, g in chunk)
                     continue
-                values = result[0] if result else {}
+                finally:
+                    conn.end_transaction()
+                if not result:
+                    reason = "the aggregate query returned no row"
+                    failures.append(("not_measured", reason))
+                    rows.extend(_empty_row(schema, table, c, g, "not_measured", reason, ran_as) for c, g in chunk)
+                    continue
+                values = result[0]
                 record_ct = _value("record_ct", values.get("record_ct"))
                 chunk_rows = [_empty_row(schema, table, c, g, "measured", "", ran_as) for c, g in chunk]
                 for row in chunk_rows:

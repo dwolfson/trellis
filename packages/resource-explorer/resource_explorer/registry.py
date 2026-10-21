@@ -1017,7 +1017,7 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         table_name            TEXT NOT NULL,
         column_name           TEXT NOT NULL DEFAULT '',
         test_type             TEXT NOT NULL,
-        measure               REAL DEFAULT NULL,
+        measure               DOUBLE PRECISION DEFAULT NULL,
         record_ct             BIGINT DEFAULT NULL,
         status                TEXT NOT NULL,
         reason                TEXT DEFAULT '',

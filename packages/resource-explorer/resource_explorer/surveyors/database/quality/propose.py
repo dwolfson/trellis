@@ -131,8 +131,13 @@ def run_propose(registry, slug: str, *, row_ct_pct_threshold: float, surveyed_at
             state = "accepted"
         elif kind == "rejected" and selected is not False:
             earlier = registry.get_quality_proposal(verdict.get("proposal_id")) or {}
+            if earlier.get("check_key") != key:
+                earlier = {}
             type_changed = bool(earlier.get("general_type")) and earlier.get("general_type") != general_type
-            if type_changed or batches.flipped_since(key, verdict.get("created_at") or ""):
+            # "Since" is the batch the person judged, a scan time like every batch it is compared with; the
+            # verdict's own wall-clock time is the fallback only when that proposal cannot be found.
+            since = earlier.get("surveyed_at") or verdict.get("created_at") or ""
+            if type_changed or batches.flipped_since(key, since):
                 pass  # proposed afresh: the column is no longer what was rejected
             else:
                 state = "suppressed"

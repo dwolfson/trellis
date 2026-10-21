@@ -125,6 +125,9 @@ def test_unique_needs_more_than_500_rows():
     ("date", "D"), ("timestamp without time zone", "D"), ("timestamp(3) with time zone", "D"),
     ("time with time zone", "T"), ("time without time zone", "T"),  # upstream's ILIKE 'time with%'
     ("integer", "N"), ("numeric(10,2)", "N"), ("double precision", "N"), ("money", "N"),
+    # Postgres's internal names, as rows materialised from an Egeria survey can carry them (review L7).
+    ("int4", "N"), ("float8", "N"), ("bool", "B"), ("varchar", "A"), ("bpchar", "A"), ("timestamptz", "D"),
+    ("_int4", "X"),
     ("uuid", "X"), ("jsonb", "X"), ("ARRAY", "X"), ("character varying[]", "X"), ("USER-DEFINED", "X"), ("", "X"),
 ])
 def test_general_type_follows_the_vendored_case(catalog_type, expected):

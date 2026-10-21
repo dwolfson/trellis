@@ -168,7 +168,9 @@ def test_request_types_equal_both_registries_and_guards_equal_the_mapping():
             assert guards == list(step_outcome.produced_guards(expected[rt])), rt
     engine_doc = _declared_types(ENGINE_DOC.read_text())
     assert not set(engine_doc) & set(declared), "a step is declared by two documents"
-    assert set(declared) | set(engine_doc) == set(expected)
+    held = {eh.request_type_for_step(k) for k in eh.HELD_FROM_DECLARATION}
+    assert set(declared) | set(engine_doc) == set(expected) - held
+    assert not held & set(declared), "a held step is declared"
     # Every registry request type is one RE's engine claims, mapped to its own step key.
     supported = eh.supported_request_types()
     assert {rt: supported[rt] for rt in expected} == expected

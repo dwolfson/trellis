@@ -11,9 +11,12 @@ measure itself is read and mapped:
 
     NULL measure, or division by zero          -> not_established ("measure undefined ...")
     query error or timeout                     -> error, with Postgres's words
+    privilege error, or row-level security     -> not_permitted
+      that filters this account
     fails, severity error / warning / info     -> fail / warning / logged
     satisfies the condition                    -> pass
-    table over the row ceiling                 -> not_measured
+    table over the row ceiling, of unknown     -> not_measured (`value_profile.refusal`, shared with the profile)
+      size, a partitioned parent or not a table
     parameter that does not validate           -> not_established, quoting the value
     column or table gone from the inventory    -> not_established ("... no longer in inventory")
 
@@ -22,7 +25,8 @@ check runs from its verdict row and is labelled `rule_source = unpublished`. Whe
 from Egeria overrides the verdict's threshold, operator and severity here (design §6's table).
 
 The baseline is the last ACCEPTED one, never the current profile, so a scheduled run of this step on its own is
-valid; each result records the profile run it was measured against.
+valid; each result records the profile run it was measured against. Each table is read in its own read-only
+transaction, ended at once, so no lock outlives its table.
 """
 from __future__ import annotations
 
@@ -43,8 +47,11 @@ from resource_explorer.surveyors.database.quality.catalogue import (
 )
 from resource_explorer.surveyors.database.quality.value_profile import (
     ProfileBounds,
-    _estimates,
+    begin_read,
+    classify_error,
     error_text,
+    read_table_facts,
+    refusal,
     run_date_text,
 )
 
@@ -55,6 +62,8 @@ ANALYSIS_STEP = "run_quality_checks"
 FAIL_STATUS = {"error": "fail", "warning": "warning", "info": "logged"}
 #: Statuses that reached a conclusion; only these will become QualityAnnotations when publishing lands.
 CONCLUDED = frozenset({"pass", "warning", "fail", "logged"})
+#: A table the shared refusal rules will not read: its state -> the check's status.
+_REFUSED_STATUS = {"not_applicable": "not_measured", "not_measured": "not_measured", "not_permitted": "not_permitted"}
 RULE_UNPUBLISHED = "unpublished"
 UNDEFINED = "measure undefined (empty table / zero baseline)"
 
@@ -63,7 +72,7 @@ def _resolve(registry, key: str, verdict: dict) -> tuple[str, str, str, str] | N
     """(schema, table, column, test_type) for an accepted check: from the proposal it accepted, else parsed from
     the key when that is unambiguous. None when it cannot be told."""
     proposal = registry.get_quality_proposal(verdict.get("proposal_id"))
-    if proposal:
+    if proposal and proposal.get("check_key") == key and proposal.get("database_slug") == verdict.get("database_slug"):
         return (proposal["schema_name"], proposal["table_name"], proposal.get("column_name") or "",
                 proposal["test_type"])
     path, sep, test_type = key.rpartition("::")
@@ -157,16 +166,15 @@ def run_quality_checks(
 
     if runnable:
         with connect() as conn:
-            conn.execute_query(f"SET LOCAL statement_timeout = {int(bounds.statement_timeout_seconds) * 1000}")
-            estimates = _estimates(conn)
+            facts = read_table_facts(conn)
             for (schema, table), checks in sorted(runnable.items()):
-                estimate = estimates.get((schema, table), (tables.get((schema, table)) or {}).get("row_count"))
-                if estimate is not None and estimate > bounds.max_table_rows:
+                refused = refusal(tables.get((schema, table)) or {}, (facts or {}).get((schema, table)),
+                                  facts is not None, bounds)
+                if refused:
                     for check in checks:
-                        check["row"].update(status="not_measured", reason=(
-                            f"over the full-profile row ceiling ({int(estimate):,} > {bounds.max_table_rows:,})"))
+                        check["row"].update(status=_REFUSED_STATUS[refused[0]], reason=refused[1])
                     continue
-                _run_table(conn, schema, table, checks)
+                _run_table(conn, schema, table, checks, bounds)
 
     for row in results:
         if row["status"] in CONCLUDED:
@@ -211,25 +219,46 @@ def _failed(check: dict, exc: Exception) -> None:
     text = error_text(exc)
     if "division by zero" in text.lower():
         check["row"].update(status="not_established", reason=f"{UNDEFINED}: {text}")
+    elif classify_error(exc) == "not_permitted":
+        check["row"].update(status="not_permitted", reason=text)
     else:
         check["row"].update(status="error", reason=text)
 
 
-def _run_table(conn, schema: str, table: str, checks: list[dict]) -> None:
+def _query(conn, sql: str, bounds: ProfileBounds) -> list[dict]:
+    """One read-only transaction for one statement, ended at once so no lock outlives it. Params None, so
+    psycopg2 never reads a "%" in a name or a placeholder value as a parameter marker."""
+    try:
+        begin_read(conn, bounds)
+        return conn.execute_query_isolated(sql, None)
+    finally:
+        conn.end_transaction()
+
+
+def _no_row(check: dict) -> None:
+    check["row"].update(status="error", reason="the aggregate query returned no row")
+
+
+def _run_table(conn, schema: str, table: str, checks: list[dict], bounds: ProfileBounds) -> None:
     """One aggregate SELECT for the table's checks; on error, each check alone (TestGen's CAT fallback)."""
     try:
-        result = conn.execute_query_isolated(_select(schema, table, [c["sql"] for c in checks]))
-        values = result[0] if result else {}
+        result = _query(conn, _select(schema, table, [c["sql"] for c in checks]), bounds)
+    except Exception:
+        result = None
+    if result is not None:
         for i, check in enumerate(checks):
-            _conclude(check, values.get(f"q{i}"), values.get("record_ct"))
+            if result:
+                _conclude(check, result[0].get(f"q{i}"), result[0].get("record_ct"))
+            else:
+                _no_row(check)
         return
-    except Exception:  # noqa: S110 - each check is re-run alone below and reports its own error
-        pass
     for check in checks:
         try:
-            result = conn.execute_query_isolated(_select(schema, table, [check["sql"]]))
+            result = _query(conn, _select(schema, table, [check["sql"]]), bounds)
         except Exception as exc:
             _failed(check, exc)
             continue
-        values = result[0] if result else {}
-        _conclude(check, values.get("q0"), values.get("record_ct"))
+        if result:
+            _conclude(check, result[0].get("q0"), result[0].get("record_ct"))
+        else:
+            _no_row(check)

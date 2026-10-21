@@ -179,6 +179,17 @@ SOURCE_REPORT_INPUT = "source_report"
 #: "Link Action to Action Executor", which is not safe to repeat.
 ENGINE_HOST_STEPS = ("db_derived",)
 
+#: Registry steps held back from the engine-host declaration, with why. The generator leaves them out, and an action
+#: dispatched for one anyway completes survey-invalid with this sentence (`out_of_scope_reason`). Both quality-check
+#: steps produce no annotations until results are published (DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md §7-§8), so
+#: the publisher would complete them with an empty survey-completed report, even for a run that ran nothing.
+HELD_FROM_DECLARATION: dict[str, str] = {
+    "propose_quality_checks": ("propose_quality_checks is not run by Resource Explorer's engine host until quality "
+                               "results are published to Egeria; run it from Resource Explorer's own Run"),
+    "run_quality_checks": ("run_quality_checks is not run by Resource Explorer's engine host until quality results "
+                           "are published to Egeria; run it from Resource Explorer's own Run"),
+}
+
 #: The resource kind every admitted step targets (all are database steps today).
 ENTITY_TYPE = "database"
 
@@ -319,6 +330,8 @@ def out_of_scope_reason(step_key: str) -> str:
     Database steps run. Repository steps do not yet: those that fetch sources or call models are out of the slice
     (§5.4: the engine host's worker has no fetch budget like the queue's), and the rest because the engine host
     resolves and publishes database targets only so far (its report path is the database survey publisher)."""
+    if step_key in HELD_FROM_DECLARATION:
+        return HELD_FROM_DECLARATION[step_key]
     step = registry_steps().get(step_key)
     if step is None or step.entity_type == "database":
         return ""

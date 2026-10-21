@@ -15,6 +15,15 @@ from resource_explorer.surveyors.database.quality.catalogue import POSTGRES_DIR,
 GENERAL_TYPE_SQL = POSTGRES_DIR / "general_type.sql"
 GENERAL_TYPE_CASE_SHA256 = "b059e1e13714472f197b29f3795436317bfd72ed990dfdab904fdb6716c91476"
 
+#: Postgres's internal type names (`pg_type.typname`, which rows materialised from an Egeria survey can carry) ->
+#: the `information_schema` names the CASE is written against.
+_INTERNAL_NAMES = {
+    "int2": "smallint", "int4": "integer", "int8": "bigint", "float4": "real", "float8": "double precision",
+    "bool": "boolean", "varchar": "character varying", "bpchar": "character", "char": "character",
+    "timestamptz": "timestamp with time zone", "timestamp": "timestamp without time zone",
+    "timetz": "time with time zone", "time": "time without time zone", "decimal": "numeric",
+}
+
 _MODIFIER = re.compile(r"\(\s*(\d+)(?:\s*,\s*\d+)?\s*\)")
 
 
@@ -35,7 +44,10 @@ def _information_schema_type(catalog_type: str) -> tuple[str, int | None]:
         return "ARRAY", None  # information_schema's word for every array type
     match = _MODIFIER.search(text)
     length = int(match.group(1)) if match else None
-    return re.sub(r"\s+", " ", _MODIFIER.sub("", text)).strip(), length
+    if text.startswith("_"):
+        return "ARRAY", None  # pg_type names an array type with a leading underscore (_int4)
+    name = re.sub(r"\s+", " ", _MODIFIER.sub("", text)).strip()
+    return _INTERNAL_NAMES.get(name.lower(), name), length
 
 
 def general_type(catalog_type: str | None, character_maximum_length: int | None = None) -> str:

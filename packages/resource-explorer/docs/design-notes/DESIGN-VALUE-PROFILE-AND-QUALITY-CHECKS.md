@@ -16,7 +16,12 @@ view or foreign table) makes its checks not applicable rather than not establish
 can also be `accepted` (with the drift sentence) or `suppressed` (a live rejection), so the
 rejected-verdict "selection outcome flipped" rule can be read from the batches; the measure is
 compared with the threshold in Python rather than in a SQL `CASE`, which is what keeps a NULL
-measure from passing.
+measure from passing. After the gate review (2026-10-20): a table of unknown size (never analysed, no
+stored count) is `not_measured` rather than scanned without a bound; a partitioned parent is
+`not_applicable` (its partitions are read); row-level security that filters the account is
+`not_permitted`; each table is read in its own `READ ONLY` transaction; and the engine host does not
+declare `propose_quality_checks` or `run_quality_checks` until results are published
+(`engine_host.HELD_FROM_DECLARATION`), since they would complete with empty reports.
 
 **Inputs:**
 - `TRELLIS-EVALUATION.md` and `TRELLIS-QUALITY-DESIGN-BRIEF.md`, both in the owner's TestGen

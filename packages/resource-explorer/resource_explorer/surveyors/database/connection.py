@@ -404,6 +404,10 @@ class DatabaseConnection(ABC):
         """
         return self.execute_query(query, params)
 
+    def end_transaction(self) -> None:
+        """End the current read transaction, releasing the locks its reads took. A no-op for an engine without
+        transactions; `PostgreSQLConnection` rolls back (every caller of this is read-only)."""
+
     @abstractmethod
     def get_schema_info(self) -> dict:
         """Get database schema information (schemas, tables, columns)."""
@@ -669,6 +673,12 @@ class PostgreSQLConnection(DatabaseConnection):
         if errors:
             result["_errors"] = errors
         return result
+
+    def end_transaction(self) -> None:
+        """Roll back the current transaction: a long read run (the value profile, the quality checks) ends it per
+        table, so it never holds AccessShareLock on every table it has read until the run ends."""
+        if self._conn is not None:
+            self._conn.rollback()
 
     def _rollback_quietly(self) -> None:
         """End an aborted transaction so the connection is usable again."""

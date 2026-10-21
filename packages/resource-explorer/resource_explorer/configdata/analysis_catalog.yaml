@@ -1208,7 +1208,8 @@ database_analyses:
     resource_types: ["database"]
     intent: assessment
     perspectives: ["Steward", "Data Owner"]
-    annotation_types: ["ResourceMeasureAnnotation"]
+    # None yet: results become QualityAnnotations with the publishing change.
+    annotation_types: []
     source: local
     run_time: medium
     availability: queued
