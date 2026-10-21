@@ -264,6 +264,14 @@ class RowWrapper:
 CLAIM_LEASE_SECONDS = 1800
 
 
+class InvestigationPublishRunning(RuntimeError):
+    """A drain is writing one of this investigation's outbox rows to Egeria right now, so it cannot be deleted."""
+
+    def __init__(self, slug: str, running: int):
+        super().__init__(f"{running} publish row(s) for investigation {slug!r} are being written to Egeria now")
+        self.slug, self.running = slug, running
+
+
 class ConnectionWrapper:
     def __init__(self, raw_conn, is_postgres: bool):
         self.raw_conn = raw_conn
@@ -11550,6 +11558,185 @@ class ProjectRegistry:
             ).fetchone()
         return (row["created_by"] if row else "") or ""
 
+    # ── Deleting an investigation (permanent; no undo) ──────────────────────────────────────────────────────
+
+    #: Tables that hold rows for an investigation under (entity_type='investigation', entity_slug=<slug>). All of
+    #: them are removed with it: they exist only for it. `activity_log` is NOT here: it is history and stays.
+    INVESTIGATION_KEYED_TABLES: tuple[str, ...] = (
+        "doc_sources", "egeria_linkage_status", "entity_egeria_project_context", "group_changes",
+        "notification_subscriptions", "resource_context", "resource_curation", "resource_curator_notes",
+        "resource_feedback", "resource_journal", "resource_schedules", "resource_tags", "resource_working_set",
+        "rfa_dismissals", "survey_definition_cache", "architecture_component_verdicts",
+        "architecture_materialized_blueprints", "architecture_materialized_components",
+        "architecture_materialized_ports",
+    )
+
+    #: Every other table with an (entity_type|resource_type, slug) pair, and why a delete leaves it alone. A test
+    #: reads the schema and fails when a table appears in neither list, so a new table forces a decision here.
+    INVESTIGATION_NOT_KEYED_TABLES: dict[str, str] = {
+        "activity_log": "history: kept, and the delete writes one more row",
+        "egeria_outbox": "pending and failed rows are removed; done, dead and cancelled rows stay as history",
+        "working_set_members": "keyed by the working set (removed through investigation_resource_lists)",
+        "work_lists": "entity_type is the type of the list's members; the list keeps living, unlinked",
+        "repo_dispositions": "a resource's own disposition, not the investigation's",
+        "repo_disposition_history": "a resource's own disposition history",
+        "api_reference_documents": "per surveyed resource, never an investigation",
+        "api_reference_operations": "per surveyed resource, never an investigation",
+        "board_summary": "per surveyed resource, never an investigation",
+        "native_survey_annotations": "per surveyed resource, never an investigation",
+        "resource_sampling_settings": "per surveyed resource, never an investigation",
+        "resource_scope_events": "per surveyed resource, never an investigation",
+        "step_annotations": "per surveyed resource, never an investigation",
+        "step_runs": "per surveyed resource, never an investigation",
+        "sub_resources": "per surveyed resource, never an investigation",
+    }
+
+    @staticmethod
+    def _investigation_working_set_slugs(conn, slug: str) -> list[str]:
+        """Every working-set slug that belongs to this investigation: the ones its resource-list links name, plus
+        the ORPHANS whose derived slug is `{slug}-folio` or `{slug}-ws-<disposition>` (a working_sets row can outlive
+        its resource-list link: an interrupted cleanup, an earlier delete). An orphan is only taken when no
+        investigation links it, so a neighbour called `{slug}-ws-x` never loses its own sets."""
+        found = [r["working_set_slug"] for r in conn.execute(
+            "SELECT working_set_slug FROM investigation_resource_lists WHERE investigation_slug = ?",
+            (slug,)).fetchall()]
+        like = slug.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "-ws-%"
+        for r in conn.execute(
+                "SELECT slug FROM working_sets WHERE (slug = ? OR slug LIKE ? ESCAPE '\\') AND slug NOT IN "
+                "(SELECT working_set_slug FROM investigation_resource_lists) ORDER BY slug",
+                (f"{slug}-folio", like)).fetchall():
+            if r["slug"] not in found:
+                found.append(r["slug"])
+        return found
+
+    def investigation_egeria_collections(self, slug: str) -> list[dict]:
+        """The Egeria Collections this investigation's working sets recorded (the Folio and any disposition set,
+        orphaned ones included): `[{working_set_slug, collection_kind, disposition, guid}]`, only those with a
+        recorded GUID."""
+        with self._conn() as conn:
+            out = []
+            for ws in self._investigation_working_set_slugs(conn, slug):
+                r = conn.execute(
+                    "SELECT slug, collection_kind, disposition, egeria_collection_guid FROM working_sets "
+                    "WHERE slug = ? AND COALESCE(egeria_collection_guid, '') <> ''", (ws,)).fetchone()
+                if r:
+                    out.append({"working_set_slug": r["slug"], "collection_kind": r["collection_kind"],
+                                "disposition": r["disposition"] or "", "guid": r["egeria_collection_guid"]})
+        return sorted(out, key=lambda d: (d["collection_kind"] or "", d["working_set_slug"]))
+
+    def begin_investigation_delete(self, slug: str) -> int:
+        """The first thing a delete does, in ONE transaction: refuse if a drain is writing one of this
+        investigation's outbox rows right now, otherwise cancel every row still waiting so none can start while the
+        delete runs. Returns how many rows were cancelled.
+
+        Raises `InvestigationPublishRunning` when any row is `running` with an unexpired lease
+        (`CLAIM_LEASE_SECONDS`): a running row may be landing in Egeria this second, so it is never changed here and
+        the delete does not begin. A `running` row whose lease has run out is a dead claim, not a write in progress;
+        it is cancelled with the waiting ones. `pending` and `failed` rows become `cancelled` (history, never
+        deleted); `done`, `dead` and `cancelled` rows are not touched."""
+        now = datetime.now(timezone.utc).isoformat()
+        cutoff = (datetime.utcnow() - timedelta(seconds=CLAIM_LEASE_SECONDS)).isoformat()
+        with self._conn() as conn:
+            running = conn.execute(
+                "SELECT COUNT(*) AS n FROM egeria_outbox WHERE entity_type = 'investigation' AND entity_slug = ? "
+                "AND status = 'running' AND claimed_at > ?", (slug, cutoff)).fetchone()["n"]
+            if running:
+                raise InvestigationPublishRunning(slug, int(running))
+            cur = conn.execute(
+                "UPDATE egeria_outbox SET status = 'cancelled', claimed_at = '', completed_at = ?, "
+                "last_error = 'cancelled: the investigation is being deleted' "
+                "WHERE entity_type = 'investigation' AND entity_slug = ? AND "
+                "(status IN ('pending', 'failed') OR (status = 'running' AND claimed_at <= ?))",
+                (now, slug, cutoff))
+        return int(cur.rowcount or 0)
+
+    def latest_investigation_delete_stop(self, slug: str) -> dict | None:
+        """The delete of this investigation that stopped part-way and has not been followed by a finished one: the
+        latest `activity_log` row with operation 'delete' and entity_type 'investigation' for the slug, when its
+        status is 'error' (a later 'ok' row clears it). Returns the stop in the shape the delete answers with
+        (`errors`, `archived`, `remaining`, `left`, `foreign`, `choice`, `ts`), or None."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT ts, status, detail FROM activity_log WHERE operation = 'delete' AND "
+                "entity_type = 'investigation' AND entity_slug = ? ORDER BY ts DESC LIMIT 1", (slug,)).fetchone()
+        if not row or row["status"] != "error":
+            return None
+        try:
+            d = json.loads(row["detail"] or "{}")
+        except ValueError:
+            d = {}
+        return {"ts": row["ts"], "choice": d.get("choice", ""), "errors": d.get("errors") or [],
+                "archived": d.get("egeria_archived") or [], "unlinked": d.get("egeria_unlinked") or [],
+                "remaining": d.get("egeria_remaining") or [], "left": d.get("egeria_left") or [],
+                "foreign": d.get("egeria_foreign") or [], "local_deleted": False}
+
+    # ── Archive proof rows for a deleted investigation (no DDL) ──
+    #
+    # One append-only row per Egeria element an investigation delete archived, in the commit-proof table the
+    # catalogue already uses, under the key "investigation/<slug>" (a slash cannot occur in a database slug). They
+    # are NEVER removed with the investigation: they are the history that links the archived Project's GUID, so a
+    # restore stays possible. The status words on screen ("archived in Egeria · <date>") derive from these rows.
+    ARCHIVE_NODE = "investigation_element"
+
+    @staticmethod
+    def investigation_proof_key(slug: str) -> str:
+        return f"investigation/{slug}"
+
+    def append_investigation_archive_proof(self, slug: str, *, proof: str, kind: str, element_guid: str,
+                                           qualified_name: str = "", detail: dict | None = None,
+                                           recorded_by: str = "", read_at: str | None = None) -> int:
+        return self.append_catalogue_commit_proof(
+            self.investigation_proof_key(slug), proof=proof, node_kind=self.ARCHIVE_NODE, schema_name=kind,
+            element_guid=element_guid, qualified_name=qualified_name, detail=detail,
+            recorded_by=recorded_by, read_at=read_at)
+
+    def list_investigation_archive_proofs(self, slug: str) -> list[dict]:
+        """Every archive observation for an investigation's Egeria elements, oldest first (survives its delete)."""
+        return [r for r in self.list_catalogue_commit_proofs(self.investigation_proof_key(slug))
+                if r["node_kind"] == self.ARCHIVE_NODE]
+
+    def delete_investigation_local(self, slug: str, activity: "ActivityEntry | None" = None) -> dict:
+        """Remove the investigation and everything that exists only for it, in ONE transaction, and write
+        `activity` (when given) in that same transaction. Returns the rows removed per table.
+
+        Removed: members and dispositions (the working-set members), the working-set and resource-list records
+        (orphans of the derived `{slug}-folio` / `{slug}-ws-*` slugs too), every `INVESTIGATION_KEYED_TABLES` row
+        (journal entries, context, tags, notes, ...) and any outbox row still waiting (pending or failed; the
+        delete already cancelled them, this catches one queued since). Kept: the activity log, and done, dead and
+        cancelled outbox rows (history). A saved work list that named it stays and is unlinked.
+        A `running` outbox row is never deleted here: if a drain is writing one, this raises
+        `InvestigationPublishRunning` before changing anything and the transaction rolls back.
+        Nothing here touches Egeria; the caller has already done whatever Egeria side was asked for."""
+        counts: dict[str, int] = {}
+        cutoff = (datetime.utcnow() - timedelta(seconds=CLAIM_LEASE_SECONDS)).isoformat()
+        with self._conn() as conn:
+            running = conn.execute(
+                "SELECT COUNT(*) AS n FROM egeria_outbox WHERE entity_type = 'investigation' AND entity_slug = ? "
+                "AND status = 'running' AND claimed_at > ?", (slug, cutoff)).fetchone()["n"]
+            if running:
+                raise InvestigationPublishRunning(slug, int(running))
+            for ws in self._investigation_working_set_slugs(conn, slug):
+                counts["working_set_members"] = counts.get("working_set_members", 0) + conn.execute(
+                    "DELETE FROM working_set_members WHERE working_set_slug = ?", (ws,)).rowcount
+                counts["working_sets"] = counts.get("working_sets", 0) + conn.execute(
+                    "DELETE FROM working_sets WHERE slug = ?", (ws,)).rowcount
+            counts["investigation_resource_lists"] = conn.execute(
+                "DELETE FROM investigation_resource_lists WHERE investigation_slug = ?", (slug,)).rowcount
+            for table in self.INVESTIGATION_KEYED_TABLES:
+                counts[table] = conn.execute(
+                    f"DELETE FROM {table} WHERE entity_type = 'investigation' AND entity_slug = ?",  # noqa: S608
+                    (slug,)).rowcount
+            counts["egeria_outbox"] = conn.execute(
+                "DELETE FROM egeria_outbox WHERE entity_type = 'investigation' AND entity_slug = ? "
+                "AND status IN ('pending', 'failed')", (slug,)).rowcount
+            counts["work_lists_unlinked"] = conn.execute(
+                "UPDATE work_lists SET investigation = '' WHERE investigation = ?", (slug,)).rowcount
+            counts["investigations"] = conn.execute(
+                "DELETE FROM investigations WHERE slug = ?", (slug,)).rowcount
+            if activity is not None:
+                self._insert_activity(conn, activity)
+        return {k: v for k, v in counts.items() if v}
+
     def set_working_set_egeria_collection(self, ws_slug: str, guid: str,
                                          qualified_name: str = "") -> dict | None:
         """Record the Egeria Collection this working set became.
@@ -13586,25 +13773,31 @@ class ProjectRegistry:
 
     def write_activity(self, entry: ActivityEntry) -> None:
         with self._conn() as conn:
-            conn.execute(
-                """INSERT INTO activity_log
-                   (id, ts, operation, intent, entity_type, entity_slug,
-                    entity_name, entity_location, status, summary, detail,
-                    items_json, annotations_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                     status=excluded.status,
-                     summary=excluded.summary,
-                     detail=excluded.detail,
-                     items_json=excluded.items_json,
-                     annotations_json=excluded.annotations_json""",
-                (
-                    entry.id, entry.ts, entry.operation, entry.intent,
-                    entry.entity_type, entry.entity_slug, entry.entity_name,
-                    entry.entity_location, entry.status, entry.summary, entry.detail,
-                    json.dumps(entry.items), json.dumps(entry.annotations),
-                ),
-            )
+            self._insert_activity(conn, entry)
+
+    @staticmethod
+    def _insert_activity(conn, entry: ActivityEntry) -> None:
+        """The activity upsert, on a connection the caller owns (so a write can put its activity row in the same
+        transaction as the change it records)."""
+        conn.execute(
+            """INSERT INTO activity_log
+               (id, ts, operation, intent, entity_type, entity_slug,
+                entity_name, entity_location, status, summary, detail,
+                items_json, annotations_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 status=excluded.status,
+                 summary=excluded.summary,
+                 detail=excluded.detail,
+                 items_json=excluded.items_json,
+                 annotations_json=excluded.annotations_json""",
+            (
+                entry.id, entry.ts, entry.operation, entry.intent,
+                entry.entity_type, entry.entity_slug, entry.entity_name,
+                entry.entity_location, entry.status, entry.summary, entry.detail,
+                json.dumps(entry.items), json.dumps(entry.annotations),
+            ),
+        )
 
     def list_activity(
         self,

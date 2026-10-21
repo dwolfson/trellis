@@ -244,7 +244,9 @@ async def get_investigation(slug: str) -> dict:
     inv = _registry().get_investigation(slug)
     if not inv:
         raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
-    return inv
+    # A delete that stopped part-way and was not followed by a finished one: read from the activity log, so the page
+    # shows what remains after a reload, not just in the session that pressed Delete.
+    return {**inv, "delete_stop": _registry().latest_investigation_delete_stop(slug)}
 
 
 @router.get("/{slug}/members")
@@ -480,6 +482,82 @@ async def update_investigation(slug: str, req: InvestigationUpdate) -> dict:
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+def _delete_context(slug: str, *, need_promoted: bool):
+    """The shared front of the delete routes: the row (404 as `get_investigation`), the caller's rights (403 with
+    words), and, for an Egeria step, that the investigation was promoted (400)."""
+    from resource_explorer.a2a_auth import caller
+    from resource_explorer.investigation_delete import WORDS, delete_rights
+
+    reg = _registry()
+    inv = reg.get_investigation(slug)
+    if not inv:
+        raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
+    identity = caller()
+    allowed, words = delete_rights(inv, identity)
+    if not allowed:
+        raise HTTPException(status_code=403, detail=words)
+    if need_promoted and not (inv.get("egeria_project_guid") or "").strip():
+        raise HTTPException(status_code=400, detail=WORDS["not_promoted"])
+    return reg, inv, identity
+
+
+@router.get("/{slug}/delete-preview")
+async def delete_investigation_preview(slug: str) -> dict:
+    """What the Delete confirm shows for a promoted investigation, from READS ONLY (nothing is written anywhere):
+    whether the ISSUE-117 archive block is on (the Egeria choice is then refused, with the block's sentence), and every
+    element anchored to the Project that Resource Explorer did not create, by type, author and date. `token` is
+    sent back with the delete; the delete refuses, writing nothing, if that list has changed since.
+
+    404 / 403 / 400 as the delete itself. A read of Egeria that fails is a 200 with `ok: false` and `error`."""
+    import asyncio
+
+    from resource_explorer.investigation_delete import InvestigationDeleter
+
+    reg, _inv, _identity = _delete_context(slug, need_promoted=True)
+    return await asyncio.to_thread(InvestigationDeleter(reg).preview, slug)
+
+
+@router.delete("/{slug}")
+async def delete_investigation(slug: str, egeria: bool = False, confirmed: str = "") -> dict:
+    """Delete an investigation: permanent in Resource Explorer. Its owner or a Portal admin or curator only.
+
+    `?egeria=false` (default) deletes in Resource Explorer only: the Egeria Project, its working-set Collection and
+    its journal Notes stay in Egeria. `?egeria=true` ARCHIVES in Egeria (never deletes): the Project, with everything
+    anchored to it, in one Egeria operation, as the signed-in person, and deletes locally only if that fully
+    succeeded (`investigation_delete`). `confirmed` is the `token` of `GET .../delete-preview`.
+
+    404 when missing or not visible to the caller (exactly as `get_investigation`); 403, with words, when the caller
+    is neither the owner nor an admin; 400 for `egeria=true` on an investigation that was never promoted; 409 while
+    a publish for it is being written (checked as the first step of the delete itself, in one transaction with the
+    cancelling of its waiting publish rows) and 409 with the block's own sentence for `egeria=true` while the
+    ISSUE-117 archive/delete block is ON. A partial Egeria failure is a 200 with `ok: false`, `archived`, `remaining`
+    and `errors` (Egeria's words), and the local investigation is kept.
+    """
+    import asyncio
+
+    from resource_explorer.registry import InvestigationPublishRunning
+    from resource_explorer.investigation_delete import (
+        CHOICE_RE_AND_EGERIA,
+        CHOICE_RE_ONLY,
+        WORDS,
+        ArchiveBlocked,
+        InvestigationDeleter,
+    )
+
+    reg, _inv, identity = _delete_context(slug, need_promoted=egeria)
+    choice = CHOICE_RE_AND_EGERIA if egeria else CHOICE_RE_ONLY
+    # In a thread, with the caller's context (asyncio.to_thread copies it): pyegeria's synchronous methods drive
+    # their own event loop, and `Caller()` reads the signed-in person from the ContextVar.
+    try:
+        return (await asyncio.to_thread(
+            InvestigationDeleter(reg).run, slug, choice,
+            by=identity.user_id, role=(getattr(identity, "role", "") or ""), confirmed=confirmed)).as_dict()
+    except ArchiveBlocked as blocked:
+        raise HTTPException(status_code=409, detail=blocked.words)
+    except InvestigationPublishRunning:
+        raise HTTPException(status_code=409, detail=WORDS["publish_running"])
 
 
 @router.post("/{slug}/reclassify")
