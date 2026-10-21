@@ -56,6 +56,7 @@ import {
   loadPurposes, purposesNow, purposePickerHtml, readPurposePicker, wirePurposePicker, purposesSummaryHtml,
 } from '/static/next/purposes.js';
 import { openDialog, closeCellDetail } from '/static/next/worklist.js';
+import { renderMarkdown } from '/static/next/markdown.js';
 import { saveCsv } from '/static/next/download.js';
 import { inPageConfirm } from '/static/next/confirm-dialog.js';
 import { cue } from '/static/next/stages/repo-manifest.js';
@@ -475,6 +476,8 @@ async function loadJournal(inv, stale) {
     toSend = plan.to_send || 0;
   } catch { /* leaves the words off */ }
   if (stale()) return;
+  const bodies = await Promise.all(entries.map((e) => renderMarkdown(e.body)));
+  if (stale()) return;
   const promoted = Boolean(inv.egeria_project_guid);
   const where = promoted
     ? 'Your entries go to the Egeria Project as Notes when you publish them.'
@@ -487,12 +490,12 @@ async function loadJournal(inv, stale) {
       <span data-journal-publish-note class="text-caveat text-ink-muted"></span>
     </div>
     <p class="mb-s2 text-caveat text-ink-muted">${esc(where)}</p>
-    ${entries.length ? entries.map((e) => `
+    ${entries.length ? entries.map((e, i) => `
       <div class="mb-s2 rounded-sm border border-rule p-s2">
         <div class="text-caveat text-ink-muted">${esc(e.author)} · ${esc(String(e.written_at).slice(0, 10))}${
           e.compile_id ? ` · compile ${esc(String(e.compile_id).slice(0, 8))}` : ''}${
           words[e.id] ? ` · ${esc(words[e.id])}` : ''}</div>
-        <div class="whitespace-pre-wrap text-answer text-ink">${esc(e.body)}</div>
+        <div data-journal-body class="min-w-0 break-words text-answer text-ink">${bodies[i]}</div>
       </div>`).join('')
       : '<p class="text-caveat text-ink-muted">No entries yet. Use “add to investigation journal” under a chat answer.</p>'}`;
   host.querySelector('[data-act="inv-journal-publish"]')?.addEventListener('click', async (e) => {

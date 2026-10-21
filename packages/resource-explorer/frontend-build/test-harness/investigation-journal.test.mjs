@@ -5,10 +5,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { createRequire } from 'node:module';
 import { makeDomEnvironment, ensureLoaderRegistered } from './dom-harness.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const INDEX_HTML = fs.readFileSync(path.resolve(HERE, '../../resource_explorer/web/static/next/index.html'), 'utf8');
+// The page loads marked with a <script> tag, which jsdom never runs: hand it the same vendored file.
+globalThis.marked = createRequire(import.meta.url)('../../resource_explorer/web/static/vendor/marked.min.js');
 const tick = (ms = 60) => new Promise((r) => setTimeout(r, ms));
 const text = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 
@@ -162,4 +165,37 @@ test('an entry that carries a compile shows it in its header', async () => {
   const t = await setUp({ journal: { entries: [
     { id: 'e1', author: 'me', written_at: '2026-10-19T10:00:00+00:00', body: 'x', compile_id: 'ab12cd34ef56', suggested_to: [] }], suggested_to: [] } });
   assert.match(text(t.document.getElementById('inv-journal')), /me · 2026-10-19 · compile ab12cd34/);
+});
+
+const MD = '**bold words**\n\n- first item\n- second item\n\n| a | b |\n|---|---|\n| 1 | 2 |\n';
+
+test('an entry written in markdown shows bold, a list and a table as elements, inside a scroller', async () => {
+  const t = await setUp({ journal: { entries: [
+    { id: 'e1', author: 'alice', written_at: '2026-10-19T10:00:00+00:00', body: MD, compile_id: 'abcdef123456', suggested_to: [] },
+  ], suggested_to: [] }, state: { notes: [{ id: 'e1', word: 'published' }], to_send: 0 } });
+  const body = t.document.querySelector('[data-journal-body]');
+  assert.equal(body.querySelector('strong').textContent, 'bold words');
+  assert.equal(body.querySelectorAll('ul li').length, 2);
+  assert.equal(body.querySelectorAll('table td').length, 2);
+  assert.match(body.querySelector('table').parentElement.className, /overflow-x-auto/);
+  assert.doesNotMatch(body.textContent, /\*\*|\|---/);
+  // the metadata line is unchanged
+  const entry = body.parentElement;
+  assert.equal(text(entry.firstElementChild), 'alice · 2026-10-19 · compile abcdef12 · published');
+});
+
+test('hostile markup in an entry is inert: no script, no handler, no javascript: link, no image', async () => {
+  const evil = '<script>window.__x=1</script>\n\n<img src=x onerror="window.__x=2">\n\n[click](javascript:alert(1))\n\n'
+    + '[ok](https://example.com/p)\n\n<a href="javascript:alert(2)" onclick="alert(3)">raw</a>\n\n![pic](https://example.com/p.png)';
+  const t = await setUp({ journal: { entries: [
+    { id: 'e1', author: 'mallory', written_at: '2026-10-19T10:00:00+00:00', body: evil, suggested_to: [] },
+  ], suggested_to: [] } });
+  const body = t.document.querySelector('[data-journal-body]');
+  assert.equal(body.querySelectorAll('script, img, iframe').length, 0);
+  for (const el of body.querySelectorAll('*')) {
+    for (const a of el.attributes) assert.doesNotMatch(a.name, /^on/i);
+  }
+  for (const a of body.querySelectorAll('a')) assert.doesNotMatch(a.getAttribute('href') || '', /^javascript:/i);
+  assert.equal([...body.querySelectorAll('a')].find((a) => a.textContent === 'ok').getAttribute('href'), 'https://example.com/p');
+  assert.equal(globalThis.window.__x, undefined);
 });
