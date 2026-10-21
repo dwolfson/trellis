@@ -1733,14 +1733,14 @@ class ProjectRegistry:
             if self.database_url not in ProjectRegistry._pg_schema_ready:
                 with ProjectRegistry._pg_cache_lock:
                     if self.database_url not in ProjectRegistry._pg_schema_ready:
-                        self._init_schema()
+                        self._run_schema_setup()
                         ProjectRegistry._pg_schema_ready.add(self.database_url)
                         ran_schema_init = True
         else:
             self.engine = create_engine(
                 self.database_url, pool_pre_ping=True, pool_recycle=1800,
             )
-            self._init_schema()
+            self._run_schema_setup()
             ran_schema_init = True
         _elapsed_ms = (_time.perf_counter() - _t0) * 1000
         if _elapsed_ms > 5:
@@ -2104,6 +2104,49 @@ class ProjectRegistry:
                     if name and name.replace("_", "").isalnum():
                         return name
         return "resource_explorer"
+
+    def _table_names(self) -> set[str]:
+        """Table names in this registry's schema: information_schema for the
+        pinned schema on Postgres, sqlite_master on SQLite. One query."""
+        with self._conn() as conn:
+            if self.database_url.startswith("postgresql"):
+                rows = conn.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = ? AND table_type = 'BASE TABLE'",
+                    (self._search_path_schema(),),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' "
+                    "AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+        return {r[0] for r in rows}
+
+    def _run_schema_setup(self) -> None:
+        """Run `_init_schema` and log exactly one INFO line saying what it
+        changed. Only called where setup actually runs (once per URL per
+        process on Postgres), never per request. The introspection can never
+        fail start-up, and a failure is reported as "not checked", never as
+        "no schema change"."""
+        log = logging.getLogger(__name__)
+        try:
+            before = self._table_names()
+        except Exception as exc:  # noqa: BLE001 - introspection must not block start-up
+            before = None
+            check_error = type(exc).__name__
+        self._init_schema()
+        if before is None:
+            log.info("registry: schema change not checked (%s)", check_error)
+            return
+        try:
+            created = sorted(self._table_names() - before)
+        except Exception as exc:  # noqa: BLE001
+            log.info("registry: schema change not checked (%s)", type(exc).__name__)
+            return
+        if created:
+            log.info("registry: created %d tables: %s", len(created), ", ".join(created))
+        else:
+            log.info("registry: no schema change")
 
     def _init_schema(self) -> None:
         with self._conn() as conn:
