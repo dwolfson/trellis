@@ -99,8 +99,13 @@ def start_scheduler() -> None:
     """
     global _started, _stop_event, _thread, _readback_thread
     with _lock:
-        if _started and _thread is not None and _thread.is_alive():
+        # BOTH threads: a tick thread that is up while the read-back thread died (or the reverse) is a half-started
+        # scheduler, and returning here would leave it that way.
+        if (_started and _thread is not None and _thread.is_alive()
+                and _readback_thread is not None and _readback_thread.is_alive()):
             return
+        if _stop_event is not None:
+            _stop_event.set()        # a half-started pair: its surviving thread leaves at its next wait, never doubles
         _started = True
         _stop_event = threading.Event()
         _thread = threading.Thread(
@@ -244,7 +249,9 @@ def _sweep_native_surveys() -> None:
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
-    if not registry.list_in_flight_native_survey_runs(limit=1):
+    # A run the sweep has stopped retrying is not work: it is skipped here exactly as the sweep skips it.
+    if not registry.list_in_flight_native_survey_runs(
+            limit=1, skip=lambda r: native_survey_run._row_gave_up(registry, r)):
         return
     # The registration port is the survey port plus the reads a registration run needs.
     with native_survey_run.port_session(catalog_and_survey.PyegeriaRegistrationPort()) as port:

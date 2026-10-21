@@ -47,3 +47,26 @@ test('a completed run shows the server\'s count label in the report button, else
   const bare = text(ns.nativeSurveyStatusHtml({ run: { ...run, count_label: '' } }));
   assert.match(bare, /6 annotations ›/); assert.doesNotMatch(bare, /on the report/);
 });
+
+// The sweep gave up on the report (20 tries or 24 h): the server's terminal words, no spinner cue, a refresh that retries.
+const gaveUp = (state, words) => ({ run: { state, egeria_status: 'COMPLETED', read_at: iso(3 * 60e3), report_guid: '', error: '',
+  not_checked_since: '', read_gave_up: true, read_gave_up_words: words, annotation_count: null } });
+
+test('awaiting_report that gave up says "report not read after 20 tries" with a refresh button and no cue', () => {
+  const h = ns.nativeSurveyStatusHtml(gaveUp('awaiting_report', 'report not read after 20 tries · refresh to retry'));
+  assert.match(text(h), /report not read after 20 tries refresh to retry/);
+  assert.match(h, /data-native-gave-up/);
+  assert.match(h, /<button[^>]*data-native-check-now[^>]*>refresh to retry<\/button>/);
+  assert.doesNotMatch(text(h), /not checked since|not read into RE yet/);
+});
+
+test('report_incomplete that gave up says "report incomplete after 20 tries"', () => {
+  const t = text(ns.nativeSurveyStatusHtml(gaveUp('report_incomplete', 'report incomplete after 20 tries · refresh to retry')));
+  assert.match(t, /report incomplete after 20 tries refresh to retry/);
+  assert.doesNotMatch(t, /reading it again/);
+});
+
+test('inside the bound the waiting words are unchanged', () => {
+  const t = text(ns.nativeSurveyStatusHtml({ run: { state: 'report_incomplete', egeria_status: 'COMPLETED', read_at: iso(1000), error: '', read_gave_up: false } }));
+  assert.match(t, /RE's copy of the report is incomplete; reading it again/);
+});
