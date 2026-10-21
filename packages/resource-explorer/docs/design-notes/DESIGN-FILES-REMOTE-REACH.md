@@ -37,11 +37,32 @@ failed". Understanding shows the three the same way, each report carrying
 Egeria could not reach the path" or "… · over SFTP from `<host>` · Egeria
 has no reach to this host".
 
-**Mapping (outcome 1).** The canonical mount step 1 already records is the
-path as Egeria's container sees it; the probe verifies it by asking the
-engine host to stat it, never trusting the typed value. A deployment-level
-prefix map (host prefix to container prefix, read from the compose
-mounts) pre-fills the field later, from Admin; not in this note.
+**Mapping (outcome 1), corrected 2026-10-21 from Egeria's source.** The
+canonical mount step 1 records is the path as Egeria's container sees
+it. There is no cheap stat: the only engine-host call that tests a path
+is a full Folder Survey launch (`FolderSurveyService` ignores
+`CHECK_ASSET`), so a probe must never launch a survey. Verification is in
+two honest parts: at attach-root, a mounted-prefix check against a small
+deployment-level prefix map read once from the platform's compose mounts
+(host prefix to container prefix), recorded as "expected reachable by
+Egeria · under `/deployments/…` · unverified"; then the first Egeria-led
+survey is the verification, a completed Folder Survey writing "Egeria can
+read … · verified `<date>`", and `BASIC-FILE-CONNECTOR-404-001` writing
+"Egeria cannot read … · `<date>`" with the lever flipping to RE-led for
+the next run and the failed launch kept as evidence. Mandy item: a stat
+or exists request type for the file survey service.
+
+**The file-name log cannot be turned off.** `FolderSurveyService` adds
+"Profile File Names to External Log" unconditionally and never reads
+`ignoreAnalysisSteps`. So on every Egeria-led survey Egeria writes a
+file-name CSV inside its container; RE never reads, stores or shows it,
+and the Egeria-led report's detail line says so. A path whose file names
+are themselves sensitive is registered RE-led on purpose (a later
+control). Mandy item: honour `ignoreAnalysisSteps`.
+
+**Inaccessible files.** Egeria-led gives the count (the list lives in a
+CSV asset behind the request for action); RE-led gives the paths. The
+view says which.
 
 ## 3. Outcome 3: remote file systems
 
