@@ -2,7 +2,6 @@
 2026-10-07, DESIGN-FILE-TYPES-AS-ANNOTATIONS.md). Recording fakes only: no Egeria, no network."""
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -47,6 +46,7 @@ def _by_name(anns):
 
 
 # ── (1) the publish emits exactly Egeria's annotation types and names ────────────────────────
+
 
 class TestEgeriaNamesVerbatim:
     def test_names_and_types_for_a_fixture_repository(self, registry):
@@ -162,9 +162,9 @@ class TestEgeriaNamesVerbatim:
 
 # ── (2) the press is retired ─────────────────────────────────────────────────────────────────
 
+
 class TestPressRetired:
     @pytest.mark.parametrize("method,path,body", [
-        ("post", "/api/egeria/egeria_git/catalog-elements", {"elements": [{"label": "Python", "file_count": 1}]}),
         ("post", "/api/egeria/egeria_git/file-types/commit", {"elements": [{"label": "Python", "file_count": 1}]}),
         ("get", "/api/egeria/egeria_git/file-types", None),
     ])
@@ -180,13 +180,11 @@ class TestPressRetired:
         fake.add_capability_asset_use.side_effect = lambda *a, **k: calls.append(("link", a, k))
         monkeypatch.setattr("pyegeria.AssetMaker", lambda *a, **k: fake)
         registry.set_egeria_asset_guid("egeria_git", "asset-1")
-        client.post("/api/egeria/egeria_git/catalog-elements", json={"elements": [{"label": "Python", "file_count": 1}]})
         client.post("/api/egeria/egeria_git/file-types/commit", json={"elements": [{"label": "Python", "file_count": 1}]})
         assert calls == []
         assert not hasattr(rp, "FileTypeGateway") and not hasattr(rp, "file_types_commit") and not hasattr(rp, "file_types_preview")
         import inspect
         from resource_explorer.web.routes import egeria as routes
-        assert "create_asset" not in inspect.getsource(routes.catalog_elements)
         assert "DataSetProperties" not in inspect.getsource(routes)
 
     def test_measurements_read_back_old_datasets_as_history_with_no_write(self, client, registry):
@@ -279,6 +277,7 @@ class TestDisplayName:
 
 # ── review fixes ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestEmptyInventoryIsNotMeasuredZero:
     def test_builder_returns_nothing_for_an_empty_inventory(self, tmp_path):
         r = ProjectRegistry(db_path=str(tmp_path / "e.db"))
@@ -363,7 +362,7 @@ class TestRetiredRequestModelGone:
 
 class TestRetiredRouteAnswers410BeforeValidating:
     def test_malformed_body_still_gets_410(self, client):
-        for path in ("/api/egeria/egeria_git/catalog-elements", "/api/egeria/egeria_git/file-types/commit"):
+        for path in ("/api/egeria/egeria_git/file-types/commit",):
             r = client.post(path, json={"elements": "not a list"})
             assert r.status_code == 410 and r.json()["detail"] == SENTENCE
             r = client.post(path, content=b"{not json", headers={"content-type": "application/json"})

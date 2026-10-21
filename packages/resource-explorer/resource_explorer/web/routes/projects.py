@@ -836,13 +836,10 @@ class AnalysisRunResult(BaseModel):
 # functions are simply reachable from the CLI and the run queue now as well as
 # from here. The names below are the seams this module and its tests use.
 from resource_explorer.workflows.analysis import (  # noqa: E402
-    STAGE_BATCH_ANALYSIS_ID as _STAGE_BATCH_ANALYSIS_ID,
     execute_and_record_analysis as _run_single_analysis_background_impl,
-    execute_and_record_stage_batch as _run_stage_batch_background_impl,
     assess_freshness as _assess_freshness,
     estimate_run_cost as _estimate_run_cost,
     resolve_analysis_plan as _resolve_analysis_plan,
-    resolve_stage_step_keys as _resolve_stage_step_keys,
     run_analysis as _run_analysis_workflow,
 )
 
@@ -859,11 +856,6 @@ def _run_single_analysis_sync(slug: str, analysis_id: str, is_ingest: bool,
 def _run_single_analysis_background(slug: str, analysis_id: str, activity_id: str,
                                     *, publish: str | None = None) -> None:
     _run_single_analysis_background_impl(slug, analysis_id, activity_id, publish=publish)
-
-
-def _run_stage_batch_background(slug: str, stage: str, step_keys: list[str],
-                                activity_id: str) -> None:
-    _run_stage_batch_background_impl(slug, stage, step_keys, activity_id)
 
 
 @router.post("/{slug}/analyses/{analysis_id}/run")
@@ -1015,92 +1007,6 @@ async def run_single_analysis(slug: str, analysis_id: str,
         "status": "started", "activity_id": activity_id, "run_id": run_id,
         **result,
     }
-
-
-@router.post("/{slug}/analyses/stage/{stage}/run")
-async def run_stage_batch(slug: str, stage: str) -> dict:
-    """'Run all <Stage>' — the pinned, visually-distinct action at the top of
-    Scouting/Discovery/Assessment/Analysis's card grids (2026-09-03, direct
-    feedback: "make it first and separate so a user can easily just select that
-    and be confident that all the surveys are being run").
-
-    Deliberately NOT a re-use of the existing per-stage Egeria Survey
-    Definitions — those cover 3/3, 5/7, 8/14 and 7/10 of each stage's individual
-    catalog entries respectively (measured 2026-09-03), so pinning one of them
-    under a "Run all" label would silently under-run the stage. The step set is
-    derived live from the catalog instead; see
-    workflows.analysis.resolve_stage_step_keys.
-
-    **Enqueues; does not run** — same change as the per-analysis route above,
-    same unchanged response contract.
-    """
-    from resource_explorer.activity_logger import log_analysis_run
-    from resource_explorer.registry import ProjectRegistry
-
-    registry = ProjectRegistry()
-    project = registry.get(slug)
-    if not project:
-        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
-
-    step_keys, analysis_count = _resolve_stage_step_keys(stage)
-    if not step_keys:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Stage '{stage}' has no batch-runnable local analyses.",
-        )
-
-    activity_id = log_analysis_run(
-        registry, "repo", slug, project.display_name, "running",
-        f"Running all {len(step_keys)} {stage} step(s) on {slug}…",
-        _STAGE_BATCH_ANALYSIS_ID, published=None,
-    )
-    run_id = registry.enqueue_run(
-        "stage_batch", {"slug": slug, "stage": stage, "step_keys": step_keys},
-        result_ref=activity_id, requested_by=_requested_by(),
-    )
-    log.info("enqueued stage_batch run %s for %s/%s (activity %s)",
-             run_id, slug, stage, activity_id)
-
-    return {"status": "started", "activity_id": activity_id, "run_id": run_id,
-            "step_count": len(step_keys), "analysis_count": analysis_count}
-
-
-@router.get("/{slug}/analyses/last-activity")
-async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
-    """{analysis_id: {last_run_at, last_run_status, last_published_at}} for
-    every local AnalysisKind — the Analyses cards' equivalent of Survey
-    Definitions' /candidates endpoint already returning last_run_at/
-    last_published_at inline. Kept as its own lightweight endpoint rather
-    than folded into GET /api/analyses/{resource_type} (analyses.py):
-    that route is resource-type-wide and shared/cached across every repo of
-    the same type (see its own module docstring) — deliberately has no repo
-    slug at all. The frontend fetches this alongside GET /api/schedules/...
-    in _loadAnalysisCatalogPanel() and merges both client-side into each
-    card, same pattern that route already used for per-card schedule state.
-
-    last_published_at is real per-analysis-id data even though this route
-    is new: get_last_published_annotation_types() (added earlier the same
-    day for the Survey Results dashboards) already has everything needed —
-    each analysis_id's own annotation_types (analysis_catalog.yaml) is the
-    same join key used there, just applied per-analysis instead of
-    per-dashboard-of-several-analyses.
-
-    The actual attribution logic (two-tier publish attribution, the
-    measured/never_run/not_established run basis, __auto_publishes__) now
-    lives in `workflows.analysis.build_analysis_last_activity` — generalized
-    there so `GET /api/databases/{slug}/analyses/last-activity` and the
-    filesystem equivalent (`web/routes/databases.py`, `web/routes/
-    filesystems.py`) can share it rather than fork this whole function; this
-    route is now a thin 404-translating adapter, same pattern as the
-    `/depth-offer` and `/catalogue-depth-offer` routes below."""
-    from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.workflows.analysis import build_analysis_last_activity
-
-    registry = ProjectRegistry()
-    if not registry.get(slug):
-        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
-
-    return build_analysis_last_activity(registry, "repo", slug)
 
 
 @router.get("/{slug}/depth-offer")

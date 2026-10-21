@@ -154,19 +154,9 @@ def list_all_tags() -> list[dict]:
     return _registry().list_all_tags()
 
 
-# NOTE: /tags/{tag}/resources is declared before /tags/{entity_type}/{slug}
-# deliberately — both are 2-segment paths under /tags, and Starlette matches
-# routes in declaration order, so a route declared after an equally-shaped
-# path-param route is unreachable (the same class of bug already documented
-# in analyses.py's /perspectives route).
 @router.get("/tags/{tag}/resources")
 def resources_by_tag(tag: str) -> list[dict]:
     return _registry().list_resources_by_tag(tag)
-
-
-@router.get("/tags/{entity_type}/{slug}")
-def list_tags(entity_type: str, slug: str) -> list[str]:
-    return _registry().list_resource_tags(entity_type, slug)
 
 
 @router.get("/tags-detail/{entity_type}/{slug}")
@@ -459,21 +449,9 @@ def add_feedback(entity_type: str, slug: str, body: FeedbackCreate, request: Req
 
 # ── Curator notes ────────────────────────────────────────────────────────────
 
-class NoteCreate(BaseModel):
-    note: str
-
-
 @router.get("/notes/{entity_type}/{slug}")
 def list_notes(entity_type: str, slug: str) -> list[dict]:
     return _registry().list_curator_notes(entity_type, slug)
-
-
-@router.post("/notes/{entity_type}/{slug}")
-def add_note(entity_type: str, slug: str, body: NoteCreate, request: Request) -> dict:
-    author = _require_author(request, "add a note")
-    if not body.note.strip():
-        raise HTTPException(status_code=400, detail="note must not be empty")
-    return _registry().add_curator_note(entity_type, slug, body.note, author=author)
 
 
 @router.delete("/notes/{note_id}")
@@ -506,17 +484,6 @@ def delete_note(note_id: str, request: Request) -> dict:
 # (_architecture_recovery_results) merges the latest verdict onto each
 # component it returns.
 
-class ComponentVerdictCreate(BaseModel):
-    scope_locator: str
-    verdict: str  # "accepted" | "rejected" | "retyped"
-    retyped_to: str = ""  # required (and only meaningful) when verdict="retyped"
-    note: str = ""
-    # Classic's rows are one component each: an accept or reject there is about THIS component, not the ones
-    # under its path (the Next tree's "this component only" mark, component_tree.ONLY_THIS). False gives the
-    # branch meaning: the verdict reaches every component under the path until its own row wins.
-    only: bool = True
-
-
 @router.get("/component-verdicts/{entity_type}/{slug}")
 def list_component_verdicts(entity_type: str, slug: str) -> dict[str, dict]:
     """{scope_locator: latest verdict} for every component this resource has
@@ -534,37 +501,6 @@ def list_component_verdicts(entity_type: str, slug: str) -> dict[str, dict]:
     """
     all_verdicts = _registry().get_component_verdicts(entity_type, slug)
     return {k: v for k, v in all_verdicts.items() if v.get("verdict_target") != "blueprint"}
-
-
-@router.post("/component-verdicts/{entity_type}/{slug}")
-def add_component_verdict(entity_type: str, slug: str, body: ComponentVerdictCreate) -> dict:
-    if not body.scope_locator.strip():
-        raise HTTPException(status_code=400, detail="scope_locator must not be empty")
-    if body.verdict not in ProjectRegistry.COMPONENT_VERDICTS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"verdict must be one of {sorted(ProjectRegistry.COMPONENT_VERDICTS)}, got {body.verdict!r}",
-        )
-    if body.verdict == "retyped" and not body.retyped_to.strip():
-        raise HTTPException(status_code=400, detail="retyped_to is required when verdict='retyped'")
-    registry = _registry()
-    _authorize_curation(registry, entity_type, slug, body.scope_locator)
-    from resource_explorer.component_tree import ONLY_THIS
-    retyped_to = body.retyped_to
-    if body.verdict in ("accepted", "rejected") and not retyped_to.strip() and body.only:
-        retyped_to = ONLY_THIS
-    # A decision and nothing more, exactly like the Next branch route (projects.branch_verdicts): no Egeria
-    # call, no materialize run, no promotion. Publish (POST /api/projects/{slug}/architecture/publish) is the one
-    # verb that writes an accepted component to Egeria, and promotes it there. A reject never writes either.
-    verdict = registry.record_component_verdict(
-        entity_type, slug, body.scope_locator, body.verdict, retyped_to, body.note,
-    )
-    # Said from the element's cache row, never from this branch: "accepted · not in Egeria yet" until Publish.
-    held = registry.get_materialized_component(entity_type, slug, body.scope_locator) or {}
-    verdict["in_egeria"] = bool(held.get("guid"))
-    verdict["materialized"] = ({"guid": held["guid"], "qualified_name": held.get("qualified_name", "")}
-                               if held.get("guid") else None)
-    return verdict
 
 
 @router.get("/component-verdicts/{entity_type}/{slug}/history")

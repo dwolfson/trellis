@@ -119,7 +119,6 @@ async function setUp(backendOpts = {}, { investigation = 'c360' } = {}) {
   for (const id of ['scope-slug', 'investigation-name', 'whoami', 'activity-count']) {
     const e = document.createElement('span'); e.id = id; document.body.appendChild(e);
   }
-  const sw = document.createElement('a'); sw.id = 'switch-ui'; document.body.appendChild(sw);
   app.renderSidebar();
   return { document, window, app, inv, calls, content };
 }

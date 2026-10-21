@@ -85,7 +85,6 @@ async function setUp(opts = {}) {
     'investigation-name', 'whoami', 'activity-count', 'answered-count']) {
     const d = document.createElement('div'); d.id = id; document.body.appendChild(d);
   }
-  const sw = document.createElement('a'); sw.id = 'switch-ui'; document.body.appendChild(sw);
   app.renderSidebar();
   return { document, window, calls, app };
 }

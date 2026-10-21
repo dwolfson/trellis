@@ -8,7 +8,6 @@ produce that error at scale, which is why the state travels with the value.
 """
 from __future__ import annotations
 
-import pytest
 
 from resource_explorer.facts import (
     PARTIAL,
@@ -240,87 +239,6 @@ class TestQuestionsTabWiring:
             cls._INDEX = (Path(__file__).resolve().parents[1] / "resource_explorer"
                           / "web" / "static" / "index.html").read_text()
         return cls._INDEX
-
-    def test_a_question_click_resolves_rather_than_prompting(self):
-        html = self._html()
-        fn = html.split("async function _answerQuestionInChat(")[1].split("\n}")[0]
-        assert "/answer?question=" in fn, "question click no longer resolves through the fact layer"
-        assert "sendQuery(" not in fn, "question click routes through the RAG"
-
-    def test_an_unanswerable_envelope_never_renders_as_a_negative_answer(self):
-        """"No CVEs" and "nothing can look for CVEs" are opposite claims."""
-        html = self._html()
-        fn = html.split("function _renderEnvelopeMarkdown(")[1].split("\nfunction ")[0]
-        assert "env.answerable" in fn
-        assert "I can't answer that yet" in fn
-        assert "blocked_reason" in fn
-
-    def test_every_fact_state_has_fixed_wording(self):
-        """These five distinctions are exactly what gets lost when a value is
-        narrated without its state, so the wording is not left to a model."""
-        html = self._html()
-        table = html.split("const _FACT_STATE_TEXT = {")[1].split("};")[0]
-        for state in ("measured", "nothing_found", "never_run", "not_established",
-                      "partial", "no_reader"):
-            assert f"{state}:" in table, f"no fixed wording for {state}"
-        assert "measured zero" in table, "nothing_found must not read as absence of coverage"
-        assert "no summary reader" in table, (
-            "no_reader must not borrow nothing_found's 'measured zero' wording -- "
-            "a missing reader has not measured anything"
-        )
-
-    def test_a_recovered_fact_is_labelled_as_a_proposal(self):
-        html = self._html()
-        fn = html.split("function _renderEnvelopeMarkdown(")[1].split("\nfunction ")[0]
-        assert "not yet validated" in fn
-
-    def test_the_answer_stays_deterministic_but_reads_better(self):
-        """Reported 2026-08-31: a raw analysis id and an unlabelled key:value
-        dump ("catalog_presence — measured\\n\\nregistered: true · group:
-        egeria · ...") read as meaningless to someone who did not already
-        know what that analysis measures. Fixed WITHOUT routing this path
-        through an LLM -- that would violate
-        test_a_question_click_resolves_rather_than_prompting's whole point --
-        by using the catalog's own display name.
-
-        **The <details> half of that fix was removed on 2026-09-01**, and
-        this test's assertion on it with it. Not because collapsing evidence
-        was a bad idea, but because measuring showed it almost never
-        happened, and where it did it was hiding the answer:
-
-        The old renderer computed `composedAnswer = proseAnswer ? '' :
-        summary` and then showed the toggle only `if (summary !==
-        composedAnswer)`. For a fact with no prose the two were equal, so
-        the toggle was skipped and the key:value line rendered inline
-        anyway. Measured across all 53 questions on egeria_python_git: 20 of
-        23 facts were scalar-only, so the inline dump this test guards
-        against was already the majority behaviour, and the <details> block
-        was reachable for exactly 3 facts -- `foss_scorecard`,
-        `project_commits`, `community_support`. Those 3 are precisely the
-        ones carrying a verdict, so the one thing the toggle reliably hid
-        was the answer ("Is this repository actively maintained?" replied
-        "389 commit(s) in the last 90 days", with `verdict: pass` behind the
-        toggle).
-
-        So the mechanism was collapsing answers, not evidence. Both halves
-        of a fact's value now render on the visible line; see
-        tests/test_fact_answer_rendering.py, which executes the renderer's
-        own expression rather than grepping for it.
-
-        What this test still pins is the half that was right and is kept:
-        the display name.
-        """
-        html = self._html()
-        fn = html.split("function _renderEnvelopeMarkdown(")[1].split("\nfunction ")[0]
-        assert "_analysisDisplayName(f.analysis_id)" in fn, (
-            "the raw analysis_id should read as a display name, not a slug"
-        )
-        assert "<details>" not in fn, (
-            "the Evidence toggle is deliberately gone -- it was reachable "
-            "only for the three verdict-carrying facts, whose verdicts it "
-            "hid. If a genuine detail tier is reintroduced, it must not be "
-            "the only place a fact's scalars appear."
-        )
 
 
 class TestToolsDoNotAssertAbsence:

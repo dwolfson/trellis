@@ -148,24 +148,6 @@ def test_api_list_carries_marker_and_no_password(client):
     assert rows["no_pw"]["credential_status"] == "none"
     assert all("db_password" not in r for r in rows.values())
     _no_leak(resp.text)
-    one = client.get("/api/databases/bad_one")
-    assert one.status_code == 200 and one.json()["credential_status"] == "unreadable"
-    _no_leak(one.text)
-
-
-def test_survey_route_refuses_for_the_bad_database_and_never_connects(client, reg, monkeypatch):
-    import psycopg2
-
-    def boom(*a, **k):
-        raise AssertionError("connected")
-    monkeypatch.setattr(psycopg2, "connect", boom)
-    resp = client.post("/api/databases/bad_one/survey", json={})
-    assert resp.status_code == 409
-    assert resp.json()["detail"] == "credential unreadable: re-enter credentials for bad_one"
-    _no_leak(resp.text)
-    assert reg.get_database("bad_one", allow_unreadable=True).status.value == "active"  # not flipped to indexing
-    # the good database is unaffected by the refusal (it passes the credential gate; no password -> 400 not 409)
-    assert client.post("/api/databases/no_pw/survey", json={}).status_code == 400
 
 
 def test_credentials_route_lets_the_user_re_enter(client, monkeypatch):

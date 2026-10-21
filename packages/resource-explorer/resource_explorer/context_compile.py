@@ -839,8 +839,7 @@ def _with_symbols(rungs: dict[Rung, str], registry, slug: str, question: str):
 #: Which analyses have a real, addressable view to point at. Deliberately
 #: narrow: Backlog "a compiled answer should be able to POINT at a view" notes
 #: deep-linking to a perspective/scope is the *prerequisite* work, and today
-#: only the architecture card has perspective tabs (`_archTabsHtml` in
-#: index.html) worth linking into. Add an entry here once a view exists to
+#: only the architecture card has perspective tabs worth linking into. Add an entry here once a view exists to
 #: point at — the compiler side needs no other change, since `Pointer` is
 #: already resource/analysis-agnostic.
 _POINTABLE_VIEWS = {"architecture_recovery": "architecture"}

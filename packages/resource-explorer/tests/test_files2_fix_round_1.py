@@ -11,7 +11,6 @@ import json
 import os
 import subprocess
 import types
-from pathlib import Path
 from unittest.mock import create_autospec
 
 import pytest
@@ -192,6 +191,7 @@ def test_a_loaded_map_feeds_the_probe_and_records_the_prefix_source(registry, tm
 
 # ── the Admin route shows the map read-only ──────────────────────────────────────────────────────────────────────────
 
+
 @pytest.fixture
 def api(registry, monkeypatch):
     from fastapi.testclient import TestClient
@@ -227,8 +227,9 @@ def test_admin_shows_the_map_with_each_pairs_source_and_date(api, monkeypatch):
 
 # ── C. M1: the reach routes need the run route's authorisation ───────────────────────────────────────────────────────
 
+
 @pytest.mark.usefixtures("signed_in_caller")
-def test_m1_reach_reachability_and_run_are_403_without_start_action(api, registry, tmp_path, monkeypatch):
+def test_m1_reach_and_run_are_403_without_start_action(api, registry, tmp_path, monkeypatch):
     client, headers = api
     _register(registry, _tree(tmp_path))
     asked = []
@@ -238,7 +239,7 @@ def test_m1_reach_reachability_and_run_are_403_without_start_action(api, registr
         return types.SimpleNamespace(allowed=False, reason="you may not start surveys on this file system")
 
     monkeypatch.setattr("resource_explorer.workflows.curate.resource_access", denied)
-    for method, url in (("post", "/api/filesystems/walkme/reach"), ("post", "/api/filesystems/walkme/reachability"),
+    for method, url in (("post", "/api/filesystems/walkme/reach"),
                         ("post", "/api/filesystems/walkme/folder-survey")):
         r = getattr(client, method)(url, headers=headers, **({"json": {}} if url.endswith("survey") else {}))
         assert r.status_code == 403, (url, r.text)
@@ -246,25 +247,8 @@ def test_m1_reach_reachability_and_run_are_403_without_start_action(api, registr
     assert registry.get_latest_reachability("walkme") is None, "a refused press wrote a probe row"
 
 
-@pytest.mark.usefixtures("signed_in_caller")
-def test_the_old_reachability_post_launches_nothing_and_never_500s(api, registry, tmp_path, monkeypatch):
-    client, headers = api
-    _register(registry, _tree(tmp_path))
-    r = client.post("/api/filesystems/walkme/reachability", headers=headers)       # guard: a launch would raise
-    assert r.status_code == 200 and r.json()["outcome"] == "mounts_unknown"
-    # a check that cannot run, with no earlier row, answers "could not tell" instead of a 500
-    registry.remove_filesystem("walkme")
-    _register(registry, _tree(tmp_path / "again"))
-
-    def boom(*a, **k):
-        raise RuntimeError("registry write failed")
-
-    monkeypatch.setattr(file_reach, "probe_filesystem", boom)
-    r = client.post("/api/filesystems/walkme/reachability", headers=headers)
-    assert r.status_code == 200 and r.json()["outcome"] == "unknown" and r.json()["error_code"] == "CHECK_FAILED"
-
-
 # ── M2: the user's press runs as the signed-in Caller, never as the reachability daemon ──────────────────────────────
+
 
 def test_m2_no_code_path_runs_a_user_press_as_the_reachability_daemon():
     import inspect
@@ -277,6 +261,7 @@ def test_m2_no_code_path_runs_a_user_press_as_the_reachability_daemon():
 
 
 # ── M3: counts only; no path reaches an annotation property ──────────────────────────────────────────────────────────
+
 
 def _strings(value):
     if isinstance(value, str):
@@ -327,6 +312,7 @@ def test_m3_the_paths_stay_in_the_registry_and_the_card_reads_them(registry, tmp
 
 
 # ── M4 and the HTTP-level publish test ───────────────────────────────────────────────────────────────────────────────
+
 
 def _fake_surveyor(monkeypatch, *, landed, read_back_guid="report-guid-7"):
     """The real EgeriaFileSystemSurveyor over a fake AssetMaker that binds pyegeria's real signatures."""
@@ -430,6 +416,7 @@ def test_http_publish_refused_until_the_probe_proves_a_lead(api, registry, tmp_p
 
 # ── D. the Egeria-led report's detail lines; noise directories counted and named ───────────────────────────────────
 
+
 def test_d_the_egeria_led_report_states_the_csv_and_the_analysis_level(registry, tmp_path):
     from resource_explorer import native_survey_run as nsr
     from resource_explorer.folder_survey_view import folder_survey_view
@@ -488,6 +475,7 @@ def test_d_the_published_report_names_the_skipped_directories(registry, tmp_path
 
 # ── E. LOW items ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
+
 def test_e_broken_symlinks_are_counted_and_listed(registry, tmp_path):
     root = _tree(tmp_path)
     os.symlink(tmp_path / "gone", root / "dangling")
@@ -509,10 +497,3 @@ def test_e_a_request_for_action_keeps_its_additional_properties():
     assert props["additionalProperties"]["surveyor"] == "Resource Explorer"
     assert props["additionalProperties"]["walkCapped"] == "true"
 
-
-def test_e_the_classic_page_words_the_new_outcomes_not_the_raw_word():
-    html = (Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "static" / "index.html").read_text()
-    block = html[html.index("const _REACHABILITY_OUTCOME_DISPLAY"):html.index("function _renderReachabilitySentence")]
-    for word in ("re_only", "expected_reachable", "mounts_unknown", "nobody_can_read", "egeria_verified", "egeria_cannot_read"):
-        assert word in block
-    assert "Only Resource Explorer can read this path" in block

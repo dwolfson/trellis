@@ -139,18 +139,6 @@ class DatabaseCredentialsUpdate(BaseModel):
     db_password: str = ""
 
 
-class SurveyRequest(BaseModel):
-    """Request body for triggering a database survey."""
-    username: str = ""  # DB username — falls back to stored db_user if blank
-    password: str = ""  # DB password — falls back to stored db_password if blank
-    use_egeria: bool = False
-    force_custom: bool = False
-    egeria_url: str | None = None
-    egeria_server: str | None = None
-    secrets_path: str | None = None
-    refresh: bool = True
-
-
 class SurveyResult(BaseModel):
     """Result of a database survey operation."""
     status: str  # "ok" | "error" | "pending"
@@ -297,44 +285,6 @@ async def list_databases(db_type: str | None = None) -> list[DatabaseSummary]:
     third, independently-found instance.
     """
     return await asyncio.to_thread(_list_databases_sync, db_type)
-
-
-@router.get("/{slug}", response_model=DatabaseSummary)
-async def get_database(slug: str) -> DatabaseSummary:
-    """Get details for a specific database."""
-    from resource_explorer.registry import ProjectRegistry
-    registry = ProjectRegistry()
-    database = registry.get_database(slug, allow_unreadable=True)
-    if not database:
-        raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
-    return _to_summary(database)
-
-
-@router.get("/{slug}/analyses/last-activity")
-async def get_analyses_last_activity(slug: str) -> dict[str, dict]:
-    """{analysis_id: {last_run_at, last_run_status, last_published_at, ...}}
-    for every local database AnalysisKind — the database equivalent of
-    `projects.py`'s `GET /{slug}/analyses/last-activity`, added because the
-    frontend's `_loadAnalysisCatalogPanel()` only ever fetched that repo
-    route: a database's Analyses cards (Schema Conventions, Nested Column
-    Profile, Data Class Match, Change Rates, ...) showed no run/result
-    indicator at all, no matter how many real surveys had completed against
-    the database (docs/Backlog.md has the live-reproduction details).
-
-    Delegates to the same `workflows.analysis.build_analysis_last_activity`
-    the repo route now uses — see that function's docstring for exactly
-    what is and is not real data yet (run attribution is; publish
-    attribution is not, for database/filesystem, until their publish paths
-    also record `project_published_analyses`/`project_published_annotation_
-    types` — logged as a follow-up rather than guessed at here)."""
-    from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.workflows.analysis import build_analysis_last_activity
-
-    registry = ProjectRegistry()
-    if not registry.get_database(slug, allow_unreadable=True):
-        raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
-
-    return build_analysis_last_activity(registry, "database", slug)
 
 
 @router.get("/{slug}/survey-results/boards")
@@ -651,173 +601,6 @@ async def update_database_egeria_host(slug: str, req: EgeriaHostUpdate) -> dict:
     in_egeria = bool(getattr(database, "egeria_asset_guid", "") or "")
     return {"slug": database.slug, "previous": previous, "egeria_host": value, "in_egeria": in_egeria,
             "note": NOTE_IN_EGERIA if in_egeria and previous != value else ""}
-
-
-@router.post("/{slug}/survey", response_model=SurveyResult)
-async def survey_database(slug: str, req: SurveyRequest) -> SurveyResult:
-    """Trigger a database survey (hybrid mode by default)."""
-    from resource_explorer.registry import ProjectRegistry, ProjectStatus
-    
-    registry = ProjectRegistry()
-    database = _get_database_for_use(registry, slug)
-    if not database:
-        raise HTTPException(status_code=404, detail=f"Database '{slug}' not found")
-    if req.use_egeria and not req.force_custom:
-        # Brief Z2: the Egeria-adaptive survey can catalog the database in Egeria and start its native survey.
-        from resource_explorer.web.routes.curate import authorize_resource_write
-        await authorize_resource_write(registry, "database", slug, write="publish")
-    
-    # Update status to surveying
-    registry.update_database_status(slug, ProjectStatus.INDEXING, "")
-    
-    # Resolve credentials — request overrides stored values
-    resolved_user = req.username or database.db_user
-    resolved_pwd  = req.password or database.db_password
-    if not resolved_user or not resolved_pwd:
-        raise HTTPException(
-            status_code=400,
-            detail="Database credentials are required. Either supply username/password in the request or store them at registration.",
-        )
-    credentials = {"user": resolved_user, "password": resolved_pwd}
-
-    def _extract_counts(raw: dict) -> tuple[int | None, int | None, int | None]:
-        """Pull schema/table/column counts from the surveyor result dict."""
-        schema_info = raw.get("schema_info", {})
-        sc = len(schema_info.get("schemas", [])) or raw.get("schema_count")
-        tc = schema_info.get("total_tables") or raw.get("table_count")
-        cc = schema_info.get("total_columns") or raw.get("column_count")
-        return sc, tc, cc
-
-    def _do_survey() -> dict[str, Any]:
-        """Run survey in thread — raises on fatal connection errors."""
-        if req.force_custom or not req.use_egeria:
-            from resource_explorer.surveyors.database.database_surveyor import run_database_survey
-            result = run_database_survey(
-                db_slug=slug,
-                credentials=credentials,
-                registry=registry,
-            )
-            sc, tc, cc = _extract_counts(result)
-            return {"source": "custom", "schema_count": sc, "table_count": tc, "column_count": cc,
-                    "errors": result.get("errors", [])}
-        else:
-            # Routed through executes_at="egeria-adaptive" (the folded-in
-            # HybridDatabaseSurveyor strategy selector — see
-            # docs/design-notes/EXECUTION-MODES-HYBRID-CLARIFICATION.md)
-            # rather than calling run_hybrid_survey directly, via a one-step
-            # synthetic Survey Definition that never touches Egeria to be
-            # constructed. `run_hybrid_survey` still exists and still works
-            # (it's what the handler delegates to) — this only moves the
-            # call site onto `executes_at` routing so the run's `source`
-            # provenance is visible in a run report the same way a real
-            # Survey Definition's steps are.
-            from resource_explorer.surveyors.survey_definition_executor import (
-                SurveyDefinitionExecutor,
-            )
-
-            executor = SurveyDefinitionExecutor(registry)
-            exec_result = executor.run_synthetic_step(
-                entity_type="database",
-                slug=slug,
-                re_analysis_step="postgres_schema_and_stats",
-                executes_at="egeria-adaptive",
-                db_user=resolved_user,
-                db_pwd=resolved_pwd,
-                refresh=req.refresh,
-                platform_url=req.egeria_url,
-                view_server=req.egeria_server,
-                secrets_path=req.secrets_path,
-            )
-            step_report = (exec_result.get("steps") or [{}])[0]
-            # A failed survey step is a FAILED survey (false-zero hotfix,
-            # 2026-09-30): surface its real error on the run instead of
-            # reconstructing an "ok" response with zero counts. The executor
-            # has already withheld the failed output from the publish step, so
-            # nothing was written to the registry or to Egeria.
-            if step_report.get("status") in ("failed", "error"):
-                run_errors = list(exec_result.get("errors") or []) or [
-                    f"Survey step failed ({step_report.get('status')})"]
-                raise RuntimeError("; ".join(str(e) for e in run_errors))
-            # Reconstruct run_hybrid_survey's historic flat response shape:
-            # the handler nests "schema_info"/"statistics" under "result" to
-            # keep the executor's generic publish step from re-publishing
-            # them a second time (see _run_egeria_adaptive's own docstring)
-            # — unnest them again here, for this route's own response only.
-            detail = dict(step_report.get("detail") or {})
-            nested = detail.pop("result", None) or {}
-            result = {**detail, **nested}
-            result.setdefault("source", step_report.get("source", "custom"))
-            result.setdefault("errors", [])
-            result["errors"] = list(result["errors"]) + [
-                e for e in exec_result.get("errors", []) if e not in result["errors"]
-            ]
-            sc, tc, cc = _extract_counts(result)
-            return {"source": result.get("source", "hybrid"),
-                    "schema_count": sc, "table_count": tc, "column_count": cc,
-                    "errors": result.get("errors", [])}
-
-    try:
-        result = await asyncio.to_thread(_do_survey)
-        registry.update_database_status(slug, ProjectStatus.ACTIVE, "")
-
-        sc, tc, cc = result.get("schema_count"), result.get("table_count"), result.get("column_count")
-        src = result.get("source", "local")
-        non_fatal_errors = result.get("errors", [])
-        counts_str = ", ".join(filter(None, [
-            f"{sc} schema(s)" if sc else "",
-            f"{tc} table(s)" if tc else "",
-            f"{cc} column(s)" if cc else "",
-        ]))
-
-        # Write activity log entry
-        try:
-            from resource_explorer.activity_logger import log_survey
-            log_survey(
-                registry,
-                entity_type="database",
-                entity_slug=slug,
-                entity_name=database.display_name,
-                entity_location=f"{database.host}:{database.port}/{database.database_name}",
-                intent="assessment",
-                status="ok",
-                summary=f"Survey complete — {counts_str or 'done'} ({src})",
-                detail="; ".join(non_fatal_errors) if non_fatal_errors else "",
-                annotations=[{"analysis_name": "Schema Inventory", "annotation_type": "SchemaAnalysisAnnotation",
-                               "count": tc or 0, "status": "local", "summary": counts_str}],
-            )
-        except Exception:
-            pass
-
-        return SurveyResult(
-            status="ok",
-            slug=slug,
-            message=f"Survey completed using {src} surveyor" + (
-                f" ({len(non_fatal_errors)} non-fatal error(s))" if non_fatal_errors else ""
-            ),
-            source=src,
-            schema_count=sc,
-            table_count=tc,
-            column_count=cc,
-        )
-    except Exception as exc:
-        err_str = str(exc)
-        # Write error to activity log
-        try:
-            from resource_explorer.activity_logger import log_survey
-            log_survey(
-                registry,
-                entity_type="database",
-                entity_slug=slug,
-                entity_name=database.display_name,
-                entity_location=f"{database.host}:{database.port}/{database.database_name}",
-                intent="assessment",
-                status="error",
-                summary=f"Survey failed: {err_str[:200]}",
-                detail=err_str,
-            )
-        except Exception:
-            pass
-        return SurveyResult(status="error", slug=slug, error=err_str)
 
 
 class AnalysisRunResult(BaseModel):
@@ -1197,10 +980,10 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
     """Publish the latest local database survey to Egeria.
 
     **Retired from the UI (Curate slice B, BRIEF-CURATE-CATALOGUE-COMMIT-DATABASES.md):**
-    Classic's Publish button and modal are gone; "Catalogue" on a database's Curate pane
+    The Classic Publish button and modal are gone (Classic itself was retired 2026-10-21); "Catalogue" on a database's Curate pane
     (`POST /api/catalogue-scope/{slug}/commit`) is the publish now, with a manifest, a
     ZoneMembership written before any target, a survey limited to the chosen schemas, and a
-    proof row behind every state. This route remains only for Classic API callers; RE itself
+    proof row behind every state. This route remains only for outside API callers; RE itself
     never calls it (the survey-definition retry goes through the commit and its stored scope).
     It starts an UNSCOPED native survey and catalogues without a declared scope, so it must not
     be offered as the way to publish. Backlog: make it scope-aware, or remove it."""

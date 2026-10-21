@@ -18,6 +18,7 @@ from resource_explorer.registry import Project, ProjectRegistry
 
 # ── test app setup ─────────────────────────────────────────────────────────────
 
+
 @pytest.fixture
 def registry(tmp_path):
     r = ProjectRegistry(db_path=str(tmp_path / "test.db"))
@@ -41,6 +42,7 @@ def client(registry, monkeypatch):
 
 # ── /health ───────────────────────────────────────────────────────────────────
 
+
 class TestHealth:
     def test_health_returns_ok(self):
         from resource_explorer.web.app import app
@@ -51,6 +53,7 @@ class TestHealth:
 
 
 # ── /api/projects ─────────────────────────────────────────────────────────────
+
 
 class TestProjectsRouter:
     def test_list_projects(self, client):
@@ -266,6 +269,7 @@ class TestProjectsRouter:
 
 # ── /api/stats ────────────────────────────────────────────────────────────────
 
+
 def _insert_stats(db_path, slug):
     conn = sqlite3.connect(db_path)
     conn.execute("""
@@ -319,6 +323,7 @@ class TestStatsRouter:
 
 
 # ── /api/query ────────────────────────────────────────────────────────────────
+
 
 class TestQueryRouter:
     """A request with no session_id still gets the tool-using ConversationAgent, as a fresh agent
@@ -406,6 +411,7 @@ class TestQueryFeedbackRouter:
 
 # ── /api/activity/rfas + PATCH /api/activity/rfas/{rfa_id} ─────────────────────
 
+
 def _write_rfa_activity_entry(registry, entry_id="entry-1", num_rfas=1, extra_annotations=None):
     from resource_explorer.registry import ActivityEntry
     annotations = [
@@ -424,18 +430,19 @@ def _write_rfa_activity_entry(registry, entry_id="entry-1", num_rfas=1, extra_an
 
 # ── /api/curate — tags, resource feedback, curator notes ───────────────────────
 
+
 class TestCurateTagsRouter:
     def test_add_list_remove_tag(self, client):
         resp = client.post("/api/curate/tags/repo/myproj", json={"tag": "Gold-Tier"})
         assert resp.status_code == 200
         assert resp.json()["tag"] == "gold-tier"  # normalized lowercase
 
-        listed = client.get("/api/curate/tags/repo/myproj").json()
+        listed = [t["tag"] for t in client.get("/api/curate/tags-detail/repo/myproj").json()]
         assert listed == ["gold-tier"]
 
         resp = client.delete("/api/curate/tags/repo/myproj/gold-tier")
         assert resp.status_code == 200
-        assert client.get("/api/curate/tags/repo/myproj").json() == []
+        assert client.get("/api/curate/tags-detail/repo/myproj").json() == []
 
     def test_add_tag_rejects_empty(self, client):
         resp = client.post("/api/curate/tags/repo/myproj", json={"tag": "   "})
@@ -452,16 +459,6 @@ class TestCurateTagsRouter:
         resp = client.get("/api/curate/tags/gold-tier/resources")
         assert resp.status_code == 200
         assert {"entity_type": "repo", "entity_slug": "proj-a"} in resp.json()
-
-    def test_resources_by_tag_route_does_not_shadow_list_tags_route(self, client):
-        # Regression guard: /tags/{tag}/resources and /tags/{entity_type}/{slug}
-        # are both 2-segment paths — declaration order matters (see curate.py's
-        # comment). A resource literally named "resources" would be the edge
-        # case that breaks if the order were ever flipped back.
-        client.post("/api/curate/tags/repo/myproj", json={"tag": "gold-tier"})
-        resp = client.get("/api/curate/tags/repo/myproj")
-        assert resp.status_code == 200
-        assert resp.json() == ["gold-tier"]
 
 
 class TestCurateFeedbackRouter:
@@ -486,28 +483,6 @@ class TestCurateFeedbackRouter:
         resp = client.post("/api/curate/feedback/repo/myproj", json={"message": "just a note"})
         assert resp.status_code == 200
         assert resp.json()["rating"] is None
-
-
-class TestCurateNotesRouter:
-    def test_add_list_delete_note(self, client):
-        resp = client.post("/api/curate/notes/repo/myproj", json={"note": "Needs a better README"})
-        assert resp.status_code == 200
-        note_id = resp.json()["id"]
-
-        listed = client.get("/api/curate/notes/repo/myproj").json()
-        assert len(listed) == 1
-
-        resp = client.delete(f"/api/curate/notes/{note_id}")
-        assert resp.status_code == 200
-        assert client.get("/api/curate/notes/repo/myproj").json() == []
-
-    def test_rejects_empty_note(self, client):
-        resp = client.post("/api/curate/notes/repo/myproj", json={"note": "  "})
-        assert resp.status_code == 400
-
-    def test_delete_nonexistent_note_404s(self, client):
-        resp = client.delete("/api/curate/notes/nonexistent-id")
-        assert resp.status_code == 404
 
 
 @pytest.fixture()
@@ -566,6 +541,7 @@ class TestQueryFeedbackRouter:
 
 # ── /api/activity/rfas + PATCH /api/activity/rfas/{rfa_id} ─────────────────────
 
+
 def _write_rfa_activity_entry(registry, entry_id="entry-1", num_rfas=1, extra_annotations=None):
     from resource_explorer.registry import ActivityEntry
     annotations = [
@@ -584,18 +560,19 @@ def _write_rfa_activity_entry(registry, entry_id="entry-1", num_rfas=1, extra_an
 
 # ── /api/curate — tags, resource feedback, curator notes ───────────────────────
 
+
 class TestCurateTagsRouter:
     def test_add_list_remove_tag(self, client, signed_in_curator):
         resp = client.post("/api/curate/tags/repo/myproj", json={"tag": "Gold-Tier"})
         assert resp.status_code == 200
         assert resp.json()["tag"] == "gold-tier"  # normalized lowercase
 
-        listed = client.get("/api/curate/tags/repo/myproj").json()
+        listed = [t["tag"] for t in client.get("/api/curate/tags-detail/repo/myproj").json()]
         assert listed == ["gold-tier"]
 
         resp = client.delete("/api/curate/tags/repo/myproj/gold-tier")
         assert resp.status_code == 200
-        assert client.get("/api/curate/tags/repo/myproj").json() == []
+        assert client.get("/api/curate/tags-detail/repo/myproj").json() == []
 
     def test_add_tag_rejects_empty(self, client, signed_in_curator):
         resp = client.post("/api/curate/tags/repo/myproj", json={"tag": "   "})
@@ -612,16 +589,6 @@ class TestCurateTagsRouter:
         resp = client.get("/api/curate/tags/gold-tier/resources")
         assert resp.status_code == 200
         assert {"entity_type": "repo", "entity_slug": "proj-a"} in resp.json()
-
-    def test_resources_by_tag_route_does_not_shadow_list_tags_route(self, client, signed_in_curator):
-        # Regression guard: /tags/{tag}/resources and /tags/{entity_type}/{slug}
-        # are both 2-segment paths — declaration order matters (see curate.py's
-        # comment). A resource literally named "resources" would be the edge
-        # case that breaks if the order were ever flipped back.
-        client.post("/api/curate/tags/repo/myproj", json={"tag": "gold-tier"})
-        resp = client.get("/api/curate/tags/repo/myproj")
-        assert resp.status_code == 200
-        assert resp.json() == ["gold-tier"]
 
 
 class TestCurateFeedbackRouter:
@@ -649,27 +616,10 @@ class TestCurateFeedbackRouter:
 
 
 class TestCurateNotesRouter:
-    def test_add_list_note_and_signed_note_is_append_only(self, client, signed_in_curator):
-        resp = client.post("/api/curate/notes/repo/myproj", json={"note": "Needs a better README"})
-        assert resp.status_code == 200
-        note_id = resp.json()["id"]
-
-        listed = client.get("/api/curate/notes/repo/myproj").json()
-        assert len(listed) == 1 and listed[0]["author"] == "dan"
-
-        # Signed notes are append-only (owner ruling 2026-10-01).
-        resp = client.delete(f"/api/curate/notes/{note_id}")
-        assert resp.status_code == 409
-        assert len(client.get("/api/curate/notes/repo/myproj").json()) == 1
-
     def test_delete_legacy_unsigned_note(self, client, registry, signed_in_curator):
         note_id = registry.add_curator_note("repo", "myproj", "from before authors")["id"]
         assert client.delete(f"/api/curate/notes/{note_id}").status_code == 200
         assert client.get("/api/curate/notes/repo/myproj").json() == []
-
-    def test_rejects_empty_note(self, client, signed_in_curator):
-        resp = client.post("/api/curate/notes/repo/myproj", json={"note": "  "})
-        assert resp.status_code == 400
 
     def test_delete_nonexistent_note_404s(self, client, signed_in_curator):
         resp = client.delete("/api/curate/notes/nonexistent-id")
@@ -704,93 +654,20 @@ def signed_in_curator(client):
 
 @pytest.mark.usefixtures("signed_in_curator", "mock_egeria_client_connections")
 class TestCurateComponentVerdictsRouter:
-    def test_add_and_list_verdict(self, client):
-        resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
-            "scope_locator": "src/foo", "verdict": "accepted",
-        })
-        assert resp.status_code == 200
-        assert resp.json()["verdict"] == "accepted"
+    def test_list_verdict(self, client, registry):
+        registry.record_component_verdict("repo", "myproj", "src/foo", "accepted", "", "", decided_by="dan")
 
         listed = client.get("/api/curate/component-verdicts/repo/myproj").json()
         assert listed["src/foo"]["verdict"] == "accepted"
 
-    def test_rejects_empty_scope_locator(self, client):
-        resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
-            "scope_locator": "  ", "verdict": "accepted",
-        })
-        assert resp.status_code == 400
-
-    def test_rejects_unknown_verdict(self, client):
-        resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
-            "scope_locator": "src/foo", "verdict": "maybe",
-        })
-        assert resp.status_code == 400
-
-    def test_retyped_without_retyped_to_is_rejected(self, client):
-        resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
-            "scope_locator": "src/foo", "verdict": "retyped",
-        })
-        assert resp.status_code == 400
-
-    def test_retyped_with_retyped_to_succeeds(self, client):
-        resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
-            "scope_locator": "src/foo", "verdict": "retyped", "retyped_to": "library",
-        })
-        assert resp.status_code == 200
-        assert resp.json()["retyped_to"] == "library"
-
-    def test_history_reflects_every_call_newest_first(self, client):
-        client.post("/api/curate/component-verdicts/repo/myproj", json={
-            "scope_locator": "src/foo", "verdict": "accepted",
-        })
-        client.post("/api/curate/component-verdicts/repo/myproj", json={
-            "scope_locator": "src/foo", "verdict": "rejected",
-        })
+    def test_history_reflects_every_call_newest_first(self, client, registry):
+        registry.record_component_verdict("repo", "myproj", "src/foo", "accepted", "", "", decided_by="dan")
+        registry.record_component_verdict("repo", "myproj", "src/foo", "rejected", "", "", decided_by="dan")
         history = client.get(
             "/api/curate/component-verdicts/repo/myproj/history",
             params={"scope_locator": "src/foo"},
         ).json()
         assert [h["verdict"] for h in history] == ["rejected", "accepted"]
-
-    def test_accepting_with_no_underlying_finding_still_saves_and_writes_nothing(self, client):
-        """Accept is a decision only (Brief A follow-up 1): the verdict saves, and nothing is attempted."""
-        resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
-            "scope_locator": "src/never-surveyed", "verdict": "accepted",
-        })
-        assert resp.status_code == 200
-        assert resp.json()["verdict"] == "accepted"
-        assert "materialization" not in resp.json() and resp.json()["in_egeria"] is False
-
-    def test_rejected_and_retyped_never_attempt_materialization(self, client, registry):
-        registry.upsert_finding("myproj", "architecture_recovery", [{
-            "check_name": "component", "label": "manifest",
-            "detail": {"name": "svc", "type": "Software Service"},
-        }], surveyed_at="2026-08-30T00:00:00", scope_locator="src/foo")
-
-        rejected = client.post("/api/curate/component-verdicts/repo/myproj", json={
-            "scope_locator": "src/foo", "verdict": "rejected",
-        })
-        retyped = client.post("/api/curate/component-verdicts/repo/myproj", json={
-            "scope_locator": "src/foo", "verdict": "retyped", "retyped_to": "library",
-        })
-        assert "materialization" not in rejected.json()
-        assert "materialization" not in retyped.json()
-
-    def test_accepting_a_real_component_does_not_materialize_it(self, client, registry):
-        """Publish writes it (architecture_publish); Accept only records the decision."""
-        registry.upsert_finding("myproj", "architecture_recovery", [{
-            "check_name": "component", "label": "manifest",
-            "detail": {"name": "svc", "type": "Software Service", "perspective": "deployment"},
-        }], surveyed_at="2026-08-30T00:00:00", scope_locator="src/foo")
-
-        with patch("resource_explorer.surveyors.arch_recovery.materializer.ComponentMaterializer") as MockCls:
-            resp = client.post("/api/curate/component-verdicts/repo/myproj", json={
-                "scope_locator": "src/foo", "verdict": "accepted",
-            })
-
-        assert resp.status_code == 200
-        MockCls.return_value.materialize.assert_not_called()
-        assert "materialization" not in resp.json() and "promotion" not in resp.json()
 
 
 @pytest.mark.usefixtures("signed_in_curator", "mock_egeria_client_connections")
@@ -831,10 +708,8 @@ class TestCurateBlueprintVerdictsRouter:
         listed = client.get("/api/curate/blueprint-verdicts/repo/myproj").json()
         assert listed["physical::core-services"]["verdict"] == "accepted"
 
-    def test_component_verdicts_and_blueprint_verdicts_do_not_leak_into_each_other(self, client):
-        client.post("/api/curate/component-verdicts/repo/myproj", json={
-            "scope_locator": "src/foo", "verdict": "accepted",
-        })
+    def test_component_verdicts_and_blueprint_verdicts_do_not_leak_into_each_other(self, client, registry):
+        registry.record_component_verdict("repo", "myproj", "src/foo", "accepted", "", "", decided_by="dan")
         client.post("/api/curate/blueprint-verdicts/repo/myproj", json={
             "perspective": "physical", "cluster_name": "core-services", "verdict": "accepted",
         })
@@ -983,6 +858,7 @@ class TestCurateBlueprintVerdictsRouter:
 
 
 # ── /api/schedules — per-resource + global overview ─────────────────────────────
+
 
 class TestSchedulesRouter:
     @pytest.fixture(autouse=True)
@@ -1221,6 +1097,7 @@ class TestRfaNotesRouter:
 
 # ── /api/analyses/{resource_type} + /perspectives + /egeria-status ─────────────
 
+
 class TestAnalysisCatalogRouter:
     def test_list_analyses_for_database(self, client):
         resp = client.get("/api/analyses/database")
@@ -1242,21 +1119,8 @@ class TestAnalysisCatalogRouter:
         assert isinstance(resp.json(), list)
         assert "perspectives" not in resp.json()  # i.e. it wasn't routed as resource_type="perspectives"
 
-    def test_egeria_status_route(self, client):
-        client.get("/api/analyses/database")  # populate the status this route reflects
-        resp = client.get("/api/analyses/database/egeria-status")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["resource_type"] == "database"
-        assert body["status"] in {"not_applicable", "unavailable", "ok", "unknown"}
-
-    def test_egeria_status_not_applicable_for_unmapped_resource_type(self, client):
-        client.get("/api/analyses/repo")
-        resp = client.get("/api/analyses/repo/egeria-status")
-        assert resp.json()["status"] == "not_applicable"
-
-
 # ── /api/analyses/annotation-types ─────────────────────────────────────────────
+
 
 class TestAnnotationTypesRouter:
     def test_list_annotation_types(self, client):
@@ -1351,6 +1215,7 @@ class TestAnnotationTypesRouter:
 # confirm the FastAPI routes call it correctly and translate its errors to
 # the right status codes, isolated from the real committed CSV/YAML via the
 # same monkeypatch technique that module's own tests use.
+
 
 class TestQuestionCatalogWriteRoutes:
     @pytest.fixture(autouse=True)

@@ -17,7 +17,6 @@ from resource_explorer.registry import (
     SECTION_COLUMNS,
     SECTION_SCHEMAS,
     SECTION_TABLES,
-    STATE_NOT_MEASURED,
     STATE_NOT_PERMITTED,
 )
 
@@ -335,10 +334,3 @@ def test_diff_route_still_reports_not_materialized(registry, client):
 
 # ── Classic consumer ─────────────────────────────────────────────────────────
 
-
-def test_classic_asks_for_size_when_no_row_count_is_established():
-    from pathlib import Path
-    import resource_explorer
-    html = (Path(resource_explorer.__file__).parent / "web/static/index.html").read_text()
-    assert "table_sizes?measure=size" in html
-    assert "not_established_count" in html

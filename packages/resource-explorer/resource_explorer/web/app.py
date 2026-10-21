@@ -6,14 +6,12 @@ import logging
 import os
 import uuid
 from pathlib import Path
-from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from resource_explorer.config import WebUIConfig
 from resource_explorer.web.routes import work_lists as work_lists_routes
 from resource_explorer.web.routes import api_reference as api_reference_routes, analytics as analytics_routes, activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, catalogue_scope, curate, databases, first_index as first_index_routes, db_servers as db_servers_routes, diagrams, discovery, doc_sources, egeria, feedback, investigations, journal, logs as logs_routes, prefect_status, prerequisites as prerequisite_routes, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions, native_surveys
 from resource_explorer.web.routes import table_preview as table_preview_routes
@@ -412,7 +410,7 @@ async def health_ready() -> JSONResponse:
     """Readiness check — actually exercises the registry's database
     connection, so it fails the same way real /api/ routes do rather than
     reporting healthy while they 500. Backs the frontend's startup +
-    periodic connectivity banner (see index.html's checkBackendHealth())."""
+    periodic connectivity banner (see the shell's health check in next/shell-status.js)."""
     from resource_explorer.registry import ProjectRegistry
 
     try:
@@ -427,37 +425,13 @@ async def health_ready() -> JSONResponse:
     return JSONResponse(content={"status": "ok", "database": "ok", "boot_id": _BOOT_ID})
 
 
-def _resolve_default_ui(raw: Optional[str]) -> str:
-    """`next` unless the operator explicitly chose `classic`. An unrecognised
-    value falls back to `next` with a warning rather than failing startup."""
-    value = (raw or "").strip().lower()
-    if value in ("", "next"):
-        return "next"
-    if value == "classic":
-        return "classic"
-    logging.getLogger(__name__).warning(
-        "RE_DEFAULT_UI=%r is not 'next' or 'classic'; serving the Next UI at /", raw
-    )
-    return "next"
-
-
-#: Read once at startup (RE_DEFAULT_UI, via config.WebUIConfig so `.env` counts).
-_DEFAULT_UI = _resolve_default_ui(WebUIConfig().default_ui)
-
-_CLASSIC_SHELL = _STATIC / "index.html"
 _NEXT_SHELL = _STATIC / "next" / "index.html"
 
 
 @app.get("/")
 async def index() -> FileResponse:
-    """The default UI: Next, unless RE_DEFAULT_UI=classic."""
-    return FileResponse(_NEXT_SHELL if _DEFAULT_UI == "next" else _CLASSIC_SHELL)
-
-
-@app.get("/classic")
-async def classic_ui() -> FileResponse:
-    """The Classic UI, explicitly. Same shell `/` served before Next became the default."""
-    return FileResponse(_CLASSIC_SHELL)
+    """The UI: the Next shell. `/next` serves the same file, kept so existing bookmarks work."""
+    return FileResponse(_NEXT_SHELL)
 
 
 @app.get("/admin/feedback")
@@ -496,7 +470,7 @@ async def _revalidate_experimental_assets(request, call_next):
 async def next_ui() -> FileResponse:
     """The Next UI at its original path, kept so existing bookmarks and links
     work. Served directly (not redirected) so query state and a Portal `#sso=`
-    fragment arrive untouched; it also stays Next when RE_DEFAULT_UI=classic.
+    fragment arrive untouched.
 
     Skin 1c, and the Questions pane rebuilt to report the ANSWER rather than
     the mechanism. The whole UI is a consumer of
