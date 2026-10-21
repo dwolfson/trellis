@@ -153,6 +153,7 @@ class LocalFileSystemSurveyor:
         inaccessible_files: list[dict] = []
 
         walk = self._walk(inaccessible_files)
+        broken_links = walk["broken_symlinks"]
         for p in walk["files"]:
             total_files += 1
             rel_path = str(p.relative_to(self.root_path))
@@ -255,6 +256,9 @@ class LocalFileSystemSurveyor:
             "last_modification_time": last_modification_time,
             "inaccessible_file_count": len(inaccessible_files),
             "inaccessible_files": inaccessible_files[:100],
+            # Links whose target is gone: counted and listed (registry only), never silently dropped.
+            "broken_symlink_count": len(broken_links),
+            "broken_symlinks": broken_links[:100],
             "readable_count": readable_count,
             "total_directories": walk["directories"],
             # Declared and shown (Files step 2, caution 3): what the walk was allowed to do and what it did. A walk
@@ -267,6 +271,10 @@ class LocalFileSystemSurveyor:
                 "deepest_level_reached": walk["deepest"],
                 "not_walked_directory_names": sorted(IGNORE_DIRS),
                 "not_walked_directories": walk["skipped_ignored"],
+                # Which of the noise names were actually met and skipped, so the report can say "12 directories not
+                # walked: .git, node_modules, .venv" and never skip silently.
+                "not_walked_names_found": sorted(walk["skipped_names"]),
+                "broken_symlink_count": len(broken_links),
                 "symlinked_directories_not_followed": walk["skipped_symlinks"],
                 "entries_examined": walk["entries"],
             },
@@ -356,6 +364,8 @@ class LocalFileSystemSurveyor:
         that stopped is `capped`. Permission and OS errors are recorded as inaccessible, relative to the root.
         """
         files: list[Path] = []
+        broken_symlinks: list[str] = []
+        skipped_names: set[str] = set()
         directories = entries = skipped_ignored = skipped_symlinks = deepest = 0
         capped_reasons: list[str] = []
         stack: list[tuple[Path, int]] = [(self.root_path, 0)]
@@ -386,6 +396,7 @@ class LocalFileSystemSurveyor:
                 if is_dir:
                     if entry.name in IGNORE_DIRS:
                         skipped_ignored += 1
+                        skipped_names.add(entry.name)
                         continue
                     directories += 1
                     if depth + 1 > self.max_depth:
@@ -398,7 +409,10 @@ class LocalFileSystemSurveyor:
                     skipped_symlinks += 1
                 elif is_file:
                     files.append(Path(entry.path))
-        return {"files": files, "directories": directories, "entries": entries, "deepest": deepest,
+                elif is_symlink:
+                    # neither a file nor a folder behind it: a broken link
+                    broken_symlinks.append(self._rel(Path(entry.path)))
+        return {"files": files, "broken_symlinks": broken_symlinks, "skipped_names": skipped_names, "directories": directories, "entries": entries, "deepest": deepest,
                 "skipped_ignored": skipped_ignored, "skipped_symlinks": skipped_symlinks,
                 "capped": bool(capped_reasons), "capped_reasons": capped_reasons}
 

@@ -591,20 +591,44 @@ def ephemeral_prefect(monkeypatch):
         yield
 
 
+class ProbeLaunchedInTest(BaseException):
+    """Raised by the guard below. A BaseException on purpose: the probe's callers catch `Exception` (a probe must never
+    break a press), and a guard that is swallowed there would let an accidental launch pass."""
+
+
 @pytest.fixture(autouse=True)
 def no_live_reachability_probe(request, monkeypatch):
-    """The file system reachability probe asks Egeria's engine host to launch a Folder Survey (a WRITE to Egeria), and
-    since Files step 2 it runs at the top of every `filesystem_inventory` survey. A test that reaches it must hand it a
-    fake; one that forgets gets this refusal (which the probe records as "could not tell") instead of an engine action
-    launched on whatever Egeria this machine can reach. Live-tier tests (`requires_egeria`) are left alone. Only the
-    probe's one live call is replaced; `reachability._get_clients` and the classifier stay the real code."""
-    if request.node.get_closest_marker("requires_egeria"):
-        return
+    """Since Files step 2 (fix round 1) the file system reachability probe launches NOTHING in Egeria: it is a
+    mounted-prefix check. This guard makes any code path that still reaches the old CHECK_ASSET engine-action launch (a
+    Folder Survey launch is a WRITE to Egeria) FAIL the test, uncatchably by `except Exception`. Tests of the legacy
+    `reachability` module install their own `_get_clients` fake after this runs. Live-tier tests are left alone.
 
-    def _refuse(*_a, **_k):
-        raise RuntimeError("live Egeria is not available in tests: pass the reachability probe a fake")
+    The same fixture keeps the prefix map out of the real docker and the real quickstart compose file: with no
+    configured pairs it is empty ("Egeria's mounts unknown"), and a test that wants pairs passes them in."""
+    from resource_explorer import egeria_mounts
 
-    monkeypatch.setattr("resource_explorer.file_reach._default_egeria_probe", _refuse)
+    egeria_mounts.reset_for_tests()
+
+    if not request.node.get_closest_marker("requires_egeria"):
+        def _refuse(*_a, **_k):
+            raise ProbeLaunchedInTest("the reachability probe must not launch an engine action; pass nothing to Egeria")
+
+        monkeypatch.setattr("resource_explorer.reachability._get_clients", _refuse)
+
+        import inspect as _inspect
+
+        real_docker = egeria_mounts.docker_inspect_mounts
+        monkeypatch.setattr(egeria_mounts, "_REAL_DOCKER_INSPECT", real_docker, raising=False)   # for tests of its parsing
+
+        def _no_docker(*_a, **_k):
+            raise egeria_mounts.DockerUnavailable("docker is not used in tests")
+
+        _no_docker.__signature__ = _inspect.signature(real_docker)      # so an autospec of it binds the real signature
+
+        monkeypatch.setattr(egeria_mounts, "docker_inspect_mounts", _no_docker)
+        monkeypatch.setattr(egeria_mounts, "DEFAULT_COMPOSE_FILE", "no-such-quickstart-compose.yaml")
+    yield
+    egeria_mounts.reset_for_tests()
 
 
 @pytest.fixture(autouse=True)

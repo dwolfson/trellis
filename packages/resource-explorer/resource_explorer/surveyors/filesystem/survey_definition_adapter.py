@@ -40,15 +40,19 @@ from resource_explorer.surveyors.survey_definition_executor import (
 log = logging.getLogger(__name__)
 
 
+class FolderSurveyNotRunHere(RuntimeError):
+    """The folder-survey step was asked where Resource Explorer's walk does not lead; the words say why."""
+
+
 def _run_filesystem_inventory(fs_entity, registry, fork=None, **_) -> dict:
     """The file system's folder survey, led by whoever can read the path (Files step 2).
 
-    The reachability probe runs FIRST, before each survey (`file_reach.probe_filesystem`), and its stored outcome
-    decides who leads:
+    The stored reachability state decides who leads (the probe launches nothing in Egeria):
 
-    * Egeria can read the canonical mount: Egeria's Folder Survey leads. This step measures NOTHING Egeria lists as its
-      own (counts, file types, inaccessible files) and says so; the survey is Egeria's, run from the survey card.
-    * Only Resource Explorer can read the path, or the probe could not tell: the walk runs here, names sizes and times
+    * Egeria is expected to read (or has been shown to read) the canonical mount: Egeria's Folder Survey leads, run
+      from the survey card. This step measures NOTHING Egeria lists as its own, and REFUSES (`FolderSurveyNotRunHere`,
+      the executor records it as the step's error), exactly as the folder-survey route does; it never succeeds empty.
+    * Resource Explorer leads (only it can read the path, Egeria's mounts are unknown, or Egeria failed to read it): the walk runs here, names sizes and times
       only (no file is opened), and PERSISTS the result. Whether it may be PUBLISHED as "Egeria could not reach the
       path" is decided at publish, from the stored probe row (`_publish`).
 
@@ -66,16 +70,20 @@ def _run_filesystem_inventory(fs_entity, registry, fork=None, **_) -> dict:
     from resource_explorer.surveyors.filesystem.local_filesystem_surveyor import LocalFileSystemSurveyor
 
     if fork is None:
+        # The stored state (the mounted-prefix check runs only if there is no row): this step launches nothing in Egeria.
         try:
-            fork = file_reach.probe_filesystem(fs_entity.slug, registry)
-        except Exception:  # noqa: BLE001 -- the probe must never stop a survey; an unprobed path reads "not checked yet"
-            log.warning("%s: the reachability probe could not run", fs_entity.slug, exc_info=True)
+            fork = file_reach.ensure_checked(fs_entity.slug, registry)
+        except Exception:  # noqa: BLE001
+            log.warning("%s: the reachability state could not be read", fs_entity.slug, exc_info=True)
             fork = file_reach.ForkState()
-    if fork.state == file_reach.EGERIA:
-        return {"led_by": "egeria", "surveyed_by": file_reach.SURVEYOR_EGERIA, "reach": fork.as_dict(),
-                "survey_data": None,
-                "message": ("Egeria's Folder Survey leads · it reads counts, file types and the inaccessible files; "
-                            "Resource Explorer measures none of them here")}
+    if fork.surveyor != file_reach.SURVEYOR_RE:
+        # Same refusal as the folder-survey route, never an empty success: this step is Resource Explorer's walk, and
+        # it says why it did not run.
+        if fork.state in (file_reach.EGERIA, file_reach.EXPECTED):
+            raise FolderSurveyNotRunHere(
+                f"{fork.sentence} · Egeria's Folder Survey leads; run it from the file system's folder survey card. "
+                "Resource Explorer measures none of what that survey lists here")
+        raise FolderSurveyNotRunHere(file_reach.refusal_words(fork, for_egeria_lead=False))
 
     surveyor = LocalFileSystemSurveyor(fs_entity, registry)
     survey_data = surveyor.run(profile_contents=False)

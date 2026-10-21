@@ -1828,7 +1828,16 @@ def refresh_run(registry, port: EgeriaSurveyPort, run: dict, *, entity_type: str
     if action.status in SUCCESS_STATUSES:
         _read_report_in(registry, port, run, action, entity_type=entity_type,
                         slug=slug, process_qn=process_qn)
-    return _refetch(registry, entity_type, slug, process_qn)
+    derived = _refetch(registry, entity_type, slug, process_qn)
+    if entity_type == "filesystem" and process_qn == FOLDER_SURVEY_QN:
+        # The first Egeria-led survey is the verification of the path (Files step 2): record what it proved.
+        try:
+            from resource_explorer import file_reach
+
+            file_reach.settle_from_run(registry, slug, derived)
+        except Exception:  # noqa: BLE001 -- recording the proof must not break the read-back
+            log.warning("%s: could not record what the folder survey proved", slug, exc_info=True)
+    return derived
 
 
 def _read_report_in(registry, port, run, action, *, entity_type, slug, process_qn) -> None:

@@ -127,11 +127,11 @@ async def run_native_survey(entity_type: str, slug: str, body: RunRequest, reque
 
     def _do() -> dict:
         if entity_type == "filesystem" and body.process_qualified_name == nsr.FOLDER_SURVEY_QN:
-            # Files step 2: the reachability probe runs before each survey, and its stored outcome decides who leads
-            # (a path only Resource Explorer can read is refused below with the probe's own words).
+            # Files step 2: the stored reachability state decides who leads (a path Resource Explorer leads is refused
+            # below with its own words). The mounted-prefix check runs only if there is no row yet; it launches nothing.
             from resource_explorer import file_reach
 
-            file_reach.probe_filesystem(slug, registry)
+            file_reach.ensure_checked(slug, registry)
         with nsr.port_session(_port()) as port:
             return nsr.submit_native_survey(
                 registry, port, entity_type, slug, body.process_qualified_name,

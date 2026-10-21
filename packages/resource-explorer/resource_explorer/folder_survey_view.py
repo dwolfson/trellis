@@ -47,7 +47,9 @@ def _egeria_candidate(registry, slug: str) -> dict | None:
             return {"surveyor": file_reach.SURVEYOR_EGERIA, "at": run.get("survey_report_at") or run.get("surveyed_at") or "",
                     "report_guid": report, "annotations": registry.query_native_survey_annotations(report),
                     "run_state": newest_state, "limits": None, "published": True,
-                    "report_sentence": file_reach.EGERIA_REPORT_SENTENCE}
+                    "publish": None, "report_sentence": file_reach.EGERIA_REPORT_SENTENCE,
+                    # Said on every Egeria-led report (design 2026-10-21 section 2, and the analysis level sent).
+                    "detail_lines": [file_reach.analysis_level_line(), file_reach.EGERIA_CSV_LINE]}
     return {"none": True, "run_state": newest_state} if runs else None
 
 
@@ -61,13 +63,38 @@ def _re_candidate(registry, slug: str) -> dict | None:
                  datetime.min.replace(tzinfo=timezone.utc))
     sd = newest["survey_data"]
     at = sd.get("surveyed_at") or newest.get("surveyed_at") or ""
-    # The published report is the row stored with the same run time and a report GUID (publish stores its own row).
-    guid = next((r.get("egeria_report_guid") for r in rows
-                 if r.get("egeria_report_guid") and r.get("surveyed_at") == newest.get("surveyed_at")), "")
+    # The published report is the row stored with the same run time and a report GUID (publish stores its own row, with
+    # what landed: `published_to_egeria`, the count Egeria returned and the SurveyReport read-back).
+    pub_row = next((r for r in rows
+                    if r.get("egeria_report_guid") and r.get("surveyed_at") == newest.get("surveyed_at")), None)
+    guid = (pub_row or {}).get("egeria_report_guid") or ""
+    proof = ((pub_row or {}).get("survey_data") or {}).get("published_to_egeria") or {}
+    publish = _publish_words(proof) if guid else None
     reach = (sd.get("surveyed_by") or {}).get("reach") or {}
-    return {"surveyor": file_reach.SURVEYOR_RE, "at": at, "report_guid": guid or "", "published": bool(guid),
-            "annotations": folder_specs(sd), "limits": sd.get("walk_limits"), "run_state": "",
-            "reach_at_run": reach, "report_sentence": file_reach.RE_REPORT_SENTENCE}
+    return {"surveyor": file_reach.SURVEYOR_RE, "at": at, "report_guid": guid, "published": bool(publish and publish["published"]),
+            "publish": publish,
+            "annotations": folder_specs(sd, include_paths=True), "limits": sd.get("walk_limits"), "run_state": "",
+            "reach_at_run": reach,
+            "report_sentence": reach.get("report_sentence") or "surveyed by Resource Explorer",
+            "detail_lines": [], "broken_symlinks": sd.get("broken_symlinks") or [],
+            "broken_symlink_count": sd.get("broken_symlink_count")}
+
+
+def _publish_words(proof: dict) -> dict:
+    """What landed in Egeria, from the stored proof of the publish (never from the fact that a publish was pressed):
+    "N of M annotations in Egeria" uses the GUIDs Egeria returned, and "published" needs the SurveyReport to have read
+    back and at least one annotation to have landed. Anything else reads "not published · <why>"."""
+    landed, built = proof.get("annotations_in_egeria"), proof.get("annotation_count")
+    if not proof:
+        why = "the publish left no proof of what landed"
+    elif proof.get("report_read_back") is not True:
+        why = proof.get("read_back_why") or "the SurveyReport could not be read back from Egeria"
+    elif not landed:
+        why = "no annotation landed in Egeria" if landed == 0 else "Egeria did not say how many annotations landed"
+    else:
+        why = ""
+    return {"published": not why, "not_published_why": why, "landed": landed, "built": built,
+            "landed_words": (f"{landed} of {built} annotations in Egeria" if landed is not None and built is not None else "")}
 
 
 def folder_survey_view(registry, slug: str) -> dict:
@@ -81,9 +108,11 @@ def folder_survey_view(registry, slug: str) -> dict:
             "egeria_run_state": (egeria or {}).get("run_state", "")}
     if not candidates:
         return {**base, "state": "none", "surveyor": "", "surveyed_at": "", "report_guid": "", "published": False,
-                "report_sentence": "", "results": None, "limits": None}
+                "publish": None, "report_sentence": "", "results": None, "limits": None, "detail_lines": []}
     best = max(candidates, key=lambda c: _when(c["at"]) or datetime.min.replace(tzinfo=timezone.utc))
     return {**base, "state": "measured", "surveyor": best["surveyor"], "surveyed_at": best["at"],
             "report_guid": best["report_guid"], "published": best["published"],
-            "report_sentence": best["report_sentence"], "results": read_folder_survey(best["annotations"]),
-            "limits": best["limits"]}
+            "publish": best.get("publish"), "report_sentence": best["report_sentence"],
+            "detail_lines": best.get("detail_lines", []), "results": read_folder_survey(best["annotations"]),
+            "limits": best["limits"], "broken_symlinks": best.get("broken_symlinks", []),
+            "broken_symlink_count": best.get("broken_symlink_count")}

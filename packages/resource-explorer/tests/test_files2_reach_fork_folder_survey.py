@@ -15,7 +15,7 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from resource_explorer import file_reach
+from resource_explorer import egeria_mounts, file_reach
 from resource_explorer import native_survey_run as nsr
 from resource_explorer.reachability import ReachabilityResult
 from resource_explorer.registry import FileSystemEntity, ProjectRegistry
@@ -41,18 +41,18 @@ def _fs(registry, tmp_path, *, slug="lake", canonical="/deployments/data-lake", 
     return registry.get_filesystem(slug), root
 
 
-def _egeria_says(outcome, code="", detail=""):
-    """A stand-in for Egeria's engine host: records its row the way `check_filesystem_reachability` does."""
-    calls = []
+def _row(registry, outcome, *, at="2026-10-20T10:00:00+00:00", path="/deployments/data-lake", slug="lake", guid="",
+         code="", **detail):
+    """A stored probe row, written the way file_reach writes them (the checked path rides in error_detail)."""
+    import json
 
-    def probe(slug, registry):
-        calls.append(slug)
-        registry.record_reachability_check(slug, probed_at="2026-10-20T10:00:00+00:00", outcome=outcome,
-                                           error_code=code, error_detail=detail)
-        return ReachabilityResult(outcome=outcome, error_code=code, error_detail=detail, latency_ms=1,
-                                  engine_action_guid="ea-1")
-    probe.calls = calls
-    return probe
+    d = {"path": path, **detail}
+    registry.record_reachability_check(slug, probed_at=at, outcome=outcome, error_code=code,
+                                       error_detail=json.dumps(d), engine_action_guid=guid)
+
+
+PAIRS = [egeria_mounts.MountPair("/Users/x/exchange/data-lake", "/deployments/data-lake",
+                                 "read from quickstart-egeria-main mounts", "2026-10-20")]
 
 
 # ── 1. the stored rows decide the state; "not checked yet" is its own state ───────────────────────────────────────
@@ -64,106 +64,229 @@ def test_no_row_is_not_checked_yet_and_neither_outcome(registry, tmp_path):
     assert s.surveyor == "" and not s.decided
 
 
-def test_outcome_1_sentence_names_the_container_path_and_the_date(registry, tmp_path):
+def test_verified_sentence_names_the_stored_path_and_the_date(registry, tmp_path):
     fs, _ = _fs(registry, tmp_path)
-    registry.record_reachability_check("lake", probed_at="2026-10-20T10:00:00+00:00", outcome="reachable")
-    s = file_reach.fork_for(registry, fs)
+    _row(registry, "egeria_verified", path="/deployments/old-path")
+    s = file_reach.fork_for(registry, _fs_with(fs, canonical="/deployments/old-path"))
     assert s.state == file_reach.EGERIA
-    assert s.sentence == "Egeria can read /deployments/data-lake · checked 2026-10-20"
+    assert s.sentence == "Egeria can read /deployments/old-path · verified 2026-10-20"
     assert s.surveyor == "Egeria's Folder Survey"
     assert s.report_sentence == "surveyed by Egeria's Folder Survey"
 
 
-def test_outcome_2_sentence_and_the_report_sentence(registry, tmp_path):
-    fs, _ = _fs(registry, tmp_path)
-    registry.record_reachability_check("lake", probed_at="2026-10-20T10:00:00+00:00", outcome="re_only")
+def _fs_with(fs, **kw):
+    import dataclasses
+
+    return dataclasses.replace(fs, canonical_mount_point=kw["canonical"])
+
+
+def test_the_path_checked_is_shown_not_todays_canonical_mount(registry, tmp_path):
+    """M5: a row about a path that has since been edited says so; it does not claim the new path."""
+    fs, _ = _fs(registry, tmp_path, canonical="/deployments/new-path")
+    _row(registry, "egeria_verified", path="/deployments/old-path")
     s = file_reach.fork_for(registry, fs)
-    assert s.state == file_reach.RE_ONLY
-    assert s.sentence == "only Resource Explorer can read this path · checked 2026-10-20"
-    assert s.surveyor == "Resource Explorer"
+    assert s.state == file_reach.NOT_CHECKED and s.path_changed and s.path == "/deployments/old-path"
+    assert "/deployments/new-path" not in s.sentence and s.surveyor == ""
+
+
+def test_expected_reachable_unverified_names_the_prefix(registry, tmp_path):
+    fs, _ = _fs(registry, tmp_path)
+    _row(registry, "expected_reachable", prefix="/deployments/data-lake", source="configured · 2026-10-20")
+    s = file_reach.fork_for(registry, fs)
+    assert s.state == file_reach.EXPECTED and s.surveyor == "Egeria's Folder Survey"
+    assert s.sentence == ("expected reachable by Egeria · under /deployments/data-lake · unverified · checked 2026-10-20")
+    assert s.prefix_source == "configured · 2026-10-20" and s.path == "/deployments/data-lake"
+
+
+def test_mounts_unknown_and_re_only_and_nobody_sentences(registry, tmp_path):
+    fs, _ = _fs(registry, tmp_path)
+    _row(registry, "mounts_unknown")
+    s = file_reach.fork_for(registry, fs)
+    assert s.state == file_reach.MOUNTS_UNKNOWN and s.surveyor == "Resource Explorer"
+    assert s.sentence == "Egeria's mounts unknown on this deployment · RE-led until configured · checked 2026-10-20"
+    assert "mounts are unknown" in s.report_sentence and "could not reach" not in s.report_sentence
+    _row(registry, "re_only", at="2026-10-20T11:00:00+00:00")
+    s = file_reach.fork_for(registry, fs)
+    assert s.state == file_reach.RE_ONLY and s.sentence == "only Resource Explorer can read this path · checked 2026-10-20"
     assert s.report_sentence == "surveyed by Resource Explorer · Egeria could not reach the path"
+    _row(registry, "nobody_can_read", at="2026-10-20T12:00:00+00:00", re_why="not a folder on this server")
+    s = file_reach.fork_for(registry, fs)
+    assert s.state == file_reach.NOBODY and s.surveyor == ""
+    assert s.sentence == "neither Egeria nor Resource Explorer can read /deployments/data-lake · 2026-10-20"
+    assert "could not tell" not in s.sentence
 
 
 @pytest.mark.parametrize("outcome", ["unknown", "no_connection", "auth_rejected", "unresolvable_secret",
                                      "network_unreachable"])
 def test_a_probe_that_could_not_tell_is_neither_outcome(registry, tmp_path, outcome):
-    """Egeria timing out, having no connection, or refusing is not "only Resource Explorer can read this path"."""
+    """An old row Egeria answered with a failure is not "only Resource Explorer can read this path"."""
     fs, _ = _fs(registry, tmp_path)
     registry.record_reachability_check("lake", probed_at="2026-10-20T10:00:00+00:00", outcome=outcome,
                                        error_detail="Egeria's own words")
     s = file_reach.fork_for(registry, fs)
     assert s.state == file_reach.UNDECIDED and not s.decided
     assert s.surveyor == "" and "Egeria's own words" in s.why
-    assert not s.sentence.startswith(("only Resource Explorer", "Egeria can read"))
     assert s.sentence == "could not tell whether Egeria can read this path · checked 2026-10-20"
 
 
 def test_the_newest_row_decides_and_history_is_kept(registry, tmp_path):
     fs, _ = _fs(registry, tmp_path)
-    registry.record_reachability_check("lake", probed_at="2026-10-19T10:00:00+00:00", outcome="reachable")
-    registry.record_reachability_check("lake", probed_at="2026-10-20T10:00:00+00:00", outcome="re_only")
+    _row(registry, "egeria_verified", at="2026-10-19T10:00:00+00:00")
+    _row(registry, "re_only", at="2026-10-20T10:00:00+00:00")
     assert file_reach.fork_for(registry, fs).state == file_reach.RE_ONLY
     assert len(registry.list_reachability_history("lake")) == 2
 
 
-# ── 2. the probe asks Egeria and never trusts the typed value ─────────────────────────────────────────────────────
+# ── 2. the mounted-prefix check at attach-root: it asks Egeria nothing ─────────────────────────────────────────────
 
-def test_a_typed_canonical_mount_is_not_believed_when_egeria_cannot_see_it(registry, tmp_path):
-    fs, _ = _fs(registry, tmp_path, canonical="/looks/fine/typed")
-    asked = _egeria_says("network_unreachable", file_reach.NOT_VISIBLE_CODE, NOT_VISIBLE)
-    state = file_reach.probe_filesystem("lake", registry, egeria_probe=asked)
-    assert asked.calls == ["lake"], "Egeria's engine host must be asked, once"
-    assert state.state == file_reach.RE_ONLY       # RE read the local mount (it exists), Egeria could not
-    rows = registry.list_reachability_history("lake")
-    assert [r["outcome"] for r in rows] == ["re_only", "network_unreachable"]
-    assert file_reach.NOT_VISIBLE_CODE in rows[0]["error_detail"]
-
-
-def test_egeria_can_read_it_is_outcome_1_and_records_no_re_only_row(registry, tmp_path):
-    _fs(registry, tmp_path)
-    state = file_reach.probe_filesystem("lake", registry, egeria_probe=_egeria_says("reachable"))
-    assert state.state == file_reach.EGERIA
-    assert [r["outcome"] for r in registry.list_reachability_history("lake")] == ["reachable"]
+def test_a_mount_under_a_container_prefix_is_expected_reachable_unverified(registry, tmp_path):
+    _fs(registry, tmp_path, canonical="/deployments/data-lake/2026")
+    state = file_reach.probe_filesystem("lake", registry, mount_map=PAIRS)
+    assert state.state == file_reach.EXPECTED and state.surveyor == "Egeria's Folder Survey"
+    assert state.prefix == "/deployments/data-lake" and state.path == "/deployments/data-lake/2026"
+    assert "read from quickstart-egeria-main mounts · 2026-10-20" == state.prefix_source
+    (row,) = registry.list_reachability_history("lake")
+    assert row["outcome"] == "expected_reachable" and row["probed_from"] == "resource-explorer"
 
 
-def test_nobody_can_read_it_is_neither_outcome(registry, tmp_path):
-    """Egeria cannot see the folder AND this server cannot read it: not "only Resource Explorer can read this path"."""
-    _fs(registry, tmp_path, make_dir=False)
-    state = file_reach.probe_filesystem(
-        "lake", registry, egeria_probe=_egeria_says("network_unreachable", file_reach.NOT_VISIBLE_CODE, NOT_VISIBLE))
-    assert state.state == file_reach.UNDECIDED
-    assert "re_only" not in [r["outcome"] for r in registry.list_reachability_history("lake")]
+def test_a_prefix_is_whole_path_components(registry, tmp_path):
+    _fs(registry, tmp_path, canonical="/deployments/data-lake-other")
+    assert file_reach.probe_filesystem("lake", registry, mount_map=PAIRS).state == file_reach.RE_ONLY
 
 
-def test_an_egeria_failure_that_raises_leaves_the_state_as_the_rows_prove_it(registry, tmp_path):
-    _fs(registry, tmp_path)
-
-    def boom(slug, reg):
-        raise ConnectionError("egeria down")
-
-    assert file_reach.probe_filesystem("lake", registry, egeria_probe=boom).state == file_reach.NOT_CHECKED
+def test_an_empty_map_is_mounts_unknown_never_a_guess(registry, tmp_path):
+    _fs(registry, tmp_path, canonical="/deployments/data-lake")
+    state = file_reach.probe_filesystem("lake", registry, mount_map=[])
+    assert state.state == file_reach.MOUNTS_UNKNOWN and state.surveyor == "Resource Explorer"
+    assert state.sentence.startswith("Egeria's mounts unknown on this deployment · RE-led until configured")
 
 
-def test_the_real_check_asks_egeria_through_the_pyegeria_signature(registry, tmp_path, monkeypatch):
-    """The real `check_filesystem_reachability` end to end with fakes that BIND pyegeria's real signatures."""
-    from pyegeria import AutomatedCuration, MetadataExpert
+def test_outside_every_mount_and_re_can_read_it_is_re_only(registry, tmp_path):
+    _fs(registry, tmp_path, canonical="/looks/fine/typed")
+    state = file_reach.probe_filesystem("lake", registry, mount_map=PAIRS)
+    assert state.state == file_reach.RE_ONLY and state.path == "/looks/fine/typed"
 
+
+def test_outside_every_mount_and_nobody_can_read_it_says_so_plainly(registry, tmp_path):
+    _fs(registry, tmp_path, canonical="/looks/fine/typed", make_dir=False)
+    state = file_reach.probe_filesystem("lake", registry, mount_map=PAIRS)
+    assert state.state == file_reach.NOBODY and "neither Egeria nor Resource Explorer" in state.sentence
+    assert "could not tell" not in state.sentence
+
+
+def test_the_probe_launches_nothing_in_egeria(registry, tmp_path, monkeypatch):
+    """The conftest guard raises a BaseException on any launch; this runs every path of the probe through it."""
     from resource_explorer import reachability
 
     _fs(registry, tmp_path)
-    ac = create_autospec(AutomatedCuration, instance=True, spec_set=True)
-    me = create_autospec(MetadataExpert, instance=True, spec_set=True)
-    ac.initiate_gov_action_type.return_value = "ea-guid-1"
-    me.get_metadata_element_by_guid.return_value = {"elementProperties": {"propertyValueMap": {
-        "activityStatus": {"symbolicName": "FAILED"}, "completionMessage": {"primitiveValue": NOT_VISIBLE}}}}
-    monkeypatch.setattr(reachability, "_get_clients", lambda: (ac, me))
-    # the conftest guard replaces the probe's one live call; this test puts the REAL call back, over fakes
-    monkeypatch.setattr(file_reach, "_default_egeria_probe", reachability.check_filesystem_reachability)
-    state = file_reach.probe_filesystem("lake", registry)
-    kwargs = ac.initiate_gov_action_type.call_args.kwargs
-    assert kwargs["action_type_qualified_name"] == "FileSurvey::survey-folder"
-    assert kwargs["action_targets"][0]["actionTargetGUID"] == ASSET
-    assert state.state == file_reach.RE_ONLY
+    for pairs, canonical in ((PAIRS, "/deployments/data-lake"), ([], "/x"), (PAIRS, "/elsewhere")):
+        registry.remove_filesystem("lake")
+        _fs(registry, tmp_path, canonical=canonical)
+        file_reach.probe_filesystem("lake", registry, mount_map=pairs)
+    with pytest.raises(BaseException) as err:           # and the guard itself is live: a launch is not swallowed
+        reachability._get_clients()
+    assert type(err.value).__name__ == "ProbeLaunchedInTest"
+
+
+def test_a_check_again_does_not_undo_a_verification(registry, tmp_path):
+    _fs(registry, tmp_path)
+    _row(registry, "egeria_verified", at="2026-10-20T10:00:00+00:00")
+    state = file_reach.probe_filesystem("lake", registry, mount_map=PAIRS)
+    assert state.state == file_reach.EGERIA
+    assert len(registry.list_reachability_history("lake")) == 1
+
+
+def test_a_check_again_reevaluates_a_failed_egeria_read_and_keeps_the_evidence(registry, tmp_path):
+    _fs(registry, tmp_path)
+    _row(registry, "egeria_cannot_read", guid="ea-failed", code=file_reach.NOT_VISIBLE_CODE)
+    state = file_reach.probe_filesystem("lake", registry, mount_map=PAIRS)
+    assert state.state == file_reach.EXPECTED
+    assert "ea-failed" in [r["engine_action_guid"] for r in registry.list_reachability_history("lake")]
+
+
+def test_a_press_with_no_row_checks_once_and_a_settled_row_is_not_reevaluated(registry, tmp_path):
+    _fs(registry, tmp_path)
+    assert file_reach.ensure_checked("lake", registry).state == file_reach.MOUNTS_UNKNOWN     # no map under the guard
+    _row(registry, "egeria_cannot_read", at="2026-10-21T10:00:00+00:00")
+    assert file_reach.ensure_checked("lake", registry).state == file_reach.EGERIA_CANNOT
+
+
+# ── 2b. the first Egeria-led survey is the verification ────────────────────────────────────────────────────────────
+
+def _derived(state, message="", guid="ea-9"):
+    return {"state": state, "message": message, "engine_action_guid": guid}
+
+
+def test_a_completed_folder_survey_records_verified_with_the_date(registry, tmp_path):
+    _fs(registry, tmp_path)
+    _row(registry, "expected_reachable", prefix="/deployments/data-lake")
+    assert file_reach.settle_from_run(registry, "lake", _derived("complete")) == "egeria_verified"
+    s = file_reach.fork_for(registry, registry.get_filesystem("lake"))
+    assert s.state == file_reach.EGERIA and "Egeria can read /deployments/data-lake · verified" in s.sentence
+    # once per engine action
+    assert file_reach.settle_from_run(registry, "lake", _derived("complete")) == ""
+    assert [r["outcome"] for r in registry.list_reachability_history("lake")] == ["egeria_verified", "expected_reachable"]
+
+
+def test_404_001_flips_the_lever_to_re_led_and_keeps_the_failed_launch(registry, tmp_path):
+    _fs(registry, tmp_path)
+    _row(registry, "expected_reachable", prefix="/deployments/data-lake")
+    assert file_reach.settle_from_run(registry, "lake", _derived("failed", NOT_VISIBLE, "ea-bad")) == "egeria_cannot_read"
+    s = file_reach.fork_for(registry, registry.get_filesystem("lake"))
+    assert s.state == file_reach.EGERIA_CANNOT and s.surveyor == "Resource Explorer"
+    assert s.sentence.startswith("Egeria cannot read /deployments/data-lake · ")
+    assert s.evidence_action_guid == "ea-bad" and "BASIC-FILE-CONNECTOR-404-001" in s.why
+    assert file_reach.refusal_words(s, for_egeria_lead=False) == ""          # RE may now walk and publish
+    assert "Egeria cannot read" in file_reach.refusal_words(s, for_egeria_lead=True)
+
+
+def test_404_001_when_re_cannot_read_it_either_is_nobody(registry, tmp_path):
+    _fs(registry, tmp_path, make_dir=False)
+    assert file_reach.settle_from_run(registry, "lake", _derived("failed", NOT_VISIBLE)) == "nobody_can_read"
+    s = file_reach.fork_for(registry, registry.get_filesystem("lake"))
+    assert s.state == file_reach.NOBODY and "neither Egeria nor Resource Explorer" in s.sentence
+    assert s.evidence_action_guid == "ea-9"
+
+
+def test_other_failures_and_running_states_prove_nothing(registry, tmp_path):
+    _fs(registry, tmp_path)
+    for d in (_derived("failed", "OPEN-SURVEY-0009 no connection"), _derived("running"), _derived("submitted"),
+              _derived("awaiting_report"), _derived("complete", guid="")):
+        assert file_reach.settle_from_run(registry, "lake", d) == ""
+    assert registry.get_latest_reachability("lake") is None
+
+
+def test_the_expected_to_verified_transition_through_a_real_refresh(registry, tmp_path):
+    """A real `refresh_run` over a scripted Egeria: expected -> (run) -> verified, with the gate open at every step."""
+    global _PORT
+    _fs(registry, tmp_path)
+    file_reach.probe_filesystem("lake", registry, mount_map=PAIRS)
+    assert file_reach.fork_for(registry, registry.get_filesystem("lake")).state == file_reach.EXPECTED
+    _PORT = _Port()
+    _submit(registry)                                   # allowed on "expected reachable · unverified"
+    _PORT.status = ("COMPLETED", "done")
+    _PORT.reports["ea-folder-9"] = "report-9"
+    _PORT.originators["report-9"] = "ea-folder-9"
+    _PORT.annotations["report-9"] = [_ann(1, "Capture File Counts", resource_properties={"Number of files": "3"})]
+    run = registry.list_native_survey_runs("filesystem", "lake", nsr.FOLDER_SURVEY_QN)[0]
+    nsr.refresh_run(registry, _PORT, run, entity_type="filesystem", slug="lake")
+    s = file_reach.fork_for(registry, registry.get_filesystem("lake"))
+    assert s.state == file_reach.EGERIA and "verified" in s.sentence
+
+
+def test_a_failed_real_refresh_with_404_flips_to_re_led(registry, tmp_path):
+    global _PORT
+    _fs(registry, tmp_path)
+    file_reach.probe_filesystem("lake", registry, mount_map=PAIRS)
+    _PORT = _Port()
+    _submit(registry)
+    _PORT.status = ("FAILED", NOT_VISIBLE)
+    run = registry.list_native_survey_runs("filesystem", "lake", nsr.FOLDER_SURVEY_QN)[0]
+    nsr.refresh_run(registry, _PORT, run, entity_type="filesystem", slug="lake")
+    s = file_reach.fork_for(registry, registry.get_filesystem("lake"))
+    assert s.state == file_reach.EGERIA_CANNOT and s.surveyor == "Resource Explorer"
+    with pytest.raises(nsr.NativeSurveyCannotRun, match="Egeria cannot read"):
+        _submit(registry)
 
 
 # ── 3. Egeria leads: the native port, the request parameter, the gate, the read-back ────────────────────────────
@@ -246,19 +369,19 @@ def test_egeria_leads_only_where_the_stored_probe_says_it_can_read(registry, tmp
                                      technology_type="File System Directory")
 
     assert reason() == "not checked yet"
-    registry.record_reachability_check("lake", probed_at="2026-10-20T10:00:00+00:00", outcome="re_only")
+    _row(registry, "re_only", at="2026-10-20T10:00:00+00:00", slug="lake", path="/deployments/data-lake")
     assert "only Resource Explorer can read this path" in reason()
     registry.record_reachability_check("lake", probed_at="2026-10-20T11:00:00+00:00", outcome="unknown",
                                        error_detail="timed out")
     assert "could not tell" in reason() and "timed out" in reason()
-    registry.record_reachability_check("lake", probed_at="2026-10-20T12:00:00+00:00", outcome="reachable")
+    _row(registry, "egeria_verified", at="2026-10-20T12:00:00+00:00", slug="lake", path="/deployments/data-lake")
     assert reason() == ""
 
 
 def test_a_press_when_re_leads_is_refused_and_asks_egeria_nothing(registry, tmp_path):
     global _PORT
     _fs(registry, tmp_path)
-    registry.record_reachability_check("lake", probed_at="2026-10-20T10:00:00+00:00", outcome="re_only")
+    _row(registry, "re_only", at="2026-10-20T10:00:00+00:00", slug="lake", path="/deployments/data-lake")
     _PORT = _Port()
     with pytest.raises(nsr.NativeSurveyCannotRun, match="only Resource Explorer can read this path"):
         _submit(registry)
@@ -268,7 +391,7 @@ def test_a_press_when_re_leads_is_refused_and_asks_egeria_nothing(registry, tmp_
 def test_egeria_led_run_sends_analysis_level_and_the_row_names_its_surveyor(registry, tmp_path):
     global _PORT
     _fs(registry, tmp_path)
-    registry.record_reachability_check("lake", probed_at="2026-10-20T10:00:00+00:00", outcome="reachable")
+    _row(registry, "egeria_verified", at="2026-10-20T10:00:00+00:00", slug="lake", path="/deployments/data-lake")
     _PORT = _Port()
     _submit(registry)
     (call,) = _PORT.calls
@@ -283,7 +406,7 @@ def test_the_file_names_log_is_never_read_stored_or_shown(registry, tmp_path):
     Resource Explorer's half of "stays off" is that it never reads it."""
     global _PORT
     _fs(registry, tmp_path)
-    registry.record_reachability_check("lake", probed_at="2026-10-20T10:00:00+00:00", outcome="reachable")
+    _row(registry, "egeria_verified", at="2026-10-20T10:00:00+00:00", slug="lake", path="/deployments/data-lake")
     _PORT = _Port()
     _submit(registry)
     _PORT.status = ("COMPLETED", "done")
@@ -311,7 +434,7 @@ def test_the_view_reads_an_egeria_led_report_back_into_counts_types_and_inaccess
     global _PORT
     _fs(registry, tmp_path)
     assert folder_survey_view(registry, "lake")["state"] == "none"
-    registry.record_reachability_check("lake", probed_at="2026-10-20T10:00:00+00:00", outcome="reachable")
+    _row(registry, "egeria_verified", at="2026-10-20T10:00:00+00:00", slug="lake", path="/deployments/data-lake")
     _PORT = _Port()
     _submit(registry)
     _PORT.status = ("COMPLETED", "done")
@@ -375,7 +498,8 @@ def test_the_walk_publishes_egerias_annotation_types_and_never_the_names_log(reg
     assert measure["resource_properties"]["Number of files"] == "5"
     assert measure["resource_properties"]["Number of subdirectories (folders)"] == "3"
     assert measure["resource_properties"]["Hidden File Count"] == "1"
-    assert {"fileCount", "subDirectoryCount", "directoryName"} <= set(measure["json_properties"])
+    assert {"fileCount", "subDirectoryCount"} <= set(measure["json_properties"])
+    assert "directoryName" not in measure["json_properties"]          # counts only: no path leaves for Egeria
     assert all(isinstance(v, str) for v in measure["resource_properties"].values())
     kinds = {a.annotation_type.value for a in to_annotations(specs)}
     assert kinds <= {"ResourceMeasureAnnotation", "ResourceProfileAnnotation", "RequestForActionAnnotation"}
@@ -403,7 +527,7 @@ def test_publish_is_refused_unless_the_probe_proves_egeria_could_not_reach_the_p
     root = _tree(tmp_path)
     sd = _walk(registry, root)
     fs = registry.get_filesystem("walkme")
-    for outcome in ("reachable", "unknown"):
+    for outcome in ("egeria_verified", "expected_reachable", "unknown"):
         registry.record_reachability_check("walkme", probed_at="2026-10-20T10:00:00+00:00", outcome=outcome)
         with pytest.raises(NothingToPublish):
             ad._publish(fs, [{"survey_data": sd}], sd["surveyed_at"], registry)
@@ -418,11 +542,13 @@ def test_the_published_report_names_resource_explorer_and_says_when_capped(regis
 
     sd = _walk(registry, _tree(tmp_path), max_entries=3)
     assert sd["walk_limits"]["capped"] is True
-    registry.record_reachability_check("walkme", probed_at="2026-10-20T10:00:00+00:00", outcome="re_only")
+    _row(registry, "re_only", at="2026-10-20T10:00:00+00:00", slug="walkme", path="/x/walkme")
     fs = registry.get_filesystem("walkme")
     sd["surveyed_by"] = {"surveyor": file_reach.SURVEYOR_RE, "reach": file_reach.fork_for(registry, fs).as_dict()}
     maker = create_autospec(AssetMaker, instance=True, spec_set=True)
     maker.create_asset.return_value = "report-guid-7"
+    maker.get_asset_by_guid.return_value = {"elementHeader": {"guid": "report-guid-7", "type": {"typeName": "SurveyReport"}},
+                                            "properties": {"qualifiedName": "q"}}
     s = EgeriaFileSystemSurveyor()
     s.connect = lambda: None
     s._asset_maker = maker
@@ -521,22 +647,23 @@ def test_noise_and_linked_folders_are_skipped_and_counted(registry, tmp_path):
 
 # ── 6. the step: the probe runs first, and an Egeria-led survey measures nothing of Egeria's ─────────────────────
 
-def test_the_inventory_step_probes_first_and_stands_aside_when_egeria_leads(registry, tmp_path, monkeypatch):
+def test_the_inventory_step_refuses_in_words_when_egeria_leads_and_never_succeeds_empty(registry, tmp_path):
     from resource_explorer.surveyors.filesystem import survey_definition_adapter as ad
 
     _fs(registry, tmp_path)
-    seen = []
-
-    def probe(slug, reg, **kw):
-        seen.append(slug)
-        reg.record_reachability_check(slug, probed_at="2026-10-20T10:00:00+00:00", outcome="reachable")
-        return file_reach.fork_for(reg, reg.get_filesystem(slug))
-
-    monkeypatch.setattr(file_reach, "probe_filesystem", probe)
-    out = ad._run_filesystem_inventory(registry.get_filesystem("lake"), registry)
-    assert seen == ["lake"]
-    assert out["led_by"] == "egeria" and out["survey_data"] is None
+    _row(registry, "expected_reachable", prefix="/deployments/data-lake")
+    with pytest.raises(ad.FolderSurveyNotRunHere, match="Egeria's Folder Survey leads"):
+        ad._run_filesystem_inventory(registry.get_filesystem("lake"), registry)
     assert registry.list_filesystem_surveys("lake") == [], "Resource Explorer re-measured what Egeria's survey owns"
+
+
+def test_the_inventory_step_refuses_when_nobody_can_be_named(registry, tmp_path):
+    from resource_explorer.surveyors.filesystem import survey_definition_adapter as ad
+
+    _fs(registry, tmp_path)
+    _row(registry, "nobody_can_read", re_why="not a folder on this server")
+    with pytest.raises(ad.FolderSurveyNotRunHere, match="neither Egeria nor Resource Explorer"):
+        ad._run_filesystem_inventory(registry.get_filesystem("lake"), registry)
 
 
 def test_the_inventory_step_walks_and_stores_when_only_re_can_read(registry, tmp_path, monkeypatch):
@@ -629,7 +756,7 @@ def test_the_view_has_exactly_the_keys_the_screens_read(registry, tmp_path):
     registry.register_filesystem(FileSystemEntity(slug="walkme", display_name="W", local_mount_point=str(root),
                                                   canonical_mount_point="/x/walkme", egeria_asset_guid=ASSET))
     sd = _walk_existing(registry, root)
-    registry.record_reachability_check("walkme", probed_at="2026-10-20T10:00:00+00:00", outcome="re_only")
+    _row(registry, "re_only", at="2026-10-20T10:00:00+00:00", slug="walkme", path="/x/walkme")
     sd["surveyed_by"] = {"surveyor": file_reach.SURVEYOR_RE, "reach": {}}
     registry.add_filesystem_survey("walkme", sd["surveyed_at"], sd, source="survey-definition")
     v = folder_survey_view(registry, "walkme")

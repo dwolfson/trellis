@@ -12,8 +12,9 @@ same way. The names come from Egeria's source, not from memory:
 * `AnalysisStep`: "Profiling Associated Resources" for the measurements and profiles, "Produce Exceptions" for the two
   requests for action.
 
-"Profile File Names to External Log" is NEVER built here: the walk records names, sizes and times in the registry only,
-and no list of file names is written to Egeria (Files brief section 5, caution 1).
+"Profile File Names to External Log" is NEVER built here, and since fix round 1 NO path or file name reaches any annotation
+property at all: the publish carries counts only (`folder_specs` without `include_paths`). The paths stay in Resource
+Explorer's registry and the /next card shows them from there.
 
 Three pure layers, so each is testable without Egeria:
 
@@ -178,15 +179,20 @@ def _metrics(sd: dict) -> dict[str, str]:
     return out
 
 
-def folder_specs(sd: dict, *, directory_name: str = "") -> list[dict]:
+def folder_specs(sd: dict, *, directory_name: str = "", include_paths: bool = False) -> list[dict]:
     """The walk's `survey_data` as neutral annotation specs under Egeria's names. Pure.
+
+    **Counts only, by default (fix round 1, M3, coordinator ruling pending the owner's word).** No file path and no file or
+    folder name goes into any spec unless `include_paths` is True: that is for Resource Explorer's OWN reader (the card,
+    which shows the paths from RE's registry), never for the publish. On the owner's tree the paths include names like
+    `.env` and `.omsecrets`, and Egeria is a shared catalog. `directory_name` is likewise only used with `include_paths`.
 
     `survey_data` is what `LocalFileSystemSurveyor` returns (structure phase). A section the walk could not fill (it ran
     without classification) is left out, not published as an empty profile."""
     cls = sd.get("classification") or {}
     metrics = _metrics(sd)
     json_props = {JSON_NAME[k]: v for k, v in metrics.items() if k in JSON_NAME}
-    if directory_name:
+    if directory_name and include_paths:
         json_props["directoryName"] = directory_name
 
     def spec(name: str, kind: str, **extra) -> dict:
@@ -203,14 +209,16 @@ def folder_specs(sd: dict, *, directory_name: str = "") -> list[dict]:
         specs.append(spec(
             MISSING_REF_DATA, "rfa", analysis_step=PRODUCE_EXCEPTIONS_STEP,
             action_requested="Review the files that could not be classified and add them to Egeria's file reference data.",
-            json_properties={"count": cls["unclassified_count"], "sample_paths": list(cls.get("unclassified_sample") or [])[:20]}))
+            json_properties={"count": cls["unclassified_count"],
+                             **({"sample_paths": list(cls.get("unclassified_sample") or [])[:20]} if include_paths else {})}))
     inaccessible = sd.get("inaccessible_files") or []
     if sd.get("inaccessible_file_count") or inaccessible:
         specs.append(spec(
             INACCESSIBLE_FILES, "rfa", analysis_step=PRODUCE_EXCEPTIONS_STEP,
             action_requested="Review permissions on the files and folders that could not be read.",
             json_properties={"count": sd.get("inaccessible_file_count", len(inaccessible)),
-                             "inaccessible": [i.get("path", i) if isinstance(i, dict) else i for i in inaccessible[:100]]}))
+                             **({"inaccessible": [i.get("path", i) if isinstance(i, dict) else i
+                                                  for i in inaccessible[:100]]} if include_paths else {})}))
     return specs
 
 

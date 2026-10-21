@@ -15151,6 +15151,13 @@ const _REACHABILITY_OUTCOME_DISPLAY = {
   network_unreachable:  ['⚠️', 'text-amber-400',   'Not reachable — the engine host cannot reach this resource'],
   auth_rejected:        ['⚠️', 'text-amber-400',   'Not reachable — authentication was rejected'],
   unknown:              ['❓', 'text-slate-400',   'Could not determine reachability'],
+  // Files step 2: the mounted-prefix check (asks Egeria nothing) and what a settled Egeria-led survey proved.
+  re_only:              ['✅', 'text-sky-400',     'Only Resource Explorer can read this path'],
+  expected_reachable:   ['◔', 'text-slate-400',   'Expected reachable by Egeria · unverified (the first Egeria-led survey verifies it)'],
+  mounts_unknown:       ['❓', 'text-slate-400',   'Egeria’s mounts unknown on this deployment · RE-led until configured'],
+  nobody_can_read:      ['⚠️', 'text-amber-400',   'Neither Egeria nor Resource Explorer can read this path'],
+  egeria_verified:      ['✅', 'text-emerald-400', 'Egeria can read this path · verified'],
+  egeria_cannot_read:   ['⚠️', 'text-amber-400',   'Egeria cannot read this path · Resource Explorer leads the next survey'],
 };
 
 function _renderReachabilitySentence(result) {

@@ -19,8 +19,16 @@ const text = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 
 const REACH = {
   not_checked: { state: 'not_checked', sentence: 'not checked yet', checked_date: '', surveyor: '', why: '', decided: false },
-  egeria: { state: 'egeria', sentence: 'Egeria can read /deployments/data-lake · checked 2026-10-20', checked_date: '2026-10-20',
-    surveyor: "Egeria's Folder Survey", why: '', decided: true },
+  egeria: { state: 'egeria', sentence: 'Egeria can read /deployments/data-lake · verified 2026-10-20', checked_date: '2026-10-20',
+    surveyor: "Egeria's Folder Survey", why: '', decided: true, path: '/deployments/data-lake' },
+  expected: { state: 'expected', sentence: 'expected reachable by Egeria · under /deployments/data-lake · unverified · checked 2026-10-20',
+    checked_date: '2026-10-20', surveyor: "Egeria's Folder Survey", why: '', decided: true, path: '/deployments/data-lake/2026' },
+  mounts_unknown: { state: 'mounts_unknown', sentence: "Egeria's mounts unknown on this deployment · RE-led until configured · checked 2026-10-20",
+    checked_date: '2026-10-20', surveyor: 'Resource Explorer', why: '', decided: true, path: '/x/walkme' },
+  egeria_cannot: { state: 'egeria_cannot', sentence: 'Egeria cannot read /x/walkme · 2026-10-20', checked_date: '2026-10-20',
+    surveyor: 'Resource Explorer', why: 'BASIC-FILE-CONNECTOR-404-001', decided: true, path: '/x/walkme' },
+  nobody: { state: 'nobody', sentence: 'neither Egeria nor Resource Explorer can read /x/walkme · 2026-10-20', checked_date: '2026-10-20',
+    surveyor: '', why: 'not a folder on this server', decided: true, path: '/x/walkme' },
   re_only: { state: 're_only', sentence: 'only Resource Explorer can read this path · checked 2026-10-20',
     checked_date: '2026-10-20', surveyor: 'Resource Explorer', why: '', decided: true },
   undecided: { state: 'undecided', sentence: 'could not tell whether Egeria can read this path · checked 2026-10-20',
@@ -34,7 +42,7 @@ const MEASURED = (reach, over = {}) => ({
   report_guid: '', published: false, report_sentence: 'surveyed by Resource Explorer · Egeria could not reach the path',
   limits: { max_depth: 20, max_entries: 100000, capped: false, capped_reasons: [], entries_examined: 5000,
     deepest_level_reached: 7, not_walked_directory_names: ['.git', 'node_modules'], not_walked_directories: 12,
-    symlinked_directories_not_followed: 1 },
+    symlinked_directories_not_followed: 1, not_walked_names_found: ['.git', 'node_modules', '.venv'], broken_symlink_count: 0 },
   results: {
     measured: true,
     counts: { files: 4200, total_size_bytes: 1234567, subdirectories: 310, unclassified: 25, inaccessible: 2, hidden: null },
@@ -81,7 +89,7 @@ async function setUp(opts = {}) {
 
 test('each outcome draws the probe sentence exactly as stored, and who leads', async () => {
   const { fs } = await setUp();
-  for (const key of ['egeria', 're_only']) {
+  for (const key of ['egeria', 'expected', 'mounts_unknown', 'egeria_cannot', 're_only']) {
     const d = new (globalThis.window.DOMParser)().parseFromString(`<body>${fs.reachLineHtml(REACH[key])}</body>`, 'text/html');
     const t = text(d.body);
     assert.ok(t.includes(REACH[key].sentence), `${key}: ${t}`);
@@ -103,7 +111,8 @@ test('"not checked yet" and "could not tell" are never drawn as either outcome',
 
 test('Survey is enabled only where an outcome names who leads', async () => {
   const { host, fs } = await setUp();
-  for (const [key, enabled] of [['not_checked', false], ['undecided', false], ['egeria', true], ['re_only', true]]) {
+  for (const [key, enabled] of [['not_checked', false], ['undecided', false], ['nobody', false], ['egeria', true],
+    ['expected', true], ['mounts_unknown', true], ['egeria_cannot', true], ['re_only', true]]) {
     host.innerHTML = fs.folderSurveyCardHtml(NONE(REACH[key]));
     const press = host.querySelector('[data-fs-act="survey"]');
     assert.equal(press.disabled, !enabled, `${key}: survey enabled=${enabled}`);
@@ -152,7 +161,7 @@ test('a capped walk says so and never reads as complete; an uncapped walk says i
   assert.doesNotMatch(c, /walked to the end/);
   assert.ok(host.querySelector('[data-fs-capped]'));
   assert.match(c, /limits: depth 20, entries 100,000/);
-  assert.match(c, /not walked: \.git, node_modules \(12 folders skipped\)/);
+  assert.match(c, /12 directories not walked: \.git, node_modules, \.venv, 1 linked folders not followed/);
 
   host.innerHTML = fs.folderSurveyCardHtml(MEASURED(REACH.re_only));
   const u = text(host.querySelector('[data-fs-limits]'));
@@ -185,13 +194,14 @@ test('Check again runs the probe and shows what it then stores', async () => {
   host.querySelector('[data-fs-act="check"]').click();
   await tick(80);
   assert.ok(calls.some((c) => c.method === 'POST' && /\/lake\/reach$/.test(c.url)));
-  assert.match(text(host), /Egeria can read \/deployments\/data-lake · checked 2026-10-20/);
+  assert.match(text(host), /Egeria can read \/deployments\/data-lake · verified 2026-10-20/);
   assert.equal(host.querySelector('[data-fs-act="survey"]').disabled, false);
 });
 
 test('a walk of Resource Explorer\'s not yet published offers Publish, and publishing re-reads', async () => {
   const { host, calls, fs } = await setUp({
-    views: [MEASURED(REACH.re_only), MEASURED(REACH.re_only, { published: true, report_guid: 'abcdef12345' })],
+    views: [MEASURED(REACH.re_only), MEASURED(REACH.re_only, { published: true, report_guid: 'abcdef12345',
+      publish: { published: true, landed_words: '7 of 7 annotations in Egeria', not_published_why: '' } })],
   });
   await fs.mountFolderSurvey(host, 'walkme');
   const pub = host.querySelector('[data-fs-act="publish"]');
@@ -199,7 +209,7 @@ test('a walk of Resource Explorer\'s not yet published offers Publish, and publi
   pub.click();
   await tick(80);
   assert.ok(calls.some((c) => c.method === 'POST' && /\/walkme\/folder-survey\/publish$/.test(c.url)));
-  assert.match(text(host.querySelector('[data-fs-published]')), /published · report abcdef12/);
+  assert.match(text(host.querySelector('[data-fs-published]')), /published · 7 of 7 annotations in Egeria · report abcdef12/);
   assert.equal(host.querySelector('[data-fs-act="publish"]'), null, 'once the re-read says published, no Publish is offered');
 });
 
@@ -257,4 +267,64 @@ test('Understanding reads a file system\'s folder survey the same way whoever le
     assert.match(pane, /CSV Data File\s?(90|3)/, `${label}: the file types`);
     assert.ok(document.querySelector('[data-understanding-not-charted]'), 'the not-charted sentence stays');
   }
+});
+
+test('the line shows the path that was CHECKED, and a nobody-can-read state names no one to lead', async () => {
+  const { fs } = await setUp();
+  const t = (r) => text(new (globalThis.window.DOMParser)().parseFromString(`<body>${fs.reachLineHtml(r)}</body>`, 'text/html').body);
+  assert.match(t(REACH.expected), /path checked: \/deployments\/data-lake\/2026/);
+  assert.match(t(REACH.nobody), /neither Egeria nor Resource Explorer can read \/x\/walkme/);
+  assert.match(t(REACH.nobody), /no one can be named to lead yet/);
+  assert.match(t(REACH.egeria_cannot), /BASIC-FILE-CONNECTOR-404-001/);
+});
+
+test('an Egeria-led report states the analysis level and the file-name CSV line, and Egeria\'s dates read as dates', async () => {
+  const { host, fs } = await setUp();
+  const lines = ['analysis level: top level only',
+    'Egeria writes a file-name CSV inside its container on every Egeria-led survey; Resource Explorer never reads, stores or shows it.'];
+  host.innerHTML = fs.folderSurveyCardHtml(MEASURED(REACH.egeria, {
+    surveyor: "Egeria's Folder Survey", published: true, report_guid: 'abcdef12345', limits: null, detail_lines: lines,
+    report_sentence: "surveyed by Egeria's Folder Survey",
+    results: { measured: true, counts: { files: 10 }, times: { last_modified: 'Mon Oct 19 08:00:00 UTC 2026' }, file_types: [],
+      extensions: [], inaccessible: { count: 0, listed: null, requested: false } } }));
+  const t = text(host.querySelector('[data-fs-results]'));
+  assert.match(t, /analysis level: top level only/);
+  assert.match(t, /Egeria writes a file-name CSV inside its container on every Egeria-led survey; Resource Explorer never reads, stores or shows it\./);
+  assert.match(t, /Last modified\s?2026-10-19/);
+  assert.equal(fs.day('Tue Oct 6 14:12:32 CDT 2026'), '2026-10-06');
+  assert.equal(fs.day('2026-10-19T08:00:00'), '2026-10-19');
+  assert.equal(fs.day(''), '');
+});
+
+test('nothing skipped is said plainly, and a walk that was not published says why', async () => {
+  const { host, fs } = await setUp();
+  assert.equal(fs.notWalkedWords({ not_walked_directories: 0 }), 'no directories skipped');
+  assert.equal(fs.notWalkedWords({ not_walked_directories: 1, not_walked_names_found: ['.git'] }), '1 directory not walked: .git');
+  host.innerHTML = fs.folderSurveyCardHtml(MEASURED(REACH.re_only, { published: false, report_guid: 'abcdef12345',
+    publish: { published: false, not_published_why: 'no annotation landed in Egeria', landed_words: '0 of 7 annotations in Egeria' } }));
+  assert.match(text(host.querySelector('[data-fs-published]')), /not published · no annotation landed in Egeria/);
+});
+
+test('a broken link is counted on the card and its path listed from the registry', async () => {
+  const { host, fs } = await setUp();
+  const m = MEASURED(REACH.re_only);
+  m.limits = { ...m.limits, broken_symlink_count: 1 };
+  m.broken_symlinks = ['dangling'];
+  host.innerHTML = fs.folderSurveyCardHtml(m);
+  assert.match(text(host.querySelector('[data-fs-broken-links]')), /1 broken link \(target gone\)/);
+  assert.match(text(host.querySelector('[data-fs-broken-list]')), /dangling/);
+});
+
+test('Admin shows the prefix map read-only with each pair\'s source and date, and says so when it is empty', async () => {
+  const { document } = await setUp();
+  const { mountsHtml } = await import('/static/next/admin/egeria_mounts.js');
+  const div = document.createElement('div');
+  div.innerHTML = mountsHtml({ container: 'quickstart-egeria-main', setting: 'EGERIA_MOUNT_MAP', pairs: [
+    { host_prefix: '/Users/x/lake', container_prefix: '/deployments/lake', label: 'configured · 2026-10-20' },
+    { host_prefix: '/Users/x/in', container_prefix: '/deployments/in', label: 'read from the quickstart compose file · 2026-10-20' }] });
+  assert.equal(div.querySelectorAll('[data-mount-pair]').length, 2);
+  assert.match(text(div.querySelector('[data-mount-source]')), /configured · 2026-10-20/);
+  assert.equal(div.querySelectorAll('input, button').length, 0, 'read-only');
+  div.innerHTML = mountsHtml({ pairs: [], empty_words: "Egeria's mounts unknown on this deployment · RE-led until configured" });
+  assert.match(text(div.querySelector('[data-mounts-empty]')), /mounts unknown on this deployment/);
 });

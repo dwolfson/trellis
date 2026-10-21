@@ -2209,6 +2209,8 @@ export const getApiReference = (slug) => get(`/api/api-reference/${encodeURIComp
 export const putApiInstance = (slug, url) => put(`/api/api-reference/${encodeURIComponent(slug)}/instance`, { url });
 export const refetchApiInstance = (slug) => post(`/api/api-reference/${encodeURIComponent(slug)}/instance/refetch`);
 export const clearApiInstance = (slug) => del(`/api/api-reference/${encodeURIComponent(slug)}/instance`);
+/** Admin, read-only: the prefix map of what Egeria's platform container can read, each pair with its source and date. */
+export const getEgeriaMounts = () => get('/api/egeria/mounts');
 export const getApiFetchPolicy = () => get('/api/api-reference/policy');
 
 /* ── First index, asked first (first_index.py) ─────────────────────────── */

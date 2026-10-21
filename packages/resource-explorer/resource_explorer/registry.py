@@ -743,10 +743,10 @@ SECTION_DATA_FILES = "data_files"
 #: all mean "checked, and here is what Egeria said." See reachability.py's
 #: classify_check_asset_result().
 #:
-#: `re_only` (Files step 2, DESIGN-FILES-REMOTE-REACH.md section 2, outcome 2) is not something Egeria says: it is
-#: recorded by `file_reach.probe_filesystem` AFTER Egeria's engine host answered `network_unreachable` (the folder is
-#: not visible to it) AND Resource Explorer itself read the path. The two rows are both true and both kept; the newer
-#: one decides who leads. No DDL: `outcome` is free text in the table, validated here.
+#: Files step 2 words (DESIGN-FILES-REMOTE-REACH.md section 2). None is something Egeria "says" about a probe: the
+#: mounted-prefix check (`file_reach.probe_filesystem`, which asks Egeria nothing) writes `expected_reachable`,
+#: `mounts_unknown`, `re_only` and `nobody_can_read`; a settled Egeria-led survey writes `egeria_verified` or
+#: `egeria_cannot_read` (`file_reach.settle_from_run`). No DDL: `outcome` is free text in the table, validated here.
 REACHABILITY_OUTCOMES: frozenset[str] = frozenset({
     "reachable",
     "no_connection",
@@ -755,6 +755,11 @@ REACHABILITY_OUTCOMES: frozenset[str] = frozenset({
     "auth_rejected",
     "unknown",
     "re_only",
+    "expected_reachable",
+    "mounts_unknown",
+    "nobody_can_read",
+    "egeria_verified",
+    "egeria_cannot_read",
 })
 
 _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (

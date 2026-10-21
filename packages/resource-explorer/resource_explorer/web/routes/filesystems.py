@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -805,29 +806,28 @@ def get_filesystem_reachability_history(slug: str, limit: int = 20):
 
 @router.post("/{slug}/reachability", response_model=ReachabilityResultModel)
 def check_filesystem_reachability_endpoint(slug: str):
-    """Trigger the fast CHECK_ASSET reachability probe for this filesystem
-    and return (and persist) its result.
+    """Run the mounted-prefix check for this filesystem and return (and persist) its result as a reachability row.
 
-    Scope (Phase 1 slice #13): filesystem/folder resources only — see
-    reachability.py's module docstring for why database reachability is not
-    handled by this same code path. Never 500s for an Egeria-side failure
-    (timeout, disconnected platform, ...) — that is reported as a normal
-    `outcome: "unknown"` result, per the three-state absence discipline, not
-    an HTTP error. A 404 here means the filesystem itself isn't registered,
-    which is a different, real error.
-    """
-    from resource_explorer.reachability import ReachabilityCheckScopeError, check_filesystem_reachability
+    Files step 2 (fix round 1): this launches NOTHING in Egeria. It asks the same question as `POST /{slug}/reach` (is
+    the canonical mount under one of the platform container's mounted paths?), so it needs the same authorisation as
+    the survey run. A check that could not run, with no earlier row, answers `outcome: "unknown"` ("could not tell"),
+    never a 500. A 404 means the filesystem itself isn't registered."""
+    from resource_explorer import file_reach
+    from resource_explorer.web.routes.curate import require_resource_write
 
     registry = ProjectRegistry()
     if not registry.filesystem_exists(slug):
         raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    require_resource_write(registry, "filesystem", slug, "start_action")
 
     try:
-        from resource_explorer import file_reach
-
         file_reach.probe_filesystem(slug, registry)
-    except ReachabilityCheckScopeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001 -- said, not a 500
+        log.warning("Reachability check for %s could not run", slug, exc_info=True)
+        if registry.get_latest_reachability(slug) is None:
+            return ReachabilityResultModel(
+                filesystem_slug=slug, probed_at=datetime.now(timezone.utc).isoformat(), outcome="unknown",
+                error_code="CHECK_FAILED", error_detail=str(exc)[:300])
 
     latest = registry.get_latest_reachability(slug)
     return ReachabilityResultModel(**latest)
@@ -850,13 +850,17 @@ def get_filesystem_reach(slug: str) -> dict:
 
 @router.post("/{slug}/reach")
 def check_filesystem_reach(slug: str) -> dict:
-    """Run the probe now (asks Egeria's engine host about the canonical mount, adds Resource Explorer's own read of the
-    path, records the outcome) and return the state the stored rows then prove."""
+    """Run the mounted-prefix check now ("Check again": asks Egeria nothing; is the canonical mount under one of the
+    container's mounted paths?), record the outcome with the path checked, and return the state the stored rows then
+    prove. Needs the same authorisation as the survey run."""
     from resource_explorer import file_reach
+
+    from resource_explorer.web.routes.curate import require_resource_write
 
     registry = ProjectRegistry()
     if not registry.filesystem_exists(slug):
         raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    require_resource_write(registry, "filesystem", slug, "start_action")
     return file_reach.probe_filesystem(slug, registry).as_dict()
 
 
@@ -897,8 +901,8 @@ def run_filesystem_folder_survey(slug: str, req: FolderSurveyRequest = FolderSur
     require_resource_write(registry, "filesystem", slug, "start_action")
     submitted_by = requested_by()
 
-    fork = file_reach.probe_filesystem(slug, registry)
-    if fork.state == file_reach.EGERIA:
+    fork = file_reach.ensure_checked(slug, registry)
+    if fork.state in (file_reach.EGERIA, file_reach.EXPECTED):
         from resource_explorer.web.routes.native_surveys import _port, _technology_type
 
         try:
@@ -914,7 +918,7 @@ def run_filesystem_folder_survey(slug: str, req: FolderSurveyRequest = FolderSur
             raise HTTPException(status_code=502, detail=str(exc))
         return {"led_by": "egeria", "surveyor": file_reach.SURVEYOR_EGERIA, "reach": fork.as_dict(), "run": run}
 
-    if fork.state != file_reach.RE_ONLY:
+    if fork.surveyor != file_reach.SURVEYOR_RE:
         raise HTTPException(status_code=409, detail=file_reach.refusal_words(fork, for_egeria_lead=True))
 
     from resource_explorer.surveyors.filesystem.survey_definition_adapter import _run_filesystem_inventory
@@ -954,8 +958,10 @@ def _publish_walk(registry, fs, sd: dict, slug: str) -> dict:
         surveyor = EgeriaFileSystemSurveyor(
             platform_url=fs.egeria_url or None, view_server=fs.egeria_server or None, identity=Caller())
         published = surveyor.publish_step_annotations(fs, sd, registry)
-        out.update(published=True, report_guid=published.get("report_guid", ""),
-                   annotation_count=published.get("annotation_count"))
+        from resource_explorer.folder_survey_view import _publish_words
+
+        out.update(report_guid=published.get("report_guid", ""), annotation_count=published.get("annotation_count"),
+                   annotations_in_egeria=published.get("annotations_in_egeria"), **_publish_words(published))
     except NothingToPublish as exc:
         out["publish_refused"] = str(exc)
     except PermissionError:
