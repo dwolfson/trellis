@@ -4,6 +4,7 @@
  * be styled or tested like the rest of the page. These two draw a modal in the page and answer through a promise:
  *
  *   inPageConfirm({ title, message, confirmLabel })  -> Promise<boolean>   (Cancel, Escape, or a click outside = false)
+ *   inPageChoice({ title, message, choices })        -> Promise<value|null>   (a destructive action with more than one way to go)
  *   inPageNotice({ title, message })                 -> Promise<void>      (the failure pop-up: one Close button)
  *   inPagePrompt({ title, message, label, defaultValue, placeholder, confirmLabel, required })
  *                                                    -> Promise<string|null>   (a name or a reason; Cancel, Escape or a click outside = null)
@@ -52,6 +53,18 @@ export function inPageConfirm({ title = 'Are you sure?', message = '', confirmLa
       { attr: 'data-confirm-yes', label: confirmLabel, value: true, primary: true },
     ],
   });
+}
+
+/** Ask which of several ways to go. Resolves the pressed choice's `value`, or null on Cancel, Escape or a click
+ *  outside. `choices` is [{ value, label }]; each button carries `data-choice-<value>`. */
+export function inPageChoice({ title = 'Choose', message = '', choices = [], cancelLabel = 'Cancel' } = {}) {
+  return open({
+    title, message, attr: 'data-choice-dialog',
+    buttons: [
+      { attr: 'data-choice-cancel', label: cancelLabel, value: null },
+      ...choices.map((c) => ({ attr: `data-choice-${c.value}`, label: c.label, value: c.value, primary: true })),
+    ],
+  }).then((v) => (v === false || v === undefined ? null : v));
 }
 
 /** Tell: the failure pop-up. Resolves when closed. */

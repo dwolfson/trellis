@@ -853,6 +853,10 @@ export const bindInvestigationEgeriaProject = (slug, {
 export const publishInvestigationJournal = (slug) =>
   post(`/api/investigations/${encodeURIComponent(slug)}/journal/publish`);
 export const promoteInvestigation = (slug) => post(`/api/investigations/${encodeURIComponent(slug)}/promote`);
+/** Delete an investigation, permanently. `egeria: false` deletes in Resource Explorer only (the Egeria Project,
+ *  Collection and Notes stay); `egeria: true` removes what RE made in Egeria first. Owner or Portal admin only. */
+export const deleteInvestigation = (slug, { egeria = false } = {}) =>
+  del(`/api/investigations/${encodeURIComponent(slug)}?egeria=${egeria ? 'true' : 'false'}`);
 
 export const reclassifyInvestigation = (slug, projectClassification, hypothesis = '') =>
   post(`/api/investigations/${encodeURIComponent(slug)}/reclassify`, {
