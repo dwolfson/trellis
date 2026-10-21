@@ -209,7 +209,7 @@ test('Publish for a file system: not attached until a read-back says so, then co
   const GUID = '11111111-2222-3333-4444-555555555555';
   const { host, calls } = await publishBand({
     rootStates: [{ state: 'not_attached' },
-      { state: 'attached', guid: GUID, read_back_at: '2026-10-20T14:05:09', by: 'dan', why: '' }],
+      { state: 'attached', guid: GUID, read_back_at: `${new Date().toISOString().slice(0, 10)}T14:05:09`, by: 'dan', why: '' }],
   });
   assert.match(text(host), /root folder not attached/);
   assert.equal(host.querySelectorAll('[data-fs-publish-go]').length, 1, 'ONE publish control');
