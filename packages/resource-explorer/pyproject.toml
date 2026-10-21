@@ -130,7 +130,10 @@ dependencies = [
     # Raised to 6.2.5 (2026-10-16): Egeria main (odpi/egeria#9371) moved the engine-action claim/status/completion/
     # active-claimed calls to the Governance Engine view service; 6.2.5 adds the GovernanceEngine client and routes
     # the old AutomatedCuration methods there (ISSUE-153). Without it the engine host's calls 404.
-    "pyegeria>=6.2.5",
+    # Raised to 6.2.7 (2026-10-21): ISSUE-152 -- update_annotation, update_context_event, update_schema_type,
+    # update_schema_attribute and update_subject_area now send their body (before, they sent nothing); 6.2.6 fixed
+    # the add/update_catalog_target bodies (ISSUE-156). No dependency changes; the lock moved only pyegeria.
+    "pyegeria>=6.2.7",
     "mcp>=2.0.0",
     # nest-asyncio removed 2026-09-04 with the shared-pool refactor: RE no
     # longer imports it anywhere. Its one site, surveyors/prefect_adapter.py's
