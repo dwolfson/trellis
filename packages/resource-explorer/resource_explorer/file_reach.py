@@ -18,6 +18,11 @@ honest parts instead:
 2. The first Egeria-led survey is the verification (`settle_from_run`, called where a run's read-back is stored):
 
        a completed Folder Survey          egeria_verified      "Egeria can read <path> · verified <date>"
+       BASIC-FILE-CONNECTOR-404-001 whose message holds an unfilled "~{name}~" placeholder
+                                          egeria_connection_broken   "connection broken · placeholder unresolved ~{name}~ ·
+                                                               re-attach the root folder · reach stays expected reachable". It says
+                                                               nothing about the path: the lever is NOT flipped, the failed launch stays
+                                                               as evidence.
        BASIC-FILE-CONNECTOR-404-001       egeria_cannot_read   "Egeria cannot read <path> · <date>", the lever flips to
                                                                Resource Explorer for the next run, the failed launch
                                                                (its engine action GUID) stays on the row as evidence
@@ -31,6 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
@@ -46,6 +52,7 @@ MOUNTS_UNKNOWN = "mounts_unknown"       # the deployment's prefix map is empty
 RE_ONLY = "re_only"
 EGERIA_CANNOT = "egeria_cannot"         # an Egeria-led survey failed with 404-001, RE can read it
 NOBODY = "nobody"                       # neither can read it
+CONNECTION_BROKEN = "connection_broken"  # Egeria's 404-001 named an unfilled ~{...}~ placeholder: not a verdict on the path
 NOT_CHECKED = "not_checked"
 UNDECIDED = "undecided"
 
@@ -78,13 +85,28 @@ def analysis_level_line() -> str:
     return "analysis level: " + nsr.FOLDER_ANALYSIS_LEVEL.lower().replace("_", " ")
 
 
+#: An unfilled template placeholder as Egeria prints it inside a message: "~{directoryAddress}~".
+_UNFILLED_PLACEHOLDER = re.compile(r"~\{[^{}~]*\}~")
+
+
+def unfilled_placeholder(message: str) -> str:
+    """The first "~{name}~" in an Egeria message, or ''."""
+    m = _UNFILLED_PLACEHOLDER.search(message or "")
+    return m.group(0) if m else ""
+
+
+def broken_connection_words(placeholder: str) -> str:
+    return (f"connection broken · placeholder unresolved {placeholder} · re-attach the root folder · "
+            "reach stays expected reachable · unverified").replace("  ", " ")
+
+
 NOT_CHECKED_WORDS = "not checked yet"
 UNDECIDED_WORDS = "could not tell whether Egeria can read this path"
 
 #: Outcomes only a settled run writes; a re-check does not overwrite a verified one.
 _VERIFIED = ("egeria_verified", "reachable")
 _RE_LEADS = (RE_ONLY, MOUNTS_UNKNOWN, EGERIA_CANNOT)
-_EGERIA_LEADS = (EGERIA, EXPECTED)
+_EGERIA_LEADS = (EGERIA, EXPECTED, CONNECTION_BROKEN)   # a broken connection is not a verdict: the lever stays
 
 
 def date_of(iso: str) -> str:
@@ -119,7 +141,7 @@ class ForkState:
 
     @property
     def decided(self) -> bool:
-        return self.state in (EGERIA, EXPECTED, MOUNTS_UNKNOWN, RE_ONLY, EGERIA_CANNOT, NOBODY)
+        return self.state in (EGERIA, EXPECTED, MOUNTS_UNKNOWN, RE_ONLY, EGERIA_CANNOT, NOBODY, CONNECTION_BROKEN)
 
     @property
     def container_path(self) -> str:       # name kept for older readers
@@ -186,6 +208,16 @@ def fork_from_row(fs, row: dict | None) -> ForkState:
     if outcome == "re_only":
         return ForkState(state=RE_ONLY, sentence=f"only Resource Explorer can read this path · checked {date}",
                          surveyor=SURVEYOR_RE, report_sentence=RE_REPORT_SENTENCE, **common)
+    if outcome == "egeria_cannot_read" and unfilled_placeholder(d.get("egeria_message") or row.get("error_detail") or ""):
+        # A row the OLD rule wrongly flipped (404-001 naming "~{directoryAddress}~"): derived at read time as a broken
+        # connection, so no stored row has to be hand-edited. The evidence (message, engine action) is unchanged.
+        outcome = "egeria_connection_broken"
+        d = {**d, "placeholder": unfilled_placeholder(d.get("egeria_message") or row.get("error_detail") or "")}
+    if outcome == "egeria_connection_broken":
+        ph = d.get("placeholder", "")
+        return ForkState(state=CONNECTION_BROKEN, sentence=f"{broken_connection_words(ph)} · {date}",
+                         surveyor=SURVEYOR_EGERIA, report_sentence=EGERIA_REPORT_SENTENCE,
+                         why=d.get("egeria_message", ""), **common)
     if outcome == "egeria_cannot_read":
         return ForkState(state=EGERIA_CANNOT, sentence=f"Egeria cannot read {path} · {date}", surveyor=SURVEYOR_RE,
                          report_sentence=RE_REPORT_SENTENCE, why=d.get("egeria_message", ""), **common)
@@ -285,7 +317,9 @@ def settle_from_run(registry, slug: str, derived: dict, *,
     if state == "complete":
         outcome = "egeria_verified"
     elif state == "failed" and NOT_VISIBLE_CODE in message:
-        outcome = "egeria_cannot_read"
+        # A 404-001 that names an unfilled "~{...}~" placeholder is about the folder's CONNECTION, not the path: the
+        # path Egeria tried to open was the placeholder text itself. It is no verdict on reachability (live 2026-10-21).
+        outcome = "egeria_connection_broken" if unfilled_placeholder(message) else "egeria_cannot_read"
     else:
         return ""
     if any(r.get("engine_action_guid") == guid for r in registry.list_reachability_history(slug, limit=100)):
@@ -293,6 +327,11 @@ def settle_from_run(registry, slug: str, derived: dict, *,
     path = container_path_of(fs)
     if outcome == "egeria_verified":
         _record(registry, slug, outcome, probed_from=FROM_SURVEY, detail=_detail(path=path), engine_action_guid=guid)
+        return outcome
+    if outcome == "egeria_connection_broken":
+        _record(registry, slug, outcome, probed_from=FROM_SURVEY, error_code=NOT_VISIBLE_CODE,
+                detail=_detail(path=path, egeria_message=message[:400], placeholder=unfilled_placeholder(message)),
+                engine_action_guid=guid)
         return outcome
     readable, why = read_check(fs.local_mount_point)
     if not readable:
@@ -309,7 +348,7 @@ def refusal_words(state: ForkState, *, for_egeria_lead: bool) -> str:
             return ""
         if state.state in _RE_LEADS:
             return state.sentence
-        if state.state in (NOBODY, UNDECIDED):
+        if state.state in (NOBODY, UNDECIDED, CONNECTION_BROKEN):
             return state.sentence + (f" · {state.why}" if state.why else "")
         return NOT_CHECKED_WORDS if not state.path_changed else f"{NOT_CHECKED_WORDS} · {state.why}"
     # Resource Explorer's walk.
@@ -318,6 +357,6 @@ def refusal_words(state: ForkState, *, for_egeria_lead: bool) -> str:
     if state.state in _EGERIA_LEADS:
         return "Egeria can read this path · its Folder Survey leads" if state.state == EGERIA else (
             state.sentence + " · its Folder Survey leads")
-    if state.state in (NOBODY, UNDECIDED):
+    if state.state in (NOBODY, UNDECIDED, CONNECTION_BROKEN):
         return state.sentence + (f" · {state.why}" if state.why else "")
     return NOT_CHECKED_WORDS if not state.path_changed else f"{NOT_CHECKED_WORDS} · {state.why}"

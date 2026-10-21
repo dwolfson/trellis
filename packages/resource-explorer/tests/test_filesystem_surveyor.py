@@ -83,8 +83,8 @@ def test_egeria_filesystem_surveyor(mock_discovery_cls, mock_asset_maker_cls, mo
     mock_discovery = mock_discovery_cls.return_value
 
     mock_autoc.get_guid_for_name.return_value = "No elements found"   # pyegeria's real miss
-    mock_autoc.create_folder_element_from_template.return_value = "0f0f0f0f-1111-2222-3333-444444444444"
-    mock_autoc.create_elem_from_template.return_value = "file-guid-456"
+    mock_autoc.get_template_guid_for_technology_type.return_value = "fbdd8efd-1b69-474c-bb6d-0a304b394146"
+    mock_autoc.create_elem_from_template.side_effect = ["0f0f0f0f-1111-2222-3333-444444444444", "file-guid-456"]
     mock_asset_maker.create_asset.return_value = "report-guid-789"
 
     fs_entity = FileSystemEntity(
@@ -126,13 +126,13 @@ def test_egeria_filesystem_surveyor(mock_discovery_cls, mock_asset_maker_cls, mo
     res = surveyor.catalog_and_survey(fs_entity, survey_data, mock_registry)
 
     # Verify calls
-    mock_autoc.create_folder_element_from_template.assert_called_once_with(
-        path_name="file://shared-mount",
-        folder_name="Mock FS",
-        file_system="mock-fs",
-        description="FileSystem root mapping: /tmp/local-mount -> file://shared-mount"
-    )
-    
+    folder_body = mock_autoc.create_elem_from_template.call_args_list[0].args[0]
+    ph = folder_body["placeholderPropertyValues"]
+    assert folder_body["templateGUID"] == "fbdd8efd-1b69-474c-bb6d-0a304b394146"
+    assert ph["directoryPathName"] == "file://shared-mount" and ph["directoryAddress"] == "file://shared-mount"
+    assert ph["directoryName"] == "Mock FS" and ph["fileSystemName"] == "mock-fs"
+    assert ph["description"] == "FileSystem root mapping: /tmp/local-mount -> file://shared-mount"
+
     mock_registry.set_filesystem_egeria_guid.assert_called_once_with("mock-fs", "0f0f0f0f-1111-2222-3333-444444444444")
     
     # Assert return values

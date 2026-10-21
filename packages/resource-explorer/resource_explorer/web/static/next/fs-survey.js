@@ -54,7 +54,7 @@ export const day = (value) => {
 /** The probe line: the sentence exactly as stored, a cue glyph for the state, and who leads. */
 export function reachLineHtml(reach) {
   const r = reach || {};
-  const glyph = { egeria: '✓', expected: '◔', mounts_unknown: '?', re_only: '✓', egeria_cannot: '⚠', nobody: '⚠',
+  const glyph = { egeria: '✓', expected: '◔', mounts_unknown: '?', re_only: '✓', egeria_cannot: '⚠', nobody: '⚠', connection_broken: '⚠',
     undecided: '?', not_checked: '◔' }[r.state] || '◔';
   const lead = r.surveyor ? FOLDER_SURVEY_WORDS.led(r.surveyor) : FOLDER_SURVEY_WORDS.noLead;
   return `<div data-fs-reach data-reach-state="${esc(r.state || 'not_checked')}" class="text-caveat text-ink">

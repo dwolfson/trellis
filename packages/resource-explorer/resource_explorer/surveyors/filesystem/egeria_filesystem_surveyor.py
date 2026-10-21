@@ -118,6 +118,48 @@ class EgeriaFileSystemSurveyor:
         create call, which is the slug."""
         return f"{EgeriaFileSystemSurveyor.ROOT_FOLDER_TYPE}::{fs_slug}:{canonical_mount}"
 
+    #: Technology type whose catalog template makes the root FileFolder.
+    FOLDER_TECHNOLOGY_TYPE = "File System Directory"
+
+    #: The placeholders Egeria's "File System Directory" template declares, from
+    #: PlaceholderProperty.getFolderPlaceholderPropertyTypes()
+    #: (open-metadata-framework/.../frameworks/openmetadata/controls/PlaceholderProperty.java:678-692; the names are
+    #: defined at :198 fileSystemName, :213 directoryPathName, :218 directoryAddress, directoryName, versionIdentifier
+    #: :104, description :96, deployedImplementationType :138) and that
+    #: DataAssetTemplateDefinition.FILE_FOLDER_TEMPLATE uses (core-content-pack/.../DataAssetTemplateDefinition.java
+    #: :285-301: qualifiedName from fileSystemName + directoryPathName, endpoint address :294 directoryAddress).
+    FOLDER_TEMPLATE_PLACEHOLDERS = (
+        "fileSystemName", "directoryPathName", "directoryName", "directoryAddress",
+        "versionIdentifier", "description", "deployedImplementationType",
+    )
+
+    @classmethod
+    def folder_template_body(cls, *, template_guid: str, canonical_mount: str, folder_name: str,
+                             file_system: str, description: str, version: str = "1.0") -> dict:
+        """TemplateRequestBody for the root FileFolder, supplying EVERY placeholder the template declares.
+
+        WORKAROUND for a pyegeria gap: AutomatedCuration.create_folder_element_from_template sends only
+        directoryPathName/directoryName/versionIdentifier/fileSystemName/description and never
+        directoryAddress, so the Endpoint address came out as the literal "~{directoryAddress}~" and Egeria's
+        Folder Survey failed BASIC-FILE-CONNECTOR-404-001 (live test 2026-10-21; see the pyegeria issue logged in
+        PYEGERIA_ISSUES.md for create_folder_element_from_template). Retire this body builder, and go back to
+        that method, once pyegeria sends directoryAddress. directoryPathName stays the canonical mount, so the
+        FileFolder qualifiedName (FileFolder::<fs>:<canonical>) is unchanged."""
+        return {
+            "class": "TemplateRequestBody",
+            "templateGUID": template_guid,
+            "isOwnAnchor": True,
+            "placeholderPropertyValues": {
+                "fileSystemName": file_system,
+                "directoryPathName": canonical_mount,
+                "directoryName": folder_name,
+                "directoryAddress": canonical_mount,
+                "versionIdentifier": version,
+                "description": description,
+                "deployedImplementationType": cls.FOLDER_TECHNOLOGY_TYPE,
+            },
+        }
+
     def _find_or_create_root_folder(self, fs_entity: FileSystemEntity) -> tuple[str, bool]:
         """Find the file system's root folder in Egeria by the template's qualifiedName (type FileFolder), else
         create it from the "File System Directory" template. The one place this is done: `catalog_and_survey`
@@ -139,13 +181,13 @@ class EgeriaFileSystemSurveyor:
         created = False
         if not fs_guid:
             try:
-                # Egeria "File System Directory" template: path_name, folder_name, file_system, description
-                fs_guid = self._automated_curation.create_folder_element_from_template(
-                    path_name=canonical_mount,
-                    folder_name=fs_name,
-                    file_system=fs_entity.slug,
-                    description=fs_entity.description or f"FileSystem root mapping: {local_mount} -> {canonical_mount}",
-                )
+                fs_guid = self._automated_curation.create_elem_from_template(
+                    self.folder_template_body(
+                        template_guid=self._automated_curation.get_template_guid_for_technology_type(
+                            self.FOLDER_TECHNOLOGY_TYPE),
+                        canonical_mount=canonical_mount, folder_name=fs_name, file_system=fs_entity.slug,
+                        description=fs_entity.description or f"FileSystem root mapping: {local_mount} -> {canonical_mount}",
+                    ))
             except Exception as exc:
                 raise EgeriaFileSystemSurveyorError(
                     f"Could not create FileSystem root folder element for {canonical_mount}: {exc}"
@@ -647,7 +689,7 @@ class EgeriaFileSystemSurveyor:
         elif fmt == "Excel":
             template_guid = "e4fabff5-2ba9-4050-9076-6ed917970b4c" # Spreadsheet Data File template
         else:
-            template_guid = "ae3067c7-cc72-4a18-88e1-746803c2c86f" # Generic File template
+            template_guid = "66d8dda9-00cf-4e59-938c-4b0583596b1e" # Data File template (FilesTemplateType.DATA_FILE_TEMPLATE; ae3067c7 was never an Egeria template)
             
         body = {
             "class": "TemplateRequestBody",
@@ -657,7 +699,13 @@ class EgeriaFileSystemSurveyor:
                 "fileName": file_info["file_name"],
                 "fileType": f"{fmt} File",
                 "filePathName": canonical_path,
-                "fileExtension": ext,
+                # Template declares fileAddress (the endpoint address) and fileEncoding too
+                # (PlaceholderProperty.java:629-642; DataAssetTemplateDefinition.java:324-340): without them the
+                # element carries the literal "~{fileAddress}~". Encoding is not measured by the walk.
+                "fileAddress": canonical_path,
+                "fileEncoding": "unknown",
+                "deployedImplementationType": f"{fmt} File",
+                "fileExtension": ext or "none",     # an empty value is dropped and lands as a literal ~{fileExtension}~
                 "fileSystemName": fs_name,
                 "description": f"Scanned {fmt} data file on filesystem {fs_name}",
                 "versionIdentifier": "1.0"
@@ -667,8 +715,8 @@ class EgeriaFileSystemSurveyor:
             return self._automated_curation.create_elem_from_template(body)
         except Exception as exc:
             log.warning(f"Failed to create asset using template {fmt}: {exc}. Trying fallback to generic File...")
-            if template_guid != "ae3067c7-cc72-4a18-88e1-746803c2c86f":
-                body["templateGUID"] = "ae3067c7-cc72-4a18-88e1-746803c2c86f"
+            if template_guid != "66d8dda9-00cf-4e59-938c-4b0583596b1e":
+                body["templateGUID"] = "66d8dda9-00cf-4e59-938c-4b0583596b1e"
                 body["placeholderPropertyValues"]["fileType"] = "File"
                 try:
                     return self._automated_curation.create_elem_from_template(body)

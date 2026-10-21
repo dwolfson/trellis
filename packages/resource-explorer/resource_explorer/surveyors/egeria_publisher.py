@@ -1895,6 +1895,11 @@ class EgeriaPublisher:
             tech_type = self._FOLDER_TECH_TYPE
             placeholder_values = {
                 "directoryPathName": qualified_name,
+                # The template also declares directoryAddress (the Endpoint address,
+                # PlaceholderProperty.java:218); unset it lands as the literal "~{directoryAddress}~".
+                "directoryAddress": qualified_name,
+                "versionIdentifier": "1.0",
+                "deployedImplementationType": tech_type,
                 "directoryName": name or "/",
                 "description": f"Sub-resource folder cataloged from survey: {path or '(root)'}",
             }
@@ -1907,6 +1912,9 @@ class EgeriaPublisher:
                 "fileName": name,
                 "fileType": tech_type,
                 "filePathName": qualified_name,
+                # fileAddress is the Endpoint address (PlaceholderProperty.java:233); unset it lands literally.
+                "fileAddress": qualified_name,
+                "deployedImplementationType": tech_type,
                 "fileExtension": ext,
                 "description": f"Sub-resource file cataloged from survey: {path}",
                 "versionIdentifier": "1.0",

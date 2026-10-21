@@ -768,6 +768,7 @@ REACHABILITY_OUTCOMES: frozenset[str] = frozenset({
     "nobody_can_read",
     "egeria_verified",
     "egeria_cannot_read",
+    "egeria_connection_broken",
 })
 
 _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
