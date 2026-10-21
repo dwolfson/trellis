@@ -211,11 +211,12 @@ import {
   questionKey,
   requireKind,
   writeJournal,
-  saveQuestionAnswer,
+  saveQuestionAnswer, getAnalysisResults,
 } from '/static/re-api.js';
 import { CREDENTIAL_UNREADABLE_TEXT, credentialMarkHtml, isCredentialUnreadable } from '/static/next/credential.js';
 import { rememberedCredential, setRemembered } from '/static/next/run-credential.js';
 import { mountDependencyTable } from '/static/next/stages/dependencies.js';
+import { mountDeclaredTopology } from '/static/next/stages/declared-topology.js';
 import { openCredentialForm } from '/static/next/credential-change.js';
 import { mountTablePreview, setPreviewPick } from '/static/next/table-preview.js';
 import { installSessionBanner } from '/static/next/session-banner.js';
@@ -8124,6 +8125,7 @@ export function byAnalysisCardHtml(slug, boardId, catalogTitle, catalogDescripti
         </details>` : ''}
       ${overall ? headlineHtml(overall) : ''}
       ${boardId === 'dependencies' ? '<div class="mt-s2" data-dependency-table-host></div>' : ''}
+      ${boardId === 'architecture_overview' ? '<div class="mt-s2" data-declared-topology-host></div>' : ''}
       ${board ? boardFindingsHtml(board) : ''}
       ${board ? boardCountsHtml(board, disagreeing) : ''}
       ${diagramHtml}
@@ -8320,6 +8322,17 @@ export async function loadByAnalysisPane() {
     // confirming a runtime row happens under Curate's "how it relates").
     cardsEl.querySelectorAll('[data-dependency-table-host]').forEach((h) => {
       mountDependencyTable(h, slug, { confirmable: false, me: '' });
+    });
+    // Declared deployment topology (generic graph renderer, first caller): read once per slug, kept a minute.
+    // The read is slow on a large repository, so a closed card does not start it; opening the card does.
+    cardsEl.querySelectorAll('[data-declared-topology-host]').forEach((h) => {
+      const card = h.closest('details');
+      const draw = () => mountDeclaredTopology(h, slug, { fetchResults: (s) => getAnalysisResults(s, 'architecture_recovery'), stale: () => !live() || !h.isConnected });
+      if (card && card.open) draw();
+      else {
+        h.innerHTML = '<p data-topology-closed class="text-caveat text-ink-muted">Open this card to read the declared deployment topology.</p>';
+        if (card) card.addEventListener('toggle', () => { if (card.open && h.dataset.drawn !== '1') { h.dataset.drawn = '1'; draw(); } });
+      }
     });
     cardsEl.querySelectorAll('[data-measure]').forEach((n) => {
       n.addEventListener('click', () => openMeasurementDetail({
