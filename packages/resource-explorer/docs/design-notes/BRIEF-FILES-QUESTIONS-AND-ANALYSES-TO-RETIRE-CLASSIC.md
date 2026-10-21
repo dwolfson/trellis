@@ -170,8 +170,13 @@ half; Q-0080 stays, answered by F7.
 
 0. **The reachability fork, then the lever** (no new analysis): the
    registration attaches the root folder and records the canonical mount
-   as Egeria's container path, verified by a stat through the engine
-   host, never trusted as typed; the probe's outcome names the surveyor.
+   as Egeria's container path, checked against the deployment's mounted
+   prefixes at attach and verified by the first Egeria-led survey's
+   outcome (no probe launches a survey; `DESIGN-FILES-REMOTE-REACH.md`
+   §2); the probe's outcome names the surveyor. Noise directories the
+   walk skips (`.git`, `node_modules`, `.venv`) are counted and named as
+   "not walked", never silent; the Folder Survey's `analysisLevel` is
+   printed on the report.
    Egeria-reachable: Egeria's Folder Survey with `analysisLevel`, read
    back, fills F2, the counts of F1 and F9, and the inaccessible list.
    RE-only: `filesystem_inventory` publishes those same annotation types
@@ -232,9 +237,13 @@ cautions follow from that, and the step-1 brief carries them with a test:
    records names, sizes and times only; `folder_narratives` reads only
    its candidate files; `file_profiles` reads only tabular data files
    under the cap; nothing else is read or published. Egeria's Folder
-   Survey classifies and counts everything, which is fine; its "Profile
-   File Names to External Log" step stays off at the gate so no path
-   list leaves the machine.
+   Survey classifies and counts everything, which is fine. Its "Profile
+   File Names to External Log" step cannot be turned off (read from
+   source, 2026-10-21): on every Egeria-led survey Egeria writes a
+   file-name CSV inside its own container, which RE never reads, stores
+   or shows, and the report says so. The owner's path is RE-led, so no
+   file-name list of it is written anywhere; the coco data lake is demo
+   data.
 2. The bulk sits in git object stores, `node_modules` and the docker
    volumes. That is the honest answer to F1 and a good first test;
    `analysisLevel` and the walk's limits are set so the first survey
