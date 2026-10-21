@@ -83,7 +83,7 @@ def test_egeria_filesystem_surveyor(mock_discovery_cls, mock_asset_maker_cls, mo
     mock_discovery = mock_discovery_cls.return_value
 
     mock_autoc.get_guid_for_name.return_value = "No elements found"   # pyegeria's real miss
-    mock_autoc.create_folder_element_from_template.return_value = "fs-folder-guid-123"
+    mock_autoc.create_folder_element_from_template.return_value = "0f0f0f0f-1111-2222-3333-444444444444"
     mock_autoc.create_elem_from_template.return_value = "file-guid-456"
     mock_asset_maker.create_asset.return_value = "report-guid-789"
 
@@ -133,10 +133,10 @@ def test_egeria_filesystem_surveyor(mock_discovery_cls, mock_asset_maker_cls, mo
         description="FileSystem root mapping: /tmp/local-mount -> file://shared-mount"
     )
     
-    mock_registry.set_filesystem_egeria_guid.assert_called_once_with("mock-fs", "fs-folder-guid-123")
+    mock_registry.set_filesystem_egeria_guid.assert_called_once_with("mock-fs", "0f0f0f0f-1111-2222-3333-444444444444")
     
     # Assert return values
-    assert res["filesystem_guid"] == "fs-folder-guid-123"
+    assert res["filesystem_guid"] == "0f0f0f0f-1111-2222-3333-444444444444"
     assert res["report_guid"] == "report-guid-789"
     assert res["file_guids"]["sales.csv"] == "file-guid-456"
     assert res["annotation_count"] == 2  # 1 measure annotation, 1 schema annotation

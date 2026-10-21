@@ -104,15 +104,48 @@ DATABASE_SURVEYOR_STEP_MAP: dict[str, list[str]] = {
 }
 
 
+def database_library_step_key(analysis_id: str) -> str:
+    """The step key of an installed-library step that provides this database analysis, or "".
+
+    A library step is a catalog entry with `provided_by.kind == "step"` (generated from a manifest); its
+    runner is attached beside the built-in ones (`survey_step_host.attach`), as the real step when its package
+    is installed and as `NotInstalledStep` (which refuses with the package's name) when it is not. Read from the
+    catalog, not from the installed set, so an uninstalled step still has a card and a run that says why not."""
+    from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+    from resource_explorer.surveyors.survey_definition_executor import get_adapter
+
+    entry = next((a for a in get_analyses("database", include_egeria_live=False) if a["id"] == analysis_id), None)
+    provided_by = (entry or {}).get("provided_by") or {}
+    if provided_by.get("kind") != "step":
+        return ""
+    step_key = provided_by.get("step") or analysis_id
+    return step_key if step_key in get_adapter("database").re_analysis_steps else ""
+
+
 def database_analysis_has_runner(analysis_id: str) -> bool:
-    """True when the per-card Run route can dispatch `analysis_id` for a
-    database: it is a zero-fetch `db_derived` analysis or has step(s) in
-    `DATABASE_SURVEYOR_STEP_MAP`. The single predicate BOTH the run route's
-    validation and the Enrichment map's "offer a Run control?" use, so a
-    button can never be offered for an analysis the route would 400."""
+    """True when the per-card Run can dispatch `analysis_id` for a database: it is a zero-fetch `db_derived`
+    analysis, has step(s) in `DATABASE_SURVEYOR_STEP_MAP`, or is provided by a library step.
+
+    The single predicate for database: the run route's validation (both its stored-credential and its
+    one-run-credential paths), the Enrichment map's "offer a Run control?" and the analyses index's
+    `runnable` (`stage_page.runnable_and_reason`) all use it, so a button can never be offered for an
+    analysis the route would 400."""
     from resource_explorer.surveyors.database.db_derived import DB_DERIVED_ANALYSES
 
-    return analysis_id in DB_DERIVED_ANALYSES or analysis_id in DATABASE_SURVEYOR_STEP_MAP
+    return (analysis_id in DB_DERIVED_ANALYSES or analysis_id in DATABASE_SURVEYOR_STEP_MAP
+            or bool(database_library_step_key(analysis_id)))
+
+
+def database_analysis_needs_credentials(analysis_id: str) -> bool:
+    """True when running `analysis_id` opens a connection with the database's stored credential.
+
+    False for a `db_derived` analysis (reads stored rows) and for a library step (`credential_tier: none`: the
+    host gives it no connection and no password). False too for an id with no runner: nothing to be asked."""
+    from resource_explorer.surveyors.database.db_derived import DB_DERIVED_ANALYSES
+
+    if analysis_id in DB_DERIVED_ANALYSES:
+        return False
+    return analysis_id in DATABASE_SURVEYOR_STEP_MAP
 
 
 def _parse_pg_array(value) -> list | None:

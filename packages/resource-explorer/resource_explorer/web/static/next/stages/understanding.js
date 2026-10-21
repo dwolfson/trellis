@@ -188,7 +188,7 @@ async function drawCard(card, spec, slug, resp, { counts = spec.counts, extraHtm
     // and a resize below refits them.
     await Plotly.newPlot(plot, fig.data, Object.assign(themed, { width: widthNow(), height: fit.height }),
       { displaylogo: false, responsive: false });
-    annotateTicks(plot, fit.alt, fit.summary);
+    annotateTicks(plot, fit.alt, fit.summary, fit.ticks);
     if (typeof window.addEventListener === 'function' && Plotly.react) {
       let last = widthNow();
       // The card can change width without the window changing (the grid drops to one column), so the plot's own box is
@@ -201,7 +201,7 @@ async function drawCard(card, spec, slug, resp, { counts = spec.counts, extraHtm
         fit = again.fit;
         plot.style.height = `${fit.height}px`;
         Plotly.react(plot, fig.data, Object.assign(again.themed, { width: w, height: fit.height }),
-          { displaylogo: false, responsive: false }).then(() => annotateTicks(plot, fit.alt, fit.summary));
+          { displaylogo: false, responsive: false }).then(() => annotateTicks(plot, fit.alt, fit.summary, fit.ticks));
       };
       window.addEventListener('resize', refit);
       if (typeof ResizeObserver === 'function') new ResizeObserver(refit).observe(plot);

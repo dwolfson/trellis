@@ -69,10 +69,9 @@ class TestPlacementIsCorpusLevelNotAStage:
         block = block[:block.index("},\n") + 3]
         assert "state.resourceType === 'repo'" in block
         assert "openFindReposDialog();" in block
-        # The old-UI-link stub must still be there for the other resource
-        # types -- this is a real port for repos, not a replacement for the
-        # DB/filesystem stub which is out of scope here.
-        assert "oldUiHref" in block
+        # Each other resource type has its own dialog too (a file system's is the
+        # register form, Files step 1); no link out to the old UI is left here.
+        assert "oldUiHref" not in block
 
 
 class TestApiWrappers:

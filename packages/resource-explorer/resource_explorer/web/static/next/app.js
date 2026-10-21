@@ -31,7 +31,7 @@ import { ago, whenMs, verdictLineHtml, changedTimesHtml, savedLine, readBackAt, 
 // declares no glyph-to-meaning mapping of its own any more.
 import { STATES as GLYPH_STATES, stateEntry } from '/static/next/glyphs.js';
 import { watchTables } from '/static/next/colresize.js';
-import { barChartHeight } from '/static/next/chart-labels.js';
+import { barChartHeight, PIE_TOP_MARGIN } from '/static/next/chart-labels.js';
 import { publishProofHtml } from '/static/next/publish-proof.js';
 import { cardHtml, cardStackHtml, tileHtml, tileRowHtml, bindTiles } from '/static/next/ui-cards.js';
 // `readEnvelope` and its own private helpers used to live here directly;
@@ -127,10 +127,10 @@ import { openFindReposDialog } from '/static/next/discovery-import.js';
 // (register a server once, then server-side introspection via
 // POST /api/db-servers/{slug}/discover), ported for `state.resourceType
 // === 'db'` in the same `find-repos` action. Chrome-level, same placement
-// rule as discovery-import.js above. Filesystems still keep the
-// old-UI-link stub — classic's own filesystem registration flow is not
-// this file's scope yet.
+// rule as discovery-import.js above. File systems register one by hand
+// (fs-register.js, Files step 1: the classic modal minus its Egeria fields).
 import { openFindDbServersDialog } from '/static/next/db-server-discovery.js';
+import { openRegisterFileSystemDialog } from '/static/next/fs-register.js';
 // Chat (PLAN-FINISH-REPOS.md item 9) — chrome-level, like worklist.js/rfa.js:
 // the "Ask" rail and the pane it promotes an answer into, beside whichever
 // stage is active rather than one of the eight itself. See next/chat.js's
@@ -1423,7 +1423,7 @@ export function answerForm(turn) {
  * **If the axis does not start at zero, it says so on the axis.** A truncated
  * scale that does not admit it is the oldest chart lie there is.
  */
-function chartAxes(entry) {
+export function chartAxes(entry) {
   const layout = { ...(entry.fig.layout || {}) };
   const [measure, range] = CHART_MEASURE[entry.kind] || [entry.label.toLowerCase(), ''];
   const span = entry.first && entry.last && entry.first !== entry.last
@@ -1434,6 +1434,11 @@ function chartAxes(entry) {
   };
   // Radar has no cartesian axes to label; everything else gets both.
   if ((entry.fig.data || []).some((t) => t.type === 'scatterpolar')) return layout;
+  // A pie has none either, and its title needs a clear gap above the slices.
+  if ((entry.fig.data || []).some((t) => t.type === 'pie')) {
+    layout.margin = { l: 16, r: 16, t: PIE_TOP_MARGIN, b: 16, ...(layout.margin || {}) };
+    return layout;
+  }
 
   const ys = (entry.fig.data || []).flatMap((t) => (t.y || []).filter((v) => typeof v === 'number'));
   const min = ys.length ? Math.min(...ys) : 0;
@@ -1609,7 +1614,8 @@ export function chartLayout(layout = {}) {
     xaxis: axis(layout.xaxis),
     yaxis: axis(layout.yaxis),
     legend: Object.assign({ font: { family: t.font, color: t.ink, size: 11 } }, layout.legend),
-    margin: { l: 56, r: 24, t: 24, b: 48 },
+    // Merged, not overwritten: a figure's own margin (a pie's room for its title) survives the theme.
+    margin: { l: 56, r: 24, t: 24, b: 48, ...(layout.margin || {}) },
   });
 }
 
@@ -2037,12 +2043,12 @@ function markKeyHtml() {
 // both now have real ports of classic's mechanisms (GitHub search +
 // list-import for repos via discovery-import.js; server-side introspection,
 // POST /api/db-servers/{slug}/discover, for databases via
-// db-server-discovery.js) — filesystem is the one that still falls through
-// to the old-UI-link stub below (see Backlog.md).
+// db-server-discovery.js); a file system is registered by hand on
+// /next (fs-register.js).
 const FIND_TITLE = {
   repo: 'Find and import candidate repos',
   db: 'Find databases',
-  filesystem: 'Register a filesystem path',
+  filesystem: 'Add a file system',
 };
 
 /** The Find action's visible words, by the kind shown (REPLY-DESIGNER-
@@ -2682,20 +2688,12 @@ function bindSidebar() {
     // -- GitHub search, the from-list bulk loader, and the inventory CSV
     // export. Databases: a real port too -- register a server, then
     // server-side introspection (POST /api/db-servers/{slug}/discover) to
-    // find and add its databases (db-server-discovery.js). Filesystem keeps
-    // the old-UI-link stub; classic's own filesystem registration flow is a
-    // separate, not-yet-ported affordance.
+    // find and add its databases (db-server-discovery.js). File systems:
+    // register one by hand (fs-register.js, Files step 1).
     'find-repos': () => {
       if (state.resourceType === 'repo') { openFindReposDialog(); return; }
       if (state.resourceType === 'db') { openFindDbServersDialog(); return; }
-      const title = FIND_TITLE[state.resourceType] || FIND_TITLE.repo;
-      const d = openDialog(title, title);
-      d.querySelector('#wl-detail-body').innerHTML = `
-        <p class="max-w-[60ch] text-answer text-ink">${esc(title)}.</p>
-        <p class="max-w-[60ch] text-answer text-ink">
-          <a href="${esc(oldUiHref())}" class="text-accent-ink underline"
-            >Open in the current UI</a> ${icon('external-link', { size: 13, cls: 'text-accent-ink' })}
-        </p>`;
+      if (state.resourceType === 'filesystem') { openRegisterFileSystemDialog(); return; }
     },
     'show-hidden': () => { state.showHidden = !state.showHidden; rerender(); },
     'select-mode': () => {
@@ -7518,9 +7516,9 @@ function neverRunLast(boards, boardState) {
 export function boardStateKey(entry) {
   if (entry.status === 'loading') return null;   // rendered separately -- no STATES entry fits "still fetching"
   if (entry.status === 'timeout') return null;    // rendered separately -- "still reading -- open to load"
-  if (entry.status === 'error') return 'error';
+  if (entry.status === 'error') return 'error';       // ✕ is for a real error row only
   const board = entry.board;
-  if (!board) return 'error';
+  if (!board) return 'not_measured';                   // read fine, nothing came back: not an error
   const needsLens = (board.analyses || []).some(
     (a) => a.analysis_id === 'preliminary_fit' && a.results && a.results.lens_declared === false);
   if (needsLens) return 'needs-lens';
@@ -7538,8 +7536,63 @@ export function boardStateKey(entry) {
   const notEstablished = (board.analyses || []).some(
     (a) => a.results && a.results.state === 'not_established');
   if (notEstablished) return 'not_established';
-  if (!board.has_results) return 'unrun';
-  return 'measured';
+  return RESULT_STATE_GLYPH[boardResultState(board)] || 'not_established';
+}
+
+/** The words for each result state a board can be in (`result_state` from the server, derived from proof rows).
+ *  "Not run yet." is only ever the never_surveyed state, so the header and the body cannot contradict each other. */
+export const RESULT_STATE_WORDS = {
+  not_requested: "not in the last survey · its step wasn't requested",
+  ran_no_rows: 'ran in the last survey · produced no rows',
+  predates_storage: 'the last survey predates stored results for this analysis',
+  never_surveyed: 'not run yet',
+  no_results_view: 'runs as a step · no results view yet',
+  survey_unattributed: "the last survey recorded no step list · can't say whether this ran",
+};
+/** One STATES key per result state. ✕ is not among them: it is for a real error row. */
+const RESULT_STATE_GLYPH = {
+  has_results: 'measured',
+  not_requested: 'unrun',
+  never_surveyed: 'unrun',
+  ran_no_rows: 'not_established',
+  predates_storage: 'not_measured',
+  no_results_view: 'not_measured',
+  survey_unattributed: 'not_established',
+};
+
+/** A board's result state: the server's own, or -- from a server that does not send one -- the two states the
+ *  board's own fields can prove, never "not run" for a resource that has been surveyed. */
+export function boardResultState(board) {
+  if (!board) return 'no_results_view';
+  if (board.has_results) return 'has_results';
+  if (board.result_state && board.result_state !== 'has_results') return board.result_state;
+  return board.last_surveyed_at ? 'survey_unattributed' : 'never_surveyed';
+}
+
+/** The one line a board says when it has no results: the state's words. */
+export function boardStateWords(board) {
+  return RESULT_STATE_WORDS[boardResultState(board)] || '';
+}
+
+/** "13 analyses · 10 ran · 2 not in the last survey · 1 no results view yet": every board is in exactly one part,
+ *  so the parts sum to the total. Still-loading boards are their own part, so the sum holds while reading too. */
+const COUNT_LABELS = [
+  ['not_requested', 'not in the last survey'], ['ran_no_rows', 'ran, no rows'],
+  ['predates_storage', 'predate stored results'], ['never_surveyed', 'not run yet'],
+  ['no_results_view', 'no results view yet'], ['survey_unattributed', "survey didn't record its steps"],
+  ['error', 'could not be read'], ['timeout', 'slow to read'], ['loading', 'still reading'],
+];
+export function byAnalysisCounts(boards, boardState) {
+  const n = { has_results: 0 };
+  for (const [k] of COUNT_LABELS) n[k] = 0;
+  for (const b of boards) {
+    const e = boardState.get(b.id) || { status: 'loading' };
+    if (e.status === 'loading') n.loading += 1;
+    else if (e.status === 'timeout') n.timeout += 1;
+    else if (e.status === 'error') n.error += 1;
+    else n[boardResultState(e.board)] += 1;
+  }
+  return { total: boards.length, ran: n.has_results, parts: COUNT_LABELS.map(([k, label]) => ({ key: k, label, n: n[k] })) };
 }
 
 /** The board's own headline, one sentence, per REPLY-DESIGNER-ROUND2-
@@ -7924,9 +7977,10 @@ export function boardRunWords(board) {
     const when = board.last_run_at || board.last_surveyed_at;
     return when ? `run ${ago(when)}` : 'run';
   }
-  return board.last_surveyed_at
-    ? `survey ran ${ago(board.last_surveyed_at)} · no result for this step`
-    : 'not run';
+  // Not a statement about whether it ran (the body's one line says that): only when the resource was last surveyed.
+  const state = boardResultState(board);
+  return board.last_surveyed_at && state !== 'never_surveyed' && state !== 'no_results_view'
+    ? `last survey ${ago(board.last_surveyed_at)}` : '';
 }
 
 /** One card's body -- headline first, description collapsed, findings,
@@ -7947,15 +8001,21 @@ export function byAnalysisCardHtml(slug, boardId, catalogTitle, catalogDescripti
       ? `<span class="text-state-warn">This could not be read: ${esc(entry.error || '')}</span>`
       : (boardHeadlineHtml(board) || (board && board.has_results
           ? '<span class="text-ink-muted">ran; no summary reader yet.</span>'
-          : '<span class="text-ink-muted">Not run yet.</span>'));
+          : `<span class="text-ink-muted" data-result-state="${esc(boardResultState(board))}">${esc(
+            boardStateWords(board))}</span>`));
+  // A closed card shows its title and this one line; open, the body below carries it (hidden here so it is not twice).
+  const closedLine = entry.status === 'done' ? (boardHeadlineText(board) || (board && !board.has_results
+    ? boardStateWords(board) : '')) : '';
   const runWhen = boardRunWords(board);
   const overall = board && (board.analyses || []).find((a) => typeof (a.results || {}).overall === 'number');
   const { html: diagramHtml } = board ? boardDiagramHtml(board) : { html: '' };
   return `
-    <details data-by-analysis-card="${esc(boardId)}" class="mt-s6 border-t-2 border-rule-strong pt-s3" ${open ? 'open' : ''}>
+    <details data-by-analysis-card="${esc(boardId)}" class="group mt-s6 border-t-2 border-rule-strong pt-s3" ${open ? 'open' : ''}>
       <summary class="flex cursor-pointer list-none flex-wrap items-baseline gap-s2">
         <span class="${glyph.tone} font-glyph" title="${esc(glyph.word)}" aria-label="${esc(glyph.word)}">${glyph.glyph}</span>
         <span class="font-heading text-name font-normal text-ink">${esc(catalogTitle)}</span>
+        ${closedLine ? `<span data-card-summary-line title="${esc(closedLine)}"
+          class="min-w-0 max-w-[60ch] flex-1 truncate text-caveat text-ink-muted group-open:hidden">${esc(closedLine)}</span>` : ''}
         <span class="ml-auto text-provenance text-ink-muted">${esc(runWhen)}</span>
       </summary>
       <div class="mt-s2 max-w-[70ch] text-answer text-ink">${headline}</div>
@@ -8009,12 +8069,8 @@ export function sharedNamesHtml(shared, disagreeing) {
 export function renderByAnalysisContents(slug, boards, boardState, settled, total, boardQuestions) {
   const contentsEl = $('by-analysis-contents');
   if (!contentsEl) return;
-  const ran = boards.filter((b) => (boardState.get(b.id) || {}).board && boardState.get(b.id).board.has_results).length;
-  const neverRun = boards.filter((b) => {
-    const e = boardState.get(b.id);
-    return e && e.status === 'done' && e.board && !e.board.has_results;
-  }).length;
-  const stillReading = total - settled;
+  const counts = byAnalysisCounts(boards, boardState);
+  const stillReading = counts.parts.find((p) => p.key === 'loading').n;
   const rows = boards.map((b) => {
     const entry = boardState.get(b.id) || { status: 'loading' };
     const glyphKey = boardStateKey(entry);
@@ -8029,7 +8085,7 @@ export function renderByAnalysisContents(slug, boards, boardState, settled, tota
     // either, so it falls through to the same envelope fallback a loading
     // board uses.
     const headlineText = entry.status === 'done'
-      ? boardHeadlineText(entry.board)
+      ? (boardHeadlineText(entry.board) || (entry.board && !entry.board.has_results ? boardStateWords(entry.board) : ''))
       : envelopeHeadlineText(boardQuestions.get(b.id), state.answers);
     const board = entry.status === 'done' ? entry.board : null;
     const runWhen = board ? boardRunWords(board)
@@ -8046,11 +8102,11 @@ export function renderByAnalysisContents(slug, boards, boardState, settled, tota
   contentsEl.innerHTML = `
     <div class="sticky top-0 z-10 -mx-s1 border-b border-rule-strong bg-paper px-s1 pb-s2">
       <div class="mb-s1 text-caveat text-ink-muted">
-        <span class="tnum">${boards.length}</span> analyses ·
-        <span class="tnum">${ran}</span> ran ·
-        <span class="tnum">${neverRun}</span> never run
+        <span class="tnum">${counts.total}</span> analyses ·
+        <span class="tnum">${counts.ran}</span> ran${counts.parts.filter((p) => p.n > 0 && p.key !== 'loading').map((p) =>
+          ` · <span class="tnum">${p.n}</span> ${esc(p.label)}`).join('')}
         ${stillReading > 0
-          ? ` · <span class="text-accent-ink">still reading <span class="tnum">${stillReading}</span> of <span class="tnum">${total}</span></span>`
+          ? ` · <span class="text-accent-ink">still reading <span class="tnum">${stillReading}</span> of <span class="tnum">${counts.total}</span></span>`
           : ''}
       </div>
       <div>${rows}</div>

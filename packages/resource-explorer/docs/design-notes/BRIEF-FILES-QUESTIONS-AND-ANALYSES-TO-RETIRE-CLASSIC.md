@@ -81,10 +81,16 @@ file-types note) and reads native survey reports back for file systems
   row stores the report GUID it came from, never a second measurement.
 
 The first slice therefore becomes: register the file system on /next,
-attach its root as an Egeria folder asset and run Egeria's Folder Survey
-at the chosen `analysisLevel` through the native-survey port RE already
-has, read it back, and only then run RE's walk extensions for what Egeria
-does not keep. The CSV Survey Service runs per data file on request, as
+attach its root as an Egeria folder asset, run the reachability probe,
+and let its outcome choose the lever (`DESIGN-FILES-REMOTE-REACH.md`
+§2, ruled 2026-10-21): where Egeria can read the canonical mount, run
+Egeria's Folder Survey at the chosen `analysisLevel` through the
+native-survey port RE already has and read it back; where only RE can
+read the path (true of the owner's gate path, which Egeria's container
+cannot see), RE's walk leads and publishes the same folder-survey
+annotation types under its own SurveyReport, marked "surveyed by
+Resource Explorer · Egeria could not reach the path". Only then run RE's
+walk extensions for what Egeria does not keep. The CSV Survey Service runs per data file on request, as
 the Egeria lever for F3, with RE's pandas profile kept for formats Egeria
 has no service for (Parquet, JSON lines, Excel), labelled as RE's.
 
@@ -104,8 +110,50 @@ Numbered as proposals; the catalog assigns ids on the append.
 | F8 | Which files has nobody touched for a long time, and which are hot? | Analysis | `fs_activity` (from access and modify times already walked; "can't tell" when atime is off) | yes, times are walked; the analysis is new |
 | F9 | Who owns or can read what, and are there world-readable sensitive files? | Analysis | `fs_permissions` (owner, group, mode from stat; joined to F7) | no: stat fields to add to the walk |
 | F10 | Does this file system contain a recognisable structure: a project, a dataset layout, an archive, backups? | Discovery | `fs_layout_signals` (README, manifest, schema files, dated folders, backup patterns) | no |
-| F11 | What is the documentation inside it, and what does it say the contents are? | Discovery | reuse the repository docs ingestion over README and docs folders (the ingestion-rules note's "documentation shape") | no for file systems |
+| F11 | What do the narrative files inside it (README, INDEX, ABOUT, NOTES, a data dictionary, a codebook, LICENSE, CHANGELOG) say the contents are, folder by folder? | Discovery | `folder_narratives` (§2a), sought proactively, read as evidence, proposals never facts | no for file systems |
 | F12 | How much would it cost to survey fully, and which parts are not worth it? | Discovery | the launcher's cost line from F1's bytes and file counts (the price-before-you-run rule, X-06) | partly |
+
+### 2a. Narrative files, sought proactively (owner, 2026-10-20)
+
+The owner's point: README-type files often carry the most valuable text
+about a folder's contents, so the survey should look for them rather than
+wait for a person to open them. `folder_narratives` is a zero-fetch step
+over the walk's rows (one read of each candidate file, size-capped):
+
+- **Candidates, by name and type, per folder:** README, READ_ME, INDEX,
+  ABOUT, NOTES, MANIFEST, CONTENTS, CHANGELOG, LICENSE, COPYING,
+  CITATION, a data dictionary or codebook by name (`*dictionary*`,
+  `*codebook*`, `*schema*`, `*layout*`) and any `.md`, `.rst` or `.txt`
+  file whose name matches the folder's or a sibling data file's name.
+  Egeria's file classifier already types them as documents; the step
+  reads the classification, not the extension.
+- **What it extracts, each with the file's path and modified time as its
+  evidence:** the folder's stated description (title and first
+  paragraph); the declared contents (lists of files, columns or fields
+  the text names, matched against the walk's rows and the profiles, so
+  "described in the README" appears on the file and on the column); the
+  licence named (answers Q-0012 and Q-0030 at folder level); a stated
+  owner or contact (a proposal for Q-0003); a stated source or
+  provenance; dates the text gives for collection or coverage (feeds
+  DataScope as a proposal, Q-0056).
+- **How it is shown:** on the folder row, "described by README.md ·
+  modified 10-14 · open"; on the Describe tab of Curate, the description
+  as a proposal "stated by README.md" that a person confirms; on a
+  column, "described in codebook.txt § Variables" with the doc link of
+  the Artifacts design. Nothing from a file becomes a fact without a
+  signature; the two-channel rule holds.
+- **Publishing:** the narrative file is catalogued as a document asset
+  beside the data it describes, linked by Egeria's external-reference or
+  documentation relationship, so the Resource Locator and the answering
+  app can quote it with its source; the extracted statements publish as
+  annotations marked "stated by <file>" until confirmed.
+- **Beyond file systems:** the same step serves open data (a portal's
+  data dictionary and codebook, §6 of the open-data brainstorm) and
+  repositories (the ingestion-rules note's documentation shape), one
+  implementation, three callers.
+- **Where it sits in the order:** with the walk extensions (step 1 of §3),
+  because it needs only the walk's rows and one read per candidate, and
+  because it gives the Describe tab something to say on the first visit.
 
 Questions that already apply (`*` kinds) and need no new analysis on a
 file system: Q-0002, Q-0003, Q-0005, Q-0012 (licence from a LICENSE file,
@@ -120,15 +168,27 @@ half; Q-0080 stays, answered by F7.
 
 ## 3. Analyses, in build order
 
-0. **Egeria's Folder Survey as the lever** (no new analysis): the
-   registration attaches the root folder, the survey press runs Egeria's
-   Folder Survey with `analysisLevel`, and the read-back fills F2, the
-   counts of F1 and F9, and the inaccessible list. RE's
-   `filesystem_inventory` keeps only what §1a says Egeria does not.
+0. **The reachability fork, then the lever** (no new analysis): the
+   registration attaches the root folder and records the canonical mount
+   as Egeria's container path, checked against the deployment's mounted
+   prefixes at attach and verified by the first Egeria-led survey's
+   outcome (no probe launches a survey; `DESIGN-FILES-REMOTE-REACH.md`
+   §2); the probe's outcome names the surveyor. Noise directories the
+   walk skips (`.git`, `node_modules`, `.venv`) are counted and named as
+   "not walked", never silent; the Folder Survey's `analysisLevel` is
+   printed on the report.
+   Egeria-reachable: Egeria's Folder Survey with `analysisLevel`, read
+   back, fills F2, the counts of F1 and F9, and the inaccessible list.
+   RE-only: `filesystem_inventory` publishes those same annotation types
+   itself under its own report. In both cases RE's own measurements are
+   only what §1a says Egeria does not keep. The gate registers two file
+   systems, the owner's path (RE-led) and the coco data lake at its
+   container path (Egeria-led), so the fork is proven in one walk.
 1. **Walk extensions** (one step, one PR): per-folder bytes and depth,
    owner/group/mode, content hash under a size limit, per-file rows kept
    per run with a run id, each row naming the Egeria report it duplicates
-   nothing from. These feed F1, F5, F6, F8, F9.
+   nothing from; plus `folder_narratives` (§2a) over those rows. These
+   feed F1, F5, F6, F8, F9 and F11.
 2. **`file_profiles` as its own step** with its cost line: Egeria's CSV
    Survey Service per CSV file, RE's pandas profile for the formats Egeria
    has no service for, both stored as column rows per run with their
@@ -141,10 +201,44 @@ half; Q-0080 stays, answered by F7.
    (follow Egeria's lead: `ResourceMeasureAnnotation`,
    `ResourceProfileAnnotation`, `RequestForActionAnnotation` for a
    world-readable sensitive file).
-4. **`fs_layout_signals`** and the docs ingestion reuse: F10, F11, and
-   Q-0012's licence.
+4. **`fs_layout_signals`** and the section-chunked docs ingestion of the
+   narrative files found in step 1: F10 and the long-form half of F11.
 5. **`data_class_match` over file profiles**: F7, with the same
    proposal-only rule as databases.
+
+### 3a. One Folder Survey definition that mixes Egeria's steps and RE's (owner, 2026-10-21)
+
+The owner: "we can write our own survey that mixes steps Egeria executes
+and that we execute". The mechanism exists: RE's survey definitions are
+Egeria governance action processes whose steps carry `executes_at`, and
+the engine-host work (step 4's mixed process, case 3) lets Egeria
+dispatch RE's steps. Ruling on the shape and the order:
+
+- **One definition, `FileSystemSurvey`**, authored in Dr.Egeria like the
+  others. Its first step is RE's `fs_reach` (the probe of
+  `DESIGN-FILES-REMOTE-REACH.md` §2), which completes with one of two
+  guards, `egeria-reachable` or `re-only`. Two next-step links route on
+  the guard: `egeria-reachable` to Egeria's `FileSurvey::survey-folder`
+  at the container path, `re-only` to RE's `re-folder-survey` walk (the
+  skip-steps variant of §4's backlog, producing the same annotation
+  types). Both join, on `survey-completed`, into the common RE steps:
+  walk extensions (per-folder bytes and depth, per-file rows),
+  `folder_narratives`, `file_profiles`, `fs_layout_signals`,
+  `data_class_match`, and `fs_change_rates` on a repeat. The fork picks
+  steps per file system inside one run, as Egeria's process model
+  intends, instead of one lever for the whole survey.
+- **Order.** It needs the RE steps to exist, so it comes after step 3's
+  walk extensions and after `folder_narratives` and `file_profiles` are
+  steps. It ships first **RE-coordinated** (the executor RE uses today
+  for the Database Analysis Survey, where `executes_at: egeria` steps
+  already run beside RE's), which needs no engine-host wiring; the same
+  definition becomes **Egeria-coordinated** through case 3 once that
+  gate passes, behind the "coordinated by Egeria" control.
+- **Honesty.** Each step's report names its surveyor; the definition's
+  manifest says which branch ran and why ("re-only: Egeria's mounts do
+  not include this path"); the guards are declared `producedGuards` on
+  `fs_reach`, and the reconciler checks the two links as it checks every
+  authored definition.
 
 ## 4. The /next screens that retire Classic for files
 
@@ -168,16 +262,55 @@ Only what the parity rows name, in the Publish-ruling shape:
 
 ## 5. Gate, by use
 
-The owner registers a local file system on /next, runs the survey with
-its price shown, reads F1 to F3 and F8 on Understanding, sees a flagged
-world-readable file with a data-class match, publishes two directories
-and reads them back in Egeria, and never opens Classic. A second walk
-after adding and removing files shows F5 honestly.
+**Path (owner, 2026-10-20): `/Users/dwolfson/localGit/egeria-v6`**, the
+live checkout of every repository, worktree and runtime volume. Three
+cautions follow from that, and the step-1 brief carries them with a test:
 
-## 6. Open for the owner
+1. The tree holds secrets (`.env` files, `.omsecrets`, runtime volumes
+   with platform data, credential files) and git internals. The walk
+   records names, sizes and times only; `folder_narratives` reads only
+   its candidate files; `file_profiles` reads only tabular data files
+   under the cap; nothing else is read or published. Egeria's Folder
+   Survey classifies and counts everything, which is fine. Its "Profile
+   File Names to External Log" step cannot be turned off (read from
+   source, 2026-10-21): on every Egeria-led survey Egeria writes a
+   file-name CSV inside its own container, which RE never reads, stores
+   or shows, and the report says so. The owner's path is RE-led, so no
+   file-name list of it is written anywhere; the coco data lake is demo
+   data.
+2. The bulk sits in git object stores, `node_modules` and the docker
+   volumes. That is the honest answer to F1 and a good first test;
+   `analysisLevel` and the walk's limits are set so the first survey
+   finishes in minutes, and the gate records the wall time.
+3. The registered root is the owner's working tree: registration and
+   survey write nothing into the path (no markers, no caches there),
+   proven by a test; the second walk for F5 follows the owner's ordinary
+   work, nothing staged.
+
+The owner registers that path on /next (RE-led, since Egeria's container
+cannot see it) and the coco data lake at its container path (Egeria-led),
+runs both surveys with their price shown, sees each report name its
+surveyor, reads F1 to F3 on Understanding with the README-stated
+descriptions on the folders that have one (F11), sees a recognised
+layout (F10) and a data-class match on a profiled file (F7), publishes
+two directories and reads them back in Egeria, and never opens Classic.
+A second walk after a day's work shows F5 honestly. The flagged
+world-readable file and the age distribution (F8, F9) are the second
+slice's gate.
+
+## 6. The owner's picks (2026-10-20) and what stays open
+
+**First slice: F1, F2, F3, F5, F7, F10, F11.** In build terms: register
+on /next and attach the root folder; Egeria's Folder Survey read back
+(F2, the counts of F1); the walk extensions with per-folder bulk and
+depth and per-file rows per run (F1, F5); `folder_narratives` (F11, and
+the licence and provenance it finds); `file_profiles` with Egeria's CSV
+survey plus RE's profile for other formats (F3); `fs_layout_signals`
+(F10); `data_class_match` over the profiles (F7); `fs_change_rates` on
+the second walk (F5). Hashes, duplicates, age distribution, owner and
+mode (F6, F8, F9) and the price line (F12) follow.
 
 - [ ] Hash limit and whether cross-file-system duplicate detection is in
-      the first slice.
-- [ ] Which of F1 to F12 are Alpha; the rest follow.
+      the second slice.
 - [ ] The CSV lister (file systems arrive hand-entered or by CSV today):
       in this brief or the discovery-sources one.

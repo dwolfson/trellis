@@ -1239,7 +1239,7 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
     # Scoped to filesystem/folder resources only, per the same live evidence:
     # probe 7 confirmed the mechanism (initiate_gov_action_type against
     # FileSurvey::survey-folder with finalAnalysisStep=CHECK_ASSET) but ALSO
-    # confirmed RE's own create_folder_element_from_template() DataFolder
+    # confirmed RE's own create_folder_element_from_template() FileFolder
     # template attaches no Connection at all -- every filesystem RE has ever
     # cataloged this way hits the "no_connection" outcome, not a genuine
     # reachability answer, until a real Connection is attached (see the
@@ -13318,7 +13318,59 @@ class ProjectRegistry:
                 "DELETE FROM filesystem_survey_coverage WHERE filesystem_slug = ?",
                 (normalized,),
             )
+            # The root-folder proof rows (below) live in catalogue_commit_proofs under a namespaced key.
+            conn.execute("DELETE FROM catalogue_commit_proofs WHERE database_slug = ?",
+                         (self._filesystem_proof_key(normalized),))
             conn.execute("DELETE FROM file_systems WHERE slug = ?", (normalized,))
+
+    # ── Root-folder proof rows (Files step 1; no DDL) ──
+    #
+    # What attaching a file system's root folder READ BACK from Egeria, one append-only row per observation, in
+    # the commit-proof table the database catalogue already uses (its columns are generic: a key, a proof word,
+    # the element GUID, who, and the time Egeria was read). The key is "filesystem/<slug>": a slash cannot occur
+    # in a database slug, so the two never meet. The "attached" state on screen derives from the NEWEST row.
+
+    FS_ROOT_NODE = "filesystem_root"
+    FS_ROOT_ATTACHED = "folder_attached"
+
+    @staticmethod
+    def _filesystem_proof_key(normalized_slug: str) -> str:
+        return f"filesystem/{normalized_slug}"
+
+    def append_filesystem_root_proof(self, slug: str, *, proof: str, element_guid: str = "",
+                                     qualified_name: str = "", detail: dict | None = None,
+                                     recorded_by: str = "", read_at: str | None = None) -> int:
+        """Append one root-folder observation: `folder_attached` (the read-back by GUID matched) or another word
+        naming why it did not. Never updates or removes a row."""
+        return self.append_catalogue_commit_proof(
+            self._filesystem_proof_key(self._normalize_slug(slug)), proof=proof, node_kind=self.FS_ROOT_NODE,
+            element_guid=element_guid, qualified_name=qualified_name, detail=detail,
+            recorded_by=recorded_by, read_at=read_at)
+
+    def filesystem_reset_at(self, slug: str) -> str:
+        """When Egeria was last reset for this file system: the newest `egeria_reset` marker under the plain slug
+        (where the reset script writes one) or under the namespaced proof key; '' when there is none."""
+        from resource_explorer.catalogue_commit import _ts
+
+        norm = self._normalize_slug(slug)
+        marks = [self.get_egeria_reset_at(norm), self.get_egeria_reset_at(self._filesystem_proof_key(norm))]
+        return max((m for m in marks if m), key=_ts, default="")
+
+    def latest_filesystem_root_proof(self, slug: str) -> dict | None:
+        """The newest root-folder observation for a file system, or None when nothing was read back SINCE Egeria
+        was last reset. The same tie rule as `catalogue_commit.derive_commit_state`: a proof read AT or after the
+        reset time is live; one read earlier describes what Egeria once held, and one whose time cannot be read
+        is neither live nor earlier, so it makes no claim."""
+        from resource_explorer.catalogue_commit import _ts
+
+        norm = self._normalize_slug(slug)
+        rows = [r for r in self.list_catalogue_commit_proofs(self._filesystem_proof_key(norm))
+                if r.get("node_kind") == self.FS_ROOT_NODE]
+        reset = self.filesystem_reset_at(norm)
+        if reset:
+            cutoff = _ts(reset)
+            rows = [r for r in rows if _ts(r.get("read_at")) >= cutoff]
+        return rows[-1] if rows else None
 
     def update_filesystem_status(self, slug: str, status: ProjectStatus, error_message: str = "") -> None:
         """Update status and last error message for a filesystem."""

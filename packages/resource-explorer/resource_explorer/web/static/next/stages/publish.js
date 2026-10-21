@@ -27,6 +27,7 @@ import { stateEntry } from '/static/next/glyphs.js';
 import {
   getRepoPublishState, publishRepoReport, forgetEgeriaLinks, resurveyRepo,
   getEgeriaReports, getEgeriaReportAnnotations, getFileTypeMeasurements, setRepoProjectContext,
+  getFilesystemRootFolder, attachFilesystemRoot,
 } from '/static/re-api.js';
 import { mountArchitecturePublish } from '/static/next/stages/architecture-publish.js';
 import { commitStateLineHtml } from '/static/next/stages/curate-scope.js';
@@ -321,7 +322,7 @@ function nonRepoStatusHtml(entityType, slug) {
     ? ` <span class="text-provenance text-state-warn">${esc(row.egeria_publish_note)}</span>` : '';
   const how = entityType === 'database'
     ? 'A database reaches Egeria through Publish → above (its survey report is published with it).'
-    : 'A file system has no publish control here yet.';
+    : 'A file system reaches Egeria through the Publish control above.';
   return `<div class="text-caveat" data-publish-status>${row.is_published
     ? cue('measured', 'in Egeria') + ` <span class="text-provenance text-ink-muted">· asset</span> ${guidHtml(guid)}`
     : cue('unrun', 'not in Egeria')}${note}</div>
@@ -588,10 +589,122 @@ async function renderFileTypeMeasurements(host, slug) {
 export async function renderPublishBand(el, slug, entityType) {
   if (!el) throw new Error('Publish band host missing');
   if (entityType === 'repo') throw new Error('renderPublishBand: a repository draws through renderPublishRepo');
+  if (entityType === 'filesystem') return renderPublishFilesystem(el, slug);
   el.innerHTML = `${head}${nonRepoStatusHtml(entityType, slug)}<div class="mt-s2" data-egeria-reports-host></div>`;
   bindCopy(el);
   const row = resourceRow(slug) || {};
   mountEgeriaReports(el.querySelector('[data-egeria-reports-host]'), { entityType, slug, inEgeria: !!row.is_published });
+}
+
+/* ── A file system's Publish (Files step 1) ─────────────────────────────── */
+
+/** Placeholder words for the file system's Publish; one table so the designer's words replace them in one place. */
+export const FS_PUBLISH_WORDS = {
+  reading: 'Reading what Egeria holds…',
+  notAttached: 'root folder not attached',
+  attached: 'root folder attached',
+  held: 'root folder: GUID held · not read back yet',
+  notConfirmed: 'root folder not confirmed',
+  button: 'Publish',
+  idle: 'attaches the root folder only',
+  signIn: 'sign in to publish — it needs an author',
+  confirmed: 'root folder confirmed',
+};
+
+/** The state line from the server's re-derived root-folder view (the newest proof row). Never from a click. */
+/** "read back" time: the clock alone when it was today, the date and the clock when it was not. */
+export function readBackWhen(iso, now = new Date()) {
+  const t = hhmm(iso);
+  if (!t) return '';
+  const day = String(iso).slice(0, 10);
+  return day === now.toISOString().slice(0, 10) ? t : `${day} ${t}`;
+}
+
+export function fsRootStateHtml(v) {
+  if (!v) return `<span data-fs-root="unknown">${cue('no_access', 'root folder state not read')}</span>`;
+  if (v.state === 'attached') {
+    const at = readBackWhen(v.read_back_at);
+    return `<span data-fs-root="attached">${cue('measured', FS_PUBLISH_WORDS.attached)}
+      ${at ? `<span class="text-provenance text-ink-muted" data-publish-read-back>· read back ${esc(at)}</span>` : ''}
+      <span class="text-provenance text-ink-muted">· asset</span> ${guidHtml(v.guid)}</span>`;
+  }
+  if (v.state === 'not_confirmed') {
+    return `<span data-fs-root="not_confirmed">${cue('partial', FS_PUBLISH_WORDS.notConfirmed, v.why || '')}
+      ${v.why ? `<span class="text-provenance text-ink-muted" data-fs-root-why>· ${esc(v.why.length > 90 ? `${v.why.slice(0, 89)}…` : v.why)}</span>` : ''}</span>`;
+  }
+  if (v.state === 'held') {
+    // The survey path put the folder in Egeria and RE holds its GUID, but no read-back by GUID was recorded:
+    // not measured, which is not "not attached".
+    return `<span data-fs-root="held">${cue('partial', FS_PUBLISH_WORDS.held)}
+      <span class="text-provenance text-ink-muted">· asset</span> ${guidHtml(v.guid)}</span>`;
+  }
+  return `<span data-fs-root="not_attached">${cue('unrun', FS_PUBLISH_WORDS.notAttached)}</span>`;
+}
+
+/** The file system's Publish band: ONE control, which at this step attaches the root folder only. The state on
+ *  screen is the server's re-derived view of the proof row; "confirmed" appears only when the re-read says
+ *  `attached` (a read-back of the folder by GUID matched). Never throws into the pane. */
+export async function renderPublishFilesystem(el, slug) {
+  const signedIn = !!whoAmI();
+  let lastFailure = '';
+  el.innerHTML = `${head}<div class="text-caveat" data-publish-status data-fs-root-host>${FS_PUBLISH_WORDS.reading}</div>
+    <div class="mt-s2 flex flex-wrap items-baseline gap-s3">
+      ${button(`data-fs-publish-go title="${esc(FS_PUBLISH_WORDS.idle)}"`, FS_PUBLISH_WORDS.button, { disabled: !signedIn })}
+      <span data-publish-feedback class="text-provenance text-ink-muted" title="${esc(FS_PUBLISH_WORDS.idle)}">${esc(signedIn ? FS_PUBLISH_WORDS.idle : FS_PUBLISH_WORDS.signIn)}</span></div>
+    <div class="mt-s2" data-egeria-reports-host></div>`;
+  const host = el.querySelector('[data-fs-root-host]');
+  const go = el.querySelector('[data-fs-publish-go]');
+  const feedback = el.querySelector('[data-publish-feedback]');
+  let reportsMounted = false;
+
+  const draw = (v) => {
+    host.innerHTML = fsRootStateHtml(v);
+    bindCopy(host);
+    // A failure stays on screen until a press succeeds (a pop-up disappears).
+    if (lastFailure) feedback.innerHTML = cue('error', lastFailure);
+    // Reports are listed from the GUID RE holds: proven (attached) or held by the survey path (not read back yet).
+    if (!reportsMounted || !v || v.state === 'attached' || v.state === 'held') {
+      reportsMounted = true;
+      mountEgeriaReports(el.querySelector('[data-egeria-reports-host]'),
+        { entityType: 'filesystem', slug, inEgeria: !!(v && (v.state === 'attached' || v.state === 'held')) });
+    }
+  };
+  const read = async () => {
+    try { return await getFilesystemRootFolder(slug); } catch (_) { return null; }
+  };
+  draw(await read());
+  if (stale(el, slug)) return;
+
+  go.addEventListener('click', async () => {
+    if (go.dataset.pending || go.disabled) return;                  // a second press is ignored
+    go.dataset.pending = '1';
+    go.disabled = true;
+    const idle = go.textContent;
+    go.textContent = `${idle} …`;
+    feedback.innerHTML = cue('running', PUBLISH_RUNNING_WORDS);
+    let failed = '';
+    try {
+      await attachFilesystemRoot(slug);
+    } catch (err) {
+      failed = err.status === 403 ? `not permitted · ${err.message}` : `not published · ${err.message}`;
+    }
+    // The word follows the RE-READ proof row, never the press.
+    const v = await read();
+    if (stale(el, slug)) return;
+    lastFailure = failed;
+    go.disabled = false; go.textContent = idle; delete go.dataset.pending;
+    draw(v);
+    feedback.title = FS_PUBLISH_WORDS.idle;
+    if (failed) {
+      showPublishFailure(el.ownerDocument, [{ what: 'root folder', word: failed }], () => go.click());
+      feedback.innerHTML = cue(/^not permitted/.test(failed) ? 'no_access' : 'error', failed);
+    } else if (v && v.state === 'attached') {
+      feedback.innerHTML = cue('measured', `${FS_PUBLISH_WORDS.confirmed}${readBackWhen(v.read_back_at) ? ` · read back ${readBackWhen(v.read_back_at)}` : ''}`);
+    } else {
+      feedback.innerHTML = cue('partial', 'not confirmed', (v && v.why) || '');
+    }
+    el.ownerDocument.dispatchEvent(new CustomEvent('re:published', { detail: { slug } }));
+  });
 }
 
 /** A database's publish band on the Curate tabs (Brief S2). `hosts` = { describe, contents }.

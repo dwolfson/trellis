@@ -122,8 +122,8 @@ class TestContentsBoardStructure:
     def test_summary_line_counts_ran_never_run_and_total(self):
         body = _fn("function renderByAnalysisContents(")
         assert "analyses ·" in body
-        assert "ran ·" in body
-        assert "never run" in body
+        assert "ran${" in body or "> ran" in body
+        assert "byAnalysisCounts(" in body   # every board is in exactly one part (walk3)
 
 
 class TestRowHeadlineFallsBackToTheQuestionsEnvelope:
@@ -164,7 +164,8 @@ class TestRowHeadlineFallsBackToTheQuestionsEnvelope:
 
     def test_contents_row_falls_back_to_the_envelope_only_while_the_board_is_not_done(self):
         body = _fn("function renderByAnalysisContents(")
-        assert "entry.status === 'done'\n      ? boardHeadlineText(entry.board)\n      : envelopeHeadlineText(boardQuestions.get(b.id), state.answers);" in body
+        assert "entry.status === 'done'\n      ? (boardHeadlineText(entry.board)" in body
+        assert ": envelopeHeadlineText(boardQuestions.get(b.id), state.answers);" in body
 
     def test_load_by_analysis_pane_builds_the_board_question_map_from_the_same_getquestions_call(self):
         # No SECOND network call -- boardQuestionMap is built from the exact
@@ -192,7 +193,7 @@ class TestNotEstablishedBoardsReadAsSuch:
     def test_not_established_check_runs_before_the_plain_measured_fallthrough(self):
         body = _fn("function boardStateKey(entry)")
         not_established_idx = body.index("notEstablished")
-        measured_idx = body.index("return 'measured';")
+        measured_idx = body.index("boardResultState(board)")
         assert not_established_idx < measured_idx
 
 

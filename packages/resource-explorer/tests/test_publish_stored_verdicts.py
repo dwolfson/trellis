@@ -266,3 +266,146 @@ def test_a_create_failing_mid_batch_on_a_reused_report_is_a_failure_not_done():
     from resource_explorer.catalogue_commit import report_step_words
     state, _ = report_step_words({**out, "report_reused": True, "annotation_count": len(second)}, "2026-10-20")
     assert state == "failed"
+
+
+# ── superseded batches in a reused report are retired (§1 item 10) ──────────────────────────────────────────
+
+
+class _RecordingDiscovery(_FakeDiscovery):
+    """Keeps each annotation's properties and type, and applies `update_annotation` as Egeria's merge update does."""
+
+    def __init__(self, maker, refuse=()):
+        super().__init__(maker)
+        self.elements: dict[str, dict] = {}
+        self.updates: list[tuple[str, dict]] = []
+        self.refuse = set(refuse)
+
+    def create_annotation(self, body):
+        guid = super().create_annotation(body)
+        props = dict(body["properties"])
+        self.elements[guid] = {"type": props["class"].removesuffix("Properties"), "properties": props}
+        return guid
+
+    def update_annotation(self, guid, body):
+        if guid in self.refuse:
+            raise RuntimeError("SERVER_ERROR_500 update refused")
+        self.updates.append((guid, body))
+        assert body["mergeUpdate"] is True
+        props = {k: v for k, v in body["properties"].items() if k != "class"}
+        assert body["properties"]["class"] == self.elements[guid]["properties"]["class"]  # the element's own bean
+        self.elements[guid]["properties"].update(props)
+
+
+def _retiring_surveyor(refuse=()):
+    s, maker = _real_surveyor()
+    s._discovery = _RecordingDiscovery(maker, refuse)
+
+    def read_report(guid, body=None, output_format=None):
+        return {"reportedAnnotations": [
+            {"relatedElement": {"elementHeader": {"guid": g, "type": {"typeName": e["type"]}},
+                                "properties": e["properties"]}}
+            for g, e in s._discovery.elements.items()]}
+    maker.get_asset_by_guid = read_report
+    return s, maker
+
+
+def _status_by_batch(s) -> dict[str, set]:
+    import json
+
+    out: dict[str, set] = {}
+    for e in s._discovery.elements.values():
+        batch = json.loads(e["properties"].get("jsonProperties") or "{}").get("measuredAt", "")
+        out.setdefault(batch, set()).add(e["properties"].get("contentStatus", ""))
+    return out
+
+
+def test_an_older_batch_in_a_reused_report_is_retired_and_the_newer_is_not():
+    s, _ = _retiring_surveyor()
+    body = {"properties": {"qualifiedName": "SurveyReport::PostgreSQL::coco_ods::2026-10-20T01:00:00"}}
+    qn = body["properties"]["qualifiedName"]
+    first = verdict_annotations_from_rows(_rows(), batch_surveyed_at="2026-10-19T08:00:00")["annotations"]
+    s._publish_survey_report(body, qn, first, "coco_ods", "2026-10-20T01:00:00")
+    second = verdict_annotations_from_rows(_rows(), batch_surveyed_at="2026-10-20T08:00:00")["annotations"]
+    out = s._publish_survey_report(body, qn, second, "coco_ods", "2026-10-20T01:00:00")
+
+    got = s._retire_superseded_verdicts(out["report_guid"], "2026-10-20T08:00:00")
+    assert got == {"state": "checked", "retired": len(first), "already_retired": 0, "failed": 0}
+    status = _status_by_batch(s)
+    assert status["2026-10-19T08:00:00"] == {"DEPRECATED"}
+    assert "DEPRECATED" not in status["2026-10-20T08:00:00"]
+    assert len(s._discovery.elements) == len(first) + len(second)                # retired, never deleted
+
+    # A republish of the newest batch changes nothing: the old ones are already retired.
+    s._discovery.updates.clear()
+    again = s._retire_superseded_verdicts(out["report_guid"], "2026-10-20T08:00:00")
+    assert again["retired"] == 0 and again["already_retired"] == len(first) and not s._discovery.updates
+
+
+def test_the_same_batch_republished_retires_nothing():
+    s, _ = _retiring_surveyor()
+    body = {"properties": {"qualifiedName": "SurveyReport::PostgreSQL::coco_ods::2026-10-20T01:00:00"}}
+    qn = body["properties"]["qualifiedName"]
+    anns = verdict_annotations_from_rows(_rows(), batch_surveyed_at="2026-10-19T08:00:00")["annotations"]
+    out = s._publish_survey_report(body, qn, anns, "coco_ods", "2026-10-20T01:00:00")
+    got = s._retire_superseded_verdicts(out["report_guid"], "2026-10-19T08:00:00")
+    assert got["retired"] == 0 and not s._discovery.updates
+
+
+def test_survey_annotations_without_a_verdict_batch_are_never_retired():
+    from resource_explorer.surveyors.survey_report import ResourceMeasureAnnotation
+
+    s, _ = _retiring_surveyor()
+    body = {"properties": {"qualifiedName": "SurveyReport::PostgreSQL::coco_ods::2026-10-20T01:00:00"}}
+    qn = body["properties"]["qualifiedName"]
+    survey = ResourceMeasureAnnotation(annotation_type_name="TableCount", summary="3 tables",
+                                       analysis_step="DatabaseSchemaSurvey", check_name="table_count")
+    old = verdict_annotations_from_rows(_rows(), batch_surveyed_at="2026-10-19T08:00:00")["annotations"]
+    out = s._publish_survey_report(body, qn, [survey, *old], "coco_ods", "2026-10-20T01:00:00")
+    got = s._retire_superseded_verdicts(out["report_guid"], "2026-10-20T08:00:00")
+    assert got["retired"] == len(old)
+    survey_status = [e["properties"].get("contentStatus", "") for e in s._discovery.elements.values()
+                     if e["properties"].get("analysisStep") == "DatabaseSchemaSurvey"]
+    assert survey_status == [""]
+
+
+def test_a_refused_retirement_is_counted_and_an_unreadable_report_is_not_checked():
+    s, _ = _retiring_surveyor(refuse={"ann-0"})
+    body = {"properties": {"qualifiedName": "SurveyReport::PostgreSQL::coco_ods::2026-10-20T01:00:00"}}
+    qn = body["properties"]["qualifiedName"]
+    old = verdict_annotations_from_rows(_rows(), batch_surveyed_at="2026-10-19T08:00:00")["annotations"]
+    out = s._publish_survey_report(body, qn, old, "coco_ods", "2026-10-20T01:00:00")
+    got = s._retire_superseded_verdicts(out["report_guid"], "2026-10-20T08:00:00")
+    assert got["failed"] == 1 and got["retired"] == len(old) - 1
+
+    def unreadable(*a, **k):
+        raise RuntimeError("SERVER_ERROR_500 read refused")
+    s._asset_maker.get_asset_by_guid = unreadable
+    gone = s._retire_superseded_verdicts(out["report_guid"], "2026-10-20T08:00:00")
+    assert gone["state"] == "not_checked" and gone["retired"] == 0
+
+
+def test_publish_local_survey_retires_only_when_the_report_was_reused(registry, monkeypatch):
+    from resource_explorer.surveyors.database.egeria_database_surveyor import EgeriaDatabaseSurveyor
+
+    registry.write_detail_rows("database_column_matches", "coco_ods", "2026-10-20T08:00:00", rows=_rows())
+    calls: list = []
+    reused = {"value": False}
+    monkeypatch.setattr(EgeriaDatabaseSurveyor, "catalog_and_survey", lambda self, **k: {"database_guid": "db-1"})
+    monkeypatch.setattr(EgeriaDatabaseSurveyor, "_publish_survey_report", lambda self, *a, **k: {
+        "report_guid": "report-1", "report_error": "", "annotation_error": "", "reused": reused["value"],
+        "annotations_in_egeria": 0, "annotations_this_publish": 0})
+    monkeypatch.setattr(EgeriaDatabaseSurveyor, "_link_verdicts_to_columns", lambda self, *a, **k: {})
+    monkeypatch.setattr(EgeriaDatabaseSurveyor, "_retire_superseded_verdicts",
+                        lambda self, guid, batch: calls.append((guid, batch)) or {"state": "checked", "retired": 3})
+
+    def publish():
+        s = EgeriaDatabaseSurveyor(platform_url="https://localhost:9443", view_server="qs-view-server")
+        return s.publish_local_survey(_entity(), schema_info=_SCHEMA_INFO, schema_count=1, table_count=1,
+                                      column_count=3, surveyed_at="2026-10-20T01:00:00", registry=registry,
+                                      survey_after_catalog=False)
+
+    assert "superseded" not in publish()["verdicts"] and not calls        # a fresh report holds no older batch
+    reused["value"] = True
+    out = publish()
+    assert calls == [("report-1", "2026-10-20T08:00:00")]
+    assert out["verdicts"]["superseded"]["retired"] == 3

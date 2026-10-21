@@ -2025,7 +2025,9 @@ def _publish(registry, target: dict, annotations: list, extra: dict | None = Non
         return _outcome(SURVEY_FAILED, f"the survey report for {slug} was not published: {_short(exc)}",
                         annotation_count=len(annotations), **extra_props)
     report_guid = pub.get("report_guid") or ""
-    sent, landed = len(annotations), pub.get("annotations_in_egeria")
+    # Judged on THIS publish's annotations: on a reused report `annotations_in_egeria` also counts earlier batches,
+    # so "N of M reached Egeria" could read N > M and hide a partial failure.
+    sent, landed = len(annotations), pub.get("annotations_this_publish", pub.get("annotations_in_egeria"))
     extra = {"annotations_in_egeria": landed, "qualified_name": pub.get("qualified_name", ""),
              "ownership": (pub.get("governance") or {}).get("ownership"), **extra_props}
     if not report_guid:
