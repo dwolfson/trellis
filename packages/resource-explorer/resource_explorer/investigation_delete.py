@@ -17,17 +17,24 @@ The Egeria side runs as the signed-in person (``Caller()``), never a daemon, in 
 
     1. read the NoteLogs attached to the Project and each log's Notes (reads only; a failed read stops here);
     2. ``remove_note`` per Note, then ``remove_note_log`` per log;
-    3. ``delete_collection`` per Collection the investigation's working sets recorded (the Folio, disposition sets);
-    4. ``delete_project``.
+    3. per Collection the investigation's working sets recorded (the Folio, disposition sets): ``remove_from_collection``
+       for each member (the CollectionMembership only; the member's own asset is never touched), then
+       ``delete_collection`` (Egeria refuses a Collection that still has members);
+    4. read everything still anchored to the Project (``get_anchored_element_graph``); if any of it is not on RE's own
+       list above, STOP before the Project step and name it (type, GUID, name, author);
+    5. ``_retire_project`` (today ``delete_project``; the one place to swap if the design session rules for archive).
 
 Only what the investigation created is touched. A member's own asset (repo, database, file system) is never read,
 unlinked or deleted here. The Project is deleted only when RE made it (its qualifiedName is the one ``promote``
 writes); a Project that was already in Egeria when the investigation was bound to it is left, and said so. A
-NoteLog RE did not make (not ``NoteLog::RE::<project guid>``) and a Collection whose qualifiedName is not RE's are
-left and said so.
+NoteLog RE did not make (not ``NoteLog::RE::<project guid>``) and a Collection whose qualifiedName is not exactly the
+one RE gave that working set are left and said so, unless the Project step would remove them (anchored to it): then
+they are named as what stops the Project, never as "left alone".
 
-Each deleted GUID is re-read with ``MetadataExpert.get_metadata_element_by_guid``. Gone means Egeria answered
-"No element found" (a string); an exception or a populated answer is "could not tell" / "still there", never gone.
+Each deleted GUID is re-read with ``MetadataExpert.get_metadata_element_by_guid`` and classified with
+``egeria_absence``: gone means Egeria answered "No element found" (a string) or raised a not-found
+(``is_absent == ABSENT``), or, for a GUID this run has just deleted, raised 400-010 "not visible" (soft-deleted). A
+401/403, an unavailable server, a timeout or a populated answer is "could not tell" / "still there", never gone.
 
 If any Egeria delete is refused or cannot be confirmed, everything stops: nothing is retried, the local investigation
 is kept, and the result names what was deleted and what remains, with Egeria's words. Pressing Delete again resumes
@@ -62,6 +69,11 @@ WORDS = {
     "note_log_not_ours": "left in Egeria: this NoteLog was not made by Resource Explorer",
     "collection_not_ours": "left in Egeria: this Collection was not made by Resource Explorer for this investigation",
     "already_gone": "already gone from Egeria",
+    "anchored_blocks": ("anchored to the Project, and Resource Explorer is not removing it, so the Project step would "
+                        "delete it too"),
+    "project_blocked": "not deleted: elements anchored to it that Resource Explorer is not removing",
+    "local_failed": ("Egeria's side finished, but removing the investigation from Resource Explorer failed, so it "
+                     "is still here. Pressing Delete again skips what is already gone from Egeria"),
 }
 
 
@@ -99,8 +111,13 @@ class DeleteResult:
     deleted: list[dict] = field(default_factory=list)
     #: Egeria elements this delete meant to remove and did not: ``{kind, guid, name, why}``.
     remaining: list[dict] = field(default_factory=list)
+    #: Collection memberships removed (the member's own element is untouched): ``{kind, guid, name, collection}``.
+    unlinked: list[dict] = field(default_factory=list)
     #: Egeria elements deliberately not touched: ``{kind, guid, name, why}``.
     left: list[dict] = field(default_factory=list)
+    #: Elements anchored to the Project that RE is not removing, so the Project step did not run:
+    #: ``{kind, guid, name, author, why}``.
+    blocking: list[dict] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     local_counts: dict = field(default_factory=dict)
     activity_id: str = ""
@@ -111,8 +128,8 @@ class DeleteResult:
 
     def as_dict(self) -> dict:
         return {"slug": self.slug, "choice": self.choice, "ok": self.ok, "local_deleted": self.local_deleted,
-                "egeria_done": self.egeria_done, "deleted": self.deleted, "remaining": self.remaining,
-                "left": self.left, "errors": self.errors, "local_counts": self.local_counts,
+                "egeria_done": self.egeria_done, "deleted": self.deleted, "unlinked": self.unlinked,
+                "remaining": self.remaining, "left": self.left, "blocking": self.blocking, "errors": self.errors, "local_counts": self.local_counts,
                 "activity_id": self.activity_id}
 
 
@@ -136,6 +153,15 @@ def caller_handles() -> EgeriaHandles:
     clients = egeria_client(Caller(), purpose="investigation delete")
     return EgeriaHandles(pm=clients.of(ProjectManager), cm=clients.of(CollectionManager),
                          me=clients.of(MetadataExpert))
+
+
+def collection_qualified_name(slug: str, record: dict) -> str:
+    """The qualifiedName ``EgeriaInvestigationPublisher`` gave the Collection of one working set: the Folio's, or the
+    disposition set's. Compared by equality; a record that fits neither has no expected name (so nothing matches)."""
+    if record.get("collection_kind") == "folio":
+        return f"Folio::Investigation::{slug}"
+    disposition = (record.get("disposition") or "").strip()
+    return f"WorkingSet::Investigation::{slug}::{disposition}" if disposition else ""
 
 
 def _words_of(exc: BaseException) -> str:
@@ -166,6 +192,33 @@ def _name(el) -> str:
     return str(p.get("displayName") or p.get("qualifiedName") or "")
 
 
+def _type_name(el) -> str:
+    h = el.get("elementHeader") if isinstance(el, dict) else None
+    t = (h or {}).get("type") if isinstance(h, dict) else None
+    return str((t or {}).get("typeName") or "") if isinstance(t, dict) else ""
+
+
+def _display(el) -> str:
+    """A name for an anchored element: its displayName or qualifiedName, else (a Comment, a Rating) a clip of its text."""
+    p = _props(el)
+    name = p.get("displayName") or p.get("qualifiedName")
+    if name:
+        return str(name)
+    text = p.get("commentText") or p.get("review") or p.get("description") or ""
+    return " ".join(str(text).split())[:80]
+
+
+def _author(el) -> str:
+    """Who created it, when Egeria says (``versions.createdBy`` on the header or the element); '' otherwise."""
+    if not isinstance(el, dict):
+        return ""
+    h = el.get("elementHeader") if isinstance(el.get("elementHeader"), dict) else {}
+    for versions in ((h or {}).get("versions"), el.get("versions")):
+        if isinstance(versions, dict) and versions.get("createdBy"):
+            return str(versions["createdBy"])
+    return ""
+
+
 def _elements(answer, what: str) -> list[dict]:
     """The elements of a pyegeria list answer. "No elements found" (a string) is an honest empty; any other
     answer (None, other text, a wrong shape) is "could not read", which stops the delete rather than meaning none."""
@@ -191,19 +244,29 @@ class InvestigationDeleter:
 
     # ── Egeria helpers ──────────────────────────────────────────────────────────────────────────────────
 
-    def _read_back(self, me, guid: str, tries: "int | None" = None) -> "bool | None":
-        """True: Egeria says no such element. False: still readable. None: could not tell (an exception, or an
-        answer that is neither). Retried a few times: a delete can take a moment to show."""
-        from resource_explorer.egeria_absence import ABSENT, is_absent
+    def _read_back(self, me, guid: str, tries: "int | None" = None, *, just_deleted: bool = False) -> "bool | None":
+        """True: gone. False: still readable. None: could not tell. Classified with ``egeria_absence``:
+
+        * gone: Egeria's "No element found" answer, or a raised not-found (``is_absent == ABSENT``; live Egeria
+          raises ``PyegeriaNotFoundException`` for a deleted GUID), or, only when ``just_deleted`` (this run sent
+          the delete), a 400-010 "not visible" (the soft-deleted shape);
+        * still there: a populated answer;
+        * could not tell: 401/403, an unavailable server, a timeout, any other exception or answer.
+
+        Retried a few times: a delete can take a moment to show."""
+        from resource_explorer.egeria_absence import ABSENT, is_absent, is_not_visible
 
         verdict: "bool | None" = None
         tries = self._tries if tries is None else tries
         for attempt in range(tries):
             try:
                 found = me.get_metadata_element_by_guid(guid)
-            except Exception as exc:  # noqa: BLE001 - an exception is "could not tell", never "gone"
+            except Exception as exc:  # noqa: BLE001 - classified below; only a typed not-found is "gone"
                 log.info("read-back of %s raised %s", guid, type(exc).__name__)
-                verdict = None
+                if is_absent(exc) == ABSENT or (just_deleted and is_not_visible(exc)):
+                    verdict = True
+                else:
+                    verdict = None
             else:
                 if isinstance(found, str):
                     verdict = True if is_absent(found) == ABSENT else None
@@ -219,7 +282,8 @@ class InvestigationDeleter:
 
     def _remove(self, res: DeleteResult, me, kind: str, guid: str, name: str, call: Callable[[str], object]) -> None:
         """Delete ONE element, then confirm it by GUID. Raises ``_Stop`` (after recording it) on a refusal or when
-        it cannot be confirmed gone."""
+        it cannot be confirmed gone. An element already gone (same classification as the confirm, minus the
+        "not visible" shape that only a delete sent by this run explains) is skipped: nothing is re-sent."""
         before = self._read_back(me, guid, tries=1)
         if before is True:
             res.deleted.append({"kind": kind, "guid": guid, "name": name, "note": WORDS["already_gone"]})
@@ -230,7 +294,7 @@ class InvestigationDeleter:
             why = _words_of(exc)
             res.remaining.append({"kind": kind, "guid": guid, "name": name, "why": why})
             raise _Stop(f"Egeria would not delete the {kind} {name or guid}: {why}") from exc
-        after = self._read_back(me, guid)
+        after = self._read_back(me, guid, just_deleted=True)
         if after is True:
             res.deleted.append({"kind": kind, "guid": guid, "name": name})
             return
@@ -238,6 +302,39 @@ class InvestigationDeleter:
                else "the delete was sent but Egeria could not be asked whether it is gone")
         res.remaining.append({"kind": kind, "guid": guid, "name": name, "why": why})
         raise _Stop(f"could not confirm the {kind} {name or guid} is gone: {why}")
+
+    def _unlink_members(self, res: DeleteResult, cm, collection_guid: str, collection_name: str) -> None:
+        """Take every member out of a Collection before it is deleted: Egeria refuses to delete a Collection that
+        still has members (``validateNoCollectionMembers``). One ``remove_from_collection`` per member, which
+        removes the CollectionMembership only; the member (a repo, a database, a file system: an asset that is not
+        RE's to delete) is never deleted or changed, and ``cascade`` is never used. The membership list is re-read
+        after each pass (a long list is paged), and a pass that unlinks nothing new stops the delete."""
+        seen: set[str] = set()
+        for _ in range(50):
+            members = _elements(cm.get_collection_members(collection_guid), f"the members of {collection_name}")
+            todo = [m for m in members if _guid(m) not in seen]
+            if not members:
+                return
+            if not todo:
+                names = ", ".join(_guid(m) for m in members[:5])
+                res.remaining.append({"kind": "Collection", "guid": collection_guid, "name": collection_name,
+                                      "why": f"members were unlinked but Egeria still lists: {names}"})
+                raise _Stop(f"the Collection {collection_name} still lists members after they were unlinked "
+                            f"({names}), so it was not deleted")
+            for m in todo:
+                mg = _guid(m)
+                try:
+                    cm.remove_from_collection(collection_guid, mg)
+                except Exception as exc:  # noqa: BLE001
+                    why = _words_of(exc)
+                    res.remaining.append({"kind": "CollectionMembership", "guid": mg, "name": _name(m) or mg,
+                                          "collection": collection_guid, "why": why})
+                    raise _Stop(f"Egeria would not unlink {_name(m) or mg} from the Collection "
+                                f"{collection_name}: {why}") from exc
+                seen.add(mg)
+                res.unlinked.append({"kind": "CollectionMembership", "guid": mg, "name": _name(m) or mg,
+                                     "collection": collection_guid})
+        raise _Stop(f"the Collection {collection_name} still has members after 50 passes, so it was not deleted")
 
     # ── the Egeria side ─────────────────────────────────────────────────────────────────────────────────
 
@@ -275,8 +372,7 @@ class InvestigationDeleter:
         for lg in logs:
             self._remove(res, me, "NoteLog", _guid(lg), _name(lg), pm.remove_note_log)
 
-        # 3. Collections the investigation's working sets recorded (only if RE's own qualifiedName).
-        prefixes = (f"Folio::Investigation::{slug}", f"WorkingSet::Investigation::{slug}::")
+        # 3. Collections the investigation's working sets recorded (only if RE's own qualifiedName, by equality).
         for c in collections:
             guid = c["guid"]
             qn = self._collection_qualified_name(cm, guid)
@@ -289,20 +385,59 @@ class InvestigationDeleter:
                                       "why": "could not read it to check that Resource Explorer made it"})
                 raise _Stop(f"could not read the Collection {guid} to check that Resource Explorer made it, "
                             "so it was not deleted")
-            if not qn.startswith(prefixes):
+            if qn != collection_qualified_name(slug, c):
                 res.left.append({"kind": "Collection", "guid": guid, "name": qn, "why": WORDS["collection_not_ours"]})
                 continue
+            self._unlink_members(res, cm, guid, qn)
             self._remove(res, me, "Collection", guid, qn, cm.delete_collection)
 
-        # 4. the Project, only when RE made it.
+        # 4. the Project, only when RE made it, and only when nothing is anchored to it that RE is not removing.
         if not project_ours:
             res.left.append({"kind": "Project", "guid": project_guid,
                              "name": inv.get("egeria_project_qualified_name") or "", "why": WORDS["project_not_ours"]})
         elif not project_gone:
-            self._remove(res, me, "Project", project_guid, project_qualified_name(slug), pm.delete_project)
+            self._stop_if_anchored_elements_remain(res, me, project_guid)
+            self._retire_project(res, me, pm, project_guid, project_qualified_name(slug))
         else:
             res.deleted.append({"kind": "Project", "guid": project_guid, "name": project_qualified_name(slug),
                                 "note": WORDS["already_gone"]})
+
+    def _stop_if_anchored_elements_remain(self, res: DeleteResult, me, project_guid: str) -> None:
+        """Read everything anchored to the Project (``MetadataExpert.get_anchored_element_graph``): NoteLogs, Notes,
+        Ratings, Comments, Likes and anything else Egeria anchors there. By now RE has removed what it made; every
+        anchored element that is not one of those would be deleted WITH the Project, so if there is any, STOP before
+        the Project step: keep the investigation, and name each element (type, GUID, name, author). The Project is
+        listed as not deleted. Anything reported as "left" that is in this set is moved here: it is not left alone,
+        it is what stops the Project."""
+        graph = me.get_anchored_element_graph(project_guid)
+        if isinstance(graph, dict) and isinstance(graph.get("element"), dict) and "anchoredElements" not in graph:
+            graph = graph["element"]
+        if not isinstance(graph, dict):
+            raise _Stop(f"could not read what is anchored to the Project (Egeria answered {str(graph)[:200]!r}), "
+                        "so the Project was not deleted")
+        mine = {d["guid"] for d in res.deleted} | {project_guid}
+        blocking = []
+        for el in graph.get("anchoredElements") or []:
+            g = _guid(el)
+            if not g or g in mine:
+                continue
+            blocking.append({"kind": _type_name(el) or "element", "guid": g, "name": _display(el),
+                             "author": _author(el), "why": WORDS["anchored_blocks"]})
+        if not blocking:
+            return
+        res.blocking = blocking
+        blocked = {b["guid"] for b in blocking}
+        res.left = [x for x in res.left if x["guid"] not in blocked]
+        res.remaining.append({"kind": "Project", "guid": project_guid, "name": "", "why": WORDS["project_blocked"]})
+        named = "; ".join(f"{b['kind']} {b['guid']}" + (f" ({b['name']})" if b["name"] else "")
+                          + (f" by {b['author']}" if b["author"] else "") for b in blocking)
+        raise _Stop(f"the Project was not deleted: {len(blocking)} element(s) anchored to it are not ones Resource "
+                    f"Explorer made, and deleting the Project would delete them too: {named}")
+
+    def _retire_project(self, res: DeleteResult, me, pm, project_guid: str, name: str) -> None:
+        """The final Project action: today ``delete_project``. The design session has yet to rule whether this should
+        archive instead; this is the one place to swap, and the anchor check before it does not change."""
+        self._remove(res, me, "Project", project_guid, name, pm.delete_project)
 
     def _collection_qualified_name(self, cm, guid: str) -> "str | None":
         """The qualifiedName of a recorded Collection, read as the caller; None when it could not be read (or is
@@ -334,6 +469,11 @@ class InvestigationDeleter:
             raise ValueError(WORDS["not_promoted"])
         res = DeleteResult(slug=slug, choice=choice)
 
+        # The very first step, in one transaction: refuse (InvestigationPublishRunning, the route's 409) if a drain
+        # is writing one of this investigation's publish rows, else cancel the ones still waiting so none starts
+        # while this runs. Nothing has been changed anywhere when it refuses.
+        self._registry.begin_investigation_delete(slug)
+
         if choice == CHOICE_RE_AND_EGERIA:
             try:
                 self._plan_and_run_egeria(res, inv)
@@ -348,8 +488,18 @@ class InvestigationDeleter:
                 return res
 
         counts_activity = self._activity(res, inv, by=by, role=role, deleted_locally=True)
+        try:
+            res.local_counts = self._registry.delete_investigation_local(slug, counts_activity)
+        except Exception as exc:  # noqa: BLE001 - includes a drain that claimed a row since the first step
+            # Egeria may be fully deleted by now. The local transaction rolled back, so the investigation is still
+            # here; say so in words, and record in its OWN transaction what Egeria lost (the row that went with
+            # the failed transaction is gone).
+            log.exception("local delete of %s failed", slug)
+            res.errors.append(f"{WORDS['local_failed'] if res.egeria_done else 'The investigation was not deleted'}"
+                              f": {_words_of(exc)}")
+            self._write_activity(res, inv, by=by, role=role, deleted_locally=False)
+            return res
         res.activity_id = counts_activity.id
-        res.local_counts = self._registry.delete_investigation_local(slug, counts_activity)
         res.local_deleted = True
         return res
 
@@ -368,7 +518,7 @@ class InvestigationDeleter:
                       + [{"kind": "Collection", "guid": c["guid"], "name": c["working_set_slug"]}
                          for c in self._registry.investigation_egeria_collections(inv["slug"])]) if guid else []
         else:
-            behind = [dict(r) for r in res.remaining] + [dict(r) for r in res.left]
+            behind = [dict(r) for r in res.remaining] + [dict(r) for r in res.left] + [dict(r) for r in res.blocking]
         if deleted_locally:
             summary = (f"deleted '{inv.get('display_name') or inv['slug']}' in {choice_words}"
                        f" · by {by or 'unknown'}"
@@ -377,20 +527,26 @@ class InvestigationDeleter:
                        + (f" · {len(behind)} left in Egeria" if behind else ""))
             status = "ok"
         else:
-            summary = (f"delete of '{inv.get('display_name') or inv['slug']}' stopped in Egeria · by {by or 'unknown'}"
-                       f" · {len(res.deleted)} removed, {len(res.remaining)} remain; the investigation was kept")
+            where = ("in Resource Explorer after Egeria's side finished" if res.egeria_done
+                     else "in Resource Explorer" if res.choice == CHOICE_RE_ONLY else "in Egeria")
+            summary = (f"delete of '{inv.get('display_name') or inv['slug']}' stopped {where} · by {by or 'unknown'}"
+                       f" · {len(res.deleted)} removed from Egeria, {len(res.remaining)} remain; "
+                       "the investigation was kept")
             status = "error"
         detail = {"event": "investigation_delete", "choice": res.choice, "by": by, "role": role,
                   "deleted_locally": deleted_locally, "egeria_project_guid": guid,
-                  "egeria_deleted": res.deleted, "egeria_remaining": res.remaining, "egeria_left": res.left,
+                  "egeria_deleted": res.deleted, "egeria_unlinked": res.unlinked,
+                  "egeria_remaining": res.remaining, "egeria_left": res.left, "egeria_blocking": res.blocking,
                   "left_behind_in_egeria": behind, "errors": res.errors}
         return ActivityEntry(
             id=str(uuid.uuid4()), ts=datetime.now(UTC).isoformat(), operation="delete", intent="enrichment",
             entity_type="investigation", entity_slug=inv["slug"], entity_name=inv.get("display_name") or "",
             status=status, summary=summary, detail=json.dumps(detail),
             items=[{"kind": d["kind"], "guid": d["guid"], "state": "deleted"} for d in res.deleted]
-            + [{"kind": d["kind"], "guid": d["guid"], "state": "left" if d in res.left or res.choice == CHOICE_RE_ONLY
-                else "remains"} for d in behind])
+            + [{"kind": d["kind"], "guid": d["guid"], "state": "unlinked"} for d in res.unlinked]
+            + [{"kind": d["kind"], "guid": d["guid"],
+                "state": ("left" if d in res.left or res.choice == CHOICE_RE_ONLY
+                          else "blocks the Project" if d in res.blocking else "remains")} for d in behind])
 
     def _write_activity(self, res: DeleteResult, inv: dict, *, by: str, role: str, deleted_locally: bool) -> None:
         try:

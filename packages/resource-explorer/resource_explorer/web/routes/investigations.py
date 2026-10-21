@@ -244,7 +244,9 @@ async def get_investigation(slug: str) -> dict:
     inv = _registry().get_investigation(slug)
     if not inv:
         raise HTTPException(status_code=404, detail=f"Investigation '{slug}' not found")
-    return inv
+    # A delete that stopped part-way and was not followed by a finished one: read from the activity log, so the page
+    # shows what remains after a reload, not just in the session that pressed Delete.
+    return {**inv, "delete_stop": _registry().latest_investigation_delete_stop(slug)}
 
 
 @router.get("/{slug}/members")
@@ -492,12 +494,14 @@ async def delete_investigation(slug: str, egeria: bool = False) -> dict:
 
     404 when missing or not visible to the caller (exactly as `get_investigation`); 403, with words, when the caller
     is neither the owner nor an admin; 400 for `egeria=true` on an investigation that was never promoted; 409 while
-    a publish for it is being written. A partial Egeria failure is a 200 with `ok: false`, `deleted`, `remaining`
+    a publish for it is being written (checked as the first step of the delete itself, in one transaction with the
+    cancelling of its waiting publish rows). A partial Egeria failure is a 200 with `ok: false`, `deleted`, `remaining`
     and `errors` (Egeria's words), and the local investigation is kept.
     """
     import asyncio
 
     from resource_explorer.a2a_auth import caller
+    from resource_explorer.registry import InvestigationPublishRunning
     from resource_explorer.investigation_delete import (
         CHOICE_RE_AND_EGERIA,
         CHOICE_RE_ONLY,
@@ -516,14 +520,15 @@ async def delete_investigation(slug: str, egeria: bool = False) -> dict:
         raise HTTPException(status_code=403, detail=words)
     if egeria and not (inv.get("egeria_project_guid") or "").strip():
         raise HTTPException(status_code=400, detail=WORDS["not_promoted"])
-    if reg.investigation_publish_in_flight(slug):
-        raise HTTPException(status_code=409, detail=WORDS["publish_running"])
     choice = CHOICE_RE_AND_EGERIA if egeria else CHOICE_RE_ONLY
     # In a thread, with the caller's context (asyncio.to_thread copies it): pyegeria's synchronous methods drive
     # their own event loop, and `Caller()` reads the signed-in person from the ContextVar.
-    return (await asyncio.to_thread(
-        InvestigationDeleter(reg).run, slug, choice,
-        by=identity.user_id, role=(getattr(identity, "role", "") or ""))).as_dict()
+    try:
+        return (await asyncio.to_thread(
+            InvestigationDeleter(reg).run, slug, choice,
+            by=identity.user_id, role=(getattr(identity, "role", "") or ""))).as_dict()
+    except InvestigationPublishRunning:
+        raise HTTPException(status_code=409, detail=WORDS["publish_running"])
 
 
 @router.post("/{slug}/reclassify")

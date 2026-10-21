@@ -13,10 +13,11 @@ const INDEX_HTML = fs.readFileSync(path.resolve(HERE, '../../resource_explorer/w
 const tick = (ms = 60) => new Promise((r) => setTimeout(r, ms));
 const text = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 
-async function setUp({ promoted = false, isMine = true, role = 'user', del } = {}) {
+async function setUp({ promoted = false, isMine = true, role = 'user', del, deleteStop = null } = {}) {
   const calls = [];
   const { document, window } = makeDomEnvironment();
   let deleted = false;
+  let serverStop = deleteStop;       // what the server's activity log says about a stopped delete (survives a reload)
   globalThis.fetch = async (url, opts = {}) => {
     const u = String(url);
     const ok = (b) => ({ ok: true, status: 200, json: async () => b });
@@ -24,6 +25,7 @@ async function setUp({ promoted = false, isMine = true, role = 'user', del } = {
       calls.push(u);
       const out = del ? del(u) : { ok: true, local_deleted: true, choice: u.includes('egeria=true') ? 're_and_egeria' : 're_only', deleted: [], remaining: [], left: [], errors: [] };
       if (out.local_deleted) deleted = true;
+      else if (!out.status) serverStop = { ...out, ts: 'now' };   // the server wrote the error row the page reads back
       if (out.status) return { ok: false, status: out.status, json: async () => ({ detail: out.detail }), text: async () => out.detail };
       return ok(out);
     }
@@ -38,7 +40,7 @@ async function setUp({ promoted = false, isMine = true, role = 'user', del } = {
     if (/^\/api\/investigations\/c360$/.test(u)) {
       return ok({ slug: 'c360', display_name: 'Customer 360', status: 'open', description: 'd', project_classification: 'StudyProject',
         purposes: [], visibility: 'shared', is_mine: isMine, egeria_project_guid: promoted ? 'proj-guid' : null,
-        egeria_project_qualified_name: promoted ? 'Project::Investigation::c360' : '' });
+        egeria_project_qualified_name: promoted ? 'Project::Investigation::c360' : '', delete_stop: serverStop });
     }
     if (/^\/api\/investigations\/\?/.test(u)) return ok(deleted ? [] : []);
     return ok({});
@@ -153,10 +155,38 @@ test('a delete Egeria stopped keeps the page, shows a pop-up and a cue that name
   assert.match(text(t.document.querySelector('[data-inv-delete-remains]')), /Note n2.*OPEN-METADATA-SECURITY-403-020/);
   assert.ok(t.document.querySelector('[data-act="inv-delete"]'), 'the investigation page is still there');
   assert.equal(t.document.querySelector('[data-act="inv-delete"]').disabled, false);
-  // the cue outlives a redraw of the page
+  // the cue outlives a redraw of the page: it is read back from the server's record, not held in this page
   await t.inv.refreshOpenInvestigation('c360');
   await tick();
   assert.match(text(t.document.querySelector('[data-inv-delete-stop]')), /Note n2/);
+});
+
+test('a reload shows the stop the activity log remembers, with no delete pressed in this session', async () => {
+  const stop = { choice: 're_and_egeria', local_deleted: false, errors: ['the Project was not deleted: 1 element(s) anchored to it'],
+    deleted: [{ kind: 'Note', guid: 'n1', name: 'first' }], unlinked: [{ kind: 'CollectionMembership', guid: 'asset-1', name: 'crm-repo' }],
+    remaining: [{ kind: 'Project', guid: 'proj-guid', why: 'not deleted: elements anchored to it that Resource Explorer is not removing' }],
+    blocking: [{ kind: 'Rating', guid: 'r1', name: '5 stars', author: 'mandy', why: 'anchored to the Project' }], left: [] };
+  const t = await setUp({ promoted: true, deleteStop: stop });
+  const cue = text(t.document.querySelector('[data-inv-delete-stop]'));
+  assert.match(cue, /delete not finished/);
+  assert.match(text(t.document.querySelector('[data-inv-delete-blocking]')), /Rating r1 · 5 stars · by mandy/);
+  assert.match(text(t.document.querySelector('[data-inv-delete-unlinked]')), /CollectionMembership asset-1/);
+  assert.match(text(t.document.querySelector('[data-inv-delete-remains]')), /Project proj-guid/);
+});
+
+test('no stop recorded: no cue on the page', async () => {
+  const t = await setUp({ promoted: true });
+  assert.equal(t.document.querySelector('[data-inv-delete-stop]'), null);
+});
+
+test('the Egeria choice says a Project RE did not create is left, what is listed first, and the collision warning', async () => {
+  const t = await setUp({ promoted: true });
+  const asked = answerNext(t.document, 'choice', 'data-choice-cancel');
+  t.document.querySelector('[data-act="inv-delete"]').click();
+  await tick(150);
+  assert.match(asked.message, /A Project that Resource Explorer did not create is left in Egeria/);
+  assert.match(asked.message, /Ratings, comments and anything else attached to the Project are listed first, and the delete stops if any of them are not ones Resource Explorer made/);
+  assert.match(asked.message, /same name and promote it, it will collide with the Project still in Egeria/);
 });
 
 test('a refusal (403) shows the not-permitted cue on the button with the server\'s words', async () => {

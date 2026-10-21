@@ -812,7 +812,7 @@ function bindDetail(inv, members) {
   });
 
   // Delete: the confirm and its choices, the call, and the cue that stays when Egeria stops it (investigation-delete.js).
-  showRememberedStop(inv.slug, $('inv-delete-result'));
+  showRememberedStop(inv, $('inv-delete-result'));
   el.querySelector('[data-act="inv-delete"]')?.addEventListener('click', (e) => startDelete(inv, e.currentTarget, {
     host: $('inv-delete-result'),
     failurePopup,

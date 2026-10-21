@@ -24,11 +24,16 @@ export const DELETE_WORDS = {
   // promoted: two choices, each with what it leaves behind
   choiceRe: 'Delete in Resource Explorer only',
   choiceReBody: 'Removes the investigation, its scope, dispositions and journal from Resource Explorer. '
-    + 'In Egeria the Project, its working-set Collection and its journal Notes stay.',
+    + 'In Egeria the Project, its working-set Collection and its journal Notes stay. '
+    + 'If you later create an investigation with the same name and promote it, it will collide with the Project '
+    + 'still in Egeria.',
   choiceBoth: 'Delete in Resource Explorer and Egeria',
   choiceBothBody: 'Removes the Project, its working-set Collection and its journal Notes from Egeria, one at a time, '
-    + 'then removes the investigation from Resource Explorer. If Egeria refuses a step it stops: nothing is deleted '
-    + 'in Resource Explorer, and this page says what is left.',
+    + 'then removes the investigation from Resource Explorer. The resources in the Collection are only taken out of it; '
+    + 'they are not deleted. A Project that Resource Explorer did not create is left in Egeria. Ratings, comments and '
+    + 'anything else attached to the Project are listed first, and the delete stops if any of them are not ones '
+    + 'Resource Explorer made. If Egeria refuses a step it stops: nothing is deleted in Resource Explorer, and this '
+    + 'page says what is left.',
   cancel: 'Cancel',
   // while and after
   working: 'deleting…',
@@ -37,6 +42,9 @@ export const DELETE_WORDS = {
   stopKept: 'The investigation is still in Resource Explorer.',
   stopDeleted: 'Removed from Egeria',
   stopRemains: 'Still in Egeria',
+  stopUnlinked: 'Taken out of a Collection (the resource itself is untouched)',
+  stopBlocking: 'Attached to the Project and not removed by Resource Explorer, so the Project was not deleted',
+  stopAuthor: 'by',
   stopLeft: 'Left alone',
   stopNothing: 'nothing',
   failedCue: 'not deleted',
@@ -45,10 +53,6 @@ export const DELETE_WORDS = {
   doneBoth: (name) => `Deleted '${name}' in Resource Explorer and Egeria.`,
   leftBehind: 'Left in Egeria',
 };
-
-/** Stops that persist across a redraw of the page: slug -> the delete result that stopped. Cleared by a delete that
- *  finishes, so the cue stays until the situation it names is gone. */
-const _stops = {};
 
 /** Whether to OFFER Delete: the investigation is the signed-in person's own, or their Portal role is curator or
  *  admin. The server enforces the same rule; a button shown here that it refuses says so in words. Pure. */
@@ -64,7 +68,8 @@ export function deleteButtonHtml() {
 }
 
 const listOf = (items) => (items || []).map((x) => `<li>${esc(x.kind)} <span class="tnum">${esc(x.guid)}</span>${
-  x.name ? ` · ${esc(x.name)}` : ''}${x.why ? ` · ${esc(x.why)}` : ''}</li>`).join('');
+  x.name ? ` · ${esc(x.name)}` : ''}${x.author ? ` · ${esc(DELETE_WORDS.stopAuthor)} ${esc(x.author)}` : ''}${
+  x.why ? ` · ${esc(x.why)}` : ''}</li>`).join('');
 
 /** The persistent cue for a delete that stopped in Egeria: what was removed, what remains with Egeria's words. */
 export function stopHtml(result) {
@@ -77,14 +82,20 @@ export function stopHtml(result) {
     <ul class="m-0 list-none p-0" data-inv-delete-removed>${listOf(result.deleted) || `<li>${esc(W.stopNothing)}</li>`}</ul>
     <div class="mt-s1 text-state-warn">${esc(W.stopRemains)}:</div>
     <ul class="m-0 list-none p-0" data-inv-delete-remains>${listOf(result.remaining) || `<li>${esc(W.stopNothing)}</li>`}</ul>
+    ${(result.unlinked || []).length ? `<div class="mt-s1 text-ink-muted">${esc(W.stopUnlinked)}:</div>
+    <ul class="m-0 list-none p-0" data-inv-delete-unlinked>${listOf(result.unlinked)}</ul>` : ''}
+    ${(result.blocking || []).length ? `<div class="mt-s1 text-state-warn">${esc(W.stopBlocking)}:</div>
+    <ul class="m-0 list-none p-0" data-inv-delete-blocking>${listOf(result.blocking)}</ul>` : ''}
     ${(result.left || []).length ? `<div class="mt-s1 text-ink-muted">${esc(W.stopLeft)}:</div>
     <ul class="m-0 list-none p-0" data-inv-delete-left>${listOf(result.left)}</ul>` : ''}
   </div>`;
 }
 
-/** Draw a remembered stop (if any) into `host`. Called on every render of the investigation page. */
-export function showRememberedStop(slug, host) {
-  if (host) host.innerHTML = _stops[slug] ? stopHtml(_stops[slug]) : '';
+/** Draw the stop the SERVER remembers (`inv.delete_stop`: the latest delete activity row for this investigation
+ *  when it ended in an error and no later delete finished) into `host`. Called on every render of the page, so the
+ *  cue survives a reload and comes from the activity log, not from anything held in this page. */
+export function showRememberedStop(inv, host) {
+  if (host) host.innerHTML = inv && inv.delete_stop ? stopHtml(inv.delete_stop) : '';
 }
 
 /** What a finished delete left in Egeria, for the list page's one-line note. */
@@ -136,12 +147,11 @@ export async function startDelete(inv, btn, ctx) {
     // Egeria stopped the delete: the investigation is kept. A pop-up now, and a cue that stays on the page.
     btn.disabled = false;
     btn.innerHTML = idle;
-    _stops[inv.slug] = result;
-    showRememberedStop(inv.slug, ctx.host);
+    // Draw what the server just recorded (the same activity row a reload reads back).
+    if (ctx.host) ctx.host.innerHTML = stopHtml(result);
     ctx.failurePopup(W.stopTitle, [...(result.errors || []), W.stopKept].join(' '));
     return;
   }
-  delete _stops[inv.slug];
   await ctx.back({
     note: `${esc(result.choice === 're_and_egeria' ? W.doneBoth(name) : W.doneRe(name))}${leftBehindHtml(result, inv)}`,
   });
