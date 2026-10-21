@@ -1784,3 +1784,43 @@ def test_the_conversation_answer_leads_with_the_link_totals(db):
         answer = ConversationAgent().handle("which databases does it use, include medium and low links")
     assert answer.startswith("5 cross-asset links found: 0 high, 0 medium, 5 low; 2 of the 5 at 'low' or above")
     assert answer.endswith("There are 2 high-confidence links.")
+
+
+def test_multi_resource_budget_partitioning(db):
+    """Each resource is compiled with an equal share of what is left after a 20% reserve.
+
+    The reserve (matrix, preamble, synthesis) plus the shares must never exceed the budget, or the
+    prompt overruns the model's window; the floors (reserve 200, share 100) apply only to budgets
+    too small to split.
+    """
+    from resource_explorer.context_compile import CompiledContext, compile_multi_resource_context
+    from resource_explorer.registry import Project
+
+    for slug in ("repo_a", "repo_b", "repo_c"):
+        db.add(Project(slug=slug, display_name=slug, collections=["c"], github_url=f"https://github.com/o/{slug}"))
+
+    def run(slugs, budget):
+        with patch("resource_explorer.context_compile.compile_context") as mock_compile, \
+             patch("resource_explorer.context_compile.build_epistemological_matrix", return_value=("| Matrix |", [])):
+            mock_compile.side_effect = lambda registry, slug, question, budget, **kw: CompiledContext(
+                text=f"content for {slug}", manifest={"used": budget, "gaps": []}, derivation=[],
+                compile_id=f"id-{slug}",
+            )
+            result = compile_multi_resource_context(db, slugs, "test query", budget=budget)
+        return result, [c.kwargs["budget"] for c in mock_compile.call_args_list]
+
+    # 1000 -> reserve 200, 800 split over 2 -> 400 each; over 3 -> 266 each (floor division).
+    result, shares = run(["repo_a", "repo_b"], 1000)
+    assert shares == [400, 400]
+    assert "Matrix" in result.text and "RESOURCE EVIDENCE: repo_a" in result.text
+    _, shares = run(["repo_a", "repo_b", "repo_c"], 1000)
+    assert shares == [266, 266, 266]
+
+    for budget in (500, 1000, 8000):
+        for slugs in (["repo_a", "repo_b"], ["repo_a", "repo_b", "repo_c"]):
+            _, shares = run(slugs, budget)
+            assert sum(shares) + max(200, int(budget * 0.20)) <= budget
+
+    # Too small to split: the per-resource floor of 100 wins, and the total is allowed to exceed the budget.
+    _, shares = run(["repo_a", "repo_b"], 100)
+    assert shares == [100, 100]
