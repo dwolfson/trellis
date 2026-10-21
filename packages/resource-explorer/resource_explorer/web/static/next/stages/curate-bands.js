@@ -43,8 +43,9 @@ import {
   getCurateTagsDetail, getCurateAllTags, addCurateTag, removeCurateTag,
   getCurateEgeriaState, syncCurateEgeria, getCurateFeedbackState,
   getCurateFeedback, addCurateFeedback, getCurateNotes, deleteCurateNote,
-  assignGroup, listGroups, getDataClassRules,
+  assignGroup, listGroups, getDataClassRules, getQualityProposals, postQualityVerdict,
 } from '/static/re-api.js';
+import { mountQualityChecks } from '/static/next/stages/quality-checks.js';
 import {
   state, esc, tnum, refreshGroupsAndSidebar,
   renderJournalWrite, renderJournalEntries,
@@ -100,9 +101,18 @@ export function databaseStructureHtml() {
   return DB_WORK_SECTIONS.map((s) => `<div data-curate-work="${s.id}" class="mb-s2">
     <div class="text-answer text-ink">${esc(s.title)}</div>
     <div class="text-caveat text-ink-muted">${esc(s.waits)}</div>${s.id === 'glossary' ? rulesBlockShellHtml() : ''}</div>`).join('')
+    + `<div data-curate-work="quality-checks" class="mb-s2">
+    <div class="text-answer text-ink">Quality checks</div>
+    <div data-curate-quality class="mt-s1 min-w-0 max-w-full text-caveat text-ink-muted">Reading the proposed checks…</div></div>`
     + `<div data-curate-work="dependencies" class="mb-s2">
     <div class="text-answer text-ink">Dependencies</div>
     <div data-curate-dependencies-none class="text-caveat text-ink-muted">none detected for databases yet</div></div>`;
+}
+
+/** Proposed quality checks, with Accept | Reject (quality-checks.js draws into the slot; it fails inside itself). */
+export function renderQualityBlock(slot, slug) {
+  if (!slot) return null;
+  return mountQualityChecks(slot, slug, { api: { getProposals: getQualityProposals, postVerdict: postQualityVerdict }, me: whoAmI() });
 }
 
 export function databaseWorkHtml() {

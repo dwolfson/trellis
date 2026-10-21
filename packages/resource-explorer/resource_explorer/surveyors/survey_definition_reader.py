@@ -943,6 +943,41 @@ class SurveyDefinitionReader:
             })
         return candidates
 
+    def find_unscoped_process_guids(
+        self, catalog_questions: list[str], technology_type: str, survey_kind: str | None = None,
+    ) -> list:
+        """Survey Definitions for this technology type that NO catalog question is scoped to: an absence of a
+        question is a fact to show, not a reason to drop the definition from the list.
+
+        `catalog_questions` is every question the catalog holds for the resource type, whatever its stage. A
+        definition whose ScopedBy links name only questions outside that set (or none) is unscoped. Read from the
+        authored documents, like `find_candidate_process_guids_by_questions`, and the same rule applies to a
+        definition that is not published (it cannot run, so it is not offered). Returns the same shape with an
+        empty `matched_questions`. Empty when no documents are readable: with nothing to read, "unscoped" is not
+        something this can say."""
+        from resource_explorer.surveyors.survey_definition_docs import (
+            _PROCESS_PREFIX, documented_definitions,
+        )
+
+        docs = documented_definitions()
+        known = {q for q in catalog_questions if q}
+        out: list = []
+        for name, doc in sorted(docs.items()):
+            if doc.technology_type != technology_type:
+                continue
+            if survey_kind is not None and doc.survey_kind != survey_kind:
+                continue
+            if known & set(doc.scoped_by):
+                continue
+            qualified_name = f"{_PROCESS_PREFIX}{name}"
+            guid = self._process_guid_cached(qualified_name)
+            if not guid:
+                log.info("survey definition %s is documented but not resolvable in Egeria; not offered", qualified_name)
+                continue
+            out.append({"qualified_name": qualified_name, "display_name": doc.display_name or name, "guid": guid,
+                        "matched_questions": []})
+        return out
+
     def _process_guid_cached(self, qualified_name: str) -> str | None:
         now = time.monotonic()
         key = (self._reader_key(), qualified_name)

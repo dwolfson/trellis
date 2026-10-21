@@ -7252,3 +7252,131 @@ Asked At
 
 ___
 
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Which data-quality checks should this database have?
+
+### Description
+propose_quality_checks reads the measured value profile and, for every column and table, applies the selection rules to propose a check, each in an Egeria quality dimension: Completeness (is the value there: Required, Missing_Pct, Required_No_Placeholder and Row_Ct_Pct), Uniqueness (Unique), Timeliness (Future_Date) and Conformity (Min_Date). A person accepts or rejects each proposal in Curate; a check whose inputs were not measured is listed as not established with the reason, never silently left out.
+
+### Summary
+A data owner cannot ask for quality until someone says what to check, and writing the checks by hand for hundreds of tables never gets done.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0096 |
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Which data-quality checks should this database have?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+Which data-quality checks should this database have?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Owner
+
+### Question Name
+Which data-quality checks should this database have?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Which data-quality checks should this database have?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Which data-quality checks hold on this database's tables, and which fail?
+
+### Description
+run_quality_checks runs the checks a person accepted, one aggregate query per table, and records pass, warning or fail per check, or not established with the reason (an empty table, a zero baseline, a column that has gone) and never a pass for a measure that is undefined. Each evaluated check is published as one Egeria QualityAnnotation in its dimension: Completeness (is the value there: Required, Missing_Pct, Required_No_Placeholder and Row_Ct_Pct), Uniqueness (Unique), Timeliness (Future_Date) and Conformity (Min_Date). With no accepted check the step is not run ("no accepted checks"), never an empty report.
+
+### Summary
+A check nobody runs is a wish; the steward needs to see which accepted checks pass, warn or fail, and which could not be evaluated.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0097 |
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Which data-quality checks hold on this database's tables, and which fail?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+Which data-quality checks hold on this database's tables, and which fail?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Owner
+
+### Question Name
+Which data-quality checks hold on this database's tables, and which fail?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Which data-quality checks hold on this database's tables, and which fail?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
