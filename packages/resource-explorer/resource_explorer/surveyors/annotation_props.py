@@ -261,6 +261,11 @@ def build_annotation_props(ann, qualified_name: str) -> dict:
         action_target = getattr(ann, "action_target_name", "")
         if action_target:
             props["actionProperties"] = {"actionTargetName": action_target}
+        # The envelope (surveyor, walk limits, capped) rides here as on a measure. Guarded on truthiness: a request for
+        # action that sets none is byte-identical on the wire.
+        ap = getattr(ann, "additional_properties", None) or {}
+        if ap:
+            props["additionalProperties"] = to_string_map(ap)
 
     elif atype == AnnotationType.SCHEMA_ANALYSIS:
         sn = getattr(ann, "schema_name", "")

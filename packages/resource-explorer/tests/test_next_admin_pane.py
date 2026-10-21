@@ -41,6 +41,7 @@ BUILT_TAB_IDS = [
     "admin-repair",
     "admin-discovery-sources",
     "admin-api-fetch",
+    "admin-egeria-mounts",
 ]
 
 

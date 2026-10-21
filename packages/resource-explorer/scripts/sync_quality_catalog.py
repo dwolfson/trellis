@@ -1,0 +1,137 @@
+"""Diff the vendored quality-check catalogue against an upstream checkout. Writes nothing.
+
+    uv run python packages/resource-explorer/scripts/sync_quality_catalog.py --check \
+        --upstream ~/localGit/egeria-v6/dataops-testgen
+
+The vendored copy lives in `resource_explorer/configdata/quality/testgen/` (see its PROVENANCE.md). For each
+vendored test type this compares, against `testgen/template/dbsetup_test_types/test_types_<Name>.yaml` upstream:
+`selection_criteria`, `default_parm_columns`, `default_parm_values` and the Postgres `cat_test_conditions` entry
+(`measure`, `test_operator`, `test_condition`), and says whether the whole file is still byte-identical. It checks
+that every measure in `postgresql/profile_measures.sql` and the `general_type` CASE still appear verbatim in
+upstream's Postgres SQL, and lists upstream test types that are not vendored.
+
+Exit status: 0 when nothing a check depends on differs, 1 when something does, 2 when the upstream checkout is
+unusable. Adopting a change is a deliberate commit (copy the file, update PROVENANCE.md, re-port any predicate
+whose pinned hash the tests then report) — this script never does it.
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+PKG = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PKG))
+
+from resource_explorer.surveyors.database.quality.catalogue import (
+    SLICE_1_TEST_TYPES,
+    TEST_TYPES_DIR,
+    read_raw,
+)
+from resource_explorer.surveyors.database.quality.general_type import (
+    vendored_case_text,
+)
+from resource_explorer.surveyors.database.quality.value_profile import measure_blocks
+
+UPSTREAM_TEST_TYPES = Path("testgen/template/dbsetup_test_types")
+UPSTREAM_PROFILE_SQL = Path("testgen/template/flavors/postgresql/profiling/project_profiling_query.sql")
+UPSTREAM_SCHEMA_DDF = Path("testgen/template/flavors/postgresql/data_chars/get_schema_ddf.sql")
+
+FIELDS = ("selection_criteria", "default_parm_columns", "default_parm_values")
+CONDITION_FIELDS = ("measure", "test_operator", "test_condition")
+
+
+def _postgres(raw: dict) -> dict:
+    return next((c for c in raw.get("cat_test_conditions") or [] if c.get("sql_flavor") == "postgresql"), {})
+
+
+def _squash(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def compare_test_type(name: str, upstream: Path) -> tuple[list[str], list[str]]:
+    """(differences that matter, notes) for one vendored test type."""
+    vendored_path = TEST_TYPES_DIR / f"{name}.yaml"
+    upstream_path = upstream / UPSTREAM_TEST_TYPES / f"test_types_{name}.yaml"
+    if not upstream_path.exists():
+        return [f"{name}: upstream file {upstream_path.relative_to(upstream)} is gone"], []
+    ours, theirs = read_raw(vendored_path), read_raw(upstream_path)
+    diffs: list[str] = []
+    for field in FIELDS:
+        if ours.get(field) != theirs.get(field):
+            diffs.append(f"{name}.{field}: vendored {ours.get(field)!r} | upstream {theirs.get(field)!r}")
+    ours_pg, theirs_pg = _postgres(ours), _postgres(theirs)
+    for field in CONDITION_FIELDS:
+        if ours_pg.get(field) != theirs_pg.get(field):
+            diffs.append(f"{name}.postgresql.{field}: vendored {ours_pg.get(field)!r} | "
+                         f"upstream {theirs_pg.get(field)!r}")
+    notes = []
+    if vendored_path.read_bytes() != upstream_path.read_bytes():
+        notes.append(f"{name}: file differs from upstream in fields no check reads")
+    return diffs, notes
+
+
+def compare_sql(upstream: Path) -> list[str]:
+    diffs: list[str] = []
+    profile_sql = upstream / UPSTREAM_PROFILE_SQL
+    if not profile_sql.exists():
+        return [f"upstream {UPSTREAM_PROFILE_SQL} is gone"]
+    upstream_text = _squash(profile_sql.read_text(encoding="utf-8"))
+    for flag, measures in measure_blocks().items():
+        for expr, alias in measures:
+            if _squash(f"{expr} AS {alias}") not in upstream_text:
+                diffs.append(f"profile_measures.sql [{flag}] {alias}: no longer verbatim upstream")
+    ddf = upstream / UPSTREAM_SCHEMA_DDF
+    if not ddf.exists():
+        diffs.append(f"upstream {UPSTREAM_SCHEMA_DDF} is gone")
+    elif _squash(vendored_case_text()) not in _squash(ddf.read_text(encoding="utf-8")):
+        diffs.append("general_type.sql: the general_type CASE is no longer verbatim upstream")
+    return diffs
+
+
+def new_test_types(upstream: Path) -> list[str]:
+    names = sorted(p.stem.removeprefix("test_types_") for p in (upstream / UPSTREAM_TEST_TYPES).glob("test_types_*.yaml"))
+    return [n for n in names if n not in SLICE_1_TEST_TYPES]
+
+
+def upstream_commit(upstream: Path) -> str:
+    try:
+        return subprocess.run(["git", "-C", str(upstream), "rev-parse", "--short", "HEAD"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown (not a git checkout)"
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--check", action="store_true", required=True,
+                        help="compare only (the only mode: this script never writes)")
+    parser.add_argument("--upstream", required=True, type=Path, help="a TestGen checkout")
+    args = parser.parse_args(argv)
+    upstream = args.upstream.expanduser()
+    if not (upstream / UPSTREAM_TEST_TYPES).is_dir():
+        print(f"{upstream} is not a TestGen checkout (no {UPSTREAM_TEST_TYPES})", file=sys.stderr)
+        return 2
+
+    print(f"upstream: {upstream} @ {upstream_commit(upstream)}")
+    diffs: list[str] = []
+    notes: list[str] = []
+    for name in SLICE_1_TEST_TYPES:
+        d, n = compare_test_type(name, upstream)
+        diffs += d
+        notes += n
+    diffs += compare_sql(upstream)
+    for line in diffs:
+        print(f"DIFF  {line}")
+    for line in notes:
+        print(f"note  {line}")
+    others = new_test_types(upstream)
+    print(f"{len(others)} upstream test type(s) not vendored: {', '.join(others) or 'none'}")
+    print("in step with upstream" if not diffs else f"{len(diffs)} difference(s) a check depends on")
+    return 1 if diffs else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

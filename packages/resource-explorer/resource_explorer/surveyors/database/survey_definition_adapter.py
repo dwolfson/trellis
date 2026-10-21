@@ -260,6 +260,57 @@ def _run_postgres_sql_analysis(
     }
 
 
+def _quality_bounds():
+    from resource_explorer.config import get_config
+    from resource_explorer.surveyors.database.quality.value_profile import ProfileBounds
+
+    settings = get_config().value_profile
+    return ProfileBounds(settings.max_table_rows, settings.statement_timeout_seconds)
+
+
+def _run_postgres_value_profile(
+    db_entity, registry, db_user: str = "", db_pwd: str = "",
+    scan_surveyed_at: str | None = None, **_,
+) -> dict:
+    """postgres_value_profile (DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md §4): measured per-column counts and
+    date bounds over whole tables, stored in `database_value_profiles`. No sampling; a table over the row ceiling
+    or the statement timeout is `not_measured`, never a zero."""
+    from resource_explorer.surveyors.database.connection import database_connection
+    from resource_explorer.surveyors.database.quality.value_profile import run_value_profile
+
+    return run_value_profile(
+        db_entity, registry, lambda: database_connection(db_entity, {"user": db_user, "password": db_pwd}),
+        bounds=_quality_bounds(), surveyed_at=scan_surveyed_at or None, ran_as=db_user,
+    )
+
+
+def _run_propose_quality_checks(db_entity, registry, scan_surveyed_at: str | None = None, **_) -> dict:
+    """propose_quality_checks (design §5): the ZERO-FETCH step that applies the vendored selection rules to the
+    latest stored value profile. No credentials in the signature, like `db_derived`: it opens no connection."""
+    from resource_explorer.config import get_config
+    from resource_explorer.surveyors.database.quality.propose import run_propose
+
+    return run_propose(registry, db_entity.slug,
+                       row_ct_pct_threshold=get_config().quality_checks.row_ct_pct_default_threshold,
+                       surveyed_at=scan_surveyed_at or None)
+
+
+def _run_run_quality_checks(
+    db_entity, registry, db_user: str = "", db_pwd: str = "",
+    scan_surveyed_at: str | None = None, **_,
+) -> dict:
+    """run_quality_checks (design §6): the accepted checks, run with the vendored Postgres SQL, stored in
+    `database_quality_results`. Publishing results as QualityAnnotations is a later change, so this returns no
+    annotations."""
+    from resource_explorer.surveyors.database.connection import database_connection
+    from resource_explorer.surveyors.database.quality.run_checks import run_quality_checks
+
+    return run_quality_checks(
+        db_entity, registry, lambda: database_connection(db_entity, {"user": db_user, "password": db_pwd}),
+        bounds=_quality_bounds(), surveyed_at=scan_surveyed_at or None, ran_as=db_user,
+    )
+
+
 def _get_database_entity(registry, slug: str):
     return registry.get_database(slug)
 
@@ -744,6 +795,41 @@ DATABASE_STEP_REGISTRY: dict[str, StepInfo] = {
         # it would be gated out of the one probe that could have said so.
         requires_capability="catalog",
     ),
+    # DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md: value profile -> propose -> run. `read` for the two that
+    # issue `SELECT ... FROM <table>` against user tables (the floor, as for postgres_column_profile); the
+    # propose step opens no connection, so it declares nothing, like db_derived.
+    "postgres_value_profile": StepInfo(
+        "postgres_value_profile", None,
+        "Measured (not estimated) per-column counts and date bounds, whole table.",
+        ["ResourceProfileAnnotation", "ResourceMeasureAnnotation"],
+        produces=("database_value_profiles",),
+        requires_context={"has_schema_inventory": "profiles the columns a stored inventory names"},
+        fetch_cost="api_heavy", compute_cost="medium",
+        requires_capability="read",
+    ),
+    "propose_quality_checks": StepInfo(
+        "propose_quality_checks", None,
+        "Zero-fetch: the vendored selection rules over the latest value profile, as proposed checks.",
+        [],
+        produces=("database_quality_proposals",),
+        requires_context={
+            "has_value_profile":
+                "the selection rules read a stored value profile; with none it would propose nothing "
+                "and that would read as 'no column qualified'",
+        },
+        fetch_cost="none", compute_cost="low",
+    ),
+    "run_quality_checks": StepInfo(
+        "run_quality_checks", None,
+        "The accepted quality checks, run with the vendored Postgres SQL against the database.",
+        [],
+        produces=("database_quality_results",),
+        requires_context={
+            "has_schema_inventory": "reports an accepted check whose column has gone as not established",
+        },
+        fetch_cost="api_heavy", compute_cost="medium",
+        requires_capability="read",
+    ),
 }
 
 
@@ -789,6 +875,9 @@ _ADAPTER = ResourceTypeAdapter(
         "postgres_nested_columns": _run_postgres_nested_columns,
         "sql_analysis": _run_postgres_sql_analysis,
         "credential_capability": _run_credential_capability,
+        "postgres_value_profile": _run_postgres_value_profile,
+        "propose_quality_checks": _run_propose_quality_checks,
+        "run_quality_checks": _run_run_quality_checks,
     },
     get_entity=_get_database_entity,
     publish=_publish,
@@ -906,6 +995,35 @@ _ADAPTER = ResourceTypeAdapter(
                 "RequestForAction",
             ],
         },
+        "postgres_value_profile": {
+            "description": (
+                "Whole-table value profile: record_ct, value_ct, distinct_value_ct, null_value_ct, "
+                "zero_length_ct and filled_value_ct (text), min_date, max_date and future_date_ct (dates), "
+                "measured with the vendored catalog's Postgres measures, one aggregate SELECT per table. "
+                "No sampling: a table over the row ceiling (VALUE_PROFILE_MAX_TABLE_ROWS) or the statement "
+                "timeout is not_measured with the reason, a view or foreign table not_applicable, a table "
+                "the credential cannot read not_permitted; never a row of zeros."
+            ),
+            "annotation_types": ["ResourceProfileAnnotation", "ResourceMeasureAnnotation"],
+        },
+        "propose_quality_checks": {
+            "description": (
+                "Zero-fetch: the vendored catalog's selection rules (ported to Python, pinned to the YAML "
+                "they came from) over the latest value profile. Writes proposals for Missing_Pct, Required, "
+                "Required_No_Placeholder, Unique, Future_Date, Min_Date and, on RE's own initiative, "
+                "Row_Ct_Pct; a rule whose inputs were not measured is not_established, never a silent no. "
+                "Accepted checks report drift from their baseline; rejected ones stay suppressed."
+            ),
+            "annotation_types": [],
+        },
+        "run_quality_checks": {
+            "description": (
+                "Runs the accepted quality checks with the vendored Postgres SQL, one aggregate SELECT per "
+                "table, every parameter validated by type. A NULL measure is not_established, never a pass; "
+                "results go to database_quality_results with status, measure, threshold and reason."
+            ),
+            "annotation_types": [],
+        },
     },
     other_engine_handlers={
         "egeria": _trigger_egeria_native_survey,
@@ -989,6 +1107,10 @@ def _build_database_analysis_re_step_map() -> dict[str, list[str]]:
         "credential_capability": ["credential_capability"],
         # Read in the always-on schema step (DatabaseSurveyor.survey()).
         "database_owner": ["postgres_schema_and_stats"],
+        # DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md: the profile, then propose and run (the one database
+        # analysis that owns two steps: proposing is zero-fetch, running reads the tables).
+        "value_profile": ["postgres_value_profile"],
+        "quality_checks": ["propose_quality_checks", "run_quality_checks"],
     }
     # Every db_derived-backed id, derived rather than hand-listed — see this
     # constant's own docstring above for the bug this specifically closes.
@@ -1080,6 +1202,94 @@ def _column_match_reader(question: str):
             ],
         }
     return _reader
+
+
+def _value_profile_results(registry, slug: str) -> dict:
+    """The latest value-profile batch: every column with its measures, and the not-profiled ones with their state
+    and reason (so "not profiled" never reads as "no values"). {} when no profile is stored: never run."""
+    rows = registry.query_detail_rows("database_value_profiles", slug)
+    if not rows:
+        return {}
+    states: dict[str, int] = {}
+    for r in rows:
+        states[r.get("state", "")] = states.get(r.get("state", ""), 0) + 1
+    measures = ("general_type", "record_ct", "value_ct", "distinct_value_ct", "null_value_ct", "zero_length_ct",
+                "filled_value_ct", "min_date", "max_date", "future_date_ct")
+    return {
+        "surveyed_at": rows[0].get("surveyed_at", ""),
+        "column_count": len(rows),
+        "measured_count": states.get("measured", 0),
+        "state_counts": states,
+        "ran_as": rows[0].get("ran_as", ""),
+        "columns": [
+            {"column_path": f"{r['schema_name']}.{r['table_name']}.{r['column_name']}",
+             "state": r.get("state", ""), "reason": r.get("reason", ""),
+             **{m: r.get(m) for m in measures}}
+            for r in rows
+        ],
+    }
+
+
+def _value_profile_headline(registry, slug: str) -> dict | None:
+    value = _value_profile_results(registry, slug)
+    if not value:
+        return None
+    measured, total = value["measured_count"], value["column_count"]
+    rest = {k: n for k, n in value["state_counts"].items() if k != "measured"}
+    tail = "".join(f" · {n} {k.replace('_', ' ')}" for k, n in sorted(rest.items()))
+    return {"label": f"{measured} of {total} column(s) profiled{tail}.", "status": "info"}
+
+
+def _quality_checks_results(registry, slug: str) -> dict:
+    """The latest quality-check results and the latest proposals, each with counts. A check that did not reach a
+    conclusion is listed with its status and reason, never folded into pass. {} when neither is stored."""
+    results = registry.query_detail_rows("database_quality_results", slug)
+    proposals = registry.query_detail_rows("database_quality_proposals", slug)
+    if not results and not proposals:
+        return {}
+
+    def counts(rows: list[dict], key: str) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for r in rows:
+            out[r.get(key, "")] = out.get(r.get(key, ""), 0) + 1
+        return out
+
+    return {
+        "results_surveyed_at": results[0].get("surveyed_at", "") if results else None,
+        "status_counts": counts(results, "status"),
+        "results": [
+            {k: r.get(k) for k in ("check_key", "test_type", "status", "measure", "record_ct", "reason", "severity",
+                                   "comparison_operator", "threshold_values_json", "rule_source",
+                                   "baseline_profile_surveyed_at")}
+            for r in results
+        ],
+        "proposals_surveyed_at": proposals[0].get("surveyed_at", "") if proposals else None,
+        "proposal_state_counts": counts(proposals, "state"),
+        "proposals": [
+            {k: r.get(k) for k in ("id", "check_key", "test_type", "origin", "state", "reason", "params_json",
+                                   "profile_surveyed_at", "catalogue_ref")}
+            for r in proposals
+        ],
+    }
+
+
+def _quality_checks_headline(registry, slug: str) -> dict | None:
+    """'41 pass · 2 fail · 1 warning · 3 not evaluated' (design §10), or the proposals waiting when nothing ran."""
+    value = _quality_checks_results(registry, slug)
+    if not value:
+        return None
+    statuses = value["status_counts"]
+    if statuses:
+        concluded = [f"{statuses[s]} {s}" for s in ("pass", "fail", "warning", "logged") if statuses.get(s)]
+        unevaluated = sum(n for s, n in statuses.items() if s not in ("pass", "fail", "warning", "logged"))
+        if unevaluated:
+            concluded.append(f"{unevaluated} not evaluated")
+        status = "warning" if statuses.get("fail") or statuses.get("warning") else "info"
+        return {"label": " · ".join(concluded) + ".", "status": status}
+    proposed = value["proposal_state_counts"].get("proposed", 0)
+    not_established = value["proposal_state_counts"].get("not_established", 0)
+    tail = f" ({not_established} could not be evaluated)" if not_established else ""
+    return {"label": f"{proposed} check(s) proposed, none accepted and run yet{tail}.", "status": "info"}
 
 
 def _db_derived_field_reader(field: str):
@@ -2729,6 +2939,10 @@ DATABASE_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
     "reference_data_match": (_column_match_reader("reference_data_match"), None),
     # ENRICHMENT-E3: the measured `datdba`, its own fact (see the reader).
     "database_owner": (_database_owner_fact_results, None),
+    # DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md: database_value_profiles, and database_quality_results with
+    # the latest database_quality_proposals.
+    "value_profile": (_value_profile_results, None),
+    "quality_checks": (_quality_checks_results, None),
 }
 
 #: Headline readers (Tier 1 stat tiles) — an additional, optional
@@ -2786,6 +3000,8 @@ DATABASE_ANALYSIS_HEADLINE_MAP: dict = {
     #: grain_determination/schema_conventions which have no top-level
     #: `explanation` at all.
     "db_fingerprint": _db_derived_explanation_headline("db_fingerprint"),
+    "value_profile": _value_profile_headline,
+    "quality_checks": _quality_checks_headline,
 }
 
 #: Slice 21a — level-aware headlines. A SEPARATE map, not a change to the

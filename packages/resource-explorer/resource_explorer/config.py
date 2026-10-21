@@ -303,6 +303,13 @@ class EgeriaConfig(BaseSettings):
     platform_url: str = Field(default="https://localhost:9443", alias="EGERIA_PLATFORM_URL")
     view_server: str = Field(default="qs-view-server", alias="EGERIA_VIEW_SERVER")
     engine_host: str = Field(default="engine-host", alias="EGERIA_ENGINE_HOST")
+    #: What Egeria's platform container can see (Files step 2): host-prefix -> container-prefix pairs, as a JSON object
+    #: or `host=container,host2=container2`. A pair set here wins over one read from `docker inspect` or the quickstart
+    #: compose file. Empty by default: the map then starts from those two sources, or stays empty (never guessed).
+    mount_map: str = Field(default="", alias="EGERIA_MOUNT_MAP")
+    #: The quickstart compose file whose `egeria-main` service lists the platform container's volumes (read only to
+    #: pre-fill the map; relative host paths are resolved against the file's own directory). Empty: not read.
+    quickstart_compose_file: str = Field(default="", alias="EGERIA_QUICKSTART_COMPOSE_FILE")
     #: The integration daemon a catalogue commit may ask to refresh the JDBC
     #: cataloguer (never to restart it). The scratch tests ran against this one.
     integration_daemon_server: str = Field(default="qs-integration-daemon", alias="EGERIA_INTEGRATION_DAEMON")
@@ -682,6 +689,33 @@ class SamplingSettings(BaseSettings):
         return value if isinstance(value, dict) else {}
 
 
+class ValueProfileSettings(BaseSettings):
+    """Bounds for the whole-table value profile (`postgres_value_profile`; DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md
+    §4), also applied by `run_quality_checks`. Slice 1 never samples: a table is profiled whole, or refused.
+
+    `max_table_rows`: a table whose `pg_class.reltuples` estimate is above this is not profiled, and is recorded as
+    `not_measured` with the reason. `statement_timeout_seconds`: the per-table `SET LOCAL statement_timeout`; a
+    timeout is `not_measured` (profile) or `error` (checks) with Postgres's words."""
+
+    max_table_rows: int = Field(default=5_000_000, alias="VALUE_PROFILE_MAX_TABLE_ROWS")
+    statement_timeout_seconds: int = Field(default=60, alias="VALUE_PROFILE_STATEMENT_TIMEOUT_SECONDS")
+
+    model_config = _ENV_FILE_CONFIG
+
+
+class QualityChecksSettings(BaseSettings):
+    """What a proposed quality check starts with (design §4). A person can change any single check's threshold
+    before accepting it; these decide only the proposal.
+
+    `row_ct_pct_default_threshold`: Row_Ct_Pct (row count within N percent of the baseline) is the one check
+    Resource Explorer proposes on its own initiative (the vendored catalogue has no default for it), so its
+    threshold is Resource Explorer's: 10 percent unless set."""
+
+    row_ct_pct_default_threshold: float = Field(default=10, alias="QUALITY_CHECKS_ROW_CT_PCT_DEFAULT_THRESHOLD")
+
+    model_config = _ENV_FILE_CONFIG
+
+
 class RuntimeConfig(BaseSettings):
     """Process-role runtime settings — see docs/process-model.md and
     docs/runtime-architecture-plan.md §2.
@@ -814,6 +848,8 @@ class ExplorerConfig(BaseSettings):
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     runs: RunsConfig = Field(default_factory=RunsConfig)
     sampling: SamplingSettings = Field(default_factory=SamplingSettings)
+    value_profile: ValueProfileSettings = Field(default_factory=ValueProfileSettings)
+    quality_checks: QualityChecksSettings = Field(default_factory=QualityChecksSettings)
 
     model_config = SettingsConfigDict(
         env_file=_ENV_FILES,

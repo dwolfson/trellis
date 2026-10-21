@@ -56,9 +56,11 @@ import {
   loadPurposes, purposesNow, purposePickerHtml, readPurposePicker, wirePurposePicker, purposesSummaryHtml,
 } from '/static/next/purposes.js';
 import { openDialog, closeCellDetail } from '/static/next/worklist.js';
+import { renderMarkdown } from '/static/next/markdown.js';
 import { saveCsv } from '/static/next/download.js';
 import { inPageConfirm } from '/static/next/confirm-dialog.js';
 import { cue } from '/static/next/stages/repo-manifest.js';
+import { mayOfferDelete, deleteButtonHtml, showRememberedStop, startDelete } from '/static/next/stages/investigation-delete.js';
 
 /** Brief Z3: a refusal by the zone check (403) is the no_access cue plus "not permitted", the reason on hover;
  *  any other failure keeps its own words. */
@@ -405,7 +407,9 @@ async function renderDetail(slug) {
       <button data-act="inv-edit" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">Edit</button>
       <button data-act="inv-reclassify" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60">Reclassify…</button>
       ${lifecycleButtons}
+      ${mayOfferDelete(inv, state.me) ? deleteButtonHtml() : ''}
     </div>
+    <div id="inv-delete-result"></div>
     <div id="inv-edit-form"></div>
     <div id="inv-reclass-form"></div>
 
@@ -472,6 +476,8 @@ async function loadJournal(inv, stale) {
     toSend = plan.to_send || 0;
   } catch { /* leaves the words off */ }
   if (stale()) return;
+  const bodies = await Promise.all(entries.map((e) => renderMarkdown(e.body)));
+  if (stale()) return;
   const promoted = Boolean(inv.egeria_project_guid);
   const where = promoted
     ? 'Your entries go to the Egeria Project as Notes when you publish them.'
@@ -484,12 +490,12 @@ async function loadJournal(inv, stale) {
       <span data-journal-publish-note class="text-caveat text-ink-muted"></span>
     </div>
     <p class="mb-s2 text-caveat text-ink-muted">${esc(where)}</p>
-    ${entries.length ? entries.map((e) => `
+    ${entries.length ? entries.map((e, i) => `
       <div class="mb-s2 rounded-sm border border-rule p-s2">
         <div class="text-caveat text-ink-muted">${esc(e.author)} · ${esc(String(e.written_at).slice(0, 10))}${
           e.compile_id ? ` · compile ${esc(String(e.compile_id).slice(0, 8))}` : ''}${
           words[e.id] ? ` · ${esc(words[e.id])}` : ''}</div>
-        <div class="whitespace-pre-wrap text-answer text-ink">${esc(e.body)}</div>
+        <div data-journal-body class="min-w-0 break-words text-answer text-ink">${bodies[i]}</div>
       </div>`).join('')
       : '<p class="text-caveat text-ink-muted">No entries yet. Use “add to investigation journal” under a chat answer.</p>'}`;
   host.querySelector('[data-act="inv-journal-publish"]')?.addEventListener('click', async (e) => {
@@ -807,6 +813,24 @@ function bindDetail(inv, members) {
       }
     });
   });
+
+  // Delete: the confirm and its choices, the call, and the cue that stays when Egeria stops it (investigation-delete.js).
+  showRememberedStop(inv, $('inv-delete-result'));
+  el.querySelector('[data-act="inv-delete"]')?.addEventListener('click', (e) => startDelete(inv, e.currentTarget, {
+    host: $('inv-delete-result'),
+    failurePopup,
+    back: async ({ note }) => {
+      // Gone: leave the page, stop treating it as current, and land on the list with one line saying what happened.
+      if (state.investigation === inv.slug) await setInvestigation('');
+      await refreshInvestigationsAndSidebar();
+      _detailSlug = null;
+      await renderInvestigation();
+      if (note) {
+        $('content').insertAdjacentHTML('afterbegin',
+          `<p data-inv-deleted-note class="mb-s2 max-w-[80ch] text-caveat text-state-ok">${note}</p>`);
+      }
+    },
+  }));
 
   el.querySelector('[data-act="inv-close"]')?.addEventListener('click', async () => {
     if (!(await inPageConfirm({ title: 'Close investigation?', message: `Close '${inv.display_name || inv.slug}'? Its findings stay queryable; it just drops out of the default scope. Nothing is deleted.`, confirmLabel: 'Close' }))) return;

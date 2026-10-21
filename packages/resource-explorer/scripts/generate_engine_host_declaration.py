@@ -319,7 +319,8 @@ def _registry_steps_for(entity_type: str) -> list:
     from resource_explorer import engine_host as eh
 
     return [s for s in eh.registry_steps().values()
-            if s.entity_type == entity_type and s.step_key not in eh.ENGINE_HOST_STEPS]
+            if s.entity_type == entity_type and s.step_key not in eh.ENGINE_HOST_STEPS
+            and s.step_key not in eh.HELD_FROM_DECLARATION]
 
 
 def _registry_step_header(entity_type: str, steps: list) -> str:

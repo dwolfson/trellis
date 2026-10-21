@@ -19,8 +19,9 @@
  */
 import {
   REPO_CHARTS, getChart, getDbChart, getDatabaseDiff, getDatabaseSurveys, getDatabaseViews,
-  getRepoDiff, renderMermaidSvg, getSurveyReport,
+  getRepoDiff, renderMermaidSvg, getSurveyReport, getFolderSurvey,
 } from '/static/re-api.js';
+import { reachLineHtml, folderResultsHtml } from '/static/next/fs-survey.js';
 import {
   state, esc, $, paneMessage, bindSubTabs, resourceHeaderHtml, bindResourceHeader,
   asFigure, allPointDates, chartIsStale, drawChart, apiEntityType,
@@ -978,8 +979,21 @@ export async function loadChartsPane() {
           data-understanding-error>Understanding could not be drawn: ${esc(err.message)}</p>`);
       }
     } else {
-      $('understanding-host').innerHTML = `<p class="max-w-[70ch] text-answer text-ink"
-        data-understanding-not-charted>${esc(FILE_SHARE_SENTENCE)}</p>`;
+      // Files step 2: a file system's folder survey reads the same whoever led it (Egeria's Folder Survey, or
+      // Resource Explorer's walk when only it could read the path), each naming its surveyor. No charts yet.
+      $('understanding-host').innerHTML = `<div id="fs-understanding-survey" class="mb-s3"></div>
+        <p class="max-w-[70ch] text-answer text-ink" data-understanding-not-charted>${esc(FILE_SHARE_SENTENCE)}</p>`;
+      try {
+        const view = await getFolderSurvey(slug);
+        const host = $('fs-understanding-survey');
+        if (host && slug === state.selectedSlug) {
+          host.innerHTML = `<div class="text-caps uppercase tracking-caps text-ink-muted">Folder survey</div>
+            ${reachLineHtml(view.reach)}${folderResultsHtml(view)}`;
+        }
+      } catch (err) {
+        const host = $('fs-understanding-survey');
+        if (host) host.innerHTML = `<p class="text-caveat text-state-warn" data-understanding-error>The folder survey could not be read: ${esc(err.message)}</p>`;
+      }
     }
     return;
   }

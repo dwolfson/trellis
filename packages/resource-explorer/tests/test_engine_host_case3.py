@@ -168,7 +168,9 @@ def test_request_types_equal_both_registries_and_guards_equal_the_mapping():
             assert guards == list(step_outcome.produced_guards(expected[rt])), rt
     engine_doc = _declared_types(ENGINE_DOC.read_text())
     assert not set(engine_doc) & set(declared), "a step is declared by two documents"
-    assert set(declared) | set(engine_doc) == set(expected)
+    held = {eh.request_type_for_step(k) for k in eh.HELD_FROM_DECLARATION}
+    assert set(declared) | set(engine_doc) == set(expected) - held
+    assert not held & set(declared), "a held step is declared"
     # Every registry request type is one RE's engine claims, mapped to its own step key.
     supported = eh.supported_request_types()
     assert {rt: supported[rt] for rt in expected} == expected
@@ -1011,7 +1013,14 @@ def test_the_definitions_route_takes_the_newer_of_the_two_and_drops_generator_pr
 
 # Owner decision 2026-10-16: sql_analysis re-runs the whole default database survey, so it stays out of every
 # definition on purpose (the Database Analysis Survey declares eight steps, not nine).
-NOT_IN_ANY_DEFINITION = {"sql_analysis": "re-runs the whole default database survey; left out by owner decision 2026-10-16"}
+NOT_IN_ANY_DEFINITION = {
+    "sql_analysis": "re-runs the whole default database survey; left out by owner decision 2026-10-16",
+    # DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md §6: these three get their own Survey Definition, "Postgres
+    # quality" (profile -> propose -> run), authored with the Egeria publishing change, not with the local steps.
+    "postgres_value_profile": "the Postgres quality Survey Definition is authored with Egeria publishing",
+    "propose_quality_checks": "the Postgres quality Survey Definition is authored with Egeria publishing",
+    "run_quality_checks": "the Postgres quality Survey Definition is authored with Egeria publishing",
+}
 
 
 def test_the_database_analysis_survey_declares_eight_steps_and_leaves_sql_analysis_out():
