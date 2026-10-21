@@ -25,6 +25,17 @@ PERSON_VERDICTS = ("accepted", "rejected")
 STATES = ("proposed", "accepted", "rejected", "retired", "not_established")
 
 
+#: Why an Accept is refused on a check whose latest proposal carries no parameters: an accept records the proposal's own
+#: parameters, and none means this profile did not select the check or could not evaluate it. Reject needs no parameters.
+CANNOT_ACCEPT_SENTENCE = ("this profile could not evaluate the check, so there are no parameters to accept; "
+                          "accept after a profile that measures it")
+
+
+def _accept_blocked(proposal: dict) -> str:
+    params = proposal.get("params_json")
+    return "" if isinstance(params, dict) and params else CANNOT_ACCEPT_SENTENCE
+
+
 class ReviewError(Exception):
     def __init__(self, status: int, message: str):
         super().__init__(message)
@@ -63,6 +74,9 @@ def _row(proposal: dict, verdict: dict | None, catalogue: dict) -> dict:
         "status": status,
         # a not-established check has no selector; every other one can be decided (again)
         "selectable": status != "not_established",
+        # Accept needs the proposal's own parameters; without them Accept is shown disabled with this sentence and
+        # Reject still works. The previous verdict stays in `verdict`/`status`.
+        "accept_blocked": "" if status == "not_established" else _accept_blocked(proposal),
         "verdict": ({"id": verdict.get("id"), "verdict": verdict.get("verdict"), "decided_by": verdict.get("decided_by"),
                      "created_at": verdict.get("created_at"), "note": verdict.get("note") or ""}
                     if verdict else None),
@@ -154,6 +168,8 @@ def record_verdict(registry, slug: str, check_key: str, verdict: str, *, decided
         raise ReviewError(404, f"no proposal {check_key!r} in the latest batch for {slug}")
     if proposal.get("state") == "not_established":
         raise ReviewError(409, f"not established, so it cannot be decided: {proposal.get('reason') or 'no reason recorded'}")
+    if verdict == "accepted" and _accept_blocked(proposal):
+        raise ReviewError(409, CANNOT_ACCEPT_SENTENCE)
     params = proposal.get("params_json") if isinstance(proposal.get("params_json"), dict) else {}
     written = registry.record_quality_verdict(slug, check_key, verdict, params, proposal_id=proposal["id"],
                                               note=note, decided_by=decided_by)

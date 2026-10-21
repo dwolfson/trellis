@@ -134,6 +134,28 @@ test('a not-established row has no selector and says why on the row', async () =
   assert.match(text(ne.querySelector('[data-qc-reason]')), /null_value_ct/);
 });
 
+test('an accept the profile cannot support is disabled with the reason on the row, Reject stays, the verdict stays', async () => {
+  const why = 'this profile could not evaluate the check, so there are no parameters to accept; accept after a profile that measures it';
+  const t = await setUp([check({ status: 'accepted', params: {}, accept_blocked: why,
+    verdict: { id: 1, verdict: 'accepted', decided_by: 'steward', created_at: '2026-10-20T09:00:00+00:00', note: '' } })]);
+  const g = await open(t, 'sales.orders');
+  const row = g.querySelector('[data-qc-row="sales.orders.placed::Required"]');
+  const acc = row.querySelector('[data-qc-verdict="accepted"]');
+  const rej = row.querySelector('[data-qc-verdict="rejected"]');
+  assert.ok(acc.disabled);
+  assert.equal(acc.getAttribute('title'), why);
+  assert.ok(!rej.disabled, 'Reject needs no parameters');
+  assert.match(text(row.querySelector('[data-qc-accept-blocked]')), /could not evaluate the check/);
+  assert.match(text(row), /accepted · you · 2026-10-20/, 'the earlier verdict stays visible');
+  assert.equal(acc.getAttribute('aria-pressed'), 'true');
+  acc.click();
+  await tick(10);
+  assert.equal(t.api.calls.posts.length, 0, 'a disabled Accept sends nothing');
+  rej.click();
+  await tick(10);
+  assert.deepEqual(t.api.calls.posts, [{ key: 'sales.orders.placed::Required', verdict: 'rejected' }]);
+});
+
 test('a press shows recording… at once, then the verdict only once it is read back', async () => {
   let release;
   const gate = new Promise((r) => { release = r; });

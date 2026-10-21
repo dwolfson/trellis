@@ -223,8 +223,8 @@ function setterButtons(node, me) {
  *  segment filled in ink, the other outlined, "×" back to undecided. `segs` is [[choice, label], ...];
  *  `segAttrs(choice)` and `clearAttrs` are the data-attributes the caller's handler reads; `off`/`dis` dim
  *  and disable it while a write is out or nobody is signed in. */
-export function selectorHtml({ own, explicit, off, dis, segs, ariaLabel, segAttrs, clearAttrs, clearTitle = 'back to undecided' }) {
-  const seg = ([choice, label]) => `<button type="button" ${segAttrs(choice)} ${dis} aria-pressed="${own === choice ? 'true' : 'false'}"
+export function selectorHtml({ own, explicit, off, dis, segs, ariaLabel, segAttrs, clearAttrs, clearTitle = 'back to undecided', segDis = null }) {
+  const seg = ([choice, label]) => `<button type="button" ${segAttrs(choice)} ${segDis ? segDis(choice, dis) : dis} aria-pressed="${own === choice ? 'true' : 'false'}"
     class="${own === choice ? 'bg-ink text-paper border border-ink' : 'bg-transparent text-ink border border-rule-strong'} ${off ? 'opacity-60' : 'cursor-pointer'} px-[6px] py-[1px] text-provenance">${label}</button>`;
   const clear = explicit ? `<button type="button" ${clearAttrs} ${dis}
     aria-label="clear the choice (undecided)" title="${esc(clearTitle)}"

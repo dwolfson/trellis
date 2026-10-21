@@ -70,6 +70,9 @@ export function verdictSelectorHtml(row, { me = '', pending = false } = {}) {
     own: row.status === 'accepted' || row.status === 'rejected' ? row.status : '', explicit: false, off, dis,
     segs: [['accepted', 'Accept'], ['rejected', 'Reject']], ariaLabel: 'Accept or reject this check',
     segAttrs: (choice) => `data-qc-act="verdict" data-qc-verdict="${choice}" data-qc-key="${key}"`,
+    // Accept alone is disabled (with the reason) when the profile gave no parameters to accept; Reject stays.
+    segDis: (choice, base) => (choice === 'accepted' && row.accept_blocked && !base
+      ? `disabled title="${esc(row.accept_blocked)}"` : base),
     clearAttrs: '',
   });
 }
@@ -93,7 +96,9 @@ export function checkRow(row, ui) {
       profile: esc(stamp(row.profile_surveyed_at)),
     },
     after: row.status === 'not_established' && row.reason
-      ? `<div data-qc-reason class="pb-[2px] pl-s2 text-provenance text-ink-muted">${esc(row.reason)}</div>` : '',
+      ? `<div data-qc-reason class="pb-[2px] pl-s2 text-provenance text-ink-muted">${esc(row.reason)}</div>`
+      : (row.accept_blocked
+        ? `<div data-qc-reason data-qc-accept-blocked class="pb-[2px] pl-s2 text-provenance text-ink-muted">${esc(row.accept_blocked)}</div>` : ''),
   };
 }
 

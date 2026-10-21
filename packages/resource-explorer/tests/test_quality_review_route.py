@@ -194,3 +194,78 @@ def test_run_checks_sees_exactly_the_check_accepted_through_the_route(client, pr
     assert set(rows) == {"sales.orders.placed::Required"}
     assert rows["sales.orders.placed::Required"]["status"] == "fail"             # 5 nulls measured against its threshold
     assert "skipped_by_design" not in out
+
+
+# ── a check this profile cannot evaluate has no parameters to accept ─────────
+
+KEY = "sales.orders.placed::Required"
+
+
+def _rewrite(registry, key, *, state, params):
+    """The latest batch as a re-profile that could not evaluate `key` would have left it (propose.py keeps the state
+    `accepted` / `suppressed` of a check with a verdict, with empty params)."""
+    rows = registry.query_detail_rows("database_quality_proposals", SLUG)
+    at = rows[0]["surveyed_at"]
+    for r in rows:
+        r.pop("id", None)
+        if r["check_key"] == key:
+            r["state"], r["params_json"] = state, params
+            r["reason"] = "accepted; this profile could not re-evaluate it" if state == "accepted" else "rejected earlier"
+    registry.write_detail_rows("database_quality_proposals", SLUG, at, rows=rows)
+
+
+def _history(registry, key=KEY):
+    return registry.list_quality_verdict_history(SLUG, key)
+
+
+@pytest.mark.parametrize("state", ["accepted", "suppressed"])
+def test_accept_on_a_row_with_no_parameters_is_409_and_writes_nothing(client, proposed, registry, state):
+    assert _press(client, KEY, "accepted").status_code == 200                   # a good accept, with parameters
+    good = registry.get_quality_verdicts(SLUG)[KEY]
+    _rewrite(registry, KEY, state=state, params={})
+    r = _press(client, KEY, "accepted")
+    assert r.status_code == 409 and "could not evaluate" in r.json()["detail"]
+    assert len(_history(registry)) == 1                                         # no new verdict row
+    assert registry.get_quality_verdicts(SLUG)[KEY]["params_json"] == good["params_json"] != {}
+
+
+def test_accept_with_no_parameters_and_no_earlier_verdict_is_refused_too(client, proposed, registry):
+    _rewrite(registry, KEY, state="suppressed", params={})
+    assert _press(client, KEY, "accepted").status_code == 409
+    assert _history(registry) == []
+
+
+def test_reject_on_a_row_with_no_parameters_is_recorded(client, proposed, registry):
+    assert _press(client, KEY, "accepted").status_code == 200
+    _rewrite(registry, KEY, state="accepted", params={})
+    r = _press(client, KEY, "rejected")
+    assert r.status_code == 200 and r.json()["recorded"] is True
+    assert registry.get_quality_verdicts(SLUG)[KEY]["verdict"] == "rejected"
+    assert len(_history(registry)) == 2
+
+
+def test_the_read_marks_such_a_row_not_acceptable_with_the_reason_and_keeps_the_verdict(client, proposed, registry):
+    from resource_explorer.quality_review import CANNOT_ACCEPT_SENTENCE
+
+    assert _press(client, KEY, "accepted").status_code == 200
+    _rewrite(registry, KEY, state="accepted", params={})
+    rows = _rows(client)
+    row = rows[KEY]
+    assert row["accept_blocked"] == CANNOT_ACCEPT_SENTENCE and row["selectable"] is True      # Reject is still offered
+    assert row["status"] == "accepted" and row["verdict"]["verdict"] == "accepted"            # the verdict stays visible
+    other = rows["sales.orders.order_id::Unique"]
+    assert other["accept_blocked"] == ""
+    ne = [r for r in rows.values() if r["status"] == "not_established"]
+    assert ne and all(r["accept_blocked"] == "" and r["selectable"] is False for r in ne)
+
+
+def test_a_403_from_the_access_check_writes_nothing(client, proposed, registry, monkeypatch):
+    from resource_explorer.workflows import curate as wc
+
+    monkeypatch.setattr(wc, "resource_access",
+                        lambda *a, **k: wc.AccessDecision(False, "zone x does not grant steward update in Egeria", "zone"))
+    r = _press(client, KEY, "accepted")
+    assert r.status_code == 403 and "does not grant" in r.json()["detail"]
+    assert registry.get_quality_verdicts(SLUG) == {} and _history(registry) == []
+    assert _press(client, KEY, "rejected").status_code == 403
+    assert _history(registry) == []
