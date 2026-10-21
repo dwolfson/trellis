@@ -19,6 +19,13 @@ def _fresh_log_state():
     ProjectRegistry._opened_logged.clear()
 
 
+# The start-up schema line ("registry: created N tables: …", "registry: no schema change",
+# "registry: schema change not checked (…)") is a separate line with its own tests
+# (test_registry_startup_schema_line.py); these tests count the open line only.
+def _is_schema_line(msg: str) -> bool:
+    return msg.startswith(("registry: created ", "registry: no schema change", "registry: schema change not checked"))
+
+
 def test_label_shared_default_is_marked_and_has_no_credentials():
     line = L.describe_registry(SHARED)
     assert line == "registry: localhost:5442/egeria_advisor (shared) schema=resource_explorer"
@@ -39,7 +46,7 @@ def test_label_sqlite_is_basename_only(tmp_path):
 def test_open_logs_one_info_line(tmp_path, caplog):
     caplog.set_level(logging.INFO)
     ProjectRegistry(database_url=f"sqlite:///{tmp_path}/a.db")
-    lines = [r for r in caplog.records if r.getMessage().startswith("registry: ")]
+    lines = [r for r in caplog.records if r.getMessage().startswith("registry: ") and not _is_schema_line(r.getMessage())]
     assert len(lines) == 1 and lines[0].levelno == logging.INFO
     assert lines[0].getMessage() == "registry: sqlite:///a.db"
 
@@ -50,7 +57,7 @@ def test_open_logs_once_per_registry_not_per_construction_or_query(tmp_path, cap
     reg = ProjectRegistry(database_url=url)
     ProjectRegistry(database_url=url)
     reg.list_projects() if hasattr(reg, "list_projects") else None
-    lines = [r for r in caplog.records if r.getMessage().startswith("registry: ")]
+    lines = [r for r in caplog.records if r.getMessage().startswith("registry: ") and not _is_schema_line(r.getMessage())]
     assert len(lines) == 1
 
 
