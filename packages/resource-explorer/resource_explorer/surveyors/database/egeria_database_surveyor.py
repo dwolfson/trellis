@@ -551,6 +551,13 @@ class EgeriaDatabaseSurveyor:
         # it here would be a wasted live write, not a fix -- see
         # _create_postgres_element_from_template's own docstring on why reuse
         # never re-runs deepCopy.
+        # The credentials reach the templates ONLY through the secrets store. Egeria's PostgreSQL
+        # Server/Database templates declare neither databaseUserId nor databasePassword
+        # (PostgresPlaceholderProperty.getPostgres{Server,Database}PlaceholderPropertyTypes) and the shipped
+        # content pack carries no ~{databaseUserId}~/~{databasePassword}~, so a plaintext pair would be
+        # discarded by Egeria and give the element no credentials. **Decision (project owner, 2026-10-21):**
+        # "drop the fallback if it isn't useful" -- on a failed save nothing credential-bearing is sent; the
+        # element is created without credentials and the failure is logged.
         secret_placeholders: dict = {}
         if not server_guid or not db_guid_lookup:
             secrets_collection_name, secrets_store_path = self._save_database_secret(
@@ -561,6 +568,9 @@ class EgeriaDatabaseSurveyor:
                     "secretsCollectionName": secrets_collection_name,
                     "secretsStorePathName": secrets_store_path,
                 }
+            else:
+                log.warning(f"Database {db_entity.slug!r}: secrets-store save failed; element created "
+                            "without credentials, so Egeria's native survey cannot connect")
 
         if not server_guid:
             try:
@@ -570,14 +580,15 @@ class EgeriaDatabaseSurveyor:
                         "serverName": server_name,
                         "hostIdentifier": egeria_host,
                         "portNumber": str(db_entity.port),
-                        "databaseUserId": db_user,
+                        # Declared by the server template (resourceName) and supplied by nothing: it would
+                        # stay a literal ~{resourceName}~ on the element.
+                        "resourceName": server_name,
                         # The server's OWN description: the rehearsal (2026-10-05) found the
                         # server element carrying the DATABASE's description.
                         "description": f"PostgreSQL server at {egeria_host}:{db_entity.port}",
                         # A second placeholder nothing supplied: it stayed as a literal
                         # `~{versionIdentifier}~` on the server element.
                         "versionIdentifier": "not recorded",
-                        "databasePassword": db_pwd,
                         **secret_placeholders,
                     },
                 )
@@ -599,7 +610,6 @@ class EgeriaDatabaseSurveyor:
                         "serverName": server_name,
                         "hostIdentifier": egeria_host,
                         "portNumber": str(db_entity.port),
-                        "databaseUserId": db_user,
                         "description": db_entity.description or f"PostgreSQL database {db_entity.database_name}",
                         # The template's description placeholder is
                         # `databaseDescription`, not `description` (scratch test
@@ -610,7 +620,6 @@ class EgeriaDatabaseSurveyor:
                         # because RE keeps no PostgreSQL version for the database.
                         "databaseDescription": db_entity.description or f"PostgreSQL database {db_entity.database_name}",
                         "versionIdentifier": "not recorded",
-                        "databasePassword": db_pwd,
                         **secret_placeholders,
                     },
                 )
