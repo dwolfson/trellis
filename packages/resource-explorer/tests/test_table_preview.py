@@ -1018,3 +1018,28 @@ class TestOneNewRevealPerRequest:
                             lambda request: {"user_id": "mandy", "exp": 4102444800})
         _hold(env)
         assert _preview(env, reveal=["email", "note"]).status_code == 422
+
+
+class TestRecordInEgeriaHook:
+    """`record_in_egeria` is a named extension point: by default it makes no Egeria call and reports a plain state."""
+
+    def test_default_hook_makes_no_egeria_call_and_mutates_nothing(self):
+        import copy
+        import socket
+        entry = {"id": 7, "operation": "preview", "ts": "2026-10-20T00:00:00Z"}
+        before = copy.deepcopy(entry)
+        with mock.patch.object(socket, "create_connection", side_effect=AssertionError("network call")), \
+                mock.patch.object(socket.socket, "connect", side_effect=AssertionError("network call")):
+            out = tp.record_in_egeria(entry)
+        assert out == {"state": "not_built"} and entry == before
+
+    def test_hook_state_is_reported_as_a_state_never_as_success(self, env):
+        _hold(env)
+        out = _preview(env).json()
+        assert out["egeria"]["state"] == "not_built" and out["egeria"]["state"] not in ("recorded", "ok", "success")
+        assert out["recorded"]["by"] == "RE"            # RE's own audit row is the record
+
+    def test_hook_doc_states_it_is_an_extension_point(self):
+        for text in (tp.__doc__, tp.record_in_egeria.__doc__):
+            flat = text.replace("\n", " ").lower()
+            assert "hook" in flat and "writes nothing to egeria" in flat

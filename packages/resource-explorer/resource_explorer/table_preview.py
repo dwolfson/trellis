@@ -19,8 +19,12 @@ a column the profile never read is masked, and one it read but could not decide 
 **Audit, RE side.** Each preview and each reveal writes one `activity_log` row (who, the database user, which table,
 when, how many rows, which columns were masked and revealed: column NAMES, never values) through the existing
 activity write path, BEFORE the rows are returned, and the "recorded" the header shows is read back from that row. If
-RE cannot record it, the rows are not shown. Egeria's record is not built (an open question for the architect, Mandy
-note Q5): `record_in_egeria` is the named seam, and the header says so as a plain state.
+RE cannot record it, the rows are not shown.
+
+**`record_in_egeria` is a named extension point (a hook), not a gap to fill here.** Today it writes NOTHING to Egeria:
+a central data-access audit is another service's job (owner and Mandy, Q5), and RE's own audit row above is the
+record. A deployment may supply an implementation that sends the entry to a central audit service; the header shows
+what the hook returns as a plain state ("Egeria record not built yet"), never as success.
 """
 from __future__ import annotations
 
@@ -248,13 +252,14 @@ def _cell(value):
 # ── the audit row ───────────────────────────────────────────────────────────────────────────────────────────────
 
 def record_in_egeria(entry: dict) -> dict:
-    """THE SEAM for Egeria's central record of a preview or reveal.
+    """HOOK (named extension point): where a deployment sends a preview or reveal to a central audit service.
 
-    NOT BUILT: which element or relationship carries "who previewed which table, when, how many rows, which columns
-    were revealed" is an open question for the architect (ASK-DESIGNER-TABLE-PREVIEW-2026-10-19, "For the
-    architect"; Mandy note Q5). The owner ruled that a preview runs whether or not Egeria can take its record, so
-    when this is built it must queue through the outbox and never block the rows. `entry` is the RE activity row
-    (no values). Returns the state the header shows.
+    Today it writes nothing to Egeria and makes no call. RE's own `activity_log` row (`_record_in_re`) is the record,
+    because a central data-access audit is someone else's job (owner and Mandy, Q5). A deployment may replace this
+    with an implementation that sends `entry` (the RE activity row; column names, never values) to such a service. An
+    implementation must not block or withhold the rows: the owner ruled that a preview runs whether or not a central
+    record can be taken, so it should queue through the outbox. Returns the state the header shows; the default is
+    `{"state": "not_built"}`, shown as a plain state, never as "recorded" or any success.
     """
     return {"state": "not_built"}
 
