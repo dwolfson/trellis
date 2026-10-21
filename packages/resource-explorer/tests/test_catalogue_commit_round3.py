@@ -145,7 +145,9 @@ class FakeAssetMaker:
         return self.reports[qn]
 
     def get_asset_by_guid(self, guid, body=None, output_format=None):
-        return {"reportedAnnotations": [{"elementHeader": {"guid": g}, "properties": {"qualifiedName": q}}
+        # The shape Egeria answers (RelatedMetadataElementSummary), which the read-back reads names out of.
+        return {"reportedAnnotations": [{"relatedElement": {"elementHeader": {"guid": g},
+                                                            "properties": {"qualifiedName": q}}}
                                         for q, g in self.annotations.items()]}
 
 

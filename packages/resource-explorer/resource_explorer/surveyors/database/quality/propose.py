@@ -34,6 +34,10 @@ from resource_explorer.surveyors.database.quality.catalogue import (
     not_established_inputs,
 )
 
+#: What a run of this step leaves on the database in Egeria (design: a dispatched step never makes an empty report).
+CHECK_NAME = "quality_proposals"
+ITEM_KEY = "proposals"
+
 PROPOSALS_TABLE = "database_quality_proposals"
 PROFILE_TABLE = "database_value_profiles"
 ANALYSIS_STEP = "propose_quality_checks"
@@ -83,7 +87,57 @@ class _Batches:
         return any(key not in self.keys(b) for b in self.batches if b > since)
 
 
-def run_propose(registry, slug: str, *, row_ct_pct_threshold: float, surveyed_at: str | None = None) -> dict:
+def build_proposal_annotation(slug: str, *, run_id: str, proposed_ct: int, columns_profiled: int,
+                              accepted_ct: int = 0, suppressed_ct: int = 0, not_established_ct: int = 0,
+                              review_link: str = ""):
+    """The ONE annotation a run of `propose_quality_checks` leaves on the database. Pure.
+
+    N > 0 proposed: a `RequestForActionAnnotation`, "review N proposed quality checks in Resource Explorer", carrying
+    the count, the run id and RE's link to the review place (`review_link`, empty when `RE_PUBLIC_URL` is not
+    configured: the key is then left out, never a guessed localhost).
+    0 proposed: a `ResourceMeasureAnnotation`, "0 checks proposed · N columns profiled · no selection rule matched".
+    That sentence is the design's and is kept whenever no rule left a check standing; if accepted or suppressed
+    checks remain the tail names them rather than claim no rule matched, and checks whose rule could not be
+    evaluated (not established) are counted after it."""
+    from resource_explorer.surveyors.survey_report import RequestForActionAnnotation, ResourceMeasureAnnotation
+
+    counts = {"proposedChecks": str(proposed_ct), "columnsProfiled": str(columns_profiled),
+              "acceptedChecks": str(accepted_ct), "suppressedChecks": str(suppressed_ct),
+              "notEstablishedChecks": str(not_established_ct)}
+    if proposed_ct > 0:
+        # The design's words, verbatim, whatever N is.
+        request = f"review {proposed_ct} proposed quality checks in Resource Explorer"
+        detail = {"runId": run_id, **counts}
+        if review_link:
+            detail["reviewLink"] = review_link
+        return RequestForActionAnnotation(
+            summary=f"{proposed_ct} quality checks proposed for {slug}",
+            analysis_step=ANALYSIS_STEP, annotation_type_name="Proposed Quality Checks",
+            check_name=CHECK_NAME, item_key=ITEM_KEY, label="proposed",
+            action_requested=request, action_target_name=slug,
+            explanation=(f"Resource Explorer proposed {proposed_ct} quality checks in run {run_id}. "
+                         + (f"Review them at {review_link}." if review_link else
+                            "Review them in Resource Explorer's Curate tab for this database.")),
+            additional_properties=detail)
+    standing = [f"{n} {word}" for n, word in ((accepted_ct, "accepted"), (suppressed_ct, "suppressed")) if n]
+    # The design's sentence stands whenever no rule left a check standing. If one did (an accepted or a suppressed
+    # check), "no selection rule matched" would be false, so the tail names them instead. A check whose rule could not
+    # be evaluated is added in either case, as a count the reader can see.
+    tail = "no selection rule matched" if not standing else f"no new check to propose ({', '.join(standing)})"
+    if not_established_ct:
+        tail += f" · {not_established_ct} not established"
+    summary = f"0 checks proposed · {columns_profiled} columns profiled · {tail}"
+    return ResourceMeasureAnnotation(
+        summary=summary, analysis_step=ANALYSIS_STEP, annotation_type_name="Proposed Quality Checks",
+        check_name=CHECK_NAME, item_key=ITEM_KEY, label="measured",
+        explanation=summary,
+        resource_properties={"runId": run_id, **counts},
+        additional_properties={"producingStep": ANALYSIS_STEP, "resultState": "measured", "measuredAt": run_id,
+                               "producingRun": run_id})
+
+
+def run_propose(registry, slug: str, *, row_ct_pct_threshold: float, surveyed_at: str | None = None,
+                review_link: str = "") -> dict:
     surveyed_at = surveyed_at or datetime.now(UTC).isoformat()
     profile = registry.query_detail_rows(PROFILE_TABLE, slug)
     if not profile:
@@ -175,7 +229,12 @@ def run_propose(registry, slug: str, *, row_ct_pct_threshold: float, surveyed_at
         if row["state"] == "not_established":
             path = f"{row['schema_name']}.{row['table_name']}" + (f".{row['column_name']}" if row["column_name"] else "")
             not_established.setdefault(path, []).append({"test_type": row["test_type"], "reason": row["reason"]})
-    return {"quality_proposals": {
+    columns_profiled = sum(1 for r in profile if r.get("state") == "measured")
+    annotation = build_proposal_annotation(
+        slug, run_id=surveyed_at, proposed_ct=states.get("proposed", 0), columns_profiled=columns_profiled,
+        accepted_ct=states.get("accepted", 0), suppressed_ct=states.get("suppressed", 0),
+        not_established_ct=states.get("not_established", 0), review_link=review_link)
+    return {"annotations": [annotation], "quality_proposals": {
         "surveyed_at": surveyed_at,
         "state": "measured",
         "profile_surveyed_at": profile_surveyed_at,

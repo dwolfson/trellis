@@ -260,6 +260,11 @@ def build_annotation_props(ann, qualified_name: str) -> dict:
         score = getattr(ann, "quality_score", None)
         if score is not None:
             props["qualityScore"] = int(score)
+        # AnnotationProperties.sampleSize (long): the records the check read, sent only where known (0 is a real
+        # count of an empty table, and is sent; None is not known, and is not).
+        sample = getattr(ann, "sample_size", None)
+        if sample is not None:
+            props["sampleSize"] = int(sample)
         ap = getattr(ann, "additional_properties", None) or {}
         if ap and (dimension or description or score is not None):
             props["additionalProperties"] = to_string_map(ap)

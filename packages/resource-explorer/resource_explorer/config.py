@@ -691,15 +691,15 @@ class SamplingSettings(BaseSettings):
 
 class ValueProfileSettings(BaseSettings):
     """Bounds for the whole-table value profile (`postgres_value_profile`; DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md
-    §4), also applied by `run_quality_checks`. Slice 1 never samples: a table is profiled whole, or refused.
+    §4) and for `run_quality_checks`. Slice 1 never samples: a table is profiled whole, or not at all, and there is
+    NO size cap (owner, DESIGN-QUALITY-AT-SCALE-AND-TESTGEN.md 2.3).
 
-    `max_table_rows`: a table whose `pg_class.reltuples` estimate is above this is not profiled, and is recorded as
-    `not_measured` with the reason. `statement_timeout_seconds`: the per-table `SET LOCAL statement_timeout`; a
-    timeout is `not_measured` (profile) or `error` (checks) with Postgres's words. `table_budget_seconds`: the time one
-    table's profile may take in total, across its chunks (owner, 2026-10-21: 5 minutes per table); past it the table
-    is `not_measured` as "profile incomplete", never partly counted."""
+    `table_budget_seconds`: the one bound on a table's profile, the total time across its chunks (owner, 2026-10-21:
+    5 minutes per table). Each chunk's statement timeout is what is left of it, so a chunk may take any time inside
+    the budget; past it the table is `not_measured` as "profile incomplete", never partly counted.
+    `statement_timeout_seconds`: the `SET LOCAL statement_timeout` of each QUALITY CHECK statement (`run_checks`); a
+    timeout is an `error` result with Postgres's words. The profile does not read it."""
 
-    max_table_rows: int = Field(default=5_000_000, alias="VALUE_PROFILE_MAX_TABLE_ROWS")
     statement_timeout_seconds: int = Field(default=60, alias="VALUE_PROFILE_STATEMENT_TIMEOUT_SECONDS")
     table_budget_seconds: int = Field(default=300, alias="VALUE_PROFILE_TABLE_BUDGET_SECONDS")
 

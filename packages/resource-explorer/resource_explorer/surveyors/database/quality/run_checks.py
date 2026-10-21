@@ -15,17 +15,17 @@ measure itself is read and mapped:
       that filters this account
     fails, severity error / warning / info     -> fail / warning / logged
     satisfies the condition                    -> pass
-    table over the row ceiling, of unknown     -> not_measured (`value_profile.refusal`, shared with the profile)
-      size, a partitioned parent or not a table
+    a partitioned parent or not a table        -> not_applicable (`value_profile.refusal`, shared with the profile;
+                                                  there is no size cap: a large table is read whole)
     parameter that does not validate           -> not_established, quoting the value
     column or table gone from the inventory    -> not_established ("... no longer in inventory")
 
 **Egeria.** Accepted checks are not yet published as DataQualityRules (Publish is a later change), so every
-check runs from its verdict row and is labelled `rule_source = unpublished`. Each check that reached a conclusion
+check runs from its verdict row and is labelled `rule_source = unpublished`. Each check that was evaluated
 is also returned as one `QualityCheckAnnotation` (`quality_annotations`; Egeria's QualityAnnotation), which the
-database publish turns into annotations on the run's SurveyReport. A check that did not reach one (not
-established, error, not permitted, not measured) is a result row, not an annotation: nothing is published for what
-was not measured. When Publish lands, the rule read
+database publish turns into annotations on the run's SurveyReport. The outcome is a state word on every one; only a
+check that reached a conclusion has a `qualityScore` (a check that did not conclude is published too, with none, so
+a 0 never reads as failed). When Publish lands, the rule read
 from Egeria overrides the verdict's threshold, operator and severity here (design §6's table).
 
 The baseline is the last ACCEPTED one, never the current profile, so a scheduled run of this step on its own is
@@ -179,7 +179,7 @@ def run_quality_checks(
             facts = read_table_facts(conn)
             for (schema, table), checks in sorted(runnable.items()):
                 refused = refusal(tables.get((schema, table)) or {}, (facts or {}).get((schema, table)),
-                                  facts is not None, bounds)
+                                  facts is not None)
                 if refused:
                     for check in checks:
                         check["row"].update(status=_REFUSED_STATUS[refused[0]], reason=refused[1])
@@ -202,44 +202,65 @@ def run_quality_checks(
     }, "quality_annotations": build_quality_annotations(results, catalogue)}
 
 
+#: A check's result status -> the state word its QualityAnnotation carries (design: passed, failed, not_established,
+#: not_measured, not_permitted, error). A warning or a logged result is a check that did not hold, at its severity.
+CHECK_STATE = {"pass": "passed", "warning": "failed", "fail": "failed", "logged": "failed",
+               "not_established": "not_established", "not_measured": "not_measured",
+               "not_permitted": "not_permitted", "error": "error"}
+
+
 def build_quality_annotations(results: list[dict], catalogue: dict | None = None) -> list:
-    """One QualityCheckAnnotation (Egeria `QualityAnnotation`) per check that reached a conclusion, in check-key
-    order. Pure: no registry, no Egeria. The dimension is the ODCS word for the test type's TestGen dimension; the
-    score is the pass rate of one check in percent (100 held, 0 did not), as Egeria's own producer scores it."""
+    """One QualityCheckAnnotation (Egeria `QualityAnnotation`) per EVALUATED check, whatever its outcome, in
+    check-key order. Pure: no registry, no Egeria.
+
+    The outcome is a state word (`CHECK_STATE`) in `additionalProperties.checkState`, with the reason sentence beside
+    it. Only a check that reached a conclusion carries a `qualityScore`: the pass rate of one check in percent (100
+    held, 0 did not), as Egeria's own producer scores it. A check that did not conclude has NO score, because 0
+    would read as failed."""
     from resource_explorer.surveyors.survey_report import QualityCheckAnnotation
 
     catalogue = catalogue or load_catalogue()
     out: list = []
     for row in results:
-        if row["status"] not in CONCLUDED:
-            continue
-        test_type = catalogue[row["test_type"]]
-        path = ".".join(p for p in (row["schema_name"], row["table_name"], row["column_name"]) if p)
-        passed = row["status"] == "pass"
+        state = CHECK_STATE.get(row["status"], "error")
+        concluded = row["status"] in CONCLUDED
+        test_type = catalogue.get(row["test_type"]) if row["test_type"] else None
+        path = ".".join(p for p in (row["schema_name"], row["table_name"], row["column_name"]) if p) or row["check_key"]
         limit = (row.get("threshold_values_json") or [None])[0]
-        description = (f"{row['status']}: {row['reason']}. Severity {row['severity']}; "
-                       f"the check fails when {test_type.measure_uom or 'the measure'} {test_type.test_operator} "
-                       f"{limit}.")
+        reason = row["reason"] or "no reason recorded"
+        if concluded and test_type is not None:
+            description = (f"{state}: {reason}. Severity {row['severity']}; "
+                           f"the check fails when {test_type.measure_uom or 'the measure'} "
+                           f"{test_type.test_operator} {limit}.")
+        else:
+            description = f"{state}: {reason}"
         detail = {
-            "checkKey": row["check_key"], "testType": row["test_type"], "schema": row["schema_name"],
+            "checkKey": row["check_key"], "checkState": state, "checkStateReason": reason,
+            "testType": row["test_type"], "schema": row["schema_name"],
             "table": row["table_name"], "column": row["column_name"], "status": row["status"],
             "severity": row["severity"], "measure": row["measure"], "recordCount": row["record_ct"],
             "comparisonOperator": row["comparison_operator"], "threshold": limit,
             "ruleSource": row["rule_source"], "ruleGuid": row["rule_guid"],
             "baselineProfileSurveyedAt": row["baseline_profile_surveyed_at"], "ranAs": row["ran_as"],
         }
+        name = test_type.name_short if test_type is not None else (row["test_type"] or "Quality check")
         out.append(QualityCheckAnnotation(
-            summary=f"{test_type.name_short} on {path}: {row['status']}",
+            summary=f"{name} on {path}: {state}",
             analysis_step=ANALYSIS_STEP,
             annotation_type_name=ANNOTATION_TYPE_NAME,
             check_name="quality_check",
             item_key=row["check_key"],
-            label=row["status"],
+            label=state,
+            confidence=100 if concluded else 0,
             explanation=(f"Run by Resource Explorer from the vendored TestGen test type {row['test_type']} "
-                         f"({test_type.name_short}); the measure was read from the database, not estimated."),
-            quality_dimension=egeria_dimension(test_type.dimension),
+                         f"({test_type.name_short}); the measure was read from the database, not estimated."
+                         if concluded and test_type is not None else
+                         f"Evaluated by Resource Explorer, and not concluded ({state}): {reason}"),
+            quality_dimension=egeria_dimension(test_type.dimension) if test_type is not None else "",
             quality_description=description,
-            quality_score=100 if passed else 0,
+            quality_score=(100 if row["status"] == "pass" else 0) if concluded else None,
+            sample_size=row["record_ct"] if isinstance(row["record_ct"], int) else None,
+            schema_name=row["schema_name"], table_name=row["table_name"], column_name=row["column_name"],
             additional_properties={k: v for k, v in detail.items() if v not in (None, "")},
         ))
     return out

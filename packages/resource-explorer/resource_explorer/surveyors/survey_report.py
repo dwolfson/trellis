@@ -239,13 +239,26 @@ class QualityScoreAnnotation(Annotation):
 class QualityCheckAnnotation(Annotation):
     """One evaluated data quality check, as Egeria's own `QualityAnnotationProperties` (type `QualityAnnotation`,
     superclass DataFieldAnnotation): `qualityDimension` (String, an ODCS dimension word), `qualityDescription`
-    (String) and `qualityScore` (int). Egeria's own producer (LovelaceOpenLineageDataQualitySummaryService) sets the
-    score as a pass rate in percent; for one check that is 100 (it held) or 0 (it did not). The check's own detail
-    (test type, measure, threshold, status, rule source) rides in `additional_properties`, which the bean keeps."""
+    (String), `qualityScore` (int) and, from AnnotationProperties, `sampleSize` (the record count the check read).
+    Egeria's own producer (LovelaceOpenLineageDataQualitySummaryService) sets the score as a pass rate in percent; for
+    one check that is 100 (it held) or 0 (it did not).
+
+    `quality_score` is None for a check that did not reach a conclusion (not established, not measured, not permitted,
+    error): nothing is sent, because the bean's int would read an absent score as 0, and a 0 reads as "failed". The
+    outcome of EVERY evaluated check travels as a state word in `additional_properties` (`checkState`, with
+    `checkStateReason`): the bean has no status field (`annotationStatus` exists only on AnnotationReviewProperties).
+    The check's own detail (test type, measure, threshold, rule source) rides there too, which the bean keeps.
+
+    `schema_name`, `table_name`, `column_name` say which element the check describes; they are RE's, never sent as
+    properties: the publish uses them to link the annotation to that element (AssociatedAnnotation)."""
     annotation_type: AnnotationType = field(default=AnnotationType.QUALITY_SCORE, init=False)
     quality_dimension: str = ""
     quality_description: str = ""
     quality_score: int | None = None
+    sample_size: int | None = None
+    schema_name: str = ""
+    table_name: str = ""
+    column_name: str = ""
 
 
 @dataclass

@@ -4,12 +4,13 @@ DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md §4. One aggregate SELECT per table, 
 measure lines (`configdata/quality/testgen/postgresql/profile_measures.sql`) with each column's blocks chosen by
 its `general_type`. Results are stored in `database_value_profiles` under the catalogue's own column names.
 
-No sampling in slice 1: a table is profiled whole, or refused. Three bounds, all settings
-(`config.ValueProfileSettings`): a row ceiling judged by `pg_class.reltuples` (over it, the table is
-`not_measured` with the reason), and a statement timeout per query (a timeout or error is `not_measured` with
-Postgres's words; a permission error is `not_permitted`), and a time budget per TABLE (5 minutes, the total across
-its chunks: past it the whole table is `not_measured` with "profile incomplete · exceeded 5 min · counts not
-measured", every measure NULL, so no check is proposed for it). A view, materialized view or foreign table is
+No sampling in slice 1: a table is profiled whole, or not at all. There is NO size cap (owner, design 2.3): the one
+bound is a time budget per TABLE (`config.ValueProfileSettings.table_budget_seconds`, 5 minutes, the total across its
+chunks). Each chunk's statement timeout is whatever is left of that budget, so the budget is the effective bound: a
+chunk that needs 100 s inside it is measured. Past the budget the whole table is `not_measured` with "profile
+incomplete · exceeded 5 min · counts not measured", every measure NULL, so no check is proposed for it; an error
+other than running out of time (a privilege error is `not_permitted`, anything else `not_measured` with Postgres's
+words) is classified first, whatever the clock says. A view, materialized view or foreign table is
 `not_applicable`. Every column the inventory names gets a row; a column that was not profiled has every measure
 NULL, never zeros.
 """
@@ -148,7 +149,8 @@ def error_text(exc: Exception) -> str:
 
 @dataclass
 class ProfileBounds:
-    max_table_rows: int
+    #: The per-statement timeout of a QUALITY CHECK (`run_checks`). The value profile does not read it: its
+    #: statements are bounded by what is left of `table_budget_seconds`.
     statement_timeout_seconds: int
     #: The whole-table time budget (owner, 2026-10-21: "5 minutes per table"): the total across a table's chunks,
     #: not a timeout on each chunk. A table that has not finished in this time is "profile incomplete".
@@ -211,16 +213,15 @@ def read_table_facts(conn) -> dict[tuple[str, str], TableFacts] | None:
     return facts
 
 
-def refusal(info: dict, facts: TableFacts | None, catalog_read: bool, bounds: ProfileBounds
-            ) -> tuple[str, str] | None:
+def refusal(info: dict, facts: TableFacts | None, catalog_read: bool) -> tuple[str, str] | None:
     """(state, reason) when a table must not be read, else None. Shared by the profile and the checks, so both
     refuse the same tables for the same reasons:
 
     - not a table (view, materialized view, foreign table) -> not_applicable;
     - a partitioned parent -> not_applicable (its partitions are read; reading the parent would scan them twice);
     - row-level security would filter this account's view -> not_permitted (a count of some rows is not a count);
-    - size unknown (never analysed, and no stored count) -> not_measured: the scan is bounded, never open-ended;
-    - over the row ceiling -> not_measured."""
+
+    There is no size test: a large table is read whole, bounded by the time budget alone (owner, design 2.3)."""
     from resource_explorer.table_kinds import PARTITIONED_TABLE, is_table_type
 
     table_type = (info.get("table_type") or "").upper().replace("_", " ")
@@ -231,13 +232,6 @@ def refusal(info: dict, facts: TableFacts | None, catalog_read: bool, bounds: Pr
     if (facts is not None and facts.rls_filters) or (not catalog_read and info.get("has_row_security")):
         return "not_permitted", ("row-level security is on and this account does not bypass it, so its counts "
                                  "would cover only the rows it may see")
-    estimate = facts.estimate if facts is not None and facts.estimate is not None else info.get("row_count")
-    if estimate is None:
-        return "not_measured", ("row count unknown (the table has never been analysed and no count is stored): "
-                                "run ANALYZE so the row ceiling can be checked")
-    if int(estimate) > bounds.max_table_rows:
-        return "not_measured", (f"over the full-profile row ceiling ({int(estimate):,} > {bounds.max_table_rows:,}); "
-                                "slice 1 reads whole tables only, never a sample")
     return None
 
 
@@ -284,7 +278,7 @@ def run_value_profile(
         facts = read_table_facts(conn)
         for (schema, table), cols in sorted(by_table.items()):
             info = tables.get((schema, table)) or {}
-            refused = refusal(info, (facts or {}).get((schema, table)), facts is not None, bounds)
+            refused = refusal(info, (facts or {}).get((schema, table)), facts is not None)
             if refused:
                 state, reason = refused
                 rows.extend(_empty_row(schema, table, c, g, state, reason, ran_as) for c, g in cols)
@@ -292,16 +286,16 @@ def run_value_profile(
                 continue
             failures: list[tuple[str, str]] = []
             table_rows: list[dict] = []
-            # The per-table budget is the TOTAL across this table's chunks. Each chunk's statement timeout is
-            # capped at what is left of it, so one slow chunk cannot run past the budget on its own.
+            # The per-table budget is the TOTAL across this table's chunks, and it is the only time bound: each
+            # chunk's statement timeout is what is left of it (never a fixed per-statement figure that would cancel
+            # a 61 s chunk with four minutes to spare).
             started, exceeded = clock(), False
             for start in range(0, len(cols), COLUMNS_PER_QUERY):
                 remaining = bounds.table_budget_seconds - (clock() - started)
                 if remaining <= 0:
                     exceeded = True
                     break
-                chunk_bounds = replace(bounds, statement_timeout_seconds=max(
-                    1, min(bounds.statement_timeout_seconds, math.ceil(remaining))))
+                chunk_bounds = replace(bounds, statement_timeout_seconds=max(1, math.ceil(remaining)))
                 chunk = cols[start:start + COLUMNS_PER_QUERY]
                 sql, aliases = build_table_query(schema, table, chunk, run_date)
                 try:
@@ -310,10 +304,13 @@ def run_value_profile(
                     begin_read(conn, chunk_bounds)
                     result = conn.execute_query_isolated(sql, None)
                 except Exception as exc:
-                    if clock() - started >= bounds.table_budget_seconds:
+                    state, reason = classify_error(exc), error_text(exc)
+                    # The exception is classified FIRST: a privilege error that arrives after the budget is spent
+                    # is still "not permitted", never relabelled "profile incomplete". Only an error that is not
+                    # one of those, arriving with the budget spent, is the budget running out.
+                    if state != "not_permitted" and clock() - started >= bounds.table_budget_seconds:
                         exceeded = True
                         break
-                    state, reason = classify_error(exc), error_text(exc)
                     failures.append((state, reason))
                     table_rows.extend(_empty_row(schema, table, c, g, state, reason, ran_as) for c, g in chunk)
                     continue
@@ -359,9 +356,7 @@ def run_value_profile(
             "states": states,
             "tables_not_profiled": table_outcomes,
             "ran_as": ran_as,
-            "bounds": {"max_table_rows": bounds.max_table_rows,
-                       "statement_timeout_seconds": bounds.statement_timeout_seconds,
-                       "table_budget_seconds": bounds.table_budget_seconds},
+            "bounds": {"table_budget_seconds": bounds.table_budget_seconds},
         },
         "annotations": build_annotations(rows, table_outcomes),
     }

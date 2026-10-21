@@ -287,6 +287,9 @@ def _db_step_publish(monkeypatch, create_answers):
         GUID if k.get("property_name") == ["qualifiedName"] else MISS)
     s._asset_maker = _fake(AssetMaker)
     s._asset_maker.create_asset.return_value = "report-guid"
+    # The report as Egeria answers a read by GUID: the annotations that failed to create are not under it, so the
+    # read-back counts what is there (none), whatever the creates returned.
+    s._asset_maker.get_asset_by_guid.return_value = {"reportedAnnotations": []}
     s._discovery = _fake(DataDiscovery)
     s._discovery.create_annotation.side_effect = create_answers or [GUID]
     db = DatabaseEntity(slug="db", display_name="Shop", db_type="postgresql", host="h", port=5432, database_name="shop")

@@ -250,6 +250,9 @@ SPEC_ANALYSIS_SCOPE: dict[str, set[str]] = {
     },
     "DatabaseAssessmentSurvey": {"privilege_audit"},
     # Quality slice Q2: value profile -> propose -> run, authored once (DESIGN-QUALITY-AT-SCALE-AND-TESTGEN.md 2.2).
+    # No question in question_catalog.yaml names `value_profile` or `quality_checks` in its `answering.analysis_ids`
+    # (checked 2026-10-21), so this document carries no "Link Element To Scope" block. The day a question does, this
+    # scope picks it up and the committed document must be regenerated (tests/test_quality_q2_*).
     "DatabaseQualitySurvey": {"value_profile", "quality_checks"},
 }
 

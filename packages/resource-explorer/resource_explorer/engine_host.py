@@ -1859,6 +1859,15 @@ def _decide_steps(registry, target: dict, cancelled=None, on_publish=None, *, us
             # Case 3: a credentialed database step's results become annotations exactly as RE's own database
             # publish makes them (`annotations_from_step_outputs`, the code `publish_step_annotations` runs).
             annotations += _step_output_annotations(entity, step_outputs, _registry)
+            if not annotations:
+                # An empty survey-completed report says "ran, found nothing" about a step that built no result at
+                # all: never written. The step's own sentence (a declined step) is used when it gave one; this is
+                # the backstop for any registry step that returns nothing to report.
+                why = (f"{step_key} on {slug} built no annotation, so there is no survey report to write: an "
+                       "absence, not a finding")
+                published["outcome"] = _outcome(SURVEY_INVALID, f"Resource Explorer did not run {request_type}: {why}",
+                                                annotation_count=0, **report_extra)
+                raise NothingToPublish(why)
         else:
             records = [r for out in step_outputs if isinstance(out, dict)
                        for r in (out.get("step_annotations") or [])]
@@ -2043,8 +2052,14 @@ def _publish(registry, target: dict, annotations: list, extra: dict | None = Non
                         + (f" ({problem})" if problem else ""),
                         report_guid=report_guid, annotation_count=sent, **extra)
     governance = "" if extra["ownership"] else " (Ownership was not recorded on the report)"
+    # A QualityAnnotation's links to the columns and tables it describes (an element Egeria does not hold is said,
+    # not an error): "linked to N of M elements".
+    from resource_explorer.surveyors.database.egeria_database_surveyor import element_link_words
+
+    link_words = element_link_words(pub.get("element_links"))
+    linked = f" · {link_words}" if link_words else ""
     return _outcome(SURVEY_COMPLETED, f"Resource Explorer ran {request_type} on {slug}: survey report "
-                    f"{report_guid} with {sent} annotation(s){governance}.",
+                    f"{report_guid} with {sent} annotation(s) read back from Egeria{linked}{governance}.",
                     report_guid=report_guid, annotation_count=sent, **extra)
 
 

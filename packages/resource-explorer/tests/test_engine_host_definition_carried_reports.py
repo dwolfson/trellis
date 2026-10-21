@@ -30,8 +30,9 @@ def test_a_definition_step_with_carried_reports_runs_standalone_and_is_not_refus
     done = egeria.actions["ea-6"]["completion"]
     assert done["status"] == "ACTIONED" and done["guards"][0] == "survey-completed", done
     assert "not choosing one" not in done["message"]
-    assert not egeria.method_calls("get_asset_by_guid")           # no carried report was read
     [(report_guid, _body)] = egeria.reports()
+    # no carried report was read: the only read is the read-back of the report this run made
+    assert {c.args[0] for c in egeria.of("AssetMaker").get_asset_by_guid.call_args_list} <= {report_guid}
     texts = {}
     for r in egeria.relationships:
         if r["end1"] == report_guid and egeria.elements.get(r["end2"], {}).get("type") == "Annotation":

@@ -1287,18 +1287,29 @@ class SurveyDefinitionExecutor:
             # The stored flag agrees with the proof: no report guid, not published.
             published = bool(report_guid)
             if quality_proof and report_guid:
-                # The quality checks' words come from what landed (the GUIDs Egeria returned for the
-                # QualityAnnotations), never from the press: "N of M annotations in Egeria".
+                # The quality steps' words come from a READ of the report by GUID, never from the press and never
+                # from the GUIDs the creates returned: "N of M annotations in Egeria", N counted from the report's
+                # own reportedAnnotations against the M this publish sent. The stored flag and the words are
+                # derived from that one read-back, so they cannot disagree.
                 built, landed = quality_proof.get("built"), quality_proof.get("landed")
-                words = (f"{landed} of {built} annotations in Egeria" if landed is not None and built is not None
+                counted = landed is not None and built is not None
+                words = (f"{landed} of {built} annotations in Egeria" if counted
                          else "annotations in Egeria could not be counted")
-                if landed is not None and built is not None and landed == built and built > 0:
+                all_landed = counted and landed == built and built > 0
+                from resource_explorer.surveyors.database.egeria_database_surveyor import element_link_words
+
+                link_words = element_link_words(quality_proof.get("links"))
+                if link_words:
+                    words += f" · {link_words}"
+                governance = quality_proof.get("governance") or {}
+                if governance and not governance.get("ownership"):
+                    words += " · Ownership was not recorded on the report"
+                if all_landed:
                     publish_state = safe_publish_text(f"{publish_state} · {words}")
                 else:
                     publish_state = safe_publish_text(f"{PUBLISH_FAILED} · {words}")
-                    errors.append(f"Quality annotations did not all reach Egeria: {words}")
-                    if not landed:
-                        published = False
+                    errors.append(f"Annotations did not all reach Egeria: {words}")
+                published = bool(all_landed)
 
         # Parity G2 (PI-016/PI-018): say which source answered each step, and
         # for a credential override say which steps ran as that user; then
