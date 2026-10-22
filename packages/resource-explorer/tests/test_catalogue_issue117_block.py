@@ -57,6 +57,14 @@ def _default_state(monkeypatch):
     monkeypatch.delenv("RE_ISSUE_117_BLOCK_OFF", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_override_log(monkeypatch):
+    """A bad override is logged once per (value, reason) per process: production behaviour, kept on purpose. Start
+    each test with an empty memory, so a warning another test in the same run already logged cannot hide this one's
+    (the caplog assertions below would otherwise see ''). Monkeypatch restores the real set afterwards."""
+    monkeypatch.setattr(gw, "_logged_override_reasons", set())
+
+
 def sent_to_egeria(fake):
     """Every call that would change Egeria on the leave-out path."""
     return fake.ops("delete_element") + fake.ops("remove_catalog_target")
@@ -136,8 +144,10 @@ def test_the_named_slug_inside_the_window_passes_the_guard(monkeypatch):
 def test_known_negative_the_named_slug_after_expiry_is_refused(monkeypatch):
     override_for(monkeypatch, "db", minutes_ago=61)
     assert gw.issue_117_blocked("db") is True
+    assert gw.issue_117_override()[2].startswith("expired at ")
     override_for(monkeypatch, "db", minutes_ago=60)             # the boundary itself is expired
     assert gw.issue_117_blocked("db") is True
+    assert gw.issue_117_override()[2].startswith("expired at ")
 
 
 def test_another_slug_is_refused_while_the_override_is_set(monkeypatch):
@@ -158,14 +168,18 @@ def test_another_slug_is_refused_while_the_override_is_set(monkeypatch):
 def test_malformed_values_are_on_with_a_logged_reason(monkeypatch, caplog, value):
     monkeypatch.setenv("RE_ISSUE_117_BLOCK_OFF", value)
     assert gw.issue_117_blocked("db") is True and gw.issue_117_blocked("c") is True
+    slug, _expires, reason = gw.issue_117_override()
+    assert slug == "" and reason != "", "the refusal carries its reason in the return value"
     assert "archive-cascade block stays ON" in caplog.text
 
 
 def test_a_time_more_than_a_few_minutes_ahead_is_on_but_a_small_skew_passes(monkeypatch, caplog):
     override_for(monkeypatch, "db", minutes_ago=-30)
     assert gw.issue_117_blocked("db") is True and "in the future" in caplog.text
+    assert "in the future" in gw.issue_117_override()[2]
     override_for(monkeypatch, "db", minutes_ago=-2)
     assert gw.issue_117_blocked("db") is False
+    assert gw.issue_117_override()[0] == "db"
 
 
 def test_the_state_line_names_the_slug_and_the_expiry_or_says_on(monkeypatch):
