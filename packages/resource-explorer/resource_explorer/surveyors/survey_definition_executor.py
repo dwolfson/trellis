@@ -1184,6 +1184,7 @@ class SurveyDefinitionExecutor:
         not_recorded = ""
         declined = ""
         sign_in_expired = ""
+        sign_in_expired_partial = False
         # A caller-supplied `publisher` (the engine host, E4) IS the decision to publish: Egeria dispatched the
         # work and expects its report. It replaces the adapter's publish, and the run's publish words below
         # follow its proof (the report GUID it returns, or the error it raises) like any other publish.
@@ -1270,7 +1271,12 @@ class SurveyDefinitionExecutor:
                             slug, report_guid, not_recorded)
                 errors.append(f"Published to Egeria ({report_guid}) but not recorded locally: {not_recorded}")
             except Exception as exc:
-                if entity_type == "database":
+                if presser_hold.expired_during_publish(exc):
+                    # The presser's token aged out DURING the publish: the same words as a missing session, not
+                    # "publish failed". Some writes may already have been made as them; the run detail says so.
+                    sign_in_expired = presser_hold.SIGN_IN_EXPIRED_WORDS
+                    sign_in_expired_partial = True
+                elif entity_type == "database":
                     publish_error = safe_publish_text(
                         str(exc) or type(exc).__name__, self._run_secrets(entity, runner_kwargs))
                     log.error("Failed to publish results to Egeria: %s", publish_error)
@@ -1324,9 +1330,11 @@ class SurveyDefinitionExecutor:
             # The word follows the proof: no report, nothing written. It replaces whatever the branch above chose
             # (a database run's "publish failed · Egeria returned no report" would be a false account of this).
             publish_state, published = sign_in_expired, False
-        # Proof on screen: who Egeria says created the report, from ONE read of it by GUID, never from the identity
-        # this code believes it published as. '' = could not tell (said as nothing, not as "nobody").
-        published_as = presser_hold.read_published_by(report_guid) if report_guid else ""
+        publish_note = presser_hold.PARTIAL_WRITE_NOTE if sign_in_expired_partial else ""
+        # Proof on screen: who Egeria says created the report, from ONE read of it by GUID, made as the presser (inside
+        # `publishing_as_presser`, so a zone-restricted report is readable), never from the identity this code believes
+        # it published as. '' = could not read: the card says "creator not read", not "as nobody".
+        published_as = presser_hold.read_published_by_presser(report_guid) if report_guid else ""
 
         # Parity G2 (PI-016/PI-018): say which source answered each step, and
         # for a credential override say which steps ran as that user; then
@@ -1372,6 +1380,7 @@ class SurveyDefinitionExecutor:
                     **({"publish_waiting": publish_waiting} if publish_waiting else {}),
                     "egeria_report_guid": report_guid,
                     **({"published_as": published_as} if published_as else {}),
+                    **({"publish_note": publish_note} if publish_note else {}),
                     **({"publish_state": publish_state} if publish_state else {}),
                     # Whole-definition Prefect default (2026-09-28) — the
                     # /next pane's launchSurvey() status line names this
@@ -1411,6 +1420,7 @@ class SurveyDefinitionExecutor:
             "auto_ran_steps": sorted(auto_ran),
             "egeria_report_guid": report_guid,
             **({"published_as": published_as} if published_as else {}),
+            **({"publish_note": publish_note} if publish_note else {}),
             "engine_note": engine_note,
             "published": published,
             **({"publish_waiting": publish_waiting} if publish_waiting else {}),

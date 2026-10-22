@@ -894,12 +894,17 @@ async def run_survey_definition_route(entity_type: str, slug: str,
     params.publish_as_presser = bool(params.started_by_person)
     held = presser_hold.hold(run_id, params.started_by_person, getattr(pressed, "egeria_token", None))
     try:
+        target = {"entity_type": entity_type, "slug": slug, "params": params.to_dict()}
+        # Claim affinity: only this process (which holds the session) may claim the row while it is alive; non-secret.
+        held_by = presser_hold.held_by_for(run_id) if held else None
+        if held_by:
+            target["held_by"] = held_by
         registry.enqueue_run(
             "survey_definition_run",
             # Case 3, decision 5: RE's own Run coordinates the definition itself and creates no engine action; its
             # params say so (`started_by: re`, and who pressed), and the run's activity detail carries them to
             # Understanding.
-            {"entity_type": entity_type, "slug": slug, "params": params.to_dict()},
+            target,
             result_ref=activity_id, requested_by=requested_by(), run_id=run_id,
         )
     except BaseException:

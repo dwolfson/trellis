@@ -393,3 +393,220 @@ def test_nothing_in_the_source_writes_the_hold_anywhere_but_memory():
     assert not imported & {"sqlite3", "psycopg2", "json", "logging", "pickle", "shelve", "tempfile"}
     called = {getattr(n.func, "id", getattr(n.func, "attr", "")) for n in ast.walk(tree) if isinstance(n, ast.Call)}
     assert not called & {"open", "print", "getLogger", "dump", "dumps"}
+
+
+# ── fix round 1 (2026-10-21): claim affinity, repr, read as presser, release, expiry mid-publish ──────────────────
+
+HOLDER = {"pid": 222, "started_at": "Wed Oct 21 10:00:00 2026"}
+OTHER = {"pid": 111, "started_at": "Wed Oct 21 09:00:00 2026"}
+
+
+def _queued(registry, held_by=None, *, run_id=None):
+    target = {"entity_type": "database", "slug": "d", "params": _params(publish_as_presser=True)}
+    if held_by is not None:
+        target["held_by"] = held_by
+    return registry.enqueue_run("survey_definition_run", target, requested_by=PRESSER, run_id=run_id)
+
+
+@pytest.fixture
+def sqlite_registry(tmp_path):
+    from resource_explorer.registry import ProjectRegistry
+
+    return ProjectRegistry(db_path=str(tmp_path / "claim.db"))
+
+
+def _stamp(**over):
+    return {**HOLDER, "until": time.time() + 3600, **over}
+
+
+def test_a_second_live_process_skips_a_held_row_and_the_holder_claims_it(sqlite_registry, monkeypatch):
+    monkeypatch.setattr("resource_explorer.run_reconciler._is_alive", lambda owner: True)
+    run_id = _queued(sqlite_registry, _stamp())
+    assert sqlite_registry.claim_next_run("other-worker", OTHER) is None
+    assert sqlite_registry.get_run(run_id)["state"] == "queued"
+    claimed = sqlite_registry.claim_next_run("holder-worker", HOLDER)
+    assert claimed is not None and claimed["id"] == run_id
+
+
+def test_a_holder_whose_liveness_cannot_be_told_still_keeps_its_row_until_the_hold_ends(sqlite_registry, monkeypatch):
+    monkeypatch.setattr("resource_explorer.run_reconciler._is_alive", lambda owner: None)
+    _queued(sqlite_registry, _stamp())
+    assert sqlite_registry.claim_next_run("other-worker", OTHER) is None
+
+
+def test_a_dead_holders_row_is_claimable_and_ends_with_the_expired_words(sqlite_registry, monkeypatch):
+    monkeypatch.setattr("resource_explorer.run_reconciler._is_alive", lambda owner: False)
+    run_id = _queued(sqlite_registry, _stamp())
+    row = sqlite_registry.claim_next_run("other-worker", OTHER)
+    assert row is not None and row["id"] == run_id
+    record = {}
+    _stub_execute(monkeypatch, record)
+    run_queue.execute_run(row, sqlite_registry)
+    assert record["expired"] == SIGN_IN_EXPIRED_WORDS and "principal_in_publish" not in record   # no service-account write
+
+
+def test_a_row_whose_hold_has_ended_is_claimable_by_anyone(sqlite_registry, monkeypatch):
+    monkeypatch.setattr("resource_explorer.run_reconciler._is_alive", lambda owner: True)
+    _queued(sqlite_registry, _stamp(until=time.time() - 1))
+    assert sqlite_registry.claim_next_run("other-worker", OTHER) is not None
+
+
+def test_an_unpressed_row_is_claimable_by_anyone(sqlite_registry, monkeypatch):
+    monkeypatch.setattr("resource_explorer.run_reconciler._is_alive", lambda owner: True)
+    _queued(sqlite_registry, None)
+    assert sqlite_registry.claim_next_run("other-worker", OTHER) is not None
+
+
+def test_a_held_row_at_the_head_does_not_block_the_rows_behind_it(sqlite_registry, monkeypatch):
+    monkeypatch.setattr("resource_explorer.run_reconciler._is_alive", lambda owner: True)
+    held = _queued(sqlite_registry, _stamp())
+    free = sqlite_registry.enqueue_run("survey_definition_run", {"entity_type": "database", "slug": "e", "params": {}},
+                                       requested_by="someoneelse")
+    assert sqlite_registry.claim_next_run("other-worker", OTHER)["id"] == free
+    assert sqlite_registry.get_run(held)["state"] == "queued"
+
+
+def test_the_stamp_the_press_writes_is_the_process_identity_and_holds_no_token(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from resource_explorer.registry import DatabaseEntity, ProjectRegistry
+    from resource_explorer.run_reconciler import process_identity
+
+    registry = ProjectRegistry(db_path=str(tmp_path / "stamp.db"))
+    registry.register_database(DatabaseEntity(slug="mydb", display_name="My DB", db_type="postgresql", host="localhost",
+                                              port=5432, database_name="mydb"))
+    monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
+                        lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None)
+    monkeypatch.setattr(
+        "resource_explorer.a2a_auth.caller",
+        lambda: CallerIdentity(user_id=PRESSER, egeria_token=LIVE_TOKEN, auth_source="app-jwt", role="user"))
+    from resource_explorer.web.app import app
+
+    resp = TestClient(app).post("/api/survey-definitions/database/mydb/run",
+                                json={"survey_definition_ref": "GovActionProcess::Test"})
+    assert resp.status_code == 200, resp.text
+    stored = registry.get_run(resp.json()["run_id"])["target"]
+    held_by = json.loads(stored)["held_by"]
+    mine = process_identity()
+    assert (held_by["pid"], held_by["started_at"]) == (mine["pid"], mine["started_at"]) and held_by["until"] > time.time()
+    assert LIVE_TOKEN not in stored and "live-session-token" not in stored
+
+
+# ── the token is in no repr ─────────────────────────────────────────────────
+
+def test_no_identity_prints_the_token():
+    from resource_explorer.egeria_identity import EgeriaIdentity
+
+    caller = CallerIdentity(user_id=PRESSER, egeria_token=LIVE_TOKEN, auth_source="held-session")
+    identity = EgeriaIdentity(user_id=PRESSER, token=LIVE_TOKEN, password="pw-secret-9", kind="caller")
+    for text in (repr(caller), str(caller), repr(identity), str(identity), repr([caller, identity]),
+                 f"{caller!r} {identity!r}"):
+        assert LIVE_TOKEN not in text and "live-session-token" not in text and "pw-secret-9" not in text
+    assert caller.user_id == PRESSER and identity.token == LIVE_TOKEN        # still carried, just not printed
+
+
+# ── "published as" is read as the presser ───────────────────────────────────
+
+def test_the_creator_read_is_made_as_the_presser_and_unread_is_blank(monkeypatch):
+    seen = []
+    monkeypatch.setattr(presser_hold, "read_published_by", lambda guid: seen.append(current_principal()) or PRESSER)
+    presser_hold.hold("run-1", PRESSER, LIVE_TOKEN)
+    with _worker_as_daemon(), presser_hold.pressed_run("run-1", PRESSER):
+        assert presser_hold.read_published_by_presser("g") == PRESSER
+    assert len(seen) == 1 and (seen[0].kind, seen[0].user_id, seen[0].token) == ("caller", PRESSER, LIVE_TOKEN)
+    with _worker_as_daemon(), presser_hold.pressed_run("run-gone", PRESSER):         # session gone: cannot read
+        assert presser_hold.read_published_by_presser("g") == ""
+    assert presser_hold.read_published_by_presser("") == ""
+
+
+def test_the_executor_reads_the_creator_inside_the_presser_scope(no_write_refusal, monkeypatch):
+    seen = []
+    monkeypatch.setattr(presser_hold, "read_published_by", lambda guid: seen.append(current_principal().kind) or PRESSER)
+    presser_hold.hold("run-1", PRESSER, LIVE_TOKEN)
+    with _worker_as_daemon(), presser_hold.pressed_run("run-1", PRESSER):
+        result = _run_definition(lambda *a, **k: "report-guid-9")
+    assert seen == ["caller"] and result["published_as"] == PRESSER
+
+
+# ── the hold is released on every exit ──────────────────────────────────────
+
+def test_the_hold_is_released_when_the_row_has_no_handler(monkeypatch):
+    presser_hold.hold("run-1", PRESSER, LIVE_TOKEN)
+    row = {**_row("run-1", {}), "kind": "no_such_kind"}
+    assert run_queue.execute_run(row, MagicMock()).state == "failed"
+    assert presser_hold.take("run-1") is None
+
+
+def test_the_hold_is_released_when_a_person_action_has_no_requester():
+    presser_hold.hold("run-1", PRESSER, LIVE_TOKEN)
+    row = {**_row("run-1", {}), "kind": "curate_commit", "requested_by": ""}
+    assert run_queue.execute_run(row, MagicMock()).state == "failed"
+    assert presser_hold.take("run-1") is None
+
+
+@pytest.mark.parametrize("failing", ["mark_run_running", "set_activity_runner"])
+def test_the_hold_is_released_when_marking_the_run_running_fails(failing):
+    presser_hold.hold("run-1", PRESSER, LIVE_TOKEN)
+    registry = MagicMock()
+    getattr(registry, failing).side_effect = RuntimeError("registry unreachable")
+    row = {**_row("run-1", {"entity_type": "database", "slug": "d", "params": _params(publish_as_presser=True)}),
+           "result_ref": "act-1"}
+    with pytest.raises(RuntimeError):
+        run_queue.execute_run(row, registry)
+    assert presser_hold.take("run-1") is None
+
+
+def test_the_hold_is_released_when_the_queued_row_is_cancelled_before_a_claim(sqlite_registry):
+    run_id = _queued(sqlite_registry, _stamp())
+    presser_hold.hold(run_id, PRESSER, LIVE_TOKEN)
+    assert sqlite_registry.cancel_queued_run(run_id) is True
+    assert presser_hold.take(run_id) is None
+    # a refused cancel (already claimed) keeps the hold
+    other = _queued(sqlite_registry, None)
+    presser_hold.hold(other, PRESSER, LIVE_TOKEN)
+    sqlite_registry.claim_next_run("w", HOLDER)
+    assert sqlite_registry.cancel_queued_run(other) is False
+    assert presser_hold.take(other) is not None
+
+
+# ── the sign-in expiring part-way through the publish ───────────────────────
+
+def test_an_expiry_during_the_publish_ends_with_the_expired_words_and_a_partial_write_note(no_write_refusal, monkeypatch):
+    from resource_explorer.egeria_clients import CallerTokenExpired
+
+    monkeypatch.setattr(presser_hold, "read_published_by", lambda guid: "x")
+
+    def publish(entity, outputs, at, registry):
+        raise CallerTokenExpired()
+
+    presser_hold.hold("run-1", PRESSER, LIVE_TOKEN)
+    with _worker_as_daemon(), presser_hold.pressed_run("run-1", PRESSER):
+        result = _run_definition(publish)
+    assert result["publish_state"] == SIGN_IN_EXPIRED_WORDS
+    assert "publish failed" not in result["publish_state"] and result["published"] is False
+    assert result["errors"] == []
+    assert "some writes may already have been made" in result["publish_note"]
+
+
+def test_an_expiry_wrapped_in_another_error_is_still_the_expired_words(no_write_refusal, monkeypatch):
+    from resource_explorer.egeria_clients import CallerTokenExpired
+
+    def publish(entity, outputs, at, registry):
+        try:
+            raise CallerTokenExpired()
+        except CallerTokenExpired as inner:
+            raise RuntimeError("wrapped") from inner
+
+    presser_hold.hold("run-1", PRESSER, LIVE_TOKEN)
+    with _worker_as_daemon(), presser_hold.pressed_run("run-1", PRESSER):
+        result = _run_definition(publish)
+    assert result["publish_state"] == SIGN_IN_EXPIRED_WORDS and "publish_note" in result
+
+
+def test_an_unpressed_run_that_fails_its_publish_still_says_publish_failed(no_write_refusal):
+    def publish(entity, outputs, at, registry):
+        raise RuntimeError("egeria said no")
+
+    with _worker_as_daemon(row_requester=None):
+        result = _run_definition(publish)
+    assert "publish_note" not in result and result["errors"]

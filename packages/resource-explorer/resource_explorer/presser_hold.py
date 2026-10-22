@@ -18,9 +18,12 @@ Egeria. `HeldSession.__repr__` hides the token and the holder has no listing and
   a row whose token is not there yet.
 * **Lifetime:** released when the run ends (`execute_run`'s `finally`), at the token's own `exp`, or at the cap
   (`RE_PRESSER_HOLD_TTL_SECONDS`, default 2 hours, never unbounded), whichever is first; and at process exit.
-* **Cross-process:** a run claimed by another process (a separate worker, a restart) finds nothing held. That is the
-  safe direction to fail in: the run ends "published: no · your sign-in expired · press Publish on the card" and
-  writes nothing as the service account.
+* **Cross-process (claim affinity, owner 2026-10-21):** the press route stamps a non-secret `held_by` (the holding
+  process's pid + start time, and the hold's end time) into the run's target JSON, no new column. `claimable_by`,
+  called by `claim_next_run`, makes a LIVE other process skip that row, so only the holder claims it. When the holder
+  is gone (dead per the reconciler's liveness check) or its hold has run out, anyone may claim it, finds nothing held,
+  and the run ends "published: no · your sign-in expired · press Publish on the card", writing nothing as the
+  service account. "Cannot tell if the holder is alive" counts as alive until the hold's end time.
 
 What it changes
 ---------------
@@ -152,6 +155,39 @@ def hold(run_id: str, person: str, token: str | None) -> bool:
     return True
 
 
+def held_by_for(run_id: str) -> dict | None:
+    """The non-secret claim-affinity stamp for a run this process holds: who holds it and until when. None when
+    nothing is held for `run_id`. Carries no credential: a pid, a process start time and an epoch second."""
+    from resource_explorer.run_reconciler import process_identity
+
+    entry = _HOLDER.take(run_id)
+    if entry is None:
+        return None
+    return {**process_identity(), "until": entry.expires_at}
+
+
+def claimable_by(held_by: object, claimer: dict | None, *, now: float | None = None) -> bool:
+    """May the process `claimer` (a `process_identity()`) claim a row whose target carries this `held_by` stamp?
+
+    True for a row with no stamp (not pressed, or pressed with nothing held), for the holder itself, and for any
+    process once the holder is provably dead or its hold has ended. False only for a row held by ANOTHER process that
+    is alive or whose liveness cannot be told, inside the hold's time. Pure apart from the liveness check."""
+    from resource_explorer.run_reconciler import _is_alive
+
+    if not isinstance(held_by, dict) or not held_by:
+        return True
+    claimer = claimer or {}
+    if (held_by.get("pid") == claimer.get("pid") and held_by.get("started_at") == claimer.get("started_at")):
+        return True
+    try:
+        until = float(held_by.get("until"))
+    except (TypeError, ValueError):
+        until = 0.0
+    if (time.time() if now is None else now) >= until:
+        return True
+    return _is_alive(held_by) is False
+
+
 #: (run id, person) of the pressed run this context is executing; None everywhere else.
 _PRESSED: ContextVar["tuple[str, str] | None"] = ContextVar("re_pressed_run", default=None)
 
@@ -239,3 +275,36 @@ def read_published_by(report_guid: str) -> str:
     except Exception:  # noqa: BLE001 - unread is "could not tell"; the message may carry a token, so it is not kept
         return ""
     return created_by_of(result)
+
+
+def read_published_by_presser(report_guid: str) -> str:
+    """`read_published_by`, made INSIDE `publishing_as_presser`: the read runs as the presser (a pressed run), so a
+    zone-restricted SurveyReport the presser can see is readable; any other run reads as it acts. '' when the read
+    could not be made (including a presser session that has gone): the caller says "creator not read"."""
+    if not report_guid:
+        return ""
+    try:
+        with publishing_as_presser():
+            return read_published_by(report_guid)
+    except PresserSignInExpired:
+        return ""
+
+
+def expired_during_publish(exc: BaseException) -> bool:
+    """True when `exc` (or what it was raised from) is the presser's token ageing out, in a pressed run only."""
+    if not is_pressed():
+        return False
+    from resource_explorer.egeria_clients import CallerTokenExpired
+
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, CallerTokenExpired):
+            return True
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+#: Said in the run detail when the sign-in expired part-way through the publish.
+PARTIAL_WRITE_NOTE = ("The sign-in expired while publishing: some writes may already have been made as the person who "
+                      "pressed; press Publish on the card to finish.")

@@ -1590,6 +1590,15 @@ def is_false_zero_survey(row: dict) -> bool:
             and not _survey_schema_info(row))
 
 
+def _target_held_by(target_json: object) -> object:
+    """The `held_by` claim-affinity stamp in a run's target JSON, or None (absent or unreadable)."""
+    try:
+        target = json.loads(target_json or "{}")
+    except (TypeError, ValueError):
+        return None
+    return target.get("held_by") if isinstance(target, dict) else None
+
+
 def _target_request_type(target_json) -> str:
     """The top-level `request_type` of a runs row's target JSON, or "" when unreadable."""
     try:
@@ -4941,16 +4950,24 @@ class ProjectRegistry:
             params.extend(f'%"request_type": {json.dumps(t)}%' for t in sorted(types))
         # With the request-type prefilter, a few candidates are read and the first exact one is taken.
         sql = sql.replace("SELECT r.id FROM", "SELECT r.id, r.kind, r.target FROM", 1)
-        sql += f"ORDER BY r.enqueued_at ASC, r.id ASC LIMIT {1 if types is None else self._CLAIM_CANDIDATES}"
+        sql += f"ORDER BY r.enqueued_at ASC, r.id ASC LIMIT {self._CLAIM_CANDIDATES}"
 
         with self._conn() as conn:
             if conn.is_postgres:
                 sql += " FOR UPDATE SKIP LOCKED"
             run_id = None
             for row in conn.execute(sql, tuple(params)).fetchall():
-                if types is None or row["kind"] != "engine_action" or _target_request_type(row["target"]) in types:
-                    run_id = row["id"]
-                    break
+                if types is not None and row["kind"] == "engine_action" \
+                        and _target_request_type(row["target"]) not in types:
+                    continue
+                # Claim affinity: a pressed run holds its presser's session in ONE process's memory; any other live
+                # process leaves the row for that holder (a dead holder's row is anyone's: it ends "sign-in expired").
+                from resource_explorer import presser_hold
+
+                if not presser_hold.claimable_by(_target_held_by(row["target"]), runner):
+                    continue
+                run_id = row["id"]
+                break
             if run_id is None:
                 return None
             conn.execute(
@@ -5081,7 +5098,13 @@ class ProjectRegistry:
                 "WHERE id=? AND state='queued'" + held_clause,
                 (now, run_id, *held),
             )
-            return bool(getattr(cur, "rowcount", 0))
+            cancelled = bool(getattr(cur, "rowcount", 0))
+        if cancelled:
+            # A pressed run cancelled before any worker claimed it: the presser's held session ends with it.
+            from resource_explorer import presser_hold
+
+            presser_hold.release(run_id)
+        return cancelled
 
     def set_activity_runner(self, entry_id: str, runner: dict) -> None:
         """Merge `_runner` into an activity entry's `detail`, leaving the rest

@@ -576,6 +576,20 @@ def _close_activity(registry, result_ref: str, kind: str, target: dict, outcome:
 
 
 def execute_run(row: dict, registry=None) -> RunOutcome:
+    """Run one claimed row to a terminal state and record it; the presser's held session (`presser_hold`) is released
+    on EVERY exit: an early return, a failed `mark_run_running`/`set_activity_runner`, a crash, or a normal end.
+
+    The detail of the run itself is in `_execute_run`.
+    """
+    from resource_explorer import presser_hold
+
+    try:
+        return _execute_run(row, registry)
+    finally:
+        presser_hold.release(row["id"])
+
+
+def _execute_run(row: dict, registry=None) -> RunOutcome:
     """Run one claimed row to a terminal state and record it.
 
     Every failure path writes a terminal state. The one way a run can end
@@ -648,9 +662,6 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
                 outcome = handler(target, result_ref)
         finally:
             current_run.reset(run_reset)
-            from resource_explorer import presser_hold
-
-            presser_hold.release(run_id)         # the presser's held session ends with the run, however it ended
     except Exception as exc:  # pragma: no cover — a handler is expected to catch its own
         # Scrubbed by shape before it is logged or stored: a handler's exception can carry a connection
         # string or token, and this catch-all writes the traceback, the run row and the outcome.
