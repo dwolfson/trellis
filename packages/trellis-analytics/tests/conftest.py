@@ -48,7 +48,8 @@ def write_local_survey(reg, slug, schemas, at="2026-10-01T00:00:00Z", tables=("t
 def write_native_survey(reg, slug, schemas, tables_per=2, at="2026-10-04T06:00:00", guid="rep-1", extra=()):
     """A stored, complete Egeria native survey (step_runs + native_survey_annotations) naming `schemas`."""
     import json
-    proc = f"survey-postgres-database:{slug}"
+    from resource_explorer.catalog_and_survey import DATABASE_SURVEY_QN
+    proc = DATABASE_SURVEY_QN
     def ann(n, kind, props):
         return {"guid": f"a-{n}", "annotation_type": kind, "summary": f"{kind} {n}", "analysis_step": "x",
                 "explanation": "", "confidence": 100, "detail": {"json_properties": json.dumps(props)}}
