@@ -11,28 +11,14 @@ paraphrase. Only the in-app chat gets this tool (``BaseExplorerAgent.allow_write
 """
 from __future__ import annotations
 
-import re
 from contextvars import ContextVar
 
 from beeai_framework.tools import tool
 
-from resource_explorer.journal import (
-    NO_EARLIER_ANSWER, NO_INVESTIGATION, PROPOSAL_WORDS, SIGN_IN_WORDS, write_turn_entry,
+from resource_explorer.journal import (  # noqa: F401  (re-exported: the conversation agent and the tests import them here)
+    ALREADY_WORDS, JOURNAL_VERB, NO_EARLIER_ANSWER, NO_INVESTIGATION, PROPOSAL_WORDS, SAVED_WORDS, SERVICE_ANSWERS,
+    SIGN_IN_WORDS, find_turn_entry, is_journal_request, last_turn_exchange, turn_key, write_turn_entry,
 )
-
-#: A request for the journal: "save this to the journal", "add that to the investigation journal", "put it in
-#: the journal", and "note this". The pane has a control for the verb, so the chat must act on it and never
-#: answer that it does not know (docs/design-notes: verbs for unmapped controls).
-JOURNAL_VERB = re.compile(
-    r"\b(?:save|add|put|write|record|log|file|store|keep|enter)\b[^.?!]{0,60}\bjournal\b"
-    r"|^\s*(?:please\s+)?note\s+(?:this|that|it)\b",
-    re.IGNORECASE,
-)
-
-#: What the chat says after the write, and the words a stored exchange carries when it was only a journal
-#: exchange; `last_turn` skips these so "this" never resolves to the proposal itself.
-SAVED_WORDS = "Added to the investigation journal."
-_SERVICE_ANSWERS = (PROPOSAL_WORDS, SAVED_WORDS, NO_EARLIER_ANSWER, SIGN_IN_WORDS, NO_INVESTIGATION)
 
 #: Where the tool finds the session and the open investigation. Set by the conversation agent at the start of a
 #: turn; a ContextVar rather than a tool argument because the model must not choose either.
@@ -42,9 +28,19 @@ _context: ContextVar[dict] = ContextVar("_journal_context", default={})
 _proposals: ContextVar[list | None] = ContextVar("_journal_proposals", default=None)
 
 
+#: The exchanges the tool put (or found already) in the journal this turn, for the pane to mark as saved.
+_written: ContextVar[list | None] = ContextVar("_journal_written", default=None)
+
+
 def set_journal_context(session_id: str | None, investigation: str | None) -> None:
     _context.set({"session_id": session_id or "", "investigation": (investigation or "").strip()})
     _proposals.set([])
+    _written.set([])
+
+
+def turn_written() -> list:
+    """The exchange ids the tool wrote (or found already written) this turn."""
+    return list(_written.get() or [])
 
 
 def turn_proposal() -> dict | None:
@@ -53,19 +49,18 @@ def turn_proposal() -> dict | None:
     return made[-1] if made else None
 
 
-def is_journal_request(query: str) -> bool:
-    return bool(JOURNAL_VERB.search(query or ""))
-
-
 def last_turn(registry, session_id: str) -> dict | None:
-    """The last question/answer pair of the session that was not itself a journal exchange."""
+    """The last question/answer pair of the session that was not itself a journal exchange, read from the STORED
+    conversation (the caller's own rows only). The same source the pane's route reads."""
     if not session_id:
         return None
-    for ex in registry.load_exchanges(session_id):
-        if (ex.get("answer") or "").strip() in _SERVICE_ANSWERS or is_journal_request(ex.get("question") or ""):
-            continue
-        return ex
-    return None
+    return last_turn_exchange(registry.load_exchanges(session_id))
+
+
+def investigation_visible(registry, investigation: str) -> bool:
+    """The route's `_check_investigation`, for the tool: `get_investigation` answers None both for "no such slug" and
+    for "not yours", so another person's private investigation is indistinguishable from none."""
+    return bool(investigation) and bool(registry.get_investigation(investigation))
 
 
 def write_journal_raw(confirm: bool = False, note: str = "", *, registry=None, author: str | None = None) -> str:
@@ -76,22 +71,32 @@ def write_journal_raw(confirm: bool = False, note: str = "", *, registry=None, a
     if not investigation:
         return NO_INVESTIGATION
     registry = registry or ProjectRegistry()
+    # The client names the open investigation; this checks the caller may see it before anything is proposed or
+    # written, so one person's private journal cannot be written into by naming its slug.
+    if not investigation_visible(registry, investigation):
+        return NO_INVESTIGATION
     ex = last_turn(registry, ctx.get("session_id") or "")
     if ex is None:
         return NO_EARLIER_ANSWER
+    who = current_user_id() if author is None else author
     if not confirm:
+        if who and find_turn_entry(registry, investigation=investigation, author=who, key=turn_key(ex["question"], ex["answer"])):
+            return ALREADY_WORDS
         made = _proposals.get()
         if made is not None:
-            made.append({"investigation": investigation, "question": ex["question"], "answer": ex["answer"],
-                         "compile_id": ex.get("compile_id"), "resource_slug": ex.get("resource_slug")})
+            made.append({"investigation": investigation, "exchange_id": ex["exchange_id"], "question": ex["question"],
+                         "answer": ex["answer"], "compile_id": ex.get("compile_id"),
+                         "resource_slug": ex.get("resource_slug")})
         return PROPOSAL_WORDS
-    who = current_user_id() if author is None else author
     if not who:
         return SIGN_IN_WORDS
-    write_turn_entry(registry, investigation=investigation, author=who, question=ex["question"],
-                     answer=ex["answer"], compile_id=ex.get("compile_id"), resource_slug=ex.get("resource_slug"),
-                     note=note)
-    return SAVED_WORDS
+    entry = write_turn_entry(registry, investigation=investigation, author=who, question=ex["question"],
+                             answer=ex["answer"], compile_id=ex.get("compile_id"),
+                             resource_slug=ex.get("resource_slug"), note=note)
+    written = _written.get()
+    if written is not None:
+        written.append(ex["exchange_id"])
+    return ALREADY_WORDS if entry.get("already") else SAVED_WORDS
 
 
 @tool(

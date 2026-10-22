@@ -15,7 +15,7 @@ const SCOPED = 'docling_core';
 const QUESTION_WORDS = 'Add this turn to the investigation journal? [Add] [Not now]';
 const DERIVED = 'Per chat\n\nQuestion: Who are the main contributors?\n\nAnswer:\n\nalice 120\n\n- Scope: investigation study · resource docling_core\n- Evidence: contributor_stats';
 
-function makeServer({ writeFails = false } = {}) {
+function makeServer({ writeFails = false, already = false } = {}) {
   const s = { calls: [] };
   const enc = new TextEncoder();
   globalThis.fetch = async (url, opts = {}) => {
@@ -25,17 +25,18 @@ function makeServer({ writeFails = false } = {}) {
     const ok = (b) => ({ ok: true, status: 200, json: async () => b, text: async () => JSON.stringify(b) });
     if (u === '/api/journal/investigation/study/turn') {
       if (writeFails && body.confirm) return { ok: false, status: 500, json: async () => ({ detail: 'registry down' }), text: async () => 'registry down' };
-      return ok(body.confirm ? { written: true, id: 'e1' } : { written: false, body: DERIVED, turn: {} });
+      if (body.confirm) return ok(already ? { written: false, already: true, id: 'e1' } : { written: true, already: false, id: 'e1' });
+      return ok({ written: false, already, body: DERIVED, turn: {} });
     }
     if (u === '/api/query/stream') {
       let frames;
       if (/journal/.test(body.query)) {
         frames = [{ t: 'chunk', v: QUESTION_WORDS },
           { t: 'done', intent: '', hash: '', cached: false, compiled: null, journal_proposal: {
-            investigation: 'study', question: 'Who are the main contributors?', answer: 'alice 120', compile_id: 'abcdef1234567890', resource_slug: SCOPED } }];
+            investigation: 'study', exchange_id: 41, question: 'Who are the main contributors?', answer: 'alice 120', compile_id: 'abcdef1234567890', resource_slug: SCOPED }, exchange_id: 43 }];
       } else {
         frames = [{ t: 'chunk', v: 'alice 120' },
-          { t: 'done', intent: 'lookup', hash: 'h', cached: false, compiled: { text: 't', manifest: { compile_id: 'abcdef1234567890', packed: [{ key: 'contributor_stats' }], gaps: [] } } }];
+          { t: 'done', intent: 'lookup', hash: 'h', cached: false, exchange_id: 41, compiled: { text: 't', manifest: { compile_id: 'abcdef1234567890', packed: [{ key: 'contributor_stats' }], gaps: [] } } }];
       }
       let sent = false;
       return { ok: true, status: 200, body: { getReader: () => ({ async read() {
@@ -49,10 +50,10 @@ function makeServer({ writeFails = false } = {}) {
   return s;
 }
 
-async function setUp({ investigation = 'study', writeFails = false } = {}) {
+async function setUp({ investigation = 'study', writeFails = false, already = false } = {}) {
   const { document, window } = makeDomEnvironment();
   window.localStorage.clear();
-  const server = makeServer({ writeFails });
+  const server = makeServer({ writeFails, already });
   ensureLoaderRegistered();
   globalThis.location = window.location; globalThis.history = window.history;
   globalThis.getComputedStyle = window.getComputedStyle.bind(window);
@@ -103,8 +104,9 @@ test('Add on the chat question writes once, with the turn the tool named, and sh
   await wait(200);
   const w = writes(t.server);
   assert.equal(w.length, 1);
-  assert.deepEqual(w[0].body, { question: 'Who are the main contributors?', answer: 'alice 120', compile_id: 'abcdef1234567890',
-    resource_slug: SCOPED, note: '', confirm: true });
+  const stream = t.server.calls.find((c) => c.url === '/api/query/stream');
+  assert.deepEqual(w[0].body, { session_id: stream.body.session_id, exchange_id: 41, note: '', confirm: true },
+    'only the session and the stored exchange travel; no question or answer text');
   const box = t.document.querySelector('[data-journal-proposal-box]');
   assert.ok(box.querySelector('[data-cue="measured"]'));
   assert.match(text(box), /added to the journal/);
@@ -137,8 +139,8 @@ test('the pane control shows the DERIVED entry read-only with Add / Not now and 
   t.document.querySelector('[data-act="journal-turn"]').click();
   await wait(200);
   assert.equal(previews(t.server).length, 1);
-  assert.deepEqual(previews(t.server)[0].body, { question: 'Who are the main contributors?', answer: 'alice 120',
-    compile_id: 'abcdef1234567890', resource_slug: SCOPED, note: '', confirm: false });
+  assert.deepEqual(Object.keys(previews(t.server)[0].body).sort(), ['confirm', 'exchange_id', 'note', 'session_id']);
+  assert.equal(previews(t.server)[0].body.exchange_id, 41);
   const form = t.document.querySelector('[data-journal-form]');
   assert.equal(form.querySelector('textarea'), null, 'no editable text: the entry is the turn');
   assert.equal(form.querySelector('[data-journal-entry]').textContent, DERIVED);
@@ -151,7 +153,7 @@ test('the pane control shows the DERIVED entry read-only with Add / Not now and 
   const w = writes(t.server);
   assert.equal(w.length, 1);
   assert.equal(w[0].body.note, 'check the bot account');
-  assert.equal(w[0].body.answer, 'alice 120');
+  assert.equal(w[0].body.answer, undefined, 'the client sends no answer text');
   // state on the element: the cue replaces the form, and the trigger is no longer a button
   assert.ok(t.document.querySelector('[data-journal-saved] [data-cue="measured"]'));
   const trigger = t.document.querySelector('[data-act="journal-turn"]');
@@ -178,4 +180,31 @@ test('no investigation open: the control is disabled with the words, and nothing
   btn.click();
   await wait(100);
   assert.equal(t.server.calls.filter((c) => c.url.includes('/api/journal/')).length, 0);
+});
+
+test('a turn already in the journal says so when the control is opened, with the saved cue and no Add', async () => {
+  const t = await setUp({ already: true });
+  await ask(t, 'Who are the main contributors?');
+  t.document.querySelector('[data-act="journal-turn"]').click();
+  await wait(200);
+  assert.match(text(t.document.querySelector('[data-journal-saved]')), /already in the journal/);
+  assert.equal(t.document.querySelector('[data-journal-add]'), null);
+  assert.equal(t.document.querySelector('[data-act="journal-turn"]').dataset.journalState, 'saved');
+  assert.equal(writes(t.server).length, 0);
+});
+
+test('the chat question turn has no per-turn journal control (it is not itself a turn to add)', async () => {
+  const t = await setUp();
+  await ask(t, 'save this to the journal');
+  assert.equal(t.document.querySelector('[data-act="journal-turn"]'), null);
+});
+
+test('Add on the chat question marks the EARLIER turn it named as in the journal', async () => {
+  const t = await setUp();
+  await ask(t, 'Who are the main contributors?');
+  await ask(t, 'save this to the journal');
+  t.document.querySelector('[data-jp-add]').click();
+  await wait(200);
+  const earlier = t.app.state.chat.find((x) => x.exchangeId === 41);
+  assert.ok(earlier && earlier.journalSaved, 'the answered turn is marked saved');
 });

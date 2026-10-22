@@ -568,12 +568,12 @@ export const writeJournal = (slug, body, suggestTo = [], entityType, compileId =
   post(`/api/journal/${encodeURIComponent(requireKind('writeJournal', entityType))}/${encodeURIComponent(slug)}`,
     { body, suggest_to: suggestTo, ...(compileId ? { compile_id: compileId } : {}) });
 
-/** A chat turn as a journal entry. `confirm: false` writes nothing and returns the derived entry ({body, turn});
- *  `confirm: true` writes it. The entry is derived on the server from the turn alone; `note` is the person's one
- *  optional addition and is stored apart from it. */
-export const writeJournalTurn = (investigation, { question, answer, compileId = null, resourceSlug = null, note = '' }, { confirm = false } = {}) =>
+/** A stored chat turn as a journal entry. `confirm: false` writes nothing and returns the derived entry ({body, turn,
+ *  already}); `confirm: true` writes it (or says `already`). Only the session and the exchange id travel: the server
+ *  derives the entry from the stored exchange. `note` is the person's one optional addition, stored apart from it. */
+export const writeJournalTurn = (investigation, { sessionId, exchangeId, note = '' }, { confirm = false } = {}) =>
   post(`/api/journal/investigation/${encodeURIComponent(investigation)}/turn`,
-    { question, answer, compile_id: compileId, resource_slug: resourceSlug, note, confirm });
+    { session_id: sessionId, exchange_id: exchangeId, note, confirm });
 
 /* ── Curate: tags, ratings (resource feedback) and Classic's curator notes ─
  * CURATE-UI-DATABASES-IMPLEMENTED.md. Every row from tags-detail, feedback

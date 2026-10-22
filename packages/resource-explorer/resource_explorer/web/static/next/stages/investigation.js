@@ -489,13 +489,15 @@ async function loadJournal(inv, stale) {
         >Publish my entries${toSend ? ` · ${toSend}` : ''}</button>` : ''}
       <span data-journal-publish-note class="text-caveat text-ink-muted"></span>
     </div>
-    <p class="mb-s2 text-caveat text-ink-muted">${esc(where)}</p>
+    <p class="mb-s2 text-caveat text-ink-muted">${esc(where)}${entries.some((e) => e.note)
+      ? ' An entry’s note goes in the same Egeria Note, after the entry.' : ''}</p>
     ${entries.length ? entries.map((e, i) => `
       <div class="mb-s2 rounded-sm border border-rule p-s2">
         <div class="text-caveat text-ink-muted">${esc(e.author)} · ${esc(String(e.written_at).slice(0, 10))}${
           e.compile_id ? ` · compile ${esc(String(e.compile_id).slice(0, 8))}` : ''}${
           words[e.id] ? ` · ${esc(words[e.id])}` : ''}</div>
         <div data-journal-body class="min-w-0 break-words text-answer text-ink">${bodies[i]}</div>
+        ${e.note ? `<div data-journal-note class="mt-s1 text-caveat text-ink-muted">your note: ${esc(e.note)}</div>` : ''}
       </div>`).join('')
       : '<p class="text-caveat text-ink-muted">No entries yet. Use “add to investigation journal” under a chat answer.</p>'}`;
   host.querySelector('[data-act="inv-journal-publish"]')?.addEventListener('click', async (e) => {

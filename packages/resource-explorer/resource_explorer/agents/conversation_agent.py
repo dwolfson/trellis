@@ -256,6 +256,7 @@ class ConversationAgent(BaseExplorerAgent):
 
         journal_tool.set_journal_context(getattr(self, "session_id", None), getattr(self, "investigation", None))
         self._journal_proposal = None
+        self._journal_written = []
         if self.allow_writes and journal_tool.is_journal_request(query):
             # A verb the pane has a control for goes to the tool, not to the model: a small model answered "I don't
             # know" to "save this to the journal". Confirm stays with the person.
@@ -327,6 +328,8 @@ class ConversationAgent(BaseExplorerAgent):
 
         try:
             answer = self._run_persistent(prompt)
+            # Turns the model's write_journal call put in the journal (the list is shared with the tool's tasks).
+            self._journal_written = journal_tool.turn_written()
         except Exception:
             if self._rag is None:
                 from resource_explorer.rag_system import RAGSystem

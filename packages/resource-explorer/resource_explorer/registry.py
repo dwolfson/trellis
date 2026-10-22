@@ -3718,7 +3718,7 @@ class ProjectRegistry:
             # resource_journal: the append-only curator journal (journal.Journal).
             # Moved here from journal.py's per-call _ensure_schema, which ran
             # this DDL on every read and write. Shape is the real registry's
-            # (7 columns, no later ADDs), so applying it there is a no-op.
+            # (7 columns; compile_id, note and turn_json are added below), so applying it there is a no-op.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS resource_journal (
                     id            TEXT PRIMARY KEY,
@@ -3736,8 +3736,17 @@ class ProjectRegistry:
             )
             # The chat turn's compile an entry was written from (context_compiles.compile_id); NULL when the entry
             # was not made from a chat turn or the turn recorded no compile.
-            if "compile_id" not in self._get_table_columns(conn, "resource_journal"):
+            journal_cols = self._get_table_columns(conn, "resource_journal")
+            if "compile_id" not in journal_cols:
                 conn.execute("ALTER TABLE resource_journal ADD COLUMN compile_id TEXT")
+            # An entry made from a chat turn (owner 2026-10-22, "add the column"): `note` is the person's optional
+            # free text, kept apart from the derived `body`; `turn_json` is the derived turn (question, evidence ids,
+            # as-of, confidence, scope, compile id, dedupe key). Same pattern as `_add_author_column`: nullable TEXT,
+            # NULL (never '') for an entry that has neither, the column list read first so a second start is a no-op,
+            # the same SQL on SQLite and Postgres (metadata-only on Postgres).
+            for col in ("note", "turn_json"):
+                if col not in journal_cols:
+                    conn.execute(f"ALTER TABLE resource_journal ADD COLUMN {col} TEXT DEFAULT NULL")
             # Work lists (work_lists.WorkLists). Moved here from work_lists.py's
             # per-method _ensure_schema, which ran this DDL on every read and
             # write. Shapes are the real registry's (no later ADDs), so applying
@@ -10257,8 +10266,9 @@ class ProjectRegistry:
         *,
         user_id: str | None = None,
         compile_id: str | None = None,
-    ) -> None:
-        """Append a single turn (user or assistant) to the conversation log.
+    ) -> int | None:
+        """Append a single turn (user or assistant) to the conversation log. Returns the new row's id (the stable
+        identity of this turn, which a journal entry is derived from), or None if it cannot be read back.
 
         Stamped with the caller (plan §4). The plan's isolation matrix is
         explicit that conversation history is read only by its owner while RAG
@@ -10279,6 +10289,10 @@ class ProjectRegistry:
                 (session_id, next_idx, role, content, resource_slug or "", user_id,
                  datetime.utcnow().isoformat(), compile_id),
             )
+            row = conn.execute(
+                "SELECT id FROM conversation_history WHERE session_id = ? AND turn_idx = ?", (session_id, next_idx)
+            ).fetchone()
+        return int(row[0]) if row else None
 
     # ── Context compiles ─────────────────────────────────────────────────
 
@@ -10343,18 +10357,29 @@ class ProjectRegistry:
         d["derivation"] = _json.loads(d["derivation"])
         return d
 
+    @staticmethod
+    def _owner_scope(user_id: str) -> tuple[str, tuple]:
+        """The conversation_history owner filter for a journal read. A signed-in caller sees only their OWN rows: the
+        shared bucket ('') is anonymous and pre-ownership history, and a journal entry is authored, so a signed-in
+        caller's "this" must never resolve to a row nobody owned. An anonymous caller reads the shared bucket."""
+        if user_id:
+            return "user_id = ?", (user_id,)
+        return "user_id = ?", (SHARED_USER_ID,)
+
     def load_exchanges(
         self, session_id: str, limit: int = 20, *, user_id: str | None = None,
     ) -> list[dict]:
-        """The most recent question/answer pairs of a session, NEWEST FIRST, each {question, answer, compile_id,
-        resource_slug}. Same caller scoping as load_turns. A user row not followed by an assistant row (a turn
-        still being answered) is not an exchange yet and is left out."""
+        """The most recent question/answer pairs of a session, NEWEST FIRST, each {exchange_id, question, answer,
+        compile_id, resource_slug}; `exchange_id` is the assistant row's id. Scoped to the caller alone (see
+        `_owner_scope`). A user row not followed by an assistant row (a turn still being answered) is not an
+        exchange yet and is left out."""
         user_id = current_user_id() if user_id is None else user_id
+        where, args = self._owner_scope(user_id)
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT role, content, project_slug, compile_id FROM conversation_history "
-                "WHERE session_id = ? AND user_id IN (?, ?) ORDER BY turn_idx DESC LIMIT ?",
-                (session_id, user_id, SHARED_USER_ID, limit * 2),
+                "SELECT id, role, content, project_slug, compile_id FROM conversation_history "
+                f"WHERE session_id = ? AND {where} ORDER BY turn_idx DESC LIMIT ?",
+                (session_id, *args, limit * 2),
             ).fetchall()
         rows = [dict(r) for r in rows]
         out: list[dict] = []
@@ -10362,7 +10387,7 @@ class ProjectRegistry:
             if r["role"] != "assistant" or i + 1 >= len(rows) or rows[i + 1]["role"] != "user":
                 continue
             q = rows[i + 1]
-            out.append({"question": q["content"], "answer": r["content"],
+            out.append({"exchange_id": r["id"], "question": q["content"], "answer": r["content"],
                         "compile_id": r.get("compile_id") or q.get("compile_id"),
                         "resource_slug": r.get("project_slug") or q.get("project_slug")})
         return out[:limit]

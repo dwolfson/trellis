@@ -4899,6 +4899,7 @@ export async function renderJournalEntries(slug, entityType) {
       data.suggested_to?.length ? ` · suggested to ${esc(data.suggested_to.join(', '))}` : ''}</div>
     ${entries.map((e) => `<div class="border-t border-rule py-s2" data-journal-entry="${esc(e.id || '')}">
       <p class="m-0 max-w-[70ch] text-answer text-ink">${tnum(esc(e.body))}</p>
+      ${e.note ? `<p data-journal-note class="m-0 max-w-[70ch] text-provenance text-ink-muted">your note: ${esc(e.note)}</p>` : ''}
       <div class="text-provenance text-ink-muted">${esc(e.author || 'unsigned · from before authors were recorded')} · <span class="tnum">${esc(ago(e.written_at))}</span>${
         e.suggested_to?.length ? ` · suggested to ${esc(e.suggested_to.join(', '))}` : ''}<span data-journal-cue="${esc(e.id || '')}"></span></div>
     </div>`).join('')}`;

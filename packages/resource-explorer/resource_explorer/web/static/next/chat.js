@@ -509,11 +509,11 @@ export function turnAsMarkdown(t) {
   return out.join('\n');
 }
 
-/** The chat turn as the journal route takes it: the question as typed, the answer as shown, the compile it came
- *  from and the resource it was asked on. The entry is DERIVED from these on the server (journal.derive_turn_entry);
- *  nothing here is edited by the person. */
+/** Which stored chat turn to add: the session and the exchange id the query reply carried. No text travels: the
+ *  entry is DERIVED on the server from the stored exchange (journal.derive_turn_entry), the same source the chat's
+ *  `write_journal` tool reads. The person's only addition is the optional note. */
 function journalPayload(t, note = '') {
-  return { question: t.question, answer: t.answer || '', compileId: t.compileId || null, resourceSlug: t.slug || null, note };
+  return { sessionId: sessionId(), exchangeId: t.exchangeId, note };
 }
 
 /** "Add to investigation journal": the derived entry shown read-only, with [Add] [Not now] and one optional note
@@ -529,6 +529,13 @@ async function openJournalForm(turn, host) {
     preview = await writeJournalTurn(inv, journalPayload(turn), { confirm: false });
   } catch (err) {
     form.innerHTML = `<span class="text-caveat text-state-warn">${cue('error', 'not shown', err.message)} ${esc(err.message)}</span>`;
+    return;
+  }
+  if (preview.already) {
+    turn.journalSaved = true;
+    form.innerHTML = `<span class="text-caveat" data-journal-saved>${cue('measured', 'already in the journal', "This turn is already an entry in this investigation's journal; nothing was added.")}</span>`;
+    const trig = host.querySelector('[data-act="journal-turn"]');
+    if (trig) trig.outerHTML = journalTriggerHtml(turn);
     return;
   }
   form.innerHTML = `
@@ -548,9 +555,11 @@ async function openJournalForm(turn, host) {
     btn.disabled = true;
     try {
       const noteText = form.querySelector('[data-journal-note-input]').value.trim();
-      await writeJournalTurn(inv, journalPayload(turn, noteText), { confirm: true });
+      const res = await writeJournalTurn(inv, journalPayload(turn, noteText), { confirm: true });
       turn.journalSaved = true;
-      form.innerHTML = `<span class="text-caveat" data-journal-saved>${cue('measured', 'added to the journal', "Written to this investigation's journal. It stays in RE until the investigation is promoted to Egeria.")}</span>`;
+      form.innerHTML = res.already
+        ? `<span class="text-caveat" data-journal-saved>${cue('measured', 'already in the journal', "This turn is already an entry in this investigation's journal; nothing was added.")}</span>`
+        : `<span class="text-caveat" data-journal-saved>${cue('measured', 'added to the journal', "Written to this investigation's journal. It stays in RE until the investigation is promoted to Egeria.")}</span>`;
       const trigger = host.querySelector('[data-act="journal-turn"]');
       if (trigger) trigger.outerHTML = journalTriggerHtml(turn);
     } catch (err) {
@@ -562,9 +571,12 @@ async function openJournalForm(turn, host) {
 
 /** The per-turn control: a button until the turn is in the journal, then the state on the element. */
 function journalTriggerHtml(turn) {
+  // A journal exchange (the chat's own "Add this turn?") is never itself a turn to add.
+  if (turn.journalProposal) return '';
   if (turn.journalSaved) return `<span data-act="journal-turn" data-journal-state="saved">${cue('measured', 'in the journal', "This turn is an entry in the current investigation's journal.")}</span>`;
-  return `<button data-act="journal-turn" ${state.investigation ? '' : 'disabled'}
-        title="${state.investigation ? 'Show this turn as a journal entry for the current investigation' : 'no investigation is open · choose one on the rail'}"
+  const can = Boolean(state.investigation) && turn.exchangeId != null;
+  return `<button data-act="journal-turn" ${can ? '' : 'disabled'}
+        title="${!state.investigation ? 'no investigation is open · choose one on the rail' : turn.exchangeId == null ? 'This turn was not stored, so it cannot be added.' : 'Show this turn as a journal entry for the current investigation'}"
         class="cursor-pointer bg-transparent text-caveat text-ink-muted underline disabled:cursor-default disabled:opacity-60"
         >add to investigation journal</button>`;
 }
@@ -600,10 +612,10 @@ function wireJournalProposal(turn) {
     const p = turn.journalProposal;
     turn.jpState = { state: 'saving' }; redrawJournalProposal(turn);
     try {
-      await writeJournalTurn(p.investigation, {
-        question: p.question, answer: p.answer, compileId: p.compile_id || null, resourceSlug: p.resource_slug || null, note: '',
-      }, { confirm: true });
+      await writeJournalTurn(p.investigation, { sessionId: sessionId(), exchangeId: p.exchange_id, note: '' }, { confirm: true });
       turn.jpState = { state: 'saved' };
+      const earlier = state.chat.find((t) => t.exchangeId != null && t.exchangeId === p.exchange_id);
+      if (earlier) earlier.journalSaved = true;
     } catch (err) {
       turn.jpState = { state: 'error', msg: err.loginRequired ? 'Sign in to write in the journal.' : err.message };
     }
@@ -1279,6 +1291,12 @@ function applyAnswer(turn, body) {
   turn.held = Boolean(body.held);
   // The journal tool's question: the pane draws [Add] [Not now] for it, so the bracketed words are not left in the text.
   turn.journalProposal = body.journal_proposal || null;
+  turn.exchangeId = body.exchange_id ?? null;
+  // Turns the chat's journal tool just put in the journal: their per-turn control shows the saved cue.
+  for (const id of body.journal_written || []) {
+    const earlier = state.chat.find((t) => t.exchangeId != null && t.exchangeId === id);
+    if (earlier) earlier.journalSaved = true;
+  }
   if (turn.journalProposal) turn.answer = String(turn.answer || '').replace(/\s*\[Add\]\s*\[Not now\]\s*$/, '');
   turn.resourceCheckError = body.resource_check_error || '';
   turn.runnable = gapRunnable(turn.compiled);
@@ -1334,7 +1352,7 @@ export async function submitAsk({ question = '', skipResourceCheck = false } = {
           response: turn.answer, intent: evt.intent, query_hash: evt.hash, cached: evt.cached,
           chart: evt.chart, compiled: evt.compiled, symbol_table: evt.symbol_table,
           compare_symbols: evt.compare_symbols, alias_suggestion: evt.alias_suggestion,
-          resource_question: evt.resource_question, held: evt.held, journal_proposal: evt.journal_proposal, resource_check_error: evt.resource_check_error,
+          resource_question: evt.resource_question, held: evt.held, journal_proposal: evt.journal_proposal, exchange_id: evt.exchange_id, journal_written: evt.journal_written, resource_check_error: evt.resource_check_error,
         });
       }
     }

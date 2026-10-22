@@ -79,16 +79,18 @@ def _ephemeral_session(resource_slug: str | None, resource_type: str | None = No
 def _persist_turn(
     session_id: str, query: str, response: str, resource_slug: str | None,
     compile_id: str | None = None,
-) -> None:
+) -> int | None:
     """Both turns of an exchange, each pointing at the compile that shaped the
-    answer (None when nothing was compiled — see registry's column comment)."""
+    answer (None when nothing was compiled — see registry's column comment).
+    Returns the assistant row's id, the exchange's identity (a journal entry is
+    derived from the stored exchange by this id), or None when nothing was stored."""
     try:
         from resource_explorer.registry import ProjectRegistry
         registry = ProjectRegistry()
         registry.append_turn(session_id, "user", query, resource_slug, compile_id=compile_id)
-        registry.append_turn(session_id, "assistant", response, resource_slug, compile_id=compile_id)
+        return registry.append_turn(session_id, "assistant", response, resource_slug, compile_id=compile_id)
     except Exception:
-        pass
+        return None
 
 
 def _compile_id_of(agent) -> str | None:
@@ -143,6 +145,10 @@ class QueryResponse(BaseModel):
     #: Set when the answer is the journal tool's "Add this turn?" question: the turn it would add, for the pane
     #: to draw [Add] [Not now] against.
     journal_proposal: dict | None = None
+    #: The stored exchange this answer is (the assistant row id), for the pane's per-turn journal control; None when
+    #: the turn was not stored (no session). `journal_written`: earlier exchanges the chat's journal tool just added.
+    exchange_id: int | None = None
+    journal_written: list[int] = []
 
 
 def _compiled_payload(agent) -> dict | None:
@@ -249,8 +255,10 @@ async def ask(request: QueryRequest) -> QueryResponse:
         agent.handle, request.query, resource_slug=request.resource_slug,
         resource_type=request.entity_type, perspectives=request.perspectives,
     )
+    exchange_id = None
     if request.session_id:
-        _persist_turn(request.session_id, request.query, response, request.resource_slug)
+        exchange_id = _persist_turn(request.session_id, request.query, response, request.resource_slug,
+                                    compile_id=_compile_id_of(agent))
     compiled = _compiled_payload(agent)
 
     chart = _pick_chart(request.query, intent.value, request.resource_slug or "")
@@ -266,6 +274,8 @@ async def ask(request: QueryRequest) -> QueryResponse:
         compiled=compiled,
         disambiguation_chips=chips,
         journal_proposal=getattr(agent, "_journal_proposal", None),
+        exchange_id=exchange_id,
+        journal_written=getattr(agent, "_journal_written", None) or [],
     )
 
 
@@ -326,12 +336,15 @@ async def stream(request: QueryRequest) -> StreamingResponse:
                                     resource_type=request.entity_type,
                                     perspectives=request.perspectives)
                 compiled = _compiled_payload(agent)
+                exchange_id = None
                 if request.session_id:
-                    _persist_turn(request.session_id, request.query, text, request.resource_slug,
-                                  compile_id=_compile_id_of(agent))
+                    exchange_id = _persist_turn(request.session_id, request.query, text, request.resource_slug,
+                                                compile_id=_compile_id_of(agent))
                 loop.call_soon_threadsafe(queue.put_nowait, text)
                 loop.call_soon_threadsafe(queue.put_nowait, {"_done": True, "intent": intent, "hash": hashlib.sha256(request.query.encode()).hexdigest()[:16], "cached": False, "compiled": compiled,
-                                                                  "journal_proposal": getattr(agent, "_journal_proposal", None)})
+                                                                  "journal_proposal": getattr(agent, "_journal_proposal", None),
+                                                                  "exchange_id": exchange_id,
+                                                                  "journal_written": getattr(agent, "_journal_written", None) or []})
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
 
@@ -378,6 +391,10 @@ async def stream(request: QueryRequest) -> StreamingResponse:
                         done["disambiguation_chips"] = chips
                 if item.get("journal_proposal"):
                     done["journal_proposal"] = item["journal_proposal"]
+                if item.get("exchange_id") is not None:
+                    done["exchange_id"] = item["exchange_id"]
+                if item.get("journal_written"):
+                    done["journal_written"] = item["journal_written"]
                 if checked and "resource_check_error" in checked:
                     done["resource_check_error"] = checked["resource_check_error"]
                 # Suggest an alias when no project was resolved but a fuzzy match exists

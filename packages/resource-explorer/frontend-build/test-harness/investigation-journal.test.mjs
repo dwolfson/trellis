@@ -188,3 +188,16 @@ test('hostile markup in an entry is inert: no script, no handler, no javascript:
   assert.equal([...body.querySelectorAll('a')].find((a) => a.textContent === 'ok').getAttribute('href'), 'https://example.com/p');
   assert.equal(globalThis.window.__x, undefined);
 });
+
+test('an entry made from a chat turn shows the person\'s note apart, labelled "your note", and says it goes in the same Egeria Note', async () => {
+  const t = await setUp({ journal: { entries: [
+    { id: 'e1', author: 'me', written_at: '2026-10-22T08:00:00+00:00', body: 'Per chat\n\nQuestion: q', compile_id: 'abcdef12', note: 'check bob' },
+    { id: 'e2', author: 'me', written_at: '2026-10-21T08:00:00+00:00', body: 'plain entry' }], suggested_to: [] } });
+  const entries = [...t.document.querySelectorAll('#inv-journal [data-journal-body]')];
+  assert.equal(entries.length, 2);
+  const note = t.document.querySelector('#inv-journal [data-journal-note]');
+  assert.equal(text(note), 'your note: check bob');
+  assert.ok(!text(entries[0]).includes('check bob'), 'the note is not merged into the entry text');
+  assert.equal(t.document.querySelectorAll('#inv-journal [data-journal-note]').length, 1, 'an entry without a note has no note line');
+  assert.match(text(t.document.getElementById('inv-journal')), /note goes in the same Egeria Note, after the entry/);
+});
