@@ -27,13 +27,13 @@ Usage:
 
 Rules added 2026-10-22 (REVIEW-QUESTIONS-AND-ANALYTICS-2026-10-22.md §5), after the owner's rulings:
 
-  1. An `Answering Analysis` cell may name only analysis-catalogue ids, `direct`/`N/A`, `human`, or GAP/PARTIAL/
+  1. An `Answering Analysis` cell may name only analysis-catalog ids, `direct`/`N/A`, `human`, or GAP/PARTIAL/
      MIXED prose. A STEP name outside a parenthetical gloss (`postgres_column_profile`) fails the build: a step
      is not an analysis, and nothing in the question layer resolves it.
   2. A named Resource Type with no adapter (`dataset`, `model`) fails the build; `*` expands to the kinds that
      have one (repo, database, filesystem).
   3. A question whose Funnel Stage does not include the intent of an analysis it names WARNS, naming both.
-  4. An analysis-catalogue entry that no question names, and that does not declare `answers_questions: false`
+  4. An analysis-catalog entry that no question names, and that does not declare `answers_questions: false`
      or a non-empty `provided_by.questions`, WARNS (the orphan check).
   5. A row whose Status is `retired <date>: ...` or `merged into Q-00NN <date>` is left out of the YAML (and out
      of the Dr.Egeria document); its id stays reserved: it counts for the next free id, and it is listed under
@@ -279,7 +279,7 @@ KNOWN_REGISTERED_IDS = set(KNOWN_ANALYSIS_IDS) | KNOWN_STEP_IDS
 
 
 def _load_catalogue_ids_including_publish() -> set[str]:
-    """Every analysis-catalogue id in every section, `action: publish` entries included.
+    """Every analysis-catalog id in every section, `action: publish` entries included.
 
     `KNOWN_ANALYSIS_IDS` leaves publish entries out on purpose (naming one as the answer to a question yields a
     permanent gap), but the bare-step-name rule below must still treat `egeria_publish` and `egeria_db_survey` as
@@ -481,7 +481,7 @@ def _is_pure_analysis_list(prose: str) -> bool:
 
 
 def _bare_step_names(note: str) -> list[str]:
-    """Step ids the note names outside a `(parenthetical gloss)` that are not analysis-catalogue ids.
+    """Step ids the note names outside a `(parenthetical gloss)` that are not analysis-catalog ids.
 
     A step is how something runs; an analysis is what the question layer can resolve and show. A cell that names
     a step as if it were the answer (`the postgres_column_profile step ...`) points at nothing the question layer
@@ -571,8 +571,8 @@ def _parse_answering(note: str, known_checks: set[str] | None = None) -> dict:
     if bare_steps:
         plural = "is a step" if len(bare_steps) == 1 else "are steps"
         raise ValueError(
-            f"Answering Analysis names {bare_steps}, which {plural}, not an analysis-catalogue id: {note!r}\n"
-            "A cell may name only analysis-catalogue ids, direct, human, or GAP/PARTIAL/MIXED prose. Name the "
+            f"Answering Analysis names {bare_steps}, which {plural}, not an analysis-catalog id: {note!r}\n"
+            "A cell may name only analysis-catalog ids, direct, human, or GAP/PARTIAL/MIXED prose. Name the "
             "catalogue analysis that wraps the step (or give the step a catalogue entry), or move the step name "
             "into a parenthetical gloss."
         )

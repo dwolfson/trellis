@@ -210,7 +210,7 @@ class TestDatabaseAnalysisStepMap:
             "schema_inventory", "row_count_snapshot", "privilege_audit",
             "db_activity_signals", "db_resilience", "db_external_dependencies",
             "data_class_match", "reference_data_match", "nested_column_profile",
-            "credential_capability",
+            "credential_capability", "sql_analysis",
         }
 
     def test_privilege_audit_now_runs_the_dedicated_operations_step(self):

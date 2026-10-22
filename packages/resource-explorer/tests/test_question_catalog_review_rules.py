@@ -69,7 +69,7 @@ class TestABareStepNameFailsTheBuild:
     def test_the_refusal_says_it_is_a_step_not_a_catalogue_id(self, gen, header):
         row = _row(header, **{"Resource Types": "database", "Answering Analysis":
                               "PARTIAL: schema_inventory covers part; postgres_nested_columns does the rest"})
-        with pytest.raises(ValueError, match="step, not an analysis-catalogue id"):
+        with pytest.raises(ValueError, match="step, not an analysis-catalog id"):
             gen.generate([row], known_purposes=["Explore"])
 
     def test_a_step_that_is_also_a_catalogue_id_passes(self, gen, header):

@@ -186,7 +186,7 @@ class TestAPartialMustNameSomethingRegistered:
         # passed (this was the real wording of one of the three 2026-09-27 corrections); the review's rule 1
         # (REVIEW-QUESTIONS-AND-ANALYTICS-2026-10-22 §5) refuses it: a step is not an analysis the question layer
         # can resolve, so the cell must name the catalogue analysis that wraps it.
-        with pytest.raises(ValueError, match="step, not an analysis-catalogue id"):
+        with pytest.raises(ValueError, match="step, not an analysis-catalog id"):
             generator._parse_answering(
                 "PARTIAL: the postgres_column_profile step reads pg_stats but samples nothing else."
             )
