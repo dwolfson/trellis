@@ -97,6 +97,54 @@ def _publish_words(proof: dict) -> dict:
             "landed_words": (f"{landed} of {built} annotations in Egeria" if landed is not None and built is not None else "")}
 
 
+NARRATIVES_SHOWN = 50
+
+
+def extensions_view(registry, slug: str) -> dict | None:
+    """The newest walk's extensions (Files build step 1), whoever led the folder survey, or None when no walk measured them.
+
+    What the screen says about the per-file rows comes from the registry's own count of the stored rows for THAT run (not from
+    the fact that a walk ran): "kept" means rows are there. What it says about publishing comes from the stored publish proof
+    ("N of M annotations in Egeria" from the GUIDs Egeria returned). Paths and narrative text are in this view because it is
+    Resource Explorer's own screen; the publish carries counts only."""
+    rows = registry.list_filesystem_surveys(slug)
+    carriers = [r for r in rows if (r.get("survey_data") or {}).get("walk_extensions") and r.get("source") != "egeria-published"]
+    if not carriers:
+        return None
+    newest = max(carriers, key=lambda r: _when(r["survey_data"].get("surveyed_at") or r.get("surveyed_at"))
+                 or datetime.min.replace(tzinfo=timezone.utc))
+    sd = newest["survey_data"]
+    ext = sd["walk_extensions"]
+    run_id = ext.get("run_id") or sd.get("surveyed_at") or newest.get("surveyed_at") or ""
+    walk_runs = registry.list_filesystem_walk_runs(slug)
+    stored = next((r for r in walk_runs if r["run_id"] == run_id), None)
+    rows_kept = {
+        "kept": stored is not None, "files": (stored or {}).get("files", 0), "hashed": (stored or {}).get("hashed", 0) or 0,
+        "runs_kept": len(walk_runs),
+        "egeria_report_guid": (stored or {}).get("egeria_report_guid", ""),
+        "error": (ext.get("rows_kept") or {}).get("error", ""),
+    }
+    pub_row = next((r for r in rows if r.get("egeria_report_guid") and r.get("surveyed_at") == newest.get("surveyed_at")
+                    and r.get("source") == "egeria-published"), None)
+    proof = ((pub_row or {}).get("survey_data") or {}).get("published_to_egeria") or {}
+    publish = _publish_words(proof) if pub_row else None
+    narratives = sd.get("folder_narratives") or []
+    return {
+        "run_id": run_id, "surveyed_at": sd.get("surveyed_at") or newest.get("surveyed_at") or "",
+        "led_by": ext.get("led_by", ""), "capped_words": ext.get("capped_words") or (sd.get("walk_limits") or {}).get("capped_words", ""),
+        "limits": sd.get("walk_limits"),
+        "report_sentence": sd.get("report_sentence") or ((sd.get("surveyed_by") or {}).get("reach") or {}).get("report_sentence")
+        or "surveyed by Resource Explorer",
+        "folders": ext.get("folders"), "owners": ext.get("owners"), "modes": ext.get("modes"), "hashing": ext.get("hashing"),
+        "narratives_summary": ext.get("narratives"), "narratives": narratives[:NARRATIVES_SHOWN],
+        "narratives_not_shown": max(0, len(narratives) - NARRATIVES_SHOWN),
+        "not_walked_by_name": (sd.get("walk_limits") or {}).get("not_walked_by_name") or {},
+        "rows": rows_kept,
+        "report_guid": (pub_row or {}).get("egeria_report_guid", ""), "published": bool(publish and publish["published"]),
+        "publish": publish,
+    }
+
+
 def folder_survey_view(registry, slug: str) -> dict:
     """The newest folder survey, whoever led it, with the probe state and who leads NOW."""
     fs = registry.get_filesystem(slug)
@@ -105,7 +153,7 @@ def folder_survey_view(registry, slug: str) -> dict:
     re_walk = _re_candidate(registry, slug)
     candidates = [c for c in (egeria, re_walk) if c and not c.get("none")]
     base = {"slug": slug, "reach": fork.as_dict(), "leads": fork.surveyor,
-            "egeria_run_state": (egeria or {}).get("run_state", "")}
+            "egeria_run_state": (egeria or {}).get("run_state", ""), "extensions": extensions_view(registry, slug)}
     if not candidates:
         return {**base, "state": "none", "surveyor": "", "surveyed_at": "", "report_guid": "", "published": False,
                 "publish": None, "report_sentence": "", "results": None, "limits": None, "detail_lines": []}
