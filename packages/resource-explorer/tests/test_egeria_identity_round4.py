@@ -70,6 +70,7 @@ def _press_then_queue(w, fake, person="dana"):
 
 # ── 1: the catalog commit's server and database elements carry the requester ─
 
+
 def test_a_queued_catalog_commit_stamps_the_server_and_database_with_the_requester(world, fake):
     choose(world, "sales", "catalogue")
     _press_then_queue(world, fake)
@@ -96,6 +97,7 @@ def test_a_stamp_that_did_not_land_makes_the_publish_step_partial(world, fake):
 
 
 # ── 2: a drain-loop retry stamps the row's author, never the service account ──
+
 
 def _attach_row(reg, by):
     payload = {"slug": "db", "schema": "sales", "database_guid": "dbg", "curation_id": "c1"}
@@ -132,6 +134,7 @@ def test_the_helper_never_names_the_daemon_user_as_owner():
 
 
 # ── 4/5: stamps are reported; requestedBy merges into the current map ───────
+
 
 class _Props:
     def __init__(self, current=None, read_error=None):
@@ -216,6 +219,7 @@ def test_a_component_whose_ownership_did_not_land_is_published_as_partial(monkey
 
 # ── 6: a file-system survey publishes only when someone chose to ─────────────
 
+
 def test_a_file_system_with_a_url_is_not_published_unless_asked(tmp_path, monkeypatch):
     from resource_explorer.registry import FileSystemEntity, ProjectRegistry
     from resource_explorer.surveyors.filesystem import hybrid_filesystem_surveyor as hfs
@@ -250,13 +254,8 @@ def test_the_survey_route_publishes_only_on_an_explicit_choice(body, chosen):
     assert _publish_chosen(FileSystemSurveyRequest(**body)) is chosen
 
 
-def test_classic_does_not_pre_tick_use_egeria_because_a_url_exists():
-    html = (Path(__file__).resolve().parents[1] / "resource_explorer/web/static/index.html").read_text()
-    assert "getElementById('survey-fs-use-egeria').checked = !!fs.egeria_url" not in html
-    assert "getElementById('survey-fs-use-egeria').checked = false" in html
-
-
 # ── found live on 8813: the platform URL has one source ───────────────────────
+
 
 def test_with_the_variable_unset_the_database_surveyor_resolves_the_configured_platform(monkeypatch):
     """8813's .env does not set EGERIA_PLATFORM_URL. The config default is the platform; a direct

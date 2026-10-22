@@ -5,7 +5,6 @@ from fastapi import APIRouter, Query
 
 from resource_explorer.surveyors.analysis_catalog_reader import (
     get_analyses,
-    get_egeria_merge_status,
     list_perspectives,
 )
 
@@ -567,13 +566,3 @@ def _attach_trend_support(resource_type: str, entries: list[dict]) -> None:
         _, trend_reader = record
         entry["trend"] = "tracked" if trend_reader is not None else "not_tracked"
 
-
-@router.get("/{resource_type}/egeria-status")
-def get_analyses_egeria_status(resource_type: str) -> dict:
-    """Outcome of the most recent live-Egeria merge attempt for this
-    resource_type, so the UI can show a "live Egeria data unavailable"
-    indicator only when a merge was actually attempted and failed — not for
-    resource types that were never wired up to a Technology Type at all.
-    Call GET /{resource_type} first; this reflects that call's outcome, it
-    does not trigger a fresh one."""
-    return {"resource_type": resource_type, "status": get_egeria_merge_status(resource_type)}

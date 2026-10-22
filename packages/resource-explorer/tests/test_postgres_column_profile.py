@@ -98,6 +98,7 @@ from resource_explorer.surveyors.database.sampling import (
 
 # ── Fakes ─────────────────────────────────────────────────────────────────────
 
+
 class _FakeSamplingConnection:
     """A duck-typed stand-in for `PostgreSQLConnection` that records the SQL it
     was asked to run and replays canned column values.
@@ -248,6 +249,7 @@ def _sample(values, **kwargs):
 
 # ── 1. Sampling configuration (design §5.8) ──────────────────────────────────
 
+
 class TestSamplingConfiguration:
     """§5.8 is a configuration surface, not a single knob."""
 
@@ -333,6 +335,7 @@ class TestSamplingConfiguration:
 
 
 # ── 2. The SQL: TABLESAMPLE, not ORDER BY random() ───────────────────────────
+
 
 class TestSampleSql:
     """§5.8 names `TABLESAMPLE SYSTEM`/`BERNOULLI` specifically, in preference
@@ -445,6 +448,7 @@ class TestSampleSql:
 
 # ── 3. The envelope (§5.8's first rule) ──────────────────────────────────────
 
+
 class TestProvenanceEnvelope:
     def test_the_sentence_carries_strategy_size_total_seed_and_date(self):
         # §5.8's own example: "from a random sample of 10 000 of 4.2 M rows
@@ -490,6 +494,7 @@ class TestProvenanceEnvelope:
 
 # ── 4. `n_distinct`'s sign convention ────────────────────────────────────────
 
+
 class TestResolveNDistinct:
     """pg_stats packs three meanings into one signed column. Two of the three
     are wrong if read as a plain number."""
@@ -530,6 +535,7 @@ class TestResolveNDistinct:
 
 
 # ── 5. data_class_match ──────────────────────────────────────────────────────
+
 
 class TestDataClassMatch:
     def _match(self, values, classes=(EMAIL_CLASS,), column="email",
@@ -735,6 +741,7 @@ class TestDataClassMatch:
 
 # ── 6. reference_data_match ──────────────────────────────────────────────────
 
+
 class TestReferenceDataMatch:
     def _match(self, distinct_values, distinct_count=5, total_rows=100_000,
                sets=(COUNTRY_SET,), provenance=None, **kwargs):
@@ -884,6 +891,7 @@ class TestStatementsAreAlwaysQualified:
 
 
 # ── 7. The DRAFT proposal path ───────────────────────────────────────────────
+
 
 def _proposal_match(question="data_class_match"):
     values = [f"{i:08x}-0000-4000-8000-000000000000" for i in range(40)]
@@ -1084,6 +1092,7 @@ class TestDraftProposalPath:
 
 # ── 8. The RFA fallback (support doc §3) ─────────────────────────────────────
 
+
 class TestRfaFallback:
     def test_a_partial_reference_match_raises_an_rfa_listing_the_values(self):
         # §5.4 asks for this by name. And it stays an RFA even though DRAFT
@@ -1145,6 +1154,7 @@ class TestRfaFallback:
 
 
 # ── 9. Reading the platform ──────────────────────────────────────────────────
+
 
 class TestReferenceCatalogReads:
     def test_only_data_class_typed_elements_are_taken(self):
@@ -1507,6 +1517,7 @@ class TestSampleColumnValues:
 
 # ── 11. contentStatus reaches Egeria on the way out ──────────────────────────
 
+
 class TestContentStatusReachesThePublishPath:
     def test_a_draft_annotation_publishes_content_status(self):
         from resource_explorer.surveyors.annotation_props import build_annotation_props
@@ -1548,6 +1559,7 @@ class TestContentStatusReachesThePublishPath:
 
 
 # ── 12. …and reaches the surface a person reads ──────────────────────────────
+
 
 class TestContentStatusIsSurfaced:
     """The peer review's "load-bearing question before slice 10": does any
@@ -1616,22 +1628,6 @@ class TestContentStatusIsSurfaced:
             json_properties={}, content_status="DRAFT",
         )
         assert item.content_status == "DRAFT"
-
-    def test_the_frontend_renders_a_draft_badge(self):
-        from pathlib import Path
-
-        import resource_explorer
-
-        index = Path(resource_explorer.__file__).parent / "web" / "static" / "index.html"
-        source = index.read_text(encoding="utf-8")
-        renderer = source[source.index("function renderAnnotations"):]
-        renderer = renderer[: renderer.index("\n}")]
-        assert "content_status" in renderer
-        assert "DRAFT" in renderer
-        # An empty contentStatus must NOT draw a badge: "not stated" is what
-        # every pre-slice-10 annotation carries and is not "confirmed".
-        assert "cs\n" in renderer or "cs ?" in renderer or "cs ?" in renderer
-
 
 # ── §F, 2026-09-28: one column'''s failure can'''t cascade, and a view is never
 #    offered to TABLESAMPLE at all ──────────────────────────────────────────

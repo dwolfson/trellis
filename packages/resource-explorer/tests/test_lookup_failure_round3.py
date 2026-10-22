@@ -5,7 +5,6 @@ Fakes bind real pyegeria signatures; pyegeria exceptions are built the way pyege
 """
 from __future__ import annotations
 
-import inspect
 
 import httpx
 import pytest
@@ -26,13 +25,8 @@ def _zone_access_open(monkeypatch):
     return open_access(monkeypatch, caller_if_none="lookup-tester")
 
 
-def _a_csv_unreachable(name, *a, **k):
-    if name.endswith("/a.csv"):
-        raise PyegeriaConnectionException()
-    return MISS
-
-
 # ── 1. a file-system publish with skipped files is partial, never "success" ──
+
 
 @pytest.fixture
 def fs_reg(tmp_path, monkeypatch):
@@ -46,68 +40,6 @@ def fs_reg(tmp_path, monkeypatch):
     monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
                         lambda self, db_path=None, **k: setattr(self, "__dict__", r.__dict__) or None)
     return r
-
-
-def _fs_boundary(monkeypatch, lookup):
-    from pyegeria import AssetMaker, AutomatedCuration
-    from pyegeria.omvs.data_discovery import DataDiscovery
-
-    ac, am, dd = _fake(AutomatedCuration), _fake(AssetMaker), _fake(DataDiscovery)
-    ac.get_guid_for_name.side_effect = lookup
-    ac.get_template_guid_for_technology_type.return_value = GUID
-    ac.create_elem_from_template.return_value = GUID
-    ac.create_folder_element_from_template.return_value = GUID
-    am.create_asset.return_value = GUID
-    dd.create_annotation.return_value = GUID
-    monkeypatch.setattr("resource_explorer.egeria_clients.egeria_client",
-                        lambda *a, **k: _Clients({AutomatedCuration: ac, AssetMaker: am, DataDiscovery: dd}))
-    return ac
-
-
-@pytest.mark.usefixtures("_zone_access_open")
-def test_fs_publish_route_with_a_skipped_file_is_partial(fs_reg, monkeypatch):
-    from fastapi.testclient import TestClient
-
-    from resource_explorer.auth import create_access_token
-    from resource_explorer.web.app import app
-
-    ac = _fs_boundary(monkeypatch, _a_csv_unreachable)
-    monkeypatch.setattr("resource_explorer.single_publish.send_with_publish", lambda *a, **k: None)
-    token = create_access_token(user_id="lookup-tester", egeria_token="tok")
-    r = TestClient(app).post("/api/filesystems/fs1/publish", json={}, headers={"Authorization": "Bearer " + token})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["status"] == "partial"
-    assert list(body["files_not_checked"]) == ["a.csv"]
-    names = [c.args[0]["placeholderPropertyValues"]["fileName"] for c in ac.create_elem_from_template.call_args_list
-             if "fileName" in c.args[0]["placeholderPropertyValues"]]      # the root folder has none
-    assert names == ["b.csv"]
-
-
-def test_fs_hybrid_route_carries_files_not_checked_and_is_partial(fs_reg, monkeypatch):
-    """The hybrid survey route flattens the executor's step report; the list must survive that."""
-    from fastapi.testclient import TestClient
-
-    from resource_explorer.auth import create_access_token
-    from resource_explorer.surveyors.survey_definition_executor import SurveyDefinitionExecutor
-    from resource_explorer.web.app import app
-
-    real = inspect.signature(SurveyDefinitionExecutor.run_synthetic_step)
-
-    def run_synthetic_step(self, *a, **k):
-        real.bind(self, *a, **k)                          # the executor's real signature
-        return {"steps": [{"detail": {"result": {
-            "total_files": 2, "total_data_files": 2, "total_size": "2 B", "source": "custom",
-            "egeria_publish": {"filesystem_guid": GUID, "report_guid": "r", "annotation_count": 1,
-                               "annotations_in_egeria": 1, "files_not_checked": {"a.csv": "could not be made"}}}}}]}
-
-    monkeypatch.setattr(SurveyDefinitionExecutor, "run_synthetic_step", run_synthetic_step)
-    token = create_access_token(user_id="lookup-tester", egeria_token="tok")
-    r = TestClient(app).post("/api/filesystems/fs1/survey", json={"mode": "hybrid", "publish": True},
-                             headers={"Authorization": "Bearer " + token})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["status"] == "partial" and body["files_not_checked"] == {"a.csv": "could not be made"}
 
 
 def test_db_step_run_metrics_record_lineage_not_checked(tmp_path, monkeypatch):
@@ -148,6 +80,7 @@ def test_db_step_run_metrics_record_lineage_not_checked(tmp_path, monkeypatch):
 
 
 # ── 2. native survey: a view server that is down does not make a pointer "gone" ──
+
 
 def test_check_pointers_server_unavailable_is_unreadable_not_gone(tmp_path, monkeypatch):
     from pyegeria import MetadataExpert
@@ -194,6 +127,7 @@ def test_check_pointers_genuine_404_is_gone(tmp_path, monkeypatch):
 
 # ── 3. a fresh report short of its annotations is failed, with a failure row ──
 
+
 def test_fresh_report_short_of_annotations_is_failed():
     from resource_explorer.catalogue_commit import report_step_words
 
@@ -203,6 +137,7 @@ def test_fresh_report_short_of_annotations_is_failed():
 
 
 # ── 4. odd non-GUID answers are could-not-check, never "" (create) ──────
+
 
 def test_odd_answer_draft_zone_creates_nothing(monkeypatch):
     from resource_explorer.egeria_identity import ensure_draft_zone_exists
@@ -276,6 +211,7 @@ def test_shared_guid_reader_three_outcomes():
 
 # ── 5. a child under a folder that could not be checked ─────────────────
 
+
 def test_child_of_an_unchecked_folder_is_not_checked_not_no_guid(tmp_path):
     from pyegeria import AssetMaker, AutomatedCuration
 
@@ -313,6 +249,7 @@ def test_child_of_an_unchecked_folder_is_not_checked_not_no_guid(tmp_path):
 
 
 # ── 6. only a pyegeria cause (or an outbox look-up) is "refused by Egeria's security" ──
+
 
 def _github_403():
     req = httpx.Request("GET", "https://api.github.com/repos/o/p")
@@ -381,6 +318,7 @@ def test_bulk_delete_github_403_cause_is_not_called_egerias(monkeypatch, bulk_re
 
 
 # ── 7. annotation_count is RE's count; annotations_in_egeria is Egeria's ──
+
 
 def test_fs_catalog_counts_are_named_consistently():
     s = _fs_surveyor(lambda *a, **k: MISS)

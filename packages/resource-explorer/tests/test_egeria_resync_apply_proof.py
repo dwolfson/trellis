@@ -39,11 +39,10 @@ def test_a_refused_publish_leaves_an_activity_log_row():
     ok_reg.write_activity.assert_not_called()
 
 
-def test_both_uis_show_a_persistent_failure_and_no_unconditional_green():
+def test_the_ui_shows_a_persistent_failure_and_no_unconditional_green():
     """Fix 2, pinned at source level (no Node in CI, same as the other /next
     JS tests)."""
     nxt = (STATIC / "next/admin/resync.js").read_text()
-    classic = (STATIC / "index.html").read_text()
     # Next: failures render, and the refresh is skipped until dismissed.
     assert "data-resync-failures" in nxt and "data-resync-dismiss" in nxt
     body = nxt[nxt.index("async function showApplyResult"):]
@@ -51,10 +50,6 @@ def test_both_uis_show_a_persistent_failure_and_no_unconditional_green():
     assert body.index("applyFailures(data).length") < body.index("await load()")
     assert "return;" in body[:body.index("await load()")]
     assert "data.reachable === false" in nxt
-    # Classic: no unconditional success toast, and the counts are stated.
-    assert "'Resync applied.'" not in classic
-    assert "ok · " in classic and "failed" in classic
-    assert "resync-dismiss" in classic and "data.reachable === false" in classic
 
 
 def test_a_repo_with_no_project_context_gets_a_sentence_and_no_tickbox():

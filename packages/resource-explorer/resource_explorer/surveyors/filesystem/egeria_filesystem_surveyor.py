@@ -475,7 +475,7 @@ class EgeriaFileSystemSurveyor:
 
         limits = survey_data.get("walk_limits") or {}
         reach = (survey_data.get("surveyed_by") or {}).get("reach") or {}
-        report_sentence = reach.get("report_sentence") or "surveyed by Resource Explorer"
+        report_sentence = survey_data.get("report_sentence") or reach.get("report_sentence") or "surveyed by Resource Explorer"
         envelope = {
             "surveyor": file_reach.SURVEYOR_RE,
             "reachChecked": reach.get("checked_at", ""),
@@ -488,13 +488,25 @@ class EgeriaFileSystemSurveyor:
         skipped_words = not_walked_words(limits)
         if skipped_words:
             envelope["notWalked"] = skipped_words
-        annotations = to_annotations(folder_specs(survey_data, directory_name=canonical_mount), additional=envelope)
+        # Files build step 1: the walk's extensions (folder bulk and depth, owner and mode, hashes, narratives) publish beside
+        # Egeria's own types, as COUNTS ONLY (walk_extensions.extension_specs). A run that measured ONLY the extensions (beside an
+        # Egeria-led folder survey) has none of the counts Egeria keeps, so the folder-survey specs are not built for it.
+        from resource_explorer.surveyors.filesystem.walk_extensions import extension_specs
+
+        extensions_only = bool(survey_data.get("walk_extensions")) and not survey_data.get("surveyed_by")
+        if survey_data.get("walk_extensions"):
+            envelope["walkExtensions"] = "true"
+            envelope["hashAlgorithm"] = (survey_data["walk_extensions"].get("hashing") or {}).get("algorithm", "")
+            if limits.get("capped_words"):
+                envelope["walkCappedAt"] = limits["capped_words"]
+        specs = ([] if extensions_only else folder_specs(survey_data, directory_name=canonical_mount)) + extension_specs(survey_data)
+        annotations = to_annotations(specs, additional=envelope)
 
         # Data profiling failures — RE-specific (no Egeria native equivalent),
         # surfaced so a run with many malformed files doesn't read as silent.
         # A folder survey (Files step 2) publishes counts only: no path or name leaves for Egeria, so the per-file
         # schema profiles and the profiling-failure paths below belong to the older walk that opened files.
-        folder_survey = bool(survey_data.get("surveyed_by"))
+        folder_survey = bool(survey_data.get("surveyed_by")) or extensions_only
         profiling_errors = [] if folder_survey else survey_data.get("profiling_errors", [])
         if profiling_errors:
             annotations.append(
@@ -543,8 +555,9 @@ class EgeriaFileSystemSurveyor:
                 "qualifiedName": qualified_name,
                 "displayName": f"Survey: {fs_name}",
                 "description": (
-                    f"Folder survey of {fs_name} run at {surveyed_at} · {report_sentence}"
-                    + (f" · capped ({envelope['walkCappedBy']}): not the whole tree"
+                    (f"Resource Explorer's measures of {fs_name} run at {surveyed_at} · {report_sentence}" if extensions_only
+                     else f"Folder survey of {fs_name} run at {surveyed_at} · {report_sentence}")
+                    + (f" · {limits.get('capped_words') or 'capped'} ({envelope['walkCappedBy']}): not the whole tree"
                        if limits.get("capped") else "")
                     + (f" · {skipped_words}" if skipped_words else "")
                 ),

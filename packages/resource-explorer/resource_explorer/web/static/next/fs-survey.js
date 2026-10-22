@@ -14,7 +14,8 @@
  * from which button was pressed. A number the survey did not carry is "–", never 0.
  */
 import { esc } from '/static/next/app.js';
-import { getFolderSurvey, runFolderSurvey, publishFolderSurvey, checkFilesystemReach } from '/static/re-api.js';
+import { getFolderSurvey, runFolderSurvey, publishFolderSurvey, checkFilesystemReach, runWalkExtensions, publishWalkExtensions } from '/static/re-api.js';
+import { enhanceTable } from '/static/next/colresize.js';
 import { fmtBytes } from '/static/next/stages/native-report.js';
 
 /** Placeholder words, in one table, for the designer. */
@@ -38,6 +39,23 @@ export const FOLDER_SURVEY_WORDS = {
   pathChecked: (p) => `path checked: ${p}`,
   brokenLinks: (n) => `${n} broken link${n === 1 ? '' : 's'} (target gone) · counted, not walked`,
   egeriaList: "the names are in Egeria's own file · not read here",
+  // Walk measures (Files build step 1): what Egeria's Folder Survey does not keep.
+  measureBeside: "Measure beside Egeria's survey",
+  measuringBeside: 'Measuring…',
+  publishMeasures: 'Publish these measures to Egeria',
+  measuresHeading: 'Walk measures',
+  measuresBy: (date, led) => `measured by Resource Explorer${date ? ` · ${date}` : ''}${led === 'egeria' ? " · beside Egeria's Folder Survey" : ''}`,
+  noMeasures: 'not measured yet',
+  rowsKept: (n, runs) => `per-file rows kept · ${num(n)} files${runs > 1 ? ` · ${num(runs)} runs held` : ''}`,
+  rowsNotKept: (why) => `per-file rows not kept${why ? ` · ${why}` : ''}`,
+  hashesOff: 'hashing off · no content hash taken',
+  hashed: (n, limit) => `${num(n)} files hashed (SHA-256) · files over ${fmtBytes(limit)} are not hashed`,
+  notHashed: (over, secret, linked, unreadable) => [
+    over ? `${num(over)} over the size limit` : '', secret ? `${num(secret)} with a secret-looking name` : '',
+    linked ? `${num(linked)} linked` : '', unreadable ? `${num(unreadable)} unreadable` : ''].filter(Boolean).join(' · '),
+  noNarratives: 'no README-type file found',
+  narrativeLine: (file, when) => `described by ${file}${when ? ` · modified ${when}` : ''}`,
+  proposal: 'a proposal · confirm it on Curate',
 };
 
 const dash = '–';
@@ -149,13 +167,90 @@ export function folderResultsHtml(view) {
   </div>`;
 }
 
-/** The whole card. `busy` is 'survey' | 'check' | 'publish' | ''. */
+const th = (t) => `<th scope="col" class="px-2 py-[2px] text-left font-normal text-ink-muted">${esc(t)}</th>`;
+const tdText = (t) => `<td class="max-w-[48ch] truncate px-2 py-[2px] text-ink" title="${esc(t)}">${esc(t)}</td>`;
+const tdNum = (t) => `<td class="px-2 py-[2px] text-right text-ink">${esc(t)}</td>`;
+
+/** A small data table: a real `<table>` with a header row, so its columns resize (colresize.js) and a long cell scrolls or
+ *  truncates inside its own box rather than overrunning at the largest text. */
+export function measureTableHtml(id, title, headers, rows) {
+  return `<div class="mt-s2" data-fs-measure-table="${esc(id)}">
+    <div class="text-caps uppercase tracking-caps text-ink-muted">${esc(title)}</div>
+    <div class="max-w-full overflow-x-auto">
+      <table data-rc-id="fs-measure-${esc(id)}" class="w-full border-collapse text-caveat">
+        <thead><tr>${headers.map(th).join('')}</tr></thead>
+        <tbody>${rows.map((r) => `<tr>${r.map((c, i) => (i === 0 ? tdText(c) : tdNum(c))).join('')}</tr>`).join('')}</tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+/** The walk's extensions (Files build step 1): bulk and depth per folder, owner and mode, hashes, noise directories, and each
+ *  folder's own narrative as a proposal. What it says about the rows and about publishing comes from the view's stored proof. */
+export function walkMeasuresHtml(ext) {
+  const W = FOLDER_SURVEY_WORDS;
+  if (!ext) return `<div data-fs-measures data-fs-measures-state="none" class="mt-s3 text-caveat text-ink-muted">${esc(W.measuresHeading)} · ${esc(W.noMeasures)}</div>`;
+  const f = ext.folders || {};
+  const h = ext.hashing || {};
+  const o = ext.owners || {};
+  const rows = ext.rows || {};
+  const capped = ext.capped_words
+    ? `<div data-fs-measures-capped class="text-caveat text-state-warn"><span class="font-glyph" aria-hidden="true">⚠</span> ${esc(ext.capped_words)} · not the whole tree</div>`
+    : `<div data-fs-measures-not-capped class="text-provenance text-ink-muted">${esc(W.complete)}</div>`;
+  const pub = ext.publish
+    ? (ext.publish.published ? W.published(ext.report_guid, ext.publish.landed_words) : W.notPublishedWhy(ext.publish.not_published_why || 'unknown'))
+    : W.notPublished;
+  const notWalked = Object.entries(ext.not_walked_by_name || {}).map(([n, c]) => `${n} ×${num(c)}`).join(', ');
+  const modes = Object.entries(ext.modes || {}).slice(0, 8).map(([m, c]) => `${m} ×${num(c)}`).join(', ');
+  const notHashed = W.notHashed(h.over_limit_files, h.secret_named_files, h.symlink_files, h.unreadable_files);
+  const narr = ext.narratives || [];
+  const ns = ext.narratives_summary || {};
+  return `<div data-fs-measures data-fs-measures-state="measured" data-fs-measures-led="${esc(ext.led_by)}" class="mt-s3">
+    <div class="text-caps uppercase tracking-caps text-ink-muted">${esc(W.measuresHeading)}</div>
+    <div class="text-caveat text-ink" data-fs-measures-by>${esc(W.measuresBy(day(ext.surveyed_at), ext.led_by))}
+      <span class="text-ink-muted"> · ${esc(ext.report_sentence || '')}</span></div>
+    ${capped}
+    <div class="text-provenance ${rows.kept ? 'text-ink-muted' : 'text-state-warn'}" data-fs-measures-rows data-fs-rows-kept="${rows.kept ? 'yes' : 'no'}">${esc(rows.kept ? W.rowsKept(rows.files, rows.runs_kept) : W.rowsNotKept(rows.error))}</div>
+    <div class="text-provenance text-ink-muted" data-fs-measures-published>${esc(pub)}</div>
+    <div class="mt-s2">
+      ${statRow('Deepest level', num(f.deepest_folder_depth))}
+      ${statRow('Folders with files', num(f.folders_with_files))}
+      ${statRow('Owners', num(o.distinct_owners))}
+      ${statRow('Groups', num(o.distinct_groups))}
+      ${statRow('World-readable', num(o.world_readable_files))}
+      ${statRow('Modes', modes || dash)}
+      ${statRow('Not walked', notWalked || 'none')}
+    </div>
+    ${h.budget_words ? `<div data-fs-measures-hash-budget class="text-caveat text-state-warn"><span class="font-glyph" aria-hidden="true">⚠</span> ${esc(h.budget_words)}</div>` : ''}
+    <div class="text-provenance text-ink-muted" data-fs-measures-hash>${esc(h.off ? W.hashesOff : W.hashed(h.hashed_files, h.limit_bytes))}${notHashed ? ` · ${esc(notHashed)}` : ''}</div>
+    ${(f.largest_folders || []).length ? measureTableHtml('largest', 'Heaviest folders', ['Folder', 'Depth', 'Files', 'Size'],
+      f.largest_folders.map((x) => [x.path, num(x.depth), num(x.files), fmtBytes(x.bytes)])) : ''}
+    ${(f.depth_histogram || []).length ? measureTableHtml('depths', 'By depth', ['Depth', 'Folders', 'Files', 'Size'],
+      f.depth_histogram.map((x) => [String(x.depth), num(x.folders), num(x.files), fmtBytes(x.bytes)])) : ''}
+    <div class="mt-s2" data-fs-narratives>
+      <div class="text-caps uppercase tracking-caps text-ink-muted">Folders that describe themselves</div>
+      ${narr.length ? narr.map((n) => `<div class="mb-[2px] text-caveat" data-fs-narrative>
+        <span class="break-words text-ink">${esc(n.folder || '(root)')}</span>
+        <span class="text-ink-muted"> · ${esc(W.narrativeLine(n.stated_by, day(n.modified_at)))}${n.licence ? ` · licence ${esc(n.licence)}` : ''}</span>
+        <div class="break-words text-provenance text-ink-muted">${esc(n.title || '')}${n.description ? ` · ${esc(n.description)}` : ''} · ${esc(W.proposal)}</div></div>`).join('')
+      : `<div class="text-provenance text-ink-muted">${esc(W.noNarratives)}</div>`}
+      ${ext.narratives_not_shown ? `<div class="text-provenance text-ink-muted">and ${num(ext.narratives_not_shown)} more</div>` : ''}
+      ${ns.stopped_at_read_cap ? `<div class="text-provenance text-state-warn">stopped after ${num(ns.read_cap)} files read · not every folder was looked at</div>` : ''}
+    </div>
+  </div>`;
+}
+
+/** The whole card. `busy` is 'survey' | 'check' | 'publish' | 'measure' | 'publish-measures' | ''. */
 export function folderSurveyCardHtml(view, { busy = '', error = '' } = {}) {
   const W = FOLDER_SURVEY_WORDS;
   const reach = (view && view.reach) || {};
   const canSurvey = !!reach.surveyor;     // a state that names who leads (Egeria expected or verified; RE-led)
   const needsPublish = view && view.state === 'measured' && view.surveyor && !view.published
     && view.surveyor !== "Egeria's Folder Survey" && reach.surveyor === 'Resource Explorer';
+  // Egeria's Folder Survey leads: Resource Explorer's own walk measures what that survey does not keep, beside it.
+  const besideEgeria = reach.surveyor === "Egeria's Folder Survey";
+  const ext = view && view.extensions;
+  const needsPublishMeasures = !!(ext && ext.led_by === 'egeria' && !ext.published && ext.rows && ext.rows.kept);
   const btn = (act, label, on) => `<button type="button" data-fs-act="${act}" ${on ? '' : 'disabled'}
     class="shrink-0 cursor-pointer rounded-sm border ${on ? 'border-accent text-accent-ink' : 'border-rule-strong text-ink-muted'} bg-transparent px-2 py-[2px] text-caveat disabled:cursor-default">${esc(label)}</button>`;
   return `<div id="fs-folder-survey" class="mt-s3 mb-s3" data-fs-card>
@@ -165,9 +260,12 @@ export function folderSurveyCardHtml(view, { busy = '', error = '' } = {}) {
       ${btn('check', busy === 'check' ? W.checking : W.check, !busy)}
       ${btn('survey', busy === 'survey' ? W.pressing : W.press, !busy && canSurvey)}
       ${needsPublish ? btn('publish', busy === 'publish' ? W.publishing : W.publish, !busy) : ''}
+      ${besideEgeria ? btn('measure', busy === 'measure' ? W.measuringBeside : W.measureBeside, !busy) : ''}
+      ${needsPublishMeasures ? btn('publish-measures', busy === 'publish-measures' ? W.publishing : W.publishMeasures, !busy) : ''}
     </div>
     ${error ? `<div data-fs-error class="mt-[2px] text-provenance text-state-warn">${esc(error)}</div>` : ''}
     ${folderResultsHtml(view)}
+    ${walkMeasuresHtml(view && view.extensions)}
   </div>`;
 }
 
@@ -180,6 +278,7 @@ export async function mountFolderSurvey(host, slug, { onChange = () => {} } = {}
   const paint = (busy = '') => {
     host.innerHTML = folderSurveyCardHtml(view, { busy, error });
     host.querySelectorAll('[data-fs-act]').forEach((b) => b.addEventListener('click', () => press(b.dataset.fsAct)));
+    host.querySelectorAll('table[data-rc-id]').forEach((t) => enhanceTable(t));     // every /next data table resizes (colresize.js)
   };
   const read = async () => {
     try { view = await getFolderSurvey(slug); error = ''; } catch (e) { error = `could not read the folder survey: ${e.message}`; }
@@ -191,6 +290,8 @@ export async function mountFolderSurvey(host, slug, { onChange = () => {} } = {}
       if (act === 'check') await checkFilesystemReach(slug);
       else if (act === 'survey') await runFolderSurvey(slug, { publish: false });
       else if (act === 'publish') await publishFolderSurvey(slug);
+      else if (act === 'measure') await runWalkExtensions(slug, { publish: false });
+      else if (act === 'publish-measures') await publishWalkExtensions(slug);
     } catch (e) {
       error = e.message || String(e);
     }

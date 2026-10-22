@@ -281,36 +281,6 @@ async def remove_server(slug: str):
     return {"removed": slug}
 
 
-@router.post("/{slug}/discover", response_model=list[DiscoveredDatabase])
-async def discover_databases(slug: str):
-    """Connect to the server and list available databases (read-only: nothing is
-    remembered; `POST /{slug}/run` is the Run that records a candidate set)."""
-    from resource_explorer.registry import ProjectRegistry
-    from resource_explorer.surveyors.database.connection import server_connection
-    registry = ProjectRegistry()
-    server = registry.get_server(slug)
-    if not server:
-        raise HTTPException(404, f"Server '{slug}' not found")
-    if not server.db_user:
-        raise HTTPException(
-            400,
-            "Server has no stored credentials — update the server registration first",
-        )
-
-    def _discover():
-        with server_connection(
-            server.host, server.port, server.db_user, server.db_password, server.db_type
-        ) as conn:
-            return conn.list_databases()
-
-    try:
-        listed = await asyncio.to_thread(_discover)
-    except Exception as exc:
-        raise HTTPException(
-            500, f"Could not connect to server: {_safe_error(exc, server.db_password)}") from exc
-    return _build_candidates(registry, server.host, server.port, listed, server.slug, None)
-
-
 @router.post("/{slug}/run", response_model=SourceRun)
 async def run_source(slug: str):
     """Run a saved source: discover on it, say what is new since its last run,

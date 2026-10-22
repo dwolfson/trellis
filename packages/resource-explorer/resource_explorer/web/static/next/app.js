@@ -861,13 +861,6 @@ export function renderTopBar() {
     (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || 'not signed in';
   $('activity-count').textContent =
     state.counts.activity === null ? '–' : state.counts.activity;
-  const link = $('switch-ui');
-  // Same resource in the Classic UI (`/classic?resource=` is read there).
-  link.textContent = 'Classic';
-  link.href = oldUiHref();
-  link.title = state.selectedSlug
-    ? 'Open this resource in the Classic UI'
-    : 'Open the Classic UI';
   wireActivityButton();
   wireAdminButton();
   wireWhoamiButton();
@@ -8533,18 +8526,6 @@ function fmtBytes(n) {
   while (x >= 1024 && i < units.length - 1) { x /= 1024; i += 1; }
   const shown = i === 0 ? String(Math.round(x)) : (Math.round(x * 10) / 10).toFixed(1);
   return `${n < 0 ? '-' : ''}${shown} ${units[i]}`;
-}
-
-/** A link into the Classic UI (`/classic`), on the same resource.
- *
- *  `index.html` gained a `?resource=` reader for this — it had no deep link
- *  of any kind, so "links out preserving the resource" was not satisfiable
- *  without adding one. Additive: an unrecognised slug selects nothing and
- *  the app starts exactly as before. */
-export function oldUiHref() {
-  return state.selectedSlug
-    ? `/classic?resource=${encodeURIComponent(state.selectedSlug)}`
-    : '/classic';
 }
 
 /**

@@ -1,9 +1,7 @@
-"""Next is the default UI; Classic is explicit (owner, 2026-10-07).
+"""There is one UI (owner, 2026-10-21: Classic retired).
 
-`/` serves the Next shell, `/classic` the Classic one, `/next` keeps working
-(served directly, not redirected, so a bookmark's query string and a Portal
-`#sso=` fragment reach the page untouched). RE_DEFAULT_UI=classic flips `/`
-back without a code change; `/next` and `/classic` do not move with it.
+`/` and `/next` both serve the Next shell. `/next` is served directly, not redirected, so a bookmark's
+query string and a Portal `#sso=` fragment reach the page untouched. `/classic` and `RE_DEFAULT_UI` are gone.
 """
 from __future__ import annotations
 
@@ -17,7 +15,6 @@ from resource_explorer.auth import RE_PUBLIC_PATHS
 from resource_explorer.web import app as app_module
 
 STATIC = Path(resource_explorer.__file__).parent / "web" / "static"
-CLASSIC = (STATIC / "index.html").read_text()
 NEXT = (STATIC / "next" / "index.html").read_text()
 
 
@@ -26,19 +23,9 @@ def client():
     return TestClient(app_module.app, follow_redirects=False)
 
 
-def test_the_two_shells_are_distinguishable():
-    assert CLASSIC != NEXT
-
-
-def test_root_serves_next_by_default(client):
-    assert app_module._DEFAULT_UI == "next"
+def test_root_serves_the_next_shell(client):
     r = client.get("/")
     assert r.status_code == 200 and r.text == NEXT
-
-
-def test_classic_is_explicit(client):
-    r = client.get("/classic")
-    assert r.status_code == 200 and r.text == CLASSIC
 
 
 def test_next_still_serves_next_without_redirect(client):
@@ -46,39 +33,27 @@ def test_next_still_serves_next_without_redirect(client):
     assert r.status_code == 200 and r.text == NEXT
 
 
-def test_classic_default_switch_flips_only_root(client, monkeypatch):
-    monkeypatch.setattr(app_module, "_DEFAULT_UI", "classic")
-    assert client.get("/").text == CLASSIC
-    assert client.get("/next").text == NEXT
-    assert client.get("/classic").text == CLASSIC
+def test_classic_is_gone(client):
+    assert client.get("/classic").status_code in (401, 404)
+    assert not (STATIC / "index.html").exists()
+    assert not (STATIC / "tailwind.css").exists()
 
 
-@pytest.mark.parametrize("raw,expected", [
-    (None, "next"), ("", "next"), ("next", "next"), ("classic", "classic"),
-    (" Classic ", "classic"), ("bogus", "next"),
-])
-def test_resolve_default_ui(raw, expected):
-    assert app_module._resolve_default_ui(raw) == expected
+def test_no_default_ui_switch_is_left():
+    assert not hasattr(app_module, "_DEFAULT_UI")
+    assert not hasattr(app_module, "_resolve_default_ui")
+    from resource_explorer.config import WebUIConfig
+
+    assert "default_ui" not in WebUIConfig.model_fields
 
 
-def test_all_three_shells_are_public_so_login_can_render():
-    for p in ("/", "/next", "/classic"):
+def test_both_shells_are_public_so_login_can_render():
+    for p in ("/", "/next"):
         assert p in RE_PUBLIC_PATHS
+    assert "/classic" not in RE_PUBLIC_PATHS and "/index.html" not in RE_PUBLIC_PATHS
 
 
-def test_next_header_link_goes_to_classic_with_honest_wording():
+def test_next_header_has_no_link_into_classic():
     app = (STATIC / "next" / "app.js").read_text()
-    assert "/next · open current UI" not in app
-    assert "export function oldUiHref() {" in app
-    block = app[app.index("export function oldUiHref()"):][:300]
-    assert "/classic?resource=" in block and "'/classic'" in block
-    assert 'href="/classic"' in NEXT
-    assert "switch to current UI" not in NEXT
-
-
-def test_next_classic_link_is_not_hidden_on_narrow_screens():
-    assert "#switch-ui { display: none; }" not in NEXT
-
-
-def test_classic_header_links_to_new_ui():
-    assert 'id="open-new-ui"' in CLASSIC and 'href="/next"' in CLASSIC
+    assert "oldUiHref" not in app
+    assert "/classic" not in NEXT and "switch-ui" not in NEXT and "switch-ui" not in app

@@ -48,9 +48,10 @@ def surveyor(monkeypatch):
         def __init__(self, entity, registry):
             pass
 
-        def run(self, *, profile_contents=True):
-            # Files step 2: the folder survey's walk opens no file contents.
-            assert profile_contents is False
+        def run(self, *, profile_contents=True, walk_extensions=False):
+            # Files step 2: the folder survey's walk opens no data-file contents. Files build step 1: it also measures the
+            # extensions (owner, mode, hash under the limit).
+            assert profile_contents is False and walk_extensions is True
             return {"surveyed_at": "2026-08-25T00:00:00", "file_count": 42}
 
     monkeypatch.setattr(mod, "LocalFileSystemSurveyor", _Fake)

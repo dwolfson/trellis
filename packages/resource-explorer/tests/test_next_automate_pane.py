@@ -150,18 +150,15 @@ class TestSubscriptionCreationNowLivesInTheQuestionsEngine:
         assert "🔔 notify me" in body
         assert "question row" in body
 
-    def test_it_still_links_out_via_the_shared_old_ui_href_helper(self):
-        # Kept as the fallback for database/filesystem resources, which the
-        # Questions engine openNotifyDialog hangs off does not cover yet
-        # (state.resourceType !== 'repo' in app.js's loadPane()).
+    def test_it_no_longer_links_out_to_classic(self):
+        # Classic was retired (re/retire-classic, 2026-10-21). The link-out was a fallback for database/filesystem
+        # resources, which the Questions engine's openNotifyDialog has covered since re/next-db-fs-gate-removal
+        # (2026-09-22), so nothing replaces it: the pane must not point at a UI that no longer exists.
         app = _app()
-        assert "export function oldUiHref() {" in app
+        assert "oldUiHref" not in app
         src = _automate_src()
-        # re/next-db-fs-gate-removal (2026-09-22) added `apiEntityType` to
-        # this same import line (see test_next_db_fs_gate_removal.py) --
-        # match on the two names present rather than the exact literal line.
-        assert "state, esc, $, icon, oldUiHref, apiEntityType } from '/static/next/app.js';" in src
-        assert "oldUiHref()" in src
+        assert "oldUiHref" not in src
+        assert "/classic" not in src
 
     def test_no_create_subscription_form_exists_in_this_module(self):
         # The real creation logic lives in app.js (openNotifyDialog) and

@@ -67,13 +67,12 @@ def _legacy_insert(registry, table, **cols):
         conn.execute(f"INSERT INTO {table} ({names}) VALUES ({marks})", tuple(cols.values()))
 
 
-# ── 401 when nobody is signed in, for each of the five write routes ──────────
+# ── 401 when nobody is signed in, for each of the write routes ──────────
 
 WRITE_CALLS = [
     ("add tag", "post", "/api/curate/tags/repo/p", {"tag": "x"}),
     ("delete tag", "delete", "/api/curate/tags/repo/p/x", None),
     ("feedback", "post", "/api/curate/feedback/repo/p", {"rating": 4, "message": "m"}),
-    ("add note", "post", "/api/curate/notes/repo/p", {"note": "n"}),
     ("delete note", "delete", "/api/curate/notes/some-id", None),
 ]
 
@@ -97,28 +96,25 @@ def test_signed_out_delete_does_not_remove_an_existing_legacy_note(client, regis
 
 # ── signed-in writes record the session user; the body cannot override ───────
 
+
 def test_signed_in_writes_record_author(client):
     h = as_user("alice")
     assert client.post("/api/curate/tags/repo/p", json={"tag": "Gold"}, headers=h).status_code == 200
     assert client.post("/api/curate/feedback/repo/p", json={"rating": 5, "message": "m"}, headers=h).status_code == 200
-    assert client.post("/api/curate/notes/repo/p", json={"note": "n"}, headers=h).status_code == 200
     tag = client.get("/api/curate/tags-detail/repo/p").json()[0]
     fb = client.get("/api/curate/feedback/repo/p").json()[0]
-    note = client.get("/api/curate/notes/repo/p").json()[0]
-    for row in (tag, fb, note):
+    for row in (tag, fb):
         assert row["author"] == "alice" and row["authored"] is True
         assert row["author_label"] == "alice"
 
 
 def test_body_author_is_ignored_and_users_are_not_mixed(client):
     a, b = as_user("alice"), as_user("bob")
-    client.post("/api/curate/notes/repo/p", json={"note": "from alice", "author": "bob"}, headers=a)
-    client.post("/api/curate/notes/repo/p", json={"note": "from bob", "author": "alice"}, headers=b)
     client.post("/api/curate/feedback/repo/p", json={"message": "fa", "author": "bob"}, headers=a)
+    client.post("/api/curate/feedback/repo/p", json={"message": "fb", "author": "alice"}, headers=b)
     client.post("/api/curate/tags/repo/p", json={"tag": "t", "author": "bob"}, headers=a)
-    notes = {n["note"]: n["author"] for n in client.get("/api/curate/notes/repo/p").json()}
-    assert notes == {"from alice": "alice", "from bob": "bob"}
-    assert client.get("/api/curate/feedback/repo/p").json()[0]["author"] == "alice"
+    authors = {f["message"]: f["author"] for f in client.get("/api/curate/feedback/repo/p").json()}
+    assert authors == {"fa": "alice", "fb": "bob"}
     assert client.get("/api/curate/tags-detail/repo/p").json()[0]["author"] == "alice"
 
 
@@ -131,6 +127,7 @@ def test_tag_removal_records_who_removed_it(client, registry):
 
 
 # ── legacy rows read back unsigned, never blank ──────────────────────────────
+
 
 def test_legacy_rows_read_back_unsigned(client, registry):
     _legacy_insert(registry, "resource_tags", entity_type="repo", entity_slug="p",
@@ -151,9 +148,10 @@ def test_legacy_rows_read_back_unsigned(client, registry):
 
 # ── notes are append-only once signed; legacy unsigned are deletable ─────────
 
+
 def test_signed_note_cannot_be_deleted_even_by_its_author(client, registry):
     h = as_user("alice")
-    nid = client.post("/api/curate/notes/repo/p", json={"note": "n"}, headers=h).json()["id"]
+    nid = registry.add_curator_note("repo", "p", "n", author="alice")["id"]
     for who in ("alice", "bob"):
         r = client.delete(f"/api/curate/notes/{nid}", headers=as_user(who))
         assert r.status_code == 409
@@ -184,7 +182,7 @@ def test_there_is_no_note_edit_route(client):
 
 #: Write routes with their own, stronger authorization (workflow-layer curation
 #: rights, 403), not part of the tags/feedback/notes family.
-_OWN_AUTHORIZATION = {"add_component_verdict", "add_blueprint_verdict"}
+_OWN_AUTHORIZATION = {"add_blueprint_verdict"}
 
 
 def test_every_curate_write_route_has_the_signin_guard():
@@ -194,8 +192,8 @@ def test_every_curate_write_route_has_the_signin_guard():
         if route.methods & {"POST", "PUT", "PATCH", "DELETE"}:
             write_endpoints.append(route.endpoint)
     names = {fn.__name__ for fn in write_endpoints}
-    # The five this slice covers must be present, so renaming cannot hide them.
-    assert {"add_tag", "remove_tag", "add_feedback", "add_note", "delete_note"} <= names
+    # The four this slice covers must be present, so renaming cannot hide them.
+    assert {"add_tag", "remove_tag", "add_feedback", "delete_note"} <= names
     unguarded = [fn.__name__ for fn in write_endpoints
                  if fn.__name__ not in _OWN_AUTHORIZATION
                  and "_require_author(" not in inspect.getsource(fn)]

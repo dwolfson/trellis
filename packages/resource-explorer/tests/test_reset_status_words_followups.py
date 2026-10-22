@@ -110,19 +110,11 @@ def registry(tmp_path):
     return r
 
 
-def test_the_legacy_page_never_copies_an_unbound_context_onto_other_resources():
-    html = (STATIC / "index.html").read_text(encoding="utf-8")
-    # the investigation label must not make an `unbound` investigation the session default ...
-    assert ("inv.egeria_context.status !== 'unset' && inv.egeria_context.status !== 'unbound'") in html
-    # ... and a session default that is `unbound` must not be POSTed to a resource
-    assert "_sessionEgeriaProjectContext.status === 'unset' || _sessionEgeriaProjectContext.status === 'unbound'" in html
-
-
 # ── the owner's invocation, the version refusal, unknown times, one tie rule ─────────────────────────────
 
 import json  # noqa: E402
 
-from tests.test_egeria_reset_cleanup import RESET, TOKEN, apply, dry  # noqa: E402
+from tests.test_egeria_reset_cleanup import apply, dry  # noqa: E402
 import clear_egeria_pointers_after_reset as S  # noqa: E402
 
 

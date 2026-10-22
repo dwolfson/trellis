@@ -10,12 +10,8 @@ Nothing here contacts Egeria.
 """
 from __future__ import annotations
 
-import json
-import logging
 import os
-import sqlite3
 import threading
-import time
 
 import pytest
 
@@ -113,60 +109,8 @@ def client(reg):
 
 # ── bulk ops: Delete in Egeria (a route) → the signed-in Caller ───────────────
 
-def test_bulk_delete_in_egeria_reaches_egeria_with_the_callers_token(boundary, reg, client, monkeypatch):
-    reg.set_egeria_asset_guid("p", "guid-p")
-    monkeypatch.setattr("pyegeria.AssetMaker", boundary.fake("AssetMaker", delete_asset=lambda g: None))
-    r = client.post("/api/egeria/linkage/delete-in-egeria",
-                    json={"targets": [{"entity_type": "repo", "slug": "p"}], "dry_run": False}, headers=_token())
-    assert r.status_code == 200, r.text
-    assert r.json()["succeeded"] == 1
-    assert boundary.users_and_tokens() == {("AssetMaker", PERSON, PERSON_TOKEN, False)}
-    assert boundary.calls == [("AssetMaker", "delete_asset", PERSON, PERSON_TOKEN)]
-
-
-def test_bulk_delete_with_no_caller_is_401_and_builds_no_client(boundary, reg, client, monkeypatch):
-    reg.set_egeria_asset_guid("p", "guid-p")
-    monkeypatch.setattr("pyegeria.AssetMaker", boundary.fake("AssetMaker", delete_asset=lambda g: None))
-    r = client.post("/api/egeria/linkage/delete-in-egeria",
-                    json={"targets": [{"entity_type": "repo", "slug": "p"}], "dry_run": False})
-    assert r.status_code == 401, r.text
-    assert boundary.clients == [], "no caller must never fall back to the service account"
-
-
-def test_bulk_delete_with_an_expired_sign_in_is_401_with_the_sentence(boundary, reg, client, monkeypatch):
-    reg.set_egeria_asset_guid("p", "guid-p")
-    monkeypatch.setattr("pyegeria.AssetMaker", boundary.fake("AssetMaker", delete_asset=lambda g: None))
-    headers = _token()
-    # The Egeria token's own exp has passed while the app session still stands (the factory reads
-    # the Egeria token's exp; patched here, after the app JWT was minted).
-    monkeypatch.setattr("resource_explorer.egeria_clients._token_expiry", lambda tok: int(time.time()) - 5)
-    r = client.post("/api/egeria/linkage/delete-in-egeria",
-                    json={"targets": [{"entity_type": "repo", "slug": "p"}], "dry_run": False}, headers=headers)
-    assert r.status_code == 401
-    assert r.json()["detail"] == "your Egeria sign-in expired; sign in again"
-    assert boundary.clients == []
-
-
-def test_a_refusal_is_reported_as_egerias_and_never_retried_as_anyone_else(boundary, reg, client, monkeypatch):
-    reg.set_egeria_asset_guid("p", "guid-p")
-
-    class Refused(Exception):
-        related_http_code = 403
-
-    def refuse(guid):
-        raise Refused("OPEN-METADATA-SECURITY-403-007 User dana is not authorized to issue operation "
-                      "Delete on Asset guid-p. More text here.")
-    monkeypatch.setattr("pyegeria.AssetMaker", boundary.fake("AssetMaker", delete_asset=refuse))
-    r = client.post("/api/egeria/linkage/delete-in-egeria",
-                    json={"targets": [{"entity_type": "repo", "slug": "p"}], "dry_run": False}, headers=_token())
-    detail = r.json()["details"][0]
-    assert detail["result"] == "failed"
-    assert detail["message"].startswith("refused by Egeria: OPEN-METADATA-SECURITY-403-007 User dana")
-    assert len(boundary.clients) == 1 and boundary.clients[0]["user"] == PERSON
-    assert not any(c["minted"] for c in boundary.clients), "never retried as the service account"
-
-
 # ── linkage recheck (a route) → the signed-in Caller ─────────────────────────
+
 
 def test_linkage_recheck_route_reads_as_the_caller(boundary, reg, client, monkeypatch):
     reg.set_egeria_asset_guid("p", "guid-p")
@@ -179,6 +123,7 @@ def test_linkage_recheck_route_reads_as_the_caller(boundary, reg, client, monkey
 
 # ── read routes: documentation-source read-back, project search → Caller ─────
 
+
 def test_doc_source_read_back_route_reads_as_the_caller(boundary, reg, client, monkeypatch):
     reg.set_egeria_asset_guid("p", "guid-p")
     monkeypatch.setattr("resource_explorer.web.routes.doc_sources._publish_status",
@@ -190,17 +135,8 @@ def test_doc_source_read_back_route_reads_as_the_caller(boundary, reg, client, m
     assert boundary.users_and_tokens() == {("MetadataExpert", PERSON, PERSON_TOKEN, False)}
 
 
-def test_project_search_route_reads_as_the_caller(boundary, reg, client, monkeypatch):
-    from resource_explorer.config import get_config
-
-    monkeypatch.setenv("EGERIA_PLATFORM_URL", get_config().egeria.platform_url)   # the allowed one
-    monkeypatch.setattr("pyegeria.ProjectManager", boundary.fake("ProjectManager", find_projects=lambda *a, **k: []))
-    r = client.get("/api/project-context/search/candidates?q=x", headers=_token())
-    assert r.status_code == 200, r.text
-    assert boundary.users_and_tokens() == {("ProjectManager", PERSON, PERSON_TOKEN, False)}
-
-
 # ── egeria_resync: the scheduled pass → Daemon(RESYNC) ────────────────────────
+
 
 def test_the_resync_loop_runs_as_the_daemon(boundary, reg, monkeypatch):
     from resource_explorer import egeria_resync
@@ -239,21 +175,6 @@ def test_the_resync_loop_runs_as_the_daemon(boundary, reg, monkeypatch):
 # These two tests replace the old "probe runs as the daemon" pin: the probe now builds NO client at all, and the
 # launch that remains runs as the signed-in person.
 
-def test_a_signed_in_reachability_press_makes_no_egeria_call_and_builds_no_client(
-        boundary, reg, client, monkeypatch, signed_in_caller):
-    from resource_explorer.registry import FileSystemEntity
-
-    for cls in ("AutomatedCuration", "MetadataExpert", "AssetMaker"):
-        monkeypatch.setattr(f"pyegeria.{cls}", boundary.fake(cls))
-    reg.register_filesystem(FileSystemEntity(slug="fs1", display_name="F", local_mount_point="/nonexistent/fs1",
-                                             canonical_mount_point="/x/fs1",
-                                             egeria_asset_guid="bbbbbbbb-0000-0000-0000-000000000002"))
-    # the conftest guard raises ProbeLaunchedInTest (a BaseException) if anything reaches the old engine-action launch
-    r = client.post("/api/filesystems/fs1/reachability", headers=_token())
-    assert r.status_code == 200, r.text
-    assert r.json()["outcome"] == "mounts_unknown"
-    assert boundary.clients == [] and boundary.calls == [], "the probe reached pyegeria"
-
 
 def test_the_egeria_led_survey_port_acts_as_the_signed_in_caller_never_the_reachability_daemon(signed_in_caller):
     from resource_explorer.egeria_clients import KIND_CALLER
@@ -265,6 +186,7 @@ def test_the_egeria_led_survey_port_acts_as_the_signed_in_caller_never_the_reach
 
 
 # ── the scheduler tick (RFA sync) → Daemon(SCHEDULER) ─────────────────────────
+
 
 def test_the_scheduler_tick_runs_rfa_sync_as_the_daemon(boundary, monkeypatch):
     from resource_explorer import rfa_egeria_sync, scheduler
@@ -280,6 +202,7 @@ def test_the_scheduler_tick_runs_rfa_sync_as_the_daemon(boundary, monkeypatch):
 
 
 # ── the outbox: inline drains run as the person; only the background loop is the daemon ─
+
 
 def _drain_fakes(boundary, monkeypatch):
     for cls in ("AssetMaker", "ExternalReferences"):
@@ -331,6 +254,7 @@ def test_a_drain_with_no_identity_claims_nothing_and_sends_nothing(boundary, reg
 
 
 # ── the catalog gateway: Curate route → Caller; background drain → daemon; stored creds never ─
+
 
 def _db_entity(**kw):
     from resource_explorer.registry import DatabaseEntity
@@ -397,6 +321,7 @@ def test_an_inline_drain_gateway_runs_as_the_person_not_the_stored_credential(bo
 
 # ── item 1: no credential goes to a platform RE is not configured for ────────
 
+
 def test_an_entity_naming_another_platform_is_refused_and_nothing_is_sent(boundary, monkeypatch, signed_in_caller):
     from resource_explorer.catalogue_commit import make_gateway
     from resource_explorer.egeria_clients import PlatformNotAllowed
@@ -408,22 +333,8 @@ def test_an_entity_naming_another_platform_is_refused_and_nothing_is_sent(bounda
     assert boundary.clients == [], "no client built, no token sent"
 
 
-def test_a_publish_route_naming_another_platform_is_403_and_sends_nothing(boundary, reg, client, monkeypatch):
-    from resource_explorer.registry import FileSystemEntity
-
-    reg.register_filesystem(FileSystemEntity(slug="fs", display_name="FS", local_mount_point="/tmp",
-                                             egeria_url="https://evil.invalid"))
-    monkeypatch.setattr(reg, "get_latest_filesystem_survey", lambda slug: {"survey_data": {}}, raising=False)
-    for cls in ("AutomatedCuration", "AssetMaker"):
-        monkeypatch.setattr(f"pyegeria.{cls}", boundary.fake(cls))
-    monkeypatch.setattr("pyegeria.omvs.data_discovery.DataDiscovery", boundary.fake("DataDiscovery"))
-    r = client.post("/api/filesystems/fs/publish", json={}, headers=_token())
-    assert r.status_code == 403, r.text
-    assert "not configured for: https://evil.invalid:443" in r.json()["detail"]
-    assert boundary.clients == []
-
-
 # ── the run queue: a survey → Daemon(RUN_QUEUE, requested_by), Ownership = requester ─
+
 
 def test_a_queued_survey_runs_as_the_daemon_and_stamps_ownership_as_the_requester(boundary, reg, monkeypatch):
     from resource_explorer import run_queue as rq
@@ -452,6 +363,7 @@ def test_a_queued_survey_runs_as_the_daemon_and_stamps_ownership_as_the_requeste
 # ── the run queue: a queued Publish → Daemon(RUN_QUEUE, requested_by) ─────
 # Owner's Egeria-consistent ruling (2026-10-09): a queued write is committed by RE's daemon, and
 # the person is the recorded requester and the Ownership owner.
+
 
 def test_a_queued_publish_is_committed_by_the_daemon_with_ownership_the_requester(boundary, reg, monkeypatch):
     from resource_explorer import run_queue as rq

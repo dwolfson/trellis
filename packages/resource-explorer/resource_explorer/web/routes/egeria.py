@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
@@ -145,14 +144,6 @@ class SurveyRow(BaseModel):
     annotation_count: int | None
 
 
-class EgeriaStatus(BaseModel):
-    slug: str
-    asset_guid: str | None
-    is_registered: bool
-    platform_url: str
-    surveys: list[SurveyRow]
-
-
 class PublishResult(BaseModel):
     status: str                    # "ok" | "error"
     report_guid: str | None = None
@@ -290,16 +281,7 @@ class CatalogItemResult(BaseModel):
     error: str | None = None
 
 
-class CatalogResult(BaseModel):
-    status: str          # "ok" | "partial" | "error"
-    cataloged: list[CatalogItemResult]
-
-
 # ── helpers ───────────────────────────────────────────────────────────────────
-
-def _platform_url() -> str:
-    return egeria_platform_url()
-
 
 def _get_project_or_404(slug: str):
     registry = ProjectRegistry()
@@ -452,33 +434,6 @@ async def get_dataclass_rules() -> list[DataClassRule]:
         return _built_in(KeywordLoad(KEYWORDS_UNREADABLE, reason=str(exc)[:200]))
 
 
-@router.get("/{slug}/status", response_model=EgeriaStatus)
-async def egeria_status(slug: str) -> EgeriaStatus:
-    """Return Egeria registration status and local survey history for a project.
-
-    Reads from the local SQLite registry only — no Egeria connection needed.
-    """
-    project, registry = _get_project_or_404(slug)
-    asset_guid = registry.get_egeria_asset_guid(slug)
-    surveys_raw = registry.get_egeria_surveys(slug)
-    surveys = [
-        SurveyRow(
-            surveyed_at=r["surveyed_at"],
-            egeria_report_guid=r["egeria_report_guid"],
-            published_at=r["published_at"],
-            annotation_count=r.get("annotation_count"),
-        )
-        for r in surveys_raw
-    ]
-    return EgeriaStatus(
-        slug=slug,
-        asset_guid=asset_guid,
-        is_registered=asset_guid is not None,
-        platform_url=_platform_url(),
-        surveys=surveys,
-    )
-
-
 @router.get("/{slug}/annotations", response_model=AnnotationsResult)
 async def get_annotations(slug: str, surveyed_at: str, report_guid: str = "") -> AnnotationsResult:
     """Fetch all annotations for a specific survey run from Egeria.
@@ -554,13 +509,6 @@ async def get_repo_egeria_annotations(slug: str, report_guid: str) -> list[Egeri
     except EgeriaConnectionError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     return build_annotation_items(EgeriaAnnotationItem, annotations)
-
-
-class ResetResult(BaseModel):
-    status: str                  # "ok"
-    slug: str
-    asset_guid_cleared: bool
-    surveys_deleted: int
 
 
 class SurveyOnlyResult(BaseModel):
@@ -658,43 +606,6 @@ async def resolve_all_linkages(req: BulkResolveRequest, request: Request) -> dic
             resolve_all, registry, targets, req.action, dry_run=req.dry_run)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return result.as_dict()
-
-
-@router.post("/linkage/delete-local")
-async def delete_resources_locally(req: BulkRequest) -> dict:
-    """Remove resources from RE entirely — registry row and pgvector collections.
-
-    Destructive, and the collections are the expensive part to reverse:
-    re-registering means re-ingesting. Egeria is left alone. Defaults to a dry
-    run; the caller has to ask for the real thing.
-    """
-    from resource_explorer.bulk_ops import delete_local
-
-    result = await asyncio.to_thread(
-        delete_local, ProjectRegistry(), [t.model_dump() for t in req.targets],
-        dry_run=req.dry_run)
-    return result.as_dict()
-
-
-@router.post("/linkage/delete-in-egeria")
-async def delete_resources_in_egeria(req: BulkRequest) -> dict:
-    """Delete the Egeria asset RE recorded for each resource.
-
-    Only ever the GUID RE itself stored — never resolved by name, never
-    cascading, and a resource without a cached GUID is skipped rather than
-    searched for. Egeria is the catalog of record and RE otherwise only adds to
-    it; this is the one path that can remove governance history, so it is
-    deliberately the narrowest of the three.
-
-    RE's own data is untouched: registry rows, survey results and collections all
-    survive.
-    """
-    from resource_explorer.bulk_ops import delete_in_egeria
-
-    result = await asyncio.to_thread(
-        delete_in_egeria, ProjectRegistry(), [t.model_dump() for t in req.targets],
-        dry_run=req.dry_run)
     return result.as_dict()
 
 
@@ -833,24 +744,6 @@ async def recheck_linkages(entity_type: list[str] | None = None) -> RecheckResul
     return RecheckResult(**result)
 
 
-@router.post("/{slug}/reset", response_model=ResetResult)
-async def reset_egeria(slug: str) -> ResetResult:
-    """Clear the cached Egeria asset GUID and all published survey records for a project.
-
-    Use this after resetting the Egeria database so the next --publish re-registers
-    the project from scratch instead of referencing stale GUIDs.
-    """
-    project, registry = _get_project_or_404(slug)
-    await _authorize(registry, "repo", slug, "decision")        # Brief Z2: RE's record of the element
-    result = registry.clear_egeria_registration(slug)
-    return ResetResult(
-        status="ok",
-        slug=slug,
-        asset_guid_cleared=result["asset_guid_cleared"],
-        surveys_deleted=result["surveys_deleted"],
-    )
-
-
 @router.post("/{slug}/survey", response_model=SurveyOnlyResult)
 async def run_survey(slug: str) -> SurveyOnlyResult:
     """Run a survey for a project and persist results to SQLite.
@@ -895,135 +788,6 @@ class PublishRequest(BaseModel):
     # just don't get a last-published badge anywhere, which is correct: they
     # aren't tied to one Survey Definition.
     survey_definition_ref: str = ""
-
-
-@router.post("/{slug}/publish", response_model=PublishResult)
-async def publish_survey(slug: str, req: PublishRequest | None = None) -> PublishResult:
-    """Run a survey (full, or scoped to req.steps) then publish the result to Egeria.
-
-    The survey and publish steps both call blocking synchronous code (pyegeria's
-    sync wrappers use loop.run_until_complete internally).  Running them inside
-    FastAPI's async event loop would cause "Can't patch loop" errors, so both
-    steps are offloaded to a thread pool via asyncio.to_thread().
-    """
-    project, registry = _get_project_or_404(slug)
-    # Brief Z round 2: the repository's own element, every operation a publish performs.
-    from resource_explorer.web.routes.curate import authorize_resource_write
-    await authorize_resource_write(registry, "repo", slug, publish=True)
-
-    # ── Egeria Project context gate (Part 5) ──────────────────────────────────
-    # The first real Egeria write for a resource is exactly this route — every
-    # repo publish surface (Scouting's registration-only publish, Assessment/
-    # Analysis per-card publish, Profile publish, Curate's full publish) funnels
-    # through here with different `steps`. Gating here once, rather than in
-    # each frontend button handler, means a future publish surface can't
-    # forget the check. status "unset" (never decided, including no row at
-    # all) and "unbound" (the project it named is gone after an Egeria reset) block; every other status
-    # (personal/linked/deferred/declined — all deliberate answers) proceeds.
-    # The shared rule (repo_publish.resolve_project_context): a decided context proceeds; otherwise an
-    # investigation bound to an Egeria Project answers (and the answer is WRITTEN, with the investigation
-    # that supplied it); otherwise 428.
-    from resource_explorer import repo_publish as _rp
-    context = _rp.resolve_project_context(registry, slug)
-    if context is None:
-        return JSONResponse(
-            status_code=428,
-            content={
-                "detail": "egeria_project_context_required",
-                "entity_type": "repo",
-                "entity_slug": slug,
-            },
-        )
-
-    steps = req.steps if req else None
-
-    # ── Step 1: survey (blocking — run in thread) ─────────────────────────────
-    try:
-        from resource_explorer.surveyors.survey_orchestrator import SurveyOrchestrator
-
-        def _run_survey():
-            return SurveyOrchestrator(registry=registry).run(slug, steps=steps)
-
-        result = await asyncio.to_thread(_run_survey)
-    except Exception as exc:
-        return PublishResult(
-            status="error",
-            error=f"Survey failed: {exc}",
-            stage="survey",
-        )
-
-    # ── Step 2: publish (blocking — run in thread) ────────────────────────────
-    try:
-        from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher, EgeriaConnectionError
-
-        zone_names = (req.zone_names if req else None) or None
-
-        def _run_publish():
-            # pyegeria sync wrappers call asyncio.get_event_loop() — set one for this thread
-            import asyncio as _aio
-            loop = _aio.new_event_loop()
-            _aio.set_event_loop(loop)
-            try:
-                # The manual Publish waits for Egeria (RUNS_PUBLISH_INLINE governs a run's auto-publish only).
-                publisher = EgeriaPublisher(registry=registry, zone_names=zone_names)
-                return publisher.publish(result, defer_drain=False), publisher
-            finally:
-                loop.close()
-                _aio.set_event_loop(None)
-
-        report_guid, publisher = await asyncio.to_thread(_run_publish)
-    except Exception as exc:
-        return PublishResult(
-            status="error",
-            error=str(exc),
-            stage="publish",
-            surveyed_at=result.surveyed_at.isoformat(),
-        )
-
-    # Separate, minimal activity_log entry (not a change to EgeriaPublisher.
-    # publish()'s own log_catalog call above, which every publish surface
-    # shares) — only written when this publish came from a Survey Definition
-    # candidate's own "☁ Publish" button, so its last-published badge
-    # (registry.get_survey_definition_last_activity) has something to find.
-    run_id = getattr(publisher, "publish_run_id", "")
-    run_id = run_id if isinstance(run_id, str) else ""
-    proof = manual_publish_proof(registry, run_id)
-    if req and req.survey_definition_ref:
-        from resource_explorer.activity_logger import log_catalog
-
-        entry = log_catalog(
-            registry, entity_type="repo", entity_slug=slug,
-            entity_name=project.display_name, entity_location=project.github_url,
-            status="ok",
-            summary=(f"'{req.survey_definition_ref}' findings ({len(result.annotations)} annotations): "
-                     f"{proof['word']}"),
-            detail=json.dumps({"survey_definition_ref": req.survey_definition_ref}),
-        )
-        if run_id and entry:
-            # Its badge (get_survey_definition_last_activity) follows the run's proof, not this row existing.
-            registry.tag_activity_publish_run(entry, run_id)
-
-    return PublishResult(
-        status="ok",
-        report_guid=report_guid,
-        annotation_count=len(result.annotations),
-        surveyed_at=result.surveyed_at.isoformat(),
-        publish_state=proof["state"],
-        publish_word=proof["word"],
-        publish_words=proof.get("words") or "",
-    )
-
-
-def manual_publish_proof(registry, publish_run_id: str) -> dict:
-    """The manual Publish's word, from the run's proof rows. No run id means nothing was queued: "nothing to
-    publish". A run id whose rows cannot be read is "publish not established", never "published"."""
-    if not publish_run_id:
-        return {"state": "nothing", "word": "nothing to publish", "words": ""}
-    try:
-        proof = registry.publish_proofs([publish_run_id]).get(publish_run_id)
-    except Exception as exc:  # noqa: BLE001 - said, never guessed
-        return {"state": "unknown", "word": "publish not established", "words": f"the outbox could not be read: {exc}"}
-    return proof or {"state": "unknown", "word": "publish not established", "words": "no outbox rows for this run"}
 
 
 async def _authorize(registry: ProjectRegistry, entity_type: str, slug: str, write: str, *,
@@ -1334,13 +1098,6 @@ async def get_survey_report(slug: str) -> SurveyReportData:
         local_surveyed_at=local_surveyed_at,
         health_read=bool(stats),
     )
-
-
-@router.post("/{slug}/catalog-elements")
-async def catalog_elements(slug: str) -> CatalogResult:
-    """RETIRED (ruling 2026-10-07, DESIGN-FILE-TYPES-AS-ANNOTATIONS.md): this created one DataSet per
-    file type. It answers 410 and creates nothing; DataSets it made earlier stay in Egeria as history."""
-    raise _file_types_retired()
 
 
 @router.get("/{slug}/diff")

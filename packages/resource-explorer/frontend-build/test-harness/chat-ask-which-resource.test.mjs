@@ -75,7 +75,6 @@ async function setUp() {
   for (const id of ['content', 'intent-nav', 'perspective-row', 'app-grid', 'question-rows', 'rail', 'sidebar', 'rail-scope', 'scope-slug', 'investigation-name', 'whoami', 'activity-count', 'answered-count']) {
     const d = document.createElement('div'); d.id = id; document.body.appendChild(d);
   }
-  const sw = document.createElement('a'); sw.id = 'switch-ui'; document.body.appendChild(sw);
   const re = document.createElement('div'); re.id = 'rail-evidence'; document.getElementById('rail').appendChild(re);
   chat.renderRail();
   return { document, app, server };

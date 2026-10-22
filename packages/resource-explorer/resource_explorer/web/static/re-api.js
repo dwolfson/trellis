@@ -239,6 +239,14 @@ export const runFolderSurvey = (slug, body = {}) =>
 export const publishFolderSurvey = (slug) =>
   post(`/api/filesystems/${encodeURIComponent(slug)}/folder-survey/publish`);
 
+/** Files build step 1: Resource Explorer's measures BESIDE an Egeria-led folder survey (per-folder bulk and depth, owner and
+ *  mode, hashes, narratives; per-file rows kept per run). 409 where Resource Explorer leads: its walk already measures them. */
+export const runWalkExtensions = (slug, body = {}) =>
+  post(`/api/filesystems/${encodeURIComponent(slug)}/walk-extensions`, { publish: false, ...body });
+/** Publish the newest stored beside-Egeria extensions run (nothing is walked again). */
+export const publishWalkExtensions = (slug) =>
+  post(`/api/filesystems/${encodeURIComponent(slug)}/walk-extensions/publish`);
+
 /* ── Catalogue scope (Curate, database: what gets catalogued) ────────────
  * web/routes/catalogue_scope.py. A declared, signed, dated choice stored in
  * RE; the scope routes reach nothing of Egeria's (the commit routes below do).
