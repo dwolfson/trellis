@@ -14,7 +14,7 @@ What goes to Egeria, and through what:
 
 **Never a delete of an InformalTag or a Folio element.** Removing a tag only removes its link to the asset;
 deleting an RE group only removes memberships (and reports the Folio). Deleting either element would be a delete
-under the ISSUE-117 block, and the owner deletes those by hand. Nothing in this module calls `delete_tag`,
+under the archive-cascade block, and the owner deletes those by hand. Nothing in this module calls `delete_tag`,
 `delete_collection` or any other element delete, and a test fails if it does.
 
 "Public" here: Egeria 6's InformalTag carries no public/private flag. `InformalTagProperties` adds nothing to

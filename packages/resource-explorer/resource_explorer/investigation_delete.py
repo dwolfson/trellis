@@ -101,7 +101,7 @@ WORDS = {
 
 
 def archive_blocked_words() -> str:
-    """The ISSUE-117 block's own sentence (``catalogue_gateway.ISSUE_117_WORDS``), unchanged."""
+    """The archive-cascade block's own sentence (``catalogue_gateway.ISSUE_117_WORDS``), unchanged."""
     return _issue_117_words()
 
 
@@ -478,8 +478,10 @@ class InvestigationDeleter:
             raise ValueError(WORDS["not_promoted"])
         from resource_explorer.catalogue_gateway import issue_117_blocked
 
-        out = {"slug": slug, "ok": True, "blocked": issue_117_blocked(),
-               "blocked_words": archive_blocked_words() if issue_117_blocked() else "", "error": "",
+        # An investigation names no database slug, so the archive-cascade block (lifted per database) stays ON for it.
+        blocked = issue_117_blocked("")
+        out = {"slug": slug, "ok": True, "blocked": blocked,
+               "blocked_words": archive_blocked_words() if blocked else "", "error": "",
                "project_ours": False, "project_state": "", "foreign": [], "ours": [], "left": [], "token": ""}
         try:
             sv = self._survey(self._handles_factory(), inv)
@@ -666,7 +668,7 @@ class InvestigationDeleter:
     def run(self, slug: str, choice: str, *, by: str, role: str = "", confirmed: str = "") -> DeleteResult:
         """Delete the investigation. Raises ``ValueError`` for a choice that cannot apply (unknown, or Egeria on an
         investigation with no Project), ``LookupError`` when it is not there and ``ArchiveBlocked`` while the
-        ISSUE-117 block is ON; everything else is in the result. ``confirmed`` is the ``token`` the delete-preview
+        archive-cascade block is ON; everything else is in the result. ``confirmed`` is the ``token`` the delete-preview
         returned (the other-people's-items list the person saw)."""
         if choice not in CHOICES:
             raise ValueError(f"unknown choice {choice!r}; valid: {list(CHOICES)}")
@@ -681,8 +683,8 @@ class InvestigationDeleter:
         if choice == CHOICE_RE_AND_EGERIA:
             from resource_explorer.catalogue_gateway import issue_117_blocked
 
-            if issue_117_blocked():
-                log.warning("investigation archive refused by ISSUE-117 block: %s", slug)
+            if issue_117_blocked(""):      # no database slug to name: blocked (the override is per database)
+                log.warning("investigation archive refused by archive-cascade block: %s", slug)
                 raise ArchiveBlocked(archive_blocked_words())      # before anything is changed or read
         res = DeleteResult(slug=slug, choice=choice)
 

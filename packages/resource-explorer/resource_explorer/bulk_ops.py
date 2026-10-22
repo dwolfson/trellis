@@ -263,7 +263,7 @@ def delete_in_egeria(registry, targets: list[dict], *, dry_run: bool = False,
 
     result = BulkResult(action="delete_in_egeria", dry_run=dry_run)
 
-    # Brief Z2: the access check stands IN FRONT of the ISSUE-117 block (unchanged below): an item the caller may
+    # Brief Z2: the access check stands IN FRONT of the archive-cascade block (unchanged below): an item the caller may
     # not delete is said as "not permitted · <reason>" before the block would be. Dry run too.
     permitted = []
     for t in targets:
@@ -275,13 +275,21 @@ def delete_in_egeria(registry, targets: list[dict], *, dry_run: bool = False,
     targets = permitted
     total = len(targets)
 
-    # ISSUE-117: a delete in Egeria is an archive/delete write, and while the block is ON none may be sent. Refused
+    # Archive-cascade block (ISSUE-117): a delete in Egeria is an archive/delete write, and while the block is ON none may be sent. Refused
     # before any client is built, in dry run too, so a preview never promises what apply would refuse.
     from resource_explorer.catalogue_gateway import ISSUE_117_WORDS, issue_117_blocked
 
-    if issue_117_blocked():
-        for t in targets:
+    # The block is lifted for ONE database slug at most (RE_ISSUE_117_BLOCK_OFF names it): each target is judged by
+    # its own slug, the blocked ones fail with the block's words, the rest go on.
+    still_open = []
+    for t in targets:
+        if issue_117_blocked(t.get("slug", "")):
             result.record(t.get("entity_type", "repo"), t.get("slug", ""), "failed", ISSUE_117_WORDS)
+        else:
+            still_open.append(t)
+    targets = still_open
+    total = len(targets)
+    if not targets:
         return result
 
     asset_maker = None

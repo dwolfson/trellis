@@ -270,14 +270,16 @@ Next controls read `GET /api/egeria/admin-status` (`{admin, configured, open}`) 
 whenever the server would refuse the caller: not an admin, and either an admin is configured or the deployment is
 not `open`.
 Resolving a single resource's stale Egeria link (the banner on a repo) is open to any signed-in user either way, and
-**Delete in Egeria** is not an RE admin action at all: it keeps only the ISSUE-117 archive/delete block.
+**Delete in Egeria** is not an RE admin action at all: it keeps only the archive-cascade block (ISSUE-117) on archive/delete.
+
+The block is lifted for ONE database at a time, by `RE_ISSUE_117_BLOCK_OFF=<who>/<UTC ISO time>/<database slug>` (the variable keeps its ISSUE-117 name for compatibility), for 60 minutes after the time stamp. Example: `RE_ISSUE_117_BLOCK_OFF=dwolfson/2026-10-21T14:05:00Z/throwaway_db`. Any other shape (a bare clearance, no slug, a bad or future time, an expired stamp) leaves it ON and logs the reason; every other database stays blocked, and an investigation archive (which names no database) stays blocked. The start-up line reads `archive-cascade block: ON` or `archive-cascade block: OFF for <slug> until <UTC>`.
 
 Deletes, for the record:
 
 | Action | RE's rule |
 |---|---|
 | **Delete locally** (Classic's bulk delete, `/linkage/delete-local`) | Signed-in users only. RE records no creator on a resource, so it cannot yet say "only the creator"; a creator rule needs a column (DDL) and is a later change. |
-| **Delete in Egeria** (`/linkage/delete-in-egeria`) | No RE gate: Egeria decides, and the ISSUE-117 block still refuses every archive/delete while it is ON. RE calls Egeria as the **signed-in person**, so Egeria's decision is theirs; a refusal is shown as "refused by Egeria" and never retried as the service account. |
+| **Delete in Egeria** (`/linkage/delete-in-egeria`) | No RE gate: Egeria decides, and the archive-cascade block still refuses every archive/delete while it is ON (per database slug). RE calls Egeria as the **signed-in person**, so Egeria's decision is theirs; a refusal is shown as "refused by Egeria" and never retried as the service account. |
 
 ### Governance zones
 

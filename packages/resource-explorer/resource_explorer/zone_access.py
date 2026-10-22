@@ -62,7 +62,7 @@ log = logging.getLogger(__name__)
 #:   PUBLISH            validateUserForElementClassify :1816 / Declassify :1911 (a ZoneMembership change)
 #:   DETACH             validateUserForElementDetach :1639-1694, on BOTH ends (Brief Z2: a leave-out's target removal)
 #:   DELETE             validateUserForElementDelete :2540-2566 (archive, soft delete or purge: Brief Z2's leave-out
-#:                      and bulk delete, both still behind the ISSUE-117 block)
+#:                      and bulk delete, both still behind the archive-cascade block)
 #:   READ               the member side of every anchored-member check (validateUserForAnchorAttach :2129-2135)
 #:   DELETE_MEMBER      validateUserForAnchorMemberDelete :2481-2500 (on the ANCHOR's zones)
 #:   DECLASSIFY         validateUserForElementDeclassify :1900-1950 (any classification but ZoneMembership; Brief Z3:

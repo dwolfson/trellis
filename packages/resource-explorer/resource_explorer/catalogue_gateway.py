@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -68,34 +69,81 @@ VERSION_NOT_RECORDED = "not recorded"
 SOFT_DELETE = "soft_delete"
 ARCHIVE = "archive"
 
-#: HARD BLOCK (2026-10-06, ISSUE-117): in this Egeria build, archiving ANY element that is not its own
-#: anchor (a schema, a table, a column, a schema type) archives the anchor's WHOLE tree: leaving out us_sales
-#: archived the coco_pharma database element and both demo schemas. Soft delete is frozen too until a
-#: throwaway proves delete does not walk the same way. The block is ON in every process; it is lifted ONLY by
-#: the environment variable below, set to a non-empty clearance ("<who>/<UTC time>"), read at CALL time. There
-#: is no code constant to edit. While it is on, `delete_element` raises before it touches a client and
-#: nothing is sent; choices are still recorded in RE.
+#: HARD BLOCK (2026-10-06, ISSUE-117; user-facing name: "archive-cascade block"): in this Egeria build, archiving
+#: ANY element that is not its own anchor (a schema, a table, a column, a schema type) archives the anchor's WHOLE
+#: tree: leaving out us_sales archived the coco_pharma database element and both demo schemas. Soft delete is
+#: frozen too until a throwaway proves delete does not walk the same way. The block is ON in every process.
+#:
+#: It is lifted for ONE database only, by the environment variable below (the name keeps "ISSUE_117" for
+#: compatibility), read at CALL time:
+#:
+#:     RE_ISSUE_117_BLOCK_OFF=<who>/<UTC ISO time>/<database slug>      e.g.  dwolfson/2026-10-21T14:05:00Z/throwaway_db
+#:
+#: The block stays ON for every other slug, and the override EXPIRES 60 minutes after the stamp (a forgotten
+#: variable can never leave it off). Any other shape (the old bare clearance, a missing slug, an unparsable time,
+#: a stamp more than a few minutes in the future, an expired stamp) is block ON, with a logged reason. A caller
+#: that cannot name the database slug it acts for is blocked. There is no code constant to edit. While it is on,
+#: `delete_element` raises before it touches a client and nothing is sent; choices are still recorded in RE.
 ISSUE_117_ENV = "RE_ISSUE_117_BLOCK_OFF"
+OVERRIDE_WINDOW = timedelta(minutes=60)
+OVERRIDE_FUTURE_SLACK = timedelta(minutes=5)
+_logged_override_reasons: set[tuple[str, str]] = set()
 
 
-def issue_117_clearance() -> str:
-    """The clearance text that lifts the block ('' means the block is on)."""
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def issue_117_override() -> tuple[str, datetime | None, str]:
+    """Parse the environment override: `(slug, expires_at, "")` when it lifts the block for `slug` right now,
+    else `("", None, reason)`. `reason` is "" only when the variable is unset. A bad value is logged once."""
     import os
-    return (os.environ.get(ISSUE_117_ENV) or "").strip()
+    raw = (os.environ.get(ISSUE_117_ENV) or "").strip()
+    if not raw:
+        return "", None, ""
+
+    def refuse(reason: str) -> tuple[str, None, str]:
+        if (raw, reason) not in _logged_override_reasons:
+            _logged_override_reasons.add((raw, reason))
+            log.warning("archive-cascade block stays ON: %s=%r is not a usable override (%s); "
+                        "the format is <who>/<UTC ISO time>/<database slug>", ISSUE_117_ENV, raw, reason)
+        return "", None, reason
+
+    parts = raw.rsplit("/", 2)
+    if len(parts) != 3 or not all(p.strip() for p in parts):
+        return refuse("expected <who>/<UTC ISO time>/<database slug>")
+    _who, stamp_text, slug = (p.strip() for p in parts)
+    try:
+        stamp = datetime.fromisoformat(stamp_text.replace("Z", "+00:00").replace("z", "+00:00"))
+    except ValueError:
+        return refuse(f"time {stamp_text!r} is not an ISO time")
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    now = _now_utc()
+    if stamp > now + OVERRIDE_FUTURE_SLACK:
+        return refuse(f"time {stamp_text!r} is in the future")
+    expires = stamp + OVERRIDE_WINDOW
+    if now >= expires:
+        return refuse(f"expired at {expires.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}")
+    return slug, expires, ""
 
 
-def issue_117_blocked() -> bool:
-    return not issue_117_clearance()
+def issue_117_blocked(slug: str) -> bool:
+    """True unless the override names exactly `slug` and is inside its window. `slug` is required: a caller that
+    cannot name the database it acts for passes "" and is blocked."""
+    named, _expires, _reason = issue_117_override()
+    return not (slug and named and slug == named)
 
 
 def issue_117_state_line() -> str:
-    c = issue_117_clearance()
-    return ("ISSUE-117 archive/delete block: ON (Egeria archives a database's whole tree when any part is archived)"
-            if not c else f"ISSUE-117 archive/delete block: OFF by clearance {c!r} ({ISSUE_117_ENV})")
+    named, expires, _reason = issue_117_override()
+    if not named or expires is None:
+        return "archive-cascade block: ON"
+    return f"archive-cascade block: OFF for {named} until {expires.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
 
 
 ISSUE_117_WORDS = ("Egeria archives the whole database tree when any part of it is archived "
-                   "(ISSUE-117, archiveBeanInRepository) · choice kept, nothing sent")
+                   "(archive-cascade block, archiveBeanInRepository) · choice kept, nothing sent")
 
 
 class GatewayError(RuntimeError):
@@ -433,7 +481,7 @@ class CatalogueGateway(Protocol):
     def archived_siblings(self, qualified_name: str) -> list[ArchivedSibling]: ...
     def schema_elements(self, prefix: str) -> list[ElementRead]: ...
     def relationships(self, guid: str) -> list[Relationship]: ...
-    def delete_element(self, guid: str, form: str) -> None: ...
+    def delete_element(self, guid: str, form: str, *, slug: str) -> None: ...
     def initiate_survey(self, database_guid: str, request_parameters: dict[str, str]) -> tuple[str, str]: ...
     def connector_status(self) -> ConnectorStatus | None: ...
     def refresh_connector(self, timeout: int = 120) -> None: ...
@@ -1162,14 +1210,16 @@ class PyegeriaCatalogueGateway:
             raise GatewayError(_short(exc)) from exc
         return parse_related_answer(res)
 
-    def delete_element(self, guid: str, form: str) -> None:
-        """One element, never a cascade. An archive is the delete endpoint with
+    def delete_element(self, guid: str, form: str, *, slug: str) -> None:
+        """One element, never a cascade. `slug` is the database the delete acts for: the archive-cascade block
+        is lifted for one named database only. An archive is the delete endpoint with
         ARCHIVE and forLineage and forDuplicateProcessing true (the archive
         endpoint answers 500 on this build)."""
         method = "ARCHIVE" if form == ARCHIVE else "SOFT_DELETE"
         flags = "deleteMethod=%s forLineage=True forDuplicateProcessing=True cascade_delete=False" % method
-        if issue_117_blocked():
-            log.warning("egeria write refused by ISSUE-117 block: %s element=%s flags: %s", method, guid, flags)
+        if issue_117_blocked(slug):
+            log.warning("egeria write refused by archive-cascade block: %s element=%s slug=%r flags: %s",
+                        method, guid, slug, flags)
             raise GatewayError(ISSUE_117_WORDS)          # before any client is built: nothing is sent
         body = {"class": "DeleteElementRequestBody", "deleteMethod": method,
                 "forLineage": True, "forDuplicateProcessing": True}

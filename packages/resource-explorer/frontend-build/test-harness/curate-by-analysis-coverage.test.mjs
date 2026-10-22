@@ -13,7 +13,7 @@ const MEASURED = {
   groups: [
     { key: 'published', words: 'published · 2 schemas · 5 tables', lines: [line('schemas', 'schemas', 2, ['hr', 'sales']), line('tables', 'tables', 5), line('report', 'report', 1, ['76 annotations'])] },
     { key: 'not_yet', words: 'not yet published · 4', lines: [line('undecided', 'undecided', 2, ['a', 'b']), line('chosen', 'chosen by a person, not published', 1), line('chosen_confirmed', 'chosen by a confirmed proposal, not published', 0), line('left_out', 'left out by a person', 1), line('left_out_confirmed', 'left out by a confirmed proposal', 0)] },
-    { key: 'blocked', words: 'blocked · 1', lines: [line('blocked', 'blocked (ISSUE-117, kept not sent)', 1, ['blk']), line('superseded', 'outbox writes superseded', 2)] },
+    { key: 'blocked', words: 'blocked · 1', lines: [line('blocked', 'blocked (archive-cascade block, kept not sent)', 1, ['blk']), line('superseded', 'outbox writes superseded', 2)] },
   ],
 };
 

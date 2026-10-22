@@ -194,11 +194,11 @@ def test_an_all_refused_press_still_names_the_issue_117_block(world):
     _secure(world["access"], _guid(world, "sales"), {"DEFAULT": ["dbas"]})
     preview = cc.build_preview(world["registry"], "db", cs.build_scope_view(world["registry"], "db"), world["fake"])
     assert preview["all_refused"] is True
-    assert [b["word"] for b in preview["also_blocked"]] == ["ISSUE-117 block"]
+    assert [b["word"] for b in preview["also_blocked"]] == ["archive-cascade block"]
     with pytest.raises(cc.CommitBlocked) as exc:
         cc.start_commit(world["registry"], "db", ME, gateway=world["fake"])
     assert exc.value.status == 403
-    assert any(r.startswith("ISSUE-117 block · ") for r in exc.value.reasons)
+    assert any(r.startswith("archive-cascade block · ") for r in exc.value.reasons)
 
 
 # ── MED 3: the commit's database element is resolved by qualified name ────────────────────────────────

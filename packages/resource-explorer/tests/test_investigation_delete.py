@@ -388,7 +388,7 @@ def test_route_is_registered_as_delete():
 
 @pytest.fixture(autouse=True)
 def block_off(monkeypatch):
-    """The ISSUE-117 block is ON unless an environment clearance lifts it. Archive tests run with it lifted; the
+    """The archive-cascade block is ON unless an environment clearance lifts it. Archive tests run with it lifted; the
     tests about the block itself ask for `block_on`."""
     monkeypatch.setenv("RE_ISSUE_117_BLOCK_OFF", "test/clearance")
 

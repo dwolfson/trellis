@@ -228,7 +228,7 @@ def add_tag(entity_type: str, slug: str, body: TagCreate, request: Request) -> d
 @router.delete("/tags/{entity_type}/{slug}/{tag}")
 def remove_tag(entity_type: str, slug: str, tag: str, request: Request) -> dict:
     """Remove a tag in RE. Brief F: the unlink from the asset waits for the page's Publish ("saved · will publish").
-    The InformalTag element itself is never deleted: that is a delete under the ISSUE-117 block, and the owner
+    The InformalTag element itself is never deleted: that is a delete under the archive-cascade block, and the owner
     deletes by hand."""
     author = _require_author(request, "remove a tag")
     reg = _registry()

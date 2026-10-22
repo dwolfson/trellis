@@ -1250,7 +1250,7 @@ def _create_collection_membership_detach(clients: "OutboxClients", payload: dict
     Destructive, so never re-sent (`DESTRUCTIVE_OUTBOX_KINDS`). Applied in queue order against the add of the same
     member (`_wait_for_earlier_membership`): while an earlier add of this member is unsettled the removal waits, so
     an add that lands late cannot leave the member in after RE removed it (and an add waits for an earlier removal
-    the same way). Not the ISSUE-117 block's: that guards archive/delete of a database's elements, and this deletes
+    the same way). Not the archive-cascade block's: that guards archive/delete of a database's elements, and this deletes
     one relationship, never an element."""
     _wait_for_earlier_membership(clients, payload, "collection_membership")
     cm = clients.require("collection_manager")

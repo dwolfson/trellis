@@ -12,7 +12,7 @@ test('a left-out schema cataloged in Egeria says "kept · not sent" on its row, 
   const b = row(document, 'schema:sales').querySelector('[data-scope-blocked]');
   assert.ok(b, 'the blocked state is on the row');
   assert.match(flat(b), /^⛔ kept · not sent why Egeria archives the whole database tree/);
-  assert.match(b.getAttribute('title'), /ISSUE-117, archiveBeanInRepository\) · choice kept, nothing sent$/);
+  assert.match(b.getAttribute('title'), /archive-cascade block, archiveBeanInRepository\) · choice kept, nothing sent$/);
 });
 
 test('no blocked mark for an included schema, a never-cataloged one, or a table', async () => {
