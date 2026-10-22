@@ -1139,6 +1139,30 @@ def repair_mark_false_zero_surveys(
     console.print(format_false_zero_plan(plan, apply=apply), markup=False, highlight=False)
 
 
+@repair_app.command(name="link-database-servers")
+def repair_link_database_servers(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Read every database's links and say what would be linked; write nothing."),
+):
+    """Link each published database to its server's DatabaseManager (CapabilityAssetUse, OWNS).
+
+    Reads each registered database's existing links first and links only the unlinked ones, so running it twice
+    makes no duplicate. Acts as RE's daemon account (printed). Prints "linked N, already linked M, could not
+    check K"; a database that could not be checked is never linked.
+    """
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.repair import RepairError, link_database_servers
+    try:
+        report = link_database_servers(ProjectRegistry(), dry_run=dry_run)
+    except RepairError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print(f"acting as {report.acting_as}", markup=False, highlight=False)
+    for row in report.rows:
+        console.print(f"  {row['slug']}: {row['words']}", markup=False, highlight=False)
+    console.print(report.summary(), markup=False, highlight=False)
+
+
 @repair_app.command(name="set-github-url")
 def repair_set_github_url(
     slug: str = typer.Argument(help="Repo slug"),

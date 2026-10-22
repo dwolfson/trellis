@@ -2103,6 +2103,17 @@ def _add_step_note(cur, cid: str, step: str, note: str) -> None:
                      st.get("more") or "")
 
 
+def _link_database_to_server(gateway, server_guid: str, database_guid: str, server_name: str):
+    """The publish step's link to the server's DatabaseManager. Never raises: a gateway that fails outright is a
+    `could not check` sentence."""
+    from resource_explorer import database_server_link as dsl
+
+    try:
+        return gateway.link_database_to_server(server_guid, database_guid, server_name=server_name)
+    except Exception as exc:  # noqa: BLE001 - the link never fails the publish step
+        return dsl.ServerLink(dsl.COULD_NOT_CHECK, f"could not check ({egeria_first_sentence(str(exc))[0]}) · not linked")
+
+
 def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | None = None,
                    drain: Callable[..., Any] | None = None) -> dict:
     """Run the curation record's steps. Nothing raises past a step: a step that
@@ -2272,11 +2283,18 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
             note = gateway.mark_on_behalf(guid_, behalf.requester, owner_)
             if note:
                 notes.append(note)
+        # The database is related to its server's DatabaseManager (CapabilityAssetUse, OWNS), read first: the
+        # outcome is a sentence on this step and on the database proof, never a failure of the step (a missing
+        # link is recoverable on the next press or by the heal; a duplicate is the bug).
+        server_link = _link_database_to_server(gateway, pub.server_guid, db_guid, pub.server_name)
         _proof(registry, slug, P_DATABASE, node_kind="database", element_guid=db_guid,
                qualified_name=pub.database_qualified_name, curation_id=curation_id, recorded_by=author,
                detail={"server_guid": pub.server_guid, "server_name": pub.server_name,
-                       "requester": ("partial · " + "; ".join(notes)) if notes else ""})
-        done = f"server {pub.server_guid[:8]} · database {db_guid[:8]} · descriptions and versions supplied"
+                       "requester": ("partial · " + "; ".join(notes)) if notes else "",
+                       "server_link": {"outcome": server_link.outcome, "words": server_link.words,
+                                       "capability_guid": server_link.capability_guid}})
+        done = (f"server {pub.server_guid[:8]} · database {db_guid[:8]} · descriptions and versions supplied"
+                f" · {server_link.words}")
         cur.set_step(curation_id, "publish_elements", "done",
                      done + (" · partial · " + "; ".join(notes) if notes else ""))
     except Exception as exc:

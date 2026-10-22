@@ -128,6 +128,92 @@ class FakeEgeria:
         self.last_wire: tuple | None = None       # (kind, raw payload) of the newest read
         # The platform clock an archive stamps into the new name (a test moves it to make a newer archived copy).
         self.archive_clock = datetime(2026, 10, 9, 1, 28, 8)
+        # The server link (2026-10-22): the pyegeria boundary the REAL `database_server_link` runs against. A server
+        # published here has a DatabaseManager unless `server_has_dm` is False; links are kept as Egeria keeps a
+        # multi-link type (a second create is a second relationship, so only the read-first logic prevents a
+        # duplicate).
+        self.server_has_dm = True
+        self.dm_of: dict[str, str] = {}                 # server guid -> DatabaseManager guid
+        self.capability_links: list[dict] = []          # {rel, capability, asset, body}
+        self.link_read_error: Exception | None = None   # raised by the CapabilityAssetUse read
+        self.link_create_error: Exception | None = None
+        self.lookup_errors: dict[str, Exception] = {}   # qualifiedName -> what the unique-name read raises
+        self.pyegeria_expert, self.pyegeria_maker = self._pyegeria_fakes()
+
+    def _pyegeria_fakes(self):
+        from unittest.mock import create_autospec
+
+        from pyegeria import AssetMaker, MetadataExpert
+
+        expert = create_autospec(MetadataExpert, spec_set=True, instance=True)
+        maker = create_autospec(AssetMaker, spec_set=True, instance=True)
+
+        def related(guid, relationship_type, body, for_lineage=None, for_duplicate_processing=None,
+                    starting_at_end=0, start_from=0, page_size=500, *args, **kwargs):
+            self.calls.append(("get_related_metadata_elements", guid, relationship_type, starting_at_end))
+            entries: list[dict] = []
+            if relationship_type == "SupportedSoftwareCapability" and starting_at_end == 1 and guid in self.dm_of:
+                dm = self.dm_of[guid]
+                entries = [{"relationshipGUID": f"ssc-{dm}", "type": {"typeName": relationship_type},
+                            "elementAtEnd1": False, "versions": {"createTime": "2026-10-01T00:00:00.000+00:00"},
+                            "element": {"elementGUID": dm,
+                                        "type": {"typeName": "DatabaseManager",
+                                                 "superTypeNames": ["DataManager", "SoftwareCapability",
+                                                                    "Referenceable", "OpenMetadataRoot"]}}}]
+            elif relationship_type == "CapabilityAssetUse" and starting_at_end == 2:
+                if self.link_read_error is not None:
+                    raise self.link_read_error
+                entries = [{"relationshipGUID": l["rel"], "type": {"typeName": relationship_type},
+                            "elementAtEnd1": True, "versions": {"createTime": l.get("created", "2026-10-02T00:00:00.000+00:00")},
+                            "element": {"elementGUID": l["capability"],
+                                        "type": {"typeName": "DatabaseManager",
+                                                 "superTypeNames": ["DataManager", "SoftwareCapability"]}}}
+                           for l in self.capability_links if l["asset"] == guid]
+            if start_from or not entries:
+                return "No elements found"
+            return {"elementList": entries}
+
+        def add(capability, asset, body=None):
+            self.calls.append(("add_capability_asset_use", capability, asset))
+            if self.link_create_error is not None:
+                raise self.link_create_error
+            self.capability_links.append({"rel": self._guid("rel"), "capability": capability, "asset": asset,
+                                          "body": body})
+
+        def unique(name, property_name="qualifiedName", *args, **kwargs):
+            self.calls.append(("get_metadata_element_by_unique_name", name))
+            if name in self.lookup_errors:
+                raise self.lookup_errors[name]
+            found = self.by_qn(name)
+            if found is None:
+                return "No elements found"
+            from tests.qn_lookup_bridge import element_answer
+            return element_answer(found["guid"], found["type"], ["Referenceable", "OpenMetadataRoot"])
+
+        expert.get_metadata_element_by_unique_name.side_effect = unique
+        expert.get_related_metadata_elements.side_effect = related
+        maker.add_capability_asset_use.side_effect = add
+        return expert, maker
+
+    def link_database_to_server(self, server_guid, database_guid, *, server_name="", write=True):
+        from resource_explorer import database_server_link as dsl
+
+        self.calls.append(("link_database_to_server", server_guid, database_guid))
+        self._boom("link_database_to_server")
+        return dsl.link_database_to_server(self.pyegeria_expert, self.pyegeria_maker, server_guid=server_guid,
+                                           database_guid=database_guid, server_label=server_name, write=write)
+
+    def link_published_database(self, db_entity, *, write=True):
+        from resource_explorer import database_server_link as dsl
+
+        server = f"{getattr(db_entity, 'egeria_host', '') or db_entity.host}:{db_entity.port}"
+        srv = self.by_qn(f"PostgreSQL Server::{server}")
+        db = self.by_qn(f"PostgreSQL Relational Database::{server}::{db_entity.database_name}")
+        if srv is None:
+            return dsl.ServerLink(dsl.NOT_LINKED, "not linked: no server element")
+        if db is None:
+            return dsl.ServerLink(dsl.NOT_LINKED, "not linked: no database element")
+        return self.link_database_to_server(srv["guid"], db["guid"], server_name=server, write=write)
 
     # -- helpers ---------------------------------------------------------
     def _guid(self, prefix: str = "g") -> str:
@@ -175,6 +261,8 @@ class FakeEgeria:
         self.targets.clear()
         self.lingering.clear()
         self.db_guid = self.server_guid = ""
+        self.dm_of.clear()
+        self.capability_links.clear()
 
     def ops(self, name: str) -> list[tuple]:
         return [c for c in self.calls if c[0] == name]
@@ -199,6 +287,8 @@ class FakeEgeria:
                 self.server_guid = self._guid("s")
                 self.elements[self.server_guid] = {"qn": f"PostgreSQL Server::{server}", "type": "SoftwareServer",
                                                    "parent": "", "archived": False, "deleted": False}
+                if self.server_has_dm:
+                    self.dm_of[self.server_guid] = self._guid("m")
             self.db_guid = self._guid("d")
             self.elements[self.db_guid] = {"qn": qn, "type": "RelationalDatabase", "parent": "", "archived": False, "deleted": False}
             self.zones[self.db_guid] = list(self.default_zones)
