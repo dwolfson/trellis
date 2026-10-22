@@ -277,16 +277,17 @@ def test_filesystem_annotation_count_is_what_egeria_returned():
 
 
 def _db_step_publish(monkeypatch, create_answers):
-    from pyegeria import AssetMaker, AutomatedCuration
+    from pyegeria import AssetMaker, AutomatedCuration, MetadataExpert
     from pyegeria.omvs.data_discovery import DataDiscovery
 
     from resource_explorer.registry import DatabaseEntity
     from resource_explorer.surveyors.database.egeria_database_surveyor import EgeriaDatabaseSurveyor
+    from tests.qn_lookup_bridge import wire_unique_name
 
     s = EgeriaDatabaseSurveyor(platform_url="https://localhost:9443", view_server="qs-view-server")
     s._automated_curation = _fake(AutomatedCuration)
-    s._automated_curation.get_guid_for_name.side_effect = lambda name, *a, **k: (
-        GUID if k.get("property_name") == ["qualifiedName"] else MISS)
+    # Every exact-qualifiedName read (the database element) is found, through the unique-name read.
+    s._metadata_expert = wire_unique_name(_fake(MetadataExpert), lambda name, *a, **k: GUID)
     s._asset_maker = _fake(AssetMaker)
     s._asset_maker.create_asset.return_value = "report-guid"
     # The report as Egeria answers a read by GUID: the annotations that failed to create are not under it, so the
@@ -384,9 +385,10 @@ def test_ref_guid_exists_miss_string_is_absent():
 
 
 def _designer(answer):
-    from tests.test_lookup_failure_never_creates import _designer as d
+    """(the DataDesigner double that would create, the MetadataExpert double whose unique-name read answers)."""
+    from tests.test_lookup_failure_never_creates import _designer as d, _expert
 
-    return d(answer)
+    return d(), _expert(answer)
 
 
 def _raise(exc):
@@ -401,8 +403,8 @@ def test_typed_not_found_is_absent_and_creates():
     )
     from tests.test_lookup_failure_never_creates import _match
 
-    designer = _designer(_raise(_egeria_error(PyegeriaNotFoundException, 404, "OMRS-METADATA-COLLECTION-404-001")))
-    assert publish_proposed_data_class(designer, _match()).created is True
+    designer, expert = _designer(_raise(_egeria_error(PyegeriaNotFoundException, 404, "OMRS-METADATA-COLLECTION-404-001")))
+    assert publish_proposed_data_class(designer, _match(), expert=expert).created is True
     designer.create_data_class.assert_called_once()
 
 
@@ -412,8 +414,8 @@ def test_multiple_elements_found_creates_nothing():
     )
     from tests.test_lookup_failure_never_creates import _match
 
-    designer = _designer(_raise(PyegeriaException(context={"issue": "Multiple elements found for supplied name!"})))
-    result = publish_proposed_data_class(designer, _match())
+    designer, expert = _designer(_raise(PyegeriaException(context={"issue": "Multiple elements found for supplied name!"})))
+    result = publish_proposed_data_class(designer, _match(), expert=expert)
     designer.create_data_class.assert_not_called()
     assert "could not be made" in result.error
 
@@ -424,8 +426,8 @@ def test_none_answer_creates_nothing():
     )
     from tests.test_lookup_failure_never_creates import _match
 
-    designer = _designer(lambda *a, **k: None)
-    result = publish_proposed_data_class(designer, _match())
+    designer, expert = _designer(lambda *a, **k: None)
+    result = publish_proposed_data_class(designer, _match(), expert=expert)
     designer.create_data_class.assert_not_called()
     assert "Egeria gave no answer" in result.error
 
@@ -442,18 +444,12 @@ def _strict_ref_manager():
 
     r = _fake(ReferenceDataManager)
 
-    def lookup(name, property_name=None, type_name=None):
-        if type_name not in _EGERIA_62_TYPES:
-            raise PyegeriaException(context={"issue": f"500 typed look-up as {type_name}"})
-        return MISS
-
     def create(body):
         type_name = (body.get("properties") or {}).get("typeName")
         if type_name not in _EGERIA_62_TYPES:
             raise PyegeriaException(context={"issue": f"OMAG-COMMON-400-018 The type name {type_name} is not recognized"})
         return GUID
 
-    r.get_guid_for_name.side_effect = lookup
     r.create_valid_value_definition.side_effect = create
     return r
 
@@ -464,8 +460,10 @@ def test_proposed_value_set_is_created_as_a_type_egeria_knows():
     )
     from tests.test_lookup_failure_never_creates import _match
 
+    from tests.test_lookup_failure_never_creates import _expert
+
     ref = _strict_ref_manager()
-    result = publish_proposed_valid_value_set(ref, _match("reference_data_match"))
+    result = publish_proposed_valid_value_set(ref, _match("reference_data_match"), expert=_expert(lambda *a, **k: MISS))
     assert result.error == "" and result.created is True
     assert len(result.member_guids) == 3
 

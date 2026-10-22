@@ -29,7 +29,7 @@ CANON = "/deployments/data-lake"
 
 
 def _surveyor():
-    from pyegeria import AssetMaker, AutomatedCuration
+    from pyegeria import AssetMaker, AutomatedCuration, MetadataExpert
     from pyegeria.omvs.data_discovery import DataDiscovery
 
     from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import EgeriaFileSystemSurveyor
@@ -37,6 +37,8 @@ def _surveyor():
     s = EgeriaFileSystemSurveyor(platform_url="https://localhost:9443", view_server="qs-view-server")
     s._automated_curation = create_autospec(AutomatedCuration, instance=True, spec_set=True)
     s._automated_curation.get_guid_for_name.return_value = "No elements found"
+    s._metadata_expert = create_autospec(MetadataExpert, instance=True, spec_set=True)
+    s._metadata_expert.get_metadata_element_by_unique_name.return_value = "No elements found"
     s._automated_curation.get_template_guid_for_technology_type.return_value = FOLDER_TEMPLATE_GUID
     s._automated_curation.create_elem_from_template.return_value = GUID
     s._asset_maker = create_autospec(AssetMaker, instance=True, spec_set=True)
@@ -68,8 +70,9 @@ def _real_folder_surveyor(sent):
 
     ac._async_get_template_guid_for_technology_type = _tmpl
     ac._async_create_elem_from_template = _post
-    ac.get_guid_for_name = lambda name, type_name=None: sent.setdefault("lookups", []).append((name, type_name)) or \
-        "No elements found"
+    s._metadata_expert.get_metadata_element_by_unique_name.side_effect = (
+        lambda name=None, property_name="qualifiedName", body=None, **k:
+        sent.setdefault("lookups", []).append((name, property_name)) or "No elements found")
     s._automated_curation = ac
     asyncio.set_event_loop(asyncio.new_event_loop())
     return s
@@ -89,8 +92,8 @@ def test_the_root_folder_body_carries_every_placeholder_the_template_declares():
     assert ph["fileSystemName"] == "lake" and ph["directoryName"] == "Lake"
     assert all(isinstance(v, str) and v.strip() and "~{" not in v for v in ph.values())   # none empty, none unfilled
     assert ph["deployedImplementationType"] == "File System Directory" and ph["versionIdentifier"] == "1.0"
-    # the look-up the attach path keeps is still by the template's qualifiedName
-    assert sent["lookups"] == [(f"FileFolder::lake:{CANON}", "FileFolder")]
+    # the look-up the attach path keeps is still by the template's qualifiedName, now the unique-name read
+    assert sent["lookups"] == [(f"FileFolder::lake:{CANON}", "qualifiedName")]
 
 
 def test_a_data_file_body_carries_every_placeholder_its_template_declares():

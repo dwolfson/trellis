@@ -273,8 +273,8 @@ def test_a_queued_write_keeps_its_requester_and_drains_on_the_service_account(bo
         mock.add_to_collection.side_effect = record
 
     boundary.configure["CollectionManager"] = add
-    boundary.configure["AutomatedCuration"] = lambda m: setattr(
-        m.get_guid_for_name, "return_value", "No elements found")
+    boundary.configure["MetadataExpert"] = lambda m: setattr(
+        m.get_metadata_element_by_unique_name, "return_value", "No elements found")
     rid = reg.enqueue_outbox_element("repo", "p", "collection_membership", "CollectionMembership::c::m",
                                      {"collection_guid": "c", "member_guid": "m", "requested_by": PETER})
     from resource_explorer.a2a_auth import caller

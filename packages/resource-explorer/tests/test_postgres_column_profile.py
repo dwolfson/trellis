@@ -57,7 +57,7 @@ from resource_explorer.surveyors.database.column_profile_step import (
     ACTION_REVIEW_UNMATCHED_VALUES,
     SamplingBudget,
     _rfa_for_match,
-    publish_proposals,
+    publish_proposals as _publish_proposals,
     run_column_profile,
     sample_column_values,
 )
@@ -72,8 +72,8 @@ from resource_explorer.surveyors.database.egeria_reference_catalog import (
     list_known_data_classes,
     list_known_valid_value_sets,
     load_reference_catalog,
-    publish_proposed_data_class,
-    publish_proposed_valid_value_set,
+    publish_proposed_data_class as _publish_proposed_data_class,
+    publish_proposed_valid_value_set as _publish_proposed_valid_value_set,
     valid_value_set_from_element,
 )
 from resource_explorer.surveyors.database.sampling import (
@@ -145,6 +145,40 @@ class _FakeSamplingConnection:
 def _column_from_sql(query: str) -> str:
     match = re.search(r'SELECT "([^"]+)" AS value', query)
     return match.group(1) if match else ""
+
+
+class _ExpertOver:
+    """The MetadataExpert unique-name read, answering what the old `get_guid_for_name` fakes below are scripted
+    with (an existing GUID, the miss sentence, or whatever a subclass returns). Production asks the unique-name
+    endpoint for every exact qualifiedName (egeria_lookup.py)."""
+
+    def __init__(self, *clients):
+        self._clients = [c for c in clients if c is not None]
+
+    def get_metadata_element_by_unique_name(self, name=None, property_name="qualifiedName", body=None, **kwargs):
+        from tests.qn_lookup_bridge import NO_ELEMENTS_FOUND, convert_answer
+
+        answer = NO_ELEMENTS_FOUND
+        for client in self._clients:
+            answer = client.get_guid_for_name(name, property_name=[property_name])
+            if answer != NO_ELEMENTS_FOUND:
+                break
+        return convert_answer(answer)
+
+
+def publish_proposed_data_class(designer, match, **kwargs):
+    kwargs.setdefault("expert", _ExpertOver(designer))
+    return _publish_proposed_data_class(designer, match, **kwargs)
+
+
+def publish_proposed_valid_value_set(ref_manager, match, **kwargs):
+    kwargs.setdefault("expert", _ExpertOver(ref_manager))
+    return _publish_proposed_valid_value_set(ref_manager, match, **kwargs)
+
+
+def publish_proposals(matches, *, designer=None, ref_manager=None, **kwargs):
+    kwargs.setdefault("expert", _ExpertOver(designer, ref_manager))
+    return _publish_proposals(matches, designer=designer, ref_manager=ref_manager, **kwargs)
 
 
 class _FakeDesigner:

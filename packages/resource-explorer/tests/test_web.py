@@ -1338,10 +1338,11 @@ class TestEgeriaRules:
             "EGERIA_USER_PASSWORD": "steward"
         }):
             with mock.patch("pyegeria.omvs.reference_data.ReferenceDataManager") as MockRD, \
-                 mock.patch("pyegeria.omvs.data_designer.DataDesigner") as MockDD:
+                 mock.patch("pyegeria.omvs.metadata_expert.MetadataExpert") as MockDD:
                 
                 MockRD.return_value.find_valid_value_definitions.return_value = mock_find_response
-                MockDD.return_value.get_guid_for_name.return_value = "dummy-guid"
+                MockDD.return_value.get_metadata_element_by_unique_name.return_value = {
+                    "elementGUID": "11111111-1111-1111-1111-111111111111", "type": {"typeName": "DataClass"}}
                 
                 from resource_explorer.auth import create_access_token
 

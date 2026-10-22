@@ -102,14 +102,14 @@ def test_a_hanging_guid_lookup_is_bounded(monkeypatch):
         def set_bearer_token(self, t):
             pass
 
-        def get_guid_for_name(self, qn):
-            _t.sleep(2)                                   # the known hang
-            return "guid"
+        def get_metadata_element_by_unique_name(self, qn, property_name="qualifiedName"):
+            _t.sleep(2)                                   # the known hang (now guarded on the unique-name read)
+            return {"elementGUID": "11111111-1111-1111-1111-111111111111", "type": {"typeName": "DataClass"}}
 
     class Ref(Designer):
         def find_valid_value_definitions(self, **k):
             return []
-    monkeypatch.setattr("pyegeria.omvs.data_designer.DataDesigner", Designer)
+    monkeypatch.setattr("pyegeria.omvs.metadata_expert.MetadataExpert", Designer)
     monkeypatch.setattr("pyegeria.omvs.reference_data.ReferenceDataManager", Ref)
     hdr = {"Authorization": "Bearer " + create_access_token(user_id="dan", egeria_token="tok-dan")}
     started = _t.monotonic()
@@ -189,8 +189,8 @@ def test_a_blueprint_whose_ownership_client_cannot_be_built_is_still_recorded_an
 
     m = BlueprintMaterializer(platform_url="https://localhost:9443")
     m._solution_architect = SA()
-    m._automated_curation = type("AC", (), {"get_guid_for_name": lambda self, *a, **k: []})()
-    m._metadata_expert = object()
+    m._metadata_expert = type("MX", (), {
+        "get_metadata_element_by_unique_name": lambda self, *a, **k: "No elements found"})()
     m._connect = lambda: None
     monkeypatch.setattr(m, "_record", lambda *a: recorded.append(a))
     with acting_as(Daemon(DaemonReason.RUN_QUEUE, requested_by="dana")):

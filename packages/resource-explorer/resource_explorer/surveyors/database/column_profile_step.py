@@ -989,6 +989,7 @@ def publish_proposals(
     ref_manager=None,
     discovery=None,
     annotation_guids_by_item: dict[str, str] | None = None,
+    expert=None,
 ) -> list[dict]:
     """Create a DRAFT candidate element for every proposable match.
 
@@ -1011,13 +1012,13 @@ def publish_proposals(
             if designer is None:
                 continue
             result = publish_proposed_data_class(
-                designer, match, discovery=discovery, annotation_guid=annotation_guid,
+                designer, match, discovery=discovery, annotation_guid=annotation_guid, expert=expert,
             )
         else:
             if ref_manager is None:
                 continue
             result = publish_proposed_valid_value_set(
-                ref_manager, match, discovery=discovery, annotation_guid=annotation_guid,
+                ref_manager, match, discovery=discovery, annotation_guid=annotation_guid, expert=expert,
             )
         results.append(result.as_dict())
     return results

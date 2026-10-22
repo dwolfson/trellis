@@ -103,7 +103,7 @@ class ComponentMaterializer:
         self.timeout = timeout or int(os.getenv("PYEGERIA_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT)))
         self._registry = registry
         self._solution_architect = None
-        self._automated_curation = None
+        self._metadata_expert = None
 
     def resolve_identity(self):
         """The `EgeriaIdentity` this materialization runs as.
@@ -130,7 +130,6 @@ class ComponentMaterializer:
             )
         identity = self.resolve_identity()
         try:
-            from pyegeria import AutomatedCuration
             from pyegeria.omvs.solution_architect import SolutionArchitect
 
             from resource_explorer.egeria_clients import egeria_client
@@ -140,10 +139,10 @@ class ComponentMaterializer:
             self.user_id = clients.user_id
             self._solution_architect = clients.of(SolutionArchitect)
 
-            # Used only for the qualifiedName idempotency check
-            # (get_guid_for_name) — same helper EgeriaPublisher uses, same
-            # reason: search before create, never create blind.
-            self._automated_curation = clients.of(AutomatedCuration)
+            # The qualifiedName idempotency check (search before create, never create blind): the
+            # unique-name endpoint, same helper EgeriaPublisher uses (egeria_lookup.py).
+            from pyegeria.omvs.metadata_expert import MetadataExpert
+            self._metadata_expert = clients.of(MetadataExpert)
         except PermissionError:
             raise
         except ImportError as exc:
@@ -161,13 +160,9 @@ class ComponentMaterializer:
         deliberately don't share a connection or a base class (see the
         module docstring); this is the one piece of logic worth keeping
         byte-identical between them regardless."""
-        result = self._automated_curation.get_guid_for_name(qualified_name)
-        if isinstance(result, list) and result:
-            candidate = result[0] if isinstance(result[0], str) else result[0].get("guid", "")
-            return candidate if _UUID_RE.match(candidate or "") else ""
-        if isinstance(result, str) and _UUID_RE.match(result):
-            return result
-        return ""
+        from resource_explorer.egeria_lookup import guid_by_qualified_name
+
+        return guid_by_qualified_name(self._metadata_expert, qualified_name) or ""
 
     @staticmethod
     def qualified_name_for(entity_type: str, entity_slug: str, scope_locator: str) -> str:

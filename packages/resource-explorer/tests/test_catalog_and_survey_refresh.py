@@ -17,6 +17,7 @@ already exists by qualifiedName.
 from __future__ import annotations
 
 from unittest.mock import MagicMock
+from tests.qn_lookup_bridge import expert_from_legacy
 
 import pytest
 
@@ -57,6 +58,7 @@ def surveyor():
     from pyegeria import MetadataExpert
     from unittest.mock import create_autospec
     s._metadata_expert = create_autospec(MetadataExpert, spec_set=True, instance=True)
+    expert_from_legacy(s._automated_curation, s._metadata_expert)
     s._metadata_expert.find_metadata_elements_with_string.return_value = "No elements found"
     return s
 

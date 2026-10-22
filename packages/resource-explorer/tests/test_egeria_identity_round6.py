@@ -92,10 +92,10 @@ def test_the_rules_read_stops_at_the_first_timeout_and_closes_its_clients(monkey
         def set_bearer_token(self, t):
             pass
 
-        def get_guid_for_name(self, qn):
+        def get_metadata_element_by_unique_name(self, qn, property_name="qualifiedName"):
             asked.append(qn)
-            _t.sleep(1)                                   # the known hang
-            return "guid"
+            _t.sleep(1)                                   # the known hang (now guarded on the unique-name read)
+            return {"elementGUID": "11111111-1111-1111-1111-111111111111", "type": {"typeName": "DataClass"}}
 
         def close_session(self):
             closed.append(1)
@@ -103,7 +103,7 @@ def test_the_rules_read_stops_at_the_first_timeout_and_closes_its_clients(monkey
     class Ref(Designer):
         def find_valid_value_definitions(self, **k):
             return []
-    monkeypatch.setattr("pyegeria.omvs.data_designer.DataDesigner", Designer)
+    monkeypatch.setattr("pyegeria.omvs.metadata_expert.MetadataExpert", Designer)
     monkeypatch.setattr("pyegeria.omvs.reference_data.ReferenceDataManager", Ref)
     hdr = {"Authorization": "Bearer " + create_access_token(user_id="dan", egeria_token="tok-dan")}
     r = TestClient(web_app.app).get("/api/egeria/rules/dataclasses", headers=hdr)

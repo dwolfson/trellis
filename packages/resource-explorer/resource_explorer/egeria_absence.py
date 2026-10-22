@@ -147,7 +147,7 @@ def lookup_could_not_be_made(name: str, cause) -> str:
     `cause` is the raised exception, or None for a call that gave no answer. A look-up that could not be made
     is never "not there": the create is not attempted, and these words say so, in one form every create path
     shares (surveyors, doc sources, the outbox, reference-data proposals)."""
-    if cause is None:
+    if cause is None or getattr(cause, "no_answer", False):
         detail = "Egeria gave no answer"
     else:
         detail = f"{type(cause).__name__}: {' '.join(str(cause).split())[:200] or '(no message)'}"

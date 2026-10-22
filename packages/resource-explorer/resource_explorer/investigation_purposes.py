@@ -151,16 +151,20 @@ def value_qn(name: str) -> str:
 
 # ── look-ups (PR #637's rule) ─────────────────────────────────────────────────
 
-def _lookup(client, qualified_name: str) -> str:
-    """The element's GUID; "" ONLY when Egeria says it holds none (pyegeria's exact miss sentence, or a typed
-    not-found); `CouldNotCheck` for anything else. Typed `ValidValueDefinition`, exact qualifiedName."""
+def _lookup(expert, qualified_name: str) -> str:
+    """The element's GUID; "" ONLY when Egeria says it holds none (its explicit miss answer, or a typed
+    not-found); `CouldNotCheck` for anything else. Typed `ValidValueDefinition`, exact qualifiedName, read through
+    the unique-name endpoint (`egeria_lookup`): the exact-value search timed out on a large repository."""
+    from resource_explorer.egeria_lookup import guid_by_qualified_name
+
+    if expert is None:
+        raise CouldNotCheck(lookup_could_not_be_made(qualified_name, ValueError("no MetadataExpert client")))
     try:
-        raw = client.get_guid_for_name(qualified_name, property_name=["qualifiedName"], type_name=VVD_TYPE)
+        return guid_by_qualified_name(expert, qualified_name, type_name=VVD_TYPE) or ""
     except Exception as exc:
         if is_absent(exc) == ABSENT:
             return ""
         raise CouldNotCheck(lookup_could_not_be_made(qualified_name, exc)) from exc
-    return guid_from_answer(raw, qualified_name, CouldNotCheck)
 
 
 # ── bodies ────────────────────────────────────────────────────────────────────
@@ -370,7 +374,7 @@ def _heal(ref_manager, expert, seed: dict, canary: str, writer: _Writer, *, only
     those alone are created and linked. A value an earlier seed already placed is never recreated or relinked,
     because Egeria holds the list and a person may have removed it there (it is reported in `missing`).
     """
-    set_guid = _lookup(ref_manager, SET_QN)
+    set_guid = _lookup(expert, SET_QN)
     set_new = not set_guid
     if set_new and only is not None:
         # The set itself is gone after an earlier seed made it: a person (or a wipe that kept the canary)
@@ -385,10 +389,10 @@ def _heal(ref_manager, expert, seed: dict, canary: str, writer: _Writer, *, only
     for ordinal, value in enumerate(seed["values"]):
         qn = value_qn(value["name"])
         if only is not None and value["name"] not in only:
-            if not _lookup(ref_manager, qn):
+            if not _lookup(expert, qn):
                 missing.append(value["name"])
             continue
-        guid = _lookup(ref_manager, qn)
+        guid = _lookup(expert, qn)
         if not guid:
             guid = writer.create(ref_manager.create_valid_value_definition, "purpose", qn, _value_body(value))
         if guid not in members:
@@ -424,10 +428,10 @@ def ensure_purposes(ref_manager, expert=None, seed: dict | None = None, still_le
         seed = seed if seed is not None else load_seed()
         canary = canary_qualified_name(seed)
         n = len(seed["values"])
-        if _lookup(ref_manager, canary):
-            if not _lookup(ref_manager, SET_QN):
+        if _lookup(expert, canary):
+            if not _lookup(expert, SET_QN):
                 missing.append(SET_QN)
-            missing += [v["name"] for v in seed["values"] if not _lookup(ref_manager, value_qn(v["name"]))]
+            missing += [v["name"] for v in seed["values"] if not _lookup(expert, value_qn(v["name"]))]
             return PurposeSeedOutcome(DRY_RUN if dry_run else PRESENT, values=n, canary=canary, missing=missing)
         earlier = _earlier_canaries(ref_manager)
         only: set[str] | None = None
@@ -481,7 +485,7 @@ def read_purposes_from_egeria(ref_manager, expert) -> list[dict]:
     """[{"name", "description", "is_default", "ordinal"}] — the members of Egeria's purposes set, in its
     order. Raises `PurposesUnavailable` when the set is absent, the look-up fails, or the set is empty."""
     try:
-        set_guid = _lookup(ref_manager, SET_QN)
+        set_guid = _lookup(expert, SET_QN)
     except CouldNotCheck as exc:
         raise PurposesUnavailable(str(exc)) from exc
     if not set_guid:

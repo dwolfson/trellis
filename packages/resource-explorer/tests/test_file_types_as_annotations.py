@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from unittest.mock import MagicMock
+from tests.qn_lookup_bridge import expert_from_legacy
 
 import pytest
 from fastapi.testclient import TestClient
@@ -214,6 +215,7 @@ def _publisher(registry_rows, existing=None):
     registry.get.return_value = Project(slug="egeria_git", display_name="egeria_git", github_url=GITHUB_URL)
     pub = EgeriaPublisher(platform_url="https://fake", registry=registry)
     pub._automated_curation = MagicMock()
+    pub._metadata_expert = expert_from_legacy(pub._automated_curation)
     pub._asset_maker = MagicMock()
     pub._discovery = MagicMock()
     pub._connect = MagicMock()

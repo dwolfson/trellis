@@ -21,6 +21,7 @@ import sys
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import create_autospec
+from tests.qn_lookup_bridge import expert_from_legacy
 
 import pytest
 
@@ -342,6 +343,7 @@ def _surveyor_over(answers):
     s._asset_maker = MagicMock()
     s._discovery = MagicMock()
     s._metadata_expert = create_autospec(MetadataExpert, spec_set=True, instance=True)
+    expert_from_legacy(s._automated_curation, s._metadata_expert)
     s._metadata_expert.find_metadata_elements_with_string.side_effect = answers
     s.connect = lambda: None
     s.saved_secrets = []

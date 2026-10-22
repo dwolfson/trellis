@@ -716,31 +716,31 @@ class ProposalLookupError(ReferenceCatalogError):
     """The idempotency look-up before a proposal's create could not be made. Nothing is created on it."""
 
 
-def _find_existing(client, qualified_name: str, type_name: str) -> str:
-    """The GUID of the `type_name` element whose name is `qualified_name`, or "" for a real miss.
+def _find_existing(expert, qualified_name: str, type_name: str) -> str:
+    """The GUID of the `type_name` element whose qualifiedName is `qualified_name`, or "" for a real miss.
 
-    Typed: the look-up asks only for the type about to be created (`DataClass`, or `ValidValueDefinition`,
-    which is what a set is on Egeria 6.2), so an element of another type sharing the name is not adopted.
+    Read through the unique-name endpoint (`egeria_lookup`): the exact-value search timed out on a large
+    repository. Typed: the element must be of the type about to be created (`DataClass`, or
+    `ValidValueDefinition`, which is what a set is on Egeria 6.2). qualifiedName is unique, so an element of
+    another type holding the name is NOT "absent" (a create would be refused): it is a look-up that could not
+    be settled.
 
-    Only a real miss returns "": pyegeria's miss sentence or a typed not-found. A look-up that raised for any
-    other reason (unreachable, 401/403, 500, timeout, several hits), or answered anything that is neither a
-    GUID nor that sentence (`egeria_absence.guid_from_answer`), could not be checked and raises
-    `ProposalLookupError`. It used to return "" and the caller created, with Egeria's
-    duplicate-qualifiedName refusal the only backstop (AUDIT-PYEGERIA-6.2.2.md, "Not in scope").
+    Only Egeria's explicit "No elements found" (or a typed not-found) returns "". A look-up that raised for any
+    other reason (unreachable, 401/403, 500, timeout), or answered anything that is not an element, or found
+    another type, could not be checked and raises `ProposalLookupError`. It used to return "" and the caller
+    created, with Egeria's duplicate-qualifiedName refusal the only backstop (AUDIT-PYEGERIA-6.2.2.md).
     """
     from resource_explorer.egeria_absence import lookup_could_not_be_made, lookup_exception_is_absent
+    from resource_explorer.egeria_lookup import guid_by_qualified_name
 
+    if expert is None:
+        raise ProposalLookupError(lookup_could_not_be_made(qualified_name, ValueError("no MetadataExpert client")))
     try:
-        answer = client.get_guid_for_name(qualified_name, type_name=type_name)
+        return guid_by_qualified_name(expert, qualified_name, type_name=type_name) or ""
     except Exception as exc:
         if lookup_exception_is_absent(exc):
             return ""
         raise ProposalLookupError(lookup_could_not_be_made(qualified_name, exc)) from exc
-    from resource_explorer.egeria_absence import guid_from_answer
-
-    # Found, a real miss (""), or could-not-check: the shared reader. `_as_guid` took any non-blank string
-    # for a GUID and read "Server busy" (whitespace) as a miss, so an odd answer could adopt or create.
-    return guid_from_answer(answer, qualified_name, ProposalLookupError)
 
 
 def publish_proposed_data_class(
@@ -749,6 +749,7 @@ def publish_proposed_data_class(
     *,
     discovery=None,
     annotation_guid: str = "",
+    expert=None,
 ) -> ProposalResult:
     """Create a candidate `DataClass` with `contentStatus: DRAFT`, and link it
     to its evidence annotation via `AssociatedAnnotation`.
@@ -773,7 +774,7 @@ def publish_proposed_data_class(
     )
 
     try:
-        existing = _find_existing(designer, qualified_name, DATA_CLASS_TYPE_NAME)
+        existing = _find_existing(expert, qualified_name, DATA_CLASS_TYPE_NAME)
     except ProposalLookupError as exc:
         result.error = str(exc)
         log.warning("Proposed Data Class for %s not created: %s", match.column_path, exc)
@@ -809,6 +810,7 @@ def publish_proposed_valid_value_set(
     discovery=None,
     annotation_guid: str = "",
     max_members: int = 64,
+    expert=None,
 ) -> ProposalResult:
     """Create a candidate reference-data set with `contentStatus: DRAFT`, one
     DRAFT member per observed value, and an `AssociatedAnnotation` link to the
@@ -830,7 +832,7 @@ def publish_proposed_valid_value_set(
     )
 
     try:
-        existing = _find_existing(ref_manager, qualified_name, VALID_VALUE_DEFINITION_TYPE_NAME)
+        existing = _find_existing(expert, qualified_name, VALID_VALUE_DEFINITION_TYPE_NAME)
     except ProposalLookupError as exc:
         result.error = str(exc)
         log.warning("Proposed Valid Value Set for %s not created: %s", match.column_path, exc)
@@ -858,7 +860,7 @@ def publish_proposed_valid_value_set(
         member_body = build_proposed_valid_value_member_body(qualified_name, value)
         member_qn = member_body["properties"]["qualifiedName"]
         try:
-            member_guid = _find_existing(ref_manager, member_qn, VALID_VALUE_DEFINITION_TYPE_NAME)
+            member_guid = _find_existing(expert, member_qn, VALID_VALUE_DEFINITION_TYPE_NAME)
         except ProposalLookupError as exc:
             # This member is not created; the set and the members that did land are still a usable proposal,
             # but the result says one could not be checked (a partial set is never reported as whole).

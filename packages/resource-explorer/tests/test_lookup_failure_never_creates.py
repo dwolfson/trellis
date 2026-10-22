@@ -19,6 +19,8 @@ from unittest.mock import create_autospec, patch
 import pytest
 from pyegeria.core._exceptions import PyegeriaConnectionException
 
+from tests.qn_lookup_bridge import wire_unique_name
+
 pytestmark = pytest.mark.usefixtures("signed_in_caller")
 
 MISS = "No elements found"          # pyegeria.core._globals.NO_ELEMENTS_FOUND: the one real miss
@@ -49,13 +51,13 @@ class _Clients:
 # ── 1. database surveyor: RE's own secrets store graph ──────────────────
 
 def _db_surveyor(lookup):
-    from pyegeria import AutomatedCuration, ConnectionMaker
+    from pyegeria import AutomatedCuration, ConnectionMaker, MetadataExpert
 
     from resource_explorer.surveyors.database.egeria_database_surveyor import EgeriaDatabaseSurveyor
 
     s = EgeriaDatabaseSurveyor(platform_url="https://localhost:9443", view_server="qs-view-server")
     s._automated_curation = _fake(AutomatedCuration)
-    s._automated_curation.get_guid_for_name.side_effect = lookup
+    s._metadata_expert = wire_unique_name(_fake(MetadataExpert), lookup)     # the exact-qualifiedName read
     maker = _fake(ConnectionMaker)
     maker.create_connector_type.return_value = "ct-guid"
     maker.create_endpoint.return_value = "ep-guid"
@@ -124,7 +126,7 @@ def test_database_report_adoption_says_the_lookup_failed_not_cannot_be_read():
 # ── 2. file-system surveyor: the root folder element ────────────────────
 
 def _fs_surveyor(lookup):
-    from pyegeria import AssetMaker, AutomatedCuration
+    from pyegeria import AssetMaker, AutomatedCuration, MetadataExpert
     from pyegeria.omvs.data_discovery import DataDiscovery
 
     from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import (
@@ -134,6 +136,7 @@ def _fs_surveyor(lookup):
     s = EgeriaFileSystemSurveyor(platform_url="https://localhost:9443", view_server="qs-view-server")
     s._automated_curation = _fake(AutomatedCuration)       # connect() returns early once this is set
     s._automated_curation.get_guid_for_name.side_effect = lookup
+    s._metadata_expert = wire_unique_name(_fake(MetadataExpert), lookup)     # the root folder's qualifiedName read
     s._automated_curation.get_template_guid_for_technology_type.return_value = GUID
     s._automated_curation.create_elem_from_template.return_value = GUID
     s._automated_curation.create_folder_element_from_template.return_value = GUID
@@ -186,7 +189,7 @@ def _doc_clients(lookup, by_guid=None):
     from pyegeria.omvs.metadata_expert import MetadataExpert
 
     ac, refs, expert = _fake(AutomatedCuration), _fake(ExternalReferences), _fake(MetadataExpert)
-    ac.get_guid_for_name.side_effect = lookup
+    wire_unique_name(expert, lookup)
     refs.create_external_reference.return_value = GUID
     refs.link_external_reference.return_value = "link-guid"
     expert.get_metadata_element_by_guid.side_effect = by_guid or (lambda *a, **k: {"elementHeader": {"guid": GUID}})
@@ -247,13 +250,13 @@ def _zone_access_open(monkeypatch):
 
 
 def _publisher(lookup):
-    from pyegeria import AutomatedCuration
+    from pyegeria import AutomatedCuration, MetadataExpert
 
     from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
 
     pub = EgeriaPublisher(platform_url="https://localhost:9443", view_server="qs-view-server")
     pub._automated_curation = _fake(AutomatedCuration)
-    pub._automated_curation.get_guid_for_name.side_effect = lookup
+    pub._metadata_expert = wire_unique_name(_fake(MetadataExpert), lookup)
     return pub
 
 
@@ -309,20 +312,24 @@ def _match(question="data_class_match"):
     return _proposal_match(question)
 
 
-def _designer(lookup):
+def _expert(lookup):
+    from pyegeria.omvs.metadata_expert import MetadataExpert
+
+    return wire_unique_name(_fake(MetadataExpert), lookup)
+
+
+def _designer():
     from pyegeria.omvs.data_designer import DataDesigner
 
     d = _fake(DataDesigner)
-    d.get_guid_for_name.side_effect = lookup
     d.create_data_class.return_value = GUID
     return d
 
 
-def _ref_manager(lookup):
+def _ref_manager():
     from pyegeria.omvs.reference_data import ReferenceDataManager
 
     r = _fake(ReferenceDataManager)
-    r.get_guid_for_name.side_effect = lookup
     r.create_valid_value_definition.return_value = GUID
     return r
 
@@ -332,13 +339,11 @@ def test_reference_data_class_failed_lookup_creates_nothing():
         publish_proposed_data_class,
     )
 
-    designer = _designer(_unreachable)
-    result = publish_proposed_data_class(designer, _match())
+    designer = _designer()
+    result = publish_proposed_data_class(designer, _match(), expert=_expert(_unreachable))
     designer.create_data_class.assert_not_called()
     assert result.published is False and result.created is False
     assert "could not be made" in result.error
-    # Typed: the look-up asks only for the type it is about to create.
-    assert designer.get_guid_for_name.call_args.kwargs.get("type_name") == "DataClass"
 
 
 def test_reference_data_class_real_miss_still_creates():
@@ -346,8 +351,8 @@ def test_reference_data_class_real_miss_still_creates():
         publish_proposed_data_class,
     )
 
-    designer = _designer(lambda *a, **k: MISS)
-    result = publish_proposed_data_class(designer, _match())
+    designer = _designer()
+    result = publish_proposed_data_class(designer, _match(), expert=_expert(lambda *a, **k: MISS))
     designer.create_data_class.assert_called_once()
     assert result.created is True and result.published is True
 
@@ -357,11 +362,24 @@ def test_reference_value_set_failed_lookup_creates_nothing():
         publish_proposed_valid_value_set,
     )
 
-    ref = _ref_manager(_unreachable)
-    result = publish_proposed_valid_value_set(ref, _match("reference_data_match"))
+    ref = _ref_manager()
+    result = publish_proposed_valid_value_set(ref, _match("reference_data_match"), expert=_expert(_unreachable))
     ref.create_valid_value_definition.assert_not_called()
     assert result.published is False and "could not be made" in result.error
-    assert ref.get_guid_for_name.call_args.kwargs.get("type_name") == "ValidValueDefinition"
+
+
+def test_reference_a_different_type_holding_the_name_creates_nothing():
+    """Typed: the element must be of the type about to be created. Another type under the name is not 'absent'."""
+    from resource_explorer.surveyors.database.egeria_reference_catalog import (
+        publish_proposed_data_class,
+    )
+    from tests.qn_lookup_bridge import element_answer
+
+    designer = _designer()
+    result = publish_proposed_data_class(
+        designer, _match(), expert=_expert(lambda *a, **k: element_answer(GUID, "DataField", supers=["Referenceable"])))
+    designer.create_data_class.assert_not_called()
+    assert result.published is False and "could not be made" in result.error
 
 
 def test_reference_value_set_member_failed_lookup_creates_no_member():
@@ -378,8 +396,8 @@ def test_reference_value_set_member_failed_lookup_creates_no_member():
             return GUID                                    # the set itself
         raise PyegeriaConnectionException()
 
-    ref = _ref_manager(lookup)
-    result = publish_proposed_valid_value_set(ref, _match("reference_data_match"))
+    ref = _ref_manager()
+    result = publish_proposed_valid_value_set(ref, _match("reference_data_match"), expert=_expert(lookup))
     ref.create_valid_value_definition.assert_not_called()
     assert result.member_guids == []
     assert sorted(result.members_not_checked) == ["CLOSED", "NEW", "OPEN"]
@@ -391,8 +409,8 @@ def test_reference_value_set_real_miss_still_creates():
         publish_proposed_valid_value_set,
     )
 
-    ref = _ref_manager(lambda *a, **k: MISS)
-    result = publish_proposed_valid_value_set(ref, _match("reference_data_match"))
+    ref = _ref_manager()
+    result = publish_proposed_valid_value_set(ref, _match("reference_data_match"), expert=_expert(lambda *a, **k: MISS))
     assert ref.create_valid_value_definition.call_count == 1 + 3       # the set and its three members
     assert result.created is True and result.published is True
 
@@ -430,7 +448,7 @@ def test_annotation_loop_real_miss_still_creates():
 # ── 6. repo publisher: sub-resource folders and files (same shape, found in the sweep) ──
 
 def _sub_resource_publisher(tmp_path, lookup):
-    from pyegeria import AutomatedCuration
+    from pyegeria import AutomatedCuration, MetadataExpert
 
     from resource_explorer.registry import Project, ProjectRegistry
     from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
@@ -441,7 +459,7 @@ def _sub_resource_publisher(tmp_path, lookup):
     reg.catalog_sub_resource("repo", "p", "docs", "folder")
     pub = EgeriaPublisher(platform_url="https://localhost:9443", view_server="qs-view-server", registry=reg)
     pub._automated_curation = _fake(AutomatedCuration)
-    pub._automated_curation.get_guid_for_name.side_effect = lookup
+    pub._metadata_expert = wire_unique_name(_fake(MetadataExpert), lookup)
     pub._automated_curation._async_get_template_guid_for_technology_type.return_value = GUID
     pub._automated_curation.create_elem_from_template.return_value = GUID
     pub._connect = lambda *a, **k: None                    # the clients are the doubles above
@@ -488,8 +506,9 @@ def _component_fixture(tmp_path, monkeypatch, pack_lookup):
     from pyegeria import ClassificationExplorer
     from pyegeria.omvs.metadata_expert import MetadataExpert
 
+    expert = wire_unique_name(_fake(MetadataExpert), lambda *a, **k: MISS)      # no component beneath RE's name yet
     clients = _Clients({SolutionArchitect: architect, AutomatedCuration: curation,
-                        MetadataExpert: _fake(MetadataExpert), ClassificationExplorer: _fake(ClassificationExplorer)})
+                        MetadataExpert: expert, ClassificationExplorer: _fake(ClassificationExplorer)})
     monkeypatch.setattr("resource_explorer.egeria_clients.egeria_client", lambda *a, **k: clients)
     return reg, architect
 

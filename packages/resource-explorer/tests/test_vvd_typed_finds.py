@@ -114,7 +114,7 @@ def run_as_daemon(daemon):
 
 
 class _Designer:
-    """DataDesigner stand-in: every standard DataClass exists."""
+    """MetadataExpert stand-in (named for the DataClass look-up it answers): every standard DataClass exists."""
 
     def __init__(self, *a, **k):
         pass
@@ -125,8 +125,10 @@ class _Designer:
     def close_session(self):
         pass
 
-    def get_guid_for_name(self, name, property_name=None, type_name=None):
-        return f"guid-{name.replace('::', '-')}"
+    def get_metadata_element_by_unique_name(self, name=None, property_name="qualifiedName", body=None, **k):
+        """The unique-name read the rules route uses for a DataClass (egeria_lookup.py)."""
+        import uuid
+        return {"elementGUID": str(uuid.uuid5(uuid.NAMESPACE_URL, name)), "type": {"typeName": "DataClass"}}
 
 
 def _rules(monkeypatch, Ref, designer=_Designer):
@@ -135,7 +137,7 @@ def _rules(monkeypatch, Ref, designer=_Designer):
     from resource_explorer.auth import create_access_token
     from resource_explorer.web import app as web_app
 
-    monkeypatch.setattr("pyegeria.omvs.data_designer.DataDesigner", designer)
+    monkeypatch.setattr("pyegeria.omvs.metadata_expert.MetadataExpert", designer)
     monkeypatch.setattr("pyegeria.omvs.reference_data.ReferenceDataManager", Ref)
     hdr = {"Authorization": "Bearer " + create_access_token(user_id="dan", egeria_token="tok-dan")}
     r = TestClient(web_app.app).get("/api/egeria/rules/dataclasses", headers=hdr)
@@ -195,7 +197,7 @@ def test_the_rules_route_names_its_keyword_source(daemon, monkeypatch, keywords,
 
 def test_a_failed_data_class_lookup_is_could_not_read_not_had_none(daemon, monkeypatch):
     class Broken(_Designer):
-        def get_guid_for_name(self, *a, **k):
+        def get_metadata_element_by_unique_name(self, *a, **k):
             raise RuntimeError("401")
 
     rules = _rules(monkeypatch, _ref({"EmailAddress": ["mail"]}), designer=Broken)
@@ -205,7 +207,7 @@ def test_a_failed_data_class_lookup_is_could_not_read_not_had_none(daemon, monke
 
 def test_a_missing_data_class_is_had_none_not_read(daemon, monkeypatch):
     class Missing(_Designer):
-        def get_guid_for_name(self, *a, **k):
+        def get_metadata_element_by_unique_name(self, *a, **k):
             return NONE_FOUND                       # pyegeria's miss sentinel, truthy
 
     Ref = _ref({"EmailAddress": ["mail"]})

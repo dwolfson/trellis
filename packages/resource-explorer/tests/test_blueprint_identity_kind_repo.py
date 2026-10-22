@@ -8,6 +8,7 @@ fakes for Egeria; a temp SQLite registry; nothing live.
 from __future__ import annotations
 
 from unittest.mock import MagicMock
+from tests.qn_lookup_bridge import expert_from_legacy
 
 import pytest
 
@@ -52,6 +53,7 @@ def _m(reg, found=None, search_error=None):
     m = BlueprintMaterializer(platform_url="https://fake", registry=reg)
     m._solution_architect = MagicMock()
     m._automated_curation = MagicMock()
+    m._metadata_expert = expert_from_legacy(m._automated_curation)
     m._connect = MagicMock()
     searched = []
     entries = {qn: (v if isinstance(v, dict) else {"guid": v}) for qn, v in (found or {}).items()}
@@ -479,10 +481,12 @@ def test_a_refusal_is_logged_once_per_element_and_an_adoption_only_after_the_row
 # ── the search is typed and verified ─────────────────────────────────────────────────────────────────────
 
 
-def test_the_search_is_restricted_to_qualified_name_and_the_blueprint_type(reg):
+def test_the_lookup_is_the_unique_name_read_on_qualified_name_and_the_hit_is_verified_as_a_blueprint(reg):
     m = _m(reg)
     _make(m)
-    assert m.searched[0] == (BASE, ["qualifiedName"], "SolutionBlueprint")
+    # The unique-name read, on qualifiedName only (it takes no type); the type is verified on the read-back.
+    assert m.searched[0] == (BASE, ["qualifiedName"], None)
+    m._metadata_expert.get_metadata_element_by_unique_name.assert_any_call(BASE, property_name="qualifiedName")
 
 
 class _Multi(Exception):

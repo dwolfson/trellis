@@ -19,6 +19,7 @@ import itertools
 import uuid
 from contextlib import contextmanager
 from unittest.mock import create_autospec
+from tests.qn_lookup_bridge import expert_from_legacy
 
 import pytest
 
@@ -157,6 +158,7 @@ class Store:
         ac.get_guid_for_name.side_effect = lambda qn, *a, **k: next(
             (g for g, e in store.elements.items() if e["qn"] == qn and store.visible(user, g)),
             "No elements found")
+        expert_from_legacy(ac, me)         # the unique-name read answers what `ac` is scripted with
         by_class = {AssetMaker: am, ClassificationExplorer: cx, MetadataExpert: me, DataDiscovery: dd,
                     AutomatedCuration: ac, ExternalReferences: fake(ExternalReferences),
                     CollectionManager: fake(CollectionManager)}

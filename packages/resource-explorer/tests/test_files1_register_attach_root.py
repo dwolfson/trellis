@@ -112,11 +112,18 @@ QN = "FileFolder::nas:file://nas/data"      # the "File System Directory" templa
 
 
 def _boundary(monkeypatch, *, lookup=None, read_back=None, created=GUID):
-    from pyegeria import AssetMaker, AutomatedCuration
+    from pyegeria import AssetMaker, AutomatedCuration, MetadataExpert
     from pyegeria.omvs.data_discovery import DataDiscovery
 
-    ac, am, dd = _fake(AutomatedCuration), _fake(AssetMaker), _fake(DataDiscovery)
-    ac.get_guid_for_name.side_effect = lookup or (lambda name, *a, **k: MISS)
+    from tests.qn_lookup_bridge import convert_answer
+
+    ac, am, dd, mx = _fake(AutomatedCuration), _fake(AssetMaker), _fake(DataDiscovery), _fake(MetadataExpert)
+    answer_for = lookup or (lambda name, *a, **k: MISS)
+    # The root folder is looked up by its qualifiedName through the unique-name read (egeria_lookup.py); a
+    # scripted lookup returns a GUID, an element dict (to set its type), the miss sentence, or raises.
+    mx.get_metadata_element_by_unique_name.side_effect = (
+        lambda name=None, property_name="qualifiedName", body=None, **k: convert_answer(answer_for(name)))
+    _boundary.mx = mx
     ac.get_template_guid_for_technology_type.return_value = TEMPLATE_GUID
     ac.create_folder_element_from_template.return_value = created
 
@@ -131,7 +138,7 @@ def _boundary(monkeypatch, *, lookup=None, read_back=None, created=GUID):
 
     def factory(*a, **k):
         real_sig.bind(*a, **k)          # the factory fake binds the real signature
-        return _Clients({AutomatedCuration: ac, AssetMaker: am, DataDiscovery: dd})
+        return _Clients({AutomatedCuration: ac, AssetMaker: am, DataDiscovery: dd, MetadataExpert: mx})
 
     monkeypatch.setattr("resource_explorer.egeria_clients.egeria_client", factory)
     # send_with_publish bound to its REAL signature; attaching the root folder must never call it
@@ -189,15 +196,17 @@ def test_attach_root_creates_the_folder_once_and_a_second_press_creates_nothing(
     assert am.get_asset_by_guid.call_count == 2                       # read back again, by GUID
     # the root folder ONLY: tags, group, documentation sources and feedback do not go out with this press
     sent.assert_not_called()
-    # the look-up was by the template's qualifiedName, restricted to FileFolder
-    ac.get_guid_for_name.assert_called_once_with(QN, type_name="FileFolder")
+    # the look-up was by the template's qualifiedName, through the unique-name read, and typed FileFolder
+    _boundary.mx.get_metadata_element_by_unique_name.assert_called_once_with(QN, property_name="qualifiedName")
+    ac.get_guid_for_name.assert_not_called()
 
 
 @pytest.mark.usefixtures("_zone_access_open")
 def test_attach_root_adopts_a_folder_egeria_already_has_by_name_and_creates_nothing(fs, monkeypatch):
     def lookup(name, *a, **k):
-        # only the template's qualifiedName, restricted to FileFolder, finds it; the bare mount path does not
-        return GUID if (name == QN and k.get("type_name") == "FileFolder") else MISS
+        # only the template's qualifiedName finds it (a FileFolder); the bare mount path does not
+        from tests.qn_lookup_bridge import element_answer
+        return element_answer(GUID, "FileFolder", supers=[]) if name == QN else MISS
 
     ac, am, dd, _sent = _boundary(monkeypatch, lookup=lookup)
     r = _client().post("/api/filesystems/nas/attach-root", headers=_headers())
@@ -205,6 +214,21 @@ def test_attach_root_adopts_a_folder_egeria_already_has_by_name_and_creates_noth
     assert r.json()["created"] is False and r.json()["state"] == "attached"
     ac.create_folder_element_from_template.assert_not_called()
     assert fs.get_filesystem("nas").egeria_asset_guid == GUID
+
+
+@pytest.mark.usefixtures("_zone_access_open")
+def test_another_type_holding_the_folders_name_creates_nothing(fs, monkeypatch):
+    """qualifiedName is unique: a DataFile under the folder's name is not 'absent' (a create would be refused
+    or duplicate), so the press creates nothing and no proof is written."""
+    def lookup(name, *a, **k):
+        from tests.qn_lookup_bridge import element_answer
+        return element_answer(GUID, "DataFile", supers=["Referenceable"]) if name == QN else MISS
+
+    ac, am, dd, _sent = _boundary(monkeypatch, lookup=lookup)
+    r = _client().post("/api/filesystems/nas/attach-root", headers=_headers())
+    assert r.status_code >= 400, r.text
+    ac.create_folder_element_from_template.assert_not_called()
+    assert fs.latest_filesystem_root_proof("nas") is None
 
 
 @pytest.mark.usefixtures("_zone_access_open")
@@ -292,7 +316,9 @@ def test_the_fakes_bind_the_real_pyegeria_signatures():
     """The calls the attach path makes, bound against the installed pyegeria."""
     from pyegeria import AssetMaker, AutomatedCuration
 
-    inspect.signature(AutomatedCuration.get_guid_for_name).bind(object(), "file://nas/data")
+    from pyegeria import MetadataExpert
+    inspect.signature(MetadataExpert.get_metadata_element_by_unique_name).bind(
+        object(), "file://nas/data", property_name="qualifiedName")
     inspect.signature(AutomatedCuration.create_elem_from_template).bind(object(), {"class": "TemplateRequestBody"})
     inspect.signature(AutomatedCuration.get_template_guid_for_technology_type).bind(object(), "File System Directory")
     inspect.signature(AssetMaker.get_asset_by_guid).bind(object(), GUID, body={"class": "GetRequestBody"})

@@ -227,7 +227,7 @@ def _find_ref_guid(clients, qualified_name: str) -> str:
 
     **Bounded via `concurrency.run_sync`, deliberately** — live-verified
     2026-09-28 (this slice's own gate check) that `AutomatedCuration.
-    get_guid_for_name` can hang this exact way: `docs/process-model.md`
+    get_guid_for_name` (the call this used to make) can hang this exact way: `docs/process-model.md`
     §1.3's incident is `resolve_question_guid()` hung 15+s inside this
     same pyegeria call -> nest_asyncio -> run_until_complete frame, fixed
     everywhere else in this package by routing through the shared bounded
@@ -238,37 +238,26 @@ def _find_ref_guid(clients, qualified_name: str) -> str:
     a pyegeria fix — `feedback_pyegeria_gaps_tracking` policy is to log
     upstream gaps and wait for approval, not patch pyegeria directly — this
     is RE's own established containment for RE's own call site."""
-    import re as _re
-
-    from pyegeria import AutomatedCuration
+    from pyegeria import MetadataExpert
 
     from resource_explorer.concurrency import run_sync
-
-    uuid_re = _re.compile(
-        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", _re.IGNORECASE
-    )
+    from resource_explorer.egeria_lookup import guid_by_qualified_name
 
     def _lookup():
-        return clients.of(AutomatedCuration).get_guid_for_name(qualified_name)
+        # The unique-name read (egeria_lookup.py), not the exact-value search that timed out on a large
+        # repository. `qualified_name` is `ExternalReference::<url>` by construction.
+        return guid_by_qualified_name(clients.of(MetadataExpert), qualified_name)
 
     from resource_explorer.egeria_absence import lookup_could_not_be_made, lookup_exception_is_absent
 
     try:
-        result = run_sync(_lookup, timeout=15.0)
+        return run_sync(_lookup, timeout=15.0) or ""
     except Exception as exc:
         # Only a real miss may lead to a create; a look-up that could not be made raises (it used to
         # return '' and the caller created a second ExternalReference).
         if lookup_exception_is_absent(exc):
             return ""
         raise DocSourceLookupError(lookup_could_not_be_made(qualified_name, exc)) from exc
-    if result is None:
-        raise DocSourceLookupError(lookup_could_not_be_made(qualified_name, None))
-    if isinstance(result, list) and result:
-        candidate = result[0] if isinstance(result[0], str) else result[0].get("guid", "")
-        return candidate if uuid_re.match(candidate or "") else ""
-    if isinstance(result, str) and uuid_re.match(result):
-        return result
-    return ""
 
 
 def publish_doc_source(source: dict, asset_guid: str, *, clients, display_name: str = "",
