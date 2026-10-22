@@ -2447,7 +2447,7 @@ database_questions:
   retired: false
 - id: Q-0077
   question: Could this be in scope for what I am looking for — worth the full pass?
-  stage: Discovery
+  stage: Discovery/Enrichment
   perspectives:
   - Financial
   - Consumer

@@ -198,6 +198,13 @@ class TestAnOrphanAnalysisWarns:
         w = gen.orphan_warnings({"repo": [{"answering": {"analysis_ids": ["shared_id"]}}]}, cat)
         assert len(w) == 1 and "database_analyses" in w[0]
 
+    def test_a_library_step_declaring_provided_by_questions_is_not_an_orphan(self, gen):
+        cat = {"database_analyses": [
+            {"id": "lib_step", "provided_by": {"questions": ["Q-0086"]}},
+            {"id": "lib_step_empty", "provided_by": {"questions": []}}]}
+        w = gen.orphan_warnings({"database": []}, cat)
+        assert len(w) == 1 and "lib_step_empty" in w[0]
+
     def test_generate_lists_it_through_the_catalog_argument(self, gen, header):
         said: list[str] = []
         gen.generate([_row(header, **{"Resource Types": "database", "Answering Analysis": "schema_inventory"})],
@@ -220,9 +227,9 @@ class TestAnOrphanAnalysisWarns:
         said: list[str] = []
         gen.generate(rows, warnings=said)
         orphans = {w.split()[1] for w in said if "named by no question" in w}
-        # semantic_suggestions: a GAP note may not name a registered id, so Q-0087 cannot name it. The other four
-        # are the stale library-step duplicates the owner has not yet decided to retire.
-        assert orphans <= {"semantic_suggestions", "change_rates", "hub_tables", "statistics_freshness", "database_staleness"}, orphans
+        # semantic_suggestions: a GAP note may not name a registered id, so Q-0087 cannot name it. The four
+        # library steps are no longer orphans: their declarations name the questions they answer.
+        assert orphans == {"semantic_suggestions"}, orphans
 
 
 # ---------------------------------------------------------------- rule 5: retired and merged rows
@@ -348,8 +355,8 @@ class TestTheCommittedCsvGeneratesTheNumbersInThePrBody:
         by_id = {e["id"]: e for k, v in out.items() if k.endswith("_questions") for e in v}
         assert len(by_id) == 94
         assert dict(Counter(e["stage"] for e in by_id.values())) == {
-            "Analysis": 33, "Discovery": 26, "Scouting": 13, "Assessment": 13, "Enrichment": 5,
-            "Analysis/Enrichment": 1, "Scouting/Assessment": 1, "Discovery/Enrichment": 1, "Discovery/Analysis": 1}
+            "Analysis": 33, "Discovery": 25, "Scouting": 13, "Assessment": 13, "Enrichment": 5,
+            "Analysis/Enrichment": 1, "Scouting/Assessment": 1, "Discovery/Enrichment": 2, "Discovery/Analysis": 1}
 
     def test_no_answer_is_unclassified(self, generated):
         _, out, _ = generated

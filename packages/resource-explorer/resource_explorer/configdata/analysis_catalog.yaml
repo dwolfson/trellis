@@ -220,7 +220,7 @@ repo_analyses:
     name: "License Classification"
     description: "Classify the repo's SPDX license id into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown)."
     resource_types: ["repo"]
-    intent: assessment  # retagged from 'discovery' 2026-10-22 (Q-0030, the question it answers, is Scouting/Assessment and absorbs Q-0012; review §1.3). Earlier note follows:  # retagged from 'assessment' 2026-08-20: Discovery is derivation over already-collected data (zero new fetch), not where a survey happens to be launched from. All three of this tier's analyses declare requires_resources={} — they reason over project_stats/file inventory that Scouting already gathered, and exist to decide whether the expensive tiers are worth paying for. See CLAUDE.md rule 17.  # is this worth pursuing, given its usage restrictions?
+    intent: discovery  # kept at discovery 2026-10-22 (CLAUDE.md rule 17, collect-vs-reason axis): the one stage-vs-intent warning on Q-0030 (Scouting/Assessment) is accepted. Earlier note follows:  # retagged from 'assessment' 2026-08-20: Discovery is derivation over already-collected data (zero new fetch), not where a survey happens to be launched from. All three of this tier's analyses declare requires_resources={} — they reason over project_stats/file inventory that Scouting already gathered, and exist to decide whether the expensive tiers are worth paying for. See CLAUDE.md rule 17.  # is this worth pursuing, given its usage restrictions?
     perspectives: ["Steward", "Security", "all"]
     annotation_types: ["ClassificationAnnotation"]
     source: local

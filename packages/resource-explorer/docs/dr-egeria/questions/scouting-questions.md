@@ -5144,7 +5144,7 @@ design §16.3's Discovery gate and §16.5 point 2 — fit is a query over stored
 This is the gate: it decides whether the Analysis-tier aggregate pass is worth paying for on this resource, from signals that cost nothing.
 
 ### Usage
-Typically asked and answerable during Discovery.
+Typically relevant during Discovery and Enrichment.
 
 ### Additional Properties
 | Parameter Name | Parameter Value |
@@ -5187,6 +5187,19 @@ Could this be in scope for what I am looking for — worth the full pass?
 
 ### Scope Reference
 Discovery
+
+### Scope Category
+Asked At
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Could this be in scope for what I am looking for — worth the full pass?
+
+### Scope Reference
+Enrichment
 
 ### Scope Category
 Asked At

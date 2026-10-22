@@ -33,8 +33,8 @@ Rules added 2026-10-22 (REVIEW-QUESTIONS-AND-ANALYTICS-2026-10-22.md §5), after
   2. A named Resource Type with no adapter (`dataset`, `model`) fails the build; `*` expands to the kinds that
      have one (repo, database, filesystem).
   3. A question whose Funnel Stage does not include the intent of an analysis it names WARNS, naming both.
-  4. An analysis-catalogue entry that no question names, and that does not declare `answers_questions: false`,
-     WARNS (the orphan check).
+  4. An analysis-catalogue entry that no question names, and that does not declare `answers_questions: false`
+     or a non-empty `provided_by.questions`, WARNS (the orphan check).
   5. A row whose Status is `retired <date>: ...` or `merged into Q-00NN <date>` is left out of the YAML (and out
      of the Dr.Egeria document); its id stays reserved: it counts for the next free id, and it is listed under
      `reserved_question_ids` so `question_catalog_reader.all_question_ids()` still returns it.
@@ -903,6 +903,10 @@ def orphan_warnings(by_type: dict[str, list[dict]], catalog: dict) -> list[str]:
     for rt, entries in _catalogue_sections(catalog).items():
         for e in entries:
             if not e.get("id") or e.get("answers_questions") is False:
+                continue
+            # A library step's declaration names the questions it answers (`provided_by.questions`); that is a
+            # question link, so the step is not an orphan (architect ruling 2026-10-22).
+            if (e.get("provided_by") or {}).get("questions"):
                 continue
             if e["id"] not in named.get(rt, set()):
                 out.append(f"analysis {e['id']} ({rt}_analyses) is named by no question and does not declare "
