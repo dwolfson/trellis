@@ -539,14 +539,14 @@ def test_links_and_ownership_are_said_in_the_words_and_a_missing_element_is_not_
     assert element_link_words(None) == "" and element_link_words({"of": 0}) == ""
     # An element Egeria does not hold yet is NEUTRAL: the checks belong to the report, and the words say so.
     assert element_link_words({"of": 3, "checks": 3, "no_element": 3, "no_element_columns": 3}) == \
-        "3 checks on the report · 3 columns not yet catalogued in Egeria, so not linked to them"
+        "3 checks on the report · 3 columns not yet cataloged in Egeria, so not linked to them"
     assert element_link_words({"of": 3, "checks": 3, "linked": 2, "no_element": 1, "no_element_columns": 1}) == \
-        "3 checks on the report · linked to 2 of 3 elements · 1 column not yet catalogued in Egeria, so not linked to it"
+        "3 checks on the report · linked to 2 of 3 elements · 1 column not yet cataloged in Egeria, so not linked to it"
     assert element_link_words({"of": 2, "checks": 2, "no_element": 2, "no_element_tables": 1,
                                "no_element_columns": 1}) == \
-        "2 checks on the report · 1 column and 1 table not yet catalogued in Egeria, so not linked to them"
+        "2 checks on the report · 1 column and 1 table not yet cataloged in Egeria, so not linked to them"
     assert element_link_words({"of": 1, "checks": 1, "no_element": 1, "no_element_tables": 1}) == \
-        "1 check on the report · 1 table not yet catalogued in Egeria, so not linked to it"
+        "1 check on the report · 1 table not yet cataloged in Egeria, so not linked to it"
     # a look-up that could not be made, or a link that failed, is NOT about the catalogue and is still said
     assert element_link_words({"of": 3, "checks": 3, "linked": 1, "already_linked": 1, "not_checked": 1}) == \
         "3 checks on the report · linked to 2 of 3 elements · 1 could not be checked"

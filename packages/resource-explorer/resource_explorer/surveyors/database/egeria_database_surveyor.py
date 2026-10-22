@@ -1998,9 +1998,9 @@ def _count_noun(n: int, one: str, many: str) -> str:
 def element_link_words(links: dict | None) -> str:
     """The words for a run's QualityAnnotations and their element links (`_link_quality_checks`).
 
-    The checks belong to the REPORT: an accepted check does not need its table catalogued, so a column or table
+    The checks belong to the REPORT: an accepted check does not need its table cataloged, so a column or table
     Egeria does not hold yet is a neutral state, never a failure ("3 checks on the report · 3 columns not yet
-    catalogued in Egeria, so not linked to them"). What did link is said first ("linked to N of M elements"); a
+    cataloged in Egeria, so not linked to them"). What did link is said first ("linked to N of M elements"); a
     look-up that could not be made or a link that could not be created is said as a gap ("could not be checked",
     "could not be linked"), because those are not about the catalogue. "" when the run published no check."""
     links = links or {}
@@ -2018,7 +2018,7 @@ def element_link_words(links: dict | None) -> str:
                             _count_noun(tables, "table", "tables") if tables else "") if n]
     if unlinked:
         total = columns + tables
-        parts.append(f"{' and '.join(unlinked)} not yet catalogued in Egeria, so not linked to "
+        parts.append(f"{' and '.join(unlinked)} not yet cataloged in Egeria, so not linked to "
                      f"{'it' if total == 1 else 'them'}")
     for key, why in (("not_checked", "could not be checked"), ("failed", "could not be linked")):
         if links.get(key):

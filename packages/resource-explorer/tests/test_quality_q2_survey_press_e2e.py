@@ -283,7 +283,7 @@ def test_accept_three_proposals_press_again_and_read_three_quality_annotations_b
     # 3 elements (sales.orders.note has no element in Egeria, and that is said, not an error)
     assert detail["publish_state"] == (f"published to Egeria · {len(bodies)} of {len(bodies)} annotations in Egeria"
                                        " · 3 checks on the report · linked to 2 of 3 elements"
-                                       " · 1 column not yet catalogued in Egeria, so not linked to it")
+                                       " · 1 column not yet cataloged in Egeria, so not linked to it")
     assert detail["status"] != "error" and not detail["publish_state"].startswith("publish failed")
 
     # read the three annotations back by GUID, as the live gate does

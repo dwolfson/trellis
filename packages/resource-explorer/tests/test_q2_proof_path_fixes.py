@@ -109,17 +109,17 @@ def test_the_report_is_read_through_the_real_signature_from_end_1(egeria, reg, n
 
 # ── 2. unlinked is neutral ─────────────────────────────────────────────────────────────────────────────────────
 
-def test_columns_not_yet_catalogued_are_words_not_a_failure():
+def test_columns_not_yet_cataloged_are_words_not_a_failure():
     from resource_explorer.surveyors.database.egeria_database_surveyor import element_link_words
 
     words = element_link_words({"of": 3, "checks": 3, "no_element": 3, "no_element_columns": 3})
-    assert words == "3 checks on the report · 3 columns not yet catalogued in Egeria, so not linked to them"
+    assert words == "3 checks on the report · 3 columns not yet cataloged in Egeria, so not linked to them"
     assert "failed" not in words and "could not" not in words
 
 
 def test_a_run_whose_checks_link_to_nothing_still_says_published_and_all_landed(egeria, reg, no_connection,
                                                                                monkeypatch):
-    """The state the live run was in: every annotation landed, no table catalogued. The status word must be
+    """The state the live run was in: every annotation landed, no table cataloged. The status word must be
     'published', led by the report, with the neutral words after it."""
     from resource_explorer.surveyors.database.quality.run_checks import build_quality_annotations
     from resource_explorer.surveyors.database.quality.catalogue import load_catalogue
@@ -130,7 +130,7 @@ def test_a_run_whose_checks_link_to_nothing_still_says_published_and_all_landed(
     from resource_explorer import engine_host
     from resource_explorer.surveyors.database.egeria_database_surveyor import EgeriaDatabaseSurveyor
 
-    # Egeria holds the annotations it was given, and no table or column element for them (not catalogued yet).
+    # Egeria holds the annotations it was given, and no table or column element for them (not cataloged yet).
     original = EgeriaDatabaseSurveyor._find_element_guid
 
     def find(self, name):
@@ -145,7 +145,7 @@ def test_a_run_whose_checks_link_to_nothing_still_says_published_and_all_landed(
     monkeypatch.setattr(engine_host, "_step_output_annotations", lambda entity, outs, registry: checks)
     done, outcome = _run(reg, egeria, "ea-unlinked")
     assert done["guards"] == ["survey-completed"], done
-    assert "3 checks on the report · 3 columns not yet catalogued in Egeria, so not linked to them" in done["message"]
+    assert "3 checks on the report · 3 columns not yet cataloged in Egeria, so not linked to them" in done["message"]
     assert outcome["guard"] == "survey-completed" and outcome["annotations_in_egeria"] == outcome["annotation_count"]
 
 
