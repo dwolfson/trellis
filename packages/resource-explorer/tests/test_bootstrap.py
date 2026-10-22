@@ -100,23 +100,41 @@ class _FakeClient:
         return "No elements found"
 
 
+class _FakeExpert:
+    """Mimics MetadataExpert.get_metadata_element_by_unique_name: the element when held, pyegeria's
+    "No elements found" sentence when not, a raise when Egeria cannot be asked."""
+
+    def __init__(self, present=(), raises=False):
+        self._present = set(present)
+        self._raises = raises
+        self.calls = []
+
+    def get_metadata_element_by_unique_name(self, name=None, property_name="qualifiedName", body=None, **kw):
+        self.calls.append((name, property_name, kw))
+        if self._raises:
+            raise RuntimeError("egeria unreachable")
+        if name in self._present:
+            return {"elementGUID": "6a3014a3-de4d-4909-8dd0-511dae0e08b2", "type": {"typeName": "Referenceable"}}
+        return "No elements found"
+
+
 class TestCanary:
     def test_present_canary_detected(self, tmp_path):
         _write_batch(tmp_path, "b", canary={"qualified_name": "Q::b"})
         batch = bs.discover_batches(tmp_path)[0]
-        assert bs.canary_present(batch, _FakeClient(present=["Q::b"])) is True
+        assert bs.canary_present(batch, expert=_FakeExpert(present=["Q::b"])) is True
 
     def test_missing_canary_detected(self, tmp_path):
         _write_batch(tmp_path, "b", canary={"qualified_name": "Q::b"})
         batch = bs.discover_batches(tmp_path)[0]
-        assert bs.canary_present(batch, _FakeClient()) is False
+        assert bs.canary_present(batch, expert=_FakeExpert()) is False
 
     def test_sentinel_string_is_not_mistaken_for_a_guid(self, tmp_path):
         """pyegeria returns "No elements found" — truthy. If that were taken as
         a GUID the batch would read as present and never heal."""
         _write_batch(tmp_path, "b", canary={"qualified_name": "Q::b"})
         batch = bs.discover_batches(tmp_path)[0]
-        assert bs.canary_present(batch, _FakeClient(present=[])) is False
+        assert bs.canary_present(batch, expert=_FakeExpert(present=[])) is False
 
     def test_lookup_error_returns_unknown_not_present(self, tmp_path):
         """An unreachable Egeria is not evidence of a reset (so: no heal), but it
@@ -124,7 +142,7 @@ class TestCanary:
         catalog report present=True across the board after a redeploy."""
         _write_batch(tmp_path, "b", canary={"qualified_name": "Q::b"})
         batch = bs.discover_batches(tmp_path)[0]
-        assert bs.canary_present(batch, _FakeClient(raises=True)) is None
+        assert bs.canary_present(batch, expert=_FakeExpert(raises=True)) is None
 
     def test_no_canary_means_never_auto_healed(self, tmp_path):
         _write_batch(tmp_path, "b", canary=None)
@@ -132,19 +150,13 @@ class TestCanary:
         assert batch.has_canary is False
         assert bs.canary_present(batch, _FakeClient()) is True
 
-    def test_type_is_omitted_from_lookup_when_not_declared(self, tmp_path):
-        """A wrong type_name silently returns nothing, which reads as 'missing'
-        and triggers a heal — so type must not be invented when absent."""
-        _write_batch(tmp_path, "b", canary={"qualified_name": "Q::b"})
-        client = _FakeClient(present=["Q::b"])
-        bs.canary_present(bs.discover_batches(tmp_path)[0], client)
-        assert "type_name" not in client.calls[0][1]
-
-    def test_declared_type_is_passed_through(self, tmp_path):
+    def test_a_qualified_name_canary_is_the_unique_name_read_with_no_type_invented(self, tmp_path):
+        """A wrong type_name would read as 'missing' and trigger a heal, and the unique-name read takes no type:
+        a declared type is not asked, qualifiedName alone is global."""
         _write_batch(tmp_path, "b", canary={"type": "Perspective", "qualified_name": "Q::b"})
-        client = _FakeClient(present=["Q::b"])
-        bs.canary_present(bs.discover_batches(tmp_path)[0], client)
-        assert client.calls[0][1]["type_name"] == "Perspective"
+        expert = _FakeExpert(present=["Q::b"])
+        assert bs.canary_present(bs.discover_batches(tmp_path)[0], expert=expert) is True
+        assert expert.calls == [("Q::b", "qualifiedName", {})]
 
     def test_display_name_canary_uses_display_name_property(self, tmp_path):
         """Glossary-term qualified names are generated with a deployment-specific

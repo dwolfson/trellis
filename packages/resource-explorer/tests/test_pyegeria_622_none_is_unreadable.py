@@ -70,27 +70,37 @@ def test_publisher_lookup_none_raises_not_create():
 
     pub = EgeriaPublisher.__new__(EgeriaPublisher)
 
-    class AC:
+    class Expert:
         def __init__(self, answer):
             self.answer = answer
 
-        def get_guid_for_name(self, qn):
+        def get_metadata_element_by_unique_name(self, name=None, property_name="qualifiedName", body=None, **kw):
             return self.answer
 
-    pub._automated_curation = AC(None)
+    pub._metadata_expert = Expert(None)
     with pytest.raises(RuntimeError, match="no answer"):
         pub._find_element_guid("Q::n")
-    pub._automated_curation = AC("No elements found")
+    pub._metadata_expert = Expert("No elements found")
     assert pub._find_element_guid("Q::n") == ""
 
 
 def test_database_surveyor_lookup_none_raises():
-    from resource_explorer.surveyors.database.egeria_database_surveyor import EgeriaDatabaseSurveyor
+    from resource_explorer.surveyors.database.egeria_database_surveyor import (
+        EgeriaDatabaseSurveyor, EgeriaDatabaseSurveyorError)
 
     s = EgeriaDatabaseSurveyor.__new__(EgeriaDatabaseSurveyor)
-    with pytest.raises(RuntimeError, match="no answer"):
-        s._guid_from_lookup(None)
-    assert s._guid_from_lookup("No elements found") == ""
+
+    class Expert:
+        answer = None
+
+        def get_metadata_element_by_unique_name(self, name=None, property_name="qualifiedName", body=None, **kw):
+            return self.answer
+
+    s._metadata_expert = Expert()
+    with pytest.raises(EgeriaDatabaseSurveyorError, match="could not be made"):
+        s._find_element_guid("Q::n")
+    Expert.answer = "No elements found"
+    assert s._find_element_guid("Q::n") == ""
 
 
 # ── native survey: the report read ───────────────────────────────────────

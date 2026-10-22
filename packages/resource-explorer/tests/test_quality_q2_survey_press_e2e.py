@@ -24,6 +24,7 @@ import re
 from unittest.mock import patch
 
 import pytest
+from tests.qn_lookup_bridge import convert_answer
 from fastapi.testclient import TestClient
 
 from resource_explorer.surveyors.database.quality.run_checks import NO_ACCEPTED_CHECKS
@@ -156,7 +157,9 @@ def rig(registry, egeria):
 
     def wire(cls, spec):
         original_wire(cls, spec)
-        for name, method, fn in (("AutomatedCuration", "get_guid_for_name", lookup),
+        for name, method, fn in (("MetadataExpert", "get_metadata_element_by_unique_name",
+                                  lambda name=None, property_name="qualifiedName", body=None, **k:
+                                  convert_answer(lookup(name))),
                                  ("DataDiscovery", "link_annotation_to_described_element", link),
                                  ("MetadataExpert", "get_related_metadata_elements", related)):
             if cls.__name__ == name:

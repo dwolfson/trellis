@@ -154,7 +154,6 @@ class BlueprintMaterializer:
         self.timeout = timeout or int(os.getenv("PYEGERIA_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT)))
         self._registry = registry
         self._solution_architect = None
-        self._automated_curation = None
         self._metadata_expert = None      # only for the explicit SolutionComposition read (see _composition_children)
 
     def resolve_identity(self):
@@ -182,7 +181,6 @@ class BlueprintMaterializer:
             )
         identity = self.resolve_identity()
         try:
-            from pyegeria import AutomatedCuration
             from pyegeria.omvs.solution_architect import SolutionArchitect
 
             from resource_explorer.egeria_clients import egeria_client
@@ -191,11 +189,6 @@ class BlueprintMaterializer:
                                     view_server=self.view_server, platform_url=self.platform_url)
             self.user_id = clients.user_id
             self._solution_architect = clients.of(SolutionArchitect)
-
-            # Used only for the qualifiedName idempotency check
-            # (get_guid_for_name) — same helper ComponentMaterializer uses,
-            # same reason: search before create, never create blind.
-            self._automated_curation = clients.of(AutomatedCuration)
 
             # The explicit read of a container's SolutionComposition relationships (6.2 leaves the
             # children key off a component that has none, so the element read alone cannot say "none").
@@ -217,13 +210,9 @@ class BlueprintMaterializer:
         kept as its own copy rather than a shared import for the same reason
         that class gives for not sharing one with EgeriaPublisher: the two
         classes deliberately don't share a connection or a base class."""
-        result = self._automated_curation.get_guid_for_name(qualified_name)
-        if isinstance(result, list) and result:
-            candidate = result[0] if isinstance(result[0], str) else result[0].get("guid", "")
-            return candidate if _UUID_RE.match(candidate or "") else ""
-        if isinstance(result, str) and _UUID_RE.match(result):
-            return result
-        return ""
+        from resource_explorer.egeria_lookup import guid_by_qualified_name
+
+        return guid_by_qualified_name(self._metadata_expert, qualified_name) or ""
 
     @staticmethod
     def qualified_name_for(entity_type: str, entity_slug: str, perspective: str, cluster_name: str) -> str:
@@ -295,26 +284,20 @@ class BlueprintMaterializer:
         SolutionBlueprint, qualifiedName equal): a hit that fails is not ours and raises, because creating
         beside it could duplicate the qualifiedName. More than one hit is `BlueprintAmbiguous`.
         Returns {guid, display_name, additional}."""
+        from resource_explorer.egeria_lookup import QualifiedNameAmbiguous, guid_by_qualified_name
+
         try:
-            result = self._automated_curation.get_guid_for_name(
-                qualified_name, property_name=["qualifiedName"], type_name="SolutionBlueprint")
+            # The unique-name read (egeria_lookup.py), untyped: the read-back below verifies the type and keeps
+            # its own words. Two elements holding the name arrive as Egeria's 404 OMAG-GENERIC-HANDLERS-404-002,
+            # which the helper raises as QualifiedNameAmbiguous (keyed on the message id, not the English).
+            guid = guid_by_qualified_name(self._metadata_expert, qualified_name) or ""
         except Exception as exc:
             text = f"{exc} {getattr(exc, 'context', '')}"
-            if "Multiple elements" in text or "more than one" in text.lower():
+            if isinstance(exc, QualifiedNameAmbiguous) or "Multiple elements" in text or "more than one" in text.lower():
                 raise BlueprintAmbiguous(
                     f"ambiguous: more than one element in Egeria answers to {qualified_name}: "
                     f"nothing was adopted or created") from exc
             raise
-        guid = ""
-        if isinstance(result, list) and result:
-            if len(result) > 1:
-                raise BlueprintAmbiguous(
-                    f"ambiguous: more than one element in Egeria answers to {qualified_name}: "
-                    f"nothing was adopted or created")
-            candidate = result[0] if isinstance(result[0], str) else result[0].get("guid", "")
-            guid = candidate if _UUID_RE.match(candidate or "") else ""
-        elif isinstance(result, str) and _UUID_RE.match(result):
-            guid = result
         if not guid:
             return None
         element = self._solution_architect.get_solution_blueprint_by_guid(guid)
@@ -800,7 +783,7 @@ class BlueprintMaterializer:
     def _ensure_connected(self) -> None:
         """Connect once. A cached-GUID path returns before `_connect`, so a method that needs the clients
         afterwards cannot assume them."""
-        if self._solution_architect is None or self._automated_curation is None:
+        if self._solution_architect is None or self._metadata_expert is None:
             self._connect()
 
     def blueprint_exists(self, guid: str) -> bool:
@@ -848,7 +831,7 @@ class BlueprintMaterializer:
         not duplicate them. Creating a component stays the component verdict's job (privacy, zones), so a
         member Egeria does not hold is simply left out.
 
-        `get_guid_for_name` searches several properties with no type restriction, so a hit is VERIFIED by
+        The unique-name read takes no type restriction, so a hit is VERIFIED by
         reading it by GUID: it must be a SolutionComponent carrying exactly that qualifiedName. A hit that
         fails (or cannot be verified) is skipped and reported in `self.adoption_skipped` {slug: why}. Never
         raises."""

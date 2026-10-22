@@ -70,6 +70,7 @@ class EgeriaFileSystemSurveyor:
         self.user_password = user_password or ""   # not used to authenticate (Brief I)
         self._identity = identity
         self._automated_curation = None
+        self._metadata_expert = None
         self._asset_maker = None
         self._discovery = None
         self._clients_for_run = None
@@ -87,7 +88,7 @@ class EgeriaFileSystemSurveyor:
             )
 
         try:
-            from pyegeria import AutomatedCuration, AssetMaker
+            from pyegeria import AutomatedCuration, AssetMaker, MetadataExpert
             from pyegeria.omvs.data_discovery import DataDiscovery
 
             from resource_explorer.egeria_clients import current_principal, egeria_client
@@ -97,6 +98,7 @@ class EgeriaFileSystemSurveyor:
             clients = egeria_client(self._identity or current_principal(), purpose="file system survey",
                                     view_server=self.view_server, platform_url=self.platform_url)
             self._automated_curation = clients.of(AutomatedCuration)
+            self._metadata_expert = clients.of(MetadataExpert)   # exact qualifiedName reads (egeria_lookup.py)
             self._asset_maker = clients.of(AssetMaker)
             self._discovery = clients.of(DataDiscovery)
             self._clients_for_run = clients
@@ -149,7 +151,7 @@ class EgeriaFileSystemSurveyor:
 
         log.info(f"Cataloging FileSystem root folder in Egeria: name={fs_name}, path={canonical_mount}")
         fs_guid = self._find_element_guid(self.root_folder_qualified_name(fs_entity.slug, canonical_mount),
-                                          type_name=self.ROOT_FOLDER_TYPE)
+                                          type_name=self.ROOT_FOLDER_TYPE, qualified_name=True)
         created = False
         if not fs_guid:
             try:
@@ -732,7 +734,7 @@ class EgeriaFileSystemSurveyor:
 
         qualified_name_prefix = f"Annotation::FileSystem::{fs_slug}::{surveyed_at}"
         return publish_annotations(
-            self._discovery, self._find_element_guid,
+            self._discovery, lambda qn: self._find_element_guid(qn, qualified_name=True),
             annotations, report_guid, qualified_name_prefix,
         )
 
@@ -749,7 +751,7 @@ class EgeriaFileSystemSurveyor:
         from resource_explorer.surveyors.annotation_props import to_string_map
 
         return to_string_map(d)
-    def _find_element_guid(self, name: str, type_name: str | None = None) -> str:
+    def _find_element_guid(self, name: str, type_name: str | None = None, *, qualified_name: bool = False) -> str:
         """Return the GUID of an existing Egeria element by display/qualified name, or '' if not found.
 
         '' is the callers' cue to create, so only a real miss returns it ("No elements found", or a typed
@@ -758,6 +760,18 @@ class EgeriaFileSystemSurveyor:
         used to swallow every exception and return '' (AUDIT-PYEGERIA-6.2.2.md, "Not in scope")."""
         from resource_explorer.egeria_absence import lookup_could_not_be_made, lookup_exception_is_absent
 
+        if qualified_name:
+            # `name` IS a qualifiedName by construction: the unique-name read, not the exact-value search that
+            # times out on a large repository (egeria_lookup.py). The other callers pass a file system path
+            # (pathName / resourceName), which that read cannot answer, so they keep the by-name search.
+            from resource_explorer.egeria_lookup import guid_by_qualified_name
+
+            try:
+                return guid_by_qualified_name(self._metadata_expert, name, type_name=type_name) or ""
+            except Exception as exc:
+                if lookup_exception_is_absent(exc):
+                    return ""
+                raise EgeriaFileSystemSurveyorError(lookup_could_not_be_made(name, exc)) from exc
         try:
             result = (self._automated_curation.get_guid_for_name(name, type_name=type_name) if type_name
                       else self._automated_curation.get_guid_for_name(name))

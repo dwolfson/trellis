@@ -76,8 +76,10 @@ def test_local_filesystem_surveyor_walk():
 @patch("pyegeria.AutomatedCuration")
 @patch("pyegeria.AssetMaker")
 @patch("pyegeria.omvs.data_discovery.DataDiscovery")
-def test_egeria_filesystem_surveyor(mock_discovery_cls, mock_asset_maker_cls, mock_autoc_cls):
+@patch("pyegeria.MetadataExpert")
+def test_egeria_filesystem_surveyor(mock_expert_cls, mock_discovery_cls, mock_asset_maker_cls, mock_autoc_cls):
     # Setup mocks
+    mock_expert_cls.return_value.get_metadata_element_by_unique_name.return_value = "No elements found"
     mock_autoc = mock_autoc_cls.return_value
     mock_asset_maker = mock_asset_maker_cls.return_value
     mock_discovery = mock_discovery_cls.return_value

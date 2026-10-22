@@ -144,6 +144,7 @@ class TestTheBlueprintWrite:
             m = real(platform_url="https://fake", registry=registry)
             m._solution_architect = without
             m._automated_curation = without
+            m._metadata_expert = without
             m._connect = lambda: None
             return m
         bm.BlueprintMaterializer = factory
@@ -225,6 +226,7 @@ class TestTheComponentWrite:
             m = real(platform_url="https://fake", registry=registry)
             m._solution_architect = fake
             m._automated_curation = fake
+            m._metadata_expert = fake
             m._connect = lambda: None
             return m
         monkeypatch.setattr(bm, "BlueprintMaterializer", factory)

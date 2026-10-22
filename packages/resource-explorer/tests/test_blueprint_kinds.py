@@ -7,6 +7,7 @@ Egeria clients that record calls; nothing live.
 from __future__ import annotations
 
 from unittest.mock import MagicMock
+from tests.qn_lookup_bridge import expert_from_legacy
 
 import pytest
 
@@ -25,6 +26,7 @@ def _m(find=None):
         get_materialized_blueprint=MagicMock(return_value=None)))
     m._solution_architect = MagicMock()
     m._automated_curation = MagicMock()
+    m._metadata_expert = expert_from_legacy(m._automated_curation)
     m._connect = MagicMock()
     m._automated_curation.get_guid_for_name.side_effect = (
         (lambda qn, **kw: find(qn)) if find else (lambda qn, **kw: []))

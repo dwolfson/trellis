@@ -193,24 +193,24 @@ class CouldNotCheck(RuntimeError):
     """An existence lookup raised. Never read as "absent": nothing is created on a failed check."""
 
 
-def _existing_guid(client, qualified_name: str, type_name: str | None = None) -> str | None:
+def _existing_guid(expert, qualified_name: str, type_name: str | None = None) -> str | None:
     """The element's GUID, None when Egeria answers that it holds none, `CouldNotCheck` when the
     lookup itself failed.
 
-    Exact qualifiedName only. With `type_name`, the lookup is restricted to that type (a plain
-    ValidValueDefinition is not resolved through the Reference Data view's default type).
-    pyegeria's "No elements found" miss sentinel goes through `_as_guid` (a truthy string, not a
-    GUID); a raise (including pyegeria's "Multiple elements found") is `CouldNotCheck`.
+    Exact qualifiedName only, read through the unique-name endpoint (`egeria_lookup`): the exact-value search
+    timed out on a large repository. With `type_name`, the element must be of that type (a plain
+    ValidValueDefinition is not resolved through the Reference Data view's default type); another type holding
+    the name is `CouldNotCheck`, never "absent". Egeria's explicit "No elements found" is None; a raise is
+    `CouldNotCheck`.
     """
+    from resource_explorer.egeria_lookup import guid_by_qualified_name
+
+    if expert is None:
+        raise CouldNotCheck(f"could not check '{qualified_name}': no MetadataExpert client")
     try:
-        if type_name:
-            raw = client.get_guid_for_name(qualified_name, property_name=["qualifiedName"],
-                                           type_name=type_name)
-        else:
-            raw = client.get_guid_for_name(qualified_name)
+        return guid_by_qualified_name(expert, qualified_name, type_name=type_name)
     except Exception as exc:  # noqa: BLE001 - re-raised as the one "could not check" outcome
         raise CouldNotCheck(f"could not check '{qualified_name}': {_sentence(exc)}") from exc
-    return _as_guid(raw)
 
 
 def _existing_keywords(ref_manager, name: str) -> dict[str, str]:
@@ -412,12 +412,12 @@ def _related_guids(expert, guid: str, relationship_type: str) -> set[str]:
     return out
 
 
-def _missing_elements(designer, ref_manager, seed: list[dict]) -> tuple[int, list[str]]:
+def _missing_elements(expert, seed: list[dict]) -> tuple[int, list[str]]:
     missing, sets = [], 0
     for dc in seed:
-        if not _existing_guid(designer, data_class_qn(dc["name"])):
+        if not _existing_guid(expert, data_class_qn(dc["name"])):
             missing.append(data_class_qn(dc["name"]))
-        if _existing_guid(ref_manager, keyword_set_qn(dc["name"]), VVD_TYPE):
+        if _existing_guid(expert, keyword_set_qn(dc["name"]), VVD_TYPE):
             sets += 1
         else:
             missing.append(keyword_set_qn(dc["name"]))
@@ -439,13 +439,13 @@ def _heal(designer, ref_manager, expert, seed: list[dict], canary: str, created:
         name = dc["name"]
         dc_qn, set_qn = data_class_qn(name), keyword_set_qn(name)
 
-        dc_guid = _existing_guid(designer, dc_qn)
+        dc_guid = _existing_guid(expert, dc_qn)
         dc_new = not dc_guid
         if dc_new:
             before_write()
             dc_guid = _create(designer.create_data_class, "DataClass", dc_qn, created, _data_class_body(dc))
 
-        set_guid = _existing_guid(ref_manager, set_qn, VVD_TYPE)
+        set_guid = _existing_guid(expert, set_qn, VVD_TYPE)
         set_new = not set_guid
         if set_new:
             before_write()
@@ -509,9 +509,9 @@ def ensure_data_classes(designer, ref_manager, expert=None, seed: list[dict] | N
     try:
         seed = seed if seed is not None else load_data_class_seed()
         canary = canary_qualified_name(seed)
-        canary_present = bool(_existing_guid(ref_manager, canary, VVD_TYPE))
+        canary_present = bool(_existing_guid(expert, canary, VVD_TYPE))
         if canary_present:
-            sets, missing = _missing_elements(designer, ref_manager, seed)
+            sets, missing = _missing_elements(expert, seed)
             if not missing:
                 return SeedOutcome(PRESENT, sets=sets, canary=canary)
             log.warning("data classes: canary present but %d missing (%s) — healing",

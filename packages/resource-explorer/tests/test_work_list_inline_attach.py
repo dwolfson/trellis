@@ -19,6 +19,7 @@ import json
 import sys
 from pathlib import Path
 from unittest.mock import create_autospec
+from tests.qn_lookup_bridge import convert_answer
 
 import pytest
 
@@ -54,6 +55,8 @@ class PyegeriaWorld:
             inst.add_to_collection.side_effect = self._add_to_collection
         elif cls.__name__ == "MetadataExpert":
             inst.get_related_metadata_elements.side_effect = self._related
+            inst.get_metadata_element_by_unique_name.side_effect = (
+                lambda name=None, property_name="qualifiedName", body=None, **k: convert_answer(self._guid_for_name(name)))
         elif cls.__name__ == "AutomatedCuration":
             inst.get_guid_for_name.side_effect = self._guid_for_name
         return inst

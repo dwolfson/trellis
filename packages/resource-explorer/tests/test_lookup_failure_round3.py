@@ -57,17 +57,21 @@ def test_db_step_run_metrics_record_lineage_not_checked(tmp_path, monkeypatch):
     ac, am, dd, ll = _fake(AutomatedCuration), _fake(AssetMaker), _fake(DataDiscovery), _fake(LineageLinker)
 
     def lookup(name, property_name=None, type_name=None):
-        if property_name == ["qualifiedName"]:
-            return GUID                                       # the database element
         if ".v." in name or name.startswith("v."):
             raise PyegeriaConnectionException()               # the lineage column look-ups
+        if name.startswith("PostgreSQL"):
+            return GUID                                       # the server and database elements
         return MISS
 
+    from pyegeria import MetadataExpert
+    from tests.qn_lookup_bridge import wire_unique_name
+
     ac.get_guid_for_name.side_effect = lookup
+    mx = wire_unique_name(_fake(MetadataExpert), lookup)       # the exact-qualifiedName reads
     am.create_asset.return_value = "report-guid"
     dd.create_annotation.return_value = GUID
     monkeypatch.setattr("resource_explorer.egeria_clients.egeria_client", lambda *a, **k: _Clients(
-        {AutomatedCuration: ac, AssetMaker: am, DataDiscovery: dd, LineageLinker: ll}))
+        {AutomatedCuration: ac, AssetMaker: am, DataDiscovery: dd, LineageLinker: ll, MetadataExpert: mx}))
     view = {"name": "v", "schema": "public", "qualified_name": "public.v", "dependencies": ["t"],
             "complexity": {"complexity_score": 1, "portability_rating": 1, "node_count": 1, "join_count": 0,
                            "cte_count": 0, "subquery_count": 0},
@@ -189,10 +193,10 @@ def test_odd_answer_reference_proposal_creates_nothing():
     from resource_explorer.surveyors.database.egeria_reference_catalog import (
         publish_proposed_data_class,
     )
-    from tests.test_lookup_failure_never_creates import _designer, _match
+    from tests.test_lookup_failure_never_creates import _designer, _expert, _match
 
-    designer = _designer(lambda *a, **k: ODD)
-    result = publish_proposed_data_class(designer, _match())
+    designer = _designer()
+    result = publish_proposed_data_class(designer, _match(), expert=_expert(lambda *a, **k: ODD))
     designer.create_data_class.assert_not_called()
     assert "could not be made" in result.error
 
@@ -225,13 +229,15 @@ def test_child_of_an_unchecked_folder_is_not_checked_not_no_guid(tmp_path):
     reg.add(Project(slug="p", display_name="p", github_url="https://github.com/o/p"))
     pub = EgeriaPublisher(platform_url="https://localhost:9443", view_server="qs-view-server", registry=reg)
     pub._automated_curation = _fake(AutomatedCuration)
+    from pyegeria import MetadataExpert
+    from tests.qn_lookup_bridge import wire_unique_name
 
     def lookup(name, *a, **k):
         if name.endswith("::docs"):
             raise PyegeriaConnectionException()
         return MISS
 
-    pub._automated_curation.get_guid_for_name.side_effect = lookup
+    pub._metadata_expert = wire_unique_name(_fake(MetadataExpert), lookup)
     pub._asset_maker = _fake(AssetMaker)
     pub._connect = lambda *a, **k: None
     reg.catalog_sub_resource("repo", "p", "docs", "folder")

@@ -11,6 +11,7 @@ credentials into it as a named collection before cataloging.
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
+from tests.qn_lookup_bridge import expert_from_legacy
 
 from resource_explorer.surveyors.database.egeria_database_surveyor import (
     EgeriaDatabaseSurveyor,
@@ -59,6 +60,7 @@ class TestEnsureOwnSecretsStoreGuid:
             user_id="erinoverview", user_password="secret",
         )
         surveyor._automated_curation = MagicMock()
+        surveyor._metadata_expert = expert_from_legacy(surveyor._automated_curation)
         return surveyor
 
     def test_explicit_config_guid_wins_and_short_circuits_lookup(self):
@@ -67,7 +69,7 @@ class TestEnsureOwnSecretsStoreGuid:
             mock_get_config.return_value.egeria.secrets_store_guid = "existing-guid-123"
             guid = surveyor._ensure_own_secrets_store_guid()
         assert guid == "existing-guid-123"
-        surveyor._automated_curation.get_guid_for_name.assert_not_called()
+        surveyor._metadata_expert.get_metadata_element_by_unique_name.assert_not_called()
 
     def test_finds_existing_element_by_qualified_name_before_creating(self):
         surveyor = self._surveyor()
@@ -83,8 +85,8 @@ class TestEnsureOwnSecretsStoreGuid:
         # Looks up the ASSET's qualifiedName, not the Connection's -- the
         # guid this method returns must be an Asset's (see its docstring:
         # save_client_side_secret resolves a connector from an Asset).
-        surveyor._automated_curation.get_guid_for_name.assert_called_once_with(
-            f"{_OWN_SECRETS_STORE_QUALIFIED_NAME}::Asset"
+        surveyor._metadata_expert.get_metadata_element_by_unique_name.assert_called_once_with(
+            f"{_OWN_SECRETS_STORE_QUALIFIED_NAME}::Asset", property_name="qualifiedName"
         )
 
     def test_creates_connection_endpoint_connector_type_asset_graph_when_absent(self):
@@ -150,7 +152,7 @@ class TestEnsureOwnSecretsStoreGuid:
             guid = surveyor._ensure_own_secrets_store_guid()
         assert guid == "cached-guid"
         mock_maker_cls.assert_not_called()
-        surveyor._automated_curation.get_guid_for_name.assert_not_called()
+        surveyor._metadata_expert.get_metadata_element_by_unique_name.assert_not_called()
 
     def test_reuses_a_partially_existing_graph_instead_of_409ing(self):
         """Live-verified 2026-09-21, after an Egeria wipe-and-redeploy: this
@@ -237,6 +239,7 @@ class TestSaveDatabaseSecret:
             user_id="erinoverview", user_password="secret",
         )
         surveyor._automated_curation = MagicMock()
+        surveyor._metadata_expert = expert_from_legacy(surveyor._automated_curation)
         return surveyor
 
     def test_returns_collection_name_and_path_on_success(self):

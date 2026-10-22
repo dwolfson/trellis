@@ -31,6 +31,10 @@ MISS_ANSWERS = (NO_ELEMENTS_FOUND, NO_ELEMENT_FOUND)
 #: handler). They arrive as a typed 404, but they are about the server, not the element.
 SERVER_UNAVAILABLE_MESSAGE_PREFIX = "OMAG-MULTI-TENANT-404"
 
+#: Egeria's `MULTIPLE_ENTITIES_FOUND` (GenericHandlersErrorCode, HTTP 404): the unique-name read found TWO or more
+#: elements. It is a typed 404, but it means "more than one", so it is never absent.
+MULTIPLE_ENTITIES_FOUND_MESSAGE_ID = "OMAG-GENERIC-HANDLERS-404-002"
+
 
 def is_absent(result_or_exc) -> str:
     """'absent' | 'present' | 'unreadable' for a returned answer or a raised exception."""
@@ -58,6 +62,8 @@ def _classify_exception(exc: BaseException) -> str:
     if isinstance(exc, PyegeriaUnauthorizedException):    # before the API exception it subclasses
         return UNREADABLE
     if egeria_message_id(exc).startswith(SERVER_UNAVAILABLE_MESSAGE_PREFIX):   # the message id first
+        return UNREADABLE
+    if egeria_message_id(exc) == MULTIPLE_ENTITIES_FOUND_MESSAGE_ID:   # two elements hold the name: not "none"
         return UNREADABLE
     if isinstance(exc, PyegeriaNotFoundException):
         return ABSENT
@@ -147,7 +153,7 @@ def lookup_could_not_be_made(name: str, cause) -> str:
     `cause` is the raised exception, or None for a call that gave no answer. A look-up that could not be made
     is never "not there": the create is not attempted, and these words say so, in one form every create path
     shares (surveyors, doc sources, the outbox, reference-data proposals)."""
-    if cause is None:
+    if cause is None or getattr(cause, "no_answer", False):
         detail = "Egeria gave no answer"
     else:
         detail = f"{type(cause).__name__}: {' '.join(str(cause).split())[:200] or '(no message)'}"

@@ -99,17 +99,18 @@ class FakeEgeria:
         self.links[(set_guid, member_guid)] = props
         self.writes.append(("link", set_guid, member_guid))
 
-    def lookup(self, name, property_name, type_name):
+    def lookup(self, name, property_name):
         if self.lookup_raises is not None:
             raise self.lookup_raises
         if self.fail_lookups:
             raise RuntimeError("Egeria is not answering")
         if self.lookup_answer is not None:
             return self.lookup_answer
-        assert type_name == VVD, "an untyped look-up would miss a plain ValidValueDefinition"
-        assert property_name == ["qualifiedName"]
+        assert property_name == "qualifiedName"
         found = self.elements.get(name)
-        return found["guid"] if found else NONE_FOUND
+        # The unique-name read's real shape (fixtures/egeria_6_2): top-level elementGUID and the typed header.
+        return ({"elementGUID": found["guid"], "type": {"typeName": found["type"], "superTypeNames": ["Referenceable"]}}
+                if found else NONE_FOUND)
 
     def find(self, search_string, starts_with=True, metadata_element_type=None, **k):
         """`find_valid_value_definitions`, typed, by qualifiedName prefix: Egeria's element shape."""
@@ -149,8 +150,6 @@ def _fake_classes(eg: FakeEgeria):
     def ref_factory(*_a, **_k):
         rm = create_autospec(_RealRef, spec_set=True, instance=True)
         rm.create_egeria_bearer_token.return_value = "tok"
-        rm.get_guid_for_name.side_effect = lambda name, property_name=None, type_name=None: eg.lookup(
-            name, property_name, type_name)
         rm.create_valid_value_definition.side_effect = lambda body: eg.create(body)
         rm.link_valid_value_definition.side_effect = lambda vv_set_guid, vv_member_guid, body=None: eg.link(
             vv_set_guid, vv_member_guid, body)
@@ -163,6 +162,8 @@ def _fake_classes(eg: FakeEgeria):
         mx = create_autospec(_RealMX, spec_set=True, instance=True)
         mx.create_egeria_bearer_token.return_value = "tok"
         mx.get_related_metadata_elements.side_effect = eg.related
+        mx.get_metadata_element_by_unique_name.side_effect = (
+            lambda name=None, property_name="qualifiedName", body=None, **k: eg.lookup(name, property_name))
         return mx
 
     return ref_factory, mx_factory

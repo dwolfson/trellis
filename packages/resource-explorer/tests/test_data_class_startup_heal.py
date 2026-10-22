@@ -13,6 +13,8 @@ import inspect
 import json
 from pathlib import Path
 
+import uuid
+
 import pytest
 from pyegeria.omvs.data_designer import DataDesigner as _RealDD
 from pyegeria.omvs.metadata_expert import MetadataExpert as _RealMX
@@ -55,7 +57,7 @@ class FakeEgeria:
         self.relationships.add((rel, end1, end2))
 
     def add(self, type_name, qn):
-        guid = f"g{len(self.elements) + 1:04d}"
+        guid = str(uuid.UUID(int=len(self.elements) + 1))     # GUID-shaped: the unique-name read accepts nothing else
         self.elements[qn] = (type_name, guid)
         return guid
 
@@ -139,6 +141,20 @@ class FakeRef(_Client):
 
 class FakeExpert(_Client):
     cls = _RealMX
+
+    def get_metadata_element_by_unique_name(self, *args, **kwargs):
+        """The unique-name read (production's exact-qualifiedName lookup): the element with its type, or
+        pyegeria's miss sentence; a raise when Egeria is not answering."""
+        b = _sig(_RealMX, "get_metadata_element_by_unique_name").bind(self, *args, **kwargs)
+        b.apply_defaults()
+        a = b.arguments
+        if self.egeria.fail_lookups:
+            raise RuntimeError("Egeria is not answering")
+        found = self.egeria.elements.get(a["name"])
+        if not found:
+            return NONE_FOUND
+        type_name, guid = found
+        return {"elementGUID": guid, "type": {"typeName": type_name, "superTypeNames": ["Referenceable"]}}
 
     def get_related_metadata_elements(self, *args, **kwargs):
         a = _sig(_RealMX, "get_related_metadata_elements").bind(self, *args, **kwargs).arguments

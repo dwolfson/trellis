@@ -2015,12 +2015,11 @@ class EgeriaPublisher:
     def _find_element_guid(self, qualified_name: str) -> str:
         """Return the GUID of an existing Egeria element by qualified name,
         or '' if not found — the D8 idempotency guard for sub-resources."""
-        from resource_explorer.egeria_absence import guid_from_answer
+        from resource_explorer.egeria_lookup import guid_by_qualified_name
 
-        result = self._automated_curation.get_guid_for_name(qualified_name)
-        # Found, a real miss (""), or could-not-check (raised; None included, which up to 6.2.1 was a failure
-        # swallowed by `@dynamic_catch`, ISSUE-134). An odd answer used to read as "" and create.
-        return guid_from_answer(result, qualified_name)
+        # The unique-name read (egeria_lookup.py): a real miss is "", anything else that is not an element
+        # raises, so a failed lookup never reads as "absent" and creates.
+        return guid_by_qualified_name(self._metadata_expert, qualified_name) or ""
 
     @staticmethod
     def _to_string_map(d: dict) -> dict[str, str]:

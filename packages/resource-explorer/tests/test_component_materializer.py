@@ -9,6 +9,7 @@ call is ever attempted. No live Egeria in any test here.
 from __future__ import annotations
 
 from unittest.mock import MagicMock
+from tests.qn_lookup_bridge import expert_from_legacy
 
 import pytest
 
@@ -42,6 +43,7 @@ def _materializer(registry=None):
     m = ComponentMaterializer(platform_url="https://fake", registry=registry)
     m._solution_architect = MagicMock()
     m._automated_curation = MagicMock()
+    m._metadata_expert = expert_from_legacy(m._automated_curation)
     m._connect = MagicMock()  # short-circuit: attributes above stand in for a real connection
     m._automated_curation.get_guid_for_name.return_value = []  # nothing pre-exists by default
     m._solution_architect.create_solution_component.return_value = "11111111-1111-1111-1111-111111111111"

@@ -136,20 +136,23 @@ NO_ELEMENTS_FOUND = "No elements found"
 
 
 def real_lookup(found: dict | None = None):
-    """The REAL `EgeriaPublisher._find_element_guid`, over an autospec'd pyegeria `AutomatedCuration` (bound to the
-    real signature): pyegeria's real miss ("No elements found") for every name, or the GUID `found` maps it to.
+    """The REAL `EgeriaPublisher._find_element_guid`, over an autospec'd pyegeria `MetadataExpert` (bound to the
+    real signature) answering the unique-name read: pyegeria's real miss ("No elements found") for every name, or
+    the element `found` maps it to.
 
     For tests that hand the outbox drain its clients: never a stand-in that answers "" or None, since a look-up that
     could not be made must not read as "absent"."""
     from unittest.mock import create_autospec
 
-    from pyegeria import AutomatedCuration
+    from pyegeria import MetadataExpert
 
     from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
+    from tests.qn_lookup_bridge import element_answer
 
-    ac = create_autospec(AutomatedCuration, instance=True, spec_set=True)
-    ac.get_guid_for_name.side_effect = (
-        lambda name, property_name=None, type_name=None: (found or {}).get(name, NO_ELEMENTS_FOUND))
+    expert = create_autospec(MetadataExpert, instance=True, spec_set=True)
+    expert.get_metadata_element_by_unique_name.side_effect = (
+        lambda name=None, property_name="qualifiedName", body=None, **k: (
+            element_answer(found[name]) if name in (found or {}) else NO_ELEMENTS_FOUND))
     publisher = EgeriaPublisher()
-    publisher._automated_curation = ac
+    publisher._metadata_expert = expert
     return publisher._find_element_guid

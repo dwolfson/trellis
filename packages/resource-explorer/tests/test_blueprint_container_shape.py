@@ -152,6 +152,10 @@ class FakeEgeria:
         self.bp_members: list[str] | None = []           # None = the blueprint read has no member key
 
     # AutomatedCuration
+    def get_metadata_element_by_unique_name(self, name=None, property_name="qualifiedName", body=None, **kw):
+        from tests.qn_lookup_bridge import unique_name_via_legacy
+        return unique_name_via_legacy(self, name, property_name)
+
     def get_guid_for_name(self, qn, **kw):
         self.calls.append(("get_guid_for_name", qn))
         g = self.qn_to_guid.get(qn)
@@ -260,6 +264,7 @@ def run(registry, monkeypatch):
             m = real(platform_url="https://fake", registry=registry)
             m._solution_architect = fake
             m._automated_curation = fake
+            m._metadata_expert = fake
             m._connect = lambda: None
             return m
         monkeypatch.setattr(bm, "BlueprintMaterializer", factory)

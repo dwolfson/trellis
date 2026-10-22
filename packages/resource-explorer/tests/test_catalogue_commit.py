@@ -16,6 +16,7 @@ import sqlite3
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
+from tests.qn_lookup_bridge import expert_from_legacy
 
 import pytest
 
@@ -913,6 +914,7 @@ def test_the_database_template_gets_database_description_and_version_so_no_place
     from unittest.mock import create_autospec
     from pyegeria import MetadataExpert
     s._metadata_expert = create_autospec(MetadataExpert, spec_set=True, instance=True)
+    expert_from_legacy(s._automated_curation, s._metadata_expert)
     s._metadata_expert.find_metadata_elements_with_string.return_value = "No elements found"   # S19: no archived copy
     s.connect = lambda: None
     s._find_element_guid = lambda name: ""

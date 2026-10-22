@@ -42,6 +42,10 @@ class FakeEgeria:
         return guid
 
     # AutomatedCuration
+    def get_metadata_element_by_unique_name(self, name=None, property_name="qualifiedName", body=None, **kw):
+        from tests.qn_lookup_bridge import unique_name_via_legacy
+        return unique_name_via_legacy(self, name, property_name)
+
     def get_guid_for_name(self, qn, **kw):
         g = self.qn_to_guid.get(qn)
         return [g] if g else []
@@ -101,6 +105,7 @@ def world(tmp_path, monkeypatch):
     def comp_connect(self):
         self._solution_architect = fake
         self._automated_curation = fake
+        self._metadata_expert = fake
     monkeypatch.setattr(cm.ComponentMaterializer, "_connect", comp_connect)
     monkeypatch.setattr("resource_explorer.egeria_identity.classification_client", lambda identity=None: MagicMock())
 

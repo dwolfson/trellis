@@ -373,7 +373,7 @@ async def get_dataclass_rules() -> list[DataClassRule]:
 
     try:
         from pyegeria.omvs.reference_data import ReferenceDataManager
-        from pyegeria.omvs.data_designer import DataDesigner
+        from pyegeria.omvs.metadata_expert import MetadataExpert
 
         from resource_explorer.concurrency import run_sync
         from resource_explorer.egeria_clients import Caller, NoCallerIdentity, egeria_client
@@ -390,15 +390,19 @@ async def get_dataclass_rules() -> list[DataClassRule]:
                                 view_server=view_server, platform_url=platform_url)
 
         def _guid_for(qname: str):
-            """`get_guid_for_name` is the known hang site: bounded through the shared pool, on a
-            client built in the pool thread itself (pyegeria binds a client to its thread's loop)."""
+            """The exact-qualifiedName read (`egeria_lookup`, the unique-name endpoint; the exact-value search it
+            replaced is the known hang site and timed out on a large repository): bounded through the shared
+            pool, on a client built in the pool thread itself (pyegeria binds a client to its thread's loop).
+            "" is Egeria's explicit "none"; anything else that is not a GUID raises."""
             def _lookup():
-                designer = egeria_client(reader, purpose="data class rules", view_server=view_server,
-                                         platform_url=platform_url, shared=False).of(DataDesigner)
+                from resource_explorer.egeria_lookup import guid_by_qualified_name
+
+                expert = egeria_client(reader, purpose="data class rules", view_server=view_server,
+                                       platform_url=platform_url, shared=False).of(MetadataExpert)
                 try:
-                    return designer.get_guid_for_name(qname)
+                    return guid_by_qualified_name(expert, qname) or ""
                 finally:                       # its own client, used once: closed after use (round 6)
-                    close = getattr(designer, "close_session", None)
+                    close = getattr(expert, "close_session", None)
                     if callable(close):
                         try:
                             close()

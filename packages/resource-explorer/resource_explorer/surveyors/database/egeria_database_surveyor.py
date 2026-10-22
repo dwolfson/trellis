@@ -1001,13 +1001,16 @@ class EgeriaDatabaseSurveyor:
         """
         from resource_explorer.egeria_absence import lookup_could_not_be_made, lookup_exception_is_absent
 
+        from resource_explorer.egeria_lookup import guid_by_qualified_name
+
         try:
-            result = self._automated_curation.get_guid_for_name(name)
+            # Every caller passes a qualifiedName: the unique-name read, not the exact-value search that
+            # times out on a large repository (egeria_lookup.py).
+            return guid_by_qualified_name(self._metadata_expert_client(), name) or ""
         except Exception as exc:
             if lookup_exception_is_absent(exc):
                 return ""
             raise EgeriaDatabaseSurveyorError(lookup_could_not_be_made(name, exc)) from exc
-        return self._guid_from_lookup(result, name)
 
     def _not_catalogued_sentence(self, db_entity, expected_qn: str) -> str:
         """Why an exact-qualifiedName lookup missed, in words a person can act on. When RE holds a
@@ -1038,14 +1041,6 @@ class EgeriaDatabaseSurveyor:
                         f"registration says host {ours}. Re-publish the database, or correct the "
                         "host (Egeria host) on the registration.")
         return base
-
-    def _guid_from_lookup(self, result, name: str = "") -> str:
-        """Found, a real miss (""), or could-not-check (raises `EgeriaDatabaseSurveyorError`, a RuntimeError):
-        the shared `egeria_absence.guid_from_answer`. None (up to 6.2.1 a swallowed failure, ISSUE-134) and any
-        odd answer used to read as "" and create."""
-        from resource_explorer.egeria_absence import guid_from_answer
-
-        return guid_from_answer(result, name or "(by-name look-up)", EgeriaDatabaseSurveyorError)
 
     def _metadata_expert_client(self):
         if self._metadata_expert is None:
@@ -1081,14 +1076,14 @@ class EgeriaDatabaseSurveyor:
         database (Brief L, 7f.7). A lookup that FAILS is not "absent": it raises
         `EgeriaDatabaseSurveyorError` rather than letting the caller create a duplicate.
         """
+        from resource_explorer.egeria_lookup import guid_by_qualified_name
+
         try:
-            result = self._automated_curation.get_guid_for_name(
-                qualified_name, property_name=["qualifiedName"])
+            return guid_by_qualified_name(self._metadata_expert_client(), qualified_name) or ""
         except Exception as exc:
             raise EgeriaDatabaseSurveyorError(
                 f"Egeria qualifiedName lookup for {qualified_name!r} failed, so RE cannot tell whether "
                 f"it exists: {' '.join(str(exc).split())[:300] or type(exc).__name__}") from exc
-        return self._guid_from_lookup(result, qualified_name)
 
     def check_survey_exists(self, db_slug: str) -> bool:
         """Check if any survey reports exist for this database in Egeria.

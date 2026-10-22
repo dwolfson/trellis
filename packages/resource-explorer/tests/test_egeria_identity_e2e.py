@@ -214,7 +214,8 @@ def _drain_fakes(boundary, monkeypatch):
     monkeypatch.setattr("pyegeria.CollectionManager", boundary.fake(
         "CollectionManager", add_to_collection=lambda *a, **k: None))
     monkeypatch.setattr("pyegeria.omvs.data_discovery.DataDiscovery", boundary.fake("DataDiscovery"))
-    monkeypatch.setattr("pyegeria.omvs.metadata_expert.MetadataExpert", boundary.fake("MetadataExpert"))
+    monkeypatch.setattr("pyegeria.omvs.metadata_expert.MetadataExpert", boundary.fake(
+        "MetadataExpert", get_metadata_element_by_unique_name=lambda *a, **k: "No elements found"))
 
 
 def test_an_inline_drain_in_a_persons_request_runs_as_that_person(boundary, reg, monkeypatch, signed_in_caller):
@@ -438,6 +439,7 @@ def stamps(boundary, monkeypatch):
         create_elem_from_template=lambda body: NEW_GUID))
     me = boundary.fake("MetadataExpert", create_metadata_element=create,
                        get_metadata_guid_by_unique_name=lambda *a, **k: "No elements found",
+                       get_metadata_element_by_unique_name=lambda *a, **k: "No elements found",
                        # S19: the archived-sibling find, answered as live 6.2 answers a miss (no archived copy)
                        find_metadata_elements_with_string=lambda *a, **k: "No elements found",
                        update_metadata_element_properties=update,
@@ -572,8 +574,8 @@ def test_publishing_local_doc_sources_runs_as_the_caller(boundary, reg, monkeypa
     monkeypatch.setattr("pyegeria.ExternalReferences", boundary.fake(
         "ExternalReferences", create_external_reference=lambda **k: "44444444-4444-4444-4444-444444444444",
         link_external_reference=lambda *a, **k: "55555555-5555-5555-5555-555555555555"))
-    monkeypatch.setattr("pyegeria.AutomatedCuration", boundary.fake(
-        "AutomatedCuration", get_guid_for_name=lambda *a, **k: []))
+    monkeypatch.setattr("pyegeria.MetadataExpert", boundary.fake(
+        "MetadataExpert", get_metadata_element_by_unique_name=lambda *a, **k: "No elements found"))
     reg.add_doc_source("repo", "p", "https://docs.example/a", label="a", source_type="other")
     out = publish_local_doc_sources("repo", "p", "66666666-6666-6666-6666-666666666666", registry=reg)
     assert out and out[0]["ok"], out

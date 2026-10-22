@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import uuid
 from unittest.mock import create_autospec
+from tests.qn_lookup_bridge import expert_from_legacy
 
 import pytest
 from pyegeria import AutomatedCuration, ExternalReferences
@@ -55,6 +56,7 @@ class FakeEgeria:
         self.expert.get_related_metadata_elements.side_effect = self._related
         self.linker.link_lineage.side_effect = self._link
         self.ac.get_guid_for_name.side_effect = lambda name, *a, **k: self.columns.get(name) or NO_ELEMENTS_FOUND
+        expert_from_legacy(self.ac, self.expert)     # the unique-name read answers what `ac` is scripted with
 
     def column(self, *names: str) -> str:
         guid = _guid()

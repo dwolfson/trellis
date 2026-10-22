@@ -14,6 +14,7 @@ import logging
 import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, create_autospec
+from tests.qn_lookup_bridge import expert_from_legacy
 
 import pytest
 from pyegeria import AutomatedCuration, ExternalReferences
@@ -43,6 +44,7 @@ class FakeEgeria:
         self.ext.link_external_reference.side_effect = self._link
         self.ac.get_guid_for_name.side_effect = (
             lambda name, *a, **k: self.refs.get(name) or "No element found")
+        expert_from_legacy(self.ac, self.expert)     # the unique-name read answers what `ac` is scripted with
 
     # pyegeria boundary behaviour ------------------------------------------------------------
     def _create_ref(self, body=None):

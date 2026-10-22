@@ -351,7 +351,7 @@ def discover_batches(docs_dir: Path = DOCS_DIR) -> list[Batch]:
 
 # ── canary check ────────────────────────────────────────────────────────────
 
-def canary_present(batch: Batch, client=None) -> bool | None:
+def canary_present(batch: Batch, client=None, expert=None) -> bool | None:
     """Is this batch's canary element in Egeria?
 
     Tri-state, and the third state matters:
@@ -375,11 +375,18 @@ def canary_present(batch: Batch, client=None) -> bool | None:
         # Nothing to check, and nothing to heal — a known answer, not an unknown.
         return True
 
-    if client is None:
+    c = batch.canary
+    by_qualified_name = bool(c.get("qualified_name"))
+    if (expert if by_qualified_name else client) is None:
         try:
             from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReader
 
-            client = SurveyDefinitionReader()._connect_classification_explorer()
+            reader = SurveyDefinitionReader()
+            if by_qualified_name:
+                # The unique-name read (egeria_lookup.py): the exact-value search timed out on a large repository.
+                expert = reader._connect_metadata_expert()
+            else:
+                client = reader._connect_classification_explorer()
         except Exception as exc:
             log.info(
                 "bootstrap: cannot reach Egeria to check %s (%s) — skipping heal, state unknown",
@@ -387,23 +394,30 @@ def canary_present(batch: Batch, client=None) -> bool | None:
             )
             return None
 
+    if by_qualified_name:
+        # type is not asked on purpose: a wrong type_name would read as "missing" and trigger a heal. Matching
+        # on the globally unique qualified_name alone is safer than guessing a type.
+        try:
+            from resource_explorer.egeria_lookup import guid_by_qualified_name
+
+            return guid_by_qualified_name(expert, c["qualified_name"]) is not None
+        except Exception as exc:
+            log.info(
+                "bootstrap: canary lookup failed for %s (%s) — skipping heal, state unknown",
+                batch.batch_id, exc,
+            )
+            return None
+
     from resource_explorer.surveyors.survey_definition_reader import _as_guid
 
-    c = batch.canary
-    if c.get("qualified_name"):
-        prop, name = "qualifiedName", c["qualified_name"]
-    else:
-        prop, name = "displayName", c["display_name"]
-
-    kwargs = {"property_name": [prop]}
-    # type is optional on purpose: a wrong type_name silently returns nothing,
-    # which reads as "missing" and triggers a heal. Matching on the globally
-    # unique qualified_name alone is safer than guessing a type.
+    # displayName canaries (no qualifiedName declared): a name search, not a unique-name read, so it stays on
+    # `get_guid_for_name`. Same reasoning as above for the optional type.
+    kwargs = {"property_name": ["displayName"]}
     if c.get("type"):
         kwargs["type_name"] = c["type"]
 
     try:
-        return _as_guid(client.get_guid_for_name(name, **kwargs)) is not None
+        return _as_guid(client.get_guid_for_name(c["display_name"], **kwargs)) is not None
     except Exception as exc:
         log.info(
             "bootstrap: canary lookup failed for %s (%s) — skipping heal, state unknown",

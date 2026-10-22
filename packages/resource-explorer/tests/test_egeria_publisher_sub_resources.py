@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from unittest.mock import MagicMock
+from tests.qn_lookup_bridge import expert_from_legacy
 
 from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
 
@@ -34,6 +35,7 @@ def _sub_resource_row(locator, kind, owners=None, **extra):
 def _publisher(registry):
     pub = EgeriaPublisher(platform_url="https://fake", registry=registry)
     pub._automated_curation = MagicMock()
+    pub._metadata_expert = expert_from_legacy(pub._automated_curation)
     pub._asset_maker = MagicMock()
     pub._discovery = MagicMock()
     pub._connect = MagicMock()  # publish_sub_resources() connects itself; short-circuit to the mocks above
