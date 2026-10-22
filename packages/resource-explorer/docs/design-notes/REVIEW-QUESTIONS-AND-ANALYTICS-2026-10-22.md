@@ -329,3 +329,44 @@ rules (retired rows keep their ids; the Dr.Egeria terms for retired and merged
 questions are updated, never deleted). The catalogue edits (four retirements,
 three intent fixes, two new entries, `answers_questions` flags) ride the same
 PR because the generator's new rules read both files.
+
+## 7. Addendum 1 (2026-10-22, after the edit was built on re/questions-csv-edit-2026-10-22)
+
+Corrections to this note, found by the builder and by a live case; the
+verdicts stand except where stated.
+
+1. **Counts.** The CSV had 97 rows. The true tally from the edit: retire 2,
+   merge 9, add 8 (E1, S1, F1, F3, F5, F7, F10, F11), keep·fix 13 (Q-0051 added
+   by item 3), keep·reword 7, keep unchanged the rest; 105 rows after the edit,
+   94 active. §0 said "keep 84 … add 9", which summed to 95, and §4 listed 8
+   adds against 9 in prose. Both were arithmetic errors in this note.
+2. **The four "stale duplicates" in §1.2 are not stale.** `change_rates`,
+   `hub_tables`, `statistics_freshness` and `database_staleness` are the
+   generated catalogue entries of the four Analytic Library steps (the
+   user-added steps of the extensibility walking skeleton), declared under
+   `docs/dr-egeria/engine-host/library` with `provided_by.questions`, and
+   referenced by their tests. "No code references" was a grep for the quoted
+   id, which does not reach generated declarations. They stay. Ruling: the
+   orphan check treats `provided_by.questions` as a question link, so a
+   library step that names the question ids it answers is not an orphan.
+3. **Contributors with names** (owner's live case: the chat named
+   docling-core's main contributors from per-author commit rows; the question
+   page's compile said the names were not listed). Q-0003 and Q-0051 are
+   keep·fix: their analyses declare a list extent, "top contributors by
+   commit share, with names", that the compile includes and the headline
+   cites. The declaration rides declared-extensibility slice 1; the gate is the
+   docling-core question showing the names on the question page. The same
+   case produced the journal ruling: a journal entry is derived wholly from
+   the chat turn (question, answer, cited row ids, as-of and confidence,
+   scope), the person adds only the confirmation and an optional note kept
+   apart, and the pane's per-turn control derives the same way; recorded on
+   the journal-from-chat builder's brief, not here.
+4. **Two intent fixes in §1.3 withdrawn.** `preliminary_fit` stays
+   `enrichment` (designer ruling 2026-09-29, "declare a lens"); Q-0077 becomes
+   `Discovery/Enrichment` instead. `license_classification` stays `discovery`
+   (CLAUDE.md rule 17: it derives from the already-fetched licence field, the
+   collect-versus-reason axis); the one stage-versus-intent warning on Q-0030
+   is accepted and this line is its reason. `quality_checks` → `analysis`
+   stands.
+5. **`resource_reachability`** is catalogued for file systems only, where the
+   probe exists; Q-0054 stays PARTIAL for repositories and databases.
