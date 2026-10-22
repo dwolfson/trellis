@@ -136,7 +136,10 @@ dependencies = [
     # Raised to 6.2.8 (2026-10-21): ISSUE-160 -- create_folder_element_from_template sends directoryAddress and
     # deployedImplementationType; CSV/secrets-store/Postgres/UC/Kafka template placeholders are filled and unset
     # optional args no longer leave ~{x}~ literals. The lock moved only pyegeria.
-    "pyegeria>=6.2.8",
+    # Raised to 6.2.9 (2026-10-21): #477 (ISSUE-161) Dr.Egeria entry points resolve the user at run time
+    # (--userid > EGERIA_USER > config/.env > default); #478 Postgres Server/Database element commands take
+    # secrets-store attributes. RE passes --userid explicitly and generates no Postgres element commands.
+    "pyegeria>=6.2.9",
     "mcp>=2.0.0",
     # nest-asyncio removed 2026-09-04 with the shared-pool refactor: RE no
     # longer imports it anywhere. Its one site, surveyors/prefect_adapter.py's
