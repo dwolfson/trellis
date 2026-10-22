@@ -298,12 +298,6 @@ def test_1_the_yaml_row_and_the_registry_name_the_same_process():
 
 def test_2_step_2_reads_the_survey_report_target_and_records_derived_from_report(
         staleness_installed, reg, egeria, no_connection, monkeypatch):
-    from resource_explorer.surveyors import egeria_survey_reader
-
-    read = []
-    real = egeria_survey_reader.annotations_from_report
-    monkeypatch.setattr(egeria_survey_reader, "annotations_from_report",
-                        lambda result: read.append(result) or real(result))
     _step2_action(egeria)
     result = _sweep(reg)
     assert result.claimed == ["ea-s2"], result
@@ -314,8 +308,9 @@ def test_2_step_2_reads_the_survey_report_target_and_records_derived_from_report
     assert not row["target"]["refusal"]
     _run_queue_once(reg)
 
-    # the step read step 1's report through the existing reader (the fake's AssetMaker binds the real signature)
-    assert any(r.get("elementHeader", {}).get("guid") == NATIVE_REPORT for r in read), "report not read"
+    # the step read step 1's report: its header from the graph read, its annotations from the PAGED
+    # ReportedAnnotation list (the fake's clients bind the real signatures)
+    assert any(p[0] == NATIVE_REPORT and p[3] > 0 for p in egeria.related_pages), "report's annotations not read"
     done = egeria.actions["ea-s2"]["completion"]
     assert done["status"] == "ACTIONED" and done["guards"] == ["survey-completed"], done
     [(report_guid, body)] = egeria.reports()

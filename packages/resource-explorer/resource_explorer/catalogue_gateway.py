@@ -917,7 +917,7 @@ class PyegeriaCatalogueGateway:
         of 2026-10-05). UNVERIFIED LIVE: the report-by-time pick; a report not seen comes back as
         no report, which the commit shows as "submitted", never as done."""
         from resource_explorer.surveyors.egeria_survey_reader import (
-            annotations_from_report, get_survey_reports_by_guid)
+            get_survey_reports_by_guid, reported_annotations)
         out = SurveyOutcome()
         try:
             el = self._client("MetadataExpert").get_metadata_element_by_guid(engine_action_guid)
@@ -931,12 +931,10 @@ class PyegeriaCatalogueGateway:
             newest = reports[0]                       # the reader sorts newest first
             out.report_guid = newest["guid"]
             try:
-                body = {"class": "GetRequestBody", "graphQueryDepth": 1}
-                res = self._client("AssetMaker").get_asset_by_guid(newest["guid"], body=body, output_format="JSON")
+                # Paged to the end of the report's ReportedAnnotation list: one graph read holds one page (999 live).
+                out.annotations = len(reported_annotations(self._client("MetadataExpert"), newest["guid"]))
             except Exception as exc:
                 raise GatewayError(f"could not read survey report {newest['guid'][:8]}: {_short(exc)}") from exc
-            if isinstance(res, dict):
-                out.annotations = len(annotations_from_report(res))
         return out
 
     def set_owner(self, guid: str, owner: str, *, person: bool = False) -> tuple[str, str]:

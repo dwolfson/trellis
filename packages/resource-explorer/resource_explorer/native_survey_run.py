@@ -566,7 +566,8 @@ class PyegeriaSurveyPort:
         return mixed_process.read_process_run(self._get_expert(), instance_guid)
 
     def read_report(self, report_guid: str) -> ReportRead:
-        from resource_explorer.surveyors.egeria_survey_reader import annotations_from_report
+        from resource_explorer.egeria_link_once import Unreadable
+        from resource_explorer.surveyors.egeria_survey_reader import reported_annotations
 
         self._enter()
         result = self._get_assets().get_asset_by_guid(
@@ -582,8 +583,15 @@ class PyegeriaSurveyPort:
               or _iso(header_versions.get("createTime")))
         originator = ((result.get("reportOriginator") or {}).get("relatedElement") or {}) \
             .get("elementHeader", {}).get("guid", "")
+        # The header and originator come from the one graph read; the annotations from the PAGED read of the report's
+        # ReportedAnnotation list, because that graph read holds ONE page of them (999 live, 2026-10-21).
+        try:
+            every = reported_annotations(self._get_expert(), report_guid)
+        except Unreadable as exc:
+            raise NativeSurveyError(
+                f"Egeria's annotations of report {report_guid} could not be read to the end of the list: {exc}") from exc
         annotations = []
-        for raw in annotations_from_report(result):
+        for raw in every:
             annotations.append({
                 "guid": raw.get("guid", ""),
                 "annotation_type": raw.get("annotation_type", ""),

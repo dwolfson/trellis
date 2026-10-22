@@ -56,8 +56,9 @@ async def _lifespan(app: FastAPI):
     to, and even then leader election decides whether that thread's loops
     actually fire. See docs/process-model.md.
     """
-    from resource_explorer.config import get_llm_tier_config
+    from resource_explorer.config import check_public_url, get_llm_tier_config
 
+    check_public_url()  # refuses to start on a malformed RE_PUBLIC_URL, quoting it (PublicUrlInvalid)
     get_llm_tier_config()  # logs the resolved tier/model/num_ctx/budget once
 
     from resource_explorer.surveyors.prefect_adapter import alog_prefect_reachability_at_startup

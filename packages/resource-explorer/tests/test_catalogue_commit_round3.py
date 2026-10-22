@@ -144,11 +144,12 @@ class FakeAssetMaker:
         self.reports[qn] = f"00000000-0000-0000-0000-{self.creates:012d}"
         return self.reports[qn]
 
-    def get_asset_by_guid(self, guid, body=None, output_format=None):
-        # The shape Egeria answers (RelatedMetadataElementSummary), which the read-back reads names out of.
-        return {"reportedAnnotations": [{"relatedElement": {"elementHeader": {"guid": g},
-                                                            "properties": {"qualifiedName": q}}}
-                                        for q, g in self.annotations.items()]}
+    def expert(self):
+        """The metadata expert the read-back pages the report's annotations through (autospec, real signature)."""
+        from tests.report_pages import paged_expert
+
+        return paged_expert(lambda report_guid: [(g, "Annotation", {"qualifiedName": q})
+                                                 for q, g in self.annotations.items()])
 
 
 def _surveyor(maker, found=None, annotations_made=None):
@@ -156,6 +157,7 @@ def _surveyor(maker, found=None, annotations_made=None):
     s = EgeriaDatabaseSurveyor.__new__(EgeriaDatabaseSurveyor)
     s._asset_maker = maker
     maker.annotations = {}
+    s._metadata_expert = maker.expert()
     s._find_element_guid = lambda name: (found or {}).get(name, maker.reports.get(name, ""))
     made = annotations_made if annotations_made is not None else []
 

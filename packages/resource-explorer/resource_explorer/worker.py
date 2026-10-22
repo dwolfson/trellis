@@ -456,8 +456,9 @@ def run_worker(
     _preload_pyegeria()
     stop_event = stop_event if stop_event is not None else threading.Event()
 
-    from resource_explorer.config import get_llm_tier_config
+    from resource_explorer.config import check_public_url, get_llm_tier_config
 
+    check_public_url()  # refuses to start on a malformed RE_PUBLIC_URL, quoting it
     get_llm_tier_config()  # logs the resolved tier/model/num_ctx/budget once
 
     log.info(

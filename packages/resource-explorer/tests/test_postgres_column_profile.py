@@ -1579,17 +1579,23 @@ class TestContentStatusIsSurfaced:
             get_annotations_by_report_guid,
         )
 
-        class _FakeAssetMaker:
-            def get_asset_by_guid(self, guid, body=None, output_format="JSON"):
-                return {"reportedAnnotations": [{"relatedElement": {
-                    "elementHeader": {"guid": "a1", "type": {"typeName": "DataClassAnnotation"}},
-                    "properties": {
-                        "qualifiedName": "qn", "summary": "proposed",
-                        "contentStatus": "DRAFT",
-                    },
-                }}]}
+        from tests.report_pages import paged_expert
 
-        annotations = get_annotations_by_report_guid(_FakeAssetMaker(), "report")
+        # contentStatus is an enum on the wire: the paged read decodes its symbolic name
+        expert = paged_expert(lambda guid: [("a1", "DataClassAnnotation", {"qualifiedName": "qn", "summary": "proposed"})])
+        from tests.report_pages import related_entry
+        real = expert.get_related_metadata_elements.side_effect
+
+        def with_enum(*a, **k):
+            answer = real(*a, **k)
+            if isinstance(answer, dict):
+                for e in answer["elementList"]:
+                    e["element"]["elementProperties"]["propertyValueMap"]["contentStatus"] = {
+                        "class": "EnumTypePropertyValue", "symbolicName": "DRAFT"}
+            return answer
+        expert.get_related_metadata_elements.side_effect = with_enum
+
+        annotations = get_annotations_by_report_guid(expert, "report")
         assert annotations[0]["content_status"] == "DRAFT"
 
     def test_an_annotation_with_no_content_status_reads_as_empty_not_confirmed(self):
@@ -1597,14 +1603,10 @@ class TestContentStatusIsSurfaced:
             get_annotations_by_report_guid,
         )
 
-        class _FakeAssetMaker:
-            def get_asset_by_guid(self, guid, body=None, output_format="JSON"):
-                return {"reportedAnnotations": [{"relatedElement": {
-                    "elementHeader": {"guid": "a1", "type": {"typeName": "X"}},
-                    "properties": {"qualifiedName": "qn", "summary": "s"},
-                }}]}
+        from tests.report_pages import paged_expert
 
-        assert get_annotations_by_report_guid(_FakeAssetMaker(), "r")[0]["content_status"] == ""
+        expert = paged_expert(lambda guid: [("a1", "X", {"qualifiedName": "qn", "summary": "s"})])
+        assert get_annotations_by_report_guid(expert, "r")[0]["content_status"] == ""
 
     @pytest.mark.parametrize("module_path", [
         "resource_explorer.web.routes.egeria",

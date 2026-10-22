@@ -1256,7 +1256,7 @@ class EgeriaDatabaseSurveyor:
         from resource_explorer.surveyors.egeria_survey_reader import get_annotations_by_report_guid
 
         self.connect()
-        return get_annotations_by_report_guid(self._asset_maker, report_guid)
+        return get_annotations_by_report_guid(self._metadata_expert_client(), report_guid)
 
     def get_latest_survey(self, db_slug: str) -> dict | None:
         """Get the most recent survey report for a database.
@@ -1538,15 +1538,22 @@ class EgeriaDatabaseSurveyor:
                                   or "unique property" in text)
 
     def _annotations_held_by(self, report_guid: str):
-        """How many annotations Egeria holds under this report, or None when the read failed (None is
-        "could not tell", never zero)."""
-        from resource_explorer.surveyors.egeria_survey_reader import annotations_from_report
+        """How many annotations Egeria holds under this report, counted over EVERY page of its `ReportedAnnotation`
+        list, or None when the list could not be read to its end (None is "could not tell", never zero, and never
+        the count of the pages that were read)."""
+        held = self._report_annotations(report_guid)
+        return None if held is None else len(held)
+
+    def _report_annotations(self, report_guid: str) -> list[dict] | None:
+        """Every annotation under the report (`egeria_survey_reader.reported_annotations`), or None when the read
+        could not be made to the end of the list. One graph read (`get_asset_by_guid`, graphQueryDepth=1) is ONE
+        page, 999 entries live, so it is never used to count."""
+        from resource_explorer.surveyors.egeria_survey_reader import reported_annotations
+
         try:
-            result = self._asset_maker.get_asset_by_guid(
-                report_guid, body={"class": "GetRequestBody", "graphQueryDepth": 1}, output_format="JSON")
-            return len(annotations_from_report(result)) if isinstance(result, dict) else None
-        except Exception as exc:
-            log.warning("could not count the annotations under report %s: %s", report_guid, exc)
+            return reported_annotations(self._metadata_expert_client(), report_guid)
+        except Exception as exc:  # noqa: BLE001 -- unknown, said as unknown
+            log.warning("could not read every annotation under report %s: %s", report_guid, exc)
             return None
 
     def _publish_survey_report(self, body: dict, qualified_name: str, annotations: list,
@@ -1668,18 +1675,11 @@ class EgeriaDatabaseSurveyor:
         Never raises. `state`: `checked`, or `not_checked` when the report could not be read (unknown, never 0).
         """
         from resource_explorer.surveyors.database.column_profile_step import ANALYSIS_STEP
-        from resource_explorer.surveyors.egeria_survey_reader import annotations_from_report
 
         counts = {"state": "checked", "retired": 0, "already_retired": 0, "failed": 0}
-        try:
-            result = self._asset_maker.get_asset_by_guid(
-                report_guid, body={"class": "GetRequestBody", "graphQueryDepth": 1}, output_format="JSON")
-            if not isinstance(result, dict):
-                raise EgeriaDatabaseSurveyorError(f"the report read returned {type(result).__name__}")
-            held = annotations_from_report(result)
-        except Exception as exc:  # noqa: BLE001 -- could not tell which are superseded
-            log.warning("could not read report %s to retire superseded verdicts: %s", report_guid, exc)
-            return {**counts, "state": "not_checked", "reason": f"{exc}"[:300]}
+        held = self._report_annotations(report_guid)
+        if held is None:  # could not tell which are superseded
+            return {**counts, "state": "not_checked", "reason": "the report's annotations could not be read to the end"}
         for ann in held:
             measured = str((ann.get("json_properties") or {}).get("measuredAt") or "")
             if ann.get("analysis_step") != ANALYSIS_STEP or not measured or measured >= batch or not ann.get("guid"):
@@ -1721,16 +1721,23 @@ class EgeriaDatabaseSurveyor:
         from resource_explorer.surveyors.survey_report import QualityCheckAnnotation
 
         targets = []
+        checks = 0
         for i, ann in enumerate(annotations):
-            if isinstance(ann, QualityCheckAnnotation) and ann.schema_name and ann.table_name:
-                targets.append((i, ".".join(p for p in (ann.schema_name, ann.table_name, ann.column_name) if p)))
+            if isinstance(ann, QualityCheckAnnotation):
+                checks += 1
+                if ann.schema_name and ann.table_name:
+                    targets.append((i, ".".join(p for p in (ann.schema_name, ann.table_name, ann.column_name) if p)))
+        kinds: dict = {}
         counts = self._link_annotations_to_elements(db_entity, annotations, targets, surveyed_at,
-                                                    label="quality check", what="quality check")
+                                                    label="quality check", what="quality check", kinds=kinds)
         counts["of"] = len(targets)
+        counts["checks"] = checks
+        counts.update(kinds)
         return counts
 
     def _link_annotations_to_elements(self, db_entity, annotations: list, targets: list[tuple[int, str]],
-                                      surveyed_at: str, *, label: str, what: str) -> dict:
+                                      surveyed_at: str, *, label: str, what: str,
+                                      kinds: dict | None = None) -> dict:
         """`AssociatedAnnotation` from `annotations[i]` to the element `path` names ("schema.table.column", or
         "schema.table" for a table), once each (`egeria_link_once`). The element's qualifiedName is the JDBC
         cataloguer's: `<schema qualifiedName>::<table>[::<column>]` (the column form confirmed live 2026-10-20; the
@@ -1739,7 +1746,10 @@ class EgeriaDatabaseSurveyor:
         linked / already_linked  a link between exactly these two exists now
         no_element               Egeria holds no such element (the cataloguer has not made it): not an error
         not_checked              a look-up could not be made, so nothing was linked
-        failed                   the annotation could not be found by name, or the link create failed"""
+        failed                   the annotation could not be found by name, or the link create failed
+
+        `kinds`, when given, is filled with how many of the `no_element` ones were columns and how many tables
+        (`no_element_columns`, `no_element_tables`), for the words."""
         from resource_explorer.catalogue_gateway import schema_qualified_name, server_name_for
         from resource_explorer.egeria_link_once import (
             ALREADY_LINKED,
@@ -1777,6 +1787,9 @@ class EgeriaDatabaseSurveyor:
                 continue
             if not element_guid:
                 counts["no_element"] += 1
+                if kinds is not None:
+                    key = "no_element_columns" if column else "no_element_tables"
+                    kinds[key] = kinds.get(key, 0) + 1
                 continue
             try:
                 ann_guid = self._find_element_guid(annotation_qualified_name(prefix, index, ann))
@@ -1798,24 +1811,19 @@ class EgeriaDatabaseSurveyor:
         return counts
 
     def _read_back(self, report_guid: str, annotations: list, db_slug: str, surveyed_at: str) -> dict | None:
-        """What the Egeria report holds, from a READ of the report by its GUID (`reportedAnnotations`), never from
-        the GUIDs the creates returned (a create that returns a GUID has not proved the element is there).
+        """What the Egeria report holds, from a READ of the report's `ReportedAnnotation` list paged to its END
+        (`_report_annotations`), never from the GUIDs the creates returned (a create that returns a GUID has not
+        proved the element is there) and never from one graph read of the report, which is one page.
 
         `{"held": annotations under the report in all, "this_publish": how many of THESE annotations are among them
         (by their published names), "quality": how many of the QualityAnnotations}`; None when the report could not
         be read, which is "could not tell", never zero."""
-        from resource_explorer.surveyors.egeria_survey_reader import annotations_from_report
         from resource_explorer.surveyors.survey_report import QualityCheckAnnotation, annotation_qualified_name
 
-        try:
-            result = self._asset_maker.get_asset_by_guid(
-                report_guid, body={"class": "GetRequestBody", "graphQueryDepth": 1}, output_format="JSON")
-        except Exception as exc:  # noqa: BLE001 -- unknown, said as unknown
-            log.warning("could not read report %s back to count its annotations: %s", report_guid, exc)
+        every = self._report_annotations(report_guid)
+        if every is None:
             return None
-        if not isinstance(result, dict):
-            return None
-        held = {a.get("qualified_name") for a in annotations_from_report(result)}
+        held = {a.get("qualified_name") for a in every}
         prefix = f"Annotation::PostgreSQL::{db_slug}::{surveyed_at}"
         names = [(annotation_qualified_name(prefix, i, a), isinstance(a, QualityCheckAnnotation))
                  for i, a in enumerate(annotations)]
@@ -1983,18 +1991,39 @@ class EgeriaDatabaseSurveyor:
             return default
 
 
+def _count_noun(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
 def element_link_words(links: dict | None) -> str:
-    """The words for a QualityAnnotation's element links (`_link_quality_checks`): "linked to N of M elements", with
-    what did not link and why in brackets. "" when no check names an element. An element Egeria does not hold is
-    said ("not in Egeria"), and is not a failure of the publish."""
+    """The words for a run's QualityAnnotations and their element links (`_link_quality_checks`).
+
+    The checks belong to the REPORT: an accepted check does not need its table cataloged, so a column or table
+    Egeria does not hold yet is a neutral state, never a failure ("3 checks on the report · 3 columns not yet
+    cataloged in Egeria, so not linked to them"). What did link is said first ("linked to N of M elements"); a
+    look-up that could not be made or a link that could not be created is said as a gap ("could not be checked",
+    "could not be linked"), because those are not about the catalogue. "" when the run published no check."""
     links = links or {}
-    if not links.get("of"):
+    checks = links.get("checks", links.get("of", 0)) or 0
+    if not checks:
         return ""
+    parts = [_count_noun(checks, "check on the report", "checks on the report")]
     made = links.get("linked", 0) + links.get("already_linked", 0)
-    gaps = [f"{links[k]} {why}" for k, why in (
-        ("no_element", "not in Egeria"), ("not_checked", "could not be checked"),
-        ("failed", "could not be linked")) if links.get(k)]
-    return f"linked to {made} of {links['of']} elements" + (f" ({', '.join(gaps)})" if gaps else "")
+    if made:
+        parts.append(f"linked to {made} of {links.get('of', checks)} elements")
+    columns, tables = links.get("no_element_columns", 0), links.get("no_element_tables", 0)
+    if not (columns or tables) and links.get("no_element"):
+        columns = links["no_element"]               # a count without its kinds: the checks mostly name columns
+    unlinked = [n for n in (_count_noun(columns, "column", "columns") if columns else "",
+                            _count_noun(tables, "table", "tables") if tables else "") if n]
+    if unlinked:
+        total = columns + tables
+        parts.append(f"{' and '.join(unlinked)} not yet cataloged in Egeria, so not linked to "
+                     f"{'it' if total == 1 else 'them'}")
+    for key, why in (("not_checked", "could not be checked"), ("failed", "could not be linked")):
+        if links.get(key):
+            parts.append(f"{links[key]} {why}")
+    return " · ".join(parts)
 
 
 def can_use_egeria() -> bool:

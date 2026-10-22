@@ -72,6 +72,8 @@ class EgeriaFileSystemSurveyor:
         self._automated_curation = None
         self._asset_maker = None
         self._discovery = None
+        self._clients_for_run = None
+        self._metadata_expert = None
 
     def connect(self) -> None:
         """Initialize connection bearer tokens for Egeria services."""
@@ -97,6 +99,7 @@ class EgeriaFileSystemSurveyor:
             self._automated_curation = clients.of(AutomatedCuration)
             self._asset_maker = clients.of(AssetMaker)
             self._discovery = clients.of(DataDiscovery)
+            self._clients_for_run = clients
         except PermissionError:
             raise
         except ImportError as exc:
@@ -591,6 +594,14 @@ class EgeriaFileSystemSurveyor:
 
         return {"filesystem_guid": fs_guid, **proof}
 
+    def _metadata_expert_client(self):
+        """The MetadataExpert for the paged read of a report's annotations."""
+        if self._metadata_expert is None:
+            from pyegeria import MetadataExpert
+
+            self._metadata_expert = self._clients_for_run.of(MetadataExpert)
+        return self._metadata_expert
+
     def get_survey_reports_by_guid(self, fs_guid: str) -> list[dict]:
         """All SurveyReports linked to this filesystem's asset GUID via the real
         ReportSubject relationship — regardless of which engine created them.
@@ -608,7 +619,7 @@ class EgeriaFileSystemSurveyor:
         from resource_explorer.surveyors.egeria_survey_reader import get_annotations_by_report_guid
 
         self.connect()
-        return get_annotations_by_report_guid(self._asset_maker, report_guid)
+        return get_annotations_by_report_guid(self._metadata_expert_client(), report_guid)
 
     def trigger_survey_by_guid(self, fs_guid: str) -> str:
         """Initiate Egeria's native FileDirectory survey using a stored GUID —
