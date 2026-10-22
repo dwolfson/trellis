@@ -568,6 +568,13 @@ export const writeJournal = (slug, body, suggestTo = [], entityType, compileId =
   post(`/api/journal/${encodeURIComponent(requireKind('writeJournal', entityType))}/${encodeURIComponent(slug)}`,
     { body, suggest_to: suggestTo, ...(compileId ? { compile_id: compileId } : {}) });
 
+/** A chat turn as a journal entry. `confirm: false` writes nothing and returns the derived entry ({body, turn});
+ *  `confirm: true` writes it. The entry is derived on the server from the turn alone; `note` is the person's one
+ *  optional addition and is stored apart from it. */
+export const writeJournalTurn = (investigation, { question, answer, compileId = null, resourceSlug = null, note = '' }, { confirm = false } = {}) =>
+  post(`/api/journal/investigation/${encodeURIComponent(investigation)}/turn`,
+    { question, answer, compile_id: compileId, resource_slug: resourceSlug, note, confirm });
+
 /* ── Curate: tags, ratings (resource feedback) and Classic's curator notes ─
  * CURATE-UI-DATABASES-IMPLEMENTED.md. Every row from tags-detail, feedback
  * and notes carries `author`, `authored` and `author_label` (never blank).
@@ -922,13 +929,14 @@ export const getInvestigationNextSteps = (slug) =>
  * filesystem question always got repo-shaped sections (`foss_scorecard`,
  * `chaoss_metrics`, ...) and reported its real answer as a gap.
  */
-export const ask = (query, { resourceSlug, entityType, perspectives = [], sessionId } = {}) =>
+export const ask = (query, { resourceSlug, entityType, perspectives = [], sessionId, investigation } = {}) =>
   post('/api/query/', {
     query,
     project_slug: resourceSlug || null,   // the wire key is still the old name
     entity_type: requireKind('ask', entityType),
     perspectives: [...perspectives],
     session_id: sessionId || null,
+    investigation: investigation || null,
   });
 
 /**
@@ -1001,7 +1009,7 @@ export const listFoundations = () => cached('discovery-foundations', () => get('
  * old browser, a proxy that buffers SSE) should catch and retry with the
  * plain `ask()` above rather than this function pretending to stream.
  */
-export async function* askStream(query, { resourceSlug, entityType, perspectives = [], sessionId, skipResourceCheck = false } = {}) {
+export async function* askStream(query, { resourceSlug, entityType, perspectives = [], sessionId, skipResourceCheck = false, investigation } = {}) {
   requireKind('askStream', entityType);
   const res = await fetch('/api/query/stream', {
     method: 'POST',
@@ -1014,6 +1022,8 @@ export async function* askStream(query, { resourceSlug, entityType, perspectives
       session_id: sessionId || null,
       // The person already chose "keep this resource" for a question that named another one.
       skip_resource_check: Boolean(skipResourceCheck),
+      // Which investigation the chat's journal tool writes to; it never changes how the question is answered.
+      investigation: investigation || null,
     }),
   });
   if (!res.ok || !res.body) throw await apiErrorFrom(res, '/api/query/stream');

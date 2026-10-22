@@ -48,9 +48,10 @@ class BaseExplorerAgent(ABC):
         """The tools that write, or none when this agent is read-only."""
         if not self.allow_writes:
             return []
+        from resource_explorer.agents.journal_tool import write_journal
         from resource_explorer.agents.rfa_tools import create_rfa_from_finding
 
-        return [create_rfa_from_finding]
+        return [create_rfa_from_finding, write_journal]
 
     def __init__(self, config: ExplorerConfig | None = None) -> None:
         self.config = config or get_config()

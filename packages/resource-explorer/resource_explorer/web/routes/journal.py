@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from resource_explorer.auth import get_current_user
-from resource_explorer.journal import Journal
+from resource_explorer.journal import Journal, derive_turn_entry, write_turn_entry
 
 router = APIRouter()
 
@@ -57,3 +57,42 @@ def write_entry(entity_type: str, slug: str, write: JournalWrite, request: Reque
                                compile_id=write.compile_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+class JournalTurn(BaseModel):
+    """A chat turn as the pane shows it. The entry is derived from these fields alone; the person's only addition
+    is `confirm` and one optional `note`, which is stored apart from the derived text."""
+    question: str
+    answer: str
+    compile_id: str | None = None
+    resource_slug: str | None = None
+    note: str = ""
+    confirm: bool = False
+
+
+@router.post("/investigation/{slug}/turn")
+def write_turn(slug: str, turn: JournalTurn, request: Request) -> dict:
+    """Add one chat turn to an investigation's journal. With `confirm` false nothing is written: the reply is the
+    derived entry, for the pane to show read-only. With `confirm` true it writes the same row the chat's
+    `write_journal` tool writes (journal.write_turn_entry), authored by the signed-in user and timed at this call."""
+    _check_investigation(INVESTIGATION, slug)
+    if not (turn.answer or "").strip():
+        raise HTTPException(status_code=422, detail="There is no answer to add.")
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    if not turn.confirm:
+        derived = derive_turn_entry(registry, question=turn.question, answer=turn.answer, compile_id=turn.compile_id,
+                                    investigation=slug, resource_slug=turn.resource_slug)
+        return {"written": False, "body": derived["body"], "turn": derived["turn"]}
+    user = get_current_user(request)
+    author = (user or {}).get("user_id") or (user or {}).get("sub") or (user or {}).get("username") or ""
+    if not author:
+        raise HTTPException(status_code=401, detail="Sign in to write in the journal — an entry needs an author.")
+    try:
+        entry = write_turn_entry(registry, investigation=slug, author=author, question=turn.question,
+                                 answer=turn.answer, compile_id=turn.compile_id, resource_slug=turn.resource_slug,
+                                 note=turn.note)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"written": True, **entry}

@@ -122,6 +122,9 @@ class QueryRequest(BaseModel):
     #: real state and not a missing value -- the compile still runs.
     perspectives: list[str] = []
     session_id: str | None = None  # browser-generated UUID for cross-turn memory
+    #: The slug of the investigation open on the rail, if any. Only the chat's journal tool reads it ("save this to
+    #: the journal" writes to THIS investigation); it never changes how a question is answered.
+    investigation: str | None = None
 
 
 class QueryResponse(BaseModel):
@@ -137,6 +140,9 @@ class QueryResponse(BaseModel):
     #: resource in scope, or the compile itself produced nothing.
     compiled: dict | None = None
     disambiguation_chips: list[dict] | None = None
+    #: Set when the answer is the journal tool's "Add this turn?" question: the turn it would add, for the pane
+    #: to draw [Add] [Not now] against.
+    journal_proposal: dict | None = None
 
 
 def _compiled_payload(agent) -> dict | None:
@@ -238,6 +244,7 @@ async def ask(request: QueryRequest) -> QueryResponse:
                                         request.entity_type)
     else:
         agent = _ephemeral_session(request.resource_slug, request.entity_type)
+    agent.investigation = request.investigation
     response = await asyncio.to_thread(
         agent.handle, request.query, resource_slug=request.resource_slug,
         resource_type=request.entity_type, perspectives=request.perspectives,
@@ -258,6 +265,7 @@ async def ask(request: QueryRequest) -> QueryResponse:
         chart=chart,
         compiled=compiled,
         disambiguation_chips=chips,
+        journal_proposal=getattr(agent, "_journal_proposal", None),
     )
 
 
@@ -313,6 +321,7 @@ async def stream(request: QueryRequest) -> StreamingResponse:
                                                     request.entity_type)
                 else:
                     agent = _ephemeral_session(request.resource_slug, request.entity_type)
+                agent.investigation = request.investigation
                 text = agent.handle(request.query, resource_slug=request.resource_slug,
                                     resource_type=request.entity_type,
                                     perspectives=request.perspectives)
@@ -321,7 +330,8 @@ async def stream(request: QueryRequest) -> StreamingResponse:
                     _persist_turn(request.session_id, request.query, text, request.resource_slug,
                                   compile_id=_compile_id_of(agent))
                 loop.call_soon_threadsafe(queue.put_nowait, text)
-                loop.call_soon_threadsafe(queue.put_nowait, {"_done": True, "intent": intent, "hash": hashlib.sha256(request.query.encode()).hexdigest()[:16], "cached": False, "compiled": compiled})
+                loop.call_soon_threadsafe(queue.put_nowait, {"_done": True, "intent": intent, "hash": hashlib.sha256(request.query.encode()).hexdigest()[:16], "cached": False, "compiled": compiled,
+                                                                  "journal_proposal": getattr(agent, "_journal_proposal", None)})
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
 
@@ -366,6 +376,8 @@ async def stream(request: QueryRequest) -> StreamingResponse:
                     chips = _disambiguation_chips(request.query, request.resource_slug or request.database_slug)
                     if chips:
                         done["disambiguation_chips"] = chips
+                if item.get("journal_proposal"):
+                    done["journal_proposal"] = item["journal_proposal"]
                 if checked and "resource_check_error" in checked:
                     done["resource_check_error"] = checked["resource_check_error"]
                 # Suggest an alias when no project was resolved but a fuzzy match exists

@@ -10343,6 +10343,30 @@ class ProjectRegistry:
         d["derivation"] = _json.loads(d["derivation"])
         return d
 
+    def load_exchanges(
+        self, session_id: str, limit: int = 20, *, user_id: str | None = None,
+    ) -> list[dict]:
+        """The most recent question/answer pairs of a session, NEWEST FIRST, each {question, answer, compile_id,
+        resource_slug}. Same caller scoping as load_turns. A user row not followed by an assistant row (a turn
+        still being answered) is not an exchange yet and is left out."""
+        user_id = current_user_id() if user_id is None else user_id
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT role, content, project_slug, compile_id FROM conversation_history "
+                "WHERE session_id = ? AND user_id IN (?, ?) ORDER BY turn_idx DESC LIMIT ?",
+                (session_id, user_id, SHARED_USER_ID, limit * 2),
+            ).fetchall()
+        rows = [dict(r) for r in rows]
+        out: list[dict] = []
+        for i, r in enumerate(rows):
+            if r["role"] != "assistant" or i + 1 >= len(rows) or rows[i + 1]["role"] != "user":
+                continue
+            q = rows[i + 1]
+            out.append({"question": q["content"], "answer": r["content"],
+                        "compile_id": r.get("compile_id") or q.get("compile_id"),
+                        "resource_slug": r.get("project_slug") or q.get("project_slug")})
+        return out[:limit]
+
     def load_turns(
         self, session_id: str, limit: int = 40, *, user_id: str | None = None,
     ) -> list[dict]:

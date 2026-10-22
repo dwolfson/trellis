@@ -61,3 +61,8 @@ verb, and the dialog's sending button says Publish.**
    The result line stays ("saved in RE · you · just now · not yet
    cataloged"). The visual-cue reply puts it in the choice cell, where the
    eye already is.
+
+
+## Addendum 2026-10-22: the chat answers every verb the pane has
+
+A verb that has a control in the pane must have a chat route. "save/add/put ... journal" and "note this" go to the confirm-gated `write_journal` tool (journal.py `write_turn_entry` behind both), and the chat never answers "I do not know" to them. Owner ruling: the journal entry is derived entirely from the chat turn. Code: agents/journal_tool.py.
