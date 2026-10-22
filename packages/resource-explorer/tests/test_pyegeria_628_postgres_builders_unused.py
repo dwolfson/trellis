@@ -1,9 +1,11 @@
 """pyegeria 6.2.8 made db_user/db_pwd on create_postgres_{server,database}_element_from_template deprecated and
 IGNORED (DeprecationWarning; credentials now come from secretsStorePathName/secretsCollectionName).
 
-RE must not silently lose the credential the JDBC cataloguer uses. It does not call those builders: the surveyor
-hand-builds the placeholder body and sends it through create_elem_from_template. This pins that, so a future switch
-to the builders (which would drop databaseUserId/databasePassword) fails here and becomes an owner decision."""
+RE does not call those builders: the surveyor hand-builds the placeholder body and sends it through
+create_elem_from_template, with the credential carried ONLY by the secrets-store pair (owner decision 2026-10-21:
+no plaintext databaseUserId/databasePassword -- Egeria's PostgreSQL templates declare neither placeholder). This
+pins both, so a switch to the builders, or a plaintext credential coming back, fails here and becomes an owner
+decision."""
 from __future__ import annotations
 
 import ast
@@ -27,10 +29,11 @@ def test_no_re_source_calls_the_deprecated_postgres_builders():
     assert not hits, f"RE now calls a builder whose db_user/db_pwd 6.2.8 ignores: {hits}"
 
 
-def test_surveyor_still_sends_credential_placeholders_through_raw_template_path():
+def test_surveyor_sends_credentials_only_through_the_secrets_store_on_the_raw_template_path():
     from resource_explorer.surveyors.database import egeria_database_surveyor as m
     src = inspect.getsource(m)
-    assert '"databaseUserId": db_user' in src and '"databasePassword": db_pwd' in src
+    assert '"databaseUserId"' not in src and '"databasePassword"' not in src
+    assert '"secretsCollectionName"' in src and '"secretsStorePathName"' in src
     assert "_create_postgres_element_from_template(" in src
 
 

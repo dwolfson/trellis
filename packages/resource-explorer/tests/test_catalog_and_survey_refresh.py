@@ -125,15 +125,21 @@ class TestCatalogAndSurveyFreshCatalog:
         ]
         surveyor._initiate_survey = MagicMock(return_value="survey-guid")
 
+        surveyor._secrets_store_guid = "store-guid"  # RE's own secrets store, already found (no lookup here)
         surveyor._catalog_and_survey(db_entity, db_user="postgres", db_pwd="corrected-pw")
 
+        # The CURRENT credentials reach Egeria only through RE's secrets store (owner decision 2026-10-21: no
+        # plaintext databaseUserId/databasePassword placeholders -- Egeria's templates declare neither).
+        saves = surveyor._automated_curation.save_client_side_secret.call_args_list
+        assert saves, "the current credentials were not saved to the secrets store"
+        secrets = saves[-1][0][1]["secretsCollection"]["secrets"]
+        assert secrets == {"userId": "postgres", "clearPassword": "corrected-pw"}
         calls = surveyor._automated_curation.create_elem_from_template.call_args_list
-        server_body = calls[0][0][0]
-        db_body = calls[1][0][0]
-        assert server_body["placeholderPropertyValues"]["databaseUserId"] == "postgres"
-        assert server_body["placeholderPropertyValues"]["databasePassword"] == "corrected-pw"
-        assert db_body["placeholderPropertyValues"]["databaseUserId"] == "postgres"
-        assert db_body["placeholderPropertyValues"]["databasePassword"] == "corrected-pw"
+        for body in (calls[0][0][0], calls[1][0][0]):
+            ph = body["placeholderPropertyValues"]
+            assert "databaseUserId" not in ph and "databasePassword" not in ph
+            assert "corrected-pw" not in str(body)
+            assert ph["secretsCollectionName"] and ph["secretsStorePathName"]
 
 
 def _by_qn(connection_guid):
