@@ -16,7 +16,7 @@ import {
   getComponentFinder, getBulkFacts, getCuratePlan, curateCommit, getCuration, pollActivity,
   getComponentTree, getComponentLeaves, postBranchVerdicts,
   getCatalogueDepthOffer, postCatalogueDepthOfferOutcome,
-  getComponentBlueprints, postBlueprintVerdict, getLatestCuration,
+  getComponentBlueprints, postBlueprintVerdict, getLatestCuration, getAnalysisResults,
 } from '/static/re-api.js';
 import {
   bandFrameHtml, renderFindableBand, renderPeopleBand, databaseWorkHtml, databaseScopeHtml, databaseStructureHtml,
@@ -28,6 +28,7 @@ import { ARCHITECTURE_CHANGED } from '/static/next/stages/architecture-publish.j
 import { repoCommitPanelHtml, commitHeaderHtml, commitResultHtml, commitVerdict, manifestCounts, publishLabel } from '/static/next/stages/repo-manifest.js';
 import { createScopeController, scopeListHtml, visibleRows } from '/static/next/stages/resource-scope.js';
 import { mountDependencyTable } from '/static/next/stages/dependencies.js';
+import { mountDeclaredTopology } from '/static/next/stages/declared-topology.js';
 import { admissionHtml, admissionNoteHtml } from '/static/next/stages/curate-admission.js';
 import {
   state, esc, $, icon, tnum, factGlyph, ensureRailShowing, railClaim, railFrame,
@@ -1492,6 +1493,7 @@ async function renderComponentTree(slug, prefix = '') {
     if (box && !box.hidden) keptBoxes.set(br.dataset.branch, box);
   });
   const keptDiagram = host.querySelector('#component-diagram');
+  const keptTopology = host.querySelector('#component-topology');
   const scrolls = [];
   for (let el = host; el; el = el.parentElement) if (el.scrollTop > 0) scrolls.push([el, el.scrollTop]);
   const winY = typeof window !== 'undefined' ? window.scrollY : 0;
@@ -1511,7 +1513,10 @@ async function renderComponentTree(slug, prefix = '') {
     ${tree.topology ? `<div class="mt-s2 text-provenance text-ink-muted">${esc(tree.topology)}</div>` : ''}
     ${tree.topology_totals ? `<div class="mt-s2 text-provenance text-ink-muted">${tnum(esc(tree.topology_totals))}</div>` : ''}
     <div id="component-tree-status" class="mt-s1 text-provenance text-ink-muted"></div>
-    <div id="component-diagram" class="mt-s3"></div>`;
+    <div id="component-diagram" class="mt-s3"></div>
+    <details id="component-topology" data-curate-ports-wires class="mt-s3"><summary class="cursor-pointer text-caps uppercase tracking-caps text-ink">Ports &amp; Wires</summary>
+      <div class="mt-s1 text-provenance text-ink-muted">Declared deployment topology, read-only: there is no verdict to give here. It is not an Egeria SolutionPort or SolutionLinkingWire; those are not written yet.</div>
+      <div data-topology-host class="mt-s1"></div></details>`;
   const searchEl = host.querySelector('[data-tree-search]');
   if (searchEl) {
     if (refocus) { searchEl.focus(); try { searchEl.setSelectionRange(searchEl.value.length, searchEl.value.length); } catch { /* type=search may refuse */ } }
@@ -1535,6 +1540,20 @@ async function renderComponentTree(slug, prefix = '') {
   }));
   if (keptDiagram) $('component-diagram')?.replaceWith(keptDiagram);
   renderComponentDiagram(slug, $('component-diagram'));
+  // Ports & Wires: the same renderer as the Analysis pane. The read is slow on a large repository, so it starts
+  // when the section is opened, and a redraw of the tree keeps the section (and what it drew) as it was.
+  if (keptTopology) $('component-topology')?.replaceWith(keptTopology);
+  else {
+    const topo = $('component-topology');
+    topo?.addEventListener('toggle', () => {
+      if (!topo.open || topo.dataset.drawn === '1') return;
+      topo.dataset.drawn = '1';
+      mountDeclaredTopology(topo.querySelector('[data-topology-host]'), slug, {
+        fetchResults: (x) => getAnalysisResults(x, 'architecture_recovery'),
+        stale: () => slug !== state.selectedSlug,
+      });
+    });
+  }
 
   host.querySelectorAll('[data-branch-scope]').forEach((t) => t.addEventListener('click', () => {
     setBranchScopeMode(slug, t.dataset.path, t.dataset.branchScope);
