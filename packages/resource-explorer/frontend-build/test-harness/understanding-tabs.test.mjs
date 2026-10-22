@@ -112,7 +112,7 @@ test('repo: since-last-run on At a glance, the survey report on Contents, the ch
   const { document } = await setUp('repo');
   await open(document);
   assert.deepEqual(sectionsOn(document, 'glance'), ['repo-since']);
-  assert.deepEqual(sectionsOn(document, 'contents'), ['repo-distribution', 'repo-report']);
+  assert.deepEqual(sectionsOn(document, 'contents'), ['repo-distribution', 'repo-report', 'repo-classification', 'repo-dependency-support']);
   assert.deepEqual(sectionsOn(document, 'over_time'), ['repo-charts']);
   // chips: the distribution kinds are indexed on Contents, the series on Over time, each kind in exactly one place
   await tab(document, 'contents');

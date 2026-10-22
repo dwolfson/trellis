@@ -16,6 +16,7 @@ session.
 from __future__ import annotations
 
 import os
+import sys
 
 import pytest
 
@@ -116,6 +117,22 @@ _PGVECTOR_AVAILABLE = _pgvector_reachable()
 # for the single call they are asserting about (see test_run_queue.py).
 # Enqueueing, reading and reconciling are unaffected — only claiming.
 os.environ.setdefault("EXPLORER_RUN_QUEUE_ENABLED", "false")
+
+# RE has no code default for its service account (config.EgeriaConfig.user_id is blank when EGERIA_USER_ID is unset
+# and every path that needs it refuses). The tests that act as the daemon get an explicit test account here.
+#
+# Clearly fake, non-person values, and ONLY when the live tier is off: an env var outranks the package .env
+# (pydantic-settings), so setting these under `--live-egeria-reads/-writes` (or RE_LIVE_EGERIA_READS) would hide the
+# real service account from the live fixtures. The live tier reads the real .env instead.
+def _live_tier_requested() -> bool:
+    flag = any(a.startswith("--live-egeria") for a in sys.argv[1:])
+    env = os.environ.get("RE_LIVE_EGERIA_READS", "").strip().lower() not in ("", "0", "false", "no")
+    return flag or env
+
+
+if not _live_tier_requested():
+    os.environ.setdefault("EGERIA_USER_ID", "re-test-service-account")
+    os.environ.setdefault("EGERIA_USER_PASSWORD", "re-test-password")
 
 
 def _egeria_reachable() -> bool:

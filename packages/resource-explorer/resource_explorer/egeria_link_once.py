@@ -149,6 +149,44 @@ def existing_links(metadata_expert, relationship_type: str, read_guid: str, read
     raise Unreadable(f"more than {MAX_PAGES} pages of links")
 
 
+def related_entries(metadata_expert, relationship_type: str, read_guid: str, read_end: int,
+                    *, page_size: int = PAGE_SIZE) -> list[dict]:
+    """EVERY `relationship_type` entry of `read_guid` (sitting at end `read_end`), paged to the end of the list, as
+    the raw entries `get_related_metadata_elements` gives. Raises `Unreadable` when the end was not reached (a
+    failed read, an answer that is not a page, too many empty pages in a row, or `MAX_PAGES` pages): a count made
+    from a partial list is never returned as if it were the whole.
+
+    The one reader a proof that counts a report's annotations uses, because a single `get_asset_by_guid(
+    graphQueryDepth=1)` read returns ONE graph page (999 entries live, 2026-10-21), however many a report holds."""
+    found: list[dict] = []
+    start = 0
+    filtered_run = 0
+    for _ in range(MAX_PAGES):
+        try:
+            answer = metadata_expert.get_related_metadata_elements(
+                read_guid, relationship_type, {"class": "ResultsRequestBody"},
+                starting_at_end=read_end, start_from=start, page_size=page_size)
+        except Exception as exc:  # every failure is "could not read to the end"
+            raise Unreadable(f"{type(exc).__name__}: {' '.join(str(exc).split())[:200]}") from exc
+        entries = _page_entries(answer)
+        if entries is _END:
+            return found
+        if entries is _FILTERED:
+            filtered_run += 1
+            if filtered_run > MAX_FILTERED_RUN:
+                raise Unreadable(f"more than {MAX_FILTERED_RUN} pages in a row came back empty after "
+                                 "Egeria's filtering, so the end of the list was not reached")
+            start += page_size
+            continue
+        filtered_run = 0
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise Unreadable("an entry is not an object")
+            found.append(entry)
+        start += page_size
+    raise Unreadable(f"more than {MAX_PAGES} pages of {relationship_type} entries")
+
+
 def _oldest(entries: list[dict]) -> dict:
     return min(entries, key=lambda e: str((e.get("versions") or {}).get("createTime") or "~"))
 

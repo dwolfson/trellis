@@ -8058,25 +8058,38 @@ class ProjectRegistry:
 
     def merge_native_survey_declared(self, engine_action_guid: str, patch: dict) -> None:
         """Merge `patch` into the `declared` JSON of the native-survey row(s) holding this GUID. No DDL: a
-        process run (engine host step 4) keeps what it last read of each of its steps here, beside `started_as`."""
+        process run (engine host step 4) keeps what it last read of each of its steps here, beside `started_as`.
+        A key patched to None is removed."""
         with self._conn() as conn:
-            rows = conn.execute("SELECT id, declared FROM step_runs WHERE engine_action_guid = ?",
-                                (engine_action_guid,)).fetchall()
-            for row in rows:
-                try:
-                    current = json.loads(dict(row).get("declared") or "{}")
-                except (TypeError, ValueError):
-                    current = {}
-                if not isinstance(current, dict):
-                    current = {}
-                current.update(patch)
-                conn.execute("UPDATE step_runs SET declared = ? WHERE id = ?",
-                             (json.dumps(current, default=str), dict(row)["id"]))
+            self._merge_declared_in(conn, engine_action_guid, patch)
+
+    @staticmethod
+    def _merge_declared_in(conn, engine_action_guid: str, patch: dict) -> None:
+        """The merge, inside a caller's transaction. A read-modify-write of one JSON column, so on Postgres the
+        SELECT locks the rows (`FOR UPDATE`): two writers (the read-back, a Cancel press) cannot lose each other's
+        keys. SQLite serialises writers already."""
+        sql = "SELECT id, declared FROM step_runs WHERE engine_action_guid = ?"
+        if getattr(conn, "is_postgres", False):
+            sql += " FOR UPDATE"
+        for row in conn.execute(sql, (engine_action_guid,)).fetchall():
+            try:
+                current = json.loads(dict(row).get("declared") or "{}")
+            except (TypeError, ValueError):
+                current = {}
+            if not isinstance(current, dict):
+                current = {}
+            for key, value in patch.items():
+                if value is None:
+                    current.pop(key, None)
+                else:
+                    current[key] = value
+            conn.execute("UPDATE step_runs SET declared = ? WHERE id = ?",
+                         (json.dumps(current, default=str), dict(row)["id"]))
 
     def record_native_survey_report(
         self, engine_action_guid: str, *, entity_type: str, slug: str,
         process_qualified_name: str, report_guid: str, report_at: str,
-        read_at: str, annotations: list[dict],
+        read_at: str, annotations: list[dict], report_totals: dict | None = None,
     ) -> int:
         """Read one Egeria SurveyReport into RE, idempotently, and stamp the
         step_runs row that originated it.
@@ -8119,6 +8132,11 @@ class ProjectRegistry:
                 "WHERE engine_action_guid = ?",
                 (report_guid, report_at, read_at, count, engine_action_guid),
             )
+            if report_totals:
+                # What the report itself held (before RE's own filter), beside the stored count -- in the row's
+                # existing `declared` JSON (no DDL), IN THIS transaction: the annotations, the count and the totals
+                # land together or not at all, so a failure cannot leave a stored report with no totals.
+                self._merge_declared_in(conn, engine_action_guid, {"report_totals": dict(report_totals)})
         return int(count)
 
     def list_native_survey_runs(
@@ -8137,29 +8155,31 @@ class ProjectRegistry:
             rows = conn.execute(sql, tuple(params)).fetchall()
         return [dict(r) for r in rows]
 
-    def list_in_flight_native_survey_runs(self, limit: int = 200) -> list[dict]:
-        """Rows with an engine-action GUID whose proof is not yet terminal:
-        no status read yet, or a read that was not terminal, or a completed
-        action whose report is not yet read in. Used by the read-back sweep;
-        deriving 'in flight' from the proof columns (not a flag) so a row
-        that a crashed sweep left half-done is picked up again."""
-        # Egeria's "still going" and "succeeded" words are the two that leave
-        # work to do; any other terminal word (FAILED, INVALID, ...) is final.
-        pending = ("REQUESTED", "APPROVED", "WAITING", "ACTIVATING", "IN_PROGRESS")
-        succeeded = ("COMPLETED", "ACTIONED")
-        marks = lambda seq: ", ".join("?" for _ in seq)  # noqa: E731
+    def list_in_flight_native_survey_runs(self, limit: int = 200, skip=None) -> list[dict]:
+        """Rows with an engine-action GUID whose proof is not yet terminal, for the read-back sweep. The set is the
+        ONE definition in `native_survey_run.IN_FLIGHT_STATES`: this builds its SQL from the per-state clauses
+        (`readback_sql_clauses`), so a state added there without a clause here raises rather than being skipped.
+        Derived from the proof columns (not a flag), so a row a crashed sweep left half-done is picked up again.
+
+        `skip(row) -> bool` drops rows the caller no longer wants (the sweep passes "gave up after its bound");
+        it runs BEFORE `limit`, so rows that are skipped forever cannot crowd out the live ones."""
+        from resource_explorer import native_survey_run as nsr
+
+        clauses = nsr.readback_sql_clauses()
+        where = " OR ".join(f"({sql})" for sql, _ in clauses.values())
+        params: list = [NATIVE_SURVEY_STEP_PREFIX + "%"]
+        for _, p in clauses.values():
+            params.extend(p)
+        sql = ("SELECT * FROM step_runs WHERE step_key LIKE ? AND engine_action_guid <> '' "
+               f"AND ({where}) ORDER BY surveyed_at DESC, id DESC")
+        if skip is None:
+            sql += " LIMIT " + str(int(limit))
         with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM step_runs WHERE step_key LIKE ? "
-                "AND engine_action_guid <> '' AND ("
-                "engine_action_status = '' "
-                f"OR engine_action_status IN ({marks(pending)}) "
-                f"OR (engine_action_status IN ({marks(succeeded)}) "
-                "    AND (report_read_at = '' OR report_annotation_count IS NULL))) "
-                "ORDER BY surveyed_at DESC, id DESC LIMIT " + str(int(limit)),
-                (NATIVE_SURVEY_STEP_PREFIX + "%", *pending, *succeeded),
-            ).fetchall()
-        return [dict(r) for r in rows]
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        out = [dict(r) for r in rows]
+        if skip is not None:
+            out = [r for r in out if not skip(r)][: int(limit)]
+        return out
 
     def query_native_survey_annotations(
         self, report_guid: str,

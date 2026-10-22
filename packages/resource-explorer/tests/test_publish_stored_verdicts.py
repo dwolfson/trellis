@@ -306,12 +306,11 @@ def _retiring_surveyor(refuse=()):
     s, maker = _real_surveyor()
     s._discovery = _RecordingDiscovery(maker, refuse)
 
-    def read_report(guid, body=None, output_format=None):
-        return {"reportedAnnotations": [
-            {"relatedElement": {"elementHeader": {"guid": g, "type": {"typeName": e["type"]}},
-                                "properties": e["properties"]}}
-            for g, e in s._discovery.elements.items()]}
-    maker.get_asset_by_guid = read_report
+    from tests.report_pages import paged_expert
+
+    # the report's annotations are read through the paged ReportedAnnotation list, to its end
+    s._metadata_expert = paged_expert(lambda guid: [(g, e["type"], e["properties"])
+                                                    for g, e in s._discovery.elements.items()])
     return s, maker
 
 
@@ -385,7 +384,7 @@ def test_a_refused_retirement_is_counted_and_an_unreadable_report_is_not_checked
 
     def unreadable(*a, **k):
         raise RuntimeError("SERVER_ERROR_500 read refused")
-    s._asset_maker.get_asset_by_guid = unreadable
+    s._metadata_expert.get_related_metadata_elements.side_effect = unreadable
     gone = s._retire_superseded_verdicts(out["report_guid"], "2026-10-20T08:00:00")
     assert gone["state"] == "not_checked" and gone["retired"] == 0
 

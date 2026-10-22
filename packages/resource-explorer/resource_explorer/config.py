@@ -313,8 +313,11 @@ class EgeriaConfig(BaseSettings):
     #: The integration daemon a catalogue commit may ask to refresh the JDBC
     #: cataloguer (never to restart it). The scratch tests ran against this one.
     integration_daemon_server: str = Field(default="qs-integration-daemon", alias="EGERIA_INTEGRATION_DAEMON")
-    user_id: str = Field(default="erinoverview", alias="EGERIA_USER_ID")
-    user_password: str = Field(default="secret", alias="EGERIA_USER_PASSWORD")
+    #: RE's own service account. NO default: a code default here was once a person's persona ("erinoverview"), so a
+    #: missing EGERIA_USER_ID silently made RE act as that person. Unset now means every path that needs the
+    #: service account refuses (egeria_clients.NoServiceAccount).
+    user_id: str = Field(default="", alias="EGERIA_USER_ID")
+    user_password: str = Field(default="", alias="EGERIA_USER_PASSWORD")
     #: Further Egeria platforms a credential may be sent to, comma separated (Brief I). The
     #: configured `platform_url` is always allowed; any other URL is refused before a request.
     allowed_platform_urls: str = Field(default="", alias="EGERIA_ALLOWED_PLATFORM_URLS")
@@ -809,6 +812,43 @@ def resolve_llm_tier_config() -> ResolvedLLMTierConfig:
 
 
 _llm_tier_config: ResolvedLLMTierConfig | None = None
+
+
+class PublicUrlInvalid(ValueError):
+    """`RE_PUBLIC_URL` is set and is not an http(s) URL; RE refuses to start with it."""
+
+
+def check_public_url(raw: str | None = None) -> str:
+    """`RE_PUBLIC_URL` as a checked URL, or `PublicUrlInvalid` quoting the value. Empty is fine (no link back is
+    written). Set, it must be an http(s) URL with a host and no whitespace anywhere in it: a value run into
+    the next line of a `.env` (`http://localhost:8813git push origin ...`, found live 2026-10-21) otherwise
+    becomes a link that Portal readers follow into the void, so RE refuses to start rather than warn and carry on.
+    Returns the value without surrounding whitespace."""
+    from urllib.parse import urlsplit
+
+    value = WebUIConfig().public_url if raw is None else raw
+    value = value or ""
+    if not value.strip():
+        return ""
+    text = value.strip()
+    problem = ""
+    if any(c.isspace() for c in text):
+        problem = "it contains whitespace"
+    else:
+        try:
+            parts = urlsplit(text)
+            if parts.scheme not in ("http", "https") or not parts.hostname:
+                problem = "it is not an http:// or https:// URL with a host"
+            else:
+                parts.port  # noqa: B018 -- raises ValueError for a port that is not a number in range
+        except ValueError:
+            problem = "its port is not a number"
+    if problem:
+        raise PublicUrlInvalid(
+            f"RE_PUBLIC_URL={value!r} is not a usable URL ({problem}). Set it to the address a browser elsewhere uses "
+            "to reach this web app, such as http://box-hostname:8810, or leave it empty; Resource Explorer will not "
+            "start with it as it is.")
+    return text
 
 
 def get_llm_tier_config(force_refresh: bool = False) -> ResolvedLLMTierConfig:

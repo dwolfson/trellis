@@ -89,6 +89,9 @@ def _deprecated(name: str):
     return refuse
 
 
+from tests.report_pages import GRAPH_PAGE as _GRAPH_PAGE, entries_from_graph, related_entry  # noqa: E402
+
+
 class FakeEgeria:
     """Engine actions, elements and relationships, with Egeria's own gates (C5, C7, C8)."""
 
@@ -122,6 +125,8 @@ class FakeEgeria:
         self.target_statuses: list[dict] = []
         #: Process cancels (instance GUID, principal at the call).
         self.cancels: list[tuple] = []
+        #: Every page of a report's ReportedAnnotation list that was asked for: (report, start_from, size, returned).
+        self.related_pages: list[tuple] = []
         #: The approved listing returns more than it should (every active action): RE's screen must still gate.
         self.overreturn = False
         #: Egeria accepts a process cancel and does not apply it (yet).
@@ -361,10 +366,40 @@ class FakeEgeria:
 
     def _related(self, element_guid, relationship_type=None, body=None, start_from=0, page_size=0,
                  starting_at_end=0, *args, **kwargs):
+        if relationship_type == "ReportedAnnotation":
+            return self._reported_annotations(element_guid, start_from, page_size, starting_at_end)
         hits = [r for r in self.relationships if r["type"] == relationship_type and r["end1"] == element_guid]
         if not hits:
             return "No elements found"
         return {"elementList": [{"element": {"elementGUID": r["end2"]}} for r in hits]}
+
+    #: Live (2026-10-21, coco_pharma): one `get_asset_by_guid(report, graphQueryDepth=1)` read of a report holding 2,161
+    #: annotations returned 999 `reportedAnnotations` and one other relationship. The fake does the same, so a proof
+    #: that counts from that read says "999 of 1200" here as it did there.
+    GRAPH_PAGE = _GRAPH_PAGE
+    #: The most one `get_related_metadata_elements` page returns, whatever page size is asked.
+    RELATED_PAGE_CAP = 999
+
+    def _reported_annotations(self, report_guid, start_from, page_size, starting_at_end):
+        """`get_related_metadata_elements(report, "ReportedAnnotation", ...)`: the report sits at end 1; the page is
+        `start_from`/`page_size` (the real signature's keywords), as RelatedMetadataElement entries whose far element
+        carries `elementGUID`, `type` and typed `elementProperties.propertyValueMap`. Past the end: the
+        "No elements found" answer."""
+        if starting_at_end != 1:
+            return "No elements found"
+        if report_guid in self.native_reports:                      # Egeria's own report, as captured
+            anns = entries_from_graph(self.native_reports[report_guid])
+        else:
+            anns = [(r["end2"], "Annotation", (self.elements[r["end2"]]["body"] or {}).get("properties", {}))
+                    for r in self.relationships
+                    if r["type"] == "ReportedAnnotation" and r["end1"] == report_guid
+                    and self.elements.get(r["end2"], {}).get("type") == "Annotation"]
+        size = min(page_size or self.RELATED_PAGE_CAP, self.RELATED_PAGE_CAP)
+        chunk = anns[start_from:start_from + size]
+        self.related_pages.append((report_guid, start_from, size, len(chunk)))
+        if not chunk:
+            return "No elements found"
+        return {"elementList": [related_entry(*a) for a in chunk]}
 
     def _element(self, guid, *args, **kwargs):
         a = self.actions.get(guid)
@@ -422,7 +457,7 @@ class FakeEgeria:
             "reportOriginator": {"relatedElement": {"elementHeader": {"guid": originator}}} if originator else {},
             "reportedAnnotations": [{"relatedElement": {
                 "elementHeader": {"guid": a["guid"], "type": {"typeName": "Annotation"}},
-                "properties": (a["body"] or {}).get("properties", {})}} for a in anns],
+                "properties": (a["body"] or {}).get("properties", {})}} for a in anns[:self.GRAPH_PAGE]],
         }
 
     # -- what the tests read ---------------------------------------------------

@@ -576,7 +576,7 @@ class EgeriaPublisher:
         from resource_explorer.surveyors.egeria_survey_reader import get_annotations_by_report_guid
 
         self._connect()
-        return get_annotations_by_report_guid(self._asset_maker, report_guid)
+        return get_annotations_by_report_guid(self._metadata_expert, report_guid)
 
     # ── Egeria-native survey triggering (Backlog "Path B3") ─────────────────
     #

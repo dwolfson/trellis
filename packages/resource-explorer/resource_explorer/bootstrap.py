@@ -101,7 +101,7 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
+import os
 import subprocess
 import sys
 import threading
@@ -428,25 +428,6 @@ def canary_present(batch: Batch, client=None, expert=None) -> bool | None:
 
 # ── heal ────────────────────────────────────────────────────────────────────
 
-def _resolve_dr_egeria_executable() -> str | None:
-    """Find the `dr_egeria` executable to run.
-
-    Prefer the one installed next to the running interpreter over whatever
-    `dr_egeria` resolves to on PATH. They are not interchangeable: this
-    package pins a pyegeria version, and the venv's own `dr_egeria` is built
-    against it, while PATH can point anywhere. On the dev box PATH's
-    `dr_egeria` is a pipx install on a different Python with a newer
-    pyegeria that died at bearer-token creation with
-    `AsyncLibraryNotFoundError` before running a single command (verified
-    2026-09-12) — a bootstrap auto-heal picking that one up fails before it
-    writes anything.
-    """
-    venv_candidate = Path(sys.executable).parent / "dr_egeria"
-    if venv_candidate.is_file():
-        return str(venv_candidate)
-    return shutil.which("dr_egeria")
-
-
 @dataclass
 class DrEgeriaProcess:
     """What one `dr_egeria --process` run of one document returned. `ok` is the process's own answer (exit 0);
@@ -459,34 +440,94 @@ class DrEgeriaProcess:
     stderr: str = ""
 
 
-def run_dr_egeria_document(doc: Path, *, env: dict | None = None) -> DrEgeriaProcess:
-    """THE Dr.Egeria processor: run one document through the `dr_egeria` CLI, `--process --summary-only`.
+SOURCE_ADHOC_AS = "--as"
+SOURCE_ADMIN_SESSION = "admin session"
+SOURCE_STARTUP_HEAL = "start-up heal"
+CHILD_TOKEN_ENV = "RE_DR_EGERIA_CHILD_TOKEN"
+CHILD_PASSWORD_ENV = "RE_DR_EGERIA_CHILD_PASSWORD"
 
-    Used by the bootstrap heal (`_run_dr_egeria`) and by the ad-hoc runner (`dr_egeria_runner`), so there is
-    one way RE executes a Dr.Egeria document. Runs as a subprocess from the document's own directory, matching
-    how these documents are run by hand and keeping relative paths resolving the same way.
 
-    `env` replaces the child's environment when given (the ad-hoc runner passes RE's daemon credential and
-    platform explicitly); None inherits this process's environment, which is what the bootstrap has always done.
+class NoDrEgeriaIdentity(ValueError):
+    """No Egeria identity was supplied for a Dr.Egeria run. RE never lets the `dr_egeria` CLI choose one."""
+
+
+@dataclass(frozen=True)
+class DrEgeriaIdentity:
+    """WHO a Dr.Egeria document is applied as, and where that identity came from. Always supplied by the caller.
+
+    * `password` set: a named Egeria user with a password (an ad-hoc `--as` run, or the start-up heal's service
+      account). It travels in the child's environment (`CHILD_PASSWORD_ENV`), never argv.
+    * `token` set (no password): a signed-in person's Egeria bearer token (the admin route). It travels in the
+      child's environment (`CHILD_TOKEN_ENV`), never argv.
+    Either way the child is `resource_explorer.dr_egeria_child`, which builds its client through the factory.
+
+    `source` is one of SOURCE_ADHOC_AS / SOURCE_ADMIN_SESSION / SOURCE_STARTUP_HEAL. Secrets are `repr=False`.
     """
-    executable = _resolve_dr_egeria_executable()
-    if executable is None:
-        venv_candidate = Path(sys.executable).parent / "dr_egeria"
-        return DrEgeriaProcess(False, f"dr_egeria CLI not found next to {venv_candidate} or on PATH")
 
-    log.info("bootstrap: running dr_egeria via %s", executable)
-    kwargs = {"env": env} if env is not None else {}
+    user: str
+    source: str
+    password: str = field(default="", repr=False)
+    token: str = field(default="", repr=False)
+
+    def __post_init__(self) -> None:
+        if not (self.user or "").strip():
+            raise NoDrEgeriaIdentity("no Egeria identity set; pass --as or sign in")
+        if not (self.password or self.token):
+            raise NoDrEgeriaIdentity(f"no credential for Egeria user {self.user!r}; pass --as or sign in")
+
+    @property
+    def announcement(self) -> str:
+        return f"applying as {self.user} from {self.source}"
+
+
+def dr_egeria_command(doc_name: str, identity: DrEgeriaIdentity, *, server: str, url: str) -> tuple[list[str], dict]:
+    """The argv and the extra environment for one run. The identity is ALWAYS explicit and NO secret is on argv.
+
+    `python -m resource_explorer.dr_egeria_child --server S --url U --userid USER DOC`, plus a one-key environment:
+    the password (`CHILD_PASSWORD_ENV`) or the token (`CHILD_TOKEN_ENV`), whichever the identity holds. argv is
+    visible in `ps` to local users for the life of the run; the environment is not."""
+    argv = [sys.executable, "-m", "resource_explorer.dr_egeria_child", "--server", server, "--url", url,
+            "--userid", identity.user, doc_name]
+    if identity.password:
+        return argv, {CHILD_PASSWORD_ENV: identity.password}
+    return argv, {CHILD_TOKEN_ENV: identity.token}
+
+
+def run_dr_egeria_document(doc: Path, *, identity: DrEgeriaIdentity, env: dict | None = None) -> DrEgeriaProcess:
+    """THE Dr.Egeria processor: run one document through `resource_explorer.dr_egeria_child` (what pyegeria's
+    `dr_egeria --process --summary-only` does, with a factory-built client so no secret is on argv).
+
+    Used by the bootstrap heal (`_run_dr_egeria`, as the service account) and by the ad-hoc runner
+    (`dr_egeria_runner`, as a named person), so there is one way RE executes a Dr.Egeria document. Runs as a
+    subprocess from the document's own directory.
+
+    **Who it applies as is the `identity` argument and nothing else.** There is no default: the identity Egeria
+    recorded once did not match the identity RE had set, so RE now passes `--userid` and the credential
+    explicitly on every call and never relies on what the CLI or its environment would pick. A missing identity
+    is a `TypeError` here and a refusal in every caller.
+
+    `env` replaces the child's environment when given; None inherits this process's (plus the child token for a
+    token identity)."""
+    if not isinstance(identity, DrEgeriaIdentity):
+        raise NoDrEgeriaIdentity("no Egeria identity set; pass --as or sign in")
+    from resource_explorer.config import get_config
+
+    egeria = get_config().egeria
+    argv, extra = dr_egeria_command(doc.name, identity, server=egeria.view_server, url=egeria.platform_url)
+    log.info("bootstrap: running dr_egeria child, %s", identity.announcement)
+    child_env = dict(env if env is not None else os.environ)
+    child_env.pop(CHILD_TOKEN_ENV, None)           # exactly one secret reaches the child, whatever the parent holds
+    child_env.pop(CHILD_PASSWORD_ENV, None)
+    child_env.update(extra)
     try:
         proc = subprocess.run(
-            [executable, "--process", "--summary-only", doc.name],
+            argv,
             cwd=str(doc.parent),
             capture_output=True,
             text=True,
             timeout=HEAL_TIMEOUT_SECONDS,
-            **kwargs,
+            env=child_env,
         )
-    except FileNotFoundError:
-        return DrEgeriaProcess(False, "dr_egeria CLI not found on PATH")
     except subprocess.TimeoutExpired:
         return DrEgeriaProcess(False, f"timed out after {HEAL_TIMEOUT_SECONDS}s")
     except Exception as exc:  # pragma: no cover - defensive
@@ -500,9 +541,44 @@ def run_dr_egeria_document(doc: Path, *, env: dict | None = None) -> DrEgeriaPro
     return DrEgeriaProcess(True, "ok", stdout, stderr)
 
 
+def heal_identity() -> DrEgeriaIdentity:
+    """The identity a bootstrap heal applies documents as: RE's service account (`EGERIA_USER_ID` and its
+    password, read by `egeria_clients._daemon_credential()`). The only service-account case for Dr.Egeria."""
+    from resource_explorer.egeria_clients import _daemon_credential
+
+    try:
+        user, password = _daemon_credential()
+    except PermissionError as exc:          # NoServiceAccount: EGERIA_USER_ID / its password not set
+        raise NoDrEgeriaIdentity(str(exc)) from exc
+    return DrEgeriaIdentity(user=user, source=SOURCE_STARTUP_HEAL, password=password)
+
+
+def log_heal_identity_at_startup() -> dict:
+    """At startup: log who the heal applies Dr.Egeria documents as, and where that identity comes from. Both are the
+    same source (`EGERIA_USER_ID` / `EGERIA_USER_PASSWORD` via `_daemon_credential()`), so there is nothing to
+    compare; a heal with no service account is logged as a loud warning. Never a password. Returns what it logged."""
+    from resource_explorer.config import get_config
+
+    source = "EGERIA_USER_ID (environment or .env)"
+    try:
+        heal_user = heal_identity().user
+    except NoDrEgeriaIdentity as exc:
+        log.warning("bootstrap: the heal has NO service account and will not heal anything: %s", exc)
+        return {"heal_user": "", "source": source, "set": False,
+                "env_egeria_user": os.environ.get("EGERIA_USER", ""), "egeria_user_id": get_config().egeria.user_id}
+    log.info("bootstrap: Dr.Egeria heal applies as %r, from %s", heal_user, source)
+    return {"heal_user": heal_user, "source": source, "set": True,
+            "env_egeria_user": os.environ.get("EGERIA_USER", ""), "egeria_user_id": get_config().egeria.user_id}
+
+
 def _run_dr_egeria(doc: Path) -> tuple[bool, str]:
-    """Execute one document for a heal (inherits this process's environment)."""
-    result = run_dr_egeria_document(doc)
+    """Execute one document for a heal, as the service account (`heal_identity()`), explicitly."""
+    try:
+        identity = heal_identity()
+    except NoDrEgeriaIdentity as exc:
+        return False, str(exc)
+    log.info("bootstrap: %s", identity.announcement)
+    result = run_dr_egeria_document(doc, identity=identity)
     return result.ok, result.detail
 
 
@@ -678,6 +754,18 @@ def _check_and_heal_locked(docs_dir: Path, force: bool) -> dict:
                 results[batch.batch_id] = {"action": "ok", "reason": "canary present"}
                 continue
 
+            try:
+                heal_identity()
+            except NoDrEgeriaIdentity as exc:
+                # Nothing to heal as: say so on the status the endpoint returns, and do not count it as a heal that
+                # ran and failed (that would trip the consecutive-failure guard on a configuration gap).
+                reason = f"no service account: {exc}"
+                log.warning("bootstrap: %s missing but not healed — %s", batch.batch_id, reason)
+                with _status_lock:
+                    st.last_healed_at = _now()
+                    st.last_heal_result = reason
+                results[batch.batch_id] = {"action": "failed", "reason": reason}
+                continue
             log.info("bootstrap: %s missing — healing (%d file(s))", batch.batch_id, len(batch.files))
             ok, detail = heal_batch(batch)
             # Re-check rather than assuming the heal worked: a canary that never

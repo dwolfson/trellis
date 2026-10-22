@@ -9609,3 +9609,13 @@ On the owner's egeria_git survey, the RAG-ingestion step produced 51,729 chunks 
 direction: refine the ingestion rules, or at least make ingesting code optional per resource, so a survey of a code
 repository does not ingest all of its code by default. Not designed; the rules (what is ingested, by kind and path) and
 where the choice is made (resource, investigation or Admin default) are open.
+
+## Scheduled work runs inline in the scheduler tick; it belongs on the run queue (2026-10-21, architect ruling)
+
+**Root cause (the architect ruled, 2026-10-21):** `scheduler._tick_body` runs `_run_due` inline on one thread, and `_run_due` runs a scheduled RagIngestion in that thread. Scheduled work belongs on the run queue, so the tick only enqueues.
+
+**Evidence (2026-10-21, loading_bay):** the `egeria_docs` RagIngestion ran inline from 20:28:35Z for 14+ minutes. While it ran, the tick did not reach the native read-back sweep or the outbox drain, so an Egeria folder survey that finished in 7.4 s showed "APPROVED · waiting" on its card for 20+ minutes, until the card's own refresh route read it back.
+
+**Done so far (branch `re/readback-loop-and-count-label`):** the read-back sweep and the outbox drain moved to their own 60 s loop, so a long `_run_due` no longer starves them. This does not fix the cause: other work in the tick (RFA reconciliation, the next due schedule) still waits behind a long inline run.
+
+**Not designed:** how a scheduled run is enqueued (which queue row, whose identity, what a schedule does when its previous run is still queued) and what the tick does with the result. **Status:** design question, then slice. Not scheduled.

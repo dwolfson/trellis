@@ -241,18 +241,18 @@ def test_a_cached_cli_session_for_the_daemon_is_refused(cfg, monkeypatch, tmp_pa
 
 # ── round 2: the source label ──────────────────────────────────────────────
 
-def test_an_unset_egeria_user_id_is_labelled_the_code_default_and_warned(cfg, monkeypatch, caplog):
+def test_an_unset_egeria_user_id_is_warned_and_has_no_persona_default(cfg, monkeypatch, caplog):
     from resource_explorer.config import EgeriaConfig
 
     monkeypatch.delenv("EGERIA_USER_ID", raising=False)
-    cfg.egeria = EgeriaConfig(_env_file=None)                   # nothing set: config.py's default
+    cfg.egeria = EgeriaConfig(_env_file=None)                   # nothing set: no code default names a person
+    assert cfg.egeria.user_id == ""
     with caplog.at_level(logging.INFO, logger="resource_explorer.egeria_clients"):
         ec.log_daemon_identity_at_startup()
     lines = [(r.levelno, r.getMessage()) for r in caplog.records if r.name == "resource_explorer.egeria_clients"]
-    assert lines == [(logging.WARNING, f"daemon identity: {cfg.egeria.user_id!r} from the code default "
-                                       "(EGERIA_USER_ID unset) — a person's persona as RE's daemon; set "
-                                       "EGERIA_USER_ID to RE's own account")]
-    assert ec.daemon_identity_status()["source"] == "default"
+    assert lines == [(logging.WARNING, "daemon identity: EGERIA_USER_ID not set: RE has no service account; "
+                                       "set it in .env")]
+    assert ec.daemon_identity_status() == {"user_id": None, "source": "unset"}
 
 
 def test_the_cli_login_refuses_the_daemon_and_never_prefills_it(cfg, monkeypatch, tmp_path):
