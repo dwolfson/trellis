@@ -119,7 +119,7 @@ test('a database run draws its own publish word: failed, not chosen, nothing to 
     [{ publish_state: 'publish failed · EGERIA_PLATFORM_URL is not set', published: false }, 'error', /^✕ publish failed$/],
     [{ publish_state: 'local only · publish not chosen', published: false }, 'unclassified', /^· not published$/],
     [{ publish_state: 'nothing to publish · no step produced results', published: false }, 'nothing', /^∅ nothing to publish$/],
-    [{ publish_state: 'published to Egeria', published: true, egeria_report_guid: 'r-1' }, 'measured', /^✓ published$/],
+    [{ publish_state: 'published to Egeria', published: true, egeria_report_guid: 'r-1' }, 'measured', /^✓ published · creator not read$/],
   ];
   for (const [extra, kind, shown] of cases) {
     const { document, app } = await setUp(scoutingSteps, extra);
@@ -164,4 +164,40 @@ test('a run that recorded no publish_state draws no run word', async () => {
   const { document, app } = await setUp(scoutingSteps, { published: false, errors: ['Failed to publish'] });
   await app.openRunsList('advisor');
   assert.equal(dlgOf(document).querySelectorAll('[data-run-publish]').length, 0);
+});
+
+/* A queued run publishes AS the person who pressed it (2026-10-21). The card says who Egeria states created the report
+ * (`published_as`, read back by GUID), and a run whose presser's sign-in was gone says so in its own words. */
+test('a published run names who Egeria says created the report; with no creator read back, it says so', async () => {
+  const withWho = await setUp(scoutingSteps, { publish_state: 'published to Egeria', published: true,
+    egeria_report_guid: 'r-1', published_as: 'peterprofile' });
+  await withWho.app.openRunsList('advisor');
+  assert.match(text(runWord(withWho.document)), /^✓ published as peterprofile$/);
+
+  const without = await setUp(scoutingSteps, { publish_state: 'published to Egeria', published: true,
+    egeria_report_guid: 'r-1' });
+  await without.app.openRunsList('advisor');
+  assert.match(text(runWord(without.document)), /^✓ published · creator not read$/);
+});
+
+test('an expired presser sign-in is drawn as a warning with its words, never as published', async () => {
+  const words = 'published: no · your sign-in expired · press Publish on the card';
+  const { document, app } = await setUp(scoutingSteps, { publish_state: words, published: false });
+  await app.openRunsList('advisor');
+  const w = runWord(document);
+  assert.equal(w.dataset.stepPublish, 'expired');
+  assert.equal(text(w).replace(/^\S+ /, ''), words);
+  assert.doesNotMatch(text(w), /^✓/);
+  assert.doesNotMatch(text(w), /not established/);
+});
+
+test('a sign-in that expired mid-publish shows its words and the partial-write note', async () => {
+  const words = 'published: no · your sign-in expired · press Publish on the card';
+  const note = 'The sign-in expired while publishing: some writes may already have been made as the person who pressed; press Publish on the card to finish.';
+  const { document, app } = await setUp(scoutingSteps, { publish_state: words, published: false, publish_note: note });
+  await app.openRunsList('advisor');
+  const w = runWord(document);
+  assert.match(text(w), /your sign-in expired/);
+  const n = dlgOf(document).querySelector('[data-run-publish-note]');
+  assert.ok(n && text(n).includes('some writes may already have been made'), 'the partial-write note is missing');
 });

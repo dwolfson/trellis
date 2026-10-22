@@ -28,8 +28,14 @@ attributed to it: `egeria_clients.Daemon(reason)`, with `reason` from a closed
 enum, so a reader can tell a deliberate daemon call from one that merely forgot
 a token. Nothing falls back to it silently.
 
-**Deliberate, and Egeria-consistent: a queued run does not carry a token**
-(owner, 2026-10-09). Any queued work — a survey, or a person's own Publish or
+**A queued run never STORES a token; a pressed survey run publishes as its presser from memory** (owner,
+2026-10-09; amended 2026-10-21). The row carries no token, ever (`presser_hold` keeps the presser's session in the
+pressing process's memory, with a non-secret `held_by` on the row so only that process claims it). A pressed survey
+run's publish uses that session; if it is gone the run ends "published: no · your sign-in expired · press Publish on
+the card" and writes nothing as the service account. Every OTHER queued write path (repo outbox-drained annotations,
+catalogue and curate commits, publish_architecture, analysis runs, the FS adaptive step) is still as described next.
+
+The rest of this paragraph is the original reasoning for the paths not yet moved (owner, 2026-10-09). Any queued work — a survey, or a person's own Publish or
 Curate commit — is committed by RE's daemon, as Egeria's engine hosts commit
 theirs, with the person recorded as `requested_by` and stamped as Ownership. An Egeria
 bearer token lives one hour (measured — `trellis_auth.
@@ -226,7 +232,7 @@ class EgeriaIdentity:
     """
 
     user_id: str
-    token: Optional[str] = None
+    token: Optional[str] = field(default=None, repr=False)
     password: str = field(default="", repr=False)
     is_service_account: bool = False
     #: Set by `egeria_clients`: "caller" | "system" | "background". Empty on a bare identity,

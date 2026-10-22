@@ -60,7 +60,18 @@ def process_identity() -> dict:
     The start time matters. Pids are recycled, and a fresh process inheriting
     a dead one's pid would make an orphaned row look alive forever.
     """
-    return {"pid": os.getpid(), "started_at": _process_start_time(os.getpid())}
+    pid = os.getpid()
+    started = _OWN_START.get(pid)
+    if not started:
+        started = _process_start_time(pid)
+        if started:                              # never cache "": an unreadable start time is retried, not frozen
+            _OWN_START.clear()
+            _OWN_START[pid] = started
+    return {"pid": pid, "started_at": started}
+
+
+#: This process's own start time, read once (a `ps` fork) and keyed by pid so a forked child re-reads its own.
+_OWN_START: dict[int, str] = {}
 
 
 def _process_start_time(pid: int) -> str:

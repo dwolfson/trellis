@@ -67,7 +67,7 @@ import os
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from starlette.requests import Request
@@ -165,7 +165,7 @@ class CallerIdentity:
     """Who is making this A2A call, and with what Egeria credential."""
 
     user_id: str
-    egeria_token: str | None
+    egeria_token: str | None = field(repr=False)
     auth_source: str  # "app-jwt" | "egeria-token" | "anonymous"
     role: str = "user"
     display_name: str = ""

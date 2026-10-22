@@ -62,6 +62,8 @@ def client(registry, monkeypatch):
     )
     registry.update_database_credentials(SLUG, "surveyor", "stored-pass-0123456789")
     monkeypatch.setattr(type(registry), "has_assigned_egeria_project", lambda self, *a, **k: True)
+    # this process runs the queue loop that takes the row (the embedded worker), so the press holds the session
+    monkeypatch.setattr("resource_explorer.run_queue.consumes_kind_here", lambda kind: True)
     # signed in: the press publishes as the person who pressed it
     monkeypatch.setenv("TRELLIS_ANONYMOUS_READ", "true")
     monkeypatch.setattr("resource_explorer.auth.get_current_user",
@@ -259,16 +261,16 @@ def test_the_value_profile_annotations_are_published_by_a_press(client, registry
 
 
 def test_the_report_a_press_makes_is_owned_by_the_person_who_pressed_it(client, registry, egeria, world, rig):
-    """M1: the queued run commits as RE's queue identity with the presser recorded as the requester; Egeria's own
-    Ownership on the report must name that person, not the service account."""
+    """M1, 2026-10-21 (architect ruling, option a): the queued run publishes AS the person who pressed it, with their
+    held session, so Egeria's provenance names them and the Ownership on the report names them too. Before: the queue's
+    service account committed it (`createdBy = resourceexplorernpa`) with the presser only recorded as the requester."""
     _press(client, registry)
     [(report_guid, _)] = egeria.reports()
     owners = [b for kind, g, b in egeria.classifications if kind == "Ownership" and g == report_guid]
     assert owners and owners[0]["properties"]["owner"] == PRESSER, owners
-    writers = {(w.reason, w.requested_by) for cls, method, w in egeria.calls if method == "add_ownership_to_element"}
-    from resource_explorer.egeria_clients import DaemonReason
-
-    assert writers == {(DaemonReason.RUN_QUEUE.value, PRESSER)}
+    writers = [(w.kind, w.user_id, w.token, w.is_service_account)
+               for cls, method, w in egeria.calls if method == "add_ownership_to_element"]
+    assert writers and set(writers) == {("caller", PRESSER, "t", False)}
 
 
 def test_accept_three_proposals_press_again_and_read_three_quality_annotations_back_by_guid(
@@ -313,13 +315,11 @@ def test_accept_three_proposals_press_again_and_read_three_quality_annotations_b
     missing = stored["sales.orders.note::Missing_Pct"]["properties"]
     assert (missing["qualityDimension"], missing["qualityScore"]) == ("completeness", 0)
     assert egeria.dropped == [], "Egeria's bean would have dropped fields RE sent"
-    # Identity (owner rule "run as the initiating user"): a queued press commits as RE's queue identity with the
-    # person who pressed it recorded as the requester (no token survives a queue), never as the engine host, which is
-    # for work Egeria dispatched.
-    from resource_explorer.egeria_clients import DaemonReason
-
+    # Identity (owner rule "run as the initiating user"): the queued press commits AS the person who pressed it (their
+    # session, held in memory for the run: `presser_hold`), never as RE's queue identity and never as the engine host.
     writers = [who for cls, method, who in egeria.calls if method == "create_annotation"]
-    assert writers and all(w.reason == DaemonReason.RUN_QUEUE.value and w.requested_by == PRESSER for w in writers)
+    assert writers and all((w.kind, w.user_id, w.token, w.is_service_account) == ("caller", PRESSER, "t", False)
+                           for w in writers)
     # and the results the annotations summarise are the registry's result rows
     results = {r["check_key"]: r["status"] for r in registry.query_detail_rows("database_quality_results", SLUG)}
     assert results == {"sales.orders.order_id::Unique": "pass", "sales.orders.placed::Required": "fail",

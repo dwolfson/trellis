@@ -6867,7 +6867,20 @@ export function stepPublishHtml(s) {
   if (!state) return '';
   let kind = 'unclassified';
   let word = 'not published';
-  if (/^published\b/i.test(state)) { kind = 'measured'; word = 'published'; }
+  const publishedAs = String((s && s.published_as) || d.published_as || '').trim();
+  if (/^published: no\b/i.test(state)) {
+    // The presser's sign-in was gone when the run reached its publish: nothing was written. The words ARE the cue
+    // (they say what to do), drawn as a warning, never as a published run.
+    return `<span class="text-provenance" data-step-publish="expired" title="${esc(state)}">`
+      + `<span class="text-state-warn font-glyph" aria-hidden="true">${esc(GLYPH_STATES.error.glyph)}</span> `
+      + `<span class="text-state-warn">${esc(state)}</span></span>`;
+  }
+  if (/^published\b/i.test(state)) {
+    kind = 'measured';
+    // "published as <identity>" is the creator Egeria states on the report (one read by GUID), so a regression to the
+    // service account shows here. No stated creator: the plain word, never "as nobody".
+    word = publishedAs ? `published as ${publishedAs}` : (s && s.creator_unread ? 'published · creator not read' : 'published');
+  }
   else if (/^publish failed\b/i.test(state)) { kind = 'error'; word = 'publish failed'; }
   else if (/^nothing to publish\b/i.test(state)) { kind = 'nothing'; word = 'nothing to publish'; }
   else if (/^publish not established\b/i.test(state)) { word = 'not established'; }
@@ -6896,10 +6909,17 @@ export function stepPublishHtml(s) {
 export function runPublishHtml(d) {
   const state = String((d && d.publish_state) || '');
   if (!state) return '';
-  if (/^published\b/i.test(state) && !String((d && d.egeria_report_guid) || '').trim()) {
+  if (/^published\b/i.test(state) && !/^published: no\b/i.test(state) && !String((d && d.egeria_report_guid) || '').trim()) {
     return stepPublishHtml({ publish_state: `publish not established · the run says "${state}" but recorded no report guid` });
   }
-  return stepPublishHtml({ publish_state: state });
+  const hasReport = !!String((d && d.egeria_report_guid) || '').trim();
+  const word = stepPublishHtml({
+    publish_state: state, published_as: d && d.published_as,
+    // A report with no creator read back says so ("could not tell"), never the bare "published".
+    creator_unread: hasReport && !(d && d.published_as),
+  });
+  const note = String((d && d.publish_note) || '').trim();
+  return note ? `${word} <span class="text-provenance text-ink-muted" data-run-publish-note>${esc(note)}</span>` : word;
 }
 
 /** Backlog 7f.6: the header activity watch's page reader. The same page also tells an open Activity list that is
