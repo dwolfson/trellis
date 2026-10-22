@@ -208,12 +208,12 @@ const VIEWS = { repo_classification: repoClassificationHtml, dependency_support:
 export async function mountRepoAnalysisView(host, slug, kind, { fetchResults, fetchCatalogue, stale = () => false }) {
   host.innerHTML = '<p class="mt-s2 text-caveat text-ink-muted">reading…</p>';
   try {
-    const [data, catalogue] = await Promise.all([
+    const [data, catalogEntries] = await Promise.all([
       fetchResults(slug, kind),
       Promise.resolve().then(() => fetchCatalogue('repo')).catch(() => []),
     ]);
     if (stale()) return;
-    const entry = (Array.isArray(catalogue) ? catalogue : []).find((e) => e && e.id === kind) || null;
+    const entry = (Array.isArray(catalogEntries) ? catalogEntries : []).find((e) => e && e.id === kind) || null;
     host.innerHTML = VIEWS[kind](data, entry);
   } catch (err) {
     if (stale()) return;
