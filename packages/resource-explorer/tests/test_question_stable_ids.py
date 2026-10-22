@@ -116,14 +116,14 @@ class TestTheGeneratorRefusesBadIds:
     def test_the_id_column_is_never_read_as_a_perspective(self, generator, csv_rows):
         assert "Question ID" in generator.NON_PERSPECTIVE_COLUMNS
         text = generator.generate(csv_rows)
-        perspectives = {p for es in yaml.safe_load(text).values() for e in es for p in e["perspectives"]}
+        perspectives = {p for k, es in yaml.safe_load(text).items() if k.endswith("_questions") for e in es for p in e["perspectives"]}
         assert "Question ID" not in perspectives
 
     def test_the_id_is_stored_not_derived_from_the_text(self, generator, csv_rows):
         rows = copy.deepcopy(csv_rows)
         rows[0]["Question"] = rows[0]["Question"] + " (reworded)"
         loaded = yaml.safe_load(generator.generate(rows))
-        ids = [e["id"] for es in loaded.values() for e in es if e["question"].endswith("(reworded)")]
+        ids = [e["id"] for k, es in loaded.items() if k.endswith("_questions") for e in es if e["question"].endswith("(reworded)")]
         assert ids and set(ids) == {csv_rows[0]["Question ID"]}
 
     def test_next_id_is_past_the_highest_ever_issued_retired_included(self, generator, csv_rows):
@@ -142,7 +142,8 @@ def test_rewording_a_question_keeps_its_id_and_lookups_still_resolve(generator, 
     qid = rows[0]["Question ID"]
     rows[0]["Question"] = "Has this repository been maintained recently?"
     catalog = yaml.safe_load(generator.generate(rows))
-    loaded = {k[: -len("_questions")]: [qcr._entry_from_yaml(e) for e in v] for k, v in catalog.items()}
+    loaded = {k[: -len("_questions")]: [qcr._entry_from_yaml(e) for e in v] for k, v in catalog.items()
+              if k.endswith("_questions")}              # not `reserved_question_ids` (2026-10-22)
     def fake_load(*a, **k):
         return loaded
 

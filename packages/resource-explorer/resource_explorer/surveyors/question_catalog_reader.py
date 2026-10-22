@@ -234,6 +234,21 @@ def _load(config_path: Path = _DEFAULT_CONFIG_PATH) -> dict[str, list[QuestionCa
     }
 
 
+#: The top-level YAML key listing the ids of rows the generator skipped (Status `retired <date>: ...` or
+#: `merged into Q-00NN <date>`). Not a `<type>_questions` section, so `_load` never reads it as one.
+_RESERVED_IDS_KEY = "reserved_question_ids"
+
+
+@functools.lru_cache(maxsize=1)
+def _load_reserved_ids(config_path: Path = _DEFAULT_CONFIG_PATH) -> frozenset[str]:
+    """Ids of retired and merged questions: absent from every section, still real ids (never reused)."""
+    if not config_path.exists():
+        return frozenset()
+    with open(config_path) as f:
+        raw = yaml.safe_load(f) or {}
+    return frozenset(str(i) for i in (raw.get(_RESERVED_IDS_KEY) or []))
+
+
 def authored_resource_types() -> list[str]:
     """Resource types the catalog has a section for, in catalog order."""
     return list(_load())
@@ -251,6 +266,7 @@ def is_authored(resource_type: str) -> bool:
 def clear_cache() -> None:
     """Testing hook — the loader result is cached via lru_cache."""
     _load.cache_clear()
+    _load_reserved_ids.cache_clear()
 
 
 def get_questions(
@@ -355,9 +371,10 @@ def get_questions(
 
 
 def all_question_ids() -> set[str]:
-    """Every question id in the catalog, across all resource types, retired questions included (a retired
-    question keeps its id, so a manifest naming one is still naming something real)."""
-    return {e.id for entries in _load().values() for e in entries if e.id}
+    """Every question id in the catalog, across all resource types, retired and merged questions included (a
+    retired or merged question keeps its id, so a manifest naming one is still naming something real). The
+    skipped rows are in no section; their ids are the YAML's `reserved_question_ids`."""
+    return {e.id for entries in _load().values() for e in entries if e.id} | set(_load_reserved_ids())
 
 
 def find_question(key: str, resource_type: str | None = None) -> dict | None:

@@ -25,6 +25,20 @@ Usage:
         docs/dr-egeria/resource_questions.csv \\
         [--output resource_explorer/configdata/question_catalog.yaml]
 
+Rules added 2026-10-22 (REVIEW-QUESTIONS-AND-ANALYTICS-2026-10-22.md §5), after the owner's rulings:
+
+  1. An `Answering Analysis` cell may name only analysis-catalogue ids, `direct`/`N/A`, `human`, or GAP/PARTIAL/
+     MIXED prose. A STEP name outside a parenthetical gloss (`postgres_column_profile`) fails the build: a step
+     is not an analysis, and nothing in the question layer resolves it.
+  2. A named Resource Type with no adapter (`dataset`, `model`) fails the build; `*` expands to the kinds that
+     have one (repo, database, filesystem).
+  3. A question whose Funnel Stage does not include the intent of an analysis it names WARNS, naming both.
+  4. An analysis-catalogue entry that no question names, and that does not declare `answers_questions: false`,
+     WARNS (the orphan check).
+  5. A row whose Status is `retired <date>: ...` or `merged into Q-00NN <date>` is left out of the YAML (and out
+     of the Dr.Egeria document); its id stays reserved: it counts for the next free id, and it is listed under
+     `reserved_question_ids` so `question_catalog_reader.all_question_ids()` still returns it.
+
 Gap-guard note (BRIEF-KEYS-AND-ACTIVITY-CLOBBER.md §C, 2026-09-27): a
 `GAP:`/`PARTIAL:` note is now checked against KNOWN_REGISTERED_IDS (analysis
 ids + step ids) at generation time -- see `_referenced_registered_ids()` and
@@ -83,8 +97,12 @@ import yaml
 # covers the standalone case so the constant is never re-declared here.
 if __package__ in (None, ""):  # running as a script, not imported as a module
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from resource_explorer.question_status import is_skipped_status
 from resource_explorer.resource_types import (
+    ALL_RESOURCE_TYPES_MARKER,
     RESOURCE_TYPES,
+    RESOURCE_TYPES_SEPARATOR,
+    SURVEYED_RESOURCE_TYPES,
     parse_resource_types,
 )
 
@@ -258,6 +276,26 @@ KNOWN_STEP_IDS = _load_known_step_ids()
 # naming an analysis id that fully answers a question on its own, but it is
 # just as real a thing to claim does not exist.
 KNOWN_REGISTERED_IDS = set(KNOWN_ANALYSIS_IDS) | KNOWN_STEP_IDS
+
+
+def _load_catalogue_ids_including_publish() -> set[str]:
+    """Every analysis-catalogue id in every section, `action: publish` entries included.
+
+    `KNOWN_ANALYSIS_IDS` leaves publish entries out on purpose (naming one as the answer to a question yields a
+    permanent gap), but the bare-step-name rule below must still treat `egeria_publish` and `egeria_db_survey` as
+    catalogue ids, not as steps: both are also step keys, and a note that mentions one in passing names a
+    catalogue entry."""
+    cat = yaml.safe_load(_ANALYSIS_CATALOG_PATH.read_text()) or {}
+    return {
+        a["id"]
+        for key, section in cat.items()
+        if key.endswith(_ANALYSES_KEY_SUFFIX) and key != _ANALYSES_KEY_SUFFIX
+        for a in (section or [])
+        if a.get("id")
+    }
+
+
+ALL_CATALOGUE_IDS = _load_catalogue_ids_including_publish()
 
 # Matches an id-shaped token: lowercase, snake_case, at least one underscore
 # -- e.g. `postgres_column_profile`, `db_derived`. Deliberately free-text
@@ -442,6 +480,19 @@ def _is_pure_analysis_list(prose: str) -> bool:
     return all(p in KNOWN_ANALYSIS_IDS for p in parts if p)
 
 
+def _bare_step_names(note: str) -> list[str]:
+    """Step ids the note names outside a `(parenthetical gloss)` that are not analysis-catalogue ids.
+
+    A step is how something runs; an analysis is what the question layer can resolve and show. A cell that names
+    a step as if it were the answer (`the postgres_column_profile step ...`) points at nothing the question layer
+    can read, and the row reads as answered or as a gap for the wrong reason (Q-0071 and Q-0079 did, until
+    2026-10-22). A parenthetical gloss may still say which step an analysis rides on, so it is not scanned, and a
+    step id that is ALSO a catalogue id (`sql_analysis` since 2026-10-22) is an analysis name and passes."""
+    text = _PARENTHETICAL_RE.sub(" ", _strip_checks_suffix(note))
+    named = set(_ID_TOKEN_RE.findall(text))
+    return sorted((named & KNOWN_STEP_IDS) - ALL_CATALOGUE_IDS)
+
+
 def _parse_answering(note: str, known_checks: set[str] | None = None) -> dict:
     note = (note or "").strip()
     prose = _strip_checks_suffix(note)
@@ -514,6 +565,18 @@ def _parse_answering(note: str, known_checks: set[str] | None = None) -> dict:
                 "question (or re-word as GAP: if nothing does)."
             )
 
+    # After the gap guard on purpose: a GAP naming a step keeps that guard's more specific message ("this gap names
+    # something that exists"); this rule is what stops a PARTIAL, MIXED or analysis cell naming a bare step.
+    bare_steps = _bare_step_names(note)
+    if bare_steps:
+        plural = "is a step" if len(bare_steps) == 1 else "are steps"
+        raise ValueError(
+            f"Answering Analysis names {bare_steps}, which {plural}, not an analysis-catalogue id: {note!r}\n"
+            "A cell may name only analysis-catalogue ids, direct, human, or GAP/PARTIAL/MIXED prose. Name the "
+            "catalogue analysis that wraps the step (or give the step a catalogue entry), or move the step name "
+            "into a parenthetical gloss."
+        )
+
     return {"kind": kind, "analysis_ids": analysis_ids, "checks": checks, "note": note}
 
 
@@ -580,6 +643,8 @@ def _restrict_answering_to_type(answering: dict, resource_type: str) -> None:
 #: not apply to, so an override cannot outlive its row silently.
 _OWNER_Q = "Who owns this resource (accountable owner), and who administers it?"
 _LICENSE_Q = "What explicit license does this resource use, and are there non-standard or copyleft terms?"
+_CHANGED_Q = "How much has changed since the last time this was surveyed — is it worth re-running now?"
+_ESTATE_Q = "Does it fit our estate — the platforms we run, our monitoring, our security controls?"
 
 _OWNER_CLAUSE = (
     "who owns it and who administers it are recorded in Enrichment; no survey "
@@ -634,16 +699,6 @@ PER_TYPE_ANSWERING_OVERRIDES: dict[str, dict[str, dict[str, str]]] = {
             "Nothing in a survey of a file system reads who owns or administers "
             "it, so the answer comes from a person through Enrichment.",
         ),
-        "dataset": _human_only(
-            _OWNER_Q, "dataset", _OWNER_CLAUSE,
-            "Nothing in a survey of a dataset reads who owns or administers it, "
-            "so the answer comes from a person through Enrichment.",
-        ),
-        "model": _human_only(
-            _OWNER_Q, "model", _OWNER_CLAUSE,
-            "Nothing in a survey of a model reads who owns or administers it, "
-            "so the answer comes from a person through Enrichment.",
-        ),
     },
     _LICENSE_Q: {
         rt: _human_only(
@@ -653,10 +708,66 @@ PER_TYPE_ANSWERING_OVERRIDES: dict[str, dict[str, dict[str, str]]] = {
             "comes from a person through Enrichment, which is also where the "
             "license is recorded when the resource is curated into Egeria.",
         )
-        for rt, noun in (
-            ("database", "database"), ("filesystem", "file system"),
-            ("dataset", "dataset"), ("model", "model"),
-        )
+        # `dataset` and `model` carried overrides here until 2026-10-22; no row may name a kind with no adapter now
+        # (expand_resource_types), so there is nothing for them to override.
+        for rt, noun in (("database", "database"), ("filesystem", "file system"))
+    },
+    # Q-0041, "How much has changed since the last time this was surveyed". The CSV row is the repository's answer
+    # (refresh_plan); a database or a file system shows the analysis that measures change for it, so a database row
+    # does not name a repository analysis (tests/test_db_question_wording.py holds the line). 2026-10-22.
+    _CHANGED_Q: {
+        "database": {
+            "Answering Analysis": (
+                "N/A — Automate subscription (notification_detector's change comparison), which surfaces the change; "
+                "db_change_rates measures rows changed per table and schema churn between two stored surveys, and "
+                "schema_diff the column-level drift"
+            ),
+            "Answering Mechanism": "Automate Change Detection",
+            "Rationale/Source": (
+                "notification_detector.py's latest-two-runs comparison, surfaced via an Automate subscription once a "
+                "schedule exists for the analysis; db_change_rates and schema_diff are the analyses that measure what "
+                "changed in a database."
+            ),
+            "Catalog History": (
+                "2026-10-22: answering names the database's own change analyses instead of the repository's "
+                "refresh_plan (review §2)."
+            ),
+        },
+        "filesystem": {
+            "Answering Analysis": (
+                "N/A — Automate subscription (notification_detector's change comparison), which surfaces the change; "
+                "GAP: fs_change_rates (Files brief §3, slice 3) is the analysis that will measure it for a file system"
+            ),
+            "Answering Mechanism": "Automate Change Detection",
+            "Rationale/Source": (
+                "notification_detector.py's latest-two-runs comparison, surfaced via an Automate subscription once a "
+                "schedule exists for the analysis; the file-system analysis that differences two walks is not built."
+            ),
+            "Catalog History": (
+                "2026-10-22: answering names fs_change_rates (F5) as the gap instead of the repository's "
+                "refresh_plan (review §2)."
+            ),
+        },
+    },
+    # E1, estate fit. The pre-fill from dependency_support reads a repository's dependency list; a database or a file
+    # system has none, so it is a plain Enrichment question there. 2026-10-22.
+    _ESTATE_Q: {
+        rt: {
+            "Answering Analysis": (
+                f"N/A — human-supplied via the Enrichment Context form: a person confirms that this {noun} fits the "
+                "platforms, monitoring and security controls we run; no survey reads it"
+            ),
+            "Answering Mechanism": "Human-Supplied",
+            "Rationale/Source": (
+                f"Nothing in a survey of a {noun} reads the estate it must fit, so the answer comes from a person "
+                "through Enrichment; the dependency-support pre-fill exists for repositories only."
+            ),
+            "Catalog History": (
+                "2026-10-22: answering reworded for this resource type, so it does not show a repository's "
+                "dependency pre-fill (review §1.5)."
+            ),
+        }
+        for rt, noun in (("database", "database"), ("filesystem", "file system"))
     },
 }
 
@@ -721,14 +832,96 @@ def next_question_id(rows: list[dict]) -> str:
     return f"Q-{top + 1:04d}"
 
 
+def expand_resource_types(raw: str, label: str = "") -> list[str]:
+    """The resource types a `Resource Types` cell applies to; refuses a named type that has no adapter.
+
+    `*` expands to the kinds with an adapter (`SURVEYED_RESOURCE_TYPES`). A NAMED kind with no adapter
+    (`dataset`, `model`) fails the build instead of emitting a section nothing can answer (owner ruling
+    2026-10-22, review §1.1); an unknown name still fails inside `parse_resource_types`."""
+    types = parse_resource_types(raw)
+    named = [v.strip() for v in (raw or "").split(RESOURCE_TYPES_SEPARATOR) if v.strip()]
+    no_adapter = [v for v in named if v != ALL_RESOURCE_TYPES_MARKER and v not in SURVEYED_RESOURCE_TYPES]
+    if no_adapter:
+        raise ValueError(
+            f"{label or 'a row'} names Resource Type(s) {no_adapter} with no adapter; only "
+            f"{list(SURVEYED_RESOURCE_TYPES)} can be surveyed today. Drop them from the row (`*` already means "
+            f"the kinds that have an adapter), or register an adapter first."
+        )
+    return types
+
+
+#: Funnel Stage names the catalogue's `intent` values map onto (case-insensitive). `understanding` and `curate`
+#: are intents with no funnel stage, so the stage/intent comparison leaves them alone.
+_STAGE_INTENTS = frozenset({"scouting", "discovery", "analysis", "assessment", "enrichment"})
+
+
+def _catalogue_sections(catalog: dict) -> dict[str, list[dict]]:
+    """`{resource_type: [entry, ...]}` for every `<type>_analyses` section, in file order."""
+    return {
+        key[: -len(_ANALYSES_KEY_SUFFIX)]: list(section or [])
+        for key, section in catalog.items()
+        if key.endswith(_ANALYSES_KEY_SUFFIX) and key != _ANALYSES_KEY_SUFFIX
+    }
+
+
+def stage_intent_warnings(by_type: dict[str, list[dict]], catalog: dict) -> list[str]:
+    """One warning per (question, analysis) whose Funnel Stage does not include the analysis's catalogue intent.
+
+    Warns, never refuses (review §1.3): an analysis may serve two stages (`db_resilience` is a Scouting analysis
+    that also answers an Assessment question). The warning names both so the author decides whether the question
+    or the catalogue is wrong."""
+    intents = {
+        rt: {e["id"]: (e.get("intent") or "").strip().lower() for e in entries if e.get("id")}
+        for rt, entries in _catalogue_sections(catalog).items()
+    }
+    said: dict[tuple[str, str, str], str] = {}
+    for rt, entries in by_type.items():
+        for entry in entries:
+            stages = {t.strip().lower() for t in entry["stage"].split("/") if t.strip()}
+            for aid in entry["answering"]["analysis_ids"]:
+                intent = intents.get(rt, {}).get(aid, "")
+                if intent in _STAGE_INTENTS and intent not in stages:
+                    said.setdefault((entry["id"], aid, intent), (
+                        f"{entry['id']}: stage {entry['stage']!r} does not include the intent {intent!r} of "
+                        f"the analysis {aid} it names"))
+    return list(said.values())
+
+
+def orphan_warnings(by_type: dict[str, list[dict]], catalog: dict) -> list[str]:
+    """One warning per catalogue entry no question names and that does not declare `answers_questions: false`.
+
+    "Names" is per resource type: a question counts for an entry only in the section of a type the question
+    applies to, after the per-type restriction, so `data_class_match` named by a database question does not
+    excuse the same id under another section. Infrastructure (ingestion, parsing, publishing) declares
+    `answers_questions: false` and is not listed; everything else that answers nothing is, so the list cannot
+    regrow silently (review §1.2, §5 rule 4)."""
+    named: dict[str, set[str]] = {
+        rt: {aid for entry in entries for aid in entry["answering"]["analysis_ids"]}
+        for rt, entries in by_type.items()
+    }
+    out: list[str] = []
+    for rt, entries in _catalogue_sections(catalog).items():
+        for e in entries:
+            if not e.get("id") or e.get("answers_questions") is False:
+                continue
+            if e["id"] not in named.get(rt, set()):
+                out.append(f"analysis {e['id']} ({rt}_analyses) is named by no question and does not declare "
+                           f"answers_questions: false")
+    return out
+
+
 def generate(rows: list[dict], known_purposes: list[str] | None = None,
-             warnings: list[str] | None = None) -> str:
+             warnings: list[str] | None = None, catalog: dict | None = None) -> str:
     """The YAML for `rows`. Purposes outside the list are kept; each is named once in `warnings` (when
-    given) and on stderr."""
+    given) and on stderr. So are the stage/intent mismatches and the orphan analyses.
+
+    `catalog` is the parsed analysis catalogue the two catalogue-reading warnings compare against; default is
+    the shipped `analysis_catalog.yaml`."""
     validate_question_ids(rows)
     known_checks = _load_known_checks()
     known_purposes = known_purposes if known_purposes is not None else _known_purposes()
     purpose_warnings: list[str] = []
+    reserved_ids: list[str] = []
     # resource_type -> entries, in first-seen order. A type appears as a key
     # ONLY if a CSV row named it: question_catalog_reader treats a missing key
     # as "not authored for this type", which is the distinction design §1.1
@@ -739,9 +932,15 @@ def generate(rows: list[dict], known_purposes: list[str] | None = None,
         question = (row.get("Question") or "").strip()
         if not question:
             continue
+        if is_skipped_status(row.get("Status")):
+            # Retired or merged: no question in any section, but the id stays reserved (it was validated and
+            # counted above; the reader returns it from `reserved_question_ids`).
+            reserved_ids.append((row.get("Question ID") or "").strip())
+            continue
         perspective_cols = [c for c in row if c not in NON_PERSPECTIVE_COLUMNS]
         perspectives = [c for c in perspective_cols if (row.get(c) or "").strip()]
-        resource_types = parse_resource_types(row.get("Resource Types", ""))
+        resource_types = expand_resource_types(
+            row.get("Resource Types", ""), f"{(row.get('Question ID') or '').strip()} {question!r}")
 
         entry = {
             "id": (row.get("Question ID") or "").strip(),
@@ -770,6 +969,10 @@ def generate(rows: list[dict], known_purposes: list[str] | None = None,
             _restrict_answering_to_type(type_entry["answering"], resource_type)
             _apply_type_override(type_entry, resource_type, known_checks)
             by_type.setdefault(resource_type, []).append(type_entry)
+
+    if catalog is None:
+        catalog = yaml.safe_load(_ANALYSIS_CATALOG_PATH.read_text()) or {}
+    catalog_warnings = stage_intent_warnings(by_type, catalog) + orphan_warnings(by_type, catalog)
 
     header = (
         "# Question checklist catalog — generated by\n"
@@ -850,6 +1053,11 @@ def generate(rows: list[dict], known_purposes: list[str] | None = None,
         "#                   maintains the catalog; split out of Rationale/Source on\n"
         "#                   2026-09-11 so the limit and the changelog stop sharing\n"
         "#                   one sentence and one colour on screen.\n"
+        "#   reserved_question_ids (top-level key, after the sections) - the ids of CSV rows\n"
+        "#                   whose Status reads `retired <date>: ...` or `merged into Q-00NN\n"
+        "#                   <date>` (2026-10-22). Those rows are in no section; their ids are\n"
+        "#                   listed here so an id is never reused and a manifest that names one\n"
+        "#                   still names something real (all_question_ids() returns them).\n"
         "#   retired     - true if the CSV's Status column reads \"Retired\" (added\n"
         "#                   2026-09-20, SPEC-ADMIN-THE-FOUR-GAPS.md §4, alongside\n"
         "#                   question_catalog_writer.py's add/retire write path).\n"
@@ -872,11 +1080,14 @@ def generate(rows: list[dict], known_purposes: list[str] | None = None,
         f"resource types {sorted(set(by_type) - set(RESOURCE_TYPES))} are not in "
         f"the RESOURCE_TYPES vocabulary and would be dropped from the catalog"
     )
+    if reserved_ids:
+        ordered["reserved_question_ids"] = sorted(reserved_ids)
     body = yaml.safe_dump(ordered, sort_keys=False, allow_unicode=True, width=100)
-    for w in purpose_warnings:
+    emitted = purpose_warnings + catalog_warnings
+    for w in emitted:
         print(f"question catalog: {w}", file=sys.stderr)
     if warnings is not None:
-        warnings.extend(purpose_warnings)
+        warnings.extend(emitted)
     return header + body
 
 
@@ -901,8 +1112,9 @@ def main() -> None:
 
     content = generate(rows)
     args.output.write_text(content)
-    n_questions = sum(1 for r in rows if (r.get("Question") or "").strip())
-    print(f"Wrote {args.output} ({n_questions} questions from {len(rows)} CSV rows)")
+    n_questions = sum(1 for r in rows if (r.get("Question") or "").strip()
+                      and not is_skipped_status(r.get("Status")))
+    print(f"Wrote {args.output} ({n_questions} active questions from {len(rows)} CSV rows)")
 
 
 if __name__ == "__main__":

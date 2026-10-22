@@ -75,7 +75,9 @@ class TestQuestionRelevance:
         from resource_explorer.surveyors.question_catalog_reader import get_questions
 
         entries = get_questions("repo", perspectives=None, purposes=None)
-        question = "Show me all the documentation survey results for egeria"
+        # "for egeria" was the second decoy here; Q-0022 now reads "What does it talk to — Egeria, ..."
+        # (REVIEW-QUESTIONS-AND-ANALYTICS-2026-10-22 §2), so the word names a real topic of that question.
+        question = "Show me all the documentation survey results for this project"
 
         scored = []
         for position, e in enumerate(entries):

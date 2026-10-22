@@ -673,6 +673,16 @@ def _r_changed_since_survey(reg, p) -> tuple:
 #: `test_every_declared_question_is_in_the_real_catalog` fails loudly on each
 #: of these, which is the point: a key matching nothing is a resolver that
 #: never runs, and it looks exactly like a question we chose not to answer.
+#: **Reconciled with the question-catalog review, 2026-10-22**
+#: (REVIEW-QUESTIONS-AND-ANALYTICS-2026-10-22.md §2): Q-0039 and Q-0042 (the launcher affordances) were retired, so
+#: their keys are gone from both tables; Q-0040 was reworded to "Given what is known, is this worth a full survey?"
+#: and re-keyed. Q-0012 (licence) merged into Q-0030 and its key is gone rather than moved: a declared source answers
+#: BEFORE the kind is consulted, so keying Q-0030 to `_r_license` would make the licence field replace the
+#: `license_classification` risk tier that Q-0030 is answered by. Q-0009 (replace or extend) merged into Q-0011, and
+#: the repo table's `_r_related` follows it (it informs, see EVIDENCE_ONLY); the database table drops its
+#: `_db_r_related` key, because Q-0011 is a mixed-kind question for a database and that table holds direct-kind ones
+#: only. The resolvers themselves (`_r_license`, `_r_which_survey`, `_r_survey_definition_exists` and the database
+#: ones) stay defined; only the question each was keyed to is gone.
 RESOURCE_STATE_SOURCES = {
     "What is this resource, and what is it for?": (_r_description, "description"),
     "Is this repository actively maintained?": (_r_maintained, "foss_scorecard"),
@@ -680,21 +690,16 @@ RESOURCE_STATE_SOURCES = {
         (_r_maintainers, "project_commits"),
     "How widely adopted and active is the community around this repository?":
         (_r_community, "community_support"),
-    "Which Survey Definition should I run — a quick coarse check or the full deep survey?":
-        (_r_which_survey, "survey_definitions"),
-    "Is there a Survey Definition authored for this resource's technology type at all, or is that a catalog gap?":
-        (_r_survey_definition_exists, "survey_definitions"),
     "Has this resource already been catalogued in Egeria, and when?":
         (_r_catalogued, "egeria_catalogue_state"),
     "Has this resource already been surveyed at any tier, and what did earlier signals reveal?":
         (_r_surveyed, "survey_history"),
-    "Based on what's already known, is this worth investigating further, or should it be deprioritized?":
+    "Given what is known, is this worth a full survey?":
         (_r_disposition, "disposition"),
     "Any known feedback?": (_r_feedback, "resource_feedback"),
-    "Under what license or agreement may this resource be used?": (_r_license, "license"),
     "Is there any existing use within our organization?":
         (_r_existing_use, "catalog_presence"),
-    "Does it replace or extend something we already have?":
+    "Which resources overlap with this one — the same data, a subset, a stand-in or a replacement — and how does this one differ?":
         (_r_related, "related_resources"),
     "How much has changed since the last time this was surveyed — is it worth re-running now?":
         (_r_changed_since_survey, "change_since_last_survey"),
@@ -1151,18 +1156,12 @@ DATABASE_RESOURCE_STATE_SOURCES = {
     "Is there any existing use within our organization?":
         (_db_r_existing_use, "db_existing_use"),
     "Any known feedback?": (_db_r_feedback, "db_feedback"),
-    "Does it replace or extend something we already have?":
-        (_db_r_related, "db_related"),
     "Has this resource already been surveyed at any tier, and what did earlier signals reveal?":
         (_db_r_surveyed, "db_surveyed"),
-    "Which Survey Definition should I run — a quick coarse check or the full deep survey?":
-        (_db_r_which_survey, "db_survey_definitions"),
-    "Based on what's already known, is this worth investigating further, or should it be deprioritized?":
+    "Given what is known, is this worth a full survey?":
         (_db_r_disposition, "db_disposition"),
     "How much has changed since the last time this was surveyed — is it worth re-running now?":
         (_db_r_changed_since_survey, "db_change_since_last_survey"),
-    "Is there a Survey Definition authored for this resource's technology type at all, or is that a catalog gap?":
-        (_db_r_survey_definition_exists, "db_survey_definitions"),
 }
 
 #: Kinds that ARE answerable, but not from analysis results — and not yet

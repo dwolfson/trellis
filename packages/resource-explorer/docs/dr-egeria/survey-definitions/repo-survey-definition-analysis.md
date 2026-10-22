@@ -581,7 +581,7 @@ ___
 Analysis Survey
 
 ### Scope Reference
-What APIs and code symbols does it expose to callers?
+What does it talk to — Egeria, databases, services, message buses?
 
 ___
 
@@ -590,7 +590,16 @@ ___
 Analysis Survey
 
 ### Scope Reference
-How much code is there? How complex?
+What code symbols — classes, functions, endpoints — does it define, and where?
+
+___
+
+## Link Element To Scope
+### Target Element
+Analysis Survey
+
+### Scope Reference
+How much code is there, and how complex is it?
 
 ___
 

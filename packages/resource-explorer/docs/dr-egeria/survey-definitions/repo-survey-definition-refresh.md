@@ -253,3 +253,12 @@ re-repo-website-ingestion
 ### Description
 Egeria dispatches GovActionProcessStep::RepoRefreshSurvey::repo_website_ingestion to Resource Explorer's engine, which claims it and runs RE step repo_website_ingestion.
 
+___
+
+## Link Element To Scope
+### Target Element
+Refresh Survey
+
+### Scope Reference
+How much has changed since the last time this was surveyed — is it worth re-running now?
+

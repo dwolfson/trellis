@@ -101,6 +101,9 @@ DATABASE_SURVEYOR_STEP_MAP: dict[str, list[str]] = {
     # DatabaseSurveyor.survey() adds it regardless, so listing it here keeps
     # this map an honest description of what actually runs.
     "credential_capability": ["schema", "credential_capability"],
+    # sql_analysis (catalogue entry added 2026-10-22, REVIEW-QUESTIONS-AND-ANALYTICS-2026-10-22 §1.2): the view DDL
+    # is parsed from the same "schema" + "views" read `schema_inventory` already runs, so the same steps.
+    "sql_analysis": ["schema", "views"],
 }
 
 

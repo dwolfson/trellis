@@ -80,7 +80,11 @@ class TestFilterByIntent:
         """Assessment keeps what genuinely evaluates against criteria.
         license_classification/maturity/repo_conventions moved to discovery on
         2026-08-20 — they derive from already-collected data with zero new
-        fetch, which is Discovery's signature (CLAUDE.md rule 17)."""
+        fetch, which is Discovery's signature (CLAUDE.md rule 17).
+        license_classification moved BACK here 2026-10-22 (REVIEW-QUESTIONS-
+        AND-ANALYTICS-2026-10-22 §1.3): the one question it answers, Q-0030,
+        is Scouting/Assessment and absorbs Q-0012, so the analysis sits at the
+        stage its question asks it at."""
         analyses = acr.get_analyses("repo", intent="assessment", include_egeria_live=False)
         ids = {a["id"] for a in analyses}
         assert ids == {
@@ -107,6 +111,8 @@ class TestFilterByIntent:
             # evaluates against criteria (someone else's, externally held) and
             # it fetches, so neither half of Discovery's signature applies.
             "cii_badge",
+            # Moved back from discovery 2026-10-22; see the docstring.
+            "license_classification",
         # The four GAP analyses, added 2026-09-01. All intent: assessment —
         # they answer "is this worth pursuing / can this be trusted", which is
         # what the assessment tier is for, rather than "what is in this repo"
@@ -159,7 +165,7 @@ class TestFilterByIntent:
         # the shape rule 17's discovery tier describes. It is the first
         # analysis here that consumes findings instead of collecting
         # anything.
-        assert ids == {"license_classification", "maturity", "repo_conventions",
+        assert ids == {"maturity", "repo_conventions",
                        "repo_classification", "architecture_summary",
                        # community_support was here from 2026-08-26 until
                        # 2026-08-28, when it moved to Assessment: naming the

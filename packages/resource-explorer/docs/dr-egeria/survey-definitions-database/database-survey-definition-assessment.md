@@ -70,14 +70,5 @@ ___
 Database Assessment Survey
 
 ### Scope Reference
-Who can read and write what — roles, grants, superusers, PUBLIC grants, and are sensitive columns readable broadly?
-
-___
-
-## Link Element To Scope
-### Target Element
-Database Assessment Survey
-
-### Scope Reference
-What is the sensitive-data exposure — which sensitive columns can which roles read?
+Who can read and write what — roles, grants, superusers, PUBLIC grants — which sensitive columns can which roles read, and what has changed?
 

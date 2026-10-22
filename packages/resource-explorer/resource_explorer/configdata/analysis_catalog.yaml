@@ -64,6 +64,12 @@
 #                       pick it up. Mixed-output kinds take their single
 #                       most-restrictive shape (simplicity over per-output
 #                       tagging, until real friction shows up).
+#   answers_questions - optional; `false` declares infrastructure (ingestion, parsing,
+#                       publishing) that answers no question by design, so the
+#                       question-catalog generator's orphan check
+#                       (scripts/csv_to_question_catalog_yaml.py) does not list
+#                       it. Absent means "should answer a question": an entry no
+#                       question names is then warned about at generation time.
 #   recommended       - shown with a ★ star as a suggested starting point.
 #   egeria_registration - schema-only hook for eventual GovernanceActionType
 #                       registration of this analysis as a native Egeria
@@ -214,7 +220,7 @@ repo_analyses:
     name: "License Classification"
     description: "Classify the repo's SPDX license id into a risk tier (permissive/weak copyleft/strong copyleft/source-available/unknown)."
     resource_types: ["repo"]
-    intent: discovery  # retagged from 'assessment' 2026-08-20: Discovery is derivation over already-collected data (zero new fetch), not where a survey happens to be launched from. All three of this tier's analyses declare requires_resources={} — they reason over project_stats/file inventory that Scouting already gathered, and exist to decide whether the expensive tiers are worth paying for. See CLAUDE.md rule 17.  # is this worth pursuing, given its usage restrictions?
+    intent: assessment  # retagged from 'discovery' 2026-10-22 (Q-0030, the question it answers, is Scouting/Assessment and absorbs Q-0012; review §1.3). Earlier note follows:  # retagged from 'assessment' 2026-08-20: Discovery is derivation over already-collected data (zero new fetch), not where a survey happens to be launched from. All three of this tier's analyses declare requires_resources={} — they reason over project_stats/file inventory that Scouting already gathered, and exist to decide whether the expensive tiers are worth paying for. See CLAUDE.md rule 17.  # is this worth pursuing, given its usage restrictions?
     perspectives: ["Steward", "Security", "all"]
     annotation_types: ["ClassificationAnnotation"]
     source: local
@@ -562,6 +568,7 @@ repo_analyses:
     run_time: fast
     availability: inline
     action: survey
+    answers_questions: false  # infrastructure: it feeds other analyses or writes to Egeria and answers no question itself (review §1.2)
     target_shape: corpus
     native_process_ref: null
 
@@ -607,6 +614,7 @@ repo_analyses:
     # distinguishable from "nobody has considered this yet".
     availability: queued
     action: survey
+    answers_questions: false  # infrastructure: it feeds other analyses or writes to Egeria and answers no question itself (review §1.2)
     target_shape: whole_resource_only
     recommended: false
     egeria_registration:
@@ -628,6 +636,7 @@ repo_analyses:
     # distinguishable from "nobody has considered this yet".
     availability: queued
     action: survey
+    answers_questions: false  # infrastructure: it feeds other analyses or writes to Egeria and answers no question itself (review §1.2)
     target_shape: whole_resource_only
     recommended: false
     egeria_registration:
@@ -806,6 +815,7 @@ repo_analyses:
     source: local
     run_time: minutes
     action: profile
+    answers_questions: false  # infrastructure: it feeds other analyses or writes to Egeria and answers no question itself (review §1.2)
     target_shape: whole_resource_only
     recommended: false
     egeria_registration:
@@ -822,6 +832,7 @@ repo_analyses:
     source: local
     run_time: minutes
     action: ingest
+    answers_questions: false  # infrastructure: it feeds other analyses or writes to Egeria and answers no question itself (review §1.2)
     target_shape: whole_resource_only
     recommended: false
     egeria_registration:
@@ -838,6 +849,7 @@ repo_analyses:
     source: local
     run_time: minutes
     action: ingest
+    answers_questions: false  # infrastructure: it feeds other analyses or writes to Egeria and answers no question itself (review §1.2)
     target_shape: whole_resource_only
     recommended: false
     egeria_registration:
@@ -854,6 +866,7 @@ repo_analyses:
     source: egeria
     run_time: minutes
     action: publish
+    answers_questions: false  # infrastructure: it feeds other analyses or writes to Egeria and answers no question itself (review §1.2)
     target_shape: whole_resource_only
     recommended: true
     egeria_registration:
@@ -1206,7 +1219,7 @@ database_analyses:
     name: "Quality Checks"
     description: "Proposes data-quality checks from the value profile (completeness, uniqueness, past dates, minimum date, row-count range) for a person to accept or reject in Curate, then runs the accepted ones against the database. A check whose inputs were not measured, or whose measure is undefined (an empty table, a zero baseline), is reported as not evaluated with the reason, never as a pass."
     resource_types: ["database"]
-    intent: assessment
+    intent: analysis  # retagged from 'assessment' 2026-10-22 (Q-0096 and Q-0097 are Analysis questions: proposing and running checks is analysis, the verdict is Q-0090's; review §1.3).
     perspectives: ["Steward", "Data Owner"]
     # The proposal step leaves ONE RequestForAction ("review N proposed quality checks") or, with none proposed, ONE
     # ResourceMeasure; run_quality_checks leaves one QualityAnnotation per evaluated check (RE's
@@ -1429,6 +1442,7 @@ database_analyses:
     run_time: fast
     availability: queued
     action: survey
+    answers_questions: false  # infrastructure: it feeds other analyses or writes to Egeria and answers no question itself (review §1.2)
     target_shape: whole_resource_only
     recommended: false
     egeria_registration:
@@ -1517,6 +1531,22 @@ database_analyses:
       candidate: false
       native_process_ref: null
 
+  - id: sql_analysis
+    name: "SQL Analysis"
+    description: "Parses the database's view DDL with SQLGlot: view dependencies, static column-level lineage and complexity scores, from the definitions the schema step already read (information_schema.views, pg_views, pg_matviews, pg_proc, pg_trigger). Registered 2026-10-22 so Q-0071 resolves its result in the question layer; the step itself (sql_analysis) existed before this entry."
+    resource_types: ["database"]
+    intent: discovery
+    perspectives: ["Data Expert", "App/AI Builder"]
+    annotation_types: ["SchemaAnalysisAnnotation", "RelationshipAnnotation", "QualityScoreAnnotation", "RequestForAction", "DataClassAnnotation"]
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
   - id: egeria_db_survey
     name: "Egeria Native DB Survey"
     description: "Trigger Egeria's native PostgreSQL survey for deep annotation of schema, data quality, and lineage. Runs asynchronously."
@@ -1527,6 +1557,7 @@ database_analyses:
     source: egeria
     run_time: async
     action: publish
+    answers_questions: false  # infrastructure: it feeds other analyses or writes to Egeria and answers no question itself (review §1.2)
     target_shape: whole_resource_only
     recommended: true
     egeria_registration:
@@ -1698,6 +1729,23 @@ filesystem_analyses:
     action: survey
     target_shape: corpus
     recommended: true
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+
+  - id: resource_reachability
+    name: "Resource Reachability"
+    description: >
+      Whether Egeria's survey engine can reach this resource or only Resource Explorer can: a CHECK_ASSET-only engine action (Phase 1 slice 13), its outcome stored as a resource_reachability row and read as the reach state the Folder Survey fork uses. A resource never probed reads as not probed, never as unreachable.
+    resource_types: ["filesystem"]
+    intent: discovery
+    perspectives: ["Architecture", "Admin"]
+    annotation_types: []
+    source: local
+    run_time: fast
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
     egeria_registration:
       candidate: false
       native_process_ref: null

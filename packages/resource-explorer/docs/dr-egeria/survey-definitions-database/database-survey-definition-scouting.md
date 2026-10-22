@@ -239,3 +239,12 @@ Database Scouting Scan
 ### Scope Reference
 Is this database resilient — replica present, archiving on, backup evidence and a tested restore?
 
+___
+
+## Link Element To Scope
+### Target Element
+Database Scouting Scan
+
+### Scope Reference
+What can the survey credential see, and what is it blind to — schemas, tables, system views, statistics?
+

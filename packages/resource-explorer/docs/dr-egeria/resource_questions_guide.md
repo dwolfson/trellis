@@ -75,6 +75,13 @@ script runs.
 | `Level` | Optional, RE-internal | The resource granularity at which the answer is a **single value**, `;`-separated from a controlled vocabulary — see **Level** below. Blank means `resource`. A typo fails the build, like `Purposes`. Not published to Egeria yet. |
 | **Perspective columns** (everything after `Answering Mechanism`) | Optional per question | One column per Perspective: `Financial`, `Governance`, `Steward`, `Data Owner`, `Consumer`, `App/AI Builder`, `Privacy`, `Community`, `Data Expert`, `Security`, `Architecture`, `Admin`. Put an `X` (any non-empty value works, but use `X` for consistency) in every column that applies to this question. Leave the cell blank if the perspective doesn't apply. A question can — and often should — have several perspectives marked. |
 
+### Rules the generator enforces (2026-10-22, REVIEW-QUESTIONS-AND-ANALYTICS-2026-10-22 §5)
+
+- **`Resource Types`**: `*` means the kinds that have an adapter (`repo`, `database`, `filesystem`). Naming `dataset` or `model` fails the build until a surveyor exists for them.
+- **`Answering Analysis`** may name only analysis-catalogue ids, `direct`/`N/A`, `human`, or GAP/PARTIAL/MIXED prose. A bare *step* name (outside a parenthetical gloss) fails the build.
+- **`Status`**: `retired <date>: <reason>` or `merged into Q-00NN <date>` takes the row out of the YAML sections and out of the Dr.Egeria document; the id stays reserved (`reserved_question_ids` in the YAML, counted by the next free id). The bare word `Retired` (the Admin pane's) keeps the row, flagged. Other text (for example "inadequately answered today") is adequacy prose and changes nothing.
+- **Warnings**, never failures: a question whose Funnel Stage does not include the intent of an analysis it names; a catalogue entry no question names that does not declare `answers_questions: false`.
+
 The generator treats **every column that isn't one of the named lead
 columns** (`Question`, `Funnel Stage`, `Resource Types`, `Why is this
 important?`, `Rationale/Source`, `Answering Analysis`, `Answering

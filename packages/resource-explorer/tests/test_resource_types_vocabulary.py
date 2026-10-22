@@ -105,8 +105,10 @@ class TestParseResourceTypes:
     def test_whitespace_is_tolerated(self):
         assert parse_resource_types(" database ; filesystem ") == ["database", "filesystem"]
 
-    def test_star_expands_to_the_whole_vocabulary(self):
-        assert parse_resource_types(ALL_RESOURCE_TYPES_MARKER) == list(RESOURCE_TYPES)
+    def test_star_expands_to_the_kinds_with_an_adapter(self):
+        # Not the whole vocabulary since 2026-10-22 (owner ruling, review §1.1): dataset and model have no adapter.
+        assert parse_resource_types(ALL_RESOURCE_TYPES_MARKER) == list(SURVEYED_RESOURCE_TYPES)
+        assert parse_resource_types(ALL_RESOURCE_TYPES_MARKER) != list(RESOURCE_TYPES)
 
     def test_empty_means_repo_so_a_pre_column_row_does_not_vanish(self):
         assert parse_resource_types("") == [DEFAULT_RESOURCE_TYPE]

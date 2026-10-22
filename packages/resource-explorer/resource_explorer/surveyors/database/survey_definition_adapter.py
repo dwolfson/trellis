@@ -1126,9 +1126,9 @@ register_adapter(_ADAPTER)
 #: hand-authored — there is no single field in the catalog today that names
 #: which physical `re_analysis_step` a connection-based analysis needs.
 #:
-#: Two known gaps, deliberately left open rather than guessed at:
-#: * "sql_analysis" has no analysis_catalog.yaml entry at all (no card
-#:   depends on it), so it is omitted here on purpose.
+#: Known gaps, deliberately left open rather than guessed at:
+#: * "sql_analysis" had no analysis_catalog.yaml entry until 2026-10-22 and was
+#:   omitted here on purpose; it has one now (review §1.2), mapped above.
 #: * "egeria_db_survey" is triggered via `other_engine_handlers["egeria"]`,
 #:   not `re_analysis_steps` — docs/survey-definitions.md says
 #:   `re_analysis_step` is meaningful "for executes_at: resource-explorer
@@ -1155,6 +1155,8 @@ def _build_database_analysis_re_step_map() -> dict[str, list[str]]:
         "nested_column_profile": ["postgres_nested_columns"],
         "egeria_db_survey": ["egeria_db_survey"],
         "credential_capability": ["credential_capability"],
+        # Catalogue entry added 2026-10-22 (review §1.2); the step existed before it.
+        "sql_analysis": ["sql_analysis"],
         # Read in the always-on schema step (DatabaseSurveyor.survey()).
         "database_owner": ["postgres_schema_and_stats"],
         # DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md: the profile, then propose and run (the one database

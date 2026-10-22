@@ -174,6 +174,15 @@ ___
 Database Quality Survey
 
 ### Scope Reference
+What do the columns actually contain — nulls, distinct counts, most-common values, ranges and widths?
+
+___
+
+## Link Element To Scope
+### Target Element
+Database Quality Survey
+
+### Scope Reference
 Which data-quality checks should this database have?
 
 ___

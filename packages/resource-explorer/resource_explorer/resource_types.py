@@ -77,7 +77,9 @@ RESOURCE_TYPES_SEPARATOR = ";"
 def parse_resource_types(raw: str) -> list[str]:
     """Parse one `Resource Types` CSV cell into resource-type names.
 
-    `*` expands to the whole vocabulary. An empty cell yields
+    `*` expands to the kinds with an adapter (`SURVEYED_RESOURCE_TYPES`), not to every name in the vocabulary
+    (`dataset` and `model` stay valid NAMES but nothing surveys them, and the question-catalog generator refuses a
+    row that names one). An empty cell yields
     `[DEFAULT_RESOURCE_TYPE]` — every row authored before the column existed
     is a repository question, and the backfill says so explicitly, but a row
     added later with the cell left blank must not vanish from every catalog.
@@ -94,7 +96,10 @@ def parse_resource_types(raw: str) -> list[str]:
         v.strip() for v in text.split(RESOURCE_TYPES_SEPARATOR) if v.strip()
     ]
     if ALL_RESOURCE_TYPES_MARKER in values:
-        return list(RESOURCE_TYPES)
+        # `*` is the kinds that have an adapter, not the whole vocabulary (owner ruling 2026-10-22,
+        # REVIEW-QUESTIONS-AND-ANALYTICS-2026-10-22.md §1.1): a section for a kind nothing can survey would be
+        # a list of questions nobody can answer.
+        return list(SURVEYED_RESOURCE_TYPES)
     unknown = [v for v in values if v not in RESOURCE_TYPES]
     if unknown:
         raise ValueError(

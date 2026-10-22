@@ -728,15 +728,6 @@ ___
 Compliance Survey
 
 ### Scope Reference
-Does it fit into our security infrastructure?
-
-___
-
-## Link Element To Scope
-### Target Element
-Compliance Survey
-
-### Scope Reference
 Is there a current, published, security analysis?
 
 ___
@@ -801,6 +792,15 @@ Compliance Survey
 
 ### Scope Reference
 Is intellectual property (IP) provenance managed via CLA or DCO?
+
+___
+
+## Link Element To Scope
+### Target Element
+Compliance Survey
+
+### Scope Reference
+What does it promise (SLA, support terms), and what does its history show?
 
 ___
 

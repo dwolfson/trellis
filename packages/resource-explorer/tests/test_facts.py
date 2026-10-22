@@ -625,7 +625,7 @@ class TestDatabaseResourceStateSources:
         from resource_explorer.surveyors.survey_definition_executor import get_adapter
 
         assert get_adapter("database").state_sources() is DATABASE_RESOURCE_STATE_SOURCES
-        assert len(DATABASE_RESOURCE_STATE_SOURCES) == 10
+        assert len(DATABASE_RESOURCE_STATE_SOURCES) == 7   # 10 until Q-0009, Q-0039 and Q-0042 went (2026-10-22)
 
     def test_every_declared_question_is_a_real_direct_kind_database_question(self):
         """Same guard `test_every_declared_question_is_in_the_real_catalog`
