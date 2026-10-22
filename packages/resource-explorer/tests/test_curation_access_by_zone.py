@@ -71,6 +71,7 @@ def as_erin():
 
 # ── 1. the emulation itself (OpenMetadataAccessSecurityConnector.validateZoneAccess) ──────────────────
 
+
 class TestZoneGrants:
     @staticmethod
     def _grants(zones, controls, account=AVAILABLE, owners=None, operations=("UPDATE_PROPERTIES",)):
@@ -118,6 +119,7 @@ class TestZoneGrants:
 
 
 # ── 2. the decision (workflows/curate.curation_access) ────────────────────────────────────────────────
+
 
 class TestCurationAccess:
     def test_anonymous_is_denied(self, registry, no_egeria_reads):
@@ -308,7 +310,7 @@ class TestRoutes:
         r = client.post("/api/projects/p/components/verdicts", json={"scope_locators": ["src/b"], "verdict": "accepted"})
         assert r.status_code == 200, r.text
         who["user_id"] = PETER
-        r = client.post("/api/curate/component-verdicts/repo/p", json={"scope_locator": "src/a", "verdict": "accepted"})
+        r = client.post("/api/projects/p/components/verdicts", json={"scope_locators": ["src/a"], "verdict": "accepted"})
         assert r.status_code == 200, r.text
         r = client.post("/api/curate/blueprint-verdicts/repo/p", json={
             "perspective": "deployment", "cluster_name": "a grouping of services", "verdict": "accepted"})
@@ -361,6 +363,7 @@ class TestRoutes:
 
 
 # ── 4. end to end: the press, the run, the next read ──────────────────────────────────────────────────
+
 
 class TestPressToNextRead:
     """Drives enqueue_publish -> run_publish -> publish_plan/last_results with only Egeria's clients faked."""
@@ -422,6 +425,7 @@ def _raise_unless(d):
 
 
 # ── 5. the CLI uses the same function ─────────────────────────────────────────────────────────────────
+
 
 def test_the_cli_publish_asks_curation_access(registry, monkeypatch):
     import typer
@@ -635,16 +639,8 @@ class TestResourceRoutes:
         r = client.post("/api/databases/d/publish", json={})
         assert r.status_code == 403 and SECURED in r.json()["detail"]
 
-    def test_the_repository_publish_is_refused_in_a_secured_zone(self, web, registry, egeria):
-        client, who = web
-        registry.set_egeria_asset_guid("p", "g-repo")
-        egeria.elements["g-repo"] = _element("g-repo", [SECURED])
-        egeria.controls[SECURED] = {"associatedSecurityList": {"DEFAULT": ["owners"]}}
-        r = client.post("/api/egeria/p/publish", json={})
-        assert r.status_code == 403 and SECURED in r.json()["detail"]
-
-
 # ── 7. round 3 (2026-10-10): the CLI cannot forge a person action; an empty ZoneMembership is unzoned ──────
+
 
 class TestRound3:
     @pytest.mark.parametrize("kind", ["publish_architecture", "curate_commit", "catalogue_commit"])
@@ -665,7 +661,6 @@ class TestRound3:
         """`portal_role` is written only from the caller ContextVar: enqueue_publish, the database commit's
         selection (Brief Z2) and a queued investigation/work-list row (Brief Z3, `egeria_outbox.requester_fields`)."""
         import pathlib
-        import re
 
         root = pathlib.Path(__file__).resolve().parents[1] / "resource_explorer"
         writers = [str(p.relative_to(root)) for p in root.rglob("*.py") if PORTAL_ROLE_WRITE.search(p.read_text())]

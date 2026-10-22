@@ -38,9 +38,6 @@ def _zone_access_open(monkeypatch):
 pytestmark = pytest.mark.usefixtures("signed_in_caller")
 
 PKG = Path(__file__).resolve().parents[1] / "resource_explorer"
-SALES_QN = "PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.sales"
-
-
 # ── no UK "catalogue" on anything a person reads ─────────────────────────────────────────────
 
 #: A UK word is fine where it is NOT prose a person reads: an identifier, a route, a proof or state key, a data attribute,
@@ -124,7 +121,7 @@ def _page_words(path: Path) -> list[str]:
 
 def test_no_page_script_or_html_says_catalogue():
     root = PKG / "web" / "static"
-    files = sorted(list((root / "next").rglob("*.js")) + [root / "index.html"])
+    files = sorted(list((root / "next").rglob("*.js")) + [root / "next" / "index.html"])
     bad = [w for p in files for w in _page_words(p)]
     assert bad == [], "UK spelling on a rendered page (use Catalog / catalog / cataloged):\n" + "\n".join(bad)
 
@@ -137,6 +134,7 @@ def test_the_connector_word_cataloguer_is_the_one_spelling_that_stays():
 
 
 # ── the group route records the person ────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def group_registry(tmp_path):
@@ -188,6 +186,7 @@ def test_a_refused_group_change_records_nothing(client, group_registry):
 
 
 # ── an Egeria soft delete says "deleted in Egeria", never "removed" ─────────────────────────
+
 
 def _attached(world, fake, *names):
     for n in names:
@@ -252,6 +251,7 @@ def test_already_deleted_and_already_archived_read_in_those_words(world, fake):
 
 
 # ── the one additive table: group_changes ─────────────────────────────────────────────────────────
+
 
 def test_group_changes_is_additive_and_an_old_shape_database_reopens_safely(tmp_path):
     import sqlite3

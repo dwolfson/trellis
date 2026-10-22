@@ -24,7 +24,6 @@ why it is worth pinning:
 from __future__ import annotations
 
 import json
-import os
 import stat
 
 import jwt
@@ -138,6 +137,7 @@ def _app_token(user_id: str = "peterprofile", *, role: str = "user",
 # 1. The login gate
 # ---------------------------------------------------------------------------
 
+
 class TestLoginRequiredMiddleware:
     @pytest.fixture()
     def client(self, monkeypatch):
@@ -215,6 +215,7 @@ class TestAnonymousReadOverride:
 # ---------------------------------------------------------------------------
 # 2. Login and Portal exchange
 # ---------------------------------------------------------------------------
+
 
 class TestAuthRoutes:
     @pytest.fixture()
@@ -317,6 +318,7 @@ def _egeria_token(sub: str) -> str:
 # 3. The CLI's cached login
 # ---------------------------------------------------------------------------
 
+
 class TestCliSession:
     @pytest.fixture(autouse=True)
     def _config_home(self, tmp_path, monkeypatch):
@@ -407,6 +409,7 @@ class TestCliSession:
 # ---------------------------------------------------------------------------
 # 4. The per-request Egeria client
 # ---------------------------------------------------------------------------
+
 
 class _FakeClient:
     def __init__(self, *args, **kwargs):
@@ -510,6 +513,7 @@ class TestPerRequestClient:
 # ---------------------------------------------------------------------------
 # 5. Ownership and ZoneMembership
 # ---------------------------------------------------------------------------
+
 
 class _ClassificationSpy:
     def __init__(self):
@@ -632,6 +636,7 @@ class TestOwnershipAndZones:
 # 6. Curate authorization and promotion
 # ---------------------------------------------------------------------------
 
+
 class TestCurateAuthorization:
     """Brief Z (2026-10-10): the old "owner = last decided_by" gate is gone; access follows Egeria's zones.
     The full matrix is tests/test_curation_access_by_zone.py; these pin the entry points' shape."""
@@ -697,33 +702,33 @@ class TestCurateRoutes:
 
     def test_the_first_verdict_records_its_author_as_the_owner(self, client):
         api, reg = client
-        r = api.post("/api/curate/component-verdicts/repo/p",
-                     json={"scope_locator": "src/a", "verdict": "accepted"},
+        r = api.post("/api/projects/p/components/verdicts",
+                     json={"scope_locators": ["src/a"], "verdict": "accepted"},
                      headers={"Authorization": f"Bearer {_app_token('dan')}"})
         assert r.status_code == 200
-        assert r.json()["decided_by"] == "dan"
+        assert r.json()["verdicts"][0]["decided_by"] == "dan"
 
     def test_another_person_may_re_decide_when_zones_are_not_in_use(self, client, monkeypatch):
         """Brief Z: `decided_by` is attribution, not ownership. With no zone anywhere, it is open."""
         monkeypatch.delenv("EXPLORER_DRAFT_ZONE", raising=False)
         monkeypatch.setattr("resource_explorer.egeria_identity.configured_publish_zones", lambda: [])
         api, reg = client
-        api.post("/api/curate/component-verdicts/repo/p",
-                 json={"scope_locator": "src/a", "verdict": "accepted"},
+        api.post("/api/projects/p/components/verdicts",
+                 json={"scope_locators": ["src/a"], "verdict": "accepted"},
                  headers={"Authorization": f"Bearer {_app_token('dan')}"})
-        r = api.post("/api/curate/component-verdicts/repo/p",
-                     json={"scope_locator": "src/a", "verdict": "rejected"},
+        r = api.post("/api/projects/p/components/verdicts",
+                     json={"scope_locators": ["src/a"], "verdict": "rejected"},
                      headers={"Authorization": f"Bearer {_app_token('mallory')}"})
         assert r.status_code == 200
-        assert r.json()["decided_by"] == "mallory"
+        assert r.json()["verdicts"][0]["decided_by"] == "mallory"
 
     def test_a_curator_role_gets_through(self, client):
         api, reg = client
-        api.post("/api/curate/component-verdicts/repo/p",
-                 json={"scope_locator": "src/a", "verdict": "accepted"},
+        api.post("/api/projects/p/components/verdicts",
+                 json={"scope_locators": ["src/a"], "verdict": "accepted"},
                  headers={"Authorization": f"Bearer {_app_token('dan')}"})
-        r = api.post("/api/curate/component-verdicts/repo/p",
-                     json={"scope_locator": "src/a", "verdict": "rejected"},
+        r = api.post("/api/projects/p/components/verdicts",
+                     json={"scope_locators": ["src/a"], "verdict": "rejected"},
                      headers={"Authorization": f"Bearer {_app_token('erin', role='curator')}"})
         assert r.status_code == 200
 
@@ -741,8 +746,8 @@ class TestCurateRoutes:
         spy = _ClassificationSpy()
         monkeypatch.setattr("resource_explorer.egeria_identity.classification_client", lambda i=None: spy)
         monkeypatch.setenv("EXPLORER_PUBLISH_ZONES", "egeria-runtime")
-        r = api.post("/api/curate/component-verdicts/repo/p",
-                     json={"scope_locator": "src/a", "verdict": "accepted"},
+        r = api.post("/api/projects/p/components/verdicts",
+                     json={"scope_locators": ["src/a"], "verdict": "accepted"},
                      headers={"Authorization": f"Bearer {_app_token('dan')}"})
         assert r.status_code == 200
         assert "promotion" not in r.json() and "materialization" not in r.json()
@@ -805,6 +810,7 @@ class TestCurateRoutes:
 # ---------------------------------------------------------------------------
 # 7. user_id scoping
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def reg(tmp_path):
@@ -892,6 +898,7 @@ class TestUserScoping:
 # 8. Queue fairness on real ids
 # ---------------------------------------------------------------------------
 
+
 class TestQueueFairness:
     def test_requested_by_is_the_signed_in_caller(self):
         from resource_explorer.a2a_auth import CallerIdentity, current_caller
@@ -950,6 +957,7 @@ class TestQueueFairness:
 # ---------------------------------------------------------------------------
 # 9. The zone bootstrap
 # ---------------------------------------------------------------------------
+
 
 class TestDraftZoneBootstrap:
     @pytest.mark.parametrize("miss", [

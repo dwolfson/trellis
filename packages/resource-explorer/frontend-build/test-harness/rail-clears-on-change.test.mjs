@@ -91,9 +91,6 @@ async function setUp({ gate = null, stage = 'scouting', subTab = 'questions' } =
     d.id = id;
     document.body.appendChild(d);
   }
-  const sw = document.createElement('a');
-  sw.id = 'switch-ui';
-  document.body.appendChild(sw);
   const rail = document.createElement('div');
   rail.id = 'rail-evidence';
   document.getElementById('rail').appendChild(rail);

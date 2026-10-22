@@ -15,7 +15,6 @@ from resource_explorer.workflows.analysis import (
 )
 
 STATIC = Path(__file__).parent.parent / "resource_explorer" / "web" / "static"
-WORDING = "not cataloged, publish needed"
 
 
 @pytest.fixture
@@ -64,9 +63,7 @@ def test_analysis_payloads_return_publish_uncatalogued(registry):
     assert any(c.get("publish_uncatalogued") is True for c in cards)
 
 
-def test_front_ends_render_the_wording_from_the_field():
-    index = (STATIC / "index.html").read_text()
+def test_the_front_end_renders_the_wording_from_the_field():
     app_js = (STATIC / "next" / "app.js").read_text()
-    assert WORDING in index                         # Classic keeps its wording
     assert "not published, publish needed" in app_js   # /next: Catalog is retired as on-screen wording (2026-10-10)
-    assert "publish_uncatalogued" in index and "publish_uncatalogued" in app_js
+    assert "publish_uncatalogued" in app_js

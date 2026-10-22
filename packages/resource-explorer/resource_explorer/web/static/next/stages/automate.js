@@ -44,9 +44,7 @@
  *     `listSubscriptions()` on every render rather than caching, so there is
  *     nothing here to push into.
  *
- *     `oldUiHref` below is therefore no longer the only way to create one --
- *     kept as a fallback link regardless, for when the Questions engine
- *     itself can't be reached. The repo-only gate this comment used to cite
+ *     The repo-only gate this comment used to cite
  *     (`state.resourceType !== 'repo'` on the Questions engine's own
  *     `loadPane()`) is gone as of the database/filesystem generalization --
  *     `openNotifyDialog()` now sends `apiEntityType(state.resourceType)`
@@ -70,7 +68,7 @@ import {
   saveSchedule, getActivityEntry, listAnalyses, listSurveyDefinitions,
 } from '/static/re-api.js';
 import { readableDetailHtml } from '/static/next/stages/activity.js';
-import { state, esc, $, icon, oldUiHref, apiEntityType } from '/static/next/app.js';
+import { state, esc, $, apiEntityType } from '/static/next/app.js';
 import { openFirstIndexAsk, refreshFirstIndex, subscribeFirstIndex } from '/static/next/first-index.js';
 import { ordinal } from '/static/next/stages/repo-header.js';
 
@@ -177,11 +175,7 @@ async function renderSubscriptions() {
       A subscription watches an analysis for change on its <em>scheduled</em> runs (see ⏱ Schedules --
       one with no active schedule for its analysis never fires) and delivers via the RFA drawer when
       something changes. Create one from the "🔔 notify me" action on a question row in Assessment or
-      Analysis${slug ? '' : ' (repositories only, for now)'} --
-      <a href="${esc(oldUiHref())}" class="text-accent-ink underline">or use ${
-        slug ? `<span class="font-mono">${esc(slug)}</span>` : 'the current UI'
-      }</a> ${icon('external-link', { size: 12, cls: 'text-accent-ink' })} for a database or filesystem,
-      which the Questions engine doesn't cover yet.
+      Analysis${slug ? '' : ' (repositories only, for now)'}.
     </p>
     <div class="my-s3 h-px bg-rule"></div>
     ${subs.length ? `<table class="w-full text-left">

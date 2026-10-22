@@ -110,26 +110,3 @@ test('a failed drain shows "publish failed" with Egeria\'s words on the Activity
     document.querySelector('#activity-panel [data-act="close"]')?.click();
   }
 });
-
-test('Classic: the manual Publish says the same three words, and published only for a read-back', async () => {
-  const { readFile } = await import('node:fs/promises');
-  const html = await readFile(new URL('../../resource_explorer/web/static/index.html', import.meta.url), 'utf8');
-  const src = html.match(/function _publishStateCue\(data\) \{[\s\S]*?\n\}\n/);
-  assert.ok(src, 'index.html has no _publishStateCue');
-  const _esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const cueOf = new Function('_esc', `${src[0]}; return _publishStateCue;`)(_esc);
-  const strip = (h) => h.replace(/<[^>]+>/g, '');
-  assert.equal(strip(cueOf({ publish_state: 'read_back' }).html), '✓ published · read back');
-  for (const data of [{ publish_state: 'queued' }, { publish_state: 'nothing' }, {},
-    { publish_state: 'failed', publish_words: '403 OPEN-METADATA-SECURITY-403' },
-    { publish_state: 'unverified', publish_word: 'could not verify' }]) {
-    const c = cueOf(data);
-    assert.doesNotMatch(strip(c.html), PUBLISHED_CLAIM, JSON.stringify(data));
-    assert.doesNotMatch(c.text, PUBLISHED_CLAIM, JSON.stringify(data));
-  }
-  assert.match(strip(cueOf({ publish_state: 'queued' }).html), /◔ queued for publish/);
-  assert.match(cueOf({ publish_state: 'failed', publish_words: '403 X' }).text, /publish failed · 403 X/);
-  // The two call sites read the cue, never a bare "Published".
-  assert.doesNotMatch(html, /✓ Published — \$\{data\.annotation_count\}/);
-  assert.doesNotMatch(html, /\$\{label\}: published \$\{data\.annotation_count\}/);
-});

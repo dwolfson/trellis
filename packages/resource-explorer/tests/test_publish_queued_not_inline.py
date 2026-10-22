@@ -114,6 +114,7 @@ def _says_published(text: str) -> bool:
 
 # ── the default ─────────────────────────────────────────────────────────────────────────────────────────────
 
+
 def test_the_default_is_enqueue_only(monkeypatch):
     from resource_explorer.config import RunsConfig
 
@@ -129,6 +130,7 @@ def test_inline_stays_available_behind_the_explicit_setting(monkeypatch):
 
 
 # ── end to end: queued, then read back ──────────────────────────────────────────────────────────────────────
+
 
 def test_a_run_queues_its_publish_and_does_not_publish_inline(world, monkeypatch):
     store, reg = world
@@ -250,6 +252,7 @@ def test_a_run_with_no_outbox_rows_carries_no_publish_word(world):
 
 # ── the engine host still waits ─────────────────────────────────────────────────────────────────────────────
 
+
 def test_the_engine_host_publisher_takes_no_defer_choice():
     """The engine host completes an engine action with its report GUID, so its publish must finish in its own
     handler. Its publisher takes four positional arguments and no `defer_drain`, which is exactly what makes the
@@ -284,66 +287,12 @@ def test_a_queued_catalog_entry_is_not_a_repo_wide_publish(world, monkeypatch):
 
 # ── fix-first round (review of 411cdf1f) ────────────────────────────────────────────────────────────────────
 
-def _manual_publish(reg, monkeypatch, ref=""):
-    """The manual Publish route (`POST /api/egeria/{slug}/publish`), called as FastAPI would, signed in."""
-    import asyncio
-
-    from resource_explorer.web.routes import egeria as route
-    from tests.test_publisher_private_zones_e2e import _signed_in
-
-    monkeypatch.setattr(route, "_get_project_or_404", lambda slug: (reg.get(slug), reg))
-
-    async def _allow(*a, **k):
-        return None
-
-    monkeypatch.setattr("resource_explorer.web.routes.curate.authorize_resource_write", _allow)
-    with patch("resource_explorer.surveyors.survey_orchestrator.SurveyOrchestrator") as orch, _signed_in("alice"):
-        orch.return_value.run.return_value = _result()
-        return asyncio.run(route.publish_survey(SLUG, route.PublishRequest(survey_definition_ref=ref)))
-
-
-def _hide_first_annotation(store):
-    real_new = store._new
-
-    def _new(user, kind, qn, *a, **k):
-        guid = real_new(user, kind, qn, *a, **k)
-        if kind == "Annotation" and not store.hidden:
-            store.hidden.add(guid)
-        return guid
-
-    store._new = _new
-
-
-def test_the_manual_publish_route_never_says_published_before_the_read_back(world, monkeypatch):
-    store, reg = world
-    _hide_first_annotation(store)
-    out = _manual_publish(reg, monkeypatch, ref="GovActionProcess::RepoScout")
-    assert out.status == "ok"                                    # the request worked; the publish word is apart
-    assert out.publish_state == "queued" and out.publish_word == "queued for publish"
-    assert not _says_published(f"{out.publish_word} {out.publish_words}")
-    [cat] = [e for e in reg.list_activity(entity_slug=SLUG, operation="catalog", limit=10)
-             if "RepoScout" in (e.get("summary") or "")]
-    assert not _says_published(cat["summary"]), cat["summary"]
-    assert cat["publish_proof"]["state"] == "queued"
-    # The ref-tagged row is not a publish for the Survey Definition card's badge until it is read back.
-    last = reg.get_survey_definition_last_activity("repo", SLUG)
-    assert "last_published_at" not in last.get("GovActionProcess::RepoScout", {})
-
-
-def test_the_manual_publish_route_says_published_read_back_once_it_is(world, monkeypatch):
-    _store, reg = world
-    out = _manual_publish(reg, monkeypatch, ref="GovActionProcess::RepoScout")
-    assert out.publish_state == "read_back" and out.publish_word == "published · read back"
-    last = reg.get_survey_definition_last_activity("repo", SLUG)
-    assert last["GovActionProcess::RepoScout"]["last_published_at"]
-
 
 def test_nothing_to_publish_is_never_published(world):
     """No annotation: no run id, no proof row, and the word is "nothing to publish"."""
     _store, reg = world
     from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
     from resource_explorer.surveyors.survey_report import SurveyResult
-    from resource_explorer.web.routes.egeria import manual_publish_proof
     from tests.test_publisher_private_zones_e2e import _signed_in
 
     empty = SurveyResult(resource_slug=SLUG, project_display_name="R", github_url="https://github.com/o/r")
@@ -353,12 +302,6 @@ def test_nothing_to_publish_is_never_published(world):
     assert pub.publish_run_id == "" and pub.publish_deferred is False
     [cat] = reg.list_activity(entity_slug=SLUG, operation="catalog", limit=5)
     assert cat["summary"].startswith("Nothing to publish to Egeria") and not _says_published(cat["summary"])
-    assert manual_publish_proof(reg, "")["word"] == "nothing to publish"
-
-
-def _rows(reg, run_id):
-    return {r["element_kind"]: r for r in reg.list_outbox_elements(entity_slug=SLUG, limit=50)
-            if r["run_id"].startswith(run_id)}
 
 
 def test_an_orphaned_link_fails_the_read_back_at_once(world):
@@ -443,6 +386,7 @@ def test_an_old_run_already_flipped_to_published_gets_a_read_back(world):
 
 
 # ── round 2 ──────────────────────────────────────────────────────────────────────────────────────────────────
+
 
 def test_runs_with_a_dead_row_do_not_starve_the_read_back_backfill(world):
     """A run with a dead row is already "publish failed": it never takes one of the backfill's slots."""

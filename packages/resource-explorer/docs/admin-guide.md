@@ -65,15 +65,9 @@ ANTHROPIC_API_KEY=sk-ant-...
 ANTHROPIC_MODEL=claude-opus-4-8
 ```
 
-### Which UI `/` serves
+### The web UI
 
-```bash
-# Optional. `next` (default) or `classic`. Read once at startup; restart to change.
-# /next always serves Next and /classic always serves Classic, whatever this says.
-RE_DEFAULT_UI=next
-```
-
-An unrecognised value falls back to `next` with a warning in the log.
+`/` and `/next` serve the one UI. (The Classic UI and `RE_DEFAULT_UI` were removed 2026-10-21.)
 
 ```bash
 # Optional. The URL a browser on another machine uses to reach this RE (the same value as the

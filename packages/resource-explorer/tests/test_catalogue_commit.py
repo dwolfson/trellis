@@ -133,6 +133,7 @@ def entity(w):
 
 # ── the commit's steps, in the manifest's order ──────────────────────────────
 
+
 def test_commit_publishes_then_targets_and_writes_a_configured_zone_last_attaching_schema_kind_only(world, fake):
     choose(world, "sales", "catalogue")
     choose(world, "archive", "catalogue")
@@ -226,6 +227,7 @@ def test_publish_failure_skips_what_depends_on_it(world, fake):
 
 
 # ── proof rows: every state word derives from one ────────────────────────────
+
 
 def test_attached_waiting_then_catalogued_after_the_refresh_with_read_back_times(world, fake):
     choose(world, "sales", "catalogue")
@@ -338,6 +340,7 @@ def test_the_commit_survives_an_egeria_reset_by_recreating_from_the_scope(world,
 
 
 # ── leave-out: two forms, chosen per schema from a relationships read ────────
+
 
 def _catalogued(world, fake, *names):
     for n in names:
@@ -476,6 +479,7 @@ def test_choosing_again_after_queuing_a_leave_out_does_not_remove_it(world, fake
 
 # ── re-inclusion ─────────────────────────────────────────────────────────────
 
+
 def test_re_inclusion_after_a_soft_delete_recreates_and_reattaches_with_new_guids(world, fake):
     fake.zone_lockout = False          # not about zones: the configured zone is one this identity may write in
     _attached(world, fake, "sales")
@@ -570,6 +574,7 @@ def test_the_real_cataloguer_behaviour_the_check_exists_for(world, fake):
 
 # ── the comma-bearing schema name ────────────────────────────────────────────
 
+
 def test_a_comma_schema_attaches_but_cannot_be_scoped_in_the_survey_and_the_manifest_says_so(world, fake):
     choose(world, "sales", "catalogue")
     choose(world, "cm,ma", "catalogue")
@@ -594,6 +599,7 @@ def test_survey_schema_list_splits_scopable_from_comma_names():
 
 
 # ── the manifest and the tables line ─────────────────────────────────────────
+
 
 def test_the_manifest_lists_three_mechanisms_the_target_count_and_the_survey_schemas(world, fake):
     choose(world, "sales", "catalogue")
@@ -647,6 +653,7 @@ def test_signed_out_commit_is_refused(world, fake):
 
 # ── the outbox kinds ─────────────────────────────────────────────────────────
 
+
 def test_the_catalogue_kinds_are_self_resolving_so_an_existing_element_does_not_skip_the_attach(world, fake):
     """apply_element's generic step 2 would adopt a schema element found by name and mark the row done
     without ever attaching the target, the half that matters."""
@@ -679,6 +686,7 @@ def test_the_default_drain_gives_the_catalogue_kinds_the_registry(world, fake, m
 
 
 # ── storage: additive, and opens an old-shape database ───────────────────────
+
 
 def test_migration_is_additive_and_an_old_shape_database_opens(tmp_path):
     path = str(tmp_path / "old.db")
@@ -713,6 +721,7 @@ def test_removing_a_database_removes_its_proofs(registry):
 
 
 # ── routes ───────────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def client(registry, world, fake, monkeypatch):
@@ -789,6 +798,7 @@ def test_read_back_route_needs_a_person_and_records_proof(client, world, fake):
 
 
 # ── the real gateway's wire shapes ───────────────────────────────────────────
+
 
 @pytest.fixture
 def real(monkeypatch):
@@ -917,6 +927,7 @@ def test_the_database_template_gets_database_description_and_version_so_no_place
 
 # ── architect rulings, 2026-10-05 ────────────────────────────────────────────
 
+
 def test_the_manifest_names_the_schemas_not_committed_in_one_sentence_form(world, fake):
     _catalogued(world, fake, "sales", "archive")
     choose(world, "sales", "leave_out")
@@ -961,16 +972,6 @@ def test_commit_route_with_no_scope_is_409_with_the_sentence_and_no_egeria_call(
     assert fake.calls == []
 
 
-def test_the_survey_definition_retry_uses_the_commit_and_never_the_unscoped_publish_route():
-    html = (Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "static" / "index.html").read_text()
-    a = html.index("async function catalogAndRetrySurveyDefinition()")
-    body = html[a:html.index("// ── Context gathering form", a)]
-    assert "/api/catalogue-scope/" in body and "/commit" in body
-    assert "/publish" not in body and "db_pwd" not in body
-    assert "submitSurveyDefinitionRun()" not in body          # the commit is queued work: no automatic retry
-    assert "/api/databases/${slug}/publish" not in html       # RE's own page calls the unscoped route nowhere
-
-
 def test_a_leave_out_is_in_the_manifest_once_as_its_own_row_not_twice(world, fake):
     choose(world, "sales", "catalogue")
     choose(world, "archive", "leave_out")                    # never catalogued: "nothing to remove"
@@ -983,6 +984,7 @@ def test_a_leave_out_is_in_the_manifest_once_as_its_own_row_not_twice(world, fak
 
 
 # ── RE's own survey report: the words say what came back (coco_pharma, 2026-10-06) ──────────────
+
 
 def _measured(world):
     world["registry"].record_database_survey("db", 2, 5, 9, {"schema_info": {"sales": {}}}, source="local",
@@ -1030,6 +1032,7 @@ def test_report_step_says_report_not_found_only_when_the_publish_returned_nothin
 
 
 # ── Egeria 6.2 element header (tests/fixtures/egeria_6_2, captured live read-only 2026-10-14) ────────────────
+
 
 def _captured_6_2(name):
     import json

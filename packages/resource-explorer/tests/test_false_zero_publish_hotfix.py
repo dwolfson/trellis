@@ -13,7 +13,6 @@ been pushed to Egeria by the classic Publish route. Rules under test:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -47,6 +46,7 @@ def _curation_access_open(monkeypatch):
 
     return permit_publish_routes(monkeypatch)
 
+
 @pytest.fixture
 def registry(tmp_path):
     r = ProjectRegistry(db_path=str(tmp_path / "t.db"))
@@ -74,6 +74,7 @@ def _all(r, slug=SLUG):
 
 
 # ── rule 2: the single predicate ─────────────────────────────────────────────
+
 
 @pytest.mark.parametrize("row,expected", [
     (_row("local", REAL), True),
@@ -113,6 +114,7 @@ def test_latest_measured_none_when_nothing_measured(registry):
 
 
 # ── rule 3: mark, do not delete; repair is dry-run by default ────────────────
+
 
 def _damage(registry):
     _add(registry, SLUG, "2026-09-28T03:00:00")
@@ -188,6 +190,7 @@ def test_cli_command_is_dry_run_by_default(registry, monkeypatch):
 
 
 # ── rule 1: a publish writes no survey row ───────────────────────────────────
+
 
 def _publisher_patches():
     from resource_explorer.surveyors.database import egeria_database_surveyor as m
@@ -313,23 +316,8 @@ def test_failing_survey_then_no_publish_step_and_no_row(registry, monkeypatch):
     assert _all(registry) == []
 
 
-def test_classic_survey_route_shows_the_auth_failure_and_writes_no_row(registry, monkeypatch):
-    monkeypatch.setattr(
-        "resource_explorer.registry.ProjectRegistry.__init__",
-        lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None)
-    monkeypatch.setattr(registry, "has_assigned_egeria_project", lambda *a, **k: True)
-    from resource_explorer.web.app import app
-
-    with patch(HYBRID, return_value=dict(FAILED_LOCAL)):
-        r = TestClient(app).post(f"/api/databases/{SLUG}/survey",
-                                 json={"use_egeria": True, "refresh": True})
-    body = r.json()
-    assert body["status"] == "error"
-    assert AUTH_ERR in body["error"]
-    assert _all(registry) == []
-
-
 # ── rule 2 at the classic Publish route ──────────────────────────────────────
+
 
 def test_publish_route_pushes_the_measured_counts_not_the_newest_empty_row(registry, monkeypatch):
     monkeypatch.setattr(
@@ -372,11 +360,3 @@ def test_publish_route_refuses_when_nothing_is_measured(registry, monkeypatch):
 
 
 # ── classic modal wording (the only control on this path) ────────────────────
-
-def test_classic_survey_modal_confirms_the_publish_before_running():
-    html = (Path(__file__).resolve().parent.parent / "resource_explorer" / "web" / "static"
-            / "index.html").read_text()
-    body = html[html.index("async function submitSurveyDb()"):]
-    body = body[:body.index("Only require credentials")]
-    assert "window.confirm" in body and "useEgeria" in body
-    assert "postgres_schema_and_stats" in body and "publishes to Egeria" in body

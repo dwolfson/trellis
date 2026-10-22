@@ -516,13 +516,7 @@ class RegistryConfig(BaseSettings):
 
 
 class WebUIConfig(BaseSettings):
-    """Which UI `/` serves. `next` (default) or `classic`.
-
-    A quick revert without a code change: set RE_DEFAULT_UI=classic and
-    restart. Read once at startup by `web/app.py`. `/next` and `/classic`
-    always serve their own UI regardless of this setting.
-    """
-    default_ui: str = Field(default="next", alias="RE_DEFAULT_UI")
+    """Web UI settings. `/` and `/next` both serve the one UI."""
     #: The URL a browser elsewhere uses to reach this RE web app (e.g. `http://<box-hostname>:8810`), the same
     #: value the Portal's tile uses (EGERIA_RESOURCE_EXPLORER_URL). Read by a work list's publish to write
     #: `additionalProperties.resourceExplorerUrl` on its WorkingSet, so the Portal can link back. Empty (the

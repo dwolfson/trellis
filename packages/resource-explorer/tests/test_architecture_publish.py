@@ -85,32 +85,6 @@ class TestAcceptWritesNothing:
         assert registry.list_runs() == []
         assert registry.list_activity(entity_slug="p") == []     # not even a 'running' row nobody will close
 
-    def test_a_classic_single_component_accept_makes_no_egeria_call_and_enqueues_no_run(self, client, registry, no_egeria):
-        """Brief A follow-up 1: Classic's POST /api/curate/component-verdicts materialised on Accept."""
-        r = client.post("/api/curate/component-verdicts/repo/p", json={"scope_locator": "pyegeria", "verdict": "accepted"})
-        assert r.status_code == 200, r.text
-        body = r.json()
-        assert body["verdict"] == "accepted" and "materialization" not in body and "promotion" not in body
-        assert body["in_egeria"] is False                         # the row says "not in Egeria yet"
-        assert registry.list_runs() == [] and registry.list_activity(entity_slug="p") == []
-        assert registry.get_materialized_component("repo", "p", "pyegeria") is None
-        # Classic's row is one component: Publish then lists exactly it, not the components under its path.
-        plan = client.get("/api/projects/p/architecture/publish-plan").json()
-        assert [c["path"] for c in plan["components"]["to_write"]] == ["pyegeria"]
-
-    def test_a_classic_reject_of_something_already_in_egeria_writes_nothing_and_says_so(self, client, registry, no_egeria):
-        _held(registry, "tests")
-        r = client.post("/api/curate/component-verdicts/repo/p", json={"scope_locator": "tests", "verdict": "rejected"})
-        assert r.status_code == 200 and r.json()["in_egeria"] is True and registry.list_runs() == []
-        assert client.get("/api/projects/p/architecture/publish-plan").json()["components"]["rejected_in_egeria"] == 1
-
-    def test_a_classic_accept_with_only_false_keeps_the_branch_meaning(self, client, registry, no_egeria):
-        client.post("/api/curate/component-verdicts/repo/p",
-                    json={"scope_locator": "pyegeria", "verdict": "accepted", "only": False})
-        plan = client.get("/api/projects/p/architecture/publish-plan").json()
-        assert [c["path"] for c in plan["components"]["to_write"]] == [
-            "pyegeria", "pyegeria/commands", "pyegeria/commands/cat", "pyegeria/utils"]
-
     def test_a_blueprint_accept_makes_no_egeria_call_and_does_not_promote(self, client, registry, no_egeria):
         _seed_cluster(registry, members=["a"])
         r = client.post("/api/curate/blueprint-verdicts/repo/p", json={
@@ -321,6 +295,7 @@ class TestTheRun:
 
 # ── gate round 1 ──────────────────────────────────────────────────────────────────────────────────────
 
+
 def _seed_member(registry, slug, scope, admission=None):
     registry.upsert_finding("p", "architecture_recovery", [{
         "check_name": "component", "label": "x",
@@ -445,6 +420,7 @@ class TestTheParentOnlyMarkIsNotARealType:
 
 # ── gate round 2 ──────────────────────────────────────────────────────────────────────────────────────
 
+
 class TestTheRecordIsWhatTheWriteHandedOver:
     def _bp(self, registry, key="physical::core", **kw):
         registry.record_materialized_blueprint("repo", "p", *key.split("::"), f"SolutionBlueprint::{key}", kw.get("guid", "bp-1"))
@@ -513,6 +489,7 @@ class TestTheRecordIsWhatTheWriteHandedOver:
 
 
 # ── gate round 3 ──────────────────────────────────────────────────────────────────────────────────────
+
 
 class TestThePlanDerivesWhatItWantsFromThePlanShape:
     def _container(self, registry):

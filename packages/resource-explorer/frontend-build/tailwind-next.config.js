@@ -1,12 +1,7 @@
-/** Tailwind build for the experimental `/next` UI — skin 1c, "dark chrome,
- * paper content".
- *
- * SEPARATE from tailwind.config.js on purpose. That build content-scans
- * index.html and emits static/tailwind.css; this one scans only static/next/
- * and emits static/next/tailwind-next.css. Two entries, two outputs, so the
- * token layer below gets proven on a real screen without one edit to the
- * ~17,900-line index.html — and so a mistake in either stylesheet cannot
- * reach the other UI.
+/** Tailwind build for the UI (served at `/` and `/next`) — skin 1c, "dark chrome,
+ * paper content". It scans static/next/ and emits static/next/tailwind-next.css.
+ * (The Classic UI had its own tailwind.config.js and tailwind.css; both were
+ * deleted with Classic, 2026-10-21.)
  *
  * THE VALUES NOW LIVE IN static/next/themes.css (RULING-THEMES-PORTAL-DARK-LIGHT.md,
  * 2026-10-20), one block per look (Dark, Light, Paper). This file holds the

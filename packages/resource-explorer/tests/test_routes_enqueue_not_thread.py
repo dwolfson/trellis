@@ -136,24 +136,6 @@ class TestPublishChoiceThreadsThroughTheQueueRow:
         assert registry.list_runs() == []
 
 
-class TestStageBatchEnqueues:
-    def test_the_route_queues_the_derived_step_keys(self, client, registry):
-        with patch("resource_explorer.workflows.analysis.run_stage_batch") as run:
-            resp = client.post("/api/projects/myproj/analyses/stage/scouting/run")
-        assert resp.status_code == 200, resp.text
-        run.assert_not_called()
-        row = registry.list_runs(state="queued")[0]
-        assert row["kind"] == "stage_batch"
-        target = json.loads(row["target"])
-        assert target["stage"] == "scouting"
-        assert target["step_keys"], "the batch was queued with no steps to run"
-
-    def test_an_empty_stage_is_a_400_not_an_empty_queued_row(self, client, registry):
-        resp = client.post("/api/projects/myproj/analyses/stage/enrichment/run")
-        assert resp.status_code == 400
-        assert registry.list_runs() == []
-
-
 class TestScoutingScanEnqueues:
     def test_the_route_queues_a_scouting_scan(self, client, registry):
         with patch("resource_explorer.workflows.scouting.run_scouting_scan") as run:

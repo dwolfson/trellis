@@ -87,7 +87,7 @@ POLICY_ENV_PREFIX = "EXPLORER"
 
 #: Public in RE beyond `trellis_auth`'s shared defaults.
 #:
-#: `/` and `/index.html` serve the SPA shell, which must load in order to
+#: `/` serves the SPA shell, which must load in order to
 #: *show* the login form — a 401 there is a blank page with nowhere to sign in.
 #: The shell holds no data; every `/api/...` call it makes is still challenged.
 #:
@@ -97,8 +97,6 @@ POLICY_ENV_PREFIX = "EXPLORER"
 #: separately-mounted A2A app).
 #:
 #: `/healthz` is RE's second liveness name, used by the A2A role.
-#: `/classic` is the Classic shell (explicit since Next became the default at `/`)
-#: and is public for the same reason.
 #: `/next` is the Next UI's shell, and is public for exactly the same
 #: reason `/` is: the shell has to load in order to render the login form that
 #: obtains the token. It is a bare HTML document that names no data — every
@@ -107,9 +105,7 @@ POLICY_ENV_PREFIX = "EXPLORER"
 #: future `/next/export` public too.
 RE_PUBLIC_PATHS = (
     "/",
-    "/index.html",
     "/next",
-    "/classic",
     "/healthz",
     "/api/auth/me",
     "/api/auth/defaults",

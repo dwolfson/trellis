@@ -51,6 +51,7 @@ def checks(monkeypatch):
 
 # ── the one helper ────────────────────────────────────────────────────────────
 
+
 def test_the_helper_defaults_only_a_local_host_with_no_value():
     from resource_explorer.egeria_host import default_egeria_host as d
 
@@ -63,6 +64,7 @@ def test_the_helper_defaults_only_a_local_host_with_no_value():
 
 
 # ── registration paths ────────────────────────────────────────────────────────
+
 
 def _server_body(**kw):
     body = {"slug": "local-docker", "display_name": "Local Docker", "host": "localhost", "port": 5442,
@@ -83,11 +85,16 @@ def test_server_register_keeps_an_explicit_value_and_a_remote_host_empty(client)
     assert client.get("/api/db-servers/b").json()["egeria_host"] == ""
 
 
+def _read_db(client, slug):
+    """One database as the API reads it back: the list route, picked by slug (the per-slug GET was Classic's)."""
+    return next(r for r in client.get("/api/databases/").json() if r["slug"] == slug)
+
+
 def test_database_register_defaults_a_localhost_database(client):
     body = {"slug": "d1", "display_name": "D1", "db_type": "postgresql", "host": "127.0.0.1", "port": 5432,
             "database_name": "d1"}
     assert client.post("/api/databases/register", json=body).status_code == 200
-    assert client.get("/api/databases/d1").json()["egeria_host"] == DOCKER
+    assert _read_db(client, "d1")["egeria_host"] == DOCKER
 
 
 def test_add_database_from_a_server_with_an_empty_value_gets_the_default(client, registry):
@@ -96,14 +103,14 @@ def test_add_database_from_a_server_with_an_empty_value_gets_the_default(client,
                                             db_user="u", db_password="p", egeria_host=""))
     r = client.post("/api/db-servers/old/add-database", params={"database_name": "x"})
     assert r.status_code == 200
-    assert client.get(f"/api/databases/{r.json()['slug']}").json()["egeria_host"] == DOCKER
+    assert _read_db(client, r.json()['slug'])["egeria_host"] == DOCKER
 
 
 def test_add_database_from_a_server_copies_the_servers_value(client, registry):
     registry.register_server(DatabaseServer(slug="srv", display_name="S", host="localhost", port=5442,
                                             db_user="u", db_password="p", egeria_host="my-box"))
     r = client.post("/api/db-servers/srv/add-database", params={"database_name": "x"})
-    assert client.get(f"/api/databases/{r.json()['slug']}").json()["egeria_host"] == "my-box"
+    assert _read_db(client, r.json()['slug'])["egeria_host"] == "my-box"
 
 
 def test_csv_import_builder_uses_the_same_helper(registry):
@@ -115,6 +122,7 @@ def test_csv_import_builder_uses_the_same_helper(registry):
 
 
 # ── the edit: a database ──────────────────────────────────────────────────────
+
 
 def _db(registry, slug="mydb", host="localhost", egeria_host="localhost", guid="", server_slug=""):
     registry.register_database(DatabaseEntity(
@@ -130,7 +138,7 @@ def test_patch_database_changes_only_the_host_and_the_next_read_shows_it(client,
     assert r.status_code == 200
     body = r.json()
     assert (body["previous"], body["egeria_host"], body["in_egeria"]) == ("localhost", DOCKER, False)
-    got = client.get("/api/databases/mydb").json()
+    got = _read_db(client, "mydb")
     assert got["egeria_host"] == DOCKER
     assert got["db_user"] == "u" and got["host"] == "localhost"
     assert registry.get_database("mydb").db_password == "secret"
@@ -144,7 +152,7 @@ def test_patch_database_registered_in_egeria_says_the_elements_keep_the_old_addr
     assert "keep the old address" in body["note"]
     assert "registered again" in body["note"]
     assert "deleting" in body["note"].lower()
-    assert client.get("/api/databases/mydb").json()["egeria_asset_guid"] == "g-1"
+    assert _read_db(client, "mydb")["egeria_asset_guid"] == "g-1"
 
 
 def test_patch_database_is_refused_without_the_write_check(client, registry, checks):
@@ -152,17 +160,18 @@ def test_patch_database_is_refused_without_the_write_check(client, registry, che
     _db(registry)
     deny.add("mydb")
     assert client.patch("/api/databases/mydb/egeria-host", json={"egeria_host": DOCKER}).status_code == 403
-    assert client.get("/api/databases/mydb").json()["egeria_host"] == "localhost"
+    assert _read_db(client, "mydb")["egeria_host"] == "localhost"
 
 
 def test_patch_database_unknown_and_malformed(client, registry, checks):
     _db(registry)
     assert client.patch("/api/databases/nope/egeria-host", json={"egeria_host": DOCKER}).status_code == 404
     assert client.patch("/api/databases/mydb/egeria-host", json={"egeria_host": "a b/c"}).status_code == 400
-    assert client.get("/api/databases/mydb").json()["egeria_host"] == "localhost"
+    assert _read_db(client, "mydb")["egeria_host"] == "localhost"
 
 
 # ── the edit: a server, and carrying the value to its databases ───────────────
+
 
 def _server_with_dbs(registry):
     registry.register_server(DatabaseServer(slug="srv", display_name="S", host="localhost", port=5442,
@@ -182,7 +191,7 @@ def test_patch_server_changes_it_and_lists_who_could_carry_it(client, registry, 
     assert body["carriable"][0]["in_egeria"] is True
     assert body["carried"] == []
     assert client.get("/api/db-servers/srv").json()["egeria_host"] == DOCKER
-    assert client.get("/api/databases/inherits").json()["egeria_host"] == "localhost"   # nothing carried silently
+    assert _read_db(client, "inherits")["egeria_host"] == "localhost"   # nothing carried silently
 
 
 def test_patch_server_carries_only_databases_that_still_have_the_old_value(client, registry, checks):
@@ -193,9 +202,9 @@ def test_patch_server_carries_only_databases_that_still_have_the_old_value(clien
                      json={"egeria_host": DOCKER, "carry_databases_from": "localhost"})
     assert r.status_code == 200
     assert [c["slug"] for c in r.json()["carried"]] == ["inherits"]
-    assert client.get("/api/databases/inherits").json()["egeria_host"] == DOCKER
-    assert client.get("/api/databases/override").json()["egeria_host"] == "my-box"
-    assert client.get("/api/databases/other").json()["egeria_host"] == "localhost"
+    assert _read_db(client, "inherits")["egeria_host"] == DOCKER
+    assert _read_db(client, "override")["egeria_host"] == "my-box"
+    assert _read_db(client, "other")["egeria_host"] == "localhost"
     assert ("database", "inherits", "publish") in seen
     assert "keep the old address" in r.json()["note"]                  # inherits is in Egeria
 
@@ -208,7 +217,7 @@ def test_patch_server_carry_refused_changes_nothing(client, registry, checks):
                      json={"egeria_host": DOCKER, "carry_databases_from": "localhost"})
     assert r.status_code == 403
     assert client.get("/api/db-servers/srv").json()["egeria_host"] == "localhost"
-    assert client.get("/api/databases/inherits").json()["egeria_host"] == "localhost"
+    assert _read_db(client, "inherits")["egeria_host"] == "localhost"
 
 
 def test_patch_server_unknown(client, checks):

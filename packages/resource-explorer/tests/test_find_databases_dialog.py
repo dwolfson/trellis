@@ -32,6 +32,7 @@ SECRET = "hunter2-do-not-leak"
 
 # ── list_databases(): non-connectable are listed; no 0 / '' defaults ─────────
 
+
 def _conn_returning(rows):
     conn = PostgreSQLConnection.__new__(PostgreSQLConnection)
     seen = {}
@@ -168,6 +169,7 @@ def test_postgres_migration_sql_without_a_connection():
 
 # ── saved-source last-run storage ────────────────────────────────────────────
 
+
 @pytest.fixture
 def registry(tmp_path):
     r = ProjectRegistry(db_path=str(tmp_path / "t.db"))
@@ -200,6 +202,7 @@ def test_storage_is_per_source(registry):
 
 
 # ── the routes ───────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def client(registry, monkeypatch):
@@ -443,15 +446,14 @@ def test_test_connection_counts_listed_and_connectable_separately(client):
 
 # ── the rename (Admin → Repository discovery sources) ────────────────────────
 
-def test_admin_label_is_renamed_in_next_and_classic():
+
+def test_admin_label_is_renamed():
     from pathlib import Path
     static = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "static"
     idx = (static / "next" / "admin" / "index.js").read_text(encoding="utf-8")
     pane = (static / "next" / "admin" / "discovery_sources.js").read_text(encoding="utf-8")
-    classic = (static / "index.html").read_text(encoding="utf-8")
     assert "label: '🔍 Repository discovery sources'" in idx
     assert "🔍 Repository discovery sources</h3>" in pane
-    assert "{ tab: 'admin-discovery-sources', label: '🔍 Repository discovery sources' }" in classic
-    for text in (idx, pane, classic):
+    for text in (idx, pane):
         assert "label: '🔍 Discovery Sources'" not in text
         assert "🔍 Discovery Sources</h3>" not in text and "🔍 Discovery Sources</h1>" not in text

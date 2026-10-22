@@ -42,13 +42,6 @@ def test_each_field_is_signed_and_mirrored_to_classics_flat_key(client, registry
     assert ctx[flat] == value
 
 
-def test_a_classic_save_after_a_next_save_keeps_the_enrichment_record(client, registry):
-    client.patch("/api/context/repo/p/field", json={"key": "steward", "value": "alice", "kind": "judgement"})
-    r = client.post("/api/context/repo/p", json={"responsible_steward": "bob"})
-    assert r.status_code == 200
-    assert registry.get_context("repo", "p")["enrichment"]["steward"]["value"] == "alice"
-
-
 def test_backup_status_outside_classics_list_is_refused(client, registry):
     r = client.patch("/api/context/repo/p/field", json={"key": "backup_status", "value": "sometimes", "kind": "observation"})
     assert r.status_code == 422

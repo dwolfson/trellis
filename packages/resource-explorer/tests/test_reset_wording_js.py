@@ -66,6 +66,3 @@ def test_every_screen_that_shows_a_published_badge_reads_the_marker_fields():
     assert "w.published_state === 'published_earlier'" in curate
     ns = (NEXT / "stages" / "native-surveys.js").read_text(encoding="utf-8")
     assert "storedCopyWords(rep)" in ns and "data-stored-copy-reset" in ns
-    legacy = (NEXT.parent / "index.html").read_text(encoding="utf-8")
-    for needle in ("_pubWord(la)", "_pubWord(c)", "_pubWord(d)"):
-        assert needle in legacy
