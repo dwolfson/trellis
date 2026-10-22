@@ -251,6 +251,19 @@ class ConversationAgent(BaseExplorerAgent):
         from resource_explorer.agents.tools import set_current_question
 
         set_current_question(query)
+        # The journal tool resolves the session and the open investigation from here, never from model arguments.
+        from resource_explorer.agents import journal_tool
+
+        journal_tool.set_journal_context(getattr(self, "session_id", None), getattr(self, "investigation", None))
+        self._journal_proposal = None
+        self._journal_written = []
+        if self.allow_writes and journal_tool.is_journal_request(query):
+            # A verb the pane has a control for goes to the tool, not to the model: a small model answered "I don't
+            # know" to "save this to the journal". Confirm stays with the person.
+            words = journal_tool.write_journal_raw(confirm=False)
+            self._journal_proposal = journal_tool.turn_proposal()
+            self._last_compiled = None
+            return words
         slug = resource_slug or self.resource_slug or self._infer_project_slug(query)
         if slug and not (resource_slug or self.resource_slug) and _bare_word_binding(query, slug):
             slug = None
@@ -315,6 +328,8 @@ class ConversationAgent(BaseExplorerAgent):
 
         try:
             answer = self._run_persistent(prompt)
+            # Turns the model's write_journal call put in the journal (the list is shared with the tool's tasks).
+            self._journal_written = journal_tool.turn_written()
         except Exception:
             if self._rag is None:
                 from resource_explorer.rag_system import RAGSystem

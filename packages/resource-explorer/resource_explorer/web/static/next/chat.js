@@ -42,7 +42,7 @@
  */
 import {
   ask, askStream, sendFeedback, submitAnswerFeedback, compileContext, runAnalysis, pollActivity,
-  activityFailure, failureText, getSchedules, saveSchedule, addAlias, listAliases, writeJournal,
+  activityFailure, failureText, getSchedules, saveSchedule, addAlias, listAliases, writeJournalTurn,
 } from '/static/re-api.js';
 import { stateEntry } from '/static/next/glyphs.js';
 import {
@@ -509,48 +509,117 @@ export function turnAsMarkdown(t) {
   return out.join('\n');
 }
 
-/** The seed for an investigation journal entry made from a chat turn: a citation line, the question and the
- *  answer as the person saw them. The person edits it before saving (reports seed theirs the same way: the machine
- *  supplies the citation, the person writes the thought). An answer past the cap is trimmed WITH a visible note,
- *  never silently. */
-const JOURNAL_SEED_MAX = 4000;
-export function journalSeedFromTurn(t, when = new Date()) {
-  // A plain-text seed: the person edits it, and the journal renders what they save as markdown.
-  const bits = [t.slug, t.compileId ? `compile ${String(t.compileId).slice(0, 8)}` : 'no compile recorded', t.source].filter(Boolean);
-  if (t.intent) bits.push(`intent ${t.intent}`);
-  let text = `Per chat (${when.toISOString().slice(0, 10)}):\n\n${t.question}\n\n${t.answer || `${t.error || 'No answer.'}`}\n\n— ${bits.join(' · ')}`;
-  if (text.length > JOURNAL_SEED_MAX) {
-    text = `${text.slice(0, JOURNAL_SEED_MAX)}\n\n[trimmed: the full answer is ${text.length.toLocaleString()} characters]`;
-  }
-  return text;
+/** Which stored chat turn to add: the session and the exchange id the query reply carried. No text travels: the
+ *  entry is DERIVED on the server from the stored exchange (journal.derive_turn_entry), the same source the chat's
+ *  `write_journal` tool reads. The person's only addition is the optional note. */
+function journalPayload(t, note = '') {
+  return { sessionId: sessionId(), exchangeId: t.exchangeId, note };
 }
 
-/** "Add to investigation journal": an editable entry seeded from the turn, written to the CURRENT investigation's
- *  journal. Local until the investigation is promoted (it has no Egeria Project to hold a Note before that). */
-function openJournalForm(turn, host) {
+/** "Add to investigation journal": the derived entry shown read-only, with [Add] [Not now] and one optional note
+ *  kept apart from it. Add writes the same row the chat's `write_journal` tool writes. Local until the investigation
+ *  is promoted (it has no Egeria Project to hold a Note before that). */
+async function openJournalForm(turn, host) {
   const form = host.querySelector('[data-journal-form]');
   if (!form || !state.investigation) return;
+  const inv = state.investigation;
+  form.innerHTML = `<span class="text-caveat text-ink-muted">${cue('running', 'reading', 'Deriving the entry from this turn.')}</span>`;
+  let preview;
+  try {
+    preview = await writeJournalTurn(inv, journalPayload(turn), { confirm: false });
+  } catch (err) {
+    form.innerHTML = `<span class="text-caveat text-state-warn">${cue('error', 'not shown', err.message)} ${esc(err.message)}</span>`;
+    return;
+  }
+  if (preview.already) {
+    turn.journalSaved = true;
+    form.innerHTML = `<span class="text-caveat" data-journal-saved>${cue('measured', 'already in the journal', "This turn is already an entry in this investigation's journal; nothing was added.")}</span>`;
+    const trig = host.querySelector('[data-act="journal-turn"]');
+    if (trig) trig.outerHTML = journalTriggerHtml(turn);
+    return;
+  }
   form.innerHTML = `
-    <textarea data-journal-text rows="8" aria-label="Journal entry"
-      class="w-full rounded-sm border border-rule-strong bg-paper p-s2 font-mono text-caveat text-ink">${esc(journalSeedFromTurn(turn))}</textarea>
+    <pre data-journal-entry class="max-h-[240px] overflow-auto whitespace-pre-wrap rounded-sm border border-rule bg-paper p-s2 font-mono text-caveat text-ink">${esc(preview.body)}</pre>
+    <label class="mt-s2 block text-caveat text-ink-muted">Your note (optional, kept apart from the entry)
+      <input data-journal-note-input type="text" maxlength="500" class="mt-[2px] w-full rounded-sm border border-rule-strong bg-paper p-s1 text-ink">
+    </label>
     <div class="mt-s2 flex items-baseline gap-s3 text-caveat">
-      <button data-journal-save type="button" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink">Save entry</button>
-      <button data-journal-cancel type="button" class="cursor-pointer bg-transparent text-ink-muted underline">Cancel</button>
+      <button data-journal-add type="button" class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-ink">Add</button>
+      <button data-journal-cancel type="button" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink">Not now</button>
       <span data-journal-note class="text-ink-muted"></span>
     </div>`;
   const note = form.querySelector('[data-journal-note]');
   form.querySelector('[data-journal-cancel]').addEventListener('click', () => { form.innerHTML = ''; });
-  form.querySelector('[data-journal-save]').addEventListener('click', async (e) => {
-    const body = form.querySelector('[data-journal-text]').value.trim();
-    if (!body) { note.textContent = 'An entry needs some text.'; return; }
-    e.currentTarget.disabled = true;
+  form.querySelector('[data-journal-add]').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
     try {
-      await writeJournal(state.investigation, body, [], 'investigation', turn.compileId || null);
-      form.innerHTML = `<span class="text-caveat text-state-ok">Saved to this investigation's journal. It stays in RE until the investigation is promoted to Egeria.</span>`;
+      const noteText = form.querySelector('[data-journal-note-input]').value.trim();
+      const res = await writeJournalTurn(inv, journalPayload(turn, noteText), { confirm: true });
+      turn.journalSaved = true;
+      form.innerHTML = res.already
+        ? `<span class="text-caveat" data-journal-saved>${cue('measured', 'already in the journal', "This turn is already an entry in this investigation's journal; nothing was added.")}</span>`
+        : `<span class="text-caveat" data-journal-saved>${cue('measured', 'added to the journal', "Written to this investigation's journal. It stays in RE until the investigation is promoted to Egeria.")}</span>`;
+      const trigger = host.querySelector('[data-act="journal-turn"]');
+      if (trigger) trigger.outerHTML = journalTriggerHtml(turn);
     } catch (err) {
-      e.currentTarget.disabled = false;
-      note.textContent = err.loginRequired ? 'Sign in to write in the journal.' : `Not saved: ${err.message}`;
+      btn.disabled = false;
+      note.textContent = err.loginRequired ? 'Sign in to write in the journal.' : `Not added: ${err.message}`;
     }
+  });
+}
+
+/** The per-turn control: a button until the turn is in the journal, then the state on the element. */
+function journalTriggerHtml(turn) {
+  // A journal exchange (the chat's own "Add this turn?") is never itself a turn to add.
+  if (turn.journalProposal) return '';
+  if (turn.journalSaved) return `<span data-act="journal-turn" data-journal-state="saved">${cue('measured', 'in the journal', "This turn is an entry in the current investigation's journal.")}</span>`;
+  const can = Boolean(state.investigation) && turn.exchangeId != null;
+  return `<button data-act="journal-turn" ${can ? '' : 'disabled'}
+        title="${!state.investigation ? 'no investigation is open · choose one on the rail' : turn.exchangeId == null ? 'This turn was not stored, so it cannot be added.' : 'Show this turn as a journal entry for the current investigation'}"
+        class="cursor-pointer bg-transparent text-caveat text-ink-muted underline disabled:cursor-default disabled:opacity-60"
+        >add to investigation journal</button>`;
+}
+
+/** The chat's own "Add this turn to the investigation journal?" with [Add] [Not now], drawn from the journal tool's
+ *  proposal. Add writes through the same route as the per-turn control. */
+function journalProposalHtml(turn) {
+  const st = turn.jpState || { state: 'asking' };
+  const head = '<span data-jp-sentence>Add this turn to the investigation journal?</span>';
+  let tail;
+  if (st.state === 'saving') tail = cue('running', 'adding', 'Writing the entry.');
+  else if (st.state === 'saved') tail = cue('measured', 'added to the journal', "Written to this investigation's journal.");
+  else if (st.state === 'dismissed') tail = cue('optional', 'not added', 'Nothing was written.');
+  else {
+    tail = `${st.state === 'error' ? `${cue('error', 'not added', st.msg)} <span class="text-state-warn">${esc(st.msg)}</span> ` : cue('human', 'asks you', 'Nothing is written until you press Add.')}
+      <button type="button" data-jp-add class="cursor-pointer rounded-sm border border-accent bg-transparent px-[8px] py-[1px] text-caveat text-accent-ink">Add</button>
+      <button type="button" data-jp-no class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-[8px] py-[1px] text-caveat text-ink">Not now</button>`;
+  }
+  return `<div data-journal-proposal-box class="mb-s3 flex flex-wrap items-baseline gap-s2 text-caveat text-ink-muted">${head} ${tail}</div>`;
+}
+
+function redrawJournalProposal(turn) {
+  const box = document.querySelector('#chat-turn-footer [data-journal-proposal-box]');
+  if (!box) return;
+  box.outerHTML = journalProposalHtml(turn);
+  wireJournalProposal(turn);
+}
+
+function wireJournalProposal(turn) {
+  const box = document.querySelector('#chat-turn-footer [data-journal-proposal-box]');
+  box?.querySelector('[data-jp-no]')?.addEventListener('click', () => { turn.jpState = { state: 'dismissed' }; redrawJournalProposal(turn); });
+  box?.querySelector('[data-jp-add]')?.addEventListener('click', async () => {
+    const p = turn.journalProposal;
+    turn.jpState = { state: 'saving' }; redrawJournalProposal(turn);
+    try {
+      await writeJournalTurn(p.investigation, { sessionId: sessionId(), exchangeId: p.exchange_id, note: '' }, { confirm: true });
+      turn.jpState = { state: 'saved' };
+      const earlier = state.chat.find((t) => t.exchangeId != null && t.exchangeId === p.exchange_id);
+      if (earlier) earlier.journalSaved = true;
+    } catch (err) {
+      turn.jpState = { state: 'error', msg: err.loginRequired ? 'Sign in to write in the journal.' : err.message };
+    }
+    redrawJournalProposal(turn);
   });
 }
 
@@ -834,6 +903,7 @@ function structuredTableHtml(turn) {
         </div>`).join('')}
       </div></div>`);
   }
+  if (turn.journalProposal) out.push(journalProposalHtml(turn));
   if (turn.resourceQuestion) out.push(otherResourceHtml(turn));
   if (turn.aliasSuggestion) out.push(aliasHtml(turn));
   if (turn.resourceCheckError) {
@@ -1163,10 +1233,7 @@ function renderPromotedFooter(turn, i) {
       <button data-act="copy-turn"
         class="cursor-pointer bg-transparent text-caveat text-ink-muted underline"
         >${icon('copy', { size: 13 })} copy as evidence</button>
-      <button data-act="journal-turn" ${state.investigation ? '' : 'disabled'}
-        title="${state.investigation ? 'Save this answer as an entry in the current investigation\'s journal' : 'Choose an investigation first'}"
-        class="cursor-pointer bg-transparent text-caveat text-ink-muted underline disabled:cursor-default disabled:opacity-60"
-        >add to investigation journal</button>
+      ${journalTriggerHtml(turn)}
       ${turn.intent ? `<span class="text-ink-muted">intent ${esc(turn.intent)}${turn.cached ? ' · cached' : ''}</span>` : ''}
     </div>
     <div data-journal-form class="mt-s2"></div>
@@ -1181,6 +1248,7 @@ function renderPromotedFooter(turn, i) {
   footer.querySelector('[data-act="open-compile"]')?.addEventListener('click', () => openCompile(turn));
   wireAlias(turn);
   wireResourceQuestion(turn);
+  wireJournalProposal(turn);
   wireRunnable(turn);
   // Read the schedules once per turn (the footer redraws on a vote; the rows keep what they read).
   if ((turn.runnable || []).some((r) => (r.sched || {}).state === 'unread')) loadRunnableSchedules(turn);
@@ -1221,6 +1289,15 @@ function applyAnswer(turn, body) {
   // A scoped question that named ANOTHER resource: held, not answered (see aliasHtml / otherResourceHtml).
   turn.resourceQuestion = body.resource_question || null;
   turn.held = Boolean(body.held);
+  // The journal tool's question: the pane draws [Add] [Not now] for it, so the bracketed words are not left in the text.
+  turn.journalProposal = body.journal_proposal || null;
+  turn.exchangeId = body.exchange_id ?? null;
+  // Turns the chat's journal tool just put in the journal: their per-turn control shows the saved cue.
+  for (const id of body.journal_written || []) {
+    const earlier = state.chat.find((t) => t.exchangeId != null && t.exchangeId === id);
+    if (earlier) earlier.journalSaved = true;
+  }
+  if (turn.journalProposal) turn.answer = String(turn.answer || '').replace(/\s*\[Add\]\s*\[Not now\]\s*$/, '');
   turn.resourceCheckError = body.resource_check_error || '';
   turn.runnable = gapRunnable(turn.compiled);
 }
@@ -1261,6 +1338,7 @@ export async function submitAsk({ question = '', skipResourceCheck = false } = {
     perspectives: state.activePerspectives,
     sessionId: sessionId(),
     skipResourceCheck,
+    investigation: state.investigation || null,
   };
   let sawChunk = false;
   try {
@@ -1274,7 +1352,7 @@ export async function submitAsk({ question = '', skipResourceCheck = false } = {
           response: turn.answer, intent: evt.intent, query_hash: evt.hash, cached: evt.cached,
           chart: evt.chart, compiled: evt.compiled, symbol_table: evt.symbol_table,
           compare_symbols: evt.compare_symbols, alias_suggestion: evt.alias_suggestion,
-          resource_question: evt.resource_question, held: evt.held, resource_check_error: evt.resource_check_error,
+          resource_question: evt.resource_question, held: evt.held, journal_proposal: evt.journal_proposal, exchange_id: evt.exchange_id, journal_written: evt.journal_written, resource_check_error: evt.resource_check_error,
         });
       }
     }

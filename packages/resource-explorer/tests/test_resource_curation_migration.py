@@ -136,7 +136,8 @@ def test_curations_reads_issue_no_ddl(registry, monkeypatch):
 # ── resource_journal: same move (journal.py's per-call _ensure_schema) ──────────────────────────
 
 JOURNAL_EXPECTED = [("id", None), ("entity_type", None), ("entity_slug", None), ("author", None),
-                    ("written_at", None), ("body", None), ("suggested_to", "[]"), ("compile_id", None)]
+                    ("written_at", None), ("body", None), ("suggested_to", "[]"), ("compile_id", None),
+                    ("note", None), ("turn_json", None)]
 
 
 def test_fresh_sqlite_gets_the_journal_table_from_migrations(tmp_path):
@@ -149,7 +150,8 @@ def test_fresh_sqlite_gets_the_journal_table_from_migrations(tmp_path):
                for r in c.execute("PRAGMA index_list(resource_journal)").fetchall()}
     finally:
         c.close()
-    assert [(r[1], (r[4] or "").strip("'") if r[4] is not None else None) for r in rows] == JOURNAL_EXPECTED
+    # SQLite reports an explicit DEFAULT NULL as the text "NULL": that is no default (None) here.
+    assert [(r[1], None if r[4] in (None, "NULL") else r[4].strip("'")) for r in rows] == JOURNAL_EXPECTED
     assert idx["idx_resource_journal_entity"] == ["entity_type", "entity_slug", "written_at"]
 
 
@@ -163,11 +165,53 @@ def test_fresh_postgres_schema_gets_the_journal_table_from_migrations(pg_registr
                            "WHERE schemaname = current_schema() AND tablename = 'resource_journal'").fetchall()
     assert [(r["column_name"], None if r["column_default"] is None else r["column_default"].split("::")[0].strip("'"))
             for r in cols] == JOURNAL_EXPECTED
-    # compile_id is the one nullable column: NULL when the entry was not made from a chat turn with a compile.
-    assert {r["column_name"] for r in cols if r["is_nullable"] == "YES"} == {"compile_id"}
+    # compile_id, note and turn_json are the nullable columns: NULL when the entry was not made from a chat turn
+    # with a compile, has no note of the person's, or is not a derived turn.
+    assert {r["column_name"] for r in cols if r["is_nullable"] == "YES"} == {"compile_id", "note", "turn_json"}
     defs = {r["indexname"]: r["indexdef"] for r in idx}
     assert "(entity_type, entity_slug, written_at)" in defs["idx_resource_journal_entity"]
     assert "resource_journal_pkey" in defs
+
+
+def test_an_older_journal_table_gains_note_and_turn_json_and_a_second_start_is_a_no_op(tmp_path):
+    """The table as the live registry has it (8 columns, before note/turn_json): the migration ADDs the two columns,
+    keeps the old rows readable, and a second start neither errors nor adds a duplicate."""
+    db = str(tmp_path / "old.db")
+    c = sqlite3.connect(db)
+    c.execute("""CREATE TABLE resource_journal (id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, entity_slug TEXT NOT NULL,
+                 author TEXT NOT NULL, written_at TEXT NOT NULL, body TEXT NOT NULL,
+                 suggested_to TEXT NOT NULL DEFAULT '[]', compile_id TEXT)""")
+    c.execute("INSERT INTO resource_journal VALUES ('old1','repo','p','a','2026-10-01T00:00:00','before',"
+              "'[\"Steward\"]',NULL)")
+    c.commit(); c.close()
+
+    def columns():
+        k = sqlite3.connect(db)
+        try:
+            return [r[1] for r in k.execute("PRAGMA table_info(resource_journal)").fetchall()]
+        finally:
+            k.close()
+
+    assert "note" not in columns() and "turn_json" not in columns()
+    reg = ProjectRegistry(db_path=db)
+    assert columns()[-2:] == ["note", "turn_json"] and len(columns()) == 10
+    ProjectRegistry(db_path=db)                       # second start: no error, no duplicate
+    assert columns().count("note") == 1 and columns().count("turn_json") == 1 and len(columns()) == 10
+    from resource_explorer.journal import Journal
+    old = Journal(reg).entries("repo", "p")[0]
+    assert old["body"] == "before" and old["suggested_to"] == ["Steward"] and "note" not in old and "turn" not in old
+
+
+def test_a_fresh_registry_started_twice_keeps_one_of_each_journal_column(tmp_path):
+    db = str(tmp_path / "twice.db")
+    ProjectRegistry(db_path=db)
+    ProjectRegistry(db_path=db)
+    c = sqlite3.connect(db)
+    try:
+        names = [r[1] for r in c.execute("PRAGMA table_info(resource_journal)").fetchall()]
+    finally:
+        c.close()
+    assert names == [n for n, _ in JOURNAL_EXPECTED]
 
 
 def test_journal_reads_and_writes_issue_no_ddl_and_output_is_unchanged(registry, monkeypatch):

@@ -293,6 +293,17 @@ def _display_name(registry, entity_type: str, slug: str) -> str:
     return str(getattr(ent, "display_name", "") or slug)
 
 
+def entry_note_text(entry: dict) -> str:
+    """What a journal entry sends to Egeria as its Note text: the derived body, then (owner 2026-10-22, "promote the
+    note too") the person's own note as a separate trailing paragraph, never merged into the derived text. An entry
+    with no note is sent exactly as before."""
+    body = entry.get("body") or ""
+    note = (entry.get("note") or "").strip()
+    if not note:
+        return body
+    return f"{body}\n\nNote ({entry.get('author') or 'unsigned'}): {note}"
+
+
 def _payload_for(registry, entity_type: str, slug: str, item: FeedbackItem, guid: str, by: str,
                  feedback: dict, entries: dict) -> tuple[str, str, dict]:
     base = {"entity_type": entity_type, "entity_slug": slug, "element_guid": guid, "by": by}
@@ -303,7 +314,7 @@ def _payload_for(registry, entity_type: str, slug: str, item: FeedbackItem, guid
             "rated_at": f.get("created_at") or ""}
     e = entries[item.id]
     return NOTE_KIND, note_qualified_name(item.id), {
-        **base, "entry_id": item.id, "body": e.get("body") or "", "written_at": e.get("written_at") or "",
+        **base, "entry_id": item.id, "body": entry_note_text(e), "written_at": e.get("written_at") or "",
         "compile_id": e.get("compile_id") or "",
         "note_qualified_name": note_qualified_name(item.id),
         "note_log_qualified_name": note_log_qualified_name(guid),

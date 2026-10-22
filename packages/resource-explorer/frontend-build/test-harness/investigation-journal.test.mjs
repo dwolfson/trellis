@@ -150,17 +150,6 @@ test('a refused publish says why and the button stays usable', async () => {
   assert.equal(t.document.querySelector('[data-act="inv-journal-publish"]').disabled, false);
 });
 
-test('a chat turn seeds a plain-text entry whose citation line carries the compile, or says none was recorded', async () => {
-  await setUp({ journal: ENTRIES });
-  const { journalSeedFromTurn } = await import('/static/next/chat.js');
-  const turn = { question: 'How often does egeria release?', answer: 'Monthly.', slug: 'egeria_git', source: 'From 13 stored results' };
-  const day = new Date('2026-10-19T12:00:00Z');
-  const withCompile = journalSeedFromTurn({ ...turn, compileId: 'ab12cd34ef56' }, day);
-  assert.match(withCompile, /— egeria_git · compile ab12cd34 · From 13 stored results/);
-  assert.doesNotMatch(withCompile, /\*\*/);
-  assert.match(journalSeedFromTurn({ ...turn, compileId: null }, day), /— egeria_git · no compile recorded · From 13 stored results/);
-});
-
 test('an entry that carries a compile shows it in its header', async () => {
   const t = await setUp({ journal: { entries: [
     { id: 'e1', author: 'me', written_at: '2026-10-19T10:00:00+00:00', body: 'x', compile_id: 'ab12cd34ef56', suggested_to: [] }], suggested_to: [] } });
@@ -198,4 +187,17 @@ test('hostile markup in an entry is inert: no script, no handler, no javascript:
   for (const a of body.querySelectorAll('a')) assert.doesNotMatch(a.getAttribute('href') || '', /^javascript:/i);
   assert.equal([...body.querySelectorAll('a')].find((a) => a.textContent === 'ok').getAttribute('href'), 'https://example.com/p');
   assert.equal(globalThis.window.__x, undefined);
+});
+
+test('an entry made from a chat turn shows the person\'s note apart, labelled "your note", and says it goes in the same Egeria Note', async () => {
+  const t = await setUp({ journal: { entries: [
+    { id: 'e1', author: 'me', written_at: '2026-10-22T08:00:00+00:00', body: 'Per chat\n\nQuestion: q', compile_id: 'abcdef12', note: 'check bob' },
+    { id: 'e2', author: 'me', written_at: '2026-10-21T08:00:00+00:00', body: 'plain entry' }], suggested_to: [] } });
+  const entries = [...t.document.querySelectorAll('#inv-journal [data-journal-body]')];
+  assert.equal(entries.length, 2);
+  const note = t.document.querySelector('#inv-journal [data-journal-note]');
+  assert.equal(text(note), 'your note: check bob');
+  assert.ok(!text(entries[0]).includes('check bob'), 'the note is not merged into the entry text');
+  assert.equal(t.document.querySelectorAll('#inv-journal [data-journal-note]').length, 1, 'an entry without a note has no note line');
+  assert.match(text(t.document.getElementById('inv-journal')), /note goes in the same Egeria Note, after the entry/);
 });
