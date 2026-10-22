@@ -263,3 +263,141 @@ def test_bootstrap_canary_by_qualified_name_is_the_fast_read_and_a_failure_is_un
     assert bs.canary_present(batch, expert=expert(MISS)) is False
     assert bs.canary_present(batch, expert=expert(raises=PyegeriaConnectionException())) is None
     assert bs.canary_present(batch, expert=expert("Server busy")) is None
+
+
+# ── two elements holding the name: Egeria's 404 OMAG-GENERIC-HANDLERS-404-002 is "more than one", never absent ──
+
+def _dup():
+    from tests.qn_lookup_bridge import multiple_entities_404
+    return multiple_entities_404(QN)
+
+
+def test_the_duplicate_404_is_a_real_pyegeria_not_found_with_the_message_id():
+    from pyegeria.core._exceptions import PyegeriaNotFoundException
+    from resource_explorer.egeria_absence import egeria_message_id
+
+    exc = _dup()
+    assert isinstance(exc, PyegeriaNotFoundException)
+    assert exc.related_http_code == 404
+    assert egeria_message_id(exc) == "OMAG-GENERIC-HANDLERS-404-002"
+
+
+def test_helper_turns_the_duplicate_404_into_qualified_name_ambiguous():
+    from resource_explorer.egeria_lookup import QualifiedNameAmbiguous
+
+    original = _dup()
+    with pytest.raises(QualifiedNameAmbiguous) as info:
+        guid_by_qualified_name(expert(raises=original), QN)
+    assert info.value.original is original and info.value.__cause__ is original
+    assert "Multiple" in str(info.value) or "more than one" in str(info.value)
+    assert isinstance(info.value, QualifiedNameLookupError)
+
+
+def test_any_other_not_found_propagates_unchanged():
+    from pyegeria.core._exceptions import PyegeriaNotFoundException
+    from tests.test_lookup_failure_round2 import _egeria_error
+
+    other = _egeria_error(PyegeriaNotFoundException, 404, "OMRS-METADATA-COLLECTION-404-001")
+    with pytest.raises(PyegeriaNotFoundException) as info:
+        guid_by_qualified_name(expert(raises=other), QN)
+    assert info.value is other
+
+
+def test_classify_the_duplicate_404_is_unreadable_not_absent():
+    from resource_explorer.egeria_absence import UNREADABLE, is_absent, lookup_exception_is_absent
+
+    assert is_absent(_dup()) == UNREADABLE
+    assert lookup_exception_is_absent(_dup()) is False
+
+
+def test_publisher_sub_resources_do_not_create_on_a_duplicated_name():
+    from unittest.mock import MagicMock
+    from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
+
+    pub = EgeriaPublisher()
+    pub._automated_curation = create_autospec(AutomatedCuration, instance=True, spec_set=True)
+    pub._metadata_expert = expert(raises=_dup())
+    with pytest.raises(Exception) as info:
+        pub._find_element_guid(QN)
+    from resource_explorer.egeria_absence import lookup_exception_is_absent
+    assert not lookup_exception_is_absent(info.value)      # the sub-resource loop's own test: could not check
+
+
+def test_materializers_do_not_create_on_a_duplicated_name():
+    import importlib
+    from resource_explorer.egeria_lookup import QualifiedNameAmbiguous
+
+    for modname, cls_name in [("resource_explorer.surveyors.arch_recovery.materializer", "ComponentMaterializer"),
+                              ("resource_explorer.surveyors.arch_recovery.blueprint_materializer", "BlueprintMaterializer")]:
+        m = getattr(importlib.import_module(modname), cls_name)(platform_url="https://fake")
+        m._metadata_expert = expert(raises=_dup())
+        with pytest.raises(QualifiedNameAmbiguous):
+            m._find_element_guid(QN)
+
+
+def test_blueprint_find_blueprint_duplicate_is_blueprint_ambiguous_by_message_id():
+    from unittest.mock import MagicMock
+    from resource_explorer.surveyors.arch_recovery.blueprint_materializer import (
+        BlueprintAmbiguous, BlueprintMaterializer)
+
+    m = BlueprintMaterializer(platform_url="https://fake")
+    m._metadata_expert = expert(raises=_dup())
+    m._solution_architect = MagicMock()
+    with pytest.raises(BlueprintAmbiguous):
+        m._find_blueprint("SolutionBlueprint::a")
+    m._solution_architect.create_solution_blueprint.assert_not_called()
+
+
+def test_database_surveyor_finders_do_not_adopt_or_create_on_a_duplicated_name():
+    from resource_explorer.surveyors.database.egeria_database_surveyor import (
+        EgeriaDatabaseSurveyor, EgeriaDatabaseSurveyorError)
+
+    s = EgeriaDatabaseSurveyor(platform_url="https://fake", view_server="v")
+    s._automated_curation = create_autospec(AutomatedCuration, instance=True, spec_set=True)
+    for finder in (s._find_element_guid, s._find_by_qualified_name):
+        s._metadata_expert = expert(raises=_dup())
+        with pytest.raises(EgeriaDatabaseSurveyorError, match="Egeria"):
+            finder(QN)
+
+
+def test_filesystem_surveyor_does_not_create_on_a_duplicated_name():
+    from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import (
+        EgeriaFileSystemSurveyor, EgeriaFileSystemSurveyorError)
+
+    s = EgeriaFileSystemSurveyor(platform_url="https://fake", view_server="v")
+    s._automated_curation = create_autospec(AutomatedCuration, instance=True, spec_set=True)
+    s._metadata_expert = expert(raises=_dup())
+    with pytest.raises(EgeriaFileSystemSurveyorError, match="could not be made"):
+        s._find_element_guid(QN, type_name="FileFolder", qualified_name=True)
+
+
+def test_doc_source_does_not_create_on_a_duplicated_name():
+    from resource_explorer.doc_source_egeria import DocSourceLookupError, _find_ref_guid
+
+    class Clients:
+        def of(self, cls):
+            return expert(raises=_dup())
+
+    with pytest.raises(DocSourceLookupError, match="could not be made"):
+        _find_ref_guid(Clients(), "ExternalReference::u")
+
+
+def test_investigation_purposes_does_not_create_on_a_duplicated_name():
+    from resource_explorer import investigation_purposes as ip
+
+    with pytest.raises(ip.CouldNotCheck):
+        ip._lookup(expert(raises=_dup()), "q")
+
+
+def test_reference_catalog_proposal_does_not_create_on_a_duplicated_name():
+    from resource_explorer.surveyors.database.egeria_reference_catalog import ProposalLookupError, _find_existing
+
+    with pytest.raises(ProposalLookupError):
+        _find_existing(expert(raises=_dup()), "q", "DataClass")
+
+
+def test_bootstrap_data_class_seed_does_not_create_on_a_duplicated_name():
+    from resource_explorer.surveyors.database import bootstrap_data_classes as bdc
+
+    with pytest.raises(bdc.CouldNotCheck):
+        bdc._existing_guid(expert(raises=_dup()), "q", "ValidValueDefinition")

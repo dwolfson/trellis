@@ -13,6 +13,8 @@ Contract of `guid_by_qualified_name`:
   * anything else          -> RAISES. A raised pyegeria exception propagates unchanged (so the caller's own
     `egeria_absence.is_absent` / could-not-check handling still applies), an answer of an unknown shape raises
     `QualifiedNameLookupError`. A failed lookup is never "absent": absent licenses a create.
+  * two elements holding the name -> `QualifiedNameAmbiguous` (Egeria's 404 `OMAG-GENERIC-HANDLERS-404-002`,
+    which pyegeria raises as a NotFound and which must NOT read as absent);
   * with `type_name`, the element's type (or one of its supertypes) must match; a mismatch raises
     `QualifiedNameTypeMismatch`. qualifiedName is unique across Egeria, so another type holding the name means
     a create would be refused or duplicate: the caller must not read it as "absent".
@@ -23,7 +25,7 @@ from __future__ import annotations
 
 import re
 
-from resource_explorer.egeria_absence import MISS_ANSWERS
+from resource_explorer.egeria_absence import MISS_ANSWERS, MULTIPLE_ENTITIES_FOUND_MESSAGE_ID, egeria_message_id
 
 _GUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 _MISSES = {m.lower() for m in MISS_ANSWERS}
@@ -42,6 +44,17 @@ class NoAnswer(QualifiedNameLookupError):
 
 class QualifiedNameTypeMismatch(QualifiedNameLookupError):
     """An element holds this qualifiedName but is not of the type asked for."""
+
+
+class QualifiedNameAmbiguous(QualifiedNameLookupError):
+    """Two or more elements hold this qualifiedName. Egeria's unique-name read refuses with
+    `OMAG-GENERIC-HANDLERS-404-002` (HTTP 404, which pyegeria raises as a NotFound): that is "there is more than
+    one", never "there is none", so nothing is adopted or created. Carries the original exception."""
+
+    def __init__(self, message: str, original: BaseException | None = None):
+        super().__init__(message)
+        self.original = original
+        self.__cause__ = original
 
 
 def _is_miss(answer) -> bool:
@@ -73,7 +86,15 @@ def _type_names(answer: dict) -> set[str]:
 def guid_by_qualified_name(expert, qualified_name: str, *, type_name: str | None = None) -> str | None:
     """The GUID of the element whose qualifiedName is EXACTLY `qualified_name`, None for Egeria's explicit
     "No elements found", and a raise for everything else (see the module docstring)."""
-    answer = expert.get_metadata_element_by_unique_name(qualified_name, property_name="qualifiedName")
+    try:
+        answer = expert.get_metadata_element_by_unique_name(qualified_name, property_name="qualifiedName")
+    except Exception as exc:
+        # Matched on Egeria's message id, never its English. Any other exception propagates unchanged.
+        if egeria_message_id(exc) == MULTIPLE_ENTITIES_FOUND_MESSAGE_ID:
+            raise QualifiedNameAmbiguous(
+                f"more than one element holds the qualifiedName {qualified_name!r} "
+                f"({MULTIPLE_ENTITIES_FOUND_MESSAGE_ID}): {' '.join(str(exc).split())[:200]}", exc) from exc
+        raise
     if _is_miss(answer):
         return None
     if answer is None:

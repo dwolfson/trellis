@@ -284,16 +284,16 @@ class BlueprintMaterializer:
         SolutionBlueprint, qualifiedName equal): a hit that fails is not ours and raises, because creating
         beside it could duplicate the qualifiedName. More than one hit is `BlueprintAmbiguous`.
         Returns {guid, display_name, additional}."""
-        from resource_explorer.egeria_lookup import guid_by_qualified_name
+        from resource_explorer.egeria_lookup import QualifiedNameAmbiguous, guid_by_qualified_name
 
         try:
             # The unique-name read (egeria_lookup.py), untyped: the read-back below verifies the type and keeps
-            # its own words. qualifiedName is unique, so "more than one" cannot come from this endpoint; the
-            # guard stays for a server that answers it anyway.
+            # its own words. Two elements holding the name arrive as Egeria's 404 OMAG-GENERIC-HANDLERS-404-002,
+            # which the helper raises as QualifiedNameAmbiguous (keyed on the message id, not the English).
             guid = guid_by_qualified_name(self._metadata_expert, qualified_name) or ""
         except Exception as exc:
             text = f"{exc} {getattr(exc, 'context', '')}"
-            if "Multiple elements" in text or "more than one" in text.lower():
+            if isinstance(exc, QualifiedNameAmbiguous) or "Multiple elements" in text or "more than one" in text.lower():
                 raise BlueprintAmbiguous(
                     f"ambiguous: more than one element in Egeria answers to {qualified_name}: "
                     f"nothing was adopted or created") from exc

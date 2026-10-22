@@ -28,10 +28,29 @@ def element_answer(guid: str, type_name: str = "Referenceable", supers: list[str
                      "superTypeNames": list(ANY_TYPE_NAMES if supers is None else supers)}}
 
 
+MULTIPLE_ENTITIES_FOUND = "OMAG-GENERIC-HANDLERS-404-002"
+
+
+def multiple_entities_404(name: str = "the name"):
+    """The REAL exception pyegeria raises when Egeria's unique-name read finds two elements: a 404-wrapped
+    answer (`relatedHTTPCode` 404, `exceptionErrorMessageId` OMAG-GENERIC-HANDLERS-404-002) as a
+    `PyegeriaNotFoundException`, built the way `_async_make_request` builds it."""
+    import httpx
+    from pyegeria.core._exceptions import PyegeriaNotFoundException
+
+    message = (f"{MULTIPLE_ENTITIES_FOUND} Multiple Referenceable entities where found with a name of {name} "
+               "in the open metadata repositories")
+    body = {"class": "VoidResponse", "relatedHTTPCode": 404, "exceptionErrorMessageId": MULTIPLE_ENTITIES_FOUND,
+            "exceptionErrorMessage": message}
+    resp = httpx.Response(200, json=body, request=httpx.Request("POST", "https://localhost:9443/servers/v/api"))
+    return PyegeriaNotFoundException(resp, {"caller_method": "get_metadata_element_by_unique_name"},
+                                     additional_info=body)
+
+
 def convert_answer(answer):
     if isinstance(answer, list):
-        if len(answer) > 1:       # the unique-name endpoint cannot return two; a server holding two raises
-            raise RuntimeError("Multiple elements found for supplied name!")
+        if len(answer) > 1:       # the unique-name endpoint cannot return two; a server holding two answers 404-002
+            raise multiple_entities_404()
         return convert_answer(answer[0]) if answer else NO_ELEMENTS_FOUND
     if isinstance(answer, str) and len(answer) == 36 and answer.count("-") == 4:
         return element_answer(answer)
