@@ -437,3 +437,39 @@ class TestPostgresClaimSemantics:
             t.join(timeout=20)
 
         assert set(claimed) == ids
+
+    def test_a_claimer_locks_only_the_row_it_takes(self, pg_registry, monkeypatch):
+        """Both claimers have READ their candidates before either has taken a lock (a barrier inside the scan
+        forces it). A scan that locked every candidate it read would leave the second claimer nothing."""
+        from resource_explorer import presser_hold
+
+        ids = {pg_registry.enqueue_run("scouting_scan", {"slug": f"s{i}"}) for i in range(2)}
+        real = presser_hold.claimable_by
+        met = threading.Barrier(2)
+        seen = threading.local()
+
+        def _meet_once(*a, **kw):
+            if not getattr(seen, "done", False):
+                seen.done = True
+                met.wait(timeout=5)
+            return real(*a, **kw)
+
+        monkeypatch.setattr(presser_hold, "claimable_by", _meet_once)
+        claimed: list = []
+
+        def _claim(name: str) -> None:
+            reg = ProjectRegistry(database_url=pg_registry.database_url)
+            try:
+                row = reg.claim_next_run(name)
+            except threading.BrokenBarrierError:
+                return
+            if row is not None:
+                claimed.append(row["id"])
+
+        threads = [threading.Thread(target=_claim, args=(f"host:{i}",)) for i in (1, 2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=20)
+
+        assert set(claimed) == ids

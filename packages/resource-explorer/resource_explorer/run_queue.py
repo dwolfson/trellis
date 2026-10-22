@@ -591,132 +591,121 @@ def execute_run(row: dict, registry=None) -> RunOutcome:
     """Run one claimed row to a terminal state and record it; the presser's held session (`presser_hold`) is released
     on EVERY exit: an early return, a failed `mark_run_running`/`set_activity_runner`, a crash, or a normal end.
 
-    The detail of the run itself is in `_execute_run`.
+    Every failure path writes a terminal state; the one way a run ends without doing so is the process dying,
+    which is what reconciliation exists for (and why the heartbeat is written at all).
     """
     from resource_explorer import presser_hold
 
-    try:
-        return _execute_run(row, registry)
-    finally:
-        presser_hold.release(row["id"])
+    with presser_hold.released_on_exit(row["id"]):
+        import json
 
+        from resource_explorer.registry import ProjectRegistry
 
-def _execute_run(row: dict, registry=None) -> RunOutcome:
-    """Run one claimed row to a terminal state and record it.
-
-    Every failure path writes a terminal state. The one way a run can end
-    without doing so is the process dying — which is precisely what
-    reconciliation exists for, and why the heartbeat is written at all.
-    """
-    import json
-
-    from resource_explorer.registry import ProjectRegistry
-
-    registry = registry or ProjectRegistry()
-    run_id = row["id"]
-    kind = row["kind"]
-    result_ref = row.get("result_ref") or ""
-    try:
-        target = json.loads(row.get("target") or "{}")
-    except (TypeError, ValueError):
-        target = {}
-
-    handler = HANDLERS.get(kind)
-    if handler is None:
-        # Loud and terminal, not left queued: a kind with no handler is a
-        # deployment mistake, and a row that sits queued for ever looks
-        # identical to a queue nobody is draining.
-        error = f"no handler registered for run kind {kind!r}"
-        log.error("run %s: %s", run_id, error)
-        registry.finish_run(run_id, "failed", error=error)
-        outcome = RunOutcome(state="failed", error=error)
-        _close_activity(registry, result_ref, kind, target, outcome)
-        return outcome
-
-    if kind in PERSON_ACTION_KINDS and not (row.get("requested_by") or "").strip():
-        # A person's action with nobody recorded: never an anonymous daemon write (Brief I).
-        log.error("run %s (%s): %s", run_id, kind, NO_REQUESTER_SENTENCE)
-        registry.finish_run(run_id, "failed", error=NO_REQUESTER_SENTENCE)
-        outcome = RunOutcome(state="failed", error=NO_REQUESTER_SENTENCE)
-        _close_activity(registry, result_ref, kind, target, outcome)
-        return outcome
-
-    registry.mark_run_running(run_id)
-    if result_ref:
-        # Stamp THIS process onto the activity entry, now that it is genuinely
-        # the owner. The enqueuing web process deliberately does not — see
-        # registry.set_activity_runner. This is also what fixes the
-        # process-model's Finding F5: a queued scouting scan now records
-        # ownership the same way an analysis run does, so run_reconciler's
-        # pid-liveness path applies to it instead of the six-hour age heuristic.
-        #
-        # Not wrapped in a best-effort try/except, deliberately, and for the
-        # same reason `mark_run_running` above is not: if this write fails the
-        # registry is unreachable, and the run's very next acts are to heartbeat
-        # and to write findings to that same registry. Swallowing the failure
-        # would buy a run that proceeds without an owner recorded — precisely
-        # the state reconciliation cannot judge — instead of one that fails
-        # immediately and visibly.
-        from resource_explorer.run_reconciler import process_identity
-
-        registry.set_activity_runner(result_ref, process_identity())
-    log.info("run started: id=%s kind=%s claimed_by=%s target=%s",
-             run_id, kind, row.get("claimed_by"), target)
-    try:
-        from resource_explorer.observability import acquisition, llm_usage
-
-        run_reset = current_run.set({"id": run_id, "registry": registry})
+        registry = registry or ProjectRegistry()
+        run_id = row["id"]
+        kind = row["kind"]
+        result_ref = row.get("result_ref") or ""
         try:
-            with _Heartbeat(registry, run_id), \
-                    _run_as(row), \
-                    llm_usage.usage_scope() as usage, \
-                    acquisition.acquisition_scope() as acquired:
-                outcome = handler(target, result_ref)
-        finally:
-            current_run.reset(run_reset)
-    except Exception as exc:  # pragma: no cover — a handler is expected to catch its own
-        # Scrubbed by shape before it is logged or stored: a handler's exception can carry a connection
-        # string or token, and this catch-all writes the traceback, the run row and the outcome.
-        import traceback
-        from resource_explorer.secret_redaction import scrub_text
+            target = json.loads(row.get("target") or "{}")
+        except (TypeError, ValueError):
+            target = {}
 
-        log.error("run %s (%s) crashed\n%s", run_id, kind, scrub_text(traceback.format_exc()))
-        crash = scrub_text(f"{type(exc).__name__}: {exc}")
-        registry.finish_run(run_id, "failed", error=crash)
-        outcome = RunOutcome(state="failed", error=crash)
+        handler = HANDLERS.get(kind)
+        if handler is None:
+            # Loud and terminal, not left queued: a kind with no handler is a
+            # deployment mistake, and a row that sits queued for ever looks
+            # identical to a queue nobody is draining.
+            error = f"no handler registered for run kind {kind!r}"
+            log.error("run %s: %s", run_id, error)
+            registry.finish_run(run_id, "failed", error=error)
+            outcome = RunOutcome(state="failed", error=error)
+            _close_activity(registry, result_ref, kind, target, outcome)
+            return outcome
+
+        if kind in PERSON_ACTION_KINDS and not (row.get("requested_by") or "").strip():
+            # A person's action with nobody recorded: never an anonymous daemon write (Brief I).
+            log.error("run %s (%s): %s", run_id, kind, NO_REQUESTER_SENTENCE)
+            registry.finish_run(run_id, "failed", error=NO_REQUESTER_SENTENCE)
+            outcome = RunOutcome(state="failed", error=NO_REQUESTER_SENTENCE)
+            _close_activity(registry, result_ref, kind, target, outcome)
+            return outcome
+
+        registry.mark_run_running(run_id)
+        if result_ref:
+            # Stamp THIS process onto the activity entry, now that it is genuinely
+            # the owner. The enqueuing web process deliberately does not — see
+            # registry.set_activity_runner. This is also what fixes the
+            # process-model's Finding F5: a queued scouting scan now records
+            # ownership the same way an analysis run does, so run_reconciler's
+            # pid-liveness path applies to it instead of the six-hour age heuristic.
+            #
+            # Not wrapped in a best-effort try/except, deliberately, and for the
+            # same reason `mark_run_running` above is not: if this write fails the
+            # registry is unreachable, and the run's very next acts are to heartbeat
+            # and to write findings to that same registry. Swallowing the failure
+            # would buy a run that proceeds without an owner recorded — precisely
+            # the state reconciliation cannot judge — instead of one that fails
+            # immediately and visibly.
+            from resource_explorer.run_reconciler import process_identity
+
+            registry.set_activity_runner(result_ref, process_identity())
+        log.info("run started: id=%s kind=%s claimed_by=%s target=%s",
+                 run_id, kind, row.get("claimed_by"), target)
+        try:
+            from resource_explorer.observability import acquisition, llm_usage
+
+            run_reset = current_run.set({"id": run_id, "registry": registry})
+            try:
+                with _Heartbeat(registry, run_id), \
+                        _run_as(row), \
+                        llm_usage.usage_scope() as usage, \
+                        acquisition.acquisition_scope() as acquired:
+                    outcome = handler(target, result_ref)
+            finally:
+                current_run.reset(run_reset)
+        except Exception as exc:  # pragma: no cover — a handler is expected to catch its own
+            # Scrubbed by shape before it is logged or stored: a handler's exception can carry a connection
+            # string or token, and this catch-all writes the traceback, the run row and the outcome.
+            import traceback
+            from resource_explorer.secret_redaction import scrub_text
+
+            log.error("run %s (%s) crashed\n%s", run_id, kind, scrub_text(traceback.format_exc()))
+            crash = scrub_text(f"{type(exc).__name__}: {exc}")
+            registry.finish_run(run_id, "failed", error=crash)
+            outcome = RunOutcome(state="failed", error=crash)
+            _close_activity(registry, result_ref, kind, target, outcome)
+            return outcome
+
+        # LLM cost for this run, recorded OUTSIDE the try above on purpose: the
+        # handler has already succeeded by here, and a metrics sink must not be able
+        # to turn that into a failed run. `usage` is still in scope — the `with`
+        # closed, the name did not — and is read here in the worker rather than from
+        # a callback, since the scope is a ContextVar only code running under it can
+        # see. `log_run_usage` swallows its own errors too; this is belt and braces
+        # because the cost of being wrong is a run reported failed after doing its
+        # work.
+        # Logged whenever EITHER has something to say. A run that made no LLM call
+        # but fetched a 200MB zipball is the expensive case §1 cares most about, and
+        # gating on `usage.calls` alone would have dropped it entirely.
+        if usage.calls or acquired.lookups:
+            snapshot = usage.as_dict()
+            acquired_snapshot = acquired.as_dict()
+            log.info("run %s (%s) cost: %s %s", run_id, kind, snapshot, acquired_snapshot)
+            # No try/except here on purpose. log_run_usage cannot raise — its whole
+            # body is guarded — and wrapping it would make execute_run itself a
+            # broad-except/log-only site in a function that returns a RunOutcome,
+            # which is exactly what tests/test_no_silent_success.py flags. The
+            # protection belongs in the sink, not at every call site.
+            from resource_explorer.observability.mlflow_tracking import log_run_usage
+
+            log_run_usage(run_id, kind, snapshot, acquisition=acquired_snapshot,
+                          slug=str(target.get("slug") or "") if isinstance(target, dict) else "",
+                          analysis_id=str(target.get("analysis_id") or "") if isinstance(target, dict) else "")
+
+        registry.finish_run(run_id, outcome.state, error=outcome.error)
         _close_activity(registry, result_ref, kind, target, outcome)
+        log.info("run finished: id=%s kind=%s state=%s", run_id, kind, outcome.state)
         return outcome
-
-    # LLM cost for this run, recorded OUTSIDE the try above on purpose: the
-    # handler has already succeeded by here, and a metrics sink must not be able
-    # to turn that into a failed run. `usage` is still in scope — the `with`
-    # closed, the name did not — and is read here in the worker rather than from
-    # a callback, since the scope is a ContextVar only code running under it can
-    # see. `log_run_usage` swallows its own errors too; this is belt and braces
-    # because the cost of being wrong is a run reported failed after doing its
-    # work.
-    # Logged whenever EITHER has something to say. A run that made no LLM call
-    # but fetched a 200MB zipball is the expensive case §1 cares most about, and
-    # gating on `usage.calls` alone would have dropped it entirely.
-    if usage.calls or acquired.lookups:
-        snapshot = usage.as_dict()
-        acquired_snapshot = acquired.as_dict()
-        log.info("run %s (%s) cost: %s %s", run_id, kind, snapshot, acquired_snapshot)
-        # No try/except here on purpose. log_run_usage cannot raise — its whole
-        # body is guarded — and wrapping it would make execute_run itself a
-        # broad-except/log-only site in a function that returns a RunOutcome,
-        # which is exactly what tests/test_no_silent_success.py flags. The
-        # protection belongs in the sink, not at every call site.
-        from resource_explorer.observability.mlflow_tracking import log_run_usage
-
-        log_run_usage(run_id, kind, snapshot, acquisition=acquired_snapshot,
-                      slug=str(target.get("slug") or "") if isinstance(target, dict) else "",
-                      analysis_id=str(target.get("analysis_id") or "") if isinstance(target, dict) else "")
-
-    registry.finish_run(run_id, outcome.state, error=outcome.error)
-    _close_activity(registry, result_ref, kind, target, outcome)
-    log.info("run finished: id=%s kind=%s state=%s", run_id, kind, outcome.state)
-    return outcome
 
 
 # ── the claim loop ───────────────────────────────────────────────────────────

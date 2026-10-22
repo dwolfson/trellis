@@ -8,7 +8,7 @@ account only when automated with no known user".
 What this module holds
 ----------------------
 The presser's own Egeria bearer token, **in this process's memory only**, keyed by the run's id, from the press until
-the run ends. It is the same posture as `preview_credential_holder` (a per-sign-in secret kept in memory, nowhere
+the run ends. It is held the way any per-sign-in secret should be (kept in memory, nowhere
 else): nothing here is written to the registry, a run row, the activity log, a log line, an exception message or
 Egeria. `HeldSession.__repr__` hides the token and the holder has no listing and no iteration. The one reader is
 `publishing_as_presser`, below.
@@ -16,7 +16,7 @@ Egeria. `HeldSession.__repr__` hides the token and the holder has no listing and
 * **Where held:** `hold()` is called by the press route (`web/routes/survey_definitions.py`) with the token the request
   carries, BEFORE the run row is enqueued (the run id is made first), so a worker in the same process can never claim
   a row whose token is not there yet.
-* **Lifetime:** released when the run ends (`execute_run`'s `finally`), at the token's own `exp`, or at the cap
+* **Lifetime:** released when the run ends (`released_on_exit`, around `execute_run`), at the token's own `exp`, or at the cap
   (`RE_PRESSER_HOLD_TTL_SECONDS`, default 2 hours, never unbounded), whichever is first; and at process exit.
 * **Cross-process (claim affinity, owner 2026-10-21):** the press route stamps a non-secret `held_by` (the holding
   process's pid + start time, and the hold's end time) into the run's target JSON, no new column. `claimable_by`,
@@ -135,6 +135,17 @@ atexit.register(_HOLDER.clear_all)
 take = _HOLDER.take
 release = _HOLDER.release
 clear_all = _HOLDER.clear_all
+
+
+@contextmanager
+def released_on_exit(run_id: str) -> Iterator[None]:
+    """Release `run_id`'s hold on EVERY way out of the block: a return, a raise, or a normal end. A `with`, not a
+    try/finally at the call site, so `run_queue.execute_run` keeps its structure (its usage log stays outside every
+    Try, which `test_llm_usage` pins)."""
+    try:
+        yield
+    finally:
+        release(run_id)
 
 
 def hold(run_id: str, person: str, token: str | None) -> bool:

@@ -4953,8 +4953,9 @@ class ProjectRegistry:
         sql += f"ORDER BY r.enqueued_at ASC, r.id ASC LIMIT {self._CLAIM_CANDIDATES}"
 
         with self._conn() as conn:
-            if conn.is_postgres:
-                sql += " FOR UPDATE SKIP LOCKED"
+            # NOT `FOR UPDATE SKIP LOCKED` on this candidate scan: a locking SELECT with LIMIT locks EVERY candidate
+            # row it returns (up to `_CLAIM_CANDIDATES`), so a first claimer would hold all of them until it commits
+            # and a second claimer would skip them all and get nothing. The lock is taken below, on the ONE row chosen.
             run_id = None
             alive_cache: dict = {}
             for row in conn.execute(sql, tuple(params)).fetchall():
@@ -4967,6 +4968,10 @@ class ProjectRegistry:
 
                 if not presser_hold.claimable_by(_target_held_by(row["target"]), runner, alive_cache=alive_cache):
                     continue
+                if conn.is_postgres and conn.execute(
+                        "SELECT id FROM runs WHERE id = ? AND state = 'queued' FOR UPDATE SKIP LOCKED",
+                        (row["id"],)).fetchone() is None:
+                    continue        # locked by another claimer, or no longer queued: skip it, try the next candidate
                 run_id = row["id"]
                 break
             if run_id is None:
