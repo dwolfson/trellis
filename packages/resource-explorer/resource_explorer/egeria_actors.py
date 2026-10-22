@@ -285,9 +285,15 @@ def ensure_re_identity_in_egeria(client: Any = None) -> dict:
     'UserIdentity', 'ProfileIdentity' this call wrote), the two GUIDs, and `notes` (things RE
     reports but leaves alone, e.g. an earlier daemon userId still linked).
     """
-    from resource_explorer.egeria_clients import DaemonReason, _daemon_credential
+    from resource_explorer.egeria_clients import (
+        NO_SERVICE_ACCOUNT_SENTENCE, DaemonReason, NoServiceAccount, _daemon_credential)
 
-    user_id = (_daemon_credential()[0] or "").strip()
+    try:
+        user_id = (_daemon_credential()[0] or "").strip()
+    except NoServiceAccount as exc:
+        # The seam refuses (no persona default). The start-up check reports; it never raises.
+        reason = ("no daemon userId is configured" if str(exc) == NO_SERVICE_ACCOUNT_SENTENCE else str(exc))
+        return _set_state({"status": COULD_NOT_CHECK_WORD, "reason": reason})
     if not user_id:
         return _set_state({"status": COULD_NOT_CHECK_WORD, "reason": "no daemon userId is configured"})
     created: list[str] = []
