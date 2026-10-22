@@ -155,29 +155,60 @@ def hold(run_id: str, person: str, token: str | None) -> bool:
     return True
 
 
+_HOST: dict | None = None
+
+
+def host_identity() -> dict:
+    """This machine's identity: its hostname, plus the kernel boot id where that is a cheap file read (Linux).
+    Read once and cached. A pid and start time mean nothing on another host or in another pid namespace."""
+    global _HOST
+    if _HOST is None:
+        import socket
+
+        boot = ""
+        try:
+            from pathlib import Path
+
+            boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        except OSError:
+            boot = ""
+        _HOST = {"host": socket.gethostname(), "boot_id": boot}
+    return _HOST
+
+
 def held_by_for(run_id: str) -> dict | None:
-    """The non-secret claim-affinity stamp for a run this process holds: who holds it and until when. None when
-    nothing is held for `run_id`. Carries no credential: a pid, a process start time and an epoch second."""
+    """The non-secret claim-affinity stamp for a run this process holds: who holds it, on which host, and until when.
+    None when nothing is held for `run_id`, or when this process's own start time cannot be read (a stamp without it
+    could not be matched, so the run is not stamped). Carries no credential. Blocking (may fork `ps` once): call it
+    off the event loop."""
     from resource_explorer.run_reconciler import process_identity
 
     entry = _HOLDER.take(run_id)
-    if entry is None:
+    identity = process_identity()
+    if entry is None or not identity.get("started_at"):
         return None
-    return {**process_identity(), "until": entry.expires_at}
+    return {**identity, **host_identity(), "until": entry.expires_at}
 
 
-def claimable_by(held_by: object, claimer: dict | None, *, now: float | None = None) -> bool:
+def claimable_by(held_by: object, claimer: dict | None, *, now: float | None = None,
+                 alive_cache: dict | None = None) -> bool:
     """May the process `claimer` (a `process_identity()`) claim a row whose target carries this `held_by` stamp?
 
     True for a row with no stamp (not pressed, or pressed with nothing held), for the holder itself, and for any
     process once the holder is provably dead or its hold has ended. False only for a row held by ANOTHER process that
-    is alive or whose liveness cannot be told, inside the hold's time. Pure apart from the liveness check."""
+    is alive or whose liveness cannot be told, inside the hold's time. A holder on a different host (or boot) is
+    "cannot tell": a pid check across hosts or pid namespaces is meaningless, so it waits until `until`.
+    `alive_cache` memoises the liveness check across one claim call. Pure apart from that check."""
     from resource_explorer.run_reconciler import _is_alive
 
     if not isinstance(held_by, dict) or not held_by:
         return True
     claimer = claimer or {}
-    if (held_by.get("pid") == claimer.get("pid") and held_by.get("started_at") == claimer.get("started_at")):
+    here = host_identity()
+    same_host = (held_by.get("host") == here["host"]
+                 and (held_by.get("boot_id") or "") == (here["boot_id"] or ""))
+    if (same_host and held_by.get("pid") == claimer.get("pid")
+            and held_by.get("started_at") == claimer.get("started_at")):
         return True
     try:
         until = float(held_by.get("until"))
@@ -185,7 +216,15 @@ def claimable_by(held_by: object, claimer: dict | None, *, now: float | None = N
         until = 0.0
     if (time.time() if now is None else now) >= until:
         return True
-    return _is_alive(held_by) is False
+    if not same_host:
+        return False
+    key = (held_by.get("pid"), held_by.get("started_at"))
+    if alive_cache is not None and key in alive_cache:
+        return alive_cache[key] is False
+    alive = _is_alive(held_by)
+    if alive_cache is not None:
+        alive_cache[key] = alive
+    return alive is False
 
 
 #: (run id, person) of the pressed run this context is executing; None everywhere else.

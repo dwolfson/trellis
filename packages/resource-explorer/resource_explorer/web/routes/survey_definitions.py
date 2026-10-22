@@ -892,13 +892,20 @@ async def run_survey_definition_route(entity_type: str, slug: str,
     params = _params(body)
     pressed = _caller()
     params.publish_as_presser = bool(params.started_by_person)
-    held = presser_hold.hold(run_id, params.started_by_person, getattr(pressed, "egeria_token", None))
+    from resource_explorer import run_queue
+
+    # Hold the session only when THIS process runs a queue loop that takes this kind; otherwise press as before (no
+    # hold, no stamp) and the run fails fast with the sign-in-expired words wherever it is claimed.
+    held = (run_queue.consumes_kind_here("survey_definition_run")
+            and presser_hold.hold(run_id, params.started_by_person, getattr(pressed, "egeria_token", None)))
     try:
         target = {"entity_type": entity_type, "slug": slug, "params": params.to_dict()}
         # Claim affinity: only this process (which holds the session) may claim the row while it is alive; non-secret.
-        held_by = presser_hold.held_by_for(run_id) if held else None
+        held_by = await asyncio.to_thread(presser_hold.held_by_for, run_id) if held else None
         if held_by:
             target["held_by"] = held_by
+        elif held:
+            presser_hold.release(run_id)         # no usable stamp: do not keep a session nobody is bound to
         registry.enqueue_run(
             "survey_definition_run",
             # Case 3, decision 5: RE's own Run coordinates the definition itself and creates no engine action; its

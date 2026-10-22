@@ -4956,6 +4956,7 @@ class ProjectRegistry:
             if conn.is_postgres:
                 sql += " FOR UPDATE SKIP LOCKED"
             run_id = None
+            alive_cache: dict = {}
             for row in conn.execute(sql, tuple(params)).fetchall():
                 if types is not None and row["kind"] == "engine_action" \
                         and _target_request_type(row["target"]) not in types:
@@ -4964,18 +4965,20 @@ class ProjectRegistry:
                 # process leaves the row for that holder (a dead holder's row is anyone's: it ends "sign-in expired").
                 from resource_explorer import presser_hold
 
-                if not presser_hold.claimable_by(_target_held_by(row["target"]), runner):
+                if not presser_hold.claimable_by(_target_held_by(row["target"]), runner, alive_cache=alive_cache):
                     continue
                 run_id = row["id"]
                 break
             if run_id is None:
                 return None
-            conn.execute(
+            cur = conn.execute(
                 """UPDATE runs SET state='claimed', claimed_by=?, runner=?,
                                    claimed_at=?, heartbeat_at=?
                    WHERE id = ? AND state = 'queued'""",
                 (claimed_by, json.dumps(runner or {}), now, now, run_id),
             )
+            if getattr(cur, "rowcount", 1) == 0:
+                return None         # another claimer took it between the select and the update (SQLite has no SKIP LOCKED)
             claimed = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
         return dict(claimed) if claimed else None
 

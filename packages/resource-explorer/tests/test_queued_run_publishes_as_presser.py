@@ -332,6 +332,7 @@ def test_the_hold_is_released_even_when_the_run_crashes(monkeypatch):
 # ── the press route: the token is held, never stored ────────────────────────
 
 def test_the_press_holds_the_session_and_the_row_carries_no_token(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(run_queue, "consumes_kind_here", lambda kind: True)
     from fastapi.testclient import TestClient
 
     from resource_explorer.registry import DatabaseEntity, ProjectRegistry
@@ -416,7 +417,7 @@ def sqlite_registry(tmp_path):
 
 
 def _stamp(**over):
-    return {**HOLDER, "until": time.time() + 3600, **over}
+    return {**HOLDER, **presser_hold.host_identity(), "until": time.time() + 3600, **over}
 
 
 def test_a_second_live_process_skips_a_held_row_and_the_holder_claims_it(sqlite_registry, monkeypatch):
@@ -467,6 +468,7 @@ def test_a_held_row_at_the_head_does_not_block_the_rows_behind_it(sqlite_registr
 
 
 def test_the_stamp_the_press_writes_is_the_process_identity_and_holds_no_token(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_queue, "consumes_kind_here", lambda kind: True)
     from fastapi.testclient import TestClient
 
     from resource_explorer.registry import DatabaseEntity, ProjectRegistry
@@ -610,3 +612,119 @@ def test_an_unpressed_run_that_fails_its_publish_still_says_publish_failed(no_wr
     with _worker_as_daemon(row_requester=None):
         result = _run_definition(publish)
     assert "publish_note" not in result and result["errors"]
+
+
+# ── fix round 2 (2026-10-21): host identity, stamp only when consumed, cached start time, SQLite claim ─────
+
+def test_a_holder_on_another_host_is_not_claimable_until_the_hold_ends(sqlite_registry, monkeypatch):
+    checked = []
+    monkeypatch.setattr("resource_explorer.run_reconciler._is_alive", lambda owner: checked.append(owner) or False)
+    run_id = _queued(sqlite_registry, _stamp(host="some-other-host"))
+    assert sqlite_registry.claim_next_run("other-worker", OTHER) is None           # a pid check there means nothing
+    assert checked == [] and sqlite_registry.get_run(run_id)["state"] == "queued"
+    sqlite_registry.cancel_queued_run(run_id)
+    _queued(sqlite_registry, _stamp(host="some-other-host", until=time.time() - 1))
+    assert sqlite_registry.claim_next_run("other-worker", OTHER) is not None       # claimable once the hold ends
+    # another boot of the same host name is also another host
+    _queued(sqlite_registry, _stamp(boot_id="a-different-boot"))
+    here = presser_hold.host_identity()
+    if here["boot_id"]:
+        assert sqlite_registry.claim_next_run("other-worker", OTHER) is None
+
+
+def test_liveness_is_asked_once_per_claim_call(sqlite_registry, monkeypatch):
+    asked = []
+    monkeypatch.setattr("resource_explorer.run_reconciler._is_alive", lambda owner: asked.append(1) or True)
+    for _ in range(3):
+        _queued(sqlite_registry, _stamp())
+    assert sqlite_registry.claim_next_run("other-worker", OTHER) is None
+    assert len(asked) == 1
+
+
+def test_the_start_time_is_read_once_and_a_stamp_is_never_blank(monkeypatch):
+    from resource_explorer import run_reconciler
+
+    calls = []
+    run_reconciler._OWN_START.clear()
+    monkeypatch.setattr(run_reconciler, "_process_start_time", lambda pid: calls.append(pid) or "Wed Oct 21 10:00:00 2026")
+    first, second = run_reconciler.process_identity(), run_reconciler.process_identity()
+    assert first == second and len(calls) == 1 and first["started_at"]
+    # unreadable: not cached, and no stamp is made
+    run_reconciler._OWN_START.clear()
+    monkeypatch.setattr(run_reconciler, "_process_start_time", lambda pid: "")
+    presser_hold.hold("run-x", PRESSER, LIVE_TOKEN)
+    assert presser_hold.held_by_for("run-x") is None
+    run_reconciler._OWN_START.clear()
+
+
+def test_the_claim_returns_none_when_the_update_matches_no_row(sqlite_registry, monkeypatch):
+    _queued(sqlite_registry, None)
+    from contextlib import contextmanager
+
+    real = sqlite_registry._conn
+
+    class Wrapped:
+        def __init__(self, conn): self._c = conn
+        def __getattr__(self, n): return getattr(self._c, n)
+        def execute(self, sql, *a):
+            if sql.lstrip().startswith("UPDATE runs SET state='claimed'"):
+                self._c.execute("UPDATE runs SET state='cancelled'")           # another claimer got there first
+            return self._c.execute(sql, *a)
+
+    @contextmanager
+    def conn():
+        with real() as c:
+            yield Wrapped(c)
+
+    monkeypatch.setattr(sqlite_registry, "_conn", conn)
+    assert sqlite_registry.claim_next_run("w", OTHER) is None
+
+
+def _press(tmp_path, monkeypatch, name):
+    from fastapi.testclient import TestClient
+
+    from resource_explorer.registry import DatabaseEntity, ProjectRegistry
+
+    registry = ProjectRegistry(db_path=str(tmp_path / f"{name}.db"))
+    registry.register_database(DatabaseEntity(slug="mydb", display_name="My DB", db_type="postgresql", host="localhost",
+                                              port=5432, database_name="mydb"))
+    monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
+                        lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None)
+    monkeypatch.setattr(
+        "resource_explorer.a2a_auth.caller",
+        lambda: CallerIdentity(user_id=PRESSER, egeria_token=LIVE_TOKEN, auth_source="app-jwt", role="user"))
+    from resource_explorer.web.app import app
+
+    resp = TestClient(app).post("/api/survey-definitions/database/mydb/run",
+                                json={"survey_definition_ref": "GovActionProcess::Test"})
+    assert resp.status_code == 200, resp.text
+    return registry, resp.json()["run_id"]
+
+
+def test_a_process_that_takes_the_kind_holds_and_stamps(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_queue, "consumes_kind_here", lambda kind: True)
+    registry, run_id = _press(tmp_path, monkeypatch, "consumes")
+    assert presser_hold.take(run_id) is not None
+    target = json.loads(registry.get_run(run_id)["target"])
+    assert target["held_by"]["started_at"] and target["held_by"]["host"] == presser_hold.host_identity()["host"]
+
+
+def test_a_process_that_does_not_take_the_kind_neither_holds_nor_stamps(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_queue, "consumes_kind_here", lambda kind: False)
+    registry, run_id = _press(tmp_path, monkeypatch, "no-consume")
+    assert presser_hold.take(run_id) is None
+    target = json.loads(registry.get_run(run_id)["target"])
+    assert "held_by" not in target and target["params"]["publish_as_presser"] is True      # fails fast with the words
+
+
+def test_consumes_kind_here_follows_the_running_loop_and_its_kinds(monkeypatch):
+    runner = run_queue.QueueRunner()
+    monkeypatch.setattr(run_queue, "_runner", runner)
+    assert run_queue.consumes_kind_here("survey_definition_run") is False          # loop not started
+    runner._thread = object()
+    assert run_queue.consumes_kind_here("survey_definition_run") is True
+    runner.kinds = ["engine_action"]
+    assert run_queue.consumes_kind_here("survey_definition_run") is False
+    runner.kinds = None
+    monkeypatch.setattr(run_queue, "HELD_KINDS", frozenset({"survey_definition_run"}))
+    assert run_queue.consumes_kind_here("survey_definition_run") is False

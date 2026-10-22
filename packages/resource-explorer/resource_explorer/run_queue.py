@@ -104,6 +104,18 @@ def queue_consumption_enabled() -> bool:
     return raw.strip().lower() not in ("0", "false", "no", "off", "")
 
 
+def consumes_kind_here(kind: str) -> bool:
+    """True when THIS process is running a QueueRunner that accepts `kind` (loop started, kind included and not held).
+
+    The press route holds a presser's session only when this is true: a held session in a process that never claims
+    its row could only be waited out. Otherwise the run is pressed as before (no hold) and fails fast with the
+    sign-in-expired words in whichever process claims it."""
+    runner = _runner
+    if runner._thread is None or kind in HELD_KINDS:
+        return False
+    return runner.kinds is None or kind in runner.kinds
+
+
 def requested_by() -> str:
     """Who a run is attributed to: the signed-in caller, or `""`.
 

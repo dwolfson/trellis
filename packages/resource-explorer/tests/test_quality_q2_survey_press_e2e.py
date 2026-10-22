@@ -61,6 +61,8 @@ def client(registry, monkeypatch):
     )
     registry.update_database_credentials(SLUG, "surveyor", "stored-pass-0123456789")
     monkeypatch.setattr(type(registry), "has_assigned_egeria_project", lambda self, *a, **k: True)
+    # this process runs the queue loop that takes the row (the embedded worker), so the press holds the session
+    monkeypatch.setattr("resource_explorer.run_queue.consumes_kind_here", lambda kind: True)
     # signed in: the press publishes as the person who pressed it
     monkeypatch.setenv("TRELLIS_ANONYMOUS_READ", "true")
     monkeypatch.setattr("resource_explorer.auth.get_current_user",
