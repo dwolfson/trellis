@@ -41,7 +41,10 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from resource_explorer.database_server_link import ServerLink
 
 log = logging.getLogger(__name__)
 
@@ -474,6 +477,9 @@ class CatalogueGateway(Protocol):
     def create_schema_element(self, db_entity, schema: str, database_guid: str, *,
                               description: str = "") -> str: ...
     def mark_on_behalf(self, guid: str, requester: str, owner: str) -> str: ...
+    def link_database_to_server(self, server_guid: str, database_guid: str, *, server_name: str = "",
+                                write: bool = True) -> "ServerLink": ...
+    def link_published_database(self, db_entity, *, write: bool = True) -> "ServerLink": ...
     def list_catalog_targets(self) -> list[CatalogTarget]: ...
     def add_catalog_target(self, element_guid: str, name: str) -> str: ...
     def remove_catalog_target(self, relationship_guid: str) -> None: ...
@@ -1105,6 +1111,47 @@ class PyegeriaCatalogueGateway:
             except GatewayError as exc:
                 reasons.append(f"Ownership: {_short(exc, 200)}")
         return f"requester not recorded ({'; '.join(reasons)})" if reasons else ""
+
+    def link_database_to_server(self, server_guid: str, database_guid: str, *, server_name: str = "",
+                                write: bool = True) -> "ServerLink":
+        """Relate the database to its server's DatabaseManager (`CapabilityAssetUse`, OWNS), reading first and
+        never creating a second link (`database_server_link`). Never raises; the outcome says what happened."""
+        from resource_explorer import database_server_link as dsl
+
+        try:
+            expert, maker = self._client("MetadataExpert"), self._client("AssetMaker")
+        except Exception as exc:  # noqa: BLE001 - a client that cannot be built is "could not check"
+            return dsl.ServerLink(dsl.COULD_NOT_CHECK, f"could not check ({_short(exc)}) · not linked")
+        return dsl.link_database_to_server(expert, maker, server_guid=server_guid, database_guid=database_guid,
+                                           server_label=server_name, write=write)
+
+    def link_published_database(self, db_entity, *, write: bool = True) -> "ServerLink":
+        """The heal's one door: find the server and the database by their EXACT qualifiedNames
+        (`egeria_lookup`: absent is None, a failed lookup raises and is "could not check", never a create), check
+        that the element RE points at is the one Egeria holds under that name, then link."""
+        from resource_explorer import database_server_link as dsl
+        from resource_explorer.egeria_lookup import guid_by_qualified_name
+
+        server_name = server_name_for(db_entity)
+        server_qn = server_qualified_name(server_name)
+        db_qn = database_qualified_name(server_name, db_entity.database_name)
+        try:
+            expert = self._client("MetadataExpert")
+            # typed: an element of another type holding the name raises, which reads "could not check", so a
+            # wrong-type element is never a link target.
+            server_guid = guid_by_qualified_name(expert, server_qn, type_name="SoftwareServer")
+            db_guid = guid_by_qualified_name(expert, db_qn, type_name="RelationalDatabase")
+        except Exception as exc:  # noqa: BLE001 - any failed lookup is "could not check"
+            return dsl.ServerLink(dsl.COULD_NOT_CHECK, f"could not check ({_short(exc)}) · not linked")
+        if not server_guid:
+            return dsl.ServerLink(dsl.NOT_LINKED, f"not linked: no server element named {server_qn}")
+        if not db_guid:
+            return dsl.ServerLink(dsl.NOT_LINKED, f"not linked: no database element named {db_qn}")
+        pointer = (getattr(db_entity, "egeria_asset_guid", "") or "").strip()
+        if pointer and pointer != db_guid:
+            return dsl.ServerLink(dsl.NOT_LINKED, f"not linked: RE points at {pointer[:8]} but Egeria holds "
+                                                  f"{db_guid[:8]} under that name")
+        return self.link_database_to_server(server_guid, db_guid, server_name=server_name, write=write)
 
     def initiate_catalog_action(self, schema_guid: str, request_parameters: dict[str, str]) -> str:
         """Egeria's own attach: `PostgreSQLGovernance::catalog-postgres-schema` with the schema

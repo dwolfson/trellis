@@ -387,3 +387,39 @@ def format_false_zero_plan(plan: list[dict], *, apply: bool) -> str:
     slugs = sorted({p["slug"] for p in plan})
     lines.append(f"slugs: {', '.join(slugs) if slugs else '(none)'}")
     return "\n".join(lines)
+
+
+# ── database -> server link heal (2026-10-22) ────────────────────────────────
+
+def link_database_servers(registry: ProjectRegistry | None = None, *, dry_run: bool = False,
+                          gateway_for=None):
+    """Link every registered database that has an `egeria_asset_guid` to its server's DatabaseManager
+    (`CapabilityAssetUse`, OWNS) when it has no such link, reading first (`database_server_link`). Returns the
+    `HealReport` ("linked N, already linked M, could not check K").
+
+    **Runs only when pressed or commanded**: nothing at start-up, in the worker, the scheduler or the bootstrap
+    calls it (a test pins that). **Identity = the daemon, recorded as such**: the writes are made by RE's own
+    service account (`DaemonReason.RESYNC`, the Egeria-heal job), and the report says who acted. A person's
+    sign-in is never used, because the heal links databases other people published."""
+    from resource_explorer.database_server_link import heal_database_server_links
+    from resource_explorer.egeria_clients import Daemon, DaemonReason, NoServiceAccount
+
+    registry = registry or ProjectRegistry()
+    try:
+        identity = Daemon(DaemonReason.RESYNC)
+    except NoServiceAccount as exc:
+        raise RepairError(f"the heal acts as RE's own service account, which is not configured: {exc}")
+    acting_as = f"{identity.client_user or identity.user_id} (RE daemon, reason {identity.reason})"
+    if gateway_for is None:
+        from resource_explorer.catalogue_gateway import PyegeriaCatalogueGateway
+
+        shared: dict[tuple[str, str], PyegeriaCatalogueGateway] = {}
+
+        def gateway_for(db):  # noqa: E306
+            # ONE gateway (so one client set) per Egeria the walk touches, not one per database.
+            key = (getattr(db, "egeria_url", "") or "", getattr(db, "egeria_server", "") or "")
+            if key not in shared:
+                shared[key] = PyegeriaCatalogueGateway(db, identity=identity)
+            return shared[key]
+    # `heal_database_server_links` logs "acting as <acting_as>" before its first write; the report carries it too.
+    return heal_database_server_links(registry, gateway_for, acting_as=acting_as, dry_run=dry_run)
