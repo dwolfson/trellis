@@ -2810,8 +2810,8 @@ def sweep_in_flight(registry, port: EgeriaSurveyPort) -> int:
             continue
         derived = refresh_run(registry, port, run, entity_type=entity_type, slug=run["slug"])
         n += 1
-        try:
-            note_sweep_attempt(registry, run, (derived or {}).get("state") or "")
-        except Exception:  # noqa: BLE001 -- the count is bookkeeping; the read itself is already recorded
-            log.warning("could not record a read-back attempt for %s", run.get("engine_action_guid"), exc_info=True)
+        # Not caught: the retry count is what bounds the retries, so a registry that cannot record it is a failed
+        # pass, reported by the caller's own handler (scheduler._readback_pass logs it with its trace), never a
+        # silent success that would retry this row without limit.
+        note_sweep_attempt(registry, run, (derived or {}).get("state") or "")
     return n
