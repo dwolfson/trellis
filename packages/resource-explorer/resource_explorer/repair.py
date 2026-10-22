@@ -413,6 +413,13 @@ def link_database_servers(registry: ProjectRegistry | None = None, *, dry_run: b
     if gateway_for is None:
         from resource_explorer.catalogue_gateway import PyegeriaCatalogueGateway
 
+        shared: dict[tuple[str, str], PyegeriaCatalogueGateway] = {}
+
         def gateway_for(db):  # noqa: E306
-            return PyegeriaCatalogueGateway(db, identity=identity)
+            # ONE gateway (so one client set) per Egeria the walk touches, not one per database.
+            key = (getattr(db, "egeria_url", "") or "", getattr(db, "egeria_server", "") or "")
+            if key not in shared:
+                shared[key] = PyegeriaCatalogueGateway(db, identity=identity)
+            return shared[key]
+    # `heal_database_server_links` logs "acting as <acting_as>" before its first write; the report carries it too.
     return heal_database_server_links(registry, gateway_for, acting_as=acting_as, dry_run=dry_run)

@@ -2,11 +2,12 @@
 
 `database_server_link` mirrors Egeria's PostgreSQL server connector (`PostgresServerCatalogTargetProcessor`
 lines 370-426): the capability is the parent at end 1, the database the asset at end 2, `useType` OWNS. The
-type is multi-link, so the only thing between RE and a duplicate is the read before the create.
+type is NOT multi-link (Egeria refuses a second link between the same pair), so the read before the create
+gives the words and saves a round-trip; Egeria backstops the race.
 
 Every test runs the REAL `database_server_link` against an autospec'd `MetadataExpert` / `AssetMaker`
-(`create_autospec(..., spec_set=True)`, so a call with the wrong signature fails), kept by `FakeEgeria` as
-Egeria keeps a multi-link type: a second create call IS a second relationship.
+(`create_autospec(..., spec_set=True)`, so a call with the wrong signature fails), kept by `FakeEgeria`. The fake does NOT
+refuse a second create (Egeria would), so a test that sees one proves RE's own read-first, not Egeria's backstop.
 """
 from __future__ import annotations
 
@@ -127,7 +128,8 @@ def test_a_database_used_by_another_capability_is_not_linked_to_this_server(worl
     fake.calls.clear()
     out, rec = press(world, fake, refresh=False)
     assert adds(fake) == [] and len(fake.capability_links) == 1
-    assert "not linked: the database is already used by capability other-ca" in step(rec, "publish_elements")["detail"]
+    assert ("not linked: the database is already used by capability other-ca"
+            " (not this server's DatabaseManager)") in step(rec, "publish_elements")["detail"]
 
 
 def test_a_refused_link_is_a_not_linked_sentence_and_the_step_is_still_done(world, fake):
@@ -302,3 +304,82 @@ def test_the_admin_route_refuses_a_non_admin_and_runs_for_an_admin(monkeypatch):
         res = client.post("/api/admin/repair/database-server-links?dry_run=true")
     assert res.status_code == 200 and res.json()["summary"] == "linked 2, already linked 1, could not check 0"
     assert heal.call_args.kwargs == {"dry_run": True}
+
+
+# ── fix round 1 (2026-10-22) ──────────────────────────────────────────────────
+
+def test_the_read_first_pages_to_the_end_and_finds_the_match_on_page_two(fake):
+    """Two pages of CapabilityAssetUse links, the server's DatabaseManager on page 2 -> "already linked"."""
+    from unittest.mock import create_autospec
+
+    from pyegeria import AssetMaker, MetadataExpert
+
+    from resource_explorer.egeria_link_once import PAGE_SIZE
+
+    expert = create_autospec(MetadataExpert, spec_set=True, instance=True)
+    maker = create_autospec(AssetMaker, spec_set=True, instance=True)
+
+    def link(cap, rel):
+        return {"relationshipGUID": rel, "type": {"typeName": "CapabilityAssetUse"}, "elementAtEnd1": True,
+                "versions": {"createTime": "2026-10-02T00:00:00.000+00:00"},
+                "element": {"elementGUID": cap, "type": {"typeName": "SoftwareCapability"}}}
+
+    page1 = [link(f"other-{i}", f"r{i}") for i in range(PAGE_SIZE)]
+    page2 = [link("mgr-1", "r-ours")]
+    seen = []
+
+    def related(guid, relationship_type, body, for_lineage=None, for_duplicate_processing=None,
+                starting_at_end=0, start_from=0, page_size=500, *a, **k):
+        seen.append((relationship_type, start_from))
+        if relationship_type == "SupportedSoftwareCapability":
+            return {"elementList": [{"relationshipGUID": "ssc", "type": {"typeName": relationship_type},
+                                     "versions": {"createTime": "2026-10-01T00:00:00.000+00:00"},
+                                     "element": {"elementGUID": "mgr-1",
+                                                 "type": {"typeName": "DatabaseManager",
+                                                          "superTypeNames": ["SoftwareCapability"]}}}]} \
+                if start_from == 0 else "No elements found"
+        return {"elementList": {0: page1, PAGE_SIZE: page2}.get(start_from, [])} \
+            if start_from in (0, PAGE_SIZE) else "No elements found"
+
+    expert.get_related_metadata_elements.side_effect = related
+    out = dsl.link_database_to_server(expert, maker, server_guid="srv", database_guid="db")
+    assert out.outcome == dsl.ALREADY_LINKED and out.relationship_guid == "r-ours"
+    assert ("CapabilityAssetUse", PAGE_SIZE) in seen            # page 2 was read
+    maker.add_capability_asset_use.assert_not_called()
+
+
+def test_a_wrong_type_element_under_the_database_name_is_could_not_check_never_a_target(heal_world, fake):
+    reg, real, guids = heal_world
+    fake.elements[guids["unlinked"]]["type"] = "Schema"
+    from resource_explorer.repair import link_database_servers
+
+    report = link_database_servers(reg, gateway_for=lambda db: real)
+    row = next(r for r in report.rows if r["slug"] == "unlinked")
+    assert row["outcome"] == dsl.COULD_NOT_CHECK and adds(fake) == []
+
+
+def test_the_heal_shares_one_gateway_across_the_walk_and_logs_who_before_writing(heal_world, fake, monkeypatch,
+                                                                                caplog):
+    reg, real, _ = heal_world
+    from resource_explorer import catalogue_gateway as cg
+    from resource_explorer import egeria_clients as ec
+    from resource_explorer.repair import link_database_servers
+
+    monkeypatch.setattr(ec, "_daemon_credential", lambda: ("resourceexplorernpa", "pw"))
+    built = []
+    real_cls = cg.PyegeriaCatalogueGateway
+
+    class Counting(real_cls):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self._clients.update({"MetadataExpert": fake.pyegeria_expert, "AssetMaker": fake.pyegeria_maker})
+            built.append(self)
+
+    monkeypatch.setattr(cg, "PyegeriaCatalogueGateway", Counting)
+    with caplog.at_level("INFO"):
+        report = link_database_servers(reg)
+    assert len(built) == 1 and report.linked == 1
+    msgs = [r.getMessage() for r in caplog.records]
+    first_write = next(i for i, m in enumerate(msgs) if "egeria write BEFORE" in m)
+    acting = next(i for i, m in enumerate(msgs) if "heal starting: acting as resourceexplorernpa (RE daemon" in m)
+    assert acting < first_write

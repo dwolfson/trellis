@@ -15,10 +15,12 @@ The type is named `CapabilityAssetUse` in Egeria 6 (`OpenMetadataType.CAPABILITY
 `OpenMetadataType.java:967`); "ServerAssetUse" is its pre-6 name (the 2.7 archive comment "0045 Add
 ServerAssetUse"). pyegeria's `AssetMaker.add_capability_asset_use` posts the same relationship.
 
-**Why read first.** `CapabilityAssetUse` is multi-link: a second create adds a second relationship between
-the same two elements (see `egeria_link_once`). So RE reads the database's existing links and creates only
-when there are none, and never when the read could not be completed ("a missing link is recoverable on the
-next publish; a duplicate is the bug").
+**Why read first.** `CapabilityAssetUse` is NOT multi-link (`RelationshipDef` defaults to false and
+`getCapabilityAssetUseRelationship` never sets it); Egeria's generic handler refuses a second uni-link between
+the same pair (`OpenMetadataAPIGenericHandler.java:10573-10600`), so Egeria backstops a race. RE still reads
+first: the read gives the words ("already linked" / "used by another capability") and avoids a server
+round-trip that would only be refused. It creates only when there is no link, and never when the read could
+not be completed ("a missing link is recoverable on the next publish").
 
 **Words** (the commit step's detail, and the heal's per-database line):
 
@@ -150,8 +152,8 @@ def link_database_to_server(expert, asset_maker, *, server_guid: str, database_g
         return ServerLink(ALREADY_LINKED, "already linked", capability_guid=ours[0][0], relationship_guid=ours[0][1])
     if owners:
         other = owners[0][0]
-        return ServerLink(NOT_LINKED, f"not linked: the database is already used by capability {other[:8]}, "
-                                      "which is not this server's DatabaseManager")
+        return ServerLink(NOT_LINKED, f"not linked: the database is already used by capability {other[:8]} "
+                                      "(not this server's DatabaseManager)")
     capability = managers[0]
     where = f"{server_label or server_guid[:8]} via DatabaseManager {capability[:8]}"
     if not write:
@@ -205,6 +207,9 @@ def heal_database_server_links(registry, gateway_for, *, acting_as: str = "", dr
     caller); it must have `link_published_database(db_entity, write=)`. Runs only when called: nothing at
     start-up calls it. A database whose check fails is counted `could not check` and nothing is created for it."""
     report = HealReport(acting_as=acting_as, dry_run=dry_run)
+    # Recorded BEFORE the first write, so a walk that dies half-way still says who was acting.
+    log.info("database/server link heal starting: acting as %s, %s", acting_as or "?",
+             "dry run, no writes" if dry_run else "writes")
     for db in registry.list_databases():
         if not (getattr(db, "egeria_asset_guid", "") or "").strip():
             continue

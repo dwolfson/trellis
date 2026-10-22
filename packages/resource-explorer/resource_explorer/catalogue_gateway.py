@@ -1137,8 +1137,10 @@ class PyegeriaCatalogueGateway:
         db_qn = database_qualified_name(server_name, db_entity.database_name)
         try:
             expert = self._client("MetadataExpert")
-            server_guid = guid_by_qualified_name(expert, server_qn)
-            db_guid = guid_by_qualified_name(expert, db_qn)
+            # typed: an element of another type holding the name raises, which reads "could not check", so a
+            # wrong-type element is never a link target.
+            server_guid = guid_by_qualified_name(expert, server_qn, type_name="SoftwareServer")
+            db_guid = guid_by_qualified_name(expert, db_qn, type_name="RelationalDatabase")
         except Exception as exc:  # noqa: BLE001 - any failed lookup is "could not check"
             return dsl.ServerLink(dsl.COULD_NOT_CHECK, f"could not check ({_short(exc)}) · not linked")
         if not server_guid:

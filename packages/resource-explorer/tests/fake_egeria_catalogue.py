@@ -129,9 +129,9 @@ class FakeEgeria:
         # The platform clock an archive stamps into the new name (a test moves it to make a newer archived copy).
         self.archive_clock = datetime(2026, 10, 9, 1, 28, 8)
         # The server link (2026-10-22): the pyegeria boundary the REAL `database_server_link` runs against. A server
-        # published here has a DatabaseManager unless `server_has_dm` is False; links are kept as Egeria keeps a
-        # multi-link type (a second create is a second relationship, so only the read-first logic prevents a
-        # duplicate).
+        # published here has a DatabaseManager unless `server_has_dm` is False; CapabilityAssetUse is NOT multi-link in
+        # Egeria (a second create between the same pair is refused). This fake does not model the refusal, so a second
+        # relationship here means RE's read-first failed; it does not mean Egeria would have kept it.
         self.server_has_dm = True
         self.dm_of: dict[str, str] = {}                 # server guid -> DatabaseManager guid
         self.capability_links: list[dict] = []          # {rel, capability, asset, body}
@@ -202,18 +202,6 @@ class FakeEgeria:
         self._boom("link_database_to_server")
         return dsl.link_database_to_server(self.pyegeria_expert, self.pyegeria_maker, server_guid=server_guid,
                                            database_guid=database_guid, server_label=server_name, write=write)
-
-    def link_published_database(self, db_entity, *, write=True):
-        from resource_explorer import database_server_link as dsl
-
-        server = f"{getattr(db_entity, 'egeria_host', '') or db_entity.host}:{db_entity.port}"
-        srv = self.by_qn(f"PostgreSQL Server::{server}")
-        db = self.by_qn(f"PostgreSQL Relational Database::{server}::{db_entity.database_name}")
-        if srv is None:
-            return dsl.ServerLink(dsl.NOT_LINKED, "not linked: no server element")
-        if db is None:
-            return dsl.ServerLink(dsl.NOT_LINKED, "not linked: no database element")
-        return self.link_database_to_server(srv["guid"], db["guid"], server_name=server, write=write)
 
     # -- helpers ---------------------------------------------------------
     def _guid(self, prefix: str = "g") -> str:

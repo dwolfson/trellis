@@ -171,7 +171,7 @@ KIND_LEAVE_OUT = "catalogue_schema_leave_out"
 STRUCTURAL_RELATIONSHIPS = frozenset({
     "CatalogTarget", "DataSetContent", "Schema", "AttributeForSchema",
     "NestedSchemaAttribute", "SchemaTypeOption", "LinkedType", "Anchors",
-    "ConnectionToAsset", "ServerAssetUse", "AssetConnection", "ReportSubject",
+    "ConnectionToAsset", "CapabilityAssetUse", "AssetConnection", "ReportSubject",
     "TemplateSource", "SourcedFrom", "ResourceList",
     # An engine action that targets a schema is Egeria's own machinery (the survey), never
     # something a person attached (architect, 2026-10-05). It never makes a leave-out an archive.
