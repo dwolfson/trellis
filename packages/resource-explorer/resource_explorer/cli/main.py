@@ -109,10 +109,36 @@ def login_command(
         )
         raise typer.Exit(1)
 
+    # The same check web login makes (routes/auth.py): Egeria can hand back a token it then
+    # refuses, so one authorized read decides before anything is cached.
+    from resource_explorer import egeria_clients
+
+    verdict = egeria_clients.check_token_accepted(user, egeria_token)
+    if verdict == egeria_clients.TOKEN_REFUSED:
+        console.print(
+            f"[red]✗ Egeria accepted {user}'s password but refuses its requests.[/red] "
+            "Sign in as a user this Egeria server knows. Nothing was cached."
+        )
+        raise typer.Exit(1)
+
     record = cli_session.save_login(user, egeria_token)
-    when = f" until {record.expires_at_local:%H:%M}" if record.expires_at_local else ""
-    console.print(f"[green]✓ Signed in as {user}[/green]{when}")
+    line = cli_session.describe_live_session(record)
+    console.print(f"[green]✓ {line[:1].upper()}{line[1:]}[/green]")
+    if verdict == egeria_clients.TOKEN_UNREACHABLE:
+        console.print("[yellow]Could not check with Egeria that it honours this token.[/yellow]")
     console.print(f"[dim]Session cached at {record.path} (mode 0600)[/dim]")
+
+
+@app.command(name="whoami")
+def whoami_command():
+    """Say who the cached session signs you in as, after asking Egeria whether it still honours it.
+
+    One authorized read with the cached token. A token Egeria refuses is reported as
+    refused, whatever expiry the session file claims.
+    """
+    from resource_explorer.cli import session as cli_session
+
+    console.print(cli_session.session_status_line(check_with_egeria=True))
 
 
 @app.command(name="logout")
