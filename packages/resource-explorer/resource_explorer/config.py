@@ -313,8 +313,11 @@ class EgeriaConfig(BaseSettings):
     #: The integration daemon a catalogue commit may ask to refresh the JDBC
     #: cataloguer (never to restart it). The scratch tests ran against this one.
     integration_daemon_server: str = Field(default="qs-integration-daemon", alias="EGERIA_INTEGRATION_DAEMON")
-    user_id: str = Field(default="erinoverview", alias="EGERIA_USER_ID")
-    user_password: str = Field(default="secret", alias="EGERIA_USER_PASSWORD")
+    #: RE's own service account. NO default: a code default here was once a person's persona ("erinoverview"), so a
+    #: missing EGERIA_USER_ID silently made RE act as that person. Unset now means every path that needs the
+    #: service account refuses (egeria_clients.NoServiceAccount).
+    user_id: str = Field(default="", alias="EGERIA_USER_ID")
+    user_password: str = Field(default="", alias="EGERIA_USER_PASSWORD")
     #: Further Egeria platforms a credential may be sent to, comma separated (Brief I). The
     #: configured `platform_url` is always allowed; any other URL is refused before a request.
     allowed_platform_urls: str = Field(default="", alias="EGERIA_ALLOWED_PLATFORM_URLS")
