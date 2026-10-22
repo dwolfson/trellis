@@ -286,14 +286,15 @@ def _db_step_publish(monkeypatch, create_answers):
 
     s = EgeriaDatabaseSurveyor(platform_url="https://localhost:9443", view_server="qs-view-server")
     s._automated_curation = _fake(AutomatedCuration)
-    # Every exact-qualifiedName read (the database element) is found, through the unique-name read.
-    s._metadata_expert = wire_unique_name(_fake(MetadataExpert), lambda name, *a, **k: GUID)
     s._asset_maker = _fake(AssetMaker)
     s._asset_maker.create_asset.return_value = "report-guid"
     # The report as Egeria answers a read by GUID: the annotations that failed to create are not under it, so the
     # read-back counts what is there (none), whatever the creates returned.
     from tests.report_pages import paged_expert
     s._metadata_expert = paged_expert(lambda guid: [])          # the report holds none: paged to the end
+    # Every exact-qualifiedName read (the database element) is found, through the unique-name read (real signature:
+    # the paged expert is an autospec, so the read binds MetadataExpert's own).
+    wire_unique_name(s._metadata_expert, lambda name, *a, **k: GUID)
     s._discovery = _fake(DataDiscovery)
     s._discovery.create_annotation.side_effect = create_answers or [GUID]
     db = DatabaseEntity(slug="db", display_name="Shop", db_type="postgresql", host="h", port=5432, database_name="shop")
