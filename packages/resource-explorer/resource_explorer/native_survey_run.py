@@ -87,6 +87,49 @@ PARTIAL = "partial"
 FAILED = "failed"
 UNREADABLE = "unreadable"
 CANNOT_RUN = "cannot_run"
+#: THE definition of "this run still has read-back work to do". Every other list derives from it: the card's
+#: `in_flight`, the sweep's selection (`readback_sql_clauses` is its SQL spelling, one clause per state), the cancel
+#: gate, the polling target, and the "not checked since" cue (`_CHECKABLE_STATES`). Three disagreeing copies of this
+#: list are how a registered database came to say "not checked since" forever (review round 1, B1).
+IN_FLIGHT_STATES = (SUBMITTED, RUNNING, UNREADABLE, AWAITING_REPORT, REPORT_INCOMPLETE)
+_IN_FLIGHT = IN_FLIGHT_STATES
+#: The two states RE retries on the sweep for a bounded time, then stops and says so (`read_gave_up`).
+RETRY_BOUNDED_STATES = (AWAITING_REPORT, REPORT_INCOMPLETE)
+#: The cue applies to these: the one list, plus the registration row's own "awaiting registration" (catalog rows
+#: remap COMPLETED to it, and it is checked until the database is readable in Egeria).
+_CHECKABLE_STATES = frozenset(IN_FLIGHT_STATES) | {"awaiting_registration"}
+
+
+def readback_sql_clauses() -> dict[str, tuple[str, list]]:
+    """{state: (SQL condition on a step_runs row, params)} for every state in IN_FLIGHT_STATES -- the SQL spelling of
+    `_derive_native_state`'s branches. `registry.list_in_flight_native_survey_runs` ORs them; a state in
+    IN_FLIGHT_STATES with no clause raises (KeyError), so the two cannot drift silently. COALESCE: the derivation
+    reads a NULL as ''."""
+    active, success = sorted(ACTIVE_STATUSES), sorted(SUCCESS_STATUSES)
+    marks = lambda seq: ", ".join("?" for _ in seq)  # noqa: E731
+    no_status = "COALESCE(engine_action_status, '') = ''"
+    read_ok = ("COALESCE(survey_report_guid, '') <> '' AND COALESCE(report_read_at, '') <> '' "
+               "AND report_annotation_count IS NOT NULL")
+    succeeded = f"engine_action_status IN ({marks(success)})"
+    clauses = {
+        SUBMITTED: (f"{no_status} AND COALESCE(engine_action_read_error, '') = ''", []),
+        UNREADABLE: (f"{no_status} AND COALESCE(engine_action_read_error, '') <> ''", []),
+        RUNNING: (f"engine_action_status IN ({marks(active)})", active),
+        AWAITING_REPORT: (f"{succeeded} AND NOT ({read_ok})", success),
+        REPORT_INCOMPLETE: (
+            f"{succeeded} AND {read_ok} AND (SELECT COUNT(*) FROM native_survey_annotations a "
+            "WHERE a.report_guid = step_runs.survey_report_guid) <> report_annotation_count", success),
+    }
+    return {state: clauses[state] for state in IN_FLIGHT_STATES}
+
+
+#: AWAITING_REPORT / REPORT_INCOMPLETE are retried by the sweep on the 60 s loop, bounded: this many attempts or this
+#: long since the state last changed, whichever comes first. The count lives on the proof row (`declared.readback_retry`),
+#: not in the loop, so a restart or a second process neither forgets nor repeats it.
+RETRY_MAX_ATTEMPTS = 20
+RETRY_MAX_AGE_S = 24 * 60 * 60
+READBACK_RETRY_KEY = "readback_retry"
+_GAVE_UP_WHAT = {AWAITING_REPORT: "report not read", REPORT_INCOMPLETE: "report incomplete"}
 
 
 #: Egeria's "not started yet" words; IN_PROGRESS is the one that means the engine has the action.
@@ -627,8 +670,101 @@ def _stall(out: dict, now: datetime | None, requested_at: str = "", started_at: 
     out["stalled"] = None if age is None else age > after
 
 
+#: A run in flight whose proof row was last read more than this long ago says "not checked since <read_at>" (2 x the
+#: read-back loop's 60 s interval). Derived from the proof row's `read_at` only, never from the loop's bookkeeping.
+NOT_CHECKED_AFTER_S = 120
+
+
+def not_checked_since(derived: dict, now: datetime | None = None) -> str:
+    """`read_at` when a run still in flight was last read more than NOT_CHECKED_AFTER_S ago, else ''. A run with no
+    read time stored has nothing to measure from, so it carries no cue (its "submitted" line already says so). A run
+    the sweep has stopped retrying carries none either: its terminal words say so instead."""
+    if derived.get("state") not in _CHECKABLE_STATES or not derived.get("read_at") or derived.get("read_gave_up"):
+        return ""
+    age = _age_seconds(derived["read_at"], now)
+    return derived["read_at"] if age is not None and age > NOT_CHECKED_AFTER_S else ""
+
+
+def readback_retry(run: dict | None) -> dict:
+    """What the sweep recorded on the row: {state, attempts, last_attempt_at, since}, or {}."""
+    rec = _declared(run).get(READBACK_RETRY_KEY) if run else None
+    return rec if isinstance(rec, dict) else {}
+
+
+def retry_exhausted(run: dict | None, state: str | None = None, now: datetime | None = None) -> bool:
+    """Has the sweep used up its bound for this row? True when the recorded retries (for `state`, when given) reached
+    RETRY_MAX_ATTEMPTS, or the state has lasted RETRY_MAX_AGE_S since it last changed. From the row alone."""
+    rec = readback_retry(run)
+    if not rec or (state is not None and rec.get("state") != state):
+        return False
+    attempts = rec.get("attempts")
+    if isinstance(attempts, int) and attempts >= RETRY_MAX_ATTEMPTS:
+        return True
+    age = _age_seconds(rec.get("since") or "", now)
+    return age is not None and age >= RETRY_MAX_AGE_S
+
+
+def read_gave_up_words(state: str, attempts: int) -> str:
+    """The terminal words, with the number of tries the row really recorded (20 when the count bound ended it)."""
+    return f"{_GAVE_UP_WHAT[state]} after {attempts} tries \u00b7 refresh to retry"
+
+
+def annotation_count_label(derived: dict, entity_type: str) -> str:
+    """How many annotations the report held and what RE did with them, from the totals stored with the read (never
+    from the ingest loop's own tally). '' when the totals were not stored (a row read before they were): the
+    caller then shows the bare stored count, not a guess.
+
+    File system: "7 annotations on the report; 6 read into RE; 1 not read by design (file-name log)".
+    Nothing dropped (databases): "7 annotations on the report · read into RE"."""
+    on_report, read = derived.get("annotations_on_report"), derived.get("annotation_count")
+    if on_report is None or read is None:
+        return ""
+    by_design = derived.get("annotations_not_read_by_design") or 0
+    word = "annotation" if on_report == 1 else "annotations"
+    gap = on_report - by_design - read
+    if by_design == 0 and gap == 0:
+        return f"{on_report} {word} on the report \u00b7 read into RE"
+    out = f"{on_report} {word} on the report; {read} read into RE"
+    if by_design:
+        out += f"; {by_design} not read by design" + (" (file-name log)" if entity_type == "filesystem" else "")
+    if gap > 0:
+        out += f"; {gap} not stored"
+    elif gap < 0:
+        # More rows are stored than the report lists (a report read again after it grew, or a count that does not
+        # add up): said as its own clause, never folded into a sum that cannot be true.
+        out += f"; {-gap} more stored than the report lists"
+    return out
+
+
 def derive_native_state(run: dict | None, *, stored_annotation_count: int | None = None,
                         now: datetime | None = None) -> dict:
+    """`_derive_native_state`, plus the two things the card says about the read itself: `not_checked_since` and the
+    annotation `count_label`. Both come from the proof row alone."""
+    out = _derive_native_state(run, stored_annotation_count=stored_annotation_count, now=now)
+    return with_read_words(out, run, now)
+
+
+def with_read_words(out: dict, run: dict | None, now: datetime | None = None) -> dict:
+    """The read-words fields (`read_gave_up`, `not_checked_since`, the annotation totals and `count_label`), from
+    `out["state"]` and the proof row. Call it AGAIN after anything remaps `out["state"]` (a registration row, a
+    process run): a word computed for the state before the remap is the wrong word for the state after it."""
+    gave_up = out.get("state") in RETRY_BOUNDED_STATES and retry_exhausted(run, out.get("state"), now)
+    out["read_gave_up"] = gave_up
+    out["read_gave_up_words"] = (read_gave_up_words(out["state"], int(readback_retry(run).get("attempts") or 0))
+                                 if gave_up else "")
+    out["not_checked_since"] = not_checked_since(out, now)
+    totals = _declared(run).get("report_totals") if run else None
+    totals = totals if isinstance(totals, dict) else {}
+    out["annotations_on_report"] = totals.get("on_report") if isinstance(totals.get("on_report"), int) else None
+    out["annotations_not_read_by_design"] = (totals.get("not_read_by_design")
+                                             if isinstance(totals.get("not_read_by_design"), int) else None)
+    out["count_label"] = (annotation_count_label(out, (run or {}).get("entity_type") or "")
+                          if out.get("state") == COMPLETE else "")
+    return out
+
+
+def _derive_native_state(run: dict | None, *, stored_annotation_count: int | None = None,
+                         now: datetime | None = None) -> dict:
     """The row's status, computed from persisted proof and nothing else.
 
     `run` is the newest `step_runs` row for (resource, process), or None.
@@ -1122,7 +1258,7 @@ def native_survey_rows(registry, entity_type: str, slug: str, technology_type: s
             "registered_again": again_here,
             "credentials": creds,
             "credentials_note": UNCONFIRMED_CREDENTIALS if creds == NOT_CONFIGURED else "",
-            "in_flight": derived["state"] in (SUBMITTED, RUNNING, AWAITING_REPORT, UNREADABLE),
+            "in_flight": derived["state"] in IN_FLIGHT_STATES and not derived.get("read_gave_up"),
             "cancellable": bool(latest) and cancel_offered(latest),
             "run": derived,
             # Who surveys (Files step 2): named on the card for the file system's folder survey.
@@ -1245,11 +1381,15 @@ CANCEL_NOT_PERMITTED = "not_permitted"
 CANCEL_REFUSED_KIND = "refused"
 #: The press's stored `answer` values (`declared.cancel.answer`).
 ANSWER_ACCEPTED, ANSWER_REFUSED, ANSWER_UNREACHABLE, ANSWER_UNKNOWN = "accepted", "refused", "unreachable", "unknown"
-#: A run whose state is one of these is not over: a press on it may still take effect.
-_IN_FLIGHT = (SUBMITTED, RUNNING, UNREADABLE)
+#: A run whose state is in IN_FLIGHT_STATES is not over: a press on it may still take effect.
 
 
 def derive_mixed_state(run: dict | None, *, now: datetime | None = None) -> dict:
+    out = _derive_mixed_with_cancel(run, now=now)
+    return with_read_words(out, run, now)       # state may have moved on from derive_native_state's
+
+
+def _derive_mixed_with_cancel(run: dict | None, *, now: datetime | None = None) -> dict:
     """`_derive_mixed_state`, plus `cancel` (§2.4) from the press's proof row and Egeria's read-back, never from the
     press alone:
 
@@ -1859,13 +1999,16 @@ def _read_report_in(registry, port, run, action, *, entity_type, slug, process_q
                 f"report {report_guid} says it originated from "
                 f"{report.originator_guid}, not from engine action {guid}")
         annotations = report.annotations
+        on_report = len(annotations)           # counted BEFORE the filter below: what the report itself holds
         if entity_type == "filesystem":
             # Egeria always writes its file-names log; RE never reads, stores or shows it (caution 1).
             annotations = [a for a in annotations if a.get("annotation_type") != NAMES_LOG_ANNOTATION]
         registry.record_native_survey_report(
             guid, entity_type=entity_type, slug=slug, process_qualified_name=process_qn,
             report_guid=report_guid, report_at=report.at, read_at=_now(),
-            annotations=annotations)
+            annotations=annotations,
+            # Kept in the row's existing `declared` JSON (no DDL): the totals the report itself carried.
+            report_totals={"on_report": on_report, "not_read_by_design": on_report - len(annotations)})
     except Exception as exc:  # noqa: BLE001 -- recorded, not raised
         # Error-only: the action's own status/message, written a moment ago,
         # stay on the row beside the fact that the report could not be read.
@@ -2143,9 +2286,6 @@ def _started_without_marker(registry, port, entity_type: str, slug: str, process
     if not isinstance(state, dict):
         state = {"engine_action_guid": engine_action_guid, "state": SUBMITTED, "line": "", "error": ""}
     return {**state, "engine_action_guid": engine_action_guid, "run_credential_marker_error": words}
-
-
-_IN_FLIGHT = (SUBMITTED, RUNNING, AWAITING_REPORT, UNREADABLE, REPORT_INCOMPLETE)
 
 
 def own_action_run(registry, entity_type: str, slug: str, engine_action_guid: str) -> dict:
@@ -2579,20 +2719,25 @@ def cancel_native_action(registry, port: EgeriaSurveyPort, entity_type: str, slu
 def refresh_resource(registry, port: EgeriaSurveyPort, entity_type: str, slug: str) -> int:
     """Read back every in-flight native survey on one resource -- the polling
     target. A registry read only when nothing is in flight. Returns how many
-    runs it read back."""
+    runs it read back. A run the sweep gave up on is read too, and its retry count starts again: this is the
+    "refresh to retry" the card offers (the poll never runs on a run that gave up, so a poll cannot reset it)."""
     n = 0
     for run in registry.list_native_survey_runs(entity_type, slug):
         if not run.get("engine_action_guid"):
             continue
-        if _run_in_flight(registry, run, entity_type, slug):
+        if _run_in_flight(registry, run, entity_type, slug, counting_given_up=True):
+            if _row_gave_up(registry, run):
+                reset_readback_retry(registry, run)
             refresh_run(registry, port, run, entity_type=entity_type, slug=slug)
             n += 1
     return n
 
 
-def _run_in_flight(registry, run: dict, entity_type: str, slug: str) -> bool:
+def _run_in_flight(registry, run: dict, entity_type: str, slug: str, *, counting_given_up: bool = False) -> bool:
     """Does this run still have read-back work to do? A registration run is judged by its own
-    derivation (a COMPLETED process has no report to wait for); every other run by the survey one."""
+    derivation (a COMPLETED process has no report to wait for); every other run by the survey one.
+    A run the sweep has stopped retrying (`read_gave_up`) has none, unless `counting_given_up` (the manual refresh,
+    which retries it)."""
     from resource_explorer.surveyors.technology_type_processes import kind_of
 
     process_qn = run.get("executor_ref") or (run.get("step_key") or "")[len(NATIVE_SURVEY_STEP_PREFIX):]
@@ -2602,10 +2747,50 @@ def _run_in_flight(registry, run: dict, entity_type: str, slug: str) -> bool:
         has_ptr = bool((getattr(entity, "egeria_asset_guid", "") or "").strip())
         return cas.catalog_in_flight(cas.derive_catalog_state(run, has_pointer=has_ptr), run)
     if is_process_run(process_qn):
-        return derive_mixed_state(run)["state"] in _IN_FLIGHT
+        derived = derive_mixed_state(run)
+    else:
+        stored = (registry.count_native_survey_annotations(run["survey_report_guid"])
+                  if run.get("survey_report_guid") else None)
+        derived = derive_native_state(run, stored_annotation_count=stored)
+    return derived["state"] in IN_FLIGHT_STATES and (counting_given_up or not derived.get("read_gave_up"))
+
+
+def _row_gave_up(registry, run: dict) -> bool:
+    """The sweep's `skip`: this row's bound is used up AND its state still is the one the bound was counted for.
+    Cheap when no retry was ever recorded (the common case): no derivation at all."""
+    if not retry_exhausted(run):
+        return False
     stored = (registry.count_native_survey_annotations(run["survey_report_guid"])
               if run.get("survey_report_guid") else None)
-    return derive_native_state(run, stored_annotation_count=stored)["state"] in _IN_FLIGHT
+    return bool(derive_native_state(run, stored_annotation_count=stored).get("read_gave_up"))
+
+
+def reset_readback_retry(registry, run: dict) -> None:
+    """A manual refresh starts the count again: the row's retry record is removed."""
+    if readback_retry(run):
+        registry.merge_native_survey_declared(run["engine_action_guid"], {READBACK_RETRY_KEY: None})
+
+
+def note_sweep_attempt(registry, run: dict, after_state: str, now: datetime | None = None) -> None:
+    """Record, on the proof row, that the sweep read this run once more and what state it was left in. Bounded
+    states count up (and restart when the state changes: `since` is when it last changed); any other state clears the
+    record. Stored in `declared.readback_retry` -- no new column."""
+    guid = run.get("engine_action_guid") or ""
+    if not guid:
+        return
+    rec = readback_retry(run)
+    if after_state not in RETRY_BOUNDED_STATES:
+        if rec:
+            registry.merge_native_survey_declared(guid, {READBACK_RETRY_KEY: None})
+        return
+    stamp = (now or datetime.now(timezone.utc).replace(tzinfo=None)).isoformat()
+    same = rec.get("state") == after_state and isinstance(rec.get("attempts"), int)
+    registry.merge_native_survey_declared(guid, {READBACK_RETRY_KEY: {
+        "state": after_state,
+        "attempts": (rec["attempts"] if same else 0) + 1,
+        "last_attempt_at": stamp,
+        "since": (rec.get("since") or stamp) if same else stamp,
+    }})
 
 
 def sweep_in_flight(registry, port: EgeriaSurveyPort) -> int:
@@ -2613,12 +2798,20 @@ def sweep_in_flight(registry, port: EgeriaSurveyPort) -> int:
     still completes -- and its report still lands in RE -- when nobody has the
     page open. Identity-free by construction: it reads Egeria and writes the
     proof rows of runs somebody else submitted, on nobody's behalf. Returns how
-    many runs it read back."""
+    many runs it read back.
+
+    A report that is not read in (AWAITING_REPORT) or not whole (REPORT_INCOMPLETE) is retried here too, bounded
+    (RETRY_MAX_ATTEMPTS or RETRY_MAX_AGE_S): each attempt is counted on the proof row, and a row past its bound is
+    skipped and says so on its card until a manual refresh resets it."""
     n = 0
-    for run in registry.list_in_flight_native_survey_runs():
+    for run in registry.list_in_flight_native_survey_runs(skip=lambda r: _row_gave_up(registry, r)):
         entity_type = run.get("entity_type") or "database"
         if not _run_in_flight(registry, run, entity_type, run["slug"]):
             continue
-        refresh_run(registry, port, run, entity_type=entity_type, slug=run["slug"])
+        derived = refresh_run(registry, port, run, entity_type=entity_type, slug=run["slug"])
         n += 1
+        # Not caught: the retry count is what bounds the retries, so a registry that cannot record it is a failed
+        # pass, reported by the caller's own handler (scheduler._readback_pass logs it with its trace), never a
+        # silent success that would retry this row without limit.
+        note_sweep_attempt(registry, run, (derived or {}).get("state") or "")
     return n

@@ -412,20 +412,22 @@ def _now() -> str:
     return nsr._now()
 
 
-def derive_catalog_state(run: dict | None, *, has_pointer: bool) -> dict:
+def derive_catalog_state(run: dict | None, *, has_pointer: bool, now: datetime | None = None) -> dict:
     """The "Catalog and Survey" row's state, from persisted proof only.
 
     The base derivation is `native_survey_run.derive_native_state` (submitted, running, Egeria's
     own failure words, ...). A process Egeria reports COMPLETED is REGISTERED only when the
     database pointer was stored (after a read of that GUID); until then it is awaiting registration.
     With no run at all, a stored pointer is `registered` and no pointer is the NEUTRAL `not_registered`."""
-    base = nsr.derive_native_state(run, stored_annotation_count=None)
+    base = nsr.derive_native_state(run, stored_annotation_count=None, now=now)
     st = base["state"]
     if st == nsr.NOT_RUN:
         base["state"] = REGISTERED if has_pointer else NOT_REGISTERED
     elif st in (nsr.AWAITING_REPORT, nsr.REPORT_INCOMPLETE, nsr.COMPLETE):
         base["state"] = REGISTERED if has_pointer else AWAITING_REGISTRATION
-    return base
+    # The state was remapped: every word computed for the state before it (the "not checked since" cue, the retry
+    # bound, the annotation label) is recomputed for the state after it. A registered database is not "waiting".
+    return nsr.with_read_words(base, run, now)
 
 
 def _within_window(run: dict | None) -> bool:
@@ -440,7 +442,7 @@ def _within_window(run: dict | None) -> bool:
 
 
 def catalog_in_flight(state: dict, run: dict | None) -> bool:
-    if state["state"] in (nsr.SUBMITTED, nsr.RUNNING, nsr.UNREADABLE):
+    if state["state"] in nsr.IN_FLIGHT_STATES:      # (AWAITING_REPORT / REPORT_INCOMPLETE are remapped away above)
         return True
     return state["state"] == AWAITING_REGISTRATION and _within_window(run)
 
@@ -661,7 +663,7 @@ def _in_flight(registry, entity_type: str, slug: str, process_qn: str, *, catalo
     stored = (registry.count_native_survey_annotations(latest["survey_report_guid"])
               if latest.get("survey_report_guid") else None)
     st = nsr.derive_native_state(latest, stored_annotation_count=stored)
-    return latest if st["state"] in (nsr.SUBMITTED, nsr.RUNNING, nsr.AWAITING_REPORT, nsr.UNREADABLE) else None
+    return latest if st["state"] in nsr.IN_FLIGHT_STATES else None
 
 
 def _read_back(port, qualified_name: str, what: str) -> ElementBack:

@@ -49,6 +49,8 @@ function glyphFor(run, runnable, row = {}) {
   if (row.stale) return 'gone';
   if (row.name_taken) return 'name_taken_unreadable';
   if (row.registered_again) return 'registered_again';
+  // The sweep stopped retrying the report: nothing is running, and nothing is proven either.
+  if (run.read_gave_up) return 'unknown';
   switch (run.state) {
     case 'complete': case 'registered': return 'measured';
     // Every step ended and some were refused: an amber half-filled cue, never the red error.
@@ -196,8 +198,22 @@ export function processLineHtml(r) {
     + `${r.read_at ? ` · read ${timeSpan(r.read_at)}` : ''}${reports ? ` · ${reports}` : ''}${runCredentialHtml(r)}${err}${fix}`;
 }
 
+/** "◌ not checked since 20:31" when the server found the run still in flight and its proof row's `read_at` more than
+ *  two read-back intervals old (`run.not_checked_since` is that `read_at`; absent otherwise). The cue is on the
+ *  element (warn tone + glyph) as well as in words. */
+function notCheckedCue(r) {
+  if (!r || !r.not_checked_since) return '';
+  const when = localTime(r.not_checked_since);
+  return ` · <span class="text-state-warn" data-native-not-checked title="${esc(`RE last read this from Egeria at ${r.not_checked_since} UTC; its read-back looks every minute.`)}"><span class="font-glyph" aria-hidden="true">◌</span> not checked since ${esc(when || r.not_checked_since)}</span>`;
+}
+
 /** The one line of status. Pure over `row.run`. */
 export function nativeSurveyStatusHtml(row) {
+  const r = row.run || { state: 'not_run' };
+  return statusLineHtml(row) + notCheckedCue(r);
+}
+
+function statusLineHtml(row) {
   const r = row.run || { state: 'not_run' };
   const err = r.error ? ` · <span class="text-state-warn">${esc(r.error)}</span>` : '';
   if (r.line && ['running', 'complete', 'partial', 'failed'].includes(r.state)) return processLineHtml(r);
@@ -216,18 +232,26 @@ export function nativeSurveyStatusHtml(row) {
         + `${timingCue(r) ? '' : (r.submitted_at ? ` · requested ${timeSpan(r.submitted_at)}` : '')}${stallCue(r)}`
         + ` · Egeria says <span class="font-mono">${esc(r.egeria_status)}</span>`
         + ` · read ${timeSpan(r.read_at)} · ${guidSpan(r.engine_action_guid)}${err}`;
-    case 'awaiting_report':
+    case 'awaiting_report': case 'report_incomplete':
+      // The sweep stopped retrying (20 tries or 24 h): the row's own words, and a refresh that starts the count again.
+      if (r.read_gave_up) {
+        return `Egeria says <span class="font-mono">${esc(r.egeria_status)}</span> · read ${timeSpan(r.read_at)} — `
+          + `<span class="text-state-warn" data-native-gave-up>${esc(gaveUpLead(r.read_gave_up_words))}</span>`
+          + ` <button type="button" data-native-check-now class="cursor-pointer bg-transparent p-0 text-accent-ink underline">refresh to retry</button>${err}`;
+      }
+      if (r.state === 'report_incomplete') {
+        return `Egeria says <span class="font-mono">${esc(r.egeria_status)}</span> · read ${timeSpan(r.read_at)}`
+          + ` — <span class="text-state-warn">RE's copy of the report is incomplete; reading it again</span>${err}`;
+      }
       return `Egeria says <span class="font-mono">${esc(r.egeria_status)}</span> · read ${timeSpan(r.read_at)}`
         + ` — its report is not read into RE yet${err}`;
-    case 'report_incomplete':
-      return `Egeria says <span class="font-mono">${esc(r.egeria_status)}</span> · read ${timeSpan(r.read_at)}`
-        + ` — <span class="text-state-warn">RE's copy of the report is incomplete; reading it again</span>${err}`;
     case 'complete':
       return `complete · read ${timeSpan(r.read_at)} · report from ${timeSpan(r.report_at)}`
         + ` · <button type="button" data-native-report="${esc(r.report_guid)}"
             class="cursor-pointer bg-transparent p-0 text-accent-ink underline"
-            ><span class="tnum">${esc(String(r.annotation_count))}</span> annotation${
-              r.annotation_count === 1 ? '' : 's'} ›</button>`;
+            >${r.count_label ? `<span class="tnum" data-native-count-label>${esc(r.count_label)}</span>`
+              : `<span class="tnum">${esc(String(r.annotation_count))}</span> annotation${
+                r.annotation_count === 1 ? '' : 's'}`} ›</button>`;
     case 'failed':
       // A cancel Egeria read back as CANCELLED is a decision, not a fault: its own words, with the check.
       if (r.egeria_status === 'CANCELLED') {
@@ -378,6 +402,10 @@ export function stoppedFollowingHtml(row) {
     ${esc(r.state === 'submitted' ? 'submitted' : 'running')}${asOf ? ` · as of <span class="tnum">${esc(asOf)}</span>` : ''} · stopped checking after 10 minutes ·
     <button type="button" data-native-check-now class="cursor-pointer bg-transparent p-0 text-accent-ink underline">check now</button></div>`;
 }
+
+/** The server's terminal words ("report not read after 20 tries · refresh to retry"), without the trailing
+ *  "refresh to retry": that is the button beside them. */
+const gaveUpLead = (words) => String(words || '').replace(/\s*\u00b7\s*refresh to retry\s*$/, '');
 
 /** One survey row: glyph, name, kind, status, and Run when RE can run it. `stopped`: RE gave up following it. */
 export function nativeSurveyRowHtml(row, opts = {}) {

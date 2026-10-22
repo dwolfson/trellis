@@ -10,10 +10,12 @@ workers they would have run N times. ``docs/runtime-architecture-plan.md``
 What it owns (docs/process-model.md §1.1 for the current-state detail):
 
 * the scheduler loop — which, per that document's Finding F1, is not
-  only "run due analyses": the Egeria **outbox drain** and **RFA
-  reconciliation** happen inside the same 15-minute tick, in the same
-  thread. They move here as part of the scheduler's move, not as
-  independently-scheduled units.
+  only "run due analyses": **RFA reconciliation** happens inside the same
+  15-minute tick, in the same thread. The Egeria **outbox drain** and the
+  native-survey read-back sweep run on their own 60 s thread
+  (``scheduler._readback_loop``, 2026-10-21), started and stopped by
+  ``start_scheduler``/``stop_scheduler`` and so under the same ``scheduler``
+  advisory lock: a long ``_run_due`` can no longer starve them.
 * the bootstrap monitor — heals Dr.Egeria definitions wiped by an
   Egeria reset, every 10 minutes.
 * the Egeria resync scanner — clears stale Egeria pointers left by a

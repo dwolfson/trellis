@@ -270,7 +270,9 @@ async def refresh_native_surveys(entity_type: str, slug: str, request: Request) 
     def _do() -> list[dict]:
         # Nothing in flight -> no port is even built (no Egeria client, no
         # event loop): the poll target must be free when there is nothing to poll.
-        if any(r["in_flight"] for r in nsr.native_survey_rows(registry, entity_type, slug, tech)):
+        # A run the sweep gave up on is not "in flight", but this is its "refresh to retry": read it too.
+        if any(r["in_flight"] or (r.get("run") or {}).get("read_gave_up")
+               for r in nsr.native_survey_rows(registry, entity_type, slug, tech)):
             with nsr.port_session(_port()) as port:
                 nsr.refresh_resource(registry, port, entity_type, slug)
         return nsr.native_survey_rows(registry, entity_type, slug, tech, **reader)
