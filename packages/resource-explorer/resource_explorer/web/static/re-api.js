@@ -246,6 +246,12 @@ export const runWalkExtensions = (slug, body = {}) =>
 /** Publish the newest stored beside-Egeria extensions run (nothing is walked again). */
 export const publishWalkExtensions = (slug) =>
   post(`/api/filesystems/${encodeURIComponent(slug)}/walk-extensions/publish`);
+/** Files build step 5: the data-file profiles (column rows per run), priced before the run. */
+export const runFileProfiles = (slug) => post(`/api/filesystems/${encodeURIComponent(slug)}/file-profiles`);
+export const readFileProfilesFromEgeria = (slug) =>
+  post(`/api/filesystems/${encodeURIComponent(slug)}/file-profiles/read-egeria`);
+export const publishFileProfiles = (slug) =>
+  post(`/api/filesystems/${encodeURIComponent(slug)}/file-profiles/publish`);
 
 /* ── Catalogue scope (Curate, database: what gets catalogued) ────────────
  * web/routes/catalogue_scope.py. A declared, signed, dated choice stored in

@@ -15,10 +15,13 @@ file system with no survey is `state: "none"`: "no folder survey yet", not zeros
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from resource_explorer import file_reach
 from resource_explorer.surveyors.filesystem.folder_survey_annotations import folder_specs, read_folder_survey
+
+log = logging.getLogger(__name__)
 
 
 def _when(text: str) -> datetime | None:
@@ -145,6 +148,17 @@ def extensions_view(registry, slug: str) -> dict | None:
     }
 
 
+def _file_profiles(registry, slug: str) -> dict:
+    """The file_profiles step's cost line and newest run (Files build step 5); a failed read is said, never an empty run."""
+    from resource_explorer.surveyors.filesystem.file_profiles import profiles_view
+
+    try:
+        return profiles_view(registry, slug)
+    except Exception as exc:  # noqa: BLE001 -- the folder survey card still renders
+        log.warning("%s: the file profiles could not be read", slug, exc_info=True)
+        return {"error": f"could not read the data-file profiles: {type(exc).__name__}: {exc}"}
+
+
 def folder_survey_view(registry, slug: str) -> dict:
     """The newest folder survey, whoever led it, with the probe state and who leads NOW."""
     fs = registry.get_filesystem(slug)
@@ -153,7 +167,8 @@ def folder_survey_view(registry, slug: str) -> dict:
     re_walk = _re_candidate(registry, slug)
     candidates = [c for c in (egeria, re_walk) if c and not c.get("none")]
     base = {"slug": slug, "reach": fork.as_dict(), "leads": fork.surveyor,
-            "egeria_run_state": (egeria or {}).get("run_state", ""), "extensions": extensions_view(registry, slug)}
+            "egeria_run_state": (egeria or {}).get("run_state", ""), "extensions": extensions_view(registry, slug),
+            "file_profiles": _file_profiles(registry, slug)}
     if not candidates:
         return {**base, "state": "none", "surveyor": "", "surveyed_at": "", "report_guid": "", "published": False,
                 "publish": None, "report_sentence": "", "results": None, "limits": None, "detail_lines": []}
