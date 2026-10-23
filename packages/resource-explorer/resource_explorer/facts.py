@@ -326,7 +326,7 @@ def _r_maintainers(reg, p) -> tuple:
     this", which is not the question. Measured on egeria_git: 63 by that count,
     3 authors in the commits actually recorded, and one of them wrote over half.
 
-    **The two contributor lists answer first** (BRIEF-CONTRIBUTORS-GITHUB.md, owner 2026-10-23): top 10 over the last
+    **The two contributor lists answer first** (REVIEW-QUESTIONS-AND-ANALYTICS-2026-10-22.md, addendum 1, owner 2026-10-23): top 10 over the last
     12 months and top 10 all time, read through `contributors.contributors`, the reader the compile, the chat tool
     and chaoss_metrics also use, so every surface names the same people. The value carries the stored row ids it
     was built from (`row_ids`). The per-author count over `project_commits` below stays only for a repository whose

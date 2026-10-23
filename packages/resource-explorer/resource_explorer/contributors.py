@@ -1,4 +1,4 @@
-"""A repository's contributors, two lists, from the GitHub API (BRIEF-CONTRIBUTORS-GITHUB.md, owner 2026-10-23).
+"""A repository's contributors, two lists, from the GitHub API (REVIEW-QUESTIONS-AND-ANALYTICS-2026-10-22.md, addendum 1, owner 2026-10-23).
 
 * `months_12`  commits in the last 365 days, counted by git author (GitHub login when GitHub links the email,
                otherwise the git author's email or name), from `GET /repos/{o}/{r}/commits?since=..&per_page=100`.

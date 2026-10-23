@@ -218,7 +218,7 @@ def query_top_committers_raw(resource_slug: str, limit: int = 10, days: int = 90
 
     registry = ProjectRegistry()
     slug = registry._normalize_slug(resource_slug)
-    # The two contributor lists are the source (BRIEF-CONTRIBUTORS-GITHUB.md): the same reader the question page
+    # The two contributor lists are the source (REVIEW-QUESTIONS-AND-ANALYTICS-2026-10-22.md, addendum 1): the same reader the question page
     # uses, so the chat and the page name the same people. The per-window git-author count below is only the
     # fallback for a repository whose lists were never fetched, and says so.
     try:

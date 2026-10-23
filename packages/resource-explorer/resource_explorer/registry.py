@@ -446,7 +446,7 @@ STEP_ANNOTATIONS_DDL = (
 )
 
 
-#: DDL for a repository's contributor lists (BRIEF-CONTRIBUTORS-GITHUB.md (b); the project owner's go 2026-10-23, "Yes,
+#: DDL for a repository's contributor lists (REVIEW-QUESTIONS-AND-ANALYTICS-2026-10-22.md, addendum 1 (b); the project owner's go 2026-10-23, "Yes,
 #: build it"). Same rules as RESOURCE_SCOPE_EVENTS_DDL: ONE additive, idempotent CREATE TABLE IF NOT EXISTS, no ALTER of
 #: an existing table, no data migration, no foreign key, no question mark or colon-name token (the Postgres translator
 #: rewrites both; AUTOINCREMENT becomes SERIAL).

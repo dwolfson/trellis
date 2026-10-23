@@ -1796,6 +1796,10 @@ def _chaoss_metrics_results(registry, slug: str) -> dict:
         lists = contrib.both(registry, slug)
     except Exception:  # noqa: BLE001 - a registry without the table still answers its findings
         return out
+    if not contrib.any_fetched(lists):
+        # Never fetched is "not measured": adding the key (with its note) would make an unsurveyed repo look like
+        # it has data, and the card would claim results it does not have.
+        return out
     out["contributors"] = {w: cl.as_dict() for w, cl in lists.items()}
     out["contributors"]["note"] = contrib.COMPARE_WORDS
     return out

@@ -1,4 +1,4 @@
-"""Contributors: top 10 over 12 months and all time, from the GitHub API (BRIEF-CONTRIBUTORS-GITHUB.md).
+"""Contributors: top 10 over 12 months and all time, from the GitHub API (REVIEW-QUESTIONS-AND-ANALYTICS-2026-10-22.md, addendum 1).
 
 Every GitHub call is faked: `GitHubClient` is autospec'd (spec_set) and `rest_get` answers `(headers, json)` in the
 shapes GitHub's REST docs give for `GET /repos/{o}/{r}/commits` (each item: sha, commit.author {name, email, date},
