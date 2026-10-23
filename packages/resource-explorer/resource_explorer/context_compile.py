@@ -799,6 +799,41 @@ MAX_CLASSES_FULL, MAX_CLASSES_SUMMARY = 60, 15
 MAX_FUNCTIONS_FULL, MAX_FUNCTIONS_SUMMARY = 40, 10
 
 
+def _with_contributors(rungs: dict[Rung, str], registry, slug: str):
+    """The two contributor lists (Q-0003 / Q-0051's declared list extent: top contributors by share, with names)
+    appended to chaoss_metrics' rungs, read through `contributors.contributors`. FULL carries the top 10 of each
+    list, SUMMARY the top 3, IDENTIFIERS nothing more. Returns (rungs, extent, row ids behind the text). A list
+    never fetched says so in words; nothing is appended when neither list was ever fetched."""
+    from resource_explorer import contributors as contrib
+
+    try:
+        lists = contrib.both(registry, slug)
+    except Exception as exc:  # noqa: BLE001 - a compile survives a failed read; the section packs without lists
+        log.warning("contributor lists unavailable for %s: %s", slug, exc)
+        return rungs, {}, []
+    if all(cl.absence == contrib.NO_FETCH_YET for cl in lists.values()):
+        return rungs, {}, []
+    full = "\n".join(contrib.text_block(lists, limit=contrib.TOP))
+    short = "\n".join(contrib.text_block(lists, limit=3))
+    head = f"## chaoss_metrics\n"
+    out = dict(rungs)
+    out[Rung.FULL] = (rungs.get(Rung.FULL) or head.rstrip()) + "\n" + full
+    if Rung.SUMMARY in rungs or not rungs:
+        out[Rung.SUMMARY] = (rungs.get(Rung.SUMMARY) or head.rstrip()) + "\n" + short
+    if Rung.IDENTIFIERS not in out:
+        out[Rung.IDENTIFIERS] = head + "reports: contributors"
+    extent = {f"contributors.{w}": {"total": cl.total_rows, "shown": {"FULL": len(cl.rows[:contrib.TOP]),
+                                                                       "SUMMARY": len(cl.rows[:3])}}
+              for w, cl in lists.items() if cl.rows}
+    # Per rung, because the packer picks one: the ids of the fetch rows and the contributor rows that rung shows.
+    ids: dict[str, list[int]] = {"FULL": [], "SUMMARY": []}
+    for cl in lists.values():
+        heads = cl.row_ids[:len(cl.row_ids) - len(cl.rows)]
+        ids["FULL"].extend(heads + [r.id for r in cl.rows[:contrib.TOP]])
+        ids["SUMMARY"].extend(heads + [r.id for r in cl.rows[:3]])
+    return out, extent, ids
+
+
 def _with_symbols(rungs: dict[Rung, str], registry, slug: str, question: str):
     """Add the symbol lists to api_structure's rungs: the question-matched
     block first (classes the question names with their methods, or the
@@ -1203,6 +1238,9 @@ def compile_context(
     #: Per packed section, each list field's total and shown-per-rung
     #: (`manifest["lists"]`), from the reader's results before rendering.
     list_extents: dict[str, dict] = {}
+    #: Per packed section, the stored row ids its text was built from (persist what the model saw): kept on the
+    #: recorded manifest, so a stored answer names the exact rows behind it.
+    rows_seen: dict[str, dict] = {}
     for rank, (analysis_id, weight) in enumerate(ranked):
         if cap > 0 and packed_count >= cap:
             deferred.append({"key": analysis_id, "weight": round(weight, 3), "rank": rank,
@@ -1242,6 +1280,9 @@ def compile_context(
                     log.warning("results reader for %s failed on %s: %s",
                                 analysis_id, slug, exc)
                     results = None
+                if results is not None and analysis_id == "chaoss_metrics" and isinstance(results, dict):
+                    # The contributor lists are packed by _with_contributors below, once, with their row ids.
+                    results = {k: v for k, v in results.items() if k != "contributors"}
                 if results is not None:
                     from_reader = _results_to_rungs(results, analysis_id)
                     extents = _list_extents(results) if isinstance(results, dict) else {}
@@ -1279,6 +1320,15 @@ def compile_context(
             rungs, ep_extent = _with_endpoints(rungs, registry, slug)
             if ep_extent:
                 list_extents.setdefault(analysis_id, {}).update(ep_extent)
+            if rungs and not provenance:
+                provenance = ({"analysis_id": analysis_id, "check": None, "surveyed_at": None},)
+
+        if analysis_id == "chaoss_metrics":
+            rungs, c_extent, c_ids = _with_contributors(rungs, registry, slug)
+            if c_extent:
+                list_extents.setdefault(analysis_id, {}).update(c_extent)
+            if c_ids and (c_ids["FULL"] or c_ids["SUMMARY"]):
+                rows_seen[analysis_id] = {"project_contributors": c_ids}
             if rungs and not provenance:
                 provenance = ({"analysis_id": analysis_id, "check": None, "surveyed_at": None},)
 
@@ -1347,6 +1397,7 @@ def compile_context(
             # the "N of M shown" the text carries, as data, so the rail can
             # say M without recounting (pick N by packed[i]["rung"]).
             "lists": {k: v for k, v in list_extents.items() if k in candidates},
+            "rows_seen": {k: v for k, v in rows_seen.items() if k in candidates},
             # What the catalog says answers this question at all. `gaps` says
             # which offered sections had nothing; this says whether the
             # question was ever a question stored analyses answer.

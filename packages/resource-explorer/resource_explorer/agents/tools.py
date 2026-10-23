@@ -218,6 +218,17 @@ def query_top_committers_raw(resource_slug: str, limit: int = 10, days: int = 90
 
     registry = ProjectRegistry()
     slug = registry._normalize_slug(resource_slug)
+    # The two contributor lists are the source (BRIEF-CONTRIBUTORS-GITHUB.md): the same reader the question page
+    # uses, so the chat and the page name the same people. The per-window git-author count below is only the
+    # fallback for a repository whose lists were never fetched, and says so.
+    try:
+        from resource_explorer import contributors as contrib
+
+        lists = contrib.both(registry, slug, top=limit)
+    except Exception:  # noqa: BLE001 - the fallback still answers
+        lists = None
+    if lists and not all(cl.absence == contrib.NO_FETCH_YET for cl in lists.values()):
+        return "\n".join([f"Top contributors to {slug}:", *contrib.text_block(lists, limit=limit)])
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
     try:
         with registry._conn() as conn:
@@ -236,7 +247,8 @@ def query_top_committers_raw(resource_slug: str, limit: int = 10, days: int = 90
         label = name or email or "unknown"
         counter[label] += 1
     top = counter.most_common(limit)
-    lines = [f"Top {min(limit, len(top))} committers to {slug} (last {days} days, {len(rows)} stored commits):"]
+    lines = [f"Top {min(limit, len(top))} committers to {slug} (last {days} days, {len(rows)} stored commits; "
+             f"no contributor fetch yet, so these are from git authors, {days}-day window):"]
     for i, (name, count) in enumerate(top, 1):
         lines.append(f"  {i}. {name}: {count} commit{'s' if count != 1 else ''}")
     return "\n".join(lines)
@@ -244,8 +256,9 @@ def query_top_committers_raw(resource_slug: str, limit: int = 10, days: int = 90
 
 @tool(
     description=(
-        "Get the top committers to a project by commit count over the last 90 days (days sets the window). "
-        "Returns a ranked list with commit counts and email addresses."
+        "Get the top contributors to a project: two lists, the last 12 months (commits by git author) and all "
+        "time (GitHub's contributions by linked account), each with shares of its own total. When neither list "
+        "has been fetched, falls back to stored commits over the last `days` days (default 90) and says so."
     )
 )
 def query_top_committers(resource_slug: str, limit: int = 10, days: int = 90) -> str:

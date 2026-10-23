@@ -1782,12 +1782,23 @@ def _interface_surface_headline(registry, slug: str) -> dict | None:
 
 
 def _chaoss_metrics_results(registry, slug: str) -> dict:
+    """The findings, plus the two contributor lists (the declared list extent of Q-0003 and Q-0051: top
+    contributors by share, with names), read through `contributors.contributors`, the one reader."""
+    from resource_explorer import contributors as contrib
+
     rows = registry.query_findings(slug, "chaoss_metrics")
-    return {"findings": [
+    out: dict = {"findings": [
         {"check_name": r["check_name"], "label": r["label"],
          "summary": r["summary"], "confidence": r["confidence"]}
         for r in rows
     ]}
+    try:
+        lists = contrib.both(registry, slug)
+    except Exception:  # noqa: BLE001 - a registry without the table still answers its findings
+        return out
+    out["contributors"] = {w: cl.as_dict() for w, cl in lists.items()}
+    out["contributors"]["note"] = contrib.COMPARE_WORDS
+    return out
 
 
 def _chaoss_metrics_trend(registry, slug: str) -> list[dict]:
@@ -1800,12 +1811,19 @@ def _chaoss_metrics_headline(registry, slug: str) -> dict | None:
     Averaging is exactly what let a project one person wrote 98% of score
     100/100 on repository_health's community_score.
     """
+    from resource_explorer import contributors as contrib
+
     rows = _chaoss_metrics_results(registry, slug)["findings"]
+    try:
+        named = contrib.headline_sentence(contrib.both(registry, slug))
+    except Exception:  # noqa: BLE001
+        named = ""
+    tail = f" · {named}" if named else ""
     if not rows:
-        return None
+        return {"label": named, "tone": "neutral"} if named else None
     ef = next((r for r in rows if r["check_name"] == "elephant_factor"), None)
     if not ef or ef["label"] == "not_established":
-        return {"label": "authorship concentration unknown", "tone": "neutral"}
+        return {"label": "authorship concentration unknown" + tail, "tone": "neutral"}
     tone = {"sole": "warn", "narrow": "warn"}.get(ef["label"], "ok")
     # The CHAOSS term stays, after the plain reading rather than instead of
     # it: "elephant factor: sole" led with jargon and left a reader to look
@@ -1815,7 +1833,7 @@ def _chaoss_metrics_headline(registry, slug: str) -> dict | None:
         "narrow": "a handful of contributors write most of the code",
         "broad": "authorship is spread across many contributors",
     }.get(ef["label"], f"authorship concentration: {ef['label']}")
-    return {"label": f"{plain} (CHAOSS elephant factor: {ef['label']})", "tone": tone}
+    return {"label": f"{plain} (CHAOSS elephant factor: {ef['label']}){tail}", "tone": tone}
 
 
 def _cii_badge_results(registry, slug: str) -> dict:
