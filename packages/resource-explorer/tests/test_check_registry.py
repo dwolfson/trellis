@@ -143,6 +143,8 @@ def test_question_purposes_are_in_the_known_vocabulary():
     known = {
         "Explore", "Select", "Assess", "Maintain", "Share",
         "Learn", "Certify", "Remediate", "Attest", "Deploy",
+        # Added by the 2026-10-13 ruling (investigation_purposes.yaml's seed): Find and Integrate.
+        "Find", "Integrate",
     }
     questions = yaml.safe_load(QUESTIONS.read_text())["repo_questions"]
     for entry in questions:

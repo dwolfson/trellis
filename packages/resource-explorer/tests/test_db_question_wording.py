@@ -117,7 +117,7 @@ class TestTheOwnerQuestionOnADatabase:
 
 
 class TestTheOtherTypesAndTheLicenseRow:
-    @pytest.mark.parametrize("rtype", ["filesystem", "dataset", "model"])
+    @pytest.mark.parametrize("rtype", ["filesystem"])   # dataset and model withdrawn 2026-10-22
     def test_ownership_is_human_for_the_types_with_no_measured_half(self, rtype):
         q = _row(rtype, OWNER_Q)
         assert q["answering"]["kind"] == "human"
@@ -125,7 +125,7 @@ class TestTheOtherTypesAndTheLicenseRow:
         for word in REPO_WORDING:
             assert word not in _shown_text(q), (rtype, word)
 
-    @pytest.mark.parametrize("rtype", ["database", "filesystem", "dataset", "model"])
+    @pytest.mark.parametrize("rtype", ["database", "filesystem"])
     def test_license_is_human_with_no_repository_wording(self, rtype):
         q = _row(rtype, LICENSE_Q)
         assert q["answering"]["kind"] == "human"
@@ -144,8 +144,8 @@ class TestTheOtherTypesAndTheLicenseRow:
 #: and is reported, not fixed, in DB-HUB-TABLES-AND-OWNER-TEXT-IMPLEMENTED.md.
 KNOWN_LEFTOVERS = {
     ("What is this resource, and what is it for?", "GitHub"),
-    ("Under what license or agreement may this resource be used?", "GitHub"),
-    ("Does it fit into our security infrastructure?", "security_scan"),
+    # Gone 2026-10-22: Q-0012 (licence) merged into Q-0030 and Q-0020 (security fit) into the estate-fit question,
+    # which has a per-type override so a database does not show the repository's dependency pre-fill.
     ("Does it fit into our governance frameworks?", "egeria_publish"),
 }
 

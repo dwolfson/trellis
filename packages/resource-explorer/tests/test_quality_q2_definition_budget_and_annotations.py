@@ -143,7 +143,7 @@ def test_the_committed_document_is_what_the_generator_writes():
         survey_kind=quality.survey_kind,
         answers_questions=gen._answered_questions(quality.survey_group, quality.step_keys,
                                                   gen._build_step_key_to_questions()))
-    assert markdown.count("## Link Element To Scope") == 2                  # Q-0096 and Q-0097
+    assert markdown.count("## Link Element To Scope") == 3                  # Q-0079 (value_profile), Q-0096, Q-0097
     assert (DEFS / quality.output_filename).read_text() == markdown
     batch = json.loads((DEFS / "_batch.json").read_text())
     assert quality.output_filename in batch["files"]
@@ -423,11 +423,13 @@ def test_two_catalog_questions_name_the_quality_analysis_and_the_definition_link
 
     named = {e["id"]: e for e in get_questions(resource_type="database")
              if {"value_profile", "quality_checks"} & set(e["answering"]["analysis_ids"])}
-    assert sorted(named) == ["Q-0096", "Q-0097"]
+    # Q-0079 names value_profile since 2026-10-22 (review §2; it named the postgres_column_profile step before), and
+    # postgres_value_profile is this definition's first step, so the definition now links to it too.
+    assert sorted(named) == ["Q-0079", "Q-0096", "Q-0097"]
     assert all(e["stage"] == "Analysis" and not e["retired"] for e in named.values())
     questions = [e["question"] for e in named.values()]
     text = (DEFS / "database-survey-definition-quality.md").read_text()
-    assert text.count("## Link Element To Scope") == 2
+    assert text.count("## Link Element To Scope") == 3
     for q in questions:
         assert f"### Scope Reference\n{q}\n" in text and "### Target Element\nDatabase Quality Survey\n" in text
 

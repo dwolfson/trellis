@@ -585,24 +585,6 @@ ___
 Repo Discovery Survey
 
 ### Scope Reference
-What kinds of integrations does it support?
-
-___
-
-## Link Element To Scope
-### Target Element
-Repo Discovery Survey
-
-### Scope Reference
-What APIs and code symbols does it expose to callers?
-
-___
-
-## Link Element To Scope
-### Target Element
-Repo Discovery Survey
-
-### Scope Reference
 What are the public interfaces?
 
 ___
@@ -613,4 +595,22 @@ Repo Discovery Survey
 
 ### Scope Reference
 Do we already support these dependencies?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Discovery Survey
+
+### Scope Reference
+Does it fit our estate — the platforms we run, our monitoring, our security controls?
+
+___
+
+## Link Element To Scope
+### Target Element
+Repo Discovery Survey
+
+### Scope Reference
+What does it talk to — Egeria, databases, services, message buses?
 

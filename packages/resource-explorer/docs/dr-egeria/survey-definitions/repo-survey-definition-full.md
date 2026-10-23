@@ -2200,6 +2200,15 @@ ___
 Full Survey (all steps)
 
 ### Scope Reference
+How much has changed since the last time this was surveyed — is it worth re-running now?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
 What languages and file types make up this repository?
 
 ___
@@ -2209,7 +2218,7 @@ ___
 Full Survey (all steps)
 
 ### Scope Reference
-How much code is there? How complex?
+How much code is there, and how complex is it?
 
 ___
 
@@ -2263,7 +2272,7 @@ ___
 Full Survey (all steps)
 
 ### Scope Reference
-How well documented is it?
+What does it talk to — Egeria, databases, services, message buses?
 
 ___
 
@@ -2272,7 +2281,7 @@ ___
 Full Survey (all steps)
 
 ### Scope Reference
-Does it fit into our security infrastructure?
+How well documented is it?
 
 ___
 
@@ -2327,24 +2336,6 @@ Full Survey (all steps)
 
 ### Scope Reference
 Does the repository have automated build tooling in place?
-
-___
-
-## Link Element To Scope
-### Target Element
-Full Survey (all steps)
-
-### Scope Reference
-What kinds of integrations does it support?
-
-___
-
-## Link Element To Scope
-### Target Element
-Full Survey (all steps)
-
-### Scope Reference
-What APIs and code symbols does it expose to callers?
 
 ___
 
@@ -2416,6 +2407,15 @@ ___
 Full Survey (all steps)
 
 ### Scope Reference
+What does it promise (SLA, support terms), and what does its history show?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
 How does it score against OpenSSF Scorecard-style criteria?
 
 ___
@@ -2443,6 +2443,15 @@ ___
 Full Survey (all steps)
 
 ### Scope Reference
+Does it fit our estate — the platforms we run, our monitoring, our security controls?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
 What deployment styles does this support?
 
 ___
@@ -2462,6 +2471,15 @@ Full Survey (all steps)
 
 ### Scope Reference
 What data files does it ship, and what shape are they?
+
+___
+
+## Link Element To Scope
+### Target Element
+Full Survey (all steps)
+
+### Scope Reference
+What code symbols — classes, functions, endpoints — does it define, and where?
 
 ___
 

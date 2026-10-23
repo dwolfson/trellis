@@ -625,7 +625,7 @@ class TestDatabaseResourceStateSources:
         from resource_explorer.surveyors.survey_definition_executor import get_adapter
 
         assert get_adapter("database").state_sources() is DATABASE_RESOURCE_STATE_SOURCES
-        assert len(DATABASE_RESOURCE_STATE_SOURCES) == 10
+        assert len(DATABASE_RESOURCE_STATE_SOURCES) == 7   # 10 until Q-0009, Q-0039 and Q-0042 went (2026-10-22)
 
     def test_every_declared_question_is_a_real_direct_kind_database_question(self):
         """Same guard `test_every_declared_question_is_in_the_real_catalog`
@@ -730,7 +730,12 @@ class TestDatabaseResourceStateSources:
         assert no.state == NOTHING_FOUND
 
     def test_related_finds_same_server_and_same_name_candidates(self, pg_registry):
-        from resource_explorer.facts import DATABASE_RESOURCE_STATE_SOURCES
+        from resource_explorer.facts import DATABASE_RESOURCE_STATE_SOURCES, _db_r_related
+
+        # The database table no longer keys this resolver to a question: the replace-or-extend question merged into
+        # Q-0011, which is mixed-kind for a database (the table holds direct-kind ones only). The resolver stays
+        # defined, so it is exercised directly, and the table is pinned not to carry it.
+        assert all(r is not _db_r_related for r, _ in DATABASE_RESOURCE_STATE_SOURCES.values())
 
         reg = pg_registry
         self._db(reg, "db_rel_a", server_slug="pg-prod-1", database_name="orders")
@@ -738,8 +743,7 @@ class TestDatabaseResourceStateSources:
         self._db(reg, "db_rel_c", server_slug="pg-prod-2", database_name="orders")
         self._db(reg, "db_rel_lonely", server_slug="pg-standalone", database_name="unique_db")
 
-        resolver, subject = DATABASE_RESOURCE_STATE_SOURCES[
-            "Does it replace or extend something we already have?"]
+        resolver, subject = _db_r_related, "db_related"
         fl = FactLayer(registry=reg, resource_type="database")
 
         found = fl._resource_state_fact("db_rel_a", resolver, subject)
@@ -781,7 +785,7 @@ class TestDatabaseResourceStateSources:
         self._db(reg, "db_disp_no")
 
         resolver, subject = DATABASE_RESOURCE_STATE_SOURCES[
-            "Based on what's already known, is this worth investigating further, or should it be deprioritized?"]
+            "Given what is known, is this worth a full survey?"]
         fl = FactLayer(registry=reg, resource_type="database")
 
         yes = fl._resource_state_fact("db_disp_yes", resolver, subject)

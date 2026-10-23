@@ -84,6 +84,13 @@ import csv
 import sys
 from pathlib import Path
 
+# The Status rule is the package's, shared with csv_to_question_catalog_yaml.py so the two outputs cannot disagree
+# about which rows are gone. Normally run under the package's own interpreter; the sys.path nudge covers the
+# standalone case.
+if __package__ in (None, ""):  # running as a script, not imported as a module
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from resource_explorer.question_status import is_skipped_status
+
 REQUIRED_COLUMNS = ["Question", "Funnel Stage"]
 # "Answering Analysis"/"Answering Mechanism" are RE-internal roadmap
 # documentation (which analysis_catalog.yaml id, if any, and which kind of
@@ -220,6 +227,10 @@ def generate(
         question = (row.get("Question") or "").strip()
         if not question:
             continue
+        if is_skipped_status(row.get("Status")):
+            # Retired or merged (2026-10-22): no new term. The Egeria term it created earlier is UPDATED by the
+            # coordinator's separate cleared batch, never deleted; this document only stops creating it.
+            continue
         funnel_stage = (row.get("Funnel Stage") or "").strip()
         if not funnel_stage:
             skipped.append(f"{question!r} — missing 'Funnel Stage', skipped")
@@ -309,8 +320,9 @@ def main() -> None:
 
     content = generate(rows, questions_glossary=args.questions_glossary, title=title)
     output_path.write_text(content)
-    n_questions = sum(1 for r in rows if (r.get("Question") or "").strip())
-    print(f"Wrote {output_path} ({n_questions} questions from {len(rows)} CSV rows)")
+    n_questions = sum(1 for r in rows if (r.get("Question") or "").strip()
+                      and not is_skipped_status(r.get("Status")))
+    print(f"Wrote {output_path} ({n_questions} active questions from {len(rows)} CSV rows)")
 
 
 if __name__ == "__main__":

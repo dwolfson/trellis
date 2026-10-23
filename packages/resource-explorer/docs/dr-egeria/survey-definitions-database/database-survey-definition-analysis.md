@@ -461,16 +461,7 @@ ___
 Database Analysis Survey
 
 ### Scope Reference
-Who can read and write what — roles, grants, superusers, PUBLIC grants, and are sensitive columns readable broadly?
-
-___
-
-## Link Element To Scope
-### Target Element
-Database Analysis Survey
-
-### Scope Reference
-What is the sensitive-data exposure — which sensitive columns can which roles read?
+Who can read and write what — roles, grants, superusers, PUBLIC grants — which sensitive columns can which roles read, and what has changed?
 
 ___
 
@@ -488,7 +479,7 @@ ___
 Database Analysis Survey
 
 ### Scope Reference
-Which columns hold semi-structured data (JSON, JSONB, XML, arrays or hstore), and how much of the data sits in them?
+Which columns hold semi-structured data (JSON, JSONB, XML, arrays or hstore), and what is inside them — keys, nesting, types and consistency across rows?
 
 ___
 
@@ -497,7 +488,7 @@ ___
 Database Analysis Survey
 
 ### Scope Reference
-What is inside the JSON, JSONB and XML columns — keys, nesting, types, and consistency across rows?
+How much has changed since the last time this was surveyed — is it worth re-running now?
 
 ___
 
@@ -524,7 +515,7 @@ ___
 Database Analysis Survey
 
 ### Scope Reference
-How complete and consistent is this database's documentation?
+How complete and consistent is this database's documentation — what fraction of its tables and columns carry comments?
 
 ___
 

@@ -55,8 +55,8 @@ def test_no_question_claims_a_gap_for_an_analysis_that_exists():
 
     offenders: list[str] = []
     for section, questions in (yaml.safe_load(QUESTIONS.read_text(encoding="utf-8")) or {}).items():
-        if not isinstance(questions, list):
-            continue
+        if not section.endswith("_questions") or not isinstance(questions, list):
+            continue      # `reserved_question_ids` is a list of ids, not of questions (2026-10-22)
         for question in questions:
             answering = question.get("answering") or {}
             if answering.get("kind") != "gap":
@@ -181,14 +181,22 @@ class TestAPartialMustNameSomethingRegistered:
         assert result["kind"] == "partial"
         assert result["analysis_ids"] == ["nested_column_profile"]
 
-    def test_a_partial_naming_a_real_step_id_passes(self, generator):
-        # postgres_column_profile is a STEP, not an analysis_catalog.yaml id --
-        # this is the real current wording of one of the three 2026-09-27
-        # corrections (see TestTheThreeCorrectedRowsRestoredToOldWording below).
+    def test_a_partial_naming_only_a_step_id_now_fails(self, generator):
+        # postgres_column_profile is a STEP, not an analysis_catalog.yaml id. Until 2026-10-22 a PARTIAL naming it
+        # passed (this was the real wording of one of the three 2026-09-27 corrections); the review's rule 1
+        # (REVIEW-QUESTIONS-AND-ANALYTICS-2026-10-22 §5) refuses it: a step is not an analysis the question layer
+        # can resolve, so the cell must name the catalogue analysis that wraps it.
+        with pytest.raises(ValueError, match="step, not an analysis-catalog id"):
+            generator._parse_answering(
+                "PARTIAL: the postgres_column_profile step reads pg_stats but samples nothing else."
+            )
+
+    def test_a_partial_naming_a_step_beside_a_catalogue_id_in_a_gloss_passes(self, generator):
         result = generator._parse_answering(
-            "PARTIAL: the postgres_column_profile step reads pg_stats but samples nothing else."
+            "PARTIAL: value_profile covers part of this (it rides postgres_value_profile); the rest is unmeasured."
         )
         assert result["kind"] == "partial"
+        assert result["analysis_ids"] == ["value_profile"]
 
 
 class TestAProseOnlyGapCannotBeCheckedAndIsAllowedToStand:

@@ -928,7 +928,8 @@ def test_a_refused_repeat_says_how_the_earlier_run_ended(root, reg, monkeypatch)
 # Fixtures are the real `dr_egeria` rendering (md_processing.process_md_file_v2, the installed pyegeria) of
 # survey-definitions/repo-survey-definition-analysis.md, captured with a stub client and no Egeria call: lookups find
 # nothing except RE's engine (declared before this document runs), every write answers one stub GUID. Re-captured
-# 2026-10-15 for engine host case 3 at widths 1158 (process) and the runner's default 600 (folded).
+# 2026-10-15 for engine host case 3 at widths 1158 (process) and 200 (folded); re-captured 2026-10-22 the same way
+# after the questions-CSV edit added one Link Element To Scope (42 commands).
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 _ANALYSIS_DOC = "survey-definitions/repo-survey-definition-analysis.md"
@@ -946,9 +947,9 @@ def test_every_command_of_the_analysis_definition_gets_a_real_status(fixture):
     plan = runner.plan_document(_ANALYSIS_DOC)
     items = runner.dr_egeria_results(plan.dr_egeria, (_FIXTURES / fixture).read_text(), "ok")
     # Re-captured for engine host case 3 (the document now carries one "Link Action to Action Executor" per step), with a
-    # stub client that knows the engine its executor links name: every one of the 41 commands gets a real status.
+    # stub client that knows the engine its executor links name: every one of the 42 commands gets a real status.
     ran = items
-    assert len(ran) == 41 and "unknown" not in {i["status"] for i in ran}
+    assert len(ran) == 42 and "unknown" not in {i["status"] for i in ran}
     assert {i["status"] for i in ran if i["command"] == "Link Action to Action Executor"} == {"ok"}
     assert {s for c, s in _statuses(ran) if c != "Link Element To Scope"} == {"ok"}
 
@@ -966,8 +967,9 @@ def test_a_full_size_document_lines_up_row_for_row_even_when_rich_folds_every_ce
         finally:
             del os.environ["EGERIA_WIDTH"]
         items = runner.dr_egeria_results(plan.dr_egeria, out, "ok")
-        # every command of the document (119 before engine host case 3 added an executor link per step: 159)
-        assert len(items) == len(plan.dr_egeria) == 159 and {i["status"] for i in items} == {"ok"}, width
+        # every command of the document (119 before engine host case 3 added an executor link per step: 159; 161 since the questions-CSV edit
+        # split the code-symbols question from the size one and added the "how much has changed" scope link)
+        assert len(items) == len(plan.dr_egeria) == 161 and {i["status"] for i in items} == {"ok"}, width
 
 
 def test_a_deferred_row_is_unknown_with_its_reason_not_ok():

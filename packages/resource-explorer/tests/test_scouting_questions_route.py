@@ -214,7 +214,9 @@ class TestLimitAndHistoryAreSeparate:
         # infrastructure?" moved from Analysis/Enrichment to Enrichment at
         # the project owner's direction (the answer is a person's), taking
         # its security_scan analysis id out of the Analysis phase with it.
-        assert len(measured) == 16
+        # 17 since 2026-10-22: Q-0021 ("What does it promise ... and what does its history show?") is answered
+        # by sla_content as well as the trend chart now, so it carries an analysis id (review §2).
+        assert len(measured) == 17
         tells = ("shipped 2026", "was marked GAP", "landed 2026", "could not parse",
                  "Closed 2026", "before any question referenced")
         leaked = [q["question"] for q in measured
@@ -231,4 +233,4 @@ class TestLimitAndHistoryAreSeparate:
         # answer — left the Analysis phase for Enrichment, so every remaining
         # measured question carries history. (Was 16 of 17 from 2026-09-12,
         # and 15 of 16 before that.)
-        assert len(with_history) == 16
+        assert len(with_history) == 17        # Q-0021 joined (2026-10-22), history authored with it

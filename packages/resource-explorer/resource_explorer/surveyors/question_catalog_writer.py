@@ -144,7 +144,12 @@ def _regenerate_yaml(rows: list[dict]) -> None:
 
 
 def _is_retired(row: dict) -> bool:
-    return (row.get("Status") or "").strip().lower() == STATUS_RETIRED.lower()
+    from resource_explorer.question_status import is_skipped_status
+
+    # The bare "Retired" this module writes, or a dated "retired ..." / "merged into ..." Status a person wrote
+    # in the CSV (2026-10-22): either way the question is gone and retiring it again would overwrite the reason.
+    return ((row.get("Status") or "").strip().lower() == STATUS_RETIRED.lower()
+            or is_skipped_status(row.get("Status")))
 
 
 def add_question(question: str, **fields) -> list[str]:

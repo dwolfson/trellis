@@ -531,7 +531,7 @@ ___
 Scouting Survey
 
 ### Scope Reference
-How much code is there? How complex?
+How much code is there, and how complex is it?
 
 ___
 

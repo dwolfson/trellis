@@ -86,7 +86,9 @@ class TestDatabaseResultsMapCoverage:
 
         # data_class_match and reference_data_match left this set on
         # 2026-10-20: their verdicts are now stored in database_column_matches.
-        expected_absent = {"nested_column_profile", "egeria_db_survey"}
+        # sql_analysis joined them 2026-10-22: a catalogue entry and a step map, but no results reader yet (its
+        # view rows are served by the databases route, not through this map).
+        expected_absent = {"nested_column_profile", "egeria_db_survey", "sql_analysis"}
         assert set(DATABASE_ANALYSIS_RE_STEP_MAP) - set(DATABASE_ANALYSIS_RESULTS_MAP) == expected_absent
         # Nineteen: ENRICHMENT-E3 added `database_owner` (the measured datdba,
         # its own fact with its own measured_at).
