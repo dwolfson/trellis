@@ -477,9 +477,11 @@ def test_the_table_is_created_on_a_fresh_sqlite_registry_and_a_reopen_is_idempot
     con.close()
 
 
-def test_the_tests_never_reach_the_shared_registry(registry):
-    assert "5442" not in str(getattr(registry, "database_url", "")) and not getattr(registry, "is_postgres", False)
-    assert os.environ.get("REGISTRY_DATABASE_URL", "").startswith("sqlite")
+def test_the_tests_never_reach_the_shared_registry(registry, tmp_path):
+    # The fixture's registry is pinned to SQLite under this test's tmp_path, whatever REGISTRY_DATABASE_URL says
+    # (CI points that variable at its own pgvector service on 5442 for the pg tier, so the env var is not asserted).
+    assert registry.database_url == f"sqlite:///{tmp_path / 'walkext.db'}"
+    assert "5442" not in registry.database_url and not getattr(registry, "is_postgres", False)
 
 
 # ── 8. publish through the real publisher with a fake that binds the real signatures ────────────────────────────────
