@@ -527,7 +527,7 @@ PROJECT_CONTRIBUTORS_DDL = (
     """,
 )
 
-#: DDL for the record of Egeria metadata resets (PLAN-EGERIA-RESET-2026-10-23.md, architect ruling (b); the project
+#: DDL for the record of Egeria metadata resets (the 2026-10-23 Egeria reset plan (architect rulings b and c); the project
 #: owner's word 2026-10-23: "Yes, the egeria_resets table is approved"). Same rules as RESOURCE_SCOPE_EVENTS_DDL: ONE
 #: additive, idempotent CREATE TABLE IF NOT EXISTS, no ALTER of an existing table, no index, no data migration, no
 #: foreign key, no question mark or colon-name token (the Postgres translator rewrites both; AUTOINCREMENT becomes

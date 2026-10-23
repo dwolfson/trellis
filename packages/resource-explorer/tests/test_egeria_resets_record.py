@@ -1,5 +1,4 @@
-"""The record of Egeria resets (`egeria_resets`) and the pre-reset status rule (PLAN-EGERIA-RESET-2026-10-23.md,
-architect rulings (b) and (c); the project owner approved the table 2026-10-23).
+"""The record of Egeria resets (`egeria_resets`) and the pre-reset status rule (the 2026-10-23 Egeria reset plan (architect rulings b and c); the project owner approved the table 2026-10-23).
 
 A proof row older than the latest recorded reset never produces ✓ / "published" / "in Egeria" on any surface the
 rule changed; rows after it behave as before; the profile publish's "previous" ignores rows before it; the CLI refuses
