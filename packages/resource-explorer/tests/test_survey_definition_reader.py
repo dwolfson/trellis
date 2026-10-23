@@ -437,10 +437,14 @@ class TestResolveQuestionGuid:
         with pytest.raises(sdr.QuestionTermUnreadable, match="2 GlossaryTerm elements hold"):
             reader.resolve_question_guid("Q")
 
-    def test_a_deprecated_term_is_not_returned_and_an_active_one_with_the_same_name_is(self):
+    def test_egeria_paths_skip_a_deprecated_term_and_return_the_active_one_with_the_same_name(self):
         """FAIL-ON-PURPOSE (architect 2026-10-23, term Update batch prerequisite): the batch marks 11 retired or
-        merged question terms DEPRECATED and KEEPS their links, so this reader's filter is what stops them
-        resolving. Through the reader's real code path, with an autospec'd MetadataExpert."""
+        merged question terms DEPRECATED and KEEPS their links. This filter covers exactly the paths that
+        resolve a question term in Egeria: the no-documents fallback (`_find_candidates_via_egeria`) and the
+        warm-up (`warm_question_guid_cache`). The main path (`find_candidate_process_guids_by_questions` over the
+        authored documents) never reads a term, so it relies on the YAML carrying no retired/merged rows,
+        pinned by test_question_catalog_reader's committed-catalog guard. Through the reader's real code path,
+        with an autospec'd MetadataExpert."""
         both = [term_element(Q1_GUID, "Q", status="DEPRECATED"), term_element(Q2_GUID, "Q", status="ACTIVE")]
         reader = _reader_with_fake_classification_explorer(_FakeClassificationExplorer(guid_by_name={"Q": both}))
         assert reader.resolve_question_guid("Q") == Q2_GUID

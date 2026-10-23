@@ -98,10 +98,15 @@ def test_a_miss_with_a_type_is_still_none():
 SLOW_EXACT_VALUE_METHODS = ("get_guid_for_name", "get_elements_by_property_value",
                             "_async_get_elements_by_property_value")
 ALLOWED_GET_GUID_FOR_NAME: dict[str, int] = {}   # none left (2026-10-23): display/path names use a typed search
+#: The scripts that still call the slow endpoint, keyed by path relative to the package root: (count, reason).
+#: Not changed in this round (review 4, 2026-10-23): each is a known site to move, not a licence for more.
+ALLOWED_SLOW_IN_SCRIPTS: dict[str, tuple[int, str]] = {
+    "scripts/create_measure_definitions.py": (1, "follow-up: slow by-exact-value lookup, see FAST-LOOKUP-SITES"),
+    "scripts/verify_perspectives.py": (1, "follow-up: slow by-exact-value lookup, see FAST-LOOKUP-SITES"),
+}
 
 
-def test_get_guid_for_name_does_not_come_back_for_qualified_names():
-    root = pathlib.Path(__file__).resolve().parent.parent / "resource_explorer"
+def _slow_calls_under(root: pathlib.Path, relative_to: pathlib.Path) -> dict[str, int]:
     found: dict[str, int] = {}
     for path in root.rglob("*.py"):
         tree = ast.parse(path.read_text())
@@ -109,7 +114,19 @@ def test_get_guid_for_name_does_not_come_back_for_qualified_names():
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                 and node.func.attr in SLOW_EXACT_VALUE_METHODS)
         if n:
-            found[path.relative_to(root).as_posix()] = n
+            found[path.relative_to(relative_to).as_posix()] = n
+    return found
+
+
+def test_get_guid_for_name_does_not_come_back_for_qualified_names():
+    package = pathlib.Path(__file__).resolve().parent.parent
+    root = package / "resource_explorer"
+    found = _slow_calls_under(root, root)
+    scripts = _slow_calls_under(package / "scripts", package)
+    assert scripts == {path: count for path, (count, _why) in ALLOWED_SLOW_IN_SCRIPTS.items()}, (
+        "a slow by-exact-value call came back in scripts/ (or an allowed one went): use egeria_lookup's "
+        "guid_by_qualified_name / guid_by_exact_value, or move it off ALLOWED_SLOW_IN_SCRIPTS")
+    assert all(why.strip() for _count, why in ALLOWED_SLOW_IN_SCRIPTS.values())
     assert found == ALLOWED_GET_GUID_FOR_NAME, (
         "a get_guid_for_name( call came back (or an allowed one went): look up an exact qualifiedName with "
         "egeria_lookup.guid_by_qualified_name and a display/path name with egeria_lookup.guid_by_exact_value")
@@ -458,9 +475,19 @@ def test_exact_value_one_hit_is_the_guid():
     _no_slow_anywhere(fake)
 
 
-@pytest.mark.parametrize("miss", [MISS, []])
-def test_exact_value_none_is_none(miss):
-    assert guid_by_exact_value(searcher(miss), "Q?", property_name="displayName", type_name="GlossaryTerm") is None
+def test_exact_value_none_is_none():
+    assert guid_by_exact_value(searcher(MISS), "Q?", property_name="displayName", type_name="GlossaryTerm") is None
+
+
+def test_exact_value_an_empty_list_raises_never_absent():
+    """Fail-on-purpose: `[]` is not Egeria's "No elements found" (`egeria_absence.is_absent([])` is unreadable),
+    so returning None for it (a create cue) fails here."""
+    from resource_explorer.egeria_absence import UNREADABLE, is_absent, lookup_exception_is_absent
+
+    assert is_absent([]) == UNREADABLE
+    with pytest.raises(QualifiedNameLookupError, match="empty element list") as caught:
+        guid_by_exact_value(searcher([]), "Q?", property_name="displayName", type_name="GlossaryTerm")
+    assert not lookup_exception_is_absent(caught.value)
 
 
 def test_exact_value_a_typed_not_found_is_none():

@@ -192,6 +192,21 @@ def test_filesystem_found_element_is_adopted_not_created():
     assert out["filesystem_guid"] == GUID
 
 
+def test_filesystem_empty_list_for_a_data_file_creates_no_data_file():
+    """Fail-on-purpose: the data file's typed pathName search answering `[]` is UNREADABLE, not absent
+    (`egeria_absence.is_absent([])`): the file is listed as not checked and no DataFile is created for it."""
+    def lookup(name, *a, **k):
+        return [] if str(name).startswith("/data/fs1/") else GUID       # root folder found; data file answers []
+
+    s = _fs_surveyor(lookup)
+    data = dict(_FS_DATA, inventory=[{"file_path": "a.csv", "file_name": "a.csv", "format": "CSV",
+                                      "is_data_file": True}], total_files=1, total_data_files=1)
+    out = s.catalog_and_survey(_FS, data)
+    s._automated_curation.create_elem_from_template.assert_not_called()
+    assert list(out["files_not_checked"]) == ["a.csv"]
+    assert "could not be made" in out["files_not_checked"]["a.csv"]
+
+
 # ── 3. doc sources: the ExternalReference ───────────────────────────────
 
 def _doc_clients(lookup, by_guid=None):

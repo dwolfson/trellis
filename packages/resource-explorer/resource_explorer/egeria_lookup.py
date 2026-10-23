@@ -177,8 +177,9 @@ def guid_by_exact_value(expert, value: str, *, property_name: str, type_name: st
       * none (Egeria's "No elements found", a typed not-found, or no element with the property exactly equal)
                                   -> None;
       * two or more               -> `ExactValueAmbiguous` (UNREADABLE: never "absent", never "pick one");
-      * anything else             -> RAISES: a pyegeria exception propagates unchanged, an odd answer, an element
-        without a GUID or of another type, or a full page raise `QualifiedNameLookupError`.
+      * anything else             -> RAISES: a pyegeria exception propagates unchanged, an odd answer, an EMPTY
+        element list `[]` (not Egeria's miss: `egeria_absence.is_absent([])` is unreadable), an element without a
+        GUID or of another type, or a full page raise `QualifiedNameLookupError`.
 
     `exclude_deprecated` drops DEPRECATED elements before counting (the question readers: a retired or merged
     term keeps its links, and this is what stops it resolving). `expert` is a `MetadataExpert`."""
@@ -207,6 +208,11 @@ def guid_by_exact_value(expert, value: str, *, property_name: str, type_name: st
     if not isinstance(answer, list):
         raise QualifiedNameLookupError(f"unexpected answer for the {type_name} {property_name} {value!r}: "
                                        f"{answer!r:.120}")
+    if not answer:
+        # An empty element list is not Egeria's miss (that is the "No elements found" sentence, or a typed
+        # not-found: `egeria_absence`); `is_absent([])` is UNREADABLE, so it raises and nothing is created.
+        raise QualifiedNameLookupError(f"an empty element list for the {type_name} {property_name} {value!r}: "
+                                       "not Egeria's \"No elements found\", so it could not be read")
     if len(answer) >= EXACT_VALUE_PAGE_SIZE:
         raise QualifiedNameLookupError(f"{len(answer)} or more {type_name} elements answered {value!r}: the "
                                        "page is full, so the count could not be told")
