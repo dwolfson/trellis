@@ -139,7 +139,11 @@ dependencies = [
     # Raised to 6.2.9 (2026-10-21): #477 (ISSUE-161) Dr.Egeria entry points resolve the user at run time
     # (--userid > EGERIA_USER > config/.env > default); #478 Postgres Server/Database element commands take
     # secrets-store attributes. RE passes --userid explicitly and generates no Postgres element commands.
-    "pyegeria>=6.2.9",
+    # Raised to 6.2.10 (2026-10-23): #483 (ISSUE-163/164/165) request fields 6.2.9 dropped are now sent -- find_*
+    # zone filter, relationship page size, anchor scope, anchorScopeGUIDs, initiate_engine_action startDate; new
+    # undo/restore, usage-activity and product-catalog APIs; #482 (ISSUE-162) term/data-designer booleans kept.
+    # Audit: RE passes none of those fields (tests/test_pyegeria_6210_request_fields.py). The lock moved only pyegeria.
+    "pyegeria>=6.2.10",
     "mcp>=2.0.0",
     # nest-asyncio removed 2026-09-04 with the shared-pool refactor: RE no
     # longer imports it anywhere. Its one site, surveyors/prefect_adapter.py's
