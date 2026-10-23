@@ -328,7 +328,7 @@ def test_the_profile_annotations(registry, entity):
     assert kinds.count("ResourceProfileAnnotation") == 5
     unprofiled = {a.item_key: a for a in out["annotations"] if type(a).__name__ == "ResourceMeasureAnnotation"}
     assert set(unprofiled) == {"sales.v_orders", "sales.big", "sales.secret", "sales.slow"}
-    placed = next(a for a in out["annotations"] if a.item_key == "sales.orders.placed")
+    placed = next(a for a in out["annotations"] if a.item_key == '["sales","orders","placed"]')
     assert placed.value_count["record_ct"] == 1000 and placed.json_properties["profileDates"]["min_date"] == "2020-01-01"
 
 

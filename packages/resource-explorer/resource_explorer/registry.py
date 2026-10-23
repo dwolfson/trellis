@@ -1656,6 +1656,12 @@ def _target_request_type(target_json) -> str:
     return str(target.get("request_type") or "") if isinstance(target, dict) else ""
 
 
+#: The rows of a report that are ON it. A value-profile proof row with an `item_key` and NO `content_hash` is
+#: `no_longer_measured` / `not_measured_this_run`: it names the PREVIOUS annotation of a measure this run did
+#: not publish, which is not on this report (`record_profile_publish` writes a hash on every row that is).
+#: Module-level, not a class attribute: trellis-analytics' RegistryReadView borrows these methods unbound.
+_NATIVE_ANNOTATION_ON_REPORT = "NOT (item_key IS NOT NULL AND content_hash IS NULL)"
+
 class ProjectRegistry:
     # Process-wide cache: a Postgres `Engine` (connection pool) and whether
     # `_init_schema` has already run, keyed by `database_url`. Added
@@ -4857,6 +4863,7 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_runs_result_ref ON runs(result_ref)"
             )
         self._migrate_artifact_columns()
+        self._migrate_profile_proof_columns()
 
     #: Artifacts slice 1 (DESIGN-ARTIFACTS-VIEW-AND-DOC-LINKS.md §3; owner's go 2026-10-15; DDL record
     #: docs/ddl-artifact-columns.md). file_role: core | test | generated | vendored | docs from
@@ -4872,6 +4879,21 @@ class ProjectRegistry:
         table's ACCESS EXCLUSIVE lock is never held while waiting for the next table's (each wait is
         bounded by its own 10 s lock_timeout)."""
         for table, column in self.ARTIFACT_COLUMNS:
+            with self._conn() as conn:
+                self._add_nullable_text_column(conn, table, column, self._get_table_columns(conn, table))
+
+    #: Profile publish reshape (BRIEF-PROFILE-PUBLISH-RESHAPE, owner's go 2026-10-23 "Profile reshape: 2 columns"):
+    #: on RE's own proof row of a published value-profile annotation, the column path it measures (`item_key`,
+    #: "schema.table.column") and the sha256 of its canonical measures (`content_hash`), so the next publish can
+    #: re-link an unchanged measure to its new report instead of creating it again. NULL = a row from before the
+    #: column existed, or a native Egeria read-back row (never compared).
+    PROFILE_PROOF_COLUMNS = (("native_survey_annotations", "item_key"),
+                             ("native_survey_annotations", "content_hash"))
+
+    def _migrate_profile_proof_columns(self) -> None:
+        """The same shape as `_migrate_artifact_columns`: additive, nullable TEXT, each in its own short
+        transaction with a bounded lock wait, IF NOT EXISTS on Postgres."""
+        for table, column in self.PROFILE_PROOF_COLUMNS:
             with self._conn() as conn:
                 self._add_nullable_text_column(conn, table, column, self._get_table_columns(conn, table))
 
@@ -8235,7 +8257,7 @@ class ProjectRegistry:
             rows = conn.execute(
                 "SELECT annotation_guid, annotation_type, analysis_step, summary, "
                 "explanation, confidence, detail_json, report_at, read_at "
-                "FROM native_survey_annotations WHERE report_guid = ? "
+                f"FROM native_survey_annotations WHERE report_guid = ? AND {_NATIVE_ANNOTATION_ON_REPORT} "
                 "ORDER BY annotation_type, summary, annotation_guid",
                 (report_guid,),
             ).fetchall()
@@ -8252,9 +8274,109 @@ class ProjectRegistry:
     def count_native_survey_annotations(self, report_guid: str) -> int:
         with self._conn() as conn:
             return int(conn.execute(
-                "SELECT COUNT(*) FROM native_survey_annotations WHERE report_guid = ?",
+                f"SELECT COUNT(*) FROM native_survey_annotations WHERE report_guid = ? AND {_NATIVE_ANNOTATION_ON_REPORT}",
                 (report_guid,),
             ).fetchone()[0])
+
+    # ── RE's own value-profile publish: proof rows (profile publish reshape) ──
+    #
+    # One row per value-profile measure a publish put on its report, in `native_survey_annotations` (keyed
+    # (report GUID, annotation GUID), so a retried record writes nothing new), with `item_key` and
+    # `content_hash` set and `detail_json.outcome` = `created` or `relinked`. A row is written only for an
+    # annotation the report's read-back found on it. A measure the previous publish had and this run did not
+    # measure gets a row with `outcome` `no_longer_measured` (or `not_measured_this_run` when its table was not
+    # profiled), the PREVIOUS annotation's GUID and NO hash (it is not on this report, and it is never compared
+    # against).
+
+    def latest_profile_publish(self, entity_type: str, slug: str, analysis_step: str) -> dict | None:
+        """What the next value-profile publish of this resource compares with, from RE's proof rows across EVERY
+        RE report of the resource: {report_guid, report_at (the latest hashed row's report), measures:
+        {item_key: {annotation_guid, content_hash}} (the LATEST HASHED row per key, so a measure whose re-link
+        failed in one run is compared with the run before it), gone_keys (keys whose latest row of any outcome is
+        `no_longer_measured`)}; None when none."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = [dict(r) for r in conn.execute(
+                "SELECT report_guid, report_at, item_key, annotation_guid, content_hash, detail_json "
+                "FROM native_survey_annotations "
+                "WHERE entity_type = ? AND slug = ? AND analysis_step = ? AND item_key IS NOT NULL "
+                "ORDER BY report_at DESC, id DESC",
+                (entity_type, slug, analysis_step),
+            ).fetchall()]
+        latest = next((r for r in rows if r["content_hash"] is not None), None)
+        if latest is None:
+            return None
+        measures: dict[str, dict] = {}
+        last_outcome: dict[str, str] = {}
+        for r in rows:
+            key = r["item_key"]
+            if key not in last_outcome:
+                try:
+                    last_outcome[key] = json.loads(r["detail_json"] or "{}").get("outcome") or ""
+                except (TypeError, ValueError, AttributeError):
+                    last_outcome[key] = ""
+            if r["content_hash"] is not None and key not in measures:
+                measures[key] = {"annotation_guid": r["annotation_guid"], "content_hash": r["content_hash"]}
+        return {"report_guid": latest["report_guid"], "report_at": latest["report_at"], "measures": measures,
+                "gone_keys": {k for k, o in last_outcome.items() if o == "no_longer_measured"}}
+
+    def record_profile_publish(self, entity_type: str, slug: str, *, report_guid: str, report_at: str,
+                               read_at: str, analysis_step: str, rows: list[dict]) -> int:
+        """Write a publish's proof rows ({annotation_guid, item_key, content_hash, outcome, summary,
+        annotation_type, previous_report_guid, previous_report_at, note (optional)}), idempotently. Returns how many rows the
+        report has now."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            for row in rows:
+                if not row.get("annotation_guid"):
+                    continue
+                detail = {"outcome": row["outcome"],
+                          "previous_report_guid": row.get("previous_report_guid") or "",
+                          "previous_report_at": row.get("previous_report_at") or ""}
+                if row.get("note"):
+                    detail["note"] = row["note"]
+                conn.execute(
+                    "INSERT INTO native_survey_annotations (entity_type, slug, report_guid, report_at, "
+                    "annotation_guid, annotation_type, analysis_step, summary, detail_json, read_at, "
+                    "item_key, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(report_guid, annotation_guid) DO NOTHING",
+                    (entity_type, slug, report_guid, report_at, row["annotation_guid"],
+                     row.get("annotation_type") or "", analysis_step, row.get("summary") or "",
+                     json.dumps(detail), read_at, row.get("item_key"), row.get("content_hash")),
+                )
+            return int(conn.execute(
+                "SELECT COUNT(*) FROM native_survey_annotations WHERE report_guid = ? AND analysis_step = ?",
+                (report_guid, analysis_step)).fetchone()[0])
+
+    def profile_publish_counts(self, report_guid: str, analysis_step: str) -> dict:
+        """The run card's counts for one value-profile publish, from its proof rows only: `published`
+        (created + relinked), `created`, `recreated` (created again after a refused re-link: the value did not
+        change), `changed` (created minus recreated), `relinked`, `no_longer_measured`, `not_measured_this_run`, and the
+        previous report it was
+        compared with (`previous_report_at`, '' when there was none)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT detail_json FROM native_survey_annotations WHERE report_guid = ? AND analysis_step = ?",
+                (report_guid, analysis_step)).fetchall()
+        from resource_explorer.surveyors.database.quality.profile_publish import RECREATED_NOTE as recreated_note
+        counts = {"created": 0, "relinked": 0, "no_longer_measured": 0, "not_measured_this_run": 0}
+        previous = ""
+        recreated = 0
+        for r in rows:
+            try:
+                detail = json.loads(dict(r)["detail_json"] or "{}")
+            except (TypeError, ValueError):
+                detail = {}
+            outcome = detail.get("outcome")
+            if outcome in counts:
+                counts[outcome] += 1
+                # a refused re-link created again in the same run: created, but its value did not change
+                if outcome == "created" and detail.get("note") == recreated_note:
+                    recreated += 1
+            previous = previous or detail.get("previous_report_at") or ""
+        return {"published": counts["created"] + counts["relinked"], **counts,
+                "recreated": recreated, "changed": counts["created"] - recreated,
+                "previous_report_at": previous, "rows": len(rows)}
 
     # ── annotations of a user step run by RE (extensibility brief 2c) ────────
     #

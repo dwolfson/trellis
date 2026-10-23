@@ -204,6 +204,7 @@ class FakeEgeria:
             wrap("get_asset_by_guid", self._asset)
         elif name == "DataDiscovery":
             wrap("create_annotation", self._create_annotation)
+            wrap("attach_annotation_to_report", self._attach_annotation)
         elif name == "ClassificationExplorer":
             wrap("add_ownership_to_element", lambda guid, body=None, *a, **k:
                  self.classifications.append(("Ownership", guid, body)))
@@ -358,6 +359,20 @@ class FakeEgeria:
                                        "end1": parent, "end2": guid})
         return guid
 
+    def _attach_annotation(self, survey_report_guid, annotation_guid, body=None):
+        """`…/survey-reports/{report}/new-annotations/{annotation}/attach`: a ReportedAnnotation from the report to
+        an EXISTING annotation. Multi-link, as in Egeria: a second attach of the same pair makes a second
+        relationship (it does not upsert), so a test can catch a missing read-first. An unknown or ARCHIVED GUID
+        (`archive(guid)`) is refused with Egeria's typed 404."""
+        for guid, kind in ((survey_report_guid, "SurveyReport"), (annotation_guid, "Annotation")):
+            element = self.elements.get(guid) or {}
+            if element.get("type") != kind or element.get("archived"):
+                raise _refusal("OMAG-REPOSITORY-HANDLER-404-001", f"no {kind} {guid}", http=404)
+        guid = _uuid()
+        self.relationships.append({"type": "ReportedAnnotation", "end1": survey_report_guid, "end2": annotation_guid,
+                                   "guid": guid})
+        return guid
+
     def _relate(self, body=None):
         guid = _uuid()
         self.relationships.append({"type": body["typeName"], "end1": body["metadataElement1GUID"],
@@ -393,7 +408,8 @@ class FakeEgeria:
             anns = [(r["end2"], "Annotation", (self.elements[r["end2"]]["body"] or {}).get("properties", {}))
                     for r in self.relationships
                     if r["type"] == "ReportedAnnotation" and r["end1"] == report_guid
-                    and self.elements.get(r["end2"], {}).get("type") == "Annotation"]
+                    and self.elements.get(r["end2"], {}).get("type") == "Annotation"
+                    and not self.elements[r["end2"]].get("archived")]
         size = min(page_size or self.RELATED_PAGE_CAP, self.RELATED_PAGE_CAP)
         chunk = anns[start_from:start_from + size]
         self.related_pages.append((report_guid, start_from, size, len(chunk)))
@@ -461,6 +477,10 @@ class FakeEgeria:
         }
 
     # -- what the tests read ---------------------------------------------------
+
+    def archive(self, guid: str) -> None:
+        """The element is archived in Egeria: no read returns it and a new relationship to it is refused (404)."""
+        self.elements[guid]["archived"] = True
 
     def reports(self) -> list[tuple[str, dict]]:
         return [(g, e["body"]) for g, e in self.elements.items() if e["type"] == "SurveyReport"]

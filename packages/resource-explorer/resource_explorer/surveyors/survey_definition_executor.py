@@ -1316,6 +1316,13 @@ class SurveyDefinitionExecutor:
                 link_words = element_link_words(quality_proof.get("links"))
                 if link_words:
                     words += f" · {link_words}"
+                # The value profile's line, from its proof rows only: "N measures published · M changed since
+                # <date> · K re-used · J no longer measured" (profile publish reshape).
+                from resource_explorer.surveyors.database.quality.profile_publish import profile_publish_words
+
+                profile_words = profile_publish_words(quality_proof.get("profile"))
+                if profile_words:
+                    words += f" · {profile_words}"
                 governance = quality_proof.get("governance") or {}
                 if governance and not governance.get("ownership"):
                     words += " · Ownership was not recorded on the report"

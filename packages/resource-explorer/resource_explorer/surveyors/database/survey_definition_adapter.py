@@ -551,7 +551,9 @@ def _publish(entity, step_outputs: list, surveyed_at: str, registry, publish_out
                                   "quality_built": result.get("quality_annotation_count") or 0,
                                   "quality_landed": result.get("quality_annotations_in_egeria"),
                                   "links": result.get("element_links") or {},
-                                  "governance": result.get("governance") or {}}
+                                  "governance": result.get("governance") or {},
+                                  # the value profile's measures, counted from their proof rows (reshape)
+                                  "profile": result.get("profile_publish") or {}}
     try:
         registry.record_step_run(
             entity.slug, "egeria_publish", surveyed_at, entity_type="database",
