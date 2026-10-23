@@ -8245,7 +8245,7 @@ class ProjectRegistry:
             rows = conn.execute(
                 "SELECT annotation_guid, annotation_type, analysis_step, summary, "
                 "explanation, confidence, detail_json, report_at, read_at "
-                "FROM native_survey_annotations WHERE report_guid = ? "
+                f"FROM native_survey_annotations WHERE report_guid = ? AND {self._ON_REPORT} "
                 "ORDER BY annotation_type, summary, annotation_guid",
                 (report_guid,),
             ).fetchall()
@@ -8259,10 +8259,15 @@ class ProjectRegistry:
             out.append(d)
         return out
 
+    #: The rows of a report that are ON it. A value-profile proof row with an `item_key` and NO `content_hash` is
+    #: `no_longer_measured` / `not_measured_this_run`: it names the PREVIOUS annotation of a measure this run did
+    #: not publish, which is not on this report (`record_profile_publish` writes a hash on every row that is).
+    _ON_REPORT = "NOT (item_key IS NOT NULL AND content_hash IS NULL)"
+
     def count_native_survey_annotations(self, report_guid: str) -> int:
         with self._conn() as conn:
             return int(conn.execute(
-                "SELECT COUNT(*) FROM native_survey_annotations WHERE report_guid = ?",
+                f"SELECT COUNT(*) FROM native_survey_annotations WHERE report_guid = ? AND {self._ON_REPORT}",
                 (report_guid,),
             ).fetchone()[0])
 
@@ -8272,36 +8277,46 @@ class ProjectRegistry:
     # (report GUID, annotation GUID), so a retried record writes nothing new), with `item_key` and
     # `content_hash` set and `detail_json.outcome` = `created` or `relinked`. A row is written only for an
     # annotation the report's read-back found on it. A measure the previous publish had and this run did not
-    # measure gets a row with `outcome` `no_longer_measured`, the PREVIOUS annotation's GUID and NO hash (it
-    # is not on this report, and it is never compared against).
+    # measure gets a row with `outcome` `no_longer_measured` (or `not_measured_this_run` when its table was not
+    # profiled), the PREVIOUS annotation's GUID and NO hash (it is not on this report, and it is never compared
+    # against).
 
     def latest_profile_publish(self, entity_type: str, slug: str, analysis_step: str) -> dict | None:
-        """The last value-profile publish RE recorded for this resource: {report_guid, report_at,
-        measures: {item_key: {annotation_guid, content_hash}}}, from its proof rows; None when none."""
+        """What the next value-profile publish of this resource compares with, from RE's proof rows across EVERY
+        RE report of the resource: {report_guid, report_at (the latest hashed row's report), measures:
+        {item_key: {annotation_guid, content_hash}} (the LATEST HASHED row per key, so a measure whose re-link
+        failed in one run is compared with the run before it), gone_keys (keys whose latest row of any outcome is
+        `no_longer_measured`)}; None when none."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
-            latest = conn.execute(
-                "SELECT report_guid, report_at FROM native_survey_annotations "
-                "WHERE entity_type = ? AND slug = ? AND analysis_step = ? AND content_hash IS NOT NULL "
-                "ORDER BY report_at DESC, id DESC LIMIT 1",
+            rows = [dict(r) for r in conn.execute(
+                "SELECT report_guid, report_at, item_key, annotation_guid, content_hash, detail_json "
+                "FROM native_survey_annotations "
+                "WHERE entity_type = ? AND slug = ? AND analysis_step = ? AND item_key IS NOT NULL "
+                "ORDER BY report_at DESC, id DESC",
                 (entity_type, slug, analysis_step),
-            ).fetchone()
-            if latest is None:
-                return None
-            latest = dict(latest)
-            rows = conn.execute(
-                "SELECT item_key, annotation_guid, content_hash FROM native_survey_annotations "
-                "WHERE report_guid = ? AND analysis_step = ? AND content_hash IS NOT NULL",
-                (latest["report_guid"], analysis_step),
-            ).fetchall()
-        return {"report_guid": latest["report_guid"], "report_at": latest["report_at"],
-                "measures": {dict(r)["item_key"]: {"annotation_guid": dict(r)["annotation_guid"],
-                                                   "content_hash": dict(r)["content_hash"]} for r in rows}}
+            ).fetchall()]
+        latest = next((r for r in rows if r["content_hash"] is not None), None)
+        if latest is None:
+            return None
+        measures: dict[str, dict] = {}
+        last_outcome: dict[str, str] = {}
+        for r in rows:
+            key = r["item_key"]
+            if key not in last_outcome:
+                try:
+                    last_outcome[key] = json.loads(r["detail_json"] or "{}").get("outcome") or ""
+                except (TypeError, ValueError, AttributeError):
+                    last_outcome[key] = ""
+            if r["content_hash"] is not None and key not in measures:
+                measures[key] = {"annotation_guid": r["annotation_guid"], "content_hash": r["content_hash"]}
+        return {"report_guid": latest["report_guid"], "report_at": latest["report_at"], "measures": measures,
+                "gone_keys": {k for k, o in last_outcome.items() if o == "no_longer_measured"}}
 
     def record_profile_publish(self, entity_type: str, slug: str, *, report_guid: str, report_at: str,
                                read_at: str, analysis_step: str, rows: list[dict]) -> int:
         """Write a publish's proof rows ({annotation_guid, item_key, content_hash, outcome, summary,
-        annotation_type, previous_report_guid, previous_report_at}), idempotently. Returns how many rows the
+        annotation_type, previous_report_guid, previous_report_at, note (optional)}), idempotently. Returns how many rows the
         report has now."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
@@ -8311,6 +8326,8 @@ class ProjectRegistry:
                 detail = {"outcome": row["outcome"],
                           "previous_report_guid": row.get("previous_report_guid") or "",
                           "previous_report_at": row.get("previous_report_at") or ""}
+                if row.get("note"):
+                    detail["note"] = row["note"]
                 conn.execute(
                     "INSERT INTO native_survey_annotations (entity_type, slug, report_guid, report_at, "
                     "annotation_guid, annotation_type, analysis_step, summary, detail_json, read_at, "
@@ -8326,13 +8343,14 @@ class ProjectRegistry:
 
     def profile_publish_counts(self, report_guid: str, analysis_step: str) -> dict:
         """The run card's counts for one value-profile publish, from its proof rows only: `published`
-        (created + relinked), `created`, `relinked`, `no_longer_measured`, and the previous report it was
+        (created + relinked), `created`, `relinked`, `no_longer_measured`, `not_measured_this_run`, and the
+        previous report it was
         compared with (`previous_report_at`, '' when there was none)."""
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT detail_json FROM native_survey_annotations WHERE report_guid = ? AND analysis_step = ?",
                 (report_guid, analysis_step)).fetchall()
-        counts = {"created": 0, "relinked": 0, "no_longer_measured": 0}
+        counts = {"created": 0, "relinked": 0, "no_longer_measured": 0, "not_measured_this_run": 0}
         previous = ""
         for r in rows:
             try:

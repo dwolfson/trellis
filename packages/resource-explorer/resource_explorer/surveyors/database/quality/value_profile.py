@@ -16,6 +16,7 @@ NULL, never zeros.
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
@@ -362,6 +363,13 @@ def run_value_profile(
     }
 
 
+def measure_key(schema: str, table: str, column: str) -> str:
+    """A column measure's `item_key`: the compact JSON array `["schema","table","column"]`, never dotted text (a
+    dot inside a name would make two different columns one key). The profile publish reshape keys its proof rows
+    on it."""
+    return json.dumps([schema, table, column], separators=(",", ":"))
+
+
 def build_annotations(rows: list[dict], table_outcomes: list[dict]) -> list:
     """One ResourceProfileAnnotation per measured column (counts in `value_count`, date bounds and the
     general_type in `json_properties`), and one ResourceMeasureAnnotation per table not profiled, carrying why."""
@@ -375,6 +383,7 @@ def build_annotations(rows: list[dict], table_outcomes: list[dict]) -> list:
         if row["state"] != "measured":
             continue
         path = f"{row['schema_name']}.{row['table_name']}.{row['column_name']}"
+        key = measure_key(row["schema_name"], row["table_name"], row["column_name"])
         counts = {k: row[k] for k in ("record_ct",) + COLUMN_MEASURES
                   if k not in DATE_MEASURES and row.get(k) is not None}
         out.append(ResourceProfileAnnotation(
@@ -383,7 +392,7 @@ def build_annotations(rows: list[dict], table_outcomes: list[dict]) -> list:
             analysis_step=ANALYSIS_STEP,
             annotation_type_name="Value Profile",
             check_name="value_profile",
-            item_key=path,
+            item_key=key,
             label="measured",
             value_count=counts,
             json_properties={

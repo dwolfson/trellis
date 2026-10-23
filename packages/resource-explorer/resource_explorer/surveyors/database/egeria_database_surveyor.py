@@ -862,10 +862,14 @@ class EgeriaDatabaseSurveyor:
         profile_plan = self._plan_profile_publish(registry, db_entity.slug, annotations)
         report_guid = self._asset_maker.create_asset(body=body)
         log.info(f"Published SurveyReport in Egeria: {report_guid}")
+        # Re-link FIRST: a re-link Egeria refuses (the annotation archived, deleted or wiped) puts that measure back
+        # into the create set, so it is created in this same run rather than missing until the next.
+        if profile_plan and profile_plan.relink:
+            relinked = self._relink_unchanged(report_guid, profile_plan.relink)
+            profile_plan.recreate(i for i, outcome in relinked.items() if outcome == "refused")
         skip = frozenset(profile_plan.relink) if profile_plan else frozenset()
         made = self._create_annotations(annotations, report_guid, db_entity.slug, surveyed_at,
                                         **({"skip": skip} if skip else {}))
-        relinked = self._relink_unchanged(report_guid, profile_plan.relink) if skip else {}
 
         # Publish column-level lineage mapping relationships to Egeria
         self.lineage_not_checked = []
@@ -881,9 +885,9 @@ class EgeriaDatabaseSurveyor:
         # registry.record_database_survey_published().
 
         # The run's own proof: what the report holds when READ BACK by its GUID, against what was sent.
+        # Every PLANNED re-link goes to the read-back, whatever the attach answered: the read by GUID decides.
         read_back = self._read_back(report_guid, annotations, db_entity.slug, surveyed_at,
-                                    relinked={i: g for i, g in (profile_plan.relink if profile_plan else {}).items()
-                                              if relinked.get(i) in ("relinked", "already_linked")})
+                                    relinked=dict(profile_plan.relink) if profile_plan else None)
         profile = self._record_profile_publish(registry, db_entity.slug, report_guid, surveyed_at, annotations,
                                                profile_plan, read_back) if profile_plan else {}
         quality_idx = [i for i, a in enumerate(annotations) if any(a is q for q in quality_annotations or [])]
@@ -1839,9 +1843,13 @@ class EgeriaDatabaseSurveyor:
 
         `ReportedAnnotation` is multi-link (one annotation is reported by many reports), so an attach never
         upserts: the report's own list is READ FIRST (paged to its end) and a pair it already holds is not
-        attached again. {index: relinked | already_linked | not_checked | failed}; never raises. When the
-        report's list cannot be read nothing is attached (not_checked): the read-back then says what is
-        missing."""
+        attached again. {index: relinked | already_linked | not_checked | refused | failed}; never raises. When
+        the report's list cannot be read nothing is attached (not_checked): the read-back then says what is
+        missing. `refused`: Egeria said the annotation is not there (`egeria_absence`: a typed 404, as for an
+        archived, deleted or wiped element), so the caller creates it instead; `failed`: anything else (could not
+        tell), left to the read-back."""
+        from resource_explorer.egeria_absence import lookup_exception_is_absent
+
         held = self._report_annotations(report_guid)
         if held is None:
             return {i: "not_checked" for i in pairs}
@@ -1858,7 +1866,7 @@ class EgeriaDatabaseSurveyor:
                           "properties": {"class": "ReportedAnnotationProperties"}})
             except Exception as exc:  # noqa: BLE001 -- counted; the read-back says it is missing
                 log.warning("could not re-link annotation %s to report %s: %s", guid, report_guid, exc)
-                out[i] = "failed"
+                out[i] = "refused" if lookup_exception_is_absent(exc) else "failed"
                 continue
             linked.add(guid)
             out[i] = "relinked"
@@ -1868,8 +1876,10 @@ class EgeriaDatabaseSurveyor:
                                 annotations: list, plan, read_back: dict | None) -> dict:
         """Write the profile measures' proof rows and return the card's counts FROM them
         (`registry.profile_publish_counts`). A row is written only for a measure the read-back found on the report
-        (`read_back["guids"]`, by index): created under its new GUID, or re-linked under the existing one. A
-        previous measure this run did not measure gets a `no_longer_measured` row. When the report could not be
+        (`read_back["guids"]`, by index): created under its new GUID (a refused re-link created again carries the
+        note "re-created: the re-used annotation was gone"), or re-linked under the existing one. A previous
+        measure this run did not measure gets a `no_longer_measured` row, or `not_measured_this_run` when its
+        table was not profiled this run. When the report could not be
         read, no created/relinked row is written (unknown, never "published"). Never raises: a failed record is
         logged and the counts come back empty."""
         from datetime import UTC, datetime
@@ -1877,6 +1887,8 @@ class EgeriaDatabaseSurveyor:
         from resource_explorer.surveyors.database.quality.profile_publish import (
             CREATED,
             NO_LONGER_MEASURED,
+            NOT_MEASURED_THIS_RUN,
+            RECREATED_NOTE,
             RELINKED,
         )
         from resource_explorer.surveyors.database.quality.value_profile import ANALYSIS_STEP
@@ -1892,10 +1904,12 @@ class EgeriaDatabaseSurveyor:
             rows.append({"annotation_guid": guid, "item_key": key, "content_hash": plan.hashes[i],
                          "outcome": RELINKED if i in plan.relink else CREATED,
                          "annotation_type": "ResourceProfileAnnotation",
-                         "summary": getattr(annotations[i], "summary", ""), **previous})
-        for key, guid in plan.gone.items():
-            rows.append({"annotation_guid": guid, "item_key": key, "content_hash": None,
-                         "outcome": NO_LONGER_MEASURED, "annotation_type": "ResourceProfileAnnotation", **previous})
+                         "summary": getattr(annotations[i], "summary", ""),
+                         **({"note": RECREATED_NOTE} if i in plan.recreated else {}), **previous})
+        for outcome, gone in ((NO_LONGER_MEASURED, plan.gone), (NOT_MEASURED_THIS_RUN, plan.not_measured)):
+            for key, guid in gone.items():
+                rows.append({"annotation_guid": guid, "item_key": key, "content_hash": None, "outcome": outcome,
+                             "annotation_type": "ResourceProfileAnnotation", **previous})
         try:
             registry.record_profile_publish("database", slug, report_guid=report_guid, report_at=surveyed_at,
                                             read_at=datetime.now(UTC).isoformat(), analysis_step=ANALYSIS_STEP,
