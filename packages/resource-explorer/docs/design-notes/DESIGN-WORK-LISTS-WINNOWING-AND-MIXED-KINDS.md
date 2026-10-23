@@ -122,7 +122,7 @@ rule to keep is "one column set per view":
   pressing none shows the shared set. The stage click rule (run stages
   re-scope the list, frame stages close it) is unchanged.
 - **Runs stay per kind**: a batch run on a mixed list dispatches one
-  definition per kind present (the definition catalogue is per kind), and
+  definition per kind present (the definition catalog is per kind), and
   the bench shows one run line per kind. "Run on all" is three runs with
   three prices, said so.
 - **Storage**: `entity_type` moves from the list to the member
