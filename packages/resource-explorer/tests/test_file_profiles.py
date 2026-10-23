@@ -552,7 +552,7 @@ def _real_port_with_fake_surveyor(store, *, root_qn="FileFolder::lake:/deploymen
     fake._read_back_by_guid.side_effect = lambda guid, expect_type=None: {
         "matched": True, "why": "", "qualified_name": root_qn, "type_name": "FileFolder", "unknown_guid": False}
     fake._metadata_expert = create_autospec(MetadataExpert, instance=True, spec_set=True)
-    fake._metadata_expert.get_elements_by_property_value.return_value = (
+    fake._metadata_expert.find_metadata_elements_with_string.return_value = (
         "No elements found" if by_path is None else by_path)
 
     def create(info, canonical, fs_name, *, fallback=True):
@@ -798,14 +798,21 @@ def test_a_qualified_name_miss_is_read_again_by_typed_exact_path_name_and_a_hit_
             "properties": {"qualifiedName": PROBE_QN, "pathName": f"{PROBE_DIR}/week1.csv"}}]
     # the root folder was attached by RE under its slug: the QN read misses, the pathName read finds Egeria's element
     port, fake = _real_port_with_fake_surveyor({}, root_qn=f"FileFolder::hampton:{PROBE_DIR}", by_path=hit)
+    fake._metadata_expert.find_metadata_elements_with_string.side_effect = (
+        lambda **kw: hit if kw["search_string"] == f"{PROBE_DIR}/week1.csv" else "No elements found")
     try:
         out = fp.run_file_profiles(fs, registry, port=port, limit=LIMIT)
     finally:
         port.close()
-    fake._create_data_file_asset.assert_not_called()
-    assert {a["asset_guid"] for a in out["egeria_actions"].values()} == {PROBE_GUID}
-    fake._metadata_expert.get_elements_by_property_value.assert_any_call(
-        f"{PROBE_DIR}/week1.csv", ["pathName"], "CSVFile", page_size=2)
+    assert [c.args[1] for c in fake._create_data_file_asset.call_args_list] == [f"{PROBE_DIR}/week2.csv"]
+    assert out["egeria_actions"]["week1.csv"]["asset_guid"] == PROBE_GUID
+    call = fake._metadata_expert.find_metadata_elements_with_string.call_args_list[0]
+    assert call.kwargs["search_string"] == f"{PROBE_DIR}/week1.csv"
+    assert call.kwargs["starts_with"] is True and call.kwargs["ends_with"] is True
+    assert call.kwargs["ignore_case"] is False and call.kwargs["metadata_element_type"] == "CSVFile"
+    assert call.kwargs["graph_query_depth"] == 0 and call.kwargs["page_size"] == 2
+    assert call.kwargs["body"]["metadataElementTypeName"] == "CSVFile"
+    fake._metadata_expert.get_elements_by_property_value.assert_not_called()   # the 30 s+ untyped search
 
 
 @pytest.mark.parametrize("answer", [[], None, {"no": "guid"}, "something else"])
@@ -813,7 +820,7 @@ def test_a_path_name_read_that_is_not_an_explicit_miss_creates_nothing(registry,
     fs = _probe_fs(registry, tmp_path)
     port, fake = _real_port_with_fake_surveyor({}, root_qn=f"FileFolder::egeria-deployment:{PROBE_DIR}", by_path=answer)
     if answer is None:
-        fake._metadata_expert.get_elements_by_property_value.return_value = None
+        fake._metadata_expert.find_metadata_elements_with_string.return_value = None
     try:
         out = fp.run_file_profiles(fs, registry, port=port, limit=LIMIT)
     finally:
@@ -824,7 +831,9 @@ def test_a_path_name_read_that_is_not_an_explicit_miss_creates_nothing(registry,
 
 def test_two_elements_holding_the_path_name_are_ambiguous_and_nothing_is_created(registry, tmp_path):
     fs = _probe_fs(registry, tmp_path)
-    two = [{"elementHeader": {"guid": PROBE_GUID}}, {"elementHeader": {"guid": "dddddddd-0000-0000-0000-000000000002"}}]
+    path = f"{PROBE_DIR}/week1.csv"
+    two = [{"elementHeader": {"guid": g, "type": {"typeName": "CSVFile"}}, "properties": {"pathName": path}}
+           for g in (PROBE_GUID, "dddddddd-0000-0000-0000-000000000002")]
     port, fake = _real_port_with_fake_surveyor({}, root_qn=f"FileFolder::egeria-deployment:{PROBE_DIR}", by_path=two)
     try:
         out = fp.run_file_profiles(fs, registry, port=port, limit=LIMIT)
@@ -837,7 +846,7 @@ def test_two_elements_holding_the_path_name_are_ambiguous_and_nothing_is_created
 def test_a_path_name_read_that_raises_creates_nothing(registry, tmp_path):
     fs = _probe_fs(registry, tmp_path)
     port, fake = _real_port_with_fake_surveyor({}, root_qn=f"FileFolder::egeria-deployment:{PROBE_DIR}")
-    fake._metadata_expert.get_elements_by_property_value.side_effect = RuntimeError("timed out")
+    fake._metadata_expert.find_metadata_elements_with_string.side_effect = RuntimeError("timed out")
     try:
         out = fp.run_file_profiles(fs, registry, port=port, limit=LIMIT)
     finally:

@@ -153,28 +153,66 @@ class PathNameAmbiguous(RuntimeError):
     """Two or more elements of the type hold this exact pathName: nothing is adopted or created."""
 
 
-def guid_by_exact_path_name(client, path_name: str, *, type_name: str) -> str | None:
-    """A TYPED exact `pathName` search, the second read-first path. The contract of `egeria_lookup.guid_by_exact_value`
-    (not on this branch's base), implemented here: one hit = its GUID; None ONLY on Egeria's explicit "No elements
-    found"; two or more = `PathNameAmbiguous`; a raise, no answer, an empty list or an answer of another shape RAISES
-    (a failed read is never "absent": absent licenses a create)."""
-    from resource_explorer.egeria_lookup import _GUID, _guid_of, _is_miss
+def guid_by_exact_path_name(expert, path_name: str, *, type_name: str) -> str | None:
+    """A TYPED exact `pathName` search, the second read-first path (never `get_elements_by_property_value`: Egeria's
+    by-exact-property-value search timed out at 30 s+ on the grown repository). The contract of
+    `egeria_lookup.guid_by_exact_value` (not on this branch's base), implemented here over
+    `MetadataExpert.find_metadata_elements_with_string` narrowed to ONE type, startsWith AND endsWith (a literal
+    match on any string property of the type), keeping only elements whose `pathName` is exactly the value.
+    One hit = its GUID; None ONLY on Egeria's explicit "No elements found"; two or more = `PathNameAmbiguous`; an
+    exception, no answer, an empty list, a full page or an answer of another shape RAISES (a failed read is never
+    "absent": absent licenses a create). `expert` is a `MetadataExpert`."""
+    from resource_explorer.egeria_lookup import _GUID, _guid_of, _is_miss, _type_names
 
-    answer = client.get_elements_by_property_value(path_name, ["pathName"], type_name, page_size=2)
+    page = 2
+    body = {"class": "SearchStringRequestBody", "searchString": path_name, "startsWith": True, "endsWith": True,
+            "ignoreCase": False, "metadataElementTypeName": type_name, "graphQueryDepth": 0,
+            "startFrom": 0, "pageSize": page}
+    answer = expert.find_metadata_elements_with_string(
+        search_string=path_name, starts_with=True, ends_with=True, ignore_case=False,
+        metadata_element_type=type_name, graph_query_depth=0, start_from=0, page_size=page, body=body)
     if _is_miss(answer):
         return None
-    if isinstance(answer, dict) and answer:
-        answer = [answer]
     if not isinstance(answer, list) or not answer:
         raise RuntimeError(f"the pathName search for {path_name!r} gave no usable answer ({answer!r:.80})")
-    if len(answer) > 1:
-        raise PathNameAmbiguous(f"{len(answer)} {type_name} elements hold the pathName {path_name!r}: nothing is "
+    held: list[str] = []
+    for element in answer:
+        if not isinstance(element, dict):
+            raise RuntimeError(f"an element in the pathName answer for {path_name!r} is not an element")
+        guid = _guid_of(element)
+        if not _GUID.match(guid):
+            raise RuntimeError(f"the pathName search for {path_name!r} answered an element with no GUID")
+        if type_name not in _type_names(element):
+            raise RuntimeError(f"element {guid} in the {type_name} answer for {path_name!r} is of another type")
+        if _path_name_of(element) != path_name:
+            continue                       # the value sits in another property of the element
+        if guid not in held:
+            held.append(guid)
+    if len(held) > 1:
+        raise PathNameAmbiguous(f"{len(held)} {type_name} elements hold the pathName {path_name!r}: nothing is "
                                 "adopted or created")
-    hit = answer[0] if isinstance(answer[0], dict) else {}
-    guid = _guid_of(hit)
-    if not _GUID.match(guid):
-        raise RuntimeError(f"the pathName search for {path_name!r} answered an element with no GUID")
-    return guid
+    if len(answer) >= page:
+        raise RuntimeError(f"the pathName search for {path_name!r} filled its page ({page}) without two holders: "
+                           "more may follow, so the count could not be told")
+    return held[0] if held else None
+
+
+def _path_name_of(element: dict) -> str | None:
+    """`pathName` of a find-with-string element: `elementProperties.propertiesAsStrings`, the typed
+    `propertyValueMap.pathName.primitiveValue`, or the asset-graph `properties`. None when absent."""
+    ep = element.get("elementProperties")
+    if isinstance(ep, dict):
+        strings = ep.get("propertiesAsStrings")
+        if isinstance(strings, dict) and "pathName" in strings:
+            return str(strings["pathName"])
+        pv = (ep.get("propertyValueMap") or {}).get("pathName")
+        if isinstance(pv, dict) and "primitiveValue" in pv:
+            return str(pv["primitiveValue"])
+    props = element.get("properties")
+    if isinstance(props, dict) and "pathName" in props:
+        return str(props["pathName"])
+    return None
+
 
 #: Egeria half outcomes (the run's own word, said on the card).
 EGERIA_HALF_NONE = "none"              # no file was routed to Egeria
