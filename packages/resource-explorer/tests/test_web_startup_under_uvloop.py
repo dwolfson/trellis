@@ -32,6 +32,9 @@ def _env(tmp_path) -> dict:
         METRICS_DATABASE_URL=f"sqlite:///{tmp_path}/met.db",
         FEEDBACK_DATABASE_URL=f"sqlite:///{tmp_path}/fb.db",
         PGVECTOR_PORT="1",
+        # The start reads the platform's origin once (catalogue_gateway.read_platform_origin): point it at a port
+        # nothing listens on, so the boot makes no live call and takes the "unreachable at start" path.
+        EGERIA_PLATFORM_URL="https://127.0.0.1:1",
     )
     return env
 

@@ -64,8 +64,11 @@ async def _lifespan(app: FastAPI):
     from resource_explorer.surveyors.prefect_adapter import alog_prefect_reachability_at_startup
 
     await alog_prefect_reachability_at_startup()
-    from resource_explorer.catalogue_gateway import issue_117_state_line
-    logging.getLogger(__name__).info("%s", issue_117_state_line())   # on, or off with the clearance text
+    import asyncio as _asyncio
+
+    from resource_explorer.catalogue_gateway import issue_117_start_line
+    # on, or off with the lift's evidence, then the platform's origin beside the proven build (one read, off-loop)
+    logging.getLogger(__name__).info("%s", await _asyncio.to_thread(issue_117_start_line))
     from resource_explorer.egeria_clients import log_daemon_identity_at_startup
     log_daemon_identity_at_startup()        # INFO: which source the daemon identity came from (Brief L)
     from resource_explorer.bootstrap import log_heal_identity_at_startup

@@ -221,6 +221,22 @@ class TestIssue117BlockOnDeleteInEgeria:
             assert all(d["message"] == ISSUE_117_WORDS for d in r.details)
         assert registry.get_egeria_asset_guid("p0") == "guid-0", "the local pointer is untouched"
 
+    def test_at_the_shipped_default_rules_delete_in_egeria_fails_and_makes_no_client_call(self, registry, monkeypatch):
+        """Behavioural (2026-10-23 lift): the shipped rules, un-stubbed, both variables unset. The lift opens the
+        leave-out archive only, so a bulk delete still fails with the block's words and no client is built or used."""
+        from resource_explorer import catalogue_gateway as gw
+        monkeypatch.setattr(gw, "issue_117_blocked", gw._shipped_issue_117_blocked)
+        monkeypatch.delenv("RE_ISSUE_117_BLOCK_OFF", raising=False)
+        monkeypatch.delenv("RE_ISSUE_117_BLOCK", raising=False)
+        assert gw.issue_117_blocked("p0", scope=gw.LEAVE_OUT_ARCHIVE) is False, "the lift is live in this test"
+        with patch("pyegeria.AssetMaker") as AM, patch("resource_explorer.egeria_clients.egeria_client") as client:
+            r = delete_in_egeria(registry, _targets("p0", "p1"), dry_run=False)
+        AM.assert_not_called()
+        client.assert_not_called()
+        assert r.failed == 2 and r.succeeded == 0
+        assert all(d["message"] == gw.ISSUE_117_WORDS for d in r.details)
+        assert registry.get_egeria_asset_guid("p0") == "guid-0"
+
     def test_the_override_lifts_the_block_for_its_one_slug_only(self, registry, monkeypatch):
         """Each target is judged by its own slug: p1 is named and goes on (dry run: no client), p0 is refused."""
         from datetime import datetime, timezone

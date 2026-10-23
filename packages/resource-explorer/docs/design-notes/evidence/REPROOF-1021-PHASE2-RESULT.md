@@ -34,6 +34,11 @@ PASS against the architect's criteria: exactly the 14 alpha-anchored elements Me
 ## Side finding
 `leave_outs` spent ~4 min (01:46:06-01:50:19Z) in `_prove_gone` -> `archived_siblings` -> `find_archived_siblings` -> `find_metadata_elements_with_string(startsWith)`: an untyped string search on the grown repository, not in the fast-lookup site table. Correct but slow; a candidate for the lookup follow-ups.
 
+## Scope of the verdict
+Proven on odpi/egeria c6dbf952 / image a8bcff5c only. RE does not compare the platform's build with this one: its
+start-up line prints the platform's origin string beside it, and the env re-arm `RE_ISSUE_117_BLOCK=on` is the only
+control for an older platform.
+
 ## Next (not done)
 - The lift PR with this evidence under docs/design-notes/evidence/ (architect + owner).
 - Investigation-delete live proof, separately, after the lift.

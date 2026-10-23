@@ -89,3 +89,15 @@ and `REPROOF-1021-PHASE2-POST-v5.json`, all in this folder) passed on odpi/egeri
 out one cataloguer-built schema archived exactly its 14 anchored elements and nothing else. Per the architect's
 ruling of 2026-10-23 the block is OFF for the leave-out ARCHIVE path only; `RE_ISSUE_117_BLOCK=on` re-arms it with no
 code change. Soft delete and the investigation-delete ARCHIVE keep the block until their own throwaway proof.
+
+Fix round 1 (architect rulings, 2026-10-23) narrowed the lift:
+- A schema whose state is "restored" passes no lifted scope: "archive blocked · this schema was restored after the
+  2026-10-06 incident; archiving restored trees is not proven".
+- The start-up line prints "platform reports <origin string> · lift proven on odpi/egeria c6dbf952 / image a8bcff5c"
+  (or "platform: unreachable at start", block state unchanged). RE does not compare builds; the env re-arm
+  `RE_ISSUE_117_BLOCK=on` is the only control for an older platform.
+- The preview's GUID set rides in the leave-out payload; the apply walks again before anything is sent and refuses
+  with "the plan changed · preview again" on any difference, or when the payload has no set.
+- RE never archives or deletes an RE SurveyReport: a re-used annotation is anchored to the report that first created
+  it, so archiving that report would take what later reports still link. `_send_destructive` refuses it whatever
+  scope or override is set, and a leave-out whose walk holds one is refused whole.

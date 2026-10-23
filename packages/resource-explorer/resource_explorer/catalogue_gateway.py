@@ -197,11 +197,55 @@ def issue_117_state_line() -> str:
     """The start-up line. OFF (the leave-out lift, with its evidence) or ON (re-armed, with its stamp); a live
     slug override is added after it."""
     armed, stamp = issue_117_rearmed()
-    line = f"archive-cascade block: ON {stamp}" if armed else f"archive-cascade block: OFF ({LIFT_EVIDENCE}) · scope: leave-out"
+    line = f"archive-cascade block: ON {stamp}" if armed else f"archive-cascade block: OFF ({LIFT_EVIDENCE}) · scope: leave-out archive"
     named, expires, _reason = issue_117_override()
     if named and expires is not None:
         line += f" · OFF for {named} until {expires.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
     return line
+
+
+#: The build the 2026-10-23 lift was proven on. RE does NOT compare the platform's build with it (it cannot tell an
+#: older build from a newer one by this string): the start-up line prints both side by side, and the only control
+#: for an older platform is the env re-arm, RE_ISSUE_117_BLOCK=on (architect ruling (b), 2026-10-23).
+PROVEN_BUILD = "odpi/egeria c6dbf952 / image a8bcff5c"
+PLATFORM_UNREACHABLE = "platform: unreachable at start"
+#: The platform's own origin endpoint: the one pyegeria's `BasePlatformClient.async_get_platform_origin` reads.
+PLATFORM_ORIGIN_PATH = "/open-metadata/platform-services/server-platform/origin"
+
+
+def read_platform_origin(timeout: float = 3.0) -> str:
+    """ONE cheap read at start-up: the platform's origin string, or "" when it cannot be read. The endpoint pyegeria's
+    `get_platform_origin` reads, called directly: building that client makes a second read (`check_connection`) and
+    drives its own event loop, which the web start (inside uvloop) cannot do. No credential is sent; TLS is not
+    verified, as pyegeria does not verify it (`enable_ssl_check = False`). Never raises."""
+    try:
+        import httpx
+
+        from resource_explorer.config import egeria_platform_url
+
+        url = (egeria_platform_url() or "").rstrip("/")
+        if not url:
+            return ""
+        r = httpx.get(url + PLATFORM_ORIGIN_PATH, timeout=timeout, verify=False)
+        return " ".join(r.text.split()) if r.status_code == 200 else ""
+    except Exception as exc:  # noqa: BLE001 - never fails the start
+        log.info("platform origin not read at start: %s", type(exc).__name__)
+        return ""
+
+
+def platform_origin_words(origin: str) -> str:
+    """"platform reports <origin> · lift proven on <build>", or "platform: unreachable at start". Said side by side;
+    never a verdict that the two builds match."""
+    origin = (origin or "").strip()
+    if not origin:
+        return PLATFORM_UNREACHABLE
+    return f"platform reports {origin} · lift proven on {PROVEN_BUILD}"
+
+
+def issue_117_start_line(read=None) -> str:
+    """The start-up line: the block state, then what the platform reports beside the proven build. The block state
+    is the same whatever the read answers (an unreachable platform changes nothing)."""
+    return f"{issue_117_state_line()} · {platform_origin_words((read or read_platform_origin)())}"
 
 
 ISSUE_117_WORDS = ("Egeria archives the whole database tree when any part of it is archived "

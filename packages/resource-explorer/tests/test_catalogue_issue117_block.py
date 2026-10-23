@@ -199,7 +199,7 @@ def test_a_time_more_than_a_few_minutes_ahead_is_on_but_a_small_skew_passes(monk
 
 
 OFF_LINE = ("archive-cascade block: OFF (lifted 2026-10-23, proven on odpi/egeria c6dbf952 / image a8bcff5c, evidence "
-            "docs/design-notes/evidence/REPROOF-1021-PHASE2-RESULT.md) · scope: leave-out")
+            "docs/design-notes/evidence/REPROOF-1021-PHASE2-RESULT.md) · scope: leave-out archive")
 
 
 def test_the_state_line_is_off_for_the_leave_out_by_default():
@@ -244,7 +244,49 @@ def test_the_session_start_logs_the_state(caplog):
     import logging
     from resource_explorer.web import app as web_app
     src = Path(web_app.__file__).read_text(encoding="utf-8")
-    assert "issue_117_state_line()" in src, "the lifespan logs the state at start"
+    assert "issue_117_start_line" in src, "the lifespan logs the state and the platform's origin at start"
+
+
+# ── the start-up line: the platform's origin beside the proven build (ruling (b), 2026-10-23) ──────────────────
+
+PROVEN = "lift proven on odpi/egeria c6dbf952 / image a8bcff5c"
+
+
+def test_the_start_line_prints_the_platform_origin_beside_the_proven_build():
+    line = gw.issue_117_start_line(lambda: "Egeria OMAG Server Platform (version 6.3-SNAPSHOT)")
+    assert line == f"{OFF_LINE} · platform reports Egeria OMAG Server Platform (version 6.3-SNAPSHOT) · {PROVEN}"
+
+
+def test_an_unreadable_platform_says_so_and_the_block_state_is_unchanged(monkeypatch):
+    assert gw.issue_117_start_line(lambda: "") == f"{OFF_LINE} · platform: unreachable at start"
+    assert gw.issue_117_blocked("db", scope=gw.LEAVE_OUT_ARCHIVE) is False
+    rearm(monkeypatch)
+    assert gw.issue_117_start_line(lambda: "") == "archive-cascade block: ON (no stamp) · platform: unreachable at start"
+    assert gw.issue_117_start_line(lambda: "an older build") == (
+        f"archive-cascade block: ON (no stamp) · platform reports an older build · {PROVEN}"), "RE never compares builds"
+
+
+def test_the_origin_read_is_one_get_and_never_raises(monkeypatch):
+    import httpx
+    calls = []
+
+    class Answer:
+        def __init__(self, code, text):
+            self.status_code, self.text = code, text
+
+    monkeypatch.setattr(gw, "log", gw.log)
+    monkeypatch.setenv("EGERIA_PLATFORM_URL", "https://platform.test:9443")
+    from resource_explorer import config as re_config
+    monkeypatch.setattr(re_config, "egeria_platform_url", lambda: "https://platform.test:9443")
+    for answer, want in ((Answer(200, " Egeria  6.3\n"), "Egeria 6.3"), (Answer(503, "down"), "")):
+        monkeypatch.setattr(httpx, "get", lambda url, **kw: (calls.append(url), answer)[1])
+        assert gw.read_platform_origin() == want
+    def boom(url, **kw):
+        calls.append(url)
+        raise httpx.ConnectError("refused")
+    monkeypatch.setattr(httpx, "get", boom)
+    assert gw.read_platform_origin() == ""
+    assert calls == ["https://platform.test:9443" + gw.PLATFORM_ORIGIN_PATH] * 3
 
 
 # ── the proof row: "0 archived" comes from a row, not from the absence of one ──────────────────────────────
@@ -373,14 +415,162 @@ def test_the_restored_word_derives_from_the_proof_row_and_goes_when_the_row_does
     assert "restored" not in d2["header"]["text"]
 
 
-def test_a_restored_schema_that_is_left_out_is_still_blocked_from_any_archive(world, fake, monkeypatch):
-    rearm(monkeypatch)
+RESTORED_WORDS = ("archive blocked · this schema was restored after the 2026-10-06 incident; archiving restored "
+                  "trees is not proven")
+
+
+def test_a_restored_schema_that_is_left_out_is_still_blocked_from_any_archive(world, fake):
+    """At the DEFAULT (no re-arm): a restored schema passes no lifted scope (architect, 2026-10-23)."""
     choose(world, "sales", "leave_out")
     choose(world, "archive", "catalogue")
     _append_restored(world)
     out, _ = press(world, fake)
     row = next(r for r in out["preview"]["leave_out"] if r["schema"] == "sales")
-    assert row["form"] == "issue_117" and not sent_to_egeria(fake)
+    assert row["form"] == "issue_117" and row["blocked"] is True and row["text"] == f"sales: {RESTORED_WORDS}"
+    assert not sent_to_egeria(fake) and not fake.ops("delete_element")
+
+
+def test_the_outbox_refuses_a_restored_schema_at_the_default_with_no_client_call(world, fake):
+    _catalogued(world, fake, "sales")
+    _append_restored(world)
+    choose(world, "sales", "leave_out")
+    before = len(sent_to_egeria(fake))
+    with pytest.raises(GatewayError) as err:
+        cc.apply_leave_out(world["registry"], fake, {"slug": "db", "schema": "sales", "form": gw.ARCHIVE,
+                                                     "curation_id": "c1", "by": ME, "plan_guids": []})
+    assert RESTORED_WORDS in str(err.value) and len(sent_to_egeria(fake)) == before
+
+
+def test_known_negative_a_slug_override_opens_a_restored_schema(world, fake, monkeypatch):
+    override_for(monkeypatch, "db")
+    _attached(world, fake, "sales")
+    _append_restored(world)
+    choose(world, "sales", "leave_out")
+    out, _ = press(world, fake)
+    row = next(r for r in out["preview"]["leave_out"] if r["schema"] == "sales")
+    assert row["form"] == gw.SOFT_DELETE and fake.ops("delete_element"), "if this does not fail the test above proves nothing"
+
+
+# ── ruling (3): the preview's GUID set rides in the payload; the apply refuses on any drift ─────────────────
+
+def _payload(world, fake, schema="sales"):
+    """The leave-out payload a press would queue, from the preview's own row."""
+    out = cc.start_commit(world["registry"], "db", ME, gateway=fake)
+    item = next(i for i in out["curation"]["selection"]["leave_out"] if i["schema"] == schema)
+    return {"slug": "db", "schema": schema, "form": item["form"], "curation_id": "c1", "by": ME,
+            "plan_guids": item["plan_guids"]}
+
+
+def _plan_refused(world, fake, payload):
+    before = len(sent_to_egeria(fake))
+    with pytest.raises(GatewayError) as err:
+        cc.apply_leave_out(world["registry"], fake, payload)
+    assert str(err.value) == "sales: the plan changed · preview again"
+    assert len(sent_to_egeria(fake)) == before, "nothing is sent on refusal, not even the detach"
+    rows = [p for p in world["registry"].list_catalogue_commit_proofs("db") if p["proof"] == cc.P_LEAVE_OUT_PLAN_CHANGED]
+    assert rows and rows[-1]["detail"]["note"] == cc.PLAN_CHANGED
+    assert derived(world)["schemas"]["sales"]["second"].startswith(cc.PLAN_CHANGED), "the schema cue derives from the row"
+    return rows[-1]["detail"]
+
+
+def test_the_preview_set_rides_in_the_payload_and_an_unchanged_walk_archives(world, fake):
+    _catalogued(world, fake, "sales")
+    choose(world, "sales", "leave_out")
+    p = _payload(world, fake)
+    assert p["form"] == gw.ARCHIVE and len(p["plan_guids"]) > 1
+    cc.apply_leave_out(world["registry"], fake, p)
+    assert {c[1] for c in fake.ops("delete_element")} == set(p["plan_guids"])
+
+
+def test_known_negative_a_guid_the_preview_did_not_count_is_refused(world, fake):
+    _catalogued(world, fake, "sales")
+    choose(world, "sales", "leave_out")
+    p = _payload(world, fake)
+    counted = p["plan_guids"]
+    p["plan_guids"] = counted[1:]                                    # the walk holds counted[0]; the preview did not count it
+    d = _plan_refused(world, fake, p)
+    assert d["not_counted"] == [counted[0]] and d["no_longer_held"] == []
+
+
+def test_known_negative_a_guid_the_walk_no_longer_holds_is_refused(world, fake):
+    _catalogued(world, fake, "sales")
+    choose(world, "sales", "leave_out")
+    p = _payload(world, fake)
+    col = next(g for g in p["plan_guids"] if fake.elements[g]["type"] == "RelationalColumn")
+    fake.elements[col]["deleted"] = True                             # gone from Egeria since the preview
+    d = _plan_refused(world, fake, p)
+    assert d["no_longer_held"] == [col] and d["not_counted"] == []
+
+
+def test_a_payload_queued_before_the_plan_set_existed_is_refused(world, fake):
+    _catalogued(world, fake, "sales")
+    choose(world, "sales", "leave_out")
+    p = _payload(world, fake)
+    del p["plan_guids"]
+    d = _plan_refused(world, fake, p)
+    assert d["preview_set"] == "none in the payload"
+
+
+# ── _send_destructive takes its scope from the caller; a SurveyReport is never archived or deleted ──────────
+
+def _send(world, fake, *, typ="RelationalColumn", form=gw.ARCHIVE, **kw):
+    cc._send_destructive(world["registry"], fake, "delete", slug="db", schema="sales", element_guid="g-1", typ=typ,
+                         form=form, qualified_name="q", **kw)
+
+
+def test_a_destructive_call_without_a_scope_is_blocked(world, fake):
+    with pytest.raises(GatewayError) as err:
+        _send(world, fake)                                            # no scope: fail closed
+    assert str(err.value) == WORDS and fake.ops("delete_element") == []
+    rows = [p for p in world["registry"].list_catalogue_commit_proofs("db") if p["proof"] == cc.P_DELETE_CALL]
+    assert rows[-1]["detail"]["outcome"] == cc.DELETE_REFUSED
+
+
+SURVEY_REPORT_WORDS = ("RE never archives or deletes an RE SurveyReport; a retirement, if ever, detaches "
+                       "ReportedAnnotation links and leaves the report")
+
+
+@pytest.mark.parametrize("setting", ["default", "re-armed", "slug override"])
+@pytest.mark.parametrize("form", [gw.ARCHIVE, gw.SOFT_DELETE])
+def test_a_survey_report_is_never_archived_or_deleted(world, fake, monkeypatch, setting, form):
+    if setting == "re-armed":
+        rearm(monkeypatch)
+    elif setting == "slug override":
+        override_for(monkeypatch, "db")
+    with pytest.raises(GatewayError) as err:
+        _send(world, fake, typ="SurveyReport", form=form, scope=gw.LEAVE_OUT_ARCHIVE)
+    assert str(err.value) == SURVEY_REPORT_WORDS and fake.ops("delete_element") == []
+    rows = [p for p in world["registry"].list_catalogue_commit_proofs("db") if p["proof"] == cc.P_DELETE_CALL]
+    assert rows[-1]["detail"]["outcome"] == cc.DELETE_REFUSED and rows[-1]["detail"]["error"] == SURVEY_REPORT_WORDS
+
+
+def test_known_negative_with_the_slug_override_another_type_is_sent(world, fake, monkeypatch):
+    override_for(monkeypatch, "db")
+    _catalogued(world, fake, "sales")
+    col = next(g for g, x in fake.elements.items() if x["type"] == "RelationalColumn")
+    cc._send_destructive(world["registry"], fake, "delete", slug="db", schema="sales", element_guid=col,
+                         typ="RelationalColumn", form=gw.ARCHIVE, qualified_name="q")
+    assert [c[1] for c in fake.ops("delete_element")] == [col], "if this does not fail the refusals prove nothing"
+
+
+def test_a_walk_holding_a_survey_report_is_refused_whole_in_preview_and_apply(world, fake, monkeypatch):
+    _catalogued(world, fake, "sales")
+    choose(world, "sales", "leave_out")
+    real = cc.read_hangs_off
+
+    def with_report(*a, **k):
+        r = real(*a, **k)
+        return {**r, "delete_order": list(r["delete_order"]) + [("rep-1", "SurveyReport", "sales::report")]}
+    monkeypatch.setattr(cc, "read_hangs_off", with_report)
+    choose(world, "archive", "catalogue")
+    before = len(sent_to_egeria(fake))
+    out, _ = press(world, fake)
+    row = next(r for r in out["preview"]["leave_out"] if r["schema"] == "sales")
+    assert row["form"] == "survey_report" and row["blocked"] is True and row["text"] == f"sales: {SURVEY_REPORT_WORDS}"
+    with pytest.raises(GatewayError) as err:
+        cc.apply_leave_out(world["registry"], fake, {"slug": "db", "schema": "sales", "form": gw.ARCHIVE,
+                                                     "curation_id": "c1", "by": ME, "plan_guids": []})
+    assert SURVEY_REPORT_WORDS in str(err.value) and len(sent_to_egeria(fake)) == before
 
 
 # ── the 2026-10-23 lift: the leave-out ARCHIVE only ──────────────────────────────────────────────────────────
