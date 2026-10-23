@@ -143,7 +143,7 @@ export function commitHeaderText(view) {
 }
 
 /** The read-back counts under the catalogue section: three chips in a fixed order ("published by RE N",
- *  "attached N schemas", "catalogued by Egeria N schemas", the unit from the server, singular for 1), each with its state cue (✓ read back, ◌ the cataloguer has not built
+ *  "attached N schemas", "cataloged by Egeria N schemas", the unit from the server, singular for 1), each with its state cue (✓ read back, ◌ the cataloguer has not built
  *  the tree yet) and, on a pending count whose newest read-back row is over 120 s old, "not checked since <time>".
  *  `rb` is `view.commit.read_back`, the server's derivation from proof rows; '' when there is none. Each chip's hover
  *  says what it counts and when it was read. */

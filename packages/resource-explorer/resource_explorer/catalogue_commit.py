@@ -816,14 +816,14 @@ def read_back_chips(published: dict | None, schema_states: dict[str, dict], last
        names the database only). ✓ once that row exists: it is written from the element Egeria returned.
     2. "attached N": chosen schemas whose newest proof says a CatalogTarget exists (`target_attached`, or
        `elements_read_back`, which is read through that target). ✓.
-    3. "catalogued by Egeria N": chosen schemas whose newest proof is `elements_read_back` (Egeria's cataloguer
+    3. "cataloged by Egeria N": chosen schemas whose newest proof is `elements_read_back` (Egeria's cataloguer
        built the tables under them). ✓ when every attached schema is catalogued; ◌ pending while some attached
        schema has no tree yet. A pending count whose newest read-back row is older than 120 s also carries
        "not checked since <read_at>".
 
     `schema_states` is {schema: _schema_state(...)} for the chosen schemas. Returns {"chips": [3 dicts]} with
     each chip {key, word, count, unit, cue: 'read_back' | 'pending' | 'none', read_at, hover, not_checked_since}.
-    `unit` is the word after the count on screen ("attached 2 schemas", "catalogued by Egeria 1 schema"); the
+    `unit` is the word after the count on screen ("attached 2 schemas", "cataloged by Egeria 1 schema"); the
     published count has none ("published by RE 2", architect fix round 1)."""
     pub_n, pub_at = 0, ""
     if published is not None:
@@ -857,7 +857,7 @@ def read_back_chips(published: dict | None, schema_states: dict[str, dict], last
          "read_at": att_at, "not_checked_since": "",
          "hover": (f"chosen schemas attached to Egeria's cataloguer as targets · read {_stamp(att_at)}" if attached
                    else "no chosen schema is attached to Egeria's cataloguer")},
-        {"key": "catalogued", "word": "catalogued by Egeria", "count": len(built), "unit": _schemas_unit(len(built)),
+        {"key": "catalogued", "word": "cataloged by Egeria", "count": len(built), "unit": _schemas_unit(len(built)),
          "cue": cat_cue,
          "read_at": built_at or read_at, "not_checked_since": stale,
          "hover": ("chosen schemas whose tables Egeria's cataloguer built"

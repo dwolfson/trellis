@@ -1,6 +1,6 @@
 """The catalogue read-back is three count chips in a fixed order, from proof rows (architect ruling 2026-10-23).
 
-"published by RE N" (the database_published row), "attached N" (target rows), "catalogued by Egeria N" (the
+"published by RE N" (the database_published row), "attached N" (target rows), "cataloged by Egeria N" (the
 elements read back under each schema): ◌ while the cataloguer has not built the tree, ✓ once it has, and
 "not checked since <read_at>" on a pending count whose newest read-back row is older than 120 s. The word
 "waiting" is gone. Temp SQLite; no Egeria.
@@ -43,10 +43,10 @@ def test_attached_not_catalogued_reads_pending_never_waiting(reg):
     c = _chips(d)
     assert (c["published"]["word"], c["published"]["count"], c["published"]["cue"]) == ("published by RE", 2, "read_back")
     assert (c["attached"]["count"], c["attached"]["cue"]) == (2, "read_back")
-    assert (c["catalogued"]["word"], c["catalogued"]["count"], c["catalogued"]["cue"]) == ("catalogued by Egeria", 0, "pending")
+    assert (c["catalogued"]["word"], c["catalogued"]["count"], c["catalogued"]["cue"]) == ("cataloged by Egeria", 0, "pending")
     assert "hr" in c["catalogued"]["hover"] and "sales" in c["catalogued"]["hover"]
     words = cc.read_back_words(d["read_back"])
-    assert words == "published by RE 2 ✓ · attached 2 schemas ✓ · catalogued by Egeria 0 schemas ◌"
+    assert words == "published by RE 2 ✓ · attached 2 schemas ✓ · cataloged by Egeria 0 schemas ◌"
     assert (c["published"]["unit"], c["attached"]["unit"], c["catalogued"]["unit"]) == ("", "schemas", "schemas")
     assert "waiting" not in words
 
@@ -68,7 +68,7 @@ def test_one_of_two_built_is_still_pending(reg):
     c = _chips(d)
     assert (c["catalogued"]["count"], c["catalogued"]["cue"]) == (1, "pending")
     assert c["catalogued"]["unit"] == "schema"                          # singular for 1
-    assert cc.read_back_words(d["read_back"]) == "published by RE 2 ✓ · attached 2 schemas ✓ · catalogued by Egeria 1 schema ◌"
+    assert cc.read_back_words(d["read_back"]) == "published by RE 2 ✓ · attached 2 schemas ✓ · cataloged by Egeria 1 schema ◌"
 
 
 def test_a_stale_read_says_not_checked_since(reg):

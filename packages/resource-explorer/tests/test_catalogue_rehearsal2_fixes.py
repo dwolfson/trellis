@@ -159,7 +159,11 @@ def test_a_failed_outbox_row_does_not_outrank_a_newer_catalogued_proof(world, fa
         reg.mark_outbox_failed(ob["id"], "OutboxApplyError: stale failure")      # the read-back proof is newer than their creation
     d = derived(world)
     assert [d["schemas"][n]["state"] for n in ("sales", "archive")] == ["catalogued", "catalogued"]
-    assert "failed" not in d["header"]["text"] and "2 published" in d["header"]["text"]
+    # The header carries no state word for attached/catalogued schemas (architect 2026-10-23): "2 schemas attached";
+    # the state lives in the read-back chips, which still say both schemas are cataloged by Egeria.
+    assert "failed" not in d["header"]["text"] and "2 schemas attached" in d["header"]["text"]
+    chips = {c["key"]: c for c in cc.read_back_chips_for(reg, "db", ["sales", "archive"])["chips"]}
+    assert (chips["attached"]["count"], chips["catalogued"]["count"], chips["catalogued"]["cue"]) == (2, 2, "read_back")
     assert d["tables"]["sales.orders"]["state"] == "catalogued"
 
 
@@ -180,8 +184,14 @@ def test_header_counts_agree_with_the_rows_catalogued_next_to_failed_is_impossib
     d = derived(world)
     states = [d["schemas"][n]["state"] for n in ("sales", "archive")]
     text = d["header"]["text"]
-    for st, word in (("catalogued", "published"), ("failed", "failed")):
-        assert (f"{states.count(st)} {word}" in text) == (st in states)
+    chips = {c["key"]: c for c in cc.read_back_chips_for(reg, "db", ["sales", "archive"])["chips"]}
+    # the counts shown are the rows' own: header "N schemas attached" and the chips' attached / cataloged counts
+    n_att = sum(1 for st in states if st in ("attached_waiting", "catalogued"))
+    assert (f"{n_att} schemas attached" in text) == (n_att > 1) and (f"{n_att} schema attached" in text) == (n_att == 1)
+    assert chips["attached"]["count"] == n_att
+    assert chips["catalogued"]["count"] == states.count("catalogued")
+    # cataloged next to failed is impossible: a failed count in the header only when a row is failed
+    assert (f"{states.count('failed')} failed" in text) == ("failed" in states)
 
 
 # ── D-H: the template's own connection graph is not catalogued content ─────────────────────────

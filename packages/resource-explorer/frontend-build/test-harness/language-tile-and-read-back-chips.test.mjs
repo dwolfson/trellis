@@ -2,7 +2,7 @@
  *  (A) the LANGUAGE tile names its source with a visible chip, "measured" (solid) or "GitHub" (outline); the basis is
  *      in the hover; neither source keeps the existing "not measured" cue, never an empty "measured".
  *  (B) the catalogue read-back is three count chips in a fixed order, "published by RE N", "attached N",
- *      "catalogued by Egeria N", each with its cue (✓ / ◌), and "not checked since" on a stale pending count.
+ *      "cataloged by Egeria N", each with its cue (✓ / ◌), and "not checked since" on a stale pending count.
  *      The word "waiting" is gone. */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -52,7 +52,7 @@ test('neither source: the existing "not read" cue, never an empty "measured"', a
 const chips = (published, attached, catalogued, cue, stale = '') => ({ chips: [
   { key: 'published', word: 'published by RE', count: published, unit: '', cue: published ? 'read_back' : 'none', hover: 'the server and database elements RE published · read 10-23 09:00', not_checked_since: '' },
   { key: 'attached', word: 'attached', count: attached, unit: attached === 1 ? 'schema' : 'schemas', cue: attached ? 'read_back' : 'none', hover: 'chosen schemas attached', not_checked_since: '' },
-  { key: 'catalogued', word: 'catalogued by Egeria', count: catalogued, unit: catalogued === 1 ? 'schema' : 'schemas', cue, hover: 'chosen schemas whose tables Egeria built', not_checked_since: stale },
+  { key: 'catalogued', word: 'cataloged by Egeria', count: catalogued, unit: catalogued === 1 ? 'schema' : 'schemas', cue, hover: 'chosen schemas whose tables Egeria built', not_checked_since: stale },
 ] });
 
 test('read-back chips: three in a fixed order, ✓ on read back, ◌ while the cataloguer has not run', async () => {
@@ -60,24 +60,24 @@ test('read-back chips: three in a fixed order, ✓ on read back, ◌ while the c
   const h = readBackChipsHtml(chips(2, 2, 0, 'pending'));
   assert.deepEqual([...h.matchAll(/data-read-back-chip="([a-z]+)"/g)].map((m) => m[1]), ['published', 'attached', 'catalogued']);
   // Units on screen, singular for 1; chips are separated by whitespace, never " · ".
-  assert.equal(strip(h), 'published by RE 2 ✓ attached 2 schemas ✓ catalogued by Egeria 0 schemas ◌');
+  assert.equal(strip(h), 'published by RE 2 ✓ attached 2 schemas ✓ cataloged by Egeria 0 schemas ◌');
   assert.ok(!/·/.test(strip(h)));
   assert.match(h, /<\/span> <span data-read-back-chip="attached"/);
-  assert.match(strip(readBackChipsHtml(chips(2, 1, 1, 'read_back'))), /attached 1 schema ✓ catalogued by Egeria 1 schema ✓$/);
+  assert.match(strip(readBackChipsHtml(chips(2, 1, 1, 'read_back'))), /attached 1 schema ✓ cataloged by Egeria 1 schema ✓$/);
   assert.ok(!/waiting/.test(h));
   assert.match(h, /data-read-back-chip="published"[^>]*title="the server and database elements RE published · read 10-23 09:00"/);
 });
 
-test('read-back chips: the tree built reads "catalogued by Egeria 18 ✓"', async () => {
+test('read-back chips: the tree built reads "cataloged by Egeria 18 ✓"', async () => {
   const { readBackChipsHtml } = await load('/static/next/stages/curate-scope.js');
-  assert.match(strip(readBackChipsHtml(chips(2, 18, 18, 'read_back'))), /catalogued by Egeria 18 schemas ✓$/);
+  assert.match(strip(readBackChipsHtml(chips(2, 18, 18, 'read_back'))), /cataloged by Egeria 18 schemas ✓$/);
 });
 
 test('read-back chips: a stale pending count says "not checked since"', async () => {
   const { readBackChipsHtml } = await load('/static/next/stages/curate-scope.js');
   const h = readBackChipsHtml(chips(2, 2, 0, 'pending', '2026-10-23T09:12:00'));
   assert.match(h, /data-read-back-not-checked/);
-  assert.match(strip(h), /catalogued by Egeria 0 schemas ◌ ◌ not checked since 09:12$/);
+  assert.match(strip(h), /cataloged by Egeria 0 schemas ◌ ◌ not checked since 09:12$/);
 });
 
 test('read-back chips: nothing derived draws nothing; the scope section carries the row under its header', async () => {

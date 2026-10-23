@@ -131,7 +131,7 @@ function makeServer(view, preview, { signedIn = true, advance = null, finalSteps
         } else s.record = { ...s.record, state: 'running' };
         return ok(s.record);
       }
-      if (method === 'POST' && u.endsWith('/read-back')) return ok({ catalogued: 1, attached_waiting: 1, read_failed: 0, chips_words: 'published by RE 2 ✓ · attached 2 schemas ✓ · catalogued by Egeria 0 schemas ◌' });
+      if (method === 'POST' && u.endsWith('/read-back')) return ok({ catalogued: 1, attached_waiting: 1, read_failed: 0, chips_words: 'published by RE 2 ✓ · attached 2 schemas ✓ · cataloged by Egeria 0 schemas ◌' });
       if (method === 'GET') return ok(s.view);
       return ok({ state: 'ok' });
     }
@@ -461,7 +461,7 @@ test('Read Egeria again posts the read-back and the status comes from its answer
   document.querySelector('[data-scope-read-back]').click();
   await wait(120);
   assert.equal(server.calls.filter((c) => c.method === 'POST' && c.url.endsWith('/read-back')).length, 1);
-  assert.match(flat(document.querySelector('[data-scope-status]')), /^read back: published by RE 2 ✓ · attached 2 schemas ✓ · catalogued by Egeria 0 schemas ◌$/);
+  assert.match(flat(document.querySelector('[data-scope-status]')), /^read back: published by RE 2 ✓ · attached 2 schemas ✓ · cataloged by Egeria 0 schemas ◌$/);
   assert.doesNotMatch(flat(document.querySelector('[data-scope-status]')), /waiting/);
 });
 
@@ -500,7 +500,7 @@ test('"Read Egeria again" reports in the Egeria family: "cataloged" only from th
   const { document } = await setUp(committedView(), previewFor());
   document.querySelector('[data-scope-read-back]').click();
   await wait(120);
-  assert.match(flat(document.querySelector('[data-scope-status]')), /^read back: published by RE 2 ✓ · attached 2 schemas ✓ · catalogued by Egeria 0 schemas ◌$/);
+  assert.match(flat(document.querySelector('[data-scope-status]')), /^read back: published by RE 2 ✓ · attached 2 schemas ✓ · cataloged by Egeria 0 schemas ◌$/);
   assert.doesNotMatch(flat(document.querySelector('[data-scope-status]')), /waiting/);
 });
 

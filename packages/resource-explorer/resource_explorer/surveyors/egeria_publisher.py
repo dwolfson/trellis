@@ -1385,6 +1385,8 @@ class EgeriaPublisher:
         except Exception as exc:  # noqa: BLE001
             log.warning("Updated the primary language of %s (%r -> %r) but could not record it: %s",
                         guid, before, wanted["primary_language"], exc)
+            # Observable on the result (non-fatal): the update is written, only its proof row is missing.
+            result.errors.append(f"primary_language updated but not recorded: {exc}")
         return True
 
     def _cache_asset_guid(self, slug: str, guid: str) -> None:
