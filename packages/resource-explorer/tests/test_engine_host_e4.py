@@ -204,6 +204,7 @@ class FakeEgeria:
             wrap("get_asset_by_guid", self._asset)
         elif name == "DataDiscovery":
             wrap("create_annotation", self._create_annotation)
+            wrap("attach_annotation_to_report", self._attach_annotation)
         elif name == "ClassificationExplorer":
             wrap("add_ownership_to_element", lambda guid, body=None, *a, **k:
                  self.classifications.append(("Ownership", guid, body)))
@@ -356,6 +357,18 @@ class FakeEgeria:
         if parent:
             self.relationships.append({"type": body.get("parentRelationshipTypeName") or "ReportedAnnotation",
                                        "end1": parent, "end2": guid})
+        return guid
+
+    def _attach_annotation(self, survey_report_guid, annotation_guid, body=None):
+        """`…/survey-reports/{report}/new-annotations/{annotation}/attach`: a ReportedAnnotation from the report to
+        an EXISTING annotation. Multi-link, as in Egeria: a second attach of the same pair makes a second
+        relationship (it does not upsert), so a test can catch a missing read-first. An unknown GUID is refused."""
+        for guid, kind in ((survey_report_guid, "SurveyReport"), (annotation_guid, "Annotation")):
+            if (self.elements.get(guid) or {}).get("type") != kind:
+                raise _refusal("OMAG-REPOSITORY-HANDLER-404-001", f"no {kind} {guid}", http=404)
+        guid = _uuid()
+        self.relationships.append({"type": "ReportedAnnotation", "end1": survey_report_guid, "end2": annotation_guid,
+                                   "guid": guid})
         return guid
 
     def _relate(self, body=None):

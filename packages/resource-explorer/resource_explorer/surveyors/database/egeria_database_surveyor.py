@@ -856,9 +856,16 @@ class EgeriaDatabaseSurveyor:
                 },
             },
         }
+        # Profile publish reshape: an unchanged value-profile measure is RE-LINKED to this report (the annotation
+        # already in Egeria), only a changed or new one is created. Planned against RE's own proof rows of the last
+        # published profile, before anything is written.
+        profile_plan = self._plan_profile_publish(registry, db_entity.slug, annotations)
         report_guid = self._asset_maker.create_asset(body=body)
         log.info(f"Published SurveyReport in Egeria: {report_guid}")
-        made = self._create_annotations(annotations, report_guid, db_entity.slug, surveyed_at)
+        skip = frozenset(profile_plan.relink) if profile_plan else frozenset()
+        made = self._create_annotations(annotations, report_guid, db_entity.slug, surveyed_at,
+                                        **({"skip": skip} if skip else {}))
+        relinked = self._relink_unchanged(report_guid, profile_plan.relink) if skip else {}
 
         # Publish column-level lineage mapping relationships to Egeria
         self.lineage_not_checked = []
@@ -874,7 +881,11 @@ class EgeriaDatabaseSurveyor:
         # registry.record_database_survey_published().
 
         # The run's own proof: what the report holds when READ BACK by its GUID, against what was sent.
-        read_back = self._read_back(report_guid, annotations, db_entity.slug, surveyed_at)
+        read_back = self._read_back(report_guid, annotations, db_entity.slug, surveyed_at,
+                                    relinked={i: g for i, g in (profile_plan.relink if profile_plan else {}).items()
+                                              if relinked.get(i) in ("relinked", "already_linked")})
+        profile = self._record_profile_publish(registry, db_entity.slug, report_guid, surveyed_at, annotations,
+                                               profile_plan, read_back) if profile_plan else {}
         quality_idx = [i for i, a in enumerate(annotations) if any(a is q for q in quality_annotations or [])]
         quality_proof: dict = {}
         if quality_idx:
@@ -906,6 +917,9 @@ class EgeriaDatabaseSurveyor:
                 "annotations_in_egeria": read_back["held"] if read_back else None,
                 "annotations_this_publish": read_back["this_publish"] if read_back else None,
                 **quality_proof,
+                # The value profile's measures on this report, counted from the proof rows just written (created
+                # vs re-linked vs no longer measured): the run card's line. {} when this publish had none.
+                "profile_publish": profile,
                 "governance": governance,
                 "element_links": element_links,
                 # Column names whose look-up could not be made, and "source -> target" pairs whose
@@ -1805,26 +1819,129 @@ class EgeriaDatabaseSurveyor:
                     LINK_FAILED: "failed"}.get(outcome.outcome, "failed")] += 1
         return counts
 
-    def _read_back(self, report_guid: str, annotations: list, db_slug: str, surveyed_at: str) -> dict | None:
+    def _plan_profile_publish(self, registry, slug: str, annotations: list):
+        """Which value-profile measures to re-link and which to create (`profile_publish.plan_profile_publish`),
+        against RE's proof rows of the last published profile. None when this publish has no profile measure or no
+        registry (then everything is created, as before)."""
+        from resource_explorer.surveyors.database.quality.profile_publish import (
+            is_profile_measure,
+            plan_profile_publish,
+        )
+        from resource_explorer.surveyors.database.quality.value_profile import ANALYSIS_STEP
+
+        if registry is None or not any(is_profile_measure(a) for a in annotations):
+            return None
+        previous = registry.latest_profile_publish("database", slug, ANALYSIS_STEP)
+        return plan_profile_publish(annotations, previous)
+
+    def _relink_unchanged(self, report_guid: str, pairs: dict[int, str]) -> dict[int, str]:
+        """One `ReportedAnnotation` from the new report to each unchanged measure's EXISTING annotation.
+
+        `ReportedAnnotation` is multi-link (one annotation is reported by many reports), so an attach never
+        upserts: the report's own list is READ FIRST (paged to its end) and a pair it already holds is not
+        attached again. {index: relinked | already_linked | not_checked | failed}; never raises. When the
+        report's list cannot be read nothing is attached (not_checked): the read-back then says what is
+        missing."""
+        held = self._report_annotations(report_guid)
+        if held is None:
+            return {i: "not_checked" for i in pairs}
+        linked = {a.get("guid") for a in held if a.get("guid")}
+        out: dict[int, str] = {}
+        for i, guid in pairs.items():
+            if guid in linked:
+                out[i] = "already_linked"
+                continue
+            try:
+                self._discovery.attach_annotation_to_report(
+                    report_guid, guid,
+                    body={"class": "NewRelationshipRequestBody",
+                          "properties": {"class": "ReportedAnnotationProperties"}})
+            except Exception as exc:  # noqa: BLE001 -- counted; the read-back says it is missing
+                log.warning("could not re-link annotation %s to report %s: %s", guid, report_guid, exc)
+                out[i] = "failed"
+                continue
+            linked.add(guid)
+            out[i] = "relinked"
+        return out
+
+    def _record_profile_publish(self, registry, slug: str, report_guid: str, surveyed_at: str,
+                                annotations: list, plan, read_back: dict | None) -> dict:
+        """Write the profile measures' proof rows and return the card's counts FROM them
+        (`registry.profile_publish_counts`). A row is written only for a measure the read-back found on the report
+        (`read_back["guids"]`, by index): created under its new GUID, or re-linked under the existing one. A
+        previous measure this run did not measure gets a `no_longer_measured` row. When the report could not be
+        read, no created/relinked row is written (unknown, never "published"). Never raises: a failed record is
+        logged and the counts come back empty."""
+        from datetime import UTC, datetime
+
+        from resource_explorer.surveyors.database.quality.profile_publish import (
+            CREATED,
+            NO_LONGER_MEASURED,
+            RELINKED,
+        )
+        from resource_explorer.surveyors.database.quality.value_profile import ANALYSIS_STEP
+
+        on_report = (read_back or {}).get("guids") or {}
+        previous = {"previous_report_guid": plan.previous_report_guid,
+                    "previous_report_at": plan.previous_report_at}
+        rows = []
+        for i, key in plan.keys.items():
+            guid = on_report.get(i)
+            if not guid:
+                continue
+            rows.append({"annotation_guid": guid, "item_key": key, "content_hash": plan.hashes[i],
+                         "outcome": RELINKED if i in plan.relink else CREATED,
+                         "annotation_type": "ResourceProfileAnnotation",
+                         "summary": getattr(annotations[i], "summary", ""), **previous})
+        for key, guid in plan.gone.items():
+            rows.append({"annotation_guid": guid, "item_key": key, "content_hash": None,
+                         "outcome": NO_LONGER_MEASURED, "annotation_type": "ResourceProfileAnnotation", **previous})
+        try:
+            registry.record_profile_publish("database", slug, report_guid=report_guid, report_at=surveyed_at,
+                                            read_at=datetime.now(UTC).isoformat(), analysis_step=ANALYSIS_STEP,
+                                            rows=rows)
+            return registry.profile_publish_counts(report_guid, ANALYSIS_STEP)
+        except Exception as exc:  # noqa: BLE001 -- the report stands; the card says it could not count
+            log.warning("could not record the value-profile proof rows of report %s: %s", report_guid, exc)
+            return {}
+
+    def _read_back(self, report_guid: str, annotations: list, db_slug: str, surveyed_at: str,
+                   relinked: dict[int, str] | None = None) -> dict | None:
         """What the Egeria report holds, from a READ of the report's `ReportedAnnotation` list paged to its END
         (`_report_annotations`), never from the GUIDs the creates returned (a create that returns a GUID has not
         proved the element is there) and never from one graph read of the report, which is one page.
 
         `{"held": annotations under the report in all, "this_publish": how many of THESE annotations are among them
         (by their published names), "quality": how many of the QualityAnnotations}`; None when the report could not
-        be read, which is "could not tell", never zero."""
+        be read, which is "could not tell", never zero.
+
+        `relinked` ({index: existing annotation GUID}): the value-profile measures this publish RE-LINKED rather than
+        created. Their names are an earlier run's, so they are found on the report by GUID. `guids` ({index: GUID})
+        is every annotation of this publish the read found on the report."""
         from resource_explorer.surveyors.survey_report import QualityCheckAnnotation, annotation_qualified_name
 
         every = self._report_annotations(report_guid)
         if every is None:
             return None
-        held = {a.get("qualified_name") for a in every}
+        relinked = relinked or {}
+        by_name = {a.get("qualified_name"): a.get("guid") or "" for a in every}
+        held_guids = {a.get("guid") for a in every if a.get("guid")}
         prefix = f"Annotation::PostgreSQL::{db_slug}::{surveyed_at}"
-        names = [(annotation_qualified_name(prefix, i, a), isinstance(a, QualityCheckAnnotation))
-                 for i, a in enumerate(annotations)]
-        return {"held": len(held),
-                "this_publish": sum(1 for n, _ in names if n in held),
-                "quality": sum(1 for n, q in names if q and n in held)}
+        guids: dict[int, str] = {}
+        quality = 0
+        for i, a in enumerate(annotations):
+            if i in relinked:
+                if relinked[i] in held_guids:
+                    guids[i] = relinked[i]
+                continue
+            name = annotation_qualified_name(prefix, i, a)
+            if name in by_name:
+                guids[i] = by_name[name]
+                quality += isinstance(a, QualityCheckAnnotation)
+        return {"held": len(by_name),
+                "this_publish": len(guids),
+                "quality": quality,
+                "guids": guids}
 
     def _publish_column_lineage(self, db_entity: "DatabaseEntity", views: list[dict]) -> None:
         """Publish column-level lineage to Egeria as LineageMapping relationships (source column at end 1,
@@ -1949,8 +2066,10 @@ class EgeriaDatabaseSurveyor:
         report_guid: str,
         db_slug: str,
         surveyed_at: str,
+        skip: frozenset[int] | set[int] = frozenset(),
     ) -> list:
-        """Push a list of Annotation objects to Egeria; returns one GUID or None per annotation.
+        """Push a list of Annotation objects to Egeria; returns one GUID or None per annotation (`skip`: indices
+        not created, see `publish_annotations`).
 
         Delegates to the shared implementation — see annotation_props.py.
         Kept as a method because tests reach for it by name. `surveyed_at` is
@@ -1961,7 +2080,7 @@ class EgeriaDatabaseSurveyor:
         qualified_name_prefix = f"Annotation::PostgreSQL::{db_slug}::{surveyed_at}"
         return publish_annotations(
             self._discovery, self._find_element_guid,
-            annotations, report_guid, qualified_name_prefix,
+            annotations, report_guid, qualified_name_prefix, skip=skip,
         )
 
     @staticmethod

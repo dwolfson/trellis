@@ -418,8 +418,14 @@ def publish_annotations(
     annotations: list,
     report_guid: str,
     qualified_name_prefix: str,
+    *,
+    skip: frozenset[int] | set[int] = frozenset(),
 ) -> list[str | None]:
     """Create one Annotation element per item in `annotations`, idempotently.
+
+    `skip`: indices NOT to create (None in their place, nothing looked up). The profile publish reshape passes the
+    value-profile measures it re-links to an existing annotation instead; the list is passed whole so every other
+    annotation keeps its index, and with it its published name.
 
     Returns one entry per input annotation, in order: the GUID (existing, if
     adopted via the idempotency lookup, or newly created), or `None` if that
@@ -472,6 +478,9 @@ def publish_annotations(
 
     guids: list[str | None] = []
     for i, ann in enumerate(annotations):
+        if i in skip:
+            guids.append(None)
+            continue
         qualified_name = annotation_qualified_name(qualified_name_prefix, i, ann)
 
         try:
