@@ -143,6 +143,10 @@ def requested_by() -> str:
 class RunOutcome:
     state: str  # "succeeded" | "failed"
     error: str = ""
+    #: "applying as <user> from <source> · written as <x>": the identity the run held when it wrote (intent,
+    #: `presser_hold.applying_as_line`), then who Egeria says wrote, from a read-back (proof,
+    #: `catalogue_commit.commit_written_as_line`). The activity entry ends with it. '' = not said.
+    applied_as: str = ""
 
     def __post_init__(self) -> None:
         # One place for EVERY handler: an error text can carry a connection string or token from
@@ -281,14 +285,52 @@ def _handle_curate_commit(target: dict, result_ref: str) -> RunOutcome:
 def _handle_catalogue_commit(target: dict, result_ref: str) -> RunOutcome:
     """Catalogue → for a database. Every step writes its outcome to the curation
     record; the run fails only if a step did (the record says which)."""
-    from resource_explorer.catalogue_commit import execute_commit, run_with_loop
+    from contextlib import nullcontext
+
+    from resource_explorer import presser_hold
+    from datetime import datetime, timezone
+
+    from resource_explorer.catalogue_commit import (
+        commit_written_as_line,
+        execute_commit,
+        refuse_presser_gone,
+        run_with_loop,
+    )
+    from resource_explorer.egeria_clients import EXPIRED_SENTENCE, current_principal
     from resource_explorer.registry import ProjectRegistry
 
-    # pyegeria's sync wrappers need an event loop on the executing thread
-    rec = run_with_loop(execute_commit, ProjectRegistry(), target["curation_id"])
+    registry = ProjectRegistry()
+    run_id = (current_run.get() or {}).get("id") or ""
+    presser = str(target.get("presser") or "").strip() if target.get("publish_as_presser") else ""
+    # A pressed commit writes AS the person who pressed it (their session, held in memory by the press: the #836
+    # mechanism). It crosses from the request thread to this worker thread in the hold, keyed by the run id, never in
+    # a ContextVar. A row with no person (none is enqueued today) keeps the queue's daemon, as before.
+    pressed = presser_hold.pressed_run(run_id, presser) if presser else nullcontext()
+    applied = ""
+    with pressed:
+        try:
+            with presser_hold.publishing_as_presser():
+                who = current_principal()
+                applied = presser_hold.applying_as_line(who)
+                log.info("catalog commit %s (%s): %s", target.get("curation_id"), target.get("slug"), applied)
+                started = datetime.now(timezone.utc)
+                # pyegeria's sync wrappers need an event loop on the executing thread
+                rec = run_with_loop(execute_commit, registry, target["curation_id"])
+                # The proof beside that intent: who Egeria says wrote the elements THIS commit wrote (its first
+                # attached schema, else a leave-out's archived copy), read by GUID as the run acts, and only when
+                # changed since `started` ("written as: could not check" otherwise, never an earlier writer).
+                try:
+                    written = run_with_loop(commit_written_as_line, registry, target["curation_id"], started)
+                except Exception:  # noqa: BLE001 - the commit is done; an unreadable proof is said, never a crash
+                    written = presser_hold.WRITTEN_AS_UNCHECKED
+                applied = f"{applied} · {written}" if applied else written
+        except presser_hold.PresserSignInExpired:
+            # Nothing written, as anyone: never retried as the service account.
+            applied = f"not applied: {EXPIRED_SENTENCE}"
+            rec = refuse_presser_gone(registry, target["curation_id"])
     failed = [s["name"] for s in rec.get("steps", []) if s.get("state") == "failed"]
     return RunOutcome(state="failed" if failed else "succeeded",
-                      error=("failed: " + ", ".join(failed)) if failed else "")
+                      error=("failed: " + ", ".join(failed)) if failed else "", applied_as=applied)
 
 
 def _handle_materialize_components(target: dict, result_ref: str) -> RunOutcome:
@@ -584,6 +626,8 @@ def _close_activity(registry, result_ref: str, kind: str, target: dict, outcome:
     if not result_ref:
         return
     status, summary = _activity_words(registry, kind, target, outcome)
+    if outcome.applied_as:
+        summary = f"{summary} · {outcome.applied_as}"
     registry.close_activity_if_running(result_ref, status, summary)
 
 

@@ -49,13 +49,39 @@ def run_hybrid_filesystem_survey(
     # says which Egeria, never that this survey should be published there.
     if force_egeria_publish:
         log.info(f"Publishing filesystem survey results for {fs_entity.slug} to Egeria...")
+        from resource_explorer import presser_hold
+
         try:
+            from resource_explorer.egeria_clients import current_principal
             from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import EgeriaFileSystemSurveyor
-            egeria_surveyor = EgeriaFileSystemSurveyor(platform_url=url, view_server=server)
-            publish_res = egeria_surveyor.catalog_and_survey(fs_entity, survey_data, registry=registry)
+
+            # The root FileFolder, its DataFiles, the SurveyReport and its annotations are written AS the person who
+            # pressed a queued run (their held session, `presser_hold`, 2026-10-23); any other run keeps the
+            # identity it had (a scheduled run: the service account). The surveyor is built inside the block, so its
+            # client is built for whoever the block acts as.
+            with presser_hold.publishing_as_presser():
+                try:
+                    # INTENT, not proof: who this block is about to write as (`current_principal()`), never who Egeria
+                    # says wrote. The key says so; nothing may show it as "written as".
+                    survey_data["applying_as_intent"] = presser_hold.applying_as_line(current_principal())
+                    log.info("filesystem %s publish: %s", fs_entity.slug, survey_data["applying_as_intent"])
+                except PermissionError:
+                    pass        # nobody to act as: the surveyor's own connect refuses, with the words, below
+                egeria_surveyor = EgeriaFileSystemSurveyor(platform_url=url, view_server=server)
+                publish_res = egeria_surveyor.catalog_and_survey(fs_entity, survey_data, registry=registry)
             log.info(f"Successfully published filesystem {fs_entity.slug} to Egeria: {publish_res}")
             survey_data["egeria_publish"] = publish_res
+        except presser_hold.PresserSignInExpired as exc:
+            # Nothing written, as anyone (never retried as the service account): the step says the agreed words.
+            survey_data["egeria_publish_refused"] = str(exc)
         except Exception as exc:
+            if presser_hold.expired_during_publish(exc):
+                # The presser's token aged out DURING the publish: the same words as the run's own publish (the
+                # executor's), never "publish failed"; some writes may already have been made as them.
+                log.warning("filesystem %s publish: the presser's sign-in expired part-way through", fs_entity.slug)
+                survey_data["egeria_publish_refused"] = presser_hold.SIGN_IN_EXPIRED_WORDS
+                survey_data["publish_note"] = presser_hold.PARTIAL_WRITE_NOTE
+                return survey_data
             log.exception(f"Failed to publish survey to Egeria for {fs_entity.slug}: {exc}")
             survey_data["egeria_publish_error"] = f"{type(exc).__name__}: {exc}"[:300]
             # Non-fatal, status updated on registry

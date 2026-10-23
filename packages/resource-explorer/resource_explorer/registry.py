@@ -263,6 +263,12 @@ class RowWrapper:
 #: observed is well under a minute, and a whole 200-row batch under ten.
 CLAIM_LEASE_SECONDS = 1800
 
+#: The payload key that marks an outbox row as enqueued inside a pressed run (2026-10-23): `"as_presser": true`. Only
+#: that run's own inline drain, as the person who pressed, applies such a row (`claim_due_outbox_elements`).
+AS_PRESSER_KEY = "as_presser"
+#: The claim's text rule for that key (`_as_presser_sql`, `ESCAPE '!'`): the quoted key, `_` matched literally.
+AS_PRESSER_LIKE = '%"' + AS_PRESSER_KEY.replace("_", "!_") + '"%'
+
 
 class InvestigationPublishRunning(RuntimeError):
     """A drain is writing one of this investigation's outbox rows to Egeria right now, so it cannot be deleted."""
@@ -9021,6 +9027,7 @@ class ProjectRegistry:
     def claim_due_outbox_elements(
         self, limit: int = 200, now: str | None = None, run_id: str | None = None,
         element_id: int | None = None, exclude_kinds: "tuple[str, ...] | list[str] | frozenset | None" = None,
+        as_presser_by: str | None = None,
     ) -> list[dict]:
         """Rows ready to attempt, oldest first.
 
@@ -9071,6 +9078,11 @@ class ProjectRegistry:
         `exclude_kinds` (Brief F) leaves rows of those kinds unclaimed: the background drain passes the feedback
         kinds, which only their author's own Publish may send.
 
+        A row enqueued inside a pressed run (2026-10-23: its payload names the key `"as_presser"`, `_as_presser_sql`)
+        is never claimed by default, whatever the key's value: only `as_presser_by=<user>`, passed by that run's own
+        inline drain as the person who pressed (`drain_outbox(drain_as_presser=True)`), claims such a row, and only
+        when the payload's `by` is that user. A mismatch, or a payload that cannot be parsed, leaves the row waiting.
+
         `run_id` scopes the claim to one publish's rows. A publisher that
         enqueues and then drains inline needs its OWN annotations written
         before it returns; an unscoped claim takes the oldest due rows in the
@@ -9084,7 +9096,7 @@ class ProjectRegistry:
         ).isoformat()
         _nd_clause, _nd_params = self._non_destructive_sql()
         sql = (
-            "SELECT o.id FROM egeria_outbox o "
+            "SELECT o.id, o.payload_json FROM egeria_outbox o "
             # A correlated EXISTS rather than a LEFT JOIN: Postgres rejects
             # "FOR UPDATE ... nullable side of an outer join" outright, and the
             # SQLite unit tests cannot see that — they were green while this
@@ -9109,6 +9121,12 @@ class ProjectRegistry:
             kinds = sorted(exclude_kinds)
             sql += f"  AND o.element_kind NOT IN ({','.join('?' * len(kinds))}) "
             params.extend(kinds)
+        if as_presser_by is None:
+            # 2026-10-23: one text rule, the same SQL on both dialects (no JSON parse, so a corrupt payload cannot
+            # abort the claim): a payload naming the key is marked, whatever its value. A wrong guess only makes a
+            # row wait; it never hands a pressed row to a drain that is not the presser's own.
+            sql += f"  AND NOT {self._as_presser_sql()} "
+            params.append(AS_PRESSER_LIKE)
         sql += "ORDER BY o.id ASC LIMIT ?"
         params.append(limit)
 
@@ -9120,7 +9138,9 @@ class ProjectRegistry:
             self._kill_lapsed_destructive_claims(conn, lease_cutoff)
             if conn.is_postgres:
                 sql += " FOR UPDATE SKIP LOCKED"
-            ids = [r["id"] for r in conn.execute(sql, tuple(params)).fetchall()]
+            found = conn.execute(sql, tuple(params)).fetchall()
+            ids = [r["id"] for r in found
+                   if as_presser_by is None or self._presser_may_claim(r["payload_json"], as_presser_by)]
             if not ids:
                 return []
             marks = ",".join("?" * len(ids))
@@ -9134,6 +9154,28 @@ class ProjectRegistry:
                 tuple(ids),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    @staticmethod
+    def _as_presser_sql() -> str:
+        """SQL (one `?`: `AS_PRESSER_LIKE`) that is true for an outbox row whose payload text names the key
+        `"as_presser"`, whatever its value, nesting or validity. The same text rule on SQLite and Postgres: no JSON
+        parse (a `::jsonb` cast aborts the whole claim on one corrupt or `\\u0000` payload). Fail-safe: a row it
+        wrongly counts as marked only waits; it is never written as the service account. Every writer is `json.dumps`,
+        which writes the key only when the row is marked (`True`); an unmarked row omits it."""
+        return "(COALESCE(o.payload_json, '') LIKE ? ESCAPE '!')"
+
+    @staticmethod
+    def _presser_may_claim(payload_json: object, user: str) -> bool:
+        """Whether a drain as `user` (a pressed run's own inline drain) may claim this row: an unmarked row, yes; a
+        marked one only when its parsed payload's `by` is `user`. Unparseable or a mismatch: no, it waits."""
+        text = payload_json if isinstance(payload_json, str) else ""
+        if f'"{AS_PRESSER_KEY}"' not in text:
+            return True
+        try:
+            payload = json.loads(text)
+        except (ValueError, TypeError):
+            return False
+        return bool(user) and isinstance(payload, dict) and payload.get("by") == user
 
     @staticmethod
     def _non_destructive_sql() -> tuple[str, list]:

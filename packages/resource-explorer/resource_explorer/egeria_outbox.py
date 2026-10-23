@@ -1422,7 +1422,7 @@ _CREATORS: dict[str, Callable[["OutboxClients", dict], str]] = {
 
 def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_guid=None, *,
                  limit: int = DRAIN_BATCH, run_id: str | None = None,
-                 element_id: int | None = None, identity=None) -> dict:
+                 element_id: int | None = None, identity=None, drain_as_presser: bool = False) -> dict:
     """One drain pass, as `identity` (Brief I, owner's rule: a person's direct acts are made as
     that person). The background loop passes `Daemon(OUTBOX)`; an inline drain inside a
     person's request (a doc-source add/remove, a publish's link drain, a catalog commit) runs
@@ -1448,12 +1448,12 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
     scope = acting_as(identity) if identity is not None and identity.kind == "daemon" else nullcontext()
     with scope:
         return _drain_outbox(registry, clients, find_element_guid, limit=limit, run_id=run_id,
-                             element_id=element_id, identity=identity)
+                             element_id=element_id, identity=identity, drain_as_presser=drain_as_presser)
 
 
 def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_guid=None, *,
                   limit: int = DRAIN_BATCH, run_id: str | None = None,
-                  element_id: int | None = None, identity=None) -> dict:
+                  element_id: int | None = None, identity=None, drain_as_presser: bool = False) -> dict:
     """One drain pass. Returns a summary dict; never raises.
 
     Called from `scheduler.py`'s existing loop, once per iteration — the same
@@ -1486,9 +1486,16 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
     # Brief F: a drain that is not a person's own request (the background Daemon drain, or a drain handed its
     # clients with no person) never claims a feedback row: only its author's Publish sends it, as them.
     is_caller = identity is not None and getattr(identity, "kind", "") == "caller"
+    # 2026-10-23: a row enqueued inside a pressed run (its payload names `"as_presser"`, `registry.AS_PRESSER_KEY`)
+    # is applied only by a drain that says so (`drain_as_presser=True`, passed by the catalogue commit's inline drain
+    # alone), made as a signed-in person, and only when that person is the row's `by`. Every other drain (the
+    # background Daemon loop, a publisher's drain, any other person's drain) leaves it waiting, so a retry is never
+    # made as the service account or as someone else.
+    presser_by = (getattr(identity, "user_id", "") or "").strip() if (drain_as_presser and is_caller) else ""
     try:
         rows = registry.claim_due_outbox_elements(limit=limit, run_id=run_id, element_id=element_id,
-                                                  exclude_kinds=None if is_caller else PERSON_ONLY_KINDS)
+                                                  exclude_kinds=None if is_caller else PERSON_ONLY_KINDS,
+                                                  as_presser_by=presser_by or None)
     except Exception:
         log.exception("Outbox drain: could not read due rows")
         return summary

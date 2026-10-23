@@ -43,6 +43,7 @@ import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Iterator
 
 DEFAULT_TTL_SECONDS = 2 * 3600
@@ -310,8 +311,14 @@ def read_published_by(report_guid: str) -> str:
     The run's "published as <identity>" comes from this read and from nothing the code path believes about itself, so a
     regression to the service account shows on the card. '' when the read could not be made or Egeria stated no
     creator: the caller says nothing, which is "could not tell", not "as nobody"."""
-    if not report_guid:
-        return ""
+    return created_by_of(_read_element_by_guid(report_guid))
+
+
+def _read_element_by_guid(guid: str, *, for_lineage: bool = False) -> object:
+    """ONE read of the element `guid` by GUID, as whoever the run is acting as; None when it could not be made.
+    `for_lineage` also reads an archived element (a leave-out's archived copy carries a Memento)."""
+    if not guid:
+        return None
     try:
         from pyegeria import AssetMaker
 
@@ -320,11 +327,65 @@ def read_published_by(report_guid: str) -> str:
 
         maker = egeria_client(current_principal(), purpose="publish read-back",
                               view_server=egeria_view_server(), platform_url=egeria_platform_url()).of(AssetMaker)
-        result = maker.get_asset_by_guid(
-            report_guid, body={"class": "GetRequestBody", "graphQueryDepth": 0}, output_format="JSON")
+        body = {"class": "GetRequestBody", "graphQueryDepth": 0, **({"forLineage": True} if for_lineage else {})}
+        return maker.get_asset_by_guid(guid, body=body, output_format="JSON")
     except Exception:  # noqa: BLE001 - unread is "could not tell"; the message may carry a token, so it is not kept
+        return None
+
+
+def written_by_of(element: object) -> str:
+    """`versions.updatedBy`, else `versions.createdBy`, from an Egeria element read: the last identity Egeria says
+    wrote it. '' when it states neither. Pure."""
+    if not isinstance(element, dict):
         return ""
-    return created_by_of(result)
+    header = element.get("elementHeader") if isinstance(element.get("elementHeader"), dict) else {}
+    for versions in ((header or {}).get("versions"), element.get("versions")):
+        if isinstance(versions, dict) and (versions.get("updatedBy") or versions.get("createdBy")):
+            return str(versions.get("updatedBy") or versions["createdBy"])
+    return ""
+
+
+#: The proof half of a pressed write path's identity line, when the read-back could not say who wrote.
+WRITTEN_AS_UNCHECKED = "written as: could not check"
+
+
+def version_time_of(element: object) -> datetime | None:
+    """`versions.updateTime`, else `versions.createTime`, from an Egeria element read, as an aware UTC datetime (epoch
+    ms or ISO); None when it states neither or the value cannot be read. Pure."""
+    if not isinstance(element, dict):
+        return None
+    header = element.get("elementHeader") if isinstance(element.get("elementHeader"), dict) else {}
+    for versions in ((header or {}).get("versions"), element.get("versions")):
+        if not isinstance(versions, dict):
+            continue
+        raw = versions.get("updateTime") or versions.get("createTime")
+        if raw in (None, ""):
+            continue
+        text = str(raw).strip()
+        try:
+            dt = (datetime.fromtimestamp(int(text) / 1000, tz=UTC) if text.isdigit()
+                  else datetime.fromisoformat(text.replace("Z", "+00:00")))
+        except (ValueError, OverflowError, OSError):
+            return None
+        return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+    return None
+
+
+def written_as_since(element_guids: list[str], since: datetime | None, *, wrote: bool) -> str:
+    """'written as <x>' for elements THIS run wrote: <x> from ONE read of each `element_guids` (in order, stopping at
+    the first that proves it) by GUID, made as whoever the run is acting as; updatedBy, else createdBy. Said only when
+    `wrote` (at least one write step succeeded) and the element's version time is not older than `since` (the run's
+    start), so a writer from an earlier commit is never named. `WRITTEN_AS_UNCHECKED` otherwise: nothing written, the
+    read failed, Egeria named nobody or no time, or the element was last changed before this run. The proof beside
+    the intent line (`applying_as_line`): never derived from the branch the code took."""
+    if not wrote or since is None:
+        return WRITTEN_AS_UNCHECKED
+    for guid in [g for g in element_guids if g]:
+        element = _read_element_by_guid(guid, for_lineage=True)
+        who, when = written_by_of(element), version_time_of(element)
+        if who and when is not None and when >= since:
+            return f"written as {who}"
+    return WRITTEN_AS_UNCHECKED
 
 
 def read_published_by_presser(report_guid: str) -> str:
@@ -358,3 +419,27 @@ def expired_during_publish(exc: BaseException) -> bool:
 #: Said in the run detail when the sign-in expired part-way through the publish.
 PARTIAL_WRITE_NOTE = ("The sign-in expired while publishing: some writes may already have been made as the person who "
                       "pressed; press Publish on the card to finish.")
+
+
+# ---------------------------------------------------------------------------
+# The identity line: who a pressed write path wrote as (2026-10-23)
+# ---------------------------------------------------------------------------
+
+#: Where the identity came from, in "applying as <user> from <source>" (the dr_egeria/bootstrap identity line's shape).
+SOURCE_PRESSER = "the sign-in of the person who pressed"
+SOURCE_SERVICE_ACCOUNT = "the service account"
+
+
+def applying_as_line(identity: object) -> str:
+    """'applying as <user> from <source>' for `identity`, what `current_principal()` returned where the writes are
+    about to be made. An INTENT line, not proof: who Egeria says wrote is `written_as_since`, from a read-back. '' for
+    no identity. Holds no credential."""
+    if identity is None:
+        return ""
+    kind = getattr(identity, "kind", "")
+    user = getattr(identity, "client_user", "") or getattr(identity, "user_id", "")
+    source = SOURCE_PRESSER if kind == "caller" else SOURCE_SERVICE_ACCOUNT
+    requester = getattr(identity, "requested_by", "") or ""
+    if kind != "caller" and requester:
+        source = f"{source}, on behalf of {requester}"
+    return f"applying as {user} from {source}"
