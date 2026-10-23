@@ -943,13 +943,17 @@ class EgeriaPublisher:
             log.debug("Asset search failed (will create): %s", exc)
 
         # Gather project stats for additional metadata
-        primary_language = ""
+        # The primary language is the ONE choice the header's LANGUAGE tile shows (measured beats GitHub's
+        # by-bytes value), and the asset carries which source it is and on what basis (2026-10-23).
+        from resource_explorer.primary_language import choose_primary_language, publish_properties
+
+        language_props = publish_properties({})
         license_name = ""
         topics_csv = ""
         if self._registry:
+            language_props = publish_properties(choose_primary_language(self._registry, result.resource_slug))
             stats = self._registry.get_latest_project_stats(result.resource_slug)
             if stats:
-                primary_language = stats.get("primary_language") or ""
                 license_name = stats.get("license") or ""
                 topics_csv = stats.get("topics") or ""
 
@@ -973,7 +977,7 @@ class EgeriaPublisher:
             "additionalProperties": {
                 "github_url": result.github_url,
                 "project_slug": result.resource_slug,
-                "primary_language": primary_language,
+                **language_props,
                 "license": license_name,
                 "topics": topics_csv,
                 # Descriptive, not a type constraint — `deployedImplementationType`

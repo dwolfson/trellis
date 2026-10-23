@@ -437,6 +437,10 @@ class ScoutingOverview(BaseModel):
     github_url: str
     description: str = ""       # GitHub's own repo description, not Enrichment's purpose
     primary_language: str = ""
+    # Which source `primary_language` is (resource_explorer/primary_language.py, the one chooser the Egeria publish
+    # also calls): {value, source: 'measured' | 'github' | '', chip, basis, as_of, hover, disagreement, ...}.
+    # source '' = neither exists, and the tile keeps its "not measured" state.
+    language: dict = {}
     stars: int = 0
     forks: int = 0
     contributors_count: int = 0
@@ -577,6 +581,8 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
     from resource_explorer.egeria_linkage import describe_publish_status
     publish_status = describe_publish_status(
         registry, "repo", project.slug, project.egeria_asset_guid or "")
+    from resource_explorer.primary_language import choose_primary_language
+    language = choose_primary_language(registry, project.slug)
 
     return ScoutingOverview(
         egeria_link_stale=linkage.get("status") == "stale",
@@ -588,7 +594,8 @@ async def get_scouting_overview(slug: str) -> ScoutingOverview:
         display_name=project.display_name,
         github_url=project.github_url,
         description=project.description,
-        primary_language=stats.get("primary_language") or "",
+        primary_language=language["value"],
+        language=language,
         stars=stats.get("stars") or 0,
         forks=stats.get("forks") or 0,
         contributors_count=stats.get("contributors_count") or 0,
