@@ -23,7 +23,7 @@
  */
 import { stateEntry } from '/static/next/glyphs.js';
 import { LINK_ACTIONS } from '/static/next/link-actions.js';
-import { ago, PUBLISHED_EARLIER_WORD, PUBLISHED_EARLIER_SENTENCE } from '/static/next/format.js';
+import { ago, PUBLISHED_EARLIER_WORD, publishedEarlierSentence } from '/static/next/format.js';
 
 function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -212,7 +212,7 @@ export function staleLinkBannerHtml(ov) {
   if (!ov || !ov.egeria_link_stale) return '';
   const e = stateEntry('gone');
   const earlier = ov.published_state === 'published_earlier'
-    ? ` · <span title="${esc(PUBLISHED_EARLIER_SENTENCE)}">${esc(PUBLISHED_EARLIER_WORD)}</span>` : '';
+    ? ` · <span title="${esc(publishedEarlierSentence(ov))}">${esc(PUBLISHED_EARLIER_WORD)}</span>` : '';
   const guid = ov.egeria_link_stale_guid
     ? ` <span class="font-mono text-provenance" title="The element Resource Explorer remembered">${esc(ov.egeria_link_stale_guid)}</span>` : '';
   const buttons = REPAIR_CHOICES.map((c) =>

@@ -30,7 +30,7 @@ from typing import Any, Callable
 
 from resource_explorer.catalogue_commit import (
     P_EGERIA_RESET, P_READ_FAILED, P_REPORT, PROJECT_UNANSWERED, PROJECT_UNBOUND, PROJECT_UNBOUND_WORDS,
-    RESET_WORDS, _ts, egeria_first_sentence)
+    RESET_WORDS, _ts, egeria_first_sentence, merge_recorded_reset, pre_reset_sent_words, pre_reset_words)
 from resource_explorer.surveyors import survey_snapshot
 from resource_explorer.surveyors.survey_snapshot import NO_SURVEY_SENTENCE
 
@@ -251,8 +251,9 @@ def _report_row_words(last: dict | None) -> dict:
         return {"word": "not published", "read_at": last["read_at"], "report_guid": last["element_guid"],
                 "sentence": full, "first": first, "rest": rest}
     if kind == P_EGERIA_RESET:
-        return {"word": "reset", "read_at": last["read_at"], "report_guid": "", "sentence": RESET_WORDS,
-                "first": RESET_WORDS, "reset": d.get("text", "")}
+        words = pre_reset_words(last["read_at"]) if last.get("read_at") else RESET_WORDS
+        return {"word": "reset", "read_at": last["read_at"], "report_guid": "", "sentence": words,
+                "first": words, "reset": d.get("text", "")}
     if kind == P_FORGOTTEN:
         return {"word": "forgotten", "read_at": last["read_at"], "report_guid": "", "sentence": FORGET_SENTENCE,
                 "first": "links forgotten", "forgot": d}
@@ -316,6 +317,13 @@ def publish_state(registry, slug: str, viewer: str | None = None) -> dict:
     proofs = [p for p in registry.list_catalogue_commit_proofs(slug)
               if (p["node_kind"] == NODE_REPORT and p["proof"] in (P_REPORT, P_SENT, P_READ_FAILED, P_FORGOTTEN))
               or p["proof"] == P_EGERIA_RESET]
+    # The recorded reset (`egeria_resets`) counts as a marker when a report proof predates it and it is newer than
+    # the repository's own marker (`catalogue_commit.merge_recorded_reset`).
+    markers = [p for p in proofs if p["proof"] == P_EGERIA_RESET]
+    newest_marker = max(markers, key=lambda p: _ts(p["read_at"])) if markers else None
+    recorded = merge_recorded_reset(registry, newest_marker, [p for p in proofs if p["proof"] != P_EGERIA_RESET])
+    if recorded is not None and recorded is not newest_marker:
+        proofs.append(recorded)
     # The newest fact by time (read_at), not by row id: the reset marker is written after the fact, but it
     # carries the reset time, so a publish made after the reset still wins over it.
     # Same tie rule as catalogue_commit.derive_commit_state: a proof read AT the reset time is live, so at an
@@ -544,20 +552,49 @@ def commit_proof_summary(registry, slug: str, curation: dict) -> dict:
     `report`        the newest report proof at or after the press: published / sent / not published;
     `sub_resources` counts by proof for this curation: read back / sent / failed, split chosen vs
                     container, with the first failure's first sentence;
-    `file_types`    the file types cataloged so far (read back), from their own proof rows."""
+    `file_types`    the file types cataloged so far (read back), from their own proof rows.
+
+    A proof row read before the latest Egeria reset (`registry.get_egeria_reset_at`: the repository's marker or
+    the recorded reset) is history: a report read back before it reads `pre_reset` and a sub-resource or file-type
+    row read back before it counts as `pre_reset`, never as read back; `pre_reset_words` says "published before the
+    <date> reset · not in Egeria now" (architect ruling (b), 2026-10-23). A row SENT and never read back before the
+    reset was never published: the report reads `pre_reset_sent` and the row counts as `pre_reset_sent`, words
+    `pre_reset_sent_words` "sent before the <date> reset · never confirmed" (fix round 1). With no reset, nothing
+    here changes."""
+    from resource_explorer.catalogue_commit import _known
+
     requested = curation.get("requested_at") or ""
     proofs = registry.list_catalogue_commit_proofs(slug)
+    reset_fn = getattr(registry, "get_egeria_reset_at", None)
+    reset_at = (reset_fn(slug) if reset_fn else "") or ""
+    cutoff = _ts(reset_at) if _known(reset_at) else ""
+
+    def _pre(p: dict) -> bool:
+        return bool(cutoff) and _known(p.get("read_at")) and _ts(p.get("read_at")) < cutoff
+
     out: dict = {"report": {"state": "none"}, "sub_resources": {"read_back": 0, "sent": 0, "failed": 0,
                  "chosen_read_back": 0, "container_read_back": 0, "first_failure": "",
                  # the same counts per row of the table: the files you chose, the folders you chose, the containers
-                 "by_row": {k: {"read_back": 0, "sent": 0, "failed": 0, "first_failure": ""}
-                            for k in ("files", "folders", "containers")}},
-                 "file_types": {"read_back": 0}}
+                 "by_row": {k: {"read_back": 0, "sent": 0, "failed": 0, "first_failure": "", "pre_reset": 0,
+                                "pre_reset_sent": 0}
+                            for k in ("files", "folders", "containers")}, "pre_reset": 0, "pre_reset_sent": 0},
+                 "file_types": {"read_back": 0, "pre_reset": 0},
+                 "pre_reset_at": reset_at if cutoff else "",
+                 "pre_reset_words": pre_reset_words(reset_at) if cutoff else "",
+                 "pre_reset_sent_words": pre_reset_sent_words(reset_at) if cutoff else ""}
     reports = [p for p in proofs if p["node_kind"] == NODE_REPORT and p["proof"] in (P_REPORT, P_SENT, P_READ_FAILED)
                and (p["read_at"] or "") >= requested[:19]]
     if reports:
         last, d = reports[-1], reports[-1].get("detail") or {}
-        if last["proof"] == P_REPORT:
+        if last["proof"] == P_REPORT and _pre(last):
+            out["report"] = {"state": "pre_reset", "read_at": last["read_at"], "surveyed_at": d.get("surveyed_at", ""),
+                             "words": pre_reset_words(reset_at), "reset_at": reset_at}
+        elif last["proof"] == P_SENT and _pre(last):
+            # Sent and never read back before the reset: it was never published, so never "published before".
+            out["report"] = {"state": "pre_reset_sent", "read_at": last["read_at"],
+                             "surveyed_at": d.get("surveyed_at", ""), "words": pre_reset_sent_words(reset_at),
+                             "reset_at": reset_at}
+        elif last["proof"] == P_REPORT:
             # ONE decider for "same result" (the tab-1 band's): this report's own outbox run settles it.
             out["confirm"] = _report_row(last, registry, slug)["confirm"]
             out["report"] = {"state": "published", "read_at": last["read_at"], "surveyed_at": d.get("surveyed_at", ""),
@@ -574,6 +611,12 @@ def commit_proof_summary(registry, slug: str, curation: dict) -> dict:
             d = p.get("detail") or {}
             row = out["sub_resources"]["by_row"]["containers" if d.get("role") == "container"
                                                   else "files" if d.get("kind") == "file" else "folders"]
+            if p["proof"] in (P_SUB_RESOURCE, P_SENT) and _pre(p):
+                # read back before the reset -> "published before"; sent and never read back -> its own count
+                k = "pre_reset" if p["proof"] == P_SUB_RESOURCE else "pre_reset_sent"
+                row[k] += 1
+                out["sub_resources"][k] += 1
+                continue
             row[{P_SUB_RESOURCE: "read_back", P_SENT: "sent", P_READ_FAILED: "failed"}.get(p["proof"], "sent")] += 1
             if p["proof"] == P_READ_FAILED and not row["first_failure"]:
                 row["first_failure"] = egeria_first_sentence(d.get("error", ""))[0]
@@ -587,7 +630,7 @@ def commit_proof_summary(registry, slug: str, curation: dict) -> dict:
                 if not out["sub_resources"]["first_failure"]:
                     out["sub_resources"]["first_failure"] = egeria_first_sentence(d.get("error", ""))[0]
         elif p["node_kind"] == NODE_FILE_TYPE and p["proof"] == P_FILE_TYPE:
-            out["file_types"]["read_back"] += 1
+            out["file_types"]["pre_reset" if _pre(p) else "read_back"] += 1
     return out
 
 

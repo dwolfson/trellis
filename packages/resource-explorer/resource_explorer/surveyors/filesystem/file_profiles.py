@@ -850,14 +850,34 @@ def precheck(f: dict, root: Path, reachable: bool) -> str | None:
     return _link_state(root, rel) if reachable else None
 
 
-def last_published_run(registry, slug: str, *, before: str | None = None) -> str | None:
+def last_published_run(registry, slug: str, *, before: str | None = None, since_reset: bool = True) -> str | None:
     """The newest profile run whose publish is COMPLETE (its proof says every annotation is in Egeria and the report was
-    read back), older than `before` when given. The baseline `changed_rows` diffs against."""
+    read back), older than `before` when given. The baseline `changed_rows` diffs against.
+
+    A publish from before the latest Egeria reset (`registry.get_egeria_reset_at`, the reset source the rest of the
+    reset record uses) is no baseline: Egeria no longer holds it, so unchanged columns must be sent to the new Egeria
+    again. With `since_reset` (the default) only a publish at or after the reset counts, and none means "publish
+    everything". A reset read that fails is logged and raised, never "no reset". `since_reset=False` is the plain
+    newest complete publish (what pruning keeps, which must not depend on the reset read)."""
+    from resource_explorer.catalogue_commit import _known, _ts
+
+    cutoff = ""
+    if since_reset:
+        fn = getattr(registry, "get_egeria_reset_at", None)
+        try:
+            reset = (fn(slug) if fn else "") or ""
+        except Exception:
+            log.exception("could not read the Egeria reset for %r", slug)
+            raise
+        cutoff = _ts(reset) if _known(reset) else ""
     rows = registry.query_step_runs(slug=slug, step_key=PUBLISH_STEP_KEY, entity_type="filesystem", limit=200)
     for r in sorted(rows, key=lambda x: x.get("surveyed_at") or "", reverse=True):
         at = r.get("surveyed_at") or ""
-        if (r.get("metrics") or {}).get("complete") and (before is None or at < before):
-            return at
+        if not (r.get("metrics") or {}).get("complete") or not (before is None or at < before):
+            continue
+        if cutoff and not (_known(at) and _ts(at) >= cutoff):
+            continue  # before the reset (or a time that cannot be read once a reset is known): no claim, no baseline
+        return at
     return None
 
 
@@ -950,7 +970,7 @@ def _run(fs_entity, registry, walk: dict, files: list[dict], run_id: str, *, por
         all_rows.extend({**r, "file_path": rel} for r in rows)
     seconds = max(0.0, clock() - started)
 
-    published = last_published_run(registry, slug)
+    published = last_published_run(registry, slug, since_reset=False)  # retention: keep it whatever the reset
     stored = registry.add_filesystem_file_columns(slug, run_id, all_rows, keep_also=(published,) if published else ())
     metrics = {
         "walk_run_id": walk["run_id"], "led_by": led_by, "machine": machine(), "limit_bytes": limit,
@@ -1057,6 +1077,15 @@ def profiles_view(registry, slug: str) -> dict:
     files = [{**s, "format": ext_of(s["file_path"]), "columns_list": by_file.get(s["file_path"], [])[:30]}
              for s in states[:FILES_SHOWN]]
     proof = latest_publish_proof(registry, slug, run_id)
+    if proof:
+        # A publish read back before the latest Egeria reset is history (fix round 1): `pre_reset` {at, words}, and the
+        # card says "published before the <date> reset · not in Egeria now", never "published · N of M in Egeria".
+        from resource_explorer.catalogue_commit import pre_reset_claim
+
+        fn = getattr(registry, "get_egeria_reset_at", None)
+        claim = pre_reset_claim((fn(slug) if fn else "") or "", proof.get("at") or run_id)
+        if claim is not None:
+            proof = {**proof, "pre_reset": claim}
     out["run"] = {"run_id": run_id, "counts": counts, "words": card_words(counts), "egeria_half": m.get("egeria_half", ""),
                   "walk_run_id": m.get("walk_run_id", ""), "files": files,
                   "files_not_shown": max(0, len(states) - FILES_SHOWN), "publish": proof}

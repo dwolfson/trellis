@@ -24,6 +24,25 @@ from resource_explorer.surveyors.filesystem.folder_survey_annotations import fol
 log = logging.getLogger(__name__)
 
 
+def _reset_at(registry, slug: str) -> str:
+    """The latest Egeria reset for this file system (its marker or the recorded reset), '' when none. A registry
+    without the reader (a test double) claims none; a read that fails raises (it must not bring "published" back)."""
+    fn = getattr(registry, "get_egeria_reset_at", None)
+    return (fn(slug) if fn else "") or ""
+
+
+def _pre_reset(publish: dict | None, reset_at: str, at: str) -> dict | None:
+    """A publish proof read back before the latest Egeria reset is history (architect ruling (b), 2026-10-23; fix
+    round 1): `published` False, `pre_reset` {at, words} with "published before the <date> reset · not in Egeria
+    now". `at` is the proof's own time (its `at`, else the row's surveyed_at). Any other publish is unchanged."""
+    from resource_explorer.catalogue_commit import pre_reset_claim
+
+    if not publish or not publish.get("published"):
+        return publish
+    claim = pre_reset_claim(reset_at, at)
+    return publish if claim is None else {**publish, "published": False, "pre_reset": claim}
+
+
 def _when(text: str) -> datetime | None:
     if not text:
         return None
@@ -47,10 +66,15 @@ def _egeria_candidate(registry, slug: str) -> dict | None:
         if i == 0:
             newest_state = state
         if state == nsr.COMPLETE and report:
-            return {"surveyor": file_reach.SURVEYOR_EGERIA, "at": run.get("survey_report_at") or run.get("surveyed_at") or "",
+            at = run.get("survey_report_at") or run.get("surveyed_at") or ""
+            # Egeria's own report, read back before the latest reset: history, never "published" (fix round 1).
+            from resource_explorer.catalogue_commit import pre_reset_claim
+
+            pre = pre_reset_claim(_reset_at(registry, slug), at)
+            return {"surveyor": file_reach.SURVEYOR_EGERIA, "at": at,
                     "report_guid": report, "annotations": registry.query_native_survey_annotations(report),
-                    "run_state": newest_state, "limits": None, "published": True,
-                    "publish": None, "report_sentence": file_reach.EGERIA_REPORT_SENTENCE,
+                    "run_state": newest_state, "limits": None, "published": pre is None,
+                    "publish": None, "pre_reset": pre, "report_sentence": file_reach.EGERIA_REPORT_SENTENCE,
                     # Said on every Egeria-led report (design 2026-10-21 section 2, and the analysis level sent).
                     "detail_lines": [file_reach.analysis_level_line(), file_reach.EGERIA_CSV_LINE]}
     return {"none": True, "run_state": newest_state} if runs else None
@@ -73,6 +97,8 @@ def _re_candidate(registry, slug: str) -> dict | None:
     guid = (pub_row or {}).get("egeria_report_guid") or ""
     proof = ((pub_row or {}).get("survey_data") or {}).get("published_to_egeria") or {}
     publish = _publish_words(proof) if guid else None
+    publish = _pre_reset(publish, _reset_at(registry, slug) if publish else "",
+                         proof.get("at") or (pub_row or {}).get("surveyed_at") or "")
     reach = (sd.get("surveyed_by") or {}).get("reach") or {}
     return {"surveyor": file_reach.SURVEYOR_RE, "at": at, "report_guid": guid, "published": bool(publish and publish["published"]),
             "publish": publish,
@@ -131,6 +157,8 @@ def extensions_view(registry, slug: str) -> dict | None:
                     and r.get("source") == "egeria-published"), None)
     proof = ((pub_row or {}).get("survey_data") or {}).get("published_to_egeria") or {}
     publish = _publish_words(proof) if pub_row else None
+    publish = _pre_reset(publish, _reset_at(registry, slug) if publish else "",
+                         proof.get("at") or (pub_row or {}).get("surveyed_at") or "")
     narratives = sd.get("folder_narratives") or []
     return {
         "run_id": run_id, "surveyed_at": sd.get("surveyed_at") or newest.get("surveyed_at") or "",
@@ -171,11 +199,12 @@ def folder_survey_view(registry, slug: str) -> dict:
             "file_profiles": _file_profiles(registry, slug)}
     if not candidates:
         return {**base, "state": "none", "surveyor": "", "surveyed_at": "", "report_guid": "", "published": False,
-                "publish": None, "report_sentence": "", "results": None, "limits": None, "detail_lines": []}
+                "publish": None, "pre_reset": None, "report_sentence": "", "results": None, "limits": None, "detail_lines": []}
     best = max(candidates, key=lambda c: _when(c["at"]) or datetime.min.replace(tzinfo=timezone.utc))
     return {**base, "state": "measured", "surveyor": best["surveyor"], "surveyed_at": best["at"],
             "report_guid": best["report_guid"], "published": best["published"],
-            "publish": best.get("publish"), "report_sentence": best["report_sentence"],
+            "publish": best.get("publish"), "pre_reset": best.get("pre_reset"),
+            "report_sentence": best["report_sentence"],
             "detail_lines": best.get("detail_lines", []), "results": read_folder_survey(best["annotations"]),
             "limits": best["limits"], "broken_symlinks": best.get("broken_symlinks", []),
             "broken_symlink_count": best.get("broken_symlink_count")}

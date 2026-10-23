@@ -141,12 +141,23 @@ def profile_publish_words(counts: dict | None) -> str:
     "N measures published · M changed since <previous report date> · K re-used · J no longer measured", and
     " · T not measured this run" when a previous measure's table was not profiled this run.
     With no earlier publish to compare with, "N measures published · first profile published". "" when the
-    publish has no profile proof rows."""
+    publish has no profile proof rows.
+
+    PUBLISH-TIME words only (fix round 1, review item 7): the line is written when the publish runs and stored on
+    the run's activity row. A reset recorded AFTER that does not rewrite the stored line; the run's own publish word
+    (`ProjectRegistry._attach_publish_proofs` -> `pre_reset`) is what turns ◌ on screen for an older run. With
+    `pre_reset_at` (the counts read after the reset) it says "N measures published before the <date> reset · not in
+    Egeria now"."""
     if not counts or not counts.get("rows"):
         return ""
     n, k, j, t, r = (counts.get(x, 0) for x in ("published", RELINKED, NO_LONGER_MEASURED,
                                                   NOT_MEASURED_THIS_RUN, "recreated"))
     m = counts.get("changed", counts.get(CREATED, 0) - r)
+    if counts.get("pre_reset_at"):
+        # Its report predates the latest Egeria reset: what it published is not in Egeria now (never "published").
+        from resource_explorer.catalogue_commit import pre_reset_words
+
+        return f"{n} measures {pre_reset_words(counts['pre_reset_at'])}"
     if not counts.get("previous_report_at"):
         return f"{n} measures published · first profile published"
     return (f"{n} measures published · {m} changed since {_date(counts['previous_report_at'])}"

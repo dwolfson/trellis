@@ -1123,8 +1123,8 @@ def build_analysis_last_activity(registry, entity_type: str, slug: str) -> dict[
     publish_stale = publish_linkage.get("status") == "stale"
     publish_uncatalogued = publish_linkage.get("status") == "uncatalogued"
 
-    from resource_explorer.catalogue_commit import _ts, egeria_reset_at, publish_fields
-    reset_at = egeria_reset_at(registry, slug)
+    from resource_explorer.catalogue_commit import _ts, egeria_reset_at_or_none, publish_fields
+    reset_at = egeria_reset_at_or_none(registry, slug)  # None: publish_fields says it could not check
 
     result: dict[str, dict] = {}
     for a in get_analyses(entity_type, include_egeria_live=False):

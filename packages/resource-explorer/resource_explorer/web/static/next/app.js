@@ -25,7 +25,7 @@
 // and it goes when the experiment goes.
 import { listWorkLists, openWorkList, saveAsWorkList, openDialog, closeCellDetail, CELL }
   from '/static/next/worklist.js';
-import { ago, whenMs, verdictLineHtml, changedTimesHtml, savedLine, readBackAt, stepOutcome, statusToken, PUBLISHED_EARLIER_SENTENCE, PUBLISHED_EARLIER_WORD } from '/static/next/format.js';
+import { ago, whenMs, verdictLineHtml, changedTimesHtml, savedLine, readBackAt, stepOutcome, statusToken, publishedEarlierSentence, PUBLISHED_EARLIER_WORD } from '/static/next/format.js';
 // The one glyph table (REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §1). `GLYPH`
 // and `factGlyph` below are thin views over `GLYPH_STATES` -- this file
 // declares no glyph-to-meaning mapping of its own any more.
@@ -3433,7 +3433,7 @@ export function resourceHeaderHtml(slug) {
     // The row's existence is not proof: a publish that predates an Egeria reset says so, short word on the
     // element, the sentence on demand.
     if (ov.published_state === 'published_earlier') {
-      published += ` · <span title="${esc(PUBLISHED_EARLIER_SENTENCE)}">${esc(PUBLISHED_EARLIER_WORD)}</span>`;
+      published += ` · <span title="${esc(publishedEarlierSentence(ov))}">${esc(PUBLISHED_EARLIER_WORD)}</span>`;
     }
   }
   // A "published" badge is actively misleading while the link is broken: it
@@ -6846,9 +6846,9 @@ const ANSWERED_BY = {
   egeria: 'Egeria',
   prefect: 'Prefect',
 };
-export function stepSourceHtml(s) {
+export function stepSourceHtml(s, preReset = null) {
   const word = ANSWERED_BY[s && s.answered_by];
-  const publish = stepPublishHtml(s);
+  const publish = stepPublishHtml(s, preReset);
   if (!word) return publish;
   const ranAs = s.ran_as && s.ran_as.user
     ? ` · ran as ${esc(s.ran_as.user)} (${esc(s.ran_as.scope || 'this run')})` : '';
@@ -6862,10 +6862,17 @@ export function stepSourceHtml(s) {
  *  publish nobody chose both read "local scan". The sentence stays on demand
  *  (title); the screen gets the glyph and one word. A step with no
  *  `publish_state` (every step but the adaptive one) draws nothing. */
-export function stepPublishHtml(s) {
+export function stepPublishHtml(s, preReset = null) {
   const d = s && s.detail && typeof s.detail === 'object' ? s.detail : {};
   const state = String((s && s.publish_state) || d.publish_state || '');
   if (!state) return '';
+  if (preReset && preReset.words && /^published\b/i.test(state) && !/^published: no\b/i.test(state)) {
+    // Published before the latest Egeria reset (the server's `pre_reset`, from the run's time): history, the ◌
+    // lane, never ✓ and never "published as <identity>" (architect ruling (b), 2026-10-23).
+    return `<span class="text-provenance" data-step-publish="pre_reset" title="${esc(`${state} · Egeria reset ${preReset.at || ''}`)}">`
+      + '<span class="text-ink-muted font-glyph" aria-hidden="true">◌</span> '
+      + `<span class="text-ink-muted">${esc(preReset.words)}</span></span>`;
+  }
   let kind = 'unclassified';
   let word = 'not published';
   const publishedAs = String((s && s.published_as) || d.published_as || '').trim();
@@ -6907,9 +6914,12 @@ export function stepPublishHtml(s) {
  *  its steps, so the word is the run's `publish_state`; "published" is drawn
  *  only with the run's `egeria_report_guid` beside it (the proof), never from
  *  the sentence alone. A run that recorded no word draws nothing. */
-export function runPublishHtml(d) {
+export function runPublishHtml(d, preReset = null) {
   const state = String((d && d.publish_state) || '');
   if (!state) return '';
+  if (preReset && preReset.words && /^published\b/i.test(state) && !/^published: no\b/i.test(state)) {
+    return stepPublishHtml({ publish_state: state }, preReset);
+  }
   if (/^published\b/i.test(state) && !/^published: no\b/i.test(state) && !String((d && d.egeria_report_guid) || '').trim()) {
     return stepPublishHtml({ publish_state: `publish not established · the run says "${state}" but recorded no report guid` });
   }
@@ -6955,7 +6965,7 @@ export async function openRunsList(slug) {
       const d = typeof r.detail === 'string' ? JSON.parse(r.detail) : (r.detail || {});
       steps = d.steps || [];
       // A run that published through the outbox carries its proof-derived word; a database run its own word.
-      runPublish = r.publish_proof ? publishProofHtml(r.publish_proof) : runPublishHtml(d);
+      runPublish = r.publish_proof ? publishProofHtml(r.publish_proof) : runPublishHtml(d, r.pre_reset || null);
     } catch (_) { /* a detail we cannot parse is a run with no step list */ }
     const ok = steps.filter((s) => s.status === 'ok').length;
     const bad = steps.filter((s) => s.status && s.status !== 'ok' && stepOutcome(s).kind === 'failed');
@@ -6985,7 +6995,7 @@ export async function openRunsList(slug) {
             <span class="${g.tone} font-glyph" title="${esc(g.word)}" aria-label="${esc(g.word)}">${g.glyph}</span>
             <span class="min-w-0 font-mono text-provenance">${
               esc(String(s.step || '').split('::').pop())}</span>
-            ${stepSourceHtml(s)}
+            ${stepSourceHtml(s, r.pre_reset || null)}
             ${out.kind === 'not_run'
               ? `<span data-step-not-run class="text-ink-muted" title="${esc(out.title)}">— ${esc(out.words)}</span>`
               : (!ok && s.detail ? `<span class="text-ink-muted">— ${esc(String(s.detail).slice(0, 120))}</span>` : '')}

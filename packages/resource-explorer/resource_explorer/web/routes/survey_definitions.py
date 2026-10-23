@@ -438,8 +438,8 @@ async def list_candidates(
             if _mine.get("last_run_at") and not _newer(_run["last_run_at"], _mine["last_run_at"]):
                 continue
             last_activity_by_ref[_ref] = {**{k: v for k, v in _mine.items() if k.startswith("last_published")}, **_run}
-        from resource_explorer.catalogue_commit import egeria_reset_at, publish_fields
-        _reset_at = egeria_reset_at(_reg, slug)
+        from resource_explorer.catalogue_commit import egeria_reset_at_or_none, publish_fields
+        _reset_at = egeria_reset_at_or_none(_reg, slug)  # None: publish_fields says it could not check
         # PUBLISH-STATE-AFTER-REDEPLOY-CORRECTIONS.md / REPLY-PUBLISH-STATE-GO-AHEAD.md §4 —
         # repo-only: `flag_vanished_publishes` (egeria_
         # resync.py) resolves `project_egeria_surveys.egeria_report_guid`,

@@ -95,7 +95,11 @@ def test_the_step_text_and_the_chips_are_one_derivation_through_a_reset(reg):
                                       detail={"text": "Egeria reset"}, read_at="2026-10-23T09:00:40")
     screen = cc.derive_commit_state(reg, "aw", VIEW, NOW)["read_back"]
     step = cc.read_back_chips_for(reg, "aw", ["sales", "hr"], now=NOW)
-    assert step == screen == {"chips": []}            # every proof predates the reset: nothing read back now
+    # every proof predates the reset: nothing is counted, and what they once proved is ◌, never ✓ (ruling (c),
+    # 2026-10-23: "cataloged by Egeria 0 ◌ until the cataloguer rebuilds")
+    assert step == screen
+    # (this fixture's schemas were attached, never catalogued, before the reset: that chip has nothing to wait for)
+    assert [(c["count"], c["cue"]) for c in step["chips"]] == [(0, "pending"), (0, "pending"), (0, "none")]
     reg.append_catalogue_commit_proof("aw", proof=cc.P_TARGET, schema_name="sales", element_guid="sales-guid-2",
                                       target_guid="sales-target-2", read_at="2026-10-23T09:00:45")
     screen = cc.derive_commit_state(reg, "aw", VIEW, NOW)["read_back"]

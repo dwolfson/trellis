@@ -5,6 +5,8 @@
  *   queued     ◔ "queued for publish"     an outbox row of the run exists and is not done (a write, or its read-back)
  *   read_back  ✓ "published · read back"  the run's read-back row is done: Egeria answered every annotation
  *   failed     ✕ "publish failed"         a row of the run is dead; Egeria's words follow, shortened, in full on hover
+ *   pre_reset  ◌ "published before the <date> reset · not in Egeria now"   read back, but before the latest Egeria
+ *              reset (architect ruling (b), 2026-10-23): history, never ✓; the words are the server's
  * Vocabulary: the designer's reply of 2026-09-13 (REPLY-COST-LADDER-AND-PUBLISH-STATE.md §2). Nothing here ever
  * says "published" for any state but `read_back`. Literal class strings only (the class-coverage check reads them).
  */
@@ -35,6 +37,12 @@ export function publishProofHtml(proof) {
     return `<span data-publish-proof="read_back" class="text-provenance" title="${esc(at ? `read back ${at}` : 'read back')}">`
       + '<span class="font-glyph text-state-ok" aria-hidden="true">✓</span> '
       + `<span class="text-ink-muted">${esc(PUBLISH_WORDS.read_back)}</span></span>`;
+  }
+  if (proof.state === 'pre_reset') {
+    const at = String(proof.at || '');
+    return `<span data-publish-proof="pre_reset" class="text-provenance" title="${esc(`read back ${at || 'at an unrecorded time'} · Egeria reset ${proof.reset_at || ''}`)}">`
+      + '<span class="font-glyph text-ink-muted" aria-hidden="true">◌</span> '
+      + `<span class="text-ink-muted">${esc(String(proof.word || 'not in Egeria now'))}</span></span>`;
   }
   if (proof.state === 'failed') {
     const short = words.length > WORDS_SHOWN ? `${words.slice(0, WORDS_SHOWN)}…` : words;
