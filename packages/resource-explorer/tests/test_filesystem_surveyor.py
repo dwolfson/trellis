@@ -84,7 +84,8 @@ def test_egeria_filesystem_surveyor(mock_expert_cls, mock_discovery_cls, mock_as
     mock_asset_maker = mock_asset_maker_cls.return_value
     mock_discovery = mock_discovery_cls.return_value
 
-    mock_autoc.get_guid_for_name.return_value = "No elements found"   # pyegeria's real miss
+    # pyegeria's real miss, for the data files' typed pathName search (egeria_lookup.guid_by_exact_value)
+    mock_expert_cls.return_value.find_metadata_elements_with_string.return_value = "No elements found"
     mock_autoc.get_template_guid_for_technology_type.return_value = "fbdd8efd-1b69-474c-bb6d-0a304b394146"
     mock_autoc.create_folder_element_from_template.return_value = "0f0f0f0f-1111-2222-3333-444444444444"
     mock_autoc.create_elem_from_template.return_value = "file-guid-456"

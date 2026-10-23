@@ -671,7 +671,7 @@ def schema_state_of(registry, slug: str, schema: str, effective: str | None = No
     return _schema_state(by.get(("schema", schema, ""), []), ob, effective, None)
 
 
-def derive_commit_state(registry, slug: str, view: dict) -> dict:
+def derive_commit_state(registry, slug: str, view: dict, now: datetime | None = None) -> dict:
     """Every state word on the scope tree, header included, from persisted rows.
 
     The one function the route and the tests share. Returns
@@ -778,7 +778,15 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
     header = _header(published, counts, conn_d, failed_read, view, bool(proofs_all or ob_by_schema), zones_text, blocked_names, n_gone,
                      reset=reset, published_earlier=_latest(earlier, (P_DATABASE, P_RESTORED)))
     zr = _latest(db_rows, (P_ZONES_READ,))
+    chosen_states = {s["name"]: schemas[s["name"]] for s in view.get("schemas") or [] if s.get("effective") == CATALOGUE}
+    last_read = max((str(p["read_at"] or "") for p in proofs if p["proof"] in _READ_BACK_ROWS), default="")
+    # No publish/restore row and no proof row for a chosen schema (both after any reset): nothing was read back,
+    # so there are no counts to show, never three measured zeros (fix round 2). The header says "not read back".
+    any_schema_proof = any(by.get(("schema", n, "")) for n in chosen_states)
+    read_back = (read_back_chips(published, chosen_states, last_read, now)
+                 if published is not None or any_schema_proof else {"chips": []})
     return {"schemas": schemas, "tables": tables, "header": header, "collisions": collisions,
+            "read_back": read_back,
             "database": ({"guid": published["element_guid"], "short": published["element_guid"][:8],
                           "at": published["read_at"], "owner": (_latest(db_rows, (P_OWNER,)) or {}).get("detail"),
                           "zones": list((zr or {}).get("detail", {}).get("zones") or []),
@@ -824,12 +832,15 @@ def _header(published, counts, conn_d, failed_read, view, anything: bool, zones_
     if published:
         parts.append(zones_text or "zones: not read back")
     if n_cat:
-        order = (("catalogued", "published"), ("attached_waiting", "attached, waiting"),
-                 ("sent", "sent"), ("queued", "queued"), ("failed", "failed"), ("restored", "restored"), ("uncommitted", "not committed yet"),
+        # Attached and catalogued carry no state word here: the read-back chips below show it (architect,
+        # 2026-10-23). The header counts them once, as attached: "N schemas attached", "no schemas attached".
+        order = (("sent", "sent"), ("queued", "queued"), ("failed", "failed"), ("restored", "restored"), ("uncommitted", "not committed yet"),
                  ("deleted", "deleted in Egeria"), ("archived", "archived in Egeria"),
                  ("reset", "published earlier, Egeria was reset"))
         bits = [f"{counts[k]} {w}" for k, w in order if counts.get(k)]
-        parts.append(f"{n_cat} schema{'s' if n_cat != 1 else ''} chosen: " + (", ".join(bits) or "no proof rows"))
+        parts.append(f"{n_cat} schema{'s' if n_cat != 1 else ''} chosen" + (": " + ", ".join(bits) if bits else ""))
+        n_att = counts.get("attached_waiting", 0) + counts.get("catalogued", 0)
+        parts.append(f"{n_att} schema{'s' if n_att != 1 else ''} attached" if n_att else "no schemas attached")
         if reset is not None:
             # Derived from the rows, never assumed: the chosen schemas whose newest proof says Egeria holds them.
             parts.append(f"{sum(counts.get(k, 0) for k in IN_EGERIA_STATES)} in Egeria")
@@ -840,6 +851,104 @@ def _header(published, counts, conn_d, failed_read, view, anything: bool, zones_
     if failed_read:
         parts.append(f"last read of Egeria failed {_stamp(failed_read['read_at'])}: {failed_read['detail'].get('error', '')}")
     return {"state": "committed", "text": " · ".join(parts)}
+
+
+# ── the read-back counts: three chips in a fixed order (architect ruling 2026-10-23) ──────────────────────
+
+#: A read-back whose newest proof row is older than this says "not checked since <read_at>": 2 x the read-back
+#: loop's 60 s interval, the same bound as native_survey_run.NOT_CHECKED_AFTER_S.
+READ_BACK_NOT_CHECKED_AFTER_S = 120
+#: The rows that are a successful read of Egeria for the catalogue: the newest one says when RE last looked.
+_READ_BACK_ROWS = (P_CONNECTOR, P_ELEMENTS, P_TARGET)
+
+
+def _age_s(iso: str, now: datetime | None) -> float | None:
+    t = _ts(iso)
+    if not t:
+        return None
+    ref = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(tzinfo=None)
+    return (ref - datetime.fromisoformat(t)).total_seconds()
+
+
+def _schemas_unit(n: int) -> str:
+    """The unit word a schema count names on screen: "schema" for 1, "schemas" otherwise (0 included)."""
+    return "schema" if n == 1 else "schemas"
+
+
+def read_back_chips(published: dict | None, schema_states: dict[str, dict], last_read_at: str = "",
+                    now: datetime | None = None) -> dict:
+    """The three counts under the catalogue section, from proof rows only, never from the branch a commit took.
+
+    1. "published by RE N": the server and database elements in the newest `database_published` row (a restore
+       names the database only). ✓ once that row exists: it is written from the element Egeria returned.
+    2. "attached N": chosen schemas whose newest proof says a CatalogTarget exists (`target_attached`, or
+       `elements_read_back`, which is read through that target). ✓.
+    3. "cataloged by Egeria N": chosen schemas whose newest proof is `elements_read_back` (Egeria's cataloguer
+       built the tables under them). ✓ when every attached schema is catalogued; ◌ pending while some attached
+       schema has no tree yet. A pending count whose newest read-back row is older than 120 s also carries
+       "not checked since <read_at>".
+
+    `schema_states` is {schema: _schema_state(...)} for the chosen schemas. Returns {"chips": [3 dicts]} with
+    each chip {key, word, count, unit, cue: 'read_back' | 'pending' | 'none', read_at, hover, not_checked_since}.
+    `unit` is the word after the count on screen ("attached 2 schemas", "cataloged by Egeria 1 schema"); the
+    published count has none ("published by RE 2", architect fix round 1)."""
+    pub_n, pub_at = 0, ""
+    if published is not None:
+        pub_n = (1 if (published.get("detail") or {}).get("server_guid") else 0) + (1 if published.get("element_guid") else 0)
+        pub_at = str(published.get("read_at") or "")
+    attached = {n: st for n, st in schema_states.items() if st.get("state") in ("attached_waiting", "catalogued")}
+    built = {n: st for n, st in attached.items() if st.get("state") == "catalogued"}
+    at = lambda sts: max((str((st.get("proof") or {}).get("at") or "") for st in sts.values()), default="")  # noqa: E731
+    att_at, built_at = at(attached), at(built)
+    read_at = last_read_at or max(att_at, built_at)
+
+    if not attached:
+        cat_cue = "none"
+    elif len(built) == len(attached):
+        cat_cue = "read_back"
+    else:
+        cat_cue = "pending"
+    stale = ""
+    if cat_cue == "pending" and read_at:
+        age = _age_s(read_at, now)
+        stale = read_at if age is not None and age > READ_BACK_NOT_CHECKED_AFTER_S else ""
+    waiting = sorted(set(attached) - set(built))
+    chips = [
+        {"key": "published", "word": "published by RE", "count": pub_n, "unit": "",
+         "cue": "read_back" if pub_n else "none",
+         "read_at": pub_at, "not_checked_since": "",
+         "hover": (f"the server and database elements RE published · read {_stamp(pub_at)}" if pub_n
+                   else "nothing RE published has been read back")},
+        {"key": "attached", "word": "attached", "count": len(attached), "unit": _schemas_unit(len(attached)),
+         "cue": "read_back" if attached else "none",
+         "read_at": att_at, "not_checked_since": "",
+         "hover": (f"chosen schemas attached to Egeria's cataloguer as targets · read {_stamp(att_at)}" if attached
+                   else "no chosen schema is attached to Egeria's cataloguer")},
+        {"key": "catalogued", "word": "cataloged by Egeria", "count": len(built), "unit": _schemas_unit(len(built)),
+         "cue": cat_cue,
+         "read_at": built_at or read_at, "not_checked_since": stale,
+         "hover": ("chosen schemas whose tables Egeria's cataloguer built"
+                   + (f" · read {_stamp(built_at)}" if built_at else "")
+                   + (f" · no tree yet: {', '.join(waiting)}" if waiting else "")
+                   + (f" · last read {_stamp(read_at)}" if read_at and read_at != built_at else ""))},
+    ]
+    return {"chips": chips}
+
+
+def read_back_chips_for(registry, slug: str, schemas: list[str], now: datetime | None = None) -> dict:
+    """The same three counts for a commit's own schemas (the read-back step's text). ONE derivation with the
+    on-screen chips (fix round 2): `derive_commit_state` over those schemas, so the Egeria-reset cutoff applies."""
+    view = {"schemas": [{"name": s, "effective": CATALOGUE, "tables": []} for s in schemas]}
+    return derive_commit_state(registry, slug, view, now)["read_back"]
+
+
+def read_back_words(chips: dict) -> str:
+    """The chips as one plain line (the step's text): fixed order, no "waiting"; the cue is the state."""
+    glyph = {"read_back": " ✓", "pending": " ◌", "none": ""}
+    if not chips.get("chips"):
+        return "nothing read back from Egeria"
+    return " · ".join(f"{c['word']} {c['count']}{(' ' + c['unit']) if c.get('unit') else ''}{glyph[c['cue']]}"
+                      for c in chips["chips"])
 
 
 # ── the preview and its manifest ─────────────────────────────────────────────
@@ -1989,7 +2098,9 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
         raise CommitBlocked(401, "Sign in to publish: the record needs an author.")
     from resource_explorer.egeria_clients import Caller
 
-    Caller()   # a live sign-in, checked before anything is written (Brief I): 401 otherwise
+    # A live sign-in, checked before anything is written (Brief I): 401 otherwise. It is also who the run writes as
+    # (2026-10-23: the person who pressed, from their session held in memory; see `_queue_as_presser`).
+    pressed = Caller()
     db_entity = registry.get_database(slug, allow_unreadable=True)
     if db_entity is None:
         raise CommitBlocked(404, f"Database '{slug}' not found")
@@ -2044,13 +2155,89 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
         summary=f"Publishing {db_entity.display_name}: {len(selection['attach'])} schema targets…")
     rec = Curations(registry).create("database", slug, author=author, selection=selection,
                                      manifest=preview["manifest"], steps=list(STEPS_DB), activity_id=activity_id)
-    # Queued: committed by RE's daemon on the author's behalf, Ownership = the author (Brief I).
-    run_id = registry.enqueue_run("catalogue_commit", {"slug": slug, "curation_id": rec["id"]},
-                                  result_ref=activity_id, requested_by=author)
+    # Queued, and written AS the person who pressed (owner rule "run as the initiating user", 2026-10-14; the #836
+    # mechanism, `presser_hold`): Ownership and requestedBy = the author as before (Brief I).
+    run_id = _queue_as_presser(registry, {"slug": slug, "curation_id": rec["id"]}, pressed,
+                               result_ref=activity_id, requested_by=author)
     return {"curation": rec, "run_id": run_id, "activity_id": activity_id, "preview": preview}
 
 
+def _queue_as_presser(registry, target: dict, pressed, *, result_ref: str, requested_by: str) -> str:
+    """Enqueue a catalogue commit that writes as `pressed` (the request's signed-in Caller), the same way a pressed
+    survey run publishes (#836, `presser_hold`): the run id is made first, the presser's session is held in THIS
+    process's memory under it (only when this process claims `catalogue_commit` rows), and the row carries the flag,
+    the person and a non-secret claim-affinity stamp. Never the token. A row claimed where nothing is held ends with
+    the expired words and writes nothing (`refuse_presser_gone`), never as the service account."""
+    import uuid
+
+    from resource_explorer import presser_hold, run_queue
+
+    run_id = str(uuid.uuid4())
+    person = (getattr(pressed, "user_id", "") or "").strip()
+    target = {**target, "publish_as_presser": bool(person), "presser": person}
+    held = (bool(person) and run_queue.consumes_kind_here("catalogue_commit")
+            and presser_hold.hold(run_id, person, getattr(pressed, "token", None)))
+    try:
+        held_by = presser_hold.held_by_for(run_id) if held else None
+        if held_by:
+            target["held_by"] = held_by
+        elif held:
+            presser_hold.release(run_id)         # no usable stamp: keep no session nobody is bound to
+        return registry.enqueue_run("catalogue_commit", target, result_ref=result_ref, requested_by=requested_by,
+                                    run_id=run_id)
+    except BaseException:
+        if held:
+            presser_hold.release(run_id)
+        raise
+
+
+def refuse_presser_gone(registry, curation_id: str) -> dict:
+    """A pressed commit whose presser's session is not held where the row was claimed (expired, released, another
+    process, or a restart): nothing is written, as anyone, and every step says so with the expired words."""
+    from resource_explorer.curate_plan import Curations
+    from resource_explorer.egeria_clients import EXPIRED_SENTENCE
+
+    cur = Curations(registry)
+    cur.set_step(curation_id, "publish_elements", "failed", f"{EXPIRED_SENTENCE} · nothing written")
+    for st in STEPS_DB[1:]:
+        cur.set_step(curation_id, st, "skipped", f"nothing written: {EXPIRED_SENTENCE}")
+    return cur.finish(curation_id)
+
+
 _PAST = {"attach": "attached", "remove": "deleted in Egeria"}
+
+
+#: A pressed commit's outbox row its own drain did not finish: the background drain leaves it (2026-10-23).
+PRESS_AGAIN_WORDS = "not sent · press Publish again"
+
+
+def _as_presser_row(row: dict) -> bool:
+    """Whether an outbox row was enqueued inside a pressed run (its payload names `registry.AS_PRESSER_KEY`)."""
+    from resource_explorer.registry import AS_PRESSER_KEY
+
+    payload = row.get("payload")
+    return isinstance(payload, dict) and AS_PRESSER_KEY in payload
+
+
+def commit_written_as_line(registry, curation_id: str, since) -> str:
+    """'written as <x>' for a commit, from the elements THIS commit wrote, as its proof rows record them: the first
+    schema element it attached, then the first leave-out it archived (its archived copy). A proof row for a target
+    that was already there (`already_attached`, "already archived when read") is not a write and is not read. Said
+    only when the schema-targets or leave-outs step is done and the element was changed at or after `since` (the
+    run's start); "written as: could not check" otherwise (`presser_hold.written_as_since`)."""
+    from resource_explorer import presser_hold
+    from resource_explorer.curate_plan import Curations
+
+    rec = Curations(registry).get(curation_id) or {}
+    steps = {s.get("name"): s.get("state") for s in rec.get("steps") or []}
+    wrote = any(steps.get(st) == "done" for st in ("schema_targets", "leave_outs"))
+    proofs = [p for p in registry.list_catalogue_commit_proofs(rec.get("entity_slug") or "")
+              if p.get("curation_id") == curation_id and p.get("element_guid")] if rec else []
+    attached = [p["element_guid"] for p in proofs if p["proof"] == P_TARGET
+                and (p.get("detail") or {}).get("mechanism") != "already_attached"]
+    archived = [p["element_guid"] for p in proofs if p["proof"] == P_ARCHIVED
+                and (p.get("detail") or {}).get("note") != "already archived when read"]
+    return presser_hold.written_as_since(attached[:1] + archived[:1], since, wrote=wrote)
 
 
 def _step_from_outbox(cur, cid: str, step: str, rows: list[dict], what: str, registry=None) -> None:
@@ -2091,12 +2278,19 @@ def _step_from_outbox(cur, cid: str, step: str, rows: list[dict], what: str, reg
             parts = [f"{len(done)} of {len(rows)} archived in Egeria, each with its proof row"]
         elif n_arch:
             parts = [f"{len(done)} of {len(rows)}: {len(kinds) - n_arch} deleted in Egeria, {n_arch} archived in Egeria, each with its proof row"]
+    # 2026-10-23: a row of a pressed commit (`"as_presser"` in its payload) that its own inline drain did not finish is
+    # never retried by the background drain (it would write as the service account): it waits for a press again.
+    held = [r for r in wait if _as_presser_row(r)]
+    wait = [r for r in wait if not _as_presser_row(r)]
     if wait:
         parts.append(f"{len(wait)} queued in the outbox (#{', #'.join(str(r['id']) for r in wait)})")
+    for r in held:
+        parts.append(f"{(r['payload'] or {}).get('schema')}: {PRESS_AGAIN_WORDS}")
     more: list[str] = []
     for r in bad:
         first, rest = egeria_first_sentence(r.get("last_error"))
-        parts.append(f"{(r['payload'] or {}).get('schema')}: {first}")
+        parts.append(f"{(r['payload'] or {}).get('schema')}: {first}"
+                     + (f" · {PRESS_AGAIN_WORDS}" if _as_presser_row(r) else ""))
         if rest:
             more.append(f"{(r['payload'] or {}).get('schema')}: {rest}")
     cur.set_step(cid, step, "done" if len(done) == len(rows) else "failed", " · ".join(parts), more="\n".join(more))
@@ -2285,12 +2479,21 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         return cur.finish(curation_id)
     if gateway is None:
         gateway = make_gateway(db)
+    # 2026-10-23: a pressed commit's outbox rows (attach, leave out) carry `"as_presser": true`, so only THIS run's
+    # inline drain below, as the person who pressed, applies them. A background drain (the scheduler's, a retry after
+    # a 5xx, one that claims between the enqueue and this drain) leaves them waiting; it never writes them as the
+    # service account. A press again makes a new commit with its own rows.
+    from resource_explorer import presser_hold
+    from resource_explorer.registry import AS_PRESSER_KEY
+
+    pressed_mark = {AS_PRESSER_KEY: True} if presser_hold.is_pressed() else {}
     if drain is None:
         from resource_explorer.egeria_outbox import OutboxClients, drain_outbox
 
         def drain(run_id):  # noqa: E306
+            # the ONE drain that may apply this run's marked rows, as the presser (`drain_as_presser`)
             return drain_outbox(registry, OutboxClients(catalogue_gateway=gateway, registry=registry),
-                                lambda qn: "", run_id=run_id)
+                                lambda qn: "", run_id=run_id, drain_as_presser=bool(pressed_mark))
 
     # 0 ── Brief Z2: the run re-checks as the requester before anything is written (Publish's rule). A Portal
     # curator/admin override seen at the press is carried in the selection. The parts refused at the press are
@@ -2484,7 +2687,8 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
                                                 anchor_guid=db_guid)
         _record_not_permitted(registry, slug, curation_id, author, np_attach, "attach")
         for schema in attach:
-            payload = {"slug": slug, "schema": schema, "database_guid": db_guid, "curation_id": curation_id, "by": author}
+            payload = {"slug": slug, "schema": schema, "database_guid": db_guid, "curation_id": curation_id, "by": author,
+                       **pressed_mark}
             confirmed = confirmed_guid_for(sel.get("reinclude"), "schema", schema)
             if confirmed:
                 payload["archived_sibling_guid"] = confirmed     # S19: the attach re-checks it before it creates
@@ -2526,7 +2730,8 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
             registry.enqueue_outbox_element(
                 "database", slug, KIND_LEAVE_OUT, schema_qn(db, item["schema"]) + "#leave_out",
                 {"slug": slug, "schema": item["schema"], "form": item["form"], "curation_id": curation_id, "by": author,
-                 "plan_guids": item.get("plan_guids")},       # None for a selection made before ruling (3): refused
+                 "plan_guids": item.get("plan_guids"),       # None for a selection made before ruling (3): refused
+                 **pressed_mark},
                 run_id=curation_id)
         drain(curation_id)
         rows = [r for r in registry.list_catalogue_outbox_rows(slug)
@@ -2690,8 +2895,9 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         if s["read_failed"]:
             cur.set_step(curation_id, "read_back", "failed", f"{s['read_failed']} read(s) of Egeria failed; states are unchanged")
         else:
+            # The words come from the proof rows the read-back just wrote, never from its own counters.
             cur.set_step(curation_id, "read_back", "done",
-                         f"{s['catalogued']} published · {s['attached_waiting']} attached, waiting")
+                         read_back_words(read_back_chips_for(registry, slug, schemas)))
     except Exception as exc:
         _fail_step(cur, curation_id, "read_back", exc)
     return cur.finish(curation_id)

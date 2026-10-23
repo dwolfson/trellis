@@ -618,6 +618,27 @@ class TestUnscopedDefinitions:
         assert card["no_catalog_question"].startswith("no catalog question yet")
         assert len([c for c in data["candidates"] if c["qualified_name"] == self.QUALITY]) == 1   # not listed twice
 
+    def test_an_unreadable_question_term_is_a_full_scan_said_as_unreadable_not_none_resolved(self, client):
+        """FAIL-ON-PURPOSE (2026-10-23): resolve_question_guid now RAISES when a term cannot be read; the route
+        must neither 500 nor say "none resolved" (a measured nothing). It is the full scan, reason
+        `question_unreadable` (the screen's "stage filter unavailable")."""
+        from resource_explorer.surveyors.survey_definition_reader import QuestionTermUnreadable
+
+        q = self._scouting_question()
+        with patch("resource_explorer.surveyors.question_catalog_reader.get_questions",
+                   return_value=[{"question": q, "answering": {}}]), \
+             patch(f"{self.READER}.find_candidate_process_guids_by_questions",
+                   side_effect=QuestionTermUnreadable("two live terms hold the name")), \
+             patch(f"{self.READER}.find_candidate_process_guids",
+                   return_value=[{"qualified_name": self.QUALITY, "display_name": "Quality",
+                                  "guid": f"g-{self.QUALITY}"}]), \
+             patch(f"{self.READER}._process_guid_cached", side_effect=lambda qn: f"g-{qn}"):
+            resp = client.get("/api/survey-definitions/database/mydb/candidates")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["scoping"] == "full-scan" and data["scoping_reason"] == "question_unreadable"
+        assert self.QUALITY in {c["qualified_name"] for c in data["candidates"]}
+
     def test_a_phase_asks_the_catalog_for_every_stage_to_decide_what_is_unscoped(self, client):
         q = self._scouting_question()
         with patch("resource_explorer.surveyors.question_catalog_reader.get_questions",

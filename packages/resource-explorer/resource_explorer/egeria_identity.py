@@ -32,8 +32,13 @@ a token. Nothing falls back to it silently.
 2026-10-09; amended 2026-10-21). The row carries no token, ever (`presser_hold` keeps the presser's session in the
 pressing process's memory, with a non-secret `held_by` on the row so only that process claims it). A pressed survey
 run's publish uses that session; if it is gone the run ends "published: no · your sign-in expired · press Publish on
-the card" and writes nothing as the service account. Every OTHER queued write path (repo outbox-drained annotations,
-catalogue and curate commits, publish_architecture, analysis runs, the FS adaptive step) is still as described next.
+the card" and writes nothing as the service account. Since 2026-10-23 a pressed database catalogue commit (its whole run,
+including the inline outbox drain) and a pressed file-system survey's adaptive step (the root FileFolder, DataFiles,
+report) write as the presser the same way; with the session gone they write nothing ("your Egeria sign-in expired").
+A pressed commit's outbox rows carry `"as_presser": true` and only its own inline drain applies them: the background
+drain never retries them as the service account (they wait for a press again). Every OTHER queued write path (repo
+outbox-drained annotations, curate commits, publish_architecture, analysis runs, the background drain's retries of
+unmarked rows) is still as described next.
 
 The rest of this paragraph is the original reasoning for the paths not yet moved (owner, 2026-10-09). Any queued work — a survey, or a person's own Publish or
 Curate commit — is committed by RE's daemon, as Egeria's engine hosts commit

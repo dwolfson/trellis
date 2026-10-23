@@ -876,6 +876,7 @@ class EgeriaPublisher:
                         e.get("elementHeader", {}).get("guid") == cached for e in check
                     ):
                         log.info("Using cached Egeria asset GUID %s for %s", cached, result.resource_slug)
+                        self._language_forward(cached, result)
                         return cached
                     # GUID not found — Egeria DB may have been reset; clear the stale cache
                     log.warning(
@@ -927,6 +928,7 @@ class EgeriaPublisher:
                             raise WriteNotPermitted(why)
                     log.info("Found existing Egeria asset GUID %s for %s", guid, result.resource_slug)
                     self._cache_asset_guid(result.resource_slug, guid)
+                    self._language_forward(guid, result)
                     return guid
                 if existing:
                     # Prefix matches that are not this asset are the normal case
@@ -943,13 +945,27 @@ class EgeriaPublisher:
             log.debug("Asset search failed (will create): %s", exc)
 
         # Gather project stats for additional metadata
-        primary_language = ""
+        # The primary language is the ONE choice the header's LANGUAGE tile shows (measured beats GitHub's
+        # by-bytes value), and the asset carries which source it is and on what basis (2026-10-23).
+        from resource_explorer.primary_language import (
+            choose_primary_language, choose_primary_language_from, publish_properties,
+        )
+
+        language_props = publish_properties({})
         license_name = ""
         topics_csv = ""
         if self._registry:
             stats = self._registry.get_latest_project_stats(result.resource_slug)
+            try:
+                choice = choose_primary_language(self._registry, result.resource_slug)
+            except Exception as exc:  # noqa: BLE001
+                # The census read failing never fails the asset creation (fix round 2): the same chooser with the
+                # measurement treated as unavailable, so the asset says GitHub, never "measured".
+                log.warning("Could not read the measured primary language for %s (GitHub's value used): %s",
+                            result.resource_slug, exc)
+                choice = choose_primary_language_from({}, stats or {})
+            language_props = publish_properties(choice)
             if stats:
-                primary_language = stats.get("primary_language") or ""
                 license_name = stats.get("license") or ""
                 topics_csv = stats.get("topics") or ""
 
@@ -973,7 +989,7 @@ class EgeriaPublisher:
             "additionalProperties": {
                 "github_url": result.github_url,
                 "project_slug": result.resource_slug,
-                "primary_language": primary_language,
+                **language_props,
                 "license": license_name,
                 "topics": topics_csv,
                 # Descriptive, not a type constraint — `deployedImplementationType`
@@ -1279,6 +1295,99 @@ class EgeriaPublisher:
             publish_local_doc_sources("repo", slug, asset_guid, registry=self._registry)
         except Exception as exc:
             log.warning("Could not publish documentation sources for %s: %s", slug, exc)
+
+    #: The additionalProperties the repository asset's primary language is carried in (primary_language.py).
+    _LANGUAGE_KEYS = ("primary_language", "primary_language_source", "primary_language_basis",
+                      "primary_language_as_of")
+
+    @staticmethod
+    def _current_additional_properties(element, qualified_name: str) -> dict | None:
+        """additionalProperties from a get_asset_by_guid answer; None when the answer cannot be trusted as a read.
+
+        Live shape (probe): {class, elementHeader, properties}, additionalProperties under `properties`. A map
+        found there (or in the older elementProperties / top-level shapes) is returned as stored. `{}` (the asset
+        has none) ONLY when `properties` is a dict whose qualifiedName is this asset's: proof the properties were
+        read. Anything else is None, so the caller writes nothing: a merge update REPLACES additionalProperties, and
+        treating an unreadable answer as empty would wipe github_url, license, topics ... (fix round 2)."""
+        if not isinstance(element, dict):
+            return None
+        props = element.get("properties")
+        for src in (props if isinstance(props, dict) else {}, element.get("elementProperties") or {}, element):
+            if isinstance(src, dict) and "additionalProperties" in src:
+                val = src.get("additionalProperties")
+                if isinstance(val, dict):
+                    return dict(val)
+                if val is not None:
+                    return None            # the key is there in a shape we do not know: not readable
+        if isinstance(props, dict) and qualified_name and props.get("qualifiedName") == qualified_name:
+            return {}                      # this asset, read, with no additionalProperties at all
+        return None
+
+    def _language_forward(self, guid: str, result: SurveyResult) -> bool:
+        """An EXISTING repository asset gets the tile's primary-language choice on its next publish (fix round 1,
+        2026-10-23). ONE read of the stored additionalProperties; a merge update only when a stored value differs
+        from the chooser's (the same `choose_primary_language` the LANGUAGE tile calls), then ONE proof row,
+        "primary_language updated", written after Egeria accepted the update. Unchanged: no write and no row.
+
+        Never written: with no registry, when neither source exists (an empty choice never blanks a stored value),
+        or when the read fails (the stored values are unknown, so "differs" cannot be told). A failure is logged and
+        never stops the publish. Returns True when the update was written."""
+        if not self._registry:
+            return False
+        from resource_explorer.primary_language import choose_primary_language, publish_properties
+
+        try:
+            choice = choose_primary_language(self._registry, result.resource_slug)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Could not choose the primary language for %s: %s", result.resource_slug, exc)
+            return False
+        if not choice.get("source"):
+            return False
+        # A wanted value that is "" (e.g. a GitHub choice whose stats row has no fetched_at) keeps whatever is
+        # stored: an empty string is never written over a stored value (fix round 2).
+        wanted = {k: v for k, v in publish_properties(choice).items() if v}
+        try:
+            with time_egeria_call(self._registry, "get_asset_by_guid", "query"):
+                current = self._asset_maker.get_asset_by_guid(guid, graph_query_depth=0, output_format="JSON")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Could not read %s before updating its primary language (left as it was): %s", guid, exc)
+            return False
+        stored = self._current_additional_properties(current, f"GitHubRepository::{result.github_url}")
+        if stored is None:
+            log.warning("Could not read the additionalProperties of %s (primary language left as it was)", guid)
+            return False
+        # A bare `as_of` written by earlier commits on this branch (never run live) is not one of the four keys:
+        # it reads as absent here and is left as stored.
+        changed = {k: (str(stored.get(k) or ""), wanted[k]) for k in self._LANGUAGE_KEYS
+                   if k in wanted and str(stored.get(k) or "") != wanted[k]}
+        if not changed:
+            return False
+        try:
+            with time_egeria_call(self._registry, "update_asset", "write"):
+                self._asset_maker.update_asset(
+                    guid, body={"class": "UpdateElementRequestBody", "mergeUpdate": True,
+                                "properties": {"class": "AssetProperties",
+                                               # the whole map: a merge update replaces additionalProperties
+                                               "additionalProperties": self._to_string_map({**stored, **wanted})}})
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Could not update the primary language of %s (left as it was): %s", guid, exc)
+            return False
+        before = changed.get("primary_language", (wanted["primary_language"],))[0]
+        try:
+            from resource_explorer.activity_logger import log_catalog
+
+            log_catalog(self._registry, entity_type="repo", entity_slug=result.resource_slug,
+                        entity_name=getattr(result, "project_display_name", "") or result.resource_slug,
+                        entity_location=getattr(result, "github_url", "") or "", status="success",
+                        summary="primary_language updated",
+                        detail=json.dumps({"element_guid": guid, "from": {k: v[0] for k, v in changed.items()},
+                                           "to": {k: v[1] for k, v in changed.items()}}, sort_keys=True))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Updated the primary language of %s (%r -> %r) but could not record it: %s",
+                        guid, before, wanted["primary_language"], exc)
+            # Observable on the result (non-fatal): the update is written, only its proof row is missing.
+            result.errors.append(f"primary_language updated but not recorded: {exc}")
+        return True
 
     def _cache_asset_guid(self, slug: str, guid: str) -> None:
         if self._registry:

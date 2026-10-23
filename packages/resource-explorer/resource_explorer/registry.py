@@ -263,6 +263,12 @@ class RowWrapper:
 #: observed is well under a minute, and a whole 200-row batch under ten.
 CLAIM_LEASE_SECONDS = 1800
 
+#: The payload key that marks an outbox row as enqueued inside a pressed run (2026-10-23): `"as_presser": true`. Only
+#: that run's own inline drain, as the person who pressed, applies such a row (`claim_due_outbox_elements`).
+AS_PRESSER_KEY = "as_presser"
+#: The claim's text rule for that key (`_as_presser_sql`, `ESCAPE '!'`): the quoted key, `_` matched literally.
+AS_PRESSER_LIKE = '%"' + AS_PRESSER_KEY.replace("_", "!_") + '"%'
+
 
 class InvestigationPublishRunning(RuntimeError):
     """A drain is writing one of this investigation's outbox rows to Egeria right now, so it cannot be deleted."""
@@ -408,6 +414,47 @@ FILESYSTEM_WALK_FILES_DDL = (
     "ON filesystem_walk_files(content_hash, size_bytes) WHERE hash_state = 'hashed'",
 )
 
+#: DDL for a file system's data-file column profiles, kept per run (Files build step 5, `file_profiles`; the project
+#: owner's go 2026-10-23, "Files 5: new table"). Same rules as RESOURCE_SCOPE_EVENTS_DDL: ONE additive, idempotent
+#: statement, CREATE TABLE IF NOT EXISTS only, no ALTER of an existing table, no index beyond the UNIQUE key, no data
+#: migration, no question mark or colon-name token (the Postgres translator rewrites both).
+#:
+#: One row per column per data file per run; a file that has no column rows (not read, not permitted, not installed,
+#: submitted to Egeria and not read back yet, or read with no columns) has ONE row with `column_name = ''` and
+#: `ordinal = 0` carrying its `state`, so every data file of the walk is a row and nothing is skipped silently. The
+#: measures are NULL whenever they were not measured (never 0). `run_id` is the profile run's own time; the run's
+#: `step_runs` row is (entity_type 'filesystem', slug, step_key 'file_profiles', surveyed_at = run_id) and holds what
+#: the run measured about itself (bytes read, seconds, which walk it profiled, Egeria's engine actions).
+#: `stats_source` is 'resource-explorer' or 'egeria:<report guid>' (`egeria_report_guid` repeats the GUID for joins).
+#: Retention: the newest file_profiles.RUNS_KEPT runs per file system; removing the file system removes them all.
+FILESYSTEM_FILE_COLUMNS_DDL = (
+    """
+    CREATE TABLE IF NOT EXISTS filesystem_file_columns (
+        filesystem_slug        TEXT NOT NULL,
+        run_id                 TEXT NOT NULL,
+        file_path              TEXT NOT NULL,
+        column_name            TEXT NOT NULL DEFAULT '',
+        ordinal                INTEGER NOT NULL DEFAULT 0,
+        declared_type          TEXT NOT NULL DEFAULT '',
+        inferred_general_type  TEXT NOT NULL DEFAULT '',
+        record_ct              BIGINT DEFAULT NULL,
+        value_ct               BIGINT DEFAULT NULL,
+        null_ct                BIGINT DEFAULT NULL,
+        distinct_ct            BIGINT DEFAULT NULL,
+        min_text               TEXT DEFAULT NULL,
+        max_text               TEXT DEFAULT NULL,
+        min_len                INTEGER DEFAULT NULL,
+        max_len                INTEGER DEFAULT NULL,
+        sample_ratio           REAL DEFAULT NULL,
+        stats_source           TEXT NOT NULL DEFAULT '',
+        egeria_report_guid     TEXT NOT NULL DEFAULT '',
+        egeria_datafield_guid  TEXT NOT NULL DEFAULT '',
+        state                  TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(filesystem_slug, run_id, file_path, column_name)
+    )
+    """,
+)
+
 #: DDL for the annotations of a user step run by RE (extensibility brief 2c; the project owner chose a dedicated
 #: table, 2026-10-13). Same rules as RESOURCE_SCOPE_EVENTS_DDL: ONE additive, idempotent block, CREATE ... IF
 #: NOT EXISTS only, no ALTER of an existing table, no data migration, no foreign keys, no question mark or
@@ -445,6 +492,40 @@ STEP_ANNOTATIONS_DDL = (
     "ON step_annotations(entity_type, slug, step_key, result_state)",
 )
 
+
+#: DDL for a repository's contributor lists (REVIEW-QUESTIONS-AND-ANALYTICS-2026-10-22.md, addendum 1 (b); the project owner's go 2026-10-23, "Yes,
+#: build it"). Same rules as RESOURCE_SCOPE_EVENTS_DDL: ONE additive, idempotent CREATE TABLE IF NOT EXISTS, no ALTER of
+#: an existing table, no data migration, no foreign key, no question mark or colon-name token (the Postgres translator
+#: rewrites both; AUTOINCREMENT becomes SERIAL).
+#:
+#: Two lists, kept per fetch like the walk rows (`contributors.FETCHES_KEPT` per list): `list_window` is `months_12`
+#: (commits by git author in the last 365 days, `source` github:commits) or `all_time` (GitHub's contributions by linked
+#: account, `source` github:contributors). The column is `list_window`, not `window`: WINDOW is a reserved word in
+#: Postgres. Rank 0 is the FETCH's own row (no login; `commits` is the total counted), so "fetched, nothing there" is a
+#: stored fact and never the same as "never fetched"; ranks 1..N are the contributors. `capped` is '' when the list was
+#: read whole, otherwise where the call cap stopped it (the oldest commit date reached for months_12, "rows N" for
+#: all_time). `lookback_days` is 365 for months_12 and NULL for all_time (it has no lookback).
+PROJECT_CONTRIBUTORS_DDL = (
+    """
+    CREATE TABLE IF NOT EXISTS project_contributors (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_slug   TEXT NOT NULL,
+        list_window    TEXT NOT NULL,
+        rank           INTEGER NOT NULL,
+        login          TEXT NOT NULL DEFAULT '',
+        display_name   TEXT NOT NULL DEFAULT '',
+        author_email   TEXT NOT NULL DEFAULT '',
+        commits        INTEGER NOT NULL DEFAULT 0,
+        share          DOUBLE PRECISION NOT NULL DEFAULT 0,
+        is_bot         INTEGER NOT NULL DEFAULT 0,
+        fetched_at     TEXT NOT NULL,
+        lookback_days  INTEGER DEFAULT NULL,
+        source         TEXT NOT NULL,
+        capped         TEXT NOT NULL DEFAULT '',
+        UNIQUE (project_slug, list_window, fetched_at, rank)
+    )
+    """,
+)
 
 #: DDL for the API reference of a repository (owner ruling 2026-10-15: the fetched and committed specs live in
 #: proper tables so elements can be filtered and analysed by path and string). Same rules as the two blocks
@@ -1649,6 +1730,12 @@ def _target_request_type(target_json) -> str:
         return ""
     return str(target.get("request_type") or "") if isinstance(target, dict) else ""
 
+
+#: The rows of a report that are ON it. A value-profile proof row with an `item_key` and NO `content_hash` is
+#: `no_longer_measured` / `not_measured_this_run`: it names the PREVIOUS annotation of a measure this run did
+#: not publish, which is not on this report (`record_profile_publish` writes a hash on every row that is).
+#: Module-level, not a class attribute: trellis-analytics' RegistryReadView borrows these methods unbound.
+_NATIVE_ANNOTATION_ON_REPORT = "NOT (item_key IS NOT NULL AND content_hash IS NULL)"
 
 class ProjectRegistry:
     # Process-wide cache: a Postgres `Engine` (connection pool) and whether
@@ -3572,11 +3659,17 @@ class ProjectRegistry:
             # filesystem_walk_files: ONE additive, idempotent block (see FILESYSTEM_WALK_FILES_DDL; proposed, owner's word).
             for _ddl in FILESYSTEM_WALK_FILES_DDL:
                 conn.execute(_ddl)
+            # filesystem_file_columns: ONE additive, idempotent statement (see FILESYSTEM_FILE_COLUMNS_DDL; owner's go 2026-10-23).
+            for _ddl in FILESYSTEM_FILE_COLUMNS_DDL:
+                conn.execute(_ddl)
             # step_annotations: ONE additive, idempotent block (see STEP_ANNOTATIONS_DDL).
             for _ddl in STEP_ANNOTATIONS_DDL:
                 conn.execute(_ddl)
             # api_reference_*: ONE additive, idempotent block (see API_REFERENCE_DDL).
             for _ddl in API_REFERENCE_DDL:
+                conn.execute(_ddl)
+            # project_contributors: ONE additive, idempotent block (see PROJECT_CONTRIBUTORS_DDL; owner's go 2026-10-23).
+            for _ddl in PROJECT_CONTRIBUTORS_DDL:
                 conn.execute(_ddl)
             # ── doc_sources — declared documentation sources (Enrichment) ──
             #
@@ -4851,6 +4944,7 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_runs_result_ref ON runs(result_ref)"
             )
         self._migrate_artifact_columns()
+        self._migrate_profile_proof_columns()
 
     #: Artifacts slice 1 (DESIGN-ARTIFACTS-VIEW-AND-DOC-LINKS.md §3; owner's go 2026-10-15; DDL record
     #: docs/ddl-artifact-columns.md). file_role: core | test | generated | vendored | docs from
@@ -4866,6 +4960,21 @@ class ProjectRegistry:
         table's ACCESS EXCLUSIVE lock is never held while waiting for the next table's (each wait is
         bounded by its own 10 s lock_timeout)."""
         for table, column in self.ARTIFACT_COLUMNS:
+            with self._conn() as conn:
+                self._add_nullable_text_column(conn, table, column, self._get_table_columns(conn, table))
+
+    #: Profile publish reshape (BRIEF-PROFILE-PUBLISH-RESHAPE, owner's go 2026-10-23 "Profile reshape: 2 columns"):
+    #: on RE's own proof row of a published value-profile annotation, the column path it measures (`item_key`,
+    #: "schema.table.column") and the sha256 of its canonical measures (`content_hash`), so the next publish can
+    #: re-link an unchanged measure to its new report instead of creating it again. NULL = a row from before the
+    #: column existed, or a native Egeria read-back row (never compared).
+    PROFILE_PROOF_COLUMNS = (("native_survey_annotations", "item_key"),
+                             ("native_survey_annotations", "content_hash"))
+
+    def _migrate_profile_proof_columns(self) -> None:
+        """The same shape as `_migrate_artifact_columns`: additive, nullable TEXT, each in its own short
+        transaction with a bounded lock wait, IF NOT EXISTS on Postgres."""
+        for table, column in self.PROFILE_PROOF_COLUMNS:
             with self._conn() as conn:
                 self._add_nullable_text_column(conn, table, column, self._get_table_columns(conn, table))
 
@@ -6988,6 +7097,77 @@ class ProjectRegistry:
                 [{**r, "project_slug": slug} for r in rows],
             )
 
+    # ── contributor lists, kept per fetch (PROJECT_CONTRIBUTORS_DDL) ─────────────────────────────────────────────────
+
+    _CONTRIBUTOR_COLUMNS = ("rank", "login", "display_name", "author_email", "commits", "share", "is_bot")
+
+    def write_contributor_fetch(self, resource_slug: str, list_window: str, fetched_at: str, rows: list[dict], *,
+                                total: int, lookback_days: int | None, source: str, capped: str = "",
+                                keep_fetches: int = 5, meta: dict | None = None, keep_also: str = "") -> list[int]:
+        """Store ONE fetch of one list, all or none (one transaction): the fetch's own row at rank 0 (`commits` =
+        `total`), then `rows` (each with rank >= 1), then remove the fetches of this list older than the newest
+        `keep_fetches`, never the fetch at `keep_also` (the newest successful one, kept behind a run of refusals).
+        Returns the ids written, the fetch row first.
+
+        `meta` is the fetch's status, stored as JSON in the rank-0 row's `display_name` (that row has no person):
+        `status` (ok / not_permitted / failed / not_enough_calls), the reset time and error words of a refusal, the
+        non-bot total and the identities merged. A refusal is a rank-0 row with no contributor rows."""
+        slug = self._normalize_slug(resource_slug)
+        cols = ("project_slug", "list_window", *self._CONTRIBUTOR_COLUMNS, "fetched_at", "lookback_days", "source",
+                "capped")
+        sql = f"INSERT INTO project_contributors ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})"
+        head = {"rank": 0, "login": "", "display_name": json.dumps(meta, sort_keys=True) if meta else "",
+                "author_email": "", "commits": int(total), "share": 1.0 if total else 0.0, "is_bot": 0}
+        ids: list[int] = []
+        with self._conn() as conn:
+            for r in [head, *rows]:
+                values = (slug, list_window, int(r["rank"]), r.get("login") or "", r.get("display_name") or "",
+                          r.get("author_email") or "", int(r.get("commits") or 0), float(r.get("share") or 0.0),
+                          1 if r.get("is_bot") else 0, fetched_at, lookback_days, source, capped or "")
+                conn.execute(sql, values)
+                got = conn.execute(
+                    "SELECT id FROM project_contributors WHERE project_slug = ? AND list_window = ? "
+                    "AND fetched_at = ? AND rank = ?", (slug, list_window, fetched_at, int(r["rank"]))).fetchone()
+                ids.append(int(got["id"]))
+            kept = [r["fetched_at"] for r in conn.execute(
+                "SELECT DISTINCT fetched_at FROM project_contributors WHERE project_slug = ? AND list_window = ? "
+                "ORDER BY fetched_at DESC", (slug, list_window)).fetchall()]
+            for old in kept[max(keep_fetches, 1):]:
+                if keep_also and old == keep_also:
+                    continue
+                conn.execute("DELETE FROM project_contributors WHERE project_slug = ? AND list_window = ? "
+                             "AND fetched_at = ?", (slug, list_window, old))
+        return ids
+
+    _CONTRIBUTOR_SELECT = ("SELECT id, project_slug, list_window, rank, login, display_name, author_email, commits, "
+                           "share, is_bot, fetched_at, lookback_days, source, capped FROM project_contributors ")
+
+    def contributor_fetch_heads(self, resource_slug: str, list_window: str) -> list[dict]:
+        """The rank-0 row of every kept fetch of one list, newest first; [] when never fetched."""
+        slug = self._normalize_slug(resource_slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                self._CONTRIBUTOR_SELECT + "WHERE project_slug = ? AND list_window = ? AND rank = 0 "
+                "ORDER BY fetched_at DESC", (slug, list_window)).fetchall()
+        return [dict(r) for r in rows]
+
+    def contributor_fetch_rows(self, resource_slug: str, list_window: str, fetched_at: str) -> list[dict]:
+        """Every row of one fetch of one list, by rank (rank 0, the fetch's own row, first)."""
+        slug = self._normalize_slug(resource_slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                self._CONTRIBUTOR_SELECT + "WHERE project_slug = ? AND list_window = ? AND fetched_at = ? "
+                "ORDER BY rank", (slug, list_window, fetched_at)).fetchall()
+        return [dict(r) for r in rows]
+
+    def latest_contributor_fetch(self, resource_slug: str, list_window: str) -> list[dict]:
+        """Every row of the newest fetch of one list, by rank (rank 0, the fetch's own row, first); [] when this list
+        was never fetched for the repository. The newest fetch may be a refusal (a rank-0 row alone)."""
+        heads = self.contributor_fetch_heads(resource_slug, list_window)
+        if not heads:
+            return []
+        return self.contributor_fetch_rows(resource_slug, list_window, heads[0]["fetched_at"])
+
     def remove(self, slug: str) -> None:
         normalized = self._normalize_slug(slug)
         with self._conn() as conn:
@@ -7008,6 +7188,7 @@ class ProjectRegistry:
             conn.execute("DELETE FROM project_code_markers WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_aliases WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_contributor_stats WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_contributors WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_dependencies WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_file_type_counts WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_file_inventory WHERE project_slug = ?", (normalized,))
@@ -7057,7 +7238,7 @@ class ProjectRegistry:
     _PROJECT_SLUG_TABLES: tuple[str, ...] = (
         "project_stats", "project_commits", "project_code_symbols",
         "project_code_relationships", "project_code_markers", "project_aliases",
-        "project_contributor_stats", "conversation_history", "context_compiles",
+        "project_contributor_stats", "project_contributors", "conversation_history", "context_compiles",
         "project_dependencies", "project_file_type_counts",
         "project_file_inventory", "project_egeria_surveys",
         "project_published_annotation_types", "project_published_analyses",
@@ -8229,7 +8410,7 @@ class ProjectRegistry:
             rows = conn.execute(
                 "SELECT annotation_guid, annotation_type, analysis_step, summary, "
                 "explanation, confidence, detail_json, report_at, read_at "
-                "FROM native_survey_annotations WHERE report_guid = ? "
+                f"FROM native_survey_annotations WHERE report_guid = ? AND {_NATIVE_ANNOTATION_ON_REPORT} "
                 "ORDER BY annotation_type, summary, annotation_guid",
                 (report_guid,),
             ).fetchall()
@@ -8246,9 +8427,109 @@ class ProjectRegistry:
     def count_native_survey_annotations(self, report_guid: str) -> int:
         with self._conn() as conn:
             return int(conn.execute(
-                "SELECT COUNT(*) FROM native_survey_annotations WHERE report_guid = ?",
+                f"SELECT COUNT(*) FROM native_survey_annotations WHERE report_guid = ? AND {_NATIVE_ANNOTATION_ON_REPORT}",
                 (report_guid,),
             ).fetchone()[0])
+
+    # ── RE's own value-profile publish: proof rows (profile publish reshape) ──
+    #
+    # One row per value-profile measure a publish put on its report, in `native_survey_annotations` (keyed
+    # (report GUID, annotation GUID), so a retried record writes nothing new), with `item_key` and
+    # `content_hash` set and `detail_json.outcome` = `created` or `relinked`. A row is written only for an
+    # annotation the report's read-back found on it. A measure the previous publish had and this run did not
+    # measure gets a row with `outcome` `no_longer_measured` (or `not_measured_this_run` when its table was not
+    # profiled), the PREVIOUS annotation's GUID and NO hash (it is not on this report, and it is never compared
+    # against).
+
+    def latest_profile_publish(self, entity_type: str, slug: str, analysis_step: str) -> dict | None:
+        """What the next value-profile publish of this resource compares with, from RE's proof rows across EVERY
+        RE report of the resource: {report_guid, report_at (the latest hashed row's report), measures:
+        {item_key: {annotation_guid, content_hash}} (the LATEST HASHED row per key, so a measure whose re-link
+        failed in one run is compared with the run before it), gone_keys (keys whose latest row of any outcome is
+        `no_longer_measured`)}; None when none."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = [dict(r) for r in conn.execute(
+                "SELECT report_guid, report_at, item_key, annotation_guid, content_hash, detail_json "
+                "FROM native_survey_annotations "
+                "WHERE entity_type = ? AND slug = ? AND analysis_step = ? AND item_key IS NOT NULL "
+                "ORDER BY report_at DESC, id DESC",
+                (entity_type, slug, analysis_step),
+            ).fetchall()]
+        latest = next((r for r in rows if r["content_hash"] is not None), None)
+        if latest is None:
+            return None
+        measures: dict[str, dict] = {}
+        last_outcome: dict[str, str] = {}
+        for r in rows:
+            key = r["item_key"]
+            if key not in last_outcome:
+                try:
+                    last_outcome[key] = json.loads(r["detail_json"] or "{}").get("outcome") or ""
+                except (TypeError, ValueError, AttributeError):
+                    last_outcome[key] = ""
+            if r["content_hash"] is not None and key not in measures:
+                measures[key] = {"annotation_guid": r["annotation_guid"], "content_hash": r["content_hash"]}
+        return {"report_guid": latest["report_guid"], "report_at": latest["report_at"], "measures": measures,
+                "gone_keys": {k for k, o in last_outcome.items() if o == "no_longer_measured"}}
+
+    def record_profile_publish(self, entity_type: str, slug: str, *, report_guid: str, report_at: str,
+                               read_at: str, analysis_step: str, rows: list[dict]) -> int:
+        """Write a publish's proof rows ({annotation_guid, item_key, content_hash, outcome, summary,
+        annotation_type, previous_report_guid, previous_report_at, note (optional)}), idempotently. Returns how many rows the
+        report has now."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            for row in rows:
+                if not row.get("annotation_guid"):
+                    continue
+                detail = {"outcome": row["outcome"],
+                          "previous_report_guid": row.get("previous_report_guid") or "",
+                          "previous_report_at": row.get("previous_report_at") or ""}
+                if row.get("note"):
+                    detail["note"] = row["note"]
+                conn.execute(
+                    "INSERT INTO native_survey_annotations (entity_type, slug, report_guid, report_at, "
+                    "annotation_guid, annotation_type, analysis_step, summary, detail_json, read_at, "
+                    "item_key, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(report_guid, annotation_guid) DO NOTHING",
+                    (entity_type, slug, report_guid, report_at, row["annotation_guid"],
+                     row.get("annotation_type") or "", analysis_step, row.get("summary") or "",
+                     json.dumps(detail), read_at, row.get("item_key"), row.get("content_hash")),
+                )
+            return int(conn.execute(
+                "SELECT COUNT(*) FROM native_survey_annotations WHERE report_guid = ? AND analysis_step = ?",
+                (report_guid, analysis_step)).fetchone()[0])
+
+    def profile_publish_counts(self, report_guid: str, analysis_step: str) -> dict:
+        """The run card's counts for one value-profile publish, from its proof rows only: `published`
+        (created + relinked), `created`, `recreated` (created again after a refused re-link: the value did not
+        change), `changed` (created minus recreated), `relinked`, `no_longer_measured`, `not_measured_this_run`, and the
+        previous report it was
+        compared with (`previous_report_at`, '' when there was none)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT detail_json FROM native_survey_annotations WHERE report_guid = ? AND analysis_step = ?",
+                (report_guid, analysis_step)).fetchall()
+        from resource_explorer.surveyors.database.quality.profile_publish import RECREATED_NOTE as recreated_note
+        counts = {"created": 0, "relinked": 0, "no_longer_measured": 0, "not_measured_this_run": 0}
+        previous = ""
+        recreated = 0
+        for r in rows:
+            try:
+                detail = json.loads(dict(r)["detail_json"] or "{}")
+            except (TypeError, ValueError):
+                detail = {}
+            outcome = detail.get("outcome")
+            if outcome in counts:
+                counts[outcome] += 1
+                # a refused re-link created again in the same run: created, but its value did not change
+                if outcome == "created" and detail.get("note") == recreated_note:
+                    recreated += 1
+            previous = previous or detail.get("previous_report_at") or ""
+        return {"published": counts["created"] + counts["relinked"], **counts,
+                "recreated": recreated, "changed": counts["created"] - recreated,
+                "previous_report_at": previous, "rows": len(rows)}
 
     # ── annotations of a user step run by RE (extensibility brief 2c) ────────
     #
@@ -9021,6 +9302,7 @@ class ProjectRegistry:
     def claim_due_outbox_elements(
         self, limit: int = 200, now: str | None = None, run_id: str | None = None,
         element_id: int | None = None, exclude_kinds: "tuple[str, ...] | list[str] | frozenset | None" = None,
+        as_presser_by: str | None = None,
     ) -> list[dict]:
         """Rows ready to attempt, oldest first.
 
@@ -9071,6 +9353,11 @@ class ProjectRegistry:
         `exclude_kinds` (Brief F) leaves rows of those kinds unclaimed: the background drain passes the feedback
         kinds, which only their author's own Publish may send.
 
+        A row enqueued inside a pressed run (2026-10-23: its payload names the key `"as_presser"`, `_as_presser_sql`)
+        is never claimed by default, whatever the key's value: only `as_presser_by=<user>`, passed by that run's own
+        inline drain as the person who pressed (`drain_outbox(drain_as_presser=True)`), claims such a row, and only
+        when the payload's `by` is that user. A mismatch, or a payload that cannot be parsed, leaves the row waiting.
+
         `run_id` scopes the claim to one publish's rows. A publisher that
         enqueues and then drains inline needs its OWN annotations written
         before it returns; an unscoped claim takes the oldest due rows in the
@@ -9084,7 +9371,7 @@ class ProjectRegistry:
         ).isoformat()
         _nd_clause, _nd_params = self._non_destructive_sql()
         sql = (
-            "SELECT o.id FROM egeria_outbox o "
+            "SELECT o.id, o.payload_json FROM egeria_outbox o "
             # A correlated EXISTS rather than a LEFT JOIN: Postgres rejects
             # "FOR UPDATE ... nullable side of an outer join" outright, and the
             # SQLite unit tests cannot see that — they were green while this
@@ -9109,6 +9396,12 @@ class ProjectRegistry:
             kinds = sorted(exclude_kinds)
             sql += f"  AND o.element_kind NOT IN ({','.join('?' * len(kinds))}) "
             params.extend(kinds)
+        if as_presser_by is None:
+            # 2026-10-23: one text rule, the same SQL on both dialects (no JSON parse, so a corrupt payload cannot
+            # abort the claim): a payload naming the key is marked, whatever its value. A wrong guess only makes a
+            # row wait; it never hands a pressed row to a drain that is not the presser's own.
+            sql += f"  AND NOT {self._as_presser_sql()} "
+            params.append(AS_PRESSER_LIKE)
         sql += "ORDER BY o.id ASC LIMIT ?"
         params.append(limit)
 
@@ -9120,7 +9413,9 @@ class ProjectRegistry:
             self._kill_lapsed_destructive_claims(conn, lease_cutoff)
             if conn.is_postgres:
                 sql += " FOR UPDATE SKIP LOCKED"
-            ids = [r["id"] for r in conn.execute(sql, tuple(params)).fetchall()]
+            found = conn.execute(sql, tuple(params)).fetchall()
+            ids = [r["id"] for r in found
+                   if as_presser_by is None or self._presser_may_claim(r["payload_json"], as_presser_by)]
             if not ids:
                 return []
             marks = ",".join("?" * len(ids))
@@ -9134,6 +9429,28 @@ class ProjectRegistry:
                 tuple(ids),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    @staticmethod
+    def _as_presser_sql() -> str:
+        """SQL (one `?`: `AS_PRESSER_LIKE`) that is true for an outbox row whose payload text names the key
+        `"as_presser"`, whatever its value, nesting or validity. The same text rule on SQLite and Postgres: no JSON
+        parse (a `::jsonb` cast aborts the whole claim on one corrupt or `\\u0000` payload). Fail-safe: a row it
+        wrongly counts as marked only waits; it is never written as the service account. Every writer is `json.dumps`,
+        which writes the key only when the row is marked (`True`); an unmarked row omits it."""
+        return "(COALESCE(o.payload_json, '') LIKE ? ESCAPE '!')"
+
+    @staticmethod
+    def _presser_may_claim(payload_json: object, user: str) -> bool:
+        """Whether a drain as `user` (a pressed run's own inline drain) may claim this row: an unmarked row, yes; a
+        marked one only when its parsed payload's `by` is `user`. Unparseable or a mismatch: no, it waits."""
+        text = payload_json if isinstance(payload_json, str) else ""
+        if f'"{AS_PRESSER_KEY}"' not in text:
+            return True
+        try:
+            payload = json.loads(text)
+        except (ValueError, TypeError):
+            return False
+        return bool(user) and isinstance(payload, dict) and payload.get("by") == user
 
     @staticmethod
     def _non_destructive_sql() -> tuple[str, list]:
@@ -13685,6 +14002,8 @@ class ProjectRegistry:
             conn.execute("DELETE FROM filesystem_surveys WHERE filesystem_slug = ?", (normalized,))
             # The walk's per-file rows carry a real FK too (filesystem_walk_files, Files build step 1).
             conn.execute("DELETE FROM filesystem_walk_files WHERE filesystem_slug = ?", (normalized,))
+            # The data-file column profiles (filesystem_file_columns, Files build step 5).
+            conn.execute("DELETE FROM filesystem_file_columns WHERE filesystem_slug = ?", (normalized,))
             # Same reason as remove_database: these carry real FKs, so
             # skipping them fails the parent delete rather than stranding
             # rows.
@@ -13962,6 +14281,90 @@ class ProjectRegistry:
             for old in pruned:
                 conn.execute("DELETE FROM filesystem_walk_files WHERE filesystem_slug = ? AND run_id = ?", (normalized, old))
         return {"rows": len(rows), "run_id": run_id, "pruned_runs": pruned}
+
+    # ── the data-file column profiles, kept per run (Files build step 5, file_profiles) ─────────────────────────────
+
+    FILE_COLUMN_FIELDS = ("file_path", "column_name", "ordinal", "declared_type", "inferred_general_type", "record_ct",
+                          "value_ct", "null_ct", "distinct_ct", "min_text", "max_text", "min_len", "max_len",
+                          "sample_ratio", "stats_source", "egeria_report_guid", "egeria_datafield_guid", "state")
+
+    def _file_column_tuple(self, slug: str, run_id: str, r: dict) -> tuple:
+        defaults = {"column_name": "", "ordinal": 0, "declared_type": "", "inferred_general_type": "", "stats_source": "",
+                    "egeria_report_guid": "", "egeria_datafield_guid": "", "state": "measured"}
+        return (slug, run_id, *((r.get(c) if r.get(c) is not None else defaults.get(c)) for c in self.FILE_COLUMN_FIELDS))
+
+    def add_filesystem_file_columns(self, fs_slug: str, run_id: str, rows: list[dict], *,
+                                    keep_runs: int | None = None, keep_also: tuple | list = ()) -> dict:
+        """Store one profile run's rows (all or none: one transaction), then remove the runs older than the newest
+        `keep_runs`, except the runs in `keep_also` (the last published run, the baseline the next publish diffs
+        against). Returns {rows, run_id, pruned_runs}."""
+        from resource_explorer.surveyors.filesystem.file_profiles import RUNS_KEPT
+
+        keep = RUNS_KEPT if keep_runs is None else keep_runs
+        normalized = self._normalize_slug(fs_slug)
+        cols = ("filesystem_slug", "run_id", *self.FILE_COLUMN_FIELDS)
+        sql = f"INSERT INTO filesystem_file_columns ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})"
+        with self._conn() as conn:
+            conn.execute("DELETE FROM filesystem_file_columns WHERE filesystem_slug = ? AND run_id = ?", (normalized, run_id))
+            batch = [self._file_column_tuple(normalized, run_id, r) for r in rows]
+            if batch:
+                conn.executemany(sql, batch)
+            runs = [r[0] for r in conn.execute(
+                "SELECT DISTINCT run_id FROM filesystem_file_columns WHERE filesystem_slug = ? ORDER BY run_id DESC",
+                (normalized,)).fetchall()]
+            pruned = [r for r in runs[keep:] if r not in set(keep_also)] if keep >= 0 else []
+            for old in pruned:
+                conn.execute("DELETE FROM filesystem_file_columns WHERE filesystem_slug = ? AND run_id = ?", (normalized, old))
+        return {"rows": len(rows), "run_id": run_id, "pruned_runs": pruned}
+
+    def replace_filesystem_file_profile(self, fs_slug: str, run_id: str, file_path: str, rows: list[dict]) -> int:
+        """Replace ONE file's rows within a run (Egeria's report read back for a file that was submitted). One transaction."""
+        normalized = self._normalize_slug(fs_slug)
+        cols = ("filesystem_slug", "run_id", *self.FILE_COLUMN_FIELDS)
+        sql = f"INSERT INTO filesystem_file_columns ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})"
+        with self._conn() as conn:
+            conn.execute("DELETE FROM filesystem_file_columns WHERE filesystem_slug = ? AND run_id = ? AND file_path = ?",
+                         (normalized, run_id, file_path))
+            batch = [self._file_column_tuple(normalized, run_id, {**r, "file_path": file_path}) for r in rows]
+            if batch:
+                conn.executemany(sql, batch)
+        return len(rows)
+
+    def list_filesystem_file_column_runs(self, fs_slug: str) -> list[str]:
+        """The profile runs that still have rows, newest first."""
+        normalized = self._normalize_slug(fs_slug)
+        with self._conn() as conn:
+            return [r[0] for r in conn.execute(
+                "SELECT DISTINCT run_id FROM filesystem_file_columns WHERE filesystem_slug = ? ORDER BY run_id DESC",
+                (normalized,)).fetchall()]
+
+    def list_filesystem_file_columns(self, fs_slug: str, run_id: str, *, file_path: str | None = None) -> list[dict]:
+        """One run's rows, by file then ordinal."""
+        normalized = self._normalize_slug(fs_slug)
+        sql = ("SELECT " + ", ".join(self.FILE_COLUMN_FIELDS) + " FROM filesystem_file_columns "
+               "WHERE filesystem_slug = ? AND run_id = ?")
+        params: list = [normalized, run_id]
+        if file_path is not None:
+            sql += " AND file_path = ?"
+            params.append(file_path)
+        sql += " ORDER BY file_path, ordinal"
+        with self._conn() as conn:
+            return [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
+
+    def filesystem_file_profile_states(self, fs_slug: str, run_id: str) -> list[dict]:
+        """Per file of one run: its state, source, columns and sample ratio, counted from the stored rows (what the card
+        says comes from here, never from the branch the run took)."""
+        normalized = self._normalize_slug(fs_slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT file_path, MAX(state) AS state, MAX(stats_source) AS stats_source,
+                          SUM(CASE WHEN column_name <> '' THEN 1 ELSE 0 END) AS columns,
+                          MIN(sample_ratio) AS sample_ratio, MAX(egeria_report_guid) AS egeria_report_guid
+                   FROM filesystem_file_columns WHERE filesystem_slug = ? AND run_id = ?
+                   GROUP BY file_path ORDER BY file_path""",
+                (normalized, run_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def list_filesystem_walk_runs(self, fs_slug: str) -> list[dict]:
         """The runs that still have per-file rows, newest first, each with what is stored (counted from the rows)."""

@@ -142,6 +142,27 @@ export function commitHeaderText(view) {
   return h && h.text ? h.text : 'Egeria state not read: this server sent no proof rows';
 }
 
+/** The read-back counts under the catalogue section: three chips in a fixed order ("published by RE N",
+ *  "attached N schemas", "cataloged by Egeria N schemas", the unit from the server, singular for 1), each with its state cue (✓ read back, ◌ the cataloguer has not built
+ *  the tree yet) and, on a pending count whose newest read-back row is over 120 s old, "not checked since <time>".
+ *  `rb` is `view.commit.read_back`, the server's derivation from proof rows; '' when there is none. Each chip's hover
+ *  says what it counts and when it was read. */
+export function readBackChipsHtml(rb) {
+  const chips = (rb && Array.isArray(rb.chips)) ? rb.chips : [];
+  // Nothing read back is no counts at all, never three measured zeros (fix round 2): the server sends no chips,
+  // and a payload whose every chip has no proof behind it (cue 'none') draws nothing either.
+  if (!chips.length || chips.every((c) => c.cue === 'none')) return '';
+  const cueHtml = (c) => (c.cue === 'read_back'
+    ? ' <span class="font-glyph text-state-ok" aria-hidden="true">✓</span>'
+    : c.cue === 'pending' ? ' <span class="font-glyph text-ink-muted" aria-hidden="true">◌</span>' : '');
+  const stale = (c) => (c.not_checked_since
+    ? ` <span data-read-back-not-checked class="text-state-warn" title="${esc(`RE last read this from Egeria at ${c.not_checked_since} UTC`)}"><span class="font-glyph" aria-hidden="true">◌</span> not checked since ${esc(hm(c.not_checked_since) || c.not_checked_since)}</span>`
+    : '');
+  const one = (c) => `<span data-read-back-chip="${esc(c.key)}" data-cue="${esc(c.cue)}" title="${esc(c.hover || '')}" class="rounded-sm border border-rule px-1 text-provenance text-ink">${esc(c.word)} <span class="tnum">${esc(String(c.count ?? 0))}</span>${c.unit ? ` ${esc(c.unit)}` : ''}${cueHtml(c)}${stale(c)}</span>`;
+  // Chips are separated by whitespace, never " · " (fix round 1): the gap draws the space, the text keeps one.
+  return `<div data-read-back-chips class="mb-s1 flex flex-wrap items-center gap-s1">${chips.map(one).join(' ')}</div>`;
+}
+
 /** The database's publish state as ONE line for the Describe tab (Brief S2). It comes from the scope view's commit
  *  header (`view.commit.header`, the server's derivation from the commit's proof rows), the same field the Contents
  *  tab prints in full. It never reads the registry's `is_published` flag: a database can carry that flag with no
@@ -614,6 +635,7 @@ export function scopeSectionHtml(view, me, status = '', open = scopeStartsOpen(v
   // The marker under the header is the commit's state, derived by the server from proof rows;
   // the "not yet cataloged" words exist only server-side, and only while no commit has left a row.
   return `<div data-scope-saved-marker data-scope-commit-header data-scope-commit-header-state="${esc(((view.commit || {}).header || {}).state || 'unknown')}" class="mb-s1 text-provenance text-ink-muted">${esc(commitHeaderText(view))}</div>
+    <div data-read-back-host>${readBackChipsHtml((view.commit || {}).read_back)}</div>
     <div class="mb-s1 text-answer text-ink"><button type="button" data-scope-collapse aria-expanded="${open ? 'true' : 'false'}"
       aria-controls="scope-section-body" title="${open ? 'Collapse to one line' : 'Show the whole scope'}"
       class="cursor-pointer bg-transparent p-0 text-left text-answer text-ink"><span aria-hidden="true" class="text-ink-muted">${open ? '▾' : '▸'}</span> <span data-scope-header><span data-scope-header-line>${esc(line)}</span></span></button></div>
@@ -1018,7 +1040,7 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshSco
     say('Reading Egeria…');
     let r;
     try { r = await postCatalogueReadBack(slug); } catch (err) { say(fail(err, 'the read'), true); offerSignIn(err); return; }
-    await redraw(`read back: ${r.catalogued || 0} published · ${r.attached_waiting || 0} attached, waiting${r.read_failed ? ` · ${r.read_failed} read(s) failed` : ''}`);
+    await redraw(`read back: ${r.chips_words || 'nothing read back from Egeria'}${r.read_failed ? ` · ${r.read_failed} read(s) failed` : ''}`);
   });
 }
 
@@ -1107,6 +1129,8 @@ function paintScope(el, slug, status, view) {
     redrawTree();
     const mk = el.querySelector('[data-scope-commit-header]');
     if (mk) { mk.textContent = commitHeaderText(v); mk.dataset.scopeCommitHeaderState = ((v.commit || {}).header || {}).state || 'unknown'; }
+    const rbHost = el.querySelector('[data-read-back-host]');
+    if (rbHost) rbHost.innerHTML = readBackChipsHtml((v.commit || {}).read_back);
   };
   const startCommitPanel = () => loadCommitPanel(el, slug, me, (msg) => renderCatalogueScope(el, slug, msg),
     !!(view.declared && view.declared.declared), refreshScope, () => view);

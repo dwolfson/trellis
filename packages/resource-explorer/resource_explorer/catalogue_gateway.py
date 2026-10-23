@@ -466,7 +466,8 @@ def find_all_starting_with(client: Any, prefix: str, *, type_name: str = "",
             body["metadataElementTypeName"] = type_name
         try:
             res = client.find_metadata_elements_with_string(
-                search_string=prefix, starts_with=True, start_from=start, page_size=page_size, body=body)
+                search_string=prefix, starts_with=True, start_from=start, page_size=page_size,
+                metadata_element_type=type_name or None, body=body)
         except Exception as exc:
             if lookup_exception_is_absent(exc):
                 return found                     # the end of the list, said as a typed not-found
@@ -497,9 +498,31 @@ def find_all_starting_with(client: Any, prefix: str, *, type_name: str = "",
     raise SiblingLookupFailed(f"more than {MAX_FIND_PAGES} pages")
 
 
-def find_archived_siblings(client: Any, qualified_name: str) -> list[ArchivedSibling]:
-    """S19: the archived copies of `qualified_name`, by the name Egeria gives them on archive, newest first."""
-    raw = find_all_starting_with(client, qualified_name + ARCHIVED_ON)
+#: The element type of each qualifiedName RE builds and re-includes (`<deployed implementation type>::...`, the
+#: template's own prefix): an archived copy keeps its type, so the sibling search is TYPED with it. A schema is a
+#: DeployedDatabaseSchema (`schema_elements`), a database a RelationalDatabase (`publish_database`'s typed read).
+ARCHIVED_SIBLING_TYPES = {SCHEMA_TECH_TYPE: "DeployedDatabaseSchema", DATABASE_TECH_TYPE: "RelationalDatabase"}
+
+
+def archived_sibling_type(qualified_name: str) -> str:
+    """The element type the archived copies of `qualified_name` carry, from the name's template prefix. A name RE
+    does not know the type of raises `SiblingLookupFailed` (never an untyped search, never "no archived copy")."""
+    type_name = ARCHIVED_SIBLING_TYPES.get(qualified_name.split("::", 1)[0])
+    if not type_name:
+        raise SiblingLookupFailed(f"no element type is known for {qualified_name!r}, so its archived copies are not "
+                                  "searched (an untyped search reads the whole repository)")
+    return type_name
+
+
+def find_archived_siblings(client: Any, qualified_name: str, *, type_name: str = "") -> list[ArchivedSibling]:
+    """S19: the archived copies of `qualified_name`, by the name Egeria gives them on archive, newest first.
+
+    TYPED (architect ruling 2026-10-23): the find carries the element's own type (`type_name`, else
+    `archived_sibling_type`) and the exact prefix `<qualifiedName>_archivedOn_`. The untyped form took ~4 min in a
+    live leave-out on the grown repository. Every page is read; a read that cannot be made raises
+    `SiblingLookupFailed`."""
+    raw = find_all_starting_with(client, qualified_name + ARCHIVED_ON,
+                                 type_name=type_name or archived_sibling_type(qualified_name))
     return parse_archived_siblings(raw or "No elements found", qualified_name)
 
 

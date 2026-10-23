@@ -198,7 +198,7 @@ def _main() -> None:
         print(
             f"[{spec.survey_kind}] {process_qualified_name}: kept {len(result.kept)}, "
             f"missing {len(result.missing)}, extra {len(result.extra)}, "
-            f"unresolvable {len(result.unresolvable)}"
+            f"unresolvable {len(result.unresolvable)}, deprecated {len(result.deprecated)}"
         )
         if result.kept:
             print(f"    kept: {', '.join(result.kept)}")
@@ -206,6 +206,8 @@ def _main() -> None:
             print(f"    missing: {', '.join(result.missing)}")
         if result.extra:
             print(f"    extra: {', '.join(e.display_name for e in result.extra)}")
+        for d in result.deprecated:   # reported, never removed, never counted as drift
+            print(f"    {d.label}: {d.display_name} (guid={d.guid})")
         if result.unresolvable:
             for u in result.unresolvable:
                 print(f"    unresolvable: guid={u.guid} type={u.type_name} qn={u.qualified_name} — {u.reason}")

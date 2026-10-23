@@ -82,24 +82,6 @@ class TestDiscovery:
         assert [b.batch_id for b in bs.discover_batches(tmp_path)] == ["good"]
 
 
-class _FakeClient:
-    """Mimics ClassificationExplorer.get_guid_for_name, including pyegeria's
-    habit of returning a human sentence rather than None when nothing matches."""
-
-    def __init__(self, present=(), raises=False):
-        self._present = set(present)
-        self._raises = raises
-        self.calls = []
-
-    def get_guid_for_name(self, name, **kw):
-        self.calls.append((name, kw))
-        if self._raises:
-            raise RuntimeError("egeria unreachable")
-        if name in self._present:
-            return "6a3014a3-de4d-4909-8dd0-511dae0e08b2"
-        return "No elements found"
-
-
 class _FakeExpert:
     """Mimics MetadataExpert.get_metadata_element_by_unique_name: the element when held, pyegeria's
     "No elements found" sentence when not, a raise when Egeria cannot be asked."""
@@ -148,7 +130,7 @@ class TestCanary:
         _write_batch(tmp_path, "b", canary=None)
         batch = bs.discover_batches(tmp_path)[0]
         assert batch.has_canary is False
-        assert bs.canary_present(batch, _FakeClient()) is True
+        assert bs.canary_present(batch) is True
 
     def test_a_qualified_name_canary_is_the_unique_name_read_with_no_type_invented(self, tmp_path):
         """A wrong type_name would read as 'missing' and trigger a heal, and the unique-name read takes no type:
@@ -160,11 +142,21 @@ class TestCanary:
 
     def test_display_name_canary_uses_display_name_property(self, tmp_path):
         """Glossary-term qualified names are generated with a deployment-specific
-        org prefix and version, so those batches key on display name instead."""
+        org prefix and version, so those batches key on display name instead: a typed
+        GlossaryTerm string search, exact, kept to the displayName property."""
+        from unittest.mock import create_autospec
+
+        from pyegeria import MetadataExpert
+
         _write_batch(tmp_path, "b", canary={"display_name": "Some Question?"})
-        client = _FakeClient(present=["Some Question?"])
-        assert bs.canary_present(bs.discover_batches(tmp_path)[0], client) is True
-        assert client.calls[0][1]["property_name"] == ["displayName"]
+        expert = create_autospec(MetadataExpert, instance=True, spec_set=True)
+        expert.find_metadata_elements_with_string.return_value = [{
+            "elementGUID": "6a3014a3-de4d-4909-8dd0-511dae0e08b2",
+            "type": {"typeName": "GlossaryTerm", "superTypeNames": ["Referenceable"]},
+            "elementProperties": {"propertiesAsStrings": {"displayName": "Some Question?"}}}]
+        assert bs.canary_present(bs.discover_batches(tmp_path)[0], expert=expert) is True
+        kw = expert.find_metadata_elements_with_string.call_args.kwargs
+        assert kw["search_string"] == "Some Question?" and kw["metadata_element_type"] == "GlossaryTerm"
 
 
 class TestCheckAndHeal:

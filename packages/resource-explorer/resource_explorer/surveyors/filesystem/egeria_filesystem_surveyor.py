@@ -115,6 +115,8 @@ class EgeriaFileSystemSurveyor:
     #: -> DeployedImplementationType.FILE_SYSTEM_DIRECTORY.getAssociatedTypeName()). It is a FileFolder, not a
     #: other folder type.
     ROOT_FOLDER_TYPE = "FileFolder"
+    #: Every data file template's element (CSVFile, ParquetFile, SpreadsheetFile ...) is a DataFile or a subtype.
+    DATA_FILE_TYPE = "DataFile"
 
     @staticmethod
     def root_folder_qualified_name(fs_slug: str, canonical_mount: str) -> str:
@@ -279,7 +281,7 @@ class EgeriaFileSystemSurveyor:
             
             # Catalog/find the file asset
             try:
-                file_guid = self._find_element_guid(canonical_path)
+                file_guid = self._find_element_guid(canonical_path, type_name=self.DATA_FILE_TYPE)
             except EgeriaFileSystemSurveyorError as exc:
                 files_not_checked[rel_path] = str(exc)
                 log.warning("Data file %s not cataloged: %s", rel_path, exc)
@@ -456,7 +458,12 @@ class EgeriaFileSystemSurveyor:
 
         canonical_mount = (fs_entity.canonical_mount_point or fs_entity.local_mount_point).rstrip("/")
         fs_name = fs_entity.display_name or fs_entity.slug
-        fs_guid = fs_entity.egeria_asset_guid or self._find_element_guid(canonical_mount)
+        # The GUID RE holds first; else the root folder's own qualifiedName (the unique-name read, exact for THIS
+        # file system); else a FileFolder whose pathName is the mount (a typed search). Two folders = unreadable.
+        fs_guid = (fs_entity.egeria_asset_guid
+                   or self._find_element_guid(self.root_folder_qualified_name(fs_entity.slug, canonical_mount),
+                                              type_name=self.ROOT_FOLDER_TYPE, qualified_name=True)
+                   or self._find_element_guid(canonical_mount, type_name=self.ROOT_FOLDER_TYPE))
         if not fs_guid:
             raise EgeriaFileSystemSurveyorError(
                 f"FileSystem '{fs_name}' is not yet published to Egeria — cannot "
@@ -596,6 +603,67 @@ class EgeriaFileSystemSurveyor:
 
         return {"filesystem_guid": fs_guid, **proof}
 
+    def publish_file_profiles(self, fs_entity: FileSystemEntity, run_id: str, specs: list[dict],
+                              registry: ProjectRegistry | None = None) -> dict:
+        """Files build step 5: Resource Explorer's column profiles as one ResourceProfileAnnotation per column under RE's own
+        SurveyReport, "surveyed by Resource Explorer". Egeria's own CSV reports are Egeria's and are never republished here.
+        `specs` come from `file_profiles.publish_specs` (each carries its own `additional`: file, column, sampleRatio,
+        statsSource). The proof (what landed, read back) is kept on a `file_profiles_publish` step_runs row for `run_id`.
+
+        Resumable: the report is read FIRST by its qualifiedName (the unique-name read, typed SurveyReport) and reused
+        when it is there, and each annotation is read first by its own qualifiedName (`publish_annotations`), so a
+        second press after a partial publish adds only the missing annotations and never a second report. The proof
+        names, per annotation, the column and the GUID Egeria holds for it ('' when it did not land), and is
+        `complete` only when every annotation is in Egeria and the report was read back."""
+        from resource_explorer.egeria_linkage import guard_linkage
+        from resource_explorer.private_publish import refuse_unsupported_private
+        from resource_explorer.surveyors.filesystem import file_profiles as fp
+        from resource_explorer.surveyors.survey_report import ResourceProfileAnnotation
+
+        refuse_unsupported_private(registry, "filesystem", fs_entity.slug, name=fs_entity.display_name or fs_entity.slug)
+        with guard_linkage(registry, "filesystem", fs_entity.slug, fs_entity.display_name or fs_entity.slug,
+                           fs_entity.egeria_asset_guid or ""):
+            self.connect()
+            fs_name = fs_entity.display_name or fs_entity.slug
+            fs_guid = fs_entity.egeria_asset_guid
+            if not fs_guid:
+                raise EgeriaFileSystemSurveyorError(
+                    f"FileSystem '{fs_name}' is not yet published to Egeria — there is no asset to attach the report to.")
+            annotations = [ResourceProfileAnnotation(
+                summary=s["summary"], analysis_step=s["analysis_step"], annotation_type_name=s["annotation_type_name"],
+                explanation=s["explanation"], value_count=dict(s["value_count"]),
+                additional_properties={"surveyor": "Resource Explorer", **s["additional"]}) for s in specs]
+            qualified_name = f"SurveyReport::FileSystem::{fs_entity.slug}::file_profiles::{run_id}"
+            body = {
+                "class": "NewElementRequestBody", "parentGUID": fs_guid, "parentRelationshipTypeName": "ReportSubject",
+                "properties": {
+                    "class": "AssetProperties", "typeName": "SurveyReport", "qualifiedName": qualified_name,
+                    "displayName": f"Data-file profiles: {fs_name}",
+                    "description": f"Data-file column profiles of {fs_name} run at {run_id} · surveyed by Resource Explorer",
+                    "additionalProperties": {"annotation_count": str(len(annotations)), "step": fp.STEP_KEY,
+                                             "surveyor": "Resource Explorer"},
+                },
+            }
+            report_guid = self._find_element_guid(qualified_name, type_name="SurveyReport", qualified_name=True)
+            reused = bool(report_guid)
+            if not reused:
+                report_guid = self._asset_maker.create_asset(body=body)
+            made = self._create_annotations(annotations, report_guid, fs_entity.slug, f"file_profiles::{run_id}")
+            read_back = self._read_back_by_guid(report_guid, expect_type="SurveyReport")
+            landed = _published_count(made)
+            per = [{"file": s["additional"].get("filePath", ""), "column": s["additional"].get("columnName", ""),
+                    "guid": (made[i] or "") if isinstance(made, list) and i < len(made) else ""}
+                   for i, s in enumerate(specs)]
+            proof = {"report_guid": report_guid, "report_reused": reused, "annotation_count": len(annotations),
+                     "annotations_in_egeria": landed, "report_read_back": bool(read_back.get("matched")),
+                     "read_back_why": read_back.get("why", ""), "annotations": per,
+                     "complete": bool(read_back.get("matched")) and landed == len(annotations),
+                     "at": datetime.utcnow().isoformat()}
+        if registry:
+            registry.record_step_run(fs_entity.slug, fp.PUBLISH_STEP_KEY, run_id, entity_type="filesystem",
+                                     source="egeria-published", executor="local", metrics=proof)
+        return proof
+
     def _metadata_expert_client(self):
         """The MetadataExpert for the paged read of a report's annotations."""
         if self._metadata_expert is None:
@@ -669,8 +737,22 @@ class EgeriaFileSystemSurveyor:
                 f"Failed to initiate Egeria survey for fs_guid={fs_guid}: {exc}"
             ) from exc
 
-    def _create_data_file_asset(self, file_info: dict, canonical_path: str, fs_name: str) -> str:
-        """Create a data file element in Egeria using template metadata values."""
+    def close(self) -> None:
+        """Close the Egeria clients this surveyor holds (their HTTP sessions). Best effort; safe to call twice."""
+        for client in (self._automated_curation, self._metadata_expert, self._asset_maker, self._discovery):
+            closer = getattr(client, "close_session", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:  # noqa: BLE001 -- closing never fails the caller
+                    log.debug("closing an Egeria client failed", exc_info=True)
+        self._automated_curation = self._metadata_expert = self._asset_maker = self._discovery = None
+        self._clients_for_run = None
+
+    def _create_data_file_asset(self, file_info: dict, canonical_path: str, fs_name: str, *,
+                                fallback: bool = True) -> str:
+        """Create a data file element in Egeria using template metadata values. `fallback=False` never falls back to the
+        generic Data File template (whose element has another type and qualifiedName than the one asked for)."""
         ext = Path(file_info["file_path"]).suffix.lstrip(".").lower()
         fmt = file_info["format"]
         
@@ -707,6 +789,8 @@ class EgeriaFileSystemSurveyor:
         try:
             return self._automated_curation.create_elem_from_template(body)
         except Exception as exc:
+            if not fallback:
+                raise
             log.warning(f"Failed to create asset using template {fmt}: {exc}. Trying fallback to generic File...")
             if template_guid != "66d8dda9-00cf-4e59-938c-4b0583596b1e":
                 body["templateGUID"] = "66d8dda9-00cf-4e59-938c-4b0583596b1e"
@@ -752,33 +836,28 @@ class EgeriaFileSystemSurveyor:
 
         return to_string_map(d)
     def _find_element_guid(self, name: str, type_name: str | None = None, *, qualified_name: bool = False) -> str:
-        """Return the GUID of an existing Egeria element by display/qualified name, or '' if not found.
+        """Return the GUID of an existing Egeria element by qualifiedName or by pathName, or '' if not found.
 
         '' is the callers' cue to create, so only a real miss returns it ("No elements found", or a typed
-        not-found: `egeria_absence.is_absent`). A look-up that raised for any other reason, or gave no
-        answer, could not be checked: `EgeriaFileSystemSurveyorError` says so and nothing is created. It
-        used to swallow every exception and return '' (AUDIT-PYEGERIA-6.2.2.md, "Not in scope")."""
+        not-found: `egeria_absence.is_absent`). A look-up that raised for any other reason, gave no answer, or
+        found two elements could not be checked: `EgeriaFileSystemSurveyorError` says so and nothing is created.
+
+        `qualified_name=True`: `name` IS a qualifiedName by construction, so the unique-name read. Otherwise
+        `name` is a file system path, Egeria's `pathName` (DataAssetTemplateDefinition: the folder and data file
+        templates set pathName to the path and resourceName to `<file system>:<path>`), read by a TYPED string
+        search, exact (architect ruling 2026-10-22). Neither is the exact-value search, which timed out on a
+        large repository (egeria_lookup.py)."""
         from resource_explorer.egeria_absence import lookup_could_not_be_made, lookup_exception_is_absent
+        from resource_explorer.egeria_lookup import guid_by_exact_value, guid_by_qualified_name
 
-        if qualified_name:
-            # `name` IS a qualifiedName by construction: the unique-name read, not the exact-value search that
-            # times out on a large repository (egeria_lookup.py). The other callers pass a file system path
-            # (pathName / resourceName), which that read cannot answer, so they keep the by-name search.
-            from resource_explorer.egeria_lookup import guid_by_qualified_name
-
-            try:
-                return guid_by_qualified_name(self._metadata_expert, name, type_name=type_name) or ""
-            except Exception as exc:
-                if lookup_exception_is_absent(exc):
-                    return ""
-                raise EgeriaFileSystemSurveyorError(lookup_could_not_be_made(name, exc)) from exc
+        if not qualified_name and not type_name:
+            raise ValueError("a pathName look-up is typed: pass type_name")
         try:
-            result = (self._automated_curation.get_guid_for_name(name, type_name=type_name) if type_name
-                      else self._automated_curation.get_guid_for_name(name))
+            if qualified_name:
+                return guid_by_qualified_name(self._metadata_expert, name, type_name=type_name) or ""
+            return guid_by_exact_value(self._metadata_expert, name, property_name="pathName",
+                                       type_name=type_name) or ""
         except Exception as exc:
             if lookup_exception_is_absent(exc):
                 return ""
             raise EgeriaFileSystemSurveyorError(lookup_could_not_be_made(name, exc)) from exc
-        from resource_explorer.egeria_absence import guid_from_answer
-
-        return guid_from_answer(result, name, EgeriaFileSystemSurveyorError)

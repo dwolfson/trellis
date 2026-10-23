@@ -422,6 +422,11 @@ def publish_snapshot(registry, slug: str, author: str, context: dict, snapshot) 
     from resource_explorer import dependency_table
     for annotation in dependency_table.runtime_annotations(registry, slug):
         result.add(annotation)
+    # The two contributor lists, ONE ResourceMeasureAnnotation each (annotationType "Contributors"; identity
+    # check_name "contributors" + item_key = the window, so a re-publish of the report reuses the same element).
+    from resource_explorer import contributors
+    for annotation in contributors.annotations(registry, slug):
+        result.add(annotation)
     surveyed_at = snapshot.surveyed_at
     publisher = EgeriaPublisher(registry=registry)           # zones: the publisher's own rule only
     # Brief F round 4: whether the publisher reached the asset and sent the documentation sources itself.

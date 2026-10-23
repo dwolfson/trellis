@@ -247,7 +247,10 @@ def test_the_press_with_no_accepted_check_leaves_the_profile_and_one_request_nev
     assert egeria.dropped == []
     # the words come from reading the report back: every annotation sent is in it
     total = sum(len(v) for v in classes.values())
-    assert detail["publish_state"] == f"published to Egeria · {total} of {total} annotations in Egeria"
+    # the first profile publish: every measure created, nothing to compare with (profile publish reshape)
+    profile = len(classes["ResourceProfileAnnotationProperties"])
+    assert detail["publish_state"] == (f"published to Egeria · {total} of {total} annotations in Egeria"
+                                       f" · {profile} measures published · first profile published")
     assert detail["published"] is True
 
 
@@ -277,6 +280,8 @@ def test_accept_three_proposals_press_again_and_read_three_quality_annotations_b
         client, registry, egeria, world, rig):
     first = _press(client, registry)
     assert _steps(first)["run_quality_checks"]["status"] == "skipped_by_design"
+    # the first report's run date ("SurveyReport::PostgreSQL::<slug>::<surveyed_at>"): what the card compares with
+    first_date = egeria.reports()[0][1]["properties"]["qualifiedName"].rsplit("::", 1)[1][:10]
     keys = _accept_three_proposals(registry)
 
     detail = _press(client, registry)
@@ -288,7 +293,10 @@ def test_accept_three_proposals_press_again_and_read_three_quality_annotations_b
     # 3 elements (sales.orders.note has no element in Egeria, and that is said, not an error)
     assert detail["publish_state"] == (f"published to Egeria · {len(bodies)} of {len(bodies)} annotations in Egeria"
                                        " · 3 checks on the report · linked to 2 of 3 elements"
-                                       " · 1 column not yet cataloged in Egeria, so not linked to it")
+                                       " · 1 column not yet cataloged in Egeria, so not linked to it"
+                                       # nothing changed in the database: every measure re-used, none created
+                                       f" · 5 measures published · 0 changed since {first_date} · 5 re-used"
+                                       " · 0 no longer measured")
     assert detail["status"] != "error" and not detail["publish_state"].startswith("publish failed")
 
     # read the three annotations back by GUID, as the live gate does
@@ -339,7 +347,7 @@ def test_a_table_check_is_linked_to_its_table_element(client, registry, egeria, 
     registry.record_quality_verdict(SLUG, key, "accepted", proposals[key]["params_json"],
                                     proposal_id=proposals[key]["id"], decided_by="steward")
     detail = _press(client, registry)
-    assert detail["publish_state"].endswith("linked to 1 of 1 elements")
+    assert "· 1 check on the report · linked to 1 of 1 elements ·" in detail["publish_state"]
     linked = [(r["end1"], egeria.elements[r["end2"]]["body"]["properties"]["additionalProperties"]["checkKey"])
               for r in egeria.relationships if r["type"] == "AssociatedAnnotation"]
     assert linked == [(TBL_ORDERS, key)]
@@ -352,7 +360,10 @@ def test_the_press_says_two_of_n_when_egeria_keeps_all_but_one(client, registry,
     _accept_three_proposals(registry)
     before = len(egeria.method_calls("create_annotation"))
     sent_before_quality = _report_size_before_quality(egeria)
-    egeria.fail_nth["create_annotation"] = (before + sent_before_quality + 2,
+    # the second press RE-LINKS the unchanged profile measures instead of creating them (profile publish reshape)
+    [(first, _)] = egeria.reports()[:1]
+    relinked = len(_by_class(_annotation_bodies(egeria, first))["ResourceProfileAnnotationProperties"])
+    egeria.fail_nth["create_annotation"] = (before + sent_before_quality - relinked + 2,
                                             RuntimeError("Egeria refused the second quality annotation"))
 
     detail = _press(client, registry)
@@ -376,7 +387,11 @@ def test_a_read_back_that_cannot_be_made_is_could_not_be_counted_never_published
     """A GUID returned by a create is not a read-back: with the read refused the run does not say it published."""
     _press(client, registry)
     _accept_three_proposals(registry)
-    egeria.fail["get_related_metadata_elements"] = RuntimeError("Egeria would not answer the read")
+    # the second press reads the report's list first (before re-linking the unchanged profile measures: two pages,
+    # the second one empty, which is how the paged reader knows it reached the end), then reads it back: the
+    # READ-BACK's first page is the one refused
+    before = len(egeria.method_calls("get_related_metadata_elements"))
+    egeria.fail_nth["get_related_metadata_elements"] = (before + 3, RuntimeError("Egeria would not answer the read"))
     detail = _press(client, registry)
     assert detail["publish_state"].startswith("publish failed · annotations in Egeria could not be counted")
     assert detail["published"] is False

@@ -401,6 +401,8 @@ def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callab
         if found:
             log.info("Outbox row %s: %s already exists (GUID %s) — adopting, not re-creating",
                      row.get("id"), qualified_name, found)
+            if kind == "annotation":
+                _refresh_adopted_annotation(clients, found, row)
             return found
 
     try:
@@ -476,6 +478,49 @@ def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callab
             f"the element cannot be found by that name — it exists to Egeria and "
             f"is invisible to our lookup, so no GUID can be recorded."
         ) from exc
+
+
+#: Annotation types whose content can change under the same qualifiedName: a re-publish of the same report after a
+#: newer fetch adopts the existing element and must not leave it stale. For these (only), an adopted annotation is
+#: read first and updated when its `resourceProperties` (which carry `as_of`) differ from the payload's, compared as string maps;
+#: equal content writes nothing. Every other annotation is written once and adopted untouched, as before.
+REFRESHED_ANNOTATION_TYPES = frozenset({"Contributors"})
+
+
+def _refresh_adopted_annotation(clients: "OutboxClients", guid: str, row: dict) -> bool:
+    """Read-first update of an adopted annotation of a `REFRESHED_ANNOTATION_TYPES` type. Returns True when it
+    wrote. A read that cannot be made raises OutboxApplyError (could not check is not "unchanged")."""
+    try:
+        payload = json.loads(row.get("payload_json") or "{}")
+    except (TypeError, ValueError):
+        return False
+    props = dict((payload or {}).get("properties") or {})
+    if props.get("annotationType") not in REFRESHED_ANNOTATION_TYPES:
+        return False
+    discovery = clients.require("discovery")
+    try:
+        held = discovery.get_annotation_by_guid(guid, output_format="JSON", graph_query_depth=0)
+    except Exception as exc:  # noqa: BLE001
+        raise OutboxApplyError(f"could not read {guid} to compare it before an update "
+                               f"({type(exc).__name__}: {str(exc)[:200]})") from exc
+    if not isinstance(held, dict):
+        raise OutboxApplyError(f"could not read {guid} to compare it before an update (Egeria answered {held!r:.80})")
+    current = held.get("properties") or {}
+    # Compared as Egeria stores them: string maps, written by `to_string_map` (the writer's own stringification).
+    # The as-of rides inside resourceProperties ("as_of"); additionalProperties is never consulted, because a
+    # real answer carries it as null and a comparison on it would read every held element as "different".
+    from resource_explorer.surveyors.annotation_props import to_string_map
+
+    want_rp = to_string_map(props.get("resourceProperties") or {})
+    have_rp = to_string_map(current.get("resourceProperties") or {})
+    want_asof, have_asof = want_rp.get("as_of"), have_rp.get("as_of")
+    if want_rp == have_rp:
+        return False
+    discovery.update_annotation(guid, {"class": "UpdateElementRequestBody", "mergeUpdate": True,
+                                       "properties": props})
+    log.info("Outbox row %s: %s updated (newer contributor list, as_of %s -> %s)",
+             row.get("id"), row.get("qualified_name"), have_asof, want_asof)
+    return True
 
 
 def _create_annotation(clients: "OutboxClients", payload: dict) -> str:
@@ -1422,7 +1467,7 @@ _CREATORS: dict[str, Callable[["OutboxClients", dict], str]] = {
 
 def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_guid=None, *,
                  limit: int = DRAIN_BATCH, run_id: str | None = None,
-                 element_id: int | None = None, identity=None) -> dict:
+                 element_id: int | None = None, identity=None, drain_as_presser: bool = False) -> dict:
     """One drain pass, as `identity` (Brief I, owner's rule: a person's direct acts are made as
     that person). The background loop passes `Daemon(OUTBOX)`; an inline drain inside a
     person's request (a doc-source add/remove, a publish's link drain, a catalog commit) runs
@@ -1448,12 +1493,12 @@ def drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_
     scope = acting_as(identity) if identity is not None and identity.kind == "daemon" else nullcontext()
     with scope:
         return _drain_outbox(registry, clients, find_element_guid, limit=limit, run_id=run_id,
-                             element_id=element_id, identity=identity)
+                             element_id=element_id, identity=identity, drain_as_presser=drain_as_presser)
 
 
 def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element_guid=None, *,
                   limit: int = DRAIN_BATCH, run_id: str | None = None,
-                  element_id: int | None = None, identity=None) -> dict:
+                  element_id: int | None = None, identity=None, drain_as_presser: bool = False) -> dict:
     """One drain pass. Returns a summary dict; never raises.
 
     Called from `scheduler.py`'s existing loop, once per iteration — the same
@@ -1486,9 +1531,16 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
     # Brief F: a drain that is not a person's own request (the background Daemon drain, or a drain handed its
     # clients with no person) never claims a feedback row: only its author's Publish sends it, as them.
     is_caller = identity is not None and getattr(identity, "kind", "") == "caller"
+    # 2026-10-23: a row enqueued inside a pressed run (its payload names `"as_presser"`, `registry.AS_PRESSER_KEY`)
+    # is applied only by a drain that says so (`drain_as_presser=True`, passed by the catalogue commit's inline drain
+    # alone), made as a signed-in person, and only when that person is the row's `by`. Every other drain (the
+    # background Daemon loop, a publisher's drain, any other person's drain) leaves it waiting, so a retry is never
+    # made as the service account or as someone else.
+    presser_by = (getattr(identity, "user_id", "") or "").strip() if (drain_as_presser and is_caller) else ""
     try:
         rows = registry.claim_due_outbox_elements(limit=limit, run_id=run_id, element_id=element_id,
-                                                  exclude_kinds=None if is_caller else PERSON_ONLY_KINDS)
+                                                  exclude_kinds=None if is_caller else PERSON_ONLY_KINDS,
+                                                  as_presser_by=presser_by or None)
     except Exception:
         log.exception("Outbox drain: could not read due rows")
         return summary

@@ -765,3 +765,48 @@ def test_a_walk_member_with_no_type_name_is_refused_whole_in_preview_and_apply(w
         cc.apply_leave_out(world["registry"], fake, {"slug": "db", "schema": "sales", "form": gw.ARCHIVE,
                                                      "curation_id": "c1", "by": ME, "plan_guids": []})
     assert words in str(err.value) and len(sent_to_egeria(fake)) == before
+
+
+# ── merge of #845 (2026-10-23): a leave-out in a pressed run carries the marker AND passes the lift's guards ──────
+
+def _pressed_press(world, fake, run_id="pressed-run"):
+    import json
+
+    from resource_explorer import presser_hold
+
+    assert presser_hold.hold(run_id, ME, "held-token")
+    try:
+        # as `run_queue` runs a pressed commit: the run is marked pressed and its writes are made as the presser
+        with presser_hold.pressed_run(run_id, ME), presser_hold.publishing_as_presser():
+            out, rec = press(world, fake)
+    finally:
+        presser_hold.release(run_id)
+    with world["registry"]._conn() as conn:
+        rows = [json.loads(r["payload_json"]) for r in conn.execute(
+            "SELECT payload_json FROM egeria_outbox WHERE run_id=? AND element_kind=?",
+            (out["curation"]["id"], cc.KIND_LEAVE_OUT)).fetchall()]
+    return out, rec, rows
+
+
+def test_a_pressed_leave_out_carries_the_marker_and_the_preview_set_and_archives(world, fake):
+    _catalogued(world, fake, "sales")
+    before = len(fake.ops("delete_element"))
+    choose(world, "sales", "leave_out")
+    out, rec, payloads = _pressed_press(world, fake)
+    assert payloads and all(p.get("as_presser") is True and p.get("plan_guids") for p in payloads), payloads
+    assert step(rec, "leave_outs")["state"] == "done", step(rec, "leave_outs")
+    sent = fake.ops("delete_element")[before:]
+    assert sent and all(c[2] == gw.ARCHIVE for c in sent)
+
+
+def test_a_pressed_leave_out_of_a_restored_schema_is_still_refused_with_no_client_call(world, fake):
+    _catalogued(world, fake, "sales")
+    _append_restored(world)
+    before = len(sent_to_egeria(fake))
+    choose(world, "sales", "leave_out")
+    choose(world, "archive", "catalogue")
+    out, rec, payloads = _pressed_press(world, fake)
+    assert payloads == []                                   # refused at the press: a proof row, nothing queued
+    assert [p for p in world["registry"].list_catalogue_commit_proofs("db")
+            if p["proof"] == cc.P_LEAVE_OUT_BLOCKED and p.get("curation_id") == out["curation"]["id"]]
+    assert not [c for c in sent_to_egeria(fake)[before:] if c[0] in ("delete_element", "remove_catalog_target")]

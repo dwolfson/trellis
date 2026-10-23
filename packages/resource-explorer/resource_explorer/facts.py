@@ -325,7 +325,41 @@ def _r_maintainers(reg, p) -> tuple:
     from years ago — and quoting it answers "how many people have ever touched
     this", which is not the question. Measured on egeria_git: 63 by that count,
     3 authors in the commits actually recorded, and one of them wrote over half.
+
+    **The two contributor lists answer first** (REVIEW-QUESTIONS-AND-ANALYTICS-2026-10-22.md, addendum 1, owner 2026-10-23): top 10 over the last
+    12 months and top 10 all time, read through `contributors.contributors`, the reader the compile, the chat tool
+    and chaoss_metrics also use, so every surface names the same people. The value carries the stored row ids it
+    was built from (`row_ids`). The per-author count over `project_commits` below stays only for a repository whose
+    lists were never fetched, and says so (`basis`).
     """
+    from resource_explorer import contributors as contrib
+
+    try:
+        lists = contrib.both(reg, p.slug)
+    except Exception:  # noqa: BLE001 - a registry without the table still answers from project_commits
+        lists = {}
+    if contrib.any_fetched(lists) and not any(cl.rows for cl in lists.values()):
+        # A fetch was attempted and stored no list (refused, failed, or GitHub answered empty): its own words,
+        # never the 90-day git authors below. Empty everywhere is a real absence; anything else (a list never fetched included) is not established.
+        empty = all(cl.absence == contrib.EMPTY_REPOSITORY for cl in lists.values())
+        return ({"named": contrib.absence_sentence(lists),
+                 "all_time": lists[contrib.WINDOW_ALL].as_dict(), "months_12": lists[contrib.WINDOW_12].as_dict(),
+                 "note": contrib.COMPARE_WORDS,
+                 "row_ids": [i for cl in lists.values() for i in cl.row_ids]},
+                NOTHING_FOUND if empty else NOT_ESTABLISHED)
+    if contrib.any_fetched(lists):
+        concentration = _finding(reg, p.slug, "chaoss_metrics", "elephant_factor")
+        return ({"named": contrib.headline_sentence(lists),
+                 "hover": " · ".join(h for h in (lists[w].hover() for w in contrib.WINDOWS) if h),
+                 "top_contributors_all_time": [r.as_dict() for r in lists[contrib.WINDOW_ALL].rows],
+                 "all_time": {k: v for k, v in lists[contrib.WINDOW_ALL].as_dict().items() if k != "rows"},
+                 "top_contributors_12_months": [r.as_dict() for r in lists[contrib.WINDOW_12].rows],
+                 "months_12": {k: v for k, v in lists[contrib.WINDOW_12].as_dict().items() if k != "rows"},
+                 "note": contrib.COMPARE_WORDS,
+                 "concentration": concentration.get("label", ""),
+                 "concentration_detail": concentration.get("summary", ""),
+                 "row_ids": [i for cl in lists.values() for i in cl.row_ids]},
+                MEASURED)
     with reg._conn() as conn:
         rows = conn.execute(
             "SELECT author_name, author_email, count(*) AS commits "
@@ -358,7 +392,7 @@ def _r_maintainers(reg, p) -> tuple:
     people = sorted(merged.values(), key=lambda e: -e["commits"])
     top = [{**e, "share": round(e["commits"] / total, 3)} for e in people[:5]]
     concentration = _finding(reg, p.slug, "chaoss_metrics", "elephant_factor")
-    return ({"people": len(people),
+    return ({"basis": contrib.FALLBACK_WORDS, "people": len(people),
              # Kept alongside, because the difference between them IS the
              # finding when one person commits under several addresses.
              "commit_identities": len(rows),
@@ -787,7 +821,14 @@ def _h_change_since_last_survey(value: dict, state: str) -> str:
     return f"{changed} of {changed + unchanged} analysis(es) changed since the last survey: {names}."
 
 
+def _h_project_commits(value: dict, state: str) -> str:
+    """Q-0003's headline from the contributor lists: the top contributor and the top-3 share. Empty for the
+    git-author fallback, which keeps its old (no-sentence) rendering."""
+    return str((value or {}).get("named") or "")
+
+
 _RESOURCE_STATE_HEADLINES: dict[str, "Callable[[dict, str], str]"] = {
+    "project_commits": _h_project_commits,
     "catalog_presence": _h_catalog_presence,
     "related_resources": _h_related_resources,
     "survey_history": _h_survey_history,
