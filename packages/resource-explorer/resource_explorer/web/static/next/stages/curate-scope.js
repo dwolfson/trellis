@@ -149,7 +149,9 @@ export function commitHeaderText(view) {
  *  says what it counts and when it was read. */
 export function readBackChipsHtml(rb) {
   const chips = (rb && Array.isArray(rb.chips)) ? rb.chips : [];
-  if (!chips.length) return '';
+  // Nothing read back is no counts at all, never three measured zeros (fix round 2): the server sends no chips,
+  // and a payload whose every chip has no proof behind it (cue 'none') draws nothing either.
+  if (!chips.length || chips.every((c) => c.cue === 'none')) return '';
   const cueHtml = (c) => (c.cue === 'read_back'
     ? ' <span class="font-glyph text-state-ok" aria-hidden="true">✓</span>'
     : c.cue === 'pending' ? ' <span class="font-glyph text-ink-muted" aria-hidden="true">◌</span>' : '');

@@ -84,6 +84,8 @@ test('read-back chips: nothing derived draws nothing; the scope section carries 
   const { readBackChipsHtml, scopeSectionHtml } = await load('/static/next/stages/curate-scope.js');
   assert.equal(readBackChipsHtml(null), '');
   assert.equal(readBackChipsHtml({ chips: [] }), '');
+  // Absence is not three measured zeros (fix round 2): chips with no proof behind any of them draw nothing.
+  assert.equal(readBackChipsHtml(chips(0, 0, 0, 'none')), '');
   const view = { schemas: [], declared: { declared: true }, commit: { header: { state: 'committed', text: 'Database element abcd1234 in Egeria' }, read_back: chips(2, 2, 1, 'pending') } };
   const h = scopeSectionHtml(view, { user_id: 'me' });
   assert.match(h, /data-scope-commit-header[\s\S]*data-read-back-host[\s\S]*data-read-back-chip="published"[\s\S]*data-read-back-chip="attached"[\s\S]*data-read-back-chip="catalogued"/);

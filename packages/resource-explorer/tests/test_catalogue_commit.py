@@ -306,12 +306,17 @@ def test_header_marker_is_state_derived_never_a_constant(world, fake):
     assert before == "Saved in Resource Explorer · not yet published to Egeria"
     press(world, fake, refresh=False)
     waiting = derived(world)["header"]["text"]
-    assert "2 schemas chosen: 2 attached, waiting" in waiting and "connector's last refresh" in waiting
+    cue_waiting = {c["key"]: c["cue"] for c in derived(world)["read_back"]["chips"]}["catalogued"]
+    # The header names no state for attached schemas (architect, 2026-10-23): the read-back chips show it.
+    assert "2 schemas chosen · 2 schemas attached" in waiting and "connector's last refresh" in waiting
+    assert "waiting" not in waiting
     fake.run_cataloguer()
     cc.read_back(world["registry"], fake, "db", ["sales", "archive"])
     done = derived(world)["header"]["text"]
-    assert "2 schemas chosen: 2 published" in done
-    assert len({before, waiting, done}) == 3                                  # three states, three sentences
+    assert "2 schemas chosen · 2 schemas attached" in done
+    # Attached and catalogued share the header's words now; the state moved to the chips below it.
+    cue_done = {c["key"]: c["cue"] for c in derived(world)["read_back"]["chips"]}["catalogued"]
+    assert before != waiting and (cue_waiting, cue_done) == ("pending", "read_back")
     assert "Database element" in done and "in Egeria" in done
 
 

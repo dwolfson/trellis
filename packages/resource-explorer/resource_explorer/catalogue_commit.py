@@ -610,7 +610,7 @@ def schema_state_of(registry, slug: str, schema: str, effective: str | None = No
     return _schema_state(by.get(("schema", schema, ""), []), ob, effective, None)
 
 
-def derive_commit_state(registry, slug: str, view: dict) -> dict:
+def derive_commit_state(registry, slug: str, view: dict, now: datetime | None = None) -> dict:
     """Every state word on the scope tree, header included, from persisted rows.
 
     The one function the route and the tests share. Returns
@@ -713,8 +713,13 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
     zr = _latest(db_rows, (P_ZONES_READ,))
     chosen_states = {s["name"]: schemas[s["name"]] for s in view.get("schemas") or [] if s.get("effective") == CATALOGUE}
     last_read = max((str(p["read_at"] or "") for p in proofs if p["proof"] in _READ_BACK_ROWS), default="")
+    # No publish/restore row and no proof row for a chosen schema (both after any reset): nothing was read back,
+    # so there are no counts to show, never three measured zeros (fix round 2). The header says "not read back".
+    any_schema_proof = any(by.get(("schema", n, "")) for n in chosen_states)
+    read_back = (read_back_chips(published, chosen_states, last_read, now)
+                 if published is not None or any_schema_proof else {"chips": []})
     return {"schemas": schemas, "tables": tables, "header": header, "collisions": collisions,
-            "read_back": read_back_chips(published, chosen_states, last_read),
+            "read_back": read_back,
             "database": ({"guid": published["element_guid"], "short": published["element_guid"][:8],
                           "at": published["read_at"], "owner": (_latest(db_rows, (P_OWNER,)) or {}).get("detail"),
                           "zones": list((zr or {}).get("detail", {}).get("zones") or []),
@@ -760,12 +765,15 @@ def _header(published, counts, conn_d, failed_read, view, anything: bool, zones_
     if published:
         parts.append(zones_text or "zones: not read back")
     if n_cat:
-        order = (("catalogued", "published"), ("attached_waiting", "attached, waiting"),
-                 ("sent", "sent"), ("queued", "queued"), ("failed", "failed"), ("restored", "restored"), ("uncommitted", "not committed yet"),
+        # Attached and catalogued carry no state word here: the read-back chips below show it (architect,
+        # 2026-10-23). The header counts them once, as attached: "N schemas attached", "no schemas attached".
+        order = (("sent", "sent"), ("queued", "queued"), ("failed", "failed"), ("restored", "restored"), ("uncommitted", "not committed yet"),
                  ("deleted", "deleted in Egeria"), ("archived", "archived in Egeria"),
                  ("reset", "published earlier, Egeria was reset"))
         bits = [f"{counts[k]} {w}" for k, w in order if counts.get(k)]
-        parts.append(f"{n_cat} schema{'s' if n_cat != 1 else ''} chosen: " + (", ".join(bits) or "no proof rows"))
+        parts.append(f"{n_cat} schema{'s' if n_cat != 1 else ''} chosen" + (": " + ", ".join(bits) if bits else ""))
+        n_att = counts.get("attached_waiting", 0) + counts.get("catalogued", 0)
+        parts.append(f"{n_att} schema{'s' if n_att != 1 else ''} attached" if n_att else "no schemas attached")
         if reset is not None:
             # Derived from the rows, never assumed: the chosen schemas whose newest proof says Egeria holds them.
             parts.append(f"{sum(counts.get(k, 0) for k in IN_EGERIA_STATES)} in Egeria")
@@ -861,17 +869,17 @@ def read_back_chips(published: dict | None, schema_states: dict[str, dict], last
 
 
 def read_back_chips_for(registry, slug: str, schemas: list[str], now: datetime | None = None) -> dict:
-    """The same three counts for a commit's own schemas, straight from the proof rows (the read-back step)."""
-    rows = [p for p in registry.list_catalogue_commit_proofs(slug) if p["node_kind"] in DATABASE_NODE_KINDS]
-    db_rows = _by_node(rows).get(("database", "", ""), [])
-    states = {s: schema_state_of(registry, slug, s) for s in schemas}
-    last = max((str(p["read_at"] or "") for p in rows if p["proof"] in _READ_BACK_ROWS), default="")
-    return read_back_chips(_latest(db_rows, (P_DATABASE, P_RESTORED)), states, last, now)
+    """The same three counts for a commit's own schemas (the read-back step's text). ONE derivation with the
+    on-screen chips (fix round 2): `derive_commit_state` over those schemas, so the Egeria-reset cutoff applies."""
+    view = {"schemas": [{"name": s, "effective": CATALOGUE, "tables": []} for s in schemas]}
+    return derive_commit_state(registry, slug, view, now)["read_back"]
 
 
 def read_back_words(chips: dict) -> str:
     """The chips as one plain line (the step's text): fixed order, no "waiting"; the cue is the state."""
     glyph = {"read_back": " ✓", "pending": " ◌", "none": ""}
+    if not chips.get("chips"):
+        return "nothing read back from Egeria"
     return " · ".join(f"{c['word']} {c['count']}{(' ' + c['unit']) if c.get('unit') else ''}{glyph[c['cue']]}"
                       for c in chips["chips"])
 

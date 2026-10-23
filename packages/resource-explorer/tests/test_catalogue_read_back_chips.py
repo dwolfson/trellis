@@ -79,7 +79,27 @@ def test_a_stale_read_says_not_checked_since(reg):
     assert stale["cue"] == "pending" and stale["not_checked_since"] == "2026-10-23T09:00:30"
 
 
-def test_nothing_published_or_attached_has_no_check(tmp_path):
+def test_nothing_published_or_attached_has_no_counts(tmp_path):
+    """No publish/restore row and no schema proof row: no count chips at all, never three measured zeros."""
     r = ProjectRegistry(db_path=str(tmp_path / "e.db"))
-    c = _chips(cc.derive_commit_state(r, "none", VIEW))
-    assert all(c[k]["count"] == 0 and c[k]["cue"] == "none" for k in ("published", "attached", "catalogued"))
+    d = cc.derive_commit_state(r, "none", VIEW)
+    assert d["read_back"] == {"chips": []}
+    assert cc.read_back_chips_for(r, "none", ["sales", "hr"]) == {"chips": []}
+    assert cc.read_back_words(d["read_back"]) == "nothing read back from Egeria"
+    assert "not read back" in d["header"]["text"] or d["header"]["state"] == "not_committed"
+
+
+def test_the_step_text_and_the_chips_are_one_derivation_through_a_reset(reg):
+    """Rows read before an Egeria reset are history: the step's chips drop them exactly as the screen's do."""
+    reg.append_catalogue_commit_proof("aw", proof=cc.P_EGERIA_RESET, node_kind="database",
+                                      detail={"text": "Egeria reset"}, read_at="2026-10-23T09:00:40")
+    screen = cc.derive_commit_state(reg, "aw", VIEW, NOW)["read_back"]
+    step = cc.read_back_chips_for(reg, "aw", ["sales", "hr"], now=NOW)
+    assert step == screen == {"chips": []}            # every proof predates the reset: nothing read back now
+    reg.append_catalogue_commit_proof("aw", proof=cc.P_TARGET, schema_name="sales", element_guid="sales-guid-2",
+                                      target_guid="sales-target-2", read_at="2026-10-23T09:00:45")
+    screen = cc.derive_commit_state(reg, "aw", VIEW, NOW)["read_back"]
+    step = cc.read_back_chips_for(reg, "aw", ["sales", "hr"], now=NOW)
+    assert step == screen
+    c = _chips(step)
+    assert (c["published"]["count"], c["attached"]["count"]) == (0, 1)

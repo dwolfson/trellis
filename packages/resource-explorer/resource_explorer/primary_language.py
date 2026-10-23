@@ -93,8 +93,9 @@ def choose_primary_language(registry, slug: str) -> dict:
 
 
 def publish_properties(choice: dict) -> dict:
-    """The four additionalProperties the repository's Egeria asset carries. Neither source: all empty strings."""
+    """The four additionalProperties the repository's Egeria asset carries, one prefix for all four (architect,
+    2026-10-23: `primary_language_as_of`, never a bare `as_of`). Neither source: all empty strings."""
     return {"primary_language": choice.get("value") or "",
             "primary_language_source": choice.get("source_id") or "",
             "primary_language_basis": choice.get("basis") or "",
-            "as_of": choice.get("as_of") or ""}
+            "primary_language_as_of": choice.get("as_of") or ""}

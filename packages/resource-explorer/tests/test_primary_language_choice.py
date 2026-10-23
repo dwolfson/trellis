@@ -60,7 +60,7 @@ class TestChooser:
         c = choose_primary_language_from({}, {})
         assert c["source"] == "" and c["value"] == "" and c["chip"] == ""
         assert publish_properties(c) == {"primary_language": "", "primary_language_source": "",
-                                         "primary_language_basis": "", "as_of": ""}
+                                         "primary_language_basis": "", "primary_language_as_of": ""}
 
     def test_disagreement_line_only_when_both_exist_and_differ(self):
         both = choose_primary_language_from(CENSUS, GITHUB)
@@ -123,7 +123,8 @@ def test_publish_carries_the_tiles_choice_and_its_source(registry, monkeypatch):
     assert extra["primary_language"] == "Python"
     assert extra["primary_language_source"] == "resource-explorer:language_file_classification"
     assert extra["primary_language_basis"] == "source files 839/983"
-    assert extra["as_of"] == CENSUS["surveyed_at"]
+    assert extra["primary_language_as_of"] == CENSUS["surveyed_at"]
+    assert "as_of" not in extra                         # one prefix for all four keys (architect, 2026-10-23)
 
     monkeypatch.setattr("resource_explorer.registry.ProjectRegistry.__init__",
                         lambda self, db_path=None: setattr(self, "__dict__", registry.__dict__) or None)
@@ -138,7 +139,8 @@ def test_publish_carries_the_tiles_choice_and_its_source(registry, monkeypatch):
 
 QN = "GitHubRepository::https://github.com/data-prep-kit/data-prep-kit"
 WANTED = {"primary_language": "Python", "primary_language_source": MEASURED_SOURCE_ID,
-          "primary_language_basis": "source files 839/983", "as_of": CENSUS["surveyed_at"]}
+          "primary_language_basis": "source files 839/983",
+          "primary_language_as_of": CENSUS["surveyed_at"]}
 
 
 def _existing_publisher(registry, stored: dict):
@@ -199,3 +201,90 @@ def test_existing_asset_is_never_blanked_when_neither_source_exists(tmp_path):
     assert pub._find_or_create_asset(_Result()) == "asset-guid"
     maker.update_asset.assert_not_called()
     assert _language_rows(r) == []
+
+
+# ── fix round 2 (2026-10-23): reads that cannot be trusted never write; "" never overwrites ──────────────────
+
+
+def test_a_read_that_raises_writes_nothing(registry):
+    pub, maker = _existing_publisher(registry, {"primary_language": "HTML"})
+    maker.get_asset_by_guid.side_effect = RuntimeError("Egeria timed out")
+    assert pub._find_or_create_asset(_Result()) == "asset-guid"
+    maker.update_asset.assert_not_called()
+    assert _language_rows(registry) == []
+
+
+@pytest.mark.parametrize("answer", [
+    {"elementHeader": {"guid": "asset-guid"}, "properties": None},                       # properties not read
+    {"elementHeader": {"guid": "asset-guid"}},                                           # no properties at all
+    {"elementHeader": {"guid": "asset-guid"}, "properties": {"qualifiedName": "SomethingElse::x"}},
+    {"elementHeader": {"guid": "asset-guid"}, "properties": {"qualifiedName": QN, "additionalProperties": "a=b"}},
+    "not a dict",
+])
+def test_an_unreadable_shape_writes_nothing(registry, answer):
+    pub, maker = _existing_publisher(registry, {})
+    maker.get_asset_by_guid.return_value = answer
+    assert pub._find_or_create_asset(_Result()) == "asset-guid"
+    maker.update_asset.assert_not_called()
+    assert _language_rows(registry) == []
+
+
+def test_this_asset_read_with_no_additional_properties_gets_the_four_keys_only(registry):
+    pub, maker = _existing_publisher(registry, {})
+    maker.get_asset_by_guid.return_value = {"class": "AssetElement", "elementHeader": {"guid": "asset-guid"},
+                                            "properties": {"qualifiedName": QN}}
+    assert pub._find_or_create_asset(_Result()) == "asset-guid"
+    maker.update_asset.assert_called_once()
+    assert maker.update_asset.call_args.kwargs["body"]["properties"]["additionalProperties"] == WANTED
+
+
+def test_a_stored_bare_as_of_reads_as_absent(registry):
+    """A bare `as_of` from earlier branch commits is not one of the four keys: the new key is written, the old
+    one is left as stored."""
+    stored = {k: v for k, v in WANTED.items() if k != "primary_language_as_of"}
+    pub, maker = _existing_publisher(registry, {**stored, "as_of": CENSUS["surveyed_at"]})
+    assert pub._find_or_create_asset(_Result()) == "asset-guid"
+    maker.update_asset.assert_called_once()
+    extra = maker.update_asset.call_args.kwargs["body"]["properties"]["additionalProperties"]
+    assert extra["primary_language_as_of"] == CENSUS["surveyed_at"]
+
+
+def test_an_empty_wanted_value_keeps_the_stored_one(tmp_path):
+    """GitHub's choice with no fetched_at: primary_language_as_of is "", so the stored one stays."""
+    r = ProjectRegistry(db_path=str(tmp_path / "gh.db"))
+    r.add(Project(slug="data_prep_kit", display_name="data-prep-kit",
+                  github_url="https://github.com/data-prep-kit/data-prep-kit", description=""))
+    with r._conn() as conn:
+        conn.execute("INSERT INTO project_stats (project_slug, fetched_at, primary_language) VALUES (?, ?, ?)",
+                     ("data_prep_kit", "", "HTML"))
+    pub, maker = _existing_publisher(r, {"primary_language": "Go", "primary_language_as_of": "2026-01-01T00:00:00",
+                                         "license": "MIT"})
+    assert pub._find_or_create_asset(_Result()) == "asset-guid"
+    maker.update_asset.assert_called_once()
+    extra = maker.update_asset.call_args.kwargs["body"]["properties"]["additionalProperties"]
+    assert extra["primary_language"] == "HTML" and extra["primary_language_source"] == GITHUB_SOURCE_ID
+    assert extra["primary_language_as_of"] == "2026-01-01T00:00:00" and extra["license"] == "MIT"
+
+
+def test_a_failing_census_read_never_fails_the_create_and_says_github(registry, monkeypatch):
+    from pyegeria import AssetMaker
+
+    from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
+
+    def boom(slug, kind, scope_locator=""):
+        raise RuntimeError("metrics database is down")
+    monkeypatch.setattr(registry, "query_metrics", boom)
+    maker = create_autospec(AssetMaker, instance=True, spec_set=True)
+    maker.find_assets.return_value = []
+    maker.find_software_capabilities.return_value = []
+    maker.create_software_capability.return_value = "github-scl-guid"
+    maker.create_asset.return_value = "new-asset-guid"
+    pub = EgeriaPublisher.__new__(EgeriaPublisher)
+    pub._asset_maker = maker
+    pub._registry = registry
+    pub.zone_names = None
+    pub._zone_names = None
+    assert pub._find_or_create_asset(_Result()) == "new-asset-guid"
+    extra = maker.create_asset.call_args.kwargs["body"]["properties"]["additionalProperties"]
+    assert extra["primary_language"] == "HTML" and extra["primary_language_source"] == GITHUB_SOURCE_ID
+    assert extra["primary_language_basis"] == "bytes"
