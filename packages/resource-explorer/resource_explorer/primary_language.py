@@ -28,8 +28,20 @@ def _day(ts: str) -> str:
     return str(ts or "")[:10]
 
 
+def _as_of_words(ts: str) -> str:
+    """The census row's walk time for the hover: 'YYYY-MM-DD HH:MM' (UTC as stored), or the day when that is all."""
+    t = str(ts or "").replace("T", " ")
+    return t[:16] if len(t) >= 16 else t
+
+
 def _measured(code_volume: dict | None) -> dict | None:
-    """(language, files, total source files, as_of) from the census row, or None when nothing was counted."""
+    """(language, files, total source files, as_of) from the census row, or None when nothing was counted.
+
+    A row with no walk time is not a measurement either (fix round 1, 2026-10-23): "measured" always carries its
+    as-of, so a census without `surveyed_at` falls back exactly as if it were absent."""
+    as_of = str((code_volume or {}).get("surveyed_at") or "").strip()
+    if not as_of:
+        return None
     detail = (code_volume or {}).get("detail")
     if isinstance(detail, str):
         import json
@@ -46,7 +58,7 @@ def _measured(code_volume: dict | None) -> dict | None:
     # Most source files wins; code lines then the name break a tie, so the answer never depends on dict order.
     lang, row = min(counted.items(), key=lambda kv: (-int(kv[1].get("files") or 0), -int(kv[1].get("code") or 0), kv[0]))
     return {"language": lang, "files": int(row.get("files") or 0), "total_files": total,
-            "as_of": str((code_volume or {}).get("surveyed_at") or "")}
+            "as_of": as_of}
 
 
 def choose_primary_language_from(code_volume: dict | None, stats: dict | None) -> dict:
@@ -59,7 +71,7 @@ def choose_primary_language_from(code_volume: dict | None, stats: dict | None) -
     gh_at = str((stats or {}).get("fetched_at") or "")
     if m is not None:
         disagreement = (f"GitHub says {gh} (by bytes)" if gh and gh.casefold() != m["language"].casefold() else "")
-        hover = f"measured · {m['files']} of {m['total_files']} source files · {_day(m['as_of'])}"
+        hover = f"measured · {m['files']} of {m['total_files']} source files · {_as_of_words(m['as_of'])}"
         return {"value": m["language"], "source": MEASURED, "chip": CHIP_WORD[MEASURED],
                 "source_id": MEASURED_SOURCE_ID,
                 "basis": f"source files {m['files']}/{m['total_files']}", "as_of": m["as_of"],

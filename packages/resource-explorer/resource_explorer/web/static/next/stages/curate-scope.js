@@ -143,7 +143,7 @@ export function commitHeaderText(view) {
 }
 
 /** The read-back counts under the catalogue section: three chips in a fixed order ("published by RE N",
- *  "attached N", "catalogued by Egeria N"), each with its state cue (✓ read back, ◌ the cataloguer has not built
+ *  "attached N schemas", "catalogued by Egeria N schemas", the unit from the server, singular for 1), each with its state cue (✓ read back, ◌ the cataloguer has not built
  *  the tree yet) and, on a pending count whose newest read-back row is over 120 s old, "not checked since <time>".
  *  `rb` is `view.commit.read_back`, the server's derivation from proof rows; '' when there is none. Each chip's hover
  *  says what it counts and when it was read. */
@@ -156,8 +156,9 @@ export function readBackChipsHtml(rb) {
   const stale = (c) => (c.not_checked_since
     ? ` <span data-read-back-not-checked class="text-state-warn" title="${esc(`RE last read this from Egeria at ${c.not_checked_since} UTC`)}"><span class="font-glyph" aria-hidden="true">◌</span> not checked since ${esc(hm(c.not_checked_since) || c.not_checked_since)}</span>`
     : '');
-  const one = (c) => `<span data-read-back-chip="${esc(c.key)}" data-cue="${esc(c.cue)}" title="${esc(c.hover || '')}" class="rounded-sm border border-rule px-1 text-provenance text-ink">${esc(c.word)} <span class="tnum">${esc(String(c.count ?? 0))}</span>${cueHtml(c)}${stale(c)}</span>`;
-  return `<div data-read-back-chips class="mb-s1 flex flex-wrap items-center gap-s1">${chips.map(one).join('')}</div>`;
+  const one = (c) => `<span data-read-back-chip="${esc(c.key)}" data-cue="${esc(c.cue)}" title="${esc(c.hover || '')}" class="rounded-sm border border-rule px-1 text-provenance text-ink">${esc(c.word)} <span class="tnum">${esc(String(c.count ?? 0))}</span>${c.unit ? ` ${esc(c.unit)}` : ''}${cueHtml(c)}${stale(c)}</span>`;
+  // Chips are separated by whitespace, never " · " (fix round 1): the gap draws the space, the text keeps one.
+  return `<div data-read-back-chips class="mb-s1 flex flex-wrap items-center gap-s1">${chips.map(one).join(' ')}</div>`;
 }
 
 /** The database's publish state as ONE line for the Describe tab (Brief S2). It comes from the scope view's commit

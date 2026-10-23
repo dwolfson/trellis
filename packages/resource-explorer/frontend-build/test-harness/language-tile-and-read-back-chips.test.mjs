@@ -18,7 +18,7 @@ const languageTile = (h) => (/<div data-scouting-tile="language"[\s\S]*?<\/div><
 
 const MEASURED = {
   value: 'Python', source: 'measured', chip: 'measured', basis: 'source files 839/983',
-  hover: 'measured · 839 of 983 source files · 2026-10-20\nGitHub says HTML (by bytes)',
+  hover: 'measured · 839 of 983 source files · 2026-10-20 08:00\nGitHub says HTML (by bytes)',
   disagreement: 'GitHub says HTML (by bytes)',
 };
 
@@ -27,7 +27,7 @@ test('measured: value with a solid "measured" chip, basis and disagreement in th
   const t = languageTile(scoutingTilesHtml({ primary_language: 'Python', language: MEASURED, stats_unread: [] }));
   assert.match(t, /data-language-source="measured"[^>]*class="[^"]*bg-ink[^"]*text-paper/);
   assert.equal(strip(t), 'LanguagePython measured');
-  assert.match(t, /title="measured · 839 of 983 source files · 2026-10-20\nGitHub says HTML \(by bytes\)"/);
+  assert.match(t, /title="measured · 839 of 983 source files · 2026-10-20 08:00\nGitHub says HTML \(by bytes\)"/);
 });
 
 test('GitHub only: outline "GitHub" chip and the by-bytes hover, no disagreement line', async () => {
@@ -50,30 +50,34 @@ test('neither source: the existing "not read" cue, never an empty "measured"', a
 });
 
 const chips = (published, attached, catalogued, cue, stale = '') => ({ chips: [
-  { key: 'published', word: 'published by RE', count: published, cue: published ? 'read_back' : 'none', hover: 'the server and database elements RE published · read 10-23 09:00', not_checked_since: '' },
-  { key: 'attached', word: 'attached', count: attached, cue: attached ? 'read_back' : 'none', hover: 'chosen schemas attached', not_checked_since: '' },
-  { key: 'catalogued', word: 'catalogued by Egeria', count: catalogued, cue, hover: 'chosen schemas whose tables Egeria built', not_checked_since: stale },
+  { key: 'published', word: 'published by RE', count: published, unit: '', cue: published ? 'read_back' : 'none', hover: 'the server and database elements RE published · read 10-23 09:00', not_checked_since: '' },
+  { key: 'attached', word: 'attached', count: attached, unit: attached === 1 ? 'schema' : 'schemas', cue: attached ? 'read_back' : 'none', hover: 'chosen schemas attached', not_checked_since: '' },
+  { key: 'catalogued', word: 'catalogued by Egeria', count: catalogued, unit: catalogued === 1 ? 'schema' : 'schemas', cue, hover: 'chosen schemas whose tables Egeria built', not_checked_since: stale },
 ] });
 
 test('read-back chips: three in a fixed order, ✓ on read back, ◌ while the cataloguer has not run', async () => {
   const { readBackChipsHtml } = await load('/static/next/stages/curate-scope.js');
   const h = readBackChipsHtml(chips(2, 2, 0, 'pending'));
   assert.deepEqual([...h.matchAll(/data-read-back-chip="([a-z]+)"/g)].map((m) => m[1]), ['published', 'attached', 'catalogued']);
-  assert.equal(strip(h), 'published by RE 2 ✓attached 2 ✓catalogued by Egeria 0 ◌');
+  // Units on screen, singular for 1; chips are separated by whitespace, never " · ".
+  assert.equal(strip(h), 'published by RE 2 ✓ attached 2 schemas ✓ catalogued by Egeria 0 schemas ◌');
+  assert.ok(!/·/.test(strip(h)));
+  assert.match(h, /<\/span> <span data-read-back-chip="attached"/);
+  assert.match(strip(readBackChipsHtml(chips(2, 1, 1, 'read_back'))), /attached 1 schema ✓ catalogued by Egeria 1 schema ✓$/);
   assert.ok(!/waiting/.test(h));
   assert.match(h, /data-read-back-chip="published"[^>]*title="the server and database elements RE published · read 10-23 09:00"/);
 });
 
 test('read-back chips: the tree built reads "catalogued by Egeria 18 ✓"', async () => {
   const { readBackChipsHtml } = await load('/static/next/stages/curate-scope.js');
-  assert.match(strip(readBackChipsHtml(chips(2, 18, 18, 'read_back'))), /catalogued by Egeria 18 ✓$/);
+  assert.match(strip(readBackChipsHtml(chips(2, 18, 18, 'read_back'))), /catalogued by Egeria 18 schemas ✓$/);
 });
 
 test('read-back chips: a stale pending count says "not checked since"', async () => {
   const { readBackChipsHtml } = await load('/static/next/stages/curate-scope.js');
   const h = readBackChipsHtml(chips(2, 2, 0, 'pending', '2026-10-23T09:12:00'));
   assert.match(h, /data-read-back-not-checked/);
-  assert.match(strip(h), /catalogued by Egeria 0 ◌ ◌ not checked since 09:12$/);
+  assert.match(strip(h), /catalogued by Egeria 0 schemas ◌ ◌ not checked since 09:12$/);
 });
 
 test('read-back chips: nothing derived draws nothing; the scope section carries the row under its header', async () => {

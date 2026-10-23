@@ -35,7 +35,16 @@ class TestChooser:
         assert (c["value"], c["source"], c["chip"]) == ("Python", "measured", "measured")
         assert c["basis"] == "source files 839/983"
         assert c["source_id"] == MEASURED_SOURCE_ID
-        assert c["hover"].startswith("measured · 839 of 983 source files · 2026-10-20")
+        assert c["hover"].startswith("measured · 839 of 983 source files · 2026-10-20 08:00")
+        assert c["as_of"] == "2026-10-20T08:00:00"          # the census row's walk time is in the payload
+
+    def test_a_census_with_no_walk_time_is_not_measured(self):
+        """'measured' carries its as-of: a census row with no time falls back exactly as if it were absent."""
+        timeless = {"detail": CENSUS["detail"]}
+        c = choose_primary_language_from(timeless, GITHUB)
+        assert c == choose_primary_language_from({}, GITHUB)
+        assert c["source"] == "github" and "measured" not in c["hover"]
+        assert choose_primary_language_from({"surveyed_at": "  ", "detail": CENSUS["detail"]}, {})["source"] == ""
 
     def test_absent_classification_falls_back_to_github(self):
         c = choose_primary_language_from({}, GITHUB)
@@ -63,8 +72,8 @@ class TestChooser:
         assert choose_primary_language_from({}, GITHUB)["disagreement"] == ""
 
     def test_a_tie_does_not_depend_on_dict_order(self):
-        a = {"detail": {"by_language": {"Go": {"files": 3, "code": 10}, "Rust": {"files": 3, "code": 50}}}}
-        b = {"detail": {"by_language": {"Rust": {"files": 3, "code": 50}, "Go": {"files": 3, "code": 10}}}}
+        a = {"surveyed_at": "t", "detail": {"by_language": {"Go": {"files": 3, "code": 10}, "Rust": {"files": 3, "code": 50}}}}
+        b = {"surveyed_at": "t", "detail": {"by_language": {"Rust": {"files": 3, "code": 50}, "Go": {"files": 3, "code": 10}}}}
         assert choose_primary_language_from(a, {})["value"] == choose_primary_language_from(b, {})["value"] == "Rust"
 
 
@@ -106,6 +115,9 @@ def test_publish_carries_the_tiles_choice_and_its_source(registry, monkeypatch):
     pub._zone_names = None
 
     assert pub._find_or_create_asset(_Result()) == "new-asset-guid"
+    # The new-asset path is unchanged: the four properties ride on the create, nothing is read or updated after.
+    maker.get_asset_by_guid.assert_not_called()
+    maker.update_asset.assert_not_called()
     body = maker.create_asset.call_args.kwargs["body"]
     extra = body["properties"]["additionalProperties"]
     assert extra["primary_language"] == "Python"
@@ -120,3 +132,70 @@ def test_publish_carries_the_tiles_choice_and_its_source(registry, monkeypatch):
     assert ov["primary_language"] == extra["primary_language"]
     assert ov["language"]["source"] == "measured" and ov["language"]["chip"] == "measured"
     assert ov["language"]["disagreement"] == "GitHub says HTML (by bytes)"
+
+
+# ── an EXISTING repository asset gets the choice on its next publish (fix round 1, 2026-10-23) ─────────────
+
+QN = "GitHubRepository::https://github.com/data-prep-kit/data-prep-kit"
+WANTED = {"primary_language": "Python", "primary_language_source": MEASURED_SOURCE_ID,
+          "primary_language_basis": "source files 839/983", "as_of": CENSUS["surveyed_at"]}
+
+
+def _existing_publisher(registry, stored: dict):
+    from pyegeria import AssetMaker
+
+    from resource_explorer.surveyors.egeria_publisher import EgeriaPublisher
+
+    registry.set_egeria_asset_guid("data_prep_kit", "asset-guid")
+    maker = create_autospec(AssetMaker, instance=True, spec_set=True)
+    maker.find_assets.return_value = [{"elementHeader": {"guid": "asset-guid"}, "properties": {"qualifiedName": QN}}]
+    maker.get_asset_by_guid.return_value = {"elementHeader": {"guid": "asset-guid"},
+                                            "properties": {"qualifiedName": QN, "additionalProperties": stored}}
+    pub = EgeriaPublisher.__new__(EgeriaPublisher)
+    pub._asset_maker = maker
+    pub._registry = registry
+    pub.zone_names = None
+    pub._zone_names = None
+    return pub, maker
+
+
+def _language_rows(registry):
+    return [e for e in registry.list_activity(entity_slug="data_prep_kit", operation="catalog", limit=50)
+            if e.get("summary") == "primary_language updated"]
+
+
+def test_existing_asset_with_stale_values_gets_one_update_and_a_proof_row(registry):
+    stale = {"github_url": "https://github.com/data-prep-kit/data-prep-kit", "license": "Apache-2.0",
+             "primary_language": "HTML"}
+    pub, maker = _existing_publisher(registry, stale)
+    assert pub._find_or_create_asset(_Result()) == "asset-guid"
+    maker.create_asset.assert_not_called()
+    maker.get_asset_by_guid.assert_called_once()
+    maker.update_asset.assert_called_once()
+    guid, = maker.update_asset.call_args.args
+    body = maker.update_asset.call_args.kwargs["body"]
+    assert guid == "asset-guid" and body["mergeUpdate"] is True
+    extra = body["properties"]["additionalProperties"]
+    assert {k: extra[k] for k in WANTED} == WANTED
+    assert extra["license"] == "Apache-2.0" and extra["github_url"] == stale["github_url"]   # the rest is kept
+    rows = _language_rows(registry)
+    assert len(rows) == 1 and rows[0]["status"] == "success"
+    assert '"primary_language": "HTML"' in rows[0]["detail"] and '"primary_language": "Python"' in rows[0]["detail"]
+
+
+def test_existing_asset_with_identical_values_is_not_written(registry):
+    pub, maker = _existing_publisher(registry, {"github_url": "x", **WANTED})
+    assert pub._find_or_create_asset(_Result()) == "asset-guid"
+    maker.get_asset_by_guid.assert_called_once()
+    maker.update_asset.assert_not_called()
+    assert _language_rows(registry) == []
+
+
+def test_existing_asset_is_never_blanked_when_neither_source_exists(tmp_path):
+    r = ProjectRegistry(db_path=str(tmp_path / "none.db"))
+    r.add(Project(slug="data_prep_kit", display_name="data-prep-kit",
+                  github_url="https://github.com/data-prep-kit/data-prep-kit", description=""))
+    pub, maker = _existing_publisher(r, {"primary_language": "Go"})
+    assert pub._find_or_create_asset(_Result()) == "asset-guid"
+    maker.update_asset.assert_not_called()
+    assert _language_rows(r) == []

@@ -795,6 +795,11 @@ def _age_s(iso: str, now: datetime | None) -> float | None:
     return (ref - datetime.fromisoformat(t)).total_seconds()
 
 
+def _schemas_unit(n: int) -> str:
+    """The unit word a schema count names on screen: "schema" for 1, "schemas" otherwise (0 included)."""
+    return "schema" if n == 1 else "schemas"
+
+
 def read_back_chips(published: dict | None, schema_states: dict[str, dict], last_read_at: str = "",
                     now: datetime | None = None) -> dict:
     """The three counts under the catalogue section, from proof rows only, never from the branch a commit took.
@@ -809,7 +814,9 @@ def read_back_chips(published: dict | None, schema_states: dict[str, dict], last
        "not checked since <read_at>".
 
     `schema_states` is {schema: _schema_state(...)} for the chosen schemas. Returns {"chips": [3 dicts]} with
-    each chip {key, word, count, cue: 'read_back' | 'pending' | 'none', read_at, hover, not_checked_since}."""
+    each chip {key, word, count, unit, cue: 'read_back' | 'pending' | 'none', read_at, hover, not_checked_since}.
+    `unit` is the word after the count on screen ("attached 2 schemas", "catalogued by Egeria 1 schema"); the
+    published count has none ("published by RE 2", architect fix round 1)."""
     pub_n, pub_at = 0, ""
     if published is not None:
         pub_n = (1 if (published.get("detail") or {}).get("server_guid") else 0) + (1 if published.get("element_guid") else 0)
@@ -832,15 +839,18 @@ def read_back_chips(published: dict | None, schema_states: dict[str, dict], last
         stale = read_at if age is not None and age > READ_BACK_NOT_CHECKED_AFTER_S else ""
     waiting = sorted(set(attached) - set(built))
     chips = [
-        {"key": "published", "word": "published by RE", "count": pub_n, "cue": "read_back" if pub_n else "none",
+        {"key": "published", "word": "published by RE", "count": pub_n, "unit": "",
+         "cue": "read_back" if pub_n else "none",
          "read_at": pub_at, "not_checked_since": "",
          "hover": (f"the server and database elements RE published · read {_stamp(pub_at)}" if pub_n
                    else "nothing RE published has been read back")},
-        {"key": "attached", "word": "attached", "count": len(attached), "cue": "read_back" if attached else "none",
+        {"key": "attached", "word": "attached", "count": len(attached), "unit": _schemas_unit(len(attached)),
+         "cue": "read_back" if attached else "none",
          "read_at": att_at, "not_checked_since": "",
          "hover": (f"chosen schemas attached to Egeria's cataloguer as targets · read {_stamp(att_at)}" if attached
                    else "no chosen schema is attached to Egeria's cataloguer")},
-        {"key": "catalogued", "word": "catalogued by Egeria", "count": len(built), "cue": cat_cue,
+        {"key": "catalogued", "word": "catalogued by Egeria", "count": len(built), "unit": _schemas_unit(len(built)),
+         "cue": cat_cue,
          "read_at": built_at or read_at, "not_checked_since": stale,
          "hover": ("chosen schemas whose tables Egeria's cataloguer built"
                    + (f" · read {_stamp(built_at)}" if built_at else "")
@@ -862,7 +872,8 @@ def read_back_chips_for(registry, slug: str, schemas: list[str], now: datetime |
 def read_back_words(chips: dict) -> str:
     """The chips as one plain line (the step's text): fixed order, no "waiting"; the cue is the state."""
     glyph = {"read_back": " ✓", "pending": " ◌", "none": ""}
-    return " · ".join(f"{c['word']} {c['count']}{glyph[c['cue']]}" for c in chips["chips"])
+    return " · ".join(f"{c['word']} {c['count']}{(' ' + c['unit']) if c.get('unit') else ''}{glyph[c['cue']]}"
+                      for c in chips["chips"])
 
 
 # ── the preview and its manifest ─────────────────────────────────────────────

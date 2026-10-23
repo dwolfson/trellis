@@ -46,7 +46,8 @@ def test_attached_not_catalogued_reads_pending_never_waiting(reg):
     assert (c["catalogued"]["word"], c["catalogued"]["count"], c["catalogued"]["cue"]) == ("catalogued by Egeria", 0, "pending")
     assert "hr" in c["catalogued"]["hover"] and "sales" in c["catalogued"]["hover"]
     words = cc.read_back_words(d["read_back"])
-    assert words == "published by RE 2 ✓ · attached 2 ✓ · catalogued by Egeria 0 ◌"
+    assert words == "published by RE 2 ✓ · attached 2 schemas ✓ · catalogued by Egeria 0 schemas ◌"
+    assert (c["published"]["unit"], c["attached"]["unit"], c["catalogued"]["unit"]) == ("", "schemas", "schemas")
     assert "waiting" not in words
 
 
@@ -63,8 +64,11 @@ def test_counts_come_from_the_rows_the_tree_built_is_a_check(reg):
 def test_one_of_two_built_is_still_pending(reg):
     reg.append_catalogue_commit_proof("aw", proof=cc.P_ELEMENTS, schema_name="sales", element_guid="sales-guid",
                                       detail={"tables": ["orders"]}, read_at="2026-10-23T09:00:50")
-    c = _chips(cc.derive_commit_state(reg, "aw", VIEW))
+    d = cc.derive_commit_state(reg, "aw", VIEW)
+    c = _chips(d)
     assert (c["catalogued"]["count"], c["catalogued"]["cue"]) == (1, "pending")
+    assert c["catalogued"]["unit"] == "schema"                          # singular for 1
+    assert cc.read_back_words(d["read_back"]) == "published by RE 2 ✓ · attached 2 schemas ✓ · catalogued by Egeria 1 schema ◌"
 
 
 def test_a_stale_read_says_not_checked_since(reg):
