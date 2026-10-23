@@ -285,7 +285,7 @@ def _text(v: Any) -> str:
     if hasattr(v, "isoformat"):
         try:
             return v.isoformat()
-        except Exception:  # noqa: BLE001
+        except (ValueError, TypeError, OverflowError, OSError):   # an out-of-range timestamp falls back to str()
             pass
     return str(v)
 
@@ -904,10 +904,12 @@ def _run(fs_entity, registry, walk: dict, files: list[dict], run_id: str, *, por
             re_files.append(f)
 
     made_here = None
+    port_error: str | None = None
     if egeria_files and port is None and port_factory is not None:
         try:
             port = made_here = port_factory()
-        except Exception:  # noqa: BLE001 -- said as could_not_check below
+        except Exception as exc:  # noqa: BLE001 -- said as could_not_check below, and the cause kept in the metrics
+            port_error = f"{type(exc).__name__}: {exc}"
             log.warning("%s: no Egeria port for the CSV half", slug, exc_info=True)
     try:
         egeria_state, egeria_rows, egeria_actions = submit_egeria_half(port, fs_entity, egeria_files,
@@ -955,7 +957,8 @@ def _run(fs_entity, registry, walk: dict, files: list[dict], run_id: str, *, por
         "mount_reachable": reachable,
         "data_files": len(files), "egeria_files": len(egeria_files), "re_files": len(re_files),
         "re_bytes_read": bytes_read, "re_seconds": round(seconds, 3),
-        "egeria_half": egeria_state, "egeria_actions": egeria_actions, "errors": errors,
+        "egeria_half": egeria_state, "egeria_actions": egeria_actions, "egeria_port_error": port_error,
+        "errors": errors,
         "rows": stored["rows"], "pruned_runs": stored["pruned_runs"],
     }
     registry.record_step_run(slug, STEP_KEY, run_id, entity_type="filesystem", source="file-profiles",
