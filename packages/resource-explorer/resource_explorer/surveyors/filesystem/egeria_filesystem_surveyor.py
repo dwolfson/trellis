@@ -115,6 +115,8 @@ class EgeriaFileSystemSurveyor:
     #: -> DeployedImplementationType.FILE_SYSTEM_DIRECTORY.getAssociatedTypeName()). It is a FileFolder, not a
     #: other folder type.
     ROOT_FOLDER_TYPE = "FileFolder"
+    #: Every data file template's element (CSVFile, ParquetFile, SpreadsheetFile ...) is a DataFile or a subtype.
+    DATA_FILE_TYPE = "DataFile"
 
     @staticmethod
     def root_folder_qualified_name(fs_slug: str, canonical_mount: str) -> str:
@@ -279,7 +281,7 @@ class EgeriaFileSystemSurveyor:
             
             # Catalog/find the file asset
             try:
-                file_guid = self._find_element_guid(canonical_path)
+                file_guid = self._find_element_guid(canonical_path, type_name=self.DATA_FILE_TYPE)
             except EgeriaFileSystemSurveyorError as exc:
                 files_not_checked[rel_path] = str(exc)
                 log.warning("Data file %s not cataloged: %s", rel_path, exc)
@@ -456,7 +458,12 @@ class EgeriaFileSystemSurveyor:
 
         canonical_mount = (fs_entity.canonical_mount_point or fs_entity.local_mount_point).rstrip("/")
         fs_name = fs_entity.display_name or fs_entity.slug
-        fs_guid = fs_entity.egeria_asset_guid or self._find_element_guid(canonical_mount)
+        # The GUID RE holds first; else the root folder's own qualifiedName (the unique-name read, exact for THIS
+        # file system); else a FileFolder whose pathName is the mount (a typed search). Two folders = unreadable.
+        fs_guid = (fs_entity.egeria_asset_guid
+                   or self._find_element_guid(self.root_folder_qualified_name(fs_entity.slug, canonical_mount),
+                                              type_name=self.ROOT_FOLDER_TYPE, qualified_name=True)
+                   or self._find_element_guid(canonical_mount, type_name=self.ROOT_FOLDER_TYPE))
         if not fs_guid:
             raise EgeriaFileSystemSurveyorError(
                 f"FileSystem '{fs_name}' is not yet published to Egeria — cannot "
@@ -752,33 +759,28 @@ class EgeriaFileSystemSurveyor:
 
         return to_string_map(d)
     def _find_element_guid(self, name: str, type_name: str | None = None, *, qualified_name: bool = False) -> str:
-        """Return the GUID of an existing Egeria element by display/qualified name, or '' if not found.
+        """Return the GUID of an existing Egeria element by qualifiedName or by pathName, or '' if not found.
 
         '' is the callers' cue to create, so only a real miss returns it ("No elements found", or a typed
-        not-found: `egeria_absence.is_absent`). A look-up that raised for any other reason, or gave no
-        answer, could not be checked: `EgeriaFileSystemSurveyorError` says so and nothing is created. It
-        used to swallow every exception and return '' (AUDIT-PYEGERIA-6.2.2.md, "Not in scope")."""
+        not-found: `egeria_absence.is_absent`). A look-up that raised for any other reason, gave no answer, or
+        found two elements could not be checked: `EgeriaFileSystemSurveyorError` says so and nothing is created.
+
+        `qualified_name=True`: `name` IS a qualifiedName by construction, so the unique-name read. Otherwise
+        `name` is a file system path, Egeria's `pathName` (DataAssetTemplateDefinition: the folder and data file
+        templates set pathName to the path and resourceName to `<file system>:<path>`), read by a TYPED string
+        search, exact (architect ruling 2026-10-22). Neither is the exact-value search, which timed out on a
+        large repository (egeria_lookup.py)."""
         from resource_explorer.egeria_absence import lookup_could_not_be_made, lookup_exception_is_absent
+        from resource_explorer.egeria_lookup import guid_by_exact_value, guid_by_qualified_name
 
-        if qualified_name:
-            # `name` IS a qualifiedName by construction: the unique-name read, not the exact-value search that
-            # times out on a large repository (egeria_lookup.py). The other callers pass a file system path
-            # (pathName / resourceName), which that read cannot answer, so they keep the by-name search.
-            from resource_explorer.egeria_lookup import guid_by_qualified_name
-
-            try:
-                return guid_by_qualified_name(self._metadata_expert, name, type_name=type_name) or ""
-            except Exception as exc:
-                if lookup_exception_is_absent(exc):
-                    return ""
-                raise EgeriaFileSystemSurveyorError(lookup_could_not_be_made(name, exc)) from exc
+        if not qualified_name and not type_name:
+            raise ValueError("a pathName look-up is typed: pass type_name")
         try:
-            result = (self._automated_curation.get_guid_for_name(name, type_name=type_name) if type_name
-                      else self._automated_curation.get_guid_for_name(name))
+            if qualified_name:
+                return guid_by_qualified_name(self._metadata_expert, name, type_name=type_name) or ""
+            return guid_by_exact_value(self._metadata_expert, name, property_name="pathName",
+                                       type_name=type_name) or ""
         except Exception as exc:
             if lookup_exception_is_absent(exc):
                 return ""
             raise EgeriaFileSystemSurveyorError(lookup_could_not_be_made(name, exc)) from exc
-        from resource_explorer.egeria_absence import guid_from_answer
-
-        return guid_from_answer(result, name, EgeriaFileSystemSurveyorError)

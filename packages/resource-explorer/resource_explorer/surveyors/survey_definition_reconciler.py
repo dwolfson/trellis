@@ -235,12 +235,45 @@ class ExtraScope:
 
 
 @dataclass
+class DeprecatedScope:
+    """One live ScopedBy link to a DEPRECATED question term (the term batch marks retired and merged questions
+    DEPRECATED and keeps their links, architect ruling (b) 2026-10-23). Its own bucket: never "kept" (it no
+    longer answers anything), never "missing" (the link is there), never "extra" (nothing recommends removing
+    it). `reason` is the term description's prefix up to its first colon, or "deprecated"; `label` is the
+    bucket's words, "deprecated: <reason>"."""
+    guid: str | None
+    qualified_name: str | None
+    display_name: str
+    reason: str
+
+    @property
+    def label(self) -> str:
+        return f"deprecated: {self.reason}"
+
+
+def _deprecated_reason(props: dict) -> str:
+    description = str(props.get("description") or "").strip()
+    head, colon, _ = description.partition(":")
+    return head.strip() if colon and head.strip() else "deprecated"
+
+
+def _is_deprecated_scope(header: dict, props: dict) -> bool:
+    """`properties.contentStatus` (Egeria 6 keeps a term's status there) or the header's instance status."""
+    content = props.get("contentStatus")
+    if isinstance(content, dict):                    # an enum as {symbolicName, ...}
+        content = content.get("symbolicName") or content.get("value")
+    return (str(content or "").upper() == "DEPRECATED"
+            or str(header.get("status") or "").upper() == "DEPRECATED")
+
+
+@dataclass
 class ScopeReconcileResult:
     process_qualified_name: str
     kept: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
     extra: list[ExtraScope] = field(default_factory=list)
     unresolvable: list[UnresolvableScope] = field(default_factory=list)
+    deprecated: list[DeprecatedScope] = field(default_factory=list)
     error: str = ""
 
 
@@ -267,6 +300,10 @@ def diff_scopes(live: list[dict], expected: set[str]) -> ScopeReconcileResult:
     with no displayName, goes to `unresolvable` — never to `extra`. Reporting
     it as extra would recommend removing a link this diff cannot actually
     evaluate; `unresolvable` says "look at this by hand" instead of guessing.
+
+    A GlossaryTerm that is DEPRECATED (`properties.contentStatus`, or the header status) goes to `deprecated`
+    ("deprecated: <reason>"), whether or not the document names it: never `kept`, never `missing`, never
+    `extra`. Its link is left alone (architect ruling (b), 2026-10-23).
     """
     result = ScopeReconcileResult(process_qualified_name="")
     seen_display_names: set[str] = set()
@@ -296,6 +333,10 @@ def diff_scopes(live: list[dict], expected: set[str]) -> ScopeReconcileResult:
             )
             continue
 
+        if _is_deprecated_scope(header, props):
+            result.deprecated.append(DeprecatedScope(guid, qualified_name, display_name, _deprecated_reason(props)))
+            seen_display_names.add(display_name)          # linked, so never "missing"
+            continue
         if display_name in expected:
             result.kept.append(display_name)
             seen_display_names.add(display_name)

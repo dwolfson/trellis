@@ -252,7 +252,9 @@ def test_the_gateway_finds_the_captured_6_2_memento_by_its_archived_name():
     assert first.kwargs["search_string"] == CAPTURED_ORIGINAL + "_archivedOn_" and first.kwargs["starts_with"] is True
     assert first.kwargs["body"] == {"class": "SearchStringRequestBody", "searchString": CAPTURED_ORIGINAL + "_archivedOn_",
                                     "startsWith": True, "ignoreCase": False, "forLineage": True,
-                                    "forDuplicateProcessing": True, "graphQueryDepth": 0, "startFrom": 0, "pageSize": 500}
+                                    "forDuplicateProcessing": True, "graphQueryDepth": 0, "startFrom": 0, "pageSize": 500,
+                                    "metadataElementTypeName": "RelationalDatabase"}
+    assert first.kwargs["metadata_element_type"] == "RelationalDatabase"   # typed: the database's own type
     assert end.kwargs["body"]["startFrom"] == 500                          # read to "No elements found"
     # the same element is NOT a sibling of a name it merely starts with
     client.find_metadata_elements_with_string.side_effect = [page, "No elements found"]
@@ -274,6 +276,42 @@ def test_the_gateway_fails_closed_when_the_lookup_cannot_be_made(answer):
     g, _ = _gateway_with(answer)
     with pytest.raises(gw.SiblingLookupFailed, match="could not check whether an archived copy exists"):
         g.archived_siblings(CAPTURED_ORIGINAL)
+
+
+@pytest.mark.parametrize("qn,type_name", [
+    (CAPTURED_ORIGINAL, "RelationalDatabase"),
+    (gw.schema_qualified_name("host.docker.internal:5432", "re_throwaway_62", "sales"), "DeployedDatabaseSchema")])
+def test_the_archived_sibling_search_is_typed_with_the_elements_own_type(qn, type_name):
+    """FAIL-ON-PURPOSE (architect 2026-10-23): the untyped startsWith find took ~4 min in a live leave-out. Every
+    page carries the element's type and the exact `<qualifiedName>_archivedOn_` prefix; no call is untyped."""
+    g, client = _gateway_with(None)
+    client.find_metadata_elements_with_string.side_effect = [
+        [{"elementGUID": f"0000000{i}-0000-4000-8000-000000000000"} for i in range(1)], "No elements found"]
+    g.archived_siblings(qn)
+    calls = client.find_metadata_elements_with_string.call_args_list
+    assert len(calls) == 2                                                  # every page read, to the end
+    for c in calls:
+        assert c.kwargs["metadata_element_type"] == type_name
+        assert c.kwargs["body"]["metadataElementTypeName"] == type_name
+        assert c.kwargs["search_string"] == c.kwargs["body"]["searchString"] == qn + "_archivedOn_"
+        assert c.kwargs["starts_with"] is True
+    client.get_guid_for_name.assert_not_called()
+
+
+def test_a_name_with_no_known_type_is_never_searched_untyped():
+    g, client = _gateway_with("No elements found")
+    with pytest.raises(gw.SiblingLookupFailed, match="could not check whether an archived copy exists"):
+        g.archived_siblings("SomethingElse::x::y")
+    client.find_metadata_elements_with_string.assert_not_called()
+
+
+def test_the_database_surveyors_sibling_check_is_typed_too():
+    from pyegeria import MetadataExpert
+    client = create_autospec(MetadataExpert, spec_set=True, instance=True)
+    client.find_metadata_elements_with_string.return_value = "No elements found"
+    assert gw.find_archived_siblings(client, CAPTURED_ORIGINAL) == []
+    assert client.find_metadata_elements_with_string.call_args.kwargs["body"]["metadataElementTypeName"] == \
+        "RelationalDatabase"
 
 
 # ── the fake: renames on archive, as Egeria does; the old shape is refused ────────────────────────────────────────
