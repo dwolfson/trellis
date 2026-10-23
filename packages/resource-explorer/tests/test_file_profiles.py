@@ -308,12 +308,38 @@ def test_publish_takes_res_changed_rows_only_and_carries_sample_ratio_and_source
     assert float(big["additional"]["sampleRatio"]) < 1 and big["additional"]["statsSource"] == "resource-explorer"
     assert "sampled" in big["explanation"] and "surveyed by Resource Explorer" in big["summary"]
     assert all("min_text" not in s["value_count"] and "max_text" not in s["value_count"] for s in specs)
+    # the baseline is the last PUBLISHED run: with no publish yet, every row is new again
+    second = fp.run_file_profiles(fs, registry, limit=LIMIT)
+    assert len(fp.changed_rows(registry, "lake", second["run_id"])) == 14
+    _published(registry, second["run_id"])
     second = fp.run_file_profiles(fs, registry, limit=LIMIT)
     assert fp.changed_rows(registry, "lake", second["run_id"]) == []
     (root / "a.csv").write_text("id,name\n1,ann\n2,bob\n3,cy\n4,dee\n")
     fs = _walk(registry, root)
     third = fp.run_file_profiles(fs, registry, limit=LIMIT)
     assert {r["file_path"] for r in fp.changed_rows(registry, "lake", third["run_id"])} == {"a.csv"}
+
+
+def _published(registry, run_id, *, complete=True):
+    registry.record_step_run("lake", fp.PUBLISH_STEP_KEY, run_id, entity_type="filesystem", source="egeria-published",
+                             executor="local", metrics={"report_guid": "r", "complete": complete})
+
+
+def test_changed_rows_ignore_an_incomplete_publish_and_the_published_run_survives_pruning(registry, tmp_path):
+    root = _tree(tmp_path)
+    fs = _walk(registry, root)
+    first = fp.run_file_profiles(fs, registry, limit=LIMIT)
+    _published(registry, first["run_id"])
+    for _ in range(fp.RUNS_KEPT + 1):
+        last = fp.run_file_profiles(fs, registry, limit=LIMIT)
+    assert first["run_id"] in registry.list_filesystem_file_column_runs("lake")
+    assert fp.changed_rows(registry, "lake", last["run_id"]) == []
+    _published(registry, last["run_id"], complete=False)       # a partial publish is not a baseline
+    (root / "a.csv").write_text("id,name\n1,ann\n2,bob\n3,cy\n4,dee\n")
+    fs = _walk(registry, root)
+    newer = fp.run_file_profiles(fs, registry, limit=LIMIT)
+    assert fp.last_published_run(registry, "lake") == first["run_id"]
+    assert {r["file_path"] for r in fp.changed_rows(registry, "lake", newer["run_id"])} == {"a.csv"}
 
 
 def test_runs_are_kept_per_run_and_pruned_to_the_newest(registry, tmp_path):
@@ -401,3 +427,310 @@ def test_the_press_with_no_walk_is_409_with_the_words(api, registry, tmp_path):
     registry.register_filesystem(FileSystemEntity(slug="nowalk", display_name="N", local_mount_point=str(tmp_path)))
     r = client.post("/api/filesystems/nowalk/file-profiles", headers=headers)
     assert r.status_code == 409 and "run the folder survey first" in r.json()["detail"]
+
+
+# ── 10. fix round 1 (Opus review, 2026-10-23) ────────────────────────────────────────────────────────────────────────
+
+def _watch_opens(monkeypatch, root):
+    import builtins
+    import io
+
+    opened: list[str] = []
+    real_open, real_io_open, real_os_open = builtins.open, io.open, os.open
+
+    def watch(path):
+        try:
+            p = os.fspath(path)
+        except TypeError:
+            return
+        if isinstance(p, bytes):
+            p = os.fsdecode(p)
+        if isinstance(p, str) and p.startswith(str(root)):
+            opened.append(p)
+
+    monkeypatch.setattr(builtins, "open", lambda f, *a, **k: (watch(f), real_open(f, *a, **k))[1])
+    monkeypatch.setattr(io, "open", lambda f, *a, **k: (watch(f), real_io_open(f, *a, **k))[1])
+    monkeypatch.setattr(os, "open", lambda f, *a, **k: (watch(f), real_os_open(f, *a, **k))[1])
+    return opened
+
+
+def test_on_an_egeria_led_file_system_a_secret_csv_and_a_linked_csv_are_never_submitted(registry, tmp_path):
+    root = _tree(tmp_path)
+    (root / "credentials.csv").write_text("user,pw\nu,p\n")
+    outside = tmp_path / "outside.csv"
+    outside.write_text("a\n1\n")
+    os.symlink(outside, root / "linked.csv")
+    fs = _walk(registry, root, led_by="egeria")
+    port = _port()
+    fp.run_file_profiles(fs, registry, port=port, limit=LIMIT)
+    states, _ = _states(registry)
+    assert states["credentials.csv"]["state"] == fp.SECRET_NAME
+    assert states["linked.csv"]["state"] == fp.LINK_NOT_FOLLOWED   # the walk keeps a link as a row; never followed
+    submitted = {c.args[1] for c in port.csv_asset_guid.call_args_list}
+    assert submitted == {"a.csv", "b.csv", "sub/c.csv", "big.csv"}
+    assert states["a.csv"]["state"] == fp.SUBMITTED
+
+
+def test_a_link_is_never_submitted_even_when_the_walk_row_does_not_say_link(registry, tmp_path):
+    root = _tree(tmp_path)
+    outside = tmp_path / "outside.csv"
+    outside.write_text("a\n1\n")
+    os.symlink(outside, root / "linked.csv")
+    assert fp.precheck({"file_path": "linked.csv", "hash_state": ""}, root, True) == fp.LINK_NOT_FOLLOWED
+    os.symlink(root / "sub", root / "subl")
+    assert fp.precheck({"file_path": "subl/c.csv", "hash_state": ""}, root, True) == fp.LINK_NOT_FOLLOWED
+    assert fp.precheck({"file_path": "credentials.csv", "hash_state": ""}, root, True) == fp.SECRET_NAME
+    assert fp.precheck({"file_path": "a.csv", "hash_state": ""}, root, True) is None
+
+
+def test_a_format_not_read_is_never_opened(registry, tmp_path, monkeypatch):
+    root = _tree(tmp_path)
+    fs = _walk(registry, root)
+    opened = _watch_opens(monkeypatch, root)
+    fp.run_file_profiles(fs, registry, limit=LIMIT)
+    assert not any(p.endswith("g.pkl") for p in opened), opened
+    assert any(p.endswith("a.csv") for p in opened)
+    states, _ = _states(registry)
+    assert states["g.pkl"]["state"] == fp.NOT_APPLICABLE
+
+
+def test_a_second_press_while_one_runs_is_already_running_and_submits_nothing(registry, tmp_path):
+    root = _tree(tmp_path)
+    fs = _walk(registry, root, led_by="egeria")
+    inner: list = []
+    port = _port()
+
+    def initiate(qn, target, guid, request_parameters=None):
+        if not inner:
+            with pytest.raises(fp.AlreadyRunning, match="already running"):
+                fp.run_file_profiles(fs, registry, port=second, limit=LIMIT)
+            inner.append(True)
+        return f"action-{guid}"
+
+    second = _port()
+    port.initiate.side_effect = initiate
+    fp.run_file_profiles(fs, registry, port=port, limit=LIMIT)
+    assert inner == [True]
+    second.csv_survey_listed.assert_not_called()
+    second.initiate.assert_not_called()
+    assert port.initiate.call_count == 4                    # each CSV once, never twice
+    assert len(registry.list_filesystem_file_column_runs("lake")) == 1
+    fp.run_file_profiles(fs, registry, port=_port(), limit=LIMIT)   # the claim was released
+    assert len(registry.list_filesystem_file_column_runs("lake")) == 2
+
+
+@pytest.mark.usefixtures("signed_in_caller")
+def test_the_double_press_through_the_route_is_409_with_the_words(api, registry, tmp_path):
+    client, headers = api
+    root = _tree(tmp_path)
+    _walk(registry, root)
+    assert registry.take_claim(f"{fp.STEP_KEY}:lake", "another-press")
+    r = client.post("/api/filesystems/lake/file-profiles", headers=headers)
+    assert r.status_code == 409 and "already running" in r.json()["detail"]
+    assert registry.list_filesystem_file_column_runs("lake") == []
+    registry.release_claim(f"{fp.STEP_KEY}:lake", "another-press")
+    assert client.post("/api/filesystems/lake/file-profiles", headers=headers).status_code == 200
+
+
+def test_the_csv_template_qualified_name():
+    assert fp.csv_asset_qualified_name("lake", "/deployments/lake/a.csv") == "CSVFile::lake:/deployments/lake/a.csv"
+
+
+def _real_port_with_fake_surveyor(store):
+    from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import EgeriaFileSystemSurveyor
+
+    fake = create_autospec(EgeriaFileSystemSurveyor, instance=True, spec_set=True)
+    fake._find_element_guid.side_effect = lambda name, type_name=None, *, qualified_name=False: store.get(name, "")
+
+    def create(info, canonical, fs_name, *, fallback=True):
+        guid = f"{len(store):08d}-0000-0000-0000-000000000000"
+        store[fp.csv_asset_qualified_name(fs_name, canonical)] = guid
+        return guid
+
+    fake._create_data_file_asset.side_effect = create
+    port = fp.pyegeria_port_class()()
+    port._fs_surveyor = fake
+    port.csv_survey_listed = lambda: True
+    port.initiate = lambda qn, target, guid, request_parameters=None: f"action-{guid}"
+    return port, fake
+
+
+def test_a_re_run_finds_the_csv_asset_by_its_template_qualified_name_and_creates_none(registry, tmp_path):
+    root = _tree(tmp_path)
+    fs = _walk(registry, root, led_by="egeria")
+    store: dict = {}
+    port, fake = _real_port_with_fake_surveyor(store)
+    try:
+        fp.run_file_profiles(fs, registry, port=port, limit=LIMIT)
+        assert fake._create_data_file_asset.call_count == 4
+        fp.run_file_profiles(fs, registry, port=port, limit=LIMIT)
+        assert fake._create_data_file_asset.call_count == 4, "the second run created no asset"
+    finally:
+        port.close()
+    fake.close.assert_called_once()
+    calls = fake._find_element_guid.call_args_list
+    assert calls and all(c.kwargs == {"type_name": "CSVFile", "qualified_name": True} for c in calls)
+    assert calls[0].args[0] == "CSVFile::lake:/deployments/lake/a.csv"
+    assert all(c.kwargs.get("fallback") is False for c in fake._create_data_file_asset.call_args_list)
+
+
+def test_a_read_that_could_not_be_made_creates_no_asset_and_the_file_is_refused(registry, tmp_path):
+    from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import EgeriaFileSystemSurveyorError
+
+    root = _tree(tmp_path)
+    fs = _walk(registry, root, led_by="egeria")
+    port, fake = _real_port_with_fake_surveyor({})
+    fake._find_element_guid.side_effect = EgeriaFileSystemSurveyorError("timed out")
+    try:
+        out = fp.run_file_profiles(fs, registry, port=port, limit=LIMIT)
+    finally:
+        port.close()
+    fake._create_data_file_asset.assert_not_called()
+    assert out["egeria_half"] == fp.EGERIA_HALF_SUBMIT_FAILED
+
+
+def test_a_report_with_no_column_profile_is_no_columns_never_profiled_by_egeria(registry, tmp_path):
+    root = _tree(tmp_path)
+    fs = _walk(registry, root, led_by="egeria")
+    port = _port()
+    fp.run_file_profiles(fs, registry, port=port, limit=LIMIT)
+    port.report_guid_for_action.side_effect = lambda action: "rep-a" if action == "action-asset-a.csv" else None
+    port.read_report.return_value = ReportRead(guid="rep-a", at="", originator_guid="x", annotations=[])
+    out = fp.read_back_egeria(fs, registry, port)
+    assert out["no_columns"] == 1 and out["read"] == 0
+    states, _ = _states(registry)
+    assert states["a.csv"]["state"] == fp.NO_COLUMNS
+    c = fp.card_counts(list(states.values()))
+    assert c["no_columns"] == 1 and c["by_egeria"] == 0
+
+
+def test_duplicate_column_names_in_a_report_dedupe_by_ordinal_and_a_bad_file_never_fails_the_read(registry, tmp_path):
+    root = _tree(tmp_path)
+    fs = _walk(registry, root, led_by="egeria")
+    port = _port()
+    fp.run_file_profiles(fs, registry, port=port, limit=LIMIT)
+    ann = lambda name, pos: {"guid": f"ann-{name}-{pos}", "annotation_type": "ResourceProfileAnnotation",  # noqa: E731
+                             "detail": {"type_name": "ResourceProfileAnnotation",
+                                        "profile_properties": {"columnName": name, "position": pos},
+                                        "profile_counts": {"recordCount": 3}}}
+    port.report_guid_for_action.side_effect = lambda action: {"action-asset-a.csv": "rep-a",
+                                                               "action-asset-b.csv": "rep-b"}.get(action)
+    good = ReportRead(guid="rep-a", at="", originator_guid="x", annotations=[ann("id", 1), ann("id", 1), ann("id", 2)])
+    port.read_report.side_effect = lambda guid: good if guid == "rep-a" else (_ for _ in ()).throw(ValueError("bad"))
+    out = fp.read_back_egeria(fs, registry, port)
+    assert out["read"] == 1 and out["failed"] == 1 and "b.csv" in out["errors"]
+    _, run = _states(registry)
+    cols = registry.list_filesystem_file_columns("lake", run, file_path="a.csv")
+    assert [(c["column_name"], c["ordinal"]) for c in cols] == [("id", 1), ("id [2]", 2)]
+
+
+def test_size_and_sampling_come_from_the_open_descriptor_not_the_walk_row(tmp_path):
+    path = tmp_path / "grown.csv"
+    path.write_text("n\n" + "\n".join(str(i) for i in range(20_000)) + "\n")
+    out = fp.profile_file(path, "csv", 10, limit=LIMIT)          # the walk said 10 bytes; the file is bigger now
+    assert out["size_bytes"] == path.stat().st_size and out["state"] == fp.SAMPLED
+    assert out["sample_ratio"] == pytest.approx(out["bytes_read"] / out["size_bytes"], rel=0.01)
+    small = fp.profile_file(tmp_path / "grown.csv", "csv", 10**12, limit=10**9)
+    assert small["state"] == fp.MEASURED and small["sample_ratio"] == 1
+
+
+def test_a_parquet_whose_single_row_group_is_over_the_limit_is_over_limit_never_read_whole(tmp_path, monkeypatch):
+    import pandas as pd
+    import pyarrow.parquet as pq
+
+    path = tmp_path / "one.parquet"
+    pd.DataFrame({"i": range(20_000), "s": [f"v{i}" for i in range(20_000)]}).to_parquet(path, row_group_size=50_000)
+    read = []
+    monkeypatch.setattr(pq.ParquetFile, "read", lambda self, *a, **k: read.append(1))
+    out = fp.profile_file(path, "parquet", limit=path.stat().st_size // 2)
+    assert out["state"] == fp.OVER_LIMIT and out["columns"] == [] and read == []
+
+
+def test_a_headerless_csv_flags_data_like_headers_and_never_publishes_their_names(registry, tmp_path):
+    root = tmp_path / "hl"
+    root.mkdir()
+    (root / "nohdr.csv").write_text("1,ann,2026-01-02\n2,ann,2026-01-03\n3,bob,2026-01-04\n")
+    (root / "ok.csv").write_text("id,name\n1,x\n")
+    fs = _walk(registry, root)
+    out = fp.run_file_profiles(fs, registry, limit=LIMIT)
+    cols = {c["column_name"]: c for c in registry.list_filesystem_file_columns("lake", out["run_id"], file_path="nohdr.csv")}
+    assert {n: c["state"] for n, c in cols.items()} == {"1": fp.HEADER_SUSPECT, "ann": fp.HEADER_SUSPECT,
+                                                        "2026-01-02": fp.HEADER_SUSPECT}
+    ok = registry.list_filesystem_file_columns("lake", out["run_id"], file_path="ok.csv")
+    assert all(c["state"] == fp.MEASURED for c in ok)
+    published = fp.changed_rows(registry, "lake", out["run_id"])
+    assert {r["file_path"] for r in published} == {"ok.csv"}
+    names = {s["additional"]["columnName"] for s in fp.publish_specs(published, "/x")}
+    assert names == {"id", "name"}
+    view = fp.profiles_view(registry, "lake")["run"]
+    assert view["counts"]["header_suspect"] == 1 and view["counts"]["profiled"] == 2
+    shown = next(f for f in view["files"] if f["file_path"] == "nohdr.csv")["columns_list"]
+    assert [c["column_name"] for c in shown] == ["column 1", "column 2", "column 3"]
+
+
+def test_an_unreachable_mount_is_not_reachable_never_not_permitted(registry, tmp_path):
+    root = _tree(tmp_path)
+    fs = _walk(registry, root)
+    gone = tmp_path / "gone"
+    root.rename(gone)
+    out = fp.run_file_profiles(fs, registry, limit=LIMIT)
+    states, _ = _states(registry)
+    assert out["mount_reachable"] is False
+    assert {s["state"] for s in states.values()} == {fp.NOT_REACHABLE}
+    c = fp.card_counts(list(states.values()))
+    assert c["not_reachable"] == 8 and c["not_permitted"] == 0
+
+
+def _publish_surveyor(store, *, fail_from=None):
+    from pyegeria import AssetMaker
+    from pyegeria.omvs.data_discovery import DataDiscovery
+
+    from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import EgeriaFileSystemSurveyor
+
+    s = EgeriaFileSystemSurveyor(platform_url="https://x", view_server="v")
+    s.connect = lambda: None
+    s._find_element_guid = lambda name, type_name=None, *, qualified_name=False: store.get(name, "")
+    maker = create_autospec(AssetMaker, instance=True, spec_set=True)
+
+    def create_asset(body):
+        guid = "aaaaaaaa-0000-0000-0000-00000000000r"
+        store[body["properties"]["qualifiedName"]] = guid
+        return guid
+
+    maker.create_asset.side_effect = create_asset
+    maker.get_asset_by_guid.side_effect = lambda guid, **k: {"elementHeader": {"guid": guid, "type": {"typeName": "SurveyReport"}},
+                                                             "properties": {}}
+    disc = create_autospec(DataDiscovery, instance=True, spec_set=True)
+    made = []
+
+    def create_annotation(body):
+        if fail_from is not None and len(made) >= fail_from:
+            raise RuntimeError("Egeria refused")
+        guid = f"cccccccc-0000-0000-0000-{len(store):012d}"
+        store[body["properties"]["qualifiedName"]] = guid
+        made.append(guid)
+        return guid
+
+    disc.create_annotation.side_effect = create_annotation
+    s._asset_maker, s._discovery = maker, disc
+    return s, maker, disc
+
+
+def test_a_partial_publish_is_resumed_on_the_same_report_adding_only_the_missing_annotations(registry, tmp_path):
+    root = _tree(tmp_path)
+    fs = _walk(registry, root)
+    out = fp.run_file_profiles(fs, registry, limit=LIMIT)
+    specs = fp.publish_specs(fp.changed_rows(registry, "lake", out["run_id"]), "/deployments/lake")
+    store: dict = {}
+    s, maker, disc = _publish_surveyor(store, fail_from=5)
+    first = s.publish_file_profiles(fs, out["run_id"], specs, registry)
+    assert first["annotations_in_egeria"] == 5 and first["complete"] is False and first["report_reused"] is False
+    assert [bool(a["guid"]) for a in first["annotations"]] == [True] * 5 + [False] * (len(specs) - 5)
+    assert first["annotations"][0]["column"] and first["annotations"][0]["file"].startswith("/deployments/lake/")
+    s2, maker2, disc2 = _publish_surveyor(store)
+    second = s2.publish_file_profiles(fs, out["run_id"], specs, registry)
+    maker2.create_asset.assert_not_called()                          # the report was found by its qualifiedName
+    assert second["report_guid"] == first["report_guid"] and second["report_reused"] is True
+    assert disc2.create_annotation.call_count == len(specs) - 5      # only the missing ones
+    assert second["complete"] is True and second["annotations_in_egeria"] == len(specs)
+    assert fp.latest_publish_proof(registry, "lake", out["run_id"])["complete"] is True

@@ -772,7 +772,8 @@ def get_filesystem_file_profiles(slug: str) -> dict:
 def run_filesystem_file_profiles(slug: str) -> dict:
     """The press (consent is this press; the card showed the cost line before it). Profiles every data file of the newest
     walk: a `.csv` on an Egeria-led file system goes to Egeria's CSV Survey Service, every other readable file is profiled
-    here. Writes nothing into the path. 409 when there is no walk yet."""
+    here. Writes nothing into the path. 409 when there is no walk yet, and 409 while a run for this file system is in
+    flight (server-side claim: a second press submits nothing)."""
     from resource_explorer.surveyors.filesystem import file_profiles as fp
     from resource_explorer.web.routes.curate import require_resource_write
 
@@ -785,7 +786,7 @@ def run_filesystem_file_profiles(slug: str) -> dict:
 
     try:
         summary = fp.run_file_profiles(fs, registry, port_factory=lambda: fp.make_port(identity=Caller()))
-    except fp.NothingToProfile as exc:
+    except (fp.NothingToProfile, fp.AlreadyRunning) as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return {**summary, "view": fp.profiles_view(registry, slug)}
 
@@ -812,7 +813,8 @@ def read_filesystem_file_profiles_from_egeria(slug: str) -> dict:
 @router.post("/{slug}/file-profiles/publish")
 def publish_filesystem_file_profiles(slug: str) -> dict:
     """Publish Resource Explorer's column profiles of the newest run, only the columns whose profile differs from the last
-    run (until the profile-publish reshape lands). Egeria's own reports stay Egeria's. 409 when nothing is to publish."""
+    run (until the profile-publish reshape lands). Egeria's own reports stay Egeria's. 409 when nothing is to publish, or when this run's publish is
+    complete. A partial publish is resumed: the same report, only the missing annotations."""
     from resource_explorer.surveyors.filesystem import file_profiles as fp
     from resource_explorer.web.routes.curate import require_resource_write
 
@@ -825,7 +827,7 @@ def publish_filesystem_file_profiles(slug: str) -> dict:
     if not runs:
         raise HTTPException(status_code=409, detail="No data-file profiles to publish. Run them first.")
     run_id = runs[0]
-    if fp.latest_publish_proof(registry, slug, run_id):
+    if (fp.latest_publish_proof(registry, slug, run_id) or {}).get("complete"):
         raise HTTPException(status_code=409, detail="These profiles are already published to Egeria. Run them again to "
                             "publish newer ones.")
     rows = fp.changed_rows(registry, slug, run_id)

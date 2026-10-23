@@ -601,7 +601,13 @@ class EgeriaFileSystemSurveyor:
         """Files build step 5: Resource Explorer's column profiles as one ResourceProfileAnnotation per column under RE's own
         SurveyReport, "surveyed by Resource Explorer". Egeria's own CSV reports are Egeria's and are never republished here.
         `specs` come from `file_profiles.publish_specs` (each carries its own `additional`: file, column, sampleRatio,
-        statsSource). The proof (what landed, read back) is kept on a `file_profiles_publish` step_runs row for `run_id`."""
+        statsSource). The proof (what landed, read back) is kept on a `file_profiles_publish` step_runs row for `run_id`.
+
+        Resumable: the report is read FIRST by its qualifiedName (the unique-name read, typed SurveyReport) and reused
+        when it is there, and each annotation is read first by its own qualifiedName (`publish_annotations`), so a
+        second press after a partial publish adds only the missing annotations and never a second report. The proof
+        names, per annotation, the column and the GUID Egeria holds for it ('' when it did not land), and is
+        `complete` only when every annotation is in Egeria and the report was read back."""
         from resource_explorer.egeria_linkage import guard_linkage
         from resource_explorer.private_publish import refuse_unsupported_private
         from resource_explorer.surveyors.filesystem import file_profiles as fp
@@ -631,12 +637,21 @@ class EgeriaFileSystemSurveyor:
                                              "surveyor": "Resource Explorer"},
                 },
             }
-            report_guid = self._asset_maker.create_asset(body=body)
+            report_guid = self._find_element_guid(qualified_name, type_name="SurveyReport", qualified_name=True)
+            reused = bool(report_guid)
+            if not reused:
+                report_guid = self._asset_maker.create_asset(body=body)
             made = self._create_annotations(annotations, report_guid, fs_entity.slug, f"file_profiles::{run_id}")
             read_back = self._read_back_by_guid(report_guid, expect_type="SurveyReport")
-            proof = {"report_guid": report_guid, "annotation_count": len(annotations),
-                     "annotations_in_egeria": _published_count(made), "report_read_back": bool(read_back.get("matched")),
-                     "read_back_why": read_back.get("why", ""), "at": datetime.utcnow().isoformat()}
+            landed = _published_count(made)
+            per = [{"file": s["additional"].get("filePath", ""), "column": s["additional"].get("columnName", ""),
+                    "guid": (made[i] or "") if isinstance(made, list) and i < len(made) else ""}
+                   for i, s in enumerate(specs)]
+            proof = {"report_guid": report_guid, "report_reused": reused, "annotation_count": len(annotations),
+                     "annotations_in_egeria": landed, "report_read_back": bool(read_back.get("matched")),
+                     "read_back_why": read_back.get("why", ""), "annotations": per,
+                     "complete": bool(read_back.get("matched")) and landed == len(annotations),
+                     "at": datetime.utcnow().isoformat()}
         if registry:
             registry.record_step_run(fs_entity.slug, fp.PUBLISH_STEP_KEY, run_id, entity_type="filesystem",
                                      source="egeria-published", executor="local", metrics=proof)
@@ -715,8 +730,22 @@ class EgeriaFileSystemSurveyor:
                 f"Failed to initiate Egeria survey for fs_guid={fs_guid}: {exc}"
             ) from exc
 
-    def _create_data_file_asset(self, file_info: dict, canonical_path: str, fs_name: str) -> str:
-        """Create a data file element in Egeria using template metadata values."""
+    def close(self) -> None:
+        """Close the Egeria clients this surveyor holds (their HTTP sessions). Best effort; safe to call twice."""
+        for client in (self._automated_curation, self._metadata_expert, self._asset_maker, self._discovery):
+            closer = getattr(client, "close_session", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:  # noqa: BLE001 -- closing never fails the caller
+                    log.debug("closing an Egeria client failed", exc_info=True)
+        self._automated_curation = self._metadata_expert = self._asset_maker = self._discovery = None
+        self._clients_for_run = None
+
+    def _create_data_file_asset(self, file_info: dict, canonical_path: str, fs_name: str, *,
+                                fallback: bool = True) -> str:
+        """Create a data file element in Egeria using template metadata values. `fallback=False` never falls back to the
+        generic Data File template (whose element has another type and qualifiedName than the one asked for)."""
         ext = Path(file_info["file_path"]).suffix.lstrip(".").lower()
         fmt = file_info["format"]
         
@@ -753,6 +782,8 @@ class EgeriaFileSystemSurveyor:
         try:
             return self._automated_curation.create_elem_from_template(body)
         except Exception as exc:
+            if not fallback:
+                raise
             log.warning(f"Failed to create asset using template {fmt}: {exc}. Trying fallback to generic File...")
             if template_guid != "66d8dda9-00cf-4e59-938c-4b0583596b1e":
                 body["templateGUID"] = "66d8dda9-00cf-4e59-938c-4b0583596b1e"

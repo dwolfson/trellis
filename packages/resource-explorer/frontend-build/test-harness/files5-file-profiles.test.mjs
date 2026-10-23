@@ -113,3 +113,18 @@ test('the press posts to file-profiles and repaints from the re-read', async () 
   assert.ok(calls.some((c) => c.method === 'POST' && /\/api\/filesystems\/lake\/file-profiles$/.test(c.url)));
   assert.equal(host.querySelector('[data-fp]').dataset.fpState, 'profiled');
 });
+
+test('fix round 1: no column profile, not reachable and a data-like header each have their own words; a partial publish still offers the press', async () => {
+  const { host, fs } = await setUp();
+  const run = RUN({ counts: COUNTS({ no_columns: 1, not_reachable: 2, header_suspect: 1 }),
+    publish: { report_guid: 'rep12345-x', annotation_count: 4, annotations_in_egeria: 2, complete: false } });
+  host.innerHTML = fs.folderSurveyCardHtml(VIEW({ price: PRICE(), run }));
+  const other = text(host.querySelector('[data-fp-other]'));
+  assert.match(other, /1 read back from Egeria with no column profile/);
+  assert.match(other, /2 not reachable from here/);
+  assert.match(other, /1 with a header that looks like data · those names not published/);
+  assert.doesNotMatch(other, /not permitted/);
+  assert.ok(host.querySelector('[data-fs-act="publish-profiles"]'), 'a partial publish can be resumed');
+  host.innerHTML = fs.folderSurveyCardHtml(VIEW({ price: PRICE(), run: RUN({ publish: { report_guid: 'r', annotation_count: 2, annotations_in_egeria: 2, complete: true } }) }));
+  assert.equal(host.querySelector('[data-fs-act="publish-profiles"]'), null, 'a complete publish is not offered again');
+});

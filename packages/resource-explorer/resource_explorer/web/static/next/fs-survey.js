@@ -74,7 +74,10 @@ export const FOLDER_SURVEY_WORDS = {
   otherStates: (c) => [c.over_limit ? `${num(c.over_limit)} over the limit in a format read only whole` : '',
     c.unreadable ? `${num(c.unreadable)} could not be parsed` : '',
     c.secret_name ? `${num(c.secret_name)} with a secret-looking name · not opened` : '',
-    c.link_not_followed ? `${num(c.link_not_followed)} linked · not followed` : ''].filter(Boolean).join(' · '),
+    c.link_not_followed ? `${num(c.link_not_followed)} linked · not followed` : '',
+    c.no_columns ? `${num(c.no_columns)} read back from Egeria with no column profile` : '',
+    c.not_reachable ? `${num(c.not_reachable)} not reachable from here · the mount point could not be reached` : '',
+    c.header_suspect ? `${num(c.header_suspect)} with a header that looks like data · those names not published` : ''].filter(Boolean).join(' · '),
 };
 
 const dash = '–';
@@ -263,7 +266,8 @@ const STATE_WORDS = {
   measured: 'profiled', sampled: 'profiled · sampled', not_applicable: 'not read · format', not_permitted: 'not permitted',
   over_limit: 'over the limit · not read', unreadable: 'could not be parsed', secret_name: 'secret-looking name · not opened',
   link_not_followed: 'linked · not followed', not_installed: 'not installed', egeria_unchecked: 'could not check Egeria',
-  submit_failed: 'refused by Egeria', submitted: "submitted to Egeria",
+  submit_failed: 'refused by Egeria', submitted: "submitted to Egeria", no_columns: 'no column profile in Egeria\'s report',
+  not_reachable: 'not reachable from here', header_suspect: 'profiled · header looks like data',
 };
 const sourceWords = (s) => (String(s || '').startsWith('egeria:') ? `Egeria · report ${String(s).slice(7, 15)}` : s === 'resource-explorer' ? 'RE' : '');
 
@@ -325,7 +329,7 @@ export function folderSurveyCardHtml(view, { busy = '', error = '' } = {}) {
       ${needsPublishMeasures ? btn('publish-measures', busy === 'publish-measures' ? W.publishing : W.publishMeasures, !busy) : ''}
       ${fp && fp.price && fp.price.walk ? btn('profile', busy === 'profile' ? W.profiling : W.profilePress, !busy) : ''}
       ${fpRun && fpRun.counts && fpRun.counts.submitted ? btn('read-egeria', busy === 'read-egeria' ? W.reading : W.readEgeria, !busy) : ''}
-      ${fpRun && !fpRun.publish && fpRun.counts && fpRun.counts.by_re ? btn('publish-profiles', busy === 'publish-profiles' ? W.publishing : W.publishProfiles, !busy) : ''}
+      ${fpRun && !(fpRun.publish && fpRun.publish.complete) && fpRun.counts && fpRun.counts.by_re ? btn('publish-profiles', busy === 'publish-profiles' ? W.publishing : W.publishProfiles, !busy) : ''}
     </div>
     ${error ? `<div data-fs-error class="mt-[2px] text-provenance text-state-warn">${esc(error)}</div>` : ''}
     ${folderResultsHtml(view)}

@@ -20,7 +20,14 @@ Rules, each with a test (tests/test_file_profiles.py):
   read in part (one JSON document, a workbook) is a row with `state = over_limit`;
 * a format the step does not read is a row with `state = not_applicable` (the card names the formats);
 * a file the walk saw but this step may not read is a row with `state = not_permitted`;
-* a secret-looking name (`walk_extensions.looks_secret`) or a link is never opened (`secret_name`, `link_not_followed`);
+* a secret-looking name (`walk_extensions.looks_secret`) or a link is never opened (`secret_name`, `link_not_followed`),
+  and the check runs on EVERY file before it is routed: such a `.csv` is never submitted to Egeria either;
+* the mount root is checked once per run: unreachable from here, every Resource Explorer file is `not_reachable` (its
+  own count), never "not permitted";
+* one run per file system at a time (a claim in `app_settings`, `ProjectRegistry.take_claim`): a second press while one
+  runs is `AlreadyRunning` (409) and submits nothing;
+* a delimited or workbook column whose header looks like data (a number, a date, or a value of its own column) is
+  `header_suspect`: kept here, its name never published;
 * nothing is written into the path.
 
 The Egeria half rests on three ASSUMPTIONS, each named here, read from the repo's own design notes because the live probe was
@@ -30,8 +37,11 @@ not made by this build (no live calls). The coordinator's probe confirms or corr
   source 2026-09-20: `csv-file-survey-service` / `survey-csv-file`, technology type "CSV File"), started as the governance
   action type `CSV_SURVEY_QN = "FileSurvey::survey-csv-file"` with action target `fileToSurvey` (the pattern of
   `FileSurvey::survey-folder`, confirmed live 2026-08-24);
-* A2 its target is a CSV file asset per file (the "CSV Data File" template the older catalog path already uses), found by
-  its path name and created when absent;
+* A2 its target is a CSV file asset per file (the "CSV Data File" template the older catalog path already uses), read
+  first by the qualifiedName that template gives it, `CSVFile::<fileSystemName>:<filePathName>` (Egeria
+  DataAssetTemplateDefinition.CSV_FILE_TEMPLATE: DeployedImplementationType.CSV_FILE.getAssociatedTypeName() + "::" +
+  FILE_SYSTEM_NAME + ":" + FILE_PATH_NAME; the associated type is `CSVFile`), with the unique-name read and a typed check,
+  and created from the template only on Egeria's explicit "not found";
 * A3 Egeria's report carries one ResourceProfileAnnotation per column whose column name is in `profileProperties`
   (`columnName`, else the annotation's display name or summary), its counts in `profileCounts`, and its range in
   `valueRangeFrom` / `valueRangeTo` (`columns_from_report`).
@@ -43,6 +53,7 @@ import io
 import json
 import logging
 import os
+import re
 import socket
 import stat as stat_mod
 import time
@@ -85,7 +96,23 @@ NOT_INSTALLED = "not_installed"        # routed to Egeria; Egeria's CSV Survey S
 EGERIA_UNCHECKED = "egeria_unchecked"  # routed to Egeria; whether it is installed could not be read (never "absent")
 SUBMIT_FAILED = "submit_failed"        # routed to Egeria; Egeria refused the survey or the file's asset
 SUBMITTED = "submitted"                # routed to Egeria; submitted, Egeria's report not read back yet
+NO_COLUMNS = "no_columns"              # routed to Egeria; its report was read back and carried no column profile
+NOT_REACHABLE = "not_reachable"        # the mount root cannot be reached from this machine (checked once per run)
+HEADER_SUSPECT = "header_suspect"      # a COLUMN row: its header looks like data; profiled, its name never published
 PROFILED_STATES = (MEASURED, SAMPLED)
+
+#: The in-flight claim of one run per file system (`ProjectRegistry.take_claim`); renewed per file, so a live run is
+#: never taken over, and a crashed one frees itself after this many seconds.
+CLAIM_STALE_SECONDS = 900
+ALREADY_RUNNING_WORDS = "a data-file profile run for {slug} is already running"
+
+#: The type the "CSV Data File" template creates, and the qualifiedName it gives the element (see A2).
+CSV_FILE_TYPE = "CSVFile"
+
+
+def csv_asset_qualified_name(file_system_name: str, canonical_path: str) -> str:
+    """`CSVFile::<fileSystemName>:<filePathName>`: the qualifiedName Egeria's CSV Data File template gives the asset."""
+    return f"{CSV_FILE_TYPE}::{file_system_name}:{canonical_path}"
 
 #: Egeria half outcomes (the run's own word, said on the card).
 EGERIA_HALF_NONE = "none"              # no file was routed to Egeria
@@ -196,6 +223,32 @@ def columns_from_frame(df: Any, *, declared: dict[str, str] | None = None, recor
     return rows
 
 
+_NUMBER_LIKE = re.compile(r"^[+-]?(\d+([.,]\d+)*|\.\d+)([eE][+-]?\d+)?%?$")
+_DATE_LIKE = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}([ T].*)?$|^\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}$")
+
+
+def header_looks_like_data(name: Any, series: Any) -> bool:
+    """A header that reads as a VALUE: a number, a date, or equal to a value of its own column (a headerless CSV whose
+    first row was taken as the header). Such a column's name is never published."""
+    n = str(name).strip()
+    if not n:
+        return False
+    if _NUMBER_LIKE.match(n) or _DATE_LIKE.match(n):
+        return True
+    try:
+        return bool((series.dropna().astype(str).str.strip() == n).any())
+    except Exception:  # noqa: BLE001 -- a column that cannot be compared is not flagged
+        return False
+
+
+def flag_header_suspects(df: Any, rows: list[dict]) -> list[dict]:
+    """Mark the column rows whose header looks like data `header_suspect` (the profile stays; the name is not published)."""
+    for row, col in zip(rows, df.columns):
+        if header_looks_like_data(col, df[col]):
+            row["state"] = HEADER_SUSPECT
+    return rows
+
+
 # ── reading one file (Resource Explorer's half) ──────────────────────────────────────────────────────────────────────
 
 _O_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
@@ -232,18 +285,26 @@ def _cut_at_line(data: bytes) -> bytes:
     return data[: cut + 1] if cut >= 0 else data
 
 
-def profile_file(path: Path, ext: str, size: int, *, limit: int = PROFILE_LIMIT_BYTES) -> dict:
-    """Profile one file. Returns {state, columns, sample_ratio, bytes_read, error}. Raises nothing for a bad file: a parse
-    failure is `unreadable` with the error, a refused open is `not_permitted`."""
+def profile_file(path: Path, ext: str, size: int | None = None, *, limit: int = PROFILE_LIMIT_BYTES) -> dict:
+    """Profile one file. Returns {state, columns, sample_ratio, bytes_read, size_bytes, error}. Raises nothing for a bad
+    file: a parse failure is `unreadable` with the error, a refused open is `not_permitted`. The size, whether the file is
+    sampled and its sample ratio come from `os.fstat` on the OPEN descriptor; `size` (the walk row's) is not used for any
+    of them, since the file can have changed since the walk."""
     import pandas as pd
 
-    out = {"state": MEASURED, "columns": [], "sample_ratio": 1.0, "bytes_read": 0, "error": ""}
+    out = {"state": MEASURED, "columns": [], "sample_ratio": 1.0, "bytes_read": 0, "size_bytes": None, "error": ""}
     try:
         fh = _open_plain(path)
     except NotPermitted as exc:
         return {**out, "state": NOT_PERMITTED, "error": str(exc)}
     if fh is None:
         return {**out, "state": LINK_NOT_FOLLOWED}
+    try:
+        size = os.fstat(fh.fileno()).st_size
+    except OSError as exc:
+        fh.close()
+        return {**out, "state": UNREADABLE, "error": f"{type(exc).__name__}: {exc}"[:300]}
+    out["size_bytes"] = size
     sampled = size > limit
     try:
         with fh:
@@ -278,8 +339,10 @@ def profile_file(path: Path, ext: str, size: int, *, limit: int = PROFILE_LIMIT_
                 df = pd.DataFrame(list(fastavro.reader(io.BytesIO(data))))
             else:
                 return {**out, "state": NOT_APPLICABLE}
-            out.update(state=state, sample_ratio=ratio,
-                       columns=columns_from_frame(df, sample_ratio=ratio, state=state))
+            columns = columns_from_frame(df, sample_ratio=ratio, state=state)
+            if ext in _DELIMITED or ext in ("xlsx", "xlsm", "xls", "ods"):
+                columns = flag_header_suspects(df, columns)
+            out.update(state=state, sample_ratio=ratio, columns=columns)
             return out
     except Exception as exc:  # noqa: BLE001 -- a file that cannot be parsed is a row that says so, never a silent skip
         return {**out, "state": UNREADABLE, "columns": [], "error": f"{type(exc).__name__}: {exc}"[:300]}
@@ -296,25 +359,28 @@ def _json_frame(data: bytes, pd):
 
 
 def _profile_parquet(fh, size: int, limit: int, out: dict) -> dict:
-    """Parquet over the limit: the first row groups whose stored bytes fit the limit (at least one), with
-    sample_ratio = rows read / rows in the file. The schema's types are the declared types."""
+    """Parquet over the limit: the first row groups whose stored bytes fit the limit, with sample_ratio = rows read /
+    rows in the file. When even the first row group is over the limit nothing is read (`over_limit`): a file over the
+    limit is never read whole. The schema's types are the declared types."""
     import pyarrow.parquet as pq
 
     pf = pq.ParquetFile(fh)
     meta = pf.metadata
     declared = {pf.schema_arrow.field(i).name: str(pf.schema_arrow.field(i).type) for i in range(len(pf.schema_arrow))}
     total_rows = meta.num_rows
-    if size <= limit or meta.num_row_groups <= 1:
+    if size <= limit:
         table = pf.read()
         read_bytes = size
     else:
         groups, used = [], 0
         for g in range(meta.num_row_groups):
             b = meta.row_group(g).total_byte_size
-            if groups and used + b > limit:
+            if used + b > limit:
                 break
             groups.append(g)
             used += b
+        if not groups:
+            return {**out, "state": OVER_LIMIT, "error": "its first row group alone is over the limit"}
         table = pf.read_row_groups(groups)
         read_bytes = used
     df = table.to_pandas()
@@ -357,19 +423,50 @@ def pyegeria_port_class():
             coordinator's probe adds the engine host's own list (`ServerOps.get_governance_engine_summaries`)."""
             return self.process_declared(CSV_SURVEY_QN)
 
-        def csv_asset_guid(self, fs_entity, rel_path: str, canonical_path: str) -> str:
-            """A2: the file's CSV Data File asset, found by its path name, created from the template when absent."""
-            from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import EgeriaFileSystemSurveyor
+        def __init__(self, identity=None) -> None:
+            super().__init__(identity=identity)
+            self._fs_surveyor = None
 
-            s = EgeriaFileSystemSurveyor(platform_url=fs_entity.egeria_url or None,
-                                         view_server=fs_entity.egeria_server or None, identity=self.principal())
-            s.connect()
-            guid = s._find_element_guid(canonical_path)
+        def _surveyor_for(self, fs_entity):
+            """ONE file-system surveyor (its Egeria clients) per port, so per run; closed by `close()`."""
+            if self._fs_surveyor is None:
+                from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import EgeriaFileSystemSurveyor
+
+                s = EgeriaFileSystemSurveyor(platform_url=fs_entity.egeria_url or None,
+                                             view_server=fs_entity.egeria_server or None, identity=self.principal())
+                s.connect()
+                self._fs_surveyor = s
+            return self._fs_surveyor
+
+        def csv_asset_guid(self, fs_entity, rel_path: str, canonical_path: str) -> str:
+            """A2: the file's CSV Data File asset, read FIRST by the template's qualifiedName
+            (`csv_asset_qualified_name`) with the unique-name read, typed `CSVFile`; created from the CSV Data File
+            template only on Egeria's explicit "not found" (a read that could not be made raises: nothing is created).
+            The create uses the same file system name (the slug) and path the qualifiedName is built from, so a re-run
+            finds what this one made."""
+            from resource_explorer.egeria_absence import _is_guid
+
+            self._enter()
+            s = self._surveyor_for(fs_entity)
+            qn = csv_asset_qualified_name(fs_entity.slug, canonical_path)
+            guid = s._find_element_guid(qn, type_name=CSV_FILE_TYPE, qualified_name=True)
             if guid:
                 return guid
             name = rel_path.rpartition("/")[2]
-            return s._create_data_file_asset({"file_path": rel_path, "file_name": name, "format": "CSV"},
-                                             canonical_path, fs_entity.slug) or ""
+            made = s._create_data_file_asset({"file_path": rel_path, "file_name": name, "format": "CSV"},
+                                             canonical_path, fs_entity.slug, fallback=False)
+            if not _is_guid(made):
+                raise RuntimeError(f"Egeria did not return an element GUID for {qn} (it answered {made!r:.60})")
+            return made
+
+        def close(self) -> None:
+            if self._fs_surveyor is not None:
+                try:
+                    self._fs_surveyor.close()
+                except Exception:  # noqa: BLE001 -- closing never fails the run
+                    log.debug("closing the file-system surveyor failed", exc_info=True)
+                self._fs_surveyor = None
+            super().close()
 
     return PyegeriaCsvSurveyPort
 
@@ -434,9 +531,12 @@ def _num(v) -> int | None:
 
 def columns_from_report(report) -> list[dict]:
     """A3: one column row per ResourceProfileAnnotation of Egeria's CSV report, `stats_source = egeria:<report guid>`.
-    An annotation that names no column is not a column (it is counted by the caller as not read)."""
+    An annotation that names no column is not a column (it is counted by the caller as not read). Duplicate column names
+    are deduplicated by ordinal: the same (name, ordinal) twice is one column; one name at two ordinals becomes
+    `name [ordinal]` for the second, so a file's rows never collide on the table's unique key."""
     guid = report.guid
     out: list[dict] = []
+    seen: dict[str, set[int]] = {}
     for ann in report.annotations:
         d = ann.get("detail") or {}
         kind = (ann.get("annotation_type") or "") + " " + (d.get("type_name") or "")
@@ -451,8 +551,16 @@ def columns_from_report(report) -> list[dict]:
         nulls = _num(counts.get("nullCount"))
         values = _num(counts.get("nonNullCount")) if counts.get("nonNullCount") is not None else (
             record - nulls if record is not None and nulls is not None else None)
+        ordinal = _num(props.get("position") or props.get("ordinal")) or len(out) + 1
+        name = str(name)
+        ordinals = seen.setdefault(name, set())
+        if ordinal in ordinals:             # the same column twice (same name, same ordinal): kept once
+            continue
+        if ordinals:                        # two columns of one name: told apart by ordinal
+            name = f"{name} [{ordinal}]"
+        ordinals.add(ordinal)
         out.append({
-            "column_name": str(name), "ordinal": _num(props.get("position") or props.get("ordinal")) or len(out) + 1,
+            "column_name": name, "ordinal": ordinal,
             "declared_type": str(d.get("inferred_data_type") or props.get("dataType") or ""),
             "inferred_general_type": general_type_of(str(d.get("inferred_data_type") or props.get("dataType") or "")),
             "record_ct": record, "value_ct": values, "null_ct": nulls,
@@ -488,16 +596,16 @@ def read_back_egeria(fs_entity, registry, port: CsvSurveyPort, *, run_id: str | 
                 counts["waiting"] += 1
                 continue
             cols = columns_from_report(port.read_report(report_guid))
-        except Exception as exc:  # noqa: BLE001 -- the file stays submitted; the failure is said
+            if not cols:
+                registry.replace_filesystem_file_profile(slug, run_id, rel, [marker_row(
+                    NO_COLUMNS, stats_source=f"{EGERIA_SOURCE_PREFIX}{report_guid}", guid=report_guid)])
+                counts["no_columns"] += 1
+                continue
+            registry.replace_filesystem_file_profile(slug, run_id, rel, cols)
+        except Exception as exc:  # noqa: BLE001 -- one bad file stays submitted and is said; the request never fails
             counts["failed"] += 1
             counts["errors"][rel] = _short(exc)
             continue
-        if not cols:
-            counts["no_columns"] += 1
-            registry.replace_filesystem_file_profile(slug, run_id, rel, [marker_row(
-                MEASURED, stats_source=f"{EGERIA_SOURCE_PREFIX}{report_guid}", guid=report_guid)])
-            continue
-        registry.replace_filesystem_file_profile(slug, run_id, rel, cols)
         counts["read"] += 1
     return counts
 
@@ -537,24 +645,100 @@ def latest_run_record(registry, slug: str) -> dict | None:
     return rows[0] if rows else None
 
 
+class AlreadyRunning(RuntimeError):
+    """A profile run for this file system is in flight (a second press is refused, never queued or run twice)."""
+
+
+def mount_reachable(root: Path) -> bool:
+    """The mount root, checked ONCE per run: False when it does not exist or is not a directory from this machine. A root
+    the OS refuses to stat is reachable (its files then say `not_permitted`, file by file)."""
+    try:
+        st = os.stat(root)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return stat_mod.S_ISDIR(st.st_mode)
+
+
+def _is_linked(root: Path, rel: str) -> bool:
+    """Whether the file, or a folder on its way down from the root, is a link (lstat, never followed)."""
+    path = root
+    for part in Path(rel).parts:
+        path = path / part
+        try:
+            if stat_mod.S_ISLNK(os.lstat(path).st_mode):
+                return True
+        except OSError:
+            return False
+    return False
+
+
+def precheck(f: dict, root: Path, reachable: bool) -> str | None:
+    """The checks EVERY file gets before it is routed to Egeria or to Resource Explorer: a link (the walk's row, or lstat
+    when the root is reachable) is `link_not_followed`; a secret-looking name is `secret_name`. None: route it."""
+    from resource_explorer.surveyors.filesystem import walk_extensions as we
+
+    rel = f["file_path"]
+    if f.get("hash_state") == we.LINK or (reachable and _is_linked(root, rel)):
+        return LINK_NOT_FOLLOWED
+    if f.get("hash_state") == we.SECRET_NAME or we.looks_secret(rel.rpartition("/")[2]):
+        return SECRET_NAME
+    return None
+
+
+def last_published_run(registry, slug: str, *, before: str | None = None) -> str | None:
+    """The newest profile run whose publish is COMPLETE (its proof says every annotation is in Egeria and the report was
+    read back), older than `before` when given. The baseline `changed_rows` diffs against."""
+    rows = registry.query_step_runs(slug=slug, step_key=PUBLISH_STEP_KEY, entity_type="filesystem", limit=200)
+    for r in sorted(rows, key=lambda x: x.get("surveyed_at") or "", reverse=True):
+        at = r.get("surveyed_at") or ""
+        if (r.get("metrics") or {}).get("complete") and (before is None or at < before):
+            return at
+    return None
+
+
 def run_file_profiles(fs_entity, registry, *, port: CsvSurveyPort | None = None,
                       port_factory: Callable[[], CsvSurveyPort] | None = None, limit: int = PROFILE_LIMIT_BYTES,
                       clock: Callable[[], float] = time.monotonic) -> dict:
     """Profile every data file of the newest walk, store the rows for this run and the run's own record, and return the
-    run's summary. Raises NothingToProfile when there is no walk yet. Writes nothing into the path."""
-    from resource_explorer.surveyors.filesystem import walk_extensions as we
-
+    run's summary. Raises NothingToProfile when there is no walk yet, AlreadyRunning when a run for this file system
+    holds the claim (nothing is submitted or read). Writes nothing into the path."""
     slug = fs_entity.slug
     walk, files = walk_data_files(registry, slug)
     if walk is None:
         raise NothingToProfile("no walk of this file system yet · run the folder survey first")
+    run_id = _now()
+    claim_key = f"{STEP_KEY}:{registry._normalize_slug(slug)}"
+    holder = f"{machine()}:{os.getpid()}:{run_id}"
+    if not registry.take_claim(claim_key, holder, stale_after_seconds=CLAIM_STALE_SECONDS):
+        raise AlreadyRunning(ALREADY_RUNNING_WORDS.format(slug=slug))
+    try:
+        return _run(fs_entity, registry, walk, files, run_id, port=port, port_factory=port_factory, limit=limit,
+                    clock=clock, heartbeat=lambda: registry.refresh_claim(claim_key, holder))
+    finally:
+        registry.release_claim(claim_key, holder)
+
+
+def _run(fs_entity, registry, walk: dict, files: list[dict], run_id: str, *, port, port_factory, limit: int, clock,
+         heartbeat: Callable[[], Any]) -> dict:
+    slug = fs_entity.slug
     led_by = walk.get("led_by") or "re"
     root = Path(fs_entity.local_mount_point)
+    reachable = mount_reachable(root)
     readable = readable_extensions()
-    run_id = _now()
 
-    egeria_files = [f for f in files if source_for(f["file_path"], led_by) == SOURCE_EGERIA]
-    re_files = [f for f in files if source_for(f["file_path"], led_by) == SOURCE_RE]
+    all_rows: list[dict] = []
+    egeria_files: list[dict] = []
+    re_files: list[dict] = []
+    for f in files:
+        held = precheck(f, root, reachable)
+        if held:
+            all_rows.append({**marker_row(held), "file_path": f["file_path"]})
+        elif source_for(f["file_path"], led_by) == SOURCE_EGERIA:
+            egeria_files.append(f)
+        else:
+            re_files.append(f)
 
     made_here = None
     if egeria_files and port is None and port_factory is not None:
@@ -568,7 +752,6 @@ def run_file_profiles(fs_entity, registry, *, port: CsvSurveyPort | None = None,
         if made_here is not None and hasattr(made_here, "close"):
             made_here.close()
 
-    all_rows: list[dict] = []
     for rel, rows in egeria_rows.items():
         all_rows.extend({**r, "file_path": rel} for r in rows)
 
@@ -578,19 +761,16 @@ def run_file_profiles(fs_entity, registry, *, port: CsvSurveyPort | None = None,
     for f in re_files:
         rel = f["file_path"]
         ext = ext_of(rel)
-        name = rel.rpartition("/")[2]
-        size = int(f.get("size_bytes") or 0)
         path = root / rel
-        if f.get("hash_state") == we.LINK:
-            rows = [marker_row(LINK_NOT_FOLLOWED)]
-        elif we.looks_secret(name):
-            rows = [marker_row(SECRET_NAME)]
+        if not reachable:
+            rows = [marker_row(NOT_REACHABLE)]
         elif ext not in readable:
             rows = [marker_row(NOT_APPLICABLE)]
         elif not os.access(path, os.R_OK):
             rows = [marker_row(NOT_PERMITTED)]
         else:
-            res = profile_file(path, ext, size, limit=limit)
+            heartbeat()
+            res = profile_file(path, ext, limit=limit)
             bytes_read += res["bytes_read"]
             if res["error"]:
                 errors[rel] = res["error"]
@@ -603,9 +783,11 @@ def run_file_profiles(fs_entity, registry, *, port: CsvSurveyPort | None = None,
         all_rows.extend({**r, "file_path": rel} for r in rows)
     seconds = max(0.0, clock() - started)
 
-    stored = registry.add_filesystem_file_columns(slug, run_id, all_rows)
+    published = last_published_run(registry, slug)
+    stored = registry.add_filesystem_file_columns(slug, run_id, all_rows, keep_also=(published,) if published else ())
     metrics = {
         "walk_run_id": walk["run_id"], "led_by": led_by, "machine": machine(), "limit_bytes": limit,
+        "mount_reachable": reachable,
         "data_files": len(files), "egeria_files": len(egeria_files), "re_files": len(re_files),
         "re_bytes_read": bytes_read, "re_seconds": round(seconds, 3),
         "egeria_half": egeria_state, "egeria_actions": egeria_actions, "errors": errors,
@@ -659,7 +841,7 @@ FILES_SHOWN = 50
 def card_counts(states: list[dict]) -> dict:
     """The card's counts, each from the stored rows of one run."""
     by = lambda *s: [r for r in states if r["state"] in s]  # noqa: E731
-    profiled = by(MEASURED, SAMPLED)
+    profiled = by(MEASURED, SAMPLED, HEADER_SUSPECT)   # a file whose every header looks like data is still profiled
     egeria = [r for r in profiled if str(r.get("stats_source") or "").startswith(EGERIA_SOURCE_PREFIX)]
     not_read = by(NOT_APPLICABLE)
     formats = sorted({ext_of(r["file_path"]) or "(none)" for r in not_read})
@@ -668,7 +850,8 @@ def card_counts(states: list[dict]) -> dict:
             "not_permitted": len(by(NOT_PERMITTED)), "over_limit": len(by(OVER_LIMIT)), "unreadable": len(by(UNREADABLE)),
             "secret_name": len(by(SECRET_NAME)), "link_not_followed": len(by(LINK_NOT_FOLLOWED)),
             "not_installed": len(by(NOT_INSTALLED)), "egeria_unchecked": len(by(EGERIA_UNCHECKED)),
-            "submit_failed": len(by(SUBMIT_FAILED)), "submitted": len(by(SUBMITTED))}
+            "submit_failed": len(by(SUBMIT_FAILED)), "submitted": len(by(SUBMITTED)), "no_columns": len(by(NO_COLUMNS)),
+            "not_reachable": len(by(NOT_REACHABLE))}
 
 
 def card_words(c: dict) -> str:
@@ -690,12 +873,15 @@ def profiles_view(registry, slug: str) -> dict:
     record = run_record(registry, slug, run_id) or {}
     m = record.get("metrics") or {}
     rows = registry.list_filesystem_file_columns(slug, run_id)
+    counts["header_suspect"] = len({r["file_path"] for r in rows if r["state"] == HEADER_SUSPECT})
     by_file: dict[str, list[dict]] = {}
     for r in rows:
         if r["column_name"]:
-            by_file.setdefault(r["file_path"], []).append(
-                {k: r[k] for k in ("column_name", "declared_type", "inferred_general_type", "record_ct", "null_ct",
-                                   "distinct_ct", "min_len", "max_len")})
+            col = {k: r[k] for k in ("column_name", "declared_type", "inferred_general_type", "record_ct", "null_ct",
+                                     "distinct_ct", "min_len", "max_len")}
+            if r["state"] == HEADER_SUSPECT:   # the header is a value: shown by position, never by the value
+                col.update(column_name=f"column {r['ordinal']}", header_suspect=True)
+            by_file.setdefault(r["file_path"], []).append(col)
     files = [{**s, "format": ext_of(s["file_path"]), "columns_list": by_file.get(s["file_path"], [])[:30]}
              for s in states[:FILES_SHOWN]]
     proof = latest_publish_proof(registry, slug, run_id)
@@ -714,10 +900,10 @@ _MEASURES = ("declared_type", "inferred_general_type", "record_ct", "value_ct", 
 
 
 def changed_rows(registry, slug: str, run_id: str) -> list[dict]:
-    """Resource Explorer's column rows of this run whose profile differs from the previous run's (or that are new). Until
-    the profile-publish reshape lands, only these publish."""
-    runs = registry.list_filesystem_file_column_runs(slug)
-    previous = next((r for r in runs if r < run_id), None)
+    """Resource Explorer's column rows of this run whose profile differs from the last PUBLISHED run's (or that are new;
+    with no complete publish yet, every row). Until the profile-publish reshape lands, only these publish. A
+    `header_suspect` column never publishes (its name is a value)."""
+    previous = last_published_run(registry, slug, before=run_id)
     before = {}
     if previous:
         before = {(r["file_path"], r["column_name"]): r for r in registry.list_filesystem_file_columns(slug, previous)}

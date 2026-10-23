@@ -14021,9 +14021,10 @@ class ProjectRegistry:
         return (slug, run_id, *((r.get(c) if r.get(c) is not None else defaults.get(c)) for c in self.FILE_COLUMN_FIELDS))
 
     def add_filesystem_file_columns(self, fs_slug: str, run_id: str, rows: list[dict], *,
-                                    keep_runs: int | None = None) -> dict:
+                                    keep_runs: int | None = None, keep_also: tuple | list = ()) -> dict:
         """Store one profile run's rows (all or none: one transaction), then remove the runs older than the newest
-        `keep_runs`. Returns {rows, run_id, pruned_runs}."""
+        `keep_runs`, except the runs in `keep_also` (the last published run, the baseline the next publish diffs
+        against). Returns {rows, run_id, pruned_runs}."""
         from resource_explorer.surveyors.filesystem.file_profiles import RUNS_KEPT
 
         keep = RUNS_KEPT if keep_runs is None else keep_runs
@@ -14038,7 +14039,7 @@ class ProjectRegistry:
             runs = [r[0] for r in conn.execute(
                 "SELECT DISTINCT run_id FROM filesystem_file_columns WHERE filesystem_slug = ? ORDER BY run_id DESC",
                 (normalized,)).fetchall()]
-            pruned = runs[keep:] if keep >= 0 else []
+            pruned = [r for r in runs[keep:] if r not in set(keep_also)] if keep >= 0 else []
             for old in pruned:
                 conn.execute("DELETE FROM filesystem_file_columns WHERE filesystem_slug = ? AND run_id = ?", (normalized, old))
         return {"rows": len(rows), "run_id": run_id, "pruned_runs": pruned}
