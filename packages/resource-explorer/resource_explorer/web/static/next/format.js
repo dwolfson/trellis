@@ -104,7 +104,14 @@ export function readBackAt(date = new Date()) {
  * (the title). */
 
 export const PUBLISHED_EARLIER_WORD = 'published earlier';
-export const PUBLISHED_EARLIER_SENTENCE = 'published earlier \u00b7 Egeria was reset';
+/** Only a fallback for a payload that carries no words: the words are the server's (`published_earlier_words`, from
+ *  catalogue_commit.publish_fields / pre_reset_words: "published before the <date> reset · not in Egeria now"). */
+export const PUBLISHED_EARLIER_SENTENCE = 'published before the reset \u00b7 not in Egeria now';
+
+/** The sentence for a publish older than the latest Egeria reset: the server's words, ONE source (fix round 1). */
+export function publishedEarlierSentence(item) {
+  return String((item && item.published_earlier_words) || PUBLISHED_EARLIER_SENTENCE);
+}
 export const STORED_COPY_RESET_LINE = 'Egeria was reset since \u00b7 the element is not in Egeria now';
 export const UNBOUND_WORDS = 'unbound by reset \u00b7 rebind to recreate';
 
@@ -114,7 +121,7 @@ export function publishedBadge(item) {
   const at = item && item.last_published_at;
   if (!at) return { text: '', title: '', earlier: false };
   if (item.published_state === 'published_earlier') {
-    return { text: PUBLISHED_EARLIER_WORD, title: `${PUBLISHED_EARLIER_SENTENCE} (${at}; reset ${item.egeria_reset_at || ''})`, earlier: true };
+    return { text: PUBLISHED_EARLIER_WORD, title: `${publishedEarlierSentence(item)} (${at}; reset ${item.egeria_reset_at || ''})`, earlier: true };
   }
   return { text: 'Published', title: `Last published: ${at}`, earlier: false };
 }

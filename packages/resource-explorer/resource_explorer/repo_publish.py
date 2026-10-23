@@ -30,7 +30,7 @@ from typing import Any, Callable
 
 from resource_explorer.catalogue_commit import (
     P_EGERIA_RESET, P_READ_FAILED, P_REPORT, PROJECT_UNANSWERED, PROJECT_UNBOUND, PROJECT_UNBOUND_WORDS,
-    RESET_WORDS, _ts, egeria_first_sentence, merge_recorded_reset, pre_reset_words)
+    RESET_WORDS, _ts, egeria_first_sentence, merge_recorded_reset, pre_reset_sent_words, pre_reset_words)
 from resource_explorer.surveyors import survey_snapshot
 from resource_explorer.surveyors.survey_snapshot import NO_SURVEY_SENTENCE
 
@@ -555,9 +555,12 @@ def commit_proof_summary(registry, slug: str, curation: dict) -> dict:
     `file_types`    the file types cataloged so far (read back), from their own proof rows.
 
     A proof row read before the latest Egeria reset (`registry.get_egeria_reset_at`: the repository's marker or
-    the recorded reset) is history: the report reads `pre_reset` and a sub-resource or file-type row counts as
-    `pre_reset`, never as read back; `pre_reset_words` says "published before the <date> reset · not in Egeria now"
-    (architect ruling (b), 2026-10-23). With no reset, nothing here changes."""
+    the recorded reset) is history: a report read back before it reads `pre_reset` and a sub-resource or file-type
+    row read back before it counts as `pre_reset`, never as read back; `pre_reset_words` says "published before the
+    <date> reset · not in Egeria now" (architect ruling (b), 2026-10-23). A row SENT and never read back before the
+    reset was never published: the report reads `pre_reset_sent` and the row counts as `pre_reset_sent`, words
+    `pre_reset_sent_words` "sent before the <date> reset · never confirmed" (fix round 1). With no reset, nothing
+    here changes."""
     from resource_explorer.catalogue_commit import _known
 
     requested = curation.get("requested_at") or ""
@@ -572,18 +575,25 @@ def commit_proof_summary(registry, slug: str, curation: dict) -> dict:
     out: dict = {"report": {"state": "none"}, "sub_resources": {"read_back": 0, "sent": 0, "failed": 0,
                  "chosen_read_back": 0, "container_read_back": 0, "first_failure": "",
                  # the same counts per row of the table: the files you chose, the folders you chose, the containers
-                 "by_row": {k: {"read_back": 0, "sent": 0, "failed": 0, "first_failure": "", "pre_reset": 0}
-                            for k in ("files", "folders", "containers")}, "pre_reset": 0},
+                 "by_row": {k: {"read_back": 0, "sent": 0, "failed": 0, "first_failure": "", "pre_reset": 0,
+                                "pre_reset_sent": 0}
+                            for k in ("files", "folders", "containers")}, "pre_reset": 0, "pre_reset_sent": 0},
                  "file_types": {"read_back": 0, "pre_reset": 0},
                  "pre_reset_at": reset_at if cutoff else "",
-                 "pre_reset_words": pre_reset_words(reset_at) if cutoff else ""}
+                 "pre_reset_words": pre_reset_words(reset_at) if cutoff else "",
+                 "pre_reset_sent_words": pre_reset_sent_words(reset_at) if cutoff else ""}
     reports = [p for p in proofs if p["node_kind"] == NODE_REPORT and p["proof"] in (P_REPORT, P_SENT, P_READ_FAILED)
                and (p["read_at"] or "") >= requested[:19]]
     if reports:
         last, d = reports[-1], reports[-1].get("detail") or {}
-        if last["proof"] in (P_REPORT, P_SENT) and _pre(last):
+        if last["proof"] == P_REPORT and _pre(last):
             out["report"] = {"state": "pre_reset", "read_at": last["read_at"], "surveyed_at": d.get("surveyed_at", ""),
                              "words": pre_reset_words(reset_at), "reset_at": reset_at}
+        elif last["proof"] == P_SENT and _pre(last):
+            # Sent and never read back before the reset: it was never published, so never "published before".
+            out["report"] = {"state": "pre_reset_sent", "read_at": last["read_at"],
+                             "surveyed_at": d.get("surveyed_at", ""), "words": pre_reset_sent_words(reset_at),
+                             "reset_at": reset_at}
         elif last["proof"] == P_REPORT:
             # ONE decider for "same result" (the tab-1 band's): this report's own outbox run settles it.
             out["confirm"] = _report_row(last, registry, slug)["confirm"]
@@ -602,8 +612,10 @@ def commit_proof_summary(registry, slug: str, curation: dict) -> dict:
             row = out["sub_resources"]["by_row"]["containers" if d.get("role") == "container"
                                                   else "files" if d.get("kind") == "file" else "folders"]
             if p["proof"] in (P_SUB_RESOURCE, P_SENT) and _pre(p):
-                row["pre_reset"] += 1
-                out["sub_resources"]["pre_reset"] += 1
+                # read back before the reset -> "published before"; sent and never read back -> its own count
+                k = "pre_reset" if p["proof"] == P_SUB_RESOURCE else "pre_reset_sent"
+                row[k] += 1
+                out["sub_resources"][k] += 1
                 continue
             row[{P_SUB_RESOURCE: "read_back", P_SENT: "sent", P_READ_FAILED: "failed"}.get(p["proof"], "sent")] += 1
             if p["proof"] == P_READ_FAILED and not row["first_failure"]:

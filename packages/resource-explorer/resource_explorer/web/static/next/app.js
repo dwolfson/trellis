@@ -25,7 +25,7 @@
 // and it goes when the experiment goes.
 import { listWorkLists, openWorkList, saveAsWorkList, openDialog, closeCellDetail, CELL }
   from '/static/next/worklist.js';
-import { ago, whenMs, verdictLineHtml, changedTimesHtml, savedLine, readBackAt, stepOutcome, statusToken, PUBLISHED_EARLIER_SENTENCE, PUBLISHED_EARLIER_WORD } from '/static/next/format.js';
+import { ago, whenMs, verdictLineHtml, changedTimesHtml, savedLine, readBackAt, stepOutcome, statusToken, publishedEarlierSentence, PUBLISHED_EARLIER_WORD } from '/static/next/format.js';
 // The one glyph table (REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §1). `GLYPH`
 // and `factGlyph` below are thin views over `GLYPH_STATES` -- this file
 // declares no glyph-to-meaning mapping of its own any more.
@@ -3433,7 +3433,7 @@ export function resourceHeaderHtml(slug) {
     // The row's existence is not proof: a publish that predates an Egeria reset says so, short word on the
     // element, the sentence on demand.
     if (ov.published_state === 'published_earlier') {
-      published += ` · <span title="${esc(PUBLISHED_EARLIER_SENTENCE)}">${esc(PUBLISHED_EARLIER_WORD)}</span>`;
+      published += ` · <span title="${esc(publishedEarlierSentence(ov))}">${esc(PUBLISHED_EARLIER_WORD)}</span>`;
     }
   }
   // A "published" badge is actively misleading while the link is broken: it

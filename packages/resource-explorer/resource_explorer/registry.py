@@ -537,6 +537,11 @@ PROJECT_CONTRIBUTORS_DDL = (
 #: (`resource-explorer registry record-egeria-reset`, `ProjectRegistry.record_egeria_reset`), never by a screen.
 #: `reset_at` is the reset time (UTC). Every proof row read before the latest `reset_at` is history: the status
 #: derivations say "published before the <date> reset · not in Egeria now" for it and never ✓. Append-only.
+#: A reset time the record accepts: a date AND a time AND `Z` or an explicit offset (fix round 1: a bare date or a
+#: naive time would be read as UTC silently).
+_RESET_AT_WITH_ZONE = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|z|[+-]\d{2}:?\d{2})$")
+#: The `note` prefix a correction writes (`record_egeria_reset(supersedes=<id>)`); the named row stops counting.
+_SUPERSEDES_NOTE = re.compile(r"^supersedes #(\d+)")
 EGERIA_RESETS_DDL = (
     """
     CREATE TABLE IF NOT EXISTS egeria_resets (
@@ -13308,43 +13313,67 @@ class ProjectRegistry:
 
     # ── the record of Egeria resets (EGERIA_RESETS_DDL) ──────────────────────
 
+    def _egeria_reset_rows(self) -> list[dict]:
+        """Every `egeria_resets` row that still counts: a row named by a later row's `supersedes #<id>` note
+        (`record_egeria_reset(supersedes=...)`, the correction of a mistyped reset) is left out."""
+        with self._conn() as conn:
+            rows = [dict(r) for r in conn.execute("SELECT id, reset_at, note FROM egeria_resets").fetchall()]
+        gone = {int(m.group(1)) for r in rows if (m := _SUPERSEDES_NOTE.match(r.get("note") or ""))}
+        return [r for r in rows if int(r["id"]) not in gone]
+
     def latest_egeria_reset_at(self) -> str | None:
         """The latest recorded reset of Egeria's metadata database (`egeria_resets.reset_at`, the newest by
-        PARSED time), or None when no reset was ever recorded: then every status derivation behaves as before."""
+        PARSED time among the rows not superseded by a correction), or None when no reset was ever recorded: then
+        every status derivation behaves as before."""
         from resource_explorer.catalogue_commit import _known, _ts
 
-        with self._conn() as conn:
-            rows = conn.execute("SELECT reset_at FROM egeria_resets").fetchall()
-        known = [r["reset_at"] for r in rows if _known(r["reset_at"])]
+        known = [r["reset_at"] for r in self._egeria_reset_rows() if _known(r["reset_at"])]
         return max(known, key=_ts) if known else None
 
     def record_egeria_reset(self, *, reset_at: str, old_platform_digest: str = "", new_platform_digest: str = "",
                             old_commit: str = "", new_commit: str = "", recorded_by: str = "", note: str = "",
-                            now: datetime | None = None) -> int:
+                            supersedes: int | None = None, now: datetime | None = None) -> int:
         """Append ONE reset row (the coordinator, once per reset). `reset_at` is stored normalised to UTC
-        ('YYYY-MM-DDTHH:MM:SSZ'). Refuses (ValueError, nothing written) a time that does not parse, one in the
-        future, and one that is not newer than the latest recorded reset (an out-of-order or repeated record).
-        Returns the new row's id."""
+        ('YYYY-MM-DDTHH:MM:SSZ'). Refuses (ValueError, nothing written) a time that does not parse, a bare date, a
+        time with no `Z` or explicit UTC offset (a naive time would be read as UTC silently), one in the future,
+        and one that is not newer than the latest recorded reset (an out-of-order or repeated record).
+
+        `supersedes` corrects a mistyped reset: the new row's `note` starts "supersedes #<id>", the named row
+        stops counting (`_egeria_reset_rows`), and the order check runs against the rows that are left, so the
+        correction may be earlier or later than the row it replaces. The named row must exist and still count.
+        Append-only: no row is ever updated. Returns the new row's id."""
         from resource_explorer.catalogue_commit import _known, _ts
 
-        if not _known(reset_at):
+        text = str(reset_at or "").strip()
+        if not _RESET_AT_WITH_ZONE.match(text):
+            raise ValueError(f"reset_at {reset_at!r} needs a date, a time and Z or an explicit offset "
+                             "(e.g. 2026-10-24T09:00Z or 2026-10-24T05:00-04:00)")
+        if not _known(text):
             raise ValueError(f"reset_at {reset_at!r} is not a time")
-        at = _ts(reset_at)
+        if _SUPERSEDES_NOTE.match(note or ""):
+            raise ValueError("a note starting 'supersedes #' is written only by --supersedes")
+        at = _ts(text)
         ref = (now or datetime.now(timezone.utc))
         ref = ref.astimezone(timezone.utc).replace(tzinfo=None) if ref.tzinfo else ref
         if at > ref.isoformat(timespec="seconds"):
             raise ValueError(f"reset_at {at}Z is in the future (now {ref.isoformat(timespec='seconds')}Z)")
-        latest = self.latest_egeria_reset_at()
+        rows = self._egeria_reset_rows()
+        if supersedes is not None:
+            if not any(int(r["id"]) == int(supersedes) for r in rows):
+                raise ValueError(f"row {supersedes} is not a recorded reset that still counts")
+            rows = [r for r in rows if int(r["id"]) != int(supersedes)]
+            note = f"supersedes #{int(supersedes)}" + (f" · {note}" if note else "")
+        known = [r["reset_at"] for r in rows if _known(r["reset_at"])]
+        latest = max(known, key=_ts) if known else None
         if latest is not None and at <= _ts(latest):
             raise ValueError(f"reset_at {at}Z is not newer than the latest recorded reset {_ts(latest)}Z")
         with self._conn() as conn:
-            conn.execute(
+            row = conn.execute(
                 "INSERT INTO egeria_resets (reset_at, old_platform_digest, new_platform_digest, old_commit, "
-                "new_commit, recorded_by, note) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "new_commit, recorded_by, note) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
                 (f"{at}Z", old_platform_digest or "", new_platform_digest or "", old_commit or "", new_commit or "",
-                 recorded_by or "", note or ""))
-            row = conn.execute("SELECT MAX(id) FROM egeria_resets").fetchone()
-        return int(row[0])
+                 recorded_by or "", note or "")).fetchone()
+        return int(row["id"])
 
     def list_catalogue_outbox_rows(self, slug: str) -> list[dict]:
         """The outbox rows a catalogue commit queued for one database, oldest first.
@@ -14734,6 +14763,8 @@ class ProjectRegistry:
         # A row that names a publish run is a publish only once that run is read back (2026-10-14): its word, and
         # whether it counts as a publish at all, come from the run's proof rows.
         proofs = self.publish_proofs([r["publish_run_id"] for r in rows if r["publish_run_id"]])
+        # ONE reset read per call, shared by every row's pre-reset check (`_pre_reset_publish_proof`).
+        reset_cache: dict = {}
         repo_wide_publish_at = ""  # most recent catalog row with no ref at all
         for row in rows:
             try:
@@ -14778,7 +14809,8 @@ class ProjectRegistry:
                 entry["last_run_started_by"] = detail.get("started_by") or ""
                 entry["last_run_by"] = detail.get("started_by_person") or ""
                 if proof:
-                    entry["last_publish_proof"] = self._pre_reset_publish_proof(proof, entity_slug, row["ts"])
+                    entry["last_publish_proof"] = self._pre_reset_publish_proof(proof, entity_slug, row["ts"],
+                                                                           reset_cache)
                 # SurveyDefinitionExecutor.run() (added 2026-08-27) publishes
                 # BEFORE it logs the 'survey' row that records the run itself
                 # — adapter.publish() runs first, its own untagged 'catalog'
@@ -14979,6 +15011,8 @@ class ProjectRegistry:
             ).fetchall()
         # The last run's publish word, from that run's proof rows (2026-10-14).
         proofs = self.publish_proofs([r["publish_run_id"] for r in rows if r["publish_run_id"]])
+        # ONE reset read per call, shared by every row's pre-reset check (`_pre_reset_publish_proof`).
+        reset_cache: dict = {}
 
         # step_runs: one row per step EXECUTION, written by the step-cost
         # observer on every path (survey, Run button, Prefect or local). It is
@@ -15050,7 +15084,7 @@ class ProjectRegistry:
                     }
                     if proofs.get(row["publish_run_id"] or ""):
                         result[analysis_id]["last_publish_proof"] = self._pre_reset_publish_proof(
-                            proofs[row["publish_run_id"]], entity_slug, row["ts"])
+                            proofs[row["publish_run_id"]], entity_slug, row["ts"], reset_cache)
                 continue
 
             ran: dict[str, list] = {}
@@ -15073,7 +15107,9 @@ class ProjectRegistry:
                     "last_run_partial": len(statuses) < owned_counts.get(analysis_id, 0),
                 }
                 if proofs.get(row["publish_run_id"] or ""):
-                    result[analysis_id]["last_publish_proof"] = proofs[row["publish_run_id"]]
+                    # A run read back before the latest Egeria reset is history, never "published · read back".
+                    result[analysis_id]["last_publish_proof"] = self._pre_reset_publish_proof(
+                        proofs[row["publish_run_id"]], entity_slug, row["ts"], reset_cache)
         # Credit analyses whose steps have a step_runs row newer than (or
         # missing from) what the activity_log gave. Same ownership map, same
         # "any owned step ran counts" rule as the survey branch above.

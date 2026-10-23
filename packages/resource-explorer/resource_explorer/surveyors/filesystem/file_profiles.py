@@ -1057,6 +1057,15 @@ def profiles_view(registry, slug: str) -> dict:
     files = [{**s, "format": ext_of(s["file_path"]), "columns_list": by_file.get(s["file_path"], [])[:30]}
              for s in states[:FILES_SHOWN]]
     proof = latest_publish_proof(registry, slug, run_id)
+    if proof:
+        # A publish read back before the latest Egeria reset is history (fix round 1): `pre_reset` {at, words}, and the
+        # card says "published before the <date> reset · not in Egeria now", never "published · N of M in Egeria".
+        from resource_explorer.catalogue_commit import pre_reset_claim
+
+        fn = getattr(registry, "get_egeria_reset_at", None)
+        claim = pre_reset_claim((fn(slug) if fn else "") or "", proof.get("at") or run_id)
+        if claim is not None:
+            proof = {**proof, "pre_reset": claim}
     out["run"] = {"run_id": run_id, "counts": counts, "words": card_words(counts), "egeria_half": m.get("egeria_half", ""),
                   "walk_run_id": m.get("walk_run_id", ""), "files": files,
                   "files_not_shown": max(0, len(states) - FILES_SHOWN), "publish": proof}

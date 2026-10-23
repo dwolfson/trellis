@@ -701,7 +701,9 @@ def test_survey_results_boards_read_the_marker_even_from_a_persisted_summary(env
         published_at="2026-09-01T01:00:00", egeria_report_guid="g")
     applied(env)
     fields = A._reset_fields(reg, "repo1", "2026-09-01T01:00:00")
-    assert fields == {"published_state": "published_earlier", "egeria_reset_at": RESET_ISO}
+    assert fields == {"published_state": "published_earlier", "egeria_reset_at": RESET_ISO,
+                      # the server's words (fix round 1: one word source for the screen)
+                      "published_earlier_words": "published before the 2026-10-08 reset · not in Egeria now"}
     assert A._reset_fields(reg, "repo2", "2026-09-01T01:00:00")["published_state"] == "published"
 
 # ── schema guard ─────────────────────────────────────────────────────────────

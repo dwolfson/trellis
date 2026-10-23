@@ -156,13 +156,26 @@ def pre_reset_words(reset_at) -> str:
     return f"published before the {day} reset · not in Egeria now" if day else RESET_WORDS
 
 
+def pre_reset_sent_words(reset_at) -> str:
+    """The words for a row SENT to Egeria and never read back before the latest reset (fix round 1): it was never
+    published, so never "published before": "sent before the <date> reset · never confirmed"."""
+    day = _ts(reset_at)[:10]
+    return f"sent before the {day} reset · never confirmed" if day else "sent before Egeria was reset · never confirmed"
+
+
 def latest_recorded_reset(registry) -> str:
-    """The latest row of `egeria_resets` ('' when none, or for a registry without the reader: a test double)."""
+    """The latest row of `egeria_resets` ('' when none, or for a registry without the reader: a test double).
+
+    A read that FAILS is logged and raised, like `get_egeria_reset_at` (fix round 1): swallowing it would bring
+    ✓ back silently for every proof row older than a real reset."""
     fn = getattr(registry, "latest_egeria_reset_at", None)
-    try:
-        return (fn() if fn else "") or ""
-    except Exception:  # noqa: BLE001 - an unreadable record makes no reset claim
+    if fn is None:
         return ""
+    try:
+        return fn() or ""
+    except Exception:
+        log.exception("could not read the record of Egeria resets (egeria_resets)")
+        raise
 
 
 def merge_recorded_reset(registry, marker: dict | None, rows: list[dict]) -> dict | None:
@@ -2843,9 +2856,21 @@ def published_state(published_at: str, reset_at: str) -> str:
 
 
 def publish_fields(registry, slug: str, published_at: str, reset_at: str | None = None) -> dict:
-    """The two fields every payload that carries `last_published_at` adds, so the screen can pick its words."""
+    """The fields every payload that carries `last_published_at` adds, so the screen can pick its words. The words
+    for a publish older than the reset come from HERE (`published_earlier_words`, `pre_reset_words`: "published
+    before the <date> reset · not in Egeria now"), never from a constant of the screen's (fix round 1)."""
     reset = egeria_reset_at(registry, slug) if reset_at is None else reset_at
-    return {"published_state": published_state(published_at, reset), "egeria_reset_at": reset}
+    state = published_state(published_at, reset)
+    return {"published_state": state, "egeria_reset_at": reset,
+            "published_earlier_words": pre_reset_words(reset) if state == "published_earlier" else ""}
+
+
+def pre_reset_claim(reset_at, at) -> dict | None:
+    """{at: <reset time>, words} when the proof time `at` is before `reset_at`; None otherwise, and None when either
+    time cannot be read (no claim either way). The one test the file-system publish proofs use (fix round 1)."""
+    if not (_known(reset_at) and _known(at)) or _ts(at) >= _ts(reset_at):
+        return None
+    return {"at": reset_at, "words": pre_reset_words(reset_at)}
 
 
 def reset_since_read(read_at: str, reset_at: str) -> bool:

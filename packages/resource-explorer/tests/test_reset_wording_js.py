@@ -38,7 +38,12 @@ def test_a_publish_before_the_marker_reads_published_earlier_and_one_after_reads
     earlier = _run("F.publishedBadge({last_published_at:'2026-09-01T00:00:00', published_state:'published_earlier', "
                    "egeria_reset_at:'2026-10-08T18:30:00'})")
     assert earlier["earlier"] is True and earlier["text"] == "published earlier"
-    assert earlier["title"].startswith("published earlier \u00b7 Egeria was reset")
+    # the sentence is the server's (`published_earlier_words`, fix round 1); without one, the ruling's shape undated
+    assert earlier["title"].startswith("published before the reset \u00b7 not in Egeria now")
+    served = _run("F.publishedBadge({last_published_at:'2026-09-01T00:00:00', published_state:'published_earlier', "
+                  "egeria_reset_at:'2026-10-08T18:30:00', "
+                  "published_earlier_words:'published before the 2026-10-08 reset \u00b7 not in Egeria now'})")
+    assert served["title"].startswith("published before the 2026-10-08 reset \u00b7 not in Egeria now")
     live = _run("F.publishedBadge({last_published_at:'2026-10-08T20:00:00', published_state:'published', egeria_reset_at:'2026-10-08T18:30:00'})")
     assert live["text"] == "Published" and live["earlier"] is False
     assert _run("F.publishedBadge({last_published_at:'', published_state:''})")["text"] == ""

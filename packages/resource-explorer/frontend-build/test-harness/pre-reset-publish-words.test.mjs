@@ -69,3 +69,45 @@ test('the same run with no pre_reset reads as before: ✓ published as <identity
   assert.match(text(run), /published as peterprofile/);
   assert.equal(dlg.querySelector('[data-step-publish]').getAttribute('data-step-publish'), 'measured');
 });
+
+// ── fix round 1: the file-system publish proofs and the one word source ──────────────────────────────────────────
+
+const PUB = { published: false, landed: 4, built: 4, landed_words: '4 of 4 annotations in Egeria', not_published_why: '', pre_reset: PRE };
+
+test('the folder survey published before the reset: ◌ and the server words, never "published · N of M"', async () => {
+  makeDomEnvironment();
+  const { folderResultsHtml } = await import('/static/next/fs-survey.js');
+  const view = { state: 'measured', surveyor: 'Resource Explorer', report_guid: 'rep-fs', published: false, publish: PUB, results: {} };
+  const html = folderResultsHtml(view);
+  const pub = html.match(/data-fs-published>([\s\S]*?)<\/div>/)[1];
+  assert.match(pub, /◌/);
+  assert.ok(pub.includes(WORDS));
+  assert.doesNotMatch(pub, /annotations in Egeria|published ·/);
+  // Egeria's own report read back before the reset: the same words, not "published · report …"
+  const eg = folderResultsHtml({ state: 'measured', surveyor: "Egeria's Folder Survey", report_guid: 'r', published: false, pre_reset: PRE, results: {} });
+  assert.ok(eg.match(/data-fs-published>([\s\S]*?)<\/div>/)[1].includes(WORDS));
+  // no pre_reset: unchanged
+  const live = folderResultsHtml({ ...view, published: true, publish: { ...PUB, published: true, pre_reset: undefined } });
+  assert.match(live.match(/data-fs-published>([\s\S]*?)<\/div>/)[1], /published · 4 of 4 annotations in Egeria/);
+});
+
+test('the walk measures and the data-file profiles published before the reset say the server words', async () => {
+  makeDomEnvironment();
+  const { walkMeasuresHtml, fileProfilesHtml } = await import('/static/next/fs-survey.js');
+  const ext = walkMeasuresHtml({ led_by: 're', surveyed_at: '2026-10-20', report_guid: 'rep-fs', publish: PUB, rows: {}, folders: {}, hashing: {}, owners: {} });
+  const m = ext.match(/data-fs-measures-published>([\s\S]*?)<\/div>/)[1];
+  assert.ok(m.includes(WORDS) && /◌/.test(m) && !/annotations in Egeria/.test(m));
+  const fp = fileProfilesHtml({ price: { words: '' }, run: { run_id: '2026-10-20T10:00:00', counts: {}, files: [], words: '',
+    publish: { report_guid: 'r', annotations_in_egeria: 2, annotation_count: 2, pre_reset: PRE } } });
+  const p = fp.match(/data-fp-published[^>]*>([\s\S]*?)<\/div>/)[1];
+  assert.ok(p.includes(WORDS) && /◌/.test(p) && !/annotations in Egeria/.test(p));
+});
+
+test('a publish older than the reset is said in the server words (one source), not a constant of the screen', async () => {
+  makeDomEnvironment();
+  const { publishedBadge } = await import('/static/next/format.js');
+  const b = publishedBadge({ last_published_at: '2026-10-20T10:00:00', published_state: 'published_earlier',
+    egeria_reset_at: PRE.at, published_earlier_words: WORDS });
+  assert.ok(b.earlier && b.title.startsWith(WORDS));
+  assert.doesNotMatch(b.title, /Egeria was reset/);
+});

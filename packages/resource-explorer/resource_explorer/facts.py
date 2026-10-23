@@ -1067,7 +1067,9 @@ def _h_db_catalogued(value: dict, state: str) -> str:
         return note if note else "Not yet published to Egeria."
     when = value.get("last_published_at") or ""
     if when and value.get("published_state") == "published_earlier":
-        return f"Published to Egeria earlier \u00b7 Egeria was reset ({when})."
+        # the server's ONE word source (catalogue_commit.publish_fields -> pre_reset_words), fix round 1
+        words = value.get("published_earlier_words") or "published before the reset \u00b7 not in Egeria now"
+        return f"{words[:1].upper()}{words[1:]} (published {when})."
     return f"Published to Egeria {when}." if when else "Published to Egeria."
 
 

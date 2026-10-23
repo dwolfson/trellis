@@ -291,3 +291,223 @@ def test_publish_fields_and_reset_since_read_use_the_recorded_reset(reg):
     assert cc.publish_fields(reg, "repo1", BEFORE)["published_state"] == "published_earlier"
     assert cc.publish_fields(reg, "repo1", AFTER)["published_state"] == "published"
     assert cc.reset_since_read(BEFORE, cc.egeria_reset_at(reg, "repo1")) is True
+
+
+# ── fix round 1 (review NEEDS-FIX, 2026-10-23) ──────────────────────────────────────────────────────────────────
+
+READ_BACK = {"state": "read_back", "word": "published · read back", "at": BEFORE, "words": ""}
+
+
+def _fake_proofs(reg, monkeypatch, proof):
+    real = ProjectRegistry.publish_proofs
+
+    def proofs(publish_run_ids):          # the real method's signature, bound
+        real.__get__(reg)                 # noqa: B018 - only to pin that the real one exists
+        return {r: dict(proof) for r in publish_run_ids}
+
+    monkeypatch.setattr(reg, "publish_proofs", proofs)
+
+
+def _survey_run(reg, ts, key, run_id="pub-1"):
+    detail = json.dumps({"steps": [{"re_analysis_step": key, "status": "ok"}], "surveyed_at": ts})
+    with reg._conn() as c:
+        c.execute("INSERT INTO activity_log (id, ts, operation, intent, entity_type, entity_slug, status, detail, "
+                  "publish_run_id) VALUES (?, ?, 'survey', 'discovery', 'database', 'db1', 'ok', ?, ?)",
+                  (f"s-{ts}", ts, detail, run_id))
+
+
+def test_item1_a_survey_run_read_back_before_the_reset_never_reads_published_read_back(reg, monkeypatch):
+    key, owners = next(iter(reg._step_key_to_analysis_ids("database").items()))
+    _fake_proofs(reg, monkeypatch, READ_BACK)
+    _survey_run(reg, BEFORE, key)
+    plain = reg.get_analysis_last_run("database", "db1")[owners[0]]
+    assert plain["last_publish_proof"]["state"] == "read_back"                 # no reset: unchanged
+    _reset(reg)
+    out = reg.get_analysis_last_run("database", "db1")[owners[0]]
+    assert out["last_run_via"] == "survey"
+    assert out["last_publish_proof"]["state"] == "pre_reset" and out["last_publish_proof"]["word"] == WORDS
+    assert "published · read back" not in json.dumps(out, ensure_ascii=False)
+
+
+def test_item11_one_reset_read_per_call(reg, monkeypatch):
+    key, _ = next(iter(reg._step_key_to_analysis_ids("database").items()))
+    _fake_proofs(reg, monkeypatch, READ_BACK)
+    _reset(reg)
+    _survey_run(reg, BEFORE, key, "p1")
+    _survey_run(reg, "2026-10-21T10:00:00", key, "p2")
+    n = {"c": 0}
+    real = reg.get_egeria_reset_at
+
+    def counted(slug):
+        n["c"] += 1
+        return real(slug)
+
+    monkeypatch.setattr(reg, "get_egeria_reset_at", counted)
+    reg.get_analysis_last_run("database", "db1")
+    assert n["c"] == 1
+
+
+# item 3: the CLI's --reset-at needs Z or an explicit offset; the success line echoes the parsed UTC time
+
+@pytest.mark.parametrize("at", ["2026-10-24", "2026-10-24T09:00", "2026-10-24T09:00:00", "2026-10-24 09:00"])
+def test_item3_a_bare_date_or_a_naive_time_is_refused(reg, at):
+    with pytest.raises(ValueError, match="Z or an explicit offset"):
+        _reset(reg, at)
+    assert reg.latest_egeria_reset_at() is None
+
+
+def test_item3_an_offset_is_stored_as_utc_and_the_cli_echoes_it(reg, monkeypatch, tmp_path):
+    _reset(reg, "2026-10-24T05:00-04:00")
+    assert reg.latest_egeria_reset_at() == "2026-10-24T09:00:00Z"
+    naive = _cli(monkeypatch, tmp_path, "--reset-at", "2026-10-01T09:00")
+    assert naive.exit_code == 2 and "explicit offset" in " ".join(naive.output.split())
+    ok = _cli(monkeypatch, tmp_path, "--reset-at", "2026-10-01T05:00-04:00")
+    assert ok.exit_code == 0, ok.output
+    assert "2026-10-01T09:00:00Z UTC" in " ".join(ok.output.split())
+
+
+# item 4: --supersedes corrects a mistyped reset, either direction; the latest NON-superseded row wins
+
+def test_item4_a_reset_typed_too_late_is_corrected_earlier(reg):
+    wrong = _reset(reg, "2026-10-24T21:00:00Z")
+    with pytest.raises(ValueError, match="not newer"):
+        _reset(reg, RESET)                                   # without --supersedes: refused as out of order
+    fixed = reg.record_egeria_reset(reset_at=RESET, supersedes=wrong, recorded_by="coordinator", now=NOW)
+    assert fixed != wrong and reg.latest_egeria_reset_at() == "2026-10-24T09:00:00Z"
+    with reg._conn() as c:
+        rows = [dict(r) for r in c.execute("SELECT id, reset_at, note FROM egeria_resets ORDER BY id").fetchall()]
+    assert rows[0]["reset_at"] == "2026-10-24T21:00:00Z"                      # the old row stays on record
+    assert rows[1]["note"].startswith(f"supersedes #{wrong}")
+    _report(reg, "2026-10-24T12:00:00")                      # after the true reset, before the mistyped one
+    assert repo_publish.publish_state(reg, "repo1")["row"]["word"] == "published"
+
+
+def test_item4_a_reset_typed_too_early_is_corrected_later_and_cannot_be_superseded_twice(reg):
+    wrong = _reset(reg, "2026-10-20T00:00:00Z")
+    _report(reg, "2026-10-22T00:00:00")                       # really before the reset
+    assert repo_publish.publish_state(reg, "repo1")["row"]["word"] == "published"
+    reg.record_egeria_reset(reset_at=RESET, supersedes=wrong, note="typo", now=NOW)
+    assert reg.latest_egeria_reset_at() == "2026-10-24T09:00:00Z"
+    assert repo_publish.publish_state(reg, "repo1")["row"]["first"] == WORDS
+    with pytest.raises(ValueError, match="still counts"):
+        reg.record_egeria_reset(reset_at="2026-10-24T10:00:00Z", supersedes=wrong, now=NOW)
+    with pytest.raises(ValueError, match="only by --supersedes"):
+        reg.record_egeria_reset(reset_at="2026-10-24T10:00:00Z", note="supersedes #1", now=NOW)
+
+
+def test_item4_the_cli_supersedes(monkeypatch, tmp_path):
+    assert _cli(monkeypatch, tmp_path, "--reset-at", "2026-10-02T09:00Z").exit_code == 0
+    out = _cli(monkeypatch, tmp_path, "--reset-at", "2026-10-01T09:00Z", "--supersedes", "1")
+    assert out.exit_code == 0, out.output
+    said = " ".join(out.output.split())
+    assert "supersedes row 1" in said and "Latest reset now 2026-10-01T09:00:00Z" in said
+
+
+# item 5: sent and never read back before the reset is not "published before the reset"
+
+def test_item5_a_sent_row_before_the_reset_is_sent_never_confirmed_with_its_own_count(reg):
+    reg.append_catalogue_commit_proof("repo1", proof=repo_publish.P_SENT, node_kind=repo_publish.NODE_REPORT,
+                                      element_guid="r", read_at=BEFORE)
+    for g, proof in (("a", repo_publish.P_SENT), ("b", repo_publish.P_SUB_RESOURCE)):
+        reg.append_catalogue_commit_proof("repo1", proof=proof, node_kind=repo_publish.NODE_SUB_RESOURCE,
+                                          curation_id="c1", element_guid=g, detail={"kind": "file", "role": "chosen"},
+                                          read_at=BEFORE)
+    cur = {"id": "c1", "requested_at": "2026-10-20T09:00:00"}
+    assert repo_publish.commit_proof_summary(reg, "repo1", cur)["report"]["state"] == "sent"   # no reset: unchanged
+    _reset(reg)
+    out = repo_publish.commit_proof_summary(reg, "repo1", cur)
+    sent_words = "sent before the 2026-10-24 reset · never confirmed"
+    assert out["report"]["state"] == "pre_reset_sent" and out["report"]["words"] == sent_words
+    files = out["sub_resources"]["by_row"]["files"]
+    assert files["pre_reset"] == 1 and files["pre_reset_sent"] == 1 and files["sent"] == 0
+    assert out["pre_reset_sent_words"] == sent_words and "published" not in out["report"]["words"]
+
+
+# item 6: a failed read of the record raises, never a silent "no reset"
+
+def test_item6_a_failed_read_of_the_record_raises(reg, monkeypatch):
+    def broken():
+        raise RuntimeError("registry down")
+
+    monkeypatch.setattr(reg, "latest_egeria_reset_at", broken)
+    with pytest.raises(RuntimeError):
+        cc.latest_recorded_reset(reg)
+
+
+# item 8: the words for a publish older than the reset come from the server
+
+def test_item8_publish_fields_send_the_rulings_words(reg):
+    assert cc.publish_fields(reg, "repo1", BEFORE)["published_earlier_words"] == ""
+    _reset(reg)
+    assert cc.publish_fields(reg, "repo1", BEFORE)["published_earlier_words"] == WORDS
+    assert cc.publish_fields(reg, "repo1", AFTER)["published_earlier_words"] == ""
+
+
+# item 10: the new row's id comes back from the insert itself
+
+def test_item10_record_returns_the_inserted_rows_id(reg):
+    a = _reset(reg, "2026-10-20T00:00:00Z")
+    b = _reset(reg)
+    with reg._conn() as c:
+        ids = [r[0] for r in c.execute("SELECT id FROM egeria_resets ORDER BY id").fetchall()]
+    assert [a, b] == ids
+
+
+# item 2: the file-system publish proofs (folder survey, walk measures, data-file profiles)
+
+def _fs(reg, tmp_path):
+    from resource_explorer.registry import FileSystemEntity
+
+    root = tmp_path / "lake"
+    root.mkdir()
+    (root / "a.csv").write_text("id,name\n1,ann\n2,bob\n")
+    reg.register_filesystem(FileSystemEntity(slug="lake", display_name="Lake", local_mount_point=str(root),
+                                             canonical_mount_point="/deployments/lake", egeria_asset_guid="fs-guid"))
+    return root
+
+
+def _fs_published(reg, sd, proof_at):
+    proof = {"report_guid": "rep-fs", "annotation_count": 4, "annotations_in_egeria": 4, "report_read_back": True,
+             "read_back_why": "", "at": proof_at}
+    reg.add_filesystem_survey(fs_slug="lake", surveyed_at=sd["surveyed_at"], survey_data={**sd, "published_to_egeria": proof},
+                              egeria_report_guid="rep-fs", source="egeria-published")
+
+
+def test_item2_the_folder_survey_and_walk_measures_published_before_the_reset_are_pre_reset(reg, tmp_path):
+    from resource_explorer.folder_survey_view import _re_candidate, extensions_view
+    from resource_explorer.surveyors.filesystem import walk_extensions as we
+    from resource_explorer.surveyors.filesystem.local_filesystem_surveyor import LocalFileSystemSurveyor
+
+    _fs(reg, tmp_path)
+    fs = reg.get_filesystem("lake")
+    sd = LocalFileSystemSurveyor(fs, reg).run(profile_contents=False, walk_extensions=True)
+    sd["surveyed_at"] = BEFORE
+    we.attach_extensions(fs, reg, sd, led_by="re")
+    sd = {**sd, "surveyed_by": {"surveyor": "Resource Explorer", "reach": {}}}
+    reg.add_filesystem_survey(fs_slug="lake", surveyed_at=BEFORE, survey_data=sd, source="survey-definition")
+    _fs_published(reg, sd, BEFORE)
+    assert _re_candidate(reg, "lake")["publish"]["published"] is True                  # no reset: unchanged
+    assert extensions_view(reg, "lake")["published"] is True
+    _reset(reg)
+    walk, ext = _re_candidate(reg, "lake"), extensions_view(reg, "lake")
+    for v in (walk, ext):
+        assert v["published"] is False and v["publish"]["published"] is False
+        assert v["publish"]["pre_reset"] == {"at": "2026-10-24T09:00:00Z", "words": WORDS}
+
+
+def test_item2_the_file_profiles_publish_before_the_reset_is_pre_reset(reg, tmp_path):
+    from resource_explorer.surveyors.filesystem import file_profiles as fp
+    from resource_explorer.surveyors.filesystem import walk_extensions as we
+    from resource_explorer.surveyors.filesystem.local_filesystem_surveyor import LocalFileSystemSurveyor
+
+    _fs(reg, tmp_path)
+    fs = reg.get_filesystem("lake")
+    sd = LocalFileSystemSurveyor(fs, reg).run(profile_contents=False, walk_extensions=True)
+    we.attach_extensions(fs, reg, sd, led_by="re")
+    run = fp.run_file_profiles(fs, reg, limit=40_000)["run_id"]
+    reg.record_step_run("lake", fp.PUBLISH_STEP_KEY, run, entity_type="filesystem", source="egeria-published",
+                        executor="local", metrics={"report_guid": "r", "complete": True, "annotations_in_egeria": 2,
+                                                   "annotation_count": 2, "at": BEFORE})
+    assert "pre_reset" not in fp.profiles_view(reg, "lake")["run"]["publish"]          # no reset: unchanged
+    _reset(reg)
+    assert fp.profiles_view(reg, "lake")["run"]["publish"]["pre_reset"]["words"] == WORDS

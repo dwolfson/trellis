@@ -149,11 +149,24 @@ const typeRows = (title, rows) => (rows && rows.length
       ${rows.length > 12 ? `<div class="text-provenance text-ink-muted">and ${num(rows.length - 12)} more</div>` : ''}</div>`
   : '');
 
+/** A publish read back before the latest Egeria reset (the server's `pre_reset` {at, words}): the ◌ lane with the
+ *  server's words "published before the <date> reset · not in Egeria now", never "published" (fix round 1). */
+function preResetHtml(claim) {
+  return `<span data-fs-pre-reset class="font-glyph" aria-hidden="true" title="${esc(`Egeria reset ${claim.at || ''}`)}">◌</span> ${esc(claim.words || 'not in Egeria now')}`;
+}
+
 /** Published means what landed, read back: "published · N of M annotations in Egeria", else "not published · why". An
- *  Egeria-led survey is Egeria's own report. */
+ *  Egeria-led survey is Egeria's own report. Returns HTML (escaped here). */
 function publishWords(v) {
   const W = FOLDER_SURVEY_WORDS;
-  if (v.surveyor === "Egeria's Folder Survey") return W.published(v.report_guid, '');
+  const pre = v.pre_reset || (v.publish && v.publish.pre_reset);
+  if (pre) return preResetHtml(pre);
+  if (v.surveyor === "Egeria's Folder Survey") return esc(W.published(v.report_guid, ''));
+  return esc(publishWordsRe(v));
+}
+
+function publishWordsRe(v) {
+  const W = FOLDER_SURVEY_WORDS;
   const p = v.publish;
   if (!p) return W.notPublished;
   return p.published ? W.published(v.report_guid, p.landed_words) : W.notPublishedWhy(p.not_published_why || 'unknown');
@@ -171,7 +184,7 @@ export function folderResultsHtml(view) {
   return `<div data-fs-results data-fs-state="measured" data-fs-surveyor="${esc(v.surveyor)}" class="mt-s2">
     <div data-fs-surveyed-by class="text-caveat text-ink">${esc(FOLDER_SURVEY_WORDS.surveyedBy(v.surveyor, day(v.surveyed_at)))}
       <span class="text-ink-muted"> · ${esc(v.report_sentence || '')}</span></div>
-    <div class="text-provenance text-ink-muted" data-fs-published>${esc(publishWords(v))}</div>
+    <div class="text-provenance text-ink-muted" data-fs-published>${publishWords(v)}</div>
     ${(v.detail_lines || []).map((l) => `<div class="text-provenance text-ink-muted" data-fs-detail>${esc(l)}</div>`).join('')}
     ${limitsHtml(v.limits)}
     ${(v.broken_symlinks || []).length ? `<div class="text-provenance text-ink-muted" data-fs-broken-list>${
@@ -220,9 +233,11 @@ export function walkMeasuresHtml(ext) {
   const capped = ext.capped_words
     ? `<div data-fs-measures-capped class="text-caveat text-state-warn"><span class="font-glyph" aria-hidden="true">⚠</span> ${esc(ext.capped_words)} · not the whole tree</div>`
     : `<div data-fs-measures-not-capped class="text-provenance text-ink-muted">${esc(W.complete)}</div>`;
-  const pub = ext.publish
-    ? (ext.publish.published ? W.published(ext.report_guid, ext.publish.landed_words) : W.notPublishedWhy(ext.publish.not_published_why || 'unknown'))
-    : W.notPublished;
+  const pub = ext.publish && ext.publish.pre_reset
+    ? preResetHtml(ext.publish.pre_reset)
+    : esc(ext.publish
+      ? (ext.publish.published ? W.published(ext.report_guid, ext.publish.landed_words) : W.notPublishedWhy(ext.publish.not_published_why || 'unknown'))
+      : W.notPublished);
   const notWalked = Object.entries(ext.not_walked_by_name || {}).map(([n, c]) => `${n} ×${num(c)}`).join(', ');
   const modes = Object.entries(ext.modes || {}).slice(0, 8).map(([m, c]) => `${m} ×${num(c)}`).join(', ');
   const notHashed = W.notHashed(h.over_limit_files, h.secret_named_files, h.symlink_files, h.unreadable_files);
@@ -234,7 +249,7 @@ export function walkMeasuresHtml(ext) {
       <span class="text-ink-muted"> · ${esc(ext.report_sentence || '')}</span></div>
     ${capped}
     <div class="text-provenance ${rows.kept ? 'text-ink-muted' : 'text-state-warn'}" data-fs-measures-rows data-fs-rows-kept="${rows.kept ? 'yes' : 'no'}">${esc(rows.kept ? W.rowsKept(rows.files, rows.runs_kept) : W.rowsNotKept(rows.error))}</div>
-    <div class="text-provenance text-ink-muted" data-fs-measures-published>${esc(pub)}</div>
+    <div class="text-provenance text-ink-muted" data-fs-measures-published>${pub}</div>
     <div class="mt-s2">
       ${statRow('Deepest level', num(f.deepest_folder_depth))}
       ${statRow('Folders with files', num(f.folders_with_files))}
@@ -289,9 +304,11 @@ export function fileProfilesHtml(fp) {
     c.file_system_name_unknown ? W.fsNameUnknown(c.file_system_name_unknown) : '']
     .filter(Boolean);
   const other = W.otherStates(c);
-  const pub = run.publish
-    ? W.published(run.publish.report_guid, run.publish.annotations_in_egeria != null ? `${num(run.publish.annotations_in_egeria)} of ${num(run.publish.annotation_count)} annotations in Egeria` : '')
-    : W.notPublished;
+  const pub = run.publish && run.publish.pre_reset
+    ? preResetHtml(run.publish.pre_reset)
+    : esc(run.publish
+      ? W.published(run.publish.report_guid, run.publish.annotations_in_egeria != null ? `${num(run.publish.annotations_in_egeria)} of ${num(run.publish.annotation_count)} annotations in Egeria` : '')
+      : W.notPublished);
   const rows = (run.files || []).map((f) => [f.file_path, STATE_WORDS[f.state] ? `${STATE_WORDS[f.state]}${f.state === 'not_applicable' ? ` ${f.format || '(none)'}` : ''}` : f.state,
     sourceWords(f.stats_source), f.columns ? num(f.columns) : dash,
     f.sample_ratio != null && f.sample_ratio < 1 ? `${W.sampled} ${(f.sample_ratio * 100).toFixed(1)}%` : '']);
@@ -299,7 +316,7 @@ export function fileProfilesHtml(fp) {
     <div data-fp-run class="text-caveat text-ink">${esc(W.profiledAt(day(run.run_id)))} · <span data-fp-words>${esc(run.words || '')}</span></div>
     ${egeriaLines.map((l) => `<div data-fp-egeria class="text-provenance text-state-warn"><span class="font-glyph" aria-hidden="true">⚠</span> ${esc(l)}</div>`).join('')}
     ${other ? `<div data-fp-other class="text-provenance text-ink-muted">${esc(other)}</div>` : ''}
-    <div data-fp-published class="text-provenance text-ink-muted">${esc(pub)}</div>
+    <div data-fp-published class="text-provenance text-ink-muted">${pub}</div>
     ${rows.length ? measureTableHtml('profiles', 'Files', ['File', 'State', 'Source', 'Columns', 'Sampled'], rows) : ''}
     ${run.files_not_shown ? `<div class="text-provenance text-ink-muted">and ${num(run.files_not_shown)} more</div>` : ''}
   </div>`;

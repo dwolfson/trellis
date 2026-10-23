@@ -1598,12 +1598,16 @@ def record_egeria_reset(
     new_commit: str = typer.Option("", "--new-commit", help="The Egeria commit after the reset"),
     recorded_by: str = typer.Option("", "--recorded-by", help="Who records it (default: $USER)"),
     note: str = typer.Option("", "--note", help="Free text kept with the row"),
+    supersedes: Optional[int] = typer.Option(None, "--supersedes",
+                                   help="Correct a mistyped reset: the id of the row this one replaces"),
 ):
     """Record ONE reset of Egeria's metadata database (the coordinator, once per reset; PLAN-EGERIA-RESET-2026-10-23).
 
     Every proof row read before the latest recorded reset then reads "published before the <date> reset · not in
     Egeria now" and never ✓. Refused (exit 2, nothing written) for a time in the future or one not newer than the
-    latest recorded reset.
+    latest recorded reset. The time needs Z or an explicit offset (a bare date or a naive time is refused).
+    A mistyped reset is corrected with --supersedes <id>: a new row replaces it (earlier or later), the old row
+    stays on record and stops counting.
 
     Example:
       resource-explorer registry record-egeria-reset --reset-at 2026-10-24T09:00Z \\
@@ -1616,11 +1620,15 @@ def record_egeria_reset(
         row_id = registry.record_egeria_reset(
             reset_at=reset_at, old_platform_digest=old_digest, new_platform_digest=new_digest,
             old_commit=old_commit, new_commit=new_commit,
-            recorded_by=recorded_by or os.environ.get("USER", ""), note=note)
+            recorded_by=recorded_by or os.environ.get("USER", ""), note=note, supersedes=supersedes)
     except ValueError as exc:
         console.print(f"[red]Refused: {exc}. Nothing was written.[/red]")
         raise typer.Exit(2)
-    console.print(f"[green]Recorded Egeria reset {registry.latest_egeria_reset_at()} (row {row_id}).[/green]")
+    from resource_explorer.catalogue_commit import _ts
+
+    console.print(f"[green]Recorded Egeria reset {_ts(reset_at)}Z UTC (from {reset_at!r}; row {row_id}"
+                  + (f", supersedes row {supersedes}" if supersedes is not None else "")
+                  + f"). Latest reset now {registry.latest_egeria_reset_at()}.[/green]")
 
 
 @app.command(name="egeria-reports")
