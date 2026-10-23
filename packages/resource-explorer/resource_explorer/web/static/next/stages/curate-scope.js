@@ -1040,7 +1040,7 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshSco
     say('Reading Egeria…');
     let r;
     try { r = await postCatalogueReadBack(slug); } catch (err) { say(fail(err, 'the read'), true); offerSignIn(err); return; }
-    await redraw(`read back: ${r.catalogued || 0} published · ${r.attached_waiting || 0} attached, waiting${r.read_failed ? ` · ${r.read_failed} read(s) failed` : ''}`);
+    await redraw(`read back: ${r.chips_words || 'nothing read back from Egeria'}${r.read_failed ? ` · ${r.read_failed} read(s) failed` : ''}`);
   });
 }
 

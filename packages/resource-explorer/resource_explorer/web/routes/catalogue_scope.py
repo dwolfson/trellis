@@ -218,7 +218,11 @@ async def post_read_back(slug: str, request: Request) -> dict:
         if gateway is None:
             raise scope.ScopeError(503, "Egeria could not be reached: no client could be built")
         chosen, kept = commit._chosen_and_kept(view, derived["schemas"])
-        return commit.read_back(registry, gateway, slug, chosen + kept, by=author)
+        schemas = chosen + kept
+        out = commit.read_back(registry, gateway, slug, schemas, by=author)
+        # The status line on the button: the same chips text the commit's read-back step shows (one derivation).
+        out["chips_words"] = commit.read_back_words(commit.read_back_chips_for(registry, slug, schemas))
+        return out
 
     return await _run(commit.run_with_loop, go)
 

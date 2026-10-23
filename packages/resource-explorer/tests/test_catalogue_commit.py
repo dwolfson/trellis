@@ -801,6 +801,9 @@ def test_read_back_route_needs_a_person_and_records_proof(client, world, fake):
     assert client.post("/api/catalogue-scope/db/read-back").status_code == 401
     r = client.post("/api/catalogue-scope/db/read-back", headers=as_user(ME))
     assert r.status_code == 200 and r.json()["catalogued"] == 1
+    # the button's status line is the commit step's chips text, never "waiting"
+    assert r.json()["chips_words"] == cc.read_back_words(cc.read_back_chips_for(world["registry"], "db", ["sales"]))
+    assert "waiting" not in r.json()["chips_words"]
 
 
 # ── the real gateway's wire shapes ───────────────────────────────────────────
