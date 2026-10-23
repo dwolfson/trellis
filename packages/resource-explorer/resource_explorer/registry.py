@@ -452,6 +452,40 @@ STEP_ANNOTATIONS_DDL = (
 )
 
 
+#: DDL for a repository's contributor lists (REVIEW-QUESTIONS-AND-ANALYTICS-2026-10-22.md, addendum 1 (b); the project owner's go 2026-10-23, "Yes,
+#: build it"). Same rules as RESOURCE_SCOPE_EVENTS_DDL: ONE additive, idempotent CREATE TABLE IF NOT EXISTS, no ALTER of
+#: an existing table, no data migration, no foreign key, no question mark or colon-name token (the Postgres translator
+#: rewrites both; AUTOINCREMENT becomes SERIAL).
+#:
+#: Two lists, kept per fetch like the walk rows (`contributors.FETCHES_KEPT` per list): `list_window` is `months_12`
+#: (commits by git author in the last 365 days, `source` github:commits) or `all_time` (GitHub's contributions by linked
+#: account, `source` github:contributors). The column is `list_window`, not `window`: WINDOW is a reserved word in
+#: Postgres. Rank 0 is the FETCH's own row (no login; `commits` is the total counted), so "fetched, nothing there" is a
+#: stored fact and never the same as "never fetched"; ranks 1..N are the contributors. `capped` is '' when the list was
+#: read whole, otherwise where the call cap stopped it (the oldest commit date reached for months_12, "rows N" for
+#: all_time). `lookback_days` is 365 for months_12 and NULL for all_time (it has no lookback).
+PROJECT_CONTRIBUTORS_DDL = (
+    """
+    CREATE TABLE IF NOT EXISTS project_contributors (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_slug   TEXT NOT NULL,
+        list_window    TEXT NOT NULL,
+        rank           INTEGER NOT NULL,
+        login          TEXT NOT NULL DEFAULT '',
+        display_name   TEXT NOT NULL DEFAULT '',
+        author_email   TEXT NOT NULL DEFAULT '',
+        commits        INTEGER NOT NULL DEFAULT 0,
+        share          DOUBLE PRECISION NOT NULL DEFAULT 0,
+        is_bot         INTEGER NOT NULL DEFAULT 0,
+        fetched_at     TEXT NOT NULL,
+        lookback_days  INTEGER DEFAULT NULL,
+        source         TEXT NOT NULL,
+        capped         TEXT NOT NULL DEFAULT '',
+        UNIQUE (project_slug, list_window, fetched_at, rank)
+    )
+    """,
+)
+
 #: DDL for the API reference of a repository (owner ruling 2026-10-15: the fetched and committed specs live in
 #: proper tables so elements can be filtered and analysed by path and string). Same rules as the two blocks
 #: above: ONE additive, idempotent block, CREATE ... IF NOT EXISTS only, no ALTER of an existing table, no data
@@ -3589,6 +3623,9 @@ class ProjectRegistry:
                 conn.execute(_ddl)
             # api_reference_*: ONE additive, idempotent block (see API_REFERENCE_DDL).
             for _ddl in API_REFERENCE_DDL:
+                conn.execute(_ddl)
+            # project_contributors: ONE additive, idempotent block (see PROJECT_CONTRIBUTORS_DDL; owner's go 2026-10-23).
+            for _ddl in PROJECT_CONTRIBUTORS_DDL:
                 conn.execute(_ddl)
             # ── doc_sources — declared documentation sources (Enrichment) ──
             #
@@ -7016,6 +7053,77 @@ class ProjectRegistry:
                 [{**r, "project_slug": slug} for r in rows],
             )
 
+    # ── contributor lists, kept per fetch (PROJECT_CONTRIBUTORS_DDL) ─────────────────────────────────────────────────
+
+    _CONTRIBUTOR_COLUMNS = ("rank", "login", "display_name", "author_email", "commits", "share", "is_bot")
+
+    def write_contributor_fetch(self, resource_slug: str, list_window: str, fetched_at: str, rows: list[dict], *,
+                                total: int, lookback_days: int | None, source: str, capped: str = "",
+                                keep_fetches: int = 5, meta: dict | None = None, keep_also: str = "") -> list[int]:
+        """Store ONE fetch of one list, all or none (one transaction): the fetch's own row at rank 0 (`commits` =
+        `total`), then `rows` (each with rank >= 1), then remove the fetches of this list older than the newest
+        `keep_fetches`, never the fetch at `keep_also` (the newest successful one, kept behind a run of refusals).
+        Returns the ids written, the fetch row first.
+
+        `meta` is the fetch's status, stored as JSON in the rank-0 row's `display_name` (that row has no person):
+        `status` (ok / not_permitted / failed / not_enough_calls), the reset time and error words of a refusal, the
+        non-bot total and the identities merged. A refusal is a rank-0 row with no contributor rows."""
+        slug = self._normalize_slug(resource_slug)
+        cols = ("project_slug", "list_window", *self._CONTRIBUTOR_COLUMNS, "fetched_at", "lookback_days", "source",
+                "capped")
+        sql = f"INSERT INTO project_contributors ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})"
+        head = {"rank": 0, "login": "", "display_name": json.dumps(meta, sort_keys=True) if meta else "",
+                "author_email": "", "commits": int(total), "share": 1.0 if total else 0.0, "is_bot": 0}
+        ids: list[int] = []
+        with self._conn() as conn:
+            for r in [head, *rows]:
+                values = (slug, list_window, int(r["rank"]), r.get("login") or "", r.get("display_name") or "",
+                          r.get("author_email") or "", int(r.get("commits") or 0), float(r.get("share") or 0.0),
+                          1 if r.get("is_bot") else 0, fetched_at, lookback_days, source, capped or "")
+                conn.execute(sql, values)
+                got = conn.execute(
+                    "SELECT id FROM project_contributors WHERE project_slug = ? AND list_window = ? "
+                    "AND fetched_at = ? AND rank = ?", (slug, list_window, fetched_at, int(r["rank"]))).fetchone()
+                ids.append(int(got["id"]))
+            kept = [r["fetched_at"] for r in conn.execute(
+                "SELECT DISTINCT fetched_at FROM project_contributors WHERE project_slug = ? AND list_window = ? "
+                "ORDER BY fetched_at DESC", (slug, list_window)).fetchall()]
+            for old in kept[max(keep_fetches, 1):]:
+                if keep_also and old == keep_also:
+                    continue
+                conn.execute("DELETE FROM project_contributors WHERE project_slug = ? AND list_window = ? "
+                             "AND fetched_at = ?", (slug, list_window, old))
+        return ids
+
+    _CONTRIBUTOR_SELECT = ("SELECT id, project_slug, list_window, rank, login, display_name, author_email, commits, "
+                           "share, is_bot, fetched_at, lookback_days, source, capped FROM project_contributors ")
+
+    def contributor_fetch_heads(self, resource_slug: str, list_window: str) -> list[dict]:
+        """The rank-0 row of every kept fetch of one list, newest first; [] when never fetched."""
+        slug = self._normalize_slug(resource_slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                self._CONTRIBUTOR_SELECT + "WHERE project_slug = ? AND list_window = ? AND rank = 0 "
+                "ORDER BY fetched_at DESC", (slug, list_window)).fetchall()
+        return [dict(r) for r in rows]
+
+    def contributor_fetch_rows(self, resource_slug: str, list_window: str, fetched_at: str) -> list[dict]:
+        """Every row of one fetch of one list, by rank (rank 0, the fetch's own row, first)."""
+        slug = self._normalize_slug(resource_slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                self._CONTRIBUTOR_SELECT + "WHERE project_slug = ? AND list_window = ? AND fetched_at = ? "
+                "ORDER BY rank", (slug, list_window, fetched_at)).fetchall()
+        return [dict(r) for r in rows]
+
+    def latest_contributor_fetch(self, resource_slug: str, list_window: str) -> list[dict]:
+        """Every row of the newest fetch of one list, by rank (rank 0, the fetch's own row, first); [] when this list
+        was never fetched for the repository. The newest fetch may be a refusal (a rank-0 row alone)."""
+        heads = self.contributor_fetch_heads(resource_slug, list_window)
+        if not heads:
+            return []
+        return self.contributor_fetch_rows(resource_slug, list_window, heads[0]["fetched_at"])
+
     def remove(self, slug: str) -> None:
         normalized = self._normalize_slug(slug)
         with self._conn() as conn:
@@ -7036,6 +7144,7 @@ class ProjectRegistry:
             conn.execute("DELETE FROM project_code_markers WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_aliases WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_contributor_stats WHERE project_slug = ?", (normalized,))
+            conn.execute("DELETE FROM project_contributors WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_dependencies WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_file_type_counts WHERE project_slug = ?", (normalized,))
             conn.execute("DELETE FROM project_file_inventory WHERE project_slug = ?", (normalized,))
@@ -7085,7 +7194,7 @@ class ProjectRegistry:
     _PROJECT_SLUG_TABLES: tuple[str, ...] = (
         "project_stats", "project_commits", "project_code_symbols",
         "project_code_relationships", "project_code_markers", "project_aliases",
-        "project_contributor_stats", "conversation_history", "context_compiles",
+        "project_contributor_stats", "project_contributors", "conversation_history", "context_compiles",
         "project_dependencies", "project_file_type_counts",
         "project_file_inventory", "project_egeria_surveys",
         "project_published_annotation_types", "project_published_analyses",

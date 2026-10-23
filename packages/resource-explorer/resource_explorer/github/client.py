@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 from functools import cached_property
 
 from github import Github, GithubException
@@ -495,6 +496,22 @@ class GitHubClient:
 
     def get_latest_commit_sha(self, repo: Repository) -> str:
         return repo.get_commits()[0].sha
+
+    def rest_get(self, path: str, params: dict | None = None) -> tuple[dict, Any]:
+        """ONE GET against the REST API, returned as GitHub sent it: `(headers, json)`.
+
+        For reads that must count their calls (the contributor lists): every call here is exactly one request,
+        and no PyGitHub object is built from the answer, so no attribute read can trigger a hidden completion call.
+        The requester is built WITHOUT PyGitHub's retry, whose default sleeps until the rate limit resets on a
+        403; here a 403 (or any error status) raises `GithubException` at once, with its status and headers, and
+        the caller stops cleanly. `json` is None for a 204 (GitHub's answer for an empty repository's
+        contributors)."""
+        return self._gh_once.requester.requestJsonAndCheck("GET", path, parameters=dict(params or {}))
+
+    @cached_property
+    def _gh_once(self) -> Github:
+        cfg = get_config().github
+        return Github(cfg.token or None, base_url=self._base_url, per_page=100, retry=None)
 
     def check_rate_limit(self) -> dict:
         rate = self._gh.get_rate_limit()
