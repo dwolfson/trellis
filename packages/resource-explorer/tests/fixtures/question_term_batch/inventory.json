@@ -1,0 +1,441 @@
+{
+  "schema": "question-term-inventory/1",
+  "taken_at": "2026-10-23T00:00:00Z",
+  "glossary": {
+    "name": "User Questions",
+    "guid": "glossary-uq"
+  },
+  "terms_seen": 13,
+  "terms": [
+    {
+      "guid": "term-01",
+      "qualified_name": "Org::Term::What-is-A?::1.0",
+      "display_name": "What is A?",
+      "description": "R1",
+      "summary": "W1",
+      "usage": "Typically asked and answerable during Scouting.",
+      "content_status": "ACTIVE",
+      "element_status": "ACTIVE",
+      "question_id": "Q-0001",
+      "classifications": [
+        "Anchors",
+        "Question"
+      ],
+      "links": [
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-01-Steward",
+          "other_at_end1": false,
+          "guid": "persp-steward",
+          "type": "Perspective",
+          "qualified_name": "Perspective::Steward",
+          "display_name": "Steward"
+        },
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-01-Scouting",
+          "other_at_end1": false,
+          "guid": "stage-scouting",
+          "type": "GlossaryTerm",
+          "qualified_name": "Org::Term::Scouting::1.0",
+          "display_name": "Scouting"
+        },
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-01-sd",
+          "other_at_end1": true,
+          "guid": "survey-def-1",
+          "type": "GovernanceActionProcess",
+          "qualified_name": "SurveyDef::Repo",
+          "display_name": "Repo survey"
+        }
+      ]
+    },
+    {
+      "guid": "term-02",
+      "qualified_name": "Org::Term::Is-B?::1.0",
+      "display_name": "Is B?",
+      "description": "R2",
+      "summary": "W2",
+      "usage": "Typically asked and answerable during Discovery.",
+      "content_status": "ACTIVE",
+      "element_status": "ACTIVE",
+      "question_id": null,
+      "classifications": [
+        "Anchors",
+        "Question"
+      ],
+      "links": [
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-02-Consumer",
+          "other_at_end1": false,
+          "guid": "persp-consumer",
+          "type": "Perspective",
+          "qualified_name": "Perspective::Consumer",
+          "display_name": "Consumer"
+        },
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-02-Discovery",
+          "other_at_end1": false,
+          "guid": "stage-discovery",
+          "type": "GlossaryTerm",
+          "qualified_name": "Org::Term::Discovery::1.0",
+          "display_name": "Discovery"
+        },
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-02-sd",
+          "other_at_end1": true,
+          "guid": "survey-def-1",
+          "type": "GovernanceActionProcess",
+          "qualified_name": "SurveyDef::Repo",
+          "display_name": "Repo survey"
+        }
+      ]
+    },
+    {
+      "guid": "term-03",
+      "qualified_name": "Org::Term::C?::1.0",
+      "display_name": "C?",
+      "description": "R3",
+      "summary": "W3",
+      "usage": "Typically asked and answerable during Analysis.",
+      "content_status": "ACTIVE",
+      "element_status": "ACTIVE",
+      "question_id": null,
+      "classifications": [
+        "Anchors",
+        "Question"
+      ],
+      "links": [
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-03-Steward",
+          "other_at_end1": false,
+          "guid": "persp-steward",
+          "type": "Perspective",
+          "qualified_name": "Perspective::Steward",
+          "display_name": "Steward"
+        },
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-03-Analysis",
+          "other_at_end1": false,
+          "guid": "stage-analysis",
+          "type": "GlossaryTerm",
+          "qualified_name": "Org::Term::Analysis::1.0",
+          "display_name": "Analysis"
+        },
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-03-sd",
+          "other_at_end1": true,
+          "guid": "survey-def-1",
+          "type": "GovernanceActionProcess",
+          "qualified_name": "SurveyDef::Repo",
+          "display_name": "Repo survey"
+        }
+      ]
+    },
+    {
+      "guid": "term-04",
+      "qualified_name": "Org::Term::D?::1.0",
+      "display_name": "D?",
+      "description": "R4",
+      "summary": "W4",
+      "usage": "Typically asked and answerable during Scouting.",
+      "content_status": "ACTIVE",
+      "element_status": "ACTIVE",
+      "question_id": "Q-0004",
+      "classifications": [
+        "Anchors",
+        "Question"
+      ],
+      "links": [
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-04-Steward",
+          "other_at_end1": false,
+          "guid": "persp-steward",
+          "type": "Perspective",
+          "qualified_name": "Perspective::Steward",
+          "display_name": "Steward"
+        },
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-04-Scouting",
+          "other_at_end1": false,
+          "guid": "stage-scouting",
+          "type": "GlossaryTerm",
+          "qualified_name": "Org::Term::Scouting::1.0",
+          "display_name": "Scouting"
+        },
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-04-sd",
+          "other_at_end1": true,
+          "guid": "survey-def-1",
+          "type": "GovernanceActionProcess",
+          "qualified_name": "SurveyDef::Repo",
+          "display_name": "Repo survey"
+        }
+      ]
+    },
+    {
+      "guid": "term-05",
+      "qualified_name": "Org::Term::E?::1.0",
+      "display_name": "E?",
+      "description": "R5",
+      "summary": "W5",
+      "usage": "Typically asked and answerable during Discovery.",
+      "content_status": "ACTIVE",
+      "element_status": "ACTIVE",
+      "question_id": "Q-0005",
+      "classifications": [
+        "Anchors",
+        "Question"
+      ],
+      "links": [
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-05-Consumer",
+          "other_at_end1": false,
+          "guid": "persp-consumer",
+          "type": "Perspective",
+          "qualified_name": "Perspective::Consumer",
+          "display_name": "Consumer"
+        },
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-05-Discovery",
+          "other_at_end1": false,
+          "guid": "stage-discovery",
+          "type": "GlossaryTerm",
+          "qualified_name": "Org::Term::Discovery::1.0",
+          "display_name": "Discovery"
+        },
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-05-sd",
+          "other_at_end1": true,
+          "guid": "survey-def-1",
+          "type": "GovernanceActionProcess",
+          "qualified_name": "SurveyDef::Repo",
+          "display_name": "Repo survey"
+        }
+      ]
+    },
+    {
+      "guid": "term-06",
+      "qualified_name": "Org::Term::F?::1.0",
+      "display_name": "F?",
+      "description": "R6",
+      "summary": "W6",
+      "usage": "Typically asked and answerable during Discovery.",
+      "content_status": "ACTIVE",
+      "element_status": "ACTIVE",
+      "question_id": "Q-0006",
+      "classifications": [
+        "Anchors",
+        "Question"
+      ],
+      "links": [
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-06-Steward",
+          "other_at_end1": false,
+          "guid": "persp-steward",
+          "type": "Perspective",
+          "qualified_name": "Perspective::Steward",
+          "display_name": "Steward"
+        },
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-06-Consumer",
+          "other_at_end1": false,
+          "guid": "persp-consumer",
+          "type": "Perspective",
+          "qualified_name": "Perspective::Consumer",
+          "display_name": "Consumer"
+        },
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-06-Discovery",
+          "other_at_end1": false,
+          "guid": "stage-discovery",
+          "type": "GlossaryTerm",
+          "qualified_name": "Org::Term::Discovery::1.0",
+          "display_name": "Discovery"
+        },
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-06-sd",
+          "other_at_end1": true,
+          "guid": "survey-def-1",
+          "type": "GovernanceActionProcess",
+          "qualified_name": "SurveyDef::Repo",
+          "display_name": "Repo survey"
+        }
+      ]
+    },
+    {
+      "guid": "term-07",
+      "qualified_name": "Org::Term::G?::1.0",
+      "display_name": "G?",
+      "description": "R7",
+      "summary": "W7",
+      "usage": "Typically asked and answerable during Scouting.",
+      "content_status": "ACTIVE",
+      "element_status": "ACTIVE",
+      "question_id": "Q-0007",
+      "classifications": [
+        "Anchors",
+        "Question"
+      ],
+      "links": [
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-07-Steward",
+          "other_at_end1": false,
+          "guid": "persp-steward",
+          "type": "Perspective",
+          "qualified_name": "Perspective::Steward",
+          "display_name": "Steward"
+        },
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-07-Scouting",
+          "other_at_end1": false,
+          "guid": "stage-scouting",
+          "type": "GlossaryTerm",
+          "qualified_name": "Org::Term::Scouting::1.0",
+          "display_name": "Scouting"
+        },
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-07-sd",
+          "other_at_end1": true,
+          "guid": "survey-def-1",
+          "type": "GovernanceActionProcess",
+          "qualified_name": "SurveyDef::Repo",
+          "display_name": "Repo survey"
+        }
+      ]
+    },
+    {
+      "guid": "term-08",
+      "qualified_name": "Org::Term::H?::1.0",
+      "display_name": "H?",
+      "description": "R8",
+      "summary": "W8",
+      "usage": "Typically asked and answerable during Enrichment.",
+      "content_status": "ACTIVE",
+      "element_status": "ACTIVE",
+      "question_id": null,
+      "classifications": [
+        "Anchors",
+        "Question"
+      ],
+      "links": [
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-08-Consumer",
+          "other_at_end1": false,
+          "guid": "persp-consumer",
+          "type": "Perspective",
+          "qualified_name": "Perspective::Consumer",
+          "display_name": "Consumer"
+        },
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-08-Enrichment",
+          "other_at_end1": false,
+          "guid": "stage-enrichment",
+          "type": "GlossaryTerm",
+          "qualified_name": "Org::Term::Enrichment::1.0",
+          "display_name": "Enrichment"
+        },
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-08-sd",
+          "other_at_end1": true,
+          "guid": "survey-def-1",
+          "type": "GovernanceActionProcess",
+          "qualified_name": "SurveyDef::Repo",
+          "display_name": "Repo survey"
+        }
+      ]
+    },
+    {
+      "guid": "term-10",
+      "qualified_name": "Org::Term::J?::1.0",
+      "display_name": "J?",
+      "description": "R10",
+      "summary": "W10",
+      "usage": "Typically asked and answerable during Scouting.",
+      "content_status": "ACTIVE",
+      "element_status": "ACTIVE",
+      "question_id": "Q-0010",
+      "classifications": [
+        "Anchors",
+        "Question"
+      ],
+      "links": [
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-10-Steward",
+          "other_at_end1": false,
+          "guid": "persp-steward",
+          "type": "Perspective",
+          "qualified_name": "Perspective::Steward",
+          "display_name": "Steward"
+        },
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-10-Scouting",
+          "other_at_end1": false,
+          "guid": "stage-scouting",
+          "type": "GlossaryTerm",
+          "qualified_name": "Org::Term::Scouting::1.0",
+          "display_name": "Scouting"
+        },
+        {
+          "relationship": "ScopedBy",
+          "relationship_guid": "rel-10-sd",
+          "other_at_end1": true,
+          "guid": "survey-def-1",
+          "type": "GovernanceActionProcess",
+          "qualified_name": "SurveyDef::Repo",
+          "display_name": "Repo survey"
+        },
+        {
+          "relationship": "ReplacementTerm",
+          "relationship_guid": "rel-10-rep",
+          "other_at_end1": false,
+          "guid": "term-01",
+          "type": "GlossaryTerm",
+          "qualified_name": "Org::Term::What-is-A?::1.0",
+          "display_name": "What is A?"
+        }
+      ]
+    },
+    {
+      "guid": "term-stage-scouting",
+      "qualified_name": "Org::Term::Scouting::1.0",
+      "display_name": "Scouting",
+      "description": "A funnel stage",
+      "summary": "",
+      "usage": "",
+      "content_status": "ACTIVE",
+      "element_status": "ACTIVE",
+      "question_id": null,
+      "classifications": [
+        "Anchors"
+      ],
+      "links": []
+    }
+  ],
+  "read_errors": []
+}

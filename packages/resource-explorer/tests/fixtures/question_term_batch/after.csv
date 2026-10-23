@@ -1,0 +1,11 @@
+Question ID,Question,Funnel Stage,Why is this important?,Rationale/Source,Answering Analysis,Answering Mechanism,Resource Types,Level,Steward,Consumer,Purposes,Catalog History,Status
+Q-0001,What is A now?,Scouting,W1,R1,a1,Direct Field,*,resource,X,,Explore,reworded,
+Q-0002,Is B?,Discovery,W2,R2,a2-fixed,Direct Field,*,resource,,X,Explore,keep-fix (RE-only column),
+Q-0003,C reworded?,Analysis,W3,R3,a3,Code Analysis,repo,resource,X,,Explore,reworded,
+Q-0004,D?,Scouting,W4,R4,a4,Direct Field,*,resource,X,,Explore,,
+Q-0005,E?,Discovery/Enrichment,W5,R5,a5,Direct Field,*,resource,,X,Explore,stage added,
+Q-0006,F?,Discovery,W6,R6,a6,Direct Field,*,resource,X,X,Explore,,retired 2026-10-22: launcher affordance (review §1.4)
+Q-0007,G?,Scouting,W7,R7,a7,Direct Field,*,resource,X,,Explore,,merged into Q-0001 2026-10-22
+Q-0008,H?,Enrichment,W8,R8,a8,Direct Field,*,resource,,X,Explore,,merged into Q-0009 2026-10-22
+Q-0009,I new?,Enrichment,W9,R9,a9,Direct Field,*,resource,X,X,Explore,new,
+Q-0010,J?,Scouting,W10,R10,a10,Direct Field,*,resource,X,,Explore,,merged into Q-0001 2026-10-22
