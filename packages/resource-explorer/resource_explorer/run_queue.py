@@ -312,7 +312,7 @@ def _handle_catalogue_commit(target: dict, result_ref: str) -> RunOutcome:
             with presser_hold.publishing_as_presser():
                 who = current_principal()
                 applied = presser_hold.applying_as_line(who)
-                log.info("catalogue commit %s (%s): %s", target.get("curation_id"), target.get("slug"), applied)
+                log.info("catalog commit %s (%s): %s", target.get("curation_id"), target.get("slug"), applied)
                 started = datetime.now(timezone.utc)
                 # pyegeria's sync wrappers need an event loop on the executing thread
                 rec = run_with_loop(execute_commit, registry, target["curation_id"])
