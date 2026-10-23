@@ -144,9 +144,11 @@ def profile_publish_words(counts: dict | None) -> str:
     publish has no profile proof rows."""
     if not counts or not counts.get("rows"):
         return ""
-    n, m, k, j, t = (counts.get(x, 0) for x in ("published", CREATED, RELINKED, NO_LONGER_MEASURED,
-                                                  NOT_MEASURED_THIS_RUN))
+    n, k, j, t, r = (counts.get(x, 0) for x in ("published", RELINKED, NO_LONGER_MEASURED,
+                                                  NOT_MEASURED_THIS_RUN, "recreated"))
+    m = counts.get("changed", counts.get(CREATED, 0) - r)
     if not counts.get("previous_report_at"):
         return f"{n} measures published · first profile published"
     return (f"{n} measures published · {m} changed since {_date(counts['previous_report_at'])}"
-            f" · {k} re-used · {j} no longer measured" + (f" · {t} not measured this run" if t else ""))
+            f" · {k} re-used" + (f" · {r} re-created (the re-used annotation was gone)" if r else "")
+            + f" · {j} no longer measured" + (f" · {t} not measured this run" if t else ""))

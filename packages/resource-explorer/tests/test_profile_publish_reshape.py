@@ -142,6 +142,14 @@ def test_the_card_line_words():
         " · 1 not measured this run")
 
 
+def test_the_card_line_names_a_recreated_measure_and_does_not_call_it_changed():
+    counts = {"rows": 5, "published": 5, "created": 1, "recreated": 1, "changed": 0, "relinked": 4,
+              "no_longer_measured": 0, "previous_report_at": "2026-10-22T10:00:00"}
+    assert profile_publish_words(counts) == (
+        "5 measures published · 0 changed since 2026-10-22 · 4 re-used"
+        " · 1 re-created (the re-used annotation was gone) · 0 no longer measured")
+
+
 # ── the read-first guard ───────────────────────────────────────────────────────────────────────────────────
 
 def _surveyor_with(held: list[dict] | None):
@@ -291,6 +299,27 @@ def _proof(registry, report_guid, *, notes: list | None = None) -> dict[str, int
     return out
 
 
+def test_only_the_gone_outcomes_have_an_item_key_and_no_content_hash(client, registry, egeria, world, rig):
+    """The convention the changed/recreated query relies on: created and relinked proof rows always carry a hash."""
+    _press(client, registry)
+    r1 = egeria.reports()[0][0]
+    egeria.archive(_profile_on(egeria, r1)[0])
+    _press(client, registry)
+    with registry._conn() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT detail_json, item_key, content_hash FROM native_survey_annotations").fetchall()]
+    seen = set()
+    for r in rows:
+        outcome = json.loads(r["detail_json"])["outcome"]
+        seen.add(outcome)
+        if outcome in ("created", "relinked"):
+            assert r["content_hash"]
+        else:
+            assert outcome in ("no_longer_measured", "not_measured_this_run")
+            assert r["item_key"] and r["content_hash"] is None
+    assert {"created", "relinked"} <= seen
+
+
 def _reported_pairs(egeria, report_guid) -> list[str]:
     return [r["end2"] for r in egeria.relationships if r["type"] == "ReportedAnnotation" and r["end1"] == report_guid]
 
@@ -403,7 +432,11 @@ def test_a_relink_egeria_refuses_is_created_in_the_same_run(client, registry, eg
     assert notes == [("created", RECREATED_NOTE)]
     assert gone not in _reported_pairs(egeria, r2) and len(_profile_on(egeria, r2)) == 5
     assert second["published"] is True
-    assert " · 5 measures published · 1 changed since " in second["publish_state"]
+    counts = registry.profile_publish_counts(r2, ANALYSIS_STEP)
+    assert counts["created"] == 1 and counts["recreated"] == 1 and counts["changed"] == 0
+    assert counts["published"] == 5
+    assert " · 5 measures published · 0 changed since " in second["publish_state"]
+    assert " · 4 re-used · 1 re-created (the re-used annotation was gone) · 0 no longer measured" in second["publish_state"]
 
 
 def test_a_partial_relink_is_relinked_on_the_next_run_not_changed(client, registry, egeria, world, rig):

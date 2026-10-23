@@ -8343,15 +8343,18 @@ class ProjectRegistry:
 
     def profile_publish_counts(self, report_guid: str, analysis_step: str) -> dict:
         """The run card's counts for one value-profile publish, from its proof rows only: `published`
-        (created + relinked), `created`, `relinked`, `no_longer_measured`, `not_measured_this_run`, and the
+        (created + relinked), `created`, `recreated` (created again after a refused re-link: the value did not
+        change), `changed` (created minus recreated), `relinked`, `no_longer_measured`, `not_measured_this_run`, and the
         previous report it was
         compared with (`previous_report_at`, '' when there was none)."""
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT detail_json FROM native_survey_annotations WHERE report_guid = ? AND analysis_step = ?",
                 (report_guid, analysis_step)).fetchall()
+        from resource_explorer.surveyors.database.quality.profile_publish import RECREATED_NOTE as recreated_note
         counts = {"created": 0, "relinked": 0, "no_longer_measured": 0, "not_measured_this_run": 0}
         previous = ""
+        recreated = 0
         for r in rows:
             try:
                 detail = json.loads(dict(r)["detail_json"] or "{}")
@@ -8360,8 +8363,12 @@ class ProjectRegistry:
             outcome = detail.get("outcome")
             if outcome in counts:
                 counts[outcome] += 1
+                # a refused re-link created again in the same run: created, but its value did not change
+                if outcome == "created" and detail.get("note") == recreated_note:
+                    recreated += 1
             previous = previous or detail.get("previous_report_at") or ""
         return {"published": counts["created"] + counts["relinked"], **counts,
+                "recreated": recreated, "changed": counts["created"] - recreated,
                 "previous_report_at": previous, "rows": len(rows)}
 
     # ── annotations of a user step run by RE (extensibility brief 2c) ────────
