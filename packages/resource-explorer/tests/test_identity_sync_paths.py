@@ -114,18 +114,24 @@ def readback(monkeypatch, fake):
     earlier), so a regression that writes as the service account reads back as the service account."""
     from pyegeria import AssetMaker
 
-    state = {"reads": [], "fail": False}
+    state = {"reads": [], "fail": False, "bodies": [], "by_guid": {}}
 
     def build(identity, **kw):
         clients = create_autospec(egeria_clients.EgeriaClients, instance=True, spec_set=True)
         maker = create_autospec(AssetMaker, instance=True, spec_set=True)
 
         def get(guid, *a, **k):
+            from datetime import datetime, timezone
+
             state["reads"].append((identity.kind, identity.client_user or identity.user_id, guid))
+            state["bodies"].append(k.get("body"))
             if state["fail"]:
                 raise RuntimeError("test boundary: the read-back failed")
+            if guid in state["by_guid"]:                     # an element a test says something else about
+                return {"elementHeader": {"guid": guid, "versions": state["by_guid"][guid]}}
             writers = [w[2] for w in _writes(fake)]
-            versions = {"createdBy": "someone-earlier", **({"updatedBy": writers[-1]} if writers else {})}
+            versions = {"createdBy": "someone-earlier", **({"updatedBy": writers[-1]} if writers else {}),
+                        "updateTime": datetime.now(timezone.utc).isoformat()}
             return {"elementHeader": {"guid": guid, "versions": versions}}
 
         maker.get_asset_by_guid.side_effect = get
@@ -215,11 +221,12 @@ def test_a_pressed_commit_writes_as_the_presser_across_the_thread_hop_and_the_ac
     assert fake.calls.who and {w[1:] for w in fake.calls.who} == {("caller", PRESSER, LIVE_TOKEN)}
     assert {"publish_database", "create_schema_element"} <= {w[0] for w in _writes(fake)}, _writes(fake)
     # the activity row says the intent (who the run acted as) and the proof (who Egeria says wrote, from a read of
-    # the database element by GUID, made as the presser)
+    # the schema element THIS commit attached, by GUID, made as the presser)
     summary = registry.get_activity(out["activity_id"])["summary"]
     assert summary.endswith(f"applying as {PRESSER} from {presser_hold.SOURCE_PRESSER} · written as {PRESSER}"), summary
-    db_guid = registry.get_database("db").egeria_asset_guid
-    assert db_guid and readback["reads"] == [("caller", PRESSER, db_guid)]
+    attached = _attached_guids(registry, out["curation"]["id"])
+    assert attached and readback["reads"] == [("caller", PRESSER, attached[0])]
+    assert registry.get_database("db").egeria_asset_guid not in {r[2] for r in readback["reads"]}
     assert presser_hold.take(out["run_id"]) is None                          # released when the run ended
 
 
@@ -256,9 +263,9 @@ def test_a_commit_row_with_no_person_keeps_the_service_account(client, world, fa
     summary = registry.get_activity(out["activity_id"])["summary"]
     assert summary.endswith(f"applying as {daemon_user} from {presser_hold.SOURCE_SERVICE_ACCOUNT}, "
                             f"on behalf of {PRESSER} · written as {daemon_user}"), summary
-    with registry._conn() as conn:                                # an unpressed commit's rows carry no marker
+    with registry._conn() as conn:          # an unpressed commit's rows OMIT the key: never `"as_presser": false`,
         texts = [r["payload_json"] for r in conn.execute("SELECT payload_json FROM egeria_outbox").fetchall()]
-    assert texts and not any("as_presser" in t for t in texts)
+    assert texts and not any("as_presser" in t for t in texts)          # which the claim's text rule counts as marked
 
 
 def test_a_signed_out_commit_is_refused_and_queues_nothing(client, world, fake, registry, monkeypatch):
@@ -364,6 +371,73 @@ def test_written_as_says_could_not_check_when_the_read_back_fails(client, world,
     assert presser_hold.WRITTEN_AS_UNCHECKED == "written as: could not check"
 
 
+def _attached_guids(registry, curation_id):
+    return [p["element_guid"] for p in registry.list_catalogue_commit_proofs("db")
+            if p["curation_id"] == curation_id and p["proof"] == cc.P_TARGET and p["element_guid"]]
+
+
+def test_written_as_names_this_commits_writer_not_the_database_elements_earlier_one(
+        client, world, fake, factory, readback, registry, monkeypatch):
+    """F2: the database element was last written by the NPA (an earlier commit); this commit's schema attach was
+    made by the person. The line reads the schema element this commit wrote, so it names the person."""
+    out = _press(client, world, fake, factory, monkeypatch)
+    db_guid = registry.get_database("db").egeria_asset_guid
+    readback["by_guid"][db_guid] = {"createdBy": "resourceexplorernpa", "updatedBy": "resourceexplorernpa",
+                                    "updateTime": "2026-01-01T00:00:00+00:00"}
+    ran = _in_a_bare_thread(lambda: run_queue.execute_run(registry.get_run(out["run_id"]), registry))
+    assert ran["result"].state == "succeeded", ran["result"].error
+    summary = registry.get_activity(out["activity_id"])["summary"]
+    assert summary.endswith(f" · written as {PRESSER}"), summary
+    assert "resourceexplorernpa" not in summary
+    assert readback["bodies"] and all(b.get("forLineage") is True for b in readback["bodies"])
+
+
+def test_written_as_could_not_check_when_the_element_was_last_changed_before_the_run(
+        client, world, fake, factory, readback, registry, monkeypatch):
+    out = _press(client, world, fake, factory, monkeypatch)
+    old = {"createdBy": PRESSER, "updatedBy": PRESSER, "updateTime": "2026-01-01T00:00:00+00:00"}
+    real_get = registry.list_catalogue_commit_proofs
+
+    def proofs_with_old_versions(slug):          # every attached element this run reads is "older than the run"
+        rows = real_get(slug)
+        for p in rows:
+            if p["proof"] == cc.P_TARGET and p["element_guid"]:
+                readback["by_guid"][p["element_guid"]] = old
+        return rows
+
+    monkeypatch.setattr(registry, "list_catalogue_commit_proofs", proofs_with_old_versions)
+    ran = _in_a_bare_thread(lambda: run_queue.execute_run(registry.get_run(out["run_id"]), registry))
+    assert ran["result"].state == "succeeded", ran["result"].error
+    summary = registry.get_activity(out["activity_id"])["summary"]
+    assert summary.endswith(f" · {presser_hold.WRITTEN_AS_UNCHECKED}"), summary
+
+
+def test_written_as_could_not_check_when_every_write_step_was_skipped(registry, readback):
+    from datetime import datetime, timezone
+
+    from resource_explorer.curate_plan import Curations
+
+    cur = Curations(registry)
+    rec = cur.create("database", "db", author=PRESSER, selection={}, manifest={}, steps=list(cc.STEPS_DB))
+    for st in cc.STEPS_DB:
+        cur.set_step(rec["id"], st, "skipped", "nothing to do")
+    registry.append_catalogue_commit_proof("db", proof=cc.P_TARGET, node_kind="schema", schema_name="sales",
+                                           element_guid="guid-from-elsewhere", curation_id=rec["id"])
+    line = cc.commit_written_as_line(registry, rec["id"], datetime(2000, 1, 1, tzinfo=timezone.utc))
+    assert line == presser_hold.WRITTEN_AS_UNCHECKED
+    assert readback["reads"] == []                                    # nothing written: nothing is read or named
+
+
+def test_version_time_reads_epoch_ms_and_iso():
+    from datetime import datetime, timezone
+
+    t = datetime(2026, 10, 23, 12, 0, tzinfo=timezone.utc)
+    assert presser_hold.version_time_of({"versions": {"updateTime": int(t.timestamp() * 1000)}}) == t
+    assert presser_hold.version_time_of({"elementHeader": {"versions": {"createTime": "2026-10-23T12:00:00Z"}}}) == t
+    assert presser_hold.version_time_of({"versions": {"updateTime": "not a time"}}) is None
+    assert presser_hold.version_time_of(None) is None
+
+
 # ── a pressed commit's outbox rows: only its own inline drain, as the presser, applies them ─────────────────────
 
 def _background_drain(registry):
@@ -390,26 +464,130 @@ def test_a_pressed_commits_outbox_rows_carry_the_marker(
     assert payloads and all(p.get("as_presser") is True for p in payloads)
 
 
-def test_the_claim_skips_a_marked_row_by_its_parsed_payload_not_its_text(registry):
-    """The structured check: key order and separators do not matter, false and a nested key do not count."""
-    import json
-
+def _rows_with_payload_text(registry, cases) -> dict:
     ids = {}
-    for name, payload_json in (
-            ("marked", json.dumps({"by": PRESSER, "as_presser": True})),
-            ("marked_compact", json.dumps({"as_presser": True, "by": PRESSER}, separators=(",", ":"))),
-            ("false", json.dumps({"as_presser": False})),
-            ("nested", json.dumps({"inner": {"as_presser": True}})),
-            ("look_alike", json.dumps({"asXpresser": True})),
-            ("plain", json.dumps({"by": PRESSER}))):
+    for name, payload_json in cases:
         rid = registry.enqueue_outbox_element("database", "db", cc.KIND_ATTACH, f"qn::{name}", {})
         with registry._conn() as conn:
             conn.execute("UPDATE egeria_outbox SET payload_json=? WHERE id=?", (payload_json, rid))
         ids[rid] = name
-    claimed = {ids[r["id"]] for r in registry.claim_due_outbox_elements(exclude_as_presser=True)}
-    assert claimed == {"false", "nested", "look_alike", "plain"}
-    # the pressed run's own drain (no exclusion) takes the marked ones
-    assert {ids[r["id"]] for r in registry.claim_due_outbox_elements()} == {"marked", "marked_compact"}
+    return ids
+
+
+def test_the_claim_treats_any_payload_naming_the_key_as_marked_and_never_raises(registry):
+    """F1: one fail-safe text rule, no JSON parse: a payload that NAMES `"as_presser"` is marked whatever its value,
+    nesting or validity (a wrong guess only makes a row wait); corrupt and \\u0000 payloads do not abort the claim."""
+    import json
+
+    ids = _rows_with_payload_text(registry, (
+        ("marked", json.dumps({"by": PRESSER, "as_presser": True})),
+        ("marked_compact", json.dumps({"as_presser": True, "by": PRESSER}, separators=(",", ":"))),
+        ("false", json.dumps({"by": PRESSER, "as_presser": False})),
+        ("nested", json.dumps({"inner": {"as_presser": True}})),
+        ("corrupt", '{"by": "' + PRESSER + '", "as_presser": tru'),
+        ("nul_marked", '{"by": "x\\u0000", "as_presser": true}'),
+        ("nul_plain", '{"by": "x\\u0000"}'),
+        ("look_alike", json.dumps({"asXpresser": True})),
+        ("plain", json.dumps({"by": PRESSER}))))
+    claimed = {ids[r["id"]] for r in registry.claim_due_outbox_elements()}
+    assert claimed == {"nul_plain", "look_alike", "plain"}
+    # another person's drain-as-presser takes none of the marked rows
+    assert registry.claim_due_outbox_elements(as_presser_by="someone-else") == []
+    # the presser's own drain takes the marked rows whose parsed `by` is them; corrupt, or no `by`, waits
+    assert {ids[r["id"]] for r in registry.claim_due_outbox_elements(as_presser_by=PRESSER)} == {
+        "marked", "marked_compact", "false"}
+    left = {ids[r["id"]] for r in registry.list_catalogue_outbox_rows("db") if r["status"] == "pending"}
+    assert left == {"nested", "corrupt", "nul_marked"}
+
+
+def test_the_claims_presser_rule_is_the_same_text_sql_on_postgres_and_sqlite():
+    """F1: no `::jsonb` cast and no per-dialect JSON parse: the Postgres claim's SQL is the SQLite SQL plus the lock."""
+    from contextlib import contextmanager
+
+    from resource_explorer.registry import AS_PRESSER_LIKE, ProjectRegistry
+
+    def captured(is_pg: bool) -> tuple[str, tuple]:
+        executed: list = []
+
+        class _Rows:
+            rowcount = 0
+
+            def fetchall(self):
+                return []
+
+            def fetchone(self):
+                return None
+
+        class _Conn:
+            is_postgres = is_pg
+
+            def execute(self, sql, params=()):
+                executed.append((" ".join(sql.split()), tuple(params)))
+                return _Rows()
+
+        reg = ProjectRegistry.__new__(ProjectRegistry)
+        reg._conn = contextmanager(lambda: (yield _Conn()))
+        assert reg.claim_due_outbox_elements(now="2026-10-23T12:00:00") == []
+        return next(e for e in executed if e[0].startswith("SELECT o.id, o.payload_json FROM egeria_outbox o"))
+
+    pg_sql, pg_params = captured(True)
+    lite_sql, lite_params = captured(False)
+    assert pg_sql == lite_sql + " FOR UPDATE SKIP LOCKED" and pg_params == lite_params
+    assert "::jsonb" not in pg_sql and "json_" not in pg_sql and "->>" not in pg_sql
+    assert "NOT (COALESCE(o.payload_json, '') LIKE ? ESCAPE '!')" in pg_sql and AS_PRESSER_LIKE in pg_params
+    assert AS_PRESSER_LIKE == '%"as!_presser"%'
+
+
+def _drain_as_person(registry, person, run_id, **kw):
+    """A person's own drain (`drain_outbox` with no identity: `current_principal()` is that person), on a bare thread."""
+    from resource_explorer.egeria_outbox import drain_outbox
+
+    presser_hold.hold("drain-" + person, person, _token(3600, "drain-" + person))
+
+    def run():
+        with _as_queue_worker(person), presser_hold.pressed_run("drain-" + person, person), \
+                presser_hold.publishing_as_presser():
+            return drain_outbox(registry, run_id=run_id, **kw)
+
+    return _in_a_bare_thread(run)["result"]
+
+
+def _left_by_a_pressed_run(registry, cid):
+    return registry.enqueue_outbox_element("database", "db", cc.KIND_ATTACH, "qn::left-by-a-pressed-run",
+                                           {"slug": "db", "schema": "sales", "curation_id": cid, "by": PRESSER,
+                                            "as_presser": True}, run_id=cid)
+
+
+def test_a_persons_scoped_drain_without_drain_as_presser_leaves_a_pressed_row(registry, fake, factory):
+    """Exclusion by proof, not convention: a person's drain scoped to the run's id is not enough; only the drain
+    that says `drain_as_presser=True` (the catalogue commit's inline drain) may claim a marked row."""
+    _left_by_a_pressed_run(registry, "cur-1")
+    summary = _drain_as_person(registry, PRESSER, "cur-1")
+    assert summary["claimed"] == 0 and list(fake.calls) == []
+    assert [r["status"] for r in _attach_rows(registry, "cur-1")] == ["pending"]
+
+
+def test_drain_as_presser_by_another_person_leaves_the_row(registry, fake, factory):
+    _left_by_a_pressed_run(registry, "cur-2")
+    summary = _drain_as_person(registry, "someone-else", "cur-2", drain_as_presser=True)
+    assert summary["claimed"] == 0 and list(fake.calls) == []
+    assert [r["status"] for r in _attach_rows(registry, "cur-2")] == ["pending"]
+
+
+def test_a_marked_row_the_pressed_drain_did_not_finish_says_press_catalogue_again():
+    """A marked row left pending or failed by its own drain is never retried in the background: its step says so."""
+    cur = MagicMock()
+    rows = [{"id": 1, "status": "pending", "payload": {"schema": "sales", "as_presser": True}},
+            {"id": 2, "status": "failed", "last_error": "SERVER_ERROR_500. More.",
+             "payload": {"schema": "hr", "as_presser": True}},
+            {"id": 3, "status": "pending", "payload": {"schema": "ops"}}]
+    cc._step_from_outbox(cur, "cid", "schema_targets", rows, "attach")
+    (_cid, step, state, words), _kw = cur.set_step.call_args
+    assert (step, state) == ("schema_targets", "failed")
+    assert f"sales: {cc.PRESS_AGAIN_WORDS}" in words
+    assert f"hr: SERVER_ERROR_500. · {cc.PRESS_AGAIN_WORDS}" in words
+    assert "1 queued in the outbox (#3)" in words                     # an unmarked row still waits for the drain
+    assert cc.PRESS_AGAIN_WORDS == "not sent · press Catalogue again"
 
 
 def test_the_background_drain_never_applies_a_pressed_row(client, world, fake, factory, registry, monkeypatch):
@@ -431,6 +609,10 @@ def test_a_5xx_on_a_pressed_attach_is_never_retried_as_the_service_account(
     _in_a_bare_thread(lambda: run_queue.execute_run(registry.get_run(out["run_id"]), registry))
     rows = _attach_rows(registry, cid)
     assert rows and {r["status"] for r in rows} == {"failed"}, rows
+    from resource_explorer.curate_plan import Curations
+
+    step = {s["name"]: s for s in Curations(registry).get(cid)["steps"]}["schema_targets"]
+    assert step["state"] == "failed" and cc.PRESS_AGAIN_WORDS in step["detail"], step
     # Egeria is back, and the 15-minute retry is due: the background drain still leaves the row for the presser
     del fake.fail["create_schema_element"]
     with registry._conn() as conn:
@@ -441,8 +623,9 @@ def test_a_5xx_on_a_pressed_attach_is_never_retried_as_the_service_account(
     assert summary["claimed"] == 0
     assert _writes(fake) == []                                       # nothing written, as the NPA or anyone
     assert {r["status"] for r in _attach_rows(registry, cid)} == {"failed"}
-    # (the row WAS due: without the exclusion the same claim takes it)
-    assert {r["id"] for r in registry.claim_due_outbox_elements(run_id=cid)} == {r["id"] for r in rows}
+    # (the row WAS due: the presser's own claim takes it)
+    assert {r["id"] for r in registry.claim_due_outbox_elements(run_id=cid, as_presser_by=PRESSER)} == {
+        r["id"] for r in rows}
 
 
 def test_a_scheduler_drain_between_enqueue_and_the_inline_drain_leaves_the_rows_for_the_presser(

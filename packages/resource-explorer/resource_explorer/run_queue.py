@@ -145,7 +145,7 @@ class RunOutcome:
     error: str = ""
     #: "applying as <user> from <source> · written as <x>": the identity the run held when it wrote (intent,
     #: `presser_hold.applying_as_line`), then who Egeria says wrote, from a read-back (proof,
-    #: `presser_hold.written_as_line`). The activity entry ends with it. '' = not said.
+    #: `catalogue_commit.commit_written_as_line`). The activity entry ends with it. '' = not said.
     applied_as: str = ""
 
     def __post_init__(self) -> None:
@@ -288,7 +288,14 @@ def _handle_catalogue_commit(target: dict, result_ref: str) -> RunOutcome:
     from contextlib import nullcontext
 
     from resource_explorer import presser_hold
-    from resource_explorer.catalogue_commit import execute_commit, refuse_presser_gone, run_with_loop
+    from datetime import datetime, timezone
+
+    from resource_explorer.catalogue_commit import (
+        commit_written_as_line,
+        execute_commit,
+        refuse_presser_gone,
+        run_with_loop,
+    )
     from resource_explorer.egeria_clients import EXPIRED_SENTENCE, current_principal
     from resource_explorer.registry import ProjectRegistry
 
@@ -306,13 +313,14 @@ def _handle_catalogue_commit(target: dict, result_ref: str) -> RunOutcome:
                 who = current_principal()
                 applied = presser_hold.applying_as_line(who)
                 log.info("catalogue commit %s (%s): %s", target.get("curation_id"), target.get("slug"), applied)
+                started = datetime.now(timezone.utc)
                 # pyegeria's sync wrappers need an event loop on the executing thread
                 rec = run_with_loop(execute_commit, registry, target["curation_id"])
-                # The proof beside that intent: who Egeria says last wrote the database element, from ONE read of it
-                # by GUID made as the run acts ("written as: could not check" when the read cannot say).
+                # The proof beside that intent: who Egeria says wrote the elements THIS commit wrote (its first
+                # attached schema, else a leave-out's archived copy), read by GUID as the run acts, and only when
+                # changed since `started` ("written as: could not check" otherwise, never an earlier writer).
                 try:
-                    db = registry.get_database(target.get("slug") or "", allow_unreadable=True)
-                    written = run_with_loop(presser_hold.written_as_line, getattr(db, "egeria_asset_guid", "") or "")
+                    written = run_with_loop(commit_written_as_line, registry, target["curation_id"], started)
                 except Exception:  # noqa: BLE001 - the commit is done; an unreadable proof is said, never a crash
                     written = presser_hold.WRITTEN_AS_UNCHECKED
                 applied = f"{applied} · {written}" if applied else written

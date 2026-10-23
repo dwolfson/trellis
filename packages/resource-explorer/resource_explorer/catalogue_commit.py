@@ -1950,6 +1950,39 @@ def refuse_presser_gone(registry, curation_id: str) -> dict:
 _PAST = {"attach": "attached", "remove": "deleted in Egeria"}
 
 
+#: A pressed commit's outbox row its own drain did not finish: the background drain leaves it (2026-10-23).
+PRESS_AGAIN_WORDS = "not sent · press Catalogue again"
+
+
+def _as_presser_row(row: dict) -> bool:
+    """Whether an outbox row was enqueued inside a pressed run (its payload names `registry.AS_PRESSER_KEY`)."""
+    from resource_explorer.registry import AS_PRESSER_KEY
+
+    payload = row.get("payload")
+    return isinstance(payload, dict) and AS_PRESSER_KEY in payload
+
+
+def commit_written_as_line(registry, curation_id: str, since) -> str:
+    """'written as <x>' for a commit, from the elements THIS commit wrote, as its proof rows record them: the first
+    schema element it attached, then the first leave-out it archived (its archived copy). A proof row for a target
+    that was already there (`already_attached`, "already archived when read") is not a write and is not read. Said
+    only when the schema-targets or leave-outs step is done and the element was changed at or after `since` (the
+    run's start); "written as: could not check" otherwise (`presser_hold.written_as_since`)."""
+    from resource_explorer import presser_hold
+    from resource_explorer.curate_plan import Curations
+
+    rec = Curations(registry).get(curation_id) or {}
+    steps = {s.get("name"): s.get("state") for s in rec.get("steps") or []}
+    wrote = any(steps.get(st) == "done" for st in ("schema_targets", "leave_outs"))
+    proofs = [p for p in registry.list_catalogue_commit_proofs(rec.get("entity_slug") or "")
+              if p.get("curation_id") == curation_id and p.get("element_guid")] if rec else []
+    attached = [p["element_guid"] for p in proofs if p["proof"] == P_TARGET
+                and (p.get("detail") or {}).get("mechanism") != "already_attached"]
+    archived = [p["element_guid"] for p in proofs if p["proof"] == P_ARCHIVED
+                and (p.get("detail") or {}).get("note") != "already archived when read"]
+    return presser_hold.written_as_since(attached[:1] + archived[:1], since, wrote=wrote)
+
+
 def _step_from_outbox(cur, cid: str, step: str, rows: list[dict], what: str, registry=None) -> None:
     done = [r for r in rows if r["status"] == "done"]
     bad = [r for r in rows if r["status"] in ("failed", "dead")]
@@ -1988,12 +2021,19 @@ def _step_from_outbox(cur, cid: str, step: str, rows: list[dict], what: str, reg
             parts = [f"{len(done)} of {len(rows)} archived in Egeria, each with its proof row"]
         elif n_arch:
             parts = [f"{len(done)} of {len(rows)}: {len(kinds) - n_arch} deleted in Egeria, {n_arch} archived in Egeria, each with its proof row"]
+    # 2026-10-23: a row of a pressed commit (`"as_presser"` in its payload) that its own inline drain did not finish is
+    # never retried by the background drain (it would write as the service account): it waits for a press again.
+    held = [r for r in wait if _as_presser_row(r)]
+    wait = [r for r in wait if not _as_presser_row(r)]
     if wait:
         parts.append(f"{len(wait)} queued in the outbox (#{', #'.join(str(r['id']) for r in wait)})")
+    for r in held:
+        parts.append(f"{(r['payload'] or {}).get('schema')}: {PRESS_AGAIN_WORDS}")
     more: list[str] = []
     for r in bad:
         first, rest = egeria_first_sentence(r.get("last_error"))
-        parts.append(f"{(r['payload'] or {}).get('schema')}: {first}")
+        parts.append(f"{(r['payload'] or {}).get('schema')}: {first}"
+                     + (f" · {PRESS_AGAIN_WORDS}" if _as_presser_row(r) else ""))
         if rest:
             more.append(f"{(r['payload'] or {}).get('schema')}: {rest}")
     cur.set_step(cid, step, "done" if len(done) == len(rows) else "failed", " · ".join(parts), more="\n".join(more))
@@ -2194,8 +2234,9 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         from resource_explorer.egeria_outbox import OutboxClients, drain_outbox
 
         def drain(run_id):  # noqa: E306
+            # the ONE drain that may apply this run's marked rows, as the presser (`drain_as_presser`)
             return drain_outbox(registry, OutboxClients(catalogue_gateway=gateway, registry=registry),
-                                lambda qn: "", run_id=run_id)
+                                lambda qn: "", run_id=run_id, drain_as_presser=bool(pressed_mark))
 
     # 0 ── Brief Z2: the run re-checks as the requester before anything is written (Publish's rule). A Portal
     # curator/admin override seen at the press is carried in the selection. The parts refused at the press are

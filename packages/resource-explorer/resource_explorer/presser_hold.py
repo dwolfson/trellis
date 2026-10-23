@@ -43,6 +43,7 @@ import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Iterator
 
 DEFAULT_TTL_SECONDS = 2 * 3600
@@ -313,8 +314,9 @@ def read_published_by(report_guid: str) -> str:
     return created_by_of(_read_element_by_guid(report_guid))
 
 
-def _read_element_by_guid(guid: str) -> object:
-    """ONE read of the element `guid` by GUID, as whoever the run is acting as; None when it could not be made."""
+def _read_element_by_guid(guid: str, *, for_lineage: bool = False) -> object:
+    """ONE read of the element `guid` by GUID, as whoever the run is acting as; None when it could not be made.
+    `for_lineage` also reads an archived element (a leave-out's archived copy carries a Memento)."""
     if not guid:
         return None
     try:
@@ -325,8 +327,8 @@ def _read_element_by_guid(guid: str) -> object:
 
         maker = egeria_client(current_principal(), purpose="publish read-back",
                               view_server=egeria_view_server(), platform_url=egeria_platform_url()).of(AssetMaker)
-        return maker.get_asset_by_guid(
-            guid, body={"class": "GetRequestBody", "graphQueryDepth": 0}, output_format="JSON")
+        body = {"class": "GetRequestBody", "graphQueryDepth": 0, **({"forLineage": True} if for_lineage else {})}
+        return maker.get_asset_by_guid(guid, body=body, output_format="JSON")
     except Exception:  # noqa: BLE001 - unread is "could not tell"; the message may carry a token, so it is not kept
         return None
 
@@ -347,12 +349,43 @@ def written_by_of(element: object) -> str:
 WRITTEN_AS_UNCHECKED = "written as: could not check"
 
 
-def written_as_line(element_guid: str) -> str:
-    """'written as <x>', <x> from ONE read of `element_guid` by GUID (updatedBy, else createdBy), made as whoever the
-    run is acting as; `WRITTEN_AS_UNCHECKED` when there is no element, the read failed, or Egeria named nobody. The
-    proof beside the intent line (`applying_as_line`): never derived from the branch the code took."""
-    who = written_by_of(_read_element_by_guid(element_guid)) if element_guid else ""
-    return f"written as {who}" if who else WRITTEN_AS_UNCHECKED
+def version_time_of(element: object) -> datetime | None:
+    """`versions.updateTime`, else `versions.createTime`, from an Egeria element read, as an aware UTC datetime (epoch
+    ms or ISO); None when it states neither or the value cannot be read. Pure."""
+    if not isinstance(element, dict):
+        return None
+    header = element.get("elementHeader") if isinstance(element.get("elementHeader"), dict) else {}
+    for versions in ((header or {}).get("versions"), element.get("versions")):
+        if not isinstance(versions, dict):
+            continue
+        raw = versions.get("updateTime") or versions.get("createTime")
+        if raw in (None, ""):
+            continue
+        text = str(raw).strip()
+        try:
+            dt = (datetime.fromtimestamp(int(text) / 1000, tz=UTC) if text.isdigit()
+                  else datetime.fromisoformat(text.replace("Z", "+00:00")))
+        except (ValueError, OverflowError, OSError):
+            return None
+        return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+    return None
+
+
+def written_as_since(element_guids: list[str], since: datetime | None, *, wrote: bool) -> str:
+    """'written as <x>' for elements THIS run wrote: <x> from ONE read of each `element_guids` (in order, stopping at
+    the first that proves it) by GUID, made as whoever the run is acting as; updatedBy, else createdBy. Said only when
+    `wrote` (at least one write step succeeded) and the element's version time is not older than `since` (the run's
+    start), so a writer from an earlier commit is never named. `WRITTEN_AS_UNCHECKED` otherwise: nothing written, the
+    read failed, Egeria named nobody or no time, or the element was last changed before this run. The proof beside
+    the intent line (`applying_as_line`): never derived from the branch the code took."""
+    if not wrote or since is None:
+        return WRITTEN_AS_UNCHECKED
+    for guid in [g for g in element_guids if g]:
+        element = _read_element_by_guid(guid, for_lineage=True)
+        who, when = written_by_of(element), version_time_of(element)
+        if who and when is not None and when >= since:
+            return f"written as {who}"
+    return WRITTEN_AS_UNCHECKED
 
 
 def read_published_by_presser(report_guid: str) -> str:
@@ -399,7 +432,7 @@ SOURCE_SERVICE_ACCOUNT = "the service account"
 
 def applying_as_line(identity: object) -> str:
     """'applying as <user> from <source>' for `identity`, what `current_principal()` returned where the writes are
-    about to be made. An INTENT line, not proof: who Egeria says wrote is `written_as_line`, from a read-back. '' for
+    about to be made. An INTENT line, not proof: who Egeria says wrote is `written_as_since`, from a read-back. '' for
     no identity. Holds no credential."""
     if identity is None:
         return ""
