@@ -152,6 +152,9 @@ export const STATES = {
   // RESERVED for G2/G3.
   no_reader:               { glyph: '◌', family: 'no-answer-here', word: 'no reader yet', tone: 'text-state-gap' },
   containment_undeclared:  { glyph: '◌', family: 'no-answer-here', word: "this engine's grouping isn't declared yet", tone: 'text-state-gap' },
+  // A proof row older than the latest Egeria reset (architect ruling (b), 2026-10-23): what it proved is not in
+  // Egeria now. Never ✓; the server's words ("published before the <date> reset · not in Egeria now") carry it.
+  pre_reset:               { glyph: '◌', family: 'no-answer-here', word: 'not in Egeria now', tone: 'text-ink-muted' },
 
   // ── ? tried, couldn't establish (distinct from ∅ -- genuinely unknown,
   //    not counted-and-empty) ──────────────────────────────────────────

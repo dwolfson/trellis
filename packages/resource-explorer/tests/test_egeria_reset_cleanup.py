@@ -567,11 +567,12 @@ def test_status_reads_published_earlier_and_counts_zero_in_egeria_after_the_mark
     applied(env)
     after = cc.derive_commit_state(reg, "db1", _view(reg))
     st = after["schemas"]["s1"]
-    assert st["state"] == "reset" and st["words"] == "published earlier · Egeria was reset · not in Egeria now"
+    # the words (architect ruling (b), 2026-10-23): the reset's date, the ◌ lane, never ✓
+    assert st["state"] == "reset" and st["words"] == "published before the 2026-10-08 reset · not in Egeria now"
     assert "Egeria reset 2026-10-08 18:30 UTC · OLD → NEW" in st["second"]
     assert after["tables"]["s1.t"]["words"].endswith("not in Egeria now")
     text = after["header"]["text"]
-    assert "0 in Egeria" in text and "published earlier · Egeria was reset 10-08 18:30" in text
+    assert "0 in Egeria" in text and "published before the 2026-10-08 reset · not in Egeria now" in text
     # the proof rows are still there, unedited
     assert len(reg.list_catalogue_commit_proofs("db1")) == 3
 
@@ -598,7 +599,7 @@ def test_repo_publish_state_reads_the_marker_and_the_unbound_status(env):
     applied(env)
     st = repo_publish.publish_state(reg, "repo1")
     assert st["row"]["word"] == "reset" and st["in_egeria"] is False
-    assert st["row"]["first"] == "published earlier · Egeria was reset · not in Egeria now"
+    assert st["row"]["first"] == "published before the 2026-10-08 reset · not in Egeria now"
     # the status is the VALUE `unbound`; the words are display text only
     assert st["project"]["status"] == "unbound"
     assert st["project"]["word"] == "unbound by reset · rebind to recreate"

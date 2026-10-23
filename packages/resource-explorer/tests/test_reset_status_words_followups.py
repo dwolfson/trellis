@@ -83,7 +83,7 @@ def test_a_repo_and_a_database_sharing_a_slug_both_read_the_one_marker(env):
     assert len(markers) == 1                                    # one per slug, keyed by node kind of the first
     assert repo_publish.publish_state(reg, "shared")["row"]["word"] == "reset"      # the repo reads it
     header = cc.derive_commit_state(reg, "shared", {"schemas": []})["header"]["text"]
-    assert "Egeria was reset" in header                          # and so does the database
+    assert "published before the 2026-10-08 reset · not in Egeria now" in header   # and so does the database
 
 
 def test_a_persisted_board_gets_its_publish_flags_corrected_at_read_time(registry, monkeypatch):

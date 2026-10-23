@@ -1585,6 +1585,44 @@ def egeria_reset(
     )
 
 
+registry_app = typer.Typer(name="registry", help="Records kept in Resource Explorer's registry.")
+app.add_typer(registry_app)
+
+
+@registry_app.command(name="record-egeria-reset")
+def record_egeria_reset(
+    reset_at: str = typer.Option(..., "--reset-at", help="When Egeria's metadata database was reset (UTC, ISO 8601)"),
+    old_digest: str = typer.Option("", "--old-digest", help="The Egeria platform image digest before the reset"),
+    new_digest: str = typer.Option("", "--new-digest", help="The Egeria platform image digest after the reset"),
+    old_commit: str = typer.Option("", "--old-commit", help="The Egeria commit before the reset"),
+    new_commit: str = typer.Option("", "--new-commit", help="The Egeria commit after the reset"),
+    recorded_by: str = typer.Option("", "--recorded-by", help="Who records it (default: $USER)"),
+    note: str = typer.Option("", "--note", help="Free text kept with the row"),
+):
+    """Record ONE reset of Egeria's metadata database (the coordinator, once per reset; PLAN-EGERIA-RESET-2026-10-23).
+
+    Every proof row read before the latest recorded reset then reads "published before the <date> reset · not in
+    Egeria now" and never ✓. Refused (exit 2, nothing written) for a time in the future or one not newer than the
+    latest recorded reset.
+
+    Example:
+      resource-explorer registry record-egeria-reset --reset-at 2026-10-24T09:00Z \\
+          --old-digest a8bcff5c --new-digest <digest> --old-commit c6dbf952 --new-commit <commit>
+    """
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    try:
+        row_id = registry.record_egeria_reset(
+            reset_at=reset_at, old_platform_digest=old_digest, new_platform_digest=new_digest,
+            old_commit=old_commit, new_commit=new_commit,
+            recorded_by=recorded_by or os.environ.get("USER", ""), note=note)
+    except ValueError as exc:
+        console.print(f"[red]Refused: {exc}. Nothing was written.[/red]")
+        raise typer.Exit(2)
+    console.print(f"[green]Recorded Egeria reset {registry.latest_egeria_reset_at()} (row {row_id}).[/green]")
+
+
 @app.command(name="egeria-reports")
 def egeria_reports(
     slug: str = typer.Argument(help="Project slug"),

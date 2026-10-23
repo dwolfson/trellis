@@ -79,6 +79,8 @@ function stateCell(id, ps) {
   const subs = ps.sub_resources || {};
   if (id === 'report') {
     const r = ps.report || {};
+    // Read back before the latest Egeria reset: history, the ◌ lane with the server's words, never ✓.
+    if (r.state === 'pre_reset') return cue('pre_reset', r.words || ps.pre_reset_words || 'not in Egeria now');
     if (r.state === 'published') return cue('measured', `published · read back ${ago(r.read_at)}`)
       + (r.reused ? ' <span class="text-provenance text-ink-muted">· reused the report already in Egeria</span>' : '');
     if (r.state === 'sent') return cue('running', 'sent · waiting for Egeria');
@@ -90,6 +92,7 @@ function stateCell(id, ps) {
     const r = (subs.by_row || {})[id] || {};
     const bits = [];
     if (r.read_back) bits.push(cue('measured', `${r.read_back} read back`));
+    if (r.pre_reset) bits.push(cue('pre_reset', `${r.pre_reset} ${ps.pre_reset_words || 'not in Egeria now'}`));
     if (r.sent) bits.push(cue('running', `${r.sent} sent, not yet read back`));
     if (r.failed) bits.push(cue('error', `${r.failed} not created${r.first_failure ? ` · ${r.first_failure}` : ''}`));
     return bits.length ? bits.join(' · ') : cue('unrun', 'nothing sent');

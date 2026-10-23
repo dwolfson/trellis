@@ -147,6 +147,11 @@ def profile_publish_words(counts: dict | None) -> str:
     n, k, j, t, r = (counts.get(x, 0) for x in ("published", RELINKED, NO_LONGER_MEASURED,
                                                   NOT_MEASURED_THIS_RUN, "recreated"))
     m = counts.get("changed", counts.get(CREATED, 0) - r)
+    if counts.get("pre_reset_at"):
+        # Its report predates the latest Egeria reset: what it published is not in Egeria now (never "published").
+        from resource_explorer.catalogue_commit import pre_reset_words
+
+        return f"{n} measures {pre_reset_words(counts['pre_reset_at'])}"
     if not counts.get("previous_report_at"):
         return f"{n} measures published · first profile published"
     return (f"{n} measures published · {m} changed since {_date(counts['previous_report_at'])}"

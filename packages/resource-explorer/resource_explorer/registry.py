@@ -527,6 +527,31 @@ PROJECT_CONTRIBUTORS_DDL = (
     """,
 )
 
+#: DDL for the record of Egeria metadata resets (PLAN-EGERIA-RESET-2026-10-23.md, architect ruling (b); the project
+#: owner's word 2026-10-23: "Yes, the egeria_resets table is approved"). Same rules as RESOURCE_SCOPE_EVENTS_DDL: ONE
+#: additive, idempotent CREATE TABLE IF NOT EXISTS, no ALTER of an existing table, no index, no data migration, no
+#: foreign key, no question mark or colon-name token (the Postgres translator rewrites both; AUTOINCREMENT becomes
+#: SERIAL).
+#:
+#: One row per reset of Egeria's metadata database, written ONCE by the coordinator after the reset
+#: (`resource-explorer registry record-egeria-reset`, `ProjectRegistry.record_egeria_reset`), never by a screen.
+#: `reset_at` is the reset time (UTC). Every proof row read before the latest `reset_at` is history: the status
+#: derivations say "published before the <date> reset · not in Egeria now" for it and never ✓. Append-only.
+EGERIA_RESETS_DDL = (
+    """
+    CREATE TABLE IF NOT EXISTS egeria_resets (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        reset_at             TEXT NOT NULL,
+        old_platform_digest  TEXT,
+        new_platform_digest  TEXT,
+        old_commit           TEXT,
+        new_commit           TEXT,
+        recorded_by          TEXT,
+        note                 TEXT
+    )
+    """,
+)
+
 #: DDL for the API reference of a repository (owner ruling 2026-10-15: the fetched and committed specs live in
 #: proper tables so elements can be filtered and analysed by path and string). Same rules as the two blocks
 #: above: ONE additive, idempotent block, CREATE ... IF NOT EXISTS only, no ALTER of an existing table, no data
@@ -3670,6 +3695,9 @@ class ProjectRegistry:
                 conn.execute(_ddl)
             # project_contributors: ONE additive, idempotent block (see PROJECT_CONTRIBUTORS_DDL; owner's go 2026-10-23).
             for _ddl in PROJECT_CONTRIBUTORS_DDL:
+                conn.execute(_ddl)
+            # egeria_resets: ONE additive, idempotent statement (see EGERIA_RESETS_DDL; owner's word 2026-10-23).
+            for _ddl in EGERIA_RESETS_DDL:
                 conn.execute(_ddl)
             # ── doc_sources — declared documentation sources (Enrichment) ──
             #
@@ -8456,6 +8484,15 @@ class ProjectRegistry:
                 "ORDER BY report_at DESC, id DESC",
                 (entity_type, slug, analysis_step),
             ).fetchall()]
+        # Architect ruling (c), 2026-10-23: rows from before the latest Egeria reset describe annotations Egeria no
+        # longer holds, so they are never "previous": the first publish after a reset creates every annotation and
+        # re-links none. A row whose report time cannot be read is dropped too once a reset is known (no claim).
+        reset = self.get_egeria_reset_at(slug)
+        if reset:
+            from resource_explorer.catalogue_commit import _ts
+
+            cutoff = _ts(reset)
+            rows = [r for r in rows if _ts(r["report_at"]) and _ts(r["report_at"]) >= cutoff]
         latest = next((r for r in rows if r["content_hash"] is not None), None)
         if latest is None:
             return None
@@ -8509,9 +8546,20 @@ class ProjectRegistry:
         compared with (`previous_report_at`, '' when there was none)."""
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT detail_json FROM native_survey_annotations WHERE report_guid = ? AND analysis_step = ?",
+                "SELECT detail_json, slug, report_at FROM native_survey_annotations "
+                "WHERE report_guid = ? AND analysis_step = ?",
                 (report_guid, analysis_step)).fetchall()
         from resource_explorer.surveyors.database.quality.profile_publish import RECREATED_NOTE as recreated_note
+        # Pre-reset (architect ruling (b), 2026-10-23): a publish whose report predates the latest Egeria reset is
+        # history; `pre_reset_at` carries the reset time so the words say so and never "published".
+        pre_reset_at = ""
+        if rows:
+            from resource_explorer.catalogue_commit import _known, _ts
+
+            first = dict(rows[0])
+            reset = self.get_egeria_reset_at(first.get("slug") or "")
+            if _known(reset) and _known(first.get("report_at")) and _ts(first["report_at"]) < _ts(reset):
+                pre_reset_at = reset
         counts = {"created": 0, "relinked": 0, "no_longer_measured": 0, "not_measured_this_run": 0}
         previous = ""
         recreated = 0
@@ -8529,7 +8577,7 @@ class ProjectRegistry:
             previous = previous or detail.get("previous_report_at") or ""
         return {"published": counts["created"] + counts["relinked"], **counts,
                 "recreated": recreated, "changed": counts["created"] - recreated,
-                "previous_report_at": previous, "rows": len(rows)}
+                "previous_report_at": previous, "rows": len(rows), "pre_reset_at": pre_reset_at}
 
     # ── annotations of a user step run by RE (extensibility brief 2c) ────────
     #
@@ -9969,8 +10017,48 @@ class ProjectRegistry:
                              "waiting": pending}
         return out
 
+    def _pre_reset_of(self, slug: str, at: str, cache: dict | None = None) -> dict | None:
+        """{at, words} when `at` (a publish's proof time) is before the latest Egeria reset for `slug` (its marker
+        or the recorded reset); None otherwise, and None when either time cannot be read (no claim)."""
+        from resource_explorer.catalogue_commit import _known, _ts, pre_reset_words
+
+        cache = {} if cache is None else cache
+        if slug not in cache:
+            try:
+                cache[slug] = self.get_egeria_reset_at(slug or "")
+            except Exception:  # noqa: BLE001 - an unreadable reset makes no claim
+                cache[slug] = ""
+        reset = cache[slug]
+        if not (_known(reset) and _known(at)) or _ts(at) >= _ts(reset):
+            return None
+        return {"at": reset, "words": pre_reset_words(reset)}
+
+    def _pre_reset_publish_proof(self, proof: dict | None, slug: str, fallback_at: str = "",
+                                 cache: dict | None = None) -> dict | None:
+        """A `read_back` publish proof whose read-back (else `fallback_at`, the run's time) predates the latest
+        Egeria reset becomes state `pre_reset`, word "published before the <date> reset · not in Egeria now" (the
+        ◌ lane, never ✓; architect ruling (b), 2026-10-23). Every other proof is returned unchanged. For display
+        only: `publish_proofs` itself (which the queued→published bookkeeping reads) is untouched."""
+        if not proof or proof.get("state") != "read_back":
+            return proof
+        pre = self._pre_reset_of(slug, proof.get("at") or fallback_at, cache)
+        if pre is None:
+            return proof
+        return {"state": "pre_reset", "word": pre["words"], "at": proof.get("at") or "", "reset_at": pre["at"],
+                "words": ""}
+
     def _attach_publish_proofs(self, entries: list[dict]) -> list[dict]:
-        """Put `publish_proof` on every activity entry that names a publish run with outbox rows."""
+        """Put `publish_proof` on every activity entry that names a publish run with outbox rows, and `pre_reset`
+        ({at, words}) on an entry that carries a publish and was logged before the latest Egeria reset, so its
+        "published" words are said as history (`_pre_reset_publish_proof`)."""
+        cache: dict = {}
+        for e in entries:
+            detail = e.get("detail")
+            text = detail if isinstance(detail, str) else json.dumps(detail or {}, default=str)
+            if e.get("publish_run_id") or '"publish_state"' in text or '"egeria_report_guid"' in text:
+                pre = self._pre_reset_of(e.get("entity_slug") or "", e.get("ts") or "", cache)
+                if pre is not None:
+                    e["pre_reset"] = pre
         runs = [e.get("publish_run_id") for e in entries if e.get("publish_run_id")]
         if not runs:
             return entries
@@ -9983,7 +10071,8 @@ class ProjectRegistry:
         for e in entries:
             proof = proofs.get(e.get("publish_run_id") or "")
             if proof:
-                e["publish_proof"] = proof
+                e["publish_proof"] = self._pre_reset_publish_proof(proof, e.get("entity_slug") or "",
+                                                                   e.get("ts") or "", cache)
         return entries
 
     def list_outbox_rows_for_kinds(self, entity_type: str, entity_slug: str,
@@ -13203,9 +13292,10 @@ class ProjectRegistry:
         return out
 
     def get_egeria_reset_at(self, slug: str) -> str:
-        """When Egeria was last reset, for this resource: the newest `egeria_reset` marker's `read_at`
-        (the reset time, not the time the marker was written), or '' when there is no marker.
-        One small read, so list routes can afford it per resource."""
+        """When Egeria was last reset, for this resource: the newer of the newest `egeria_reset` marker's
+        `read_at` (the reset time, not the time the marker was written) and the latest recorded reset in
+        `egeria_resets` (`latest_egeria_reset_at`, which applies to every resource), or '' when there is neither.
+        Two small reads, so list routes can afford it per resource."""
         slug = self._normalize_slug(slug)
         from resource_explorer.catalogue_commit import _ts
         with self._conn() as conn:
@@ -13213,7 +13303,48 @@ class ProjectRegistry:
                 "SELECT read_at FROM catalogue_commit_proofs "
                 "WHERE database_slug = ? AND proof = 'egeria_reset'", (slug,)).fetchall()
         # the newest by PARSED time (not MAX() over text, which orders 'Z', '+00:00' and spaces wrongly)
-        return max((r["read_at"] or "" for r in rows), key=_ts, default="")
+        marks = [r["read_at"] or "" for r in rows] + [self.latest_egeria_reset_at() or ""]
+        return max(marks, key=_ts, default="")
+
+    # ── the record of Egeria resets (EGERIA_RESETS_DDL) ──────────────────────
+
+    def latest_egeria_reset_at(self) -> str | None:
+        """The latest recorded reset of Egeria's metadata database (`egeria_resets.reset_at`, the newest by
+        PARSED time), or None when no reset was ever recorded: then every status derivation behaves as before."""
+        from resource_explorer.catalogue_commit import _known, _ts
+
+        with self._conn() as conn:
+            rows = conn.execute("SELECT reset_at FROM egeria_resets").fetchall()
+        known = [r["reset_at"] for r in rows if _known(r["reset_at"])]
+        return max(known, key=_ts) if known else None
+
+    def record_egeria_reset(self, *, reset_at: str, old_platform_digest: str = "", new_platform_digest: str = "",
+                            old_commit: str = "", new_commit: str = "", recorded_by: str = "", note: str = "",
+                            now: datetime | None = None) -> int:
+        """Append ONE reset row (the coordinator, once per reset). `reset_at` is stored normalised to UTC
+        ('YYYY-MM-DDTHH:MM:SSZ'). Refuses (ValueError, nothing written) a time that does not parse, one in the
+        future, and one that is not newer than the latest recorded reset (an out-of-order or repeated record).
+        Returns the new row's id."""
+        from resource_explorer.catalogue_commit import _known, _ts
+
+        if not _known(reset_at):
+            raise ValueError(f"reset_at {reset_at!r} is not a time")
+        at = _ts(reset_at)
+        ref = (now or datetime.now(timezone.utc))
+        ref = ref.astimezone(timezone.utc).replace(tzinfo=None) if ref.tzinfo else ref
+        if at > ref.isoformat(timespec="seconds"):
+            raise ValueError(f"reset_at {at}Z is in the future (now {ref.isoformat(timespec='seconds')}Z)")
+        latest = self.latest_egeria_reset_at()
+        if latest is not None and at <= _ts(latest):
+            raise ValueError(f"reset_at {at}Z is not newer than the latest recorded reset {_ts(latest)}Z")
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO egeria_resets (reset_at, old_platform_digest, new_platform_digest, old_commit, "
+                "new_commit, recorded_by, note) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (f"{at}Z", old_platform_digest or "", new_platform_digest or "", old_commit or "", new_commit or "",
+                 recorded_by or "", note or ""))
+            row = conn.execute("SELECT MAX(id) FROM egeria_resets").fetchone()
+        return int(row[0])
 
     def list_catalogue_outbox_rows(self, slug: str) -> list[dict]:
         """The outbox rows a catalogue commit queued for one database, oldest first.
@@ -14647,7 +14778,7 @@ class ProjectRegistry:
                 entry["last_run_started_by"] = detail.get("started_by") or ""
                 entry["last_run_by"] = detail.get("started_by_person") or ""
                 if proof:
-                    entry["last_publish_proof"] = proof
+                    entry["last_publish_proof"] = self._pre_reset_publish_proof(proof, entity_slug, row["ts"])
                 # SurveyDefinitionExecutor.run() (added 2026-08-27) publishes
                 # BEFORE it logs the 'survey' row that records the run itself
                 # — adapter.publish() runs first, its own untagged 'catalog'
@@ -14918,7 +15049,8 @@ class ProjectRegistry:
                         "not_retried": detail.get("not_retried") or "",
                     }
                     if proofs.get(row["publish_run_id"] or ""):
-                        result[analysis_id]["last_publish_proof"] = proofs[row["publish_run_id"]]
+                        result[analysis_id]["last_publish_proof"] = self._pre_reset_publish_proof(
+                            proofs[row["publish_run_id"]], entity_slug, row["ts"])
                 continue
 
             ran: dict[str, list] = {}

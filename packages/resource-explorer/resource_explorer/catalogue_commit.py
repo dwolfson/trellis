@@ -146,6 +146,37 @@ PROJECT_UNBOUND = "unbound"
 PROJECT_UNBOUND_WORDS = "unbound by reset \u00b7 rebind to recreate"
 PROJECT_UNANSWERED = ("unset", PROJECT_UNBOUND)
 RESET_WORDS = "published earlier · Egeria was reset · not in Egeria now"
+
+
+def pre_reset_words(reset_at) -> str:
+    """The words for a proof row older than the latest Egeria reset (architect ruling (b), 2026-10-23): "published
+    before the <date> reset · not in Egeria now", the ◌ lane, never ✓. RESET_WORDS when the reset time cannot be
+    read (the claim stays, without a date)."""
+    day = _ts(reset_at)[:10]
+    return f"published before the {day} reset · not in Egeria now" if day else RESET_WORDS
+
+
+def latest_recorded_reset(registry) -> str:
+    """The latest row of `egeria_resets` ('' when none, or for a registry without the reader: a test double)."""
+    fn = getattr(registry, "latest_egeria_reset_at", None)
+    try:
+        return (fn() if fn else "") or ""
+    except Exception:  # noqa: BLE001 - an unreadable record makes no reset claim
+        return ""
+
+
+def merge_recorded_reset(registry, marker: dict | None, rows: list[dict]) -> dict | None:
+    """The reset a derivation splits its proof rows at: the newer of the resource's own `egeria_reset` marker and
+    the latest recorded reset (`egeria_resets`), as a marker-shaped dict. The recorded reset is used only when some
+    row in `rows` was read before it: a resource with nothing before the reset reads exactly as it did (no reset
+    claim for something that was never in Egeria)."""
+    rec = latest_recorded_reset(registry)
+    if not _known(rec) or (marker is not None and _ts(marker.get("read_at")) >= _ts(rec)):
+        return marker
+    if not any(_known(r.get("read_at")) and _ts(r.get("read_at")) < _ts(rec) for r in rows):
+        return marker
+    return {"id": 0, "proof": P_EGERIA_RESET, "read_at": rec, "node_kind": "", "element_guid": "",
+            "detail": {"text": f"Egeria reset {_ts(rec)[:10]} · recorded"}}
 #: The schema states that mean "Egeria holds it right now" (read back or attached), for the header's count.
 IN_EGERIA_STATES = ("catalogued", "attached_waiting", "restored")
 
@@ -627,6 +658,8 @@ def derive_commit_state(registry, slug: str, view: dict, now: datetime | None = 
     # Ordered by read_at (the reset time), never by id, so a proof recorded after the reset but before the
     # marker was written still counts.
     reset = _latest(proofs_all, (P_EGERIA_RESET,))
+    # The recorded reset (`egeria_resets`) splits the history the same way when it is newer than the marker.
+    reset = merge_recorded_reset(registry, reset, [p for p in proofs_all if p["proof"] != P_EGERIA_RESET])
     cutoff = _ts(reset["read_at"]) if reset else ""
     # ONE tie rule, shared with repo_publish.publish_state: a proof read AT or after the reset time is live.
     # A proof whose time cannot be read is neither live nor earlier (no claim either way).
@@ -660,7 +693,7 @@ def derive_commit_state(registry, slug: str, view: dict, now: datetime | None = 
         st = _schema_state(by.get(("schema", name, ""), []), ob_by_schema.get(name), s.get("effective"), conn_d)
         if reset is not None and st["state"] in ("none", "uncommitted") and \
                 _latest(earlier_by.get(("schema", name, ""), []), STATE_PROOFS) is not None:
-            st = {"state": "reset", "words": RESET_WORDS,
+            st = {"state": "reset", "words": pre_reset_words(reset["read_at"]),
                   "second": str((reset["detail"] or {}).get("text") or "Egeria was reset"),
                   "proof": {"kind": P_EGERIA_RESET, "at": reset["read_at"], "element_guid": "", "outbox_id": None}}
         schemas[name] = st
@@ -680,7 +713,7 @@ def derive_commit_state(registry, slug: str, view: dict, now: datetime | None = 
                 if t.get("effective") == LEAVE_OUT:
                     ts["second"] = WHOLE_SCHEMAS_LINE
             elif st["state"] in ("attached_waiting", "queued", "sent", "failed", "deleted", "archived", "restored", "reset"):
-                ts = {"state": "follows_schema", "words": f"as its schema: {'deleted in Egeria' if st['state'] == 'deleted' else RESET_WORDS if st['state'] == 'reset' else st['state'].replace('_', ' ')}",
+                ts = {"state": "follows_schema", "words": f"as its schema: {'deleted in Egeria' if st['state'] == 'deleted' else pre_reset_words(reset["read_at"]) if st['state'] == 'reset' else st['state'].replace('_', ' ')}",
                       "second": WHOLE_SCHEMAS_LINE if t.get("effective") == LEAVE_OUT else ""}
             else:
                 ts = {"state": "none", "words": "", "second": ""}
@@ -716,8 +749,17 @@ def derive_commit_state(registry, slug: str, view: dict, now: datetime | None = 
     # No publish/restore row and no proof row for a chosen schema (both after any reset): nothing was read back,
     # so there are no counts to show, never three measured zeros (fix round 2). The header says "not read back".
     any_schema_proof = any(by.get(("schema", n, "")) for n in chosen_states)
-    read_back = (read_back_chips(published, chosen_states, last_read, now)
-                 if published is not None or any_schema_proof else {"chips": []})
+    # Rows from before the reset prove nothing about now; they make the chips ◌ (never ✓) until a post-reset proof.
+    pre = None
+    if reset is not None:
+        pre_att = {n for n in chosen_states
+                   if _latest(earlier_by.get(("schema", n, ""), []), (P_TARGET, P_ELEMENTS)) is not None}
+        pre_built = {n for n in chosen_states if _latest(earlier_by.get(("schema", n, ""), []), (P_ELEMENTS,)) is not None}
+        pre_pub = _latest(earlier, (P_DATABASE, P_RESTORED)) is not None
+        if pre_pub or pre_att:
+            pre = {"reset_at": reset["read_at"], "published": pre_pub, "attached": pre_att, "built": pre_built}
+    read_back = (read_back_chips(published, chosen_states, last_read, now, pre_reset=pre)
+                 if published is not None or any_schema_proof or pre is not None else {"chips": []})
     return {"schemas": schemas, "tables": tables, "header": header, "collisions": collisions,
             "read_back": read_back,
             "database": ({"guid": published["element_guid"], "short": published["element_guid"][:8],
@@ -758,8 +800,7 @@ def _header(published, counts, conn_d, failed_read, view, anything: bool, zones_
         else:
             parts.append(f"Database element {published['element_guid'][:8]} in Egeria · published {_stamp(published['read_at'])}")
     elif reset is not None and published_earlier is not None:
-        parts.append(f"Database element {published_earlier['element_guid'][:8]} published earlier · Egeria was reset "
-                     f"{_stamp(reset['read_at'])} · not in Egeria now")
+        parts.append(f"Database element {published_earlier['element_guid'][:8]} {pre_reset_words(reset['read_at'])}")
     else:
         parts.append("Database element not read back from Egeria")
     if published:
@@ -769,7 +810,7 @@ def _header(published, counts, conn_d, failed_read, view, anything: bool, zones_
         # 2026-10-23). The header counts them once, as attached: "N schemas attached", "no schemas attached".
         order = (("sent", "sent"), ("queued", "queued"), ("failed", "failed"), ("restored", "restored"), ("uncommitted", "not committed yet"),
                  ("deleted", "deleted in Egeria"), ("archived", "archived in Egeria"),
-                 ("reset", "published earlier, Egeria was reset"))
+                 ("reset", f"published before the {_ts((reset or {}).get('read_at'))[:10]} reset"))
         bits = [f"{counts[k]} {w}" for k, w in order if counts.get(k)]
         parts.append(f"{n_cat} schema{'s' if n_cat != 1 else ''} chosen" + (": " + ", ".join(bits) if bits else ""))
         n_att = counts.get("attached_waiting", 0) + counts.get("catalogued", 0)
@@ -809,7 +850,7 @@ def _schemas_unit(n: int) -> str:
 
 
 def read_back_chips(published: dict | None, schema_states: dict[str, dict], last_read_at: str = "",
-                    now: datetime | None = None) -> dict:
+                    now: datetime | None = None, pre_reset: dict | None = None) -> dict:
     """The three counts under the catalogue section, from proof rows only, never from the branch a commit took.
 
     1. "published by RE N": the server and database elements in the newest `database_published` row (a restore
@@ -824,7 +865,13 @@ def read_back_chips(published: dict | None, schema_states: dict[str, dict], last
     `schema_states` is {schema: _schema_state(...)} for the chosen schemas. Returns {"chips": [3 dicts]} with
     each chip {key, word, count, unit, cue: 'read_back' | 'pending' | 'none', read_at, hover, not_checked_since}.
     `unit` is the word after the count on screen ("attached 2 schemas", "cataloged by Egeria 1 schema"); the
-    published count has none ("published by RE 2", architect fix round 1)."""
+    published count has none ("published by RE 2", architect fix round 1).
+
+    `pre_reset` ({reset_at, published, attached, built}, from `derive_commit_state`) names what proof rows from
+    BEFORE the latest Egeria reset showed. Those rows are never counted (the counts are post-reset proof only) and a
+    chip they cover that no post-reset proof has caught up with is ◌ (`pending`), never ✓, with `pre_reset_at` and the
+    words "published before the <date> reset · not in Egeria now" on hover (architect rulings (b) and (c),
+    2026-10-23): "cataloged by Egeria 0 ◌" until the cataloguer rebuilds."""
     pub_n, pub_at = 0, ""
     if published is not None:
         pub_n = (1 if (published.get("detail") or {}).get("server_guid") else 0) + (1 if published.get("element_guid") else 0)
@@ -846,25 +893,39 @@ def read_back_chips(published: dict | None, schema_states: dict[str, dict], last
         age = _age_s(read_at, now)
         stale = read_at if age is not None and age > READ_BACK_NOT_CHECKED_AFTER_S else ""
     waiting = sorted(set(attached) - set(built))
+    pre = pre_reset or {}
+    pre_words = pre_reset_words(pre.get("reset_at")) if pre else ""
+    pub_behind = bool(pre.get("published")) and not pub_n
+    att_behind = sorted(set(pre.get("attached") or ()) - set(attached))
+    built_behind = sorted(set(pre.get("built") or ()) - set(built))
+    if built_behind:
+        cat_cue = "pending"
     chips = [
         {"key": "published", "word": "published by RE", "count": pub_n, "unit": "",
-         "cue": "read_back" if pub_n else "none",
+         "cue": "read_back" if pub_n else ("pending" if pub_behind else "none"),
          "read_at": pub_at, "not_checked_since": "",
          "hover": (f"the server and database elements RE published · read {_stamp(pub_at)}" if pub_n
+                   else f"the database element {pre_words}" if pub_behind
                    else "nothing RE published has been read back")},
         {"key": "attached", "word": "attached", "count": len(attached), "unit": _schemas_unit(len(attached)),
-         "cue": "read_back" if attached else "none",
+         "cue": "pending" if att_behind else ("read_back" if attached else "none"),
          "read_at": att_at, "not_checked_since": "",
-         "hover": (f"chosen schemas attached to Egeria's cataloguer as targets · read {_stamp(att_at)}" if attached
-                   else "no chosen schema is attached to Egeria's cataloguer")},
+         "hover": ((f"chosen schemas attached to Egeria's cataloguer as targets · read {_stamp(att_at)}" if attached
+                    else "no chosen schema is attached to Egeria's cataloguer")
+                   + (f" · {pre_words}: {', '.join(att_behind)}" if att_behind else ""))},
         {"key": "catalogued", "word": "cataloged by Egeria", "count": len(built), "unit": _schemas_unit(len(built)),
          "cue": cat_cue,
          "read_at": built_at or read_at, "not_checked_since": stale,
          "hover": ("chosen schemas whose tables Egeria's cataloguer built"
                    + (f" · read {_stamp(built_at)}" if built_at else "")
                    + (f" · no tree yet: {', '.join(waiting)}" if waiting else "")
-                   + (f" · last read {_stamp(read_at)}" if read_at and read_at != built_at else ""))},
+                   + (f" · last read {_stamp(read_at)}" if read_at and read_at != built_at else "")
+                   + (f" · {pre_words}: {', '.join(built_behind)}" if built_behind else ""))},
     ]
+    if pre:
+        for c, behind in zip(chips, (pub_behind, att_behind, built_behind)):
+            if behind:
+                c["pre_reset_at"] = pre.get("reset_at") or ""
     return {"chips": chips}
 
 
