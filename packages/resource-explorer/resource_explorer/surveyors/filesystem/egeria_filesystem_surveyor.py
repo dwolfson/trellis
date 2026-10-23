@@ -596,6 +596,52 @@ class EgeriaFileSystemSurveyor:
 
         return {"filesystem_guid": fs_guid, **proof}
 
+    def publish_file_profiles(self, fs_entity: FileSystemEntity, run_id: str, specs: list[dict],
+                              registry: ProjectRegistry | None = None) -> dict:
+        """Files build step 5: Resource Explorer's column profiles as one ResourceProfileAnnotation per column under RE's own
+        SurveyReport, "surveyed by Resource Explorer". Egeria's own CSV reports are Egeria's and are never republished here.
+        `specs` come from `file_profiles.publish_specs` (each carries its own `additional`: file, column, sampleRatio,
+        statsSource). The proof (what landed, read back) is kept on a `file_profiles_publish` step_runs row for `run_id`."""
+        from resource_explorer.egeria_linkage import guard_linkage
+        from resource_explorer.private_publish import refuse_unsupported_private
+        from resource_explorer.surveyors.filesystem import file_profiles as fp
+        from resource_explorer.surveyors.survey_report import ResourceProfileAnnotation
+
+        refuse_unsupported_private(registry, "filesystem", fs_entity.slug, name=fs_entity.display_name or fs_entity.slug)
+        with guard_linkage(registry, "filesystem", fs_entity.slug, fs_entity.display_name or fs_entity.slug,
+                           fs_entity.egeria_asset_guid or ""):
+            self.connect()
+            fs_name = fs_entity.display_name or fs_entity.slug
+            fs_guid = fs_entity.egeria_asset_guid
+            if not fs_guid:
+                raise EgeriaFileSystemSurveyorError(
+                    f"FileSystem '{fs_name}' is not yet published to Egeria — there is no asset to attach the report to.")
+            annotations = [ResourceProfileAnnotation(
+                summary=s["summary"], analysis_step=s["analysis_step"], annotation_type_name=s["annotation_type_name"],
+                explanation=s["explanation"], value_count=dict(s["value_count"]),
+                additional_properties={"surveyor": "Resource Explorer", **s["additional"]}) for s in specs]
+            qualified_name = f"SurveyReport::FileSystem::{fs_entity.slug}::file_profiles::{run_id}"
+            body = {
+                "class": "NewElementRequestBody", "parentGUID": fs_guid, "parentRelationshipTypeName": "ReportSubject",
+                "properties": {
+                    "class": "AssetProperties", "typeName": "SurveyReport", "qualifiedName": qualified_name,
+                    "displayName": f"Data-file profiles: {fs_name}",
+                    "description": f"Data-file column profiles of {fs_name} run at {run_id} · surveyed by Resource Explorer",
+                    "additionalProperties": {"annotation_count": str(len(annotations)), "step": fp.STEP_KEY,
+                                             "surveyor": "Resource Explorer"},
+                },
+            }
+            report_guid = self._asset_maker.create_asset(body=body)
+            made = self._create_annotations(annotations, report_guid, fs_entity.slug, f"file_profiles::{run_id}")
+            read_back = self._read_back_by_guid(report_guid, expect_type="SurveyReport")
+            proof = {"report_guid": report_guid, "annotation_count": len(annotations),
+                     "annotations_in_egeria": _published_count(made), "report_read_back": bool(read_back.get("matched")),
+                     "read_back_why": read_back.get("why", ""), "at": datetime.utcnow().isoformat()}
+        if registry:
+            registry.record_step_run(fs_entity.slug, fp.PUBLISH_STEP_KEY, run_id, entity_type="filesystem",
+                                     source="egeria-published", executor="local", metrics=proof)
+        return proof
+
     def _metadata_expert_client(self):
         """The MetadataExpert for the paged read of a report's annotations."""
         if self._metadata_expert is None:

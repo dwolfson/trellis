@@ -752,3 +752,101 @@ def publish_filesystem_folder_survey(slug: str) -> dict:
         raise HTTPException(status_code=409, detail="No Resource Explorer walk to publish. Run the survey first.")
     newest = max(walks, key=lambda r: (r["survey_data"].get("surveyed_at") or r.get("surveyed_at") or ""))
     return _publish_walk(registry, fs, newest["survey_data"], slug)
+
+
+# ── Files build step 5: file_profiles (column profiles of the walk's data files, priced before the run) ──────────────
+
+@router.get("/{slug}/file-profiles")
+def get_filesystem_file_profiles(slug: str) -> dict:
+    """The cost line (from the walk rows and this machine's last measured rate) and the newest profile run, every count
+    from the stored rows. Registry-only."""
+    from resource_explorer.surveyors.filesystem import file_profiles as fp
+
+    registry = ProjectRegistry()
+    if not registry.filesystem_exists(slug):
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    return fp.profiles_view(registry, slug)
+
+
+@router.post("/{slug}/file-profiles")
+def run_filesystem_file_profiles(slug: str) -> dict:
+    """The press (consent is this press; the card showed the cost line before it). Profiles every data file of the newest
+    walk: a `.csv` on an Egeria-led file system goes to Egeria's CSV Survey Service, every other readable file is profiled
+    here. Writes nothing into the path. 409 when there is no walk yet."""
+    from resource_explorer.surveyors.filesystem import file_profiles as fp
+    from resource_explorer.web.routes.curate import require_resource_write
+
+    registry = ProjectRegistry()
+    fs = registry.get_filesystem(slug)
+    if not fs:
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    require_resource_write(registry, "filesystem", slug, "start_action")
+    from resource_explorer.egeria_clients import Caller
+
+    try:
+        summary = fp.run_file_profiles(fs, registry, port_factory=lambda: fp.make_port(identity=Caller()))
+    except fp.NothingToProfile as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {**summary, "view": fp.profiles_view(registry, slug)}
+
+
+@router.post("/{slug}/file-profiles/read-egeria")
+def read_filesystem_file_profiles_from_egeria(slug: str) -> dict:
+    """Read Egeria's CSV reports back by GUID for the newest run's submitted files (read-only in Egeria)."""
+    from resource_explorer.surveyors.filesystem import file_profiles as fp
+    from resource_explorer.web.routes.curate import require_resource_write
+
+    registry = ProjectRegistry()
+    fs = registry.get_filesystem(slug)
+    if not fs:
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    require_resource_write(registry, "filesystem", slug, "start_action")
+    from resource_explorer import native_survey_run as nsr
+    from resource_explorer.egeria_clients import Caller
+
+    with nsr.port_session(fp.make_port(identity=Caller())) as port:
+        counts = fp.read_back_egeria(fs, registry, port)
+    return {**counts, "view": fp.profiles_view(registry, slug)}
+
+
+@router.post("/{slug}/file-profiles/publish")
+def publish_filesystem_file_profiles(slug: str) -> dict:
+    """Publish Resource Explorer's column profiles of the newest run, only the columns whose profile differs from the last
+    run (until the profile-publish reshape lands). Egeria's own reports stay Egeria's. 409 when nothing is to publish."""
+    from resource_explorer.surveyors.filesystem import file_profiles as fp
+    from resource_explorer.web.routes.curate import require_resource_write
+
+    registry = ProjectRegistry()
+    fs = registry.get_filesystem(slug)
+    if not fs:
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    require_resource_write(registry, "filesystem", slug, "publish")
+    runs = registry.list_filesystem_file_column_runs(slug)
+    if not runs:
+        raise HTTPException(status_code=409, detail="No data-file profiles to publish. Run them first.")
+    run_id = runs[0]
+    if fp.latest_publish_proof(registry, slug, run_id):
+        raise HTTPException(status_code=409, detail="These profiles are already published to Egeria. Run them again to "
+                            "publish newer ones.")
+    rows = fp.changed_rows(registry, slug, run_id)
+    if not rows:
+        raise HTTPException(status_code=409, detail="No profile Resource Explorer measured differs from the last run · "
+                            "nothing new to publish")
+    from resource_explorer.egeria_clients import Caller
+    from resource_explorer.egeria_clients import refusal as egeria_refusal
+    from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import EgeriaFileSystemSurveyor
+
+    canonical = (fs.canonical_mount_point or fs.local_mount_point).rstrip("/")
+    surveyor = EgeriaFileSystemSurveyor(platform_url=fs.egeria_url or None, view_server=fs.egeria_server or None,
+                                        identity=Caller())
+    try:
+        proof = surveyor.publish_file_profiles(fs, run_id, fp.publish_specs(rows, canonical), registry)
+    except PermissionError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- the profiles stand; the publish failure is said
+        refused = egeria_refusal(exc)
+        if refused is not None:
+            raise refused from exc
+        log.exception("Publishing the file profiles failed for %s", slug)
+        raise HTTPException(status_code=502, detail=f"not published · {exc}")
+    return {**proof, "columns": len(rows), "view": fp.profiles_view(registry, slug)}

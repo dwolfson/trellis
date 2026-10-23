@@ -14,7 +14,8 @@
  * from which button was pressed. A number the survey did not carry is "–", never 0.
  */
 import { esc } from '/static/next/app.js';
-import { getFolderSurvey, runFolderSurvey, publishFolderSurvey, checkFilesystemReach, runWalkExtensions, publishWalkExtensions } from '/static/re-api.js';
+import { getFolderSurvey, runFolderSurvey, publishFolderSurvey, checkFilesystemReach, runWalkExtensions, publishWalkExtensions,
+  runFileProfiles, readFileProfilesFromEgeria, publishFileProfiles } from '/static/re-api.js';
 import { enhanceTable } from '/static/next/colresize.js';
 import { fmtBytes } from '/static/next/stages/native-report.js';
 
@@ -56,6 +57,24 @@ export const FOLDER_SURVEY_WORDS = {
   noNarratives: 'no README-type file found',
   narrativeLine: (file, when) => `described by ${file}${when ? ` · modified ${when}` : ''}`,
   proposal: 'a proposal · confirm it on Curate',
+  // Data-file profiles (Files build step 5).
+  profilesHeading: 'Data-file profiles',
+  profilePress: 'Profile data files',
+  profiling: 'Profiling…',
+  readEgeria: "Read Egeria's reports",
+  reading: 'Reading…',
+  publishProfiles: 'Publish these profiles to Egeria',
+  noProfiles: 'not profiled yet',
+  profiledAt: (date) => `profiled${date ? ` · ${date}` : ''}`,
+  sampled: 'sampled',
+  submitted: (n) => `${num(n)} CSV file${n === 1 ? '' : 's'} submitted to Egeria's CSV Survey Service · its reports not read back yet`,
+  notInstalled: (n) => `not installed · Egeria's CSV Survey Service is not installed where its engine host runs · ${num(n)} CSV file${n === 1 ? '' : 's'} not profiled`,
+  egeriaUnchecked: (n) => `could not check whether Egeria's CSV Survey Service is installed · ${num(n)} CSV file${n === 1 ? '' : 's'} not profiled`,
+  submitFailed: (n) => `${num(n)} CSV file${n === 1 ? '' : 's'} refused by Egeria`,
+  otherStates: (c) => [c.over_limit ? `${num(c.over_limit)} over the limit in a format read only whole` : '',
+    c.unreadable ? `${num(c.unreadable)} could not be parsed` : '',
+    c.secret_name ? `${num(c.secret_name)} with a secret-looking name · not opened` : '',
+    c.link_not_followed ? `${num(c.link_not_followed)} linked · not followed` : ''].filter(Boolean).join(' · '),
 };
 
 const dash = '–';
@@ -240,7 +259,47 @@ export function walkMeasuresHtml(ext) {
   </div>`;
 }
 
-/** The whole card. `busy` is 'survey' | 'check' | 'publish' | 'measure' | 'publish-measures' | ''. */
+const STATE_WORDS = {
+  measured: 'profiled', sampled: 'profiled · sampled', not_applicable: 'not read · format', not_permitted: 'not permitted',
+  over_limit: 'over the limit · not read', unreadable: 'could not be parsed', secret_name: 'secret-looking name · not opened',
+  link_not_followed: 'linked · not followed', not_installed: 'not installed', egeria_unchecked: 'could not check Egeria',
+  submit_failed: 'refused by Egeria', submitted: "submitted to Egeria",
+};
+const sourceWords = (s) => (String(s || '').startsWith('egeria:') ? `Egeria · report ${String(s).slice(7, 15)}` : s === 'resource-explorer' ? 'RE' : '');
+
+/** The data-file profiles (Files build step 5): the cost line BEFORE the press, then the run's counts, each from stored rows. */
+export function fileProfilesHtml(fp) {
+  const W = FOLDER_SURVEY_WORDS;
+  if (!fp) return '';
+  if (fp.error) return `<div data-fp data-fp-state="error" class="mt-s3 text-provenance text-state-warn">${esc(fp.error)}</div>`;
+  const price = fp.price || {};
+  const run = fp.run;
+  const head = `<div class="text-caps uppercase tracking-caps text-ink-muted">${esc(W.profilesHeading)}</div>
+    <div data-fp-price class="text-caveat text-ink">${esc(price.words || '')}</div>`;
+  if (!run) return `<div data-fp data-fp-state="none" class="mt-s3">${head}<div class="text-provenance text-ink-muted">${esc(W.noProfiles)}</div></div>`;
+  const c = run.counts || {};
+  const egeriaLines = [c.submitted ? W.submitted(c.submitted) : '', c.not_installed ? W.notInstalled(c.not_installed) : '',
+    c.egeria_unchecked ? W.egeriaUnchecked(c.egeria_unchecked) : '', c.submit_failed ? W.submitFailed(c.submit_failed) : '']
+    .filter(Boolean);
+  const other = W.otherStates(c);
+  const pub = run.publish
+    ? W.published(run.publish.report_guid, run.publish.annotations_in_egeria != null ? `${num(run.publish.annotations_in_egeria)} of ${num(run.publish.annotation_count)} annotations in Egeria` : '')
+    : W.notPublished;
+  const rows = (run.files || []).map((f) => [f.file_path, STATE_WORDS[f.state] ? `${STATE_WORDS[f.state]}${f.state === 'not_applicable' ? ` ${f.format || '(none)'}` : ''}` : f.state,
+    sourceWords(f.stats_source), f.columns ? num(f.columns) : dash,
+    f.sample_ratio != null && f.sample_ratio < 1 ? `${W.sampled} ${(f.sample_ratio * 100).toFixed(1)}%` : '']);
+  return `<div data-fp data-fp-state="profiled" class="mt-s3">${head}
+    <div data-fp-run class="text-caveat text-ink">${esc(W.profiledAt(day(run.run_id)))} · <span data-fp-words>${esc(run.words || '')}</span></div>
+    ${egeriaLines.map((l) => `<div data-fp-egeria class="text-provenance text-state-warn"><span class="font-glyph" aria-hidden="true">⚠</span> ${esc(l)}</div>`).join('')}
+    ${other ? `<div data-fp-other class="text-provenance text-ink-muted">${esc(other)}</div>` : ''}
+    <div data-fp-published class="text-provenance text-ink-muted">${esc(pub)}</div>
+    ${rows.length ? measureTableHtml('profiles', 'Files', ['File', 'State', 'Source', 'Columns', 'Sampled'], rows) : ''}
+    ${run.files_not_shown ? `<div class="text-provenance text-ink-muted">and ${num(run.files_not_shown)} more</div>` : ''}
+  </div>`;
+}
+
+/** The whole card. `busy` is 'survey' | 'check' | 'publish' | 'measure' | 'publish-measures' | 'profile' | 'read-egeria' |
+ *  'publish-profiles' | ''. */
 export function folderSurveyCardHtml(view, { busy = '', error = '' } = {}) {
   const W = FOLDER_SURVEY_WORDS;
   const reach = (view && view.reach) || {};
@@ -251,6 +310,8 @@ export function folderSurveyCardHtml(view, { busy = '', error = '' } = {}) {
   const besideEgeria = reach.surveyor === "Egeria's Folder Survey";
   const ext = view && view.extensions;
   const needsPublishMeasures = !!(ext && ext.led_by === 'egeria' && !ext.published && ext.rows && ext.rows.kept);
+  const fp = view && view.file_profiles;
+  const fpRun = fp && fp.run;
   const btn = (act, label, on) => `<button type="button" data-fs-act="${act}" ${on ? '' : 'disabled'}
     class="shrink-0 cursor-pointer rounded-sm border ${on ? 'border-accent text-accent-ink' : 'border-rule-strong text-ink-muted'} bg-transparent px-2 py-[2px] text-caveat disabled:cursor-default">${esc(label)}</button>`;
   return `<div id="fs-folder-survey" class="mt-s3 mb-s3" data-fs-card>
@@ -262,10 +323,14 @@ export function folderSurveyCardHtml(view, { busy = '', error = '' } = {}) {
       ${needsPublish ? btn('publish', busy === 'publish' ? W.publishing : W.publish, !busy) : ''}
       ${besideEgeria ? btn('measure', busy === 'measure' ? W.measuringBeside : W.measureBeside, !busy) : ''}
       ${needsPublishMeasures ? btn('publish-measures', busy === 'publish-measures' ? W.publishing : W.publishMeasures, !busy) : ''}
+      ${fp && fp.price && fp.price.walk ? btn('profile', busy === 'profile' ? W.profiling : W.profilePress, !busy) : ''}
+      ${fpRun && fpRun.counts && fpRun.counts.submitted ? btn('read-egeria', busy === 'read-egeria' ? W.reading : W.readEgeria, !busy) : ''}
+      ${fpRun && !fpRun.publish && fpRun.counts && fpRun.counts.by_re ? btn('publish-profiles', busy === 'publish-profiles' ? W.publishing : W.publishProfiles, !busy) : ''}
     </div>
     ${error ? `<div data-fs-error class="mt-[2px] text-provenance text-state-warn">${esc(error)}</div>` : ''}
     ${folderResultsHtml(view)}
     ${walkMeasuresHtml(view && view.extensions)}
+    ${fileProfilesHtml(view && view.file_profiles)}
   </div>`;
 }
 
@@ -292,6 +357,9 @@ export async function mountFolderSurvey(host, slug, { onChange = () => {} } = {}
       else if (act === 'publish') await publishFolderSurvey(slug);
       else if (act === 'measure') await runWalkExtensions(slug, { publish: false });
       else if (act === 'publish-measures') await publishWalkExtensions(slug);
+      else if (act === 'profile') await runFileProfiles(slug);
+      else if (act === 'read-egeria') await readFileProfilesFromEgeria(slug);
+      else if (act === 'publish-profiles') await publishFileProfiles(slug);
     } catch (e) {
       error = e.message || String(e);
     }

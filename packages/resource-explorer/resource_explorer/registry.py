@@ -408,6 +408,47 @@ FILESYSTEM_WALK_FILES_DDL = (
     "ON filesystem_walk_files(content_hash, size_bytes) WHERE hash_state = 'hashed'",
 )
 
+#: DDL for a file system's data-file column profiles, kept per run (Files build step 5, `file_profiles`; the project
+#: owner's go 2026-10-23, "Files 5: new table"). Same rules as RESOURCE_SCOPE_EVENTS_DDL: ONE additive, idempotent
+#: statement, CREATE TABLE IF NOT EXISTS only, no ALTER of an existing table, no index beyond the UNIQUE key, no data
+#: migration, no question mark or colon-name token (the Postgres translator rewrites both).
+#:
+#: One row per column per data file per run; a file that has no column rows (not read, not permitted, not installed,
+#: submitted to Egeria and not read back yet, or read with no columns) has ONE row with `column_name = ''` and
+#: `ordinal = 0` carrying its `state`, so every data file of the walk is a row and nothing is skipped silently. The
+#: measures are NULL whenever they were not measured (never 0). `run_id` is the profile run's own time; the run's
+#: `step_runs` row is (entity_type 'filesystem', slug, step_key 'file_profiles', surveyed_at = run_id) and holds what
+#: the run measured about itself (bytes read, seconds, which walk it profiled, Egeria's engine actions).
+#: `stats_source` is 'resource-explorer' or 'egeria:<report guid>' (`egeria_report_guid` repeats the GUID for joins).
+#: Retention: the newest file_profiles.RUNS_KEPT runs per file system; removing the file system removes them all.
+FILESYSTEM_FILE_COLUMNS_DDL = (
+    """
+    CREATE TABLE IF NOT EXISTS filesystem_file_columns (
+        filesystem_slug        TEXT NOT NULL,
+        run_id                 TEXT NOT NULL,
+        file_path              TEXT NOT NULL,
+        column_name            TEXT NOT NULL DEFAULT '',
+        ordinal                INTEGER NOT NULL DEFAULT 0,
+        declared_type          TEXT NOT NULL DEFAULT '',
+        inferred_general_type  TEXT NOT NULL DEFAULT '',
+        record_ct              BIGINT DEFAULT NULL,
+        value_ct               BIGINT DEFAULT NULL,
+        null_ct                BIGINT DEFAULT NULL,
+        distinct_ct            BIGINT DEFAULT NULL,
+        min_text               TEXT DEFAULT NULL,
+        max_text               TEXT DEFAULT NULL,
+        min_len                INTEGER DEFAULT NULL,
+        max_len                INTEGER DEFAULT NULL,
+        sample_ratio           REAL DEFAULT NULL,
+        stats_source           TEXT NOT NULL DEFAULT '',
+        egeria_report_guid     TEXT NOT NULL DEFAULT '',
+        egeria_datafield_guid  TEXT NOT NULL DEFAULT '',
+        state                  TEXT NOT NULL DEFAULT 'measured',
+        UNIQUE(filesystem_slug, run_id, file_path, column_name)
+    )
+    """,
+)
+
 #: DDL for the annotations of a user step run by RE (extensibility brief 2c; the project owner chose a dedicated
 #: table, 2026-10-13). Same rules as RESOURCE_SCOPE_EVENTS_DDL: ONE additive, idempotent block, CREATE ... IF
 #: NOT EXISTS only, no ALTER of an existing table, no data migration, no foreign keys, no question mark or
@@ -3571,6 +3612,9 @@ class ProjectRegistry:
                 conn.execute(_ddl)
             # filesystem_walk_files: ONE additive, idempotent block (see FILESYSTEM_WALK_FILES_DDL; proposed, owner's word).
             for _ddl in FILESYSTEM_WALK_FILES_DDL:
+                conn.execute(_ddl)
+            # filesystem_file_columns: ONE additive, idempotent statement (see FILESYSTEM_FILE_COLUMNS_DDL; owner's go 2026-10-23).
+            for _ddl in FILESYSTEM_FILE_COLUMNS_DDL:
                 conn.execute(_ddl)
             # step_annotations: ONE additive, idempotent block (see STEP_ANNOTATIONS_DDL).
             for _ddl in STEP_ANNOTATIONS_DDL:
@@ -13685,6 +13729,8 @@ class ProjectRegistry:
             conn.execute("DELETE FROM filesystem_surveys WHERE filesystem_slug = ?", (normalized,))
             # The walk's per-file rows carry a real FK too (filesystem_walk_files, Files build step 1).
             conn.execute("DELETE FROM filesystem_walk_files WHERE filesystem_slug = ?", (normalized,))
+            # The data-file column profiles (filesystem_file_columns, Files build step 5).
+            conn.execute("DELETE FROM filesystem_file_columns WHERE filesystem_slug = ?", (normalized,))
             # Same reason as remove_database: these carry real FKs, so
             # skipping them fails the parent delete rather than stranding
             # rows.
@@ -13962,6 +14008,89 @@ class ProjectRegistry:
             for old in pruned:
                 conn.execute("DELETE FROM filesystem_walk_files WHERE filesystem_slug = ? AND run_id = ?", (normalized, old))
         return {"rows": len(rows), "run_id": run_id, "pruned_runs": pruned}
+
+    # ── the data-file column profiles, kept per run (Files build step 5, file_profiles) ─────────────────────────────
+
+    FILE_COLUMN_FIELDS = ("file_path", "column_name", "ordinal", "declared_type", "inferred_general_type", "record_ct",
+                          "value_ct", "null_ct", "distinct_ct", "min_text", "max_text", "min_len", "max_len",
+                          "sample_ratio", "stats_source", "egeria_report_guid", "egeria_datafield_guid", "state")
+
+    def _file_column_tuple(self, slug: str, run_id: str, r: dict) -> tuple:
+        defaults = {"column_name": "", "ordinal": 0, "declared_type": "", "inferred_general_type": "", "stats_source": "",
+                    "egeria_report_guid": "", "egeria_datafield_guid": "", "state": "measured"}
+        return (slug, run_id, *((r.get(c) if r.get(c) is not None else defaults.get(c)) for c in self.FILE_COLUMN_FIELDS))
+
+    def add_filesystem_file_columns(self, fs_slug: str, run_id: str, rows: list[dict], *,
+                                    keep_runs: int | None = None) -> dict:
+        """Store one profile run's rows (all or none: one transaction), then remove the runs older than the newest
+        `keep_runs`. Returns {rows, run_id, pruned_runs}."""
+        from resource_explorer.surveyors.filesystem.file_profiles import RUNS_KEPT
+
+        keep = RUNS_KEPT if keep_runs is None else keep_runs
+        normalized = self._normalize_slug(fs_slug)
+        cols = ("filesystem_slug", "run_id", *self.FILE_COLUMN_FIELDS)
+        sql = f"INSERT INTO filesystem_file_columns ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})"
+        with self._conn() as conn:
+            conn.execute("DELETE FROM filesystem_file_columns WHERE filesystem_slug = ? AND run_id = ?", (normalized, run_id))
+            batch = [self._file_column_tuple(normalized, run_id, r) for r in rows]
+            if batch:
+                conn.executemany(sql, batch)
+            runs = [r[0] for r in conn.execute(
+                "SELECT DISTINCT run_id FROM filesystem_file_columns WHERE filesystem_slug = ? ORDER BY run_id DESC",
+                (normalized,)).fetchall()]
+            pruned = runs[keep:] if keep >= 0 else []
+            for old in pruned:
+                conn.execute("DELETE FROM filesystem_file_columns WHERE filesystem_slug = ? AND run_id = ?", (normalized, old))
+        return {"rows": len(rows), "run_id": run_id, "pruned_runs": pruned}
+
+    def replace_filesystem_file_profile(self, fs_slug: str, run_id: str, file_path: str, rows: list[dict]) -> int:
+        """Replace ONE file's rows within a run (Egeria's report read back for a file that was submitted). One transaction."""
+        normalized = self._normalize_slug(fs_slug)
+        cols = ("filesystem_slug", "run_id", *self.FILE_COLUMN_FIELDS)
+        sql = f"INSERT INTO filesystem_file_columns ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})"
+        with self._conn() as conn:
+            conn.execute("DELETE FROM filesystem_file_columns WHERE filesystem_slug = ? AND run_id = ? AND file_path = ?",
+                         (normalized, run_id, file_path))
+            batch = [self._file_column_tuple(normalized, run_id, {**r, "file_path": file_path}) for r in rows]
+            if batch:
+                conn.executemany(sql, batch)
+        return len(rows)
+
+    def list_filesystem_file_column_runs(self, fs_slug: str) -> list[str]:
+        """The profile runs that still have rows, newest first."""
+        normalized = self._normalize_slug(fs_slug)
+        with self._conn() as conn:
+            return [r[0] for r in conn.execute(
+                "SELECT DISTINCT run_id FROM filesystem_file_columns WHERE filesystem_slug = ? ORDER BY run_id DESC",
+                (normalized,)).fetchall()]
+
+    def list_filesystem_file_columns(self, fs_slug: str, run_id: str, *, file_path: str | None = None) -> list[dict]:
+        """One run's rows, by file then ordinal."""
+        normalized = self._normalize_slug(fs_slug)
+        sql = ("SELECT " + ", ".join(self.FILE_COLUMN_FIELDS) + " FROM filesystem_file_columns "
+               "WHERE filesystem_slug = ? AND run_id = ?")
+        params: list = [normalized, run_id]
+        if file_path is not None:
+            sql += " AND file_path = ?"
+            params.append(file_path)
+        sql += " ORDER BY file_path, ordinal"
+        with self._conn() as conn:
+            return [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
+
+    def filesystem_file_profile_states(self, fs_slug: str, run_id: str) -> list[dict]:
+        """Per file of one run: its state, source, columns and sample ratio, counted from the stored rows (what the card
+        says comes from here, never from the branch the run took)."""
+        normalized = self._normalize_slug(fs_slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT file_path, MAX(state) AS state, MAX(stats_source) AS stats_source,
+                          SUM(CASE WHEN column_name <> '' THEN 1 ELSE 0 END) AS columns,
+                          MIN(sample_ratio) AS sample_ratio, MAX(egeria_report_guid) AS egeria_report_guid
+                   FROM filesystem_file_columns WHERE filesystem_slug = ? AND run_id = ?
+                   GROUP BY file_path ORDER BY file_path""",
+                (normalized, run_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def list_filesystem_walk_runs(self, fs_slug: str) -> list[dict]:
         """The runs that still have per-file rows, newest first, each with what is stored (counted from the rows)."""
