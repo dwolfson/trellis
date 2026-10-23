@@ -1650,6 +1650,12 @@ def _target_request_type(target_json) -> str:
     return str(target.get("request_type") or "") if isinstance(target, dict) else ""
 
 
+#: The rows of a report that are ON it. A value-profile proof row with an `item_key` and NO `content_hash` is
+#: `no_longer_measured` / `not_measured_this_run`: it names the PREVIOUS annotation of a measure this run did
+#: not publish, which is not on this report (`record_profile_publish` writes a hash on every row that is).
+#: Module-level, not a class attribute: trellis-analytics' RegistryReadView borrows these methods unbound.
+_NATIVE_ANNOTATION_ON_REPORT = "NOT (item_key IS NOT NULL AND content_hash IS NULL)"
+
 class ProjectRegistry:
     # Process-wide cache: a Postgres `Engine` (connection pool) and whether
     # `_init_schema` has already run, keyed by `database_url`. Added
@@ -8245,7 +8251,7 @@ class ProjectRegistry:
             rows = conn.execute(
                 "SELECT annotation_guid, annotation_type, analysis_step, summary, "
                 "explanation, confidence, detail_json, report_at, read_at "
-                f"FROM native_survey_annotations WHERE report_guid = ? AND {self._ON_REPORT} "
+                f"FROM native_survey_annotations WHERE report_guid = ? AND {_NATIVE_ANNOTATION_ON_REPORT} "
                 "ORDER BY annotation_type, summary, annotation_guid",
                 (report_guid,),
             ).fetchall()
@@ -8259,15 +8265,10 @@ class ProjectRegistry:
             out.append(d)
         return out
 
-    #: The rows of a report that are ON it. A value-profile proof row with an `item_key` and NO `content_hash` is
-    #: `no_longer_measured` / `not_measured_this_run`: it names the PREVIOUS annotation of a measure this run did
-    #: not publish, which is not on this report (`record_profile_publish` writes a hash on every row that is).
-    _ON_REPORT = "NOT (item_key IS NOT NULL AND content_hash IS NULL)"
-
     def count_native_survey_annotations(self, report_guid: str) -> int:
         with self._conn() as conn:
             return int(conn.execute(
-                f"SELECT COUNT(*) FROM native_survey_annotations WHERE report_guid = ? AND {self._ON_REPORT}",
+                f"SELECT COUNT(*) FROM native_survey_annotations WHERE report_guid = ? AND {_NATIVE_ANNOTATION_ON_REPORT}",
                 (report_guid,),
             ).fetchone()[0])
 
