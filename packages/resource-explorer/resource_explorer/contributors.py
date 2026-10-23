@@ -127,6 +127,10 @@ def bots_words(n: int) -> str:
     return f"{n} bot{'s' if n != 1 else ''} excluded"
 
 
+def _mask_at(text: str) -> str:
+    return text.split("@", 1)[0] + "@\u2026" if "@" in text else text
+
+
 @dataclass
 class ContributorRow:
     id: int
@@ -143,11 +147,12 @@ class ContributorRow:
 
     @property
     def name(self) -> str:
-        # Never the email: an address is not a name to show or publish.
-        return self.login or self.display_name or UNKNOWN_NAME
+        # Never the email: an address is not a name to show or publish. A name that holds an "@" (a git author
+        # name typed as an address) is cut to its local part.
+        return _mask_at(self.login or self.display_name or UNKNOWN_NAME)
 
     def as_dict(self) -> dict:
-        return {"rank": self.rank, "login": self.login, "name": self.name, "display_name": self.display_name,
+        return {"rank": self.rank, "login": self.login, "name": self.name, "display_name": _mask_at(self.display_name),
                 "commits": self.commits, "share": round(self.share, 4), "is_bot": self.is_bot, "kind": self.kind}
 
 
@@ -502,6 +507,8 @@ def _merge_unlinked(by_key: dict[str, dict], seen: dict[str, dict[str, set]]) ->
         if len(targets) != 1:
             continue
         target = by_key[next(iter(targets))]
+        if bool(target["is_bot"]) != bool(entry["is_bot"]):
+            continue                                       # a bot and a person are never one identity
         target["commits"] += entry["commits"]
         target["is_bot"] = target["is_bot"] or entry["is_bot"]
         del by_key[key]
@@ -700,9 +707,9 @@ def text_block(lists: dict, *, limit: int = TOP) -> list[str]:
 def annotations(registry, slug: str) -> list:
     """ONE ResourceMeasureAnnotation per stored list (Egeria has no contributor annotation type; following its lead
     as far as it goes): annotationType "Contributors", `resourceProperties` top10 as JSON (each entry's "name" is
-    the shown name, never an email), `measurementName` the window, `as_of` the fetch time, `basis` the share basis.
+    the shown name, never an email), `measurementName` the window, `as_of` (in resourceProperties) the fetch time, `basis` the share basis.
     Identified by (check_name, item_key = window), so a second publish of the same report reuses the same
-    qualifiedName; the outbox then updates that element when its `resourceProperties` or `as_of` differ
+    qualifiedName; the outbox then updates that element when its `resourceProperties` differ
     (egeria_outbox.REFRESHED_ANNOTATION_TYPES). A list never fetched, refused with no earlier list, or empty
     publishes nothing."""
     from resource_explorer.surveyors.survey_report import ResourceMeasureAnnotation
@@ -720,8 +727,8 @@ def annotations(registry, slug: str) -> list:
             check_name="contributors", item_key=window,
             explanation="; ".join([COMPARE_WORDS, *cl.words(), cl.hover()]),
             confidence=100,
-            resource_properties={"top10": json.dumps(top10)},
-            additional_properties={"measurementName": window, "as_of": cl.fetched_at, "basis": cl.share_basis,
+            resource_properties={"top10": json.dumps(top10), "as_of": cl.fetched_at},
+            additional_properties={"measurementName": window, "basis": cl.share_basis,
                                    "source": SOURCE[window], "total": str(cl.total),
                                    "total_with_bots": str(cl.total_all), "merged": str(cl.merged),
                                    "capped": cl.cut_at, "bots_excluded": str(cl.bots_excluded)}))

@@ -482,7 +482,7 @@ def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callab
 
 #: Annotation types whose content can change under the same qualifiedName: a re-publish of the same report after a
 #: newer fetch adopts the existing element and must not leave it stale. For these (only), an adopted annotation is
-#: read first and updated when its `resourceProperties` or `additionalProperties.as_of` differ from the payload's;
+#: read first and updated when its `resourceProperties` (which carry `as_of`) differ from the payload's, compared as string maps;
 #: equal content writes nothing. Every other annotation is written once and adopted untouched, as before.
 REFRESHED_ANNOTATION_TYPES = frozenset({"Contributors"})
 
@@ -506,10 +506,15 @@ def _refresh_adopted_annotation(clients: "OutboxClients", guid: str, row: dict) 
     if not isinstance(held, dict):
         raise OutboxApplyError(f"could not read {guid} to compare it before an update (Egeria answered {held!r:.80})")
     current = held.get("properties") or {}
-    want_rp, have_rp = props.get("resourceProperties") or {}, current.get("resourceProperties") or {}
-    want_asof = (props.get("additionalProperties") or {}).get("as_of")
-    have_asof = (current.get("additionalProperties") or {}).get("as_of")
-    if want_rp == have_rp and want_asof == have_asof:
+    # Compared as Egeria stores them: string maps, written by `to_string_map` (the writer's own stringification).
+    # The as-of rides inside resourceProperties ("as_of"); additionalProperties is never consulted, because a
+    # real answer carries it as null and a comparison on it would read every held element as "different".
+    from resource_explorer.surveyors.annotation_props import to_string_map
+
+    want_rp = to_string_map(props.get("resourceProperties") or {})
+    have_rp = to_string_map(current.get("resourceProperties") or {})
+    want_asof, have_asof = want_rp.get("as_of"), have_rp.get("as_of")
+    if want_rp == have_rp:
         return False
     discovery.update_annotation(guid, {"class": "UpdateElementRequestBody", "mergeUpdate": True,
                                        "properties": props})

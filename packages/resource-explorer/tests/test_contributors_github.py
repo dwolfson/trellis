@@ -366,7 +366,7 @@ def test_one_resource_measure_annotation_per_list_identified_by_window(registry)
     top10 = json.loads(body["resourceProperties"]["top10"])
     assert top10[0] == {"name": "alice", "commits": 400, "share": round(400 / 880, 4)}
     assert body["additionalProperties"]["measurementName"] == "all_time"
-    assert body["additionalProperties"]["as_of"] == NOW.isoformat()
+    assert body["resourceProperties"]["as_of"] == NOW.isoformat() and "as_of" not in body["additionalProperties"]
     assert body["additionalProperties"]["basis"] == "contributions all time"
 
 
@@ -493,5 +493,114 @@ def test_a_republish_after_a_newer_fetch_updates_the_adopted_annotation_and_an_e
     assert discovery.update_annotation.call_count == 1
     body = discovery.update_annotation.call_args.args[1]
     assert body["class"] == "UpdateElementRequestBody" and body["mergeUpdate"] is True
-    assert held["g1"]["properties"]["additionalProperties"]["as_of"] == (NOW + timedelta(days=1)).isoformat()
+    assert held["g1"]["properties"]["resourceProperties"]["as_of"] == (NOW + timedelta(days=1)).isoformat()
     assert json.loads(held["g1"]["properties"]["resourceProperties"]["top10"])[0]["name"] == "zoe"
+
+
+# ── the refresh against the REAL answer shape (tests/fixtures/annotation-by-guid-sample.json, saved verbatim) ─────────
+
+def _refresh_harness(registry, held_extra: dict | None = None, *, drop_additional: bool = True):
+    """(apply, update_mock, first_row): the held element is the live sample with the Contributors payload laid over its
+    properties, so every field the real answer has (and additionalProperties absent/null) is there."""
+    from pathlib import Path
+
+    from pyegeria import DataDiscovery
+
+    from resource_explorer.egeria_outbox import OutboxClients, apply_element
+    from resource_explorer.surveyors.annotation_props import build_annotation_body
+    from resource_explorer.surveyors.survey_report import annotation_qualified_name
+
+    sample = json.loads((Path(__file__).parent / "fixtures" / "annotation-by-guid-sample.json").read_text())
+    assert sample["properties"].get("additionalProperties") is None
+    discovery = create_autospec(DataDiscovery, spec_set=True, instance=True)
+
+    def row_for(ann) -> dict:
+        qn = annotation_qualified_name("RPT", 0, ann)
+        body = build_annotation_body(ann, qn, "report-guid")
+        rid = registry.enqueue_outbox_element("repo", "widget", "annotation", qn, body, run_id="RPT")
+        return {"id": rid, "qualified_name": qn, "element_kind": "annotation", "egeria_guid": "",
+                "payload_json": json.dumps(body)}
+
+    C.fetch_contributors(registry, _client(_commits_230(), ALL_TIME), "widget", FULL, now=NOW)
+    first = next(a for a in C.annotations(registry, "widget") if a.item_key == C.WINDOW_ALL)
+    row = row_for(first)
+    held = json.loads(json.dumps(sample))
+    props = json.loads(row["payload_json"])["properties"]
+    held["properties"].update({k: v for k, v in props.items() if k != "additionalProperties"})
+    held["properties"]["additionalProperties"] = None
+    discovery.get_annotation_by_guid.side_effect = lambda guid, *a, **kw: json.loads(json.dumps(held))
+    return (lambda r: apply_element(r, OutboxClients(discovery=discovery), lambda qn: "g1")), discovery, row, row_for
+
+
+def test_an_identical_republish_against_the_live_answer_shape_makes_no_update_call(registry):
+    apply, discovery, row, _ = _refresh_harness(registry)
+    assert apply(row) == "g1"
+    assert discovery.update_annotation.call_count == 0
+
+
+def test_a_changed_list_against_the_live_answer_shape_makes_exactly_one_update_call(registry):
+    apply, discovery, row, row_for = _refresh_harness(registry)
+    C.fetch_contributors(registry, _client(_commits_230(), ALL_TIME + [_user("zoe", 900)]), "widget", FULL,
+                         now=NOW + timedelta(days=1))
+    newer = next(a for a in C.annotations(registry, "widget") if a.item_key == C.WINDOW_ALL)
+    assert apply(row_for(newer)) == "g1"
+    assert discovery.update_annotation.call_count == 1
+
+
+def test_a_held_answer_with_null_additional_properties_is_not_different_on_that_basis_alone(registry):
+    apply, discovery, row, _ = _refresh_harness(registry)
+    payload = json.loads(row["payload_json"])
+    assert payload["properties"].get("additionalProperties")        # wanted side has them; the held side has None
+    assert "as_of" in payload["properties"]["resourceProperties"]    # the as-of is carried here, not there
+    assert "as_of" not in (payload["properties"].get("additionalProperties") or {})
+    apply(row)
+    assert discovery.update_annotation.call_count == 0
+
+
+def test_resource_properties_compare_as_string_maps(registry):
+    apply, discovery, row, _ = _refresh_harness(registry)
+    payload = json.loads(row["payload_json"])
+    payload["properties"]["resourceProperties"]["count"] = 3          # wanted holds an int, held will hold "3"
+    discovery.get_annotation_by_guid.side_effect = None
+    held = {"properties": {"annotationType": "Contributors", "additionalProperties": None,
+                           "resourceProperties": {**payload["properties"]["resourceProperties"], "count": "3"}}}
+    discovery.get_annotation_by_guid.return_value = held
+    from resource_explorer.egeria_outbox import OutboxClients, apply_element
+    row["payload_json"] = json.dumps(payload)
+    apply_element(row, OutboxClients(discovery=discovery), lambda qn: "g1")
+    assert discovery.update_annotation.call_count == 0
+
+
+# ── merge, facts and names ───────────────────────────────────────────────────────────────────────────────────────────
+
+def test_a_merge_is_skipped_when_is_bot_differs_between_the_two_entries():
+    by_key = {"login:acme-bot": {"login": "acme-bot", "display_name": "Acme", "author_email": "a@x.org",
+                                 "commits": 4, "is_bot": True},
+              "name:acme": {"login": "", "display_name": "Acme", "author_email": "a@x.org",
+                            "commits": 2, "is_bot": False}}
+    seen = {"login:acme-bot": {"emails": {"a@x.org"}, "names": {"acme"}}}
+    assert C._merge_unlinked(by_key, seen) == 0 and len(by_key) == 2
+    by_key["name:acme"]["is_bot"] = True
+    assert C._merge_unlinked(by_key, seen) == 1 and by_key["login:acme-bot"]["commits"] == 6
+
+
+def test_a_never_fetched_list_beside_an_empty_one_is_not_established_not_nothing_found(registry):
+    from resource_explorer import facts
+
+    cl = lambda absence: C.ContributorList(slug="widget", window="w", absence=absence)    # noqa: E731
+    for lists, expected in (({C.WINDOW_ALL: cl(C.EMPTY_REPOSITORY), C.WINDOW_12: cl(C.EMPTY_REPOSITORY)}, facts.NOTHING_FOUND),
+                            ({C.WINDOW_ALL: cl(C.EMPTY_REPOSITORY), C.WINDOW_12: cl(C.NO_FETCH_YET)}, facts.NOT_ESTABLISHED)):
+        with patch.object(C, "both", return_value=lists), patch.object(C, "any_fetched", return_value=True):
+            value, status = facts._r_maintainers(registry, Project(slug="widget", display_name="W",
+                                                                      github_url="", description=""))
+        assert status == expected
+
+
+def test_any_shown_name_with_an_at_sign_is_cut_to_its_local_part():
+    row = C.ContributorRow(id=1, rank=1, login="", display_name="jane.doe@corp.example", author_email="", commits=3,
+                           share=1.0, is_bot=False, kind="unlinked")
+    assert row.name == "jane.doe@\u2026"
+    assert "corp.example" not in json.dumps(row.as_dict())
+    login = C.ContributorRow(id=1, rank=1, login="x@y.z", display_name="", author_email="", commits=1, share=1.0,
+                             is_bot=False, kind="User")
+    assert login.name == "x@\u2026"

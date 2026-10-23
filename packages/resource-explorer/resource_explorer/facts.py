@@ -340,8 +340,8 @@ def _r_maintainers(reg, p) -> tuple:
         lists = {}
     if contrib.any_fetched(lists) and not any(cl.rows for cl in lists.values()):
         # A fetch was attempted and stored no list (refused, failed, or GitHub answered empty): its own words,
-        # never the 90-day git authors below. Empty everywhere is a real absence; anything else is not measured.
-        empty = all(cl.absence in (contrib.EMPTY_REPOSITORY, contrib.NO_FETCH_YET) for cl in lists.values())
+        # never the 90-day git authors below. Empty everywhere is a real absence; anything else (a list never fetched included) is not established.
+        empty = all(cl.absence == contrib.EMPTY_REPOSITORY for cl in lists.values())
         return ({"named": contrib.absence_sentence(lists),
                  "all_time": lists[contrib.WINDOW_ALL].as_dict(), "months_12": lists[contrib.WINDOW_12].as_dict(),
                  "note": contrib.COMPARE_WORDS,
