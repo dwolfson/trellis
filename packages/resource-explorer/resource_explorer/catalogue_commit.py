@@ -610,7 +610,7 @@ def schema_state_of(registry, slug: str, schema: str, effective: str | None = No
     return _schema_state(by.get(("schema", schema, ""), []), ob, effective, None)
 
 
-def derive_commit_state(registry, slug: str, view: dict) -> dict:
+def derive_commit_state(registry, slug: str, view: dict, now: datetime | None = None) -> dict:
     """Every state word on the scope tree, header included, from persisted rows.
 
     The one function the route and the tests share. Returns
@@ -711,7 +711,15 @@ def derive_commit_state(registry, slug: str, view: dict) -> dict:
     header = _header(published, counts, conn_d, failed_read, view, bool(proofs_all or ob_by_schema), zones_text, blocked_names, n_gone,
                      reset=reset, published_earlier=_latest(earlier, (P_DATABASE, P_RESTORED)))
     zr = _latest(db_rows, (P_ZONES_READ,))
+    chosen_states = {s["name"]: schemas[s["name"]] for s in view.get("schemas") or [] if s.get("effective") == CATALOGUE}
+    last_read = max((str(p["read_at"] or "") for p in proofs if p["proof"] in _READ_BACK_ROWS), default="")
+    # No publish/restore row and no proof row for a chosen schema (both after any reset): nothing was read back,
+    # so there are no counts to show, never three measured zeros (fix round 2). The header says "not read back".
+    any_schema_proof = any(by.get(("schema", n, "")) for n in chosen_states)
+    read_back = (read_back_chips(published, chosen_states, last_read, now)
+                 if published is not None or any_schema_proof else {"chips": []})
     return {"schemas": schemas, "tables": tables, "header": header, "collisions": collisions,
+            "read_back": read_back,
             "database": ({"guid": published["element_guid"], "short": published["element_guid"][:8],
                           "at": published["read_at"], "owner": (_latest(db_rows, (P_OWNER,)) or {}).get("detail"),
                           "zones": list((zr or {}).get("detail", {}).get("zones") or []),
@@ -757,12 +765,15 @@ def _header(published, counts, conn_d, failed_read, view, anything: bool, zones_
     if published:
         parts.append(zones_text or "zones: not read back")
     if n_cat:
-        order = (("catalogued", "published"), ("attached_waiting", "attached, waiting"),
-                 ("sent", "sent"), ("queued", "queued"), ("failed", "failed"), ("restored", "restored"), ("uncommitted", "not committed yet"),
+        # Attached and catalogued carry no state word here: the read-back chips below show it (architect,
+        # 2026-10-23). The header counts them once, as attached: "N schemas attached", "no schemas attached".
+        order = (("sent", "sent"), ("queued", "queued"), ("failed", "failed"), ("restored", "restored"), ("uncommitted", "not committed yet"),
                  ("deleted", "deleted in Egeria"), ("archived", "archived in Egeria"),
                  ("reset", "published earlier, Egeria was reset"))
         bits = [f"{counts[k]} {w}" for k, w in order if counts.get(k)]
-        parts.append(f"{n_cat} schema{'s' if n_cat != 1 else ''} chosen: " + (", ".join(bits) or "no proof rows"))
+        parts.append(f"{n_cat} schema{'s' if n_cat != 1 else ''} chosen" + (": " + ", ".join(bits) if bits else ""))
+        n_att = counts.get("attached_waiting", 0) + counts.get("catalogued", 0)
+        parts.append(f"{n_att} schema{'s' if n_att != 1 else ''} attached" if n_att else "no schemas attached")
         if reset is not None:
             # Derived from the rows, never assumed: the chosen schemas whose newest proof says Egeria holds them.
             parts.append(f"{sum(counts.get(k, 0) for k in IN_EGERIA_STATES)} in Egeria")
@@ -773,6 +784,104 @@ def _header(published, counts, conn_d, failed_read, view, anything: bool, zones_
     if failed_read:
         parts.append(f"last read of Egeria failed {_stamp(failed_read['read_at'])}: {failed_read['detail'].get('error', '')}")
     return {"state": "committed", "text": " · ".join(parts)}
+
+
+# ── the read-back counts: three chips in a fixed order (architect ruling 2026-10-23) ──────────────────────
+
+#: A read-back whose newest proof row is older than this says "not checked since <read_at>": 2 x the read-back
+#: loop's 60 s interval, the same bound as native_survey_run.NOT_CHECKED_AFTER_S.
+READ_BACK_NOT_CHECKED_AFTER_S = 120
+#: The rows that are a successful read of Egeria for the catalogue: the newest one says when RE last looked.
+_READ_BACK_ROWS = (P_CONNECTOR, P_ELEMENTS, P_TARGET)
+
+
+def _age_s(iso: str, now: datetime | None) -> float | None:
+    t = _ts(iso)
+    if not t:
+        return None
+    ref = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(tzinfo=None)
+    return (ref - datetime.fromisoformat(t)).total_seconds()
+
+
+def _schemas_unit(n: int) -> str:
+    """The unit word a schema count names on screen: "schema" for 1, "schemas" otherwise (0 included)."""
+    return "schema" if n == 1 else "schemas"
+
+
+def read_back_chips(published: dict | None, schema_states: dict[str, dict], last_read_at: str = "",
+                    now: datetime | None = None) -> dict:
+    """The three counts under the catalogue section, from proof rows only, never from the branch a commit took.
+
+    1. "published by RE N": the server and database elements in the newest `database_published` row (a restore
+       names the database only). ✓ once that row exists: it is written from the element Egeria returned.
+    2. "attached N": chosen schemas whose newest proof says a CatalogTarget exists (`target_attached`, or
+       `elements_read_back`, which is read through that target). ✓.
+    3. "cataloged by Egeria N": chosen schemas whose newest proof is `elements_read_back` (Egeria's cataloguer
+       built the tables under them). ✓ when every attached schema is catalogued; ◌ pending while some attached
+       schema has no tree yet. A pending count whose newest read-back row is older than 120 s also carries
+       "not checked since <read_at>".
+
+    `schema_states` is {schema: _schema_state(...)} for the chosen schemas. Returns {"chips": [3 dicts]} with
+    each chip {key, word, count, unit, cue: 'read_back' | 'pending' | 'none', read_at, hover, not_checked_since}.
+    `unit` is the word after the count on screen ("attached 2 schemas", "cataloged by Egeria 1 schema"); the
+    published count has none ("published by RE 2", architect fix round 1)."""
+    pub_n, pub_at = 0, ""
+    if published is not None:
+        pub_n = (1 if (published.get("detail") or {}).get("server_guid") else 0) + (1 if published.get("element_guid") else 0)
+        pub_at = str(published.get("read_at") or "")
+    attached = {n: st for n, st in schema_states.items() if st.get("state") in ("attached_waiting", "catalogued")}
+    built = {n: st for n, st in attached.items() if st.get("state") == "catalogued"}
+    at = lambda sts: max((str((st.get("proof") or {}).get("at") or "") for st in sts.values()), default="")  # noqa: E731
+    att_at, built_at = at(attached), at(built)
+    read_at = last_read_at or max(att_at, built_at)
+
+    if not attached:
+        cat_cue = "none"
+    elif len(built) == len(attached):
+        cat_cue = "read_back"
+    else:
+        cat_cue = "pending"
+    stale = ""
+    if cat_cue == "pending" and read_at:
+        age = _age_s(read_at, now)
+        stale = read_at if age is not None and age > READ_BACK_NOT_CHECKED_AFTER_S else ""
+    waiting = sorted(set(attached) - set(built))
+    chips = [
+        {"key": "published", "word": "published by RE", "count": pub_n, "unit": "",
+         "cue": "read_back" if pub_n else "none",
+         "read_at": pub_at, "not_checked_since": "",
+         "hover": (f"the server and database elements RE published · read {_stamp(pub_at)}" if pub_n
+                   else "nothing RE published has been read back")},
+        {"key": "attached", "word": "attached", "count": len(attached), "unit": _schemas_unit(len(attached)),
+         "cue": "read_back" if attached else "none",
+         "read_at": att_at, "not_checked_since": "",
+         "hover": (f"chosen schemas attached to Egeria's cataloguer as targets · read {_stamp(att_at)}" if attached
+                   else "no chosen schema is attached to Egeria's cataloguer")},
+        {"key": "catalogued", "word": "cataloged by Egeria", "count": len(built), "unit": _schemas_unit(len(built)),
+         "cue": cat_cue,
+         "read_at": built_at or read_at, "not_checked_since": stale,
+         "hover": ("chosen schemas whose tables Egeria's cataloguer built"
+                   + (f" · read {_stamp(built_at)}" if built_at else "")
+                   + (f" · no tree yet: {', '.join(waiting)}" if waiting else "")
+                   + (f" · last read {_stamp(read_at)}" if read_at and read_at != built_at else ""))},
+    ]
+    return {"chips": chips}
+
+
+def read_back_chips_for(registry, slug: str, schemas: list[str], now: datetime | None = None) -> dict:
+    """The same three counts for a commit's own schemas (the read-back step's text). ONE derivation with the
+    on-screen chips (fix round 2): `derive_commit_state` over those schemas, so the Egeria-reset cutoff applies."""
+    view = {"schemas": [{"name": s, "effective": CATALOGUE, "tables": []} for s in schemas]}
+    return derive_commit_state(registry, slug, view, now)["read_back"]
+
+
+def read_back_words(chips: dict) -> str:
+    """The chips as one plain line (the step's text): fixed order, no "waiting"; the cue is the state."""
+    glyph = {"read_back": " ✓", "pending": " ◌", "none": ""}
+    if not chips.get("chips"):
+        return "nothing read back from Egeria"
+    return " · ".join(f"{c['word']} {c['count']}{(' ' + c['unit']) if c.get('unit') else ''}{glyph[c['cue']]}"
+                      for c in chips["chips"])
 
 
 # ── the preview and its manifest ─────────────────────────────────────────────
@@ -2637,8 +2746,9 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         if s["read_failed"]:
             cur.set_step(curation_id, "read_back", "failed", f"{s['read_failed']} read(s) of Egeria failed; states are unchanged")
         else:
+            # The words come from the proof rows the read-back just wrote, never from its own counters.
             cur.set_step(curation_id, "read_back", "done",
-                         f"{s['catalogued']} published · {s['attached_waiting']} attached, waiting")
+                         read_back_words(read_back_chips_for(registry, slug, schemas)))
     except Exception as exc:
         _fail_step(cur, curation_id, "read_back", exc)
     return cur.finish(curation_id)

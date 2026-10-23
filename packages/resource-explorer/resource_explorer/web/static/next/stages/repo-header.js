@@ -131,6 +131,22 @@ export function docsHtml(ov) {
   return ` · <span data-docs-cue="${esc(ov.docs_state || '')}"${hover ? ` title="${esc(hover)}"` : ''}>${word}</span>`;
 }
 
+/** The LANGUAGE tile. `ov.language` is the server's one choice (resource_explorer/primary_language.py, which the
+ *  Egeria publish also calls): the value, and a visible chip naming its source, "measured" (solid) when RE's own
+ *  classification counted the source files, "GitHub" (outline) when only GitHub's by-bytes value exists. The basis is
+ *  in the hover, with "GitHub says X (by bytes)" added when the two disagree. Neither source keeps the existing
+ *  "not measured" cue, never an empty "measured". */
+export function languageTileHtml(ov, unread, cue) {
+  const lang = (ov && ov.language) || {};
+  if (!lang.source || !lang.value) {
+    return tile('language', 'Language', unread.has('primary_language') ? cue() : esc(ov.primary_language));
+  }
+  const chip = lang.source === 'measured'
+    ? `<span data-language-source="measured" class="rounded-sm border border-ink bg-ink px-1 text-provenance text-paper">measured</span>`
+    : `<span data-language-source="github" class="rounded-sm border border-rule-strong px-1 text-provenance text-ink-muted">GitHub</span>`;
+  return tile('language', 'Language', `${esc(lang.value)} ${chip}`, lang.hover || '');
+}
+
 /** The tile row. `ov` is the scouting overview; returns '' when there is none (the header renders without it). */
 export function scoutingTilesHtml(ov) {
   if (!ov) return '';
@@ -148,7 +164,7 @@ export function scoutingTilesHtml(ov) {
     tile('website', 'Website', ov.homepage
       ? `<a href="${esc(ov.homepage)}" target="_blank" rel="noopener noreferrer" class="text-accent-ink underline">${esc(prettyHost(ov.homepage))} ↗</a>${docsHtml(ov)}`
       : `<span class="text-ink-muted">none found</span>${docsHtml(ov)}`, ov.homepage || 'No project website found'),
-    tile('language', 'Language', unread.has('primary_language') ? cue() : esc(ov.primary_language)),
+    languageTileHtml(ov, unread, cue),
     tile('stars', 'Stars', num('stars', ov.stars)),
     tile('forks', 'Forks', num('forks', ov.forks)),
     tile('contributors', 'Contributors', num('contributors', ov.contributors_count)),
