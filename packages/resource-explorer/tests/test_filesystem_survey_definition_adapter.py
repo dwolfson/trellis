@@ -179,7 +179,7 @@ def test_publish_step_annotations_requires_cataloged_filesystem():
     }
 
     with patch.object(EgeriaFileSystemSurveyor, "connect", lambda self: None), \
-         patch.object(EgeriaFileSystemSurveyor, "_find_element_guid", lambda self, mount: None):
+         patch.object(EgeriaFileSystemSurveyor, "_find_element_guid", lambda self, name, type_name=None, **kw: ""):
         e = EgeriaFileSystemSurveyor()
         try:
             e.publish_step_annotations(fs_entity, minimal_survey_data, MagicMock())

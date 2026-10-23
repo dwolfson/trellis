@@ -346,12 +346,20 @@ async def list_candidates(
         #: Definition is scoped to them (a retry can change that). Empty when it IS narrowed.
         scoping_reason = ""
         if questions:
-            thin_candidates = reader.find_candidate_process_guids_by_questions(
-                questions, adapter.technology_type, survey_kind=survey_kind,
-            )
+            from resource_explorer.surveyors.survey_definition_reader import QuestionTermUnreadable
+
+            try:
+                thin_candidates = reader.find_candidate_process_guids_by_questions(
+                    questions, adapter.technology_type, survey_kind=survey_kind,
+                )
+            except QuestionTermUnreadable as exc:
+                # A question term that could not be read is "could not tell", never "none resolved": the full scan
+                # below, with its own reason (the screen's "stage filter unavailable", not "no survey is scoped").
+                log.warning("question-scoped Survey Definitions for %s not read: %s", adapter.technology_type, exc)
+                scoping_reason = "question_unreadable"
         if not thin_candidates:
             scoping = "full-scan"
-            scoping_reason = "none_resolved" if questions else "no_questions"
+            scoping_reason = scoping_reason or ("none_resolved" if questions else "no_questions")
             # No cataloged Questions for this resource type, none resolved to
             # a real Egeria GUID yet, or none are scoped to any matching
             # Survey Definition — fall back to the full scan rather than

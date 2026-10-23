@@ -204,6 +204,11 @@ class SurveyDefinitionReaderError(RuntimeError):
     """Raised when a Survey Definition can't be read, or is missing required data."""
 
 
+class QuestionTermUnreadable(SurveyDefinitionReaderError):
+    """A Question term's GUID could not be read: Egeria raised, gave no answer or an odd one, the lookup timed out,
+    or two live terms hold the display name. Never "no such question": nothing caches it and nothing scopes by it."""
+
+
 class UnsupportedSurveyDefinitionError(SurveyDefinitionReaderError):
     """Raised when a fetched Survey Definition has a shape RE's executor can't run yet
     (e.g. guard-based branching — v1 only supports linear step sequences)."""
@@ -409,22 +414,30 @@ class SurveyDefinitionReader:
         self._classification_explorer = client
         return client
 
-    def _thread_local_classification_explorer(self):
-        """Per-thread ClassificationExplorer for question-GUID lookups only
+    def _new_question_lookup_client(self):
+        """Construct one MetadataExpert, connected, for question-GUID lookups (the typed string search,
+        `egeria_lookup.guid_by_exact_value`). Its own (unshared) client: one per thread, per pyegeria ISSUE-96.
+        The single construction seam `_thread_local_question_lookup_client` calls; tests substitute it."""
+        from pyegeria.omvs.metadata_expert import MetadataExpert
+
+        return self._clients(shared=False).of(MetadataExpert)
+
+    def _thread_local_question_lookup_client(self):
+        """Per-thread MetadataExpert for question-GUID lookups only
         (see pyegeria ISSUE-96 note on ``self._thread_local_explorer`` in
-        __init__). Same construction as ``_connect_classification_explorer``
-        (same URL/server/credentials/bearer token, via ``_new_classification_
-        explorer``), but memoised on ``threading.local()`` instead of
-        ``self`` — one client per pool worker thread, never shared, bounded
-        by the shared pool's own size (``EXPLORER_SYNC_POOL_SIZE``, default
-        8; see concurrency.py), so this adds at most one client per
-        already-existing worker thread, not one per call.
+        __init__). Built by ``_new_question_lookup_client`` (same URL/server/
+        credentials/bearer token as every other client of this reader), but
+        memoised on ``threading.local()`` instead of ``self`` — one client per
+        pool worker thread, never shared, bounded by the shared pool's own size
+        (``EXPLORER_SYNC_POOL_SIZE``, default 8; see concurrency.py), so this
+        adds at most one client per already-existing worker thread, not one per
+        call.
 
         Only ``_lookup_question_guid`` (and, through it, the pooled
-        ``_resolve_one_pooled``) should call this. Every other caller of
-        ClassificationExplorer keeps using the shared, main-thread-cached
-        ``_connect_classification_explorer`` — those callers are never
-        invoked from the shared pool, so they never hit the cross-loop bug.
+        ``_resolve_one_pooled``) should call this. Every ClassificationExplorer
+        caller keeps using the shared, main-thread-cached
+        ``_connect_classification_explorer`` — those callers are never invoked
+        from the shared pool, so they never hit the cross-loop bug.
         """
         from resource_explorer.egeria_clients import identity_key
 
@@ -434,7 +447,7 @@ class SurveyDefinitionReader:
         cached = getattr(self._thread_local_explorer, "client", None)
         if cached is not None and getattr(self._thread_local_explorer, "key", None) == key:
             return cached
-        client = self._new_classification_explorer()
+        client = self._new_question_lookup_client()
         self._thread_local_explorer.client = client
         self._thread_local_explorer.key = key
         return client
@@ -564,10 +577,11 @@ class SurveyDefinitionReader:
     def resolve_question_guid(self, question_display_name: str) -> str | None:
         """Resolve a Question glossary term's GUID by its display name —
         long-TTL cached (Question terms are stable once authored via
-        docs/dr-egeria/scouting-questions.md and siblings). Returns None if
-        not found or on any lookup error (best-effort; a missing Question
-        just means D2's scoped lookup contributes nothing for it, not a
-        hard failure — the caller falls back to the full scan)."""
+        docs/dr-egeria/scouting-questions.md and siblings). None only when
+        Egeria holds no live (non-DEPRECATED) term with that display name;
+        a lookup that could not be made raises `QuestionTermUnreadable` and
+        is not cached (2026-10-23: "not found" licensed "contributes no
+        scoping", so an outage or a duplicated term read as a fact)."""
         now = time.monotonic()
         cached = _question_guid_cache.get(question_display_name)
         if _question_guid_fresh(cached, now):
@@ -578,77 +592,60 @@ class SurveyDefinitionReader:
         return guid
 
     def _lookup_question_guid(self, question_display_name: str) -> str | None:
-        """The uncached Egeria lookup, bounded. Never raises.
+        """The uncached Egeria lookup, bounded: a GUID, None (no live term holds the name), or a raise of
+        `QuestionTermUnreadable`.
 
         Split out of resolve_question_guid so the batch path
         (_resolve_question_guids) can submit THIS as leaf work to the
-        shared pool without one pooled task opening a pool of its own —
-        the nesting that made the old code a pool of up to 8 workers each
-        constructing its own one-worker pool.
+        shared pool without one pooled task opening a pool of its own.
 
-        The bound stays (docs/process-model.md §1.3): pyegeria's
-        get_guid_for_name is a SYNC call that internally does
-        asyncio.get_event_loop().run_until_complete(...), and on
-        2026-09-03/04 six worker threads were caught, live, still blocked
-        in that frame 15+ seconds in while a direct curl to the same
-        platform returned in 18ms. run_sync abandons rather than joins the
-        worker on timeout, for the reason the old shutdown(wait=False) did:
-        waiting for a thread that is stuck inside Egeria's client would
-        reintroduce the exact hang this exists to avoid.
+        The lookup (architect ruling 2026-10-22): a TYPED string search on
+        displayName, exact, GlossaryTerm only (`egeria_lookup.guid_by_exact_value`),
+        measured instant where `get_guid_for_name` (by-exact-property-value) timed
+        out at 30 s. DEPRECATED terms are excluded (2026-10-23): the term batch
+        marks retired and merged questions DEPRECATED and keeps their links, so
+        this filter is what stops them resolving. Two live terms holding the name
+        are UNREADABLE (`ExactValueAmbiguous`), never "pick one". No qualifiedName
+        is tried first: a question term's qualifiedName is generated by Dr.Egeria
+        and RE does not know it (csv_to_dr_egeria_questions.py).
 
-        What changed with the shared pool: an abandoned worker now holds a
-        slot in a bounded pool instead of taking a throwaway pool with it.
-        concurrency.stuck_worker_count() is where that shows up.
+        The bound stays (docs/process-model.md §1.3): pyegeria's sync calls run
+        their coroutine with run_until_complete, and on 2026-09-03/04 six worker
+        threads were caught, live, still blocked in that frame 15+ seconds in.
+        run_sync abandons rather than joins the worker on timeout; a timeout is
+        "could not tell", never "not found".
 
-        Uses ``_thread_local_classification_explorer`` rather than the
-        shared ``_connect_classification_explorer`` client — pyegeria
-        ISSUE-96: a client shared across threads breaks deterministically
-        here (100% failure, 52/52 names) because it can run on a pool
-        worker thread, and one client per calling thread is what measured
-        0% failure. See the note on ``self._thread_local_explorer`` in
-        __init__ for the full mechanism.
-
-        The client is looked up INSIDE ``_call`` (below), not here — this
-        method's caller is not always the thread that ends up executing
-        ``_call``: ``run_sync`` submits it to a shared-pool worker thread
-        unless the caller is already on one (``_resolve_one_pooled``'s
-        case). Fetching the thread-local client here would bind it to the
-        wrong thread's loop in the submit case, reintroducing the exact bug
-        this exists to avoid.
+        Uses ``_thread_local_question_lookup_client`` — pyegeria ISSUE-96: a
+        client shared across threads breaks deterministically here because it
+        can run on a pool worker thread. The client is looked up INSIDE
+        ``_call``: run_sync may run ``_call`` on a different thread than this
+        one, and a client bound to the wrong thread's loop is the bug.
         """
         from concurrent.futures import TimeoutError as _FutureTimeoutError
 
         from resource_explorer.concurrency import run_sync
+        from resource_explorer.egeria_lookup import guid_by_exact_value
 
-        # Who, resolved HERE in the caller's thread (the pool thread has no ContextVar), and
-        # outside the swallow below: no caller is a 401, never "no such question".
+        # Who, resolved HERE in the caller's thread (the pool thread has no ContextVar): no caller is a 401.
         self.principal()
 
         def _call():
-            try:
-                client = self._thread_local_classification_explorer()
-            except Exception as exc:
-                log.debug("resolve_question_guid(%r) failed to connect: %s",
-                          question_display_name, exc)
-                return None
-            return client.get_guid_for_name(
-                question_display_name,
-                property_name=["displayName"], type_name="GlossaryTerm",
-            )
+            client = self._thread_local_question_lookup_client()
+            return guid_by_exact_value(client, question_display_name, property_name="displayName",
+                                       type_name="GlossaryTerm", exclude_deprecated=True)
 
         try:
-            return _as_guid(run_sync(
-                _call, timeout=_QUESTION_GUID_CALL_TIMEOUT_SECONDS))
-        except _FutureTimeoutError:
-            log.warning(
-                "resolve_question_guid(%r) did not return within %ss — "
-                "treating as not-found rather than blocking; see "
-                "_QUESTION_GUID_CALL_TIMEOUT_SECONDS' comment",
-                question_display_name, _QUESTION_GUID_CALL_TIMEOUT_SECONDS,
-            )
+            return run_sync(_call, timeout=_QUESTION_GUID_CALL_TIMEOUT_SECONDS)
+        except PermissionError:
+            raise
+        except _FutureTimeoutError as exc:
+            raise QuestionTermUnreadable(
+                f"the question term {question_display_name!r} did not answer within "
+                f"{_QUESTION_GUID_CALL_TIMEOUT_SECONDS}s: could not tell") from exc
         except Exception as exc:
-            log.debug("resolve_question_guid(%r) failed: %s", question_display_name, exc)
-        return None
+            raise QuestionTermUnreadable(
+                f"the question term {question_display_name!r} could not be read: "
+                f"{' '.join(str(exc).split())[:200]}") from exc
 
     def warm_question_guid_cache(self, questions: list[str] | None = None) -> dict:
         """Resolve question GUIDs ahead of the first request. Never raises.
@@ -802,15 +799,11 @@ class SurveyDefinitionReader:
 
         # Resolve the FIRST question on this thread, then pool the rest.
         #
-        # This is the pre-warm, done through the existing error-handled path
-        # rather than a new try/except around _connect_classification_explorer.
-        # That method memoises the client on the instance and fetches a bearer
-        # token as a side effect, so letting N workers race to be first means N
-        # clients built and N token requests, all but one discarded. Resolving
-        # one question first constructs it exactly once — and
-        # resolve_question_guid already handles its own failures by returning
-        # None, so an unreachable Egeria still degrades to "contributes no
-        # scoping" without this function growing a silent except of its own.
+        # This is the pre-warm: resolving one question first on this thread
+        # resolves the caller and fails fast. A lookup that could not be made
+        # RAISES (`QuestionTermUnreadable`, 2026-10-23): an unreachable Egeria or
+        # a duplicated term is never "contributes no scoping", so this function
+        # propagates it rather than dropping the question.
         first, rest = questions[0], questions[1:]
         guids = [self.resolve_question_guid(first)]
 
@@ -840,18 +833,15 @@ class SurveyDefinitionReader:
         for fut in futures:
             try:
                 guids.append(fut.result(timeout=max(0.0, deadline - time.monotonic())))
-            except _FutureTimeoutError:
-                fut.cancel()
-                log.warning(
-                    "question-GUID batch exceeded its %ss budget — the "
-                    "remaining lookups contribute no scoping (same "
-                    "degrade-to-not-found contract as a single timeout)",
-                    budget,
-                )
-                guids.append(None)
-            except Exception as exc:
-                log.debug("pooled question-GUID resolve failed: %s", exc)
-                guids.append(None)
+            except _FutureTimeoutError as exc:
+                for pending in futures:
+                    pending.cancel()
+                raise QuestionTermUnreadable(
+                    f"the question-GUID batch exceeded its {budget}s budget: could not tell") from exc
+            except Exception:
+                for pending in futures:
+                    pending.cancel()
+                raise
         return [(q, g) for q, g in zip(questions, guids) if g]
 
     def _resolve_one_pooled(self, question_display_name: str) -> str | None:
@@ -1017,9 +1007,9 @@ class SurveyDefinitionReader:
         # cold stage load, and none of it was work — it was waiting.
         #
         # Order is restored afterwards so the result is deterministic; the
-        # cache_key below is built from it. Failures inside resolve_question_guid
-        # are already swallowed there and yield None, so a slow or missing
-        # question degrades to "contributes no scoping" exactly as before.
+        # cache_key below is built from it. A question no live term holds
+        # contributes no scoping; a lookup that could not be made RAISES
+        # (`QuestionTermUnreadable`) rather than reading as one.
         question_guids = self._resolve_question_guids(questions)
         if not question_guids:
             return []

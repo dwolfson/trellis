@@ -137,6 +137,16 @@ def _fs_surveyor(lookup):
     s._automated_curation = _fake(AutomatedCuration)       # connect() returns early once this is set
     s._automated_curation.get_guid_for_name.side_effect = lookup
     s._metadata_expert = wire_unique_name(_fake(MetadataExpert), lookup)     # the root folder's qualifiedName read
+
+    def _path_search(search_string="*", **kw):
+        # a data file's / the mount's typed pathName search answers what `lookup` answers for that path
+        answer = lookup(search_string)
+        if isinstance(answer, str) and len(answer) == 36 and answer.count("-") == 4:
+            return [{"elementGUID": answer, "type": {"typeName": kw.get("metadata_element_type") or "DataFile"},
+                     "elementProperties": {"propertiesAsStrings": {"pathName": search_string}}}]
+        return answer
+
+    s._metadata_expert.find_metadata_elements_with_string.side_effect = _path_search
     s._automated_curation.get_template_guid_for_technology_type.return_value = GUID
     s._automated_curation.create_elem_from_template.return_value = GUID
     s._automated_curation.create_folder_element_from_template.return_value = GUID
