@@ -25,17 +25,19 @@
     "repaired both affected terms. All 41 now resolve. The canary below is the document's last",
     "term, which is the strongest completion signal available.",
     "",
-    "2026-10-22: the canary is Q-0095's term, no longer the document's last. The old canary (Q-0042) was retired and is",
-    "no longer in the document, and the document's last terms are new (Q-0098 onward) and not yet in Egeria: a canary on",
-    "one of them would read the batch as missing and make a restart re-run it before the cleared Egeria update. Q-0095's",
-    "text is unchanged and long established. Move the canary to the document's last term once that update has run.",
+    "2026-10-22: the canary was moved to Q-0095's term while the document's last terms (Q-0098 onward) were new and not",
+    "yet in Egeria: a canary on one of them would have read the batch as missing and made a restart re-run it before the",
+    "cleared Egeria update. 2026-10-23: that update is scripts/question_term_update_batch.py (inventory, then plan, then",
+    "the coordinator's cleared apply), which creates Q-0098..Q-0105. The canary is the document's last term again",
+    "(Q-0105). Land this change only AFTER that apply has run: before it, Q-0105 does not exist and a restart would",
+    "re-run this CREATE document.",
     "",
     "Terms are generated from ../resource_questions.csv (the source of truth) via",
     "scripts/csv_to_dr_egeria_questions.py \u2014 edit the CSV and regenerate, don't hand-edit the md."
   ],
   "display_name": "Resource questions (scouting stage)",
   "canary": {
-    "display_name": "Does this filesystem contain recognizable tabular or structured data files, and what do their schemas look like?"
+    "display_name": "What do the narrative files inside it (README, INDEX, ABOUT, NOTES, a data dictionary, a codebook, LICENSE, CHANGELOG) say the contents are, folder by folder?"
   },
   "files": [
     "scouting-questions.md"
