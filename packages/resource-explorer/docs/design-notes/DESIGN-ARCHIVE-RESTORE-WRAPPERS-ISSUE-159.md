@@ -41,7 +41,7 @@ of it.
 2. **Restore is the re-include path (S19).** Today re-include creates a new
    element and leaves the archived twin, which orphans every annotation,
    lineage link and proof row that pointed at the original. Restore keeps the
-   GUID and reverts the rename, so the catalogue reads as if the leave-out
+   GUID and reverts the rename, so the catalog reads as if the leave-out
    never happened. Until the methods ship, S19 stays and says so on the card:
    "re-included as a new element · the archived record <guid> remains", both
    GUIDs on the proof row, so the pairs can be migrated later.
@@ -63,7 +63,7 @@ of it.
 
 ## 3. Proof before RE ships restore
 
-A cataloguer-built throwaway on the new platform after the planned reset,
+A catalogr-built throwaway on the new platform after the planned reset,
 the re-proof pattern: baseline by GUID; leave-out of one schema; restore
 anchor-first from the proof rows; read-back equals the baseline (GUIDs,
 qualifiedNames, anchors, status). Plus the two anchored-descendant
