@@ -167,8 +167,10 @@ def assess(commits: list, stats: dict, all_time=None) -> list:
     factor = elephant_factor(humans) if listed else elephant_factor(commits_by_author)
     if listed and factor is not None:
         label, note = _band(factor)
-        total = sum(humans.values())
-        top = max(humans.values()) / total
+        # The stored non-bot total (the same denominator every contributor surface uses), so "the single largest
+        # holds" here and Q-0003's top share are one number.
+        total = int(all_time.total or 0) or sum(humans.values())
+        top = all_time.rows[0].commits / total
         out.append(_metric(
             "elephant_factor", label,
             f"{note} Measured over GitHub's {total} all-time contribution(s) by {len(humans)} "

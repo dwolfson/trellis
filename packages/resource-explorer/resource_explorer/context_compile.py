@@ -811,7 +811,7 @@ def _with_contributors(rungs: dict[Rung, str], registry, slug: str):
     except Exception as exc:  # noqa: BLE001 - a compile survives a failed read; the section packs without lists
         log.warning("contributor lists unavailable for %s: %s", slug, exc)
         return rungs, {}, []
-    if all(cl.absence == contrib.NO_FETCH_YET for cl in lists.values()):
+    if not contrib.any_fetched(lists):
         return rungs, {}, []
     full = "\n".join(contrib.text_block(lists, limit=contrib.TOP))
     short = "\n".join(contrib.text_block(lists, limit=3))
@@ -822,7 +822,7 @@ def _with_contributors(rungs: dict[Rung, str], registry, slug: str):
         out[Rung.SUMMARY] = (rungs.get(Rung.SUMMARY) or head.rstrip()) + "\n" + short
     if Rung.IDENTIFIERS not in out:
         out[Rung.IDENTIFIERS] = head + "reports: contributors"
-    extent = {f"contributors.{w}": {"total": cl.total_rows, "shown": {"FULL": len(cl.rows[:contrib.TOP]),
+    extent = {f"contributors.{w}": {"total": cl.humans, "shown": {"FULL": len(cl.rows[:contrib.TOP]),
                                                                        "SUMMARY": len(cl.rows[:3])}}
               for w, cl in lists.items() if cl.rows}
     # Per rung, because the packer picks one: the ids of the fetch rows and the contributor rows that rung shows.

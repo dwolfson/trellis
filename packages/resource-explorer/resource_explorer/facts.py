@@ -338,9 +338,19 @@ def _r_maintainers(reg, p) -> tuple:
         lists = contrib.both(reg, p.slug)
     except Exception:  # noqa: BLE001 - a registry without the table still answers from project_commits
         lists = {}
-    if any(cl.rows for cl in lists.values()):
+    if contrib.any_fetched(lists) and not any(cl.rows for cl in lists.values()):
+        # A fetch was attempted and stored no list (refused, failed, or GitHub answered empty): its own words,
+        # never the 90-day git authors below. Empty everywhere is a real absence; anything else is not measured.
+        empty = all(cl.absence in (contrib.EMPTY_REPOSITORY, contrib.NO_FETCH_YET) for cl in lists.values())
+        return ({"named": contrib.absence_sentence(lists),
+                 "all_time": lists[contrib.WINDOW_ALL].as_dict(), "months_12": lists[contrib.WINDOW_12].as_dict(),
+                 "note": contrib.COMPARE_WORDS,
+                 "row_ids": [i for cl in lists.values() for i in cl.row_ids]},
+                NOTHING_FOUND if empty else NOT_ESTABLISHED)
+    if contrib.any_fetched(lists):
         concentration = _finding(reg, p.slug, "chaoss_metrics", "elephant_factor")
         return ({"named": contrib.headline_sentence(lists),
+                 "hover": " · ".join(h for h in (lists[w].hover() for w in contrib.WINDOWS) if h),
                  "top_contributors_all_time": [r.as_dict() for r in lists[contrib.WINDOW_ALL].rows],
                  "all_time": {k: v for k, v in lists[contrib.WINDOW_ALL].as_dict().items() if k != "rows"},
                  "top_contributors_12_months": [r.as_dict() for r in lists[contrib.WINDOW_12].rows],

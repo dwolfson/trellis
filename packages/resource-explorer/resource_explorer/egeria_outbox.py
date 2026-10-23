@@ -401,6 +401,8 @@ def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callab
         if found:
             log.info("Outbox row %s: %s already exists (GUID %s) — adopting, not re-creating",
                      row.get("id"), qualified_name, found)
+            if kind == "annotation":
+                _refresh_adopted_annotation(clients, found, row)
             return found
 
     try:
@@ -476,6 +478,44 @@ def apply_element(row: dict, clients: "OutboxClients", find_element_guid: Callab
             f"the element cannot be found by that name — it exists to Egeria and "
             f"is invisible to our lookup, so no GUID can be recorded."
         ) from exc
+
+
+#: Annotation types whose content can change under the same qualifiedName: a re-publish of the same report after a
+#: newer fetch adopts the existing element and must not leave it stale. For these (only), an adopted annotation is
+#: read first and updated when its `resourceProperties` or `additionalProperties.as_of` differ from the payload's;
+#: equal content writes nothing. Every other annotation is written once and adopted untouched, as before.
+REFRESHED_ANNOTATION_TYPES = frozenset({"Contributors"})
+
+
+def _refresh_adopted_annotation(clients: "OutboxClients", guid: str, row: dict) -> bool:
+    """Read-first update of an adopted annotation of a `REFRESHED_ANNOTATION_TYPES` type. Returns True when it
+    wrote. A read that cannot be made raises OutboxApplyError (could not check is not "unchanged")."""
+    try:
+        payload = json.loads(row.get("payload_json") or "{}")
+    except (TypeError, ValueError):
+        return False
+    props = dict((payload or {}).get("properties") or {})
+    if props.get("annotationType") not in REFRESHED_ANNOTATION_TYPES:
+        return False
+    discovery = clients.require("discovery")
+    try:
+        held = discovery.get_annotation_by_guid(guid, output_format="JSON", graph_query_depth=0)
+    except Exception as exc:  # noqa: BLE001
+        raise OutboxApplyError(f"could not read {guid} to compare it before an update "
+                               f"({type(exc).__name__}: {str(exc)[:200]})") from exc
+    if not isinstance(held, dict):
+        raise OutboxApplyError(f"could not read {guid} to compare it before an update (Egeria answered {held!r:.80})")
+    current = held.get("properties") or {}
+    want_rp, have_rp = props.get("resourceProperties") or {}, current.get("resourceProperties") or {}
+    want_asof = (props.get("additionalProperties") or {}).get("as_of")
+    have_asof = (current.get("additionalProperties") or {}).get("as_of")
+    if want_rp == have_rp and want_asof == have_asof:
+        return False
+    discovery.update_annotation(guid, {"class": "UpdateElementRequestBody", "mergeUpdate": True,
+                                       "properties": props})
+    log.info("Outbox row %s: %s updated (newer contributor list, as_of %s -> %s)",
+             row.get("id"), row.get("qualified_name"), have_asof, want_asof)
+    return True
 
 
 def _create_annotation(clients: "OutboxClients", payload: dict) -> str:

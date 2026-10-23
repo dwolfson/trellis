@@ -7031,16 +7031,21 @@ class ProjectRegistry:
 
     def write_contributor_fetch(self, resource_slug: str, list_window: str, fetched_at: str, rows: list[dict], *,
                                 total: int, lookback_days: int | None, source: str, capped: str = "",
-                                keep_fetches: int = 5) -> list[int]:
+                                keep_fetches: int = 5, meta: dict | None = None, keep_also: str = "") -> list[int]:
         """Store ONE fetch of one list, all or none (one transaction): the fetch's own row at rank 0 (`commits` =
         `total`), then `rows` (each with rank >= 1), then remove the fetches of this list older than the newest
-        `keep_fetches`. Returns the ids written, the fetch row first."""
+        `keep_fetches`, never the fetch at `keep_also` (the newest successful one, kept behind a run of refusals).
+        Returns the ids written, the fetch row first.
+
+        `meta` is the fetch's status, stored as JSON in the rank-0 row's `display_name` (that row has no person):
+        `status` (ok / not_permitted / failed / not_enough_calls), the reset time and error words of a refusal, the
+        non-bot total and the identities merged. A refusal is a rank-0 row with no contributor rows."""
         slug = self._normalize_slug(resource_slug)
         cols = ("project_slug", "list_window", *self._CONTRIBUTOR_COLUMNS, "fetched_at", "lookback_days", "source",
                 "capped")
         sql = f"INSERT INTO project_contributors ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})"
-        head = {"rank": 0, "login": "", "display_name": "", "author_email": "", "commits": int(total),
-                "share": 1.0 if total else 0.0, "is_bot": 0}
+        head = {"rank": 0, "login": "", "display_name": json.dumps(meta, sort_keys=True) if meta else "",
+                "author_email": "", "commits": int(total), "share": 1.0 if total else 0.0, "is_bot": 0}
         ids: list[int] = []
         with self._conn() as conn:
             for r in [head, *rows]:
@@ -7056,26 +7061,40 @@ class ProjectRegistry:
                 "SELECT DISTINCT fetched_at FROM project_contributors WHERE project_slug = ? AND list_window = ? "
                 "ORDER BY fetched_at DESC", (slug, list_window)).fetchall()]
             for old in kept[max(keep_fetches, 1):]:
+                if keep_also and old == keep_also:
+                    continue
                 conn.execute("DELETE FROM project_contributors WHERE project_slug = ? AND list_window = ? "
                              "AND fetched_at = ?", (slug, list_window, old))
         return ids
 
-    def latest_contributor_fetch(self, resource_slug: str, list_window: str) -> list[dict]:
-        """Every row of the newest fetch of one list, by rank (rank 0, the fetch's own row, first); [] when this list
-        was never fetched for the repository."""
+    _CONTRIBUTOR_SELECT = ("SELECT id, project_slug, list_window, rank, login, display_name, author_email, commits, "
+                           "share, is_bot, fetched_at, lookback_days, source, capped FROM project_contributors ")
+
+    def contributor_fetch_heads(self, resource_slug: str, list_window: str) -> list[dict]:
+        """The rank-0 row of every kept fetch of one list, newest first; [] when never fetched."""
         slug = self._normalize_slug(resource_slug)
         with self._conn() as conn:
-            newest = conn.execute(
-                "SELECT MAX(fetched_at) AS f FROM project_contributors WHERE project_slug = ? AND list_window = ?",
-                (slug, list_window)).fetchone()
-            if not newest or not newest["f"]:
-                return []
             rows = conn.execute(
-                "SELECT id, project_slug, list_window, rank, login, display_name, author_email, commits, share, "
-                "is_bot, fetched_at, lookback_days, source, capped FROM project_contributors "
-                "WHERE project_slug = ? AND list_window = ? AND fetched_at = ? ORDER BY rank",
-                (slug, list_window, newest["f"])).fetchall()
+                self._CONTRIBUTOR_SELECT + "WHERE project_slug = ? AND list_window = ? AND rank = 0 "
+                "ORDER BY fetched_at DESC", (slug, list_window)).fetchall()
         return [dict(r) for r in rows]
+
+    def contributor_fetch_rows(self, resource_slug: str, list_window: str, fetched_at: str) -> list[dict]:
+        """Every row of one fetch of one list, by rank (rank 0, the fetch's own row, first)."""
+        slug = self._normalize_slug(resource_slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                self._CONTRIBUTOR_SELECT + "WHERE project_slug = ? AND list_window = ? AND fetched_at = ? "
+                "ORDER BY rank", (slug, list_window, fetched_at)).fetchall()
+        return [dict(r) for r in rows]
+
+    def latest_contributor_fetch(self, resource_slug: str, list_window: str) -> list[dict]:
+        """Every row of the newest fetch of one list, by rank (rank 0, the fetch's own row, first); [] when this list
+        was never fetched for the repository. The newest fetch may be a refusal (a rank-0 row alone)."""
+        heads = self.contributor_fetch_heads(resource_slug, list_window)
+        if not heads:
+            return []
+        return self.contributor_fetch_rows(resource_slug, list_window, heads[0]["fetched_at"])
 
     def remove(self, slug: str) -> None:
         normalized = self._normalize_slug(slug)

@@ -227,7 +227,7 @@ def query_top_committers_raw(resource_slug: str, limit: int = 10, days: int = 90
         lists = contrib.both(registry, slug, top=limit)
     except Exception:  # noqa: BLE001 - the fallback still answers
         lists = None
-    if lists and not all(cl.absence == contrib.NO_FETCH_YET for cl in lists.values()):
+    if lists and contrib.any_fetched(lists):
         return "\n".join([f"Top contributors to {slug}:", *contrib.text_block(lists, limit=limit)])
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
     try:
