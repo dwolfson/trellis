@@ -310,8 +310,13 @@ def read_published_by(report_guid: str) -> str:
     The run's "published as <identity>" comes from this read and from nothing the code path believes about itself, so a
     regression to the service account shows on the card. '' when the read could not be made or Egeria stated no
     creator: the caller says nothing, which is "could not tell", not "as nobody"."""
-    if not report_guid:
-        return ""
+    return created_by_of(_read_element_by_guid(report_guid))
+
+
+def _read_element_by_guid(guid: str) -> object:
+    """ONE read of the element `guid` by GUID, as whoever the run is acting as; None when it could not be made."""
+    if not guid:
+        return None
     try:
         from pyegeria import AssetMaker
 
@@ -320,11 +325,34 @@ def read_published_by(report_guid: str) -> str:
 
         maker = egeria_client(current_principal(), purpose="publish read-back",
                               view_server=egeria_view_server(), platform_url=egeria_platform_url()).of(AssetMaker)
-        result = maker.get_asset_by_guid(
-            report_guid, body={"class": "GetRequestBody", "graphQueryDepth": 0}, output_format="JSON")
+        return maker.get_asset_by_guid(
+            guid, body={"class": "GetRequestBody", "graphQueryDepth": 0}, output_format="JSON")
     except Exception:  # noqa: BLE001 - unread is "could not tell"; the message may carry a token, so it is not kept
+        return None
+
+
+def written_by_of(element: object) -> str:
+    """`versions.updatedBy`, else `versions.createdBy`, from an Egeria element read: the last identity Egeria says
+    wrote it. '' when it states neither. Pure."""
+    if not isinstance(element, dict):
         return ""
-    return created_by_of(result)
+    header = element.get("elementHeader") if isinstance(element.get("elementHeader"), dict) else {}
+    for versions in ((header or {}).get("versions"), element.get("versions")):
+        if isinstance(versions, dict) and (versions.get("updatedBy") or versions.get("createdBy")):
+            return str(versions.get("updatedBy") or versions["createdBy"])
+    return ""
+
+
+#: The proof half of a pressed write path's identity line, when the read-back could not say who wrote.
+WRITTEN_AS_UNCHECKED = "written as: could not check"
+
+
+def written_as_line(element_guid: str) -> str:
+    """'written as <x>', <x> from ONE read of `element_guid` by GUID (updatedBy, else createdBy), made as whoever the
+    run is acting as; `WRITTEN_AS_UNCHECKED` when there is no element, the read failed, or Egeria named nobody. The
+    proof beside the intent line (`applying_as_line`): never derived from the branch the code took."""
+    who = written_by_of(_read_element_by_guid(element_guid)) if element_guid else ""
+    return f"written as {who}" if who else WRITTEN_AS_UNCHECKED
 
 
 def read_published_by_presser(report_guid: str) -> str:
@@ -358,3 +386,27 @@ def expired_during_publish(exc: BaseException) -> bool:
 #: Said in the run detail when the sign-in expired part-way through the publish.
 PARTIAL_WRITE_NOTE = ("The sign-in expired while publishing: some writes may already have been made as the person who "
                       "pressed; press Publish on the card to finish.")
+
+
+# ---------------------------------------------------------------------------
+# The identity line: who a pressed write path wrote as (2026-10-23)
+# ---------------------------------------------------------------------------
+
+#: Where the identity came from, in "applying as <user> from <source>" (the dr_egeria/bootstrap identity line's shape).
+SOURCE_PRESSER = "the sign-in of the person who pressed"
+SOURCE_SERVICE_ACCOUNT = "the service account"
+
+
+def applying_as_line(identity: object) -> str:
+    """'applying as <user> from <source>' for `identity`, what `current_principal()` returned where the writes are
+    about to be made. An INTENT line, not proof: who Egeria says wrote is `written_as_line`, from a read-back. '' for
+    no identity. Holds no credential."""
+    if identity is None:
+        return ""
+    kind = getattr(identity, "kind", "")
+    user = getattr(identity, "client_user", "") or getattr(identity, "user_id", "")
+    source = SOURCE_PRESSER if kind == "caller" else SOURCE_SERVICE_ACCOUNT
+    requester = getattr(identity, "requested_by", "") or ""
+    if kind != "caller" and requester:
+        source = f"{source}, on behalf of {requester}"
+    return f"applying as {user} from {source}"

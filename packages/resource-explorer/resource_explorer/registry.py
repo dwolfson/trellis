@@ -263,6 +263,10 @@ class RowWrapper:
 #: observed is well under a minute, and a whole 200-row batch under ten.
 CLAIM_LEASE_SECONDS = 1800
 
+#: The payload key that marks an outbox row as enqueued inside a pressed run (2026-10-23): `"as_presser": true`. Only
+#: that run's own inline drain, as the person who pressed, applies such a row (`claim_due_outbox_elements`).
+AS_PRESSER_KEY = "as_presser"
+
 
 class InvestigationPublishRunning(RuntimeError):
     """A drain is writing one of this investigation's outbox rows to Egeria right now, so it cannot be deleted."""
@@ -9021,6 +9025,7 @@ class ProjectRegistry:
     def claim_due_outbox_elements(
         self, limit: int = 200, now: str | None = None, run_id: str | None = None,
         element_id: int | None = None, exclude_kinds: "tuple[str, ...] | list[str] | frozenset | None" = None,
+        exclude_as_presser: bool = False,
     ) -> list[dict]:
         """Rows ready to attempt, oldest first.
 
@@ -9071,6 +9076,10 @@ class ProjectRegistry:
         `exclude_kinds` (Brief F) leaves rows of those kinds unclaimed: the background drain passes the feedback
         kinds, which only their author's own Publish may send.
 
+        `exclude_as_presser` (2026-10-23) leaves rows enqueued inside a pressed run (`"as_presser": true` in the
+        payload, `_as_presser_sql`) unclaimed: every drain passes it except that run's own inline drain, made as the
+        person who pressed (`egeria_outbox._drain_outbox`).
+
         `run_id` scopes the claim to one publish's rows. A publisher that
         enqueues and then drains inline needs its OWN annotations written
         before it returns; an unscoped claim takes the oldest due rows in the
@@ -9109,8 +9118,7 @@ class ProjectRegistry:
             kinds = sorted(exclude_kinds)
             sql += f"  AND o.element_kind NOT IN ({','.join('?' * len(kinds))}) "
             params.extend(kinds)
-        sql += "ORDER BY o.id ASC LIMIT ?"
-        params.append(limit)
+        # (`exclude_as_presser` and the ORDER BY are added inside the transaction below: the JSON test is dialect SQL.)
 
         # Select and mark in ONE transaction, so two drainers cannot both take
         # the same row. On Postgres the FOR UPDATE SKIP LOCKED makes the losing
@@ -9118,6 +9126,13 @@ class ProjectRegistry:
         # SQLite serialises writers itself, so the same transaction suffices.
         with self._conn() as conn:
             self._kill_lapsed_destructive_claims(conn, lease_cutoff)
+            if exclude_as_presser:
+                # 2026-10-23: a row enqueued inside a pressed run (`"as_presser": true` in its payload) is written
+                # only by that run's own inline drain, as the person who pressed; any other drain leaves it waiting.
+                sql += f"  AND NOT {self._as_presser_sql(conn.is_postgres)} "
+                params.append(f'%"{AS_PRESSER_KEY}"%')
+            sql += "ORDER BY o.id ASC LIMIT ?"
+            params.append(limit)
             if conn.is_postgres:
                 sql += " FOR UPDATE SKIP LOCKED"
             ids = [r["id"] for r in conn.execute(sql, tuple(params)).fetchall()]
@@ -9134,6 +9149,19 @@ class ProjectRegistry:
                 tuple(ids),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    @staticmethod
+    def _as_presser_sql(is_postgres: bool) -> str:
+        """SQL that is true for an outbox row whose parsed payload has `as_presser` = JSON true (one `?`: the LIKE
+        gate). A structured test, not text matching: the payload is parsed by the database's JSON functions, so key
+        order and separators do not matter and a nested `as_presser` does not count. The LIKE gate only keeps the
+        parse to rows that name the key (`payload_json` is TEXT; every writer is `json.dumps`). On SQLite a gated
+        payload that is not valid JSON counts as marked: unparseable is never handed to a background drain."""
+        if is_postgres:
+            return (f"(CASE WHEN o.payload_json LIKE ? "
+                    f"THEN COALESCE((o.payload_json::jsonb ->> '{AS_PRESSER_KEY}') = 'true', FALSE) ELSE FALSE END)")
+        return (f"(CASE WHEN o.payload_json LIKE ? THEN (CASE WHEN json_valid(o.payload_json) "
+                f"THEN COALESCE(json_type(o.payload_json, '$.{AS_PRESSER_KEY}') = 'true', 0) ELSE 1 END) ELSE 0 END)")
 
     @staticmethod
     def _non_destructive_sql() -> tuple[str, list]:

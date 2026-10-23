@@ -232,10 +232,14 @@ def _run_egeria_adaptive(
 
     egeria_publish = survey_data.pop("egeria_publish", None)
     publish_error = survey_data.pop("egeria_publish_error", "")
+    # A pressed run whose presser's session is gone: nothing was written, and the step says the run-level words
+    # (`presser_hold.SIGN_IN_EXPIRED_WORDS`), never "publish failed".
+    publish_refused = survey_data.pop("egeria_publish_refused", "")
     source = "egeria-custom" if egeria_publish is not None else "custom"
 
     outcome = {"source": source, "status": "ok", **survey_data,
                "publish_state": (PUBLISHED if egeria_publish is not None
+                                 else publish_refused if publish_refused
                                  else f"publish failed · {publish_error}" if publish_error
                                  else PUBLISH_NOT_CHOSEN)}
     # Kept out of any top-level key `_publish` below recognizes (it looks

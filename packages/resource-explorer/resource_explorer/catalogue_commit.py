@@ -1843,7 +1843,9 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
         raise CommitBlocked(401, "Sign in to publish: the record needs an author.")
     from resource_explorer.egeria_clients import Caller
 
-    Caller()   # a live sign-in, checked before anything is written (Brief I): 401 otherwise
+    # A live sign-in, checked before anything is written (Brief I): 401 otherwise. It is also who the run writes as
+    # (2026-10-23: the person who pressed, from their session held in memory; see `_queue_as_presser`).
+    pressed = Caller()
     db_entity = registry.get_database(slug, allow_unreadable=True)
     if db_entity is None:
         raise CommitBlocked(404, f"Database '{slug}' not found")
@@ -1896,10 +1898,53 @@ def start_commit(registry, slug: str, author: str, *, refresh_now: bool = False,
         summary=f"Publishing {db_entity.display_name}: {len(selection['attach'])} schema targets…")
     rec = Curations(registry).create("database", slug, author=author, selection=selection,
                                      manifest=preview["manifest"], steps=list(STEPS_DB), activity_id=activity_id)
-    # Queued: committed by RE's daemon on the author's behalf, Ownership = the author (Brief I).
-    run_id = registry.enqueue_run("catalogue_commit", {"slug": slug, "curation_id": rec["id"]},
-                                  result_ref=activity_id, requested_by=author)
+    # Queued, and written AS the person who pressed (owner rule "run as the initiating user", 2026-10-14; the #836
+    # mechanism, `presser_hold`): Ownership and requestedBy = the author as before (Brief I).
+    run_id = _queue_as_presser(registry, {"slug": slug, "curation_id": rec["id"]}, pressed,
+                               result_ref=activity_id, requested_by=author)
     return {"curation": rec, "run_id": run_id, "activity_id": activity_id, "preview": preview}
+
+
+def _queue_as_presser(registry, target: dict, pressed, *, result_ref: str, requested_by: str) -> str:
+    """Enqueue a catalogue commit that writes as `pressed` (the request's signed-in Caller), the same way a pressed
+    survey run publishes (#836, `presser_hold`): the run id is made first, the presser's session is held in THIS
+    process's memory under it (only when this process claims `catalogue_commit` rows), and the row carries the flag,
+    the person and a non-secret claim-affinity stamp. Never the token. A row claimed where nothing is held ends with
+    the expired words and writes nothing (`refuse_presser_gone`), never as the service account."""
+    import uuid
+
+    from resource_explorer import presser_hold, run_queue
+
+    run_id = str(uuid.uuid4())
+    person = (getattr(pressed, "user_id", "") or "").strip()
+    target = {**target, "publish_as_presser": bool(person), "presser": person}
+    held = (bool(person) and run_queue.consumes_kind_here("catalogue_commit")
+            and presser_hold.hold(run_id, person, getattr(pressed, "token", None)))
+    try:
+        held_by = presser_hold.held_by_for(run_id) if held else None
+        if held_by:
+            target["held_by"] = held_by
+        elif held:
+            presser_hold.release(run_id)         # no usable stamp: keep no session nobody is bound to
+        return registry.enqueue_run("catalogue_commit", target, result_ref=result_ref, requested_by=requested_by,
+                                    run_id=run_id)
+    except BaseException:
+        if held:
+            presser_hold.release(run_id)
+        raise
+
+
+def refuse_presser_gone(registry, curation_id: str) -> dict:
+    """A pressed commit whose presser's session is not held where the row was claimed (expired, released, another
+    process, or a restart): nothing is written, as anyone, and every step says so with the expired words."""
+    from resource_explorer.curate_plan import Curations
+    from resource_explorer.egeria_clients import EXPIRED_SENTENCE
+
+    cur = Curations(registry)
+    cur.set_step(curation_id, "publish_elements", "failed", f"{EXPIRED_SENTENCE} · nothing written")
+    for st in STEPS_DB[1:]:
+        cur.set_step(curation_id, st, "skipped", f"nothing written: {EXPIRED_SENTENCE}")
+    return cur.finish(curation_id)
 
 
 _PAST = {"attach": "attached", "remove": "deleted in Egeria"}
@@ -2137,6 +2182,14 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         return cur.finish(curation_id)
     if gateway is None:
         gateway = make_gateway(db)
+    # 2026-10-23: a pressed commit's outbox rows (attach, leave out) carry `"as_presser": true`, so only THIS run's
+    # inline drain below, as the person who pressed, applies them. A background drain (the scheduler's, a retry after
+    # a 5xx, one that claims between the enqueue and this drain) leaves them waiting; it never writes them as the
+    # service account. A press again makes a new commit with its own rows.
+    from resource_explorer import presser_hold
+    from resource_explorer.registry import AS_PRESSER_KEY
+
+    pressed_mark = {AS_PRESSER_KEY: True} if presser_hold.is_pressed() else {}
     if drain is None:
         from resource_explorer.egeria_outbox import OutboxClients, drain_outbox
 
@@ -2336,7 +2389,8 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
                                                 anchor_guid=db_guid)
         _record_not_permitted(registry, slug, curation_id, author, np_attach, "attach")
         for schema in attach:
-            payload = {"slug": slug, "schema": schema, "database_guid": db_guid, "curation_id": curation_id, "by": author}
+            payload = {"slug": slug, "schema": schema, "database_guid": db_guid, "curation_id": curation_id, "by": author,
+                       **pressed_mark}
             confirmed = confirmed_guid_for(sel.get("reinclude"), "schema", schema)
             if confirmed:
                 payload["archived_sibling_guid"] = confirmed     # S19: the attach re-checks it before it creates
@@ -2377,7 +2431,8 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
         for item in leave:
             registry.enqueue_outbox_element(
                 "database", slug, KIND_LEAVE_OUT, schema_qn(db, item["schema"]) + "#leave_out",
-                {"slug": slug, "schema": item["schema"], "form": item["form"], "curation_id": curation_id, "by": author},
+                {"slug": slug, "schema": item["schema"], "form": item["form"], "curation_id": curation_id, "by": author,
+                 **pressed_mark},
                 run_id=curation_id)
         drain(curation_id)
         rows = [r for r in registry.list_catalogue_outbox_rows(slug)

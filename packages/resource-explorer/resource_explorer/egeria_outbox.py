@@ -1486,9 +1486,15 @@ def _drain_outbox(registry, clients: "OutboxClients | None" = None, find_element
     # Brief F: a drain that is not a person's own request (the background Daemon drain, or a drain handed its
     # clients with no person) never claims a feedback row: only its author's Publish sends it, as them.
     is_caller = identity is not None and getattr(identity, "kind", "") == "caller"
+    # 2026-10-23: a row enqueued inside a pressed run (`"as_presser": true`, `registry.AS_PRESSER_KEY`) is applied
+    # only by that run's own inline drain: a person's drain scoped to the run's id (the catalogue commit drains
+    # `run_id=<its curation id>` as the presser). Every other drain (the background Daemon loop, a publisher's drain, a person's
+    # unscoped or single-row drain) leaves it waiting, so a retry is never made as the service account.
+    own_pressed_run = is_caller and run_id is not None
     try:
         rows = registry.claim_due_outbox_elements(limit=limit, run_id=run_id, element_id=element_id,
-                                                  exclude_kinds=None if is_caller else PERSON_ONLY_KINDS)
+                                                  exclude_kinds=None if is_caller else PERSON_ONLY_KINDS,
+                                                  exclude_as_presser=not own_pressed_run)
     except Exception:
         log.exception("Outbox drain: could not read due rows")
         return summary
