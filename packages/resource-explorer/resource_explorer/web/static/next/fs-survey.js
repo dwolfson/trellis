@@ -71,6 +71,7 @@ export const FOLDER_SURVEY_WORDS = {
   notInstalled: (n) => `not installed · Egeria's CSV Survey Service is not installed where its engine host runs · ${num(n)} CSV file${n === 1 ? '' : 's'} not profiled`,
   egeriaUnchecked: (n) => `could not check whether Egeria's CSV Survey Service is installed · ${num(n)} CSV file${n === 1 ? '' : 's'} not profiled`,
   submitFailed: (n) => `${num(n)} CSV file${n === 1 ? '' : 's'} refused by Egeria`,
+  fsNameUnknown: (n) => `the name Egeria uses for this file system could not be established · ${num(n)} CSV file${n === 1 ? '' : 's'} not read or created in Egeria`,
   otherStates: (c) => [c.over_limit ? `${num(c.over_limit)} over the limit in a format read only whole` : '',
     c.unreadable ? `${num(c.unreadable)} could not be parsed` : '',
     c.secret_name ? `${num(c.secret_name)} with a secret-looking name · not opened` : '',
@@ -268,6 +269,7 @@ const STATE_WORDS = {
   link_not_followed: 'linked · not followed', not_installed: 'not installed', egeria_unchecked: 'could not check Egeria',
   submit_failed: 'refused by Egeria', submitted: "submitted to Egeria", no_columns: 'no column profile in Egeria\'s report',
   not_reachable: 'not reachable from here', header_suspect: 'profiled · header looks like data',
+  file_system_name_unknown: "file system's name in Egeria not known",
 };
 const sourceWords = (s) => (String(s || '').startsWith('egeria:') ? `Egeria · report ${String(s).slice(7, 15)}` : s === 'resource-explorer' ? 'RE' : '');
 
@@ -283,7 +285,8 @@ export function fileProfilesHtml(fp) {
   if (!run) return `<div data-fp data-fp-state="none" class="mt-s3">${head}<div class="text-provenance text-ink-muted">${esc(W.noProfiles)}</div></div>`;
   const c = run.counts || {};
   const egeriaLines = [c.submitted ? W.submitted(c.submitted) : '', c.not_installed ? W.notInstalled(c.not_installed) : '',
-    c.egeria_unchecked ? W.egeriaUnchecked(c.egeria_unchecked) : '', c.submit_failed ? W.submitFailed(c.submit_failed) : '']
+    c.egeria_unchecked ? W.egeriaUnchecked(c.egeria_unchecked) : '', c.submit_failed ? W.submitFailed(c.submit_failed) : '',
+    c.file_system_name_unknown ? W.fsNameUnknown(c.file_system_name_unknown) : '']
     .filter(Boolean);
   const other = W.otherStates(c);
   const pub = run.publish

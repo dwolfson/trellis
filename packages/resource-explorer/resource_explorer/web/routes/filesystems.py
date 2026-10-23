@@ -786,7 +786,7 @@ def run_filesystem_file_profiles(slug: str) -> dict:
 
     try:
         summary = fp.run_file_profiles(fs, registry, port_factory=lambda: fp.make_port(identity=Caller()))
-    except (fp.NothingToProfile, fp.AlreadyRunning) as exc:
+    except (fp.NothingToProfile, fp.AlreadyRunning, fp.ClaimLost) as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return {**summary, "view": fp.profiles_view(registry, slug)}
 
@@ -814,7 +814,10 @@ def read_filesystem_file_profiles_from_egeria(slug: str) -> dict:
 def publish_filesystem_file_profiles(slug: str) -> dict:
     """Publish Resource Explorer's column profiles of the newest run, only the columns whose profile differs from the last
     run (until the profile-publish reshape lands). Egeria's own reports stay Egeria's. 409 when nothing is to publish, or when this run's publish is
-    complete. A partial publish is resumed: the same report, only the missing annotations."""
+    complete. A partial publish is resumed: the same report, only the missing annotations. One publish per file system
+    at a time (a `file_profiles_publish:<slug>` claim): a second press while one runs is 409 and publishes nothing."""
+    import os
+
     from resource_explorer.surveyors.filesystem import file_profiles as fp
     from resource_explorer.web.routes.curate import require_resource_write
 
@@ -823,6 +826,20 @@ def publish_filesystem_file_profiles(slug: str) -> dict:
     if not fs:
         raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
     require_resource_write(registry, "filesystem", slug, "publish")
+    claim_key = f"{fp.PUBLISH_STEP_KEY}:{registry._normalize_slug(slug)}"
+    holder = f"{fp.machine()}:{os.getpid()}:{fp._now()}"
+    if not registry.take_claim(claim_key, holder, stale_after_seconds=fp.CLAIM_STALE_SECONDS):
+        raise HTTPException(status_code=409, detail=fp.PUBLISH_ALREADY_RUNNING_WORDS.format(slug=slug))
+    try:
+        return _publish_file_profiles_claimed(registry, fs, slug)
+    finally:
+        registry.release_claim(claim_key, holder)
+
+
+def _publish_file_profiles_claimed(registry: ProjectRegistry, fs, slug: str) -> dict:
+    """The publish itself, run only while this press holds the publish claim."""
+    from resource_explorer.surveyors.filesystem import file_profiles as fp
+
     runs = registry.list_filesystem_file_column_runs(slug)
     if not runs:
         raise HTTPException(status_code=409, detail="No data-file profiles to publish. Run them first.")

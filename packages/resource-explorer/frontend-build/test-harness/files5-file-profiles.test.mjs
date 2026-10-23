@@ -128,3 +128,15 @@ test('fix round 1: no column profile, not reachable and a data-like header each 
   host.innerHTML = fs.folderSurveyCardHtml(VIEW({ price: PRICE(), run: RUN({ publish: { report_guid: 'r', annotation_count: 2, annotations_in_egeria: 2, complete: true } }) }));
   assert.equal(host.querySelector('[data-fs-act="publish-profiles"]'), null, 'a complete publish is not offered again');
 });
+
+test('fix round 2: a file system whose name in Egeria is unknown says so on the card; header suspects ride on the words', async () => {
+  const { host, fs } = await setUp();
+  const run = RUN({ counts: COUNTS({ file_system_name_unknown: 3, header_suspect: 1 }),
+    words: '7 files profiled (0 by Egeria, 7 by RE), 1 sampled, 1 not read (formats: pkl), 0 not permitted (1 header suspect)',
+    files: [{ file_path: 'a.csv', state: 'file_system_name_unknown', stats_source: '', columns: 0, sample_ratio: null, format: 'csv' }] });
+  host.innerHTML = fs.folderSurveyCardHtml(VIEW({ price: PRICE(), run }));
+  assert.match(text(host.querySelector('[data-fp-egeria]')), /the name Egeria uses for this file system could not be established · 3 CSV files not read or created in Egeria/);
+  assert.match(text(host.querySelector('[data-fp-words]')), /\(1 header suspect\)$/);
+  const cells = [...host.querySelectorAll('table[data-rc-id="fs-measure-profiles"] tbody tr')].map((tr) => [...tr.children].map((td) => text(td)));
+  assert.equal(cells[0][1], "file system's name in Egeria not known");
+});

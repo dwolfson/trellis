@@ -40,8 +40,13 @@ not made by this build (no live calls). The coordinator's probe confirms or corr
 * A2 its target is a CSV file asset per file (the "CSV Data File" template the older catalog path already uses), read
   first by the qualifiedName that template gives it, `CSVFile::<fileSystemName>:<filePathName>` (Egeria
   DataAssetTemplateDefinition.CSV_FILE_TEMPLATE: DeployedImplementationType.CSV_FILE.getAssociatedTypeName() + "::" +
-  FILE_SYSTEM_NAME + ":" + FILE_PATH_NAME; the associated type is `CSVFile`), with the unique-name read and a typed check,
-  and created from the template only on Egeria's explicit "not found";
+  FILE_SYSTEM_NAME + ":" + FILE_PATH_NAME; the associated type is `CSVFile`), with the unique-name read and a typed check;
+  on a miss, a typed exact `pathName` search (`guid_by_exact_path_name`); created from the template only when BOTH miss
+  on Egeria's explicit "not found". The coordinator's live probe (FILES5-CSVFILE-QN-PROBE, 2026-10-23) confirmed the
+  pattern and showed the fileSystemName is the one Egeria uses (`egeria-deployment`), never RE's slug: it is read from
+  the file system's root FileFolder in Egeria (`file_system_name_from_root`, by the GUID RE holds for it), and when it
+  cannot be established the Egeria half refuses for that file system (`file_system_name_unknown`: nothing read or
+  created);
 * A3 Egeria's report carries one ResourceProfileAnnotation per column whose column name is in `profileProperties`
   (`columnName`, else the annotation's display name or summary), its counts in `profileCounts`, and its range in
   `valueRangeFrom` / `valueRangeTo` (`columns_from_report`).
@@ -96,6 +101,7 @@ NOT_INSTALLED = "not_installed"        # routed to Egeria; Egeria's CSV Survey S
 EGERIA_UNCHECKED = "egeria_unchecked"  # routed to Egeria; whether it is installed could not be read (never "absent")
 SUBMIT_FAILED = "submit_failed"        # routed to Egeria; Egeria refused the survey or the file's asset
 SUBMITTED = "submitted"                # routed to Egeria; submitted, Egeria's report not read back yet
+FS_NAME_UNKNOWN = "file_system_name_unknown"  # routed to Egeria; the name Egeria uses for the file system is not known
 NO_COLUMNS = "no_columns"              # routed to Egeria; its report was read back and carried no column profile
 NOT_REACHABLE = "not_reachable"        # the mount root cannot be reached from this machine (checked once per run)
 HEADER_SUSPECT = "header_suspect"      # a COLUMN row: its header looks like data; profiled, its name never published
@@ -105,14 +111,70 @@ PROFILED_STATES = (MEASURED, SAMPLED)
 #: never taken over, and a crashed one frees itself after this many seconds.
 CLAIM_STALE_SECONDS = 900
 ALREADY_RUNNING_WORDS = "a data-file profile run for {slug} is already running"
+CLAIM_LOST_WORDS = ("this data-file profile run for {slug} lost its claim (another run holds it now) · stopped, nothing "
+                    "from it was stored{submitted}")
+PUBLISH_ALREADY_RUNNING_WORDS = "a publish of the data-file profiles of {slug} is already running"
+FS_NAME_UNKNOWN_WORDS = ("the name Egeria uses for this file system could not be established ({why}) · no CSV file was "
+                         "read or created in Egeria")
 
 #: The type the "CSV Data File" template creates, and the qualifiedName it gives the element (see A2).
 CSV_FILE_TYPE = "CSVFile"
 
 
 def csv_asset_qualified_name(file_system_name: str, canonical_path: str) -> str:
-    """`CSVFile::<fileSystemName>:<filePathName>`: the qualifiedName Egeria's CSV Data File template gives the asset."""
+    """`CSVFile::<fileSystemName>:<filePathName>`: the qualifiedName Egeria's CSV Data File template gives the asset.
+    `file_system_name` is the name Egeria uses for the file system (`file_system_name_from_root`), never RE's slug."""
     return f"{CSV_FILE_TYPE}::{file_system_name}:{canonical_path}"
+
+
+#: The type of the file system's root folder in Egeria (the "File System Directory" template's element).
+ROOT_FOLDER_TYPE = "FileFolder"
+
+
+class FileSystemNameUnknown(RuntimeError):
+    """The name Egeria uses for this file system could not be established: the Egeria half refuses (nothing is read or
+    created in Egeria for its files)."""
+
+
+def file_system_name_from_root(qualified_name: str, canonical_mount: str) -> str | None:
+    """The fileSystemName out of the root FileFolder's qualifiedName, `FileFolder::<fileSystemName>:<directoryPathName>`
+    (the File System Directory template's pattern, the same one the CSV Data File template uses). Only when the
+    qualifiedName has exactly that shape AND ends in this file system's canonical mount; anything else is None (unknown,
+    never guessed)."""
+    qn = str(qualified_name or "")
+    prefix, suffix = f"{ROOT_FOLDER_TYPE}::", f":{canonical_mount.rstrip('/')}"
+    if not canonical_mount.strip("/") or not qn.startswith(prefix) or not qn.endswith(suffix):
+        return None
+    name = qn[len(prefix):len(qn) - len(suffix)]
+    return name if name.strip() else None
+
+
+class PathNameAmbiguous(RuntimeError):
+    """Two or more elements of the type hold this exact pathName: nothing is adopted or created."""
+
+
+def guid_by_exact_path_name(client, path_name: str, *, type_name: str) -> str | None:
+    """A TYPED exact `pathName` search, the second read-first path. The contract of `egeria_lookup.guid_by_exact_value`
+    (not on this branch's base), implemented here: one hit = its GUID; None ONLY on Egeria's explicit "No elements
+    found"; two or more = `PathNameAmbiguous`; a raise, no answer, an empty list or an answer of another shape RAISES
+    (a failed read is never "absent": absent licenses a create)."""
+    from resource_explorer.egeria_lookup import _GUID, _guid_of, _is_miss
+
+    answer = client.get_elements_by_property_value(path_name, ["pathName"], type_name, page_size=2)
+    if _is_miss(answer):
+        return None
+    if isinstance(answer, dict) and answer:
+        answer = [answer]
+    if not isinstance(answer, list) or not answer:
+        raise RuntimeError(f"the pathName search for {path_name!r} gave no usable answer ({answer!r:.80})")
+    if len(answer) > 1:
+        raise PathNameAmbiguous(f"{len(answer)} {type_name} elements hold the pathName {path_name!r}: nothing is "
+                                "adopted or created")
+    hit = answer[0] if isinstance(answer[0], dict) else {}
+    guid = _guid_of(hit)
+    if not _GUID.match(guid):
+        raise RuntimeError(f"the pathName search for {path_name!r} answered an element with no GUID")
+    return guid
 
 #: Egeria half outcomes (the run's own word, said on the card).
 EGERIA_HALF_NONE = "none"              # no file was routed to Egeria
@@ -121,6 +183,7 @@ EGERIA_HALF_NOT_INSTALLED = "not_installed"
 EGERIA_HALF_UNCHECKED = "could_not_check"
 EGERIA_HALF_PARTIAL = "partly_submitted"
 EGERIA_HALF_SUBMIT_FAILED = "submit_failed"
+EGERIA_HALF_FS_NAME_UNKNOWN = "file_system_name_unknown"
 
 # ── formats ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -403,7 +466,8 @@ class CsvSurveyPort(Protocol):
     """The Egeria surface the CSV half uses. Every method raises on a transport/API failure (never an empty answer)."""
 
     def csv_survey_listed(self) -> bool: ...
-    def csv_asset_guid(self, fs_entity, rel_path: str, canonical_path: str) -> str: ...
+    def egeria_file_system_name(self, fs_entity) -> str: ...
+    def csv_asset_guid(self, fs_entity, rel_path: str, canonical_path: str, file_system_name: str) -> str: ...
     def initiate(self, process_qualified_name: str, action_target_name: str, target_guid: str,
                  request_parameters: dict | None = None) -> str: ...
     def report_guid_for_action(self, engine_action_guid: str) -> str | None: ...
@@ -438,23 +502,50 @@ def pyegeria_port_class():
                 self._fs_surveyor = s
             return self._fs_surveyor
 
-        def csv_asset_guid(self, fs_entity, rel_path: str, canonical_path: str) -> str:
+        def egeria_file_system_name(self, fs_entity) -> str:
+            """The name Egeria uses for this file system: read from its root FileFolder in Egeria BY the GUID Resource
+            Explorer holds for it (`fs_entity.egeria_asset_guid`, set when the root folder was attached), out of that
+            element's qualifiedName (`file_system_name_from_root`). Raises `FileSystemNameUnknown` (with why) when there
+            is no GUID, the read-back does not match a FileFolder, or the qualifiedName does not carry the name."""
+            from resource_explorer.egeria_absence import _is_guid
+
+            guid = (fs_entity.egeria_asset_guid or "").strip()
+            if not _is_guid(guid):
+                raise FileSystemNameUnknown("its root folder is not attached in Egeria")
+            self._enter()
+            read = self._surveyor_for(fs_entity)._read_back_by_guid(guid, expect_type=ROOT_FOLDER_TYPE)
+            if not read.get("matched"):
+                raise FileSystemNameUnknown(f"its root folder could not be read back: {read.get('why') or 'no match'}")
+            canonical = (fs_entity.canonical_mount_point or fs_entity.local_mount_point).rstrip("/")
+            name = file_system_name_from_root(read.get("qualified_name", ""), canonical)
+            if not name:
+                raise FileSystemNameUnknown(
+                    f"its root folder's qualifiedName {read.get('qualified_name', '')!r:.120} does not name it")
+            return name
+
+        def csv_asset_guid(self, fs_entity, rel_path: str, canonical_path: str, file_system_name: str) -> str:
             """A2: the file's CSV Data File asset, read FIRST by the template's qualifiedName
-            (`csv_asset_qualified_name`) with the unique-name read, typed `CSVFile`; created from the CSV Data File
-            template only on Egeria's explicit "not found" (a read that could not be made raises: nothing is created).
-            The create uses the same file system name (the slug) and path the qualifiedName is built from, so a re-run
+            (`csv_asset_qualified_name` with the name Egeria uses for the file system) with the unique-name read, typed
+            `CSVFile`; on a miss, by a typed exact `pathName` search (`guid_by_exact_path_name`); created from the CSV
+            Data File template only when BOTH say Egeria's explicit "not found" (a read that could not be made, or an
+            ambiguous one, raises: nothing is created). The create uses the same file system name and path, so a re-run
             finds what this one made."""
             from resource_explorer.egeria_absence import _is_guid
 
+            if not str(file_system_name or "").strip():
+                raise FileSystemNameUnknown("no file system name was given")
             self._enter()
             s = self._surveyor_for(fs_entity)
-            qn = csv_asset_qualified_name(fs_entity.slug, canonical_path)
+            qn = csv_asset_qualified_name(file_system_name, canonical_path)
             guid = s._find_element_guid(qn, type_name=CSV_FILE_TYPE, qualified_name=True)
+            if guid:
+                return guid
+            guid = guid_by_exact_path_name(s._metadata_expert, canonical_path, type_name=CSV_FILE_TYPE)
             if guid:
                 return guid
             name = rel_path.rpartition("/")[2]
             made = s._create_data_file_asset({"file_path": rel_path, "file_name": name, "format": "CSV"},
-                                             canonical_path, fs_entity.slug, fallback=False)
+                                             canonical_path, file_system_name, fallback=False)
             if not _is_guid(made):
                 raise RuntimeError(f"Egeria did not return an element GUID for {qn} (it answered {made!r:.60})")
             return made
@@ -479,10 +570,21 @@ def _short(exc: Exception) -> str:
     return " ".join(f"{type(exc).__name__}: {exc}".split())[:300]
 
 
-def submit_egeria_half(port: CsvSurveyPort | None, fs_entity, files: list[dict]) -> tuple[str, dict[str, list[dict]], dict]:
+class ClaimLost(RuntimeError):
+    """The run's claim was renewed and is no longer ours (another run took it over): the run stops, storing nothing."""
+
+
+def _true() -> bool:
+    return True
+
+
+def submit_egeria_half(port: CsvSurveyPort | None, fs_entity, files: list[dict], *,
+                       heartbeat: Callable[[], Any] = _true) -> tuple[str, dict[str, list[dict]], dict]:
     """Submit Egeria's CSV Survey Service for each file routed to Egeria. Returns (half state, rows per file, actions per
     file {path: {engine_action_guid, asset_guid} | {error}}). Whether the service is installed is read FIRST; a failed read
-    is `could_not_check`, never "not installed"."""
+    is `could_not_check`, never "not installed". Then the name Egeria uses for the file system: when it cannot be
+    established the half refuses (`file_system_name_unknown`, nothing read or created in Egeria). `heartbeat` renews the
+    run's claim before each file; False (the claim is lost) raises `ClaimLost`, naming how many were already submitted."""
     if not files:
         return EGERIA_HALF_NONE, {}, {}
     rows: dict[str, list[dict]] = {}
@@ -503,12 +605,26 @@ def submit_egeria_half(port: CsvSurveyPort | None, fs_entity, files: list[dict])
         for f in files:
             rows[f["file_path"]] = [marker_row(NOT_INSTALLED)]
         return EGERIA_HALF_NOT_INSTALLED, rows, actions
+    try:
+        fs_name = port.egeria_file_system_name(fs_entity)
+        if not str(fs_name or "").strip():
+            raise FileSystemNameUnknown("Egeria's answer carried no name")
+    except Exception as exc:  # noqa: BLE001 -- unknown is refused, never guessed (the slug is not Egeria's name)
+        why = str(exc) if isinstance(exc, FileSystemNameUnknown) else _short(exc)
+        for f in files:
+            rows[f["file_path"]] = [marker_row(FS_NAME_UNKNOWN)]
+            actions[f["file_path"]] = {"error": FS_NAME_UNKNOWN_WORDS.format(why=why)}
+        return EGERIA_HALF_FS_NAME_UNKNOWN, rows, actions
     canonical_root = (fs_entity.canonical_mount_point or fs_entity.local_mount_point).rstrip("/")
     ok = 0
     for f in files:
         rel = f["file_path"]
+        if heartbeat() is False:
+            raise ClaimLost(CLAIM_LOST_WORDS.format(
+                slug=fs_entity.slug, submitted=f" · {ok:,} CSV file{'' if ok == 1 else 's'} already submitted to Egeria"
+                if ok else ""))
         try:
-            asset = port.csv_asset_guid(fs_entity, rel, f"{canonical_root}/{rel}")
+            asset = port.csv_asset_guid(fs_entity, rel, f"{canonical_root}/{rel}", fs_name)
             if not asset:
                 raise RuntimeError("Egeria returned no asset for the file")
             action = port.initiate(CSV_SURVEY_QN, CSV_ACTION_TARGET, asset)
@@ -661,30 +777,39 @@ def mount_reachable(root: Path) -> bool:
     return stat_mod.S_ISDIR(st.st_mode)
 
 
-def _is_linked(root: Path, rel: str) -> bool:
-    """Whether the file, or a folder on its way down from the root, is a link (lstat, never followed)."""
+def _link_state(root: Path, rel: str) -> str | None:
+    """LINK_NOT_FOLLOWED when the file, or a folder on its way down from the root, is a link (lstat, never followed);
+    NOT_REACHABLE when a step of that way cannot be lstat'ed (it could be a link: the file is held, never opened);
+    None when no step is a link."""
     path = root
     for part in Path(rel).parts:
         path = path / part
         try:
             if stat_mod.S_ISLNK(os.lstat(path).st_mode):
-                return True
+                return LINK_NOT_FOLLOWED
         except OSError:
-            return False
-    return False
+            return NOT_REACHABLE
+    return None
+
+
+def _is_linked(root: Path, rel: str) -> bool:
+    """Whether the file must be held as (possibly) linked: True for a link on the way down AND for a step that could not
+    be checked (OSError), so a file whose way down is unknown is never opened or submitted."""
+    return _link_state(root, rel) is not None
 
 
 def precheck(f: dict, root: Path, reachable: bool) -> str | None:
     """The checks EVERY file gets before it is routed to Egeria or to Resource Explorer: a link (the walk's row, or lstat
-    when the root is reachable) is `link_not_followed`; a secret-looking name is `secret_name`. None: route it."""
+    when the root is reachable) is `link_not_followed`; a way down that cannot be lstat'ed is `not_reachable` (held);
+    a secret-looking name is `secret_name`. None: route it."""
     from resource_explorer.surveyors.filesystem import walk_extensions as we
 
     rel = f["file_path"]
-    if f.get("hash_state") == we.LINK or (reachable and _is_linked(root, rel)):
+    if f.get("hash_state") == we.LINK:
         return LINK_NOT_FOLLOWED
     if f.get("hash_state") == we.SECRET_NAME or we.looks_secret(rel.rpartition("/")[2]):
         return SECRET_NAME
-    return None
+    return _link_state(root, rel) if reachable else None
 
 
 def last_published_run(registry, slug: str, *, before: str | None = None) -> str | None:
@@ -747,7 +872,8 @@ def _run(fs_entity, registry, walk: dict, files: list[dict], run_id: str, *, por
         except Exception:  # noqa: BLE001 -- said as could_not_check below
             log.warning("%s: no Egeria port for the CSV half", slug, exc_info=True)
     try:
-        egeria_state, egeria_rows, egeria_actions = submit_egeria_half(port, fs_entity, egeria_files)
+        egeria_state, egeria_rows, egeria_actions = submit_egeria_half(port, fs_entity, egeria_files,
+                                                                       heartbeat=heartbeat)
     finally:
         if made_here is not None and hasattr(made_here, "close"):
             made_here.close()
@@ -769,7 +895,8 @@ def _run(fs_entity, registry, walk: dict, files: list[dict], run_id: str, *, por
         elif not os.access(path, os.R_OK):
             rows = [marker_row(NOT_PERMITTED)]
         else:
-            heartbeat()
+            if heartbeat() is False:
+                raise ClaimLost(CLAIM_LOST_WORDS.format(slug=slug, submitted=""))
             res = profile_file(path, ext, limit=limit)
             bytes_read += res["bytes_read"]
             if res["error"]:
@@ -851,14 +978,18 @@ def card_counts(states: list[dict]) -> dict:
             "secret_name": len(by(SECRET_NAME)), "link_not_followed": len(by(LINK_NOT_FOLLOWED)),
             "not_installed": len(by(NOT_INSTALLED)), "egeria_unchecked": len(by(EGERIA_UNCHECKED)),
             "submit_failed": len(by(SUBMIT_FAILED)), "submitted": len(by(SUBMITTED)), "no_columns": len(by(NO_COLUMNS)),
+            "file_system_name_unknown": len(by(FS_NAME_UNKNOWN)),
             "not_reachable": len(by(NOT_REACHABLE))}
 
 
 def card_words(c: dict) -> str:
-    """"P files profiled (E by Egeria, R by RE), S sampled, X not read (formats: ...), U not permitted"."""
+    """"P files profiled (E by Egeria, R by RE), S sampled, X not read (formats: ...), U not permitted", then
+    " (N header suspect)" when any file has a header that looks like data."""
     fmts = f" (formats: {', '.join(c['not_read_formats'])})" if c["not_read_formats"] else ""
+    suspect = int(c.get("header_suspect") or 0)
     return (f"{c['profiled']:,} files profiled ({c['by_egeria']:,} by Egeria, {c['by_re']:,} by RE), {c['sampled']:,} sampled, "
-            f"{c['not_read']:,} not read{fmts}, {c['not_permitted']:,} not permitted")
+            f"{c['not_read']:,} not read{fmts}, {c['not_permitted']:,} not permitted"
+            + (f" ({suspect:,} header suspect)" if suspect else ""))
 
 
 def profiles_view(registry, slug: str) -> dict:

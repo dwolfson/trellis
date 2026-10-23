@@ -67,7 +67,8 @@ def _states(registry, slug="lake"):
 def _port(*, listed=True):
     port = create_autospec(fp.pyegeria_port_class(), instance=True, spec_set=True)
     port.csv_survey_listed.return_value = listed
-    port.csv_asset_guid.side_effect = lambda fs, rel, canonical: f"asset-{rel}"
+    port.egeria_file_system_name.return_value = "egeria-deployment"
+    port.csv_asset_guid.side_effect = lambda fs, rel, canonical, fs_name: f"asset-{rel}"
     port.initiate.side_effect = lambda qn, target, guid, request_parameters=None: f"action-{guid}"
     return port
 
@@ -166,7 +167,7 @@ def test_on_an_egeria_led_file_system_csv_goes_to_egeria_and_parquet_to_re(regis
     assert not {"a.csv", "b.csv", "c.csv", "big.csv"} & set(opened), "RE measures nothing Egeria measures"
     assert out["egeria_half"] == fp.EGERIA_HALF_SUBMITTED and out["egeria_files"] == 4
     # the survey is started on each file's asset, at the canonical path
-    port.csv_asset_guid.assert_any_call(fs, "a.csv", "/deployments/lake/a.csv")
+    port.csv_asset_guid.assert_any_call(fs, "a.csv", "/deployments/lake/a.csv", "egeria-deployment")
     port.initiate.assert_any_call(fp.CSV_SURVEY_QN, fp.CSV_ACTION_TARGET, "asset-a.csv")
 
 
@@ -536,11 +537,23 @@ def test_the_csv_template_qualified_name():
     assert fp.csv_asset_qualified_name("lake", "/deployments/lake/a.csv") == "CSVFile::lake:/deployments/lake/a.csv"
 
 
-def _real_port_with_fake_surveyor(store):
+def _real_port_with_fake_surveyor(store, *, root_qn="FileFolder::lake:/deployments/lake", by_path=None):
+    """The real port over a fake surveyor bound to the real signatures. The root folder reads back with `root_qn`;
+    `by_path` is the typed pathName search's answer (default: Egeria's explicit "No elements found")."""
+    from pyegeria import MetadataExpert
+
     from resource_explorer.surveyors.filesystem.egeria_filesystem_surveyor import EgeriaFileSystemSurveyor
 
-    fake = create_autospec(EgeriaFileSystemSurveyor, instance=True, spec_set=True)
+    class _Surveyor(EgeriaFileSystemSurveyor):   # the spec, plus the instance attribute the port reads
+        _metadata_expert = None
+
+    fake = create_autospec(_Surveyor, instance=True, spec_set=True)
     fake._find_element_guid.side_effect = lambda name, type_name=None, *, qualified_name=False: store.get(name, "")
+    fake._read_back_by_guid.side_effect = lambda guid, expect_type=None: {
+        "matched": True, "why": "", "qualified_name": root_qn, "type_name": "FileFolder", "unknown_guid": False}
+    fake._metadata_expert = create_autospec(MetadataExpert, instance=True, spec_set=True)
+    fake._metadata_expert.get_elements_by_property_value.return_value = (
+        "No elements found" if by_path is None else by_path)
 
     def create(info, canonical, fs_name, *, fallback=True):
         guid = f"{len(store):08d}-0000-0000-0000-000000000000"
@@ -734,3 +747,213 @@ def test_a_partial_publish_is_resumed_on_the_same_report_adding_only_the_missing
     assert disc2.create_annotation.call_count == len(specs) - 5      # only the missing ones
     assert second["complete"] is True and second["annotations_in_egeria"] == len(specs)
     assert fp.latest_publish_proof(registry, "lake", out["run_id"])["complete"] is True
+
+
+# ── fix round 2 (2026-10-23): the name Egeria uses for the file system, the pathName read-first, the claims ──────────
+
+PROBE_DIR = "/deployments/loading-bay/sample-data/hampton-drop-foot-weekly-measurements"
+PROBE_QN = f"CSVFile::egeria-deployment:{PROBE_DIR}/week1.csv"      # FILES5-CSVFILE-QN-PROBE.json, verbatim shape
+PROBE_GUID = "dddddddd-0000-0000-0000-000000000001"
+
+
+def _probe_fs(registry, tmp_path, *, guid=ASSET):
+    root = tmp_path / "hampton"
+    root.mkdir()
+    for n in (1, 2):
+        (root / f"week{n}.csv").write_text("patient,score\np1,3\np2,4\n")
+    registry.register_filesystem(FileSystemEntity(slug="hampton", display_name="Hampton", local_mount_point=str(root),
+                                                  canonical_mount_point=PROBE_DIR, egeria_asset_guid=guid))
+    return _walk(registry, root, slug="hampton", led_by="egeria")
+
+
+def test_file_system_name_comes_from_the_root_folders_qualified_name_never_guessed():
+    assert fp.file_system_name_from_root(f"FileFolder::egeria-deployment:{PROBE_DIR}", PROBE_DIR) == "egeria-deployment"
+    assert fp.file_system_name_from_root("FileFolder::a:b:/x/y", "/x/y/") == "a:b"
+    assert fp.file_system_name_from_root("FileFolder::egeria-deployment:/elsewhere", PROBE_DIR) is None
+    assert fp.file_system_name_from_root(f"DataFolder::x:{PROBE_DIR}", PROBE_DIR) is None
+    assert fp.file_system_name_from_root(f"FileFolder:::{PROBE_DIR}", PROBE_DIR) is None
+    assert fp.file_system_name_from_root("", PROBE_DIR) is None
+
+
+def test_an_existing_egeria_csvfile_of_the_live_shape_is_found_and_nothing_is_created_for_it(registry, tmp_path):
+    fs = _probe_fs(registry, tmp_path)
+    store = {PROBE_QN: PROBE_GUID}
+    port, fake = _real_port_with_fake_surveyor(store, root_qn=f"FileFolder::egeria-deployment:{PROBE_DIR}")
+    try:
+        out = fp.run_file_profiles(fs, registry, port=port, limit=LIMIT)
+    finally:
+        port.close()
+    assert out["egeria_actions"]["week1.csv"]["asset_guid"] == PROBE_GUID
+    looked = [c.args[0] for c in fake._find_element_guid.call_args_list]
+    assert PROBE_QN in looked and not any(":hampton:" in q or "::hampton" in q for q in looked), "never the slug"
+    made = fake._create_data_file_asset.call_args_list
+    assert [c.args[1] for c in made] == [f"{PROBE_DIR}/week2.csv"]          # only the file Egeria does not hold
+    assert made[0].args[2] == "egeria-deployment" and made[0].kwargs["fallback"] is False
+    fake._read_back_by_guid.assert_called_with(ASSET, expect_type="FileFolder")
+
+
+def test_a_qualified_name_miss_is_read_again_by_typed_exact_path_name_and_a_hit_creates_nothing(registry, tmp_path):
+    fs = _probe_fs(registry, tmp_path)
+    hit = [{"elementHeader": {"guid": PROBE_GUID, "type": {"typeName": "CSVFile"}},
+            "properties": {"qualifiedName": PROBE_QN, "pathName": f"{PROBE_DIR}/week1.csv"}}]
+    # the root folder was attached by RE under its slug: the QN read misses, the pathName read finds Egeria's element
+    port, fake = _real_port_with_fake_surveyor({}, root_qn=f"FileFolder::hampton:{PROBE_DIR}", by_path=hit)
+    try:
+        out = fp.run_file_profiles(fs, registry, port=port, limit=LIMIT)
+    finally:
+        port.close()
+    fake._create_data_file_asset.assert_not_called()
+    assert {a["asset_guid"] for a in out["egeria_actions"].values()} == {PROBE_GUID}
+    fake._metadata_expert.get_elements_by_property_value.assert_any_call(
+        f"{PROBE_DIR}/week1.csv", ["pathName"], "CSVFile", page_size=2)
+
+
+@pytest.mark.parametrize("answer", [[], None, {"no": "guid"}, "something else"])
+def test_a_path_name_read_that_is_not_an_explicit_miss_creates_nothing(registry, tmp_path, answer):
+    fs = _probe_fs(registry, tmp_path)
+    port, fake = _real_port_with_fake_surveyor({}, root_qn=f"FileFolder::egeria-deployment:{PROBE_DIR}", by_path=answer)
+    if answer is None:
+        fake._metadata_expert.get_elements_by_property_value.return_value = None
+    try:
+        out = fp.run_file_profiles(fs, registry, port=port, limit=LIMIT)
+    finally:
+        port.close()
+    fake._create_data_file_asset.assert_not_called()
+    assert out["egeria_half"] == fp.EGERIA_HALF_SUBMIT_FAILED
+
+
+def test_two_elements_holding_the_path_name_are_ambiguous_and_nothing_is_created(registry, tmp_path):
+    fs = _probe_fs(registry, tmp_path)
+    two = [{"elementHeader": {"guid": PROBE_GUID}}, {"elementHeader": {"guid": "dddddddd-0000-0000-0000-000000000002"}}]
+    port, fake = _real_port_with_fake_surveyor({}, root_qn=f"FileFolder::egeria-deployment:{PROBE_DIR}", by_path=two)
+    try:
+        out = fp.run_file_profiles(fs, registry, port=port, limit=LIMIT)
+    finally:
+        port.close()
+    fake._create_data_file_asset.assert_not_called()
+    assert "PathNameAmbiguous" in out["egeria_actions"]["week1.csv"]["error"]
+
+
+def test_a_path_name_read_that_raises_creates_nothing(registry, tmp_path):
+    fs = _probe_fs(registry, tmp_path)
+    port, fake = _real_port_with_fake_surveyor({}, root_qn=f"FileFolder::egeria-deployment:{PROBE_DIR}")
+    fake._metadata_expert.get_elements_by_property_value.side_effect = RuntimeError("timed out")
+    try:
+        out = fp.run_file_profiles(fs, registry, port=port, limit=LIMIT)
+    finally:
+        port.close()
+    fake._create_data_file_asset.assert_not_called()
+    assert out["egeria_half"] == fp.EGERIA_HALF_SUBMIT_FAILED
+
+
+def test_both_explicit_misses_create_under_egerias_file_system_name(registry, tmp_path):
+    fs = _probe_fs(registry, tmp_path)
+    store: dict = {}
+    port, fake = _real_port_with_fake_surveyor(store, root_qn=f"FileFolder::egeria-deployment:{PROBE_DIR}")
+    try:
+        fp.run_file_profiles(fs, registry, port=port, limit=LIMIT)
+    finally:
+        port.close()
+    assert set(store) == {PROBE_QN, f"CSVFile::egeria-deployment:{PROBE_DIR}/week2.csv"}
+
+
+@pytest.mark.parametrize("case", ["no_guid", "not_matched", "other_shape"])
+def test_when_the_file_system_name_cannot_be_established_the_egeria_half_refuses(registry, tmp_path, case):
+    fs = _probe_fs(registry, tmp_path, guid="" if case == "no_guid" else ASSET)
+    port, fake = _real_port_with_fake_surveyor({}, root_qn=("FileFolder::x:/elsewhere" if case == "other_shape"
+                                                            else f"FileFolder::egeria-deployment:{PROBE_DIR}"))
+    if case == "not_matched":
+        fake._read_back_by_guid.side_effect = lambda guid, expect_type=None: {
+            "matched": False, "why": "Egeria does not hold an element with that GUID", "qualified_name": "",
+            "type_name": "", "unknown_guid": True}
+    try:
+        out = fp.run_file_profiles(fs, registry, port=port, limit=LIMIT)
+    finally:
+        port.close()
+    assert out["egeria_half"] == fp.EGERIA_HALF_FS_NAME_UNKNOWN
+    fake._find_element_guid.assert_not_called()
+    fake._metadata_expert.get_elements_by_property_value.assert_not_called()
+    fake._create_data_file_asset.assert_not_called()
+    states, _ = _states(registry, "hampton")
+    assert {s["state"] for s in states.values()} == {fp.FS_NAME_UNKNOWN}
+    assert all("could not be established" in a["error"] for a in out["egeria_actions"].values())
+    assert fp.card_counts(list(states.values()))["file_system_name_unknown"] == 2
+
+
+def test_a_lost_claim_stops_the_egeria_half_with_words_and_stores_nothing(registry, tmp_path, monkeypatch):
+    root = _tree(tmp_path)
+    fs = _walk(registry, root, led_by="egeria")
+    port = _port()
+    beats = iter([True, True, False])
+    monkeypatch.setattr(registry, "refresh_claim", lambda key, holder: next(beats))
+    with pytest.raises(fp.ClaimLost, match=r"lost its claim .* 2 CSV files already submitted"):
+        fp.run_file_profiles(fs, registry, port=port, limit=LIMIT)
+    assert port.initiate.call_count == 2
+    assert registry.list_filesystem_file_column_runs("lake") == []
+    assert registry.get_claim(f"{fp.STEP_KEY}:lake") is None
+
+
+def test_a_lost_claim_stops_the_re_half_too(registry, tmp_path, monkeypatch):
+    root = _tree(tmp_path)
+    fs = _walk(registry, root)
+    monkeypatch.setattr(registry, "refresh_claim", lambda key, holder: False)
+    with pytest.raises(fp.ClaimLost, match="lost its claim"):
+        fp.run_file_profiles(fs, registry, limit=LIMIT)
+    assert registry.list_filesystem_file_column_runs("lake") == []
+
+
+def test_submit_egeria_half_beats_once_per_file():
+    beats = []
+    port = _port()
+    fs = FileSystemEntity(slug="lake", display_name="Lake", local_mount_point="/x", canonical_mount_point="/d")
+    half, _, _ = fp.submit_egeria_half(port, fs, [{"file_path": "a.csv"}, {"file_path": "b.csv"}],
+                                       heartbeat=lambda: beats.append(1) or True)
+    assert half == fp.EGERIA_HALF_SUBMITTED and len(beats) == 2
+
+
+@pytest.mark.usefixtures("signed_in_caller")
+def test_a_second_publish_press_while_one_runs_is_409_with_the_words(api, registry, tmp_path):
+    client, headers = api
+    _walk(registry, _tree(tmp_path))
+    key = f"{fp.PUBLISH_STEP_KEY}:lake"
+    assert registry.take_claim(key, "another-publish")
+    r = client.post("/api/filesystems/lake/file-profiles/publish", headers=headers)
+    assert r.status_code == 409 and "publish of the data-file profiles of lake is already running" in r.json()["detail"]
+    assert registry.get_claim(key)[0] == "another-publish"          # the other press's claim is untouched
+    registry.release_claim(key, "another-publish")
+    r = client.post("/api/filesystems/lake/file-profiles/publish", headers=headers)
+    assert r.status_code == 409 and "No data-file profiles to publish" in r.json()["detail"]
+    assert registry.get_claim(key) is None                          # released after the press
+
+
+@pytest.mark.usefixtures("signed_in_caller")
+def test_a_lost_claim_through_the_route_is_409_with_the_words(api, registry, tmp_path, monkeypatch):
+    client, headers = api
+    _walk(registry, _tree(tmp_path))
+    monkeypatch.setattr(registry, "refresh_claim", lambda key, holder: False)
+    monkeypatch.setattr(fp.run_file_profiles, "__kwdefaults__", {**fp.run_file_profiles.__kwdefaults__, "limit": LIMIT})
+    r = client.post("/api/filesystems/lake/file-profiles", headers=headers)
+    assert r.status_code == 409 and "lost its claim" in r.json()["detail"]
+
+
+def test_a_way_down_that_cannot_be_checked_holds_the_file(tmp_path, monkeypatch):
+    root = _tree(tmp_path)
+    real = os.lstat
+
+    def lstat(p, *a, **k):
+        if str(p).endswith("sub"):
+            raise PermissionError("denied")
+        return real(p, *a, **k)
+
+    monkeypatch.setattr(fp.os, "lstat", lstat)
+    assert fp._is_linked(root, "sub/c.csv") is True
+    assert fp.precheck({"file_path": "sub/c.csv", "hash_state": ""}, root, True) == fp.NOT_REACHABLE
+    assert fp._is_linked(root, "a.csv") is False
+
+
+def test_card_words_name_header_suspects_only_when_any():
+    c = {"profiled": 2, "by_egeria": 0, "by_re": 2, "sampled": 0, "not_read": 0, "not_read_formats": [],
+         "not_permitted": 0}
+    assert fp.card_words(c).endswith("0 not permitted")
+    assert fp.card_words({**c, "header_suspect": 0}).endswith("0 not permitted")
+    assert fp.card_words({**c, "header_suspect": 1}).endswith("0 not permitted (1 header suspect)")
