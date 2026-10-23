@@ -443,11 +443,25 @@ def plan_guids(walk: list[tuple[str, str, str]]) -> list[str]:
     return [g for g, _t, _qn in walk]
 
 
+def is_survey_report(typ: str | None) -> bool:
+    """A SurveyReport or any subtype of it (a subtype's name ends with "SurveyReport")."""
+    return (typ or "").endswith(SURVEY_REPORT_TYPE)
+
+
+#: A walk member whose type name is empty or missing: RE cannot tell it is not a SurveyReport, so it sends nothing.
+UNKNOWN_TYPE_REFUSED = "couldn't tell what an element is · nothing archived"
+
+
+def untyped_in(walk: list[tuple[str, str, str]]) -> list[str]:
+    """GUIDs of walk members with an empty or missing type name."""
+    return [g for g, t, _qn in walk if not (t or "").strip()]
+
+
 def survey_reports_in(walk: list[tuple[str, str, str]]) -> list[str]:
     """GUIDs of any SurveyReport in a walk. The walk reads columns, tables, schema types and whatever sits under the
     schema's qualifiedName prefix, so a report named under it would be in the list: such a leave-out is refused
     whole (preview and apply), and `_send_destructive` refuses the report again behind that."""
-    return [g for g, t, _qn in walk if t == SURVEY_REPORT_TYPE]
+    return [g for g, t, _qn in walk if is_survey_report(t)]
 
 
 def archive_plan(walk: list[tuple[str, str, str]]) -> dict:
@@ -1096,6 +1110,9 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
         elif survey_reports_in(leave_out_walk(read, schema_qn(db_entity, name))):
             row.update(form="survey_report", blocked=True, reason=SURVEY_REPORT_REFUSED,
                        text=f"{name}: {SURVEY_REPORT_REFUSED}")
+        elif untyped_in(leave_out_walk(read, schema_qn(db_entity, name))):
+            row.update(form="unknown_type", blocked=True, reason=UNKNOWN_TYPE_REFUSED,
+                       text=f"{name}: {UNKNOWN_TYPE_REFUSED}")
         elif read["form"] == SOFT_DELETE and gw.issue_117_blocked(slug) and st.get("state") in CATALOGED_STATES:
             row.update(form="issue_117", blocked=True, reason=gw.ISSUE_117_WORDS, text=f"{name}: {gw.ISSUE_117_WORDS}")
         elif read["form"] == SOFT_DELETE:
@@ -1353,7 +1370,7 @@ def _send_destructive(registry, gateway, op: str, *, slug: str, schema: str, ele
     what = (f"{method} element={element_guid} type={typ or 'unknown'} schema={schema}"
             + (f" relationship={relationship_guid}" if relationship_guid else "") + f" flags={flags} {who}")
     outcome, error = DELETE_OK, ""
-    report = method != "remove_catalog_target" and typ == SURVEY_REPORT_TYPE
+    report = method != "remove_catalog_target" and is_survey_report(typ)
     blocked = method != "remove_catalog_target" and (report or gw.issue_117_blocked(slug, scope=scope))
     if report:
         outcome, error = DELETE_REFUSED, SURVEY_REPORT_REFUSED
@@ -1679,6 +1696,9 @@ def apply_leave_out(registry, gateway: CatalogueGateway, payload: dict, *, outbo
             # this is not that; the outbox row's failure carries the sentence.
             log.warning("leave-out %s/%s refused: the walk holds SurveyReport %s", slug, schema, ", ".join(reports))
             raise GatewayError(f"{schema}: {SURVEY_REPORT_REFUSED}")
+        if untyped_in(walk):
+            log.warning("leave-out %s/%s refused: a walk member has no type name", slug, schema)
+            raise GatewayError(f"{schema}: {UNKNOWN_TYPE_REFUSED}")
         counted = payload.get("plan_guids")
         now_held = set(plan_guids(walk))
         if counted is None or read["state"] != "read" or now_held != set(counted):

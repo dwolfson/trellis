@@ -43,6 +43,22 @@ def _embed_worker_enabled() -> bool:
         return True
 
 
+START_LINE_SECONDS = 5
+
+
+async def start_line_within(seconds: float) -> str:
+    """The archive-cascade start-up line, never holding start-up beyond `seconds`. The platform-origin read runs
+    off-loop; on timeout the line says "platform: unreachable at start" and the block state is unchanged."""
+    import asyncio as _asyncio
+
+    from resource_explorer.catalogue_gateway import issue_117_start_line
+
+    try:
+        return await _asyncio.wait_for(_asyncio.to_thread(issue_117_start_line), seconds)
+    except _asyncio.TimeoutError:
+        return issue_117_start_line(lambda: "")
+
+
 async def _lifespan(app: FastAPI):
     """Serve HTTP. Start background loops only when asked to embed one.
 
@@ -66,9 +82,8 @@ async def _lifespan(app: FastAPI):
     await alog_prefect_reachability_at_startup()
     import asyncio as _asyncio
 
-    from resource_explorer.catalogue_gateway import issue_117_start_line
     # on, or off with the lift's evidence, then the platform's origin beside the proven build (one read, off-loop)
-    logging.getLogger(__name__).info("%s", await _asyncio.to_thread(issue_117_start_line))
+    logging.getLogger(__name__).info("%s", await start_line_within(START_LINE_SECONDS))
     from resource_explorer.egeria_clients import log_daemon_identity_at_startup
     log_daemon_identity_at_startup()        # INFO: which source the daemon identity came from (Brief L)
     from resource_explorer.bootstrap import log_heal_identity_at_startup

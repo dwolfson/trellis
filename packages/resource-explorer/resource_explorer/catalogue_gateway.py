@@ -208,6 +208,7 @@ def issue_117_state_line() -> str:
 #: older build from a newer one by this string): the start-up line prints both side by side, and the only control
 #: for an older platform is the env re-arm, RE_ISSUE_117_BLOCK=on (architect ruling (b), 2026-10-23).
 PROVEN_BUILD = "odpi/egeria c6dbf952 / image a8bcff5c"
+MAX_ORIGIN_CHARS = 200            # the origin text is logged: never more than this
 PLATFORM_UNREACHABLE = "platform: unreachable at start"
 #: The platform's own origin endpoint: the one pyegeria's `BasePlatformClient.async_get_platform_origin` reads.
 PLATFORM_ORIGIN_PATH = "/open-metadata/platform-services/server-platform/origin"
@@ -227,7 +228,7 @@ def read_platform_origin(timeout: float = 3.0) -> str:
         if not url:
             return ""
         r = httpx.get(url + PLATFORM_ORIGIN_PATH, timeout=timeout, verify=False)
-        return " ".join(r.text.split()) if r.status_code == 200 else ""
+        return " ".join(r.text.split())[:MAX_ORIGIN_CHARS] if r.status_code == 200 else ""
     except Exception as exc:  # noqa: BLE001 - never fails the start
         log.info("platform origin not read at start: %s", type(exc).__name__)
         return ""
@@ -236,7 +237,7 @@ def read_platform_origin(timeout: float = 3.0) -> str:
 def platform_origin_words(origin: str) -> str:
     """"platform reports <origin> · lift proven on <build>", or "platform: unreachable at start". Said side by side;
     never a verdict that the two builds match."""
-    origin = (origin or "").strip()
+    origin = (origin or "").strip()[:MAX_ORIGIN_CHARS]
     if not origin:
         return PLATFORM_UNREACHABLE
     return f"platform reports {origin} · lift proven on {PROVEN_BUILD}"

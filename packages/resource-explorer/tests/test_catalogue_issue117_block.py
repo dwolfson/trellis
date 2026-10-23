@@ -711,3 +711,57 @@ def test_the_investigation_archive_and_bulk_delete_stay_blocked_by_default():
     assert gw.issue_117_blocked("") is True and gw.issue_117_blocked("p1") is True
     for mod in (investigation_delete, bulk_ops):
         assert "LEAVE_OUT_ARCHIVE" not in inspect.getsource(mod), mod.__name__
+
+
+# ── hardening 2026-10-23: bounded start read, short logged origin, subtype + untyped refusals ───────────────────
+
+def test_a_slow_origin_read_never_holds_the_start_beyond_the_bound(monkeypatch):
+    import asyncio
+    import time
+    from resource_explorer.web import app as web_app
+    monkeypatch.setattr(gw, "read_platform_origin", lambda *a, **k: (time.sleep(1.5), "late origin")[1])
+    t0 = time.monotonic()
+    line = asyncio.run(web_app.start_line_within(0.2))
+    assert time.monotonic() - t0 < 1.2, "the start did not wait for the slow read"
+    assert line == f"{OFF_LINE} · platform: unreachable at start"
+    assert "5" in str(web_app.START_LINE_SECONDS) and web_app.START_LINE_SECONDS == 5
+
+
+def test_the_logged_origin_is_cut_at_200_characters(monkeypatch):
+    import httpx
+
+    class R:
+        status_code = 200
+        text = "X" * 500
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: R())
+    monkeypatch.setenv("EGERIA_PLATFORM_URL", "https://example.invalid:9443")
+    assert len(gw.read_platform_origin()) == 200
+    assert len(gw.platform_origin_words("Y" * 500).split(" · ")[0]) == len("platform reports ") + 200
+
+
+@pytest.mark.parametrize("typ", ["SurveyReport", "EgeriaSurveyReport", "MySurveyReport"])
+def test_a_survey_report_subtype_is_refused_too(world, fake, typ):
+    with pytest.raises(GatewayError) as err:
+        _send(world, fake, typ=typ, scope=gw.LEAVE_OUT_ARCHIVE)
+    assert str(err.value) == SURVEY_REPORT_WORDS and fake.ops("delete_element") == []
+
+
+def test_a_walk_member_with_no_type_name_is_refused_whole_in_preview_and_apply(world, fake, monkeypatch):
+    _catalogued(world, fake, "sales")
+    choose(world, "sales", "leave_out")
+    real = cc.read_hangs_off
+    words = "couldn't tell what an element is · nothing archived"
+
+    def with_untyped(*a, **k):
+        r = real(*a, **k)
+        return {**r, "delete_order": list(r["delete_order"]) + [("x-1", "", "sales::x")]}
+    monkeypatch.setattr(cc, "read_hangs_off", with_untyped)
+    choose(world, "archive", "catalogue")
+    before = len(sent_to_egeria(fake))
+    out, _ = press(world, fake)
+    row = next(r for r in out["preview"]["leave_out"] if r["schema"] == "sales")
+    assert row["blocked"] is True and row["text"] == f"sales: {words}"
+    with pytest.raises(GatewayError) as err:
+        cc.apply_leave_out(world["registry"], fake, {"slug": "db", "schema": "sales", "form": gw.ARCHIVE,
+                                                     "curation_id": "c1", "by": ME, "plan_guids": []})
+    assert words in str(err.value) and len(sent_to_egeria(fake)) == before
