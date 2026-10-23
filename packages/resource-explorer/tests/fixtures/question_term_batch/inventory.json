@@ -1,11 +1,11 @@
 {
-  "schema": "question-term-inventory/1",
+  "schema": "question-term-inventory/2",
   "taken_at": "2026-10-23T00:00:00Z",
   "glossary": {
     "name": "User Questions",
     "guid": "glossary-uq"
   },
-  "terms_seen": 13,
+  "terms_seen": 11,
   "terms": [
     {
       "guid": "term-01",
@@ -17,6 +17,9 @@
       "content_status": "ACTIVE",
       "element_status": "ACTIVE",
       "question_id": "Q-0001",
+      "additional_properties": {
+        "question_id": "Q-0001"
+      },
       "classifications": [
         "Anchors",
         "Question"
@@ -61,6 +64,7 @@
       "content_status": "ACTIVE",
       "element_status": "ACTIVE",
       "question_id": null,
+      "additional_properties": {},
       "classifications": [
         "Anchors",
         "Question"
@@ -105,6 +109,7 @@
       "content_status": "ACTIVE",
       "element_status": "ACTIVE",
       "question_id": null,
+      "additional_properties": {},
       "classifications": [
         "Anchors",
         "Question"
@@ -149,6 +154,9 @@
       "content_status": "ACTIVE",
       "element_status": "ACTIVE",
       "question_id": "Q-0004",
+      "additional_properties": {
+        "question_id": "Q-0004"
+      },
       "classifications": [
         "Anchors",
         "Question"
@@ -193,6 +201,9 @@
       "content_status": "ACTIVE",
       "element_status": "ACTIVE",
       "question_id": "Q-0005",
+      "additional_properties": {
+        "question_id": "Q-0005"
+      },
       "classifications": [
         "Anchors",
         "Question"
@@ -237,6 +248,9 @@
       "content_status": "ACTIVE",
       "element_status": "ACTIVE",
       "question_id": "Q-0006",
+      "additional_properties": {
+        "question_id": "Q-0006"
+      },
       "classifications": [
         "Anchors",
         "Question"
@@ -290,6 +304,9 @@
       "content_status": "ACTIVE",
       "element_status": "ACTIVE",
       "question_id": "Q-0007",
+      "additional_properties": {
+        "question_id": "Q-0007"
+      },
       "classifications": [
         "Anchors",
         "Question"
@@ -334,6 +351,7 @@
       "content_status": "ACTIVE",
       "element_status": "ACTIVE",
       "question_id": null,
+      "additional_properties": {},
       "classifications": [
         "Anchors",
         "Question"
@@ -378,6 +396,9 @@
       "content_status": "ACTIVE",
       "element_status": "ACTIVE",
       "question_id": "Q-0010",
+      "additional_properties": {
+        "question_id": "Q-0010"
+      },
       "classifications": [
         "Anchors",
         "Question"
@@ -431,10 +452,68 @@
       "content_status": "ACTIVE",
       "element_status": "ACTIVE",
       "question_id": null,
+      "additional_properties": {},
       "classifications": [
         "Anchors"
       ],
       "links": []
+    }
+  ],
+  "all_terms": [
+    {
+      "guid": "term-03",
+      "qualified_name": "Org::Term::C?::1.0",
+      "display_name": "C?"
+    },
+    {
+      "guid": "term-04",
+      "qualified_name": "Org::Term::D?::1.0",
+      "display_name": "D?"
+    },
+    {
+      "guid": "term-05",
+      "qualified_name": "Org::Term::E?::1.0",
+      "display_name": "E?"
+    },
+    {
+      "guid": "other-glossary-term",
+      "qualified_name": "Other::Term::Elsewhere::1.0",
+      "display_name": "Elsewhere"
+    },
+    {
+      "guid": "term-06",
+      "qualified_name": "Org::Term::F?::1.0",
+      "display_name": "F?"
+    },
+    {
+      "guid": "term-07",
+      "qualified_name": "Org::Term::G?::1.0",
+      "display_name": "G?"
+    },
+    {
+      "guid": "term-08",
+      "qualified_name": "Org::Term::H?::1.0",
+      "display_name": "H?"
+    },
+    {
+      "guid": "term-02",
+      "qualified_name": "Org::Term::Is-B?::1.0",
+      "display_name": "Is B?"
+    },
+    {
+      "guid": "term-10",
+      "qualified_name": "Org::Term::J?::1.0",
+      "display_name": "J?"
+    },
+    {
+      "guid": "term-stage-scouting",
+      "qualified_name": "Org::Term::Scouting::1.0",
+      "display_name": "Scouting"
+    },
+    {
+      "guid": "term-01",
+      "qualified_name": "Org::Term::What-is-A?::1.0",
+      "display_name": "What is A?"
     }
   ],
   "read_errors": []

@@ -17,6 +17,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import Optional
 from unittest.mock import create_autospec
 
 import pytest
@@ -95,7 +96,7 @@ def test_missing_id_is_set_in_the_same_update(after, before, inventory):
     assert q2.changed_fields == ["question_id"]  # text unchanged: an RE-only column changed
     (update,) = q2.commands
     assert update.command == "Update Glossary Term"
-    assert update.fields["Qualified Name"] == "Org::Term::Is-B?::1.0"
+    assert (update.fields["GUID"], update.fields["Qualified Name"]) == ("term-02", "Org::Term::Is-B?::1.0")
     assert "| question_id | Q-0002 |" in update.fields["Additional Properties"]
 
 
@@ -124,9 +125,9 @@ def test_merges_link_absorbed_to_survivor_and_omit_an_existing_replacement(after
     (rep7,) = [c for c in _row(plan, "Q-0007").commands if c.kind == "link_replacement"]
     assert rep7.fields == {"Term 1": "Org::Term::G?::1.0", "Term 2": "Org::Term::What-is-A?::1.0",
                            "Relationship Type": "ReplacementTerm"}
-    # survivor is new: named by its display name, created earlier in the same document
+    # survivor is new: named by the qualifiedName its Create (earlier in the same document) carries
     (rep8,) = [c for c in _row(plan, "Q-0008").commands if c.kind == "link_replacement"]
-    assert rep8.fields["Term 2"] == "I new?"
+    assert rep8.fields["Term 2"] == "Org::Term::I-new?::1.0" == _row(plan, "Q-0009").commands[0].fields["Qualified Name"]
     kinds = [c.kind for c in plan.commands()]
     assert kinds.index("create") < kinds.index("link_replacement")
     # Q-0010's ReplacementTerm to Q-0001 is already in the inventory: only the status update remains
@@ -237,40 +238,49 @@ def test_every_rendered_label_is_an_attribute_of_its_command(after, before, inve
     assert attrs["Status"]["inUpdate"] and attrs["Additional Properties"]["inUpdate"]
 
 
-def _apply(inventory: dict, text: str) -> dict:
-    """What a fully successful PROCESS of the document leaves in Egeria, as the next inventory would show it."""
+def _apply(inventory: dict, text: str, limit: Optional[int] = None) -> dict:
+    """What a successful PROCESS of the document leaves in Egeria, as the next inventory would show it. With
+    `limit`, only the document's first `limit` commands were processed (a partial apply)."""
     inv = copy.deepcopy(inventory)
     terms = inv["terms"]
 
     def find(ref):
-        hits = [t for t in terms if ref in (t["qualified_name"], t["display_name"])]
+        """Links, classifications and Term 1/2 name a term by qualifiedName (the inventory's, or the one a
+        Create in the same document carries); nothing is found by display name."""
+        hits = [t for t in terms if ref == t["qualified_name"]]
         assert len(hits) == 1, ref
         return hits[0]
 
-    def qid_of(table):
-        m = re.search(r"\|\s*question_id\s*\|\s*(Q-\d{4})\s*\|", table or "")
-        return m.group(1) if m else None
+    def props(table):
+        return dict(re.findall(r"^\|(?!\s*(?:Parameter Name|-))\s*([^|]+?)\s*\|\s*([^|]*?)\s*\|$", table or "", re.M))
 
-    for n, c in enumerate(_extract(text)):
+    for n, c in enumerate(_extract(text)[:limit]):
         a, name = c.attributes, f"{c.verb} {c.object_type}"
         if name == "Create Glossary Term":
-            terms.append({"guid": f"new-{n}", "qualified_name": f"Org::Term::{a['Display Name']}::1.0",
+            assert a["Qualified Name"] not in {t["qualified_name"] for t in terms}
+            p = props(a.get("Additional Properties"))
+            terms.append({"guid": f"new-{n}", "qualified_name": a["Qualified Name"],
                           "display_name": a["Display Name"], "description": a.get("Description", ""),
                           "summary": a.get("Summary", ""), "usage": a.get("Usage", ""), "content_status": "ACTIVE",
-                          "element_status": "ACTIVE", "question_id": qid_of(a.get("Additional Properties")),
-                          "classifications": ["Anchors"], "links": []})
+                          "element_status": "ACTIVE", "question_id": p.get("question_id"),
+                          "additional_properties": p, "classifications": ["Anchors"], "links": []})
+            inv.setdefault("all_terms", []).append({"guid": f"new-{n}", "qualified_name": a["Qualified Name"],
+                                                    "display_name": a["Display Name"]})
         elif name == "Classify Term as Question":
             find(a["Term Name"])["classifications"].append("Question")
         elif name == "Update Glossary Term":
-            t = find(a["Qualified Name"])
+            # located by GUID, which must name the same term as the qualifiedName it also carries
+            (t,) = [x for x in terms if x["guid"] == a["GUID"]]
+            assert t["qualified_name"] == a["Qualified Name"]
             t["display_name"] = a["Display Name"]
             for label, key in (("Description", "description"), ("Summary", "summary"), ("Usage", "usage")):
                 if label in a:
                     t[key] = a[label]
             if "Status" in a:
                 t["content_status"] = a["Status"]
-            if qid_of(a.get("Additional Properties")):
-                t["question_id"] = qid_of(a["Additional Properties"])
+            if "Additional Properties" in a:
+                t["additional_properties"] = props(a["Additional Properties"])  # the map sent replaces the map
+                t["question_id"] = t["additional_properties"].get("question_id")
         elif name == "Link Perspective to Question":
             col = a["Perspective Name"].split("::", 1)[1]
             find(a["Question Name"])["links"].append({
@@ -336,6 +346,30 @@ def _live_glossary() -> dict:
     return {"elementHeader": related["elementHeader"], "properties": related["properties"]}
 
 
+LIVE_RELATED = FIXTURES / "live_related_sample_Q-0001.json"
+
+
+def _live_related() -> dict:
+    """The live get_all_related_elements answer for Q-0001's term (pyegeria 6.2.9), verbatim: six ScopedBy with
+    a survey process at end 1, the Scouting stage and three perspectives at end 2, and the CollectionMembership."""
+    return json.loads(LIVE_RELATED.read_text(encoding="utf-8"))
+
+
+def _replacement_item(guid: str, qualified_name: str, display_name: str) -> dict:
+    """A ReplacementTerm item built from the live sample's own GlossaryTerm item (the Scouting stage): only the
+    relationship type and GUID and the other element's GUID and names changed; the survivor at end 2."""
+    item = copy.deepcopy(next(e for e in _live_related()["elementList"]
+                              if e["element"]["type"]["typeName"] == "GlossaryTerm"))
+    item["type"]["typeName"] = "ReplacementTerm"
+    item["relationshipGUID"] = f"rt-{guid}"
+    item["elementAtEnd1"] = False
+    item["element"]["elementGUID"] = guid
+    pvm = item["element"]["elementProperties"]["propertyValueMap"]
+    pvm["qualifiedName"]["primitiveValue"] = qualified_name
+    pvm["displayName"]["primitiveValue"] = display_name
+    return item
+
+
 def _term_element(guid, name, glossary=LIVE_GLOSSARY_GUID, qid=None, *, scopes=True):
     """A variant of the LIVE sample: its guid, names and membership target changed, nothing invented."""
     t = _live_term()
@@ -383,23 +417,20 @@ def test_inventory_reads_only_and_records_links(monkeypatch):
             return "No elements found"
         if guid == "t2":
             return "No elements found"
-        return {"elementList": [
-            {"type": {"typeName": "ScopedBy"}, "elementAtEnd1": False, "relationshipGUID": "r1",
-             "element": {"elementGUID": "p1", "type": {"typeName": "Perspective"},
-                         "elementProperties": {"propertiesAsStrings": {"qualifiedName": "Perspective::Steward",
-                                                                       "displayName": "Steward"}}}},
-            {"type": {"typeName": "ReplacementTerm"}, "elementAtEnd1": False, "relationshipGUID": "r2",
-             "element": {"elementGUID": "t9", "type": {"typeName": "GlossaryTerm"},
-                         "elementProperties": {"propertiesAsStrings": {"qualifiedName": "QN::nine"}}}},
-            {"type": {"typeName": "CollectionMembership"}, "elementAtEnd1": True, "relationshipGUID": "r3",
-             "element": {"elementGUID": LIVE_GLOSSARY_GUID}}]}
+        answer = _live_related()  # the LIVE get_all_related_elements answer, plus one ReplacementTerm of its shape
+        answer["elementList"].append(_replacement_item("t9", "QN::nine", "nine"))
+        return answer
     me.get_all_related_elements.side_effect = related
 
     inv = qtb.read_inventory(gm, me, "User Questions", page_size=3, now="T")
     assert inv["schema"] == qtb.INVENTORY_SCHEMA and inv["read_errors"] == []
     assert [(t["guid"], t["question_id"]) for t in inv["terms"]] == [("t1", "Q-0001"), ("t2", None)]
-    assert [l["relationship"] for l in inv["terms"][0]["links"]] == ["ScopedBy", "ReplacementTerm"]
-    assert inv["terms"][1]["links"] == []
+    assert [l["relationship"] for l in inv["terms"][0]["links"]] == ["ScopedBy"] * 4 + ["ReplacementTerm"]
+    assert inv["terms"][0]["additional_properties"] == {"question_id": "Q-0001"}
+    assert inv["terms"][1]["links"] == [] and inv["terms"][1]["additional_properties"] == {}
+    # every term read is kept, the one in another glossary too
+    assert [(t["guid"], t["display_name"]) for t in inv["all_terms"]] == [
+        ("x1", "Elsewhere"), ("t1", "Q one?"), ("t2", "Q two?")]
     called = {c[0].split(".")[0] for m in (gm, me) for c in m.mock_calls if c[0]}
     assert called <= set(qtb.INVENTORY_READ_METHODS)
 
@@ -524,7 +555,9 @@ def test_live_term_plans_by_old_name_sets_question_id_adds_no_link_and_replans_e
 # ---------------------------------------------------------------------------
 
 def test_active_row_missing_in_egeria_is_created_and_counted_apart(after, before, inventory):
-    inventory["terms"] = [t for t in inventory["terms"] if t["guid"] != "term-05"]  # Q-0005: active, pre-edit row
+    # Q-0005: active, pre-edit row; gone from the glossary AND from every term read
+    inventory["terms"] = [t for t in inventory["terms"] if t["guid"] != "term-05"]
+    inventory["all_terms"] = [t for t in inventory["all_terms"] if t["guid"] != "term-05"]
     plan = qtb.build_plan(after, before, inventory)
     assert plan.unplaceable == []
     q5 = _row(plan, "Q-0005")
@@ -541,7 +574,8 @@ def test_active_row_missing_in_egeria_is_created_and_counted_apart(after, before
 def _leftover(guid, name, description="old text"):
     return {"guid": guid, "qualified_name": f"Org::Term::{name}::1.0", "display_name": name,
             "description": description, "summary": "", "usage": "", "content_status": "ACTIVE",
-            "element_status": "ACTIVE", "question_id": None, "classifications": ["Anchors", "Question"],
+            "element_status": "ACTIVE", "question_id": None, "additional_properties": {},
+            "classifications": ["Anchors", "Question"],
             "links": [{"relationship": "ScopedBy", "relationship_guid": "r-lo", "other_at_end1": False,
                        "guid": "persp-Steward", "type": "Perspective", "qualified_name": "Perspective::Steward",
                        "display_name": "Steward"}]}
@@ -554,7 +588,8 @@ def test_leftover_in_the_map_is_deprecated_with_a_replacement_to_its_survivor(af
     (lo,) = [r for r in plan.leftovers if r.term["guid"] == "bbbab254-0000"]
     assert (lo.action, lo.survivor_id, lo.question_id) == ("deprecate_leftover", "Q-0001", "")
     dep, rep = lo.commands
-    assert dep.fields == {"Qualified Name": "Org::Term::Old cost?::1.0", "Display Name": "Old cost?",
+    assert dep.fields == {"GUID": "bbbab254-0000", "Qualified Name": "Org::Term::Old cost?::1.0",
+                          "Display Name": "Old cost?",
                           "Description": "retired before 2026-10-22: no longer in the question list — old text",
                           "Status": "DEPRECATED"}  # no Additional Properties: ids are never invented
     assert rep.fields == {"Term 1": "Org::Term::Old cost?::1.0", "Term 2": "Org::Term::What-is-A?::1.0",
@@ -595,7 +630,7 @@ def test_end_to_end_with_leftovers_replans_empty(after, before, inventory, monke
     inventory["terms"].append(_leftover("bbbab254-0000", "Old cost?", description=""))
     first = qtb.build_plan(after, before, inventory)
     (rep,) = [c for r in first.leftovers for c in r.commands if c.kind == "link_replacement"]
-    assert rep.fields["Term 2"] == "I new?"
+    assert rep.fields["Term 2"] == "Org::Term::I-new?::1.0"
     applied = _apply(inventory, qtb.render_document(first))
     lo = next(t for t in applied["terms"] if t["guid"] == "bbbab254-0000")
     assert lo["content_status"] == "DEPRECATED" and lo["question_id"] is None
@@ -616,12 +651,19 @@ def _live_plan_inputs():
             json.loads(LIVE_INVENTORY.read_text(encoding="utf-8")))
 
 
-def test_real_inventory_plans_with_exit_0_and_these_counts(tmp_path, capsys):
+def test_real_inventory_plans_these_counts_and_writes_nothing_from_a_schema_1_inventory(tmp_path, capsys):
+    """The 2026-10-23T02:04Z inventory is schema /1: no all-terms list, no additionalProperties map. The plan is
+    counted and printed with both gaps named, and no document is written: the coordinator re-takes it."""
     out = tmp_path / "batch.md"
     rc = qtb.main(["plan", "--inventory", str(LIVE_INVENTORY), "--out", str(out), "--csv", str(LIVE_CSV_AFTER),
                    "--old-csv", str(LIVE_CSV_BEFORE)])
-    printed = capsys.readouterr().out
-    assert rc == 0 and out.exists()
+    captured = capsys.readouterr()
+    printed = captured.out
+    assert rc == 1 and not out.exists()
+    assert "NOT ESTABLISHED: no all-terms list: a create was checked against the 98 glossary terms only, not every " \
+           "term read (991)" in printed
+    assert "NOT ESTABLISHED: no additionalProperties map" in printed
+    assert "Take a fresh inventory with this version" in captured.err
     assert ("found by name 94, by id 2, id set on 94, created: missing in Egeria 1 (Q-0073), "
             "deprecated: leftovers 2") in printed
     plan = qtb.build_plan(*_live_plan_inputs())
@@ -650,3 +692,202 @@ def test_real_inventory_replans_empty_after_apply():
     assert {r.join_path for r in second.rows if r.term is not None} == {"question_id"}
     assert [(r.term["content_status"], r.action) for r in second.leftovers] == [("DEPRECATED", "unchanged")] * 2
     assert second.proof()["deprecated: leftovers"] == 0 and second.proof()["created: missing in Egeria"] == 0
+
+
+# ---------------------------------------------------------------------------
+# fix round 3 (Opus review 2026-10-23)
+# ---------------------------------------------------------------------------
+
+def _updates(plan):
+    return [c for c in plan.commands() if c.command == "Update Glossary Term"]
+
+
+def test_every_update_and_deprecation_carries_the_guid_and_its_qualified_name(after, before, inventory):
+    plan = qtb.build_plan(after, before, inventory)
+    term_of = {id(c): r.term for r in plan.rows + plan.leftovers for c in r.commands}
+    updates = _updates(plan)
+    assert {c.kind for c in updates} == {"update", "deprecate", "deprecate_leftover"}
+    for c in updates:
+        assert (c.fields["GUID"], c.fields["Qualified Name"]) == (term_of[id(c)]["guid"],
+                                                                  term_of[id(c)]["qualified_name"])
+    doc = qtb.render_document(plan)
+    assert doc.count("### GUID\n") == len(updates)
+    assert "VALIDATE must show no \"Rewriting ... to 'Create'\"; if it does, STOP" in doc
+
+
+def test_the_installed_dr_egeria_honours_an_explicit_guid_before_any_name():
+    """processors.py fetch_as_is: '### GUID' is fetched first, so an Update is not rewritten to a Create when
+    its qualifiedName lookup fails. A pyegeria that dropped this would make the GUID decoration."""
+    from md_processing.v2.processors import AsyncBaseCommandProcessor
+    source = inspect.getsource(AsyncBaseCommandProcessor.fetch_as_is)
+    guid_at = source.index('explicit_guid = self.parsed_output.get("attributes", {}).get("GUID", {}).get("value")')
+    assert guid_at < source.index('qn = self.parsed_output.get("qualified_name")')
+
+
+def test_real_inventory_every_update_carries_a_guid():
+    plan = qtb.build_plan(*_live_plan_inputs())
+    updates = _updates(plan)
+    assert len(updates) == 83 + 11 + 2 and all(c.fields["GUID"] for c in updates)
+    assert qtb.render_document(plan).count("### GUID\n") == 96
+
+
+def test_updates_send_only_what_changed_plus_the_locator(after, before, inventory):
+    plan = qtb.build_plan(after, before, inventory)
+    (q2,) = _row(plan, "Q-0002").commands  # only question_id changed
+    assert list(q2.fields) == ["GUID", "Qualified Name", "Display Name", "Additional Properties"]
+    assert q2.fields["Display Name"] == "Is B?"  # the term's own: Display Name is required, not a change
+    q3 = _row(plan, "Q-0003").commands[0]  # reworded: the new name rides in Display Name
+    assert q3.fields["Display Name"] == _row(plan, "Q-0003").question != "C?"
+    assert set(q3.fields) - {"GUID", "Qualified Name", "Display Name", "Additional Properties"} == {
+        label for label in _row(plan, "Q-0003").changed_fields if label != "Display Name" and label != "question_id"}
+
+
+def test_question_id_is_merged_into_the_whole_additional_properties_map(after, before, inventory):
+    t2 = next(t for t in inventory["terms"] if t["guid"] == "term-02")
+    t2["additional_properties"] = {"source": "scouting-questions.md", "owner": "stewards"}
+    plan = qtb.build_plan(after, before, inventory)
+    table = _row(plan, "Q-0002").commands[0].fields["Additional Properties"]
+    assert table.splitlines()[2:] == ["| source | scouting-questions.md |", "| owner | stewards |",
+                                      "| question_id | Q-0002 |"]
+    applied = _apply(inventory, qtb.render_document(plan))
+    assert next(t for t in applied["terms"] if t["guid"] == "term-02")["additional_properties"] == {
+        "source": "scouting-questions.md", "owner": "stewards", "question_id": "Q-0002"}
+    assert qtb.build_plan(after, before, applied).commands() == []
+
+
+def test_a_map_that_cannot_be_written_back_unchanged_is_unplaceable(after, before, inventory):
+    next(t for t in inventory["terms"] if t["guid"] == "term-02")["additional_properties"] = {"note": "a | b"}
+    plan = qtb.build_plan(after, before, inventory)
+    assert [r.question_id for r in plan.unplaceable] == ["Q-0002"] and _row(plan, "Q-0002").commands == []
+
+
+def test_an_active_term_without_the_question_classification_is_classified(after, before, inventory):
+    next(t for t in inventory["terms"] if t["guid"] == "term-04")["classifications"] = ["Anchors"]  # like bbbab254
+    plan = qtb.build_plan(after, before, inventory)
+    q4 = _row(plan, "Q-0004")
+    assert q4.action == "links_only"
+    assert [(c.command, c.fields) for c in q4.commands] == [
+        ("Classify Term as Question", {"Term Name": "Org::Term::D?::1.0"})]
+    applied = _apply(inventory, qtb.render_document(plan))
+    assert "Question" in next(t for t in applied["terms"] if t["guid"] == "term-04")["classifications"]
+    assert qtb.build_plan(after, before, applied).commands() == []
+
+
+def test_live_related_sample_is_read_scopes_only_at_end_2():
+    links = qtb.links_from_related(_live_related(), "live")
+    assert [(l["type"], l["qualified_name"]) for l in links] == [
+        ("GlossaryTerm", "Coco Pharmaceuticals::Term::Scouting::1.0"), ("Perspective", "Perspective::Data Expert"),
+        ("Perspective", "Perspective::Consumer"), ("Perspective", "Perspective::Steward")]
+    assert all(l["relationship"] == "ScopedBy" and not l["other_at_end1"] for l in links)
+    term = {"links": links}
+    assert qtb._term_stages(term) == {"Scouting"}
+    assert qtb._term_perspectives(term) == {"Perspective::Data Expert", "Perspective::Consumer",
+                                            "Perspective::Steward"}
+
+
+def test_a_replacement_term_in_the_live_item_shape_is_not_planned_again():
+    """Q-0001's live term is the survivor; a second term (old name 'Old dup?') merged into it already has the
+    ReplacementTerm, read from an item of the live related-elements shape: the re-plan only deprecates."""
+    gm, me = _fakes()
+    gm.get_glossaries_by_name.return_value = [_live_glossary()]
+    survivor = _live_term()
+    absorbed = _term_element("b0b0b0b0-0000-0000-0000-000000000001", "Old dup?", scopes=False)
+    gm.find_glossary_terms.side_effect = lambda *a, start_from=0, **k: [survivor, absorbed] if start_from == 0 else []
+    survivor_qn = survivor["properties"]["qualifiedName"]
+
+    def related(guid, start_from=0, **kw):
+        if start_from:
+            return "No elements found"
+        if guid == absorbed["elementHeader"]["guid"]:
+            return {"elementList": [_replacement_item(survivor["elementHeader"]["guid"], survivor_qn,
+                                                      survivor["properties"]["displayName"])]}
+        return _live_related()
+    me.get_all_related_elements.side_effect = related
+    inventory = qtb.read_inventory(gm, me, "User Questions", now="T")
+    (q1,) = _live_rows()
+    dup = dict(q1, **{"Question ID": "Q-0999", "Question": "Old dup?", "Status": "merged into Q-0001 2026-10-22"})
+    plan = qtb.build_plan([q1, dup], [q1, dup], inventory)
+    q999 = _row(plan, "Q-0999")
+    assert q999.action == "deprecate_merged" and [c.kind for c in q999.commands] == ["deprecate"]
+    assert not [c for c in plan.commands() if c.kind == "link_replacement"]
+
+
+def test_a_create_that_collides_with_any_term_read_is_unplaceable(after, before, inventory):
+    # a term in another glossary under Q-0009's name: never seen by the glossary read, seen in all_terms
+    inventory["all_terms"].append({"guid": "elsewhere-1", "qualified_name": "Other::Term::I-new?::1.0",
+                                   "display_name": "I new?"})
+    plan = qtb.build_plan(after, before, inventory)
+    q9 = _row(plan, "Q-0009")
+    assert q9.action == "unplaceable" and "elsewhere-1" in q9.reason and q9.commands == []
+    assert "Q-0008" in [r.question_id for r in plan.unplaceable]  # its survivor is not placed
+
+
+def test_a_create_whose_derived_qualified_name_is_taken_is_unplaceable(after, before, inventory):
+    inventory["all_terms"].append({"guid": "qn-1", "qualified_name": "Org::Term::I-new?::1.0",
+                                   "display_name": "Something else"})
+    q9 = _row(qtb.build_plan(after, before, inventory), "Q-0009")
+    assert q9.action == "unplaceable" and "'Org::Term::I-new?::1.0'" in q9.reason and "qn-1" in q9.reason
+
+
+def test_a_create_is_refused_when_a_term_with_another_id_has_the_rows_name(after, before, inventory):
+    """Item 5: the name check counts terms WITH a question_id too (the join only looks at id-less ones)."""
+    other = copy.deepcopy(next(t for t in inventory["terms"] if t["guid"] == "term-04"))
+    other.update(guid="term-x", qualified_name="Org::Term::I-new-x?::1.0", display_name="I new?",
+                 question_id="Q-0777", additional_properties={"question_id": "Q-0777"})
+    inventory["terms"].append(other)
+    q9 = _row(qtb.build_plan(after, before, inventory), "Q-0009")
+    assert q9.action == "unplaceable" and "term-x" in q9.reason
+
+
+def test_created_terms_are_named_by_their_derived_qualified_name(after, before, inventory):
+    plan = qtb.build_plan(after, before, inventory)
+    q9 = _row(plan, "Q-0009")
+    create, classify, *links = q9.commands
+    assert create.fields["Qualified Name"] == q9.created_qn == "Org::Term::I-new?::1.0"
+    assert classify.fields == {"Term Name": q9.created_qn}
+    assert links and all(q9.created_qn in (c.fields.get("Question Name"), c.fields.get("Target Element"))
+                         for c in links)
+
+
+def test_a_schema_1_inventory_names_its_gaps_and_a_schema_2_one_has_none(after, before, inventory, tmp_path):
+    assert qtb.build_plan(after, before, inventory).input_gaps == []
+    legacy = copy.deepcopy(inventory)
+    legacy["schema"] = qtb.LEGACY_INVENTORY_SCHEMA
+    del legacy["all_terms"]
+    for t in legacy["terms"]:
+        del t["additional_properties"]
+    assert len(qtb.build_plan(after, before, legacy).input_gaps) == 2
+    for inv, rc_expected in ((inventory, 0), (legacy, 1)):
+        src, out = tmp_path / f"inv-{rc_expected}.json", tmp_path / f"out-{rc_expected}.md"
+        src.write_text(json.dumps(inv))
+        rc = qtb.main(["plan", "--inventory", str(src), "--out", str(out), "--csv", str(FIXTURES / "after.csv"),
+                       "--old-csv", str(FIXTURES / "before.csv")])
+        assert (rc, out.exists()) == (rc_expected, rc_expected == 0)
+
+
+def _no_duplicates(inventory: dict) -> None:
+    qns = [t["qualified_name"] for t in inventory["terms"]]
+    assert len(qns) == len(set(qns)), "a term was created twice"
+    for t in inventory["terms"]:
+        keys = [(l["relationship"], l["qualified_name"]) for l in t["links"]]
+        assert len(keys) == len(set(keys)), (t["qualified_name"], "a link was added twice")
+        assert t["classifications"].count("Question") <= 1
+
+
+@pytest.mark.parametrize("which", ["fixture", "live"])
+def test_a_partial_apply_replans_the_remainder_without_repeating_anything(which, after, before, inventory):
+    """Item 9: PROCESS stops after N commands; a fresh inventory and plan finishes the job, repeating no create,
+    link or classification, for every N (the live inventory at a spread of N)."""
+    args = (after, before, inventory) if which == "fixture" else _live_plan_inputs()
+    first = qtb.build_plan(*args)
+    doc, total = qtb.render_document(first), len(first.commands())
+    steps = range(total + 1) if which == "fixture" else sorted({0, 1, 2, 9, 10, 18, 40, 83, 120, 169, total})
+    for n in steps:
+        partial = _apply(args[2], doc, limit=n)
+        second = qtb.build_plan(args[0], args[1], partial)
+        assert second.unplaceable == [], n
+        created = {c.question_id for c in first.commands()[:n] if c.kind == "create"}
+        assert not [c for c in second.commands() if c.kind == "create" and c.question_id in created], n
+        done = _apply(partial, qtb.render_document(second))
+        _no_duplicates(done)
+        assert qtb.build_plan(args[0], args[1], done).commands() == [], n

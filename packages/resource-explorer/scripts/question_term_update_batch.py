@@ -10,22 +10,33 @@ Two subcommands, one plan function:
 * ``inventory`` (READ-ONLY): pages the glossary's terms and writes JSON: GUID, qualifiedName, displayName,
   description, summary, usage, contentStatus, the ``question_id`` additional property (MISSING on terms authored
   before 2026-10-13 unless a later batch set it), and each term's ScopedBy links (perspectives and funnel stages)
-  and ReplacementTerm links. It calls only ``get_glossaries_by_name``, ``find_glossary_terms`` and
+  and ReplacementTerm links, the term's whole ``additionalProperties`` map, and (``all_terms``) the GUID,
+  qualifiedName and display name of EVERY term the read returned, members of the glossary or not. It calls only ``get_glossaries_by_name``, ``find_glossary_terms`` and
   ``get_all_related_elements``; a test runs it against fakes whose every write method raises.
   Shape read (pyegeria 6.2.9, saved live sample in tests/fixtures/question_term_batch/): a term is in the glossary
   by its ``memberOfCollections`` CollectionMembership (matched on the glossary's GUID, or its qualifiedName when
   the entry carries no GUID), never by its Anchors (a term anchors itself). ScopedBy links come from the term's
   ``relevantToScopes``, merged with the related-elements read, which is kept because the term answer shows no
-  ReplacementTerm list and its embedded lists may be capped.
+  ReplacementTerm list and its embedded lists may be capped. A ScopedBy whose OTHER element is at end 1 is the
+  term acting as a scope (a survey process scoped by the question), not one of the term's scopes: not recorded.
 
 * ``plan --inventory <json> --out <md>``: joins each CSV row to a term by ``question_id``; a term without one is
   joined by the row's display name in the pre-edit CSV (d7a395a4), and the same Update sets its ``question_id``.
   ``build_plan`` returns one Plan object; the printed counts and the rendered document both come from it.
 
   - an active row whose term differs (display name, description, summary, usage, or no ``question_id``):
-    ``Update Glossary Term`` located by the term's qualifiedName. Links the term already has are never re-added;
-    a perspective or funnel-stage link the CSV names and the inventory lacks is added.
-  - a new row with no term: Create + Classify as Question + each perspective link + each ScopedBy link.
+    ``Update Glossary Term`` located by ``### GUID`` (the inventory's) and its qualifiedName, carrying the
+    required Display Name and ONLY the fields that changed; setting ``question_id`` sends the term's whole
+    additionalProperties map with question_id merged in, never a map with other keys dropped. Every Update and
+    deprecation carries the GUID: Dr.Egeria rewrites an Update whose element it cannot find to a CREATE
+    (processors.py, "Rewriting ... to 'Create'"), which would mint a term outside the glossary. Links the term
+    already has are never re-added; a perspective or funnel-stage link the CSV names and the inventory lacks is
+    added, and ``Classify Term as Question`` when the term lacks the Question classification.
+  - a new row with no term: Create + Classify as Question + each perspective link + each ScopedBy link. The
+    Create carries an explicit Qualified Name derived from the glossary's own pattern (local qualifier, "Term",
+    the display name with whitespace as "-", version) so the Classify and Link commands can name it exactly.
+    Refused (unplaceable) when ANY term read, in the glossary or not, with or without a question_id, has the
+    row's old or new display name or the derived qualifiedName.
   - a retired or merged row: Update with Status DEPRECATED and the CSV Status text as a description prefix;
     a merged term also gets a ReplacementTerm link (absorbed term = Term 1, survivor = Term 2), omitted when the
     inventory shows it. Every existing link on a deprecated term is kept: nothing here deletes a relationship.
@@ -36,10 +47,13 @@ Two subcommands, one plan function:
     description prefix LEFTOVER_PREFIX, no question_id, links kept, and a ReplacementTerm to its survivor when
     LEFTOVER_SURVIVORS (data, keyed on display name, GUID prefix checked) names one; otherwise listed without one.
   - a row the plan cannot place (two terms for one id or name, one term claimed by two rows, a survivor that is
-    missing, a mapped leftover name on another GUID) is listed, no document is written and ``plan`` exits 1.
+    missing, a mapped leftover name on another GUID, a create that collides) is listed, no document is written and ``plan`` exits 1.
   The proof line: "found by name N, by id N, id set on N, created: missing in Egeria N, deprecated: leftovers N".
 
-  An inventory taken after a successful apply gives a plan with no commands (tested).
+  An inventory taken after a successful apply gives a plan with no commands, and one taken after a partial
+  apply plans exactly the remainder (both tested). An inventory of schema /1 (before fix round 3) has no
+  all-terms list and no additionalProperties map: the plan is counted and printed with those gaps named, and
+  no document is written (exit 1): take a fresh inventory.
 
 The coordinator runs both subcommands; a builder never runs either against a live platform:
 
@@ -78,7 +92,11 @@ CSV_PATH = _PKG_DIR / "docs" / "dr-egeria" / "resource_questions.csv"
 PRE_EDIT_SHA = "d7a395a4"
 PRE_EDIT_CSV_IN_REPO = "packages/resource-explorer/docs/dr-egeria/resource_questions.csv"
 QUESTIONS_GLOSSARY = "User Questions"
-INVENTORY_SCHEMA = "question-term-inventory/1"
+INVENTORY_SCHEMA = "question-term-inventory/2"
+#: Before fix round 3: no `all_terms`, no per-term `additional_properties`. Planned with those gaps named; never
+#: rendered to a document by the CLI.
+LEGACY_INVENTORY_SCHEMA = "question-term-inventory/1"
+QUESTION_CLASSIFICATION = "Question"
 DEPRECATED = "DEPRECATED"
 PERSPECTIVE_QN_PREFIX = "Perspective::"
 SCOPED_BY = "ScopedBy"
@@ -233,11 +251,15 @@ def _generic_prop(element: dict, name: str) -> str:
 
 def links_from_related(answer: Any, what: str) -> list[dict]:
     """Pure: the ScopedBy and ReplacementTerm links in one `get_all_related_elements(guid, graph_query_depth=1)`
-    answer. `other_at_end1` is Egeria's `elementAtEnd1` for the OTHER element."""
+    answer (live shape: `{elementList: [{element, elementAtEnd1, relationshipGUID, type: {typeName}}, ...]}`).
+    `other_at_end1` is Egeria's `elementAtEnd1` for the OTHER element. A ScopedBy with the other element at end 1
+    is the term as a scope (the term answer's `scopedElements`), not one of its scopes, and is skipped."""
     out = []
     for entry in _elements(answer, what):
         rtype = (entry.get("type") or {}).get("typeName")
         if rtype not in (SCOPED_BY, REPLACEMENT_TERM):
+            continue
+        if rtype == SCOPED_BY and entry.get("elementAtEnd1"):
             continue
         other = entry.get("element") or {}
         out.append({
@@ -255,7 +277,9 @@ def links_from_related(answer: Any, what: str) -> list[dict]:
 def _term_record(element: dict) -> dict:
     props = _props(element)
     additional = props.get("additionalProperties") or {}
-    qid = additional.get("question_id") if isinstance(additional, dict) else None
+    if not isinstance(additional, dict):
+        additional = {}
+    qid = additional.get("question_id")
     return {
         "guid": str(_header(element).get("guid") or ""),
         "qualified_name": str(props.get("qualifiedName") or ""),
@@ -266,6 +290,7 @@ def _term_record(element: dict) -> dict:
         "content_status": str(props.get("contentStatus") or ""),
         "element_status": str(_header(element).get("status") or ""),
         "question_id": (str(qid).strip() or None) if qid is not None else None,
+        "additional_properties": {str(k): v for k, v in additional.items()},
         "classifications": sorted({c["classificationName"] for c in _classifications(element)}),
         "links": links_from_term(element),
     }
@@ -323,6 +348,11 @@ def read_inventory(glossary_manager, metadata_expert, glossary_name: str = QUEST
         "glossary": {"name": glossary_name, "guid": glossary_guid, "qualified_name": glossary_qn},
         "terms_seen": len(seen),
         "terms": terms,
+        # every term read, in the glossary or not: a Create must not collide with any of them
+        "all_terms": sorted(({"guid": str(_header(e).get("guid") or ""),
+                              "qualified_name": str(_props(e).get("qualifiedName") or ""),
+                              "display_name": str(_props(e).get("displayName") or "")} for e in seen),
+                            key=lambda t: (t["display_name"], t["guid"])),
         "read_errors": read_errors,
     }
 
@@ -357,6 +387,7 @@ class RowPlan:
     reason: str = ""
     missing_in_egeria: bool = False   # an active pre-edit row with no term: created here, counted apart
     survivor_id: Optional[str] = None  # leftovers: the survivor from LEFTOVER_SURVIVORS, if any
+    created_qn: Optional[str] = None   # creates: the explicit qualifiedName the Create carries; Classify/Links name it
 
 
 @dataclass
@@ -366,6 +397,9 @@ class Plan:
     unknown_terms: list = field(default_factory=list)   # unjoined terms a CSV row still names (left alone)
     stale_links: list = field(default_factory=list)     # links the CSV no longer names (kept: no deletes)
     leftovers: list = field(default_factory=list)       # RowPlans for terms no CSV row names (deprecated)
+    #: what the inventory could not show (a /1 inventory): named, never read as "nothing there". The CLI writes no
+    #: document while any is present.
+    input_gaps: list = field(default_factory=list)
 
     @property
     def unplaceable(self) -> list:
@@ -412,6 +446,7 @@ class Plan:
                                           if r.action == "create" and r.missing_in_egeria],
             "deprecate_no_term": [r.question_id for r in self.rows if r.action == "no_term"],
             "proof": self.proof(),
+            "input_gaps": list(self.input_gaps),
             "leftovers": [{"guid": r.term["guid"], "display_name": r.term["display_name"], "action": r.action,
                            "survivor": r.survivor_id} for r in self.leftovers],
         }
@@ -473,16 +508,83 @@ def _link_commands(row_plan: RowPlan, row: dict, persp_cols: list[str], ref: str
     return out
 
 
+def _dash(name: str) -> str:
+    """pyegeria's __create_qualified_name__ rule for the name part: each whitespace character becomes '-'."""
+    return re.sub(r"\s", "-", (name or "").strip())
+
+
+def qualified_name_pattern(terms: Iterable[dict]) -> Optional[tuple]:
+    """(local qualifier, version) that the glossary's own terms' qualifiedNames share, read from the terms whose
+    qualifiedName is '<local qualifier>::Term::<display name, whitespace as ->::<version>'. None when no term
+    shows the pattern or two patterns disagree: the plan never guesses a qualifiedName."""
+    found = set()
+    for t in terms:
+        name = t.get("display_name") or ""
+        if not name:
+            continue
+        m = re.fullmatch(r"(?:(.*)::)?Term::" + re.escape(_dash(name)) + r"(?:::([^:]+))?", t.get("qualified_name") or "")
+        if m:
+            found.add((m.group(1) or "", m.group(2) or ""))
+    return found.pop() if len(found) == 1 else None
+
+
+def derive_qualified_name(pattern: tuple, display_name: str) -> str:
+    local_qualifier, version = pattern
+    return "::".join(p for p in (local_qualifier, "Term", _dash(display_name), version) if p)
+
+
+def _properties_table(mapping: dict) -> Optional[str]:
+    """The whole additionalProperties map as Dr.Egeria's Dictionary table (the create generator's form). None when
+    a key or value cannot be written into a table cell unchanged (a '|' or a line break): never mangled."""
+    rows = []
+    for key, value in mapping.items():
+        k, v = str(key), "" if value is None else str(value)
+        if any(ch in k + v for ch in "|\n\r") or not k.strip():
+            return None
+        rows.append(f"| {k} | {v} |")
+    return "| Parameter Name | Parameter Value |\n|---|---|\n" + "\n".join(rows)
+
+
+def _id_properties(term: dict, question_id: str) -> Optional[str]:
+    """The term's own additionalProperties with question_id merged in (never a map with other keys dropped)."""
+    return _properties_table({**(term.get("additional_properties") or {}), "question_id": question_id})
+
+
+def _locator(term: dict, display_name: Optional[str] = None) -> dict:
+    """Every Update and deprecation: the GUID first (Dr.Egeria's fetch_as_is tries an explicit GUID before any
+    name), the qualifiedName kept, and the Display Name the command requires."""
+    return {"GUID": term["guid"], "Qualified Name": term["qualified_name"],
+            "Display Name": display_name or term["display_name"]}
+
+
 def build_plan(rows: list[dict], old_rows: list[dict], inventory: dict, *,
                questions_glossary: str = QUESTIONS_GLOSSARY) -> Plan:
     """THE plan. Pure: CSV rows (current), the pre-edit CSV rows, and an inventory in; one Plan out."""
-    if inventory.get("schema") != INVENTORY_SCHEMA:
-        raise PlanInputError(f"inventory schema {inventory.get('schema')!r}, expected {INVENTORY_SCHEMA!r}")
+    schema = inventory.get("schema")
+    if schema not in (INVENTORY_SCHEMA, LEGACY_INVENTORY_SCHEMA):
+        raise PlanInputError(f"inventory schema {schema!r}, expected {INVENTORY_SCHEMA!r}")
     if inventory.get("read_errors"):
         raise PlanInputError(f"inventory has {len(inventory['read_errors'])} read error(s); a term whose links "
                              "could not be read cannot be planned (missing is not the same as not read)")
     terms = list(inventory.get("terms") or [])
     persp_cols = perspective_columns(rows[0].keys()) if rows else []
+    gaps: list[str] = []
+    all_terms = inventory.get("all_terms")
+    if all_terms is None:
+        all_terms = []
+        gaps.append(f"no all-terms list: a create was checked against the {len(terms)} glossary terms only, not "
+                    f"every term read ({inventory.get('terms_seen', '?')})")
+    if any("additional_properties" not in t for t in terms):
+        gaps.append("no additionalProperties map: an Update setting question_id could drop the term's other keys")
+    # every term read, members and not, with or without a question_id: a Create must collide with none of them
+    any_name: dict[str, list] = {}
+    any_qn: dict[str, list] = {}
+    for t in list(terms) + list(all_terms):
+        if _norm(t.get("display_name")):
+            any_name.setdefault(_norm(t.get("display_name")), []).append(t["guid"])
+        if t.get("qualified_name"):
+            any_qn.setdefault(t["qualified_name"], []).append(t["guid"])
+    qn_pattern = qualified_name_pattern(terms)
 
     by_id: dict[str, list] = {}
     by_name: dict[str, list] = {}
@@ -496,6 +598,7 @@ def build_plan(rows: list[dict], old_rows: list[dict], inventory: dict, *,
     # Pass 1: join every row to at most one term.
     plans: list[RowPlan] = []
     row_of: dict[str, dict] = {}
+    created_qns: dict[str, list] = {}
     for row in rows:
         question = (row.get("Question") or "").strip()
         qid = (row.get("Question ID") or "").strip()
@@ -526,10 +629,33 @@ def build_plan(rows: list[dict], old_rows: list[dict], inventory: dict, *,
                 rp.reason = f"no term for {qid} by question_id or by name: nothing to deprecate"
             else:
                 # Active and absent from Egeria. Created like a new row; counted apart when the row existed
-                # before the edit (architect ruling 2026-10-23: missing in Egeria, not an error).
+                # before the edit (architect ruling 2026-10-23: missing in Egeria, not an error). Refused when
+                # any term read has the row's old or new name, or the qualifiedName the Create would carry.
                 rp.action = "create"
                 rp.missing_in_egeria = old is not None
+                named = sorted({g for n in names for g in any_name.get(n, [])})
+                if named:
+                    rp.action = "unplaceable"
+                    rp.reason = (f"{qid} would be created, but a term already has its old or new name: "
+                                 + ", ".join(named) + "; resolve by hand")
+                elif qn_pattern is None:
+                    rp.action = "unplaceable"
+                    rp.reason = (f"{qid} would be created, but the glossary's terms show no single qualifiedName "
+                                 "pattern to derive its qualifiedName from")
+                else:
+                    rp.created_qn = derive_qualified_name(qn_pattern, question)
+                    if any_qn.get(rp.created_qn):
+                        rp.action = "unplaceable"
+                        rp.reason = (f"{qid} would be created as {rp.created_qn!r}, which term(s) "
+                                     + ", ".join(any_qn[rp.created_qn]) + " already carry; resolve by hand")
+                    else:
+                        created_qns.setdefault(rp.created_qn, []).append(rp)
         plans.append(rp)
+    for qn, claimants in created_qns.items():
+        if len(claimants) > 1:
+            for rp in claimants:
+                rp.action = "unplaceable"
+                rp.reason = f"{qn!r} would be created for " + ", ".join(c.question_id for c in claimants)
 
     claims: dict[str, list] = {}
     for rp in plans:
@@ -553,30 +679,35 @@ def build_plan(rows: list[dict], old_rows: list[dict], inventory: dict, *,
         if rp.action == "create":
             text = _desired_text(row)
             rp.commands.append(Command("Create Glossary Term", {
-                "Glossary Name": questions_glossary, **text,
+                "Glossary Name": questions_glossary, "Qualified Name": rp.created_qn, **text,
                 "Additional Properties": _gen._question_properties(rp.question_id)}, "create", rp.question_id))
-            rp.commands.append(Command("Classify Term as Question", {"Term Name": rp.question}, "classify",
+            rp.commands.append(Command("Classify Term as Question", {"Term Name": rp.created_qn}, "classify",
                                        rp.question_id))
-            rp.commands.extend(_link_commands(rp, row, persp_cols, rp.question, None))
+            rp.commands.extend(_link_commands(rp, row, persp_cols, rp.created_qn, None))
             continue
 
         term = rp.term
         need_id = not term.get("question_id")
+        id_props = _id_properties(term, rp.question_id) if need_id else None
+        if need_id and id_props is None:
+            rp.action = "unplaceable"
+            rp.reason = (f"term {term['guid']}'s additionalProperties cannot be written back as a table unchanged "
+                         "(a '|' or a line break); set question_id by hand")
+            continue
         if is_skipped_status(status):
             merged = _MERGED_RX.match(status)
-            fields = {"Qualified Name": term["qualified_name"], "Display Name": term["display_name"]}
+            fields = _locator(term)
             current_desc = term.get("description") or ""
             if not _norm(current_desc).startswith(_norm(status)):
                 fields["Description"] = f"{status} — {current_desc}" if current_desc.strip() else status
                 rp.changed_fields.append("Description")
             if (term.get("content_status") or "").upper() != DEPRECATED:
                 rp.changed_fields.append("Status")
+                fields["Status"] = DEPRECATED
             if need_id:
                 rp.changed_fields.append("question_id")
+                fields["Additional Properties"] = id_props
             if rp.changed_fields:
-                fields["Status"] = DEPRECATED
-                if need_id:
-                    fields["Additional Properties"] = _gen._question_properties(rp.question_id)
                 rp.commands.append(Command("Update Glossary Term", fields, "deprecate", rp.question_id))
             rp.action = "deprecate_merged" if merged else "deprecate_retired"
             if merged:
@@ -597,8 +728,8 @@ def build_plan(rows: list[dict], old_rows: list[dict], inventory: dict, *,
                                      "way (survivor at end 1); resolve by hand")
                         continue
                     present, survivor_ref = bool(links), survivor.term["qualified_name"]
-                else:  # created earlier in this same document
-                    present, survivor_ref = False, survivor.question
+                else:  # created earlier in this same document, under the qualifiedName its Create carries
+                    present, survivor_ref = False, survivor.created_qn
                 if not present:
                     rp.commands.append(Command("Link Term-Term Relationship", {
                         "Term 1": term["qualified_name"], "Term 2": survivor_ref,
@@ -613,10 +744,16 @@ def build_plan(rows: list[dict], old_rows: list[dict], inventory: dict, *,
         if need_id:
             rp.changed_fields.append("question_id")
         if rp.changed_fields:
-            fields = {"Qualified Name": term["qualified_name"], **desired}
+            # only what changed, plus the locator (GUID, qualifiedName, the required Display Name)
+            fields = _locator(term, desired["Display Name"] if "Display Name" in rp.changed_fields else None)
+            fields.update({label: desired[label] for label in ("Description", "Summary", "Usage")
+                           if label in rp.changed_fields})
             if need_id:
-                fields["Additional Properties"] = _gen._question_properties(rp.question_id)
+                fields["Additional Properties"] = id_props
             rp.commands.append(Command("Update Glossary Term", fields, "update", rp.question_id))
+        if QUESTION_CLASSIFICATION not in (term.get("classifications") or []):
+            rp.commands.append(Command("Classify Term as Question", {"Term Name": term["qualified_name"]},
+                                       "classify", rp.question_id))
         rp.commands.extend(_link_commands(rp, row, persp_cols, term["qualified_name"], term))
         rp.action = "update" if rp.changed_fields else ("links_only" if rp.commands else "unchanged")
 
@@ -642,12 +779,12 @@ def build_plan(rows: list[dict], old_rows: list[dict], inventory: dict, *,
             continue
         leftovers.append(_plan_leftover(t, survivors.get(_norm(t.get("display_name"))), plan_of, row_of))
     return Plan(rows=plans, inventory_taken_at=str(inventory.get("taken_at") or ""), unknown_terms=unknown,
-                stale_links=stale, leftovers=leftovers)
+                stale_links=stale, leftovers=leftovers, input_gaps=gaps)
 
 
 def _plan_leftover(term: dict, mapped: Optional[tuple], plan_of: dict, row_of: dict) -> RowPlan:
-    """One leftover term: DEPRECATED with LEFTOVER_PREFIX on its description, located by qualifiedName, and a
-    ReplacementTerm (leftover = Term 1, survivor = Term 2) when LEFTOVER_SURVIVORS names a survivor."""
+    """One leftover term: DEPRECATED with LEFTOVER_PREFIX on its description, located by GUID and qualifiedName,
+    and a ReplacementTerm (leftover = Term 1, survivor = Term 2) when LEFTOVER_SURVIVORS names a survivor."""
     rp = RowPlan(question_id="", question=term["display_name"], join_path="leftover", term=term,
                  action="deprecate_leftover")
     if mapped is not None:
@@ -659,14 +796,14 @@ def _plan_leftover(term: dict, mapped: Optional[tuple], plan_of: dict, row_of: d
             return rp
         rp.survivor_id = survivor_id
     current_desc = term.get("description") or ""
-    fields = {"Qualified Name": term["qualified_name"], "Display Name": term["display_name"]}
+    fields = _locator(term)
     if not _norm(current_desc).startswith(_norm(LEFTOVER_PREFIX)):
         fields["Description"] = f"{LEFTOVER_PREFIX} — {current_desc}" if current_desc.strip() else LEFTOVER_PREFIX
         rp.changed_fields.append("Description")
     if (term.get("content_status") or "").upper() != DEPRECATED:
         rp.changed_fields.append("Status")
-    if rp.changed_fields:
         fields["Status"] = DEPRECATED
+    if rp.changed_fields:
         rp.commands.append(Command("Update Glossary Term", fields, "deprecate_leftover", ""))
     if rp.survivor_id:
         survivor, survivor_row = plan_of.get(rp.survivor_id), row_of.get(rp.survivor_id)
@@ -685,8 +822,8 @@ def _plan_leftover(term: dict, mapped: Optional[tuple], plan_of: dict, row_of: d
                              "other way (survivor at end 1); resolve by hand")
                 return rp
             present, survivor_ref = bool(links), survivor.term["qualified_name"]
-        else:  # created earlier in this same document
-            present, survivor_ref = False, survivor.question
+        else:  # created earlier in this same document, under the qualifiedName its Create carries
+            present, survivor_ref = False, survivor.created_qn
         if not present:
             rp.commands.append(Command("Link Term-Term Relationship", {
                 "Term 1": term["qualified_name"], "Term 2": survivor_ref,
@@ -728,6 +865,9 @@ def render_document(plan: Plan) -> str:
         "Generated by scripts/question_term_update_batch.py plan from the inventory taken "
         f"{plan.inventory_taken_at or '(no timestamp)'} and docs/dr-egeria/resource_questions.csv. Do not hand-edit:",
         "take a fresh inventory and plan again. Run with VALIDATE first, then PROCESS. It deletes no relationship.",
+        "",
+        "OPERATOR: every Update below carries its term's GUID. VALIDATE must show no \"Rewriting ... to 'Create'\"; "
+        "if it does, STOP: do not PROCESS (a rewritten Update would create a new term outside the glossary).",
         "",
         f"Commands: {counts['commands_total']} "
         + ", ".join(f"{k} {v}" for k, v in counts["command"].items()),
@@ -776,6 +916,8 @@ def format_counts(plan: Plan) -> str:
     for lo in c["leftovers"]:
         lines.append(f"leftover {lo['guid']} {lo['display_name']!r}: {lo['action']}"
                      + (f", ReplacementTerm to {lo['survivor']}" if lo["survivor"] else ", no replacement (not in the map)"))
+    for gap in c["input_gaps"]:
+        lines.append(f"NOT ESTABLISHED: {gap}")
     for r in plan.unplaceable:
         lines.append(f"UNPLACEABLE {r.question_id or r.term['guid']} ({r.join_path}): {r.reason}")
     return "\n".join(lines)
@@ -832,6 +974,10 @@ def _cmd_plan(args) -> int:
     print(format_counts(plan))
     if plan.unplaceable:
         print(f"\n{len(plan.unplaceable)} row(s) cannot be placed: no document written.", file=sys.stderr)
+        return 1
+    if plan.input_gaps:
+        print(f"\nThe inventory ({inventory.get('schema')}) cannot show {len(plan.input_gaps)} thing(s) the plan "
+              "needs: no document written. Take a fresh inventory with this version.", file=sys.stderr)
         return 1
     Path(args.out).write_text(render_document(plan), encoding="utf-8")
     print(f"Wrote {args.out}")
