@@ -80,3 +80,12 @@ confirm whether her pending ISSUE-117 fix covers this path. The fixes listed as 
   delete path does not walk the same way. Message: "Egeria archives the whole database tree when any
   part of it is archived (ISSUE-117, archiveBeanInRepository) · choice kept, nothing sent". The owner's choices are still recorded.
 - 8813 is not rebuilt until it carries that block. All merges are frozen.
+
+## Block lifted 2026-10-23 (leave-out path)
+
+The re-proof on a throwaway database (`REPROOF-1021-PHASE2-RESULT.md`, with its baselines
+`REPROOF-1021-PHASE1-BASELINE-v1.md`/`-v1.json`/`-v2.json`/`-v3-post-upgrade.json`, `REPROOF-1021-PHASE2-PRE-v4.json`
+and `REPROOF-1021-PHASE2-POST-v5.json`, all in this folder) passed on odpi/egeria c6dbf952 / image a8bcff5c: leaving
+out one cataloguer-built schema archived exactly its 14 anchored elements and nothing else. Per the architect's
+ruling of 2026-10-23 the block is OFF for the leave-out ARCHIVE path only; `RE_ISSUE_117_BLOCK=on` re-arms it with no
+code change. Soft delete and the investigation-delete ARCHIVE keep the block until their own throwaway proof.

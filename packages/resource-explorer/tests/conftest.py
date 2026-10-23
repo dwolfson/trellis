@@ -531,7 +531,7 @@ def issue_117_block_off_for_legacy_delete_path_tests(request, monkeypatch):
     import os
     from resource_explorer import catalogue_gateway as _gw
     monkeypatch.setattr(_gw, "_shipped_issue_117_blocked", _gw.issue_117_blocked, raising=False)   # for tests that need the real rules
-    monkeypatch.setattr(_gw, "issue_117_blocked", lambda slug="": not (os.environ.get(_gw.ISSUE_117_ENV) or "").strip())
+    monkeypatch.setattr(_gw, "issue_117_blocked", lambda slug="", *, scope="": not (os.environ.get(_gw.ISSUE_117_ENV) or "").strip())
 
 
 @pytest.fixture(autouse=True)

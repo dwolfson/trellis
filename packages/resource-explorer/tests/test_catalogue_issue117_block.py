@@ -1,7 +1,12 @@
-"""Archive-cascade block (ISSUE-117): Egeria archives the WHOLE database tree when any part of it is archived (leaving
-out us_sales archived the coco_pharma database element and both demo schemas, 2026-10-06). While
-the block is on (the DEFAULT: env var RE_ISSUE_117_BLOCK_OFF unset), NOTHING reaches Egeria for any archive or delete of a database's
-tree (schema, table, column, schema type), soft delete included; the choice stays recorded in RE.
+"""Archive-cascade block (ISSUE-117): Egeria archived the WHOLE database tree when any part of it was archived (leaving
+out us_sales archived the coco_pharma database element and both demo schemas, 2026-10-06).
+
+Lifted 2026-10-23 for the leave-out ARCHIVE path only (proof: docs/design-notes/evidence/REPROOF-1021-PHASE2-RESULT.md):
+by default a leave-out of a cataloguer-built schema archives, and its preview names the plan ("will archive N elements
+anchored to <schema>: ..."), counted from the same list the apply walks. RE_ISSUE_117_BLOCK=on re-arms it. Soft delete,
+the investigation-delete ARCHIVE and bulk delete keep the block. While blocked, NOTHING reaches Egeria for any archive
+or delete of a database's tree (schema, table, column, schema type); the choice stays recorded in RE. The leave-out
+tests written for the block ON re-arm it (`rearm`).
 
 These tests run with the block at its DEFAULT (the env var is removed for each test; conftest sets it only for
 the older catalogue tests that exercise the frozen delete path against the fake). The block can be lifted ONLY by
@@ -46,6 +51,10 @@ def stamp(minutes_ago: float = 0.0) -> str:
     return (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def rearm(monkeypatch, value: str = "on") -> None:
+    monkeypatch.setenv("RE_ISSUE_117_BLOCK", value)
+
+
 def override_for(monkeypatch, slug: str = "db", minutes_ago: float = 0.0) -> str:
     value = f"tester/{stamp(minutes_ago)}/{slug}"
     monkeypatch.setenv("RE_ISSUE_117_BLOCK_OFF", value)
@@ -55,6 +64,7 @@ def override_for(monkeypatch, slug: str = "db", minutes_ago: float = 0.0) -> str
 @pytest.fixture(autouse=True)
 def _default_state(monkeypatch):
     monkeypatch.delenv("RE_ISSUE_117_BLOCK_OFF", raising=False)
+    monkeypatch.delenv("RE_ISSUE_117_BLOCK", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -70,8 +80,12 @@ def sent_to_egeria(fake):
     return fake.ops("delete_element") + fake.ops("remove_catalog_target")
 
 
-def test_the_block_is_on_as_shipped():
+def test_the_block_is_on_as_shipped_except_for_the_leave_out_archive():
     assert gw.issue_117_blocked("db") is True and gw.issue_117_blocked("") is True and gw.ISSUE_117_WORDS == WORDS
+    assert gw.issue_117_blocked("db", scope=gw.LEAVE_OUT_ARCHIVE) is False
+    assert gw.issue_117_blocked("", scope=gw.LEAVE_OUT_ARCHIVE) is True, "a caller with no slug is blocked in every scope"
+    assert gw.issue_117_blocked("db", scope="investigation_archive") is True, "only the named scope is lifted"
+    assert gw.LIFTED_SCOPES == frozenset({gw.LEAVE_OUT_ARCHIVE})
     assert not hasattr(gw, "ISSUE_117_BLOCK"), "no code constant to edit"
 
 
@@ -93,7 +107,8 @@ def test_the_real_gateway_sends_nothing_for_any_element_of_a_database_tree(kind,
 # ── through the commit: preview, press, outbox ───────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("setup", [_attached, _catalogued])
-def test_leaving_out_a_cataloged_schema_sends_nothing_and_keeps_the_choice(world, fake, setup):
+def test_leaving_out_a_cataloged_schema_sends_nothing_and_keeps_the_choice(world, fake, setup, monkeypatch):
+    rearm(monkeypatch)
     setup(world, fake, "sales")
     before = len(sent_to_egeria(fake))
     choose(world, "sales", "leave_out")
@@ -108,7 +123,8 @@ def test_leaving_out_a_cataloged_schema_sends_nothing_and_keeps_the_choice(world
     assert any(n["reason"] == WORDS for n in out["preview"]["manifest"]["not_committed"])
 
 
-def test_the_outbox_handler_refuses_a_cataloged_schema_before_sending_anything(world, fake):
+def test_the_outbox_handler_refuses_a_cataloged_schema_before_sending_anything(world, fake, monkeypatch):
+    rearm(monkeypatch)
     _attached(world, fake, "sales")
     choose(world, "sales", "leave_out")
     before = len(sent_to_egeria(fake))
@@ -182,15 +198,40 @@ def test_a_time_more_than_a_few_minutes_ahead_is_on_but_a_small_skew_passes(monk
     assert gw.issue_117_override()[0] == "db"
 
 
-def test_the_state_line_names_the_slug_and_the_expiry_or_says_on(monkeypatch):
-    assert gw.issue_117_state_line() == "archive-cascade block: ON"
+OFF_LINE = ("archive-cascade block: OFF (lifted 2026-10-23, proven on odpi/egeria c6dbf952 / image a8bcff5c, evidence "
+            "docs/design-notes/evidence/REPROOF-1021-PHASE2-RESULT.md) · scope: leave-out")
+
+
+def test_the_state_line_is_off_for_the_leave_out_by_default():
+    assert gw.issue_117_state_line() == OFF_LINE
+
+
+def test_the_state_line_is_on_with_the_re_arm_stamp(monkeypatch, caplog):
+    rearm(monkeypatch, "on")
+    assert gw.issue_117_state_line() == "archive-cascade block: ON (no stamp)"
+    rearm(monkeypatch, "dwolfson/2026-10-23T14:05:00Z")
+    assert gw.issue_117_state_line() == "archive-cascade block: ON (dwolfson/2026-10-23T14:05:00Z)"
+    rearm(monkeypatch, "dwolfson/2026-10-23T10:05:00-04:00")                  # read as that instant, said in UTC
+    assert gw.issue_117_state_line() == "archive-cascade block: ON (dwolfson/2026-10-23T14:05:00Z)"
+    for odd in ("off", "yes", "dwolfson/not-a-time"):                          # never lifts: ON, no stamp, logged
+        rearm(monkeypatch, odd)
+        assert gw.issue_117_state_line() == "archive-cascade block: ON (no stamp)", odd
+        assert gw.issue_117_blocked("db", scope=gw.LEAVE_OUT_ARCHIVE) is True, odd
+    assert "archive-cascade block is ON with no stamp" in caplog.text
+    rearm(monkeypatch, "   ")                                                   # blank is unset
+    assert gw.issue_117_state_line() == OFF_LINE
+
+
+def test_the_state_line_adds_a_live_slug_override(monkeypatch):
     monkeypatch.setattr(gw, "_now_utc", lambda: datetime(2026, 10, 21, 14, 30, tzinfo=timezone.utc))
+    rearm(monkeypatch, "on")
     monkeypatch.setenv("RE_ISSUE_117_BLOCK_OFF", "dwolfson/2026-10-21T14:05:00Z/throwaway_db")
-    assert gw.issue_117_state_line() == "archive-cascade block: OFF for throwaway_db until 2026-10-21T15:05:00Z"
+    assert gw.issue_117_state_line() == ("archive-cascade block: ON (no stamp) · OFF for throwaway_db until "
+                                         "2026-10-21T15:05:00Z")
     monkeypatch.setenv("RE_ISSUE_117_BLOCK_OFF", "dwolfson/2026-10-21T12:05:00Z/throwaway_db")      # expired
-    assert gw.issue_117_state_line() == "archive-cascade block: ON"
+    assert gw.issue_117_state_line() == "archive-cascade block: ON (no stamp)"
     monkeypatch.setenv("RE_ISSUE_117_BLOCK_OFF", "bare-clearance")
-    assert gw.issue_117_state_line() == "archive-cascade block: ON"
+    assert gw.issue_117_state_line() == "archive-cascade block: ON (no stamp)"
 
 
 def test_an_offset_time_is_read_as_that_instant(monkeypatch):
@@ -208,15 +249,16 @@ def test_the_session_start_logs_the_state(caplog):
 
 # ── the proof row: "0 archived" comes from a row, not from the absence of one ──────────────────────────────
 
-def _blocked_commit(world, fake):
+def _blocked_commit(world, fake, monkeypatch):
+    rearm(monkeypatch)
     _catalogued(world, fake, "sales")
     choose(world, "sales", "leave_out")
     choose(world, "archive", "catalogue")
     return press(world, fake)
 
 
-def test_a_refused_leave_out_is_a_proof_row_and_the_header_and_row_derive_from_it(world, fake):
-    out, rec = _blocked_commit(world, fake)
+def test_a_refused_leave_out_is_a_proof_row_and_the_header_and_row_derive_from_it(world, fake, monkeypatch):
+    out, rec = _blocked_commit(world, fake, monkeypatch)
     rows = [p for p in world["registry"].list_catalogue_commit_proofs("db") if p["proof"] == cc.P_LEAVE_OUT_BLOCKED]
     assert len(rows) == 1 and rows[0]["schema_name"] == "sales"
     assert rows[0]["detail"]["note"] == "kept, not sent · archive-cascade block"
@@ -232,7 +274,8 @@ def test_a_refused_leave_out_is_a_proof_row_and_the_header_and_row_derive_from_i
     assert "ISSUE-117" not in d2["header"]["text"] and "blocked_117" not in d2["schemas"]["sales"]
 
 
-def test_the_outbox_refusal_also_writes_the_row(world, fake):
+def test_the_outbox_refusal_also_writes_the_row(world, fake, monkeypatch):
+    rearm(monkeypatch)
     _attached(world, fake, "sales")
     choose(world, "sales", "leave_out")
     with pytest.raises(GatewayError):
@@ -243,6 +286,7 @@ def test_the_outbox_refusal_also_writes_the_row(world, fake):
 # ── the guard can fail: with the variable set the same scenarios reach the delete path ───────────────────────────
 
 def test_known_negative_with_an_override_for_the_slug_the_commit_reaches_the_delete_path(world, fake, monkeypatch):
+    rearm(monkeypatch)
     override_for(monkeypatch, "db")
     _attached(world, fake, "sales")
     choose(world, "sales", "leave_out")
@@ -272,6 +316,7 @@ def test_the_real_gateway_refuses_another_slug_and_an_expired_override_and_sends
 
 
 def test_a_leave_out_on_another_slug_is_refused_while_the_override_names_a_different_database(world, fake, monkeypatch):
+    rearm(monkeypatch)
     override_for(monkeypatch, "some_other_throwaway")
     _attached(world, fake, "sales")
     choose(world, "sales", "leave_out")
@@ -286,6 +331,7 @@ def test_a_leave_out_on_another_slug_is_refused_while_the_override_names_a_diffe
 
 
 def test_a_leave_out_for_the_named_slug_after_expiry_is_refused(world, fake, monkeypatch):
+    rearm(monkeypatch)
     override_for(monkeypatch, "db", minutes_ago=61)
     _attached(world, fake, "sales")
     choose(world, "sales", "leave_out")
@@ -327,10 +373,151 @@ def test_the_restored_word_derives_from_the_proof_row_and_goes_when_the_row_does
     assert "restored" not in d2["header"]["text"]
 
 
-def test_a_restored_schema_that_is_left_out_is_still_blocked_from_any_archive(world, fake):
+def test_a_restored_schema_that_is_left_out_is_still_blocked_from_any_archive(world, fake, monkeypatch):
+    rearm(monkeypatch)
     choose(world, "sales", "leave_out")
     choose(world, "archive", "catalogue")
     _append_restored(world)
     out, _ = press(world, fake)
     row = next(r for r in out["preview"]["leave_out"] if r["schema"] == "sales")
     assert row["form"] == "issue_117" and not sent_to_egeria(fake)
+
+
+# ── the 2026-10-23 lift: the leave-out ARCHIVE only ──────────────────────────────────────────────────────────
+
+def _types_sent(fake):
+    return [fake.elements[c[1]]["type"] for c in fake.ops("delete_element")]
+
+
+def test_by_default_a_cataloged_leave_out_archives_and_the_preview_names_the_plan_it_then_walks(world, fake):
+    _catalogued(world, fake, "sales")
+    before = len(fake.ops("delete_element"))
+    choose(world, "sales", "leave_out")
+    out, rec = press(world, fake)
+    row = next(r for r in out["preview"]["leave_out"] if r["schema"] == "sales")
+    assert row["form"] == gw.ARCHIVE and row["blocked"] is False
+    sent = _types_sent(fake)[before:]
+    assert all(c[2] == gw.ARCHIVE for c in fake.ops("delete_element")[before:])
+    counts = {}
+    for t in sent:
+        counts[t] = counts.get(t, 0) + 1
+    assert row["plan"] == {"total": len(sent), "by_type": counts}, "the preview counts the list the apply walks"
+    assert sent[-1] == "DeployedDatabaseSchema" and counts["RelationalTable"] == 2 and counts["RelationalColumn"] == 4
+    words = (f"will archive {len(sent)} elements anchored to sales: "
+             + " · ".join(f"{n} {t}" for t, n in counts.items()))
+    assert words in row["text"], row["text"]
+    assert "Egeria archives the whole database tree" not in row["text"]
+    assert step(rec, "leave_outs")["state"] == "done", step(rec, "leave_outs")
+    assert not [p for p in world["registry"].list_catalogue_commit_proofs("db") if p["proof"] == cc.P_LEAVE_OUT_BLOCKED]
+
+
+def test_the_plan_words_come_from_the_walk_list():
+    walk = [("c1", "RelationalColumn", "q"), ("c2", "RelationalColumn", "q"), ("t1", "RelationalTable", "q"),
+            ("s", "DeployedDatabaseSchema", "q")]
+    plan = cc.archive_plan(walk)
+    assert plan == {"total": 4, "by_type": {"RelationalColumn": 2, "RelationalTable": 1, "DeployedDatabaseSchema": 1}}
+    assert cc.archive_plan_words(plan, "alpha") == ("will archive 4 elements anchored to alpha: 2 RelationalColumn · "
+                                                    "1 RelationalTable · 1 DeployedDatabaseSchema")
+    read = {"delete_order": walk[:-1], "element_guid": "s"}
+    assert cc.leave_out_walk(read, "q") == walk
+
+
+def test_a_plan_that_cannot_be_read_says_it_could_not_check_and_sends_nothing(world, fake, monkeypatch):
+    _catalogued(world, fake, "sales")
+    choose(world, "sales", "leave_out")
+    choose(world, "archive", "catalogue")
+    before = len(sent_to_egeria(fake))
+    monkeypatch.setattr(cc, "read_hangs_off", lambda *a, **k: {"state": "cannot_check", "error": "Egeria said no"})
+    out, _ = press(world, fake)
+    row = next(r for r in out["preview"]["leave_out"] if r["schema"] == "sales")
+    assert row["form"] == "cannot_check" and row["blocked"] is True and "plan" not in row
+    assert row["text"] == f"sales: {cc.CANT_CHECK}"
+    assert len(sent_to_egeria(fake)) == before
+
+
+def test_re_armed_a_leave_out_is_refused_with_no_client_call(world, fake, monkeypatch):
+    _catalogued(world, fake, "sales")
+    rearm(monkeypatch, "dwolfson/2026-10-23T14:05:00Z")
+    before = len(sent_to_egeria(fake))
+    choose(world, "sales", "leave_out")
+    choose(world, "archive", "catalogue")
+    out, _ = press(world, fake)
+    row = next(r for r in out["preview"]["leave_out"] if r["schema"] == "sales")
+    assert row["form"] == "issue_117" and row["text"] == f"sales: {WORDS}"
+    with pytest.raises(GatewayError) as err:
+        cc.apply_leave_out(world["registry"], fake, {"slug": "db", "schema": "sales", "form": gw.ARCHIVE, "curation_id": "c1", "by": ME})
+    assert WORDS in str(err.value)
+    assert len(sent_to_egeria(fake)) == before
+
+
+def test_re_armed_the_real_gateway_refuses_the_leave_out_archive_and_sends_nothing(monkeypatch):
+    rearm(monkeypatch)
+    g = gw.PyegeriaCatalogueGateway(entity_stub())
+    md = MagicMock()
+    g._clients.update({"MetadataExpert": md})
+    with pytest.raises(GatewayError) as err:
+        g.delete_element("guid", gw.ARCHIVE, slug="db", scope=gw.LEAVE_OUT_ARCHIVE)
+    assert str(err.value) == WORDS and md.method_calls == []
+
+
+def test_known_negative_by_default_the_real_gateway_sends_the_leave_out_archive(monkeypatch):
+    g = gw.PyegeriaCatalogueGateway(entity_stub())
+    md = MagicMock()
+    g._clients.update({"MetadataExpert": md})
+    g.delete_element("guid", gw.ARCHIVE, slug="db", scope=gw.LEAVE_OUT_ARCHIVE)
+    assert md.delete_metadata_element.called, "if this does not fail the re-armed test proves nothing"
+
+
+def test_a_soft_delete_keeps_the_block_whatever_scope_it_names(monkeypatch):
+    g = gw.PyegeriaCatalogueGateway(entity_stub())
+    md = MagicMock()
+    g._clients.update({"MetadataExpert": md})
+    with pytest.raises(GatewayError):
+        g.delete_element("guid", gw.SOFT_DELETE, slug="db", scope=gw.LEAVE_OUT_ARCHIVE)
+    assert md.method_calls == []
+
+
+def test_a_soft_delete_leave_out_stays_blocked_by_default_and_nothing_is_detached(world, fake):
+    _attached(world, fake, "sales")                       # nothing hangs off it: the soft-delete form
+    choose(world, "sales", "leave_out")
+    choose(world, "archive", "catalogue")
+    before = len(sent_to_egeria(fake))
+    out, rec = press(world, fake, refresh=False)          # no refresh: the cataloguer adds no tables to it
+    row = next(r for r in out["preview"]["leave_out"] if r["schema"] == "sales")
+    assert row["form"] == "issue_117" and row["text"] == f"sales: {WORDS}"
+    assert len(sent_to_egeria(fake)) == before
+    with pytest.raises(GatewayError) as err:
+        cc.apply_leave_out(world["registry"], fake, {"slug": "db", "schema": "sales", "form": gw.SOFT_DELETE, "curation_id": "c1", "by": ME})
+    assert WORDS in str(err.value)
+    assert len(sent_to_egeria(fake)) == before, "a soft delete is refused before the target is detached"
+
+
+def test_known_negative_with_a_slug_override_the_soft_delete_leave_out_goes_through(world, fake, monkeypatch):
+    override_for(monkeypatch, "db")
+    _attached(world, fake, "sales")
+    choose(world, "sales", "leave_out")
+    out, _ = press(world, fake)
+    row = next(r for r in out["preview"]["leave_out"] if r["schema"] == "sales")
+    assert row["form"] == gw.SOFT_DELETE and fake.ops("delete_element")
+
+
+def test_re_armed_the_slug_override_still_opens_one_slug(world, fake, monkeypatch):
+    rearm(monkeypatch)
+    override_for(monkeypatch, "db")
+    assert gw.issue_117_blocked("db", scope=gw.LEAVE_OUT_ARCHIVE) is False
+    assert gw.issue_117_blocked("other_db", scope=gw.LEAVE_OUT_ARCHIVE) is True
+    _catalogued(world, fake, "sales")
+    before = len(fake.ops("delete_element"))
+    choose(world, "sales", "leave_out")
+    out, _ = press(world, fake)
+    row = next(r for r in out["preview"]["leave_out"] if r["schema"] == "sales")
+    assert row["form"] == gw.ARCHIVE and len(fake.ops("delete_element")) > before
+
+
+def test_the_investigation_archive_and_bulk_delete_stay_blocked_by_default():
+    """The callers outside the lift pass no scope: investigation_delete (anchor = Project, slug "") and bulk_ops."""
+    import inspect
+    from resource_explorer import bulk_ops, investigation_delete
+    assert gw.issue_117_blocked("") is True and gw.issue_117_blocked("p1") is True
+    for mod in (investigation_delete, bulk_ops):
+        assert "LEAVE_OUT_ARCHIVE" not in inspect.getsource(mod), mod.__name__

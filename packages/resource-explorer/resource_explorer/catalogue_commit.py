@@ -82,9 +82,11 @@ WHOLE_SCHEMAS_LINE = "Egeria adds whole schemas · table choices are kept for wh
 SURVEY_LINE = "Egeria's survey is limited to your chosen schemas"
 LINGERING_LINE = ("Egeria's cataloguer still lists this schema until its connector restarts "
                   "· nothing is recreated")
-# The archive-cascade block (ISSUE-117) lives in catalogue_gateway (`issue_117_blocked(slug)`, `ISSUE_117_WORDS`): ON
-# unless the env var RE_ISSUE_117_BLOCK_OFF names a fresh override FOR THIS DATABASE SLUG; read at call time so one
-# switch governs the preview, the outbox handler and the real gateway. Every guard passes the slug it acts for.
+# The archive-cascade block (ISSUE-117) lives in catalogue_gateway (`issue_117_blocked(slug, scope=)`, `ISSUE_117_WORDS`).
+# Since 2026-10-23 it is OFF for the leave-out ARCHIVE (`gw.LEAVE_OUT_ARCHIVE`) unless RE_ISSUE_117_BLOCK re-arms it, and
+# ON for a leave-out's soft delete; RE_ISSUE_117_BLOCK_OFF names a fresh override FOR ONE DATABASE SLUG. Read at call
+# time so one switch governs the preview, the outbox handler and the real gateway. Every guard passes the slug it acts
+# for, and only a guard on an ARCHIVE of a leave-out passes the scope.
 CATALOGED_STATES = ("catalogued", "attached_waiting", "queued", "sent", "failed", "restored")
 CANT_CHECK = "couldn't check what hangs off it"
 IN_USE = "in use by a running survey · wait or cancel"
@@ -415,6 +417,27 @@ def read_hangs_off(gateway: CatalogueGateway, db_entity, schema: str) -> dict:
     return {"state": "read", "form": ARCHIVE if h["total"] else SOFT_DELETE, "hangs_off": h,
             "element_guid": el.guid, "checked": 1 + len(members), "in_use": running_actions(rels),
             "delete_order": order, "content": content}
+
+
+def leave_out_walk(read: dict, qualified_name: str) -> list[tuple[str, str, str]]:
+    """THE list a leave-out sends, in send order: `read_hangs_off`'s `delete_order` (leaf first), then the schema.
+    `apply_leave_out` walks it and the preview counts it (`archive_plan`): one source, so what the person is shown
+    before pressing is what the press would take."""
+    return list(read["delete_order"]) + [(read["element_guid"], "DeployedDatabaseSchema", qualified_name)]
+
+
+def archive_plan(walk: list[tuple[str, str, str]]) -> dict:
+    """`{"total": N, "by_type": {type: n}}` from `leave_out_walk`'s list, types in send order."""
+    by_type: dict[str, int] = {}
+    for _g, typ, _qn in walk:
+        by_type[typ or "unknown"] = by_type.get(typ or "unknown", 0) + 1
+    return {"total": len(walk), "by_type": by_type}
+
+
+def archive_plan_words(plan: dict, schema: str) -> str:
+    """"will archive N elements anchored to <schema>: <counts by type>" (architect ruling 2026-10-23)."""
+    counts = " · ".join(f"{n} {t}" for t, n in plan["by_type"].items())
+    return f"will archive {plan['total']} element{'s' if plan['total'] != 1 else ''} anchored to {schema}: {counts}"
 
 
 def running_actions(rels_per_element: list[list]) -> list[dict]:
@@ -809,8 +832,9 @@ def survey_schema_list(names: list[str]) -> tuple[list[str], list[str]]:
 #   attach    ATTACH                (the CatalogTarget link on the schema: validateUserForElementAttach :1582-1620)
 #   leave out DETACH + DELETE       (the target removal :1639-1694, then the archive / soft delete :2540-2566), and
 #             DELETE on every table, column and schema-type element the delete walks (`read_hangs_off`'s
-#             delete_order) when the archive-cascade block is off. With the block on (it is) nothing is deleted, and the
-#             check runs IN FRONT of the block only, so a refusal is said before the block would be.
+#             delete_order) when the archive-cascade block is off for the leave-out ARCHIVE (the default since
+#             2026-10-23). With the block on (re-armed) nothing is deleted, and the check runs IN FRONT of the block
+#             only, so a refusal is said before the block would be.
 # RE writes no table element on an attach: Egeria's cataloguer creates the tables (whole schemas). A part that is
 # not permitted is skipped with its own word ("not permitted · <reason>") and the rest proceed, as Publish does.
 # The element reads are batched (`zone_access.read_elements`: lanes, Daemon(ACCESS_CHECK)); no per-element client.
@@ -980,7 +1004,7 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
                                                     override=False, reader=reader, anchor_guid=anchor)
             _ok, np_leave = parts_check_by_name(registry, gateway, db_entity, slug, leave_cands, LEAVE_OUT_OPS,
                                                 override=False, reader=reader,
-                                                members=not gw.issue_117_blocked(slug))
+                                                members=not gw.issue_117_blocked(slug, scope=gw.LEAVE_OUT_ARCHIVE))
         else:
             # No gateway: Egeria cannot be reached, and the commit cannot run either. RE's own rows name the
             # elements it knows; the rest wait for the run.
@@ -1014,7 +1038,9 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
             not_permitted.append({**np_row, "write": "leave out"})
             leave.append(row)
             continue
-        if gw.issue_117_blocked(slug) and st.get("state") in CATALOGED_STATES:
+        # The leave-out ARCHIVE is lifted (2026-10-23) unless re-armed; its soft delete keeps the block, so a schema
+        # the archive path may take is read first and held only if its form is the soft delete.
+        if gw.issue_117_blocked(slug, scope=gw.LEAVE_OUT_ARCHIVE) and st.get("state") in CATALOGED_STATES:
             row.update(form="issue_117", blocked=True, reason=gw.ISSUE_117_WORDS, text=f"{name}: {gw.ISSUE_117_WORDS}")
             leave.append(row)
             continue
@@ -1032,13 +1058,17 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
             row.update(form="in_use", blocked=True, reason=f"{_in_use_phrase(read['in_use'][0])} · {WAIT}",
                        in_use=read["in_use"],
                        text=in_use_text(name, read["in_use"]))
+        elif read["form"] == SOFT_DELETE and gw.issue_117_blocked(slug) and st.get("state") in CATALOGED_STATES:
+            row.update(form="issue_117", blocked=True, reason=gw.ISSUE_117_WORDS, text=f"{name}: {gw.ISSUE_117_WORDS}")
         elif read["form"] == SOFT_DELETE:
             row.update(form=SOFT_DELETE, blocked=False, hangs_off=read["hangs_off"], checked=read["checked"],
                        text=f"{name}: nothing hangs off it · will delete in Egeria"
                             + (f" with its {tcount} tables" if tcount else "") + " · delete · nothing depends on it")
         else:
-            row.update(form=ARCHIVE, blocked=False, hangs_off=read["hangs_off"], checked=read["checked"],
-                       text=f"{name}: {read['hangs_off']['words']} hang off it · will archive in Egeria, "
+            plan = archive_plan(leave_out_walk(read, schema_qn(db_entity, name)))
+            row.update(form=ARCHIVE, blocked=False, hangs_off=read["hangs_off"], checked=read["checked"], plan=plan,
+                       text=f"{name}: {read['hangs_off']['words']} hang off it · "
+                            f"{archive_plan_words(plan, name)} · archive in Egeria, "
                             f"not delete · re-including it later creates a new element; the archived record stays"
                             + "".join(f" · archive · lineage to {n} would be lost"
                                       for n in read["hangs_off"].get("lineage_to", [])))
@@ -1278,7 +1308,8 @@ def _send_destructive(registry, gateway, op: str, *, slug: str, schema: str, ele
     what = (f"{method} element={element_guid} type={typ or 'unknown'} schema={schema}"
             + (f" relationship={relationship_guid}" if relationship_guid else "") + f" flags={flags} {who}")
     outcome, error = DELETE_OK, ""
-    blocked = method != "remove_catalog_target" and gw.issue_117_blocked(slug)
+    scope = gw.LEAVE_OUT_ARCHIVE if method == "ARCHIVE" else ""     # only this module's leave-out sends here
+    blocked = method != "remove_catalog_target" and gw.issue_117_blocked(slug, scope=scope)
     if blocked:
         outcome, error = DELETE_REFUSED, gw.ISSUE_117_WORDS
         log.warning("destructive call refused by archive-cascade block (slug=%r): %s", slug, what)
@@ -1290,7 +1321,7 @@ def _send_destructive(registry, gateway, op: str, *, slug: str, schema: str, ele
             if method == "remove_catalog_target":
                 gateway.remove_catalog_target(relationship_guid)
             else:
-                gateway.delete_element(element_guid, form, slug=slug)
+                gateway.delete_element(element_guid, form, slug=slug, scope=scope)
         except BaseException as exc:                      # the row is written first, then this propagates
             raised = exc
             error = " ".join(str(exc).split())[:gw.MAX_EGERIA_TEXT] or type(exc).__name__
@@ -1551,12 +1582,28 @@ def apply_leave_out(registry, gateway: CatalogueGateway, payload: dict, *, outbo
         return ""
     el = gateway.read_element(qn)
     guid = el.guid if el else ""
-    if gw.issue_117_blocked(slug) and el is not None:
+    def refuse_117() -> None:
         # Defence behind the preview: whatever queued this, nothing is sent for a schema Egeria holds,
         # and the refusal is a ROW, so the header derives "0 archived" from it rather than from silence.
         _proof(registry, slug, P_LEAVE_OUT_BLOCKED, schema=schema, element_guid=guid, qualified_name=qn, curation_id=cid,
                outbox_id=outbox_id, recorded_by=payload.get("by", ""), detail={"note": KEPT_NOT_SENT, "form": payload.get("form", "")})
         raise GatewayError(f"{schema}: {gw.ISSUE_117_WORDS}")
+
+    if gw.issue_117_blocked(slug, scope=gw.LEAVE_OUT_ARCHIVE) and el is not None:
+        refuse_117()                                      # re-armed (RE_ISSUE_117_BLOCK) and no override for the slug
+    pre_form = ""
+    if el is not None and payload.get("form") != ARCHIVE and gw.issue_117_blocked(slug):
+        # The archive is lifted, the soft delete is not: decide the form BEFORE the target is detached, so a soft
+        # delete is refused with nothing sent (not after a detach). The safer form wins below as before.
+        pre = read_hangs_off(gateway, e, schema)
+        if pre["state"] == "cannot_check":
+            raise GatewayError(f"{schema}: {CANT_CHECK}: {pre['error']}")
+        if pre.get("in_use"):
+            raise GatewayError(in_use_text(schema, pre["in_use"]))
+        if pre["state"] == "read":
+            if pre["form"] != ARCHIVE:
+                refuse_117()
+            pre_form = ARCHIVE
     if guid:
         for t in [t for t in gateway.list_catalog_targets() if t.element_guid == guid]:
             _send_destructive(registry, gateway, "remove_catalog_target", slug=slug, schema=schema, element_guid=guid,
@@ -1585,15 +1632,15 @@ def apply_leave_out(registry, gateway: CatalogueGateway, payload: dict, *, outbo
         raise GatewayError(f"{schema}: {CANT_CHECK}: {read['error']}")
     if read.get("in_use"):
         raise GatewayError(in_use_text(schema, read["in_use"]))
-    form = ARCHIVE if (payload.get("form") == ARCHIVE or read.get("form") == ARCHIVE) else SOFT_DELETE
+    form = ARCHIVE if ARCHIVE in (payload.get("form"), read.get("form"), pre_form) else SOFT_DELETE
     # Every element by GUID, leaf first (columns, tables, the template's connection graph, the schema type), then the
     # schema: tables, columns and the schema type are anchored to the database, so deleting the schema never cascades
     # them. Each is read back; the schema's own read-back is the proof row.
-    order = list(read["delete_order"])
+    walk = leave_out_walk(read, qn)                   # the same list the preview counted
+    order = walk[:-1]
     send = dict(slug=slug, schema=schema, form=form, curation_id=cid, outbox_id=outbox_id, by=payload.get("by", ""))
-    for g, typ, mqn in order:
+    for g, typ, mqn in walk:
         _send_destructive(registry, gateway, "delete", element_guid=g, typ=typ, qualified_name=mqn or "", **send)
-    _send_destructive(registry, gateway, "delete", element_guid=guid, typ="DeployedDatabaseSchema", qualified_name=qn, **send)
     for g, _typ, mqn in order:
         if mqn:
             _prove_gone(gateway, mqn, form, schema, g)
