@@ -1,6 +1,6 @@
 """`file_profiles` (Files build step 5): column names, types and a value profile for every data file the walk found.
 
-Design: BRIEF-FILES-5-FILE-PROFILES.md (architect, 2026-10-23), BRIEF-FILES-QUESTIONS-AND-ANALYSES-TO-RETIRE-CLASSIC.md
+Design: BRIEF-FILES-QUESTIONS-AND-ANALYSES-TO-RETIRE-CLASSIC.md
 section 1a (what Egeria's file connectors own) and section 3 item 2. It answers F3 (which tabular or structured files are
 here, with what columns) and feeds F7 (`data_class_match`, a later step).
 
