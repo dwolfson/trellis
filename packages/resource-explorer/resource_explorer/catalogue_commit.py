@@ -1951,7 +1951,7 @@ _PAST = {"attach": "attached", "remove": "deleted in Egeria"}
 
 
 #: A pressed commit's outbox row its own drain did not finish: the background drain leaves it (2026-10-23).
-PRESS_AGAIN_WORDS = "not sent · press Catalog again"
+PRESS_AGAIN_WORDS = "not sent · press Publish again"
 
 
 def _as_presser_row(row: dict) -> bool:

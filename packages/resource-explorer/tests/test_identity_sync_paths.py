@@ -587,7 +587,7 @@ def test_a_marked_row_the_pressed_drain_did_not_finish_says_press_catalogue_agai
     assert f"sales: {cc.PRESS_AGAIN_WORDS}" in words
     assert f"hr: SERVER_ERROR_500. · {cc.PRESS_AGAIN_WORDS}" in words
     assert "1 queued in the outbox (#3)" in words                     # an unmarked row still waits for the drain
-    assert cc.PRESS_AGAIN_WORDS == "not sent · press Catalog again"
+    assert cc.PRESS_AGAIN_WORDS == "not sent · press Publish again"
 
 
 def test_the_background_drain_never_applies_a_pressed_row(client, world, fake, factory, registry, monkeypatch):
