@@ -1,0 +1,1590 @@
+{
+ "class": "OpenMetadataRootElement",
+ "elementHeader": {
+  "class": "ElementHeader",
+  "headerVersion": 0,
+  "status": "ACTIVE",
+  "type": {
+   "typeId": "0db3e6ec-f5ef-4d75-ae38-b7ee6fd6ec0a",
+   "typeName": "GlossaryTerm",
+   "superTypeNames": [
+    "AuthoredReferenceable",
+    "Referenceable",
+    "OpenMetadataRoot"
+   ],
+   "typeVersion": 1,
+   "typeDescription": "A semantic description of something, such as a concept, object, asset, technology, role or group.",
+   "typeCategory": "ENTITY_DEF"
+  },
+  "origin": {
+   "sourceServer": "qs-metadata-store",
+   "originCategory": "LOCAL_COHORT",
+   "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+   "homeMetadataCollectionName": "qs-metadata-store"
+  },
+  "versions": {
+   "createdBy": "erinoverview",
+   "updatedBy": "erinoverview",
+   "maintainedBy": [
+    "erinoverview"
+   ],
+   "createTime": "2026-10-09T00:29:25.429+00:00",
+   "updateTime": "2026-10-09T00:29:25.429+00:00",
+   "version": 1,
+   "lastRequestId": "fe918a4f-879d-4e0f-95b2-efd3fecd7243"
+  },
+  "guid": "318f1291-a825-4f67-81b1-f9fd1d18e6e3",
+  "anchor": {
+   "class": "ElementClassification",
+   "headerVersion": 0,
+   "status": "ACTIVE",
+   "type": {
+    "typeId": "aa44f302-2e43-4669-a1e7-edaae414fc6e",
+    "typeName": "Anchors",
+    "typeVersion": 1,
+    "typeDescription": "Identifies the anchor entity for an element that is part of a large composite object such as an asset.",
+    "typeCategory": "CLASSIFICATION_DEF"
+   },
+   "origin": {
+    "sourceServer": "qs-metadata-store",
+    "originCategory": "LOCAL_COHORT",
+    "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+    "homeMetadataCollectionName": "qs-metadata-store"
+   },
+   "versions": {
+    "createdBy": "erinoverview",
+    "updatedBy": "erinoverview",
+    "maintainedBy": [
+     "erinoverview"
+    ],
+    "createTime": "2026-10-09T00:29:25.427+00:00",
+    "updateTime": "2026-10-09T00:29:25.427+00:00",
+    "version": 1,
+    "lastRequestId": "fe918a4f-879d-4e0f-95b2-efd3fecd7243"
+   },
+   "classificationOrigin": "ASSIGNED",
+   "classificationName": "Anchors",
+   "classificationProperties": {
+    "class": "AnchorsProperties",
+    "typeName": "Anchors",
+    "anchorTypeName": "GlossaryTerm",
+    "anchorDomainName": "AuthoredReferenceable"
+   }
+  },
+  "otherClassifications": [
+   {
+    "class": "ElementClassification",
+    "headerVersion": 0,
+    "status": "ACTIVE",
+    "type": {
+     "typeId": "eaa4f8ea-0cd5-4b55-8684-dd918f4e33e5",
+     "typeName": "Question",
+     "typeVersion": 1,
+     "typeDescription": "Identifies that this glossary term describes a question that a particular actor might ask.",
+     "typeCategory": "CLASSIFICATION_DEF"
+    },
+    "origin": {
+     "sourceServer": "qs-metadata-store",
+     "originCategory": "LOCAL_COHORT",
+     "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+     "homeMetadataCollectionName": "qs-metadata-store"
+    },
+    "versions": {
+     "createdBy": "erinoverview",
+     "updatedBy": "erinoverview",
+     "maintainedBy": [
+      "erinoverview"
+     ],
+     "createTime": "2026-10-09T00:29:25.639+00:00",
+     "updateTime": "2026-10-09T00:29:25.639+00:00",
+     "version": 1,
+     "lastRequestId": "eee32ea3-3935-4ee1-9971-f85582575c78"
+    },
+    "classificationOrigin": "ASSIGNED",
+    "classificationName": "Question",
+    "classificationProperties": {
+     "class": "QuestionProperties",
+     "typeName": "Question"
+    }
+   }
+  ]
+ },
+ "memberOfCollections": [
+  {
+   "class": "RelatedMetadataElementSummary",
+   "relationshipHeader": {
+    "class": "ElementHeader",
+    "headerVersion": 0,
+    "status": "ACTIVE",
+    "type": {
+     "typeId": "5cabb76a-e25b-4bb5-8b93-768bbac005af",
+     "typeName": "CollectionMembership",
+     "typeVersion": 1,
+     "typeDescription": "Identifies a member of a collection.",
+     "typeCategory": "RELATIONSHIP_DEF"
+    },
+    "origin": {
+     "sourceServer": "qs-metadata-store",
+     "originCategory": "LOCAL_COHORT",
+     "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+     "homeMetadataCollectionName": "qs-metadata-store"
+    },
+    "versions": {
+     "createdBy": "erinoverview",
+     "updatedBy": "erinoverview",
+     "maintainedBy": [
+      "erinoverview"
+     ],
+     "createTime": "2026-10-09T00:29:25.489+00:00",
+     "updateTime": "2026-10-09T00:29:25.489+00:00",
+     "version": 1,
+     "lastRequestId": "ae37145d-c8f6-4dbb-9670-af02fe85ec5f"
+    },
+    "guid": "22b9bf41-6ffd-4426-81d8-d523cfd9fbb7"
+   },
+   "relationshipProperties": {
+    "class": "CollectionMembershipProperties",
+    "typeName": "CollectionMembership",
+    "confidence": 0
+   },
+   "relatedElement": {
+    "elementHeader": {
+     "class": "ElementHeader",
+     "headerVersion": 0,
+     "status": "ACTIVE",
+     "type": {
+      "typeId": "36f66863-9726-4b41-97ee-714fd0dc6fe4",
+      "typeName": "Glossary",
+      "superTypeNames": [
+       "Collection",
+       "AuthoredReferenceable",
+       "Referenceable",
+       "OpenMetadataRoot"
+      ],
+      "typeVersion": 1,
+      "typeDescription": "A collection of related glossary terms.",
+      "typeCategory": "ENTITY_DEF"
+     },
+     "origin": {
+      "sourceServer": "qs-metadata-store",
+      "originCategory": "LOCAL_COHORT",
+      "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+      "homeMetadataCollectionName": "qs-metadata-store"
+     },
+     "versions": {
+      "createdBy": "erinoverview",
+      "updatedBy": "erinoverview",
+      "maintainedBy": [
+       "erinoverview"
+      ],
+      "createTime": "2026-10-09T00:29:19.270+00:00",
+      "updateTime": "2026-10-09T00:29:19.270+00:00",
+      "version": 1,
+      "lastRequestId": "fe7ff652-9a0f-45c1-ae6d-08ff2dbbd51d"
+     },
+     "guid": "22dc03e9-a981-41c2-814e-bacbdad9fa9f",
+     "anchor": {
+      "class": "ElementClassification",
+      "headerVersion": 0,
+      "status": "ACTIVE",
+      "type": {
+       "typeId": "aa44f302-2e43-4669-a1e7-edaae414fc6e",
+       "typeName": "Anchors",
+       "typeVersion": 1,
+       "typeDescription": "Identifies the anchor entity for an element that is part of a large composite object such as an asset.",
+       "typeCategory": "CLASSIFICATION_DEF"
+      },
+      "origin": {
+       "sourceServer": "qs-metadata-store",
+       "originCategory": "LOCAL_COHORT",
+       "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+       "homeMetadataCollectionName": "qs-metadata-store"
+      },
+      "versions": {
+       "createdBy": "erinoverview",
+       "updatedBy": "erinoverview",
+       "maintainedBy": [
+        "erinoverview"
+       ],
+       "createTime": "2026-10-09T00:29:19.268+00:00",
+       "updateTime": "2026-10-09T00:29:19.268+00:00",
+       "version": 1,
+       "lastRequestId": "fe7ff652-9a0f-45c1-ae6d-08ff2dbbd51d"
+      },
+      "classificationOrigin": "ASSIGNED",
+      "classificationName": "Anchors",
+      "classificationProperties": {
+       "class": "AnchorsProperties",
+       "typeName": "Anchors",
+       "anchorTypeName": "Glossary",
+       "anchorDomainName": "AuthoredReferenceable"
+      }
+     },
+     "memberPopularityProfile": {
+      "class": "ElementClassification",
+      "headerVersion": 0,
+      "status": "ACTIVE",
+      "type": {
+       "typeId": "e1abafb4-5b4b-4038-8c36-a3a62cd22750",
+       "typeName": "MemberPopularityProfile",
+       "typeVersion": 1,
+       "typeDescription": "Summarizes the usage activity around the members of an element, both in total and member by member, for each kind of activity.",
+       "typeCategory": "CLASSIFICATION_DEF"
+      },
+      "origin": {
+       "sourceServer": "qs-metadata-store",
+       "originCategory": "LOCAL_COHORT",
+       "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+       "homeMetadataCollectionName": "qs-metadata-store"
+      },
+      "versions": {
+       "createdBy": "egeriagovernanceengine",
+       "updatedBy": "egeriagovernanceengine",
+       "maintainedBy": [
+        "egeriagovernanceengine"
+       ],
+       "createTime": "2026-10-16T20:46:54.128+00:00",
+       "updateTime": "2026-10-16T20:46:54.128+00:00",
+       "version": 1,
+       "lastRequestId": "8c163466-6790-4b98-9b5c-fe7b2210f6a0"
+      },
+      "classificationOrigin": "ASSIGNED",
+      "classificationName": "MemberPopularityProfile",
+      "classificationProperties": {
+       "class": "MemberPopularityProfileProperties",
+       "typeName": "MemberPopularityProfile",
+       "explicitGetCountTotal": 0,
+       "findCountTotal": 0,
+       "updatePropertyCountTotal": 0,
+       "updateAttachmentCountTotal": 0,
+       "updateFeedbackCountTotal": 0,
+       "deleteAttachmentCountTotal": 0,
+       "deleteFeedbackCountTotal": 0
+      }
+     },
+     "collectionKinds": [
+      {
+       "class": "ElementClassification",
+       "headerVersion": 0,
+       "status": "ACTIVE",
+       "type": {
+        "typeId": "37116c51-e6c9-4c37-942e-35d48c8c69a0",
+        "typeName": "Taxonomy",
+        "superTypeNames": [
+         "CollectionKind"
+        ],
+        "typeVersion": 1,
+        "typeDescription": "Identifies a glossary organized as a taxonomy.",
+        "typeCategory": "CLASSIFICATION_DEF"
+       },
+       "origin": {
+        "sourceServer": "qs-metadata-store",
+        "originCategory": "LOCAL_COHORT",
+        "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+        "homeMetadataCollectionName": "qs-metadata-store"
+       },
+       "versions": {
+        "createdBy": "erinoverview",
+        "updatedBy": "erinoverview",
+        "maintainedBy": [
+         "erinoverview"
+        ],
+        "createTime": "2026-10-09T00:29:19.268+00:00",
+        "updateTime": "2026-10-09T00:29:19.268+00:00",
+        "version": 1,
+        "lastRequestId": "fe7ff652-9a0f-45c1-ae6d-08ff2dbbd51d"
+       },
+       "classificationOrigin": "ASSIGNED",
+       "classificationName": "Taxonomy",
+       "classificationProperties": {
+        "class": "TaxonomyProperties",
+        "typeName": "Taxonomy"
+       }
+      },
+      {
+       "class": "ElementClassification",
+       "headerVersion": 0,
+       "status": "ACTIVE",
+       "type": {
+        "typeId": "33ad3da2-0910-47be-83f1-daee018a4c05",
+        "typeName": "CanonicalVocabulary",
+        "superTypeNames": [
+         "CollectionKind"
+        ],
+        "typeVersion": 1,
+        "typeDescription": "Identifies a glossary that contains unique terms with consistent granularity.",
+        "typeCategory": "CLASSIFICATION_DEF"
+       },
+       "origin": {
+        "sourceServer": "qs-metadata-store",
+        "originCategory": "LOCAL_COHORT",
+        "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+        "homeMetadataCollectionName": "qs-metadata-store"
+       },
+       "versions": {
+        "createdBy": "erinoverview",
+        "updatedBy": "erinoverview",
+        "maintainedBy": [
+         "erinoverview"
+        ],
+        "createTime": "2026-10-09T00:29:19.268+00:00",
+        "updateTime": "2026-10-09T00:29:19.268+00:00",
+        "version": 1,
+        "lastRequestId": "fe7ff652-9a0f-45c1-ae6d-08ff2dbbd51d"
+       },
+       "classificationOrigin": "ASSIGNED",
+       "classificationName": "CanonicalVocabulary",
+       "classificationProperties": {
+        "class": "CanonicalVocabularyProperties",
+        "typeName": "CanonicalVocabulary"
+       }
+      }
+     ]
+    },
+    "properties": {
+     "class": "GlossaryProperties",
+     "typeName": "Glossary",
+     "qualifiedName": "Coco Pharmaceuticals::Glossary::User-Questions::1.0",
+     "displayName": "User Questions",
+     "description": "Questions users of Resource Explorer / Egeria Advisor / Trellis tools might\nask about a resource, grouped and scoped by the funnel stage (intent) and\nperspective(s) each question applies to.",
+     "versionIdentifier": "1.0",
+     "contentStatus": "ACTIVE",
+     "language": "English",
+     "usage": "Reference from Link Perspective to Question and Link Element To Scope\ncommands. One glossary shared across all funnel-stage question documents,\nnot re-created per stage."
+    }
+   },
+   "relatedElementAtEnd1": true
+  }
+ ],
+ "relevantToScopes": [
+  {
+   "class": "RelatedMetadataElementSummary",
+   "relationshipHeader": {
+    "class": "ElementHeader",
+    "headerVersion": 0,
+    "status": "ACTIVE",
+    "type": {
+     "typeId": "3845b5cc-8c85-462f-b7e6-47472a568793",
+     "typeName": "ScopedBy",
+     "typeVersion": 1,
+     "typeDescription": "Link between a scope - such as a digital product, infrastructure element, or organization - and an element restricted the scope, such as a governance definition.",
+     "typeCategory": "RELATIONSHIP_DEF"
+    },
+    "origin": {
+     "sourceServer": "qs-metadata-store",
+     "originCategory": "LOCAL_COHORT",
+     "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+     "homeMetadataCollectionName": "qs-metadata-store"
+    },
+    "versions": {
+     "createdBy": "erinoverview",
+     "updatedBy": "erinoverview",
+     "maintainedBy": [
+      "erinoverview"
+     ],
+     "createTime": "2026-10-09T00:29:25.938+00:00",
+     "updateTime": "2026-10-09T00:29:25.938+00:00",
+     "version": 1,
+     "lastRequestId": "b2c9b952-f4db-4e8f-b219-15df455ee70f"
+    },
+    "guid": "4bb99bfd-3f18-432f-b3d9-d423d1b650dd"
+   },
+   "relatedElement": {
+    "elementHeader": {
+     "class": "ElementHeader",
+     "headerVersion": 0,
+     "status": "ACTIVE",
+     "type": {
+      "typeId": "0db3e6ec-f5ef-4d75-ae38-b7ee6fd6ec0a",
+      "typeName": "GlossaryTerm",
+      "superTypeNames": [
+       "AuthoredReferenceable",
+       "Referenceable",
+       "OpenMetadataRoot"
+      ],
+      "typeVersion": 1,
+      "typeDescription": "A semantic description of something, such as a concept, object, asset, technology, role or group.",
+      "typeCategory": "ENTITY_DEF"
+     },
+     "origin": {
+      "sourceServer": "qs-metadata-store",
+      "originCategory": "LOCAL_COHORT",
+      "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+      "homeMetadataCollectionName": "qs-metadata-store"
+     },
+     "versions": {
+      "createdBy": "erinoverview",
+      "updatedBy": "erinoverview",
+      "maintainedBy": [
+       "erinoverview"
+      ],
+      "createTime": "2026-10-09T00:29:19.652+00:00",
+      "updateTime": "2026-10-09T00:29:19.652+00:00",
+      "version": 1,
+      "lastRequestId": "75036396-5e96-4e6e-b06b-cc75ee359268"
+     },
+     "guid": "b1a9b3c8-4713-4a49-b25f-a427777e0d15",
+     "anchor": {
+      "class": "ElementClassification",
+      "headerVersion": 0,
+      "status": "ACTIVE",
+      "type": {
+       "typeId": "aa44f302-2e43-4669-a1e7-edaae414fc6e",
+       "typeName": "Anchors",
+       "typeVersion": 1,
+       "typeDescription": "Identifies the anchor entity for an element that is part of a large composite object such as an asset.",
+       "typeCategory": "CLASSIFICATION_DEF"
+      },
+      "origin": {
+       "sourceServer": "qs-metadata-store",
+       "originCategory": "LOCAL_COHORT",
+       "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+       "homeMetadataCollectionName": "qs-metadata-store"
+      },
+      "versions": {
+       "createdBy": "erinoverview",
+       "updatedBy": "erinoverview",
+       "maintainedBy": [
+        "erinoverview"
+       ],
+       "createTime": "2026-10-09T00:29:19.650+00:00",
+       "updateTime": "2026-10-09T00:29:19.650+00:00",
+       "version": 1,
+       "lastRequestId": "75036396-5e96-4e6e-b06b-cc75ee359268"
+      },
+      "classificationOrigin": "ASSIGNED",
+      "classificationName": "Anchors",
+      "classificationProperties": {
+       "class": "AnchorsProperties",
+       "typeName": "Anchors",
+       "anchorTypeName": "GlossaryTerm",
+       "anchorDomainName": "AuthoredReferenceable"
+      }
+     }
+    },
+    "properties": {
+     "class": "GlossaryTermProperties",
+     "typeName": "GlossaryTerm",
+     "qualifiedName": "Coco Pharmaceuticals::Term::Scouting::1.0",
+     "displayName": "Scouting",
+     "description": "Funnel-stage intent: broad inventory across many resources.",
+     "versionIdentifier": "1.0",
+     "contentStatus": "ACTIVE"
+    }
+   },
+   "relatedElementAtEnd1": false
+  },
+  {
+   "class": "RelatedMetadataElementSummary",
+   "relationshipHeader": {
+    "class": "ElementHeader",
+    "headerVersion": 0,
+    "status": "ACTIVE",
+    "type": {
+     "typeId": "3845b5cc-8c85-462f-b7e6-47472a568793",
+     "typeName": "ScopedBy",
+     "typeVersion": 1,
+     "typeDescription": "Link between a scope - such as a digital product, infrastructure element, or organization - and an element restricted the scope, such as a governance definition.",
+     "typeCategory": "RELATIONSHIP_DEF"
+    },
+    "origin": {
+     "sourceServer": "qs-metadata-store",
+     "originCategory": "LOCAL_COHORT",
+     "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+     "homeMetadataCollectionName": "qs-metadata-store"
+    },
+    "versions": {
+     "createdBy": "erinoverview",
+     "updatedBy": "erinoverview",
+     "maintainedBy": [
+      "erinoverview"
+     ],
+     "createTime": "2026-10-09T00:29:25.843+00:00",
+     "updateTime": "2026-10-09T00:29:25.843+00:00",
+     "version": 1,
+     "lastRequestId": "eca4dcb3-b1a3-4efa-831c-af1f63c5a67e"
+    },
+    "guid": "f85bfa6c-46f0-4889-86ac-f52928d73b4a"
+   },
+   "relatedElement": {
+    "elementHeader": {
+     "class": "ElementHeader",
+     "headerVersion": 0,
+     "status": "ACTIVE",
+     "type": {
+      "typeId": "79cb9e7a-80f3-4bf6-9973-84517f951bd4",
+      "typeName": "Perspective",
+      "superTypeNames": [
+       "Actor",
+       "Referenceable",
+       "OpenMetadataRoot"
+      ],
+      "typeVersion": 1,
+      "typeDescription": "A context for an actor and how they are likely to process information based on their skills, current context, and background.",
+      "typeCategory": "ENTITY_DEF"
+     },
+     "origin": {
+      "sourceServer": "qs-metadata-store",
+      "originCategory": "CONTENT_PACK",
+      "homeMetadataCollectionId": "09450b83-20ff-4a8b-a8fb-f9b527bbcba6",
+      "homeMetadataCollectionName": "CoreContentPack",
+      "license": "Apache 2.0"
+     },
+     "versions": {
+      "createdBy": "Egeria Project",
+      "updatedBy": "Egeria Project",
+      "maintainedBy": [
+       "Egeria Project"
+      ],
+      "createTime": "2026-04-01T06:45:49.989+00:00",
+      "updateTime": "2026-04-01T06:45:49.989+00:00",
+      "version": 1791191572534
+     },
+     "guid": "82376297-93f9-4546-a034-968fc7cf7207",
+     "anchor": {
+      "class": "ElementClassification",
+      "headerVersion": 0,
+      "status": "ACTIVE",
+      "type": {
+       "typeId": "aa44f302-2e43-4669-a1e7-edaae414fc6e",
+       "typeName": "Anchors",
+       "typeVersion": 1,
+       "typeDescription": "Identifies the anchor entity for an element that is part of a large composite object such as an asset.",
+       "typeCategory": "CLASSIFICATION_DEF"
+      },
+      "origin": {
+       "sourceServer": "qs-metadata-store",
+       "originCategory": "CONTENT_PACK",
+       "homeMetadataCollectionId": "09450b83-20ff-4a8b-a8fb-f9b527bbcba6",
+       "homeMetadataCollectionName": "CoreContentPack"
+      },
+      "versions": {
+       "createdBy": "Egeria Project",
+       "updatedBy": "Egeria Project",
+       "maintainedBy": [
+        "Egeria Project"
+       ],
+       "createTime": "2026-04-01T06:45:49.989+00:00",
+       "updateTime": "2026-04-01T06:45:49.989+00:00",
+       "version": 1791191572534
+      },
+      "classificationOrigin": "ASSIGNED",
+      "classificationName": "Anchors",
+      "classificationProperties": {
+       "class": "AnchorsProperties",
+       "typeName": "Anchors",
+       "anchorTypeName": "Perspective",
+       "anchorDomainName": "Actor"
+      }
+     }
+    },
+    "properties": {
+     "class": "PerspectiveProperties",
+     "typeName": "Perspective",
+     "qualifiedName": "Perspective::Data Expert",
+     "identifier": "Data Expert",
+     "displayName": "DATA-EXPERT-PERSPECTIVE",
+     "description": "A focus on developing valuable data resource for the organization. This involves understanding various data resource's quality, relevance, and utility.",
+     "url": "https://egeria-project.org/practices/coco-pharmaceuticals/personas/peter-profile/"
+    }
+   },
+   "relatedElementAtEnd1": false
+  },
+  {
+   "class": "RelatedMetadataElementSummary",
+   "relationshipHeader": {
+    "class": "ElementHeader",
+    "headerVersion": 0,
+    "status": "ACTIVE",
+    "type": {
+     "typeId": "3845b5cc-8c85-462f-b7e6-47472a568793",
+     "typeName": "ScopedBy",
+     "typeVersion": 1,
+     "typeDescription": "Link between a scope - such as a digital product, infrastructure element, or organization - and an element restricted the scope, such as a governance definition.",
+     "typeCategory": "RELATIONSHIP_DEF"
+    },
+    "origin": {
+     "sourceServer": "qs-metadata-store",
+     "originCategory": "LOCAL_COHORT",
+     "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+     "homeMetadataCollectionName": "qs-metadata-store"
+    },
+    "versions": {
+     "createdBy": "erinoverview",
+     "updatedBy": "erinoverview",
+     "maintainedBy": [
+      "erinoverview"
+     ],
+     "createTime": "2026-10-09T00:29:25.780+00:00",
+     "updateTime": "2026-10-09T00:29:25.780+00:00",
+     "version": 1,
+     "lastRequestId": "56f434bb-0e53-4b70-a3a5-0e5f0e3621bb"
+    },
+    "guid": "bba9a775-fe76-4d97-865a-7ec02aaf47f9"
+   },
+   "relatedElement": {
+    "elementHeader": {
+     "class": "ElementHeader",
+     "headerVersion": 0,
+     "status": "ACTIVE",
+     "type": {
+      "typeId": "79cb9e7a-80f3-4bf6-9973-84517f951bd4",
+      "typeName": "Perspective",
+      "superTypeNames": [
+       "Actor",
+       "Referenceable",
+       "OpenMetadataRoot"
+      ],
+      "typeVersion": 1,
+      "typeDescription": "A context for an actor and how they are likely to process information based on their skills, current context, and background.",
+      "typeCategory": "ENTITY_DEF"
+     },
+     "origin": {
+      "sourceServer": "qs-metadata-store",
+      "originCategory": "CONTENT_PACK",
+      "homeMetadataCollectionId": "09450b83-20ff-4a8b-a8fb-f9b527bbcba6",
+      "homeMetadataCollectionName": "CoreContentPack",
+      "license": "Apache 2.0"
+     },
+     "versions": {
+      "createdBy": "Egeria Project",
+      "updatedBy": "Egeria Project",
+      "maintainedBy": [
+       "Egeria Project"
+      ],
+      "createTime": "2026-04-01T06:45:49.989+00:00",
+      "updateTime": "2026-04-01T06:45:49.989+00:00",
+      "version": 1791191572534
+     },
+     "guid": "c996ada0-8c32-406d-90dc-c89cddc7b6c2",
+     "anchor": {
+      "class": "ElementClassification",
+      "headerVersion": 0,
+      "status": "ACTIVE",
+      "type": {
+       "typeId": "aa44f302-2e43-4669-a1e7-edaae414fc6e",
+       "typeName": "Anchors",
+       "typeVersion": 1,
+       "typeDescription": "Identifies the anchor entity for an element that is part of a large composite object such as an asset.",
+       "typeCategory": "CLASSIFICATION_DEF"
+      },
+      "origin": {
+       "sourceServer": "qs-metadata-store",
+       "originCategory": "CONTENT_PACK",
+       "homeMetadataCollectionId": "09450b83-20ff-4a8b-a8fb-f9b527bbcba6",
+       "homeMetadataCollectionName": "CoreContentPack"
+      },
+      "versions": {
+       "createdBy": "Egeria Project",
+       "updatedBy": "Egeria Project",
+       "maintainedBy": [
+        "Egeria Project"
+       ],
+       "createTime": "2026-04-01T06:45:49.989+00:00",
+       "updateTime": "2026-04-01T06:45:49.989+00:00",
+       "version": 1791191572534
+      },
+      "classificationOrigin": "ASSIGNED",
+      "classificationName": "Anchors",
+      "classificationProperties": {
+       "class": "AnchorsProperties",
+       "typeName": "Anchors",
+       "anchorTypeName": "Perspective",
+       "anchorDomainName": "Actor"
+      }
+     }
+    },
+    "properties": {
+     "class": "PerspectiveProperties",
+     "typeName": "Perspective",
+     "qualifiedName": "Perspective::Consumer",
+     "identifier": "Consumer",
+     "displayName": "CONSUMER-PERSPECTIVE",
+     "description": "A focus on the selection and use of appropriate resources of the organization.",
+     "url": "https://egeria-project.org/practices/coco-pharmaceuticals/personas/callie-quartile/"
+    }
+   },
+   "relatedElementAtEnd1": false
+  },
+  {
+   "class": "RelatedMetadataElementSummary",
+   "relationshipHeader": {
+    "class": "ElementHeader",
+    "headerVersion": 0,
+    "status": "ACTIVE",
+    "type": {
+     "typeId": "3845b5cc-8c85-462f-b7e6-47472a568793",
+     "typeName": "ScopedBy",
+     "typeVersion": 1,
+     "typeDescription": "Link between a scope - such as a digital product, infrastructure element, or organization - and an element restricted the scope, such as a governance definition.",
+     "typeCategory": "RELATIONSHIP_DEF"
+    },
+    "origin": {
+     "sourceServer": "qs-metadata-store",
+     "originCategory": "LOCAL_COHORT",
+     "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+     "homeMetadataCollectionName": "qs-metadata-store"
+    },
+    "versions": {
+     "createdBy": "erinoverview",
+     "updatedBy": "erinoverview",
+     "maintainedBy": [
+      "erinoverview"
+     ],
+     "createTime": "2026-10-09T00:29:25.721+00:00",
+     "updateTime": "2026-10-09T00:29:25.721+00:00",
+     "version": 1,
+     "lastRequestId": "3808210f-2a68-4ed1-a25e-0366063e4c57"
+    },
+    "guid": "6285a10b-d5af-45dc-9864-8705688d5d27"
+   },
+   "relatedElement": {
+    "elementHeader": {
+     "class": "ElementHeader",
+     "headerVersion": 0,
+     "status": "ACTIVE",
+     "type": {
+      "typeId": "79cb9e7a-80f3-4bf6-9973-84517f951bd4",
+      "typeName": "Perspective",
+      "superTypeNames": [
+       "Actor",
+       "Referenceable",
+       "OpenMetadataRoot"
+      ],
+      "typeVersion": 1,
+      "typeDescription": "A context for an actor and how they are likely to process information based on their skills, current context, and background.",
+      "typeCategory": "ENTITY_DEF"
+     },
+     "origin": {
+      "sourceServer": "qs-metadata-store",
+      "originCategory": "CONTENT_PACK",
+      "homeMetadataCollectionId": "09450b83-20ff-4a8b-a8fb-f9b527bbcba6",
+      "homeMetadataCollectionName": "CoreContentPack",
+      "license": "Apache 2.0"
+     },
+     "versions": {
+      "createdBy": "Egeria Project",
+      "updatedBy": "Egeria Project",
+      "maintainedBy": [
+       "Egeria Project"
+      ],
+      "createTime": "2026-04-01T06:45:49.989+00:00",
+      "updateTime": "2026-04-01T06:45:49.989+00:00",
+      "version": 1791191572534
+     },
+     "guid": "f5f5251a-da44-43ea-92cc-afe726b2798b",
+     "anchor": {
+      "class": "ElementClassification",
+      "headerVersion": 0,
+      "status": "ACTIVE",
+      "type": {
+       "typeId": "aa44f302-2e43-4669-a1e7-edaae414fc6e",
+       "typeName": "Anchors",
+       "typeVersion": 1,
+       "typeDescription": "Identifies the anchor entity for an element that is part of a large composite object such as an asset.",
+       "typeCategory": "CLASSIFICATION_DEF"
+      },
+      "origin": {
+       "sourceServer": "qs-metadata-store",
+       "originCategory": "CONTENT_PACK",
+       "homeMetadataCollectionId": "09450b83-20ff-4a8b-a8fb-f9b527bbcba6",
+       "homeMetadataCollectionName": "CoreContentPack"
+      },
+      "versions": {
+       "createdBy": "Egeria Project",
+       "updatedBy": "Egeria Project",
+       "maintainedBy": [
+        "Egeria Project"
+       ],
+       "createTime": "2026-04-01T06:45:49.989+00:00",
+       "updateTime": "2026-04-01T06:45:49.989+00:00",
+       "version": 1791191572534
+      },
+      "classificationOrigin": "ASSIGNED",
+      "classificationName": "Anchors",
+      "classificationProperties": {
+       "class": "AnchorsProperties",
+       "typeName": "Anchors",
+       "anchorTypeName": "Perspective",
+       "anchorDomainName": "Actor"
+      }
+     }
+    },
+    "properties": {
+     "class": "PerspectiveProperties",
+     "typeName": "Perspective",
+     "qualifiedName": "Perspective::Steward",
+     "identifier": "Steward",
+     "displayName": "STEWARD-PERSPECTIVE",
+     "description": "A focus on protecting the quality and trustworthiness of specific resources of the organization.",
+     "url": "https://egeria-project.org/practices/coco-pharmaceuticals/personas/tanya-tidie/"
+    }
+   },
+   "relatedElementAtEnd1": false
+  }
+ ],
+ "scopedElements": [
+  {
+   "class": "RelatedMetadataElementSummary",
+   "relationshipHeader": {
+    "class": "ElementHeader",
+    "headerVersion": 0,
+    "status": "ACTIVE",
+    "type": {
+     "typeId": "3845b5cc-8c85-462f-b7e6-47472a568793",
+     "typeName": "ScopedBy",
+     "typeVersion": 1,
+     "typeDescription": "Link between a scope - such as a digital product, infrastructure element, or organization - and an element restricted the scope, such as a governance definition.",
+     "typeCategory": "RELATIONSHIP_DEF"
+    },
+    "origin": {
+     "sourceServer": "qs-metadata-store",
+     "originCategory": "LOCAL_COHORT",
+     "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+     "homeMetadataCollectionName": "qs-metadata-store"
+    },
+    "versions": {
+     "createdBy": "erinoverview",
+     "updatedBy": "erinoverview",
+     "maintainedBy": [
+      "erinoverview"
+     ],
+     "createTime": "2026-10-09T00:32:13.299+00:00",
+     "updateTime": "2026-10-09T00:32:13.299+00:00",
+     "version": 1,
+     "lastRequestId": "a1be742a-72b8-471f-96b2-9db4d5fe931f"
+    },
+    "guid": "f4a0f70c-3ecb-4956-ac02-823c0cecbfb5"
+   },
+   "relatedElement": {
+    "elementHeader": {
+     "class": "ElementHeader",
+     "headerVersion": 0,
+     "status": "ACTIVE",
+     "type": {
+      "typeId": "4d3a2b8d-9e2e-4832-b338-21c74e45b238",
+      "typeName": "GovernanceActionProcess",
+      "superTypeNames": [
+       "GovernanceAction",
+       "GovernanceControl",
+       "GovernanceDefinition",
+       "AuthoredReferenceable",
+       "Referenceable",
+       "OpenMetadataRoot"
+      ],
+      "typeVersion": 1,
+      "typeDescription": "A process implemented by chained engine actions that call governance services.",
+      "typeCategory": "ENTITY_DEF"
+     },
+     "origin": {
+      "sourceServer": "qs-metadata-store",
+      "originCategory": "LOCAL_COHORT",
+      "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+      "homeMetadataCollectionName": "qs-metadata-store"
+     },
+     "versions": {
+      "createdBy": "erinoverview",
+      "updatedBy": "erinoverview",
+      "maintainedBy": [
+       "erinoverview"
+      ],
+      "createTime": "2026-10-09T00:32:11.045+00:00",
+      "updateTime": "2026-10-09T00:32:11.045+00:00",
+      "version": 1,
+      "lastRequestId": "63bc2431-3832-4cd9-a55b-b9fd9bdb2fd3"
+     },
+     "guid": "9e8bda5f-01f3-4207-9757-dec2b108543e",
+     "anchor": {
+      "class": "ElementClassification",
+      "headerVersion": 0,
+      "status": "ACTIVE",
+      "type": {
+       "typeId": "aa44f302-2e43-4669-a1e7-edaae414fc6e",
+       "typeName": "Anchors",
+       "typeVersion": 1,
+       "typeDescription": "Identifies the anchor entity for an element that is part of a large composite object such as an asset.",
+       "typeCategory": "CLASSIFICATION_DEF"
+      },
+      "origin": {
+       "sourceServer": "qs-metadata-store",
+       "originCategory": "LOCAL_COHORT",
+       "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+       "homeMetadataCollectionName": "qs-metadata-store"
+      },
+      "versions": {
+       "createdBy": "erinoverview",
+       "updatedBy": "erinoverview",
+       "maintainedBy": [
+        "erinoverview"
+       ],
+       "createTime": "2026-10-09T00:32:11.044+00:00",
+       "updateTime": "2026-10-09T00:32:11.044+00:00",
+       "version": 1,
+       "lastRequestId": "63bc2431-3832-4cd9-a55b-b9fd9bdb2fd3"
+      },
+      "classificationOrigin": "ASSIGNED",
+      "classificationName": "Anchors",
+      "classificationProperties": {
+       "class": "AnchorsProperties",
+       "typeName": "Anchors",
+       "anchorTypeName": "GovernanceActionProcess",
+       "anchorDomainName": "AuthoredReferenceable"
+      }
+     }
+    },
+    "properties": {
+     "class": "GovernanceActionProcessProperties",
+     "typeName": "GovernanceActionProcess",
+     "qualifiedName": "GovActionProcess::RepoFullSurvey",
+     "displayName": "Full Survey (all steps)",
+     "description": "Every current Resource Explorer repo analysis step, chained into one Survey Definition \u2014 the comprehensive bundle for an already-tracked repo, not Discovery's launch target. Regenerated by scripts/generate_repo_survey_definition.py from repo_survey_definition_adapter.py's STEP_REGISTRY, the single source of truth for what RE can actually run against a Git repository. Named 'Full Survey (all steps)' \u2014 deliberately NOT 'Scouting - ...', which it was briefly called: this is an automate_full bundle, and the Scouting prefix made it read as a Scouting-tier survey, which is how running it from Scouting came to deposit Assessment-tier results that rendered as Scouting Results cards. Scouting's own run-everything option is 'Scouting Survey'. qualified_name has never changed across either rename, so both were in-place updates of the same element. Scales poorly by construction: as repo survey steps grow into the dozens, some of them expensive, 'run every step' stops being a sensible default and this becomes a deliberate, scheduled choice rather than a convenient one.",
+     "versionIdentifier": "1.0",
+     "additionalProperties": {
+      "supported_technology_type": "Git Repository",
+      "survey_kind": "automate_full"
+     },
+     "contentStatus": "ACTIVE",
+     "domainIdentifier": 0
+    }
+   },
+   "relatedElementAtEnd1": true
+  },
+  {
+   "class": "RelatedMetadataElementSummary",
+   "relationshipHeader": {
+    "class": "ElementHeader",
+    "headerVersion": 0,
+    "status": "ACTIVE",
+    "type": {
+     "typeId": "3845b5cc-8c85-462f-b7e6-47472a568793",
+     "typeName": "ScopedBy",
+     "typeVersion": 1,
+     "typeDescription": "Link between a scope - such as a digital product, infrastructure element, or organization - and an element restricted the scope, such as a governance definition.",
+     "typeCategory": "RELATIONSHIP_DEF"
+    },
+    "origin": {
+     "sourceServer": "qs-metadata-store",
+     "originCategory": "LOCAL_COHORT",
+     "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+     "homeMetadataCollectionName": "qs-metadata-store"
+    },
+    "versions": {
+     "createdBy": "erinoverview",
+     "updatedBy": "erinoverview",
+     "maintainedBy": [
+      "erinoverview"
+     ],
+     "createTime": "2026-10-09T00:31:56.212+00:00",
+     "updateTime": "2026-10-09T00:31:56.212+00:00",
+     "version": 1,
+     "lastRequestId": "365a4b55-5b2d-4a56-8b2f-c0e3efbd6fa9"
+    },
+    "guid": "fc2bb0da-62e3-4807-90eb-c2c5bec97125"
+   },
+   "relatedElement": {
+    "elementHeader": {
+     "class": "ElementHeader",
+     "headerVersion": 0,
+     "status": "ACTIVE",
+     "type": {
+      "typeId": "4d3a2b8d-9e2e-4832-b338-21c74e45b238",
+      "typeName": "GovernanceActionProcess",
+      "superTypeNames": [
+       "GovernanceAction",
+       "GovernanceControl",
+       "GovernanceDefinition",
+       "AuthoredReferenceable",
+       "Referenceable",
+       "OpenMetadataRoot"
+      ],
+      "typeVersion": 1,
+      "typeDescription": "A process implemented by chained engine actions that call governance services.",
+      "typeCategory": "ENTITY_DEF"
+     },
+     "origin": {
+      "sourceServer": "qs-metadata-store",
+      "originCategory": "LOCAL_COHORT",
+      "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+      "homeMetadataCollectionName": "qs-metadata-store"
+     },
+     "versions": {
+      "createdBy": "erinoverview",
+      "updatedBy": "erinoverview",
+      "maintainedBy": [
+       "erinoverview"
+      ],
+      "createTime": "2026-10-09T00:31:54.990+00:00",
+      "updateTime": "2026-10-09T00:31:54.990+00:00",
+      "version": 1,
+      "lastRequestId": "4fe63c9a-914a-4d23-a85b-e129115def61"
+     },
+     "guid": "9f85a492-16b5-4150-9d2e-291ef1c39dfb",
+     "anchor": {
+      "class": "ElementClassification",
+      "headerVersion": 0,
+      "status": "ACTIVE",
+      "type": {
+       "typeId": "aa44f302-2e43-4669-a1e7-edaae414fc6e",
+       "typeName": "Anchors",
+       "typeVersion": 1,
+       "typeDescription": "Identifies the anchor entity for an element that is part of a large composite object such as an asset.",
+       "typeCategory": "CLASSIFICATION_DEF"
+      },
+      "origin": {
+       "sourceServer": "qs-metadata-store",
+       "originCategory": "LOCAL_COHORT",
+       "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+       "homeMetadataCollectionName": "qs-metadata-store"
+      },
+      "versions": {
+       "createdBy": "erinoverview",
+       "updatedBy": "erinoverview",
+       "maintainedBy": [
+        "erinoverview"
+       ],
+       "createTime": "2026-10-09T00:31:54.989+00:00",
+       "updateTime": "2026-10-09T00:31:54.989+00:00",
+       "version": 1,
+       "lastRequestId": "4fe63c9a-914a-4d23-a85b-e129115def61"
+      },
+      "classificationOrigin": "ASSIGNED",
+      "classificationName": "Anchors",
+      "classificationProperties": {
+       "class": "AnchorsProperties",
+       "typeName": "Anchors",
+       "anchorTypeName": "GovernanceActionProcess",
+       "anchorDomainName": "AuthoredReferenceable"
+      }
+     }
+    },
+    "properties": {
+     "class": "GovernanceActionProcessProperties",
+     "typeName": "GovernanceActionProcess",
+     "qualifiedName": "GovActionProcess::RepoComplianceSurvey",
+     "displayName": "Compliance Survey",
+     "description": "Everything that assesses a repository's compliance and disclosure posture, in one runnable survey: the existing security-family steps plus the four gap analyses added 2026-09-01 (secret handling, telemetry/phone-home, CLA/DCO provenance, published SLA content). Created as a NEW GROUP because RepoAssessmentSurvey was then ten steps and deliberately all-low-compute. On 2026-10-02 the project owner decided Assessment should include these four steps as well, so RepoAssessmentSurvey now carries them too (test_assessment_carries_the_compliance_steps_by_owner_decision pins that membership); this survey remains as the narrower compliance-only run, with manifest parsing and license classification added. Steps are shared, not moved: every one of these also remains in whatever group it already belonged to, which the step->group mapping has always supported (11 of 36 steps were already multi-group before this). Prefixed by the two prerequisite refresh steps because every gap analysis declares requires_context={'has_file_inventory': ...} and would otherwise be correctly SKIPPED_BY_DESIGN on a repo nothing had inventoried.",
+     "versionIdentifier": "1.0",
+     "additionalProperties": {
+      "supported_technology_type": "Git Repository",
+      "survey_kind": "assessment"
+     },
+     "contentStatus": "ACTIVE",
+     "domainIdentifier": 0
+    }
+   },
+   "relatedElementAtEnd1": true
+  },
+  {
+   "class": "RelatedMetadataElementSummary",
+   "relationshipHeader": {
+    "class": "ElementHeader",
+    "headerVersion": 0,
+    "status": "ACTIVE",
+    "type": {
+     "typeId": "3845b5cc-8c85-462f-b7e6-47472a568793",
+     "typeName": "ScopedBy",
+     "typeVersion": 1,
+     "typeDescription": "Link between a scope - such as a digital product, infrastructure element, or organization - and an element restricted the scope, such as a governance definition.",
+     "typeCategory": "RELATIONSHIP_DEF"
+    },
+    "origin": {
+     "sourceServer": "qs-metadata-store",
+     "originCategory": "LOCAL_COHORT",
+     "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+     "homeMetadataCollectionName": "qs-metadata-store"
+    },
+    "versions": {
+     "createdBy": "erinoverview",
+     "updatedBy": "erinoverview",
+     "maintainedBy": [
+      "erinoverview"
+     ],
+     "createTime": "2026-10-09T00:31:51.137+00:00",
+     "updateTime": "2026-10-09T00:31:51.137+00:00",
+     "version": 1,
+     "lastRequestId": "641ba34e-4140-4ca6-81b2-9437ccf050dc"
+    },
+    "guid": "37a65516-e592-4f4c-850b-118c2e17901b"
+   },
+   "relatedElement": {
+    "elementHeader": {
+     "class": "ElementHeader",
+     "headerVersion": 0,
+     "status": "ACTIVE",
+     "type": {
+      "typeId": "4d3a2b8d-9e2e-4832-b338-21c74e45b238",
+      "typeName": "GovernanceActionProcess",
+      "superTypeNames": [
+       "GovernanceAction",
+       "GovernanceControl",
+       "GovernanceDefinition",
+       "AuthoredReferenceable",
+       "Referenceable",
+       "OpenMetadataRoot"
+      ],
+      "typeVersion": 1,
+      "typeDescription": "A process implemented by chained engine actions that call governance services.",
+      "typeCategory": "ENTITY_DEF"
+     },
+     "origin": {
+      "sourceServer": "qs-metadata-store",
+      "originCategory": "LOCAL_COHORT",
+      "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+      "homeMetadataCollectionName": "qs-metadata-store"
+     },
+     "versions": {
+      "createdBy": "erinoverview",
+      "updatedBy": "erinoverview",
+      "maintainedBy": [
+       "erinoverview"
+      ],
+      "createTime": "2026-10-09T00:31:49.797+00:00",
+      "updateTime": "2026-10-09T00:31:49.797+00:00",
+      "version": 1,
+      "lastRequestId": "e0c6d64b-4d5c-4507-a952-44b5ff2cee27"
+     },
+     "guid": "e824c78a-bb49-4982-8d41-1b6f4db9c08e",
+     "anchor": {
+      "class": "ElementClassification",
+      "headerVersion": 0,
+      "status": "ACTIVE",
+      "type": {
+       "typeId": "aa44f302-2e43-4669-a1e7-edaae414fc6e",
+       "typeName": "Anchors",
+       "typeVersion": 1,
+       "typeDescription": "Identifies the anchor entity for an element that is part of a large composite object such as an asset.",
+       "typeCategory": "CLASSIFICATION_DEF"
+      },
+      "origin": {
+       "sourceServer": "qs-metadata-store",
+       "originCategory": "LOCAL_COHORT",
+       "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+       "homeMetadataCollectionName": "qs-metadata-store"
+      },
+      "versions": {
+       "createdBy": "erinoverview",
+       "updatedBy": "erinoverview",
+       "maintainedBy": [
+        "erinoverview"
+       ],
+       "createTime": "2026-10-09T00:31:49.796+00:00",
+       "updateTime": "2026-10-09T00:31:49.796+00:00",
+       "version": 1,
+       "lastRequestId": "e0c6d64b-4d5c-4507-a952-44b5ff2cee27"
+      },
+      "classificationOrigin": "ASSIGNED",
+      "classificationName": "Anchors",
+      "classificationProperties": {
+       "class": "AnchorsProperties",
+       "typeName": "Anchors",
+       "anchorTypeName": "GovernanceActionProcess",
+       "anchorDomainName": "AuthoredReferenceable"
+      }
+     }
+    },
+    "properties": {
+     "class": "GovernanceActionProcessProperties",
+     "typeName": "GovernanceActionProcess",
+     "qualifiedName": "GovActionProcess::RepoAssessmentSurvey",
+     "displayName": "Assessment Survey",
+     "description": "Everything Assessment evaluates: documentation coverage, security-policy hygiene, GitHub's native security-feature toggles, CI quality, dependency advisories, and the four compliance and disclosure analyses \u2014 committed secrets, telemetry/phone-home, CLA/DCO contribution provenance and published SLA/support content (added 2026-10-02 on the project owner's decision, so a repo that is assessed gets them rather than only a repo someone separately ran the Compliance Survey on). Prefixed by the two prerequisite refresh steps \u2014 every step here reads project_stats and documentation also reads project_file_inventory, and the four compliance steps each declare has_file_inventory and read the SAME zipball repo_file_inventory already downloads (one download per run, shared), so they add no new fetch, no clone and no new credential \u2014 without the prefix the run scores whatever an earlier, unrelated survey left behind. The four sit after repo_cve_scan and before the two reducers (repo_foss_scorecard, repo_security_summary), which stay at the end. No longer cheap: repo_secret_scan is compute_cost='high' (222 regex rules over every tracked file; 277.3s measured on egeria_git, 330.8s median in docs/funnel-cost-measured.md) and Prefect-routed, repo_telemetry_scan is medium (24.1s median, n=3), repo_sla_content measured 20.2s (n=3) and repo_contribution_provenance is declared low and unmeasured. Run with max_compute_cost='medium' to leave out the secret scan, or max_fetch_cost='none' to score against stored data instead.",
+     "versionIdentifier": "1.0",
+     "additionalProperties": {
+      "supported_technology_type": "Git Repository",
+      "survey_kind": "assessment"
+     },
+     "contentStatus": "ACTIVE",
+     "domainIdentifier": 0
+    }
+   },
+   "relatedElementAtEnd1": true
+  },
+  {
+   "class": "RelatedMetadataElementSummary",
+   "relationshipHeader": {
+    "class": "ElementHeader",
+    "headerVersion": 0,
+    "status": "ACTIVE",
+    "type": {
+     "typeId": "3845b5cc-8c85-462f-b7e6-47472a568793",
+     "typeName": "ScopedBy",
+     "typeVersion": 1,
+     "typeDescription": "Link between a scope - such as a digital product, infrastructure element, or organization - and an element restricted the scope, such as a governance definition.",
+     "typeCategory": "RELATIONSHIP_DEF"
+    },
+    "origin": {
+     "sourceServer": "qs-metadata-store",
+     "originCategory": "LOCAL_COHORT",
+     "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+     "homeMetadataCollectionName": "qs-metadata-store"
+    },
+    "versions": {
+     "createdBy": "erinoverview",
+     "updatedBy": "erinoverview",
+     "maintainedBy": [
+      "erinoverview"
+     ],
+     "createTime": "2026-10-09T00:31:45.586+00:00",
+     "updateTime": "2026-10-09T00:31:45.586+00:00",
+     "version": 1,
+     "lastRequestId": "cf8892c5-8bc9-4912-93ed-7d85250126a6"
+    },
+    "guid": "7e045277-2471-4150-8431-a90d2aacca16"
+   },
+   "relatedElement": {
+    "elementHeader": {
+     "class": "ElementHeader",
+     "headerVersion": 0,
+     "status": "ACTIVE",
+     "type": {
+      "typeId": "4d3a2b8d-9e2e-4832-b338-21c74e45b238",
+      "typeName": "GovernanceActionProcess",
+      "superTypeNames": [
+       "GovernanceAction",
+       "GovernanceControl",
+       "GovernanceDefinition",
+       "AuthoredReferenceable",
+       "Referenceable",
+       "OpenMetadataRoot"
+      ],
+      "typeVersion": 1,
+      "typeDescription": "A process implemented by chained engine actions that call governance services.",
+      "typeCategory": "ENTITY_DEF"
+     },
+     "origin": {
+      "sourceServer": "qs-metadata-store",
+      "originCategory": "LOCAL_COHORT",
+      "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+      "homeMetadataCollectionName": "qs-metadata-store"
+     },
+     "versions": {
+      "createdBy": "erinoverview",
+      "updatedBy": "erinoverview",
+      "maintainedBy": [
+       "erinoverview"
+      ],
+      "createTime": "2026-10-09T00:31:45.036+00:00",
+      "updateTime": "2026-10-09T00:31:45.036+00:00",
+      "version": 1,
+      "lastRequestId": "43a95bcb-711c-4ab9-b5a7-fe969513457d"
+     },
+     "guid": "a76d1bbf-e794-4046-a793-1f2503396464",
+     "anchor": {
+      "class": "ElementClassification",
+      "headerVersion": 0,
+      "status": "ACTIVE",
+      "type": {
+       "typeId": "aa44f302-2e43-4669-a1e7-edaae414fc6e",
+       "typeName": "Anchors",
+       "typeVersion": 1,
+       "typeDescription": "Identifies the anchor entity for an element that is part of a large composite object such as an asset.",
+       "typeCategory": "CLASSIFICATION_DEF"
+      },
+      "origin": {
+       "sourceServer": "qs-metadata-store",
+       "originCategory": "LOCAL_COHORT",
+       "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+       "homeMetadataCollectionName": "qs-metadata-store"
+      },
+      "versions": {
+       "createdBy": "erinoverview",
+       "updatedBy": "erinoverview",
+       "maintainedBy": [
+        "erinoverview"
+       ],
+       "createTime": "2026-10-09T00:31:45.034+00:00",
+       "updateTime": "2026-10-09T00:31:45.034+00:00",
+       "version": 1,
+       "lastRequestId": "43a95bcb-711c-4ab9-b5a7-fe969513457d"
+      },
+      "classificationOrigin": "ASSIGNED",
+      "classificationName": "Anchors",
+      "classificationProperties": {
+       "class": "AnchorsProperties",
+       "typeName": "Anchors",
+       "anchorTypeName": "GovernanceActionProcess",
+       "anchorDomainName": "AuthoredReferenceable"
+      }
+     }
+    },
+    "properties": {
+     "class": "GovernanceActionProcessProperties",
+     "typeName": "GovernanceActionProcess",
+     "qualifiedName": "GovActionProcess::RepoScoutingSurvey",
+     "displayName": "Scouting Survey",
+     "description": "Everything Scouting does, in one run: refresh git statistics and the file inventory, then score health, language shape, file classification and structure, data-file profiles and the project's external website. The union of Git Statistics Survey and Coarse Profile Survey, which remain available separately for the narrower/faster cases. Scouting-tier by construction \u2014 every step here belongs to Scouting, unlike the automate_full bundle which runs all 20 steps including Assessment- and Analysis-tier ones.",
+     "versionIdentifier": "1.0",
+     "additionalProperties": {
+      "supported_technology_type": "Git Repository",
+      "survey_kind": "scouting"
+     },
+     "contentStatus": "ACTIVE",
+     "domainIdentifier": 0
+    }
+   },
+   "relatedElementAtEnd1": true
+  },
+  {
+   "class": "RelatedMetadataElementSummary",
+   "relationshipHeader": {
+    "class": "ElementHeader",
+    "headerVersion": 0,
+    "status": "ACTIVE",
+    "type": {
+     "typeId": "3845b5cc-8c85-462f-b7e6-47472a568793",
+     "typeName": "ScopedBy",
+     "typeVersion": 1,
+     "typeDescription": "Link between a scope - such as a digital product, infrastructure element, or organization - and an element restricted the scope, such as a governance definition.",
+     "typeCategory": "RELATIONSHIP_DEF"
+    },
+    "origin": {
+     "sourceServer": "qs-metadata-store",
+     "originCategory": "LOCAL_COHORT",
+     "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+     "homeMetadataCollectionName": "qs-metadata-store"
+    },
+    "versions": {
+     "createdBy": "erinoverview",
+     "updatedBy": "erinoverview",
+     "maintainedBy": [
+      "erinoverview"
+     ],
+     "createTime": "2026-10-09T00:31:41.791+00:00",
+     "updateTime": "2026-10-09T00:31:41.791+00:00",
+     "version": 1,
+     "lastRequestId": "a3d9612e-4734-44bd-9a3a-934ebd4b6aaa"
+    },
+    "guid": "2bb0f702-4126-4ea7-acf1-6731b6425524"
+   },
+   "relatedElement": {
+    "elementHeader": {
+     "class": "ElementHeader",
+     "headerVersion": 0,
+     "status": "ACTIVE",
+     "type": {
+      "typeId": "4d3a2b8d-9e2e-4832-b338-21c74e45b238",
+      "typeName": "GovernanceActionProcess",
+      "superTypeNames": [
+       "GovernanceAction",
+       "GovernanceControl",
+       "GovernanceDefinition",
+       "AuthoredReferenceable",
+       "Referenceable",
+       "OpenMetadataRoot"
+      ],
+      "typeVersion": 1,
+      "typeDescription": "A process implemented by chained engine actions that call governance services.",
+      "typeCategory": "ENTITY_DEF"
+     },
+     "origin": {
+      "sourceServer": "qs-metadata-store",
+      "originCategory": "LOCAL_COHORT",
+      "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+      "homeMetadataCollectionName": "qs-metadata-store"
+     },
+     "versions": {
+      "createdBy": "erinoverview",
+      "updatedBy": "erinoverview",
+      "maintainedBy": [
+       "erinoverview"
+      ],
+      "createTime": "2026-10-09T00:31:41.200+00:00",
+      "updateTime": "2026-10-09T00:31:41.200+00:00",
+      "version": 1,
+      "lastRequestId": "67e109f0-1cee-4ddd-a090-93716eb71698"
+     },
+     "guid": "c1731659-7227-4a2e-a15d-fd99973dded9",
+     "anchor": {
+      "class": "ElementClassification",
+      "headerVersion": 0,
+      "status": "ACTIVE",
+      "type": {
+       "typeId": "aa44f302-2e43-4669-a1e7-edaae414fc6e",
+       "typeName": "Anchors",
+       "typeVersion": 1,
+       "typeDescription": "Identifies the anchor entity for an element that is part of a large composite object such as an asset.",
+       "typeCategory": "CLASSIFICATION_DEF"
+      },
+      "origin": {
+       "sourceServer": "qs-metadata-store",
+       "originCategory": "LOCAL_COHORT",
+       "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+       "homeMetadataCollectionName": "qs-metadata-store"
+      },
+      "versions": {
+       "createdBy": "erinoverview",
+       "updatedBy": "erinoverview",
+       "maintainedBy": [
+        "erinoverview"
+       ],
+       "createTime": "2026-10-09T00:31:41.198+00:00",
+       "updateTime": "2026-10-09T00:31:41.198+00:00",
+       "version": 1,
+       "lastRequestId": "67e109f0-1cee-4ddd-a090-93716eb71698"
+      },
+      "classificationOrigin": "ASSIGNED",
+      "classificationName": "Anchors",
+      "classificationProperties": {
+       "class": "AnchorsProperties",
+       "typeName": "Anchors",
+       "anchorTypeName": "GovernanceActionProcess",
+       "anchorDomainName": "AuthoredReferenceable"
+      }
+     }
+    },
+    "properties": {
+     "class": "GovernanceActionProcessProperties",
+     "typeName": "GovernanceActionProcess",
+     "qualifiedName": "GovActionProcess::RepoCoarseProfile",
+     "displayName": "Coarse Profile Survey",
+     "description": "Download the repo's zipball once and profile what's actually in it \u2014 file types, sizes, language shape, and any data-file schemas. Replaces the old bespoke 'Refresh coarse profile' button/route (docs/survey-model.md (\u00a76) D2/D3) \u2014 this is now an ordinary Survey Definition candidate like every other survey type, dispatched through the same batched executor path (D1) that downloads the zipball once for the whole group instead of once per step.",
+     "versionIdentifier": "1.0",
+     "additionalProperties": {
+      "supported_technology_type": "Git Repository",
+      "survey_kind": "scouting"
+     },
+     "contentStatus": "ACTIVE",
+     "domainIdentifier": 0
+    }
+   },
+   "relatedElementAtEnd1": true
+  },
+  {
+   "class": "RelatedMetadataElementSummary",
+   "relationshipHeader": {
+    "class": "ElementHeader",
+    "headerVersion": 0,
+    "status": "ACTIVE",
+    "type": {
+     "typeId": "3845b5cc-8c85-462f-b7e6-47472a568793",
+     "typeName": "ScopedBy",
+     "typeVersion": 1,
+     "typeDescription": "Link between a scope - such as a digital product, infrastructure element, or organization - and an element restricted the scope, such as a governance definition.",
+     "typeCategory": "RELATIONSHIP_DEF"
+    },
+    "origin": {
+     "sourceServer": "qs-metadata-store",
+     "originCategory": "LOCAL_COHORT",
+     "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+     "homeMetadataCollectionName": "qs-metadata-store"
+    },
+    "versions": {
+     "createdBy": "erinoverview",
+     "updatedBy": "erinoverview",
+     "maintainedBy": [
+      "erinoverview"
+     ],
+     "createTime": "2026-10-09T00:31:29.236+00:00",
+     "updateTime": "2026-10-09T00:31:29.236+00:00",
+     "version": 1,
+     "lastRequestId": "85c91e73-5788-411d-ae9d-303140729412"
+    },
+    "guid": "5012f5f2-11e3-4e22-b6a7-f87f997e012e"
+   },
+   "relatedElement": {
+    "elementHeader": {
+     "class": "ElementHeader",
+     "headerVersion": 0,
+     "status": "ACTIVE",
+     "type": {
+      "typeId": "4d3a2b8d-9e2e-4832-b338-21c74e45b238",
+      "typeName": "GovernanceActionProcess",
+      "superTypeNames": [
+       "GovernanceAction",
+       "GovernanceControl",
+       "GovernanceDefinition",
+       "AuthoredReferenceable",
+       "Referenceable",
+       "OpenMetadataRoot"
+      ],
+      "typeVersion": 1,
+      "typeDescription": "A process implemented by chained engine actions that call governance services.",
+      "typeCategory": "ENTITY_DEF"
+     },
+     "origin": {
+      "sourceServer": "qs-metadata-store",
+      "originCategory": "LOCAL_COHORT",
+      "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+      "homeMetadataCollectionName": "qs-metadata-store"
+     },
+     "versions": {
+      "createdBy": "erinoverview",
+      "updatedBy": "erinoverview",
+      "maintainedBy": [
+       "erinoverview"
+      ],
+      "createTime": "2026-10-09T00:31:28.810+00:00",
+      "updateTime": "2026-10-09T00:31:28.810+00:00",
+      "version": 1,
+      "lastRequestId": "59131dda-01d5-42c0-8095-c43dbdef7455"
+     },
+     "guid": "cb708230-0de0-4900-a988-9df033cf0e9c",
+     "anchor": {
+      "class": "ElementClassification",
+      "headerVersion": 0,
+      "status": "ACTIVE",
+      "type": {
+       "typeId": "aa44f302-2e43-4669-a1e7-edaae414fc6e",
+       "typeName": "Anchors",
+       "typeVersion": 1,
+       "typeDescription": "Identifies the anchor entity for an element that is part of a large composite object such as an asset.",
+       "typeCategory": "CLASSIFICATION_DEF"
+      },
+      "origin": {
+       "sourceServer": "qs-metadata-store",
+       "originCategory": "LOCAL_COHORT",
+       "homeMetadataCollectionId": "9905c3cb-94c5-4494-9229-0d6f69c0b842",
+       "homeMetadataCollectionName": "qs-metadata-store"
+      },
+      "versions": {
+       "createdBy": "erinoverview",
+       "updatedBy": "erinoverview",
+       "maintainedBy": [
+        "erinoverview"
+       ],
+       "createTime": "2026-10-09T00:31:28.808+00:00",
+       "updateTime": "2026-10-09T00:31:28.808+00:00",
+       "version": 1,
+       "lastRequestId": "59131dda-01d5-42c0-8095-c43dbdef7455"
+      },
+      "classificationOrigin": "ASSIGNED",
+      "classificationName": "Anchors",
+      "classificationProperties": {
+       "class": "AnchorsProperties",
+       "typeName": "Anchors",
+       "anchorTypeName": "GovernanceActionProcess",
+       "anchorDomainName": "AuthoredReferenceable"
+      }
+     }
+    },
+    "properties": {
+     "class": "GovernanceActionProcessProperties",
+     "typeName": "GovernanceActionProcess",
+     "qualifiedName": "GovActionProcess::RepoCoarseScout",
+     "displayName": "Repo Scouting Scan",
+     "description": "Fast, GitHub-API-only pass \u2014 is this repo active enough to look closer at? Regenerated by scripts/generate_repo_survey_definition.py. Re-authored after the original live Egeria element was lost to a platform restart (quickstart platform does not persist custom-authored elements across restarts). Renamed from 'Repo Coarse Scout' (docs/survey-model.md (\u00a76) D5), then from 'Git Statistics Survey' (2026-08-27) \u2014 that name came from its first step, repo_git_statistics, which is a prerequisite refresh step with no results view, so the survey was named after the one thing it cannot show you \u2014 qualified_name unchanged, so this is an in-place rename of the existing element, not a new one.",
+     "versionIdentifier": "1.0",
+     "additionalProperties": {
+      "supported_technology_type": "Git Repository",
+      "survey_kind": "scouting"
+     },
+     "contentStatus": "ACTIVE",
+     "domainIdentifier": 0
+    }
+   },
+   "relatedElementAtEnd1": true
+  }
+ ],
+ "properties": {
+  "class": "GlossaryTermProperties",
+  "typeName": "GlossaryTerm",
+  "qualifiedName": "Coco Pharmaceuticals::Term::Is-this-repository-actively-maintained?::1.0",
+  "displayName": "Is this repository actively maintained?",
+  "description": "Recency/frequency signal \u2014 last-pushed date, commit cadence \u2014 answerable from GitHub API metadata alone (RE's HealthSurveyor), no zipball needed.",
+  "versionIdentifier": "1.0",
+  "contentStatus": "ACTIVE",
+  "summary": "I don't want to start using something that is a dead-end burden.",
+  "usage": "Typically asked and answerable during Scouting."
+ },
+ "mermaidGraph": "---\ntitle: GlossaryTerm - Is this repository actively maintained? [318f1291-a825-4f67-81b1-f9fd1d18e6e3]\n---\nflowchart TD\n%%{init: {\"flowchart\": {\"htmlLabels\": false}} }%%\n\n1@{ shape: rounded, label: \"*Glossary Term*\n**Is this repository actively maintained?**\"}\n2@{ shape: rect, label: \"*Glossary [Taxonomy]*\n**User Questions**\"}\n2==>|\"Collection Membership\"|1\n3@{ shape: rect, label: \"*Glossary Term*\n**Scouting**\"}\n1==>|\"Scoped By\"|3\n4@{ shape: trap-t, label: \"*Perspective*\n**DATA-EXPERT-PERSPECTIVE**\"}\n1==>|\"Scoped By\"|4\n5@{ shape: trap-t, label: \"*Perspective*\n**CONSUMER-PERSPECTIVE**\"}\n1==>|\"Scoped By\"|5\n6@{ shape: trap-t, label: \"*Perspective*\n**STEWARD-PERSPECTIVE**\"}\n1==>|\"Scoped By\"|6\n7@{ shape: processes, label: \"*Governance Action Process*\n**Full Survey (all steps)**\"}\n7==>|\"Scoped By\"|1\n8@{ shape: processes, label: \"*Governance Action Process*\n**Compliance Survey**\"}\n8==>|\"Scoped By\"|1\n9@{ shape: processes, label: \"*Governance Action Process*\n**Assessment Survey**\"}\n9==>|\"Scoped By\"|1\n10@{ shape: processes, label: \"*Governance Action Process*\n**Scouting Survey**\"}\n10==>|\"Scoped By\"|1\n11@{ shape: processes, label: \"*Governance Action Process*\n**Coarse Profile Survey**\"}\n11==>|\"Scoped By\"|1\n12@{ shape: processes, label: \"*Governance Action Process*\n**Repo Scouting Scan**\"}\n12==>|\"Scoped By\"|1\nstyle 11 color:#000000, fill:#40E0D0, stroke:#000000\nstyle 1 color:#000000, fill:#e0ab18, stroke:#004563\nstyle 12 color:#000000, fill:#40E0D0, stroke:#000000\nstyle 2 color:#FFFFFF, fill:#008080, stroke:#000000\nstyle 3 color:#000000, fill:#66CDAA, stroke:#008080\nstyle 4 color:#000000, fill:#FFE599, stroke:#000000\nstyle 5 color:#000000, fill:#FFE599, stroke:#000000\nstyle 6 color:#000000, fill:#FFE599, stroke:#000000\nstyle 7 color:#000000, fill:#40E0D0, stroke:#000000\nstyle 8 color:#000000, fill:#40E0D0, stroke:#000000\nstyle 9 color:#000000, fill:#40E0D0, stroke:#000000\nstyle 10 color:#000000, fill:#40E0D0, stroke:#000000\nclick 4 \"https://egeria-project.org/practices/coco-pharmaceuticals/personas/peter-profile/\" \"Click for more documentation\" _blank\nclick 5 \"https://egeria-project.org/practices/coco-pharmaceuticals/personas/callie-quartile/\" \"Click for more documentation\" _blank\nclick 6 \"https://egeria-project.org/practices/coco-pharmaceuticals/personas/tanya-tidie/\" \"Click for more documentation\" _blank\n"
+}

@@ -12,6 +12,11 @@ Two subcommands, one plan function:
   before 2026-10-13 unless a later batch set it), and each term's ScopedBy links (perspectives and funnel stages)
   and ReplacementTerm links. It calls only ``get_glossaries_by_name``, ``find_glossary_terms`` and
   ``get_all_related_elements``; a test runs it against fakes whose every write method raises.
+  Shape read (pyegeria 6.2.9, saved live sample in tests/fixtures/question_term_batch/): a term is in the glossary
+  by its ``memberOfCollections`` CollectionMembership (matched on the glossary's GUID, or its qualifiedName when
+  the entry carries no GUID), never by its Anchors (a term anchors itself). ScopedBy links come from the term's
+  ``relevantToScopes``, merged with the related-elements read, which is kept because the term answer shows no
+  ReplacementTerm list and its embedded lists may be capped.
 
 * ``plan --inventory <json> --out <md>``: joins each CSV row to a term by ``question_id``; a term without one is
   joined by the row's display name in the pre-edit CSV (d7a395a4), and the same Update sets its ``question_id``.
@@ -136,13 +141,68 @@ def _classifications(element: dict) -> list[dict]:
     return out
 
 
-def _anchor_scope_guid(element: dict) -> Optional[str]:
-    for c in _classifications(element):
-        if c.get("classificationName") == "Anchors":
-            guid = (c.get("classificationProperties") or {}).get("anchorScopeGUID")
-            if guid:
-                return str(guid)
-    return None
+def _glossary_memberships(element: dict) -> list[dict]:
+    """The term's CollectionMembership entries (`memberOfCollections`), each as the related element's GUID and
+    qualifiedName. A term is its own anchor (Anchors names no anchorScopeGUID), so anchoring cannot say which
+    glossary a term is in; membership does."""
+    out = []
+    for entry in element.get("memberOfCollections") or []:
+        if not isinstance(entry, dict):
+            continue
+        rtype = ((entry.get("relationshipHeader") or {}).get("type") or {}).get("typeName")
+        if rtype != "CollectionMembership":
+            continue
+        related = entry.get("relatedElement") or {}
+        out.append({"guid": str(_header(related).get("guid") or ""),
+                    "qualified_name": str(_props(related).get("qualifiedName") or "")})
+    return out
+
+
+def _is_member(element: dict, glossary_guid: str, glossary_qn: str) -> bool:
+    """Matched on the glossary's GUID, falling back to its qualifiedName; never on a display name."""
+    for m in _glossary_memberships(element):
+        if m["guid"] == glossary_guid or (glossary_qn and not m["guid"] and m["qualified_name"] == glossary_qn):
+            return True
+    return False
+
+
+def links_from_term(element: dict) -> list[dict]:
+    """Pure: the term's ScopedBy links as the term answer itself carries them (`relevantToScopes`: the scopes the
+    term is ScopedBy, i.e. its perspectives and funnel stages). `other_at_end1` is `relatedElementAtEnd1`."""
+    out = []
+    for entry in element.get("relevantToScopes") or []:
+        if not isinstance(entry, dict):
+            continue
+        rheader = entry.get("relationshipHeader") or {}
+        rtype = (rheader.get("type") or {}).get("typeName")
+        if rtype != SCOPED_BY:
+            continue
+        related = entry.get("relatedElement") or {}
+        out.append({
+            "relationship": rtype,
+            "relationship_guid": str(rheader.get("guid") or ""),
+            "other_at_end1": bool(entry.get("relatedElementAtEnd1")),
+            "guid": str(_header(related).get("guid") or ""),
+            "type": str((_header(related).get("type") or {}).get("typeName") or ""),
+            "qualified_name": str(_props(related).get("qualifiedName") or ""),
+            "display_name": str(_props(related).get("displayName") or ""),
+        })
+    return out
+
+
+def merge_links(*sources: list[dict]) -> list[dict]:
+    """One link per relationship: the term answer's and the related-elements read's, de-duplicated by
+    relationship GUID (or, without one, by relationship type and other element). A link either read shows is
+    present, so a capped list in one read never makes the plan re-add a link the other read saw."""
+    out, seen = [], set()
+    for links in sources:
+        for link in links:
+            key = link["relationship_guid"] or (link["relationship"], link["guid"], link["qualified_name"])
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(link)
+    return out
 
 
 def _generic_prop(element: dict, name: str) -> str:
@@ -191,7 +251,7 @@ def _term_record(element: dict) -> dict:
         "element_status": str(_header(element).get("status") or ""),
         "question_id": (str(qid).strip() or None) if qid is not None else None,
         "classifications": sorted({c["classificationName"] for c in _classifications(element)}),
-        "links": [],
+        "links": links_from_term(element),
     }
 
 
@@ -216,15 +276,17 @@ def read_inventory(glossary_manager, metadata_expert, glossary_name: str = QUEST
     if len(exact) != 1:
         raise InventoryReadError(f"glossary {glossary_name!r}: {len(exact)} exact matches (need 1)")
     glossary_guid = str(_header(exact[0]).get("guid") or "")
+    glossary_qn = str(_props(exact[0]).get("qualifiedName") or "")
     if not glossary_guid:
         raise InventoryReadError(f"glossary {glossary_name!r}: answer carries no GUID")
 
     seen = _paged(lambda **kw: glossary_manager.find_glossary_terms("*", output_format="JSON", **kw),
                   "glossary terms", page_size)
-    in_glossary = [e for e in seen if _anchor_scope_guid(e) == glossary_guid]
+    in_glossary = [e for e in seen if _is_member(e, glossary_guid, glossary_qn)]
     if seen and not in_glossary:
         raise InventoryReadError(
-            f"{len(seen)} terms read, none anchored to {glossary_name!r} ({glossary_guid}): the answer's shape is "
+            f"{len(seen)} terms read, none a member of {glossary_name!r} ({glossary_guid}) by CollectionMembership: "
+            "the answer's shape is "
             "not the one this script reads, so it reports nothing rather than an empty glossary")
 
     terms, read_errors = [], []
@@ -233,7 +295,7 @@ def read_inventory(glossary_manager, metadata_expert, glossary_name: str = QUEST
         try:
             entries = _paged(lambda **kw: metadata_expert.get_all_related_elements(
                 record["guid"], graph_query_depth=1, **kw), f"links of {record['guid']}", page_size)
-            record["links"] = links_from_related(entries, f"links of {record['guid']}")
+            record["links"] = merge_links(record["links"], links_from_related(entries, f"links of {record['guid']}"))
         except Exception as exc:  # recorded per term; the plan refuses the inventory
             read_errors.append({"guid": record["guid"], "display_name": record["display_name"],
                                 "error": f"{type(exc).__name__}: {exc}"[:500]})
@@ -242,7 +304,7 @@ def read_inventory(glossary_manager, metadata_expert, glossary_name: str = QUEST
     return {
         "schema": INVENTORY_SCHEMA,
         "taken_at": now or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "glossary": {"name": glossary_name, "guid": glossary_guid},
+        "glossary": {"name": glossary_name, "guid": glossary_guid, "qualified_name": glossary_qn},
         "terms_seen": len(seen),
         "terms": terms,
         "read_errors": read_errors,

@@ -311,15 +311,50 @@ def _read_only_fake(cls):
     return fake
 
 
-def _term_element(guid, name, glossary, qid=None):
-    props = {"qualifiedName": f"QN::{name}", "displayName": name, "description": "d", "summary": "s",
-             "usage": "u", "contentStatus": "ACTIVE"}
+LIVE_SAMPLE = FIXTURES / "live_term_sample_Q-0001.json"
+LIVE_GLOSSARY_GUID = "22dc03e9-a981-41c2-814e-bacbdad9fa9f"
+LIVE_GLOSSARY_QN = "Coco Pharmaceuticals::Glossary::User-Questions::1.0"
+
+
+def _live_term() -> dict:
+    """The live Egeria answer for Q-0001 (pyegeria 6.2.9 find_glossary_terms, JSON), verbatim."""
+    return json.loads(LIVE_SAMPLE.read_text(encoding="utf-8"))
+
+
+def _live_glossary() -> dict:
+    """The glossary entry get_glossaries_by_name answers with, taken from the sample's own membership."""
+    related = _live_term()["memberOfCollections"][0]["relatedElement"]
+    return {"elementHeader": related["elementHeader"], "properties": related["properties"]}
+
+
+def _term_element(guid, name, glossary=LIVE_GLOSSARY_GUID, qid=None, *, scopes=True):
+    """A variant of the LIVE sample: its guid, names and membership target changed, nothing invented."""
+    t = _live_term()
+    t["elementHeader"]["guid"] = guid
+    t["properties"].update(qualifiedName=f"QN::{name}", displayName=name)
     if qid:
-        props["additionalProperties"] = {"question_id": qid}
-    return {"elementHeader": {"guid": guid, "status": "ACTIVE",
-                              "anchor": {"classificationName": "Anchors",
-                                         "classificationProperties": {"anchorScopeGUID": glossary}}},
-            "properties": props}
+        t["properties"]["additionalProperties"] = {"question_id": qid}
+    t["memberOfCollections"][0]["relatedElement"]["elementHeader"]["guid"] = glossary
+    if glossary != LIVE_GLOSSARY_GUID:
+        t["memberOfCollections"][0]["relatedElement"]["properties"]["qualifiedName"] = f"QN::{glossary}"
+    if not scopes:
+        t["relevantToScopes"] = []
+    return t
+
+
+def _old_shape_only(element: dict, glossary_guid: str) -> dict:
+    """The shape the first builder read: an Anchors classification naming the glossary, no membership."""
+    e = copy.deepcopy(element)
+    e.pop("memberOfCollections", None)
+    e["elementHeader"]["classifications"] = [{"classificationName": "Anchors",
+                                              "classificationProperties": {"anchorScopeGUID": glossary_guid}}]
+    return e
+
+
+def _fakes():
+    from pyegeria.omvs.glossary_manager import GlossaryManager
+    from pyegeria.omvs.metadata_expert import MetadataExpert
+    return _read_only_fake(GlossaryManager), _read_only_fake(MetadataExpert)
 
 
 def test_inventory_reads_only_and_records_links(monkeypatch):
@@ -328,9 +363,9 @@ def test_inventory_reads_only_and_records_links(monkeypatch):
 
     gm, me = _read_only_fake(GlossaryManager), _read_only_fake(MetadataExpert)
     gm.get_glossaries_by_name.return_value = [
-        {"elementHeader": {"guid": "g-uq"}, "properties": {"displayName": "User Questions"}},
+        _live_glossary(),
         {"elementHeader": {"guid": "g-other"}, "properties": {"displayName": "User Questions (old)"}}]
-    page1 = [_term_element("t1", "Q one?", "g-uq", "Q-0001"), _term_element("t2", "Q two?", "g-uq"),
+    page1 = [_term_element("t1", "Q one?", qid="Q-0001", scopes=False), _term_element("t2", "Q two?", scopes=False),
              _term_element("x1", "Elsewhere", "g-other")]
     gm.find_glossary_terms.side_effect = lambda *a, start_from=0, **k: page1 if start_from == 0 else "No elements found"
 
@@ -348,7 +383,7 @@ def test_inventory_reads_only_and_records_links(monkeypatch):
              "element": {"elementGUID": "t9", "type": {"typeName": "GlossaryTerm"},
                          "elementProperties": {"propertiesAsStrings": {"qualifiedName": "QN::nine"}}}},
             {"type": {"typeName": "CollectionMembership"}, "elementAtEnd1": True, "relationshipGUID": "r3",
-             "element": {"elementGUID": "g-uq"}}]}
+             "element": {"elementGUID": LIVE_GLOSSARY_GUID}}]}
     me.get_all_related_elements.side_effect = related
 
     inv = qtb.read_inventory(gm, me, "User Questions", page_size=3, now="T")
@@ -365,10 +400,10 @@ def test_inventory_records_a_failed_link_read_and_the_plan_refuses_it():
     from pyegeria.omvs.metadata_expert import MetadataExpert
 
     gm, me = _read_only_fake(GlossaryManager), _read_only_fake(MetadataExpert)
-    gm.get_glossaries_by_name.return_value = [{"elementHeader": {"guid": "g"}, "properties": {"displayName": "UQ"}}]
-    gm.find_glossary_terms.return_value = [_term_element("t1", "Q?", "g", "Q-0001")]
+    gm.get_glossaries_by_name.return_value = [_live_glossary()]
+    gm.find_glossary_terms.return_value = [_term_element("t1", "Q?", qid="Q-0001")]
     me.get_all_related_elements.return_value = None  # pyegeria's dynamic_catch on a failure: not "no links"
-    inv = qtb.read_inventory(gm, me, "UQ", now="T")
+    inv = qtb.read_inventory(gm, me, "User Questions", now="T")
     assert [e["guid"] for e in inv["read_errors"]] == ["t1"]
     with pytest.raises(qtb.PlanInputError):
         qtb.build_plan([], [], inv)
@@ -384,5 +419,92 @@ def test_inventory_refuses_an_answer_it_cannot_read():
         qtb.read_inventory(gm, me, "User Questions")
     gm.get_glossaries_by_name.return_value = [{"elementHeader": {"guid": "g"}, "properties": {"displayName": "UQ"}}]
     gm.find_glossary_terms.return_value = [{"elementHeader": {"guid": "t"}, "properties": {"displayName": "x"}}]
-    with pytest.raises(qtb.InventoryReadError, match="none anchored"):
+    with pytest.raises(qtb.InventoryReadError, match="none a member of"):
         qtb.read_inventory(gm, me, "UQ")
+
+
+# ---------------------------------------------------------------------------
+# inventory: the live term shape (tests/fixtures/question_term_batch/live_term_sample_Q-0001.json)
+# ---------------------------------------------------------------------------
+
+def test_live_shape_is_read_membership_scopes_and_classifications():
+    gm, me = _fakes()
+    gm.get_glossaries_by_name.return_value = [_live_glossary()]
+    gm.find_glossary_terms.side_effect = lambda *a, start_from=0, **k: [_live_term()] if start_from == 0 else []
+    me.get_all_related_elements.return_value = "No elements found"
+    inv = qtb.read_inventory(gm, me, "User Questions", now="T")
+    assert inv["read_errors"] == [] and inv["glossary"]["qualified_name"] == LIVE_GLOSSARY_QN
+    (t,) = inv["terms"]
+    assert t["guid"] == "318f1291-a825-4f67-81b1-f9fd1d18e6e3"
+    assert t["display_name"] == "Is this repository actively maintained?"
+    assert t["question_id"] is None and t["content_status"] == "ACTIVE"   # no additionalProperties on live terms
+    assert "Question" in t["classifications"]
+    assert qtb._term_perspectives(t) == {"Perspective::Data Expert", "Perspective::Consumer", "Perspective::Steward"}
+    assert qtb._term_stages(t) == {"Scouting"}
+    # scopedElements (the term as the scope of survey processes) are not the term's own scopes
+    assert all(l["type"] != "GovernanceActionProcess" for l in t["links"])
+
+
+def test_the_old_anchors_shape_alone_is_refused():
+    gm, me = _fakes()
+    gm.get_glossaries_by_name.return_value = [_live_glossary()]
+    gm.find_glossary_terms.side_effect = lambda *a, start_from=0, **k: (
+        [_old_shape_only(_live_term(), LIVE_GLOSSARY_GUID)] if start_from == 0 else [])
+    with pytest.raises(qtb.InventoryReadError, match="1 terms read, none a member of 'User Questions'"):
+        qtb.read_inventory(gm, me, "User Questions", now="T")
+
+
+def test_membership_falls_back_to_qualified_name_never_display_name():
+    gm, me = _fakes()
+    gm.get_glossaries_by_name.return_value = [_live_glossary()]
+    by_qn = _term_element("t-qn", "by qn")
+    del by_qn["memberOfCollections"][0]["relatedElement"]["elementHeader"]["guid"]
+    by_dn = _term_element("t-dn", "by display name only")
+    rel = by_dn["memberOfCollections"][0]["relatedElement"]
+    del rel["elementHeader"]["guid"]
+    rel["properties"]["qualifiedName"] = "Other::Glossary::User-Questions::1.0"  # displayName still "User Questions"
+    gm.find_glossary_terms.side_effect = lambda *a, start_from=0, **k: [by_qn, by_dn] if start_from == 0 else []
+    me.get_all_related_elements.return_value = "No elements found"
+    inv = qtb.read_inventory(gm, me, "User Questions", now="T")
+    assert [t["guid"] for t in inv["terms"]] == ["t-qn"]
+
+
+def test_a_link_in_both_reads_is_recorded_once():
+    gm, me = _fakes()
+    gm.get_glossaries_by_name.return_value = [_live_glossary()]
+    live = _live_term()
+    gm.find_glossary_terms.side_effect = lambda *a, start_from=0, **k: [live] if start_from == 0 else []
+    scope = live["relevantToScopes"][0]
+    me.get_all_related_elements.side_effect = lambda guid, start_from=0, **kw: "No elements found" if start_from else {
+        "elementList": [{"type": {"typeName": "ScopedBy"}, "elementAtEnd1": False,
+                         "relationshipGUID": scope["relationshipHeader"]["guid"],
+                         "element": {"elementGUID": scope["relatedElement"]["elementHeader"]["guid"],
+                                     "type": {"typeName": "GlossaryTerm"},
+                                     "elementProperties": {"propertiesAsStrings": {
+                                         "qualifiedName": "Coco Pharmaceuticals::Term::Scouting::1.0",
+                                         "displayName": "Scouting"}}}}]}
+    (t,) = qtb.read_inventory(gm, me, "User Questions", now="T")["terms"]
+    assert len(t["links"]) == len(live["relevantToScopes"]) == 4
+
+
+def _live_rows():
+    """The real CSV's Q-0001 row, before and after #842 (the question was not reworded)."""
+    rows = qtb.read_csv_rows(qtb.CSV_PATH.read_text(encoding="utf-8"))
+    return [r for r in rows if r["Question ID"] == "Q-0001"]
+
+
+def test_live_term_plans_by_old_name_sets_question_id_adds_no_link_and_replans_empty():
+    gm, me = _fakes()
+    gm.get_glossaries_by_name.return_value = [_live_glossary()]
+    gm.find_glossary_terms.side_effect = lambda *a, start_from=0, **k: [_live_term()] if start_from == 0 else []
+    me.get_all_related_elements.return_value = "No elements found"
+    inventory = qtb.read_inventory(gm, me, "User Questions", now="T")
+    rows = _live_rows()
+    plan = qtb.build_plan(rows, rows, inventory)
+    (rp,) = plan.rows
+    assert rp.join_path == "old_name" and rp.action == "update" and "question_id" in rp.changed_fields
+    assert [c.kind for c in rp.commands] == ["update"]  # perspectives and the Scouting stage are already linked
+    assert rp.commands[0].fields["Qualified Name"] == "Coco Pharmaceuticals::Term::Is-this-repository-actively-maintained?::1.0"
+    applied = _apply(inventory, qtb.render_document(plan))
+    second = qtb.build_plan(rows, rows, applied)
+    assert second.commands() == [] and [r.join_path for r in second.rows] == ["question_id"]
