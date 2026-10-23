@@ -488,7 +488,11 @@ async def native_survey_report(entity_type: str, slug: str, report_guid: str) ->
         from resource_explorer.catalogue_commit import _ts, egeria_reset_at, reset_since_read
         copy_read_at = max((a.get("read_at") or "" for a in annotations), key=_ts, default="") \
             or (run.get("report_read_at") or "")
-        reset_at = egeria_reset_at(registry, slug)
+        try:
+            reset_at = egeria_reset_at(registry, slug)
+        except Exception as exc:  # noqa: BLE001 - no guess either way: "no reset" would call a stored copy live
+            raise HTTPException(status_code=503, detail="Could not check whether Egeria was reset, so the stored "
+                                f"copy is not shown as current · the record of Egeria resets could not be read: {exc}")
         return {
             "report_guid": report_guid,
             "report_at": run.get("survey_report_at") or "",

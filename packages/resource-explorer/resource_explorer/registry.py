@@ -10024,15 +10024,18 @@ class ProjectRegistry:
 
     def _pre_reset_of(self, slug: str, at: str, cache: dict | None = None) -> dict | None:
         """{at, words} when `at` (a publish's proof time) is before the latest Egeria reset for `slug` (its marker
-        or the recorded reset); None otherwise, and None when either time cannot be read (no claim)."""
+        or the recorded reset); None otherwise, and None when either time cannot be read (no claim). A reset read
+        that FAILS is logged and raised, never "no reset" (fix round 2): that would bring ✓ back silently. Callers
+        say "could not check" (`_pre_reset_publish_proof`, `_attach_publish_proofs`)."""
         from resource_explorer.catalogue_commit import _known, _ts, pre_reset_words
 
         cache = {} if cache is None else cache
         if slug not in cache:
             try:
                 cache[slug] = self.get_egeria_reset_at(slug or "")
-            except Exception:  # noqa: BLE001 - an unreadable reset makes no claim
-                cache[slug] = ""
+            except Exception:
+                log.exception("could not read the record of Egeria resets for %r", slug)
+                raise
         reset = cache[slug]
         if not (_known(reset) and _known(at)) or _ts(at) >= _ts(reset):
             return None
@@ -10046,7 +10049,11 @@ class ProjectRegistry:
         only: `publish_proofs` itself (which the queued→published bookkeeping reads) is untouched."""
         if not proof or proof.get("state") != "read_back":
             return proof
-        pre = self._pre_reset_of(slug, proof.get("at") or fallback_at, cache)
+        try:
+            pre = self._pre_reset_of(slug, proof.get("at") or fallback_at, cache)
+        except Exception as exc:  # noqa: BLE001 - never ✓ when the reset cannot be read: say it could not check
+            return {"state": "unknown", "word": "publish not established", "at": proof.get("at") or "",
+                    "words": f"the record of Egeria resets could not be read: {exc}"}
         if pre is None:
             return proof
         return {"state": "pre_reset", "word": pre["words"], "at": proof.get("at") or "", "reset_at": pre["at"],
@@ -10061,7 +10068,11 @@ class ProjectRegistry:
             detail = e.get("detail")
             text = detail if isinstance(detail, str) else json.dumps(detail or {}, default=str)
             if e.get("publish_run_id") or '"publish_state"' in text or '"egeria_report_guid"' in text:
-                pre = self._pre_reset_of(e.get("entity_slug") or "", e.get("ts") or "", cache)
+                try:
+                    pre = self._pre_reset_of(e.get("entity_slug") or "", e.get("ts") or "", cache)
+                except Exception as exc:  # noqa: BLE001 - said as history-unknown (◌), never as published
+                    pre = {"at": "", "words": f"publish not established · the record of Egeria resets could not be "
+                                              f"read: {exc}"}
                 if pre is not None:
                     e["pre_reset"] = pre
         runs = [e.get("publish_run_id") for e in entries if e.get("publish_run_id")]

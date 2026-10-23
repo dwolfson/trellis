@@ -2835,13 +2835,29 @@ PUBLISHED_EARLIER_WORDS = "published earlier · Egeria was reset"
 
 
 def egeria_reset_at(registry, slug: str) -> str:
-    """The reset time for this resource from its `egeria_reset` marker, '' when there is none. Tolerates a
-    registry without the reader (a test double): no marker known means no reset claimed."""
+    """The latest Egeria reset for this resource (its `egeria_reset` marker or the recorded reset), '' when there is
+    none. Tolerates a registry without the reader (a test double): no reset known means none claimed. A read that
+    FAILS is logged and raised, never "no reset" (fix round 2): swallowing it would bring ✓ back silently."""
     fn = getattr(registry, "get_egeria_reset_at", None)
-    try:
-        return (fn(slug) if fn else "") or ""
-    except Exception:
+    if fn is None:
         return ""
+    try:
+        return fn(slug) or ""
+    except Exception:
+        log.exception("could not read the Egeria reset for %r", slug)
+        raise
+
+
+def egeria_reset_at_or_none(registry, slug: str) -> str | None:
+    """`egeria_reset_at`, or None when the read fails (already logged). A caller passes None on to `publish_fields`,
+    which then says "could not check" for a published row; it never reads None as "no reset"."""
+    try:
+        return egeria_reset_at(registry, slug)
+    except Exception:  # noqa: BLE001 - logged by egeria_reset_at
+        return None
+
+
+RESET_UNREADABLE_WORDS = "publish not established · the record of Egeria resets could not be read"
 
 
 def published_state(published_at: str, reset_at: str) -> str:
@@ -2859,7 +2875,16 @@ def publish_fields(registry, slug: str, published_at: str, reset_at: str | None 
     """The fields every payload that carries `last_published_at` adds, so the screen can pick its words. The words
     for a publish older than the reset come from HERE (`published_earlier_words`, `pre_reset_words`: "published
     before the <date> reset · not in Egeria now"), never from a constant of the screen's (fix round 1)."""
-    reset = egeria_reset_at(registry, slug) if reset_at is None else reset_at
+    if reset_at is None:
+        try:
+            reset = egeria_reset_at(registry, slug)
+        except Exception:  # noqa: BLE001 - logged; a publish with an unreadable reset is never ✓ (fix round 2)
+            if not published_at:
+                return {"published_state": "", "egeria_reset_at": "", "published_earlier_words": ""}
+            return {"published_state": "published_earlier", "egeria_reset_at": "",
+                    "published_earlier_words": RESET_UNREADABLE_WORDS}
+    else:
+        reset = reset_at
     state = published_state(published_at, reset)
     return {"published_state": state, "egeria_reset_at": reset,
             "published_earlier_words": pre_reset_words(reset) if state == "published_earlier" else ""}

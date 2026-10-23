@@ -847,7 +847,11 @@ def _publish_file_profiles_claimed(registry: ProjectRegistry, fs, slug: str) -> 
     if (fp.latest_publish_proof(registry, slug, run_id) or {}).get("complete"):
         raise HTTPException(status_code=409, detail="These profiles are already published to Egeria. Run them again to "
                             "publish newer ones.")
-    rows = fp.changed_rows(registry, slug, run_id)
+    try:
+        rows = fp.changed_rows(registry, slug, run_id)
+    except Exception as exc:  # noqa: BLE001 - logged; without the reset record the diff baseline is unknown
+        raise HTTPException(status_code=503, detail="Could not check whether Egeria was reset, so nothing was "
+                            f"published · the record of Egeria resets could not be read: {exc}")
     if not rows:
         raise HTTPException(status_code=409, detail="No profile Resource Explorer measured differs from the last run · "
                             "nothing new to publish")

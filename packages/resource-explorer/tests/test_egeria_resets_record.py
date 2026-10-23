@@ -511,3 +511,108 @@ def test_item2_the_file_profiles_publish_before_the_reset_is_pre_reset(reg, tmp_
     assert "pre_reset" not in fp.profiles_view(reg, "lake")["run"]["publish"]          # no reset: unchanged
     _reset(reg)
     assert fp.profiles_view(reg, "lake")["run"]["publish"]["pre_reset"]["words"] == WORDS
+
+
+# ── fix round 2: an unreadable reset read raises; it is never "no reset" and never ✓ ─────────────────────────────
+
+def _break_reset_reads(reg, monkeypatch):
+    def broken(*a, **k):
+        raise RuntimeError("registry down")
+
+    monkeypatch.setattr(reg, "get_egeria_reset_at", broken)
+
+
+def test_round2_pre_reset_of_and_egeria_reset_at_raise_on_a_failed_read(reg, monkeypatch):
+    _reset(reg)
+    _break_reset_reads(reg, monkeypatch)
+    with pytest.raises(RuntimeError):
+        reg._pre_reset_of("db1", BEFORE)
+    with pytest.raises(RuntimeError):
+        cc.egeria_reset_at(reg, "db1")
+    assert cc.egeria_reset_at_or_none(reg, "db1") is None
+
+
+def test_round2_an_unreadable_reset_never_gives_a_read_back_proof_or_a_published_entry(reg, monkeypatch):
+    _activity(reg, BEFORE)
+    _break_reset_reads(reg, monkeypatch)
+    proof = {"state": "read_back", "word": "published · read back", "at": BEFORE, "words": ""}
+    got = reg._pre_reset_publish_proof(proof, "db1")
+    assert got["state"] == "unknown" and got["word"] == "publish not established"
+    assert "could not be read" in got["words"]
+    entry = reg.list_activity(entity_slug="db1")[0]                      # does not raise: a pre_reset ◌ line
+    assert "could not be read" in entry["pre_reset"]["words"]
+
+
+def test_round2_publish_fields_say_could_not_check_never_published(reg, monkeypatch):
+    _break_reset_reads(reg, monkeypatch)
+    f = cc.publish_fields(reg, "repo1", BEFORE)
+    assert f["published_state"] == "published_earlier" and "could not be read" in f["published_earlier_words"]
+    assert cc.publish_fields(reg, "repo1", "")["published_state"] == ""      # nothing published: nothing to doubt
+
+
+def test_round2_the_analysis_and_definition_payloads_survive_an_unreadable_reset(reg, monkeypatch):
+    from resource_explorer.workflows import analysis
+
+    _break_reset_reads(reg, monkeypatch)
+    assert cc.egeria_reset_at_or_none(reg, "repo1") is None
+    assert analysis._reset_fields(reg, "repo1", BEFORE)["published_state"] == "published_earlier"
+
+
+def test_round2_the_publish_route_says_could_not_check_when_the_reset_read_fails(reg, monkeypatch, tmp_path):
+    from fastapi import HTTPException
+
+    from resource_explorer.surveyors.filesystem import file_profiles as fp
+    from resource_explorer.web.routes import filesystems
+
+    from resource_explorer.surveyors.filesystem import walk_extensions as we
+    from resource_explorer.surveyors.filesystem.local_filesystem_surveyor import LocalFileSystemSurveyor
+
+    _fs(reg, tmp_path)
+    fs = reg.get_filesystem("lake")
+    sd = LocalFileSystemSurveyor(fs, reg).run(profile_contents=False, walk_extensions=True)
+    we.attach_extensions(fs, reg, sd, led_by="re")
+    fp.run_file_profiles(fs, reg, limit=40_000)
+    _break_reset_reads(reg, monkeypatch)
+    with pytest.raises(HTTPException) as exc:
+        filesystems._publish_file_profiles_claimed(reg, reg.get_filesystem("lake"), "lake")
+    assert exc.value.status_code == 503 and "could not be read" in exc.value.detail
+
+
+def test_round2_file_profiles_after_a_reset_publish_everything_again(reg, tmp_path, monkeypatch):
+    from resource_explorer.surveyors.filesystem import file_profiles as fp
+    from resource_explorer.surveyors.filesystem import walk_extensions as we
+    from resource_explorer.surveyors.filesystem.local_filesystem_surveyor import LocalFileSystemSurveyor
+
+    _fs(reg, tmp_path)
+    fs = reg.get_filesystem("lake")
+    sd = LocalFileSystemSurveyor(fs, reg).run(profile_contents=False, walk_extensions=True)
+    we.attach_extensions(fs, reg, sd, led_by="re")
+    monkeypatch.setattr(fp, "_now", lambda: "2026-10-20T10:00:00+00:00")
+    first = fp.run_file_profiles(fs, reg, limit=40_000)["run_id"]
+    reg.record_step_run("lake", fp.PUBLISH_STEP_KEY, first, entity_type="filesystem", source="egeria-published",
+                        executor="local", metrics={"report_guid": "r", "complete": True})
+    monkeypatch.setattr(fp, "_now", lambda: "2026-10-21T10:00:00+00:00")
+    second = fp.run_file_profiles(fs, reg, limit=40_000)["run_id"]
+    assert fp.changed_rows(reg, "lake", second) == []                       # no reset: the unchanged run sends nothing
+    assert fp.last_published_run(reg, "lake", before=second) == first
+    _reset(reg)                                                             # Egeria was reset after that publish
+    monkeypatch.setattr(fp, "_now", lambda: "2026-10-24T12:00:00+00:00")
+    third = fp.run_file_profiles(fs, reg, limit=40_000)["run_id"]
+    assert fp.last_published_run(reg, "lake", before=third) is None         # the old publish is no baseline
+    assert fp.last_published_run(reg, "lake", before=third, since_reset=False) == first
+    rows = fp.changed_rows(reg, "lake", third)
+    assert rows and {r["column_name"] for r in rows} == {"id", "name"}      # every row publishes to the new Egeria
+    reg.record_step_run("lake", fp.PUBLISH_STEP_KEY, third, entity_type="filesystem", source="egeria-published",
+                        executor="local", metrics={"report_guid": "r2", "complete": True})
+    monkeypatch.setattr(fp, "_now", lambda: "2026-10-24T13:00:00+00:00")
+    fourth = fp.run_file_profiles(fs, reg, limit=40_000)["run_id"]
+    assert fp.changed_rows(reg, "lake", fourth) == []                       # a publish after the reset is a baseline
+
+
+def test_round2_file_profiles_baseline_raises_when_the_reset_read_fails(reg, tmp_path, monkeypatch):
+    from resource_explorer.surveyors.filesystem import file_profiles as fp
+
+    _break_reset_reads(reg, monkeypatch)
+    with pytest.raises(RuntimeError):
+        fp.last_published_run(reg, "lake")
+    assert fp.last_published_run(reg, "lake", since_reset=False) is None   # retention does not need the reset
