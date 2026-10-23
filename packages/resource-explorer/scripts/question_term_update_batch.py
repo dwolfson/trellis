@@ -29,8 +29,15 @@ Two subcommands, one plan function:
   - a retired or merged row: Update with Status DEPRECATED and the CSV Status text as a description prefix;
     a merged term also gets a ReplacementTerm link (absorbed term = Term 1, survivor = Term 2), omitted when the
     inventory shows it. Every existing link on a deprecated term is kept: nothing here deletes a relationship.
-  - a row the plan cannot place (no term by either path, two terms for one id or name, one term claimed by two
-    rows, a survivor that is missing) is listed, no document is written and ``plan`` exits 1.
+  - an active row that existed before the edit but has no term (by id, old name or new name) is created like a
+    new row and counted apart: "created: missing in Egeria N". A retired or merged row with no term has nothing
+    to deprecate: reported as "deprecate: no term N", not a failure.
+  - a LEFTOVER (a glossary term no CSV row, pre- or post-edit, names by id or by name): DEPRECATED with the
+    description prefix LEFTOVER_PREFIX, no question_id, links kept, and a ReplacementTerm to its survivor when
+    LEFTOVER_SURVIVORS (data, keyed on display name, GUID prefix checked) names one; otherwise listed without one.
+  - a row the plan cannot place (two terms for one id or name, one term claimed by two rows, a survivor that is
+    missing, a mapped leftover name on another GUID) is listed, no document is written and ``plan`` exits 1.
+  The proof line: "found by name N, by id N, id set on N, created: missing in Egeria N, deprecated: leftovers N".
 
   An inventory taken after a successful apply gives a plan with no commands (tested).
 
@@ -80,6 +87,15 @@ REPLACEMENT_TERM = "ReplacementTerm"
 #: script does not need.
 INVENTORY_READ_METHODS = ("get_glossaries_by_name", "find_glossary_terms", "get_all_related_elements")
 _MERGED_RX = re.compile(r"^\s*merged into\s+(Q-\d{4})\b", re.IGNORECASE)
+#: Description prefix for a leftover: a glossary term no CSV row (pre- or post-edit) names, by id or by name.
+LEFTOVER_PREFIX = "retired before 2026-10-22: no longer in the question list"
+#: Architect ruling 2026-10-23: the survivor of each known leftover. DATA, never inferred. Keyed on the term's
+#: display name; the GUID prefix is checked against the inventory, and a name that matches with another GUID is
+#: refused (unplaceable), not guessed. A leftover not in this map is deprecated without a replacement and listed.
+LEFTOVER_SURVIVORS = {
+    "Do we know what the cost to run it is?": ("bbbab254", "Q-0016"),
+    "What is its internal architecture — what components exist and how do they relate?": ("ccc5d55b", "Q-0044"),
+}
 
 
 def _load_generator():
@@ -331,31 +347,49 @@ class Command:
 class RowPlan:
     question_id: str
     question: str
-    join_path: str               # question_id | old_name | not_found
-    action: str = "unchanged"    # create | update | links_only | deprecate_retired | deprecate_merged | unchanged | unplaceable
+    join_path: str               # question_id | old_name | not_found | leftover
+    # create | update | links_only | deprecate_retired | deprecate_merged | deprecate_leftover | no_term |
+    # unchanged | unplaceable
+    action: str = "unchanged"
     term: Optional[dict] = None
     commands: list = field(default_factory=list)
     changed_fields: list = field(default_factory=list)
     reason: str = ""
+    missing_in_egeria: bool = False   # an active pre-edit row with no term: created here, counted apart
+    survivor_id: Optional[str] = None  # leftovers: the survivor from LEFTOVER_SURVIVORS, if any
 
 
 @dataclass
 class Plan:
     rows: list
     inventory_taken_at: str
-    unknown_terms: list = field(default_factory=list)   # glossary terms no CSV row joined to (left alone)
+    unknown_terms: list = field(default_factory=list)   # unjoined terms a CSV row still names (left alone)
     stale_links: list = field(default_factory=list)     # links the CSV no longer names (kept: no deletes)
+    leftovers: list = field(default_factory=list)       # RowPlans for terms no CSV row names (deprecated)
 
     @property
     def unplaceable(self) -> list:
-        return [r for r in self.rows if r.action == "unplaceable"]
+        return [r for r in self.rows + self.leftovers if r.action == "unplaceable"]
 
     def commands(self) -> list:
         """The document's commands, in its order: creates (a survivor exists before a ReplacementTerm names it),
-        then active-term updates and link adds, then deprecations."""
-        order = {"create": 0, "update": 1, "links_only": 1, "deprecate_retired": 2, "deprecate_merged": 2}
-        rows = sorted((r for r in self.rows if r.action in order), key=lambda r: order[r.action])
+        then active-term updates and link adds, then deprecations, then leftovers."""
+        order = {"create": 0, "update": 1, "links_only": 1, "deprecate_retired": 2, "deprecate_merged": 2,
+                 "deprecate_leftover": 3}
+        rows = sorted((r for r in self.rows + self.leftovers if r.action in order), key=lambda r: order[r.action])
         return [c for r in rows for c in r.commands]
+
+    def proof(self) -> dict:
+        """The counts line the architect asked for (2026-10-23), from the rows themselves."""
+        id_set = sum(1 for r in self.rows if r.term is not None and any(
+            "question_id" in str(c.fields.get("Additional Properties") or "") for c in r.commands))
+        return {
+            "found by name": sum(1 for r in self.rows if r.join_path == "old_name" and r.term is not None),
+            "by id": sum(1 for r in self.rows if r.join_path == "question_id" and r.term is not None),
+            "id set on": id_set,
+            "created: missing in Egeria": sum(1 for r in self.rows if r.action == "create" and r.missing_in_egeria),
+            "deprecated: leftovers": sum(1 for r in self.leftovers if r.action == "deprecate_leftover"),
+        }
 
     def counts(self) -> dict:
         def tally(values: Iterable[str]) -> dict:
@@ -374,6 +408,12 @@ class Plan:
             "unplaceable": len(self.unplaceable),
             "unknown_terms": len(self.unknown_terms),
             "stale_links_kept": len(self.stale_links),
+            "created_missing_in_egeria": [r.question_id for r in self.rows
+                                          if r.action == "create" and r.missing_in_egeria],
+            "deprecate_no_term": [r.question_id for r in self.rows if r.action == "no_term"],
+            "proof": self.proof(),
+            "leftovers": [{"guid": r.term["guid"], "display_name": r.term["display_name"], "action": r.action,
+                           "survivor": r.survivor_id} for r in self.leftovers],
         }
 
 
@@ -479,11 +519,16 @@ def build_plan(rows: list[dict], old_rows: list[dict], inventory: dict, *,
                     t["guid"] for t in hits)
             elif hits:
                 rp.join_path, rp.term = "old_name", hits[0]
-            elif old is not None or is_skipped_status(row.get("Status")):
-                rp.action = "unplaceable"
-                rp.reason = f"no term for {qid} by question_id or by its pre-edit display name"
+            elif is_skipped_status(row.get("Status")):
+                # Retired or merged with no term: nothing to deprecate. Reported, not a failure: a term under a
+                # name no row gives would be a leftover below, deprecated and listed, so nothing is lost.
+                rp.action = "no_term"
+                rp.reason = f"no term for {qid} by question_id or by name: nothing to deprecate"
             else:
+                # Active and absent from Egeria. Created like a new row; counted apart when the row existed
+                # before the edit (architect ruling 2026-10-23: missing in Egeria, not an error).
                 rp.action = "create"
+                rp.missing_in_egeria = old is not None
         plans.append(rp)
 
     claims: dict[str, list] = {}
@@ -501,7 +546,7 @@ def build_plan(rows: list[dict], old_rows: list[dict], inventory: dict, *,
     # Pass 2: the commands.
     stale: list = []
     for rp in plans:
-        if rp.action == "unplaceable":
+        if rp.action in ("unplaceable", "no_term"):
             continue
         row = row_of[rp.question_id]
         status = (row.get("Status") or "").strip()
@@ -582,10 +627,73 @@ def build_plan(rows: list[dict], old_rows: list[dict], inventory: dict, *,
         stale += [{"question_id": rp.question_id, "kind": "stage", "scope": s}
                   for s in sorted(_term_stages(term) - wanted_s)]
 
-    unknown = [{"guid": t["guid"], "display_name": t["display_name"], "question_id": t.get("question_id")}
-               for t in terms if t["guid"] not in joined_guids]
+    # Pass 3: terms no row joined. A term a CSV row (pre- or post-edit) still names, by id or by display name, is
+    # left alone and listed (an unplaceable row explains it). A term no row names at all is a LEFTOVER: deprecated,
+    # no question_id (ids are never invented), links kept, ReplacementTerm to its survivor when the map gives one.
+    named_ids = {(r.get("Question ID") or "").strip() for r in list(rows) + list(old_rows)} - {""}
+    named_names = {_norm(r.get("Question")) for r in list(rows) + list(old_rows)} - {""}
+    survivors = {_norm(name): value for name, value in LEFTOVER_SURVIVORS.items()}
+    unknown, leftovers = [], []
+    for t in terms:
+        if t["guid"] in joined_guids:
+            continue
+        if (t.get("question_id") or "") in named_ids or _norm(t.get("display_name")) in named_names:
+            unknown.append({"guid": t["guid"], "display_name": t["display_name"], "question_id": t.get("question_id")})
+            continue
+        leftovers.append(_plan_leftover(t, survivors.get(_norm(t.get("display_name"))), plan_of, row_of))
     return Plan(rows=plans, inventory_taken_at=str(inventory.get("taken_at") or ""), unknown_terms=unknown,
-                stale_links=stale)
+                stale_links=stale, leftovers=leftovers)
+
+
+def _plan_leftover(term: dict, mapped: Optional[tuple], plan_of: dict, row_of: dict) -> RowPlan:
+    """One leftover term: DEPRECATED with LEFTOVER_PREFIX on its description, located by qualifiedName, and a
+    ReplacementTerm (leftover = Term 1, survivor = Term 2) when LEFTOVER_SURVIVORS names a survivor."""
+    rp = RowPlan(question_id="", question=term["display_name"], join_path="leftover", term=term,
+                 action="deprecate_leftover")
+    if mapped is not None:
+        guid_prefix, survivor_id = mapped
+        if not term["guid"].startswith(guid_prefix):
+            rp.action = "unplaceable"
+            rp.reason = (f"leftover {term['display_name']!r} is {term['guid']}, the survivor map names "
+                         f"{guid_prefix}…: a different term under the same name; resolve by hand")
+            return rp
+        rp.survivor_id = survivor_id
+    current_desc = term.get("description") or ""
+    fields = {"Qualified Name": term["qualified_name"], "Display Name": term["display_name"]}
+    if not _norm(current_desc).startswith(_norm(LEFTOVER_PREFIX)):
+        fields["Description"] = f"{LEFTOVER_PREFIX} — {current_desc}" if current_desc.strip() else LEFTOVER_PREFIX
+        rp.changed_fields.append("Description")
+    if (term.get("content_status") or "").upper() != DEPRECATED:
+        rp.changed_fields.append("Status")
+    if rp.changed_fields:
+        fields["Status"] = DEPRECATED
+        rp.commands.append(Command("Update Glossary Term", fields, "deprecate_leftover", ""))
+    if rp.survivor_id:
+        survivor, survivor_row = plan_of.get(rp.survivor_id), row_of.get(rp.survivor_id)
+        if (survivor is None or survivor_row is None or is_skipped_status(survivor_row.get("Status"))
+                or survivor.action == "unplaceable"):
+            rp.action, rp.commands = "unplaceable", []
+            rp.reason = (f"leftover {term['guid']} is replaced by {rp.survivor_id}, and that survivor is missing, "
+                         "not active or not placed")
+            return rp
+        if survivor.term is not None:
+            links = [l for l in term.get("links", []) if l["relationship"] == REPLACEMENT_TERM
+                     and l["guid"] == survivor.term["guid"]]
+            if any(l["other_at_end1"] for l in links):
+                rp.action, rp.commands = "unplaceable", []
+                rp.reason = (f"a ReplacementTerm between leftover {term['guid']} and {rp.survivor_id} runs the "
+                             "other way (survivor at end 1); resolve by hand")
+                return rp
+            present, survivor_ref = bool(links), survivor.term["qualified_name"]
+        else:  # created earlier in this same document
+            present, survivor_ref = False, survivor.question
+        if not present:
+            rp.commands.append(Command("Link Term-Term Relationship", {
+                "Term 1": term["qualified_name"], "Term 2": survivor_ref,
+                "Relationship Type": REPLACEMENT_TERM}, "link_replacement", ""))
+    if not rp.commands:
+        rp.action = "unchanged"
+    return rp
 
 
 # ---------------------------------------------------------------------------
@@ -596,11 +704,14 @@ _SECTIONS = (
     ("create", "New question terms (Q-ids not yet in Egeria)"),
     ("active", "Existing question terms: text, question_id and missing links"),
     ("deprecate", "Retired and merged question terms: DEPRECATED, links kept"),
+    ("leftover", "Leftover terms no question row names: DEPRECATED, no question_id, links kept"),
 )
 
 
 def _section_of(cmd: Command, action_of: dict) -> str:
-    action = action_of[cmd.question_id]
+    action = action_of[id(cmd)]
+    if action == "deprecate_leftover" or (action == "unplaceable" and not cmd.question_id):
+        return "leftover"
     if action == "create":
         return "create"
     if action.startswith("deprecate"):
@@ -626,7 +737,7 @@ def render_document(plan: Plan) -> str:
     if not cmds:
         out += ["No changes: Egeria's question terms already match the CSV.", ""]
         return "\n".join(out)
-    action_of = {r.question_id: r.action for r in plan.rows}
+    action_of = {id(c): r.action for r in plan.rows + plan.leftovers for c in r.commands}
     current = None
     for cmd in cmds:
         section = _section_of(cmd, action_of)
@@ -635,6 +746,15 @@ def render_document(plan: Plan) -> str:
             current = section
         out.append(_gen._block(cmd.command, **cmd.fields))
     return "\n".join(out) + "\n"
+
+
+def format_proof(plan: Plan) -> str:
+    """The architect's proof line (2026-10-23), the missing-in-Egeria ids named."""
+    p = plan.proof()
+    missing = plan.counts()["created_missing_in_egeria"]
+    created = f"created: missing in Egeria {p['created: missing in Egeria']}" + (f" ({', '.join(missing)})" if missing else "")
+    return (f"found by name {p['found by name']}, by id {p['by id']}, id set on {p['id set on']}, {created}, "
+            f"deprecated: leftovers {p['deprecated: leftovers']}")
 
 
 def format_counts(plan: Plan) -> str:
@@ -649,8 +769,15 @@ def format_counts(plan: Plan) -> str:
     text_updates = [r for r in plan.rows if r.action == "update"]
     id_only = sum(1 for r in text_updates if r.changed_fields == ["question_id"])
     lines.append(f"updates: {len(text_updates)} ({len(text_updates) - id_only} change text, {id_only} set question_id only)")
+    lines.append(format_proof(plan))
+    if c["deprecate_no_term"]:
+        lines.append(f"deprecate: no term {len(c['deprecate_no_term'])} ({', '.join(c['deprecate_no_term'])}): "
+                     "retired or merged, never in Egeria; nothing to deprecate")
+    for lo in c["leftovers"]:
+        lines.append(f"leftover {lo['guid']} {lo['display_name']!r}: {lo['action']}"
+                     + (f", ReplacementTerm to {lo['survivor']}" if lo["survivor"] else ", no replacement (not in the map)"))
     for r in plan.unplaceable:
-        lines.append(f"UNPLACEABLE {r.question_id} ({r.join_path}): {r.reason}")
+        lines.append(f"UNPLACEABLE {r.question_id or r.term['guid']} ({r.join_path}): {r.reason}")
     return "\n".join(lines)
 
 

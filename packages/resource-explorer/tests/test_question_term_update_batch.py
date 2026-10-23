@@ -2,7 +2,7 @@
 
 The fixture (tests/fixtures/question_term_batch/) is a ten-row CSV pair and an inventory covering the join paths
 (question_id, pre-edit-name fallback, not found), an id-less term, an existing link that must not be re-added, a
-merge whose ReplacementTerm already exists, a merge into a NEW term, and a stray term the CSV does not name. The
+merge whose ReplacementTerm already exists, a merge into a NEW term, and a leftover term no CSV row names. The
 failure cases (duplicate id, survivor missing, term not found, read errors) mutate it. The end-to-end test parses
 the RENDERED document with Dr.Egeria's own extractor, applies it to the inventory, and plans again: empty.
 """
@@ -70,11 +70,13 @@ def test_fixture_counts_by_join_path_and_action(after, before, inventory):
     c = plan.counts()
     assert c["join_path"] == {"not_found": 1, "old_name": 3, "question_id": 6}
     assert c["action"] == {"create": 1, "deprecate_merged": 3, "deprecate_retired": 1, "unchanged": 1, "update": 4}
-    assert c["command_kind"] == {"classify": 1, "create": 1, "deprecate": 4, "link_perspective": 2,
-                                 "link_replacement": 2, "link_stage": 2, "update": 4}
-    assert c["commands_total"] == 16
+    assert c["command_kind"] == {"classify": 1, "create": 1, "deprecate": 4, "deprecate_leftover": 1,
+                                 "link_perspective": 2, "link_replacement": 2, "link_stage": 2, "update": 4}
+    assert c["commands_total"] == 17
     assert c["unplaceable"] == 0
-    assert c["unknown_terms"] == 1  # the stray "Scouting" term: listed, left alone
+    assert c["unknown_terms"] == 0  # the stray "Scouting" term no row names is now a leftover, deprecated
+    assert c["proof"] == {"found by name": 3, "by id": 6, "id set on": 3, "created: missing in Egeria": 0,
+                          "deprecated: leftovers": 1}
 
 
 def test_each_join_path(after, before, inventory):
@@ -151,10 +153,15 @@ def test_survivor_missing_is_unplaceable(after, before, inventory):
     assert _row(plan, "Q-0007").commands == []
 
 
-def test_term_not_found_by_either_path_is_unplaceable(after, before, inventory):
+def test_retired_row_with_no_term_is_reported_not_failed(after, before, inventory):
+    """Ruling 2026-10-23: nothing to deprecate is fine; reported as "deprecate: no term", never unplaceable."""
     inventory["terms"] = [t for t in inventory["terms"] if t["guid"] != "term-06"]
     plan = qtb.build_plan(after, before, inventory)
-    assert [(r.question_id, r.join_path) for r in plan.unplaceable] == [("Q-0006", "not_found")]
+    assert plan.unplaceable == []
+    q6 = _row(plan, "Q-0006")
+    assert (q6.join_path, q6.action, q6.commands) == ("not_found", "no_term", [])
+    assert plan.counts()["deprecate_no_term"] == ["Q-0006"]
+    assert "deprecate: no term 1 (Q-0006)" in qtb.format_counts(plan)
 
 
 def test_inventory_with_read_errors_is_refused(after, before, inventory):
@@ -164,7 +171,9 @@ def test_inventory_with_read_errors_is_refused(after, before, inventory):
 
 
 def test_cli_exits_nonzero_and_writes_nothing_when_unplaceable(tmp_path, inventory):
-    inventory["terms"] = [t for t in inventory["terms"] if t["guid"] != "term-06"]
+    dup = copy.deepcopy(next(t for t in inventory["terms"] if t["question_id"] == "Q-0004"))
+    dup["guid"] = "term-04-copy"
+    inventory["terms"].append(dup)
     inv = tmp_path / "inv.json"
     inv.write_text(json.dumps(inventory))
     out = tmp_path / "out.md"
@@ -508,3 +517,136 @@ def test_live_term_plans_by_old_name_sets_question_id_adds_no_link_and_replans_e
     applied = _apply(inventory, qtb.render_document(plan))
     second = qtb.build_plan(rows, rows, applied)
     assert second.commands() == [] and [r.join_path for r in second.rows] == ["question_id"]
+
+
+# ---------------------------------------------------------------------------
+# fix round 2 (architect rulings 2026-10-23): missing terms and leftover terms
+# ---------------------------------------------------------------------------
+
+def test_active_row_missing_in_egeria_is_created_and_counted_apart(after, before, inventory):
+    inventory["terms"] = [t for t in inventory["terms"] if t["guid"] != "term-05"]  # Q-0005: active, pre-edit row
+    plan = qtb.build_plan(after, before, inventory)
+    assert plan.unplaceable == []
+    q5 = _row(plan, "Q-0005")
+    assert (q5.join_path, q5.action, q5.missing_in_egeria) == ("not_found", "create", True)
+    assert [c.kind for c in q5.commands][:2] == ["create", "classify"]
+    assert "| question_id | Q-0005 |" in q5.commands[0].fields["Additional Properties"]
+    assert {c.kind for c in q5.commands[2:]} <= {"link_perspective", "link_stage"} and q5.commands[2:]
+    assert _row(plan, "Q-0009").missing_in_egeria is False  # a row new in the edit is not "missing"
+    assert plan.proof()["created: missing in Egeria"] == 1
+    assert plan.counts()["created_missing_in_egeria"] == ["Q-0005"]
+    assert "created: missing in Egeria 1 (Q-0005)" in qtb.format_counts(plan)
+
+
+def _leftover(guid, name, description="old text"):
+    return {"guid": guid, "qualified_name": f"Org::Term::{name}::1.0", "display_name": name,
+            "description": description, "summary": "", "usage": "", "content_status": "ACTIVE",
+            "element_status": "ACTIVE", "question_id": None, "classifications": ["Anchors", "Question"],
+            "links": [{"relationship": "ScopedBy", "relationship_guid": "r-lo", "other_at_end1": False,
+                       "guid": "persp-Steward", "type": "Perspective", "qualified_name": "Perspective::Steward",
+                       "display_name": "Steward"}]}
+
+
+def test_leftover_in_the_map_is_deprecated_with_a_replacement_to_its_survivor(after, before, inventory, monkeypatch):
+    monkeypatch.setattr(qtb, "LEFTOVER_SURVIVORS", {"Old cost?": ("bbbab254", "Q-0001")})
+    inventory["terms"].append(_leftover("bbbab254-0000", "Old cost?"))
+    plan = qtb.build_plan(after, before, inventory)
+    (lo,) = [r for r in plan.leftovers if r.term["guid"] == "bbbab254-0000"]
+    assert (lo.action, lo.survivor_id, lo.question_id) == ("deprecate_leftover", "Q-0001", "")
+    dep, rep = lo.commands
+    assert dep.fields == {"Qualified Name": "Org::Term::Old cost?::1.0", "Display Name": "Old cost?",
+                          "Description": "retired before 2026-10-22: no longer in the question list — old text",
+                          "Status": "DEPRECATED"}  # no Additional Properties: ids are never invented
+    assert rep.fields == {"Term 1": "Org::Term::Old cost?::1.0", "Term 2": "Org::Term::What-is-A?::1.0",
+                          "Relationship Type": "ReplacementTerm"}
+    assert not any(c.command.startswith(("Unlink", "Detach", "Remove", "Delete")) for c in plan.commands())
+    assert plan.proof()["deprecated: leftovers"] == 2  # this one and the fixture's "Scouting"
+    assert "Leftover terms no question row names" in qtb.render_document(plan)
+
+
+def test_leftover_not_in_the_map_is_deprecated_without_a_replacement_and_listed(after, before, inventory):
+    plan = qtb.build_plan(after, before, inventory)
+    (lo,) = plan.leftovers
+    assert lo.term["guid"] == "term-stage-scouting" and lo.survivor_id is None
+    assert [c.kind for c in lo.commands] == ["deprecate_leftover"]
+    assert plan.counts()["leftovers"] == [{"guid": "term-stage-scouting", "display_name": "Scouting",
+                                           "action": "deprecate_leftover", "survivor": None}]
+    assert "leftover term-stage-scouting 'Scouting': deprecate_leftover, no replacement" in qtb.format_counts(plan)
+
+
+def test_mapped_leftover_name_on_another_guid_is_unplaceable(after, before, inventory, monkeypatch):
+    monkeypatch.setattr(qtb, "LEFTOVER_SURVIVORS", {"Old cost?": ("bbbab254", "Q-0001")})
+    inventory["terms"].append(_leftover("99999999-0000", "Old cost?"))
+    plan = qtb.build_plan(after, before, inventory)
+    (bad,) = plan.unplaceable
+    assert bad.term["guid"] == "99999999-0000" and "bbbab254" in bad.reason and bad.commands == []
+
+
+def test_a_term_a_row_still_names_is_not_a_leftover(after, before, inventory):
+    """Two terms named like Q-0004's row: Q-0004 joins by id; the other is named by a row, so left alone."""
+    inventory["terms"].append(_leftover("term-d-copy", "D?"))
+    plan = qtb.build_plan(after, before, inventory)
+    assert [t["guid"] for t in plan.unknown_terms] == ["term-d-copy"]
+    assert "term-d-copy" not in {r.term["guid"] for r in plan.leftovers}
+
+
+def test_end_to_end_with_leftovers_replans_empty(after, before, inventory, monkeypatch):
+    monkeypatch.setattr(qtb, "LEFTOVER_SURVIVORS", {"Old cost?": ("bbbab254", "Q-0009")})  # survivor created here
+    inventory["terms"].append(_leftover("bbbab254-0000", "Old cost?", description=""))
+    first = qtb.build_plan(after, before, inventory)
+    (rep,) = [c for r in first.leftovers for c in r.commands if c.kind == "link_replacement"]
+    assert rep.fields["Term 2"] == "I new?"
+    applied = _apply(inventory, qtb.render_document(first))
+    lo = next(t for t in applied["terms"] if t["guid"] == "bbbab254-0000")
+    assert lo["content_status"] == "DEPRECATED" and lo["question_id"] is None
+    assert lo["description"] == qtb.LEFTOVER_PREFIX and len(lo["links"]) == 2  # Steward kept + ReplacementTerm
+    second = qtb.build_plan(after, before, applied)
+    assert second.commands() == [] and second.unplaceable == []
+    assert {r.action for r in second.leftovers} == {"unchanged"}
+
+
+# the real inventory the coordinator took 2026-10-23T02:04Z (read-only), and the CSVs it was planned against
+LIVE_INVENTORY = FIXTURES / "live_inventory_2026-10-23.json"
+LIVE_CSV_BEFORE = FIXTURES / "live_csv_before_d7a395a4.csv"
+LIVE_CSV_AFTER = FIXTURES / "live_csv_after_24da909b.csv"
+
+
+def _live_plan_inputs():
+    return (_rows(LIVE_CSV_AFTER.name), _rows(LIVE_CSV_BEFORE.name),
+            json.loads(LIVE_INVENTORY.read_text(encoding="utf-8")))
+
+
+def test_real_inventory_plans_with_exit_0_and_these_counts(tmp_path, capsys):
+    out = tmp_path / "batch.md"
+    rc = qtb.main(["plan", "--inventory", str(LIVE_INVENTORY), "--out", str(out), "--csv", str(LIVE_CSV_AFTER),
+                   "--old-csv", str(LIVE_CSV_BEFORE)])
+    printed = capsys.readouterr().out
+    assert rc == 0 and out.exists()
+    assert ("found by name 94, by id 2, id set on 94, created: missing in Egeria 1 (Q-0073), "
+            "deprecated: leftovers 2") in printed
+    plan = qtb.build_plan(*_live_plan_inputs())
+    c = plan.counts()
+    assert c["rows"] == 105 and c["unplaceable"] == 0 and c["unknown_terms"] == 0
+    assert c["join_path"] == {"not_found": 9, "old_name": 94, "question_id": 2}
+    assert c["action"] == {"create": 9, "deprecate_merged": 9, "deprecate_retired": 2, "unchanged": 2, "update": 83}
+    assert c["command_kind"] == {"classify": 9, "create": 9, "deprecate": 11, "deprecate_leftover": 2,
+                                 "link_perspective": 31, "link_replacement": 11, "link_stage": 14, "update": 83}
+    assert c["commands_total"] == 170
+    assert c["created_missing_in_egeria"] == ["Q-0073"] and c["deprecate_no_term"] == []
+    survivors = {lo["guid"][:8]: lo["survivor"] for lo in c["leftovers"]}
+    assert survivors == {"bbbab254": "Q-0016", "ccc5d55b": "Q-0044"}
+    for lo in plan.leftovers:
+        (rep,) = [x for x in lo.commands if x.kind == "link_replacement"]
+        assert rep.fields["Term 2"] == _row(plan, lo.survivor_id).term["qualified_name"]
+        assert "Additional Properties" not in lo.commands[0].fields
+
+
+def test_real_inventory_replans_empty_after_apply():
+    after_rows, before_rows, inventory = _live_plan_inputs()
+    first = qtb.build_plan(after_rows, before_rows, inventory)
+    applied = _apply(inventory, qtb.render_document(first))
+    second = qtb.build_plan(after_rows, before_rows, applied)
+    assert second.commands() == [] and second.unplaceable == []
+    assert {r.join_path for r in second.rows if r.term is not None} == {"question_id"}
+    assert [(r.term["content_status"], r.action) for r in second.leftovers] == [("DEPRECATED", "unchanged")] * 2
+    assert second.proof()["deprecated: leftovers"] == 0 and second.proof()["created: missing in Egeria"] == 0
