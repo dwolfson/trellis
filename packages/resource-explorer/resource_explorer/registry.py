@@ -8472,7 +8472,9 @@ class ProjectRegistry:
     # annotation the report's read-back found on it. A measure the previous publish had and this run did not
     # measure gets a row with `outcome` `no_longer_measured` (or `not_measured_this_run` when its table was not
     # profiled), the PREVIOUS annotation's GUID and NO hash (it is not on this report, and it is never compared
-    # against).
+    # against). Round 2 (architect rulings 2026-10-24): a not-profiled table's ResourceMeasureAnnotation (same step,
+    # `item_key` ["schema","table"]) and the proposals step's annotation (its own step, `item_key` "proposals")
+    # get created/relinked rows the same way; neither ever gets a no-longer-measured row.
 
     def latest_profile_publish(self, entity_type: str, slug: str, analysis_step: str) -> dict | None:
         """What the next value-profile publish of this resource compares with, from RE's proof rows across EVERY
@@ -8548,11 +8550,15 @@ class ProjectRegistry:
         (created + relinked), `created`, `recreated` (created again after a refused re-link: the value did not
         change), `changed` (created minus recreated), `relinked`, `no_longer_measured`, `not_measured_this_run`, and the
         previous report it was
-        compared with (`previous_report_at`, '' when there was none)."""
+        compared with (`previous_report_at`, '' when there was none).
+
+        Column measures only (`ResourceProfileAnnotation` rows): the same step's not-profiled-table rows (round 2,
+        re-linked like them) are not measures and never counted as one."""
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT detail_json, slug, report_at FROM native_survey_annotations "
-                "WHERE report_guid = ? AND analysis_step = ?",
+                "WHERE report_guid = ? AND analysis_step = ? "
+                "AND COALESCE(annotation_type, '') IN ('ResourceProfileAnnotation', '')",
                 (report_guid, analysis_step)).fetchall()
         from resource_explorer.surveyors.database.quality.profile_publish import RECREATED_NOTE as recreated_note
         # Pre-reset (architect ruling (b), 2026-10-23): a publish whose report predates the latest Egeria reset is

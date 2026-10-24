@@ -217,6 +217,15 @@ def _by_class(bodies) -> dict[str, list[dict]]:
     return out
 
 
+def _utc_minute(at: str) -> str:
+    """A report time as the card names it: date and time in UTC with Z (round 2, ruling (a))."""
+    from datetime import UTC, datetime
+
+    instant = datetime.fromisoformat(at)
+    instant = instant.replace(tzinfo=UTC) if instant.tzinfo is None else instant.astimezone(UTC)   # RE writes UTC
+    return instant.strftime("%Y-%m-%d %H:%MZ")
+
+
 def _proposed_count(registry) -> int:
     return sum(1 for r in registry.query_detail_rows("database_quality_proposals", SLUG) if r["state"] == "proposed")
 
@@ -281,7 +290,7 @@ def test_accept_three_proposals_press_again_and_read_three_quality_annotations_b
     first = _press(client, registry)
     assert _steps(first)["run_quality_checks"]["status"] == "skipped_by_design"
     # the first report's run date ("SurveyReport::PostgreSQL::<slug>::<surveyed_at>"): what the card compares with
-    first_date = egeria.reports()[0][1]["properties"]["qualifiedName"].rsplit("::", 1)[1][:10]
+    first_date = _utc_minute(egeria.reports()[0][1]["properties"]["qualifiedName"].rsplit("::", 1)[1])
     keys = _accept_three_proposals(registry)
 
     detail = _press(client, registry)
@@ -360,9 +369,12 @@ def test_the_press_says_two_of_n_when_egeria_keeps_all_but_one(client, registry,
     _accept_three_proposals(registry)
     before = len(egeria.method_calls("create_annotation"))
     sent_before_quality = _report_size_before_quality(egeria)
-    # the second press RE-LINKS the unchanged profile measures instead of creating them (profile publish reshape)
+    # the second press RE-LINKS the unchanged profile measures instead of creating them (profile publish reshape), and
+    # the unchanged not-profiled tables' measures (round 2); the request changed (three accepted), so it is created
     [(first, _)] = egeria.reports()[:1]
-    relinked = len(_by_class(_annotation_bodies(egeria, first))["ResourceProfileAnnotationProperties"])
+    classes = _by_class(_annotation_bodies(egeria, first))
+    relinked = len(classes["ResourceProfileAnnotationProperties"]) + sum(
+        1 for b in classes.get("ResourceMeasureAnnotationProperties", []) if b["analysisStep"] == "postgres_value_profile")
     egeria.fail_nth["create_annotation"] = (before + sent_before_quality - relinked + 2,
                                             RuntimeError("Egeria refused the second quality annotation"))
 

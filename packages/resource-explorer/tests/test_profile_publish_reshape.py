@@ -28,7 +28,7 @@ from resource_explorer.surveyors.database.quality.profile_publish import (
     profile_publish_words,
     table_of,
 )
-from resource_explorer.surveyors.database.quality.value_profile import ANALYSIS_STEP, measure_key
+from resource_explorer.surveyors.database.quality.value_profile import ANALYSIS_STEP, measure_key, table_key
 from resource_explorer.surveyors.survey_report import ResourceMeasureAnnotation, ResourceProfileAnnotation
 from tests.test_engine_host_e4 import egeria  # noqa: F401 - fixture reused
 from tests.test_quality_q2_survey_press_e2e import (  # noqa: F401 - fixtures and helpers reused
@@ -36,6 +36,7 @@ from tests.test_quality_q2_survey_press_e2e import (  # noqa: F401 - fixtures an
     _by_class,
     _no_live_database,
     _press,
+    _utc_minute,
     client,
     rig,
     world,
@@ -100,13 +101,157 @@ def test_the_shape_version_is_hashed_and_the_key_is_a_json_array():
     assert _key("sales.orders.id") == '["sales","orders","id"]'
     # a dot inside a name is a different column, never the same key
     assert measure_key("a.b", "c", "d") != measure_key("a", "b.c", "d")
-    assert table_of(measure_key("sales", "orders", "id")) == "sales.orders" and table_of("sales.orders.id") == ""
+    assert table_of(measure_key("sales", "orders", "id")) == table_key("sales", "orders") == '["sales","orders"]'
+    assert table_of("sales.orders.id") == "" and table_of(table_key("sales", "orders")) == ""
 
 
-def _not_profiled(table: str) -> ResourceMeasureAnnotation:
+# ── round 2 (architect rulings 2026-10-24) ─────────────────────────────────────────────────────────────────
+
+class _ClockConn:
+    """The value profile's fake Postgres for a STATIC table whose `placed` column holds one date half an hour after
+    the first profile: `future_date_ct` is computed from the `{RUN_DATE}` literal the statement carries, as Postgres
+    would, so it moves with the clock while nothing in the table does."""
+
+    PLACED = "2026-10-20 10:30:00"
+
+    def __init__(self):
+        from tests.test_value_profile_quality_checks import FakeConn
+
+        self.inner = FakeConn(profile=copy.deepcopy(PROFILE))
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+    def execute_query_isolated(self, sql, params=()):
+        import re
+
+        rows = self.inner.execute_query_isolated(sql, params)
+        run_date = re.search(r"> '(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})'", sql)
+        for alias in re.findall(r"AS (c\d+__future_date_ct)", sql):
+            rows[0][alias] = int(self.PLACED > run_date.group(1))
+        return rows
+
+
+def _profile_at(registry, at: str) -> dict[str, ResourceProfileAnnotation]:
+    from contextlib import contextmanager
+
+    from resource_explorer.surveyors.database.quality.value_profile import run_value_profile
+    from tests.test_value_profile_quality_checks import BOUNDS
+
+    conn = _ClockConn()
+
+    @contextmanager
+    def connect():
+        yield conn
+
+    out = run_value_profile(registry.get_database(SLUG), registry, connect, bounds=BOUNDS, surveyed_at=at,
+                            ran_as="surveyor", clock=lambda: 0.0)
+    return {a.item_key: a for a in out["annotations"] if isinstance(a, ResourceProfileAnnotation)}
+
+
+def test_two_profiles_of_a_static_table_an_hour_apart_hash_equal(registry):
+    """Fail-on-purpose (ruling (b)): the table does not change between 10:00 and 11:00, but its one date passes
+    'now' at 10:30, so `future_date_ct` goes 1 -> 0. Hashed or published in `value_count`, every date column would
+    read as changed on every press of a live database."""
+    first, later = _profile_at(registry, "2026-10-20T10:00:00+00:00"), _profile_at(registry, "2026-10-20T11:00:00+00:00")
+    placed = _key("sales.orders.placed")
+    # RE's own rows keep the relative measure for the Future_Date check, and it did move
+    assert {r["column_name"]: r["future_date_ct"] for r in registry.query_detail_rows(
+        "database_value_profiles", SLUG, "2026-10-20T10:00:00+00:00") if r["table_name"] == "orders"}["placed"] == 1
+    assert {r["column_name"]: r["future_date_ct"] for r in registry.query_detail_rows(
+        "database_value_profiles", SLUG, "2026-10-20T11:00:00+00:00") if r["table_name"] == "orders"}["placed"] == 0
+    # the annotation carries neither the count nor a clock-dependent hash; it says what the bounds were as of when
+    assert "future_date_ct" not in first[placed].value_count
+    assert first[placed].json_properties["profileDates"]["asOf"] == "2026-10-20T10:00:00Z"
+    assert later[placed].json_properties["profileDates"]["asOf"] == "2026-10-20T11:00:00Z"
+    assert set(first) == set(later)
+    for key in first:
+        assert content_hash(first[key]) == content_hash(later[key]), key
+
+
+def test_the_shape_version_moved_so_round_1_hashes_never_match():
+    """Every round-1 proof row hashed a different shape (future_date_ct in it): the first round-2 publish creates
+    each measure once rather than matching an old hash by accident."""
+    assert PROFILE_SHAPE_VERSION == 2
+
+
+def test_a_relative_measure_on_an_old_annotation_is_not_hashed_either():
+    a = _measure(value_count={"record_ct": 10, "future_date_ct": 3}, profileDates={"max_date": "2026-01-01",
+                                                                                     "asOf": "2026-10-20T10:00:00Z"})
+    b = _measure(value_count={"record_ct": 10}, profileDates={"max_date": "2026-01-01", "asOf": "2026-10-24T21:09:00Z"})
+    assert content_hash(a) == content_hash(b)
+    assert content_hash(b) != content_hash(_measure(value_count={"record_ct": 10},
+                                                    profileDates={"max_date": "2026-01-02"}))
+
+
+def _proposals(digest="d1", run_id="2026-10-24T21:09:00", proposed=3):
+    from resource_explorer.surveyors.database.quality import propose
+    from resource_explorer.surveyors.survey_report import RequestForActionAnnotation
+
+    return RequestForActionAnnotation(
+        summary=f"{proposed} quality checks proposed for coco", analysis_step=propose.ANALYSIS_STEP,
+        annotation_type_name="Proposed Quality Checks", check_name=propose.CHECK_NAME, item_key=propose.ITEM_KEY,
+        label="proposed", action_requested=f"review {proposed} proposed quality checks in Resource Explorer",
+        action_target_name="coco", explanation=f"Resource Explorer proposed {proposed} quality checks in run {run_id}.",
+        additional_properties={"runId": run_id, "proposedChecks": str(proposed), "proposedChecksDigest": digest})
+
+
+def test_the_proposals_request_compares_on_its_checks_never_on_its_run():
+    from resource_explorer.surveyors.database.quality.profile_publish import PROPOSALS, relink_kind
+
+    assert relink_kind(_proposals()) == PROPOSALS
+    assert content_hash(_proposals(run_id="a")) == content_hash(_proposals(run_id="b"))
+    assert content_hash(_proposals(digest="d1")) != content_hash(_proposals(digest="d2"))   # same count, other checks
+    assert content_hash(_proposals(proposed=3)) != content_hash(_proposals(proposed=4))
+
+
+def test_the_proposals_request_is_planned_against_its_own_steps_proof_rows():
+    from resource_explorer.surveyors.database.quality import propose
+
+    req = _proposals()
+    others = {propose.ANALYSIS_STEP: {"report_guid": "r1", "report_at": "2026-10-24T21:09:00",
+                                      "measures": {propose.ITEM_KEY: {"annotation_guid": "g-rfa",
+                                                                      "content_hash": content_hash(req)}}}}
+    plan = plan_profile_publish([_measure(), req], None, others)
+    assert plan.relink == {1: "g-rfa"} and plan.create == [0]
+    assert plan.steps == {0: ANALYSIS_STEP, 1: propose.ANALYSIS_STEP}
+    assert plan.previous_by_step == {propose.ANALYSIS_STEP: ("r1", "2026-10-24T21:09:00")}
+    # a key in the value profile's proof rows is never the request's, even if equal text
+    assert plan_profile_publish([req], {"report_guid": "r0", "report_at": "x", "measures": {
+        propose.ITEM_KEY: {"annotation_guid": "wrong", "content_hash": content_hash(req)}}}).relink == {}
+
+
+def test_a_not_profiled_table_relinks_when_its_reason_is_the_same_and_is_never_no_longer_measured():
+    slow = _not_profiled("s.slow")
+    previous = {"report_guid": "r1", "report_at": "2026-10-24T21:09:00",
+                "measures": {table_key("s", "slow"): {"annotation_guid": "g-slow-t", "content_hash": content_hash(slow)},
+                             table_key("s", "fast"): {"annotation_guid": "g-fast-t", "content_hash": "h"}}}
+    plan = plan_profile_publish([slow, _not_profiled("s.other", reason="permission denied")], previous)
+    assert plan.relink == {0: "g-slow-t"} and plan.create == [1]
+    # s.fast was not profiled last time and is profiled now: nothing is "no longer measured" for a table key
+    assert plan.gone == {} and plan.not_measured == {}
+    changed = _not_profiled("s.slow", reason="permission denied")
+    assert plan_profile_publish([changed], previous).relink == {}
+
+
+def test_the_card_names_the_previous_report_by_date_and_time_utc():
+    counts = {"rows": 2, "published": 2, "created": 1, "relinked": 1, "no_longer_measured": 0}
+    for stored, shown in (("2026-10-24T21:09:41.123456", "2026-10-24 21:09Z"),     # RE's naive UTC
+                          ("2026-10-24T23:09:00+02:00", "2026-10-24 21:09Z"),      # an offset, converted
+                          ("2026-10-24T21:09:00Z", "2026-10-24 21:09Z")):
+        assert profile_publish_words({**counts, "previous_report_at": stored}) == (
+            f"2 measures published · 1 changed since {shown} · 1 re-used · 0 no longer measured")
+    # a time that cannot be read is shown as stored, never a guessed one
+    assert " · 1 changed since sometime · " in profile_publish_words({**counts, "previous_report_at": "sometime"})
+
+
+def _not_profiled(table: str, reason: str = "canceling statement due to statement timeout"
+                  ) -> ResourceMeasureAnnotation:
     return ResourceMeasureAnnotation(summary=f"Value profile: {table} not profiled (not_measured)",
                                      analysis_step=ANALYSIS_STEP, annotation_type_name="Value Profile",
-                                     check_name="value_profile", item_key=table, label="not_measured")
+                                     check_name="value_profile", item_key=table_key(*table.split(".")),
+                                     label="not_measured", confidence=0, explanation=reason,
+                                     resource_properties={"state": "not_measured", "reason": reason})
 
 
 def test_the_plan_relinks_the_unchanged_creates_the_changed_and_new_and_names_the_gone():
@@ -121,12 +266,13 @@ def test_the_plan_relinks_the_unchanged_creates_the_changed_and_new_and_names_th
     other = object()                                                   # any other annotation is never planned
     plan = plan_profile_publish([other, same, changed, new, _not_profiled("s.slow")], previous)
     assert plan.relink == {1: "g-a"}
-    assert plan.create == [2, 3]
+    assert plan.create == [2, 3, 4]                                    # the table not profiled is new: created
+    assert plan.keys[4] == table_key("s", "slow") and plan.steps[4] == ANALYSIS_STEP
     assert plan.gone == {_key("s.t.gone"): "g-gone"}                 # counted once: s.t.counted already was
     assert plan.not_measured == {_key("s.slow.x"): "g-slow"}         # its table was not profiled: not a drop
     assert plan_profile_publish([same], None).relink == {}            # nothing published before: all created
     plan.recreate([1])
-    assert plan.relink == {} and plan.recreated == {1} and plan.create == [1, 2, 3]
+    assert plan.relink == {} and plan.recreated == {1} and plan.create == [1, 2, 3, 4]
 
 
 def test_the_card_line_words():
@@ -135,10 +281,10 @@ def test_the_card_line_words():
                                   "previous_report_at": ""}) == "5 measures published · first profile published"
     assert profile_publish_words({"rows": 5, "published": 4, "created": 1, "relinked": 3, "no_longer_measured": 1,
                                   "previous_report_at": "2026-10-22T10:00:00"}) == (
-        "4 measures published · 1 changed since 2026-10-22 · 3 re-used · 1 no longer measured")
+        "4 measures published · 1 changed since 2026-10-22 10:00Z · 3 re-used · 1 no longer measured")
     assert profile_publish_words({"rows": 5, "published": 4, "created": 0, "relinked": 4, "no_longer_measured": 0,
                                   "not_measured_this_run": 1, "previous_report_at": "2026-10-22T10:00:00"}) == (
-        "4 measures published · 0 changed since 2026-10-22 · 4 re-used · 0 no longer measured"
+        "4 measures published · 0 changed since 2026-10-22 10:00Z · 4 re-used · 0 no longer measured"
         " · 1 not measured this run")
 
 
@@ -146,7 +292,7 @@ def test_the_card_line_names_a_recreated_measure_and_does_not_call_it_changed():
     counts = {"rows": 5, "published": 5, "created": 1, "recreated": 1, "changed": 0, "relinked": 4,
               "no_longer_measured": 0, "previous_report_at": "2026-10-22T10:00:00"}
     assert profile_publish_words(counts) == (
-        "5 measures published · 0 changed since 2026-10-22 · 4 re-used"
+        "5 measures published · 0 changed since 2026-10-22 10:00Z · 4 re-used"
         " · 1 re-created (the re-used annotation was gone) · 0 no longer measured")
 
 
@@ -280,9 +426,10 @@ def _profile_creates(egeria, since: set[str]) -> int:
 
 def _proof(registry, report_guid, *, notes: list | None = None) -> dict[str, int]:
     with registry._conn() as conn:
-        rows = [dict(r) for r in conn.execute(
-            "SELECT detail_json, item_key, content_hash FROM native_survey_annotations WHERE report_guid = ?",
-            (report_guid,)).fetchall()]
+        every = [dict(r) for r in conn.execute(
+            "SELECT detail_json, item_key, content_hash, annotation_type FROM native_survey_annotations "
+            "WHERE report_guid = ?", (report_guid,)).fetchall()]
+    rows = [r for r in every if r["annotation_type"] == "ResourceProfileAnnotation"]
     out: dict[str, int] = {}
     for r in rows:
         detail = json.loads(r["detail_json"])
@@ -292,11 +439,32 @@ def _proof(registry, report_guid, *, notes: list | None = None) -> dict[str, int
         assert (r["content_hash"] is None) == (outcome in ("no_longer_measured", "not_measured_this_run"))
         if notes is not None and detail.get("note"):
             notes.append((outcome, detail["note"]))
-    # the rows NOT on the report are not counted as on it
-    on_report = sum(v for k, v in out.items() if k in ("created", "relinked"))
+    # the rows NOT on the report are not counted as on it (the request's and any table's rows are on it too)
+    on_report = sum(v for k, v in out.items() if k in ("created", "relinked")) + len(every) - len(rows)
     assert registry.count_native_survey_annotations(report_guid) == on_report
     assert len(registry.query_native_survey_annotations(report_guid)) == on_report
     return out
+
+
+def _report_rows(registry, report_guid) -> list[dict]:
+    with registry._conn() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT detail_json, annotation_type, analysis_step FROM native_survey_annotations "
+            "WHERE report_guid = ?", (report_guid,)).fetchall()]
+
+
+def _other_proof(registry, report_guid) -> dict[tuple[str, str], int]:
+    """The proof rows of the re-linkable annotations that are not column measures: {(type, outcome): n}."""
+    out: dict[tuple[str, str], int] = {}
+    for r in _report_rows(registry, report_guid):
+        if r["annotation_type"] != "ResourceProfileAnnotation":
+            key = (r["annotation_type"], json.loads(r["detail_json"])["outcome"])
+            out[key] = out.get(key, 0) + 1
+    return out
+
+
+def _relinked_rows(registry, report_guid) -> int:
+    return sum(1 for r in _report_rows(registry, report_guid) if json.loads(r["detail_json"])["outcome"] == "relinked")
 
 
 def test_only_the_gone_outcomes_have_an_item_key_and_no_content_hash(client, registry, egeria, world, rig):
@@ -332,7 +500,7 @@ def test_two_identical_presses_then_a_change_then_a_drop(client, registry, egeri
     assert _proof(registry, r1) == {"created": 5}
     assert first["publish_state"].endswith("· 5 measures published · first profile published")
     assert first["published"] is True
-    first_date = egeria.reports()[0][1]["properties"]["qualifiedName"].rsplit("::", 1)[1][:10]
+    first_date = _utc_minute(egeria.reports()[0][1]["properties"]["qualifiedName"].rsplit("::", 1)[1])
     profile_on_r1 = {g for g in _reported_pairs(egeria, r1)
                      if egeria.elements[g]["body"]["properties"]["class"] == PROFILE_CLASS}
 
@@ -342,8 +510,11 @@ def test_two_identical_presses_then_a_change_then_a_drop(client, registry, egeri
     second = _press(client, registry)
     r2 = egeria.reports()[1][0]
     assert _profile_creates(egeria, seen) == 0
-    assert len(egeria.method_calls("attach_annotation_to_report")) - attaches == 5
     assert _proof(registry, r2) == {"relinked": 5}
+    # round 2: the four tables not profiled and the proposals request are unchanged too, so re-linked as well
+    assert _other_proof(registry, r2) == {("ResourceMeasureAnnotation", "relinked"): 4,
+                                          ("RequestForAction", "relinked"): 1}
+    assert len(egeria.method_calls("attach_annotation_to_report")) - attaches == _relinked_rows(registry, r2) == 10
     on_r2 = _reported_pairs(egeria, r2)
     assert {g for g in on_r2 if egeria.elements[g]["body"]["properties"]["class"] == PROFILE_CLASS} == profile_on_r1
     assert len(on_r2) == len(set(on_r2))                                  # one ReportedAnnotation per pair
@@ -374,8 +545,11 @@ def test_two_identical_presses_then_a_change_then_a_drop(client, registry, egeri
     fourth = _press(client, registry)
     r4 = egeria.reports()[3][0]
     assert _profile_creates(egeria, seen) == 0
-    assert len(egeria.method_calls("attach_annotation_to_report")) - attaches == 4
+    assert len(egeria.method_calls("attach_annotation_to_report")) - attaches == _relinked_rows(registry, r4)
     assert _proof(registry, r4) == {"relinked": 4, "not_measured_this_run": 1}
+    # the newly not-profiled table's annotation is created; the four that were already not profiled are re-linked
+    assert {k: v for k, v in _other_proof(registry, r4).items() if k[0] == "ResourceMeasureAnnotation"} == {
+        ("ResourceMeasureAnnotation", "created"): 1, ("ResourceMeasureAnnotation", "relinked"): 4}
     assert " · 4 measures published · 0 changed since " in fourth["publish_state"]
     assert fourth["publish_state"].endswith("· 4 re-used · 0 no longer measured · 1 not measured this run")
     assert registry.profile_publish_counts(r4, ANALYSIS_STEP)["published"] == 4
@@ -479,7 +653,8 @@ def test_a_report_that_already_holds_a_pair_is_not_attached_again_end_to_end(cli
     attaches = len(egeria.method_calls("attach_annotation_to_report"))
     second = _press(client, registry)
     r2 = egeria.reports()[1][0]
-    assert len(egeria.method_calls("attach_annotation_to_report")) - attaches == 4
+    # every planned re-link but the one the report already held (4 measures + 4 tables + 1 request)
+    assert len(egeria.method_calls("attach_annotation_to_report")) - attaches == _relinked_rows(registry, r2) - 1 == 9
     on_r2 = _reported_pairs(egeria, r2)
     assert len(on_r2) == len(set(on_r2))                                  # one ReportedAnnotation per pair
     assert _proof(registry, r2) == {"relinked": 5}

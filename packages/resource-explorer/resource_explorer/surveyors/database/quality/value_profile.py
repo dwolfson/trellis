@@ -43,6 +43,11 @@ PROFILE_MEASURES_SQL = POSTGRES_DIR / "profile_measures.sql"
 COLUMN_MEASURES = ("value_ct", "distinct_value_ct", "null_value_ct", "zero_length_ct", "filled_value_ct",
                    "min_date", "max_date", "future_date_ct")
 DATE_MEASURES = frozenset({"min_date", "max_date"})
+#: Measures taken against the profile's own instant (`{RUN_DATE}`), so they move with the clock on a table nobody
+#: wrote to. RE's own rows keep them (the Future_Date check reads `future_date_ct`), but the published annotation
+#: does not carry them in `value_count`, and the profile publish reshape never hashes them (architect ruling
+#: 2026-10-24): `profileDates` carries the max date and the as-of instead, so a reader can tell.
+RELATIVE_TO_NOW_MEASURES = frozenset({"future_date_ct"})
 
 #: Postgres's target-list limit is 1664 entries; columns are profiled in chunks well under it (each column
 #: contributes at most six measures). Each chunk is its own scan.
@@ -97,6 +102,12 @@ def run_date_text(surveyed_at: str) -> str:
     if instant.tzinfo is not None:
         instant = instant.astimezone(UTC)
     return instant.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def as_of_text(surveyed_at: str) -> str:
+    """The profile's own instant as ISO UTC with Z ('YYYY-MM-DDTHH:MM:SSZ'): the instant `{RUN_DATE}` measured
+    against, published as `profileDates.asOf`."""
+    return run_date_text(surveyed_at).replace(" ", "T") + "Z"
 
 
 def _fill(expr: str, column: str, run_date: str) -> str:
@@ -168,6 +179,12 @@ def _empty_row(schema: str, table: str, column: str, gtype: str, state: str, rea
            "record_ct": None, "sample_ratio": None, "state": state, "reason": reason, "ran_as": ran_as}
     row.update({m: None for m in COLUMN_MEASURES})
     return row
+
+
+def _table_outcome(schema: str, table: str, state: str, reason: str) -> dict:
+    # The names travel apart as well as dotted: a dot inside a name must not change the table's `item_key`.
+    return {"table": f"{schema}.{table}", "schema_name": schema, "table_name": table, "state": state,
+            "reason": reason}
 
 
 @dataclass(frozen=True)
@@ -283,7 +300,7 @@ def run_value_profile(
             if refused:
                 state, reason = refused
                 rows.extend(_empty_row(schema, table, c, g, state, reason, ran_as) for c, g in cols)
-                table_outcomes.append({"table": f"{schema}.{table}", "state": state, "reason": reason})
+                table_outcomes.append(_table_outcome(schema, table, state, reason))
                 continue
             failures: list[tuple[str, str]] = []
             table_rows: list[dict] = []
@@ -337,12 +354,12 @@ def run_value_profile(
                 # ever written for a count that was not taken.
                 reason = incomplete_reason(bounds.table_budget_seconds)
                 rows.extend(_empty_row(schema, table, c, g, "not_measured", reason, ran_as) for c, g in cols)
-                table_outcomes.append({"table": f"{schema}.{table}", "state": "not_measured", "reason": reason})
+                table_outcomes.append(_table_outcome(schema, table, "not_measured", reason))
                 continue
             rows.extend(table_rows)
             if failures:
                 state, reason = failures[0]
-                table_outcomes.append({"table": f"{schema}.{table}", "state": state, "reason": reason})
+                table_outcomes.append(_table_outcome(schema, table, state, reason))
 
     registry.write_detail_rows(PROFILE_TABLE, slug, surveyed_at, rows=rows)
     states: dict[str, int] = {}
@@ -359,7 +376,7 @@ def run_value_profile(
             "ran_as": ran_as,
             "bounds": {"table_budget_seconds": bounds.table_budget_seconds},
         },
-        "annotations": build_annotations(rows, table_outcomes),
+        "annotations": build_annotations(rows, table_outcomes, as_of=as_of_text(surveyed_at)),
     }
 
 
@@ -370,9 +387,25 @@ def measure_key(schema: str, table: str, column: str) -> str:
     return json.dumps([schema, table, column], separators=(",", ":"))
 
 
-def build_annotations(rows: list[dict], table_outcomes: list[dict]) -> list:
+def table_key(schema: str, table: str) -> str:
+    """A not-profiled table's `item_key`: the compact JSON array `["schema","table"]`, as `measure_key` is for a
+    column. The profile publish reshape re-links an unchanged one by it."""
+    return json.dumps([schema, table], separators=(",", ":"))
+
+
+def _outcome_key(outcome: dict) -> str:
+    schema, table = outcome.get("schema_name"), outcome.get("table_name")
+    if schema is None or table is None:
+        schema, _, table = outcome["table"].partition(".")
+    return table_key(schema, table)
+
+
+def build_annotations(rows: list[dict], table_outcomes: list[dict], *, as_of: str = "") -> list:
     """One ResourceProfileAnnotation per measured column (counts in `value_count`, date bounds and the
-    general_type in `json_properties`), and one ResourceMeasureAnnotation per table not profiled, carrying why."""
+    general_type in `json_properties`), and one ResourceMeasureAnnotation per table not profiled, carrying why.
+
+    A relative-to-now measure (`RELATIVE_TO_NOW_MEASURES`) is left out of `value_count`; a date column's
+    `profileDates` carries `asOf` (the instant it was measured against) beside its bounds."""
     from resource_explorer.surveyors.survey_report import (
         ResourceMeasureAnnotation,
         ResourceProfileAnnotation,
@@ -385,7 +418,10 @@ def build_annotations(rows: list[dict], table_outcomes: list[dict]) -> list:
         path = f"{row['schema_name']}.{row['table_name']}.{row['column_name']}"
         key = measure_key(row["schema_name"], row["table_name"], row["column_name"])
         counts = {k: row[k] for k in ("record_ct",) + COLUMN_MEASURES
-                  if k not in DATE_MEASURES and row.get(k) is not None}
+                  if k not in DATE_MEASURES | RELATIVE_TO_NOW_MEASURES and row.get(k) is not None}
+        dates = {k: row.get(k) for k in DATE_MEASURES if row.get(k) is not None}
+        if as_of and row.get("general_type") == "D":
+            dates["asOf"] = as_of
         out.append(ResourceProfileAnnotation(
             summary=f"Value profile: {path} ({row['record_ct']:,} rows, {row.get('value_ct') or 0:,} with a value)"
             if row.get("record_ct") is not None else f"Value profile: {path}",
@@ -397,7 +433,7 @@ def build_annotations(rows: list[dict], table_outcomes: list[dict]) -> list:
             value_count=counts,
             json_properties={
                 "generalType": row["general_type"],
-                "profileDates": {k: row.get(k) for k in DATE_MEASURES if row.get(k) is not None},
+                "profileDates": dates,
                 "sampleRatio": None,
                 "ranAs": row.get("ran_as", ""),
             },
@@ -408,7 +444,7 @@ def build_annotations(rows: list[dict], table_outcomes: list[dict]) -> list:
             analysis_step=ANALYSIS_STEP,
             annotation_type_name="Value Profile",
             check_name="value_profile",
-            item_key=outcome["table"],
+            item_key=_outcome_key(outcome),
             label=outcome["state"],
             confidence=0,
             explanation=outcome["reason"],
