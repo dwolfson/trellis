@@ -1044,10 +1044,14 @@ class EgeriaResync:
         )
 
     def _asset_guid(self, entity_type: str, entity_slug: str) -> str:
-        if entity_type != "repo":
+        # The one per-kind lookup (`member_assets`), shared with the relink repair's publisher: a repo-only copy
+        # here hid every database and file-system member from this finding, so the relink card never rendered for them.
+        from resource_explorer.member_assets import MemberUnresolved, NotInEgeriaYet, member_egeria_guid
+
+        try:
+            return member_egeria_guid(self._registry, entity_type, entity_slug)
+        except (NotInEgeriaYet, MemberUnresolved):
             return ""
-        p = self._registry.get(entity_slug)
-        return (getattr(p, "egeria_asset_guid", "") or "") if p else ""
 
     # ── repair ──────────────────────────────────────────────────────────────
     def apply(self, steps: list) -> dict:

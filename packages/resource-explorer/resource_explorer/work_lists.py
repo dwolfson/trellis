@@ -156,38 +156,9 @@ def _additional_properties(element) -> dict:
     return dict(found) if isinstance(found, dict) else {}
 
 
-#: The resource types a work list's members can be, and so the ones `member_egeria_guid` knows how to read.
-MEMBER_ENTITY_TYPES = SURVEYED_RESOURCE_TYPES
-
-
-class MemberUnresolved(Exception):
-    """RE could not say whether a work-list member has an Egeria element: an unsupported type, a member that is
-    not in RE's registry, or a registry read that failed. Never the same answer as "not published to Egeria yet"."""
-
-
-def member_egeria_guid(registry, entity_type: str, slug: str) -> str:
-    """A work-list member's own Egeria asset GUID, by its type; "" means RE holds the resource and it has no
-    Egeria element yet. The ONE lookup every work-list path uses (publish's attach split, the removals' map).
-
-    The getters are `curation_egeria._entity`'s, the per-type read the curation paths already use
-    (`registry.get` / `get_database` / `get_filesystem`). Raises `MemberUnresolved` when the answer is not known:
-    a type with no getter, a slug RE does not hold, or a read that failed. A bare `registry.get(slug)` answered
-    None for every database and file-system member, which read as "never published" (wl-0c09fe4404, 2026-10-13)."""
-    from resource_explorer.curation_egeria import _entity
-
-    if entity_type not in MEMBER_ENTITY_TYPES:
-        raise MemberUnresolved(f"members of type '{entity_type or '(none)'}' are not supported")
-    try:
-        entity = _entity(registry, entity_type, slug)
-    except Exception as exc:  # noqa: BLE001 - a failed read is "could not resolve", never "not published"
-        raise MemberUnresolved(f"could not read RE's record · {type(exc).__name__}: {exc}"[:300]) from exc
-    if entity is None:
-        raise MemberUnresolved(f"no {entity_type} '{slug}' in RE's registry")
-    return str(getattr(entity, "egeria_asset_guid", "") or "").strip()
-
-
-def not_published_words(entity_type: str) -> str:
-    return f"not published to Egeria yet · {entity_type}"
+from resource_explorer.member_assets import (  # noqa: E402,F401  (the one resolver; re-exported for callers)
+    MEMBER_ENTITY_TYPES, MemberUnresolved, NotInEgeriaYet, member_egeria_guid,
+)
 
 
 def _refused(row: dict) -> bool:
@@ -643,16 +614,16 @@ class WorkLists:
                 unresolved.append({"entity_slug": m["entity_slug"], "entity_type": wl["entity_type"],
                                    "words": f"could not resolve · {exc}"})
                 continue
-            if member_guid:
-                attachable.append({
-                    "member_guid": member_guid,
-                    "entity_type": wl["entity_type"],
-                    "entity_slug": m["entity_slug"],
-                    "rationale": m.get("rationale") or "",
-                    "confidence": m.get("confidence"),
-                })
-            else:
+            except NotInEgeriaYet:
                 unpublished.append(m["entity_slug"])
+                continue
+            attachable.append({
+                "member_guid": member_guid,
+                "entity_type": wl["entity_type"],
+                "entity_slug": m["entity_slug"],
+                "rationale": m.get("rationale") or "",
+                "confidence": m.get("confidence"),
+            })
         attachable, refused = per_member(attachable, lambda m: access_words(
             self.registry, [member_write(m["member_guid"])], entity_type=m["entity_type"], slug=m["entity_slug"],
             reader=reader))
@@ -751,7 +722,7 @@ class WorkLists:
             # "" when every inline drain ran; else what raised, in words (the rows stay for the background drain).
             "attach_error": attach_error,
             "not_published": [{"entity_slug": s_, "entity_type": wl["entity_type"],
-                               "words": not_published_words(wl["entity_type"])} for s_ in unpublished],
+                               "words": str(NotInEgeriaYet(wl["entity_type"]))} for s_ in unpublished],
             "not_resolved": unresolved,
             # Brief Z3: each member the caller may not attach, with its words; the rest were queued.
             "not_permitted": not_permitted,
