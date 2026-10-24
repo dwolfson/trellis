@@ -28,8 +28,15 @@ from resource_explorer.surveyors.database.quality.profile_publish import (
     profile_publish_words,
     table_of,
 )
-from resource_explorer.surveyors.database.quality.value_profile import ANALYSIS_STEP, measure_key, table_key
-from resource_explorer.surveyors.survey_report import ResourceMeasureAnnotation, ResourceProfileAnnotation
+from resource_explorer.surveyors.database.quality.value_profile import (
+    ANALYSIS_STEP,
+    measure_key,
+    table_key,
+)
+from resource_explorer.surveyors.survey_report import (
+    ResourceMeasureAnnotation,
+    ResourceProfileAnnotation,
+)
 from tests.test_engine_host_e4 import egeria  # noqa: F401 - fixture reused
 from tests.test_quality_q2_survey_press_e2e import (  # noqa: F401 - fixtures and helpers reused
     _annotation_bodies,
@@ -235,14 +242,15 @@ def test_a_not_profiled_table_relinks_when_its_reason_is_the_same_and_is_never_n
 
 
 def test_the_card_names_the_previous_report_by_date_and_time_utc():
-    counts = {"rows": 2, "published": 2, "created": 1, "relinked": 1, "no_longer_measured": 0}
+    counts = {"rows": 2, "published": 2, "created": 1, "relinked": 1, "no_longer_measured": 0, "counts_moved": 1}
     for stored, shown in (("2026-10-24T21:09:41.123456", "2026-10-24 21:09Z"),     # RE's naive UTC
                           ("2026-10-24T23:09:00+02:00", "2026-10-24 21:09Z"),      # an offset, converted
                           ("2026-10-24T21:09:00Z", "2026-10-24 21:09Z")):
         assert profile_publish_words({**counts, "previous_report_at": stored}) == (
-            f"2 measures published · 1 changed since {shown} · 1 re-used · 0 no longer measured")
+            f"2 measures published · 1 changed since {shown}: 1 counts moved · 0 shape changed · 1 re-used"
+            " · 0 no longer measured")
     # a time that cannot be read is shown as stored, never a guessed one
-    assert " · 1 changed since sometime · " in profile_publish_words({**counts, "previous_report_at": "sometime"})
+    assert " · 1 changed since sometime: " in profile_publish_words({**counts, "previous_report_at": "sometime"})
 
 
 def _not_profiled(table: str, reason: str = "canceling statement due to statement timeout"
@@ -280,8 +288,10 @@ def test_the_card_line_words():
     assert profile_publish_words({"rows": 5, "published": 5, "created": 5, "relinked": 0, "no_longer_measured": 0,
                                   "previous_report_at": ""}) == "5 measures published · first profile published"
     assert profile_publish_words({"rows": 5, "published": 4, "created": 1, "relinked": 3, "no_longer_measured": 1,
+                                  "counts_moved": 1, "shape_changed": 0,
                                   "previous_report_at": "2026-10-22T10:00:00"}) == (
-        "4 measures published · 1 changed since 2026-10-22 10:00Z · 3 re-used · 1 no longer measured")
+        "4 measures published · 1 changed since 2026-10-22 10:00Z: 1 counts moved · 0 shape changed · 3 re-used"
+        " · 1 no longer measured")
     assert profile_publish_words({"rows": 5, "published": 4, "created": 0, "relinked": 4, "no_longer_measured": 0,
                                   "not_measured_this_run": 1, "previous_report_at": "2026-10-22T10:00:00"}) == (
         "4 measures published · 0 changed since 2026-10-22 10:00Z · 4 re-used · 0 no longer measured"
@@ -535,8 +545,13 @@ def test_two_identical_presses_then_a_change_then_a_drop(client, registry, egeri
     r3 = egeria.reports()[2][0]
     assert _profile_creates(egeria, seen) == 1
     assert _proof(registry, r3) == {"created": 1, "relinked": 4}
+    # ruling 5: the one change was a count (value_ct), not the column's shape; and it moved on one of the two tables
+    # measured, which is past the default share (0.25), so the card says the database is written live
     assert " · 5 measures published · 1 changed since " in third["publish_state"]
-    assert third["publish_state"].endswith("· 4 re-used · 0 no longer measured")
+    assert ": 1 counts moved · 0 shape changed · 4 re-used · 0 no longer measured" in third["publish_state"]
+    assert third["publish_state"].endswith(" · this database is written live · see change rates")
+    assert third["written_live"] == {"analysis_id": "db_change_rates", "question_id": "Q-0086"}
+    assert "written_live" not in second and "written live" not in second["publish_state"]
 
     # 4. a table not profiled this time (it timed out): its column is NOT MEASURED THIS RUN, never "no longer
     # measured"; nothing written to Egeria for it
@@ -659,3 +674,161 @@ def test_a_report_that_already_holds_a_pair_is_not_attached_again_end_to_end(cli
     assert len(on_r2) == len(set(on_r2))                                  # one ReportedAnnotation per pair
     assert _proof(registry, r2) == {"relinked": 5}
     assert second["publish_state"].endswith("· 5 re-used · 0 no longer measured")
+
+
+# ── ruling 5 (architect, 2026-10-24): which kind of change, and the written-live words ───────────────────────
+
+def _moved(before: ResourceProfileAnnotation | None, after: ResourceProfileAnnotation) -> list[str]:
+    from resource_explorer.surveyors.database.quality.profile_publish import (
+        measure_groups,
+        moved_groups,
+    )
+
+    return moved_groups(measure_groups(after), {"groups": measure_groups(before)} if before else None)
+
+
+def test_a_count_that_moved_inside_its_shape_is_counts_moved_only():
+    base = _measure(value_count={"record_ct": 1000, "value_ct": 900, "null_value_ct": 100, "distinct_value_ct": 900})
+    grown = _measure(value_count={"record_ct": 1010, "value_ct": 909, "null_value_ct": 101, "distinct_value_ct": 909})
+    assert _moved(base, grown) == ["counts"]
+
+
+def test_general_type_null_pattern_distinct_band_and_min_max_are_shape():
+    counts = {"record_ct": 1000, "value_ct": 1000, "null_value_ct": 0, "distinct_value_ct": 1000}
+    base = _measure(value_count=counts, profileDates={"min_date": "2020-01-01"})
+    assert _moved(base, _measure(value_count=counts, generalType="A", profileDates={"min_date": "2020-01-01"})) == [
+        "shape"]
+    assert _moved(base, _measure(value_count=counts, profileDates={"min_date": "2019-12-31"})) == ["shape"]
+    # nulls appear (none -> some): the counts moved AND the shape changed; counted in both
+    assert _moved(base, _measure(value_count={**counts, "value_ct": 990, "null_value_ct": 10, "distinct_value_ct": 990},
+                                 profileDates={"min_date": "2020-01-01"})) == ["counts", "shape"]
+    # unique -> medium distinct ratio
+    assert _moved(base, _measure(value_count={**counts, "distinct_value_ct": 100},
+                                 profileDates={"min_date": "2020-01-01"})) == ["counts", "shape"]
+
+
+def test_the_bands_and_patterns_are_what_the_shape_names():
+    from resource_explorer.surveyors.database.quality.profile_publish import (
+        distinct_band,
+        null_pattern,
+    )
+
+    assert [null_pattern({"record_ct": 5, "null_value_ct": n}) for n in (0, 2, 5)] == ["none", "some", "all"]
+    assert null_pattern({"record_ct": 5}) is None                         # not measured, never "none"
+    assert [distinct_band({"value_ct": 100, "distinct_value_ct": d}) for d in (100, 50, 5, 1)] == [
+        "unique", "high", "medium", "low"]
+    assert distinct_band({"value_ct": 0, "distinct_value_ct": 0}) is None
+
+
+def test_a_new_column_is_new_and_an_earlier_row_without_groups_is_not_compared():
+    from resource_explorer.surveyors.database.quality.profile_publish import (
+        measure_groups,
+        moved_groups,
+    )
+
+    assert _moved(None, _measure()) == ["new"]
+    assert moved_groups(measure_groups(_measure()), {"annotation_guid": "g", "content_hash": "h"}) == ["not_compared"]
+
+
+def test_the_plan_records_groups_for_every_measure_and_moved_only_for_the_created():
+    same, grown = _measure("s.t.a"), _measure("s.t.b", value_count={"record_ct": 1001, "value_ct": 1001,
+                                                                     "null_value_ct": 0})
+    from resource_explorer.surveyors.database.quality.profile_publish import measure_groups
+
+    previous = {"report_guid": "r1", "report_at": "2026-10-24T21:09:00",
+                "measures": {_key("s.t.a"): {"annotation_guid": "g-a", "content_hash": content_hash(same),
+                                             "groups": measure_groups(same)},
+                             _key("s.t.b"): {"annotation_guid": "g-b", "content_hash": content_hash(_measure("s.t.b")),
+                                             "groups": measure_groups(_measure("s.t.b"))}}}
+    plan = plan_profile_publish([same, grown, _measure("s.t.c")], previous)
+    assert plan.relink == {0: "g-a"} and set(plan.groups) == {0, 1, 2}
+    assert plan.moved == {1: ["counts"], 2: ["new"]}
+
+
+def test_the_card_breaks_changed_down_and_names_the_rest_only_when_there_are_any():
+    base = {"rows": 80, "published": 80, "created": 70, "relinked": 10, "no_longer_measured": 0,
+            "previous_report_at": "2026-10-24T21:09:00"}
+    assert profile_publish_words({**base, "counts_moved": 70, "shape_changed": 0}) == (
+        "80 measures published · 70 changed since 2026-10-24 21:09Z: 70 counts moved · 0 shape changed"
+        " · 10 re-used · 0 no longer measured")
+    assert ": 66 counts moved · 3 shape changed · 2 new · 1 not compared · 10 re-used" in profile_publish_words(
+        {**base, "counts_moved": 66, "shape_changed": 3, "new": 2, "not_compared": 1})
+    # nothing changed: no breakdown
+    assert profile_publish_words({**base, "created": 0, "relinked": 80}).endswith(
+        "0 changed since 2026-10-24 21:09Z · 80 re-used · 0 no longer measured")
+
+
+def test_written_live_is_more_than_the_declared_share_of_measured_tables():
+    from resource_explorer.surveyors.database.quality.profile_publish import (
+        WRITTEN_LIVE_WORDS,
+        written_live,
+    )
+
+    counts = {"rows": 10, "published": 10, "created": 3, "relinked": 7, "counts_moved": 3,
+              "previous_report_at": "2026-10-24T21:09:00", "tables_measured": 8, "tables_counts_moved": 2}
+    assert not written_live(counts, 0.25)                                 # 2 of 8 is the share, not more
+    assert written_live({**counts, "tables_counts_moved": 3}, 0.25)
+    assert not written_live({**counts, "tables_counts_moved": 3}, None)   # no share declared: never said
+    assert not written_live({**counts, "previous_report_at": ""}, 0.0)    # a first publish moved nothing
+    assert not written_live({**counts, "tables_measured": 0}, 0.0)
+    assert profile_publish_words({**counts, "tables_counts_moved": 3}, 0.25).endswith(f" · {WRITTEN_LIVE_WORDS}")
+    assert WRITTEN_LIVE_WORDS not in profile_publish_words(counts, 0.25)
+
+
+def test_the_share_is_a_config_value(monkeypatch):
+    from resource_explorer.config import ValueProfileSettings
+
+    assert ValueProfileSettings().live_write_table_share == 0.25
+    monkeypatch.setenv("VALUE_PROFILE_LIVE_WRITE_TABLE_SHARE", "0.6")
+    assert ValueProfileSettings().live_write_table_share == 0.6
+    monkeypatch.setenv("VALUE_PROFILE_LIVE_WRITE_TABLE_SHARE", "1.5")
+    with pytest.raises(ValueError):
+        ValueProfileSettings()
+
+
+def test_the_counts_come_from_the_rows_moved_and_an_old_row_is_not_compared(tmp_path):
+    from resource_explorer.registry import ProjectRegistry
+
+    reg = ProjectRegistry(db_path=str(tmp_path / "counts.db"))
+    row = {"annotation_type": "ResourceProfileAnnotation", "previous_report_guid": "r0",
+           "previous_report_at": "2026-10-24T21:09:00"}
+    reg.record_profile_publish("database", "d", report_guid="r1", report_at="2026-10-24T22:00:00", read_at="t",
+                               analysis_step=ANALYSIS_STEP, rows=[
+        {**row, "annotation_guid": "a", "item_key": _key("s.t.a"), "content_hash": "1", "outcome": "created",
+         "moved": ["counts"]},
+        {**row, "annotation_guid": "b", "item_key": _key("s.t.b"), "content_hash": "2", "outcome": "created",
+         "moved": ["counts", "shape"]},
+        {**row, "annotation_guid": "c", "item_key": _key("s.u.c"), "content_hash": "3", "outcome": "created"},
+        {**row, "annotation_guid": "d", "item_key": _key("s.v.d"), "content_hash": "4", "outcome": "relinked"},
+        # a not-profiled table's row on the same step is not a measure and not a table measured
+        {**row, "annotation_type": "ResourceMeasureAnnotation", "annotation_guid": "t", "item_key": table_key("s", "w"),
+         "content_hash": "5", "outcome": "created"}])
+    counts = reg.profile_publish_counts("r1", ANALYSIS_STEP)
+    assert (counts["changed"], counts["counts_moved"], counts["shape_changed"], counts["new"],
+            counts["not_compared"]) == (3, 2, 1, 0, 1)
+    assert (counts["tables_measured"], counts["tables_counts_moved"]) == (3, 1)
+    # the groups are read back as "previous" for the next publish
+    reg.record_profile_publish("database", "d", report_guid="r2", report_at="2026-10-24T23:00:00", read_at="t",
+                               analysis_step=ANALYSIS_STEP, rows=[
+        {**row, "annotation_guid": "e", "item_key": _key("s.t.e"), "content_hash": "6", "outcome": "created",
+         "groups": {"counts": "c1", "shape": "s1"}, "moved": ["new"]}])
+    latest = reg.latest_profile_publish("database", "d", ANALYSIS_STEP)
+    assert latest["measures"][_key("s.t.e")]["groups"] == {"counts": "c1", "shape": "s1"}
+    assert "groups" not in latest["measures"][_key("s.t.a")]
+
+
+def test_a_shape_change_through_the_press_says_shape_changed_and_not_written_live(client, registry, egeria, world,
+                                                                                  rig):
+    _press(client, registry)
+    world.profile = copy.deepcopy(world.profile)
+    world.profile[("sales", "orders")]["columns"][2]["min_date"] = "2019-01-01"     # the date column's lower bound
+    second = _press(client, registry)
+    r2 = egeria.reports()[1][0]
+    assert _proof(registry, r2) == {"created": 1, "relinked": 4}
+    with registry._conn() as conn:
+        [moved] = [json.loads(r["detail_json"])["moved"] for r in conn.execute(
+            "SELECT detail_json FROM native_survey_annotations WHERE report_guid = ? AND item_key = ?",
+            (r2, _key("sales.orders.placed"))).fetchall()]
+    assert moved == ["shape"]
+    assert ": 0 counts moved · 1 shape changed · 4 re-used · 0 no longer measured" in second["publish_state"]
+    assert "written live" not in second["publish_state"] and "written_live" not in second

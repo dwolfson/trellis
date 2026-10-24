@@ -201,3 +201,26 @@ test('a sign-in that expired mid-publish shows its words and the partial-write n
   const n = dlgOf(document).querySelector('[data-run-publish-note]');
   assert.ok(n && text(n).includes('some writes may already have been made'), 'the partial-write note is missing');
 });
+
+/* Ruling 5 (architect, 2026-10-24): when counts moved on more than the configured share of the tables a publish
+ * measured, the run's detail carries `written_live` (from the proof rows) and the card adds a visible link to the
+ * database's Analysis stage, where Change Rates (db_change_rates, Q-0086) is. Drawn from the flag, never the sentence. */
+test('a written-live run links to change rates; a run without the flag draws no link', async () => {
+  const published = { publish_state: 'published to Egeria · 5 measures published', published: true,
+    egeria_report_guid: 'r-1', published_as: 'peterprofile' };
+  const live = await setUp(scoutingSteps, { ...published,
+    written_live: { analysis_id: 'db_change_rates', question_id: 'Q-0086' } });
+  await live.app.openRunsList('coco_pharma');
+  const link = dlgOf(live.document).querySelector('[data-run-publish] [data-run-written-live]');
+  assert.ok(link, 'no written-live link');
+  assert.equal(text(link), 'this database is written live · see change rates');
+  assert.equal(link.getAttribute('href'), '?type=db&resource=coco_pharma&stage=analysis');
+  assert.match(link.getAttribute('title'), /db_change_rates \(Q-0086\)/);
+  assert.match(text(runWord(live.document)), /^✓ published as peterprofile$/);       // the word is unchanged
+
+  // the sentence alone (no flag) never draws the link
+  const plain = await setUp(scoutingSteps, { ...published,
+    publish_state: 'published to Egeria · this database is written live · see change rates' });
+  await plain.app.openRunsList('coco_pharma');
+  assert.equal(dlgOf(plain.document).querySelectorAll('[data-run-written-live]').length, 0);
+});

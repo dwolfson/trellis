@@ -37,6 +37,18 @@ UNCOMPARED_DATES = frozenset({"asOf"})
 #: The proposals annotation's fields that name the run that made it, never compared.
 RUN_FIELDS = frozenset({"runId", "measuredAt", "producingRun"})
 
+#: Ruling 5 (architect, 2026-10-24): the card says WHAT KIND of change a changed column measure was. COUNTS: the raw
+#: counts of `value_count` (record_ct, value_ct, null_value_ct, distinct_value_ct, and the other raw counts). SHAPE:
+#: what the counts and properties say about the column, not how many: general type, null pattern, distinct-ratio band,
+#: min/max text (`profileDates` less `asOf`), sample ratio. Both still hash and re-link together (`content_hash`);
+#: each created row records which group moved (`moved`), so the card's words come from proof rows.
+COUNTS, SHAPE = "counts", "shape"
+#: `moved` for a created measure that is not a change of an earlier one (a new column), and for one whose earlier
+#: proof row carries no group hashes to compare with (published before ruling 5, or under another shape version).
+NEW, NOT_COMPARED = "new", "not_compared"
+#: Distinct-ratio bands (distinct_value_ct / value_ct), highest first: the first lower bound the ratio reaches.
+DISTINCT_RATIO_BANDS = ((1.0, "unique"), (0.5, "high"), (0.05, "medium"), (0.0, "low"))
+
 #: What `relink_kind` says an annotation is: a column measure, a table not profiled, the proposals annotation.
 MEASURE, TABLE_NOT_PROFILED, PROPOSALS = "measure", "table_not_profiled", "proposals"
 
@@ -151,11 +163,54 @@ def _without_run(props) -> dict:
     return {k: v for k, v in (props or {}).items() if k not in RUN_FIELDS}
 
 
+def _sha(value) -> str:
+    text = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def content_hash(annotation) -> str:
     """sha256 over the canonical JSON: keys sorted, no whitespace, numbers exact (an int and a float are
     different text, so they never compare equal by accident), dates as strings."""
-    text = json.dumps(canonical_measures(annotation), sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return _sha(canonical_measures(annotation))
+
+
+def null_pattern(counts: dict) -> str | None:
+    """"none", "some" or "all" of the rows null; None when either count was not measured."""
+    nulls, rows = counts.get("null_value_ct"), counts.get("record_ct")
+    if nulls is None or rows is None:
+        return None
+    return "none" if nulls == 0 else "all" if nulls == rows else "some"
+
+
+def distinct_band(counts: dict) -> str | None:
+    """The distinct-ratio band (`DISTINCT_RATIO_BANDS`); None when there is no value to divide by."""
+    distinct, values = counts.get("distinct_value_ct"), counts.get("value_ct")
+    if distinct is None or not values:
+        return None
+    ratio = distinct / values
+    return next(name for floor, name in DISTINCT_RATIO_BANDS if ratio >= floor)
+
+
+def measure_groups(annotation) -> dict[str, str]:
+    """{COUNTS: hash, SHAPE: hash} of a column measure: together they cover everything `content_hash` covers, so a
+    changed measure always moved at least one group."""
+    canonical = canonical_measures(annotation)
+    counts, props = canonical["value_count"], canonical["json_properties"]
+    shape = {"generalType": props.get("generalType"), "nullPattern": null_pattern(counts),
+             "distinctBand": distinct_band(counts), "profileDates": props.get("profileDates"),
+             "sampleRatio": props.get("sampleRatio")}
+    return {COUNTS: _sha([PROFILE_SHAPE_VERSION, counts]), SHAPE: _sha([PROFILE_SHAPE_VERSION, shape])}
+
+
+def moved_groups(groups: dict, before: dict | None) -> list[str]:
+    """Which groups of a created measure moved since `before` (its latest hashed proof row, or None)."""
+    if not before:
+        return [NEW]
+    earlier = before.get("groups") or {}
+    moved = [g for g in (COUNTS, SHAPE) if earlier.get(g) and earlier.get(g) != groups.get(g)]
+    if not all(earlier.get(g) for g in (COUNTS, SHAPE)) or not moved:
+        return [NOT_COMPARED]
+    return moved
 
 
 @dataclass
@@ -171,6 +226,9 @@ class ProfilePlan:
     previous_report_at: str = ""
     previous_by_step: dict[str, tuple[str, str]] = field(default_factory=dict)
     steps: dict[int, str] = field(default_factory=dict)
+    #: Column measures only: their group hashes, and for a created one which groups moved (ruling 5).
+    groups: dict[int, dict] = field(default_factory=dict)
+    moved: dict[int, list] = field(default_factory=dict)
     keys: dict[int, str] = field(default_factory=dict)
     hashes: dict[int, str] = field(default_factory=dict)
     relink: dict[int, str] = field(default_factory=dict)
@@ -213,6 +271,10 @@ def plan_profile_publish(annotations: list, previous: dict | None,
         before = ((by_step.get(step) or {}).get("measures") or {}).get(key)
         if before and before.get("content_hash") == plan.hashes[i] and before.get("annotation_guid"):
             plan.relink[i] = before["annotation_guid"]
+        if relink_kind(ann) == MEASURE:
+            plan.groups[i] = measure_groups(ann)
+            if i not in plan.relink:
+                plan.moved[i] = moved_groups(plan.groups[i], before)
     for key, before in measures.items():
         # Only a column measure is "no longer measured": a table key absent this run was profiled this time.
         if key in seen or not before.get("annotation_guid") or not is_column_key(key):
@@ -238,7 +300,7 @@ def _when(at: str) -> str:
     return instant.strftime("%Y-%m-%d %H:%MZ")
 
 
-def profile_publish_words(counts: dict | None) -> str:
+def profile_publish_words(counts: dict | None, live_share: float | None = None) -> str:
     """The run card's line, from the publish's proof rows only (`registry.profile_publish_counts`):
     "N measures published · M changed since <previous report date and time, UTC> · K re-used · J no longer measured", and
     " · T not measured this run" when a previous measure's table was not profiled this run.
@@ -249,7 +311,10 @@ def profile_publish_words(counts: dict | None) -> str:
     the run's activity row. A reset recorded AFTER that does not rewrite the stored line; the run's own publish word
     (`ProjectRegistry._attach_publish_proofs` -> `pre_reset`) is what turns ◌ on screen for an older run. With
     `pre_reset_at` (the counts read after the reset) it says "N measures published before the <date> reset · not in
-    Egeria now"."""
+    Egeria now".
+
+    Ruling 5: "M changed since <time>: C counts moved · S shape changed" (`changed_kinds_words`), and
+    " · this database is written live · see change rates" at the end when `written_live(counts, live_share)`."""
     if not counts or not counts.get("rows"):
         return ""
     n, k, j, t, r = (counts.get(x, 0) for x in ("published", RELINKED, NO_LONGER_MEASURED,
@@ -260,8 +325,33 @@ def profile_publish_words(counts: dict | None) -> str:
         from resource_explorer.catalogue_commit import pre_reset_words
 
         return f"{n} measures {pre_reset_words(counts['pre_reset_at'])}"
+    live = f" · {WRITTEN_LIVE_WORDS}" if written_live(counts, live_share) else ""
     if not counts.get("previous_report_at"):
         return f"{n} measures published · first profile published"
     return (f"{n} measures published · {m} changed since {_when(counts['previous_report_at'])}"
-            f" · {k} re-used" + (f" · {r} re-created (the re-used annotation was gone)" if r else "")
-            + f" · {j} no longer measured" + (f" · {t} not measured this run" if t else ""))
+            + (changed_kinds_words(counts) if m else "")
+            + f" · {k} re-used" + (f" · {r} re-created (the re-used annotation was gone)" if r else "")
+            + f" · {j} no longer measured" + (f" · {t} not measured this run" if t else "") + live)
+
+
+def changed_kinds_words(counts: dict) -> str:
+    """Ruling 5's breakdown of "M changed", from the proof rows' `moved`: ": C counts moved · S shape changed", then
+    " · N new" and " · X not compared" when there are any. A measure whose counts AND shape moved is counted in
+    both."""
+    c, s, n, x = (counts.get(k, 0) for k in ("counts_moved", "shape_changed", "new", "not_compared"))
+    return (f": {c} counts moved · {s} shape changed" + (f" · {n} new" if n else "")
+            + (f" · {x} not compared" if x else ""))
+
+
+#: Ruling 5: the words the card adds when counts moved on more than the declared share of the measured tables.
+WRITTEN_LIVE_WORDS = "this database is written live · see change rates"
+
+
+def written_live(counts: dict | None, share: float | None) -> bool:
+    """Counts moved on MORE than `share` (`config.ValueProfileSettings.live_write_table_share`) of the tables this
+    publish measured, from the proof rows (`tables_counts_moved` of `tables_measured`). False with no share, no
+    earlier publish to compare with, or no table measured."""
+    if share is None or not counts or not counts.get("previous_report_at") or counts.get("pre_reset_at"):
+        return False
+    measured = counts.get("tables_measured") or 0
+    return bool(measured) and (counts.get("tables_counts_moved") or 0) / measured > share

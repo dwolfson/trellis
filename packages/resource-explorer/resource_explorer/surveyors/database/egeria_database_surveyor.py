@@ -1916,6 +1916,8 @@ class EgeriaDatabaseSurveyor:
                  "outcome": RELINKED if i in plan.relink else CREATED,
                  "annotation_type": annotation_type_of(annotations[i]),
                  "summary": getattr(annotations[i], "summary", ""),
+                 **({"groups": plan.groups[i]} if i in plan.groups else {}),
+                 **({"moved": plan.moved[i]} if i in plan.moved and i not in plan.relink else {}),
                  **({"note": RECREATED_NOTE} if i in plan.recreated else {}), **previous(step)})
         for outcome, gone in ((NO_LONGER_MEASURED, plan.gone), (NOT_MEASURED_THIS_RUN, plan.not_measured)):
             for key, guid in gone.items():
