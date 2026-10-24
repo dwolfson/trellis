@@ -48,6 +48,10 @@ COUNTS, SHAPE = "counts", "shape"
 NEW, NOT_COMPARED = "new", "not_compared"
 #: Distinct-ratio bands (distinct_value_ct / value_ct), highest first: the first lower bound the ratio reaches.
 DISTINCT_RATIO_BANDS = ((1.0, "unique"), (0.5, "high"), (0.05, "medium"), (0.0, "low"))
+#: Shape compares the BAND, never the ratio, and the band is held (architect, 2026-10-24, amending ruling 5): a column
+#: leaves its previous band only when its ratio is past one of that band's edges by MORE than this. The band a measure
+#: was given is kept on its proof row (`groups["band"]`, detail_json) so the next publish knows what to hold.
+BAND_HYSTERESIS = 0.02
 
 #: What `relink_kind` says an annotation is: a column measure, a table not profiled, the proposals annotation.
 MEASURE, TABLE_NOT_PROFILED, PROPOSALS = "measure", "table_not_profiled", "proposals"
@@ -182,24 +186,47 @@ def null_pattern(counts: dict) -> str | None:
     return "none" if nulls == 0 else "all" if nulls == rows else "some"
 
 
-def distinct_band(counts: dict) -> str | None:
-    """The distinct-ratio band (`DISTINCT_RATIO_BANDS`); None when there is no value to divide by."""
+def _band_edges(band: str) -> tuple[float, float] | None:
+    """[lower, upper) of a band's ratios; None for a name that is not a band."""
+    upper = float("inf")
+    for floor, name in DISTINCT_RATIO_BANDS:
+        if name == band:
+            return floor, upper
+        upper = floor
+    return None
+
+
+def distinct_band(counts: dict, previous: str | None = None) -> str | None:
+    """The distinct-ratio band (`DISTINCT_RATIO_BANDS`); None when there is no value to divide by.
+
+    With `previous` (the band the last publish gave this column) the band is HELD: it changes only when the ratio is
+    below the previous band's lower edge, or above its upper edge, by more than `BAND_HYSTERESIS`. "unique" is the one
+    band whose upper edge no ratio can pass (a ratio is at most 1.0), so entering it takes the ratio reaching 1.0;
+    leaving it takes the same 0.02 as every other edge."""
     distinct, values = counts.get("distinct_value_ct"), counts.get("value_ct")
     if distinct is None or not values:
         return None
     ratio = distinct / values
-    return next(name for floor, name in DISTINCT_RATIO_BANDS if ratio >= floor)
+    band = next(name for floor, name in DISTINCT_RATIO_BANDS if ratio >= floor)
+    edges = _band_edges(previous) if previous else None
+    if edges is None or band == previous or band == DISTINCT_RATIO_BANDS[0][1]:
+        return band
+    lower, upper = edges
+    return previous if lower - BAND_HYSTERESIS <= ratio <= upper + BAND_HYSTERESIS else band
 
 
-def measure_groups(annotation) -> dict[str, str]:
-    """{COUNTS: hash, SHAPE: hash} of a column measure: together they cover everything `content_hash` covers, so a
-    changed measure always moved at least one group."""
+def measure_groups(annotation, previous_band: str | None = None) -> dict[str, str]:
+    """{COUNTS: hash, SHAPE: hash, "band": the held distinct-ratio band} of a column measure. The two hashes together
+    cover everything `content_hash` covers except the ratio inside a held band, so a changed measure always moved at
+    least one group, or only its counts. `previous_band`: the band on its last proof row (`distinct_band`)."""
     canonical = canonical_measures(annotation)
     counts, props = canonical["value_count"], canonical["json_properties"]
+    band = distinct_band(counts, previous_band)
     shape = {"generalType": props.get("generalType"), "nullPattern": null_pattern(counts),
-             "distinctBand": distinct_band(counts), "profileDates": props.get("profileDates"),
+             "distinctBand": band, "profileDates": props.get("profileDates"),
              "sampleRatio": props.get("sampleRatio")}
-    return {COUNTS: _sha([PROFILE_SHAPE_VERSION, counts]), SHAPE: _sha([PROFILE_SHAPE_VERSION, shape])}
+    return {COUNTS: _sha([PROFILE_SHAPE_VERSION, counts]), SHAPE: _sha([PROFILE_SHAPE_VERSION, shape]),
+            "band": band}
 
 
 def moved_groups(groups: dict, before: dict | None) -> list[str]:
@@ -272,7 +299,7 @@ def plan_profile_publish(annotations: list, previous: dict | None,
         if before and before.get("content_hash") == plan.hashes[i] and before.get("annotation_guid"):
             plan.relink[i] = before["annotation_guid"]
         if relink_kind(ann) == MEASURE:
-            plan.groups[i] = measure_groups(ann)
+            plan.groups[i] = measure_groups(ann, ((before or {}).get("groups") or {}).get("band"))
             if i not in plan.relink:
                 plan.moved[i] = moved_groups(plan.groups[i], before)
     for key, before in measures.items():
@@ -314,9 +341,15 @@ def profile_publish_words(counts: dict | None, live_share: float | None = None) 
     Egeria now".
 
     Ruling 5: "M changed since <time>: C counts moved · S shape changed" (`changed_kinds_words`), and
-    " · this database is written live · see change rates" at the end when `written_live(counts, live_share)`."""
+    " · this database is written live · see change rates" at the end when `written_live(counts, live_share)`.
+    A re-linked proposals request keeps the run that first published it, so the line says
+    " · proposals unchanged since <that report's time>" (`proposals_unchanged_since`, from the proof rows), and a
+    re-used request is never read as new work."""
+    proposals = (f"proposals unchanged since {_when(counts['proposals_unchanged_since'])}"
+                 if counts and counts.get("proposals_unchanged_since") and not counts.get("pre_reset_at") else "")
     if not counts or not counts.get("rows"):
-        return ""
+        return proposals
+    proposals = f" · {proposals}" if proposals else ""
     n, k, j, t, r = (counts.get(x, 0) for x in ("published", RELINKED, NO_LONGER_MEASURED,
                                                   NOT_MEASURED_THIS_RUN, "recreated"))
     m = counts.get("changed", counts.get(CREATED, 0) - r)
@@ -327,11 +360,11 @@ def profile_publish_words(counts: dict | None, live_share: float | None = None) 
         return f"{n} measures {pre_reset_words(counts['pre_reset_at'])}"
     live = f" · {WRITTEN_LIVE_WORDS}" if written_live(counts, live_share) else ""
     if not counts.get("previous_report_at"):
-        return f"{n} measures published · first profile published"
+        return f"{n} measures published · first profile published" + proposals
     return (f"{n} measures published · {m} changed since {_when(counts['previous_report_at'])}"
             + (changed_kinds_words(counts) if m else "")
             + f" · {k} re-used" + (f" · {r} re-created (the re-used annotation was gone)" if r else "")
-            + f" · {j} no longer measured" + (f" · {t} not measured this run" if t else "") + live)
+            + f" · {j} no longer measured" + (f" · {t} not measured this run" if t else "") + proposals + live)
 
 
 def changed_kinds_words(counts: dict) -> str:

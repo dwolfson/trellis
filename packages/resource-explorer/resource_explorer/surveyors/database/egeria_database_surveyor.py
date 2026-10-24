@@ -1897,6 +1897,7 @@ class EgeriaDatabaseSurveyor:
             RELINKED,
             annotation_type_of,
         )
+        from resource_explorer.surveyors.database.quality.propose import ANALYSIS_STEP as PROPOSALS_STEP
         from resource_explorer.surveyors.database.quality.value_profile import ANALYSIS_STEP
 
         on_report = (read_back or {}).get("guids") or {}
@@ -1929,7 +1930,11 @@ class EgeriaDatabaseSurveyor:
             for step, rows in by_step.items():
                 registry.record_profile_publish("database", slug, report_guid=report_guid, report_at=surveyed_at,
                                                 read_at=read_at, analysis_step=step, rows=rows)
-            return registry.profile_publish_counts(report_guid, ANALYSIS_STEP)
+            counts = registry.profile_publish_counts(report_guid, ANALYSIS_STEP)
+            # A re-linked proposals request still names the run that first published it: the card says since when it
+            # is unchanged, from the proof rows, so it is not read as new work.
+            since = registry.relinked_since(report_guid, PROPOSALS_STEP) if PROPOSALS_STEP in by_step else ""
+            return {**counts, "proposals_unchanged_since": since} if since else counts
         except Exception as exc:  # noqa: BLE001 -- the report stands; the card says it could not count
             log.warning("could not record the value-profile proof rows of report %s: %s", report_guid, exc)
             return {}

@@ -529,8 +529,11 @@ def test_two_identical_presses_then_a_change_then_a_drop(client, registry, egeri
     assert {g for g in on_r2 if egeria.elements[g]["body"]["properties"]["class"] == PROFILE_CLASS} == profile_on_r1
     assert len(on_r2) == len(set(on_r2))                                  # one ReportedAnnotation per pair
     # the read-back counts what the report holds, re-linked ones included: M + K = 0 + 5
+    # the request is re-used too, still naming the run that first published it: the card says since when it is
+    # unchanged (the first report's time, from the proof rows), so it is not read as new work
     assert second["publish_state"].endswith(
-        f"· 5 measures published · 0 changed since {first_date} · 5 re-used · 0 no longer measured")
+        f"· 5 measures published · 0 changed since {first_date} · 5 re-used · 0 no longer measured"
+        f" · proposals unchanged since {first_date}")
     assert second["published"] is True and second["status"] != "error"
     # the re-linked annotations are the first report's, anchored there, now reported by both
     for g in profile_on_r1:
@@ -566,7 +569,7 @@ def test_two_identical_presses_then_a_change_then_a_drop(client, registry, egeri
     assert {k: v for k, v in _other_proof(registry, r4).items() if k[0] == "ResourceMeasureAnnotation"} == {
         ("ResourceMeasureAnnotation", "created"): 1, ("ResourceMeasureAnnotation", "relinked"): 4}
     assert " · 4 measures published · 0 changed since " in fourth["publish_state"]
-    assert fourth["publish_state"].endswith("· 4 re-used · 0 no longer measured · 1 not measured this run")
+    assert "· 4 re-used · 0 no longer measured · 1 not measured this run" in fourth["publish_state"]
     assert registry.profile_publish_counts(r4, ANALYSIS_STEP)["published"] == 4
 
     # 5. it is profiled again, unchanged: re-linked from the last run that measured it, not created
@@ -576,7 +579,7 @@ def test_two_identical_presses_then_a_change_then_a_drop(client, registry, egeri
     r5 = egeria.reports()[4][0]
     assert _profile_creates(egeria, seen) == 0
     assert _proof(registry, r5) == {"relinked": 5}
-    assert fifth["publish_state"].endswith("· 5 re-used · 0 no longer measured")
+    assert "· 5 re-used · 0 no longer measured" in fifth["publish_state"]
 
 
 def _drop_table(registry, schema: str, table: str, at="2026-10-20T09:30:00+00:00") -> None:
@@ -595,11 +598,11 @@ def test_a_dropped_table_is_no_longer_measured_once(client, registry, egeria, wo
     second = _press(client, registry)
     r2 = egeria.reports()[1][0]
     assert _proof(registry, r2) == {"relinked": 4, "no_longer_measured": 1}
-    assert second["publish_state"].endswith("· 4 re-used · 1 no longer measured")
+    assert "· 4 re-used · 1 no longer measured" in second["publish_state"]
     # the next run does not count the same drop again
     third = _press(client, registry)
     assert _proof(registry, egeria.reports()[2][0]) == {"relinked": 4}
-    assert third["publish_state"].endswith("· 4 re-used · 0 no longer measured")
+    assert "· 4 re-used · 0 no longer measured" in third["publish_state"]
 
 
 def _profile_on(egeria, report_guid) -> list[str]:
@@ -647,7 +650,7 @@ def test_a_partial_relink_is_relinked_on_the_next_run_not_changed(client, regist
     assert _profile_creates(egeria, seen) == 0
     assert _proof(registry, r3) == {"relinked": 5}
     assert " · 5 measures published · 0 changed since " in third["publish_state"]
-    assert third["publish_state"].endswith("· 5 re-used · 0 no longer measured")
+    assert "· 5 re-used · 0 no longer measured" in third["publish_state"]
 
 
 def test_a_report_that_already_holds_a_pair_is_not_attached_again_end_to_end(client, registry, egeria, world, rig,
@@ -673,7 +676,7 @@ def test_a_report_that_already_holds_a_pair_is_not_attached_again_end_to_end(cli
     on_r2 = _reported_pairs(egeria, r2)
     assert len(on_r2) == len(set(on_r2))                                  # one ReportedAnnotation per pair
     assert _proof(registry, r2) == {"relinked": 5}
-    assert second["publish_state"].endswith("· 5 re-used · 0 no longer measured")
+    assert "· 5 re-used · 0 no longer measured" in second["publish_state"]
 
 
 # ── ruling 5 (architect, 2026-10-24): which kind of change, and the written-live words ───────────────────────
@@ -832,3 +835,96 @@ def test_a_shape_change_through_the_press_says_shape_changed_and_not_written_liv
     assert moved == ["shape"]
     assert ": 0 counts moved · 1 shape changed · 4 re-used · 0 no longer measured" in second["publish_state"]
     assert "written live" not in second["publish_state"] and "written_live" not in second
+
+
+# ── fix round (architect, 2026-10-24): a held band, and a re-used request says since when ─────────────────────
+
+def _ratio_counts(distinct: int, values: int = 100) -> dict:
+    return {"value_ct": values, "distinct_value_ct": distinct}
+
+
+def test_the_band_is_held_until_the_ratio_passes_an_edge_by_more_than_the_hysteresis():
+    from resource_explorer.surveyors.database.quality.profile_publish import (
+        BAND_HYSTERESIS,
+        distinct_band,
+    )
+
+    assert BAND_HYSTERESIS == 0.02
+    # no previous band: the ratio's own band
+    assert distinct_band(_ratio_counts(51)) == "high" and distinct_band(_ratio_counts(49)) == "medium"
+    # held on both sides of the 0.5 edge, up to 0.02 past it
+    assert distinct_band(_ratio_counts(51), "medium") == "medium"
+    assert distinct_band(_ratio_counts(52), "medium") == "medium"            # 0.02 past: not MORE than
+    assert distinct_band(_ratio_counts(53), "medium") == "high"
+    assert distinct_band(_ratio_counts(48), "high") == "high"
+    assert distinct_band(_ratio_counts(47), "high") == "medium"
+    # the 0.05 edge the same way, and a jump over several bands goes straight to the ratio's own
+    assert distinct_band(_ratio_counts(4), "medium") == "medium" and distinct_band(_ratio_counts(2), "medium") == "low"
+    assert distinct_band(_ratio_counts(99), "low") == "high"
+    # unique: entered when the ratio reaches 1.0 (no ratio can pass its upper edge), left only below 0.98
+    assert distinct_band(_ratio_counts(100), "high") == "unique"
+    assert distinct_band(_ratio_counts(99), "unique") == "unique" and distinct_band(_ratio_counts(97), "unique") == "high"
+    # a previous name that is not a band is ignored, never trusted
+    assert distinct_band(_ratio_counts(51), "middling") == "high"
+
+
+def _set_note_distinct(world, distinct: int) -> None:
+    world.profile = copy.deepcopy(world.profile)
+    world.profile[("sales", "orders")]["columns"][1]["distinct_value_ct"] = distinct     # value_ct 900
+
+
+def _band_of(registry, report_guid, path: str) -> str:
+    with registry._conn() as conn:
+        [detail] = [json.loads(r["detail_json"]) for r in conn.execute(
+            "SELECT detail_json FROM native_survey_annotations WHERE report_guid = ? AND item_key = ?",
+            (report_guid, _key(path))).fetchall()]
+    return detail["groups"]["band"]
+
+
+def test_a_ratio_oscillating_across_an_edge_stays_in_its_band_and_reads_no_shape_change(client, registry, egeria,
+                                                                                         world, rig):
+    """Fail-on-purpose (architect's amendment to ruling 5): sales.orders.note's distinct ratio goes 0.49 -> 0.51 ->
+    0.49 over three runs. Compared on the ratio, or on a band with no hysteresis, run 2 reads "1 shape changed" and run
+    3 again; held, the band stays "medium" and only the counts moved."""
+    _set_note_distinct(world, 441)                                          # 441 / 900 = 0.49
+    _press(client, registry)
+    r1 = egeria.reports()[0][0]
+    assert _band_of(registry, r1, "sales.orders.note") == "medium"
+    for n, distinct in ((2, 459), (3, 441)):                                # 0.51, then 0.49 again
+        _set_note_distinct(world, distinct)
+        run = _press(client, registry)
+        report = egeria.reports()[n - 1][0]
+        assert _proof(registry, report) == {"created": 1, "relinked": 4}, n
+        assert _band_of(registry, report, "sales.orders.note") == "medium", n
+        assert ": 1 counts moved · 0 shape changed · 4 re-used" in run["publish_state"], (n, run["publish_state"])
+
+
+def test_a_relinked_request_names_the_first_run_on_the_card():
+    base = {"rows": 5, "published": 5, "created": 0, "relinked": 5, "no_longer_measured": 0,
+            "previous_report_at": "2026-10-24T22:00:00"}
+    assert profile_publish_words({**base, "proposals_unchanged_since": "2026-10-24T21:09:00"}) == (
+        "5 measures published · 0 changed since 2026-10-24 22:00Z · 5 re-used · 0 no longer measured"
+        " · proposals unchanged since 2026-10-24 21:09Z")
+    # a request re-used on a publish with no profile measures still says so; none re-used says nothing
+    assert profile_publish_words({"rows": 0, "proposals_unchanged_since": "2026-10-24T21:09:00"}) == (
+        "proposals unchanged since 2026-10-24 21:09Z")
+    assert "proposals" not in profile_publish_words(base)
+
+
+def test_relinked_since_is_the_first_report_of_the_reused_request(tmp_path):
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.database.quality import propose
+
+    reg = ProjectRegistry(db_path=str(tmp_path / "since.db"))
+    row = {"annotation_type": "RequestForAction", "item_key": propose.ITEM_KEY, "content_hash": "h"}
+    for report, at, outcome in (("r1", "2026-10-24T21:09:00", "created"), ("r2", "2026-10-24T22:00:00", "relinked"),
+                                ("r3", "2026-10-24T23:00:00", "relinked")):
+        reg.record_profile_publish("database", "d", report_guid=report, report_at=at, read_at="t",
+                                   analysis_step=propose.ANALYSIS_STEP,
+                                   rows=[{**row, "annotation_guid": "g-rfa", "outcome": outcome}])
+    reg.record_profile_publish("database", "d", report_guid="r4", report_at="2026-10-25T00:00:00", read_at="t",
+                               analysis_step=propose.ANALYSIS_STEP,
+                               rows=[{**row, "annotation_guid": "g-rfa-2", "content_hash": "h2", "outcome": "created"}])
+    assert reg.relinked_since("r3", propose.ANALYSIS_STEP) == "2026-10-24T21:09:00"
+    assert reg.relinked_since("r1", propose.ANALYSIS_STEP) == ""            # created there: nothing re-used
+    assert reg.relinked_since("r4", propose.ANALYSIS_STEP) == ""            # a new request: new work

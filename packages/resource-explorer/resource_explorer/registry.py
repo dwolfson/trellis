@@ -8551,6 +8551,32 @@ class ProjectRegistry:
                 "SELECT COUNT(*) FROM native_survey_annotations WHERE report_guid = ? AND analysis_step = ?",
                 (report_guid, analysis_step)).fetchone()[0])
 
+    def relinked_since(self, report_guid: str, analysis_step: str) -> str:
+        """The earliest report time of the annotations this report RE-LINKED on `analysis_step` (the report each was
+        first published on), from the proof rows; '' when the report re-linked none. The card's "proposals unchanged
+        since <time>"."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT annotation_guid, detail_json FROM native_survey_annotations "
+                "WHERE report_guid = ? AND analysis_step = ? AND content_hash IS NOT NULL",
+                (report_guid, analysis_step)).fetchall()
+            guids = []
+            for r in rows:
+                try:
+                    outcome = json.loads(dict(r)["detail_json"] or "{}").get("outcome")
+                except (TypeError, ValueError, AttributeError):
+                    outcome = None
+                if outcome == "relinked":
+                    guids.append(dict(r)["annotation_guid"])
+            if not guids:
+                return ""
+            marks = ", ".join("?" for _ in guids)
+            row = conn.execute(
+                f"SELECT MIN(report_at) FROM native_survey_annotations WHERE analysis_step = ? "
+                f"AND content_hash IS NOT NULL AND annotation_guid IN ({marks})",
+                (analysis_step, *guids)).fetchone()
+        return (row[0] if row else "") or ""
+
     def profile_publish_counts(self, report_guid: str, analysis_step: str) -> dict:
         """The run card's counts for one value-profile publish, from its proof rows only: `published`
         (created + relinked), `created`, `recreated` (created again after a refused re-link: the value did not
