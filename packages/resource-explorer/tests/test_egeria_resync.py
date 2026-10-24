@@ -60,6 +60,23 @@ class TestScanUnlinkedMembers:
 
         assert finding.items == [{"investigation": "q3", "linkable": 1}]
 
+    def test_a_database_member_with_its_own_asset_is_reported(self):
+        """The finding reads the same per-kind pointer the relink repair does (`member_assets`); a repo-only
+        lookup here hid every database member, so the card never rendered for coco_pharma after the reset."""
+        registry = MagicMock()
+        registry.list_investigations.return_value = [_investigation("q3")]
+        registry.get_or_create_working_set.return_value = {"egeria_collection_guid": "coll-1"}
+        registry.list_investigation_members.return_value = [
+            {"entity_type": "database", "entity_slug": "coco_pharma"},
+        ]
+        registry.get_database.return_value = SimpleNamespace(egeria_asset_guid="asset-db")
+
+        r = _resync_with(registry, member_list_return=[])
+        finding = r._scan_unlinked_members(ScanResult())
+
+        assert finding.items == [{"investigation": "q3", "linkable": 1}]
+        registry.get_database.assert_called_with("coco_pharma", allow_unreadable=True)
+
     def test_a_member_with_no_asset_yet_is_never_reported_regardless_of_membership(self):
         registry = MagicMock()
         registry.list_investigations.return_value = [_investigation("q3")]
