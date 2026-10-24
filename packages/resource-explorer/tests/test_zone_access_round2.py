@@ -269,7 +269,7 @@ def test_resync_relink_skips_a_refused_member(registry, access, signed_in_caller
     monkeypatch.setattr(eip.EgeriaInvestigationPublisher, "_managers", lambda self: (None, None))
     # Brief Z3: the refusal is asked inside _link_members (for a member with an asset), so the real one runs; only
     # the queue boundary is faked (what is enqueued is what would be attached).
-    monkeypatch.setattr(eip.EgeriaInvestigationPublisher, "_asset_guid", lambda self, et, s: f"g-{s}")
+    monkeypatch.setattr(eip.EgeriaInvestigationPublisher, "_member_asset", lambda self, et, s: (f"g-{s}", ""))
     monkeypatch.setattr("resource_explorer.egeria_outbox.enqueue_collection_members",
                         lambda reg, slug, cg, members, run_id="": seen.setdefault("members", members) and [])
     monkeypatch.setattr("resource_explorer.egeria_outbox.drain_outbox", lambda *a, **k: {})

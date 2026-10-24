@@ -929,6 +929,9 @@ def test_a_member_with_no_egeria_asset_is_reported_not_invented(made):
     inv = made(display_name="Partial Promote")
     reg = ProjectRegistry()
     ws = reg.get_or_create_working_set(inv["slug"])
+    from resource_explorer.registry import Project
+    reg.add(Project(slug="definitely-not-published-xyz", display_name="x",
+                    github_url="https://github.com/o/definitely-not-published-xyz", description=""))
     reg.add_working_set_member(ws["slug"], "repo", "definitely-not-published-xyz")
 
     cm = _StubCM()
@@ -936,7 +939,7 @@ def test_a_member_with_no_egeria_asset_is_reported_not_invented(made):
 
     assert res.members_linked == []
     assert len(res.members_unlinkable) == 1
-    assert "not published to Egeria yet" in res.members_unlinkable[0]["reason"]
+    assert "not in Egeria yet" in res.members_unlinkable[0]["reason"]
     assert cm.members == []
 
 
@@ -1622,8 +1625,8 @@ def test_a_failed_membership_becomes_a_retryable_row_not_a_forgotten_note(made, 
     reg = ProjectRegistry()
     ws = reg.get_or_create_working_set(inv["slug"])
     reg.add_working_set_member(ws["slug"], "repo", "published-repo")
-    monkeypatch.setattr(EgeriaInvestigationPublisher, "_asset_guid",
-                        lambda self, et, es: "asset-guid-1")
+    monkeypatch.setattr(EgeriaInvestigationPublisher, "_member_asset",
+                        lambda self, et, es: ("asset-guid-1", ""))
 
     res = EgeriaInvestigationPublisher(
         reg, project_manager=_StubPM(), collection_manager=_FailingCM(),
@@ -1653,13 +1656,16 @@ def test_a_member_with_no_asset_is_never_queued(made):
     inv = made(display_name="Unpublished Member")
     reg = ProjectRegistry()
     ws = reg.get_or_create_working_set(inv["slug"])
+    from resource_explorer.registry import Project
+    reg.add(Project(slug="definitely-not-published-abc", display_name="x",
+                    github_url="https://github.com/o/definitely-not-published-abc", description=""))
     reg.add_working_set_member(ws["slug"], "repo", "definitely-not-published-abc")
 
     res = EgeriaInvestigationPublisher(
         reg, project_manager=_StubPM(), collection_manager=_StubCM(),
     ).promote(inv["slug"])
 
-    assert "not published to Egeria yet" in res.members_unlinkable[0]["reason"]
+    assert "not in Egeria yet" in res.members_unlinkable[0]["reason"]
     # Scoped to THIS investigation: the registry is shared across tests in this
     # module, so an unscoped assertion would pass or fail on what ran before it.
     assert [r for r in reg.list_outbox_elements(entity_slug=inv["slug"], limit=50)
@@ -1678,8 +1684,8 @@ def test_a_successful_membership_still_links_before_promote_returns(made, monkey
     reg = ProjectRegistry()
     ws = reg.get_or_create_working_set(inv["slug"])
     reg.add_working_set_member(ws["slug"], "repo", "published-repo")
-    monkeypatch.setattr(EgeriaInvestigationPublisher, "_asset_guid",
-                        lambda self, et, es: "asset-guid-1")
+    monkeypatch.setattr(EgeriaInvestigationPublisher, "_member_asset",
+                        lambda self, et, es: ("asset-guid-1", ""))
 
     cm = _StubCM()
     res = EgeriaInvestigationPublisher(
@@ -1989,7 +1995,7 @@ def test_link_status_end_to_end_after_a_promotion_with_stubbed_egeria(client, ma
     # Before any relink: assets exist but nothing was attached.
     body, by = _states(client, slug)
     assert by["lk-ok"]["state"] == "not_linked" and "Link members" in by["lk-ok"]["reason"]
-    assert by["lk-none"]["state"] == "not_linked" and "no asset GUID" in by["lk-none"]["reason"]
+    assert by["lk-none"]["state"] == "not_linked" and "not in Egeria yet" in by["lk-none"]["reason"]
     # linkable counts what relink would attach: the two published members, not the one with no asset GUID.
     assert body["counts"]["linkable"] == 2
 

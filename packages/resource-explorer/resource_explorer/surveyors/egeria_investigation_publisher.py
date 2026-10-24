@@ -823,10 +823,10 @@ class EgeriaInvestigationPublisher:
 
         linkable: list[dict] = []
         for m in members:
-            asset_guid = self._asset_guid(m["entity_type"], m["entity_slug"])
+            asset_guid, why_none = self._member_asset(m["entity_type"], m["entity_slug"])
             if not asset_guid:
                 res.members_unlinkable.append({
-                    **m, "reason": "not published to Egeria yet — no asset GUID",
+                    **m, "reason": why_none,
                 })
                 continue
             # Brief Z2 round 2 / Z3: a member the access check refuses is not queued; its words are its reason.
@@ -980,10 +980,9 @@ class EgeriaInvestigationPublisher:
                             "reason": ("no working set Collection yet" if ws
                                        else "no working set yet")})
                 continue
-            asset_guid = self._asset_guid(m["entity_type"], m["entity_slug"])
+            asset_guid, why_none = self._member_asset(m["entity_type"], m["entity_slug"])
             if not asset_guid:
-                out.append({**base, "state": "not_linked",
-                            "reason": "not in Egeria yet — no asset GUID"})
+                out.append({**base, "state": "not_linked", "reason": why_none})
                 continue
             row = rows_by_qn.get(collection_membership_qn(collection_guid, asset_guid))
             if row is None:
@@ -1227,7 +1226,22 @@ class EgeriaInvestigationPublisher:
                 out["errors"].append(f"{disposition}: {type(exc).__name__}: {exc}")
         return out
 
+    def _member_asset(self, entity_type: str, entity_slug: str) -> "tuple[str, str]":
+        """(asset GUID, reason it is empty). THE one question "is there anything to link?", asked by promote and
+        relink (`_link_members`) and by `link_status`, so the three cannot disagree. The GUID is the member's OWN
+        asset as RE recorded it: the repo's project asset, the database's RelationalDatabase
+        (`databases.egeria_asset_guid`), the file system's root FileFolder (`file_systems.egeria_asset_guid`)
+        -- never the server or the host. "not in Egeria yet" is said only when that kind's own pointer is empty;
+        a kind or slug RE cannot resolve has its own words (`resource_explorer.member_assets`)."""
+        # The ONE per-kind lookup, shared with work lists (`work_lists.member_egeria_guid`): no second copy here.
+        from resource_explorer.member_assets import MemberUnresolved, NotInEgeriaYet, member_egeria_guid
+
+        try:
+            return member_egeria_guid(self._registry, entity_type, entity_slug), ""
+        except NotInEgeriaYet as exc:
+            return "", str(exc)
+        except MemberUnresolved as exc:
+            return "", str(exc)
+
     def _asset_guid(self, entity_type: str, entity_slug: str) -> str:
-        if entity_type == "repo":
-            return self._registry.get_egeria_asset_guid(entity_slug) or ""
-        return ""
+        return self._member_asset(entity_type, entity_slug)[0]
