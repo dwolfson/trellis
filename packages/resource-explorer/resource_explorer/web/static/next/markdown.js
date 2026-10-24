@@ -75,3 +75,17 @@ export async function renderMarkdown(text) {
     return asWritten(text);
   }
 }
+
+/** Show `text` as markdown inside `el`. The element is first filled with the text as written (escaped), so the
+ *  surface is never empty while the parser loads; then it is replaced by the sanitised rendering, unless the
+ *  element has left the page or been given other text in the meantime. The stored text is never touched. */
+export async function showMarkdown(el, text) {
+  if (!el) return;
+  const raw = String(text ?? '');
+  el.dataset.raw = raw;
+  const html = await renderMarkdown(raw);
+  if (el.isConnected && el.dataset.raw === raw) {
+    el.classList.remove('whitespace-pre-wrap');
+    el.innerHTML = html;
+  }
+}

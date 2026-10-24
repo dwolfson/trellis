@@ -45,6 +45,7 @@ import {
   activityFailure, failureText, getSchedules, saveSchedule, addAlias, listAliases, writeJournalTurn,
 } from '/static/re-api.js';
 import { stateEntry } from '/static/next/glyphs.js';
+import { showMarkdown } from '/static/next/markdown.js';
 import {
   state, esc, icon, tnum, $, selectResourceFromChat,
   ensureRailShowing, railFrame, railClaim, openMembers,
@@ -415,6 +416,11 @@ function renderTurnList() {
         <div class="mt-s2 flex flex-col gap-s3">${elsewhere.join('')}</div>
       </details>` : '');
 
+  // The rail's answer text is markdown; it is drawn escaped first, then replaced by the sanitised rendering.
+  log.querySelectorAll('[data-turn-answer]').forEach((el) => {
+    const t = state.chat[Number(el.closest('[data-open-turn]')?.dataset.openTurn)];
+    if (t?.answer) showMarkdown(el, t.answer);
+  });
   log.querySelectorAll('[data-open-turn]').forEach((b) => b.addEventListener('click', () => {
     const t = state.chat[Number(b.dataset.openTurn)];
     if (t && (t.answer || t.error) && !t.pending) promoteChatTurn(t);
@@ -539,7 +545,7 @@ async function openJournalForm(turn, host) {
     return;
   }
   form.innerHTML = `
-    <pre data-journal-entry class="max-h-[240px] overflow-auto whitespace-pre-wrap rounded-sm border border-rule bg-paper p-s2 font-mono text-caveat text-ink">${esc(preview.body)}</pre>
+    <div data-journal-entry class="max-h-[240px] min-w-0 overflow-auto whitespace-pre-wrap break-words rounded-sm border border-rule bg-paper p-s2 text-caveat text-ink">${esc(preview.body)}</div>
     <label class="mt-s2 block text-caveat text-ink-muted">Your note (optional, kept apart from the entry)
       <input data-journal-note-input type="text" maxlength="500" class="mt-[2px] w-full rounded-sm border border-rule-strong bg-paper p-s1 text-ink">
     </label>
@@ -549,6 +555,8 @@ async function openJournalForm(turn, host) {
       <span data-journal-note class="text-ink-muted"></span>
     </div>`;
   const note = form.querySelector('[data-journal-note]');
+  // The entry is read-only and stays exactly as derived (kept in data-raw); only its display is rendered.
+  showMarkdown(form.querySelector('[data-journal-entry]'), preview.body);
   form.querySelector('[data-journal-cancel]').addEventListener('click', () => { form.innerHTML = ''; });
   form.querySelector('[data-journal-add]').addEventListener('click', async (e) => {
     const btn = e.currentTarget;

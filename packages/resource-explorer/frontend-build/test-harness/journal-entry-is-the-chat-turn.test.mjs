@@ -143,7 +143,7 @@ test('the pane control shows the DERIVED entry read-only with Add / Not now and 
   assert.equal(previews(t.server)[0].body.exchange_id, 41);
   const form = t.document.querySelector('[data-journal-form]');
   assert.equal(form.querySelector('textarea'), null, 'no editable text: the entry is the turn');
-  assert.equal(form.querySelector('[data-journal-entry]').textContent, DERIVED);
+  assert.equal(form.querySelector('[data-journal-entry]').dataset.raw, DERIVED);
   assert.equal(text(form.querySelector('[data-journal-add]')), 'Add');
   assert.equal(text(form.querySelector('[data-journal-cancel]')), 'Not now');
   assert.equal(writes(t.server).length, 0, 'showing it writes nothing');
