@@ -524,6 +524,9 @@ def issue_117_block_off_for_legacy_delete_path_tests(request, monkeypatch):
     with the switch off; ONLY tests/test_catalogue_issue117_block.py runs with it on (the shipped state)."""
     if request.module.__name__.endswith("test_catalogue_issue117_block"):
         return
+    # A lifespan run under TestClient reads the platform's origin once at start: never a live call from a test.
+    from resource_explorer import catalogue_gateway as _gw0
+    monkeypatch.setattr(_gw0, "read_platform_origin", lambda timeout=3.0: "")
     monkeypatch.setenv("RE_ISSUE_117_BLOCK_OFF", "tests/legacy-delete-path-fixture")
     # The shipped block is lifted for ONE database slug and expires; these older tests use many slugs and bare
     # "clearance" strings, so they keep the old meaning (any non-empty value = off) through this stand-in. The
@@ -531,7 +534,7 @@ def issue_117_block_off_for_legacy_delete_path_tests(request, monkeypatch):
     import os
     from resource_explorer import catalogue_gateway as _gw
     monkeypatch.setattr(_gw, "_shipped_issue_117_blocked", _gw.issue_117_blocked, raising=False)   # for tests that need the real rules
-    monkeypatch.setattr(_gw, "issue_117_blocked", lambda slug="": not (os.environ.get(_gw.ISSUE_117_ENV) or "").strip())
+    monkeypatch.setattr(_gw, "issue_117_blocked", lambda slug="", *, scope="": not (os.environ.get(_gw.ISSUE_117_ENV) or "").strip())
 
 
 @pytest.fixture(autouse=True)

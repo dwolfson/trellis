@@ -540,7 +540,7 @@ class FakeEgeria:
         g = self.by_qn(f"{schema_qn}::{qn_suffix}")["guid"]
         self.rels.setdefault(g, []).extend(Relationship("SemanticAssignment", other_guid="term") for _ in range(n))
 
-    def delete_element(self, guid, form, *, slug):
+    def delete_element(self, guid, form, *, slug, scope=""):
         self.calls.append(("delete_element", guid, form))
         self._boom("delete_element")
         e = self.elements[guid]

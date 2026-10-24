@@ -43,7 +43,7 @@ class Gate:
     def __init__(self, fail=()):
         self.calls, self.fail = [], set(fail)
 
-    def delete_element(self, guid, form, *, slug):
+    def delete_element(self, guid, form, *, slug, scope=""):
         self.calls.append(("delete_element", guid, form))
         if guid in self.fail:
             raise GatewayError(SENTENCE)

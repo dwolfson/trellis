@@ -455,12 +455,29 @@ def test_a_leave_out_that_was_never_catalogued_removes_nothing(world, fake):
 def test_the_form_is_re_derived_at_press_time_and_the_safer_wins(world, fake):
     _attached(world, fake, "sales")
     choose(world, "sales", "leave_out")
+    from fake_egeria_catalogue import Relationship
     out = cc.start_commit(world["registry"], "db", ME, gateway=fake)          # preview said soft delete
-    assert out["curation"]["selection"]["leave_out"] == [{"schema": "sales", "form": "soft_delete"}]
-    fake._cycle(fake.by_qn("PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.sales")["guid"])   # the cataloguer filled it meanwhile
-    fake.add_term_assignment("customers::id", "PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.sales")
+    schema_guid = fake.by_qn("PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.sales")["guid"]
+    [item] = out["curation"]["selection"]["leave_out"]
+    assert (item["schema"], item["form"], item["plan_guids"][-1]) == ("sales", "soft_delete", schema_guid)
+    # a term was assigned to the schema meanwhile: the same elements (the plan holds), something now hangs off it
+    fake.rels.setdefault(schema_guid, []).append(Relationship("SemanticAssignment", other_guid="term"))
     cc.execute_commit(world["registry"], out["curation"]["id"], gateway=fake)
     assert {f for _, _, f in fake.deleted_order} == {"archive"}               # something hung off it by then
+
+
+def test_known_negative_the_cataloguer_filling_the_schema_after_the_preview_is_the_plan_changed(world, fake):
+    """Ruling (3), 2026-10-23: the walk now holds GUIDs the preview did not count: refused, nothing sent (this
+    test used to expect the safer form to archive the new tables; the plan check now stops it first)."""
+    _attached(world, fake, "sales")
+    choose(world, "sales", "leave_out")
+    out = cc.start_commit(world["registry"], "db", ME, gateway=fake)
+    fake._cycle(fake.by_qn("PostgreSQL Relational Database Schema::host.docker.internal:5442::shop.sales")["guid"])
+    before = len(fake.ops("delete_element")) + len(fake.ops("remove_catalog_target"))
+    rec = cc.execute_commit(world["registry"], out["curation"]["id"], gateway=fake)
+    assert fake.deleted_order == [] and len(fake.ops("delete_element")) + len(fake.ops("remove_catalog_target")) == before
+    assert step(rec, "leave_outs")["state"] == "failed" and cc.PLAN_CHANGED in step(rec, "leave_outs")["detail"]
+    assert derived(world)["schemas"]["sales"]["second"].startswith(cc.PLAN_CHANGED)
 
 
 def test_a_leave_out_whose_read_fails_at_press_time_deletes_nothing(world, fake):

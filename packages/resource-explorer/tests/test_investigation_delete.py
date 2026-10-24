@@ -1042,3 +1042,19 @@ def test_the_words_say_what_the_designer_asked_for():
     assert "Archives the Project in Egeria (restorable); its notes, ratings and comments go with it." in js
     assert "A Project that Resource Explorer did not create is left in Egeria" in js
     assert "collide with the Project" in js
+
+
+def test_the_leave_out_lift_of_2026_10_23_leaves_the_investigation_archive_blocked(promoted, registry, block_on,
+                                                                                   monkeypatch):
+    """The shipped rules, un-stubbed, at the default: the lift covers the leave-out ARCHIVE only, so the
+    investigation's ARCHIVE (anchor = Project) is still refused before anything is read or changed."""
+    from resource_explorer import catalogue_gateway as gw
+    from resource_explorer.investigation_delete import ArchiveBlocked
+    monkeypatch.setattr(gw, "issue_117_blocked", gw._shipped_issue_117_blocked)
+    monkeypatch.delenv("RE_ISSUE_117_BLOCK", raising=False)
+    assert gw.issue_117_state_line().startswith("archive-cascade block: OFF (lifted 2026-10-23")
+    world = World()
+    with pytest.raises(ArchiveBlocked) as e:
+        _run(registry, world)
+    assert e.value.words == gw.ISSUE_117_WORDS and world.calls == []
+    assert _deleter(registry, world).preview(SLUG)["blocked"] is True

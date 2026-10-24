@@ -72,21 +72,40 @@ VERSION_NOT_RECORDED = "not recorded"
 SOFT_DELETE = "soft_delete"
 ARCHIVE = "archive"
 
-#: HARD BLOCK (2026-10-06, ISSUE-117; user-facing name: "archive-cascade block"): in this Egeria build, archiving
-#: ANY element that is not its own anchor (a schema, a table, a column, a schema type) archives the anchor's WHOLE
-#: tree: leaving out us_sales archived the coco_pharma database element and both demo schemas. Soft delete is
-#: frozen too until a throwaway proves delete does not walk the same way. The block is ON in every process.
+#: HARD BLOCK (2026-10-06, ISSUE-117; user-facing name: "archive-cascade block"): in the Egeria build of 2026-10-06,
+#: archiving ANY element that is not its own anchor (a schema, a table, a column, a schema type) archived the anchor's
+#: WHOLE tree: leaving out us_sales archived the coco_pharma database element and both demo schemas.
 #:
-#: It is lifted for ONE database only, by the environment variable below (the name keeps "ISSUE_117" for
-#: compatibility), read at CALL time:
+#: LIFTED 2026-10-23 FOR THE LEAVE-OUT ARCHIVE PATH ONLY (architect ruling; proof
+#: docs/design-notes/evidence/REPROOF-1021-PHASE2-RESULT.md: on odpi/egeria c6dbf952 / image a8bcff5c the leaf-first
+#: ARCHIVE of a cataloguer-built schema took exactly its 14 anchored elements and nothing else). The lift covers ONE
+#: scope, `LEAVE_OUT_ARCHIVE`: a leave-out whose form is ARCHIVE. Everything else keeps the block as before, with its
+#: own block word, until its own throwaway proof (ruled 2026-10-21): soft delete (a leave-out with nothing hanging off
+#: it included), the investigation-delete ARCHIVE (anchor = Project), and bulk delete in Egeria.
+#:
+#: Re-arming the block for the leave-out path too needs no code change, one variable read at CALL time:
+#:
+#:     RE_ISSUE_117_BLOCK=on                                  ON, stamped "(no stamp)"
+#:     RE_ISSUE_117_BLOCK=<who>/<UTC ISO time>                ON, stamped "(<who>/<UTC>)"   e.g. dwolfson/2026-10-23T14:05:00Z
+#:
+#: Any other non-empty value is also ON ("(no stamp)", with a logged reason): a value meant to re-arm never lifts.
+#: The re-arm does not expire. While the block is ON (re-armed, or for the scopes never lifted) it is lifted for ONE
+#: database only, by the slug-scoped override, also read at CALL time:
 #:
 #:     RE_ISSUE_117_BLOCK_OFF=<who>/<UTC ISO time>/<database slug>      e.g.  dwolfson/2026-10-21T14:05:00Z/throwaway_db
 #:
-#: The block stays ON for every other slug, and the override EXPIRES 60 minutes after the stamp (a forgotten
-#: variable can never leave it off). Any other shape (the old bare clearance, a missing slug, an unparsable time,
-#: a stamp more than a few minutes in the future, an expired stamp) is block ON, with a logged reason. A caller
-#: that cannot name the database slug it acts for is blocked. There is no code constant to edit. While it is on,
-#: `delete_element` raises before it touches a client and nothing is sent; choices are still recorded in RE.
+#: The override opens that slug for 60 minutes after the stamp (a forgotten variable can never leave it off). Any
+#: other shape (the old bare clearance, a missing slug, an unparsable time, a stamp more than a few minutes in the
+#: future, an expired stamp) is no override, with a logged reason. A caller that cannot name the database slug it acts
+#: for is blocked, in every scope. There is no code constant to edit. While blocked, `delete_element` raises before it
+#: touches a client and nothing is sent; choices are still recorded in RE.
+ISSUE_117_BLOCK_ENV = "RE_ISSUE_117_BLOCK"
+#: The one scope the 2026-10-23 lift opens: a leave-out whose form is ARCHIVE. Callers outside it pass no scope.
+LEAVE_OUT_ARCHIVE = "leave_out_archive"
+LIFTED_SCOPES = frozenset({LEAVE_OUT_ARCHIVE})
+LIFT_EVIDENCE = ("lifted 2026-10-23, proven on odpi/egeria c6dbf952 / image a8bcff5c, evidence "
+                 "docs/design-notes/evidence/REPROOF-1021-PHASE2-RESULT.md")
+NO_STAMP = "(no stamp)"
 ISSUE_117_ENV = "RE_ISSUE_117_BLOCK_OFF"
 OVERRIDE_WINDOW = timedelta(minutes=60)
 OVERRIDE_FUTURE_SLACK = timedelta(minutes=5)
@@ -131,18 +150,103 @@ def issue_117_override() -> tuple[str, datetime | None, str]:
     return slug, expires, ""
 
 
-def issue_117_blocked(slug: str) -> bool:
-    """True unless the override names exactly `slug` and is inside its window. `slug` is required: a caller that
+def issue_117_rearmed() -> tuple[bool, str]:
+    """`(True, "(<who>/<UTC>)" or "(no stamp)")` when RE_ISSUE_117_BLOCK re-arms the block for the lifted scopes,
+    else `(False, "")`. Unset or blank is not armed; `on` is ON with no stamp; `<who>/<UTC ISO time>` is ON with that
+    stamp; anything else is ON with no stamp and a logged reason (a value meant to re-arm never lifts)."""
+    import os
+    raw = (os.environ.get(ISSUE_117_BLOCK_ENV) or "").strip()
+    if not raw:
+        return False, ""
+    if raw.lower() == "on":
+        return True, NO_STAMP
+    parts = raw.rsplit("/", 1)
+    reason = ""
+    if len(parts) != 2 or not all(p.strip() for p in parts):
+        reason = "expected on or <who>/<UTC ISO time>"
+    else:
+        who, stamp_text = (p.strip() for p in parts)
+        try:
+            stamp = datetime.fromisoformat(stamp_text.replace("Z", "+00:00").replace("z", "+00:00"))
+        except ValueError:
+            reason = f"time {stamp_text!r} is not an ISO time"
+        else:
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            return True, f"({who}/{stamp.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')})"
+    if (raw, reason) not in _logged_override_reasons:
+        _logged_override_reasons.add((raw, reason))
+        log.warning("archive-cascade block is ON with no stamp: %s=%r (%s)", ISSUE_117_BLOCK_ENV, raw, reason)
+    return True, NO_STAMP
+
+
+def issue_117_blocked(slug: str, *, scope: str = "") -> bool:
+    """True when an archive/delete for database `slug` in `scope` may not be sent. A scope in `LIFTED_SCOPES` (only
+    `LEAVE_OUT_ARCHIVE`) passes unless RE_ISSUE_117_BLOCK re-arms it; every other scope, and a re-armed one, passes
+    only when the override names exactly `slug` inside its window. `slug` is required in every scope: a caller that
     cannot name the database it acts for passes "" and is blocked."""
+    if not slug:
+        return True
+    if scope in LIFTED_SCOPES and not issue_117_rearmed()[0]:
+        return False
     named, _expires, _reason = issue_117_override()
-    return not (slug and named and slug == named)
+    return not (named and slug == named)
 
 
 def issue_117_state_line() -> str:
+    """The start-up line. OFF (the leave-out lift, with its evidence) or ON (re-armed, with its stamp); a live
+    slug override is added after it."""
+    armed, stamp = issue_117_rearmed()
+    line = f"archive-cascade block: ON {stamp}" if armed else f"archive-cascade block: OFF ({LIFT_EVIDENCE}) · scope: leave-out archive"
     named, expires, _reason = issue_117_override()
-    if not named or expires is None:
-        return "archive-cascade block: ON"
-    return f"archive-cascade block: OFF for {named} until {expires.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+    if named and expires is not None:
+        line += f" · OFF for {named} until {expires.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+    return line
+
+
+#: The build the 2026-10-23 lift was proven on. RE does NOT compare the platform's build with it (it cannot tell an
+#: older build from a newer one by this string): the start-up line prints both side by side, and the only control
+#: for an older platform is the env re-arm, RE_ISSUE_117_BLOCK=on (architect ruling (b), 2026-10-23).
+PROVEN_BUILD = "odpi/egeria c6dbf952 / image a8bcff5c"
+MAX_ORIGIN_CHARS = 200            # the origin text is logged: never more than this
+PLATFORM_UNREACHABLE = "platform: unreachable at start"
+#: The platform's own origin endpoint: the one pyegeria's `BasePlatformClient.async_get_platform_origin` reads.
+PLATFORM_ORIGIN_PATH = "/open-metadata/platform-services/server-platform/origin"
+
+
+def read_platform_origin(timeout: float = 3.0) -> str:
+    """ONE cheap read at start-up: the platform's origin string, or "" when it cannot be read. The endpoint pyegeria's
+    `get_platform_origin` reads, called directly: building that client makes a second read (`check_connection`) and
+    drives its own event loop, which the web start (inside uvloop) cannot do. No credential is sent; TLS is not
+    verified, as pyegeria does not verify it (`enable_ssl_check = False`). Never raises."""
+    try:
+        import httpx
+
+        from resource_explorer.config import egeria_platform_url
+
+        url = (egeria_platform_url() or "").rstrip("/")
+        if not url:
+            return ""
+        r = httpx.get(url + PLATFORM_ORIGIN_PATH, timeout=timeout, verify=False)
+        return " ".join(r.text.split())[:MAX_ORIGIN_CHARS] if r.status_code == 200 else ""
+    except Exception as exc:  # noqa: BLE001 - never fails the start
+        log.info("platform origin not read at start: %s", type(exc).__name__)
+        return ""
+
+
+def platform_origin_words(origin: str) -> str:
+    """"platform reports <origin> · lift proven on <build>", or "platform: unreachable at start". Said side by side;
+    never a verdict that the two builds match."""
+    origin = (origin or "").strip()[:MAX_ORIGIN_CHARS]
+    if not origin:
+        return PLATFORM_UNREACHABLE
+    return f"platform reports {origin} · lift proven on {PROVEN_BUILD}"
+
+
+def issue_117_start_line(read=None) -> str:
+    """The start-up line: the block state, then what the platform reports beside the proven build. The block state
+    is the same whatever the read answers (an unreachable platform changes nothing)."""
+    return f"{issue_117_state_line()} · {platform_origin_words((read or read_platform_origin)())}"
 
 
 ISSUE_117_WORDS = ("Egeria archives the whole database tree when any part of it is archived "
@@ -510,7 +614,7 @@ class CatalogueGateway(Protocol):
     def archived_siblings(self, qualified_name: str) -> list[ArchivedSibling]: ...
     def schema_elements(self, prefix: str) -> list[ElementRead]: ...
     def relationships(self, guid: str) -> list[Relationship]: ...
-    def delete_element(self, guid: str, form: str, *, slug: str) -> None: ...
+    def delete_element(self, guid: str, form: str, *, slug: str, scope: str = "") -> None: ...
     def initiate_survey(self, database_guid: str, request_parameters: dict[str, str]) -> tuple[str, str]: ...
     def connector_status(self) -> ConnectorStatus | None: ...
     def refresh_connector(self, timeout: int = 120) -> None: ...
@@ -1280,16 +1384,17 @@ class PyegeriaCatalogueGateway:
             raise GatewayError(_short(exc)) from exc
         return parse_related_answer(res)
 
-    def delete_element(self, guid: str, form: str, *, slug: str) -> None:
-        """One element, never a cascade. `slug` is the database the delete acts for: the archive-cascade block
-        is lifted for one named database only. An archive is the delete endpoint with
+    def delete_element(self, guid: str, form: str, *, slug: str, scope: str = "") -> None:
+        """One element, never a cascade. `slug` is the database the delete acts for and `scope` the path it is on:
+        the archive-cascade block is lifted for `LEAVE_OUT_ARCHIVE` (an ARCHIVE only; a soft delete keeps the block
+        whatever scope it names), else for one named database only. An archive is the delete endpoint with
         ARCHIVE and forLineage and forDuplicateProcessing true (the archive
         endpoint answers 500 on this build)."""
         method = "ARCHIVE" if form == ARCHIVE else "SOFT_DELETE"
         flags = "deleteMethod=%s forLineage=True forDuplicateProcessing=True cascade_delete=False" % method
-        if issue_117_blocked(slug):
-            log.warning("egeria write refused by archive-cascade block: %s element=%s slug=%r flags: %s",
-                        method, guid, slug, flags)
+        if issue_117_blocked(slug, scope=scope if method == "ARCHIVE" else ""):
+            log.warning("egeria write refused by archive-cascade block: %s element=%s slug=%r scope=%r flags: %s",
+                        method, guid, slug, scope, flags)
             raise GatewayError(ISSUE_117_WORDS)          # before any client is built: nothing is sent
         body = {"class": "DeleteElementRequestBody", "deleteMethod": method,
                 "forLineage": True, "forDuplicateProcessing": True}
