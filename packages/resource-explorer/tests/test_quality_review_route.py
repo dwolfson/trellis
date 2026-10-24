@@ -269,3 +269,28 @@ def test_a_403_from_the_access_check_writes_nothing(client, proposed, registry, 
     assert registry.get_quality_verdicts(SLUG) == {} and _history(registry) == []
     assert _press(client, KEY, "rejected").status_code == 403
     assert _history(registry) == []
+
+
+# ── the settings, readable on the Admin page (architect, 2026-10-24) ───────────────────────────────────────
+
+def test_the_settings_are_read_with_their_value_source_and_meaning(client, monkeypatch):
+    from resource_explorer import config
+    from resource_explorer.web import admin_auth
+
+    monkeypatch.setattr(admin_auth, "require_admin", lambda request: None)
+    monkeypatch.setattr(config, "_config", None)
+    monkeypatch.setenv("VALUE_PROFILE_TABLE_BUDGET_SECONDS", "120")
+    monkeypatch.delenv("VALUE_PROFILE_LIVE_WRITE_TABLE_SHARE", raising=False)
+    r = client.get("/api/quality-checks/settings")
+    assert r.status_code == 200, r.text
+    rows = {s["name"]: s for s in r.json()["settings"]}
+    live = rows["live_write_table_share"]
+    assert (live["value"], live["source"], live["setting"]) == (0.25, "default", "VALUE_PROFILE_LIVE_WRITE_TABLE_SHARE")
+    assert "this database is written live · see change rates" in live["means"]
+    assert (rows["table_budget_seconds"]["value"], rows["table_budget_seconds"]["source"]) == (
+        120, "set in the environment")
+    assert all(s["means"] and s["unit"] for s in rows.values())
+
+
+def test_the_settings_are_admin_only(client):
+    assert client.get("/api/quality-checks/settings").status_code == 403

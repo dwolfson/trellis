@@ -231,8 +231,8 @@ def test_a_table_not_profiled_says_why_and_is_never_a_row_of_zeros(registry, ent
     for row in rows:
         assert row["state"] == state and words in row["reason"]
         assert row["record_ct"] is None and all(row[m] is None for m in COLUMN_MEASURES)
-    assert {"table": f"sales.{table}", "state": state, "reason": rows[0]["reason"]} in \
-        out["value_profile"]["tables_not_profiled"]
+    assert {"table": f"sales.{table}", "schema_name": "sales", "table_name": table, "state": state,
+            "reason": rows[0]["reason"]} in out["value_profile"]["tables_not_profiled"]
     if table == "v_orders":
         assert not any(s.endswith(f'FROM "sales"."{table}"') for s in conn.statements)  # refused, not run
 
@@ -327,9 +327,17 @@ def test_the_profile_annotations(registry, entity):
     kinds = [type(a).__name__ for a in out["annotations"]]
     assert kinds.count("ResourceProfileAnnotation") == 5
     unprofiled = {a.item_key: a for a in out["annotations"] if type(a).__name__ == "ResourceMeasureAnnotation"}
-    assert set(unprofiled) == {"sales.v_orders", "sales.big", "sales.secret", "sales.slow"}
+    # a not-profiled table's key is the JSON array, as a column's is (round 2: re-linked by it)
+    assert set(unprofiled) == {'["sales","v_orders"]', '["sales","big"]', '["sales","secret"]', '["sales","slow"]'}
     placed = next(a for a in out["annotations"] if a.item_key == '["sales","orders","placed"]')
     assert placed.value_count["record_ct"] == 1000 and placed.json_properties["profileDates"]["min_date"] == "2020-01-01"
+    # a relative-to-now measure stays on RE's row but is not published; the date column says what it was as of
+    assert "future_date_ct" not in placed.value_count
+    assert placed.json_properties["profileDates"] == {"min_date": "2020-01-01", "max_date": "2026-10-01",
+                                                      "asOf": "2026-10-20T10:00:00Z"}
+    assert _rows(registry, "database_value_profiles")[("sales", "orders", "placed")]["future_date_ct"] == 0
+    order_id = next(a for a in out["annotations"] if a.item_key == '["sales","orders","order_id"]')
+    assert order_id.json_properties["profileDates"] == {}                 # not a date column: no as-of
 
 
 def test_no_stored_inventory_profiles_nothing_and_stores_nothing(tmp_path):

@@ -6913,8 +6913,12 @@ export function stepPublishHtml(s, preReset = null) {
 /** Backlog 7f.8: a database run's own publish word. It publishes once, after
  *  its steps, so the word is the run's `publish_state`; "published" is drawn
  *  only with the run's `egeria_report_guid` beside it (the proof), never from
- *  the sentence alone. A run that recorded no word draws nothing. */
-export function runPublishHtml(d, preReset = null) {
+ *  the sentence alone. A run that recorded no word draws nothing.
+ *  Ruling 5 (2026-10-24): a run whose detail carries `written_live` (counts moved
+ *  on more than the configured share of tables, from the proof rows) adds
+ *  "this database is written live · see change rates", a link to `slug`'s
+ *  Analysis stage, where Change Rates (db_change_rates, Q-0086) is listed. */
+export function runPublishHtml(d, preReset = null, slug = '') {
   const state = String((d && d.publish_state) || '');
   if (!state) return '';
   if (preReset && preReset.words && /^published\b/i.test(state) && !/^published: no\b/i.test(state)) {
@@ -6930,7 +6934,13 @@ export function runPublishHtml(d, preReset = null) {
     creator_unread: hasReport && !(d && d.published_as),
   });
   const note = String((d && d.publish_note) || '').trim();
-  return note ? `${word} <span class="text-provenance text-ink-muted" data-run-publish-note>${esc(note)}</span>` : word;
+  const noted = note ? `${word} <span class="text-provenance text-ink-muted" data-run-publish-note>${esc(note)}</span>` : word;
+  const live = d && d.written_live;
+  if (!live || !slug) return noted;
+  const href = `?type=db&resource=${encodeURIComponent(slug)}&stage=analysis`;
+  const about = `${live.analysis_id || 'db_change_rates'} (${live.question_id || 'Q-0086'})`;
+  return `${noted} · <a class="text-provenance text-accent-ink underline" data-run-written-live href="${esc(href)}"`
+    + ` title="${esc(`Change Rates: ${about}`)}">this database is written live · see change rates</a>`;
 }
 
 /** Backlog 7f.6: the header activity watch's page reader. The same page also tells an open Activity list that is
@@ -6965,7 +6975,7 @@ export async function openRunsList(slug) {
       const d = typeof r.detail === 'string' ? JSON.parse(r.detail) : (r.detail || {});
       steps = d.steps || [];
       // A run that published through the outbox carries its proof-derived word; a database run its own word.
-      runPublish = r.publish_proof ? publishProofHtml(r.publish_proof) : runPublishHtml(d, r.pre_reset || null);
+      runPublish = r.publish_proof ? publishProofHtml(r.publish_proof) : runPublishHtml(d, r.pre_reset || null, slug);
     } catch (_) { /* a detail we cannot parse is a run with no step list */ }
     const ok = steps.filter((s) => s.status === 'ok').length;
     const bad = steps.filter((s) => s.status && s.status !== 'ok' && stepOutcome(s).kind === 'failed');

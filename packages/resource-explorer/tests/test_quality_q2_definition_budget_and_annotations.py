@@ -12,6 +12,7 @@ pyegeria signature. The route-level end to end is in test_quality_q2_survey_pres
 """
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import sys
@@ -365,7 +366,11 @@ def test_proposals_leave_one_request_for_action_with_the_count_the_run_and_the_l
                                    if r["state"] == "measured")),
         "acceptedChecks": "0", "suppressedChecks": "0",
         "notEstablishedChecks": str(out["quality_proposals"]["not_established_ct"]),
-        "reviewLink": "https://re.example/next?type=database&worklist=coco_ods"}
+        "reviewLink": "https://re.example/next?type=database&worklist=coco_ods",
+        # the batch's proposed checks, digested: the request is re-linked only when the same checks are proposed
+        "proposedChecksDigest": hashlib.sha256("\n".join(sorted(
+            r["check_key"] for r in registry.query_detail_rows("database_quality_proposals", SLUG)
+            if r["state"] == "proposed")).encode()).hexdigest()}
     assert set(props) <= ACCEPTED_FIELDS["RequestForActionProperties"]
 
 

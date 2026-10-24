@@ -89,7 +89,7 @@ class _Batches:
 
 def build_proposal_annotation(slug: str, *, run_id: str, proposed_ct: int, columns_profiled: int,
                               accepted_ct: int = 0, suppressed_ct: int = 0, not_established_ct: int = 0,
-                              review_link: str = ""):
+                              review_link: str = "", proposed_keys=()):
     """The ONE annotation a run of `propose_quality_checks` leaves on the database. Pure.
 
     N > 0 proposed: a `RequestForActionAnnotation`, "review N proposed quality checks in Resource Explorer", carrying
@@ -98,7 +98,13 @@ def build_proposal_annotation(slug: str, *, run_id: str, proposed_ct: int, colum
     0 proposed: a `ResourceMeasureAnnotation`, "0 checks proposed · N columns profiled · no selection rule matched".
     That sentence is the design's and is kept whenever no rule left a check standing; if accepted or suppressed
     checks remain the tail names them rather than claim no rule matched, and checks whose rule could not be
-    evaluated (not established) are counted after it."""
+    evaluated (not established) are counted after it.
+
+    `proposed_keys`: the batch's proposed check keys. The request carries their digest (`proposedChecksDigest`, a
+    sha256 of the sorted keys), so the profile publish reshape re-links it only when the same checks are proposed,
+    not merely as many (round 2, architect ruling 2026-10-24: the request re-links when unchanged)."""
+    import hashlib
+
     from resource_explorer.surveyors.survey_report import RequestForActionAnnotation, ResourceMeasureAnnotation
 
     counts = {"proposedChecks": str(proposed_ct), "columnsProfiled": str(columns_profiled),
@@ -107,7 +113,8 @@ def build_proposal_annotation(slug: str, *, run_id: str, proposed_ct: int, colum
     if proposed_ct > 0:
         # The design's words, verbatim, whatever N is.
         request = f"review {proposed_ct} proposed quality checks in Resource Explorer"
-        detail = {"runId": run_id, **counts}
+        detail = {"runId": run_id, **counts,
+                  "proposedChecksDigest": hashlib.sha256("\n".join(sorted(proposed_keys)).encode()).hexdigest()}
         if review_link:
             detail["reviewLink"] = review_link
         return RequestForActionAnnotation(
@@ -233,7 +240,8 @@ def run_propose(registry, slug: str, *, row_ct_pct_threshold: float, surveyed_at
     annotation = build_proposal_annotation(
         slug, run_id=surveyed_at, proposed_ct=states.get("proposed", 0), columns_profiled=columns_profiled,
         accepted_ct=states.get("accepted", 0), suppressed_ct=states.get("suppressed", 0),
-        not_established_ct=states.get("not_established", 0), review_link=review_link)
+        not_established_ct=states.get("not_established", 0), review_link=review_link,
+        proposed_keys=[r["check_key"] for r in rows if r["state"] == "proposed"])
     return {"annotations": [annotation], "quality_proposals": {
         "surveyed_at": surveyed_at,
         "state": "measured",

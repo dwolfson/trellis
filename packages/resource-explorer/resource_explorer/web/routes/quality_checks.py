@@ -1,5 +1,7 @@
 """Quality-check review for a database (Curate, Structure tab).
 
+GET  /api/quality-checks/settings           the value profile's and quality checks' settings in force, with what each
+                                            means (the Admin page's read-only pane)
 GET  /api/quality-checks/{slug}/proposals   groups by table with counts; `?schema=&table=` adds one group's rows
 POST /api/quality-checks/{slug}/verdict     one accept or reject of one check, as the signed-in person
 
@@ -47,6 +49,44 @@ async def _run(fn, *args, **kwargs):
         return await asyncio.to_thread(fn, *args, **kwargs)
     except review.ReviewError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.message) from exc
+
+
+def describe_settings() -> dict:
+    """The value profile's and quality checks' settings in force, each with its value, unit, environment name, whether
+    it was set or is the default, and what it means, in a person's words (architect, 2026-10-24: a setting a person
+    must be able to read on the Admin page, not only as an env name)."""
+    from resource_explorer.config import get_config
+
+    config = get_config()
+    rows = []
+    for section, name, setting, unit, means in (
+        (config.value_profile, "live_write_table_share", "VALUE_PROFILE_LIVE_WRITE_TABLE_SHARE", "share of tables",
+         ("When a repeat value-profile publish finds counts moved on more than this share of the tables it measured, "
+          "the run card adds “this database is written live · see change rates”.")),
+        (config.value_profile, "table_budget_seconds", "VALUE_PROFILE_TABLE_BUDGET_SECONDS", "seconds",
+         ("The most time one table's value profile may take, across its chunks. Past it the table is "
+          "“profile incomplete”, never partly counted.")),
+        (config.value_profile, "statement_timeout_seconds", "VALUE_PROFILE_STATEMENT_TIMEOUT_SECONDS", "seconds",
+         ("The time limit on each quality check's statement. A check that runs past it is an error, with "
+          "Postgres's words.")),
+        (config.quality_checks, "row_ct_pct_default_threshold", "QUALITY_CHECKS_ROW_CT_PCT_DEFAULT_THRESHOLD",
+         "percent",
+         ("The threshold a proposed Row_Ct_Pct check starts with: the row count within this percent of the "
+          "baseline. A person can change it on any one check before accepting it.")),
+    ):
+        rows.append({"name": name, "setting": setting, "value": getattr(section, name), "unit": unit,
+                     "source": "set in the environment" if name in section.model_fields_set else "default",
+                     "means": means})
+    return {"settings": rows}
+
+
+@router.get("/settings")
+def read_settings(request: Request) -> dict:
+    """Read-only, Admin only like the Admin page's other routes."""
+    from resource_explorer.web import admin_auth
+
+    admin_auth.require_admin(request)
+    return describe_settings()
 
 
 @router.get("/{slug}/proposals")

@@ -42,6 +42,8 @@ BUILT_TAB_IDS = [
     "admin-discovery-sources",
     "admin-api-fetch",
     "admin-egeria-mounts",
+    # architect, 2026-10-24: the value profile's settings (the written-live share among them) readable by a person
+    "admin-quality-settings",
 ]
 
 
@@ -129,6 +131,25 @@ class TestGroupsAndTabsMatchClassic:
         src = _admin_index_src()
         render_count = src.count("render: render")
         assert render_count == len(BUILT_TAB_IDS)
+
+
+class TestValueProfileSettingsPane:
+    """A read-only Configure pane (architect, 2026-10-24): each value profile and quality check setting with its value,
+    source, environment name and meaning, read from GET /api/quality-checks/settings. Behaviour is in the harness
+    (admin-quality-settings.test.mjs); this pins the wiring."""
+
+    def test_the_tab_is_in_configure_and_renders_its_own_module(self):
+        src = _admin_index_src()
+        configure = src[src.index("{ name: 'Configure'"):src.index("{ name: 'Reconcile'")]
+        assert ("{ id: 'admin-quality-settings', label: '📏 Value profile settings', render: renderQualitySettings }"
+                in configure)
+        assert "import { renderQualitySettings } from '/static/next/admin/quality_settings.js';" in src
+
+    def test_the_pane_only_reads(self):
+        pane = _admin_module("quality_settings.js")
+        assert "getQualitySettings" in pane and "read-only" in pane
+        assert "export const getQualitySettings = () => get('/api/quality-checks/settings');" in _reapi_src()
+        assert not any(verb in pane for verb in ("post(", "put(", "del("))
 
 
 class TestEgeriaLinksAndPublishQueueAreBuilt:

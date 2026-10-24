@@ -8472,12 +8472,14 @@ class ProjectRegistry:
     # annotation the report's read-back found on it. A measure the previous publish had and this run did not
     # measure gets a row with `outcome` `no_longer_measured` (or `not_measured_this_run` when its table was not
     # profiled), the PREVIOUS annotation's GUID and NO hash (it is not on this report, and it is never compared
-    # against).
+    # against). Round 2 (architect rulings 2026-10-24): a not-profiled table's ResourceMeasureAnnotation (same step,
+    # `item_key` ["schema","table"]) and the proposals step's annotation (its own step, `item_key` "proposals")
+    # get created/relinked rows the same way; neither ever gets a no-longer-measured row.
 
     def latest_profile_publish(self, entity_type: str, slug: str, analysis_step: str) -> dict | None:
         """What the next value-profile publish of this resource compares with, from RE's proof rows across EVERY
         RE report of the resource: {report_guid, report_at (the latest hashed row's report), measures:
-        {item_key: {annotation_guid, content_hash}} (the LATEST HASHED row per key, so a measure whose re-link
+        {item_key: {annotation_guid, content_hash, groups (when the row recorded them)}} (the LATEST HASHED row per key, so a measure whose re-link
         failed in one run is compared with the run before it), gone_keys (keys whose latest row of any outcome is
         `no_longer_measured`)}; None when none."""
         slug = self._normalize_slug(slug)
@@ -8505,21 +8507,26 @@ class ProjectRegistry:
         last_outcome: dict[str, str] = {}
         for r in rows:
             key = r["item_key"]
+            try:
+                detail = json.loads(r["detail_json"] or "{}")
+            except (TypeError, ValueError):
+                detail = {}
+            detail = detail if isinstance(detail, dict) else {}
             if key not in last_outcome:
-                try:
-                    last_outcome[key] = json.loads(r["detail_json"] or "{}").get("outcome") or ""
-                except (TypeError, ValueError, AttributeError):
-                    last_outcome[key] = ""
+                last_outcome[key] = detail.get("outcome") or ""
             if r["content_hash"] is not None and key not in measures:
-                measures[key] = {"annotation_guid": r["annotation_guid"], "content_hash": r["content_hash"]}
+                measures[key] = {"annotation_guid": r["annotation_guid"], "content_hash": r["content_hash"],
+                                 **({"groups": detail["groups"]} if isinstance(detail.get("groups"), dict) else {})}
         return {"report_guid": latest["report_guid"], "report_at": latest["report_at"], "measures": measures,
                 "gone_keys": {k for k, o in last_outcome.items() if o == "no_longer_measured"}}
 
     def record_profile_publish(self, entity_type: str, slug: str, *, report_guid: str, report_at: str,
                                read_at: str, analysis_step: str, rows: list[dict]) -> int:
         """Write a publish's proof rows ({annotation_guid, item_key, content_hash, outcome, summary,
-        annotation_type, previous_report_guid, previous_report_at, note (optional)}), idempotently. Returns how many rows the
-        report has now."""
+        annotation_type, previous_report_guid, previous_report_at, note, groups, moved (the last three optional)}),
+        idempotently. `groups` ({counts, shape} hashes) and `moved` (which of them moved, on a created column measure;
+        ruling 5) go in `detail_json` beside the outcome: no column of their own. Returns how many rows the report has
+        now."""
         slug = self._normalize_slug(slug)
         with self._conn() as conn:
             for row in rows:
@@ -8528,8 +8535,9 @@ class ProjectRegistry:
                 detail = {"outcome": row["outcome"],
                           "previous_report_guid": row.get("previous_report_guid") or "",
                           "previous_report_at": row.get("previous_report_at") or ""}
-                if row.get("note"):
-                    detail["note"] = row["note"]
+                for extra in ("note", "groups", "moved"):
+                    if row.get(extra):
+                        detail[extra] = row[extra]
                 conn.execute(
                     "INSERT INTO native_survey_annotations (entity_type, slug, report_guid, report_at, "
                     "annotation_guid, annotation_type, analysis_step, summary, detail_json, read_at, "
@@ -8543,18 +8551,61 @@ class ProjectRegistry:
                 "SELECT COUNT(*) FROM native_survey_annotations WHERE report_guid = ? AND analysis_step = ?",
                 (report_guid, analysis_step)).fetchone()[0])
 
+    def relinked_since(self, report_guid: str, analysis_step: str) -> str:
+        """The earliest report time of the annotations this report RE-LINKED on `analysis_step` (the report each was
+        first published on), from the proof rows; '' when the report re-linked none. The card's "proposals unchanged
+        since <time>"."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT annotation_guid, detail_json FROM native_survey_annotations "
+                "WHERE report_guid = ? AND analysis_step = ? AND content_hash IS NOT NULL",
+                (report_guid, analysis_step)).fetchall()
+            guids = []
+            for r in rows:
+                try:
+                    outcome = json.loads(dict(r)["detail_json"] or "{}").get("outcome")
+                except (TypeError, ValueError, AttributeError):
+                    outcome = None
+                if outcome == "relinked":
+                    guids.append(dict(r)["annotation_guid"])
+            if not guids:
+                return ""
+            marks = ", ".join("?" for _ in guids)
+            row = conn.execute(
+                f"SELECT MIN(report_at) FROM native_survey_annotations WHERE analysis_step = ? "
+                f"AND content_hash IS NOT NULL AND annotation_guid IN ({marks})",
+                (analysis_step, *guids)).fetchone()
+        return (row[0] if row else "") or ""
+
     def profile_publish_counts(self, report_guid: str, analysis_step: str) -> dict:
         """The run card's counts for one value-profile publish, from its proof rows only: `published`
         (created + relinked), `created`, `recreated` (created again after a refused re-link: the value did not
         change), `changed` (created minus recreated), `relinked`, `no_longer_measured`, `not_measured_this_run`, and the
         previous report it was
-        compared with (`previous_report_at`, '' when there was none)."""
+        compared with (`previous_report_at`, '' when there was none).
+
+        Ruling 5: of the changed, `counts_moved`, `shape_changed`, `new` and `not_compared` (from each row's `moved`;
+        a measure whose counts and shape both moved is in both), and `tables_measured` / `tables_counts_moved` (the
+        tables on this report, and those with a counts move), for the written-live words.
+
+        Column measures only (`ResourceProfileAnnotation` rows): the same step's not-profiled-table rows (round 2,
+        re-linked like them) are not measures and never counted as one."""
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT detail_json, slug, report_at FROM native_survey_annotations "
-                "WHERE report_guid = ? AND analysis_step = ?",
+                "SELECT detail_json, slug, report_at, item_key FROM native_survey_annotations "
+                "WHERE report_guid = ? AND analysis_step = ? "
+                "AND COALESCE(annotation_type, '') IN ('ResourceProfileAnnotation', '')",
                 (report_guid, analysis_step)).fetchall()
-        from resource_explorer.surveyors.database.quality.profile_publish import RECREATED_NOTE as recreated_note
+        from resource_explorer.surveyors.database.quality.profile_publish import (
+            COUNTS,
+            NEW,
+            NOT_COMPARED,
+            SHAPE,
+            table_of,
+        )
+        from resource_explorer.surveyors.database.quality.profile_publish import (
+            RECREATED_NOTE as recreated_note,
+        )
         # Pre-reset (architect ruling (b), 2026-10-23): a publish whose report predates the latest Egeria reset is
         # history; `pre_reset_at` carries the reset time so the words say so and never "published".
         pre_reset_at = ""
@@ -8566,8 +8617,11 @@ class ProjectRegistry:
             if _known(reset) and _known(first.get("report_at")) and _ts(first["report_at"]) < _ts(reset):
                 pre_reset_at = reset
         counts = {"created": 0, "relinked": 0, "no_longer_measured": 0, "not_measured_this_run": 0}
+        kinds = {COUNTS: 0, SHAPE: 0, NEW: 0, NOT_COMPARED: 0}
         previous = ""
         recreated = 0
+        measured_tables: set[str] = set()
+        moved_tables: set[str] = set()
         for r in rows:
             try:
                 detail = json.loads(dict(r)["detail_json"] or "{}")
@@ -8576,12 +8630,27 @@ class ProjectRegistry:
             outcome = detail.get("outcome")
             if outcome in counts:
                 counts[outcome] += 1
-                # a refused re-link created again in the same run: created, but its value did not change
-                if outcome == "created" and detail.get("note") == recreated_note:
-                    recreated += 1
+            if outcome in ("created", "relinked"):
+                measured_tables.add(table_of(dict(r).get("item_key") or ""))
+            # a refused re-link created again in the same run: created, but its value did not change
+            if outcome == "created" and detail.get("note") == recreated_note:
+                recreated += 1
+            elif outcome == "created":
+                # ruling 5: which group moved, as the row recorded it; a row that recorded none is not compared
+                moved = detail.get("moved") or [NOT_COMPARED]
+                for kind in moved:
+                    if kind in kinds:
+                        kinds[kind] += 1
+                if COUNTS in moved:
+                    moved_tables.add(table_of(dict(r).get("item_key") or ""))
             previous = previous or detail.get("previous_report_at") or ""
+        measured_tables.discard("")
+        moved_tables.discard("")
         return {"published": counts["created"] + counts["relinked"], **counts,
                 "recreated": recreated, "changed": counts["created"] - recreated,
+                "counts_moved": kinds[COUNTS], "shape_changed": kinds[SHAPE], "new": kinds[NEW],
+                "not_compared": kinds[NOT_COMPARED],
+                "tables_measured": len(measured_tables), "tables_counts_moved": len(moved_tables),
                 "previous_report_at": previous, "rows": len(rows), "pre_reset_at": pre_reset_at}
 
     # ── annotations of a user step run by RE (extensibility brief 2c) ────────

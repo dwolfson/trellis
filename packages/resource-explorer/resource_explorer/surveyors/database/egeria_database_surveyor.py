@@ -1824,19 +1824,23 @@ class EgeriaDatabaseSurveyor:
         return counts
 
     def _plan_profile_publish(self, registry, slug: str, annotations: list):
-        """Which value-profile measures to re-link and which to create (`profile_publish.plan_profile_publish`),
-        against RE's proof rows of the last published profile. None when this publish has no profile measure or no
+        """Which re-linkable annotations to re-link and which to create (`profile_publish.plan_profile_publish`):
+        the value profile's column measures and not-profiled tables, and the proposals annotation (round 2), each
+        against RE's proof rows of its own step's last publish. None when this publish has none of them or no
         registry (then everything is created, as before)."""
         from resource_explorer.surveyors.database.quality.profile_publish import (
-            is_profile_measure,
             plan_profile_publish,
+            relink_kind,
         )
         from resource_explorer.surveyors.database.quality.value_profile import ANALYSIS_STEP
 
-        if registry is None or not any(is_profile_measure(a) for a in annotations):
+        steps = {a.analysis_step for a in annotations if relink_kind(a)}
+        if registry is None or not steps:
             return None
         previous = registry.latest_profile_publish("database", slug, ANALYSIS_STEP)
-        return plan_profile_publish(annotations, previous)
+        others = {step: registry.latest_profile_publish("database", slug, step)
+                  for step in steps if step != ANALYSIS_STEP}
+        return plan_profile_publish(annotations, previous, others)
 
     def _relink_unchanged(self, report_guid: str, pairs: dict[int, str]) -> dict[int, str]:
         """One `ReportedAnnotation` from the new report to each unchanged measure's EXISTING annotation.
@@ -1874,8 +1878,9 @@ class EgeriaDatabaseSurveyor:
 
     def _record_profile_publish(self, registry, slug: str, report_guid: str, surveyed_at: str,
                                 annotations: list, plan, read_back: dict | None) -> dict:
-        """Write the profile measures' proof rows and return the card's counts FROM them
-        (`registry.profile_publish_counts`). A row is written only for a measure the read-back found on the report
+        """Write the re-linkable annotations' proof rows, each under its own step, and return the card's counts
+        FROM the value profile's (`registry.profile_publish_counts`, column measures only). A row is written only for
+        an annotation the read-back found on the report
         (`read_back["guids"]`, by index): created under its new GUID (a refused re-link created again carries the
         note "re-created: the re-used annotation was gone"), or re-linked under the existing one. A previous
         measure this run did not measure gets a `no_longer_measured` row, or `not_measured_this_run` when its
@@ -1890,31 +1895,46 @@ class EgeriaDatabaseSurveyor:
             NOT_MEASURED_THIS_RUN,
             RECREATED_NOTE,
             RELINKED,
+            annotation_type_of,
         )
+        from resource_explorer.surveyors.database.quality.propose import ANALYSIS_STEP as PROPOSALS_STEP
         from resource_explorer.surveyors.database.quality.value_profile import ANALYSIS_STEP
 
         on_report = (read_back or {}).get("guids") or {}
-        previous = {"previous_report_guid": plan.previous_report_guid,
-                    "previous_report_at": plan.previous_report_at}
-        rows = []
+
+        def previous(step: str) -> dict:
+            guid, at = plan.previous_by_step.get(step, ("", ""))
+            return {"previous_report_guid": guid, "previous_report_at": at}
+
+        by_step: dict[str, list] = {ANALYSIS_STEP: []}
         for i, key in plan.keys.items():
             guid = on_report.get(i)
             if not guid:
                 continue
-            rows.append({"annotation_guid": guid, "item_key": key, "content_hash": plan.hashes[i],
-                         "outcome": RELINKED if i in plan.relink else CREATED,
-                         "annotation_type": "ResourceProfileAnnotation",
-                         "summary": getattr(annotations[i], "summary", ""),
-                         **({"note": RECREATED_NOTE} if i in plan.recreated else {}), **previous})
+            step = plan.steps.get(i, ANALYSIS_STEP)
+            by_step.setdefault(step, []).append(
+                {"annotation_guid": guid, "item_key": key, "content_hash": plan.hashes[i],
+                 "outcome": RELINKED if i in plan.relink else CREATED,
+                 "annotation_type": annotation_type_of(annotations[i]),
+                 "summary": getattr(annotations[i], "summary", ""),
+                 **({"groups": plan.groups[i]} if i in plan.groups else {}),
+                 **({"moved": plan.moved[i]} if i in plan.moved and i not in plan.relink else {}),
+                 **({"note": RECREATED_NOTE} if i in plan.recreated else {}), **previous(step)})
         for outcome, gone in ((NO_LONGER_MEASURED, plan.gone), (NOT_MEASURED_THIS_RUN, plan.not_measured)):
             for key, guid in gone.items():
-                rows.append({"annotation_guid": guid, "item_key": key, "content_hash": None, "outcome": outcome,
-                             "annotation_type": "ResourceProfileAnnotation", **previous})
+                by_step[ANALYSIS_STEP].append(
+                    {"annotation_guid": guid, "item_key": key, "content_hash": None, "outcome": outcome,
+                     "annotation_type": "ResourceProfileAnnotation", **previous(ANALYSIS_STEP)})
         try:
-            registry.record_profile_publish("database", slug, report_guid=report_guid, report_at=surveyed_at,
-                                            read_at=datetime.now(UTC).isoformat(), analysis_step=ANALYSIS_STEP,
-                                            rows=rows)
-            return registry.profile_publish_counts(report_guid, ANALYSIS_STEP)
+            read_at = datetime.now(UTC).isoformat()
+            for step, rows in by_step.items():
+                registry.record_profile_publish("database", slug, report_guid=report_guid, report_at=surveyed_at,
+                                                read_at=read_at, analysis_step=step, rows=rows)
+            counts = registry.profile_publish_counts(report_guid, ANALYSIS_STEP)
+            # A re-linked proposals request still names the run that first published it: the card says since when it
+            # is unchanged, from the proof rows, so it is not read as new work.
+            since = registry.relinked_since(report_guid, PROPOSALS_STEP) if PROPOSALS_STEP in by_step else ""
+            return {**counts, "proposals_unchanged_since": since} if since else counts
         except Exception as exc:  # noqa: BLE001 -- the report stands; the card says it could not count
             log.warning("could not record the value-profile proof rows of report %s: %s", report_guid, exc)
             return {}

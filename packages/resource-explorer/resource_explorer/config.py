@@ -695,10 +695,14 @@ class ValueProfileSettings(BaseSettings):
     5 minutes per table). Each chunk's statement timeout is what is left of it, so a chunk may take any time inside
     the budget; past it the table is `not_measured` as "profile incomplete", never partly counted.
     `statement_timeout_seconds`: the `SET LOCAL statement_timeout` of each QUALITY CHECK statement (`run_checks`); a
-    timeout is an `error` result with Postgres's words. The profile does not read it."""
+    timeout is an `error` result with Postgres's words. The profile does not read it.
+    `live_write_table_share`: when a repeat publish finds counts moved on MORE than this share of the tables it
+    measured, the run card adds "this database is written live · see change rates" (architect ruling 5,
+    2026-10-24; `profile_publish.written_live`). A share from 0 to 1."""
 
     statement_timeout_seconds: int = Field(default=60, alias="VALUE_PROFILE_STATEMENT_TIMEOUT_SECONDS")
     table_budget_seconds: int = Field(default=300, alias="VALUE_PROFILE_TABLE_BUDGET_SECONDS")
+    live_write_table_share: float = Field(default=0.25, ge=0, le=1, alias="VALUE_PROFILE_LIVE_WRITE_TABLE_SHARE")
 
     model_config = _ENV_FILE_CONFIG
 

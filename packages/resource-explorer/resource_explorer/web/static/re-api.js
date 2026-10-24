@@ -2259,6 +2259,9 @@ export const clearApiInstance = (slug) => del(`/api/api-reference/${encodeURICom
 export const getEgeriaMounts = () => get('/api/egeria/mounts');
 export const getApiFetchPolicy = () => get('/api/api-reference/policy');
 
+/** The value profile's and quality checks' settings in force, each with what it means (Admin, read-only). */
+export const getQualitySettings = () => get('/api/quality-checks/settings');
+
 /* ── First index, asked first (first_index.py) ─────────────────────────── */
 
 /** The figures the ask shows for these repositories: measured ones with their source, estimated ones or null. */

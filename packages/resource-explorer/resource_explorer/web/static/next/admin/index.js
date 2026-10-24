@@ -56,6 +56,7 @@ import { renderDiscoverySources } from '/static/next/admin/discovery_sources.js'
 import { renderEgeriaLinks } from '/static/next/admin/egeria_links.js';
 import { renderOutbox } from '/static/next/admin/outbox.js';
 import { renderApiFetch } from '/static/next/admin/api_fetch.js';
+import { renderQualitySettings } from '/static/next/admin/quality_settings.js';
 import { renderEgeriaMounts } from '/static/next/admin/egeria_mounts.js';
 
 const PANEL_ID = 'admin-panel';
@@ -70,6 +71,7 @@ const GROUPS = [
     { id: 'admin-discovery-sources', label: '🔍 Repository discovery sources', render: renderDiscoverySources },
     { id: 'admin-question-catalog', label: '❓ Question Catalog', render: renderQuestionCatalog },
     { id: 'admin-api-fetch', label: '🌐 API fetch addresses', render: renderApiFetch },
+    { id: 'admin-quality-settings', label: '📏 Value profile settings', render: renderQualitySettings },
     { id: 'admin-egeria-mounts', label: '📁 Egeria\'s mounts', render: renderEgeriaMounts },
   ]},
   { name: 'Reconcile', tabs: [

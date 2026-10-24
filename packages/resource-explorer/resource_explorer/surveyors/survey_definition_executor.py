@@ -225,6 +225,10 @@ class NothingToPublish(Exception):
     word says "nothing to publish · <why>", nothing is added to `errors`, and nothing was written to Egeria."""
 
 
+#: Where the card's "this database is written live · see change rates" points (architect ruling 5, 2026-10-24).
+WRITTEN_LIVE_LINK = {"analysis_id": "db_change_rates", "question_id": "Q-0086"}
+
+
 def safe_publish_text(text: str, secrets: "list[str] | tuple[str, ...]" = ()) -> str:
     """Text about a publish that is stored and shown: credentials masked by
     shape (`scrub_text`: URL userinfo, password=, Bearer ...), then every known
@@ -1192,6 +1196,9 @@ class SurveyDefinitionExecutor:
         publish_fn = publisher or adapter.publish
         #: What the run's QualityAnnotations did in Egeria ({"built", "landed"}), when the publish carried any.
         quality_proof: dict = {}
+        # Ruling 5: counts moved on more than the configured share of the tables this publish measured. The card draws
+        # its link to the change-rates analysis from this, never from the sentence.
+        is_written_live = False
         if step_outputs and publish_chosen and publisher is None:
             # Brief Z2: the requester must be allowed to publish this resource, re-checked right before the write.
             from resource_explorer.workflows.curate import person_write_refusal
@@ -1317,10 +1324,17 @@ class SurveyDefinitionExecutor:
                 if link_words:
                     words += f" · {link_words}"
                 # The value profile's line, from its proof rows only: "N measures published · M changed since
-                # <date> · K re-used · J no longer measured" (profile publish reshape).
-                from resource_explorer.surveyors.database.quality.profile_publish import profile_publish_words
+                # <time>: C counts moved · S shape changed · K re-used · J no longer measured" (profile publish
+                # reshape), and the written-live words past the configured share of tables (ruling 5).
+                from resource_explorer.config import get_config
+                from resource_explorer.surveyors.database.quality.profile_publish import (
+                    profile_publish_words,
+                    written_live,
+                )
 
-                profile_words = profile_publish_words(quality_proof.get("profile"))
+                live_share = get_config().value_profile.live_write_table_share
+                profile_words = profile_publish_words(quality_proof.get("profile"), live_share)
+                is_written_live = written_live(quality_proof.get("profile"), live_share)
                 if profile_words:
                     words += f" · {profile_words}"
                 governance = quality_proof.get("governance") or {}
@@ -1389,6 +1403,7 @@ class SurveyDefinitionExecutor:
                     **({"published_as": published_as} if published_as else {}),
                     **({"publish_note": publish_note} if publish_note else {}),
                     **({"publish_state": publish_state} if publish_state else {}),
+                    **({"written_live": WRITTEN_LIVE_LINK} if is_written_live else {}),
                     # Whole-definition Prefect default (2026-09-28) — the
                     # /next pane's launchSurvey() status line names this
                     # directly, success or fallback, so a default run's
@@ -1432,6 +1447,7 @@ class SurveyDefinitionExecutor:
             "published": published,
             **({"publish_waiting": publish_waiting} if publish_waiting else {}),
             **({"publish_state": publish_state} if publish_state else {}),
+            **({"written_live": WRITTEN_LIVE_LINK} if is_written_live else {}),
             # False when the run happened but could not be written to the
             # activity log — the card will say "Never run" and be wrong.
             "run_recorded": run_recorded,
