@@ -26,6 +26,7 @@
 import { listWorkLists, openWorkList, saveAsWorkList, openDialog, closeCellDetail, CELL }
   from '/static/next/worklist.js';
 import { ago, whenMs, verdictLineHtml, changedTimesHtml, savedLine, readBackAt, stepOutcome, statusToken, publishedEarlierSentence, PUBLISHED_EARLIER_WORD } from '/static/next/format.js';
+import { showMarkdown } from '/static/next/markdown.js';
 // The one glyph table (REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §1). `GLYPH`
 // and `factGlyph` below are thin views over `GLYPH_STATES` -- this file
 // declares no glyph-to-meaning mapping of its own any more.
@@ -1838,7 +1839,11 @@ export async function promoteToPane(turn) {
     } else if (form === 'diagram') {
       await renderDiagramInto(body, turn, 'promoted');
     } else {
+      // A text answer is as tall as its words: the 320px floor is for a chart or a diagram, and under a short
+      // answer it read as a blank block before the next section. Rendered markdown, as the chat rail renders it.
+      body.classList.remove('min-h-[320px]');
       body.innerHTML = `<div class="whitespace-pre-wrap text-answer text-ink">${tnum(esc(turn.answer || ''))}</div>`;
+      showMarkdown(body.firstElementChild, turn.answer || '');
     }
   } catch (err) {
     // Per-artefact failure, stated. Never a blank pane.
