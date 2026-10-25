@@ -468,6 +468,14 @@ class CurationStep:
     at: str = ""
 
 
+#: Architect ruling 2026-10-25 (2): a step whose destructive writes Egeria ACCEPTED but whose read-back did not confirm
+#: them, and the record holding it. Never "failed" (that invites a second press of a destructive write); a Refresh
+#: re-reads it. Terminal for a poll: nothing more happens until a person presses Refresh.
+NEEDS_READ_BACK = "needs read-back"
+#: Every state a finished record can hold.
+FINISHED_STATES = ("done", "failed", NEEDS_READ_BACK)
+
+
 class Curations:
     """Append-only record of each Catalogue → press: who, when, what was
     selected, what the manifest said it would write, and how each step went.
@@ -625,7 +633,7 @@ class Curations:
     def finish(self, cid: str) -> dict:
         cur = self.get(cid)
         states = {s["state"] for s in cur["steps"]}
-        final = "failed" if "failed" in states else "done"
+        final = "failed" if "failed" in states else NEEDS_READ_BACK if NEEDS_READ_BACK in states else "done"
         with self._conn() as conn:
             conn.execute("UPDATE resource_curation SET state = ?, finished_at = ? WHERE id = ?",
                          (final, _now(), cid))

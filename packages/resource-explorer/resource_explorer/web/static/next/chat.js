@@ -1078,7 +1078,7 @@ function runnableRowHtml(r, k) {
     : cue('unknown', 'schedule not read yet', 'The schedules for this resource have not been read.');
   const saving = sc.saving;
   return `<div data-runnable="${esc(r.id)}" class="mb-s1 flex flex-wrap items-baseline gap-s2 text-caveat">
-    <span class="font-mono text-ink">${esc(r.id)}</span>
+    <span class="w-[14rem] shrink-0 truncate font-mono text-ink" title="${esc(r.id)}">${esc(r.id)}</span>
     <span data-run-status>${status}</span>
     <button type="button" data-run="${k}" ${run.state === 'running' ? 'disabled' : ''}
       class="cursor-pointer rounded-sm border border-accent bg-transparent px-[8px] py-[1px] text-caveat text-accent-ink disabled:cursor-default disabled:opacity-60"

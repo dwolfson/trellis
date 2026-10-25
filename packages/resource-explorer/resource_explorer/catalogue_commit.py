@@ -57,6 +57,7 @@ from resource_explorer.catalogue_gateway import (
     schema_qualified_name, server_name_for)
 from resource_explorer import catalogue_gateway as gw
 from resource_explorer.catalogue_scope import CATALOGUE, LEAVE_OUT, current_schema_choice, md
+from resource_explorer.curate_plan import NEEDS_READ_BACK
 
 log = logging.getLogger(__name__)
 
@@ -121,6 +122,15 @@ P_RESTORED = "restored"
 #: One row per destructive call RE sends (archive, soft delete, detach), written AFTER the call returns, is
 #: refused by the archive-cascade block, or raises. A record of a call, never of a state: NOT in STATE_PROOFS.
 P_DELETE_CALL = "delete_call"
+#: Architect ruling 2026-10-25 (1): one row per archive call Egeria ACCEPTED, written the moment the call returns and
+#: BEFORE any read-back, filed under its schema (`element_guid`, `qualified_name` and `detail["type"]` say which
+#: element; `detail["planned"]` is the size of the walk). The read-back appends a newer row for the same element and
+#: outbox row; an element's state is its newest row's `detail["read_back"]`: pending | confirmed | failed (with
+#: `detail["reason"]`). A record of an element, never of the schema's state: NOT in STATE_PROOFS.
+P_ELEMENT_ARCHIVED = "element_archived"
+RB_PENDING, RB_CONFIRMED, RB_FAILED = "pending", "confirmed", "failed"
+#: Ruling (2): the words after an accepted destructive write whose read-back did not confirm it.
+DO_NOT_PRESS = "do not press again · Refresh re-reads"
 P_LEAVE_OUT_BLOCKED = "leave_out_blocked"   # a leave-out that was refused (ISSUE-117): kept, not sent
 KEPT_NOT_SENT = "kept, not sent · archive-cascade block"
 #: Architect ruling 2026-10-23: a schema whose state is "restored" passes NO lifted scope (restored trees are unproven).
@@ -640,6 +650,15 @@ def _schema_state(rows: list[dict], ob: dict | None, effective: str | None, conn
             return {"state": "queued", "words": f"queued · outbox #{ob['id']}",
                     "second": f"step: {step}",
                     "proof": {"kind": "outbox", "outbox_id": ob["id"], "status": status}}
+        attempt = (archive_attempt(rows, str((ob.get("payload") or {}).get("schema") or ""), ob["id"])
+                   if step == "leave out" and status in ("failed", "dead") and not proof_newer else None)
+        if attempt is not None:
+            # Egeria accepted archive calls for this leave-out (ruling 2, 2026-10-25): the words are its rows', never
+            # "failed · not sent". All accepted is archived; a walk Egeria stopped part-way stays failed.
+            return {"state": "archived" if attempt["accepted"] == attempt["planned"] else "failed",
+                    "words": _archive_words(attempt, ob.get("last_error") or ""),
+                    "second": f"step: {step} · outbox #{ob['id']} · each accepted archive has its proof row",
+                    "proof": {"kind": P_ELEMENT_ARCHIVED, "outbox_id": ob["id"], "status": status}}
         if status == "failed" and not proof_newer:
             return _failed_state(ob, f"step: {step} · outbox #{ob['id']} · {WORKER_WORDS}")
         if status == "dead" and not proof_newer:
@@ -1819,6 +1838,69 @@ def _schema_restored(registry, slug: str, schema: str) -> bool:
     return last is not None and last["proof"] == P_RESTORED
 
 
+def element_archived_words(detail: dict) -> str:
+    """An archived element's words, from its newest `element_archived` row (ruling 1, 2026-10-25)."""
+    rb = (detail or {}).get("read_back")
+    if rb == RB_CONFIRMED:
+        return "archived · confirmed"
+    if rb == RB_FAILED:
+        return f"archived · read-back failed: {(detail or {}).get('reason') or 'reason not stated'}"
+    return "archived · read-back pending"
+
+
+def member_name(qualified_name: str, schema_qualified_name: str, schema: str) -> str:
+    """A walk member as the screen names it: `widgets::made_on` under the schema, the schema's own name for itself."""
+    if qualified_name == schema_qualified_name:
+        return schema
+    prefix = schema_qualified_name + "::"
+    return qualified_name[len(prefix):] if qualified_name.startswith(prefix) else qualified_name
+
+
+class ArchiveReadBackFailed(GatewayError):
+    """Egeria accepted the archive calls (each has its `element_archived` row) but the read-back did not confirm
+    every one. The write happened: it is never "not sent", and it is never sent again."""
+
+
+def _element_archived(registry, slug: str, schema: str, guid: str, typ: str, qualified_name: str, read_back: str, *,
+                      name: str, planned: int, curation_id: str, outbox_id: int | None, by: str,
+                      reason: str = "") -> None:
+    detail = {"read_back": read_back, "type": typ, "name": name, "planned": planned,
+              **({"reason": reason} if reason else {})}
+    _proof(registry, slug, P_ELEMENT_ARCHIVED, schema=schema, element_guid=guid, qualified_name=qualified_name,
+           curation_id=curation_id, outbox_id=outbox_id, recorded_by=by,
+           detail={**detail, "words": element_archived_words(detail)})
+
+
+def _archive_seen(gateway: CatalogueGateway, qualified_name: str, guid: str, typ: str) -> str:
+    """'' when the read-back shows THIS element archived (its own name free, its Memento copy found by the archived
+    name, typed with the element's own type, and matched by GUID); otherwise why not. A read that cannot be made
+    raises: that is not an answer, and the element's row stays pending."""
+    if not qualified_name:
+        return "no qualified name to read it back by"
+    if gateway.read_element(qualified_name) is not None:
+        return "still readable under its own name"
+    if _archived_copy(gateway, qualified_name, guid, typ) is None:
+        return "no archived copy under its archived name"
+    return ""
+
+
+def archive_attempt(proofs: list[dict], schema: str, outbox_id: int | None) -> dict | None:
+    """One leave-out's archive, from its `element_archived` rows (one outbox row's): None when Egeria accepted no
+    call for it. `accepted` counts the elements with a row, `planned` the walk; `elements` is each element's newest
+    row, in the order the calls were accepted."""
+    rows = [p for p in proofs if p["proof"] == P_ELEMENT_ARCHIVED and p["schema_name"] == schema
+            and p.get("outbox_id") == outbox_id]
+    if not rows:
+        return None
+    newest: dict[str, dict] = {}
+    for r in rows:                                   # oldest first: the last row per element is its state
+        newest[r["element_guid"]] = r
+    els = list(newest.values())
+    planned = max(int((r["detail"] or {}).get("planned") or 0) for r in rows)
+    by_state = {k: [r for r in els if (r["detail"] or {}).get("read_back") == k] for k in (RB_PENDING, RB_CONFIRMED, RB_FAILED)}
+    return {"accepted": len(els), "planned": planned or len(els), "elements": els, **by_state}
+
+
 def apply_leave_out(registry, gateway: CatalogueGateway, payload: dict, *, outbox_id: int | None = None) -> str:
     """Detach the schema's target and remove or archive its element. Idempotent.
 
@@ -1921,21 +2003,21 @@ def apply_leave_out(registry, gateway: CatalogueGateway, payload: dict, *, outbo
     # detach, and equal to the GUID set the preview counted.
     order = walk[:-1]
     send = dict(slug=slug, schema=schema, form=form, curation_id=cid, outbox_id=outbox_id, by=by, scope=scope)
+    rb = dict(planned=len(walk), curation_id=cid, outbox_id=outbox_id, by=by)
     for g, typ, mqn in walk:
         _send_destructive(registry, gateway, "delete", element_guid=g, typ=typ, qualified_name=mqn or "", **send)
-    for g, _typ, mqn in order:
-        if mqn:
-            _prove_gone(gateway, mqn, form, schema, g)
-    now = gateway.read_element(qn)
+        if form == ARCHIVE:
+            # Ruling (1) 2026-10-25: the row the moment Egeria accepts the call, before any read-back.
+            _element_archived(registry, slug, schema, g, typ, mqn or "", RB_PENDING,
+                              name=member_name(mqn or g, qn, schema), **rb)
     if form == ARCHIVE:
-        seen = _archived_copy(gateway, qn, guid)
-        if now is not None or seen is None:
-            raise GatewayError(f"{schema}: the archive was sent but the read-back does not show it archived")
-        _proof(registry, slug, P_ARCHIVED, schema=schema, element_guid=guid, qualified_name=qn, curation_id=cid,
-               outbox_id=outbox_id, recorded_by=payload.get("by", ""),
-               detail={"form": ARCHIVE, "hangs_off": read["hangs_off"]["by_type"], "content": read["content"],
-                       "elements_archived": len(order) + 1})
-        return guid
+        return _read_back_archive(registry, gateway, slug, schema, qn, guid, walk, rb,
+                                  detail={"form": ARCHIVE, "hangs_off": read["hangs_off"]["by_type"],
+                                          "content": read["content"]})
+    for g, typ, mqn in order:
+        if mqn:
+            _prove_gone(gateway, mqn, form, schema, g, typ)
+    now = gateway.read_element(qn)
     if now is not None or gateway.elements_under(qn + "::"):
         raise GatewayError(f"{schema}: the delete was sent but the read-back still finds elements")
     _proof(registry, slug, P_REMOVED, schema=schema, element_guid=guid, qualified_name=qn, curation_id=cid,
@@ -1944,17 +2026,47 @@ def apply_leave_out(registry, gateway: CatalogueGateway, payload: dict, *, outbo
     return guid
 
 
-def _archived_copy(gateway: CatalogueGateway, qualified_name: str, guid: str):
-    """The archived copy of THIS element (by its GUID) under the name Egeria gives it on archive, or None."""
-    return next((x for x in gateway.archived_siblings(qualified_name) if x.guid == guid and x.archived), None)
+def _read_back_archive(registry, gateway: CatalogueGateway, slug: str, schema: str, qn: str, guid: str,
+                       walk: list[tuple[str, str, str]], rb: dict, *, detail: dict) -> str:
+    """Read back every element whose archive Egeria accepted, in walk order, and move its row: confirmed, or
+    "read-back failed: <reason>". A read that raises leaves its row and every later one pending. All confirmed
+    writes the schema's `archived` row; anything else raises `ArchiveReadBackFailed` naming the first element
+    not confirmed (the outbox keeps the "not retried: destructive write" guard)."""
+    failed: tuple[str, str] | None = None
+    for g, typ, mqn in walk:
+        name = member_name(mqn or g, qn, schema)
+        try:
+            reason = _archive_seen(gateway, mqn or "", g, typ)
+        except Exception as exc:                          # not an answer: this row and the rest stay pending
+            said = egeria_first_sentence(" ".join(str(exc).split()) or type(exc).__name__)[0]
+            raise ArchiveReadBackFailed(f"{schema}: read-back failed on {name}: {said}") from exc
+        _element_archived(registry, slug, schema, g, typ, mqn or "", RB_FAILED if reason else RB_CONFIRMED,
+                          name=name, reason=reason, **rb)
+        if reason and failed is None:
+            failed = (name, reason)
+    if failed is not None:
+        raise ArchiveReadBackFailed(f"{schema}: read-back failed on {failed[0]}: {failed[1]}")
+    _proof(registry, slug, P_ARCHIVED, schema=schema, element_guid=guid, qualified_name=qn,
+           curation_id=rb["curation_id"], outbox_id=rb["outbox_id"], recorded_by=rb["by"],
+           detail={**detail, "elements_archived": len(walk)})
+    return guid
 
 
-def _prove_gone(gateway: CatalogueGateway, qualified_name: str, form: str, schema: str, guid: str = "") -> None:
+def _archived_copy(gateway: CatalogueGateway, qualified_name: str, guid: str, type_name: str = ""):
+    """The archived copy of THIS element (by its GUID) under the name Egeria gives it on archive, or None. The find
+    is typed with `type_name`, the element's own type, when the caller knows it: a guess from the name's prefix
+    types every element under a schema as the schema (`CatalogueGateway.archived_siblings`)."""
+    return next((x for x in gateway.archived_siblings(qualified_name, type_name=type_name)
+                 if x.guid == guid and x.archived), None)
+
+
+def _prove_gone(gateway: CatalogueGateway, qualified_name: str, form: str, schema: str, guid: str = "",
+                type_name: str = "") -> None:
     """The read-back that proves one element gone (soft delete) or archived: a Memento, renamed by Egeria to
     `<qn>_archivedOn_<date>` and visible with `forLineage`, found by that name and matched by its GUID."""
     if gateway.read_element(qualified_name) is not None:
         raise GatewayError(f"{schema}: {qualified_name} is still readable after its {form}")
-    if form == ARCHIVE and _archived_copy(gateway, qualified_name, guid) is None:
+    if form == ARCHIVE and _archived_copy(gateway, qualified_name, guid, type_name) is None:
         raise GatewayError(f"{schema}: {qualified_name} was archived but the read-back does not show it")
 
 
@@ -1992,7 +2104,7 @@ def _read_schema_by_guid(gateway: CatalogueGateway, guid: str, qn: str):
 
 
 def read_back(registry, gateway: CatalogueGateway, slug: str, schemas: list[str], *,
-              curation_id: str = "", by: str = "") -> dict:
+              curation_id: str = "", by: str = "", reread: bool = False) -> dict:
     """Read Egeria and write what it says as proof rows. The one place a schema
     becomes `catalogued`: elements found under it by qualified name.
 
@@ -2040,8 +2152,66 @@ def read_back(registry, gateway: CatalogueGateway, slug: str, schemas: list[str]
                            "connector_note": "the connector's last refresh, not this target's"})
             summary["attached_waiting"] += 1
             summary["schemas"][schema] = "attached_waiting"
+    if reread:
+        # Refresh only (the route): a commit's own read-back step leaves its leave-out's rows as the apply left them.
+        reread_archives(registry, gateway, slug, summary, by=by)
     _read_database_facts(registry, gateway, slug, curation_id, summary)
     return summary
+
+
+def reread_archives(registry, gateway: CatalogueGateway, slug: str, summary: dict, *, by: str = "") -> None:
+    """Refresh re-reads (ruling 2, 2026-10-25): every leave-out whose archive calls Egeria all accepted but whose
+    read-back did not confirm them is read again, element by element, and each answer is a new `element_archived`
+    row. When every element is confirmed the schema gets its `archived` row, and the commit's leave-outs step and
+    state are worded again from the rows. A read that raises leaves the rows as they are and counts a failed read.
+    Nothing is sent to Egeria but reads."""
+    from resource_explorer.curate_plan import Curations
+
+    proofs = registry.list_catalogue_commit_proofs(slug)
+    leave_rows = [r for r in registry.list_catalogue_outbox_rows(slug) if r["element_kind"] == KIND_LEAVE_OUT]
+    touched: set[str] = set()
+    for r in leave_rows:
+        payload = r.get("payload") or {}
+        schema = str(payload.get("schema") or "")
+        a = archive_attempt(proofs, schema, r["id"])
+        if a is None or a["accepted"] != a["planned"] or len(a[RB_CONFIRMED]) == a["accepted"]:
+            continue
+        cid = str(payload.get("curation_id") or "")
+        rb = dict(planned=a["planned"], curation_id=cid, outbox_id=r["id"], by=by)
+        all_seen = True
+        for el in a["elements"]:
+            d = el["detail"] or {}
+            if d.get("read_back") == RB_CONFIRMED:
+                continue
+            try:
+                reason = _archive_seen(gateway, el["qualified_name"] or "", el["element_guid"], d.get("type") or "")
+            except Exception as exc:
+                _proof(registry, slug, P_READ_FAILED, schema=schema, curation_id=cid,
+                       detail={"error": " ".join(str(exc).split())[:gw.MAX_EGERIA_TEXT] or type(exc).__name__,
+                               "what": f"the archive read-back of {d.get('name') or el['element_guid']}"})
+                summary["read_failed"] += 1
+                all_seen = False
+                break
+            _element_archived(registry, slug, schema, el["element_guid"], d.get("type") or "", el["qualified_name"] or "",
+                              RB_FAILED if reason else RB_CONFIRMED, name=d.get("name") or "", reason=reason, **rb)
+            all_seen = all_seen and not reason
+        if all_seen:
+            own = next((el for el in a["elements"] if (el["detail"] or {}).get("type") == "DeployedDatabaseSchema"), None)
+            _proof(registry, slug, P_ARCHIVED, schema=schema, element_guid=own["element_guid"] if own else "",
+                   qualified_name=own["qualified_name"] if own else "", curation_id=cid, outbox_id=r["id"],
+                   recorded_by=by, detail={"form": ARCHIVE, "elements_archived": a["planned"],
+                                           "note": "every accepted archive confirmed on a later read-back"})
+            summary.setdefault("schemas", {})[schema] = "archived"
+        if cid:
+            touched.add(cid)
+    cur = Curations(registry)
+    for cid in touched:
+        rec = cur.get(cid) or {}
+        rows = [x for x in leave_rows if x.get("run_id") == cid]
+        if rec and rows:
+            _step_from_outbox(cur, cid, "leave_outs", rows, "remove", registry, settle=True)
+            if rec.get("state") == NEEDS_READ_BACK:
+                cur.finish(cid)
 
 
 def _read_database_facts(registry, gateway: CatalogueGateway, slug: str, curation_id: str, summary: dict) -> None:
@@ -2314,15 +2484,72 @@ def commit_written_as_line(registry, curation_id: str, since) -> str:
     return presser_hold.written_as_since(attached[:1] + archived[:1], since, wrote=wrote)
 
 
-def _step_from_outbox(cur, cid: str, step: str, rows: list[dict], what: str, registry=None) -> None:
-    done = [r for r in rows if r["status"] == "done"]
-    bad = [r for r in rows if r["status"] in ("failed", "dead")]
-    wait = [r for r in rows if r["status"] in ("pending", "running")]
+def _archive_words(attempt: dict, last_error: str = "") -> str:
+    """Ruling (2) 2026-10-25, from one leave-out's `element_archived` rows: "archived in Egeria (14 of 14 accepted) ·
+    read-back failed on <element>: <reason> · do not press again · Refresh re-reads". The element is the first not
+    confirmed; a pending one (its read raised) takes the reason the run recorded on its outbox row."""
+    head = f"archived in Egeria ({attempt['accepted']} of {attempt['planned']} accepted)"
+    if attempt["accepted"] < attempt["planned"]:
+        # a call Egeria did not accept stopped the walk: what it said is the outbox row's (never "not sent")
+        said = egeria_first_sentence(_unguarded(last_error))[0]
+        return f"{head} · {said} · do not press again"
+    first = next((r for r in attempt["elements"] if (r["detail"] or {}).get("read_back") != RB_CONFIRMED), None)
+    if first is None:
+        return f"{head} · confirmed"
+    d = first["detail"] or {}
+    if d.get("read_back") == RB_FAILED:
+        name, reason = d.get("name") or first["element_guid"], d.get("reason") or "reason not stated"
+    else:
+        name, reason = _failed_on(last_error, first)
+    return f"{head} · read-back failed on {name}: {reason} · {DO_NOT_PRESS}"
+
+
+def _unguarded(last_error: str) -> str:
+    """An outbox error without the "not retried: destructive write · " guard words and the schema prefix."""
+    from resource_explorer.egeria_outbox import NOT_RETRIED
+    text = " ".join(str(last_error or "").split())
+    if text.startswith(NOT_RETRIED):
+        text = text[len(NOT_RETRIED):].lstrip(" ·")
+    return text
+
+
+_FAILED_ON_RE = re.compile(r"read-back failed on (.+?): (.+?)(?: · Egeria said:|$)")
+
+
+def _failed_on(last_error: str, row: dict) -> tuple[str, str]:
+    """(element, reason) of a read that raised, as `_read_back_archive` worded it on the outbox row."""
+    m = _FAILED_ON_RE.search(_unguarded(last_error))
+    if m:
+        return m.group(1), m.group(2)
+    return (row["detail"] or {}).get("name") or row["element_guid"], "the read-back did not answer"
+
+
+def _step_from_outbox(cur, cid: str, step: str, rows: list[dict], what: str, registry=None, *, settle: bool = False) -> None:
+    """A step's state and words from its outbox rows and, for a leave-out, its proof rows. A leave-out whose archive
+    calls Egeria accepted is judged by its `element_archived` rows, whatever the outbox row says: all confirmed is
+    done; all accepted and some not confirmed is NEEDS_READ_BACK (ruling 2, 2026-10-25), never "failed" and never
+    "not sent". `settle`: update a finished record without reopening it (a Refresh)."""
+    set_step = cur.settle_step if settle else cur.set_step
     if not rows:
-        cur.set_step(cid, step, "skipped", f"no schema to {what}")
+        set_step(cid, step, "skipped", f"no schema to {what}")
         return
+    attempts: dict[int, dict] = {}
+    if what == "remove" and registry is not None:
+        slug = ((rows[0].get("payload") or {}).get("slug")) or ""
+        proofs = registry.list_catalogue_commit_proofs(slug) if slug else []
+        for r in rows:
+            got = archive_attempt(proofs, (r.get("payload") or {}).get("schema") or "", r["id"])
+            if got is not None:
+                attempts[r["id"]] = got
+    confirmed = {i for i, a in attempts.items() if a["accepted"] == a["planned"] and len(a[RB_CONFIRMED]) == a["accepted"]}
+    needs = {i for i, a in attempts.items() if a["accepted"] == a["planned"] and i not in confirmed}
+    done = [r for r in rows if r["status"] == "done" or r["id"] in confirmed]
+    bad = [r for r in rows if r["status"] in ("failed", "dead") and r["id"] not in confirmed]
+    wait = [r for r in rows if r["status"] in ("pending", "running")]
     verb = _PAST.get(what, what + "ed")
     parts = [f"{len(done)} of {len(rows)} {verb}, each with its proof row"]
+    if not done and bad and all(r["id"] in attempts for r in bad):
+        parts = []          # every failure is an accepted write: its own words say what happened, no "0 of n"
     if what == "attach" and registry is not None and done:
         # Two of three may already have been attached by an earlier commit: say which (the proof
         # row's mechanism is `already_attached` when the guard found the target already there).
@@ -2362,12 +2589,19 @@ def _step_from_outbox(cur, cid: str, step: str, rows: list[dict], what: str, reg
         parts.append(f"{(r['payload'] or {}).get('schema')}: {PRESS_AGAIN_WORDS}")
     more: list[str] = []
     for r in bad:
+        sch = (r['payload'] or {}).get('schema')
+        if r["id"] in attempts:
+            # Egeria accepted at least one archive call: never "not sent", never "press again" (ruling 2).
+            parts.append(f"{sch}: {_archive_words(attempts[r['id']], r.get('last_error') or '')}")
+            continue
         first, rest = egeria_first_sentence(r.get("last_error"))
-        parts.append(f"{(r['payload'] or {}).get('schema')}: {first}"
+        parts.append(f"{sch}: {first}"
                      + (f" · {PRESS_AGAIN_WORDS}" if _as_presser_row(r) else ""))
         if rest:
-            more.append(f"{(r['payload'] or {}).get('schema')}: {rest}")
-    cur.set_step(cid, step, "done" if len(done) == len(rows) else "failed", " · ".join(parts), more="\n".join(more))
+            more.append(f"{sch}: {rest}")
+    hard = [r for r in bad if r["id"] not in needs]
+    state = "done" if len(done) == len(rows) else "failed" if hard or wait or held else NEEDS_READ_BACK
+    set_step(cid, step, state, " · ".join(parts), more="\n".join(more))
 
 
 def fresh_report_shortfall(res: dict) -> str:

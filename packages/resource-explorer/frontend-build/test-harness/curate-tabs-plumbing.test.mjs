@@ -340,3 +340,16 @@ test('commit line: the database poller feeds it too (a catalogue commit record w
   assert.equal(l.state, 'published');
   assert.equal(l.readBack, '2026-10-11T09:00:00Z');
 });
+
+test('commit line: a catalogue commit that needs read-back says so, never failed and never press again (ruling 2026-10-25)', async () => {
+  const { ct } = await setUp('db');
+  const l = ct.commitLineFromRecord('db', { id: 'ffee0012', state: 'needs read-back', finished_at: '2026-10-25T17:49:40Z',
+    steps: [{ name: 'publish_elements', state: 'done' }, { name: 'leave_outs', state: 'needs read-back' }] });
+  assert.equal(l.state, 'needs read-back');
+  const host = document.createElement('div');
+  host.innerHTML = ct.commitLineHtml(l);
+  const el = host.querySelector('[data-curate-commit-line]');
+  assert.equal(el.dataset.commitLineState, 'needs read-back');
+  assert.match(el.textContent, /Publish · commit ffee · needs read-back · do not press again · Refresh re-reads/);
+  assert.doesNotMatch(el.textContent, /failed|press Publish again/);
+});
