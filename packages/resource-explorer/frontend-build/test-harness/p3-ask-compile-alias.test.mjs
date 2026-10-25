@@ -41,7 +41,7 @@ function makeServer(over = {}) {
   const s = {
     calls: [], questions: [Q_RUN, Q_NONE], ran: new Set(), schedules: [], aliases: [],
     gaps: ['cve_scan', 'activity_metrics'], runStatus: 'success', runError: 'rate limit reached',
-    scheduleFails: false, aliasLists: true, noGaps: false, deferred: [], stateFactOnly: false, ...over,
+    scheduleFails: false, aliasLists: true, noGaps: false, deferred: [], stateFactOnly: false, manifest: null, ...over,
   };
   const enc = new TextEncoder();
   globalThis.fetch = async (url, opts = {}) => {
@@ -71,10 +71,11 @@ function makeServer(over = {}) {
       s.schedules.push({ analysis_id: body.analysis_id, schedule: body.schedule, enabled: body.enabled });
       return ok({ status: 'ok' });
     }
+    if (u === '/api/context/compile' && s.manifest) return ok({ text: 'compiled text', manifest: s.manifest, derivation: [], compile_id: 'm1' });
     if (u === '/api/context/compile') {
       const open = s.gaps.filter((g) => !s.ran.has(g));
       const manifest = { packed: [{ key: 'foss_scorecard', rung: 'FULL', size: 120 }], compile_id: 'c1' };
-      if (!s.noGaps) manifest.gaps = open.map((key) => ({ key, reason: 'no stored result' }));
+      if (!s.noGaps) manifest.gaps = open.map((key) => ({ key, state: 'never_run', reason: 'has not run' }));
       if (s.deferred.length) manifest.deferred = s.deferred.map((key) => ({ key, reason: 'below the section cap of 12' }));
       return ok({ text: 'compiled text', manifest, derivation: [], compile_id: 'c1' });
     }
@@ -91,7 +92,7 @@ function makeServer(over = {}) {
     if (u === '/api/query/stream') {
       const done = body.project_slug
         ? { t: 'done', intent: 'health', hash: 'h2', cached: false,
-            compiled: { text: 't', manifest: { packed: [], gaps: s.gaps.filter((g) => !s.ran.has(g)).map((key) => ({ key, reason: 'no stored result' })) } } }
+            compiled: { text: 't', manifest: s.manifest || { packed: [], gaps: s.gaps.filter((g) => !s.ran.has(g)).map((key) => ({ key, state: 'never_run', reason: 'has not run' })) } } }
         : { t: 'done', intent: 'lookup', hash: 'h1', cached: false,
             alias_suggestion: { term: 'Foo Bar', candidate_slug: 'foo_bar', candidate_name: 'Foo Bar Repo' } };
       const frames = [{ t: 'chunk', v: 'No such repo.' }, done];
@@ -459,4 +460,64 @@ test('walk 2026-10-12: an analysis the server reports behind a state-answered qu
   const st = text(document.querySelector('[data-runnable="cve_scan"] [data-run-status]'));
   assert.match(st, /has run/);
   assert.doesNotMatch(st, /not run/);
+});
+
+/* ── HANDOFF-CHAT-ROUTING-AND-JOURNAL-SEED-2026-10-22.md items 4 and 8 ──── */
+
+// The shape compile_multi_resource_context writes: one `packed` across resources, each entry naming its resource,
+// and gaps judged by the fact layer. deployment_evidence has no recorded run on a resource surveyed before per-step
+// recording (NOT_ESTABLISHED, no last_run_at); egeria_interfaces is never_run.
+const MULTI = {
+  compile_id: '144eef54200fbe3c', mode: 'multi_resource', slugs: ['egeria', 'openlineage'], budget: 6000, used: 5890, headroom: 110,
+  packed: [
+    { key: 'dependency_analysis', role: 'evidence', rung: 'SUMMARY', size: 900, resource_slug: 'egeria' },
+    { key: 'dependency_analysis', role: 'evidence', rung: 'SUMMARY', size: 800, resource_slug: 'openlineage' },
+  ],
+  gaps: [
+    { key: 'deployment_evidence', state: 'not_established', reason: 'no run recorded · whether it ran is not known',
+      explanation: 'This resource was surveyed by runs that predate per-step recording, so whether this analysis was among them cannot be determined.',
+      resource_slug: 'egeria' },
+    { key: 'egeria_interfaces', state: 'never_run', reason: 'has not run', resource_slug: 'egeria' },
+  ],
+};
+
+test('item 8: each missing analysis shows ONE state, the one the compile judged; "ran" only with a recorded run', async () => {
+  const { document } = await setUp({ manifest: MULTI });
+  document.getElementById('ask-input').value = 'Does egeria integrate with OpenLineage?';
+  document.getElementById('ask-compile').click();
+  await wait();
+  const row = (k) => text(document.querySelector(`[data-gap="${k}"] [data-gap-status]`));
+  assert.equal(row('deployment_evidence'), '? no run recorded · whether it ran is not known');
+  assert.doesNotMatch(text(document.querySelector('[data-gap="deployment_evidence"]')), /not run|ran ·/);
+  assert.equal(row('egeria_interfaces'), '○ not run');
+  assert.equal(document.querySelector('[data-gap="deployment_evidence"] [data-cue]').getAttribute('title'),
+    MULTI.gaps[0].explanation, 'the fact layer\'s own sentence is on hover');
+  const gaps = text(document.querySelector('[data-compile-gaps]'));
+  assert.match(gaps, /2 with no stored result · 1 not run/);
+  assert.doesNotMatch(gaps, /2 not run/);
+});
+
+test('item 4: a multi-resource compile lists its stored results per resource, never "not reported"', async () => {
+  const { document, chat } = await setUp({ manifest: MULTI });
+  document.getElementById('ask-input').value = 'Does egeria integrate with OpenLineage?';
+  document.getElementById('ask-compile').click();
+  await wait();
+  const stored = text(document.querySelector('[data-compile-stored]'));
+  assert.equal(stored, '2 stored results used: dependency_analysis (egeria), dependency_analysis (openlineage)');
+  assert.equal(chat.sourceLine({ compiled: { manifest: MULTI } }),
+    'From 2 stored results · dependency_analysis (egeria), dependency_analysis (openlineage)');
+  // A manifest with no `packed` says what is not reported.
+  const { packed, ...noPacked } = MULTI;
+  assert.match(chat.sourceLine({ compiled: { manifest: noPacked } }), /its sources are not listed/);
+});
+
+test('item 8: the answer\'s own run rows take the same one state from the judged gap', async () => {
+  const { document } = await setUp({ manifest: MULTI });
+  document.getElementById('ask-input').value = 'Does egeria integrate with OpenLineage?';
+  document.getElementById('ask-submit').click();
+  await wait(300);
+  const status = (k) => document.querySelector(`[data-runnable="${k}"] [data-run-status]`);
+  // The stream's done frame carries the stub's own manifest; the rows come from that compile's gaps.
+  assert.equal(text(status('deployment_evidence')), '? no run recorded · whether it ran is not known');
+  assert.equal(text(status('egeria_interfaces')), '○ not run');
 });

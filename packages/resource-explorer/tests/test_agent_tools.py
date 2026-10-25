@@ -1786,41 +1786,77 @@ def test_the_conversation_answer_leads_with_the_link_totals(db):
     assert answer.endswith("There are 2 high-confidence links.")
 
 
-def test_multi_resource_budget_partitioning(db):
-    """Each resource is compiled with an equal share of what is left after a 20% reserve.
+def _multi_compile_run(db, slugs, budget, text_for=None):
+    """compile_multi_resource_context over a per-resource compile that binds the real signature. `text_for(slug,
+    share)` is the text each resource returns (default: a short line that always fits)."""
+    from unittest.mock import create_autospec
 
-    The reserve (matrix, preamble, synthesis) plus the shares must never exceed the budget, or the
-    prompt overruns the model's window; the floors (reserve 200, share 100) apply only to budgets
-    too small to split.
-    """
+    from resource_explorer import context_compile
     from resource_explorer.context_compile import CompiledContext, compile_multi_resource_context
+
+    def per_resource(registry, slug, question, **kw):
+        text = text_for(slug, kw["budget"]) if text_for else f"content for {slug}"
+        return CompiledContext(text=text, compile_id=f"id-{slug}-{kw['budget']}", derivation=[], manifest={
+            "used": len(text), "gaps": [],
+            "packed": [{"key": "dependency_analysis", "role": "evidence", "rung": "FULL", "size": len(text)}]})
+
+    fake = create_autospec(context_compile.compile_context, side_effect=per_resource)
+    with patch.object(context_compile, "compile_context", fake), \
+         patch.object(context_compile, "build_epistemological_matrix", return_value=("| Matrix |", [])):
+        result = compile_multi_resource_context(db, slugs, "test query", budget=budget)
+    return result, [c.kwargs["budget"] for c in fake.call_args_list]
+
+
+def _add_repos(db, *slugs):
     from resource_explorer.registry import Project
 
-    for slug in ("repo_a", "repo_b", "repo_c"):
+    for slug in slugs:
         db.add(Project(slug=slug, display_name=slug, collections=["c"], github_url=f"https://github.com/o/{slug}"))
 
-    def run(slugs, budget):
-        with patch("resource_explorer.context_compile.compile_context") as mock_compile, \
-             patch("resource_explorer.context_compile.build_epistemological_matrix", return_value=("| Matrix |", [])):
-            mock_compile.side_effect = lambda registry, slug, question, budget, **kw: CompiledContext(
-                text=f"content for {slug}", manifest={"used": budget, "gaps": []}, derivation=[],
-                compile_id=f"id-{slug}",
-            )
-            result = compile_multi_resource_context(db, slugs, "test query", budget=budget)
-        return result, [c.kwargs["budget"] for c in mock_compile.call_args_list]
 
-    # 1000 -> reserve 200, 800 split over 2 -> 400 each; over 3 -> 266 each (floor division).
-    result, shares = run(["repo_a", "repo_b"], 1000)
-    assert shares == [400, 400]
-    assert "Matrix" in result.text and "RESOURCE EVIDENCE: repo_a" in result.text
-    _, shares = run(["repo_a", "repo_b", "repo_c"], 1000)
-    assert shares == [266, 266, 266]
-
-    for budget in (500, 1000, 8000):
+def test_multi_resource_budget_partitioning(db):
+    """Each resource gets an equal share of what the matrix and preamble, MEASURED, leave of the budget; the assembled
+    text is what `used` counts, and it never exceeds the budget."""
+    _add_repos(db, "repo_a", "repo_b", "repo_c")
+    for budget in (1000, 6000, 8000):
         for slugs in (["repo_a", "repo_b"], ["repo_a", "repo_b", "repo_c"]):
-            _, shares = run(slugs, budget)
-            assert sum(shares) + max(200, int(budget * 0.20)) <= budget
+            result, shares = _multi_compile_run(db, slugs, budget)
+            overhead = len(result.text) - sum(len(f"content for {s}") for s in slugs)
+            assert len(set(shares)) == 1
+            # Nothing is reserved beyond what the preamble takes (it was a flat 20%), give or take the trailing newline.
+            assert budget - len(slugs) - 2 <= sum(shares) + overhead <= budget + 2
+            assert result.manifest["used"] == len(result.text) <= budget
+            assert result.manifest["headroom"] == budget - len(result.text)
+    assert "Matrix" in result.text and "RESOURCE EVIDENCE: repo_a" in result.text
 
-    # Too small to split: the per-resource floor of 100 wins, and the total is allowed to exceed the budget.
-    _, shares = run(["repo_a", "repo_b"], 100)
-    assert shares == [100, 100]
+
+def test_a_multi_resource_compile_over_budget_never_reports_headroom(db):
+    """Live, compile 144eef54: budget 6000, used 4996, headroom 1004, and 6,095 characters of text (item 7 of
+    HANDOFF-CHAT-ROUTING-AND-JOURNAL-SEED-2026-10-22.md). `used` added len(matrix) // 4 to character counts."""
+    from trellis_context import BudgetError
+
+    _add_repos(db, "repo_a", "repo_b")
+    # A resource text that ignores its share entirely: the assembled text cannot fit, so the compile fails.
+    with pytest.raises(BudgetError, match="ceiling is hard"):
+        _multi_compile_run(db, ["repo_a", "repo_b"], 1000, text_for=lambda slug, share: "x" * 700)
+    # Too small for the preamble itself: a hard failure, not a floor that overruns.
+    with pytest.raises(BudgetError, match="leaving no room for evidence"):
+        _multi_compile_run(db, ["repo_a", "repo_b"], 100)
+
+
+def test_a_resource_text_past_its_share_steps_every_share_down(db):
+    """The packer counts sections, not the blank lines between them, so a resource's text runs a little past its share.
+    The assembled text is measured and the shares step down until it fits."""
+    _add_repos(db, "repo_a", "repo_b")
+    result, shares = _multi_compile_run(db, ["repo_a", "repo_b"], 1000, text_for=lambda slug, share: "x" * (share + 40))
+    assert len(shares) == 4 and shares[2] < shares[0], "compiled once, then again with smaller shares"
+    assert result.manifest["used"] == len(result.text) <= 1000
+    assert result.manifest["headroom"] == 1000 - len(result.text)
+
+
+def test_a_multi_resource_manifest_lists_what_it_packed_per_resource(db):
+    """The readers of a compile read `packed` (item 4): one list across resources, each entry naming its resource."""
+    _add_repos(db, "repo_a", "repo_b")
+    result, _ = _multi_compile_run(db, ["repo_a", "repo_b"], 2000)
+    assert [(p["key"], p["resource_slug"]) for p in result.manifest["packed"]] == [
+        ("dependency_analysis", "repo_a"), ("dependency_analysis", "repo_b")]
