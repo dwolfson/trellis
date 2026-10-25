@@ -85,7 +85,7 @@ of every descendant; the loop stays until then.
 
 Owner's word 2026-10-23: "yes to restore as re-include, prove on the first
 post-reset throwaway". The proof ran on `laz_local_re_reproof_postreset_1025`
-(cataloguer-built, two schemas, 67 elements with two column-linked
+(cataloger-built, two schemas, 67 elements with two column-linked
 QualityAnnotations added for the purpose) on odpi/egeria 4486d1a7. Evidence:
 REPROOF-POSTRESET-1025-step2-BASELINE.json and
 REPROOF-POSTRESET-1025-step3-RESULT.md.
