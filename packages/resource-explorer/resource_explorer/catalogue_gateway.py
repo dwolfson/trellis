@@ -611,7 +611,7 @@ class CatalogueGateway(Protocol):
     def add_catalog_target(self, element_guid: str, name: str) -> str: ...
     def remove_catalog_target(self, relationship_guid: str) -> None: ...
     def elements_under(self, qualified_name_prefix: str) -> list[ElementRead]: ...
-    def archived_siblings(self, qualified_name: str) -> list[ArchivedSibling]: ...
+    def archived_siblings(self, qualified_name: str, *, type_name: str = "") -> list[ArchivedSibling]: ...
     def schema_elements(self, prefix: str) -> list[ElementRead]: ...
     def relationships(self, guid: str) -> list[Relationship]: ...
     def delete_element(self, guid: str, form: str, *, slug: str, scope: str = "") -> None: ...
@@ -1353,15 +1353,20 @@ class PyegeriaCatalogueGateway:
             raise GatewayError(_short(exc)) from exc
         return [e for e in parse_elements_answer(res) if e.qualified_name.startswith(qualified_name_prefix)]
 
-    def archived_siblings(self, qualified_name: str) -> list[ArchivedSibling]:
+    def archived_siblings(self, qualified_name: str, *, type_name: str = "") -> list[ArchivedSibling]:
         """S19: the archived copies of `qualified_name`, found by the name Egeria gives them on archive,
         `<qualified_name>_archivedOn_<date>`, newest first, every page read. A read that cannot be made raises
-        `SiblingLookupFailed`: never "no archived copy", so nothing is created on it."""
+        `SiblingLookupFailed`: never "no archived copy", so nothing is created on it.
+
+        `type_name` is the element's own type when the caller knows it (a leave-out's walk does). Without it the
+        type is guessed from the name's template prefix (`archived_sibling_type`), which is right only for a schema
+        or a database: every element under a schema carries the schema's prefix, so a column's copy searched as a
+        DeployedDatabaseSchema is never found (the 2026-10-25 post-reset re-proof, `widgets::made_on`)."""
         try:
             client = self._client("MetadataExpert")
         except Exception as exc:
             raise SiblingLookupFailed(_short(exc, 200)) from exc
-        return find_archived_siblings(client, qualified_name)
+        return find_archived_siblings(client, qualified_name, type_name=type_name)
 
     def schema_elements(self, prefix: str) -> list[ElementRead]:
         """Every DeployedDatabaseSchema named `<prefix>...`, live AND archived (forLineage), in ONE paged find:

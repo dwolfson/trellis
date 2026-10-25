@@ -86,6 +86,7 @@ class FakeEgeria:
         self.connector_errors: list[str] = []
         self.lingering: set[str] = set()
         self.fail: dict[str, str] = {}
+        self._last_find: list[dict] = []          # the first page of the newest archived-copy find
         self.zones_ok = True
         self.owner_policy = "set"          # set | refuse | fail
         self.zones: dict[str, list[str]] = {}
@@ -465,15 +466,38 @@ class FakeEgeria:
         self.last_wire = ("elements", raw or "No elements found")
         return parse_elements_answer(self.last_wire[1])
 
-    def archived_siblings(self, qualified_name):
-        """The starts-with, forLineage find for `<qn>_archivedOn_`, answered in the captured 6.2 shape and
-        parsed by the real gateway's parser."""
+    def archived_siblings(self, qualified_name, *, type_name=""):
+        """The starts-with, forLineage find for `<qn>_archivedOn_`, made by the REAL gateway's `find_archived_siblings`
+        against a MetadataExpert client bound to pyegeria's signature (`find_client`), so the type the real code puts
+        on the find (`type_name`, else the one guessed from the name's prefix) filters the answer as Egeria's typed
+        find does. Answers are the captured 6.2 Memento shape, parsed by the real parser."""
         self.calls.append(("archived_siblings", qualified_name))
         self._boom("archived_siblings")
-        prefix = qualified_name + _gw.ARCHIVED_ON
-        raw = [self.raw_element(g) for g, e in self.elements.items() if not e["deleted"] and e["qn"].startswith(prefix)]
-        self.last_wire = ("elements", raw or "No elements found")
-        return _gw.parse_archived_siblings(self.last_wire[1], qualified_name)
+        found = _gw.find_archived_siblings(self.find_client(), qualified_name, type_name=type_name)
+        self.last_wire = ("elements", self._last_find or "No elements found")
+        return found
+
+    def find_client(self):
+        """pyegeria's MetadataExpert, autospecced: `find_metadata_elements_with_string` answers from the fake's
+        elements, filtered by the search string (starts-with) and by `metadata_element_type` exactly as typed."""
+        from unittest.mock import create_autospec
+
+        from pyegeria import MetadataExpert
+
+        client = create_autospec(MetadataExpert, spec_set=True, instance=True)
+
+        def find(search_string="*", starts_with=True, start_from=0, page_size=0, metadata_element_type=None, body=None,
+                 **_kw):
+            hits = [g for g, e in self.elements.items() if not e["deleted"]
+                    and (e["qn"].startswith(search_string) if starts_with else e["qn"] == search_string)
+                    and (not metadata_element_type or e["type"] == metadata_element_type)]
+            page = [self.raw_element(g) for g in hits[start_from:start_from + (page_size or len(hits))]]
+            if start_from == 0:
+                self._last_find = page
+            return page or "No elements found"
+
+        client.find_metadata_elements_with_string.side_effect = find
+        return client
 
     def schema_elements(self, prefix):
         """The one paged schema find (live and archived DeployedDatabaseSchema under `prefix`), as raw 6.2 answers

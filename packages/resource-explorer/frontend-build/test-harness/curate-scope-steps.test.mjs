@@ -57,6 +57,20 @@ test('the steps are a numbered list under one header line: step n of m · runnin
   assert.equal(lis[4].querySelector('[data-scope-step-first]'), null);
 });
 
+test('ruling 2026-10-25: a leave-out whose archive Egeria accepted but did not read back says needs read-back, never failed', async () => {
+  const { mod } = await open();
+  const host = document.createElement('div');
+  const words = 'alpha: archived in Egeria (14 of 14 accepted) · read-back failed on widgets::made_on: no archived copy under its archived name · do not press again · Refresh re-reads';
+  const steps = STEPS({ leave_outs: { state: 'needs read-back', detail: words } }).map((st) => (['pending', 'submitted'].includes(st.state) ? { ...st, state: 'done' } : st));
+  host.innerHTML = mod.commitStepsHtml(REC(steps, { state: 'needs read-back' }));
+  assert.equal(flat(host.querySelector('[data-scope-steps-head]')), 'Publish · commit a3f2c001 · 9 of 9 steps · needs read-back · 0 failed');
+  const li = host.querySelector('[data-scope-commit-step="leave_outs"]');
+  assert.match(flat(li), /^4\. □ Leave outs · needs read-back/);
+  assert.ok(li.className.includes('border-l-[3px]'), 'it leads with a left-edge rule, as a failed step does');
+  assert.equal(flat(li.querySelector('[data-scope-step-first]')), words, 'and its words at once');
+  assert.doesNotMatch(flat(host), /not sent|press Publish again/);
+});
+
 test('a skipped refresh is not counted as failed in the header', async () => {
   const { mod } = await open();
   const host = document.createElement('div');
