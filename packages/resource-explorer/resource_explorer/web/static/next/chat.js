@@ -545,7 +545,7 @@ async function openJournalForm(turn, host) {
     return;
   }
   form.innerHTML = `
-    <div data-journal-entry class="max-h-[240px] min-w-0 overflow-auto whitespace-pre-wrap break-words rounded-sm border border-rule bg-paper p-s2 text-caveat text-ink">${esc(preview.body)}</div>
+    <div data-journal-entry class="min-w-0 whitespace-pre-wrap break-words rounded-sm border border-rule bg-paper p-s2 text-caveat text-ink">${esc(preview.body)}</div>
     <label class="mt-s2 block text-caveat text-ink-muted">Your note (optional, kept apart from the entry)
       <input data-journal-note-input type="text" maxlength="500" class="mt-[2px] w-full rounded-sm border border-rule-strong bg-paper p-s1 text-ink">
     </label>
