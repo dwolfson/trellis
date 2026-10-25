@@ -167,7 +167,7 @@ async def read_latest_commit(slug: str) -> dict:
     every schema. Read-only: it writes nothing and never contacts Egeria, so a reload and a second tab both read the
     same registry rows and see the same thing. `commit` is null when nothing was ever committed."""
     from datetime import datetime, timezone
-    from resource_explorer.curate_plan import Curations
+    from resource_explorer.curate_plan import FINISHED_STATES, Curations
     registry = _registry_for(slug)
 
     def build() -> dict:
@@ -175,7 +175,7 @@ async def read_latest_commit(slug: str) -> dict:
         if not recs:
             return {"commit": None, "terminal": None, "age_hours": None, "stale_unfinished": False, "states": {}}
         rec = recs[0]                                   # for_resource orders newest first
-        terminal = rec.get("state") in ("done", "failed")
+        terminal = rec.get("state") in FINISHED_STATES      # "needs read-back" too: only a Refresh changes it
         age = None
         try:
             then = datetime.fromisoformat(str(rec.get("requested_at") or "").replace("Z", "+00:00"))
@@ -219,7 +219,7 @@ async def post_read_back(slug: str, request: Request) -> dict:
             raise scope.ScopeError(503, "Egeria could not be reached: no client could be built")
         chosen, kept = commit._chosen_and_kept(view, derived["schemas"])
         schemas = chosen + kept
-        out = commit.read_back(registry, gateway, slug, schemas, by=author)
+        out = commit.read_back(registry, gateway, slug, schemas, by=author, reread=True)   # Refresh re-reads archives
         # The status line on the button: the same chips text the commit's read-back step shows (one derivation).
         out["chips_words"] = commit.read_back_words(commit.read_back_chips_for(registry, slug, schemas))
         return out

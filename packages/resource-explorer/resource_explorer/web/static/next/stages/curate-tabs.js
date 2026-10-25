@@ -31,11 +31,13 @@ export function commitLineFromRecord(kind, rec) {
   const steps = rec.steps;
   const running = steps.find((s) => s.state === 'running');
   const failed = steps.filter((s) => s.state === 'failed');
-  const done = steps.filter((s) => ['done', 'skipped', 'failed'].includes(s.state)).length;
+  const done = steps.filter((s) => ['done', 'skipped', 'failed', 'needs read-back'].includes(s.state)).length;
   const finished = steps.length > 0 && done === steps.length;
+  // 'needs read-back' (ruling 2026-10-25): Egeria accepted the archive, its read-back did not confirm it.
+  const unread = rec.state === 'needs read-back' || steps.some((s) => s.state === 'needs read-back');
   return {
     kind, id: String(rec.id),
-    state: failed.length || rec.state === 'failed' ? 'failed' : (finished || rec.state === 'done' ? 'published' : 'running'),
+    state: failed.length || rec.state === 'failed' ? 'failed' : unread ? 'needs read-back' : (finished || rec.state === 'done' ? 'published' : 'running'),
     step: running ? steps.indexOf(running) + 1 : Math.min(steps.length, done),
     steps: steps.length,
     started: rec.requested_at || '',
@@ -48,12 +50,13 @@ export function commitLineFromRecord(kind, rec) {
 /** The line itself. Empty when there is no record. */
 export function commitLineHtml(line) {
   if (!line) return '';
-  const cue = line.state === 'failed' ? 'error' : line.state === 'published' ? 'measured' : 'running';
+  const cue = line.state === 'failed' ? 'error' : line.state === 'published' ? 'measured' : line.state === 'needs read-back' ? 'archived' : 'running';
   const e = stateEntry(cue);
   const open = cue === 'measured' ? '<span class="text-state-ok"' : cue === 'error' ? '<span class="text-state-warn"' : '<span class="text-ink-muted"';
   const word = line.state === 'running' ? `step ${line.step} of ${line.steps} · running`
     : line.state === 'published' ? `published${line.readBack ? ` · read back ${String(line.readBack).slice(0, 10)}` : ''}`
-      : `failed${line.reason ? ` · ${line.reason}` : ''}`;
+      : line.state === 'needs read-back' ? 'needs read-back · do not press again · Refresh re-reads'
+        : `failed${line.reason ? ` · ${line.reason}` : ''}`;
   return `<div data-curate-commit-line data-commit-line-state="${esc(line.state)}" class="mb-s3 text-caveat text-ink">${open} data-cue="${cue}"><span class="font-glyph" aria-hidden="true">${e.glyph}</span></span> Publish · commit ${esc(line.id.slice(0, 4))} · ${esc(word)} · <button type="button" data-curate-commit-goto="curate_contents" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">Contents ›</button></div>`;
 }
 

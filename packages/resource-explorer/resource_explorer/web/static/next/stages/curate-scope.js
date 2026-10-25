@@ -666,6 +666,11 @@ const find = (view, schema, table) => {
 
 /* ── the commit (slice B) ───────────────────────────────────────────── */
 
+/** Architect ruling 2026-10-25 (2): Egeria accepted a destructive write whose read-back did not confirm it. A finished
+ *  state (only Refresh changes it), never "failed", so nothing on the page invites a second press. */
+export const NEEDS_READ_BACK = 'needs read-back';
+const finishedState = (state) => state === 'done' || state === 'failed' || state === NEEDS_READ_BACK;
+
 /** Two-word labels, one per step: a person scans these top to bottom. */
 const STEP_LABEL = {
   publish_elements: 'Publish elements', zone_membership: 'Zone membership',
@@ -673,7 +678,7 @@ const STEP_LABEL = {
   survey_report: 'Survey report', survey: 'Egeria survey', refresh: 'Refresh cataloger',
   read_back: 'Read back',
 };
-const STEP_GLYPH = { done: 'catalogued', failed: 'catalogue_failed', running: 'queued', pending: 'queued', submitted: 'queued', requested: 'queued' };
+const STEP_GLYPH = { done: 'catalogued', failed: 'catalogue_failed', running: 'queued', pending: 'queued', submitted: 'queued', requested: 'queued', [NEEDS_READ_BACK]: 'archived' };
 
 /** Egeria's long tail (the `* Context:` block) folded under "details": the row reads its first sentence. */
 const detailsHtml = (more, attr) => (more
@@ -728,7 +733,7 @@ export function commitStepsHtml(rec) {
   // The step line already says its state; a detail that starts with the same word would say it twice.
   const bare = (st) => String(st.detail || '').replace(new RegExp(`^${String(st.state).replace(/[^a-z_]/gi, '')} · `, 'i'), '');
   const rows = steps.map((st, i) => {
-    const failed = st.state === 'failed';
+    const failed = st.state === 'failed' || st.state === NEEDS_READ_BACK;   // both lead with their first sentence
     const running = st === cur;
     const first = failed ? ` <span data-scope-step-first>${esc(bare(st))}</span>` : (bare(st) ? moreHtml(bare(st)) : '');
     const hint = running && st.name === 'survey' && st.state === 'submitted' ? surveyRunningHtml(rec, st) : '';
@@ -993,7 +998,7 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshSco
     commitUi.rec = rec;
     setCommitLine(commitLineFromRecord('db', rec));
     paintSteps();
-    if (rec.state === 'done' || rec.state === 'failed') {
+    if (finishedState(rec.state)) {
       commitUi.polling = false;
       commitUi.sig = stepSig(rec);
       await redraw(commitSummary(rec));          // the tree and header re-read from the proof rows
@@ -1053,7 +1058,7 @@ function followUnfinished(el, slug, id) {
     let rec;
     try { rec = await getCatalogueCommitRecord(slug, id); } catch { return; }
     setCommitLine(commitLineFromRecord('db', rec));
-    if (rec.state === 'done' || rec.state === 'failed') {
+    if (finishedState(rec.state)) {
       stop();
       try { const v = await getCatalogueScope(slug); if (v && Array.isArray(v.schemas) && !stale(el, slug)) announceView(el, slug, v); } catch { /* the line is already settled */ }
     }
