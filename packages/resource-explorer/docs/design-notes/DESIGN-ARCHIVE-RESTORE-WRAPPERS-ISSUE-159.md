@@ -80,3 +80,48 @@ of every descendant; the loop stays until then.
   recommendation) or waits for a pyegeria release that carries the methods.
 - Whether to ask Mandy the anchored-descendant question directly, which
   would save the second half of the proof.
+
+## 5. Addendum 1 (2026-10-25): the post-reset proof answered the open questions
+
+Owner's word 2026-10-23: "yes to restore as re-include, prove on the first
+post-reset throwaway". The proof ran on `laz_local_re_reproof_postreset_1025`
+(cataloger-built, two schemas, 67 elements with two column-linked
+QualityAnnotations added for the purpose) on odpi/egeria 4486d1a7. Evidence:
+REPROOF-POSTRESET-1025-step2-BASELINE.json and
+REPROOF-POSTRESET-1025-step3-RESULT.md.
+
+Archive half: the leave-out of `alpha` through the lifted path archived
+exactly the 14 planned elements; the 53 others stayed ACTIVE; the two
+AssociatedAnnotation links on the archived column survived, visible only
+with forLineage. RE's own reporting of that press was a false failure ("not
+sent · press Publish again", zero proof rows); ruled separately as a bug:
+a proof row per accepted archive before any read-back, and after a
+destructive write never "not sent" and never "press again".
+
+Restore half, the three questions:
+
+1. **Does restoring a descendant need its anchor live?** A descendant
+   restored alone loses its Memento and regains its qualifiedName, but stays
+   invisible on plain reads until its anchor is restored (the 400
+   OMAG-REPOSITORY-HANDLER-400-010 names the anchor). So the order in §2 item
+   1 is anchor-first by necessity, not preference, and the loop treats that
+   400 as "anchor still archived", not as failure.
+2. **Does restoring the anchor restore its descendants?** No. Restoring the
+   schema brought back only the schema; its 12 descendants stayed archived.
+   The per-element loop stays, exactly as §2 item 1 has it.
+3. **Do annotation links come back?** Yes. After the full restore the two
+   links are back on plain reads; the report and its annotations were ACTIVE
+   throughout.
+
+One more fact the design did not have: restore recreates no relationships.
+RE's leave-out detaches the schema's CatalogTarget before archiving, and
+after the restore it is gone. So **re-include = restore every element from
+the leave-out's proof rows, anchor first, then re-attach what the leave-out
+detached, read-first**, and the leave-out's proof rows must record every
+relationship removed, not only the archives. The collision guard (§2 item 3)
+is unchanged. Final state of the throwaway after the proof: 67 ACTIVE,
+qualifiedNames unchanged, no Memento, CatalogTarget to be re-attached by the
+next Publish.
+
+The S19 builder brief follows from §2 as amended here; it waits for the
+coordinator's slot and the owner's merge, since it is an Egeria write path.
