@@ -82,6 +82,7 @@ import { nativeSurveysSectionHtml, nativeSurveysUnreadableHtml, bindNativeSurvey
 // STAGE-IA.md §0.3/§6 item 1) — who + when + the evidence-moved flag, one
 // function, called from both stores' rows rather than reimplemented here.
 import { personRowLineHtml } from '/static/next/row-anatomy.js';
+import { showMarkdown } from '/static/next/markdown.js';
 import { renderInvestigation, openInvestigationDetail, refreshOpenInvestigation, openCreateDialog as openNewInvestigationDialog } from '/static/next/stages/investigation.js';
 import { openInvestigationPicker, scopeActWording } from '/static/next/investigation-picker.js';
 import { addActWording, addListToInvestigation, openStartFromList, START_LABEL } from '/static/next/worklist-actions.js';
@@ -1810,7 +1811,7 @@ export async function promoteToPane(turn) {
     </div>
     <div class="mt-s1 text-provenance text-ink-muted">${esc(turn.source || '')}</div>
     <div class="my-s3 h-px bg-rule"></div>
-    <div id="promoted-body" class="min-h-[320px]"></div>`;
+    <div id="promoted-body" class="${form === 'chart' || form === 'diagram' ? 'min-h-[320px]' : ''}"></div>`;
   bindSubTabs();
   el.querySelector('[data-act="close-promoted"]').addEventListener('click', () => {
     state.promoted = null;
@@ -1838,7 +1839,10 @@ export async function promoteToPane(turn) {
     } else if (form === 'diagram') {
       await renderDiagramInto(body, turn, 'promoted');
     } else {
-      body.innerHTML = `<div class="whitespace-pre-wrap text-answer text-ink">${tnum(esc(turn.answer || ''))}</div>`;
+      // A text answer is markdown, as in the rail: drawn escaped first, then the sanitised rendering. Only a
+      // chart or diagram needs the 320px box; a short text answer left a blank gap above what follows.
+      body.innerHTML = `<div data-promoted-answer class="whitespace-pre-wrap text-answer text-ink">${tnum(esc(turn.answer || ''))}</div>`;
+      showMarkdown(body.querySelector('[data-promoted-answer]'), turn.answer || '');
     }
   } catch (err) {
     // Per-artefact failure, stated. Never a blank pane.
