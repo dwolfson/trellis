@@ -150,6 +150,15 @@ class PgVectorConfig(BaseSettings):
 # preset value. Likewise `rag_context_budget_tokens: None` for dev means no
 # new token-based RAG cutoff is introduced; build_context() joins every
 # retrieved chunk unchanged, exactly as it does today.
+#
+# The compile limits (`compile_evidence_budget_chars`, `compile_max_sections`)
+# are per-tier too: the characters of stored-analysis evidence the chat
+# compiles into a prompt, and how many ranked sections compete for them. Both
+# are 6000 / 12 on every tier today (measured 2026-09-09, see
+# context_compile.MAX_EVIDENCE_SECTIONS). Override with
+# EXPLORER_COMPILE_EVIDENCE_BUDGET_CHARS / EXPLORER_COMPILE_MAX_SECTIONS;
+# 0 for the section cap means no cap. Anyone lowering `num_ctx` should lower
+# the budget with it (docs/admin-guide.md).
 DEFAULT_MODEL_TIER = "dev"
 
 TIER_PRESETS: dict[str, dict[str, Any]] = {
@@ -157,11 +166,15 @@ TIER_PRESETS: dict[str, dict[str, Any]] = {
         "num_ctx": 32768,
         "rag_context_budget_tokens": None,
         "model": None,
+        "compile_evidence_budget_chars": 6000,
+        "compile_max_sections": 12,
     },
     "demo-gpu": {
         "num_ctx": 8192,
         "rag_context_budget_tokens": 2000,
         "model": "llama3.1:8b",
+        "compile_evidence_budget_chars": 6000,
+        "compile_max_sections": 12,
     },
     "demo-cpu": {
         # RE has one model slot (no separate code model the way EA does),
@@ -172,6 +185,8 @@ TIER_PRESETS: dict[str, dict[str, Any]] = {
         "num_ctx": 8192,
         "rag_context_budget_tokens": 2000,
         "model": "llama3.1:8b",
+        "compile_evidence_budget_chars": 6000,
+        "compile_max_sections": 12,
     },
 }
 
@@ -755,6 +770,8 @@ class ResolvedLLMTierConfig(BaseModel):
     model: str
     num_ctx: int
     rag_context_budget_tokens: Optional[int]
+    compile_evidence_budget_chars: int = 6000
+    compile_max_sections: int = 12
 
 
 def resolve_model_tier() -> str:
@@ -781,6 +798,22 @@ def resolve_model_tier() -> str:
     return DEFAULT_MODEL_TIER
 
 
+def _int_override(env_name: str, preset_value: int, *, minimum: int) -> int:
+    """The env override if set to an integer >= `minimum`, else the preset value.
+    An unusable value is logged and skipped, like an unknown tier: a typo must not fail startup."""
+    raw = os.environ.get(env_name, "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = None
+        if value is not None and value >= minimum:
+            return value
+        log.warning("Ignoring %s=%r (expected an integer >= %d); using the tier's %d",
+                    env_name, raw, minimum, preset_value)
+    return preset_value
+
+
 def resolve_llm_tier_config() -> ResolvedLLMTierConfig:
     """
     Resolve the effective Ollama model, ``num_ctx``, and RAG context budget
@@ -795,6 +828,9 @@ def resolve_llm_tier_config() -> ResolvedLLMTierConfig:
       2. The resolved tier's preset model.
       3. ``OllamaConfig``'s own class default (only reachable for ``dev``,
          whose preset leaves the model alone).
+
+    The compile limits follow the same order: ``EXPLORER_COMPILE_EVIDENCE_BUDGET_CHARS``
+    (>= 1) and ``EXPLORER_COMPILE_MAX_SECTIONS`` (>= 0; 0 is no cap), then the tier's preset.
     """
     tier = resolve_model_tier()
     preset = TIER_PRESETS[tier]
@@ -812,6 +848,10 @@ def resolve_llm_tier_config() -> ResolvedLLMTierConfig:
         model=model,
         num_ctx=preset["num_ctx"],
         rag_context_budget_tokens=preset["rag_context_budget_tokens"],
+        compile_evidence_budget_chars=_int_override(
+            "EXPLORER_COMPILE_EVIDENCE_BUDGET_CHARS", preset["compile_evidence_budget_chars"], minimum=1),
+        compile_max_sections=_int_override(
+            "EXPLORER_COMPILE_MAX_SECTIONS", preset["compile_max_sections"], minimum=0),
     )
 
 
@@ -865,8 +905,10 @@ def get_llm_tier_config(force_refresh: bool = False) -> ResolvedLLMTierConfig:
         _llm_tier_config = resolve_llm_tier_config()
         cfg = _llm_tier_config
         log.info(
-            "LLM tier resolved: tier=%s model=%s num_ctx=%s rag_context_budget_tokens=%s",
+            "LLM tier resolved: tier=%s model=%s num_ctx=%s rag_context_budget_tokens=%s "
+            "compile_evidence_budget_chars=%s compile_max_sections=%s",
             cfg.tier, cfg.model, cfg.num_ctx, cfg.rag_context_budget_tokens,
+            cfg.compile_evidence_budget_chars, cfg.compile_max_sections,
         )
     return _llm_tier_config
 

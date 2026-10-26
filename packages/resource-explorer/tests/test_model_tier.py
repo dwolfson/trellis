@@ -39,7 +39,8 @@ class TestResolveModelTier:
 
     def test_every_preset_has_the_required_keys(self):
         for tier, preset in TIER_PRESETS.items():
-            assert set(preset) == {"num_ctx", "rag_context_budget_tokens", "model"}
+            assert set(preset) == {"num_ctx", "rag_context_budget_tokens", "model",
+                                   "compile_evidence_budget_chars", "compile_max_sections"}
 
 
 class TestResolveLLMTierConfig:

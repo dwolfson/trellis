@@ -65,6 +65,39 @@ ANTHROPIC_API_KEY=sk-ant-...
 ANTHROPIC_MODEL=claude-opus-4-8
 ```
 
+### Model tier and compile limits
+
+`EXPLORER_MODEL_TIER` picks a machine profile: `dev` (the default), `demo-gpu` or `demo-cpu`. A tier sets the
+Ollama model, `num_ctx`, the RAG token budget and the two compile limits below. `LLM__OLLAMA__MODEL` overrides the
+tier's model. The resolved values are logged at start-up on the `LLM tier resolved:` line.
+
+The chat compiles stored analysis results into the prompt as evidence. Two limits shape that compile:
+
+| Setting (tier preset) | Env override | Default, every tier | Meaning |
+|---|---|---|---|
+| `compile_evidence_budget_chars` | `EXPLORER_COMPILE_EVIDENCE_BUDGET_CHARS` | 6000 | Characters of evidence in the prompt. Whole integer, 1 or more. |
+| `compile_max_sections` | `EXPLORER_COMPILE_MAX_SECTIONS` | 12 | Ranked evidence sections that compete for the budget. 0 means no cap. |
+
+Precedence is the same as for the model: the env var if set, then the tier's preset. An unusable value (not an
+integer, or below the minimum) is logged and ignored, so a typo falls back to the tier's value rather than stopping
+the server. Both values are in each compile's identity (`compile_id`), and the compile panel shows the budget and
+the cap beside the other manifest rows. The multi-resource compile (compare, integration) uses the same budget and
+measures its matrix and preamble as assembled; it holds no reserved share, so there is no setting for one.
+
+**Why 12 sections.** Measured 2026-09-09 on the three experiment repos, 6 questions each, at budget 6000:
+uncapped, about 26 sections share the budget and only 22% reach FULL detail (the rest sit at SUMMARY, which the
+model then narrates as if it were the answer). With the cap at 12, 88% of sections reach FULL and 52 of 54
+top-ranked sections are at FULL, with the budget (median 5,610 characters used), not the cap, deciding the last
+sections in. A cap of 8 gives 90% FULL but leaves the budget under-used (median 4,368). The comment above
+`MAX_EVIDENCE_SECTIONS` in `context_compile.py` has the full table.
+
+**Keep the budget consistent with `num_ctx`.** The budget is characters, `num_ctx` is tokens. 6,000 characters of
+evidence is roughly 1,500 to 2,000 tokens, which fits comfortably in the 8,192-token window the demo tiers use, with
+room for the instructions, the question, tool results and the answer (`llm.ollama.max_tokens`, 4096). If you lower
+`num_ctx` below 8,192, lower `compile_evidence_budget_chars` with it; a prompt that overflows the window is
+truncated by Ollama without warning. Raising the budget on `dev` (32,768 tokens) is safe well past 6,000, but
+re-measure the cap if you do, since the cap was chosen at 6000.
+
 ### The web UI
 
 `/` and `/next` serve the one UI. (The Classic UI and `RE_DEFAULT_UI` were removed 2026-10-21.)
