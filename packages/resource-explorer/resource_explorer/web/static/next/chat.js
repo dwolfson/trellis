@@ -175,6 +175,11 @@ export function sourceLine(body) {
       ? `From ${keys.length} stored result${keys.length === 1 ? '' : 's'} · ${keys.join(', ')}`
       : 'Compiled evidence was empty · answered from retrieval') + suffix;
   }
+  // Answered from stored rows with no compile behind them: said as what it was read from, never "not reported".
+  const from = body.answered_from;
+  if (from && from.kind === 'stored_dependencies' && from.resource_slug) {
+    return `From the stored dependency list of ${from.resource_slug} · ${from.analysis_id || 'dependency_analysis'}`;
+  }
   return 'No compiled evidence on this answer · source not reported';
 }
 

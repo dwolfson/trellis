@@ -1,7 +1,34 @@
 """Integration agent — answers 'how do X and Y work together?' queries."""
 from __future__ import annotations
 
+import re
+
 from resource_explorer.agents.base import BaseExplorerAgent
+
+
+def _name_key(text: str) -> str:
+    """A name as it can be written in a question: lower case, with -, _, . and spaces as one hyphen. So docling-core,
+    docling_core and "docling core" are one name."""
+    return re.sub(r"[-_.\s]+", "-", (text or "").lower()).strip("-")
+
+
+def _dependency_sentences(slug: str, name: str, rows: list[dict]) -> str:
+    """What the stored rows say about one declared dependency: the manifests that declare it, grouped by version,
+    dependency type and ecosystem. Only declarations are stored (manifests, never lock files), so every row is a
+    direct dependency, and whether it is ALSO pulled in transitively is not recorded."""
+    groups: dict[tuple[str, str, str], list[str]] = {}
+    for d in rows:
+        key = ((d.get("dep_version") or "").strip(), d.get("dep_type") or "", d.get("ecosystem") or "")
+        groups.setdefault(key, []).append(d.get("source_file") or "(file not recorded)")
+    files = sorted({f for fs in groups.values() for f in fs})
+    lines = [(f"Yes. {slug} declares {name} as a direct dependency, in {len(files)} "
+              f"manifest{'' if len(files) == 1 else 's'} (from its stored dependency list):")]
+    for (version, dep_type, ecosystem), fs in sorted(groups.items()):
+        kind = " ".join(x for x in (dep_type, ecosystem) if x) or "dependency"
+        lines.append(f"- {kind}, version {version or 'not pinned'}: {', '.join(sorted(fs))}")
+    lines.append(f"Only declared dependencies are recorded, so whether {name} also reaches {slug} transitively "
+                 "is not known.")
+    return "\n".join(lines)
 
 
 class IntegrationAgent(BaseExplorerAgent):
@@ -54,9 +81,17 @@ class IntegrationAgent(BaseExplorerAgent):
         ]
 
     def handle(self, query: str, resource_slug: str | None = None, **kwargs) -> str:
+        self._last_compiled = None
+        self._answered_from = None
         slugs = self._infer_all_project_slugs(query)
 
         if len(slugs) < 2:
+            # "Is there a relationship between data-prep-kit and docling-core?" names one resource and one of its
+            # declared dependencies. That is answered from the stored dependency list, not by asking for a second
+            # resource.
+            answer = self._named_dependency_answer(query, slugs, resource_slug)
+            if answer:
+                return answer
             from resource_explorer.registry import ProjectRegistry
             available = ", ".join(p.slug for p in ProjectRegistry().list_all())
             return (
@@ -105,6 +140,41 @@ class IntegrationAgent(BaseExplorerAgent):
             answer = self._fallback(query, slugs)
         lead = self._direct_answer_lead(slugs)
         return f"{lead}\n\n{answer}" if lead else answer
+
+    def _named_dependency_answer(self, query: str, slugs: list[str], resource_slug: str | None) -> str | None:
+        """The answer when the question names a registered repository (or is asked on one) and a dependency that
+        repository declares, read from its stored dependency rows: which manifests declare it, the version and the
+        dependency type. None when no named or scoped repository declares anything the question names. Fail-soft:
+        a failed read is no answer, and the agent goes on as before."""
+        from resource_explorer.registry import ProjectRegistry
+
+        try:
+            registry = ProjectRegistry()
+            candidates: list[str] = []
+            for s in [*slugs, *([resource_slug] if resource_slug else [])]:
+                norm = registry._normalize_slug(s)
+                if norm not in candidates and registry.get(norm):
+                    candidates.append(norm)
+            q = _name_key(query)
+            for slug in candidates:
+                own = {_name_key(slug)}
+                project = registry.get(slug)
+                if project and project.display_name:
+                    own.add(_name_key(project.display_name))
+                rows = registry.query_dependencies(slug)
+                named = sorted({d["dep_name"] for d in rows
+                                if len(_name_key(d["dep_name"])) >= 4 and _name_key(d["dep_name"]) not in own
+                                and re.search(rf"(?<![a-z0-9]){re.escape(_name_key(d['dep_name']))}(?![a-z0-9])", q)})
+                if named:
+                    self._answered_from = {"kind": "stored_dependencies", "resource_slug": slug,
+                                           "analysis_id": "dependency_analysis", "dependencies": named}
+                    return "\n\n".join(_dependency_sentences(slug, name, [d for d in rows if d["dep_name"] == name])
+                                        for name in named)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).debug("dependency answer unavailable for %s", slugs, exc_info=True)
+        return None
 
     def _declared_dependencies(self, slugs: list[str]) -> tuple[list[tuple[str, str, list[dict]]], list[str]]:
         """(a, b, dependencies of a naming b) for each ordered pair of named repositories, and the repositories with

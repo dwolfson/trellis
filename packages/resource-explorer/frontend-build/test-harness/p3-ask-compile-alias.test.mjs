@@ -521,3 +521,11 @@ test('item 8: the answer\'s own run rows take the same one state from the judged
   assert.equal(text(status('deployment_evidence')), '? no run recorded · whether it ran is not known');
   assert.equal(text(status('egeria_interfaces')), '○ not run');
 });
+
+test('an answer read from the stored dependency list says so, never "source not reported"', async () => {
+  const { chat } = await setUp();
+  const body = { compiled: null, answered_from: { kind: 'stored_dependencies', resource_slug: 'data_prep_kit',
+    analysis_id: 'dependency_analysis', dependencies: ['docling-core'] } };
+  assert.equal(chat.sourceLine(body), 'From the stored dependency list of data_prep_kit · dependency_analysis');
+  assert.equal(chat.sourceLine({ compiled: null }), 'No compiled evidence on this answer · source not reported');
+});

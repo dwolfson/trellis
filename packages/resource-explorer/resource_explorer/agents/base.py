@@ -33,6 +33,9 @@ class BaseExplorerAgent(ABC):
     #: HTTP route reads it after handle() to show the user the manifest that
     #: shaped the answer (see ConversationAgent._last_compiled).
     _last_compiled = None
+    #: What an answer was read from when it had no compile behind it, e.g. {"kind": "stored_dependencies",
+    #: "resource_slug", "analysis_id", "dependencies"}; None otherwise. The route puts it on the done event.
+    _answered_from = None
 
     #: Whether this agent may be given the tool that files a RequestForAction. The in-app chat does;
     #: the A2A surface sets it False because its tools are read-only (see agents/rfa_tools.py).

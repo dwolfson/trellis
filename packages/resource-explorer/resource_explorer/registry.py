@@ -10714,7 +10714,14 @@ class ProjectRegistry:
                 f"FROM project_dependencies WHERE {where} ORDER BY ecosystem, dep_type, dep_name",
                 params,
             ).fetchall()
-        return [dict(r) for r in rows]
+        # Rows stored before the parser dropped requirements-file inline comments still carry them in dep_version;
+        # every reader gets the version alone.
+        from resource_explorer.ingestion.dependency_parser import strip_inline_comment
+
+        out = [dict(r) for r in rows]
+        for d in out:
+            d["dep_version"] = strip_inline_comment(d.get("dep_version") or "")
+        return out
 
     def query_dependencies_history(self, slug: str) -> list[dict]:
         """Return one row per ingest/refresh run with total dependency count
