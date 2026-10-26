@@ -832,7 +832,8 @@ def test_the_integration_answer_leads_with_the_declared_dependency_and_the_promp
          patch.object(IntegrationAgent, "_cross_asset_link_lines", return_value=["LINKS TABLE"]), \
          patch.object(IntegrationAgent, "_run_agent", side_effect=lambda p: prompts.append(p) or "Through PostgreSQL."):
         answer = agent.handle("Can marquez work with openlineage?")
-    assert answer.startswith("marquez declares 1 dependency naming openlineage (io.openlineage:openlineage-java 1.2.0)")
+    assert answer.startswith(
+        "marquez declares 1 dependency naming openlineage (io.openlineage:openlineage-java 1.2.0 in build.gradle)")
     assert answer.endswith("Through PostgreSQL.")
     prompt = prompts[0]
     assert prompt.index("Direct evidence") < prompt.index("MATRIX") < prompt.index("LINKS TABLE")
@@ -841,6 +842,26 @@ def test_the_integration_answer_leads_with_the_declared_dependency_and_the_promp
     with patch("resource_explorer.registry.ProjectRegistry", return_value=db):
         assert IntegrationAgent()._direct_answer_lead(["openlineage", "marquez"]) .startswith("marquez declares")
         assert IntegrationAgent()._direct_answer_lead(["openlineage"]) == ""
+
+
+def test_the_lead_names_each_manifest_once_per_version():
+    """data_prep_kit declares docling-core ==2.50.1 in two requirements.txt files. Listed per row the lead read
+    "2 dependencies naming docling_core (docling-core ==2.50.1; docling-core ==2.50.1)": one dependency, its
+    version twice and neither file named."""
+    from resource_explorer.agents.integration_agent import IntegrationAgent
+
+    hits = [{"dep_name": "docling-core", "dep_version": "==2.50.1",
+             "source_file": "transforms/language/doc_chunk/requirements.txt"},
+            {"dep_name": "docling-core", "dep_version": "==2.50.1",
+             "source_file": "transforms/language/docling2parquet/requirements.txt"}]
+    with patch.object(IntegrationAgent, "_declared_dependencies",
+                      return_value=([("data_prep_kit", "docling_core", hits)], [])):
+        lead = IntegrationAgent()._direct_answer_lead(["data_prep_kit", "docling_core"])
+        lines = IntegrationAgent()._dependency_link_lines(["data_prep_kit", "docling_core"])
+    assert lead == ("data_prep_kit declares 1 dependency naming docling_core (docling-core ==2.50.1 in "
+                    "transforms/language/doc_chunk/requirements.txt and "
+                    "transforms/language/docling2parquet/requirements.txt), so the two are already connected.")
+    assert lines[0].startswith("[data_prep_kit] declares 1 dependency naming docling_core: docling-core ==2.50.1 in ")
 
 
 def test_dynamic_delegation_tools(db):
