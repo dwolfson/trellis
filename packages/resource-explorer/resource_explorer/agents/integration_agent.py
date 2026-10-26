@@ -205,9 +205,26 @@ class IntegrationAgent(BaseExplorerAgent):
         return found, [a for a in repos if not deps[a]]
 
     @staticmethod
-    def _dependency_names(hits: list[dict]) -> str:
-        shown = "; ".join(f"{d['dep_name']} {d.get('dep_version') or ''}".strip() for d in hits[:5])
-        return shown + (f" (+{len(hits) - 5} more)" if len(hits) > 5 else "")
+    def _dependency_groups(hits: list[dict]) -> dict[tuple[str, str], list[str]]:
+        """Hits grouped by (name, version), each with the manifests that declare it. data_prep_kit declares
+        docling-core ==2.50.1 in two requirements.txt files; listed per row it read "docling-core ==2.50.1;
+        docling-core ==2.50.1", one version twice and no file named."""
+        groups: dict[tuple[str, str], list[str]] = {}
+        for d in hits:
+            files = groups.setdefault((d["dep_name"], (d.get("dep_version") or "").strip()), [])
+            f = d.get("source_file")
+            if f and f not in files:
+                files.append(f)
+        return groups
+
+    @classmethod
+    def _dependency_names(cls, hits: list[dict]) -> str:
+        groups = list(cls._dependency_groups(hits).items())
+        shown = "; ".join(
+            f"{name} {version}".strip() + (f" in {' and '.join(sorted(files))}" if files else "")
+            for (name, version), files in groups[:5]
+        )
+        return shown + (f" (+{len(groups) - 5} more)" if len(groups) > 5 else "")
 
     def _dependency_link_lines(self, slugs: list[str]) -> list[str]:
         """Which named repository declares a dependency that names another named one (marquez declares
@@ -219,7 +236,8 @@ class IntegrationAgent(BaseExplorerAgent):
             out.append(f"[{a}] No dependencies are recorded for it, so whether it depends on "
                        f"{', '.join(b for b in slugs if b != a) or 'the others'} is unknown, not 'no'.")
         for a, b, hits in found:
-            out.append(f"[{a}] declares {len(hits)} dependenc{'y' if len(hits) == 1 else 'ies'} naming {b}: "
+            n = len(self._dependency_groups(hits))
+            out.append(f"[{a}] declares {n} dependenc{'y' if n == 1 else 'ies'} naming {b}: "
                        f"{self._dependency_names(hits)}.")
         return out
 
@@ -229,7 +247,7 @@ class IntegrationAgent(BaseExplorerAgent):
         declares an openlineage dependency, so the fact is stated by code, as the q11 confidence floor is."""
         found, _ = self._declared_dependencies(slugs)
         return " ".join(
-            f"{a} declares {len(hits)} dependenc{'y' if len(hits) == 1 else 'ies'} naming {b} "
+            f"{a} declares {(n := len(self._dependency_groups(hits)))} dependenc{'y' if n == 1 else 'ies'} naming {b} "
             f"({self._dependency_names(hits)}), so the two are already connected."
             for a, b, hits in found
         )
