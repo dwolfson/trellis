@@ -57,7 +57,7 @@ def _exchange(registry, session="s1", q=QUESTION, a=ANSWER, compile_id="abcdef12
 
 class TestMultiResourceTurn:
     """An integration or comparison turn is compiled by compile_multi_resource_context. Its entry must list what the
-    answer was built from (HANDOFF-CHAT-ROUTING-AND-JOURNAL-SEED-2026-10-22.md, item 4): the recorded manifest had no
+    answer was built from: the recorded manifest had no
     top-level `packed`, so the Evidence list was empty and the confidence counted 0 stored results."""
 
     def test_the_entry_lists_each_resources_evidence_and_a_real_confidence(self, registry):

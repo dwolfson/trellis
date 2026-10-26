@@ -150,12 +150,6 @@ export function renderRail() {
  *  and an answer retrieved from embeddings must not look alike. When the
  *  response does not say which, this says THAT — it never guesses, and it
  *  never quietly implies retrieval. */
-/** A packed entry's name: the analysis, and its resource when a multi-resource compile packed it (the same analysis
- *  can be packed once per resource). */
-function packedLabel(p) {
-  return p && p.key ? (p.resource_slug ? `${p.key} (${p.resource_slug})` : p.key) : '';
-}
-
 export function sourceLine(body) {
   const manifest = body.compiled && body.compiled.manifest;
   if (manifest && typeof manifest === 'object') {
@@ -182,6 +176,12 @@ export function sourceLine(body) {
       : 'Compiled evidence was empty · answered from retrieval') + suffix;
   }
   return 'No compiled evidence on this answer · source not reported';
+}
+
+/** A packed entry's name: the analysis, and its resource when a multi-resource compile packed it (the same analysis
+ *  can be packed once per resource). */
+function packedLabel(p) {
+  return p && p.key ? (p.resource_slug ? `${p.key} (${p.resource_slug})` : p.key) : '';
 }
 
 /** Mermaid source fenced inside an answer, if there is any.

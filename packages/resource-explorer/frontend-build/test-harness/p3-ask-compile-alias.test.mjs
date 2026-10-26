@@ -462,7 +462,7 @@ test('walk 2026-10-12: an analysis the server reports behind a state-answered qu
   assert.doesNotMatch(st, /not run/);
 });
 
-/* ── HANDOFF-CHAT-ROUTING-AND-JOURNAL-SEED-2026-10-22.md items 4 and 8 ──── */
+/* ── multi-resource compile: sources listed, one state per gap (2026-10-25) ── */
 
 // The shape compile_multi_resource_context writes: one `packed` across resources, each entry naming its resource,
 // and gaps judged by the fact layer. deployment_evidence has no recorded run on a resource surveyed before per-step

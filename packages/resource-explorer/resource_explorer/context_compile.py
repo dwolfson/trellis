@@ -933,7 +933,7 @@ def _judge_gap(fact_layer, slug: str, analysis_id: str) -> dict:
     if fact.state == "not_established" and not fact.last_run_at:
         # "ran" is said only when a run is recorded. NOT_ESTABLISHED without one is the fact layer's "surveyed by runs
         # that predate per-step recording" (or no reader at all), and the panel showed "ran" beside "not run" for it
-        # (item 8 of HANDOFF-CHAT-ROUTING-AND-JOURNAL-SEED-2026-10-22.md). The fact's own note says which.
+        # (the compile panel for an integration question, 2026-10-25). The fact's own note says which.
         gap["reason"] = _NOT_ESTABLISHED_UNRECORDED
         note = getattr(fact, "note", "")
         gap["explanation"] = note if isinstance(note, str) and note else _NOT_ESTABLISHED_UNRECORDED
@@ -1629,8 +1629,8 @@ def compile_multi_resource_context(
 
     # The budget is in the packer's unit (characters), and so is everything measured here: the matrix and preamble are
     # measured as assembled, not reserved as a guessed 20% and counted as len // 4. That pair let compile 144eef54 report
-    # 1004 of headroom over 6,095 characters of text against a budget of 6000
-    # (HANDOFF-CHAT-ROUTING-AND-JOURNAL-SEED-2026-10-22.md, item 7). Over budget is a hard failure, never a truncation.
+    # 1004 of headroom over 6,095 characters of text against a budget of 6000. Over budget is a hard failure, never a
+    # truncation.
     overhead = len(_assemble([""] * len(normalized_slugs)))
     per_resource_budget = (budget - overhead) // len(normalized_slugs)
 
@@ -1710,7 +1710,7 @@ def compile_multi_resource_context(
         "coverage_matrix": matrix_records,
         # One list of what was packed, across every resource, each entry naming its resource. The readers of a
         # compile (the chat's source line, the compile panel, the journal entry's Evidence and Confidence) all read
-        # `packed`; without it a multi-resource answer read as having no sources (item 4 of the same note).
+        # `packed`; without it a multi-resource answer read as having no sources.
         "packed": [{**p, "resource_slug": slug} for slug, c in zip(normalized_slugs, compiled_list)
                    for p in (c.manifest.get("packed") or []) if isinstance(p, dict)],
         "per_resource": {slug: c.manifest for slug, c in zip(normalized_slugs, compiled_list)},

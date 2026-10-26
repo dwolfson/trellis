@@ -1831,8 +1831,8 @@ def test_multi_resource_budget_partitioning(db):
 
 
 def test_a_multi_resource_compile_over_budget_never_reports_headroom(db):
-    """Live, compile 144eef54: budget 6000, used 4996, headroom 1004, and 6,095 characters of text (item 7 of
-    HANDOFF-CHAT-ROUTING-AND-JOURNAL-SEED-2026-10-22.md). `used` added len(matrix) // 4 to character counts."""
+    """Live, compile 144eef54: budget 6000, used 4996, headroom 1004, and 6,095 characters of text, seen in
+    the compile panel on 2026-10-25. `used` added len(matrix) // 4 to character counts."""
     from trellis_context import BudgetError
 
     _add_repos(db, "repo_a", "repo_b")

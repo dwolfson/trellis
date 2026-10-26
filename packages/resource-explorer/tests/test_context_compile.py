@@ -598,7 +598,7 @@ class TestGapsAreJudgedNotListed:
 
     def test_not_established_with_no_recorded_run_never_says_ran(self):
         """The compile panel showed "ran · result not attributable" beside "not run" for deployment_evidence
-        (item 8 of HANDOFF-CHAT-ROUTING-AND-JOURNAL-SEED-2026-10-22.md). With no run recorded, "ran" is unproven."""
+        (seen 2026-10-25 on an integration question). With no run recorded, "ran" is unproven."""
         from unittest.mock import MagicMock
 
         from resource_explorer.context_compile import _judge_gap
