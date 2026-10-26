@@ -158,7 +158,7 @@ export function sourceLine(body) {
     // (compile_id, budget, headroom ...) are bookkeeping, not sources; they
     // were listed here once and read as if they were the answer.
     const packed = Array.isArray(manifest.packed) ? manifest.packed : null;
-    const keys = packed ? [...new Set(packed.map((p) => p && p.key).filter(Boolean))] : [];
+    const keys = packed ? [...new Set(packed.map(packedLabel).filter(Boolean))] : [];
     // The absence fact `evidenceFooterListsHtml` deliberately does not
     // enumerate belongs here instead, as one clause on the answer's own
     // sentence -- not a footer line per key, and not one combined line
@@ -176,6 +176,12 @@ export function sourceLine(body) {
       : 'Compiled evidence was empty · answered from retrieval') + suffix;
   }
   return 'No compiled evidence on this answer · source not reported';
+}
+
+/** A packed entry's name: the analysis, and its resource when a multi-resource compile packed it (the same analysis
+ *  can be packed once per resource). */
+function packedLabel(p) {
+  return p && p.key ? (p.resource_slug ? `${p.key} (${p.resource_slug})` : p.key) : '';
 }
 
 /** Mermaid source fenced inside an answer, if there is any.
@@ -200,7 +206,9 @@ const MEMBER_LISTED = new Set(['dependency_analysis', 'cve_scan', 'data_file_pro
 function listSources(body) {
   const packed = body?.compiled?.manifest?.packed;
   if (!Array.isArray(packed)) return [];
-  return packed.filter((p) => p && p.role === 'evidence' && MEMBER_LISTED.has(p.key)).map((p) => p.key);
+  // The list opens for the turn's resource, so an entry packed for ANOTHER resource (multi-resource compile) is not
+  // offered here: its button would open the wrong resource's list.
+  return packed.filter((p) => p && p.role === 'evidence' && MEMBER_LISTED.has(p.key) && !p.resource_slug).map((p) => p.key);
 }
 
 /** The lists an answer was compiled from, with their TOTAL and what the
@@ -728,20 +736,39 @@ function openCompile(turn) {
 
 let compileView = null;   // { turn, compiled, rechecked, gapRuns: {analysis id: {state, msg}} }
 
+/** A gap's ONE state, from what the compile judged it (`state`, `reason`, `explanation`: context_compile._judge_gap,
+ *  which reads the fact layer's run rows), never assumed. "not run" only for a gap judged never_run; a gap judged
+ *  nothing else is said in the compile's own words under the ? cue. */
+const GAP_CUE = { never_run: 'unrun', nothing_found: 'nothing', partial: 'partial', not_established: 'not_established', no_reader: 'no_reader' };
+function gapCue(g, ground) {
+  const key = GAP_CUE[g && g.state] || 'unknown';
+  const word = g && g.state === 'never_run' ? 'not run' : (g && g.reason) || 'not judged';
+  return cue(key, word, (g && (g.explanation || g.reason)) || 'The compile did not say why this has no stored result.', ground);
+}
+
 function gapRowHtml(g, k) {
   const run = compileView.gapRuns[g.key] || { state: 'idle' };
   const status = run.state === 'running' ? cue('running', 'running', '', 'chrome')
     : run.state === 'failed' ? `${cue('error', 'failed', run.msg, 'chrome')} <span class="text-chrome-muted">${esc(run.msg)}</span>`
     : run.state === 'skipped' ? cue('measured', 'already up to date', run.msg, 'chrome')
     : run.state === 'ran' ? cue('partial', 'ran, still no stored result', 'The run finished and the compile still finds no stored result for it.', 'chrome')
-    : cue('unrun', 'not run', 'No stored result for this analysis.', 'chrome');
+    : gapCue(g, 'chrome');
   return `<div data-gap="${esc(g.key)}" class="mb-[3px] flex flex-wrap items-baseline gap-s2">
-    <span class="font-mono text-chrome-ink">${esc(g.key)}</span>${g.reason ? `<span class="text-chrome-muted"${g.explanation ? ` title="${esc(g.explanation)}"` : ''}>· ${esc(g.reason)}</span>` : ''}
-    <span>${status}</span>
+    <span class="font-mono text-chrome-ink">${esc(g.key)}</span>
+    <span data-gap-status>${status}</span>
     <button data-gap-run="${k}" ${run.state === 'running' ? 'disabled' : ''}
       class="cursor-pointer rounded-sm border border-accent bg-transparent px-[6px] py-[1px] text-caps text-accent-on-dark disabled:cursor-default disabled:opacity-60"
       >${run.state === 'running' ? 'Running…' : run.state === 'failed' ? 'Run again' : 'Run'}</button>
   </div>`;
+}
+
+/** The gap list's count, said as "N not run" only when every gap was judged never_run. */
+function gapsHeadCue(gaps) {
+  const notRun = gaps.filter((g) => g && g.state === 'never_run').length;
+  return notRun === gaps.length
+    ? cue('unrun', `${gaps.length} not run`, 'Analyses that would answer this and have never run on this resource.', 'chrome')
+    : cue('not_established', `${gaps.length} with no stored result${notRun ? ` · ${notRun} not run` : ''}`,
+      'Analyses that would answer this and have no stored result; each row says why.', 'chrome');
 }
 
 function evidenceStateHtml() {
@@ -752,8 +779,8 @@ function evidenceStateHtml() {
   const packed = Array.isArray(m.packed) ? m.packed : null;
   const storedLine = packed
     ? `<div data-compile-stored class="mb-s1 text-chip"><span class="tnum">${packed.length}</span> stored result${packed.length === 1 ? '' : 's'} used${
-        packed.length ? `: <span class="font-mono">${packed.map((x) => esc(x.key)).join(', ')}</span>` : ''}</div>`
-    : `<div data-compile-stored class="mb-s1 text-chip">${cue('not_established', 'not reported', 'This compile did not say which stored results it used.', 'chrome')}</div>`;
+        packed.length ? `: <span class="font-mono">${packed.map((x) => esc(packedLabel(x))).join(', ')}</span>` : ''}</div>`
+    : `<div data-compile-stored class="mb-s1 text-chip">${cue('not_established', 'stored results used: not reported', 'This compile did not say which stored results it used.', 'chrome')}</div>`;
   // An analysis that was run from here and now has a stored result: said once, from the fresh compile.
   const nowStored = Object.entries(gapRuns).filter(([key, r]) => r.state === 'ran' && !(gaps || []).some((g) => g.key === key)).map(([key]) => key);
   const gapBlock = gaps === null
@@ -764,7 +791,7 @@ function evidenceStateHtml() {
         ? `<div data-compile-gaps data-compile-deferred class="mb-s2 text-chip">${cue('partial', `${deferredKeys.length} not read`, 'These ranked below the compile\'s section cap, so the compile did not look for a stored result.', 'chrome')} <span class="text-chrome-muted">nothing missing among the ones read; not read, below the section cap:</span> <span class="font-mono">${deferredKeys.map(esc).join(', ')}</span></div>`
         : `<div data-compile-gaps class="mb-s2 text-chip">${cue('measured', 'nothing missing', 'Every analysis that answers this has a stored result.', 'chrome')} <span class="text-chrome-muted">every analysis that answers this has a stored result</span></div>`)
       : `<div data-compile-gaps class="mb-s2 border border-chrome-line p-s2 text-chip">
-          <div class="mb-s1">${cue('unrun', `${gaps.length} not run`, 'Analyses that would answer this and have no stored result.', 'chrome')} <span class="text-chrome-muted">would answer this, with no stored result</span></div>
+          <div class="mb-s1">${gapsHeadCue(gaps)} <span class="text-chrome-muted">would answer this, with no stored result</span></div>
           ${gaps.map(gapRowHtml).join('')}
         </div>`;
   const ranLine = nowStored.length
@@ -1069,6 +1096,7 @@ function runnableRowHtml(r, k) {
     : run.state === 'skipped' ? cue('measured', 'already up to date', run.msg)
     : run.state === 'ran' ? cue('measured', 'ran just now', 'The run finished without an error.')
     : r.ran ? cue('measured', 'has run', 'This analysis has a recorded run for this resource.')
+    : r.gap ? gapCue(r.gap)
     : cue('unrun', 'not run', 'No stored result for this analysis on this resource.');
   const sc = r.sched || { state: 'unread' };
   const sched = sc.state === 'set'
@@ -1176,7 +1204,7 @@ async function refreshAfterRun(turn, ran) {
     }
     const fresh = await compileContext({ resourceSlug: turn.slug, question: turn.question, entityType: turn.entityType, perspectives: state.activePerspectives });
     const gaps = compileGaps(fresh) || [];
-    const stillMissing = gaps.map((g) => ({ id: g.key, ran: false, run: (keep.get(g.key) || {}).run || { state: 'idle' }, sched: (keep.get(g.key) || {}).sched || { state: 'unread' } }));
+    const stillMissing = gaps.map((g) => ({ id: g.key, ran: false, gap: g, run: (keep.get(g.key) || {}).run || { state: 'idle' }, sched: (keep.get(g.key) || {}).sched || { state: 'unread' } }));
     const done = [...keep.values()].filter((x) => x.run && x.run.state === 'ran' && !gaps.some((g) => g.key === x.id));
     turn.runnable = [...done, ...stillMissing];
     turn.rechecked = done.length
@@ -1189,7 +1217,7 @@ async function refreshAfterRun(turn, ran) {
 
 /** The analyses a compile lists as missing, as run/schedule rows. */
 function gapRunnable(compiled) {
-  return (compileGaps(compiled) || []).map((g) => ({ id: g.key, ran: false, run: { state: 'idle' }, sched: { state: 'unread' } }));
+  return (compileGaps(compiled) || []).map((g) => ({ id: g.key, ran: false, gap: g, run: { state: 'idle' }, sched: { state: 'unread' } }));
 }
 
 /** "Ask in chat" on a question row (PI-055): a turn whose answer is the row's own answer text, with the analyses

@@ -230,8 +230,10 @@ def _evidence_of(compile_row: dict | None) -> tuple[list[str], str | None, str]:
     packed = [p for p in (manifest.get("packed") or []) if isinstance(p, dict)]
     keys: list[str] = []
     for p in packed:
-        if p.get("key") and p["key"] not in keys:
-            keys.append(p["key"])
+        # A multi-resource compile packs the same analysis for several resources; each entry names its resource.
+        key = p.get("key") and (f"{p['key']} ({p['resource_slug']})" if p.get("resource_slug") else p["key"])
+        if key and key not in keys:
+            keys.append(key)
     as_ofs = [(p.get("pointer") or {}).get("as_of") for p in packed]
     as_of = max((a for a in as_ofs if a), default=None)
     gaps = [g.get("key") for g in (manifest.get("gaps") or []) if isinstance(g, dict) and g.get("key")]

@@ -25,7 +25,7 @@ import logging
 from dataclasses import dataclass
 
 from trellis_artifact_tree.model import Rung
-from trellis_context import Candidate, ContextSpec, Pointer, Section, pack
+from trellis_context import BudgetError, Candidate, ContextSpec, Pointer, Section, pack
 
 log = logging.getLogger(__name__)
 
@@ -187,6 +187,9 @@ _GAP_PHRASING = {
 _GAP_EXPLANATION = {
     "not_established": "it ran, but nothing shows this analysis produced the result",
 }
+
+#: A NOT_ESTABLISHED gap with no recorded run: nothing proves it ran, and nothing proves it did not.
+_NOT_ESTABLISHED_UNRECORDED = "no run recorded · whether it ran is not known"
 
 
 @dataclass(frozen=True)
@@ -927,6 +930,13 @@ def _judge_gap(fact_layer, slug: str, analysis_id: str) -> dict:
     gap["reason"] = phrasing
     if fact.state in _GAP_EXPLANATION:
         gap["explanation"] = _GAP_EXPLANATION[fact.state]
+    if fact.state == "not_established" and not fact.last_run_at:
+        # "ran" is said only when a run is recorded. NOT_ESTABLISHED without one is the fact layer's "surveyed by runs
+        # that predate per-step recording" (or no reader at all), and the panel showed "ran" beside "not run" for it
+        # (the compile panel for an integration question, 2026-10-25). The fact's own note says which.
+        gap["reason"] = _NOT_ESTABLISHED_UNRECORDED
+        note = getattr(fact, "note", "")
+        gap["explanation"] = note if isinstance(note, str) and note else _NOT_ESTABLISHED_UNRECORDED
     if fact.last_run_at:
         gap["last_run_at"] = fact.last_run_at
     if fact.can_run:
@@ -1557,8 +1567,10 @@ def compile_multi_resource_context(
 ) -> CompiledContext:
     """Compile structured comparative context across two or more resources.
 
-    Partitions the prompt token budget proportionally across resources and
-    generates an epistemological asymmetry matrix comparing survey coverage.
+    Gives each resource an equal share of what the matrix and preamble leave of
+    the budget, and generates an epistemological asymmetry matrix comparing
+    survey coverage. The assembled text never exceeds `budget` characters:
+    `used` is its length, and a compile that cannot fit raises BudgetError.
     """
     if not slugs:
         raise ValueError("At least one resource slug is required for context compilation.")
@@ -1590,14 +1602,7 @@ def compile_multi_resource_context(
     # Multi-resource compilation
     matrix_md, matrix_records = build_epistemological_matrix(registry, normalized_slugs)
 
-    # Allocate budget: reserve 20% for matrix, preamble, and cross-resource synthesis
-    reserved_budget = max(200, int(budget * 0.20))
-    evidence_budget = max(100, budget - reserved_budget)
-    per_resource_budget = max(100, evidence_budget // len(normalized_slugs))
-
-    compiled_list: list[CompiledContext] = []
     slug_types: dict[str, str] = {}
-
     for slug in normalized_slugs:
         rtype = "repo"
         if registry.get_database(slug, allow_unreadable=True):
@@ -1606,38 +1611,68 @@ def compile_multi_resource_context(
             rtype = "filesystem"
         slug_types[slug] = rtype
 
-        c = compile_context(
-            registry=registry,
-            slug=slug,
-            question=question,
-            budget=per_resource_budget,
-            resource_type=rtype,
-            perspectives=perspectives,
-            purposes=purposes,
-            target_model=target_model,
-            session_id=session_id,
-            instructions_variant=instructions_variant,
-            max_sections=max_sections_per_resource,
+    def _assemble(texts: list[str]) -> str:
+        text_parts: list[str] = [
+            "=== MULTI-RESOURCE EVIDENCE COMPILATION ===",
+            f"Target Resources: {', '.join(normalized_slugs)}\n",
+            "## Epistemological Coverage & Asymmetry Matrix",
+            "The following table compares survey findings and knowledge states across resources.",
+            "A state of 'KNOWN' indicates measured facts; 'NEVER_RUN' indicates unmeasured dimensions (do not assume absence).",
+            matrix_md,
+            "",
+        ]
+        for slug, t in zip(normalized_slugs, texts):
+            text_parts.append(f"=== RESOURCE EVIDENCE: {slug} ({slug_types[slug]}) ===")
+            text_parts.append(t)
+            text_parts.append("")
+        return "\n".join(text_parts).strip()
+
+    # The budget is in the packer's unit (characters), and so is everything measured here: the matrix and preamble are
+    # measured as assembled, not reserved as a guessed 20% and counted as len // 4. That pair let compile 144eef54 report
+    # 1004 of headroom over 6,095 characters of text against a budget of 6000. Over budget is a hard failure, never a
+    # truncation.
+    overhead = len(_assemble([""] * len(normalized_slugs)))
+    per_resource_budget = (budget - overhead) // len(normalized_slugs)
+
+    compiled_list: list[CompiledContext] = []
+    combined_text = ""
+    # A resource's text can run a little past its share (the packer counts its sections, not the blank lines between
+    # them), so the assembled text is measured and, when over, every share steps down by the overrun and the
+    # resources are compiled again. Bounded: a compile that still does not fit raises.
+    if per_resource_budget <= 0:
+        raise BudgetError(
+            f"multi-resource compile of {', '.join(normalized_slugs)}: the matrix and preamble take {overhead} "
+            f"characters of a budget of {budget}, leaving no room for evidence"
         )
-        compiled_list.append(c)
-
-    # Assemble combined text
-    text_parts: list[str] = [
-        "=== MULTI-RESOURCE EVIDENCE COMPILATION ===",
-        f"Target Resources: {', '.join(normalized_slugs)}\n",
-        "## Epistemological Coverage & Asymmetry Matrix",
-        "The following table compares survey findings and knowledge states across resources.",
-        "A state of 'KNOWN' indicates measured facts; 'NEVER_RUN' indicates unmeasured dimensions (do not assume absence).",
-        matrix_md,
-        "",
-    ]
-
-    for slug, c in zip(normalized_slugs, compiled_list):
-        text_parts.append(f"=== RESOURCE EVIDENCE: {slug} ({slug_types[slug]}) ===")
-        text_parts.append(c.text)
-        text_parts.append("")
-
-    combined_text = "\n".join(text_parts).strip()
+    for _attempt in range(3):
+        if per_resource_budget <= 0:
+            break
+        compiled_list = [
+            compile_context(
+                registry=registry,
+                slug=slug,
+                question=question,
+                budget=per_resource_budget,
+                resource_type=slug_types[slug],
+                perspectives=perspectives,
+                purposes=purposes,
+                target_model=target_model,
+                session_id=session_id,
+                instructions_variant=instructions_variant,
+                max_sections=max_sections_per_resource,
+            )
+            for slug in normalized_slugs
+        ]
+        combined_text = _assemble([c.text for c in compiled_list])
+        over = len(combined_text) - budget
+        if over <= 0:
+            break
+        per_resource_budget -= -(-over // len(normalized_slugs))
+    if len(combined_text) > budget:
+        raise BudgetError(
+            f"multi-resource compile of {', '.join(normalized_slugs)}: assembled {len(combined_text)} characters "
+            f"into a budget of {budget} — the ceiling is hard, and silent truncation would defeat every other guarantee"
+        )
 
     # Create multi-resource compile ID
     id_input = f"{':'.join(normalized_slugs)}|{budget}|" + "|".join(c.compile_id for c in compiled_list)
@@ -1645,7 +1680,7 @@ def compile_multi_resource_context(
 
     multi_compile_id = hashlib.sha256(id_input.encode("utf-8")).hexdigest()[:16]
 
-    total_used = sum(c.manifest.get("used", 0) for c in compiled_list) + len(matrix_md) // 4
+    total_used = len(combined_text)
     all_gaps = []
     for slug, c in zip(normalized_slugs, compiled_list):
         for g in c.manifest.get("gaps", []):
@@ -1673,6 +1708,11 @@ def compile_multi_resource_context(
         "used": total_used,
         "headroom": max(0, budget - total_used),
         "coverage_matrix": matrix_records,
+        # One list of what was packed, across every resource, each entry naming its resource. The readers of a
+        # compile (the chat's source line, the compile panel, the journal entry's Evidence and Confidence) all read
+        # `packed`; without it a multi-resource answer read as having no sources.
+        "packed": [{**p, "resource_slug": slug} for slug, c in zip(normalized_slugs, compiled_list)
+                   for p in (c.manifest.get("packed") or []) if isinstance(p, dict)],
         "per_resource": {slug: c.manifest for slug, c in zip(normalized_slugs, compiled_list)},
         "gaps": all_gaps,
         "notes": all_notes,

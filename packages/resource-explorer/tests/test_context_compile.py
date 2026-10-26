@@ -589,12 +589,28 @@ class TestGapsAreJudgedNotListed:
         from resource_explorer.context_compile import _judge_gap
 
         fl = MagicMock()
-        fl.fact.return_value = MagicMock(state="not_established", last_run_at="", can_run=[])
+        fl.fact.return_value = MagicMock(state="not_established", last_run_at="2026-10-02T10:00:00", can_run=[])
         gap = _judge_gap(fl, "x", "a")
         assert gap["state"] == "not_established", "the internal state name is unchanged"
         assert gap["reason"] == "ran · result not attributable"
         assert "cannot be credited" not in gap["reason"]
         assert gap["explanation"] == "it ran, but nothing shows this analysis produced the result"
+
+    def test_not_established_with_no_recorded_run_never_says_ran(self):
+        """The compile panel showed "ran · result not attributable" beside "not run" for deployment_evidence
+        (seen 2026-10-25 on an integration question). With no run recorded, "ran" is unproven."""
+        from unittest.mock import MagicMock
+
+        from resource_explorer.context_compile import _judge_gap
+
+        note = ("This resource was surveyed by runs that predate per-step recording, so whether this analysis was "
+                "among them cannot be determined.")
+        fl = MagicMock()
+        fl.fact.return_value = MagicMock(state="not_established", last_run_at="", can_run=[], note=note)
+        gap = _judge_gap(fl, "x", "deployment_evidence")
+        assert gap["state"] == "not_established"
+        assert gap["reason"] == "no run recorded · whether it ran is not known"
+        assert "ran ·" not in gap["reason"] and gap["explanation"] == note
 
     def test_an_unjudgeable_gap_is_still_reported(self):
         """Fail-soft: a fact layer that cannot answer must not cost the compile,

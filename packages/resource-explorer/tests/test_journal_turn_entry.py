@@ -55,6 +55,44 @@ def _exchange(registry, session="s1", q=QUESTION, a=ANSWER, compile_id="abcdef12
     registry.append_turn(session, "assistant", a, "docling_core", user_id="peterprofile", compile_id=compile_id)
 
 
+class TestMultiResourceTurn:
+    """An integration or comparison turn is compiled by compile_multi_resource_context. Its entry must list what the
+    answer was built from: the recorded manifest had no
+    top-level `packed`, so the Evidence list was empty and the confidence counted 0 stored results."""
+
+    def test_the_entry_lists_each_resources_evidence_and_a_real_confidence(self, registry):
+        from resource_explorer import context_compile
+        from resource_explorer.context_compile import (
+            CompiledContext,
+            compile_multi_resource_context,
+        )
+
+        registry.add(Project(slug="openlineage", display_name="openlineage", github_url="https://github.com/x/o",
+                             description=""))
+        as_of = {"docling_core": "2026-10-20T08:00:00+00:00", "openlineage": "2026-10-21T08:00:00+00:00"}
+
+        def per_resource(registry, slug, question, **kw):
+            return CompiledContext(
+                text=f"## dependency_analysis\n{slug} deps", compile_id=f"id-{slug}",
+                manifest={"used": 20, "gaps": [], "packed": [
+                    {"key": "dependency_analysis", "role": "evidence", "rung": "FULL", "size": 20,
+                     "pointer": {"resource_slug": slug, "view": "v", "as_of": as_of[slug]}}]},
+                derivation=[])
+
+        fake = mock.create_autospec(context_compile.compile_context, side_effect=per_resource)
+        with mock.patch.object(context_compile, "compile_context", fake), \
+             mock.patch.object(context_compile, "build_epistemological_matrix", return_value=("| m |", [])):
+            compiled = compile_multi_resource_context(registry, ["docling_core", "openlineage"],
+                                                      "Does docling_core integrate with openlineage?", budget=6000)
+        assert compiled.manifest["recorded"] is True
+        d = derive_turn_entry(registry, question="Does docling_core integrate with openlineage?", answer="Yes.",
+                              compile_id=compiled.compile_id, investigation="s", resource_slug="docling_core")
+        assert d["turn"]["evidence"] == ["dependency_analysis (docling_core)", "dependency_analysis (openlineage)"]
+        assert d["turn"]["confidence"] == "answered from 2 stored results"
+        assert d["turn"]["as_of"] == "2026-10-21T08:00:00+00:00"
+        assert "no stored analysis answers" not in d["body"]
+
+
 class TestDerivation:
     def test_the_body_is_the_turn_and_carries_the_evidence_ids(self, registry):
         d = derive_turn_entry(registry, question=QUESTION, answer=ANSWER, compile_id="abcdef1234567890",
