@@ -6,6 +6,7 @@ database or Ollama.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -13,13 +14,57 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from resource_explorer.native_survey_run import ReportRead
+from resource_explorer.native_survey_run import ReportRead, report_annotation
 from resource_explorer.registry import FILESYSTEM_FILE_COLUMNS_DDL, FileSystemEntity, ProjectRegistry
+from resource_explorer.surveyors.egeria_survey_reader import annotation_from_related_entry
 from resource_explorer.surveyors.filesystem import file_profiles as fp
 from resource_explorer.surveyors.filesystem import walk_extensions as we
 
 ASSET = "bbbbbbbb-0000-0000-0000-0000000000f5"
 LIMIT = 40_000          # the profile limit the tests use (the step's default is 50 MB)
+
+#: Egeria's own answer: the ReportedAnnotation entries of CSV report 2b52abd2 (treasury-dts.csv, header
+#: "Term Name,Qualified Name,Abbreviation,Summary,Description,Examples,Usage,Version Identifier,Status"), read live
+#: 2026-10-25 by the coordinator's gate.
+CSV_REPORT_FIXTURE = Path(__file__).parent / "fixtures" / "egeria_6_2" / "csv_survey_report_2b52abd2_annotations.json"
+TREASURY_HEADER = ["Term Name", "Qualified Name", "Abbreviation", "Summary", "Description", "Examples", "Usage",
+                   "Version Identifier", "Status"]
+
+
+def _report(entries, guid="rep-a") -> ReportRead:
+    """A ReportRead built the way `read_report` builds one: Egeria's wire entries through the paged reader's decoder."""
+    return ReportRead(guid=guid, at="", originator_guid="x",
+                      annotations=[report_annotation(annotation_from_related_entry(e)) for e in entries])
+
+
+def _typed(v):
+    """A plain value in Egeria's typed wire form (`elementProperties.propertyValueMap`)."""
+    if isinstance(v, dict):
+        return {"class": "MapTypePropertyValue", "mapValues": {"propertyValueMap": {k: _typed(x) for k, x in v.items()}}}
+    if isinstance(v, list):
+        return {"class": "ArrayTypePropertyValue",
+                "arrayValues": {"propertyValueMap": {str(i): _typed(x) for i, x in enumerate(v)}}}
+    return {"class": "PrimitiveTypePropertyValue", "primitiveValue": v}
+
+
+def _wire(type_name, props, guid="g"):
+    return {"element": {"elementGUID": guid, "type": {"typeName": type_name},
+                        "elementProperties": {"propertyValueMap": {k: _typed(v) for k, v in props.items()}}}}
+
+
+def _inspect(column, freq, values=None, asset="asset-1", guid=None):
+    """One InspectDataValues annotation of the live shape (qualifiedName, displayName, valueCount, valueList)."""
+    return _wire("ResourceProfileAnnotation", {
+        "annotationType": "InspectDataValues", "qualifiedName": f"{asset}::InspectDataValues::{column}::1792972072411",
+        "displayName": f"InspectDataValues ({column}) ", "valueCount": freq,
+        "valueList": list(freq) if values is None else values}, guid=guid or f"ann-{column}")
+
+
+def _schema(names, asset="asset-1"):
+    return _wire("SchemaAnalysisAnnotation", {
+        "annotationType": "Derive Schema From Data", "qualifiedName": f"{asset}::Derive Schema From Data::1",
+        "additionalProperties": {"Column Names": "[" + ", ".join(names) + "]", "Column Count": str(len(names))}},
+        guid="ann-schema")
 
 
 @pytest.fixture
@@ -222,14 +267,8 @@ def test_egerias_report_is_read_back_by_guid_into_column_rows_named_by_source(re
     port = _port()
     fp.run_file_profiles(fs, registry, port=port, limit=LIMIT)
     port.report_guid_for_action.side_effect = lambda action: "rep-a" if action == "action-asset-a.csv" else None
-    ann = lambda name, rec, nulls: {"guid": f"ann-{name}", "annotation_type": "ResourceProfileAnnotation", "analysis_step": "",  # noqa: E731
-                                    "summary": "", "explanation": "", "confidence": 100,
-                                    "detail": {"type_name": "ResourceProfileAnnotation",
-                                               "profile_properties": {"columnName": name},
-                                               "profile_counts": {"recordCount": rec, "nullCount": nulls},
-                                               "inferred_data_type": "string", "value_range_from": "1", "value_range_to": "3"}}
-    port.read_report.return_value = ReportRead(guid="rep-a", at="", originator_guid="action-asset-a.csv",
-                                               annotations=[ann("id", 3, 0), ann("name", 3, 1)])
+    port.read_report.return_value = _report([_schema(["id", "name"]), _inspect("name", {"ann": 1, "bob": 1, "": 1}),
+                                             _inspect("id", {"1": 1, "2": 1, "3": 1})])
     out = fp.read_back_egeria(fs, registry, port)
     assert out["read"] == 1 and out["waiting"] == 3
     port.read_report.assert_called_once_with("rep-a")
@@ -237,10 +276,63 @@ def test_egerias_report_is_read_back_by_guid_into_column_rows_named_by_source(re
     assert states["a.csv"]["state"] == fp.MEASURED and states["a.csv"]["stats_source"] == "egeria:rep-a"
     assert states["b.csv"]["state"] == fp.SUBMITTED
     cols = registry.list_filesystem_file_columns("lake", run, file_path="a.csv")
-    assert [(c["column_name"], c["record_ct"], c["null_ct"], c["value_ct"]) for c in cols] == [("id", 3, 0, 3), ("name", 3, 1, 2)]
+    assert [(c["column_name"], c["ordinal"], c["record_ct"], c["null_ct"], c["value_ct"], c["distinct_ct"])
+            for c in cols] == [("id", 1, 3, None, None, 3), ("name", 2, 3, 1, 2, 2)]
     assert all(c["egeria_report_guid"] == "rep-a" for c in cols)
     counts = fp.card_counts(list(states.values()))
     assert counts["by_egeria"] == 1 and counts["submitted"] == 3
+
+
+def test_egerias_live_report_names_every_column_by_its_header_and_derives_its_counts():
+    """Report 2b52abd2 as Egeria wrote it: 9 InspectDataValues annotations (newest column first), a schema annotation
+    and a physical-status one. Before this fix every column was stored as "InspectDataValues (<col>) " with no count."""
+    cols = fp.columns_from_report(_report(json.loads(CSV_REPORT_FIXTURE.read_text()), guid="2b52abd2"))
+    assert [c["column_name"] for c in cols] == TREASURY_HEADER
+    assert [c["ordinal"] for c in cols] == list(range(1, 10))
+    assert all(c["record_ct"] == 125 and c["state"] == fp.MEASURED for c in cols)
+    by = {c["column_name"]: c for c in cols}
+    # a column of blanks: Egeria's "" key is the null count
+    assert (by["Usage"]["null_ct"], by["Usage"]["value_ct"], by["Usage"]["distinct_ct"]) == (125, 0, 0)
+    assert by["Usage"]["min_len"] is None and by["Usage"]["max_len"] is None
+    # no "" key: nulls not measured by Egeria, never 0; distinct is the number of keys
+    assert (by["Term Name"]["null_ct"], by["Term Name"]["value_ct"], by["Term Name"]["distinct_ct"]) == (None, None, 121)
+    assert (by["Summary"]["distinct_ct"], by["Summary"]["min_len"], by["Summary"]["max_len"]) == (120, 4, 103)
+    assert (by["Status"]["distinct_ct"], by["Status"]["min_len"], by["Status"]["max_len"]) == (1, 5, 5)
+    assert {c["stats_source"] for c in cols} == {"egeria:2b52abd2"}
+    assert fp.schema_column_names(_report(json.loads(CSV_REPORT_FIXTURE.read_text()))) == TREASURY_HEADER
+
+
+def test_a_leading_bom_is_stripped_from_egerias_column_name_and_its_schema_list():
+    cols = fp.columns_from_report(_report([_schema(["\ufeffPatientId", "Date"]), _inspect("Date", {"2026-01-01": 2}),
+                                           _inspect("\ufeffPatientId", {"P1": 1, "P2": 1})]))
+    assert [(c["column_name"], c["ordinal"]) for c in cols] == [("PatientId", 1), ("Date", 2)]
+
+
+def test_a_whole_undelimited_line_as_one_column_is_header_suspect_and_a_two_word_header_is_not():
+    line = "PatientId Date AngleLeft AngleRight"
+    cols = fp.columns_from_report(_report([_schema([line]),
+                                           _inspect(line, {"P1 2026-01-01 30 31": 1, "P2 2026-01-02 29 33": 1})]))
+    assert [(c["column_name"], c["state"]) for c in cols] == [(line, fp.HEADER_SUSPECT)]
+    tabbed = fp.columns_from_report(_report([_inspect("a\tb", {"1\t2": 1})]))
+    assert tabbed[0]["state"] == fp.HEADER_SUSPECT
+    plain = fp.columns_from_report(_report([_schema(["Full Name"]), _inspect("Full Name", {"Ann Lee": 1})]))
+    assert plain[0]["state"] == fp.MEASURED
+
+
+def test_a_column_egeria_did_not_count_has_no_counts_never_zero():
+    cols = fp.columns_from_report(_report([_inspect("x", {})]))
+    assert [(c["column_name"], c["record_ct"], c["null_ct"], c["value_ct"], c["distinct_ct"]) for c in cols] == [
+        ("x", None, None, None, None)]
+
+
+def test_annotations_that_are_not_value_inspections_are_not_columns_and_the_reason_is_said():
+    entries = [e for e in json.loads(CSV_REPORT_FIXTURE.read_text())
+               if e["element"]["type"]["typeName"] != "ResourceProfileAnnotation"]
+    report = _report(entries)
+    assert fp.columns_from_report(report) == []
+    assert "listed 9 columns but inspected no values" in fp.no_columns_why(report)
+    assert fp.no_columns_why(_report([])) == "the report carries no annotations"
+    assert "derived no columns" in fp.no_columns_why(_report([_schema([])]))
 
 
 # ── 5. the end to end over the fixture folder ────────────────────────────────────────────────────────────────────────
@@ -611,6 +703,7 @@ def test_a_report_with_no_column_profile_is_no_columns_never_profiled_by_egeria(
     port.read_report.return_value = ReportRead(guid="rep-a", at="", originator_guid="x", annotations=[])
     out = fp.read_back_egeria(fs, registry, port)
     assert out["no_columns"] == 1 and out["read"] == 0
+    assert out["no_columns_why"] == {"a.csv": "report rep-a: the report carries no annotations"}
     states, _ = _states(registry)
     assert states["a.csv"]["state"] == fp.NO_COLUMNS
     c = fp.card_counts(list(states.values()))
@@ -622,13 +715,11 @@ def test_duplicate_column_names_in_a_report_dedupe_by_ordinal_and_a_bad_file_nev
     fs = _walk(registry, root, led_by="egeria")
     port = _port()
     fp.run_file_profiles(fs, registry, port=port, limit=LIMIT)
-    ann = lambda name, pos: {"guid": f"ann-{name}-{pos}", "annotation_type": "ResourceProfileAnnotation",  # noqa: E731
-                             "detail": {"type_name": "ResourceProfileAnnotation",
-                                        "profile_properties": {"columnName": name, "position": pos},
-                                        "profile_counts": {"recordCount": 3}}}
     port.report_guid_for_action.side_effect = lambda action: {"action-asset-a.csv": "rep-a",
                                                                "action-asset-b.csv": "rep-b"}.get(action)
-    good = ReportRead(guid="rep-a", at="", originator_guid="x", annotations=[ann("id", 1), ann("id", 1), ann("id", 2)])
+    # a header "id,id": Egeria lists it twice and inspects it twice; one annotation read twice is not a third column
+    once = _inspect("id", {"1": 3}, guid="ann-id-1")
+    good = _report([_schema(["id", "id"]), once, once, _inspect("id", {"2": 3}, guid="ann-id-2")])
     port.read_report.side_effect = lambda guid: good if guid == "rep-a" else (_ for _ in ()).throw(ValueError("bad"))
     out = fp.read_back_egeria(fs, registry, port)
     assert out["read"] == 1 and out["failed"] == 1 and "b.csv" in out["errors"]

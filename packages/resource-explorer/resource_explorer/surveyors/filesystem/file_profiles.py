@@ -47,9 +47,12 @@ not made by this build (no live calls). The coordinator's probe confirms or corr
   the file system's root FileFolder in Egeria (`file_system_name_from_root`, by the GUID RE holds for it), and when it
   cannot be established the Egeria half refuses for that file system (`file_system_name_unknown`: nothing read or
   created);
-* A3 Egeria's report carries one ResourceProfileAnnotation per column whose column name is in `profileProperties`
-  (`columnName`, else the annotation's display name or summary), its counts in `profileCounts`, and its range in
-  `valueRangeFrom` / `valueRangeTo` (`columns_from_report`).
+* A3 (corrected by the live read of 2026-10-25, report 2b52abd2; the shape first assumed, `profileProperties` /
+  `profileCounts`, is not one Egeria writes): Egeria's report carries one ResourceProfileAnnotation per column with
+  annotationType `InspectDataValues`, the column name in its qualifiedName `<asset>::InspectDataValues::<column>::<time>`
+  and a frequency map `valueCount` {value: count} plus `valueList`; and one SchemaAnalysisAnnotation "Derive Schema From
+  Data" whose additionalProperties list the `Column Names` in order (`columns_from_report`). The saved answer is the
+  test fixture `tests/fixtures/egeria_6_2/csv_survey_report_2b52abd2_annotations.json`.
 """
 from __future__ import annotations
 
@@ -683,50 +686,144 @@ def _num(v) -> int | None:
         return None
 
 
-def columns_from_report(report) -> list[dict]:
-    """A3: one column row per ResourceProfileAnnotation of Egeria's CSV report, `stats_source = egeria:<report guid>`.
-    An annotation that names no column is not a column (it is counted by the caller as not read). Duplicate column names
-    are deduplicated by ordinal: the same (name, ordinal) twice is one column; one name at two ordinals becomes
-    `name [ordinal]` for the second, so a file's rows never collide on the table's unique key."""
-    guid = report.guid
-    out: list[dict] = []
-    seen: dict[str, set[int]] = {}
+#: The annotationType of Egeria's per-column value inspection (the CSV Survey Service's "Inspect Data Values" step).
+INSPECT_DATA_VALUES = "InspectDataValues"
+#: The annotation that lists the file's columns in order (the CSV Survey Service's "Derive Schema From Data" step).
+DERIVE_SCHEMA = "Derive Schema From Data"
+_INSPECT_DISPLAY = re.compile(r"^InspectDataValues \((.*)\)\s*$", re.S)
+_BOM = "\ufeff"
+#: Delimiters Egeria's CSV Survey Service does not split on (it reads commas): a header holding one of them as a single
+#: column is a file Egeria read whole-line.
+_OTHER_DELIMITERS = ("\t", ";", "|", " ")
+
+
+def _clean_name(name: Any) -> str:
+    return str(name or "").lstrip(_BOM).strip()
+
+
+def _inspected_column(d: dict) -> str:
+    """The column an InspectDataValues annotation is about: the third segment of its qualifiedName
+    `<asset guid>::InspectDataValues::<column>::<time>`, else its displayName without the `InspectDataValues (...) `
+    wrapper. A leading BOM is stripped. "" when neither names a column."""
+    parts = str(d.get("qualified_name") or "").split("::")
+    if len(parts) >= 4 and parts[1] == INSPECT_DATA_VALUES:
+        return _clean_name("::".join(parts[2:-1]))
+    m = _INSPECT_DISPLAY.match(str(d.get("display_name") or ""))
+    return _clean_name(m.group(1)) if m else ""
+
+
+def schema_column_names(report) -> list[str] | None:
+    """The column names, in file order, from the report's "Derive Schema From Data" annotation (`additionalProperties`
+    `Column Names=[a, b, ...]` and `Column Count=N`). None when the report has no such annotation, or when its list
+    does not split into Column Count names (a name holding ", "): the order is then not known, never guessed."""
     for ann in report.annotations:
         d = ann.get("detail") or {}
-        kind = (ann.get("annotation_type") or "") + " " + (d.get("type_name") or "")
-        if "ResourceProfile" not in kind or "Log" in kind:
+        if (ann.get("annotation_type") or "") != DERIVE_SCHEMA:
             continue
-        props = d.get("profile_properties") or {}
-        name = props.get("columnName") or props.get("fieldName") or d.get("display_name") or ann.get("summary") or ""
-        if not name:
+        ap = d.get("additional_properties") or {}
+        text = str(ap.get("Column Names") or "").strip()
+        if not (text.startswith("[") and text.endswith("]")):
+            return None
+        names = [_clean_name(n) for n in text[1:-1].split(", ")] if text[1:-1].strip() else []
+        count = _num(ap.get("Column Count"))
+        return names if count is None or count == len(names) else None
+    return None
+
+
+def _undelimited(name: str, values: list) -> bool:
+    """A single column whose header splits on a delimiter Egeria does not split on, as one of its values does into as
+    many parts: the whole line arrived as one column (e.g. "PatientId Date AngleLeft AngleRight"). A space needs three
+    parts or more, so a one-column file headed "Full Name" is not flagged."""
+    for sep in _OTHER_DELIMITERS:
+        n = len([p for p in name.split(sep) if p])
+        if n < (3 if sep == " " else 2):
             continue
-        counts = d.get("profile_counts") or {}
-        record = _num(counts.get("recordCount") or counts.get("valueCount"))
-        nulls = _num(counts.get("nullCount"))
-        values = _num(counts.get("nonNullCount")) if counts.get("nonNullCount") is not None else (
-            record - nulls if record is not None and nulls is not None else None)
-        ordinal = _num(props.get("position") or props.get("ordinal")) or len(out) + 1
-        name = str(name)
-        ordinals = seen.setdefault(name, set())
-        if ordinal in ordinals:             # the same column twice (same name, same ordinal): kept once
+        if any(len([p for p in str(v).split(sep) if p]) == n for v in values if v not in (None, "")):
+            return True
+    return False
+
+
+def columns_from_report(report) -> list[dict]:
+    """A3 (the live shape, report 2b52abd2, 2026-10-25): one column row per `InspectDataValues` ResourceProfileAnnotation
+    of Egeria's CSV report, `stats_source = egeria:<report guid>`.
+
+    * the column name is in the annotation's qualifiedName (`_inspected_column`), BOM stripped; its ordinal is its place
+      in the "Derive Schema From Data" annotation's Column Names (`schema_column_names`), else the order read;
+    * the counts come from `valueCount`, a frequency map {value: count}: `record_ct` is the sum of the counts. Egeria
+      writes a blank cell as the key "": `null_ct` is that key's count, `value_ct` the rest, and `distinct_ct` the
+      number of the other keys (the RE half's meaning: distinct non-null values). With no "" key, `null_ct` and
+      `value_ct` stay None (not measured by Egeria), never 0, and `distinct_ct` is the number of keys;
+    * `min_len` / `max_len` from `valueList` (else the map's keys), blanks left out. Egeria states no type and no
+      range here: `declared_type` stays "" and `min_text` / `max_text` None.
+
+    An annotation that names no column is not a column (the caller counts the report as `no_columns`). A header that
+    looks like data, or a single column holding a whole undelimited line, is `header_suspect`. The same annotation
+    twice (one GUID) is one column; one name at two ordinals (a header "id,id") becomes `name [ordinal]` for the
+    second, so a file's rows never collide on the table's unique key."""
+    import pandas as pd
+
+    guid = report.guid
+    schema = schema_column_names(report)
+    taken: set[int] = set()
+    out: list[dict] = []
+    names: set[str] = set()
+    guids: set[str] = set()
+    for ann in report.annotations:
+        d = ann.get("detail") or {}
+        if ann.get("annotation_type") != INSPECT_DATA_VALUES or "ResourceProfile" not in (d.get("type_name") or ""):
             continue
-        if ordinals:                        # two columns of one name: told apart by ordinal
-            name = f"{name} [{ordinal}]"
-        ordinals.add(ordinal)
+        name = _inspected_column(d)
+        if not name or (ann.get("guid") and ann["guid"] in guids):
+            continue
+        guids.add(ann.get("guid") or "")
+        freq = {str(k): _num(v) for k, v in (d.get("value_count") or {}).items()}
+        counted = [c for c in freq.values() if c is not None]
+        record = sum(counted) if counted and len(counted) == len(freq) else None
+        nulls = freq.get("") if "" in freq else None
+        values_ct = record - nulls if record is not None and nulls is not None else None
+        distinct = (len(freq) - (1 if "" in freq else 0)) if record is not None else None
+        texts = [str(v) for v in (d.get("value_list") or list(freq)) if v not in (None, "")]
+        ordinal = None
+        if schema is not None:
+            ordinal = next((i for i, n in enumerate(schema, start=1) if n == name and i not in taken), None)
+        if ordinal is None:                 # not in the schema's list (or no list): after every ordinal known
+            ordinal = max(taken | {len(schema or [])}) + 1
+        taken.add(ordinal)
+        shown = f"{name} [{ordinal}]" if name in names else name   # two columns of one name: told apart by ordinal
+        names.add(name)
+        suspect = header_looks_like_data(name, pd.Series(texts, dtype=object))
         out.append({
-            "column_name": name, "ordinal": ordinal,
-            "declared_type": str(d.get("inferred_data_type") or props.get("dataType") or ""),
-            "inferred_general_type": general_type_of(str(d.get("inferred_data_type") or props.get("dataType") or "")),
-            "record_ct": record, "value_ct": values, "null_ct": nulls,
-            "distinct_ct": _num(counts.get("distinctCount") or counts.get("uniqueValueCount")),
-            "min_text": (str(d["value_range_from"]) if d.get("value_range_from") not in (None, "") else None),
-            "max_text": (str(d["value_range_to"]) if d.get("value_range_to") not in (None, "") else None),
-            "min_len": _num(counts.get("minLength")), "max_len": _num(counts.get("maxLength")),
+            "column_name": shown, "ordinal": ordinal,
+            "declared_type": "", "inferred_general_type": general_type_of(""),
+            "record_ct": record, "value_ct": values_ct, "null_ct": nulls, "distinct_ct": distinct,
+            "min_text": None, "max_text": None,
+            "min_len": min(map(len, texts)) if texts else None, "max_len": max(map(len, texts)) if texts else None,
             "sample_ratio": None, "stats_source": f"{EGERIA_SOURCE_PREFIX}{guid}", "egeria_report_guid": guid,
-            "egeria_datafield_guid": str(props.get("dataFieldGUID") or d.get("data_field_guid") or ""),
-            "state": MEASURED,
+            "egeria_datafield_guid": "",
+            "state": HEADER_SUSPECT if suspect else MEASURED,
+            "_values": texts,
         })
+    if len(out) == 1 and _undelimited(out[0]["column_name"], out[0]["_values"]):
+        out[0]["state"] = HEADER_SUSPECT
+    for row in out:
+        row.pop("_values")
+    out.sort(key=lambda r: r["ordinal"])
     return out
+
+
+def no_columns_why(report) -> str:
+    """Why a report gave no column rows, from what it does carry (said on the read's answer, per file)."""
+    kinds = sorted({str(a.get("annotation_type") or (a.get("detail") or {}).get("type_name") or "?")
+                    for a in report.annotations})
+    schema = schema_column_names(report)
+    if not report.annotations:
+        return "the report carries no annotations"
+    if schema is not None and not schema:
+        return f"Egeria derived no columns from the file (annotations: {', '.join(kinds)})"
+    if schema:
+        return (f"Egeria listed {len(schema)} column{'' if len(schema) == 1 else 's'} but inspected no values "
+                f"(annotations: {', '.join(kinds)})")
+    return f"no InspectDataValues annotation (annotations: {', '.join(kinds)})"
 
 
 def read_back_egeria(fs_entity, registry, port: CsvSurveyPort, *, run_id: str | None = None) -> dict:
@@ -739,7 +836,8 @@ def read_back_egeria(fs_entity, registry, port: CsvSurveyPort, *, run_id: str | 
     run_id = run["surveyed_at"]
     actions = (run.get("metrics") or {}).get("egeria_actions") or {}
     states = {r["file_path"]: r for r in registry.filesystem_file_profile_states(slug, run_id)}
-    counts = {"read": 0, "waiting": 0, "failed": 0, "no_columns": 0, "run_id": run_id, "errors": {}}
+    counts = {"read": 0, "waiting": 0, "failed": 0, "no_columns": 0, "run_id": run_id, "errors": {},
+              "no_columns_why": {}}
     for rel, act in actions.items():
         guid = act.get("engine_action_guid")
         if not guid or (states.get(rel) or {}).get("state") != SUBMITTED:
@@ -749,11 +847,13 @@ def read_back_egeria(fs_entity, registry, port: CsvSurveyPort, *, run_id: str | 
             if not report_guid:
                 counts["waiting"] += 1
                 continue
-            cols = columns_from_report(port.read_report(report_guid))
+            report = port.read_report(report_guid)
+            cols = columns_from_report(report)
             if not cols:
                 registry.replace_filesystem_file_profile(slug, run_id, rel, [marker_row(
                     NO_COLUMNS, stats_source=f"{EGERIA_SOURCE_PREFIX}{report_guid}", guid=report_guid)])
                 counts["no_columns"] += 1
+                counts["no_columns_why"][rel] = f"report {report_guid}: {no_columns_why(report)}"
                 continue
             registry.replace_filesystem_file_profile(slug, run_id, rel, cols)
         except Exception as exc:  # noqa: BLE001 -- one bad file stays submitted and is said; the request never fails
