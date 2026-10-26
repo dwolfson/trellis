@@ -590,23 +590,27 @@ class PyegeriaSurveyPort:
         except Unreadable as exc:
             raise NativeSurveyError(
                 f"Egeria's annotations of report {report_guid} could not be read to the end of the list: {exc}") from exc
-        annotations = []
-        for raw in every:
-            annotations.append({
-                "guid": raw.get("guid", ""),
-                "annotation_type": raw.get("annotation_type", ""),
-                "analysis_step": raw.get("analysis_step", ""),
-                "summary": raw.get("summary", ""),
-                "explanation": raw.get("explanation", ""),
-                "confidence": raw.get("confidence"),
-                # Everything else the wire carried, verbatim: the measurement
-                # payload is not RE's to summarise away.
-                "detail": {k: v for k, v in raw.items() if k not in (
-                    "guid", "annotation_type", "analysis_step", "summary",
-                    "explanation", "confidence")},
-            })
         return ReportRead(guid=report_guid, at=at, originator_guid=originator,
-                          annotations=annotations)
+                          annotations=[report_annotation(raw) for raw in every])
+
+
+def report_annotation(raw: dict) -> dict:
+    """One annotation of a `ReportRead`, from the flat dict `egeria_survey_reader`
+    gives. Pure: tests build a `ReportRead` from a saved Egeria answer through
+    the reader and this, the path `read_report` takes."""
+    return {
+        "guid": raw.get("guid", ""),
+        "annotation_type": raw.get("annotation_type", ""),
+        "analysis_step": raw.get("analysis_step", ""),
+        "summary": raw.get("summary", ""),
+        "explanation": raw.get("explanation", ""),
+        "confidence": raw.get("confidence"),
+        # Everything else the wire carried, verbatim: the measurement
+        # payload is not RE's to summarise away.
+        "detail": {k: v for k, v in raw.items() if k not in (
+            "guid", "annotation_type", "analysis_step", "summary",
+            "explanation", "confidence")},
+    }
 
 
 @contextlib.contextmanager
