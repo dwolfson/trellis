@@ -16,7 +16,7 @@ const wait = (ms = 150) => new Promise((r) => setTimeout(r, ms));
 const text = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 const SCOPED = 'docling_core';
 const QUESTION_WORDS = 'Add this turn to the investigation journal? [Add] [Not now]';
-const DERIVED_UNUSED = 'Per chat\n\nQuestion: Who are the main contributors?\n\nAnswer:\n\nalice 120\n\n- Scope: investigation study · resource docling_core\n- Evidence: contributor_stats';
+const DERIVED_UNUSED = 'Per chat\n\nQuestion: Who are the main contributors?\n\nAnswer:\n\nalice 120\n\n- Scope: investigation study - resource docling_core\n- Evidence: contributor_stats';
 
 let ANSWER = '';
 let DERIVED = '';

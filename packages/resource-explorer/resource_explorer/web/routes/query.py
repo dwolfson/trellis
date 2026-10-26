@@ -142,6 +142,9 @@ class QueryResponse(BaseModel):
     #: resource in scope, or the compile itself produced nothing.
     compiled: dict | None = None
     disambiguation_chips: list[dict] | None = None
+    #: What the answer was read from when no compile is behind it (BaseExplorerAgent._answered_from), e.g. the
+    #: stored dependency list of the resource it is asked on. None otherwise.
+    answered_from: dict | None = None
     #: Set when the answer is the journal tool's "Add this turn?" question: the turn it would add, for the pane
     #: to draw [Add] [Not now] against.
     journal_proposal: dict | None = None
@@ -263,7 +266,8 @@ async def ask(request: QueryRequest) -> QueryResponse:
 
     chart = _pick_chart(request.query, intent.value, request.resource_slug or "")
     chips = None
-    if intent.value in ("comparison", "integration"):
+    answered_from = getattr(agent, "_answered_from", None)
+    if intent.value in ("comparison", "integration") and not answered_from:
         chips = _disambiguation_chips(request.query, request.resource_slug or request.database_slug)
 
     return QueryResponse(
@@ -273,6 +277,7 @@ async def ask(request: QueryRequest) -> QueryResponse:
         chart=chart,
         compiled=compiled,
         disambiguation_chips=chips,
+        answered_from=answered_from,
         journal_proposal=getattr(agent, "_journal_proposal", None),
         exchange_id=exchange_id,
         journal_written=getattr(agent, "_journal_written", None) or [],
@@ -344,7 +349,8 @@ async def stream(request: QueryRequest) -> StreamingResponse:
                 loop.call_soon_threadsafe(queue.put_nowait, {"_done": True, "intent": intent, "hash": hashlib.sha256(request.query.encode()).hexdigest()[:16], "cached": False, "compiled": compiled,
                                                                   "journal_proposal": getattr(agent, "_journal_proposal", None),
                                                                   "exchange_id": exchange_id,
-                                                                  "journal_written": getattr(agent, "_journal_written", None) or []})
+                                                                  "journal_written": getattr(agent, "_journal_written", None) or [],
+                                                                  "answered_from": getattr(agent, "_answered_from", None)})
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
 
@@ -384,8 +390,11 @@ async def stream(request: QueryRequest) -> StreamingResponse:
                 # Side-by-side symbol comparison for comparison queries about API surface
                 if intent_val == "comparison":
                     done["compare_symbols"] = _compare_symbols_table(request.query)
-                # Disambiguation chips for cross-resource queries with missing or ambiguous targets
-                if intent_val in ("comparison", "integration"):
+                if item.get("answered_from"):
+                    done["answered_from"] = item["answered_from"]
+                # Disambiguation chips for cross-resource queries with missing or ambiguous targets. Not when the
+                # answer was read from the scoped resource's own dependency list: the second name was a dependency.
+                if intent_val in ("comparison", "integration") and not item.get("answered_from"):
                     chips = _disambiguation_chips(request.query, request.resource_slug or request.database_slug)
                     if chips:
                         done["disambiguation_chips"] = chips

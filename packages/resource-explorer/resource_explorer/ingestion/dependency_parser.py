@@ -9,6 +9,15 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+#: A requirements-file inline comment: "#" after whitespace ("docling-core==2.50.1    # remove potential conflicts").
+_INLINE_COMMENT = re.compile(r"\s+#.*$")
+
+
+def strip_inline_comment(text: str) -> str:
+    """A requirements line or a stored version without its trailing comment. The parser kept it, so data_prep_kit's
+    docling-core version was stored as "==2.50.1    # remove potential conflicts ..."."""
+    return _INLINE_COMMENT.sub("", text or "").strip()
+
 
 class DependencyParser:
     """
@@ -154,7 +163,7 @@ class DependencyParser:
                 line = line.strip()
                 if not line or line.startswith(("#", "-r", "-c", "--")):
                     continue
-                name, ver = self._split_pep508(line)
+                name, ver = self._split_pep508(strip_inline_comment(line))
                 if name:
                     deps.append(self._dep("python", name, ver, dep_type, path.name))
         except Exception as exc:

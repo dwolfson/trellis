@@ -257,6 +257,7 @@ class ConversationAgent(BaseExplorerAgent):
         journal_tool.set_journal_context(getattr(self, "session_id", None), getattr(self, "investigation", None))
         self._journal_proposal = None
         self._journal_written = []
+        self._answered_from = None
         if self.allow_writes and journal_tool.is_journal_request(query):
             # A verb the pane has a control for goes to the tool, not to the model: a small model answered "I don't
             # know" to "save this to the journal". Confirm stays with the person.
@@ -296,6 +297,7 @@ class ConversationAgent(BaseExplorerAgent):
                     query, resource_slug=slug, perspectives=kwargs.get("perspectives")
                 )
                 self._last_compiled = specialist._last_compiled
+                self._answered_from = getattr(specialist, "_answered_from", None)
                 return answer
 
         # Reset per turn, not just on failure -- a question with no resource
