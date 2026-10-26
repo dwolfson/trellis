@@ -266,7 +266,7 @@ def derive_turn_entry(registry, *, question: str, answer: str, compile_id: str |
     keys, as_of, confidence = _evidence_of(row)
     if compile_id and row is None:
         confidence = f"compile {compile_id[:8]} is not on file, so confidence is not established"
-    scope = f"investigation {investigation}" + (f" · resource {resource_slug}" if resource_slug else "")
+    scope = f"investigation {investigation}" + (f" - resource {resource_slug}" if resource_slug else "")
     body = "\n".join([
         "Per chat",
         "",

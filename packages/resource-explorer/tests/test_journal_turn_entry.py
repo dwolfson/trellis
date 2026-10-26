@@ -99,14 +99,14 @@ class TestDerivation:
                               investigation="study", resource_slug="docling_core")
         assert d["body"] == "\n".join([
             "Per chat", "", f"Question: {QUESTION}", "", "Answer:", "", ANSWER, "",
-            "- Scope: investigation study · resource docling_core",
+            "- Scope: investigation study - resource docling_core",
             "- As of: 2026-10-20T08:00:00+00:00",
             "- Confidence: answered from 2 stored results; 1 not measured (bus_factor)",
             "- Evidence: contributor_stats, commit_activity",
             "- Compile: abcdef12",
         ])
         assert d["turn"]["evidence"] == ["contributor_stats", "commit_activity"]
-        assert d["turn"]["scope"] == "investigation study · resource docling_core"
+        assert d["turn"]["scope"] == "investigation study - resource docling_core"
 
     def test_the_same_turn_always_derives_the_same_body(self, registry):
         kw = dict(question=QUESTION, answer=ANSWER, compile_id="abcdef1234567890", investigation="s", resource_slug="d")
@@ -130,7 +130,7 @@ class TestDerivation:
         assert row["turn"]["evidence"] == ["contributor_stats", "commit_activity"]
         assert row["suggested_to"] == [] and row["compile_id"] == "abcdef1234567890"
         assert out["note"] == row["note"] and out["already"] is False
-        assert row["turn"]["answer"] == ANSWER and row["turn"]["scope"] == f"investigation {investigation} · resource docling_core"
+        assert row["turn"]["answer"] == ANSWER and row["turn"]["scope"] == f"investigation {investigation} - resource docling_core"
         assert row["turn"]["compile_id"] == "abcdef1234567890"
 
     def test_a_hand_written_entry_keeps_its_plain_list(self, registry):
