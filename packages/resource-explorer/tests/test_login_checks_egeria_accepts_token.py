@@ -118,6 +118,10 @@ def _fake_egeria(monkeypatch, read):
             super().__init__(*a, **kw)
 
     monkeypatch.setattr(bsc, "AsyncClient", _Faked)
+    # pyegeria 6.2.13 posts the token request from _base_platform_client._post_for_bearer_token, with that
+    # module's own AsyncClient: without this the token POST bypasses the MockTransport and reaches a real platform.
+    import pyegeria.core._base_platform_client as bpc
+    monkeypatch.setattr(bpc, "AsyncClient", _Faked)
     return seen
 
 
