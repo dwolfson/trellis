@@ -212,6 +212,7 @@ async def test_startup_hook_recreates_deleted_file(env, monkeypatch):
         return None
     monkeypatch.setattr(pa, "alog_prefect_reachability_at_startup", _noop)
     monkeypatch.setattr(config, "get_llm_tier_config", lambda: None)
+    monkeypatch.setattr(config, "log_llm_tier_config", lambda: None)  # the lifespan's start-up line (#873)
     assert not path.exists()
     async with lifespan(webapp.app):
         assert set(_collections(path)) == {"db_a::PostgreSQL Secret", "db_b::PostgreSQL Secret"}
