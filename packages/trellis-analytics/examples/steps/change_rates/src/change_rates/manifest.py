@@ -1,4 +1,6 @@
 """The step's manifest: the wrapper's declaration. Its version is the package's."""
+from trellis_analytics.declaration import (AbsenceSentences, ConfidenceDeclaration, Declaration,
+                                           ExtentDeclaration, MeasureDeclaration)
 from trellis_analytics.manifest import StepManifest
 
 from change_rates import __version__
@@ -30,4 +32,25 @@ MANIFEST = StepManifest(
     # Design ruling 2026-10-15: one activity snapshot is an absence honestly recorded ("not measured · one activity
     # snapshot only; a rate needs two"), a completed survey. survey-invalid is only for inputs present and wrong.
     nothing_to_derive_guard="survey-completed",
+    declaration=Declaration(
+        result_kind="distribution",
+        measures=[MeasureDeclaration(name="change_rates", unit="rows written per day", as_of="toAsOf",
+                                     value_field="Writes Per Day")],
+        absence=AbsenceSentences(
+            not_measured=("Not measured: one table activity snapshot is stored, or the table is missing from one; "
+                          "a rate needs two, and a counter reset between them gives no rate."),
+            not_permitted=("Not permitted: the survey that stored the activity snapshots could not read this "
+                           "table's counters, so no rate is held for it."),
+            not_applicable="Not applicable: a view holds no rows of its own, so nothing is written to it.",
+            measured_nothing="Measured: no rows were inserted, updated or deleted over the interval."),
+        extents=[ExtentDeclaration(
+            name="tables_by_write_rate", fields=["scope", "Writes Per Day", "Writes In Interval", "Interval Days",
+                                                  "fromAsOf", "toAsOf"],
+            rows=20, order="by rows written per day, most first",
+            truncation="{shown} of {total} tables shown, by rows written per day", token_cost=1000,
+            citation="{analysis} · {scope} · as of {as_of}")],
+        # PostgreSQL's cumulative counters, read exactly and differenced: no estimate, no score.
+        confidence=ConfidenceDeclaration(form="measured"),
+        scope="member",
+    ),
 )

@@ -13,8 +13,9 @@ trellis wants stricter than the base:
   built as a step. The base allows either on either.
 
 and what the base does not have: `purposes` and `questions` (qualifiers checked at load) and a step's
-`credential_tier`, `inputs`, `display_name`, `stage`, `perspectives`, `request_type` and
-`nothing_to_derive_guard`.
+`credential_tier`, `inputs`, `display_name`, `stage`, `perspectives`, `request_type`,
+`nothing_to_derive_guard` and `declaration` (what its results are, for rendering, Chat and publishing:
+`trellis_analytics.declaration`).
 """
 from __future__ import annotations
 
@@ -23,6 +24,8 @@ from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 from pyegeria.view.analytic_registry import AnalyticFunctionSpec
+
+from trellis_analytics.declaration import Declaration
 
 Source = Literal["ods", "egeria", "resource"]
 
@@ -122,6 +125,10 @@ class StepManifest(_TrellisManifest):
     #: what the code uses: the wrapper hands them to the code as `inputs.parameters`, and the code reads them from
     #: there rather than from a constant of its own.
     parameters: dict[str, int | float | str] = Field(default_factory=dict)
+    #: What the step's results are, so RE renders, compiles and publishes them with no code of its own
+    #: (`trellis_analytics.declaration`). Its measures are this manifest's measures, each with a unit and an as-of;
+    #: its answers are `questions`, filled from them when left out.
+    declaration: Declaration | None = None
 
     @model_validator(mode="after")
     def _measure_types(self) -> "StepManifest":
@@ -196,4 +203,34 @@ class StepManifest(_TrellisManifest):
         if "connection" in self.inputs and self.credential_tier == "none":
             raise ValueError("a step that declares the 'connection' input must declare credential_tier "
                              "'read_only'; with 'none' there is no connection to hand it")
+        return self
+
+    @model_validator(mode="after")
+    def _declaration_matches(self) -> "StepManifest":
+        d = self.declaration
+        if d is None:
+            return self
+        names = self.measure_names()
+        declared = [m.name for m in d.measures]
+        undeclared = [n for n in names if n not in declared]
+        if undeclared:
+            raise ValueError(f"declaration gives no unit or as-of for measure {', '.join(undeclared)}: every "
+                             f"measure the step reports is declared ({', '.join(names)})")
+        unknown = [n for n in declared if n not in names]
+        if unknown:
+            raise ValueError(f"declaration declares measure {', '.join(unknown)}, which the step does not report "
+                             f"({', '.join(names)})")
+        for m in d.measures:
+            writes = self.annotation_type_for(m.name)
+            if m.annotation and m.annotation.type != writes:
+                raise ValueError(f"declaration says measure '{m.name}' writes as {m.annotation.type}; the step "
+                                 f"publishes it as {writes}")
+            if not m.annotation and writes != "ResourceMeasureAnnotation":
+                raise ValueError(f"declaration gives measure '{m.name}' no annotation, which reads as a generic "
+                                 f"measure; the step publishes it as {writes}, so declare that type")
+        if d.answers is None:
+            d.answers = list(self.questions)
+        elif sorted(d.answers) != sorted(self.questions):
+            raise ValueError(f"declaration answers {d.answers}, but the manifest's questions are "
+                             f"{self.questions}: one list of questions, not two")
         return self

@@ -324,11 +324,13 @@ def test_the_catalog_entries_in_analysis_catalog_yaml_are_the_generated_ones(rea
         entry = cards[name]
         # what the entry says is what the manifest says
         assert entry["name"] == m.display_name and entry["description"] == m.description
-        assert entry["resource_types"] == m.resource_types and entry["annotation_types"] == [m.annotation_type]
+        assert entry["resource_types"] == m.resource_types and entry["annotation_types"] == m.annotation_types()
         assert entry["intent"] == m.stage and entry["perspectives"] == m.perspectives
         assert entry["provided_by"]["step"] == m.name and entry["provided_by"]["version"] == m.version
         assert entry["provided_by"]["questions"] == m.questions and entry["provided_by"]["purposes"] == m.purposes
         assert entry["availability"] == "queued"      # a step never runs in the web process
+        # the declaration travels unchanged, so the catalog reads a step's results by the same rules as RE's own
+        assert entry["declaration"] == m.declaration.model_dump(mode="json", exclude_defaults=True), name
         # a card must say what "not measured" means: an absence is never shown as a zero
         assert "not measured" in entry["description"], name
 

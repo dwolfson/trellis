@@ -1,4 +1,6 @@
 """The step's manifest: the wrapper's declaration. Its version is the package's."""
+from trellis_analytics.declaration import (AbsenceSentences, AnnotationDeclaration, ConfidenceDeclaration, Declaration,
+                                           ExtentDeclaration, MeasureDeclaration)
 from trellis_analytics.manifest import StepManifest
 
 from hub_tables import __version__
@@ -38,4 +40,29 @@ MANIFEST = StepManifest(
     # Design ruling 2026-10-15: no keys captured is an absence honestly recorded ("not measured · no keys captured;
     # hubs cannot be derived"), a completed survey. survey-invalid is only for inputs present and wrong.
     nothing_to_derive_guard="survey-completed",
+    declaration=Declaration(
+        result_kind="proposal",
+        measures=[MeasureDeclaration(name="hub_tables", unit="tables referencing this one by foreign key",
+                                     as_of="asOf", value_field="Foreign Keys In"),
+                  MeasureDeclaration(name="hub_table_proposal", unit="tables referencing the proposed hub",
+                                     as_of="asOf", value_field="Foreign Keys In",
+                                     annotation=AnnotationDeclaration(type="ClassificationAnnotation"))],
+        absence=AbsenceSentences(
+            not_measured=("Not measured: no foreign keys are stored for this database, so hubs cannot be derived "
+                          "— not a finding that it has no hubs."),
+            not_permitted=("Not permitted: the survey that stored this database's keys could not read this "
+                           "table's constraints, so its degree is not held."),
+            not_applicable="Not applicable: a view has no keys of its own.",
+            measured_nothing="Measured: no table is referenced by enough other tables to be proposed as a hub."),
+        extents=[ExtentDeclaration(
+            name="proposed_hubs", fields=["scope", "Foreign Keys In", "Foreign Keys Out", "Referencing Tables",
+                                          "Referenced By Is Lower Bound"],
+            rows=10, order="by tables referencing it, most first",
+            truncation="{shown} of {total} proposed hubs shown, by tables referencing them", token_cost=440,
+            citation="{analysis} · {scope} · as of {as_of}")],
+        # A degree is counted from the stored keys; where keys were partly captured it is reported as a lower bound,
+        # in the result's own words ("basis"), not as a score.
+        confidence=ConfidenceDeclaration(form="measured"),
+        scope="member",
+    ),
 )
