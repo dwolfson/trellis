@@ -252,4 +252,3 @@ class TestNotBuildingTheDeferredRecordIdea:
         assert "saveReport" not in chat
         assert "actOnRecord" not in chat
         assert "listRecords" not in chat
-
