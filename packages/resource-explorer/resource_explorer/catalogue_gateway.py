@@ -103,8 +103,8 @@ ISSUE_117_BLOCK_ENV = "RE_ISSUE_117_BLOCK"
 #: The one scope the 2026-10-23 lift opens: a leave-out whose form is ARCHIVE. Callers outside it pass no scope.
 LEAVE_OUT_ARCHIVE = "leave_out_archive"
 LIFTED_SCOPES = frozenset({LEAVE_OUT_ARCHIVE})
-LIFT_EVIDENCE = ("lifted 2026-10-23, proven on odpi/egeria c6dbf952 / image a8bcff5c, evidence "
-                 "docs/design-notes/evidence/REPROOF-1021-PHASE2-RESULT.md")
+LIFT_EVIDENCE = ("lifted 2026-10-23, re-proven 2026-10-26 on odpi/egeria 8de9572c / image 4994af36, evidence "
+                 "docs/design-notes/evidence/REPROOF-1026-RESULT.md")
 NO_STAMP = "(no stamp)"
 ISSUE_117_ENV = "RE_ISSUE_117_BLOCK_OFF"
 OVERRIDE_WINDOW = timedelta(minutes=60)
@@ -204,10 +204,11 @@ def issue_117_state_line() -> str:
     return line
 
 
-#: The build the 2026-10-23 lift was proven on. RE does NOT compare the platform's build with it (it cannot tell an
+#: The build the lift was last proven on (2026-10-26 re-proof; first proven 2026-10-23 on odpi/egeria c6dbf952 /
+#: image a8bcff5c, REPROOF-1021-PHASE2-RESULT.md). RE does NOT compare the platform's build with it (it cannot tell an
 #: older build from a newer one by this string): the start-up line prints both side by side, and the only control
 #: for an older platform is the env re-arm, RE_ISSUE_117_BLOCK=on (architect ruling (b), 2026-10-23).
-PROVEN_BUILD = "odpi/egeria c6dbf952 / image a8bcff5c"
+PROVEN_BUILD = "odpi/egeria 8de9572c / image 4994af36"
 MAX_ORIGIN_CHARS = 200            # the origin text is logged: never more than this
 PLATFORM_UNREACHABLE = "platform: unreachable at start"
 #: The platform's own origin endpoint: the one pyegeria's `BasePlatformClient.async_get_platform_origin` reads.

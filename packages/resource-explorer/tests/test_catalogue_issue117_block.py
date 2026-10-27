@@ -198,8 +198,8 @@ def test_a_time_more_than_a_few_minutes_ahead_is_on_but_a_small_skew_passes(monk
     assert gw.issue_117_override()[0] == "db"
 
 
-OFF_LINE = ("archive-cascade block: OFF (lifted 2026-10-23, proven on odpi/egeria c6dbf952 / image a8bcff5c, evidence "
-            "docs/design-notes/evidence/REPROOF-1021-PHASE2-RESULT.md) · scope: leave-out archive")
+OFF_LINE = ("archive-cascade block: OFF (lifted 2026-10-23, re-proven 2026-10-26 on odpi/egeria 8de9572c / image "
+            "4994af36, evidence docs/design-notes/evidence/REPROOF-1026-RESULT.md) · scope: leave-out archive")
 
 
 def test_the_state_line_is_off_for_the_leave_out_by_default():
@@ -249,7 +249,7 @@ def test_the_session_start_logs_the_state(caplog):
 
 # ── the start-up line: the platform's origin beside the proven build (ruling (b), 2026-10-23) ──────────────────
 
-PROVEN = "lift proven on odpi/egeria c6dbf952 / image a8bcff5c"
+PROVEN = "lift proven on odpi/egeria 8de9572c / image 4994af36"
 
 
 def test_the_start_line_prints_the_platform_origin_beside_the_proven_build():
