@@ -1114,6 +1114,9 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
     # record_ct = 0, a real zero. `general_type` is derived from the column's
     # catalog type, never measured; `sample_ratio` is NULL in slice 1, which
     # profiles whole tables only. `ran_as` is the account that profiled it.
+    # `before_20yr_date_ct` (quality slice Q6) is added to an existing table by
+    # `_migrate_value_profile_columns`; a row profiled before it existed reads
+    # NULL there, "not measured", never 0.
     """
     CREATE TABLE IF NOT EXISTS database_value_profiles (
         id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1133,6 +1136,7 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         min_date          TEXT DEFAULT NULL,
         max_date          TEXT DEFAULT NULL,
         future_date_ct    BIGINT DEFAULT NULL,
+        before_20yr_date_ct BIGINT DEFAULT NULL,
         sample_ratio      REAL DEFAULT NULL,
         ran_as            TEXT DEFAULT '',
         state             TEXT NOT NULL DEFAULT 'measured',
@@ -2069,19 +2073,21 @@ class ProjectRegistry:
     #: test can shorten it; production is 10 s).
     _DDL_LOCK_TIMEOUT = "10s"
 
-    def _add_nullable_text_column(self, conn, table: str, column: str, existing: set[str]) -> None:
+    def _add_nullable_text_column(self, conn, table: str, column: str, existing: set[str],
+                                  sql_type: str = "TEXT") -> None:
         """Additive, nullable, no default: an ADD COLUMN that rewrites nothing, and every older row reads
         NULL ("not recorded"). The same shape as resource_schedules.created_by and step_runs'
         engine_action_* columns: IF NOT EXISTS on Postgres so two processes starting together cannot fail
         each other; lock_timeout so a table another process holds fails fast instead of queueing every
-        later reader behind it. SQLite has no IF NOT EXISTS here (single writer)."""
+        later reader behind it. SQLite has no IF NOT EXISTS here (single writer). `sql_type` is TEXT unless
+        the column is a count (BIGINT), still with no default."""
         if not existing or column in existing:
             return
         if conn.is_postgres:
             conn.execute(f"SET LOCAL lock_timeout = '{self._DDL_LOCK_TIMEOUT}'")
         try:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} TEXT"
-                         if conn.is_postgres else f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {sql_type}"
+                         if conn.is_postgres else f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
         except Exception as exc:
             if getattr(exc, "pgcode", None) == "55P03" or "lock timeout" in str(exc).lower():
                 raise RuntimeError(
@@ -4978,6 +4984,7 @@ class ProjectRegistry:
             )
         self._migrate_artifact_columns()
         self._migrate_profile_proof_columns()
+        self._migrate_value_profile_columns()
 
     #: Artifacts slice 1 (DESIGN-ARTIFACTS-VIEW-AND-DOC-LINKS.md §3; owner's go 2026-10-15; DDL record
     #: docs/ddl-artifact-columns.md). file_role: core | test | generated | vendored | docs from
@@ -5010,6 +5017,18 @@ class ProjectRegistry:
         for table, column in self.PROFILE_PROOF_COLUMNS:
             with self._conn() as conn:
                 self._add_nullable_text_column(conn, table, column, self._get_table_columns(conn, table))
+
+    #: Quality slice Q6 (DESIGN-QUALITY-Q6-RECENCY.md; DDL record docs/ddl-value-profile-q6.md): the whole-table
+    #: measure Recency's date-branch inference reads. NULL = profiled before the column existed, or not a date
+    #: column: "not measured", which every selection rule reads as not_established, never as 0.
+    VALUE_PROFILE_COLUMNS = (("database_value_profiles", "before_20yr_date_ct", "BIGINT"),)
+
+    def _migrate_value_profile_columns(self) -> None:
+        """The same shape as `_migrate_artifact_columns`: additive, nullable, no default, each in its own short
+        transaction with a bounded lock wait, IF NOT EXISTS on Postgres."""
+        for table, column, sql_type in self.VALUE_PROFILE_COLUMNS:
+            with self._conn() as conn:
+                self._add_nullable_text_column(conn, table, column, self._get_table_columns(conn, table), sql_type)
 
     # ── the run queue ─────────────────────────────────────────────────────────
     #

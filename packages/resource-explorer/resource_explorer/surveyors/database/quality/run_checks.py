@@ -210,8 +210,9 @@ CHECK_STATE = {"pass": "passed", "warning": "failed", "fail": "failed", "logged"
 
 
 #: Measure units that count things in the table, so "N <uom> of <records>" reads true ("0 future dates of 66").
-#: Every other unit (a difference measure, a percent of baseline) is a figure of its own: "<uom> <value>".
-_MEASURE_IS_NOT_A_COUNT = ("measure", "percent")
+#: Every other unit (a difference measure, a percent of baseline, Recency's days before the test) is a figure of
+#: its own: "<uom> <value>".
+_MEASURE_IS_NOT_A_COUNT = ("measure", "percent", "days before")
 
 
 def outcome_words(row: dict, test_type) -> str:

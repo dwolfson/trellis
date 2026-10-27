@@ -28,7 +28,11 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from functools import lru_cache
 
-from resource_explorer.surveyors.database.quality.catalogue import POSTGRES_DIR, quote_identifier
+from resource_explorer.surveyors.database.quality.catalogue import (
+    POSTGRES_DIR,
+    expand_templated_functions,
+    quote_identifier,
+)
 from resource_explorer.surveyors.database.quality.general_type import (
     general_type as derive_general_type,
 )
@@ -41,19 +45,20 @@ PROFILE_MEASURES_SQL = POSTGRES_DIR / "profile_measures.sql"
 
 #: The measures a profile row carries, in the vendored names. `record_ct` is per table.
 COLUMN_MEASURES = ("value_ct", "distinct_value_ct", "null_value_ct", "zero_length_ct", "filled_value_ct",
-                   "min_date", "max_date", "future_date_ct")
+                   "min_date", "max_date", "future_date_ct", "before_20yr_date_ct")
 DATE_MEASURES = frozenset({"min_date", "max_date"})
 #: Measures taken against the profile's own instant (`{RUN_DATE}`), so they move with the clock on a table nobody
-#: wrote to. RE's own rows keep them (the Future_Date check reads `future_date_ct`), but the published annotation
+#: wrote to. RE's own rows keep them (the Future_Date check reads `future_date_ct`, Recency's inference
+#: `before_20yr_date_ct`), but the published annotation
 #: does not carry them in `value_count`, and the profile publish reshape never hashes them (architect ruling
 #: 2026-10-24): `profileDates` carries the max date and the as-of instead, so a reader can tell.
-RELATIVE_TO_NOW_MEASURES = frozenset({"future_date_ct"})
+RELATIVE_TO_NOW_MEASURES = frozenset({"future_date_ct", "before_20yr_date_ct"})
 
 #: Postgres's target-list limit is 1664 entries; columns are profiled in chunks well under it (each column
-#: contributes at most six measures). Each chunk is its own scan.
+#: contributes at most seven measures, a date column). Each chunk is its own scan.
 COLUMNS_PER_QUERY = 200
 
-_AS = re.compile(r"^(?P<expr>.*?)\s+AS\s+(?P<alias>[a-z_]+),?\s*$", re.DOTALL)
+_AS = re.compile(r"^(?P<expr>.*?)\s+AS\s+(?P<alias>[a-z0-9_]+),?\s*$", re.DOTALL)
 
 
 @lru_cache(maxsize=1)
@@ -77,7 +82,7 @@ def measure_blocks() -> dict[str, tuple[tuple[str, str], ...]]:
             continue
         pending.append(line)
         match = _AS.match("\n".join(pending).strip())
-        if match and re.search(r"\bAS\s+[a-z_]+,?\s*$", line):
+        if match and re.search(r"\bAS\s+[a-z0-9_]+,?\s*$", line):
             blocks[flag].append((match.group("expr").strip(), match.group("alias")))
             pending = []
     return {k: tuple(v) for k, v in blocks.items()}
@@ -111,7 +116,10 @@ def as_of_text(surveyed_at: str) -> str:
 
 
 def _fill(expr: str, column: str, run_date: str) -> str:
-    # The template quotes "{COL_NAME}" itself, so the name goes in with only its double quotes doubled.
+    # Upstream's templated functions are expanded in the vendored text first, so the name never passes through
+    # the expansion. The template quotes "{COL_NAME}" itself, so the name goes in with only its double quotes
+    # doubled.
+    expr = expand_templated_functions(expr)
     return expr.replace('"{COL_NAME}"', quote_identifier(column)).replace("{RUN_DATE}", run_date)
 
 

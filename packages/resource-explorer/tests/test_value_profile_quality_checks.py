@@ -119,7 +119,7 @@ class FakeConn:
         if isinstance(spec, Exception):
             raise spec
         row = {"record_ct": spec["record_ct"]}
-        for alias in re.findall(r"AS (c(\d+)__([a-z_]+))", sql):
+        for alias in re.findall(r"AS (c(\d+)__([a-z0-9_]+))", sql):
             name, index, measure = alias
             row[name] = spec["columns"][int(index)].get(measure)
         return [row]
@@ -308,9 +308,9 @@ def test_every_assembled_statement_parses_as_postgres():
 
     cols = [("a", "A"), ("b", "N"), ("c", "D"), ("d", "B"), ("e", "X"), ('we"ird', "A"), ("pct%", "T")]
     sql, aliases = build_table_query("sales", "orders", cols, "2026-10-20 12:00:00")
-    # value_ct + null_value_ct for all 7, distinct + zero_length + filled for the 2 text columns, 3 date measures,
-    # distinct for B, D, N and T (none for X).
-    assert len(aliases) == 2 * 7 + 3 * 2 + 3 + 4
+    # value_ct + null_value_ct for all 7, distinct + zero_length + filled for the 2 text columns, 4 date measures
+    # (min_date, max_date, future_date_ct, before_20yr_date_ct), distinct for B, D, N and T (none for X).
+    assert len(aliases) == 2 * 7 + 3 * 2 + 4 + 4
     sqlglot.parse_one(sql, read="postgres")
     sqlglot.parse_one(TABLE_FACTS_SQL, read="postgres")
     params = {"baseline_ct": 10, "baseline_value_ct": 9, "baseline_value": "2020-01-01", "threshold_value": 2}
