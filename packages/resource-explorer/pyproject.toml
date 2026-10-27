@@ -143,13 +143,22 @@ dependencies = [
     # zone filter, relationship page size, anchor scope, anchorScopeGUIDs, initiate_engine_action startDate; new
     # undo/restore, usage-activity and product-catalog APIs; #482 (ISSUE-162) term/data-designer booleans kept.
     # Audit: RE passes none of those fields (tests/test_pyegeria_6210_request_fields.py). The lock moved only pyegeria.
-    # Raised to 6.2.12 (2026-10-27) for the Egeria 6.3-SNAPSHOT platform (odpi/egeria 8de9572c): #485 (ISSUE-165)
+    # Raised to 6.2.13 (2026-10-27) for the Egeria build with the ISSUE-166 boxed-properties fix (odpi/egeria
+    # 12b1aaae #9389, image c2ca054c). 6.2.12 content as below, plus: #498 unset numbers/flags are no longer sent as
+    # 0/false (domain_identifier, position, headCount defaults now None) and create_egeria_bearer_token RAISES
+    # (PyegeriaUnauthorized/Client/Connection/TimeoutException) instead of returning "FAILED" or the 401 text;
+    # #495 security annotation models; #497 Dr.Egeria survey-report/security-finding commands. Audit: RE passes
+    # domain_identifier explicitly, sets no position/headCount; every RE annotation body is sent unchanged on 6.2.10
+    # and 6.2.13 (14 types compared); trellis-auth's password login already catches the raise. EgeriaClients._mint /
+    # refresh now raise on a failed daemon login instead of continuing without a token
+    # (tests/test_pyegeria_6213_audit.py).
+    # The 6.2.12 audit: #485 (ISSUE-165)
     # routes the endpoints Egeria removed (analysis reports, subject-area membership, find_governance_action_processes,
     # get_gov_def_in_context, data classifications) to their replacements as deprecated wrappers; #487
     # get_platform_organization reads /api/public/app/info; #492/#493 SecurityOfficer statements of applicability;
     # delete_annotation's body is now optional. Audit: RE calls none of the rerouted methods, nor
     # get_platform_organization (tests/test_pyegeria_6212_rerouted_methods.py). No shared client code changed.
-    "pyegeria>=6.2.12",
+    "pyegeria>=6.2.13",
     "mcp>=2.0.0",
     # nest-asyncio removed 2026-09-04 with the shared-pool refactor: RE no
     # longer imports it anywhere. Its one site, surveyors/prefect_adapter.py's
