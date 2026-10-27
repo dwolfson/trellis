@@ -796,7 +796,7 @@ function evidenceStateHtml() {
         ? `<div data-compile-gaps data-compile-deferred class="mb-s2 text-chip">${cue('partial', `${deferredKeys.length} not read`, 'These ranked below the compile\'s section cap, so the compile did not look for a stored result.', 'chrome')} <span class="text-chrome-muted">nothing missing among the ones read; not read, below the section cap:</span> <span class="font-mono">${deferredKeys.map(esc).join(', ')}</span></div>`
         : `<div data-compile-gaps class="mb-s2 text-chip">${cue('measured', 'nothing missing', 'Every analysis that answers this has a stored result.', 'chrome')} <span class="text-chrome-muted">every analysis that answers this has a stored result</span></div>`)
       : `<div data-compile-gaps class="mb-s2 border border-chrome-line p-s2 text-chip">
-          <div class="mb-s1">${gapsHeadCue(gaps)} <span class="text-chrome-muted">would answer this, with no stored result</span></div>
+          <div class="mb-s1">${gapsHeadCue(gaps)} <span class="text-chrome-muted">would answer this</span></div>
           ${gaps.map(gapRowHtml).join('')}
         </div>`;
   const ranLine = nowStored.length

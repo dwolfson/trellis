@@ -252,3 +252,21 @@ class TestNotBuildingTheDeferredRecordIdea:
         assert "saveReport" not in chat
         assert "actOnRecord" not in chat
         assert "listRecords" not in chat
+
+
+class TestGapsHeaderSaysNoStoredResultOnce:
+    """The gaps header read "3 with no stored result would answer this, with
+    no stored result": gapsHeadCue's cue already says it, so the trailing
+    caption must not repeat it."""
+
+    def test_the_caption_after_the_gaps_cue_does_not_repeat_no_stored_result(self):
+        chat = _chat()
+        head = chat[chat.index("${gapsHeadCue(gaps)}"):]
+        head = head[:head.index("</div>")]
+        assert "would answer this</span>" in head
+        assert "no stored result" not in head
+
+    def test_the_cue_itself_still_says_no_stored_result(self):
+        chat = _chat()
+        cue_fn = chat[chat.index("function gapsHeadCue("):chat.index("function evidenceStateHtml(")]
+        assert "with no stored result" in cue_fn
