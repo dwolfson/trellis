@@ -66,7 +66,7 @@ class BaseExplorerAgent(ABC):
         init_phoenix()
 
     def _multi_resource_evidence(
-        self, query: str, slugs: list[str], perspectives=None, budget: int = 6000
+        self, query: str, slugs: list[str], perspectives=None, budget: int | None = None
     ) -> list[str]:
         """Prompt lines of compiled evidence across several resources, plus what is missing.
 
@@ -81,6 +81,7 @@ class BaseExplorerAgent(ABC):
         """
         self._last_compiled = None
         try:
+            from resource_explorer.config import get_llm_tier_config
             from resource_explorer.context_compile import compile_multi_resource_context
             from resource_explorer.registry import ProjectRegistry
 
@@ -88,7 +89,7 @@ class BaseExplorerAgent(ABC):
                 ProjectRegistry(),
                 slugs,
                 query,
-                budget=budget,
+                budget=get_llm_tier_config().compile_evidence_budget_chars if budget is None else budget,
                 perspectives=list(perspectives or []),
                 session_id=getattr(self, "session_id", None) or "",
             )

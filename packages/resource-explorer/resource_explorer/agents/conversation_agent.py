@@ -431,6 +431,7 @@ class ConversationAgent(BaseExplorerAgent):
         if not self.compiled_evidence:
             return []
         try:
+            from resource_explorer.config import get_llm_tier_config
             from resource_explorer.context_compile import compile_context
 
             compiled = compile_context(
@@ -442,7 +443,7 @@ class ConversationAgent(BaseExplorerAgent):
                 # Deliberately a fraction of the model window: this is evidence
                 # to reason over, not the whole prompt, and the agent still has
                 # tools for anything the compile could not reach.
-                budget=6000,
+                budget=get_llm_tier_config().compile_evidence_budget_chars,
                 session_id=getattr(self, "session_id", None),
                 instructions_variant=self.instructions_variant,
             )

@@ -164,6 +164,9 @@ INSTRUCTION_VARIANTS: dict[str, tuple[str, str]] = {
 #: the largest cap at which the ranked sections reach FULL while the budget,
 #: not the cap, still decides the last sections in. The value is a knob, not
 #: a law: `compile_context(max_sections=...)` overrides it, 0 disables it.
+#: This is the built-in default; the running value is the tier setting
+#: `compile_max_sections` (config.py, EXPLORER_COMPILE_MAX_SECTIONS), which
+#: compile_context reads when no `max_sections` is passed.
 MAX_EVIDENCE_SECTIONS = 12
 
 
@@ -207,7 +210,17 @@ class CompiledContext:
     compile_id: str = ""
 
 
-def _compile_id(spec, candidates: dict, budget: int) -> str:
+def _default_max_sections() -> int:
+    """The tier's section cap (config.py `compile_max_sections`), or the built-in default if config cannot resolve."""
+    try:
+        from resource_explorer.config import get_llm_tier_config
+
+        return get_llm_tier_config().compile_max_sections
+    except Exception:
+        return MAX_EVIDENCE_SECTIONS
+
+
+def _compile_id(spec, candidates: dict, budget: int, max_sections: int = MAX_EVIDENCE_SECTIONS) -> str:
     """blake2b over the packer's inputs, in a canonical order.
 
     Hashes rung TEXT, not provenance timestamps: a re-read of the same stored
@@ -216,7 +229,7 @@ def _compile_id(spec, candidates: dict, budget: int) -> str:
     """
     import hashlib
     h = hashlib.blake2b(digest_size=16)
-    h.update(f"{spec.spec_id}|{spec.version}|{budget}|{spec.target_model}|".encode())
+    h.update(f"{spec.spec_id}|{spec.version}|{budget}|{max_sections}|{spec.target_model}|".encode())
     for key in sorted(candidates):
         h.update(f"[{key}]".encode())
         for rung, text in sorted(candidates[key].rungs.items(), key=lambda kv: str(kv[0])):
@@ -1228,7 +1241,7 @@ def compile_context(
     sections = [Section("instructions", role="instructions", required=True, weight=1.0)]
     candidates: dict[str, Candidate] = {}
     ranked = sorted(weights.items(), key=lambda kv: (-kv[1], kv[0]))
-    cap = MAX_EVIDENCE_SECTIONS if max_sections is None else max_sections
+    cap = _default_max_sections() if max_sections is None else max_sections
     deferred: list[dict] = []
     # The cap counts sections WITH EVIDENCE, and a gap costs nothing. The
     # first version sliced the ranking to `cap` entries before resolving any,
@@ -1388,14 +1401,14 @@ def compile_context(
     from resource_explorer.facts import FactLayer
 
     _facts = FactLayer(registry, resource_type=resource_type)
-    compile_id = _compile_id(spec, candidates, budget)
+    compile_id = _compile_id(spec, candidates, budget, cap)
     compiled = CompiledContext(
         text=packed.text(),
         compile_id=compile_id,
         manifest={
             "compile_id": compile_id,
             "resource_type": resource_type,
-            "spec_id": m.spec_id, "budget": m.budget, "used": m.used,
+            "spec_id": m.spec_id, "budget": m.budget, "max_sections": cap, "used": m.used,
             "headroom": m.headroom, "packed": list(m.packed),
             "dropped": list(m.dropped),
             # Ranked below the cap: never offered to the packer, so neither
@@ -1705,6 +1718,7 @@ def compile_multi_resource_context(
         "mode": "multi_resource",
         "slugs": normalized_slugs,
         "budget": budget,
+        "max_sections": _default_max_sections() if max_sections_per_resource is None else max_sections_per_resource,
         "used": total_used,
         "headroom": max(0, budget - total_used),
         "coverage_matrix": matrix_records,

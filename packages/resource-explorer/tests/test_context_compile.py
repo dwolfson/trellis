@@ -1476,3 +1476,30 @@ class TestVulnerabilityQuestionBindsToCveScan:
         c = compile_context(self._every_analysis_has_a_result(), "x", self.QUESTION)
         assert "cve_scan" in [p["key"] for p in c.manifest["packed"]]
         assert "cve_scan" not in [d["key"] for d in c.manifest["deferred"]]
+
+
+class TestSectionCapIsATierSetting:
+    """`compile_max_sections` (config.py) is the default cap, `max_sections=` still overrides it, and the cap is
+    part of the compile's identity because it changes what is packed."""
+
+    def test_the_compile_id_changes_when_the_cap_changes(self):
+        reg = TestSectionCap()._many()
+        a = compile_context(reg, "x", "how well documented is it?", budget=6000, max_sections=12)
+        b = compile_context(reg, "x", "how well documented is it?", budget=6000, max_sections=8)
+        assert a.compile_id != b.compile_id
+        assert b.manifest["max_sections"] == 8 and a.manifest["max_sections"] == 12
+
+    def test_the_tier_setting_is_the_default_cap(self, monkeypatch):
+        monkeypatch.setenv("EXPLORER_COMPILE_MAX_SECTIONS", "3")
+        from resource_explorer.config import get_llm_tier_config
+        get_llm_tier_config(force_refresh=True)
+        try:
+            c = compile_context(TestSectionCap()._many(), "x", "q", budget=6000)
+            assert c.manifest["max_sections"] == 3
+            assert len([p for p in c.manifest["packed"] if p["role"] == "evidence"]) <= 3
+            # An explicit argument still wins.
+            assert compile_context(TestSectionCap()._many(), "x", "q", budget=6000,
+                                   max_sections=5).manifest["max_sections"] == 5
+        finally:
+            monkeypatch.delenv("EXPLORER_COMPILE_MAX_SECTIONS")
+            get_llm_tier_config(force_refresh=True)
