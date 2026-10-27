@@ -32,6 +32,16 @@ def _api():
     return (STATIC / "re-api.js").read_text(encoding="utf-8")
 
 
+class TestRailTurnLabel:
+    """The open turn's caption is a status, not an action: "open in pane" read as a link that did nothing
+    (owner, 2026-10-26), because the turn it labels is already the one the pane shows."""
+
+    def test_the_open_turn_says_it_is_shown_in_the_pane(self):
+        src = _chat()
+        assert "' · shown in pane'" in src
+        assert "' · open in pane'" not in src
+
+
 class TestExtraction:
     """next/chat.js exists, app.js imports it rather than defining chat
     inline, and the moved functions are actually gone from app.js -- an

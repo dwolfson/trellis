@@ -414,7 +414,7 @@ function renderTurnList() {
       ${t.error ? `<div data-turn-failed class="text-chip text-accent-on-dark">failed · ${esc(t.error)}</div>` : ''}
       ${noAnswer ? '<div data-turn-no-answer class="text-chip text-chrome-muted">no answer recorded</div>' : ''}
       ${t.answer && !t.pending ? answerPreviewHtml(t.answer) : ''}
-      ${t.answer && !t.pending ? `<div class="text-caps text-chrome-muted">${esc(t.source || '')}${isOpen ? ' · open in pane' : ' · tap to open'}</div>` : ''}
+      ${t.answer && !t.pending ? `<div class="text-caps text-chrome-muted">${esc(t.source || '')}${isOpen ? ' · shown in pane' : ' · tap to open'}</div>` : ''}
     </button>`;
   };
   const here = [];
