@@ -1,0 +1,11 @@
+# Vendored subset of flavors/postgresql/profiling/templated_functions.yaml
+# (DataKitchen DataOps TestGen 5.134.0, commit 3606859c; Apache-2.0, see ../NOTICE and ../PROVENANCE.md).
+#
+# Only the functions the vendored SQL calls are kept, each entry verbatim: DATEDIFF_MONTH in
+# profile_measures.sql (before_20yr_date_ct) and DATEDIFF_DAY in Recency's Postgres measure. A call
+# `<%NAME;arg1;arg2%>` is replaced by the entry with {$1}, {$2} set to the arguments, as upstream's
+# read_file.replace_templated_functions does. Resource Explorer expands the vendored text BEFORE it fills
+# any placeholder, so no identifier or parameter value ever passes through the expansion.
+DATEDIFF_DAY: DATE({$2}) - DATE({$1})
+
+DATEDIFF_MONTH: (DATE_PART('year', {$2}::TIMESTAMP) - DATE_PART('year', {$1}::TIMESTAMP)) * 12 + (DATE_PART('month', {$2}::TIMESTAMP) - DATE_PART('month', {$1}::TIMESTAMP))

@@ -7,8 +7,9 @@ The vendored copy lives in `resource_explorer/configdata/quality/testgen/` (see 
 vendored test type this compares, against `testgen/template/dbsetup_test_types/test_types_<Name>.yaml` upstream:
 `selection_criteria`, `default_parm_columns`, `default_parm_values` and the Postgres `cat_test_conditions` entry
 (`measure`, `test_operator`, `test_condition`), and says whether the whole file is still byte-identical. It checks
-that every measure in `postgresql/profile_measures.sql` and the `general_type` CASE still appear verbatim in
-upstream's Postgres SQL, and lists upstream test types that are not vendored.
+that every measure in `postgresql/profile_measures.sql`, the `general_type` CASE, every entry of
+`postgresql/templated_functions.yaml` and every statement of `profiling/functional_datatype_date.sql` still appear
+verbatim upstream, and lists upstream test types that are not vendored.
 
 Exit status: 0 when nothing a check depends on differs, 1 when something does, 2 when the upstream checkout is
 unusable. Adopting a change is a deliberate commit (copy the file, update PROVENANCE.md, re-port any predicate
@@ -26,10 +27,12 @@ PKG = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PKG))
 
 from resource_explorer.surveyors.database.quality.catalogue import (
-    SLICE_1_TEST_TYPES,
+    PORTED_TEST_TYPES,
     TEST_TYPES_DIR,
     read_raw,
+    templated_functions,
 )
+from resource_explorer.surveyors.database.quality.functional_type import FUNCTIONAL_DATATYPE_SQL
 from resource_explorer.surveyors.database.quality.general_type import (
     vendored_case_text,
 )
@@ -38,6 +41,8 @@ from resource_explorer.surveyors.database.quality.value_profile import measure_b
 UPSTREAM_TEST_TYPES = Path("testgen/template/dbsetup_test_types")
 UPSTREAM_PROFILE_SQL = Path("testgen/template/flavors/postgresql/profiling/project_profiling_query.sql")
 UPSTREAM_SCHEMA_DDF = Path("testgen/template/flavors/postgresql/data_chars/get_schema_ddf.sql")
+UPSTREAM_FUNCTIONS = Path("testgen/template/flavors/postgresql/profiling/templated_functions.yaml")
+UPSTREAM_FUNCTIONAL_TYPE = Path("testgen/template/profiling/functional_datatype.sql")
 
 FIELDS = ("selection_criteria", "default_parm_columns", "default_parm_values")
 CONDITION_FIELDS = ("measure", "test_operator", "test_condition")
@@ -88,12 +93,42 @@ def compare_sql(upstream: Path) -> list[str]:
         diffs.append(f"upstream {UPSTREAM_SCHEMA_DDF} is gone")
     elif _squash(vendored_case_text()) not in _squash(ddf.read_text(encoding="utf-8")):
         diffs.append("general_type.sql: the general_type CASE is no longer verbatim upstream")
+    diffs += compare_functions(upstream)
+    diffs += compare_functional_type(upstream)
     return diffs
+
+
+def compare_functions(upstream: Path) -> list[str]:
+    path = upstream / UPSTREAM_FUNCTIONS
+    if not path.exists():
+        return [f"upstream {UPSTREAM_FUNCTIONS} is gone"]
+    import yaml
+
+    theirs = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    ours = yaml.safe_load((TEST_TYPES_DIR.parent / "postgresql" / "templated_functions.yaml").read_text()) or {}
+    return [f"templated_functions.yaml {name}: no longer verbatim upstream"
+            for name in sorted(ours) if theirs.get(name) != ours[name] or name not in templated_functions()]
+
+
+def vendored_statements() -> list[str]:
+    """The statements of `profiling/functional_datatype_date.sql`, each the text after its `-- upstream lines`
+    header (the header comment above them is RE's)."""
+    blocks = FUNCTIONAL_DATATYPE_SQL.read_text(encoding="utf-8").split("-- upstream lines ")[1:]
+    return [block.split("\n", 1)[1].strip() for block in blocks]
+
+
+def compare_functional_type(upstream: Path) -> list[str]:
+    path = upstream / UPSTREAM_FUNCTIONAL_TYPE
+    if not path.exists():
+        return [f"upstream {UPSTREAM_FUNCTIONAL_TYPE} is gone"]
+    text = _squash(path.read_text(encoding="utf-8"))
+    return [f"functional_datatype_date.sql statement {i + 1}: no longer verbatim upstream"
+            for i, stmt in enumerate(vendored_statements()) if _squash(stmt) not in text]
 
 
 def new_test_types(upstream: Path) -> list[str]:
     names = sorted(p.stem.removeprefix("test_types_") for p in (upstream / UPSTREAM_TEST_TYPES).glob("test_types_*.yaml"))
-    return [n for n in names if n not in SLICE_1_TEST_TYPES]
+    return [n for n in names if n not in PORTED_TEST_TYPES]
 
 
 def upstream_commit(upstream: Path) -> str:
@@ -118,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"upstream: {upstream} @ {upstream_commit(upstream)}")
     diffs: list[str] = []
     notes: list[str] = []
-    for name in SLICE_1_TEST_TYPES:
+    for name in PORTED_TEST_TYPES:
         d, n = compare_test_type(name, upstream)
         diffs += d
         notes += n

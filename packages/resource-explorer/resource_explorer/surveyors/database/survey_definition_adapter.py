@@ -1041,7 +1041,8 @@ _ADAPTER = ResourceTypeAdapter(
         "postgres_value_profile": {
             "description": (
                 "Whole-table value profile: record_ct, value_ct, distinct_value_ct, null_value_ct, "
-                "zero_length_ct and filled_value_ct (text), min_date, max_date and future_date_ct (dates), "
+                "zero_length_ct and filled_value_ct (text), min_date, max_date, future_date_ct and "
+                "before_20yr_date_ct (dates), "
                 "measured with the vendored catalog's Postgres measures, one aggregate SELECT per table. "
                 "No sampling and no size cap: a table is read whole, within 5 minutes per table "
                 "(VALUE_PROFILE_TABLE_BUDGET_SECONDS). A table that does not finish is not_measured as "
@@ -1054,7 +1055,9 @@ _ADAPTER = ResourceTypeAdapter(
             "description": (
                 "Zero-fetch: the vendored catalog's selection rules (ported to Python, pinned to the YAML "
                 "they came from) over the latest value profile. Writes proposals for Missing_Pct, Required, "
-                "Required_No_Placeholder, Unique, Future_Date, Min_Date and, on RE's own initiative, "
+                "Required_No_Placeholder, Unique, Future_Date, Min_Date, Recency (on dated columns that the date "
+                "branch of the functional-type inference does not call Future or Schedule Dates), "
+                "Future_Date_1Y and, on RE's own initiative, "
                 "Row_Ct_Pct; a rule whose inputs were not measured is not_established, never a silent no. "
                 "Accepted checks report drift from their baseline; rejected ones stay suppressed. A run that "
                 "proposes checks leaves one RequestForAction on the database (\"review N proposed quality checks "
@@ -1268,7 +1271,7 @@ def _value_profile_results(registry, slug: str) -> dict:
     for r in rows:
         states[r.get("state", "")] = states.get(r.get("state", ""), 0) + 1
     measures = ("general_type", "record_ct", "value_ct", "distinct_value_ct", "null_value_ct", "zero_length_ct",
-                "filled_value_ct", "min_date", "max_date", "future_date_ct")
+                "filled_value_ct", "min_date", "max_date", "future_date_ct", "before_20yr_date_ct")
     return {
         "surveyed_at": rows[0].get("surveyed_at", ""),
         "column_count": len(rows),

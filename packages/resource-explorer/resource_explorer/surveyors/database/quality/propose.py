@@ -12,6 +12,10 @@ the ported rule (`catalogue.PREDICATES`) gives one of three answers:
 
 Row_Ct_Pct is proposed by RE itself (origin `re`) for every table with `record_ct > 0`.
 
+Two rules read an instant as well as the profile: Recency reads the profile's own (its `surveyed_at`, TestGen's
+`run_date`), and Future_Date_1Y reads `{AS_OF_DATE}`, the instant checks are generated, which is this run's
+`surveyed_at` (passed to the rule as `as_of_date`).
+
 Verdicts (append-only, latest per key wins) shape what a proposal becomes:
 - accepted: the row is `accepted`, and `reason` says whether the new profile drifted from the accepted
   baseline. Drift is a fact for the reviewer; nothing is re-applied.
@@ -54,6 +58,9 @@ def _not_established_reason(test_type: str, profile: dict) -> str:
     missing = not_established_inputs(test_type, profile)
     if profile.get("record_ct") == 0:
         return f"the table was empty when profiled, so {', '.join(missing) or 'an input'} is undefined"
+    if profile.get("value_ct") == 0 and missing and set(missing) <= {"min_date", "max_date"}:
+        # Measured, and the column held no value: its date bounds do not exist. Not "the profile did not measure".
+        return f"the column had no values when profiled, so {', '.join(missing)} is undefined"
     return f"its selection rule reads {', '.join(missing) or 'an input'}, which the profile did not measure"
 
 
@@ -167,7 +174,7 @@ def run_propose(registry, slug: str, *, row_ct_pct_threshold: float, surveyed_at
             # A view or foreign table: the profile does not apply, so neither does any check on it.
             not_applicable_ct += 1
             return
-        selected = PREDICATES[test_type.test_type].evaluate(prow)
+        selected = PREDICATES[test_type.test_type].evaluate({**prow, "as_of_date": surveyed_at})
         params: dict = {}
         state, reason = "proposed", ""
         if selected is None:

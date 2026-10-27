@@ -23,12 +23,21 @@ import operator
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from resource_explorer.surveyors.database.quality.functional_type import (
+    INPUTS as INFERENCE_INPUTS,
+)
+from resource_explorer.surveyors.database.quality.functional_type import (
+    as_timestamp,
+    datediff_day,
+    recency_excluded,
+)
 
 CATALOGUE_DIR = Path(__file__).resolve().parents[3] / "configdata" / "quality" / "testgen"
 TEST_TYPES_DIR = CATALOGUE_DIR / "test_types"
@@ -37,11 +46,15 @@ POSTGRES_DIR = CATALOGUE_DIR / "postgresql"
 #: The upstream commit the catalogue was copied from (PROVENANCE.md). Part of every proposal's catalogue_ref.
 UPSTREAM_COMMIT = "3606859c"
 
-#: Slice 1's seven test types. Recency is slice 2 (its selection rule reads functional_data_type, which slice 1
-#: does not infer, so the rule would silently propose nothing).
+#: Slice 1's seven test types.
 SLICE_1_TEST_TYPES = (
     "Missing_Pct", "Required", "Required_No_Placeholder", "Unique", "Future_Date", "Min_Date", "Row_Ct_Pct",
 )
+#: Quality slice Q6 (DESIGN-QUALITY-Q6-RECENCY.md): Recency, whose rule reads the date branch of the
+#: functional-type inference (`functional_type.py`), and Future_Date_1Y, which rides with it.
+Q6_TEST_TYPES = ("Recency", "Future_Date_1Y")
+#: Every test type RE has ported, in the order proposals are considered.
+PORTED_TEST_TYPES = SLICE_1_TEST_TYPES + Q6_TEST_TYPES
 
 #: The test type RE proposes on its own initiative: TestGen has no selection rule for it (manual-only there).
 RE_PROPOSED = frozenset({"Row_Ct_Pct"})
@@ -153,8 +166,43 @@ def read_raw(path: Path) -> dict:
 
 @lru_cache(maxsize=1)
 def load_catalogue() -> dict[str, TestType]:
-    """{test_type: TestType} for slice 1, read from the vendored YAML."""
-    return {name: parse_test_type(read_raw(TEST_TYPES_DIR / f"{name}.yaml")) for name in SLICE_1_TEST_TYPES}
+    """{test_type: TestType} for every ported test type, read from the vendored YAML."""
+    return {name: parse_test_type(read_raw(TEST_TYPES_DIR / f"{name}.yaml")) for name in PORTED_TEST_TYPES}
+
+
+# ── upstream's templated functions (`<%NAME;arg;arg%>`) ────────────────────────────────────────────────────────
+
+TEMPLATED_FUNCTIONS_YAML = POSTGRES_DIR / "templated_functions.yaml"
+_FUNCTION_CALL = re.compile(r"<%(\w+)(?:;(.+?))?%>")
+_FUNCTION_ARG = re.compile(r"\{\$(\d+)\}")
+
+
+@lru_cache(maxsize=1)
+def templated_functions() -> dict[str, str]:
+    """{name: template} from the vendored subset, comments dropped and whitespace squashed as upstream does."""
+    raw = yaml.safe_load(TEMPLATED_FUNCTIONS_YAML.read_text(encoding="utf-8")) or {}
+    return {name: re.sub(r"\s\s*", " ", re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)) for name, text in raw.items()}
+
+
+def expand_templated_functions(text: str) -> str:
+    """Upstream's `read_file.replace_templated_functions` for the Postgres flavour: each `<%NAME;a;b%>` becomes the
+    template with `{$1}`, `{$2}` set to the arguments. Applied to VENDORED text only, before any placeholder is
+    filled, so no identifier or parameter value is ever split on `;` or matched as `%>`. An unknown function or a
+    missing argument raises ParameterError: the vendored SQL then calls something this port has not vendored."""
+    functions = templated_functions()
+
+    def call(match: re.Match) -> str:
+        name, args = match.group(1), (match.group(2) or "").split(";")
+        if name not in functions:
+            raise ParameterError(f"the vendored SQL calls <%{name}%>, which templated_functions.yaml does not hold")
+
+        def arg(m: re.Match) -> str:
+            index = int(m.group(1)) - 1
+            if index >= len(args):
+                raise ParameterError(f"<%{name}%> is missing argument {index + 1}")
+            return args[index]
+        return _FUNCTION_ARG.sub(arg, functions[name])
+    return _FUNCTION_CALL.sub(call, text)
 
 
 def catalogue_ref(test_type: TestType) -> str:
@@ -211,6 +259,20 @@ class Predicate:
 
 def _p(row: dict, name: str):
     return row.get(name)
+
+
+def _shift(ts: datetime | None, *, days: int) -> datetime | None:
+    return None if ts is None else ts + timedelta(days=days)
+
+
+def _midnight(ts: datetime | None) -> datetime | None:
+    """`'...'::DATE`, compared with a timestamp: its midnight."""
+    return None if ts is None else datetime(ts.year, ts.month, ts.day)  # noqa: DTZ001 - naive UTC, as upstream's timestamp columns
+
+
+def _datediff_day(first, second) -> int | None:
+    a, b = as_timestamp(first), as_timestamp(second)
+    return None if a is None or b is None else datediff_day(a, b)
 
 
 # Each rule below is the vendored fragment, term for term. The fragment is quoted above its port.
@@ -283,10 +345,41 @@ PREDICATES: dict[str, Predicate] = {
         ("record_ct",),
         lambda p: _cmp(_p(p, "record_ct"), ">", 0),
     ),
+    # general_type= 'D' AND max_date <= run_date + INTERVAL '1 day' AND NOT column_name IN ( 'filedate' ,
+    #   'file_date' ) AND NOT functional_data_type IN ('Future Date', 'Schedule Date') AND DATEDIFF( 'DAY' ,
+    #   max_date, run_date) <= 62
+    # run_date is the profile's own instant (its batch `surveyed_at`); functional_data_type is the date branch of
+    # the inference, ported in functional_type.py.
+    "Recency": Predicate(
+        "575ccbd3c20b457f0de7c76a98a1ac8d5c5900f544bc455f0017ed4826067c44",
+        tuple(dict.fromkeys(("general_type", "max_date", "surveyed_at") + INFERENCE_INPUTS)),
+        lambda p: _and(
+            _cmp(_p(p, "general_type"), "=", "D"),
+            _cmp(as_timestamp(_p(p, "max_date")), "<=", _shift(as_timestamp(_p(p, "surveyed_at")), days=1)),
+            _not(_p(p, "column_name") in ("filedate", "file_date")),
+            _not(recency_excluded(p)),
+            _cmp(_datediff_day(_p(p, "max_date"), _p(p, "surveyed_at")), "<=", 62),
+        ),
+    ),
+    # general_type='D'AND future_date_ct > 0 AND max_date <='{AS_OF_DATE}'::DATE + INTERVAL'365 DAYS'
+    # {AS_OF_DATE} is the instant the checks are generated: the propose run (`as_of_date`), as TestGen's
+    # generation run with no profiling delay.
+    "Future_Date_1Y": Predicate(
+        "90e86999535a8ca5b5acfb738507d1f6745e4888eb3851526c891716efa01027",
+        ("general_type", "future_date_ct", "max_date", "as_of_date"),
+        lambda p: _and(
+            _cmp(_p(p, "general_type"), "=", "D"),
+            _cmp(_p(p, "future_date_ct"), ">", 0),
+            _cmp(as_timestamp(_p(p, "max_date")), "<=", _shift(_midnight(as_timestamp(_p(p, "as_of_date"))), days=365)),
+        ),
+    ),
 }
 
-#: Inputs whose NULL is a real value rather than a missing measure: min_date is read by IS NOT NULL.
-_NULL_IS_A_VALUE = {"Min_Date": {"min_date"}}
+#: Inputs whose NULL is a real value rather than a missing measure: min_date is read by IS NOT NULL. Recency's
+#: inference reads zero_length_ct and filled_value_ct only through upstream's own NULL handling (neither is
+#: measured on a date column, upstream either), and min_date only for the Period overrides.
+_NULL_IS_A_VALUE = {"Min_Date": {"min_date"},
+                    "Recency": {"zero_length_ct", "filled_value_ct", "min_date"}}
 
 
 def not_established_inputs(test_type: str, profile: dict) -> list[str]:
@@ -348,6 +441,29 @@ _PARAM_KEYS = {
 }
 
 
+def _recency_threshold(profile: dict):
+    """Recency's default threshold, the vendored CASE over d = DATEDIFF('DAY', max_date, run_date):
+    d <= 3: d + 3; d <= 7: d + 7; d <= 31: CEILING(d / 7.0) * 7; d > 31: CEILING(d / 30.0) * 30."""
+    d = _datediff_day(profile.get("max_date"), profile.get("surveyed_at"))
+    if d is None:
+        return None
+    if d <= 3:
+        return d + 3
+    if d <= 7:
+        return d + 7
+    if d <= 31:
+        return math.ceil(d / 7.0) * 7
+    return math.ceil(d / 30.0) * 30
+
+
+#: Defaults that are an expression over the profile rather than a list of columns and literals: the SHA-256 of
+#: the vendored `default_parm_values` each port was made from, and the port.
+DEFAULT_PORTS: dict[str, tuple[str, Callable[[dict], Any]]] = {
+    # CASE WHEN DATEDIFF( 'DAY' , max_date, run_date) <= 3 THEN DATEDIFF('DAY', max_date, run_date) + 3 WHEN ...
+    "Recency": ("4a8f8bd298ae8f1e20ff4b7251454697078c503ab760aed919b698a466a00622", _recency_threshold),
+}
+
+
 def default_params(test_type: TestType, profile: dict, row_ct_pct_threshold: float) -> dict:
     """The parameters a proposal starts with: the catalogue's defaults evaluated against the profile, plus the
     severity. Raises ParameterError when a default reads a profile measure that is NULL."""
@@ -357,6 +473,11 @@ def default_params(test_type: TestType, profile: dict, row_ct_pct_threshold: flo
         # TestGen has no defaults for it: RE's baseline is the measured count, the threshold a setting.
         params["baseline_ct"] = profile.get("record_ct")
         params["threshold_value"] = row_ct_pct_threshold
+    elif test_type.test_type in DEFAULT_PORTS:
+        sha, port = DEFAULT_PORTS[test_type.test_type]
+        if sha256_text(test_type.default_parm_values) != sha:
+            raise ParameterError(f"{test_type.test_type}'s vendored default_parm_values changed: re-port it")
+        params["threshold_value"] = port(profile)
     else:
         values = _split_sql_list(test_type.default_parm_values or "")
         if len(values) != len(test_type.default_parm_columns):
@@ -458,7 +579,8 @@ def render_measure(test_type: TestType, column_name: str, params: dict, run_date
     literals). Raises ParameterError, quoting the bad value, for anything that does not validate, and for any
     placeholder this port does not know: an unknown placeholder means the vendored SQL changed under us."""
     fills: dict[str, str] = {"COLUMN_NAME": quote_identifier(column_name), "RUN_DATE": run_date}
-    for placeholder in set(_PLACEHOLDER.findall(test_type.measure)):
+    measure = expand_templated_functions(test_type.measure)
+    for placeholder in set(_PLACEHOLDER.findall(measure)):
         if placeholder in _RE_FILLED:
             continue
         key = _PLACEHOLDER_PARAM.get(placeholder)
@@ -474,11 +596,11 @@ def render_measure(test_type: TestType, column_name: str, params: dict, run_date
             fills[placeholder] = as_iso_date("baseline_value", value)
         else:
             fills[placeholder] = _sql_number(as_number(key, value))
-    return _PLACEHOLDER.sub(lambda m: fills[m.group(1)], test_type.measure)
+    return _PLACEHOLDER.sub(lambda m: fills[m.group(1)], measure)
 
 
 def threshold(test_type: TestType, params: dict) -> float | int:
-    """The condition's value: the vendored condition is `{THRESHOLD_VALUE}` for every slice-1 type."""
+    """The condition's value: the vendored condition is `{THRESHOLD_VALUE}` for every ported type."""
     if test_type.test_condition.strip() != "{THRESHOLD_VALUE}":
         raise ParameterError(f"{test_type.test_type}: condition {test_type.test_condition!r} is not a plain threshold")
     return as_number("threshold_value", params.get("threshold_value"))

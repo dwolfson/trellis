@@ -109,6 +109,10 @@ to number.
 | 7 | **Profile slice 2, sampled text shape** (D, B1c) | 8 | patterns, placeholder and character counts, sampled, `sample_ratio` set | several columns | one `TABLESAMPLE` read per text column |
 | 8 | **Monitors** (B1d) and **hashes** (B2) | 12 | the result series (have); `multiset_hash`, `keyed_hash`, `frequent_values`, `frequent_patterns` | hash columns; a frequent-values child table | hashes are whole-table and off by default in TestGen too |
 
+Row 1 is built (2026-10-26): `DESIGN-QUALITY-Q6-RECENCY.md` records what was ported from which TestGen file,
+and §2 there corrects §5.1's reason for the order (Historical Date cannot pre-empt Future or Schedule Date; the
+statements around the CASE can).
+
 **Out of scope for proposals:** family H (5, manual-only in TestGen), family E (8, cross-table and
 person-authored), family F (4, custom SQL). They need a check editor, not a selection rule, and F
 is the owner's "define your own rules" backlog stage. F carries an extra warning from RE's own

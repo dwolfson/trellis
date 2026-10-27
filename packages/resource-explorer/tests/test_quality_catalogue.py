@@ -24,9 +24,9 @@ PKG = Path(__file__).resolve().parent.parent
 
 # ── provenance and pins ──────────────────────────────────────────────────────────────────────────────────────
 
-def test_the_seven_slice_1_test_types_are_vendored_with_licence_and_provenance():
-    assert set(cat.load_catalogue()) == set(cat.SLICE_1_TEST_TYPES)
-    assert "Recency" not in cat.SLICE_1_TEST_TYPES  # slice 2: its rule reads functional_data_type
+def test_the_ported_test_types_are_vendored_with_licence_and_provenance():
+    assert set(cat.load_catalogue()) == set(cat.SLICE_1_TEST_TYPES) | set(cat.Q6_TEST_TYPES)
+    assert set(cat.Q6_TEST_TYPES) == {"Recency", "Future_Date_1Y"}
     for name in ("LICENSE", "NOTICE", "PROVENANCE.md"):
         assert (cat.CATALOGUE_DIR / name).is_file(), name
     provenance = (cat.CATALOGUE_DIR / "PROVENANCE.md").read_text()
@@ -34,7 +34,7 @@ def test_the_seven_slice_1_test_types_are_vendored_with_licence_and_provenance()
     assert "DataKitchen" in (cat.CATALOGUE_DIR / "NOTICE").read_text()
 
 
-@pytest.mark.parametrize("name", cat.SLICE_1_TEST_TYPES)
+@pytest.mark.parametrize("name", cat.PORTED_TEST_TYPES)
 def test_every_predicate_is_pinned_to_the_fragment_it_was_ported_from(name):
     """A changed selection_criteria (an upstream change adopted by the sync script) fails here until the
     predicate is re-ported and its pin updated."""
@@ -243,14 +243,18 @@ def _fake_upstream(root: Path) -> Path:
     """An upstream-shaped tree built from the vendored files themselves, plus one test type we do not vendor."""
     types = root / "testgen/template/dbsetup_test_types"
     types.mkdir(parents=True)
-    for name in cat.SLICE_1_TEST_TYPES:
+    for name in cat.PORTED_TEST_TYPES:
         shutil.copy(cat.TEST_TYPES_DIR / f"{name}.yaml", types / f"test_types_{name}.yaml")
-    shutil.copy(cat.TEST_TYPES_DIR / "Unique.yaml", types / "test_types_Recency.yaml")
+    shutil.copy(cat.TEST_TYPES_DIR / "Unique.yaml", types / "test_types_Dupe_Rows.yaml")
     flavor = root / "testgen/template/flavors/postgresql"
     (flavor / "profiling").mkdir(parents=True)
     (flavor / "data_chars").mkdir(parents=True)
     shutil.copy(cat.POSTGRES_DIR / "profile_measures.sql", flavor / "profiling/project_profiling_query.sql")
     shutil.copy(cat.POSTGRES_DIR / "general_type.sql", flavor / "data_chars/get_schema_ddf.sql")
+    shutil.copy(cat.POSTGRES_DIR / "templated_functions.yaml", flavor / "profiling/templated_functions.yaml")
+    (root / "testgen/template/profiling").mkdir()
+    shutil.copy(cat.CATALOGUE_DIR / "profiling/functional_datatype_date.sql",
+                root / "testgen/template/profiling/functional_datatype.sql")
     return root
 
 
@@ -259,7 +263,7 @@ def test_sync_check_reports_in_step_and_lists_new_test_types(tmp_path, capsys):
     before = sorted(p.read_bytes() for p in cat.CATALOGUE_DIR.rglob("*") if p.is_file())
     assert _sync_module().main(["--check", "--upstream", str(upstream)]) == 0
     out = capsys.readouterr().out
-    assert "in step with upstream" in out and "Recency" in out
+    assert "in step with upstream" in out and "Dupe_Rows" in out
     assert sorted(p.read_bytes() for p in cat.CATALOGUE_DIR.rglob("*") if p.is_file()) == before  # writes nothing
 
 
