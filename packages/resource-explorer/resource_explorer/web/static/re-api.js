@@ -984,11 +984,12 @@ export const submitAnswerFeedback = ({ slug, question, verdict, comment = '', se
 
 /** What would answer this question, WITHOUT asking it: the sections that have a stored result and the
  *  analyses that would answer it and have none (`manifest.gaps`). The same compile the Ask path runs
- *  (`POST /api/context/compile`), so the preview and the answer cannot name different evidence. */
-export const compileContext = ({ resourceSlug, question, entityType, perspectives = [], budget = 8000 }) =>
+ *  (`POST /api/context/compile`), so the preview and the answer cannot name different evidence --
+ *  provided `budget` is left out: the server then uses the tier's budget, the one Ask compiles with. */
+export const compileContext = ({ resourceSlug, question, entityType, perspectives = [], budget }) =>
   post('/api/context/compile', {
     resource_slug: resourceSlug, question, entity_type: requireKind('compileContext', entityType),
-    perspectives: [...perspectives], budget,
+    perspectives: [...perspectives], ...(budget != null ? { budget } : {}),
   });
 
 /** Remember "this name means that resource" (the answer to an alias suggestion). The server stores the

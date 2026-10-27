@@ -897,20 +897,32 @@ def check_public_url(raw: str | None = None) -> str:
 
 def get_llm_tier_config(force_refresh: bool = False) -> ResolvedLLMTierConfig:
     """Return the cached resolved tier config, logging it once on first
-    resolution. Call sites (web/app.py's lifespan, worker.py's run_worker())
-    that want a startup log line regardless of import-order timing should
-    call this explicitly rather than relying on the lazy first-call log."""
+    resolution. That first resolution usually happens before logging is
+    configured (the CLI's get_config() runs first), so the lazy line is lost;
+    a start-up line must come from log_llm_tier_config()."""
     global _llm_tier_config
     if _llm_tier_config is None or force_refresh:
         _llm_tier_config = resolve_llm_tier_config()
-        cfg = _llm_tier_config
-        log.info(
-            "LLM tier resolved: tier=%s model=%s num_ctx=%s rag_context_budget_tokens=%s "
-            "compile_evidence_budget_chars=%s compile_max_sections=%s",
-            cfg.tier, cfg.model, cfg.num_ctx, cfg.rag_context_budget_tokens,
-            cfg.compile_evidence_budget_chars, cfg.compile_max_sections,
-        )
+        _log_llm_tier_config(_llm_tier_config)
     return _llm_tier_config
+
+
+def log_llm_tier_config() -> ResolvedLLMTierConfig:
+    """Log the resolved tier config now, cached or not. For start-up (web/app.py's
+    lifespan), where get_llm_tier_config() is a no-op because something resolved
+    it before logging was set up."""
+    cfg = get_llm_tier_config()
+    _log_llm_tier_config(cfg)
+    return cfg
+
+
+def _log_llm_tier_config(cfg: ResolvedLLMTierConfig) -> None:
+    log.info(
+        "LLM tier resolved: tier=%s model=%s num_ctx=%s rag_context_budget_tokens=%s "
+        "compile_evidence_budget_chars=%s compile_max_sections=%s",
+        cfg.tier, cfg.model, cfg.num_ctx, cfg.rag_context_budget_tokens,
+        cfg.compile_evidence_budget_chars, cfg.compile_max_sections,
+    )
 
 
 class ExplorerConfig(BaseSettings):
