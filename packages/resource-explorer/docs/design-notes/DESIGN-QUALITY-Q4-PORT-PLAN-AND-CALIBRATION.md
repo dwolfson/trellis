@@ -252,6 +252,8 @@ proposal with `origin=testgen`, never a verdict. Fixed here:
 
 ## 7. Questions for the project owner
 
+**Decision (project owner, 2026-10-26):** all seven recommendations below are accepted as written.
+
 1. **Is this the Q4 you meant?** The plan on the inventory plus the harness design, with the coco
    calibration report and the TestGen-only import built in the slices that port types (§1, §6.5).
    *Recommendation:* yes. The inventory is written; the build-and-run parts of the 10-21 gate depend
