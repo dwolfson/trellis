@@ -1,4 +1,4 @@
-# Vendored catalogue: DataKitchen DataOps TestGen test types (Postgres, slice 1 and Q6)
+# Vendored catalogue: DataKitchen DataOps TestGen test types (Postgres, slice 1, Q6 and B1a)
 
 Data only. No TestGen code is vendored and TestGen is never run: Resource Explorer reads these files
 and executes the checks with its own steps (`surveyors/database/quality/`). The engine and analysis names
@@ -14,6 +14,8 @@ so the upstream product name appears only here, in `NOTICE` and in the developer
 - **Copied:** 2026-10-20 (slice 1); 2026-10-26 (Q6: Recency, Future_Date_1Y, `before_20yr_date_ct`, the
   templated functions and the date branch of the functional-type inference), from the same commit. The clone's
   HEAD was `e8a5a906`, one docs commit on top of `3606859c`; its `testgen/` tree is identical to `3606859c`.
+  2026-10-27 (B1a: the six Table Comparison types on measures RE already profiles, and `gen_Match_Row_Ct.sql`),
+  from the same clone and commit, `testgen/` again identical to `3606859c`.
 - **License:** Apache-2.0 (`LICENSE`, verbatim). `NOTICE` is DataKitchen's, verbatim.
 
 ## Files
@@ -29,6 +31,13 @@ so the upstream product name appears only here, in `NOTICE` and in the developer
 | `test_types/Row_Ct_Pct.yaml` | `testgen/template/dbsetup_test_types/test_types_Row_Ct_Pct.yaml` | unchanged |
 | `test_types/Recency.yaml` | `testgen/template/dbsetup_test_types/test_types_Recency.yaml` | unchanged (Q6) |
 | `test_types/Future_Date_1Y.yaml` | `testgen/template/dbsetup_test_types/test_types_Future_Date_1Y.yaml` | unchanged (Q6) |
+| `test_types/Match_Row_Ct.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Row_Ct.yaml` | unchanged (B1a) |
+| `test_types/Match_Distinct_Ct.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Distinct_Ct.yaml` | unchanged (B1a) |
+| `test_types/Match_Null_Ct.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Null_Ct.yaml` | unchanged (B1a) |
+| `test_types/Match_Zero_Length_Ct.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Zero_Length_Ct.yaml` | unchanged (B1a) |
+| `test_types/Match_Min_Date.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Min_Date.yaml` | unchanged (B1a) |
+| `test_types/Match_Max_Date.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Max_Date.yaml` | unchanged (B1a) |
+| `gen_query_tests/gen_Match_Row_Ct.sql` | `testgen/template/gen_query_tests/gen_Match_Row_Ct.sql` | unchanged (B1a): Match_Row_Ct's selection is this template, not a fragment; its port is pinned to the file's hash |
 | `postgresql/profile_measures.sql` | `testgen/template/flavors/postgresql/profiling/project_profiling_query.sql` | subset: the measure lines for `record_ct`, `value_ct`, `distinct_value_ct`, `null_value_ct`, `zero_length_ct`, `filled_value_ct`, `min_date`, `max_date`, `future_date_ct` and (Q6) `before_20yr_date_ct`, each verbatim, under upstream's `TG-IF` flag names; a header comment added |
 | `postgresql/templated_functions.yaml` | `testgen/template/flavors/postgresql/profiling/templated_functions.yaml` | subset (Q6): `DATEDIFF_DAY` and `DATEDIFF_MONTH`, verbatim; a header comment added |
 | `profiling/functional_datatype_date.sql` | `testgen/template/profiling/functional_datatype.sql` | subset (Q6): the eight statements that can label a date column (upstream lines 18-25, 28-36, 39-43, 45-49, 72-116, 136-142, 228-262, 356-366), verbatim and in upstream order, each headed by its line range; a header comment added |
@@ -37,7 +46,9 @@ so the upstream product name appears only here, in `NOTICE` and in the developer
 
 Slice 1 is seven test types (`docs/design-notes/DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md`). Q6 adds
 Recency, whose selection rule reads `functional_data_type`, and Future_Date_1Y
-(`docs/design-notes/DESIGN-QUALITY-Q6-RECENCY.md`).
+(`docs/design-notes/DESIGN-QUALITY-Q6-RECENCY.md`). B1a adds the six Table Comparison types whose baseline is
+a measure the value profile already takes, proposed only for a table a person opted in
+(`docs/design-notes/DESIGN-QUALITY-B1A-BASELINE-MATCH.md`).
 
 ## How the catalogue is used
 
@@ -55,6 +66,7 @@ Recency, whose selection rule reads `functional_data_type`, and Future_Date_1Y
 
 `scripts/sync_quality_catalog.py --check --upstream <testgen checkout>` diffs this copy against an
 upstream checkout (each YAML's `selection_criteria`, `default_parm_columns`, `default_parm_values` and
-Postgres `cat_test_conditions`, the profile SQL subset, and new test types) and writes nothing.
+Postgres `cat_test_conditions`, the profile SQL subset, the generation templates, and new test types) and writes
+nothing.
 Adopting an upstream change is a deliberate commit: copy the file, update the commit above, and re-port
 any predicate whose pin the tests then report.

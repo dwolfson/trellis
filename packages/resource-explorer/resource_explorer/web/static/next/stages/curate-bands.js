@@ -43,7 +43,7 @@ import {
   getCurateTagsDetail, getCurateAllTags, addCurateTag, removeCurateTag,
   getCurateEgeriaState, syncCurateEgeria, getCurateFeedbackState,
   getCurateFeedback, addCurateFeedback, getCurateNotes, deleteCurateNote,
-  assignGroup, listGroups, getDataClassRules, getQualityProposals, postQualityVerdict,
+  assignGroup, listGroups, getDataClassRules, getQualityProposals, postQualityVerdict, postQualityTableComparison,
 } from '/static/re-api.js';
 import { mountQualityChecks } from '/static/next/stages/quality-checks.js';
 import {
@@ -112,7 +112,8 @@ export function databaseStructureHtml() {
 /** Proposed quality checks, with Accept | Reject (quality-checks.js draws into the slot; it fails inside itself). */
 export function renderQualityBlock(slot, slug) {
   if (!slot) return null;
-  return mountQualityChecks(slot, slug, { api: { getProposals: getQualityProposals, postVerdict: postQualityVerdict }, me: whoAmI() });
+  return mountQualityChecks(slot, slug, { api: { getProposals: getQualityProposals, postVerdict: postQualityVerdict,
+    postTableComparison: postQualityTableComparison }, me: whoAmI() });
 }
 
 export function databaseWorkHtml() {

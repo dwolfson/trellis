@@ -9,7 +9,8 @@ vendored test type this compares, against `testgen/template/dbsetup_test_types/t
 (`measure`, `test_operator`, `test_condition`), and says whether the whole file is still byte-identical. It checks
 that every measure in `postgresql/profile_measures.sql`, the `general_type` CASE, every entry of
 `postgresql/templated_functions.yaml` and every statement of `profiling/functional_datatype_date.sql` still appear
-verbatim upstream, and lists upstream test types that are not vendored.
+verbatim upstream, that each vendored generation template (`gen_query_tests/`) is byte-identical upstream, and lists
+upstream test types that are not vendored.
 
 Exit status: 0 when nothing a check depends on differs, 1 when something does, 2 when the upstream checkout is
 unusable. Adopting a change is a deliberate commit (copy the file, update PROVENANCE.md, re-port any predicate
@@ -27,6 +28,7 @@ PKG = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PKG))
 
 from resource_explorer.surveyors.database.quality.catalogue import (
+    GENERATION_TEMPLATES_DIR,
     PORTED_TEST_TYPES,
     TEST_TYPES_DIR,
     read_raw,
@@ -43,6 +45,7 @@ UPSTREAM_PROFILE_SQL = Path("testgen/template/flavors/postgresql/profiling/proje
 UPSTREAM_SCHEMA_DDF = Path("testgen/template/flavors/postgresql/data_chars/get_schema_ddf.sql")
 UPSTREAM_FUNCTIONS = Path("testgen/template/flavors/postgresql/profiling/templated_functions.yaml")
 UPSTREAM_FUNCTIONAL_TYPE = Path("testgen/template/profiling/functional_datatype.sql")
+UPSTREAM_GENERATION_TEMPLATES = Path("testgen/template/gen_query_tests")
 
 FIELDS = ("selection_criteria", "default_parm_columns", "default_parm_values")
 CONDITION_FIELDS = ("measure", "test_operator", "test_condition")
@@ -95,6 +98,18 @@ def compare_sql(upstream: Path) -> list[str]:
         diffs.append("general_type.sql: the general_type CASE is no longer verbatim upstream")
     diffs += compare_functions(upstream)
     diffs += compare_functional_type(upstream)
+    diffs += compare_generation_templates(upstream)
+    return diffs
+
+
+def compare_generation_templates(upstream: Path) -> list[str]:
+    diffs = []
+    for ours in sorted(GENERATION_TEMPLATES_DIR.glob("*.sql")):
+        theirs = upstream / UPSTREAM_GENERATION_TEMPLATES / ours.name
+        if not theirs.exists():
+            diffs.append(f"upstream {UPSTREAM_GENERATION_TEMPLATES / ours.name} is gone")
+        elif theirs.read_bytes() != ours.read_bytes():
+            diffs.append(f"gen_query_tests/{ours.name}: differs from upstream")
     return diffs
 
 

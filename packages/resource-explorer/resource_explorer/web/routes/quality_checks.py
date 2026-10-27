@@ -4,6 +4,9 @@ GET  /api/quality-checks/settings           the value profile's and quality chec
                                             means (the Admin page's read-only pane)
 GET  /api/quality-checks/{slug}/proposals   groups by table with counts; `?schema=&table=` adds one group's rows
 POST /api/quality-checks/{slug}/verdict     one accept or reject of one check, as the signed-in person
+POST /api/quality-checks/{slug}/table-comparison
+                                            opt one table into (or out of) Table Comparison, the baseline-match
+                                            checks, as the signed-in person; the next propose run reads it
 
 The write resolves the person from the session first (401 when nobody is signed in) and never takes the author, the
 parameters or the proposal id from the body. It writes RE's own verdict row only; Publish is what reaches Egeria.
@@ -41,6 +44,13 @@ def _registry_for(slug: str) -> ProjectRegistry:
 class VerdictBody(BaseModel):
     check_key: str
     verdict: Literal["accepted", "rejected"]
+    note: str = ""
+
+
+class TableComparisonBody(BaseModel):
+    schema_name: str
+    table_name: str
+    watch: bool
     note: str = ""
 
 
@@ -106,3 +116,14 @@ async def post_verdict(slug: str, body: VerdictBody, request: Request) -> dict:
     await authorize_resource_write(registry, "database", slug)
     return await _run(review.record_verdict, registry, slug, body.check_key, body.verdict, decided_by=author,
                       note=body.note)
+
+
+@router.post("/{slug}/table-comparison")
+async def post_table_comparison(slug: str, body: TableComparisonBody, request: Request) -> dict:
+    author = _require_author(request, "opt a table into Table Comparison")
+    registry = _registry_for(slug)
+    from resource_explorer.web.routes.curate import authorize_resource_write
+
+    await authorize_resource_write(registry, "database", slug)
+    return await _run(review.set_table_comparison, registry, slug, body.schema_name, body.table_name, body.watch,
+                      decided_by=author, note=body.note)

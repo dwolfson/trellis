@@ -113,6 +113,10 @@ Row 1 is built (2026-10-26): `DESIGN-QUALITY-Q6-RECENCY.md` records what was por
 and §2 there corrects §5.1's reason for the order (Historical Date cannot pre-empt Future or Schedule Date; the
 statements around the CASE can).
 
+Row 2 is built (2026-10-27), with the TestGen-only import of §6.5: `DESIGN-QUALITY-B1A-BASELINE-MATCH.md`. §4 there
+records where "no new measure, no DDL" needed more than this table says: the two date matches measure text, which
+the results table's numeric `measure` column cannot hold as text, and all six carry upstream's `null_measure_fails`.
+
 **Out of scope for proposals:** family H (5, manual-only in TestGen), family E (8, cross-table and
 person-authored), family F (4, custom SQL). They need a check editor, not a selection rule, and F
 is the owner's "define your own rules" backlog stage. F carries an extra warning from RE's own

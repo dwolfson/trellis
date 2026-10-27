@@ -6,6 +6,8 @@
  *    the press (the server's `recorded`), never from the click; a failure stays on the row until the next press;
  *  - a check that could not be established has NO selector, and says why on its row.
  * There is no bulk verdict: one press decides one check (the design speaks of one check at a time).
+ * Each table's card also carries its Table Comparison opt-in ("watch this table for drift": the baseline-match checks,
+ * proposed at the next propose run), recorded and read back the same way.
  *
  * The module draws into one slot and takes its API and the signed-in person as arguments, so it loads without the
  * rest of the app and a test can drive it with a stub. Tables use colresize (report-tables.js). */
@@ -102,6 +104,27 @@ export function checkRow(row, ui) {
   };
 }
 
+export const WATCH_SENTENCE = 'Table Comparison: the baseline-match checks (row, distinct, null and empty-string counts, '
+  + 'earliest and latest date), each failing when the table moves from the profile it was accepted against. '
+  + 'Proposed at the next propose run.';
+
+/** A table's Table Comparison line: its state cue and one button. `tc` is the group's `table_comparison`. Pure. */
+export function watchLineHtml(g, { me = '', pending = false, failure = '' } = {}) {
+  const tc = g.table_comparison || { watched: false };
+  const who = tc.by && tc.by === me ? 'you' : (tc.by || 'unknown');
+  const cue = pending ? cueHtml('pending', 'recording…')
+    : failure ? cueHtml('failed', `not recorded · ${failure}`, failure)
+      : tc.watched ? cueHtml('accepted', `watched for drift · ${who} · ${day(tc.at)}`, WATCH_SENTENCE)
+        : cueHtml('proposed', 'not watched for drift', WATCH_SENTENCE);
+  const dis = !me ? 'disabled title="sign in to opt a table in · it needs a person to record"'
+    : (pending ? 'disabled aria-busy="true"' : '');
+  return `<div data-qc-watch class="mb-s1 flex flex-wrap items-baseline gap-x-s2">
+    <button type="button" data-qc-act="watch" data-qc-schema="${esc(g.schema_name)}" data-qc-table="${esc(g.table_name)}"
+      data-qc-watch="${tc.watched ? '0' : '1'}" ${dis} title="${esc(WATCH_SENTENCE)}"
+      class="border border-rule-strong px-s1 text-provenance text-ink">${tc.watched ? 'Stop watching' : 'Watch for drift'}</button>
+    ${cue}</div>`;
+}
+
 export function groupBodyHtml(rows, ui) {
   if (!rows.length) return '<div class="text-caveat text-ink-muted">No checks in this table match the filters.</div>';
   return gridHtml(QC_COLS, 'Proposed quality checks', rows.map((r) => checkRow(r, ui)));
@@ -160,11 +183,16 @@ export function mountQualityChecks(slot, slug, deps) {
   const keyOf = (g) => `${g.schema_name}.${g.table_name}`;
   const groupEl = (key) => [...slot.querySelectorAll('[data-qc-group]')].find((e) => e.dataset.qcGroup === key);
 
+  const watchUi = { pending: new Set(), failed: new Map() };
+  const watchHtml = (key) => {
+    const g = summary && summary.groups.find((x) => keyOf(x) === key);
+    return g ? watchLineHtml(g, { me: ui.me, pending: watchUi.pending.has(key), failure: watchUi.failed.get(key) || '' }) : '';
+  };
   const paintRows = (key) => {
     const el = groupEl(key);
     const host = el && el.querySelector('[data-qc-body]');
     if (!host) return;
-    host.innerHTML = groupBodyHtml(rowsOf.get(key) || [], ui);
+    host.innerHTML = watchHtml(key) + groupBodyHtml(rowsOf.get(key) || [], ui);
     attachGrids(host, () => QC_COLS);
   };
 
@@ -275,7 +303,29 @@ export function mountQualityChecks(slot, slug, deps) {
     } catch (_e) { /* the row's own cue already says what was recorded; the counts catch up on the next read */ }
   }
 
+  async function pressWatch(btn) {
+    const key = `${btn.dataset.qcSchema}.${btn.dataset.qcTable}`;
+    const watch = btn.dataset.qcWatch === '1';
+    if (watchUi.pending.has(key) || !deps.api.postTableComparison) return;
+    watchUi.pending.add(key);
+    watchUi.failed.delete(key);
+    paintRows(key);
+    try {
+      const out = await deps.api.postTableComparison(slug, btn.dataset.qcSchema, btn.dataset.qcTable, watch);
+      const tc = out && out.table_comparison;
+      const g = summary && summary.groups.find((x) => keyOf(x) === key);
+      if (out && out.recorded === true && tc && tc.watched === watch && g) g.table_comparison = tc;
+      else watchUi.failed.set(key, 'the opt-in could not be read back');
+    } catch (err) {
+      watchUi.failed.set(key, err.message || 'the write failed');
+    }
+    watchUi.pending.delete(key);
+    paintRows(key);
+  }
+
   const onClick = (ev) => {
+    const watchBtn = ev.target.closest && ev.target.closest('[data-qc-act="watch"]');
+    if (watchBtn && slot.contains(watchBtn) && !watchBtn.disabled) { pressWatch(watchBtn); return; }
     const btn = ev.target.closest && ev.target.closest('[data-qc-act="verdict"]');
     if (btn && slot.contains(btn) && !btn.disabled) press(btn);
   };

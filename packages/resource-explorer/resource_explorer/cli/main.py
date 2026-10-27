@@ -2366,6 +2366,89 @@ def database_sampling(
         console.print(f"[red]resolves to an error, so value-sampling steps will fail: {exc}[/red]")
 
 
+@database_app.command(name="quality-watch")
+def database_quality_watch(
+    slug: str = typer.Argument(help="Database slug"),
+    table: str = typer.Argument(help="The table, as schema.table"),
+    off: bool = typer.Option(False, "--off", help="Stop watching (opt the table out)"),
+    note: str = typer.Option("", "--note", help="Why, recorded with the opt-in"),
+):
+    """Opt one table into Table Comparison ("watch this table for drift"), or out with --off.
+
+    The baseline-match checks (Match_Row_Ct, Match_Distinct_Ct, Match_Null_Ct, Match_Zero_Length_Ct, Match_Min_Date,
+    Match_Max_Date) are proposed for the table at the next propose run, each with its baseline from that profile.
+    Recorded as you (sign in first); local only, nothing is written to Egeria. An opt-out stops new proposals and
+    leaves accepted checks running until they are retired.
+    """
+    from resource_explorer.cli import session as cli_session
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.database.quality import table_comparison
+
+    registry = ProjectRegistry()
+    if not registry.get_database(slug, allow_unreadable=True):
+        console.print(f"[red]Database '{slug}' not found.[/red]")
+        raise typer.Exit(1)
+    schema, sep, name = table.partition(".")
+    if not sep or not schema or not name:
+        console.print(f"[red]Name the table as schema.table, got {table!r}.[/red]")
+        raise typer.Exit(2)
+    person = cli_session.require_and_activate(console).user_id
+    try:
+        entry = table_comparison.set_watch(registry, slug, schema, name, not off, by=person, note=note)
+    except ValueError as exc:
+        console.print(f"[red]✗ Not recorded: {exc}[/red]")
+        raise typer.Exit(1) from None
+    if off:
+        console.print(f"[green]✓ {table} opted out of Table Comparison by {entry['by']} at {entry['at']}.[/green] "
+                      "Accepted checks keep running until retired.")
+    else:
+        console.print(f"[green]✓ {table} opted into Table Comparison by {entry['by']} at {entry['at']}.[/green] "
+                      "Its baseline-match checks are proposed at the next propose run.")
+
+
+@database_app.command(name="quality-import-testgen")
+def database_quality_import_testgen(
+    slug: str = typer.Argument(help="Database slug (the export's re_slug)"),
+    export_path: str = typer.Option(..., "--export", help="JSON from TestGen's scripts/export_testgen.py"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Say what would be imported; write nothing"),
+):
+    """Import TestGen-only tests as proposals (origin testgen), never verdicts (Q4 port plan §6.5).
+
+    Only test types RE has ported are imported; a key with a live verdict, or one RE's own latest batch already
+    proposes, is a match and not imported. Parameters come from TestGen's test definition and are validated as RE's
+    own are. Reads the file only: nothing reaches TestGen or Egeria. A person accepts an imported proposal in Curate.
+    """
+    import json as _json
+
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors.database.quality.testgen_import import TestGenImportError, import_export
+
+    registry = ProjectRegistry()
+    if not registry.get_database(slug, allow_unreadable=True):
+        console.print(f"[red]Database '{slug}' not found.[/red]")
+        raise typer.Exit(1)
+    try:
+        with open(export_path, encoding="utf-8") as f:
+            export = _json.load(f)
+        summary = import_export(registry, slug, export, dry_run=dry_run)
+    except (OSError, ValueError, TestGenImportError) as exc:
+        console.print(f"[red]✗ Not imported: {exc}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"table groups: {', '.join(f'{k} ({v})' for k, v in summary['table_groups'].items()) or 'none'}")
+    console.print(f"imported {summary['imported_ct']} · not established {summary['not_established_ct']} · "
+                  f"already proposed by RE {summary['matched_re_ct']} · already accepted {summary['matched_accepted_ct']} "
+                  f"· rejected, not imported {summary['rejected_ct']} · inactive in TestGen {summary['inactive_ct']}")
+    unported = summary["unported"]
+    console.print(f"not ported in RE, not imported: "
+                  f"{', '.join(f'{k} ({v})' for k, v in sorted(unported.items())) or 'none'}")
+    if dry_run:
+        console.print("dry run: nothing written")
+    elif summary["surveyed_at"]:
+        console.print(f"[green]✓ written as proposals batch {summary['surveyed_at']}[/green]")
+    else:
+        console.print("nothing new to propose: no batch written")
+
+
 @database_app.command(name="info")
 def database_info(
     slug: str = typer.Argument(help="Database slug"),
