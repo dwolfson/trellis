@@ -36,6 +36,7 @@ from resource_explorer.surveyors.database.quality.run_checks import (
     run_quality_checks,
 )
 from resource_explorer.surveyors.database.quality.value_profile import (
+    COLUMNS_PER_QUERY,
     ProfileBounds,
     incomplete_reason,
     run_value_profile,
@@ -606,7 +607,7 @@ class _SlowConn(FakeConn):
 
 
 def _wide_registry(registry, columns=450):
-    """`sales.wide`: 450 integer columns, so the profile reads it as three chunks of at most 200."""
+    """`sales.wide`: 450 integer columns, so the profile reads it as three chunks of at most COLUMNS_PER_QUERY (150)."""
     tables = registry.query_detail_rows("database_tables", SLUG)
     cols = registry.query_detail_rows("database_columns", SLUG)
     tables.append({"schema_name": "sales", "table_name": "wide", "table_type": "BASE TABLE", "row_count": 1000})
@@ -629,7 +630,7 @@ def test_a_table_that_runs_past_five_minutes_is_incomplete_with_every_count_not_
     out = _wide_profile(registry, entity, conn, clock, bounds)
     wide = [r for r in registry.query_detail_rows("database_value_profiles", SLUG) if r["table_name"] == "wide"]
     # Chunks 1 and 2 took 260 s and finished; the third started with 40 s left, ran into it and was cancelled: the
-    # whole table is incomplete, including the 400 columns whose counts had been read.
+    # whole table is incomplete, including the 300 columns whose counts had been read.
     assert len(wide) == 450
     assert {r["state"] for r in wide} == {"not_measured"}
     assert {r["reason"] for r in wide} == {"profile incomplete · exceeded 5 min · counts not measured"}
@@ -672,13 +673,13 @@ def test_a_table_whose_budget_is_spent_between_chunks_starts_no_more_and_is_inco
 def test_a_chunk_that_takes_100_seconds_inside_the_budget_is_measured(registry, entity):
     """H2: the 5-minute budget is the EFFECTIVE bound. Slice 1's fixed 60 s statement timeout would have cancelled a
     100 s chunk with 200 s of the table's budget left; now each chunk may take what is left of the budget."""
-    _wide_registry(registry, columns=200)             # one chunk
+    _wide_registry(registry, columns=COLUMNS_PER_QUERY)   # one chunk
     clock = _Clock()
     conn = _SlowConn(clock, seconds=100, profile=PROFILE, reltuples={("sales", "wide"): 1000})
     bounds = ProfileBounds(statement_timeout_seconds=60, table_budget_seconds=300)      # the old 60 s setting present
     _wide_profile(registry, entity, conn, clock, bounds)
     wide = [r for r in registry.query_detail_rows("database_value_profiles", SLUG) if r["table_name"] == "wide"]
-    assert len(wide) == 200 and {r["state"] for r in wide} == {"measured"}
+    assert len(wide) == COLUMNS_PER_QUERY and {r["state"] for r in wide} == {"measured"}
     assert wide[0]["record_ct"] == 1000 and clock.now == 100
     assert conn.timeouts[-1] == 300                   # the chunk was given the whole budget, not 60 s
 
@@ -687,7 +688,7 @@ def test_a_privilege_error_after_the_budget_is_spent_is_still_not_permitted_not_
     """L2: the exception is classified before the table is labelled 'profile incomplete'."""
     from tests.test_value_profile_quality_checks import PgError
 
-    _wide_registry(registry, columns=200)
+    _wide_registry(registry, columns=COLUMNS_PER_QUERY)
     clock = _Clock()
 
     class Denied(_SlowConn):

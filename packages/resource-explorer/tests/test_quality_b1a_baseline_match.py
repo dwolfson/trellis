@@ -446,7 +446,8 @@ def test_the_review_shows_each_table_s_opt_in_and_records_one_read_back(registry
     assert out["recorded"] and out["table_comparison"]["watched"] and out["table_comparison"]["by"] == "steward"
     body = review.build_review(registry, SLUG)
     assert {g["table_name"]: g for g in body["groups"]}["orders"]["table_comparison"]["watched"]
-    assert body["table_comparison"] == {"test_types": list(cat.B1A_TEST_TYPES), "tables_opted_in": 1}
+    assert body["table_comparison"] == {"test_types": review.table_comparison_types(), "tables_opted_in": 1}
+    assert review.table_comparison_types()[:6] == list(cat.B1A_TEST_TYPES)
     with pytest.raises(review.ReviewError) as exc:
         review.set_table_comparison(registry, SLUG, "sales", "nope", True, decided_by="steward")
     assert exc.value.status == 400
