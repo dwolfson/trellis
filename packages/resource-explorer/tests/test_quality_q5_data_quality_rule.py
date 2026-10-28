@@ -1,7 +1,7 @@
 """Quality slice Q5 (DESIGN-QUALITY-Q5-DATA-QUALITY-RULE.md): accepted checks as Egeria DataQualityRules.
 
 - the property mapping, the qualified name, Validity -> accuracy with originalDimension (owner, 2026-10-20);
-- Publish against an in-memory gateway: create, read back, link once; unchanged on a re-publish; update in place on a
+- Publish against an in-memory gateway: create (its own anchor), read back, link column and asset once; unchanged on a re-publish; update in place on a
   parameter change; Egeria wins over a rule edited there; reject -> DEPRECATED and unlinked, never deleted;
 - the NO-FALLBACK rule: a refused subtype create ends that check, one create call, never a base definition;
 - proof rows in the registry, and the reset cutoff;
@@ -87,8 +87,8 @@ class FakeGateway:
             return self.name_holders[qualified_name]
         return [r for r in self.rules.values() if r.properties.get("qualifiedName") == qualified_name]
 
-    def create(self, anchor_guid, properties):
-        self.calls.append(("create", anchor_guid, dict(properties)))
+    def create(self, properties):
+        self.calls.append(("create", dict(properties)))
         if self.refuse_create:
             raise er.RuleGatewayError(self.refuse_create)
         guid = f"rule-{len(self.rules) + 1}"
@@ -184,14 +184,15 @@ def test_the_qualified_name_is_the_bitol_shape_rooted_at_the_asset():
 
 # ── Publish ───────────────────────────────────────────────────────────────────────────────────────────────
 
-def test_publish_creates_reads_back_anchors_and_links_and_a_republish_writes_nothing(registry, entity):
+def test_publish_creates_a_reusable_rule_reads_back_and_links_column_and_asset_and_a_republish_writes_nothing(
+        registry, entity):
     _accept(registry, UNIQUE, "Unique")
     gw = _gateway(entity)
     out = _publish(registry, entity, gw)
     assert out["counts"] == {"created": 1} and out["line"] == "quality rules: 1 new"
     (create,) = gw.made("create")
-    assert create[1] == ASSET_GUID and create[2]["qualifiedName"] == f"{ASSET_QN}::Quality::{UNIQUE}"
-    assert gw.links == {(COLUMN_GUID, "rule-1")}
+    assert create[1]["qualifiedName"] == f"{ASSET_QN}::Quality::{UNIQUE}"
+    assert gw.links == {(COLUMN_GUID, "rule-1"), (ASSET_GUID, "rule-1")}
     proof = registry.latest_quality_rule_proofs(SLUG)[UNIQUE]
     assert proof["outcome"] == "created" and proof["rule_guid"] == "rule-1" and proof["read_at"]
     assert proof["detail_json"]["sent"] == {"comparisonOperator": "mustBeLessOrEqualTo", "thresholdValues": ["0"],
@@ -201,7 +202,7 @@ def test_publish_creates_reads_back_anchors_and_links_and_a_republish_writes_not
     again = _publish(registry, entity, gw)
     assert again["counts"] == {"unchanged": 1}
     assert not gw.made("create") and not gw.made("update")
-    assert gw.links == {(COLUMN_GUID, "rule-1")}          # the link is checked, never doubled
+    assert gw.links == {(COLUMN_GUID, "rule-1"), (ASSET_GUID, "rule-1")}     # checked, never doubled
 
 
 def test_a_parameter_edited_in_re_updates_the_same_rule(registry, entity):
@@ -238,12 +239,14 @@ def test_reject_after_publish_deprecates_and_unlinks_never_deletes(registry, ent
     out = _publish(registry, entity, gw)
     assert out["counts"] == {"retired": 1}
     assert gw.rules["rule-1"].properties["contentStatus"] == "DEPRECATED" and "rule-1" in gw.rules
-    assert gw.links == set() and gw.made("unlink") == [("unlink", COLUMN_GUID, "rule-1")]
+    assert gw.links == set()
+    assert gw.made("unlink") == [("unlink", COLUMN_GUID, "rule-1"), ("unlink", ASSET_GUID, "rule-1")]
     # re-accepting brings the same rule back, by name
     _accept(registry, UNIQUE, "Unique")
     back = _publish(registry, entity, gw)
     assert back["counts"] == {"reactivated": 1} and len(gw.made("create")) == 1
-    assert gw.rules["rule-1"].properties["contentStatus"] == "ACTIVE" and gw.links == {(COLUMN_GUID, "rule-1")}
+    assert gw.rules["rule-1"].properties["contentStatus"] == "ACTIVE"
+    assert gw.links == {(COLUMN_GUID, "rule-1"), (ASSET_GUID, "rule-1")}
 
 
 def test_a_refused_subtype_create_never_falls_back(registry, entity):
@@ -255,7 +258,7 @@ def test_a_refused_subtype_create_never_falls_back(registry, entity):
     out = _publish(registry, entity, gw)
     assert out["counts"] == {"refused": 1}
     (create,) = gw.made("create")
-    assert create[2]["class"] == "DataQualityRuleProperties"
+    assert create[1]["class"] == "DataQualityRuleProperties"
     assert not gw.made("link") and not gw.rules
     proof = registry.latest_quality_rule_proofs(SLUG)[UNIQUE]
     assert proof["outcome"] == "refused" and proof["rule_guid"] == "" and "400-029" in proof["detail_json"]["error"]
@@ -292,7 +295,7 @@ def test_a_table_check_governs_the_table(registry, entity):
     _accept(registry, ROWS, "Row_Ct_Pct", baseline_ct=1000, threshold_value=10)
     gw = _gateway(entity)
     assert _publish(registry, entity, gw)["counts"] == {"created": 1}
-    assert gw.links == {(TABLE_GUID, "rule-1")}
+    assert gw.links == {(TABLE_GUID, "rule-1"), (ASSET_GUID, "rule-1")}
     assert ("element_guid", _element_qn(entity, "sales.orders"), "RelationalTable") in gw.calls
 
 
@@ -408,18 +411,19 @@ def _real_gateway():
     return er.PyegeriaRuleGateway(go, expert), go, expert
 
 
-def test_the_create_body_is_the_subtype_anchored_to_the_asset():
+def test_the_create_body_is_the_subtype_as_its_own_anchor():
+    """A reusable rule is its own anchor (owner, 2026-10-28); what it checks is said by GovernedBy, not the anchor."""
     gw, go, _ = _real_gateway()
     go.create_governance_definition.return_value = "rule-guid"
-    assert gw.create(ASSET_GUID, {"class": "DataQualityRuleProperties", "typeName": "DataQualityRule"}) == "rule-guid"
+    assert gw.create({"class": "DataQualityRuleProperties", "typeName": "DataQualityRule"}) == "rule-guid"
     (body,) = go.create_governance_definition.call_args.args
-    assert body == {"class": "NewElementRequestBody", "anchorGUID": ASSET_GUID, "isOwnAnchor": False,
+    assert body == {"class": "NewElementRequestBody", "isOwnAnchor": True,
                     "properties": {"class": "DataQualityRuleProperties", "typeName": "DataQualityRule"}}
-    # pyegeria's own model keeps the anchor and the subtype as sent (GUID spelled as Egeria reads it)
+    # pyegeria's own model keeps the anchor choice and the subtype as sent
     from pyegeria.models.models import NewElementRequestBody
 
     dumped = NewElementRequestBody.model_validate(body).model_dump(by_alias=True, exclude_none=True)
-    assert dumped["anchorGUID"] == ASSET_GUID and dumped["isOwnAnchor"] is False
+    assert dumped["isOwnAnchor"] is True and "anchorGUID" not in dumped
     assert dumped["properties"]["class"] == "DataQualityRuleProperties"
 
 
@@ -427,7 +431,7 @@ def test_a_create_that_raises_is_one_call_and_a_gateway_error():
     gw, go, _ = _real_gateway()
     go.create_governance_definition.side_effect = RuntimeError("OMAG-COMMON-400-029")
     with pytest.raises(er.RuleGatewayError, match="400-029"):
-        gw.create(ASSET_GUID, {"class": "DataQualityRuleProperties"})
+        gw.create({"class": "DataQualityRuleProperties"})
     assert go.create_governance_definition.call_count == 1
 
 
@@ -451,7 +455,7 @@ def test_a_read_is_gone_only_when_egeria_says_so():
 
 
 def test_the_link_reads_from_the_rule_at_end_two_and_links_once(monkeypatch):
-    gw, go, expert = _real_gateway()
+    gw, go, _expert = _real_gateway()
     seen = {}
 
     def fake_link_once(metadata_expert, **kw):

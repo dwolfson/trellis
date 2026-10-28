@@ -92,7 +92,7 @@ One accepted check (latest verdict `accepted` for its `check_key`) → one `Data
 |---|---|---|
 | request `class` | `NewElementRequestBody`; properties class `DataQualityRuleProperties`, `typeName` `DataQualityRule` | never `GovernanceDefinitionProperties` (§6.1) |
 | `qualifiedName` | `<databaseAssetQN>::Quality::<check_key>`, i.e. `…::Quality::sales.orders.order_id::Unique` | `check_key` is already `schema.table[.column]::Test_Type` (`catalogue.check_key`), so §7's scheme and RE's key coincide; one name per check, stable across threshold edits |
-| anchor | `anchorGUID` = the database Asset, `isOwnAnchor = false` | as Bitol anchors to the contract; see §7 and owner question 1 |
+| anchor | **its own** (`isOwnAnchor = true`, no `anchorGUID`): a reusable rule | **Decision (project owner, 2026-10-28)**, §11 row 1. Superseded the draft's asset anchor. What the rule checks is said by `GovernedBy` (below), not by the anchor |
 | `displayName` | `"<test_name_short>: <path>"` | |
 | `summary`, `description` | YAML `test_description`; `usage_notes` | |
 | `scope` | `schema.table[.column]` | |
@@ -113,8 +113,13 @@ One accepted check (latest verdict `accepted` for its `check_key`) → one `Data
 - `GovernedBy` `QualityAnnotation` → rule, per Q2's annotations from the run after the rule exists (§5).
   Annotations published before the rule existed are not back-linked: they say `ruleSource: unpublished`, which
   was true when they were measured.
-- No link to the database Asset beyond the anchor. A check whose column or table has no element gets no rule
-  (owner, 2026-10-20).
+- `GovernedBy` database Asset → rule, as well as the column or table link: the rule-to-asset relationship the
+  owner asked for. Probe call 7 is why it is `GovernedBy`: of the relationships 6.3 allows on a `Database`, it is the
+  one whose other end is a `GovernanceDefinition` (`GovernanceResults` is for governance-action results, and
+  `GovernanceMechanism`/`GovernanceControlLink` join definitions to definitions). Both links are made once, and
+  a retire detaches both.
+- A check whose column or table has no element still gets no rule (owner, 2026-10-20): the asset link is in
+  addition to the element link, never instead of it.
 
 ## 5. When it is written, changed and retired
 
@@ -126,7 +131,7 @@ Per accepted, retired or rejected `check_key`, Publish compares the verdict with
 
 | Verdict now | Proof row says | Action |
 |---|---|---|
-| accepted | none, or `retired` | find by qualified name → create (anchored) or reactivate; link once; read back |
+| accepted | none, or `retired` | find by qualified name → create (own anchor) or reactivate; link column/table and asset once; read back |
 | accepted, parameters as published | `published`, same `reProofHash` | nothing; counted as unchanged |
 | accepted, parameters edited (threshold, severity) | `published`, different hash | `update_governance_definition` in place, same GUID; read back |
 | rejected or retired | `published` | `contentStatus` → `DEPRECATED`, `detach_governed_by_definition` from the column/table; the rule and its annotation links stay as history; read back |
@@ -180,12 +185,14 @@ applied at the next RE start against :5442, which needs the owner's word. It has
 
 ## 7. Zones and visibility
 
-Anchoring the rule to the database Asset (§4) is what makes visibility right without RE writing zones: Egeria's
-anchor-based security gives an anchored element its anchor's zones, so the rule is visible exactly to those who
-can see the asset, and is found in the asset's anchored set. RE writes no `ZoneMembership` unless
-`EXPLORER_PUBLISH_ZONES` is configured, the existing Curate rule. With `isOwnAnchor = true` instead, an unzoned
-rule would be visible to everyone the server's default allows, and would survive the asset's deletion as an
-orphan. Anchoring also means deleting the database Asset deletes its rules, which is the intended lifecycle.
+The rule is its own anchor (owner, 2026-10-28), so it does **not** inherit the database Asset's zones and it
+**survives the asset's deletion**. That is what a reusable rule should do, and two consequences follow:
+
+- **Visibility.** An own-anchored rule with no `ZoneMembership` is visible to whoever the server's default lets
+  read unzoned elements. RE writes no zone unless `EXPLORER_PUBLISH_ZONES` is configured (the existing Curate
+  rule), and the build does not yet write one on a rule even then: open item R6.
+- **Lifecycle.** Deleting or archiving the database Asset leaves its rules, with their `GovernedBy` links to that
+  asset gone. A rule left governing nothing is a candidate for retire; RE does not delete it.
 
 Writes run as the signed-in user through `egeria_identity.apply_identity` (the probe used the daemon identity
 only to read); unattended scheduled publishes use the service account, the owner's identity rule.
@@ -216,9 +223,9 @@ column it governs and the annotations that evaluated it, newest first.
 
 On coco_pharma, with `sales` committed in Contents: the owner accepts three proposals (one column check, one
 `Row_Ct_Pct` table check, one on a column of an **uncommitted** schema), presses Publish once. Then:
-1. two rules read back by GUID as `DataQualityRule` with `method`, operator and threshold as accepted, anchored
-   to the database Asset, `GovernedBy` read from the column's and the table's side; the third check shows "not
-   added to Egeria" and no rule exists for it;
+1. two rules read back by GUID as `DataQualityRule` with `method`, operator and threshold as accepted, each its
+   own anchor, `GovernedBy` read from the column's (or table's) side and from the database Asset's; the third
+   check shows "not added to Egeria" and no rule exists for it;
 2. Publish again: zero creates, two `unchanged` proof rows;
 3. edit one threshold in RE, Publish: same GUID, updated; reject the other, Publish: `DEPRECATED`, unlinked from
    its table, still present;
@@ -238,25 +245,35 @@ On coco_pharma, with `sales` committed in Contents: the owner accepts three prop
 - **R3. `get_governance_definitions_by_name` and type filtering.** A by-name lookup across all governance
   definition types could match a non-rule with the same qualified name; the filter to `DataQualityRule` is
   RE's job, and §6.2's "two hits" rule covers the rest.
-- **R4. Anchored creates and the view service.** The Bitol mapper anchors through the Java client; whether the
-  Governance Officer REST create honours `anchorGUID` with `isOwnAnchor=false` for this type is unchecked. If
-  not, fall back is **not** to own-anchor silently: report and ask (owner question 1).
+- **R4. (Closed 2026-10-28.)** The anchor question no longer arises: rules are their own anchor, the
+  Governance Officer create's default.
+- **R6. Zones on a reusable rule.** Own-anchored, a rule does not take the asset's zones (§7). Whether RE should
+  zone rules from `EXPLORER_PUBLISH_ZONES`, and to which zone a reusable rule belongs, is open.
 - **R5. Annotation → rule `GovernedBy` volume.** One edge per check per run. At the Q3 batch scale this grows
   linearly with runs; the profile-publish re-link pattern may be wanted for annotations of unchanged results.
 
 ## 11. Owner questions, answered (2026-10-28)
 
 The owner: "I answered all the questions previously - we should be able to move forward?" Each question's
-recorded answer, or the recommendation taken where none is recorded, marked **assumed: owner to confirm**.
+recorded answer, or the recommendation taken where none was recorded. The four that were assumed were then
+answered by the owner on 2026-10-28, in the coordinator session; one of them, the anchor, changed.
+
+**Decision (project owner, 2026-10-28):** "There are different use cases - it might be a reusable rule in which
+case it is its own anchor or it may be tied to a data contract in which case it is anchored there...and perhaps
+others...as a follow-on, I wonder if we need to pull in data-contracts that egeria knows about (or even create new
+ones) and test against those?"
+
+**Decision (project owner, 2026-10-28):** a reject after publish sets DEPRECATED and unlinks, never deletes; no
+back-link to annotations published before their rule; one press publishes every pending accepted check.
 
 | # | Question | Answer | Source |
 |---|---|---|---|
-| 1 | Anchor the rule to the database Asset? | **Yes**, anchored (`isOwnAnchor` false) | **assumed: owner to confirm**. No recorded answer; Egeria's own Bitol mapper anchors to the contract |
+| 1 | Anchor the rule to the database Asset? | **No: its own anchor.** The rules RE publishes are reusable rules; each is related to the database Asset and to its column or table by `GovernedBy`. A rule tied to a data contract would be anchored to the contract: later (§13) | **owner, 2026-10-28** (quoted above). Changed from the assumed asset anchor |
 | 2 | Validity's dimension word | **`accuracy`**, with `originalDimension: Validity` | **recorded**: owner, 2026-10-20, "conformity and validity are not equivalent - accuracy is closer - we could use accuracy and additionalProperties until we add validity" (`DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md` §11 item 9; the 10-20 coordinator handoff transcript). The 10-21 inventory and the Q2 code said `conformity` without the ruling; the build corrects the code, so Q2's annotations now say `accuracy` too |
 | 3 | An edit in Egeria wins? | **Yes**: RE does not overwrite, the run uses Egeria's values and says "rule edited in Egeria since acceptance" | **recorded in the design**: `DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md` §6 ("The input is the accepted checks, and Egeria wins"), the 2026-10-19 design the owner answered against; no separate owner quote found |
-| 4 | Reject after publish → DEPRECATED and unlinked, never deleted? | **Yes** | **assumed: owner to confirm** |
-| 5 | Back-link annotations published before the rule existed? | **No**: only a run that read its rule from Egeria links its annotation | **assumed: owner to confirm** |
-| 6 | Rules in Publish automatically, or opt-in per press? | **Automatically**, every accepted check pending; the press is `POST /api/quality-checks/{slug}/publish-rules` | **assumed: owner to confirm**. Recorded only that "Publish is the only action that writes rules" (§7 of the value-profile note) and its wireframe's "Publish accepted checks" (§10 there) |
+| 4 | Reject after publish → DEPRECATED and unlinked, never deleted? | **Yes** | **owner, 2026-10-28**: confirmed as built |
+| 5 | Back-link annotations published before the rule existed? | **No**: only a run that read its rule from Egeria links its annotation | **owner, 2026-10-28**: confirmed as built |
+| 6 | Rules in Publish automatically, or opt-in per press? | **Automatically**: one press publishes every pending accepted check (`POST /api/quality-checks/{slug}/publish-rules`) | **owner, 2026-10-28**: confirmed as built |
 
 Also recorded and applied: `contentStatus` ACTIVE for an accepted check (owner, 2026-10-19, value-profile note §11
 item 5); `GovernedBy` from annotation to rule (owner, 2026-10-20, item 6).
@@ -266,7 +283,8 @@ item 5); `GovernedBy` from annotation to rule (owner, 2026-10-20, item 6).
 - `surveyors/database/quality/egeria_rules.py`: the property mapping (`rule_properties`), the plan
   (`plan_rules`, pure), Publish (`publish_rules`, `publish_database_rules`) behind a `RuleGateway` seam, the
   pyegeria gateway (`PyegeriaRuleGateway`: the generic Governance Officer calls, `egeria_lookup` for names,
-  `egeria_link_once` for `GovernedBy` read from the rule at end 2), the run step's reader (`rules_for_run`,
+  `egeria_link_once` for `GovernedBy` read from the rule at end 2; the create is its own anchor and links the
+  column or table and the database Asset), the run step's reader (`rules_for_run`,
   `read_rules_for_run`) and the Curate state lines (`rule_states`).
 - `registry.py`: `database_quality_rule_proofs` (DDL in code, not applied), `record_quality_rule_proofs`,
   `latest_quality_rule_proofs` (reset cutoff), and `remove_database` deletes its rows.
@@ -286,3 +304,16 @@ item 5); `GovernedBy` from annotation to rule (owner, 2026-10-20, item 6).
 routes); folding `publish-rules` into the page's one Publish press, which waits on row 6 and on the publish table
 of `DESIGN-DECLARED-EXTENSIBILITY…` §5 landing. No live write has been made: the gate's first write is the first
 evidence that the create works (R2).
+
+## 13. Open: rules anchored to data contracts (owner's follow-on, 2026-10-28)
+
+Not built, and not planned in a slice yet. The owner's follow-on (quoted in §11): rules tied to a data contract are
+anchored to the contract, and RE might **pull in the data contracts Egeria already knows about, or create new
+ones, and test against those**. That would make a contract's quality rules a source of accepted checks beside RE's
+own proposals. What it needs first:
+- a read of the data contracts the platform holds (Egeria's Bitol/ODCS mapper creates them; the rules it makes are
+  `<elementQN>::Quality::<id>` anchored to the agreement, §3), and how their elements map to RE's columns;
+- which of a contract's rules RE can run: only those whose `method` is a vendored test type, never `checkType` sql
+  or an `expression` RE did not write (the existing rule);
+- whether RE ever creates a contract, or only reads them.
+

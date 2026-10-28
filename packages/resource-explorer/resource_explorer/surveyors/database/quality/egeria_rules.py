@@ -3,8 +3,10 @@
 One accepted check -> one `DataQualityRule`, written only by Publish (accepting stays local):
 
     qualifiedName   <databaseAssetQN>::Quality::<check_key>          (Bitol's `<elementQN>::Quality::<id>`)
-    anchor          the database Asset (`isOwnAnchor` false), as Bitol anchors its rules to the contract
-    GovernedBy      from the RelationalColumn (a column check) or RelationalTable (a table check), linked once
+    anchor          its OWN (`isOwnAnchor`): a reusable rule (owner, 2026-10-28). A rule tied to a data contract
+                    is anchored there; that is a later slice, not this one
+    GovernedBy      from the RelationalColumn (a column check) or RelationalTable (a table check), AND from the
+                    database Asset, each linked once: the relationship, not the anchor, says what the rule checks
 
 Through pyegeria's GENERIC governance-definition calls, wrapped here so a later dedicated API
 (`SPEC-PYEGERIA-DATA-QUALITY-RULE.md`) is a change to `PyegeriaRuleGateway` only. The rules the design sets:
@@ -168,6 +170,7 @@ class RuleAction:
     proof: dict | None = None       # RE's latest proof row for this key
     reason: str = ""
     outcome: str = ""               # for a skip: the outcome its row records
+    asset_guid: str = ""            # the database Asset, also linked by GovernedBy (set by publish_rules)
 
 
 def plan_rules(verdicts: dict[str, dict], proofs: dict[str, dict], properties: dict[str, dict],
@@ -223,7 +226,7 @@ class RuleGateway(Protocol):
     def find_by_name(self, qualified_name: str) -> list[RuleRead]: ...
     def element_guid(self, qualified_name: str, type_name: str) -> str: ...
     def qualified_name_of(self, guid: str) -> str: ...
-    def create(self, anchor_guid: str, properties: dict) -> str: ...
+    def create(self, properties: dict) -> str: ...
     def read(self, guid: str) -> RuleRead | None: ...
     def update(self, guid: str, properties: dict) -> None: ...
     def link(self, element_guid: str, rule_guid: str) -> tuple[bool, str]: ...
@@ -252,6 +255,7 @@ def publish_rules(actions: list[RuleAction], gateway: RuleGateway, *, slug: str,
     written."""
     rows: list[dict] = []
     for action in actions:
+        action.asset_guid = asset_guid
         qn = rule_qualified_name(asset_qualified_name, action.check_key)
         row = {"database_slug": slug, "check_key": action.check_key, "rule_guid": "", "qualified_name": qn,
                "governed_guid": action.element_guid, "governed_kind": action.element_kind, "outcome": "",
@@ -267,7 +271,7 @@ def publish_rules(actions: list[RuleAction], gateway: RuleGateway, *, slug: str,
             elif action.kind == "retire":
                 _retire(action, gateway, row)
             else:
-                _publish_one(action, gateway, row, qn, asset_guid)
+                _publish_one(action, gateway, row, qn)
         except RuleGatewayError as exc:
             row.update(outcome=UNREADABLE if not row["outcome"] else row["outcome"],
                        detail_json={**row["detail_json"], "error": str(exc)[:400]})
@@ -275,7 +279,7 @@ def publish_rules(actions: list[RuleAction], gateway: RuleGateway, *, slug: str,
     return rows
 
 
-def _publish_one(action: RuleAction, gateway: RuleGateway, row: dict, qn: str, asset_guid: str) -> None:
+def _publish_one(action: RuleAction, gateway: RuleGateway, row: dict, qn: str) -> None:
     props = {**action.properties, "qualifiedName": qn}
     proof = action.proof or {}
     sent_before = (proof.get("detail_json") or {}).get("sent") if isinstance(proof.get("detail_json"), dict) else None
@@ -302,7 +306,7 @@ def _publish_one(action: RuleAction, gateway: RuleGateway, row: dict, qn: str, a
 
     if current is None:
         try:
-            guid = gateway.create(asset_guid, props)
+            guid = gateway.create(props)
         except RuleGatewayError as exc:
             # No fallback: the subtype refused is the end of this check's publish.
             row.update(outcome=REFUSED, detail_json={"error": str(exc)[:400]})
@@ -338,10 +342,14 @@ def _publish_one(action: RuleAction, gateway: RuleGateway, row: dict, qn: str, a
 
 
 def _link(gateway: RuleGateway, action: RuleAction, guid: str, row: dict) -> None:
-    linked, words = gateway.link(action.element_guid, guid)
-    row["detail_json"]["link"] = words
-    if not linked:
-        row["detail_json"]["link_error"] = words
+    """GovernedBy from the column or table, then from the database Asset, each once."""
+    for key, element in (("link", action.element_guid), ("asset_link", action.asset_guid)):
+        if not element:
+            continue
+        linked, words = gateway.link(element, guid)
+        row["detail_json"][key] = words
+        if not linked:
+            row["detail_json"][f"{key}_error"] = words
 
 
 def _retire(action: RuleAction, gateway: RuleGateway, row: dict) -> None:
@@ -354,11 +362,13 @@ def _retire(action: RuleAction, gateway: RuleGateway, row: dict) -> None:
         return
     if current.properties.get("contentStatus") != DEPRECATED:
         gateway.update(guid, {"class": PROPERTIES_CLASS, "typeName": TYPE_NAME, "contentStatus": DEPRECATED})
-    unlinked = ""
-    if action.element_guid:
+    unlinked = []
+    for element in (action.element_guid, action.asset_guid):
+        if not element:
+            continue
         try:
-            gateway.unlink(action.element_guid, guid)
-            unlinked = action.element_guid
+            gateway.unlink(element, guid)
+            unlinked.append(element)
         except RuleGatewayError as exc:
             row["detail_json"]["unlink_error"] = str(exc)[:400]
     read = gateway.read(guid)
@@ -477,9 +487,9 @@ class PyegeriaRuleGateway:
             raise RuleGatewayError(f"no qualifiedName on the answer for {guid}")
         return str(qn)
 
-    def create(self, anchor_guid: str, properties: dict) -> str:
-        body = {"class": "NewElementRequestBody", "anchorGUID": anchor_guid, "isOwnAnchor": False,
-                "properties": properties}
+    def create(self, properties: dict) -> str:
+        """A reusable rule: its own anchor (owner, 2026-10-28)."""
+        body = {"class": "NewElementRequestBody", "isOwnAnchor": True, "properties": properties}
         guid = self._guard(self._go.create_governance_definition, body)
         if not guid or not isinstance(guid, str):
             raise RuleGatewayError(f"the create returned no GUID ({guid!r})")
