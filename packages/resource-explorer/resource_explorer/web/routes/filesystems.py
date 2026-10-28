@@ -840,6 +840,42 @@ def run_filesystem_narrative_docs(slug: str) -> dict:
     return {**summary, "view": narrative_docs.view(registry, slug)}
 
 
+# ── Files build step 8: data_class_match over the file profiles (F7), proposals only ─────────────────────────────────
+
+@router.get("/{slug}/class-match")
+def get_filesystem_class_match(slug: str) -> dict:
+    """The price (the newest profile run's columns and files) and the newest run. Registry-only."""
+    from resource_explorer.surveyors.filesystem import file_class_match
+
+    registry = ProjectRegistry()
+    if not registry.filesystem_exists(slug):
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    return file_class_match.view(registry, slug)
+
+
+@router.post("/{slug}/class-match")
+def run_filesystem_class_match(slug: str) -> dict:
+    """The press (consent is this press; the card showed what it reads before it): match every column of the newest
+    profile run against the data classes Egeria holds (read as the signed-in person, read-only), with values from the
+    head of each file Resource Explorer profiled, and the file names against the personal-data words. Every match is a
+    proposal; nothing is published or created in Egeria, nothing is written into the path. 409 when nothing is
+    profiled, while a run for this file system is in flight, or when the mount cannot be reached."""
+    from resource_explorer.surveyors.filesystem import file_class_match
+    from resource_explorer.web.routes.curate import require_resource_write
+
+    registry = ProjectRegistry()
+    fs = registry.get_filesystem(slug)
+    if not fs:
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    require_resource_write(registry, "filesystem", slug, "start_action")
+    try:
+        summary = file_class_match.run_file_class_match(fs, registry)
+    except (file_class_match.NothingToMatch, file_class_match.AlreadyRunning, file_class_match.NotReachable) as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {"columns": summary["columns"], "established": summary["established"],
+            "view": file_class_match.view(registry, slug)}
+
+
 # ── Files build step 5: file_profiles (column profiles of the walk's data files, priced before the run) ──────────────
 
 @router.get("/{slug}/file-profiles")
