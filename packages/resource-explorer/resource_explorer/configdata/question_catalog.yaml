@@ -3944,14 +3944,19 @@ filesystem_questions:
   levels:
   - container
   answering:
-    kind: gap
-    analysis_ids: []
+    kind: analysis
+    analysis_ids:
+    - fs_layout_signals
     checks: []
-    note: 'GAP: fs_layout_signals (Files brief §3, slice 4)'
+    note: fs_layout_signals
   answering_mechanism: Code Analysis
-  rationale: fs_layout_signals reads README and manifest files, schema files, dated folders and backup
-    patterns; it also supplies the backup evidence Q-0066 asks for.
-  catalog_history: '2026-10-22: added: F10 of the Files brief (§2), owner pick 2026-10-20 (review §4).'
+  rationale: fs_layout_signals matches the names on the walk's kept rows (project manifests and .git directories,
+    dated and partition folders, dictionary and schema files, archive and backup names) without opening
+    a file; it also supplies the backup evidence Q-0066 asks for. With no walk it reports 'not measured',
+    never 'nothing recognised'.
+  catalog_history: '2026-10-22: added: F10 of the Files brief (§2), owner pick 2026-10-20 (review §4).
+    | 2026-10-28: answered by fs_layout_signals, an Analytic Library step over the walk''s kept per-file
+    rows (Files build step 7); was GAP.'
   retired: false
 - id: Q-0105
   question: What do the narrative files inside it (README, INDEX, ABOUT, NOTES, a data dictionary, a codebook,
