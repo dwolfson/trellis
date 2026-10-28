@@ -33,11 +33,14 @@ import {
   getAnalysisTrend,
   getDispositionHistory,
   getWorkList,
+  getColumnTypes,
   listAnalyses,
   listInvestigationMembers,
   listWorkLists,
   promoteWorkList,
+  enqueuePerKind,
   publishWorkList,
+  reapplyShortlist,
   fetchWorkListCsv,
   requireKind,
   setDisposition,
@@ -50,6 +53,10 @@ import { shortName } from '/static/next/investigation-picker.js';
 import { contextRecordedSpec, contextRecordedState } from '/static/next/context-recorded.js';
 import { cue } from '/static/next/stages/repo-manifest.js';
 import { inPagePrompt } from '/static/next/confirm-dialog.js';
+import {
+  STATE_WORDS, OP_WORDS, applyFilter, criterionFor, criterionWords, fieldsFor, opsFor, readCriterion, reapplyDiff,
+  sharedColumns, shortlistWords, storedFilter, unrunGroups,
+} from '/static/next/winnow.js';
 
 /** Brief Z3: the members the zone check refused (a publish or a batch), each with the no_access cue, the reason
  *  on hover; the rest went ahead. '' when none. */
@@ -172,9 +179,10 @@ export const CELL = Object.fromEntries(Object.keys(CELL_TONE).map((k) => [
   k, { glyph: GLYPH_STATES[k].glyph, tone: CELL_TONE[k], label: GLYPH_STATES[k].word },
 ]));
 
-/** The open work list's own resource kind. The `entity_type` column is
- *  authoritative (a work list is homogeneous by construction --
- *  routes/work_lists.py `WorkListCreate.entity_type`), so a work list that
+/** The open work list's kind as the server reads it: its members' one kind, or
+ *  'mixed' for a list of more than one (DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-
+ *  KINDS §5: one column set per VIEW, not one kind per list; each member
+ *  carries its own `entity_type`). A work list that
  *  arrives without one is a bug to surface, never one to cover with 'repo':
  *  that silent default is what sent a database work list's column read to the
  *  repo catalog ("Project 'X' not found"). Throws, naming the work list. */
@@ -186,13 +194,78 @@ function kindOf(wl) {
   return k;
 }
 
-/** The open list's kind, in words, for the title line ("9 databases"). An
- *  unknown kind says "resources" rather than guessing one. */
-function kindPlural(wl, n) {
-  const names = { repo: ['repo', 'repos'], database: ['database', 'databases'],
-                  filesystem: ['file system', 'file systems'] }[wl && wl.entity_type];
+const KIND_NAMES = { repo: ['repo', 'repos'], database: ['database', 'databases'],
+                     filesystem: ['file system', 'file systems'] };
+
+/** A kind, in words, for a count ("9 databases"). An unknown kind, or a list
+ *  of more than one, says "resources" rather than guessing one. */
+function kindWords(kind, n) {
+  const names = KIND_NAMES[kind];
   if (!names) return n === 1 ? 'resource' : 'resources';
   return n === 1 ? names[0] : names[1];
+}
+
+/** The open list's kind, in words, for the title line ("9 databases"). */
+function kindPlural(wl, n) {
+  return kindWords(wl && wl.entity_type, n);
+}
+
+/* ── One column set per view (§5) ──────────────────────────────────────
+ *
+ * A list of more than one kind shows the SHARED columns: the questions every
+ * kind present carries, each answered per row by that row's own kind's
+ * analyses (`q.byKind`). A chip per kind ("12 repos · 4 databases") narrows
+ * the rows to that kind and widens the columns to its full stage questions;
+ * no chip shows the shared set. A question a row's kind does not carry is not
+ * "could not check": it is not asked of that kind, and the shared set already
+ * leaves it out. A one-kind list is exactly as before. */
+
+function isMixed(wl = grid.workList) {
+  return kindOf(wl) === 'mixed';
+}
+
+/** The kind the current view reads as one kind, or '' for the shared view of a list of more than one. */
+function viewKind() {
+  return grid.kindFilter || (isMixed() ? '' : kindOf(grid.workList));
+}
+
+/** The members the current view holds: all, or one kind's. */
+function viewMembers() {
+  const k = grid.kindFilter;
+  return k ? grid.workList.members.filter((m) => memberKind(m) === k) : grid.workList.members;
+}
+
+/** A member's kind, by slug (rows are keyed by slug). */
+function kindOfSlug(slug) {
+  const m = grid.workList?.members.find((x) => x.entity_slug === slug);
+  return m ? memberKind(m) : (viewKind() || kindOf(grid.workList));
+}
+
+/** A column as one member's kind asks it: its own kind's entry of a shared column, else the column itself. */
+function qFor(q, m) {
+  return (q && q.byKind && q.byKind[memberKind(m)]) || q;
+}
+
+/** The members, grouped by kind, in first-seen order: Map kind -> [member]. */
+function byKind(members) {
+  const out = new Map();
+  for (const m of members) out.set(memberKind(m), [...(out.get(memberKind(m)) || []), m]);
+  return out;
+}
+
+/** The kind chips: "12 repos · 4 databases · 2 file systems", one press each; a list of one kind has none. */
+function chipsHtml() {
+  if (!isMixed()) return '';
+  const kinds = grid.workList.kinds || Object.fromEntries([...byKind(grid.workList.members)].map(([k, ms]) => [k, ms.length]));
+  return `<div class="mt-s2 flex flex-wrap items-baseline gap-s2 text-caveat" data-kind-chips>
+    ${Object.entries(kinds).map(([k, n]) => `<button type="button" data-kind-chip="${esc(k)}"
+      class="cursor-pointer rounded-sm border px-2 py-[2px] ${grid.kindFilter === k
+        ? 'border-accent bg-accent-tint text-accent-ink' : 'border-rule-strong bg-transparent text-ink'}"
+      aria-pressed="${grid.kindFilter === k}"><span class="tnum">${n}</span> ${esc(kindWords(k, n))}</button>`).join(' · ')}
+    <span class="text-ink-muted" data-kind-view>${grid.kindFilter
+      ? `${esc(kindWords(grid.kindFilter, 2))} only, with all their questions · press it again for the questions every kind shares`
+      : 'the questions every kind here shares · press a kind for all of its questions'}</span>
+  </div>`;
 }
 
 /** A question Context records (context-recorded.js): the SAME state word the
@@ -201,7 +274,7 @@ function kindPlural(wl, n) {
  *  question; 'unknown' = this member's Context could not be read (never a
  *  guessed word). */
 function contextCellState(q, slug) {
-  const kind = kindOf(grid.workList);
+  const kind = kindOfSlug(slug);
   if (!contextRecordedSpec(q.question, kind)) return '';
   const enrichment = grid.contexts?.get(slug);
   return contextRecordedState(q.question, kind, enrichment) || 'unknown';
@@ -288,6 +361,11 @@ export const grid = {
   ctx: null,             // the pane context, for actions raised from a popup
   contexts: new Map(),   // slug -> enrichment map, for questions Context records (context-recorded.js)
   scope: null,           // the LINKED investigation's scope, read live: { slug, name, inScope: Set, error }
+  // Winnowing (winnow.js): the criteria held, the column types read per kind (kind -> types | {error}), the
+  // three buckets they give over the rows held now, and which bucket the grid shows.
+  winnow: { open: false, criteria: [], types: new Map(), buckets: null, show: 'all' },
+  kindFilter: '',        // a list of more than one kind: the chip pressed ('' = the shared columns)
+  columnsNote: '',       // what the column set is, for a list of more than one kind
 };
 
 /* ── The linked investigation's scope ───────────────────────────────────
@@ -306,9 +384,9 @@ async function loadScope(ctx) {
   const name = ctx.host?.investigationName?.(slug) || slug;
   try {
     const members = await listInvestigationMembers(slug);
-    const kind = kindOf(wl);
+    // Each member as its own kind: a repository and a database may share a slug.
     grid.scope = { slug, name, error: null,
-      inScope: new Set((members || []).filter((m) => m.entity_type === kind).map((m) => m.entity_slug)) };
+      inScope: new Set((members || []).map((m) => `${m.entity_type}|${m.entity_slug}`)) };
   } catch (err) {
     // Unknown stays unknown: a failed read is not "nothing in scope".
     grid.scope = { slug, name, error: err.message, inScope: new Set() };
@@ -326,7 +404,7 @@ function renderLinked() {
     return;
   }
   const total = grid.workList.members.length;
-  const inN = grid.workList.members.filter((m) => sc.inScope.has(m.entity_slug)).length;
+  const inN = grid.workList.members.filter((m) => sc.inScope.has(`${memberKind(m)}|${m.entity_slug}`)).length;
   const notAdded = total - inN;
   host.innerHTML = `<span class="tnum">${inN}</span> of <span class="tnum">${total}</span> in scope for ${name}${
     notAdded ? ` · <span class="tnum">${notAdded}</span> not added` : ''}`;
@@ -336,7 +414,429 @@ function renderLinked() {
 function scopeWord(slug) {
   const sc = grid.scope;
   if (!sc || sc.error) return 'scope unknown';
-  return sc.inScope.has(slug) ? 'in scope' : 'not in scope';
+  return sc.inScope.has(`${kindOfSlug(slug)}|${slug}`) ? 'in scope' : 'not in scope';
+}
+
+/* ── Winnowing ─────────────────────────────────────────────────────────
+ *
+ * DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-KINDS §2: every headline a column, every column a filter. The criteria
+ * are evaluated over the cells the grid already holds (winnow.js), so the buckets move as the background read
+ * lands. Three buckets, never two: a row whose answer is absent is "could not check" with its sentence, shown,
+ * never folded into kept or dropped. Saving keeps the criteria and all three buckets on the shortlist. */
+
+/** The kind a member is read as. */
+function memberKind(m) {
+  return (m && m.entity_type) || kindOf(grid.workList);
+}
+
+/** The column types read for a kind: the types, `{error}`, or null while unread. */
+function typesFor(kind) {
+  const t = grid.winnow.types.get(kind);
+  return t && !t.error ? t : null;
+}
+
+/** What one criterion reads for one member of the open list, from the cells held now. */
+function readHeld(c0, m) {
+  const slug = m.entity_slug;
+  const c = criterionFor(c0, memberKind(m));      // a shared column, as this member's kind answers it
+  return readCriterion(c, {
+    row: grid.rows.get(slug), per: grid.states?.[slug] || {}, q: { kind: 'analysis', analysis_ids: c.analysis_ids },
+    running: !!grid.batch?.runs?.find((r) => r.entity_slug === slug && ['queued', 'claimed', 'running'].includes(r.state)),
+    cellState, types: typesFor(memberKind(m)),
+  });
+}
+
+function computeBuckets() {
+  const w = grid.winnow;
+  w.buckets = w.criteria.length ? applyFilter(w.criteria, viewMembers(), readHeld) : null;
+  return w.buckets;
+}
+
+/** The members the grid shows: all, or one bucket. */
+function shownMembers() {
+  const members = viewMembers();
+  const b = computeBuckets();
+  const show = grid.winnow.show;
+  if (!b || show === 'all') return members;
+  const want = new Set(show === 'kept' ? b.kept
+    : show === 'dropped' ? b.dropped.map((d) => d.entity_slug)
+      : b.couldNotCheck.map((u) => u.entity_slug));
+  return members.filter((m) => want.has(m.entity_slug));
+}
+
+/** The bucket word on a row, in ink; the reason on the row itself for the third bucket, never only on hover. */
+function bucketMark(slug) {
+  const b = grid.winnow.buckets;
+  if (!b) return '';
+  const drop = b.dropped.find((d) => d.entity_slug === slug);
+  if (drop) {
+    return `<span data-bucket="dropped" class="mr-s2 text-provenance text-ink-muted" title="${esc(drop.why)}">dropped</span>`;
+  }
+  const un = b.couldNotCheck.find((u) => u.entity_slug === slug);
+  if (un) {
+    return `<span data-bucket="could-not-check" class="mr-s2 text-provenance text-state-warn"
+      title="${esc(un.words)}">could not check · ${esc(un.words)}</span>`;
+  }
+  return b.kept.includes(slug) ? '<span data-bucket="kept" class="mr-s2 text-provenance text-ink">kept</span>' : '';
+}
+
+/** Read the column types for every kind the list holds, once per pane. A kind whose read fails offers state and
+ *  headline only, and the panel says so. */
+async function loadColumnTypes() {
+  const ids = [...new Set(qsAnalysisIds(grid.questions))];
+  const kinds = [...new Set(grid.workList.members.map(memberKind))];
+  await Promise.all(kinds.filter((k) => !grid.winnow.types.has(k)).map(async (k) => {
+    try { grid.winnow.types.set(k, await getColumnTypes(k, ids)); } catch (err) { grid.winnow.types.set(k, { error: err.message }); }
+  }));
+}
+
+/** The columns a filter can be built on: the open view's questions that an analysis answers. */
+function filterableColumns() {
+  return grid.questions.map((q, i) => ({ q, i })).filter(({ q }) => (q.analysis_ids || []).length);
+}
+
+function renderWinnow(ctx) {
+  const host = document.getElementById('wl-winnow');
+  if (!host || !grid.workList) return;
+  const w = grid.winnow;
+  const chips = w.criteria.map((c, n) => `<span class="inline-flex items-baseline gap-[4px] rounded-sm border border-rule-strong px-2"
+      data-criterion="${n}">${esc(criterionWords(c))}<button type="button" data-act="winnow-drop" data-n="${n}"
+      class="cursor-pointer bg-transparent text-ink-muted" aria-label="remove this condition">×</button></span>`).join(' ');
+  if (!w.open) {
+    host.innerHTML = `<div class="flex flex-wrap items-baseline gap-s2">
+      <button type="button" data-act="winnow-open" class="cursor-pointer bg-transparent text-accent-ink underline"
+        >${w.criteria.length ? 'Edit the filter' : 'Filter rows…'}</button>${chips}
+      <span data-winnow-summary></span></div>`;
+    host.querySelector('[data-act="winnow-open"]').addEventListener('click', async () => {
+      w.open = true;
+      renderWinnow(ctx);
+      await loadColumnTypes();
+      renderWinnow(ctx);
+    });
+    bindChipDrops(host, ctx);
+    renderWinnowSummary();
+    return;
+  }
+  const cols = filterableColumns();
+  const qi = Number(w.draftCol ?? cols[0]?.i ?? -1);
+  const q = grid.questions[qi];
+  // The shared view of a list of more than one kind filters by state and headline: a declared measure is
+  // one kind's analysis. A kind's chip offers its measures.
+  const kind = viewKind();
+  const types = kind ? typesFor(kind) : null;
+  const typeErr = grid.winnow.types.get(kind)?.error;
+  const fields = q ? fieldsFor(q, types) : [];
+  const field = fields.find((f) => f.field === w.draftField)?.field || fields[0]?.field || '';
+  const ops = opsFor(field);
+  const op = ops.includes(w.draftOp) ? w.draftOp : ops[0];
+  const lens = grid.workList.investigation
+    ? `<div class="text-provenance text-ink-muted" data-winnow-lens>No data lens is applied to
+        ${esc(ctx?.host?.investigationName?.(grid.workList.investigation) || grid.workList.investigation)} on this
+        build, so the lens's fit columns are not offered.</div>` : '';
+  host.innerHTML = `
+    <div class="flex flex-wrap items-baseline gap-s2" data-winnow-builder>
+      <span class="text-caps uppercase tracking-caps text-ink-muted">Filter</span>
+      ${cols.length ? `
+      <select data-winnow="col" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink">
+        ${cols.map(({ q: cq, i }) => `<option value="${i}" ${i === qi ? 'selected' : ''}>${i + 1}. ${esc(cq.question)}</option>`).join('')}
+      </select>
+      <select data-winnow="field" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink">
+        ${fields.map((f) => `<option value="${esc(f.field)}" ${f.field === field ? 'selected' : ''}>${esc(f.label)}</option>`).join('')}
+      </select>
+      <select data-winnow="op" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink">
+        ${ops.map((o) => `<option value="${esc(o)}" ${o === op ? 'selected' : ''}>${esc(OP_WORDS[o] || o)}</option>`).join('')}
+      </select>
+      ${field === 'state'
+        ? `<select data-winnow="value" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink">
+            ${STATE_WORDS.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join('')}</select>`
+        : `<input data-winnow="value" class="w-[9rem] rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink"
+            placeholder="${field === 'headline' ? 'words' : op?.endsWith('_days') ? 'days' : 'number'}">`}
+      <button type="button" data-act="winnow-add"
+        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-ink">Add</button>`
+      : '<span class="text-ink-muted">No column in this view has an analysis behind it, so there is nothing to filter on.</span>'}
+      <button type="button" data-act="winnow-close" class="cursor-pointer bg-transparent text-ink-muted underline">close</button>
+    </div>
+    ${typeErr ? `<div class="text-provenance text-state-warn">The declared measures could not be read (${esc(typeErr)}):
+      answer state and headline words only.</div>` : ''}
+    ${lens}
+    <div class="mt-s2 flex flex-wrap items-baseline gap-s2">${chips}</div>
+    <div data-winnow-summary class="mt-s2"></div>`;
+  const reDraft = () => {
+    w.draftCol = host.querySelector('[data-winnow="col"]')?.value;
+    w.draftField = host.querySelector('[data-winnow="field"]')?.value;
+    w.draftOp = host.querySelector('[data-winnow="op"]')?.value;
+    renderWinnow(ctx);
+  };
+  host.querySelector('[data-winnow="col"]')?.addEventListener('change', () => { w.draftField = ''; reDraft(); });
+  host.querySelector('[data-winnow="field"]')?.addEventListener('change', reDraft);
+  host.querySelector('[data-winnow="op"]')?.addEventListener('change', reDraft);
+  host.querySelector('[data-act="winnow-close"]').addEventListener('click', () => { w.open = false; renderWinnow(ctx); });
+  host.querySelector('[data-act="winnow-add"]')?.addEventListener('click', () => {
+    const raw = host.querySelector('[data-winnow="value"]').value;
+    const value = field === 'state' || field === 'headline' ? String(raw).trim() : Number(raw);
+    if (value === '' || (typeof value === 'number' && (!Number.isFinite(value) || String(raw).trim() === ''))) {
+      note(`<span class="text-state-warn">${field === 'headline' ? 'Give the words to look for.' : 'Give a number.'}</span>`);
+      return;
+    }
+    w.criteria.push({ question_id: q.id || '', question: q.question, analysis_ids: [...(q.analysis_ids || [])],
+      ...(q.byKind ? { analysis_ids_by_kind: Object.fromEntries(Object.entries(q.byKind)
+        .map(([k, qk]) => [k, [...(qk.analysis_ids || [])]])) } : {}),
+      field, op, value });
+    note('');
+    renderGrid();
+    renderWinnow(ctx);
+  });
+  bindChipDrops(host, ctx);
+  renderWinnowSummary();
+}
+
+function bindChipDrops(host, ctx) {
+  host.querySelectorAll('[data-act="winnow-drop"]').forEach((b) => b.addEventListener('click', () => {
+    grid.winnow.criteria.splice(Number(b.dataset.n), 1);
+    if (!grid.winnow.criteria.length) grid.winnow.show = 'all';
+    renderGrid();
+    renderWinnow(ctx);
+  }));
+}
+
+/** The three counts, the show toggles, the could-not-check sentences, the "run it on them first" offers and the
+ *  save. Re-drawn whenever the grid is, since the buckets follow the cells. */
+function renderWinnowSummary() {
+  const el = document.querySelector('#wl-winnow [data-winnow-summary]');
+  if (!el) return;
+  const b = computeBuckets();
+  if (!b) { el.innerHTML = ''; return; }
+  const w = grid.winnow;
+  const ctx = grid.ctx;
+  const toggle = (key, label, n) => `<button type="button" data-show="${key}"
+    class="cursor-pointer bg-transparent ${w.show === key ? 'text-ink underline' : 'text-accent-ink'}"
+    ><span class="tnum">${n}</span> ${label}</button>`;
+  const runs = unrunGroups(b.couldNotCheck);
+  el.innerHTML = `
+    <div class="flex flex-wrap items-baseline gap-s3">
+      ${toggle('kept', 'kept', b.kept.length)} · ${toggle('dropped', 'dropped', b.dropped.length)} ·
+      ${toggle('could-not-check', 'could not check', b.couldNotCheck.length)} ·
+      ${toggle('all', 'all rows', viewMembers().length)}
+      <button type="button" data-act="winnow-save" ${b.kept.length ? '' : 'disabled'}
+        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-ink"
+        >Save the <span class="tnum">${b.kept.length}</span> kept as a shortlist</button>
+    </div>
+    ${b.couldNotCheck.length ? `<ul class="m-0 mt-s2 list-none p-0 text-provenance" data-winnow-unchecked>
+      ${b.couldNotCheck.map((u) => `<li><span class="font-mono">${esc(u.entity_slug)}</span> · ${esc(u.words)}</li>`).join('')}
+    </ul>` : ''}
+    ${runs.map((g) => `<div class="mt-s2 text-accent-ink" data-winnow-cost>
+      <span class="tnum">${g.slugs.length}</span> ${g.slugs.length === 1 ? 'member has' : 'members have'} no answer to
+      ${esc(g.question)} · a filter on it is a run first:
+      ${g.analysisIds.map((a) => `<button type="button" data-act="winnow-run" data-analysis="${esc(a)}"
+        data-kind="${esc(g.entityType || viewKind())}" data-slugs="${esc(g.slugs.join(','))}"
+        class="cursor-pointer bg-transparent underline">run ${esc(a)} on them first</button>`).join(' ')}
+      <span class="text-ink-muted">(the plan and what it already holds are shown before anything runs)</span>
+    </div>`).join('')}`;
+  el.querySelectorAll('button[data-show]').forEach((btn) => btn.addEventListener('click', () => {
+    w.show = btn.dataset.show;
+    renderGrid();
+  }));
+  el.querySelector('[data-act="winnow-save"]')?.addEventListener('click', () => saveFiltered(ctx));
+  el.querySelectorAll('[data-act="winnow-run"]').forEach((btn) => btn.addEventListener('click', () => runBatch(ctx, {
+    analysisId: btn.dataset.analysis, slugs: btn.dataset.slugs.split(','), entityType: btn.dataset.kind,
+    scope: 'the members with no answer' })));
+}
+
+async function saveFiltered(ctx) {
+  const b = computeBuckets();
+  const wl = grid.workList;
+  const name = await inPagePrompt({
+    title: 'Save the kept rows as a shortlist',
+    message: `Kept ${b.kept.length} of ${viewMembers().length} on ${grid.winnow.criteria.map(criterionWords).join(' and ')}.`
+      + (b.couldNotCheck.length ? ` ${b.couldNotCheck.length} could not be checked: they are not in the shortlist,`
+        + ' and it names each with the reason.' : '')
+      + ' The shortlist keeps the filter, so it can be re-applied on fresher answers later.',
+    label: 'Shortlist name',
+    defaultValue: `${wl.display_name} — shortlist`,
+    confirmLabel: 'Save',
+  });
+  if (name === null) return;
+  const filter = storedFilter(grid.winnow.criteria, b,
+    { parentSlug: wl.slug, parentCount: viewMembers().length, appliedAt: new Date().toISOString(),
+      entityType: grid.kindFilter });
+  try {
+    const next = await promoteWorkList(wl.slug, b.kept, name, '', filter);
+    grid.workList = next;
+    grid.selected.clear();
+    grid.rows.clear();
+    grid.winnow = { open: false, criteria: [], types: new Map(), buckets: null, show: 'all' };
+    note(`Saved <strong>${esc(next.display_name)}</strong>: ${esc(shortlistWords(next.filter))}, cut from
+      <span class="font-mono">${esc(next.derived_from)}</span>.`);
+    await renderWorkListPane(ctx);
+  } catch (err) {
+    note(`<span class="text-state-warn">Could not save the shortlist: ${esc(err.message)}</span>`);
+  }
+}
+
+/** A filtered shortlist says what it was cut from, on what, as of when, and who could not be checked; what its
+ *  last re-apply changed ("re-applied automatically <time>: +N / −M", the diff one click away); and offers
+ *  "Re-apply now…" (a press with the diff shown first). */
+function renderShortlistLine(ctx) {
+  const host = document.getElementById('wl-shortlist');
+  const f = grid.workList?.filter;
+  if (!host) return;
+  if (!f) { host.innerHTML = ''; return; }
+  if (f.unreadable) { host.innerHTML = `<span class="text-state-warn" data-shortlist-filter>${esc(f.unreadable)}</span>`; return; }
+  const un = f.could_not_check || [];
+  const last = (f.reapplies || []).slice(-1)[0];
+  const lastHtml = last ? `<details class="mt-[2px]" data-shortlist-reapplied>
+      <summary class="cursor-pointer">${last.automatic ? 're-applied automatically' : 're-applied'}
+        ${esc(ago(last.at))}: +<span class="tnum">${(last.joined || []).length}</span> /
+        −<span class="tnum">${(last.dropped || []).length}</span>${(last.held || []).length
+          ? ` · <span class="text-state-warn"><span class="tnum">${last.held.length}</span> held, could not be checked</span>` : ''}</summary>
+      <ul class="m-0 list-none p-0 text-provenance text-ink-muted" data-reapply-record>
+        <li>answers as of ${esc(String(last.answers_as_of || '').slice(0, 16) || 'unknown')} · re-applied ${esc(String(last.at).slice(0, 16))}</li>
+        <li>joined: ${(last.joined || []).map(esc).join(', ') || 'none'}</li>
+        <li>dropped: ${(last.dropped || []).map(esc).join(', ') || 'none'}</li>
+        <li>held: ${(last.held || []).map((h) => `${esc(h.entity_slug)} · ${esc(h.words)}`).join('; ') || 'none'}</li>
+      </ul></details>` : '';
+  host.innerHTML = `<div data-shortlist-filter>${esc(shortlistWords(f))}${
+    un.length ? ` · <span class="text-state-warn"><span class="tnum">${un.length}</span> could not be checked</span>` : ''}
+    <button type="button" data-act="reapply" class="ml-s2 cursor-pointer bg-transparent text-accent-ink underline"
+      >Re-apply now…</button></div>
+    ${lastHtml}
+    ${un.length ? `<ul class="m-0 list-none p-0 text-provenance text-ink-muted">${un.map((u) =>
+      `<li><span class="font-mono">${esc(u.entity_slug)}</span> · ${esc(u.words)}</li>`).join('')}</ul>` : ''}`;
+  host.querySelector('[data-act="reapply"]').addEventListener('click', () => openReapply(ctx));
+}
+
+/** The shortlist's criteria evaluated on its parent's CURRENT answers: {parent, buckets, diff}. Throws when the
+ *  answers cannot be read (the caller says so; nothing changes). */
+async function evaluateShortlist(wl) {
+  const f = wl.filter;
+  const rows = new Map();
+  const states = {};
+  const types = new Map();
+  const parent = await getWorkList(wl.derived_from);
+  // A cut made under one kind's chip is re-made over that kind's members only.
+  if (f.entity_type) parent.members = parent.members.filter((m) => m.entity_type === f.entity_type);
+  const groups = new Map();
+  for (const m of parent.members) {
+    const k = m.entity_type || parent.entity_type;
+    groups.set(k, [...(groups.get(k) || []), m.entity_slug]);
+  }
+  for (const [k, slugs] of groups) {
+    const ids = [...new Set(f.criteria.flatMap((c) => criterionFor(c, k).analysis_ids || []))];
+    const [proj, bulk] = await Promise.all([getBulkStates(slugs, ids, k), getBulkFacts(slugs, ids, k)]);
+    Object.assign(states, proj.states || {});
+    for (const sl of slugs) {
+      const facts = bulk.subjects?.[sl];
+      rows.set(sl, facts ? { factsById: new Map(facts.map((x) => [x.analysis_id, x])) }
+        : { error: bulk.unreadable?.[sl] || 'no facts returned for this resource' });
+    }
+    try { types.set(k, await getColumnTypes(k, ids)); } catch { types.set(k, null); }
+  }
+  const read = (c0, m) => {
+    const k = m.entity_type || parent.entity_type;
+    const c = criterionFor(c0, k);
+    return readCriterion(c, {
+      row: rows.get(m.entity_slug), per: states[m.entity_slug] || {}, q: { kind: 'analysis', analysis_ids: c.analysis_ids },
+      running: false, cellState, types: types.get(k) });
+  };
+  const buckets = applyFilter(f.criteria, parent.members, read);
+  const diff = reapplyDiff(wl.members.map((m) => m.entity_slug), buckets.kept,
+    buckets.couldNotCheck.map((u) => u.entity_slug));
+  return { parent, buckets, diff };
+}
+
+/** POST the re-apply; the server records it (automatic or pressed) and returns the list as it now stands. */
+async function sendReapply(ctx, { parent, buckets }, automatic) {
+  const wl = grid.workList;
+  const filter = storedFilter(wl.filter.criteria, buckets,
+    { parentSlug: parent.slug, parentCount: parent.members.length, appliedAt: new Date().toISOString(),
+      entityType: wl.filter.entity_type || '' });
+  const out = await reapplyShortlist(wl.slug, filter, { automatic });
+  grid.workList = out.work_list;
+  grid.rows.clear();
+  grid.autoChecked = wl.slug;          // just re-cut: the answers it read are not newer than itself
+  await renderWorkListPane(ctx);
+  return out;
+}
+
+/**
+ * AUTOMATIC RE-APPLY (Decision (project owner, 2026-10-28): "automatic").
+ *
+ * The trigger is the nearest one this code has: ON READ, when a filtered shortlist is opened in the bench, its
+ * parent's current answers are read and compared by as-of with the cut — if any answer behind the filter is newer
+ * than `applied_at`, the filter is re-applied and the re-apply recorded. A run finishing does not trigger it on
+ * its own: the run queue's completion (`run_queue._handle_analysis_run`) is where a server-side trigger belongs,
+ * and it would need the evaluator in Python (follow-up). Never silent: the line says "re-applied automatically
+ * <time>: +N / −M" with the diff a click away, and a member that moves to could-not-check is held, not dropped.
+ */
+async function maybeAutoReapply(ctx) {
+  const wl = grid.workList;
+  const f = wl?.filter;
+  if (!f || f.unreadable || !wl.derived_from || grid.autoChecked === wl.slug) return;
+  grid.autoChecked = wl.slug;
+  let evaluated;
+  try {
+    evaluated = await evaluateShortlist(wl);
+  } catch (err) {
+    note(`<span class="text-state-warn" data-auto-reapply>Could not check whether the shortlist's answers changed:
+      ${esc(err.message)}. It was not re-applied.</span>`);
+    return;
+  }
+  const newest = evaluated.buckets.newestAnswer;
+  if (!newest || grid.workList?.slug !== wl.slug || Date.parse(newest) <= Date.parse(f.applied_at)) return;
+  try {
+    await sendReapply(ctx, evaluated, true);
+  } catch (err) {
+    note(`<span class="text-state-warn" data-auto-reapply>An answer behind this shortlist's filter is newer than its
+      cut, but re-applying it failed: ${esc(err.message)}.</span>`);
+  }
+}
+
+/** "Re-apply now…": evaluate on the parent's current answers, show what would change, change it only on the
+ *  press. */
+async function openReapply(ctx) {
+  const wl = grid.workList;
+  const f = wl.filter;
+  const el = openDialog('Re-apply the filter', `${shortlistWords(f)} · cut from ${wl.derived_from}`);
+  const body = el.querySelector('#wl-detail-body');
+  body.innerHTML = '<p class="text-ink-muted">Reading the current answers of the list it was cut from…</p>';
+  let evaluated;
+  try {
+    evaluated = await evaluateShortlist(wl);
+  } catch (err) {
+    body.innerHTML = `<p class="text-state-warn">Could not read the current answers: ${esc(err.message)}. Nothing changed.</p>`;
+    return;
+  }
+  const { parent, buckets, diff } = evaluated;
+  const names = (xs) => xs.map((x) => `<span class="font-mono">${esc(x)}</span>`).join(', ');
+  body.innerHTML = `
+    <p>On the current answers of the <span class="tnum">${parent.members.length}</span> members of
+      <span class="font-mono">${esc(parent.slug)}</span>:</p>
+    <ul class="ml-s3 mt-s2 list-disc" data-reapply-diff>
+      <li><span class="tnum">${diff.wouldDrop.length}</span> would now drop${diff.wouldDrop.length ? `: ${names(diff.wouldDrop)}` : ''}</li>
+      <li><span class="tnum">${diff.wouldJoin.length}</span> would now join${diff.wouldJoin.length ? `: ${names(diff.wouldJoin)}` : ''}</li>
+      ${diff.wouldHold.length ? `<li><span class="tnum">${diff.wouldHold.length}</span> would be held (members that can no
+        longer be checked stay): ${names(diff.wouldHold)}</li>` : ''}
+      <li><span class="tnum">${buckets.couldNotCheck.length}</span> could not be checked${buckets.couldNotCheck.length
+        ? `: ${buckets.couldNotCheck.map((u) => `${esc(u.entity_slug)} · ${esc(u.words)}`).join('; ')}` : ''}</li>
+    </ul>
+    <p class="mt-s3 text-ink">Nothing changes until you confirm.${
+      diff.wouldDrop.length || diff.wouldJoin.length ? '' : ' No member would change; confirming records the fresher as-of.'}</p>
+    <div class="mt-s3 flex gap-s3 border-t border-rule pt-s2">
+      <button type="button" data-act="go" class="cursor-pointer rounded-sm border border-accent px-2 py-[2px] text-accent-ink"
+        >Re-apply</button>
+      <button type="button" data-act="close" class="cursor-pointer bg-transparent text-ink-muted underline">Cancel</button>
+    </div>`;
+  body.querySelector('[data-act="go"]').addEventListener('click', async () => {
+    closeCellDetail();
+    try {
+      const out = await sendReapply(ctx, evaluated, false);
+      note(`Re-applied: <span class="tnum">${out.joined.length}</span> joined${out.joined.length ? ` (${names(out.joined)})` : ''},
+        <span class="tnum">${out.dropped.length}</span> dropped${out.dropped.length ? ` (${names(out.dropped)})` : ''}${
+        out.held?.length ? `, <span class="tnum">${out.held.length}</span> held (${names(out.held.map((h) => h.entity_slug))})` : ''}.`);
+    } catch (err) {
+      note(`<span class="text-state-warn">Could not re-apply: ${esc(err.message)}</span>`);
+    }
+  });
 }
 
 /* ── Rendering ──────────────────────────────────────────────────────── */
@@ -376,16 +876,33 @@ export async function renderWorkListPane(ctx) {
         ${wl.egeria_guid ? ' · published to Egeria' : ' · not published'}
       </span>
     </div>
+    <div id="wl-kinds">${chipsHtml()}</div>
     <div id="wl-actions" class="mt-s3 flex flex-wrap items-baseline gap-s3 text-caveat"></div>
     <div id="wl-linked" class="mt-s2 text-caveat text-ink"></div>
     <div id="wl-note" class="mt-s2 text-caveat text-ink"></div>
     <div id="wl-progress" class="mt-s2"></div>
+    <div id="wl-shortlist" class="mt-s2 text-caveat text-ink"></div>
+    <div id="wl-winnow" class="mt-s2 text-caveat text-ink"></div>
     <div class="my-s3 h-px bg-rule"></div>
     <div id="wl-common-rationale" class="mb-s2 text-provenance text-ink-muted"></div>
     <div id="wl-grid" class="overflow-x-auto"></div>
     <div id="wl-legend" class="mt-s3 flex flex-wrap gap-s3 text-caveat text-ink"></div>`;
 
   el.querySelector('[data-act="exit"]').addEventListener('click', () => ctx.onExit());
+  el.querySelectorAll('[data-kind-chip]').forEach((b) => b.addEventListener('click', async () => {
+    // The chip narrows the rows and widens the columns: a new view, so the
+    // columns, the facts behind them and any filter on the old columns go.
+    grid.kindFilter = grid.kindFilter === b.dataset.kindChip ? '' : b.dataset.kindChip;
+    grid.selected.clear();
+    grid.rows.clear();
+    grid.bgToken += 1;
+    grid.winnow = { open: false, criteria: [], types: grid.winnow.types, buckets: null, show: 'all' };
+    await renderWorkListPane(ctx);
+  }));
+  renderShortlistLine(ctx);
+  renderWinnow(ctx);
+  // Off the render path: the grid opens at once, and the shortlist re-cuts itself behind it if its answers moved.
+  if (grid.workList.filter) maybeAutoReapply(ctx);
 
   // The runnable analyses for THIS STAGE, re-read whenever the pane renders.
   //
@@ -401,12 +918,20 @@ export async function renderWorkListPane(ctx) {
   renderActions(ctx);
   renderLegend();
   try {
-    // The work list itself is homogeneous in entity_type (work_lists.py's
-    // WorkListCreate.entity_type, one value per list, default "repo") --
-    // this used to hardcode 'repo' regardless, silently showing the repo
+    // The menu is the VIEW's kind (one kind's list, or a kind's chip
+    // pressed); the shared view of a list of more than one kind reads one
+    // menu per kind. This used to hardcode 'repo' regardless, silently showing the repo
     // analysis catalog's menu on a database/filesystem work list rather than
     // an honest error or the right menu.
-    grid.analyses = await listAnalyses(kindOf(wl), { intent: stage });
+    // A list of more than one kind, in the shared view, runs per kind: each
+    // kind's own stage menu (the definition catalog is per kind).
+    if (viewKind()) {
+      grid.analyses = await listAnalyses(viewKind(), { intent: stage });
+    } else {
+      const kinds = [...byKind(wl.members).keys()];
+      const lists = await Promise.all(kinds.map((k) => listAnalyses(k, { intent: stage })));
+      grid.analyses = { perKind: new Map(kinds.map((k, i) => [k, lists[i] || []])) };
+    }
   } catch (err) {
     grid.analyses = { error: err.message };
   }
@@ -431,7 +956,16 @@ function renderActions(ctx) {
     invName: ctx.host?.investigationName?.(ctx.host?.currentInvestigation?.() || ''),
     count: grid.workList.members.length, selected: n,
   });
-  host.innerHTML = `
+  // The shared view of a list of more than one kind: one analysis is one
+  // kind's, so a run here is one batch per kind, each priced and said.
+  const perKind = grid.analyses?.perKind;
+  const runPart = perKind ? `
+    <button data-act="run-per-kind"
+      class="cursor-pointer rounded-sm border border-accent text-accent-ink bg-transparent px-2 py-[2px]"
+      title="One run per kind present, each its own analysis: the definition catalog is per kind"
+      >Run per kind…</button>
+    <span class="text-ink-muted"><span class="tnum">${perKind.size}</span> kinds · one run each · ${
+      n ? `${n} selected` : 'all rows'}</span>` : `
     <select id="wl-analysis" ${runnable ? '' : 'disabled'}
       class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink">
       ${!loaded && !failed ? '<option value="">reading the catalog…</option>' : ''}
@@ -449,7 +983,7 @@ function renderActions(ctx) {
       runnable ? `
     <button data-act="run"
       class="cursor-pointer rounded-sm border border-accent text-accent-ink bg-transparent px-2 py-[2px]"
-      >Run across <span class="tnum">${n || grid.workList.members.length}</span></button>
+      >Run across <span class="tnum">${n || viewMembers().length}</span></button>
     <button data-act="refresh"
       class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink"
       title="Re-run only what is stale, for ${n ? 'the selected rows' : 'every row'}. Shows the plan first."
@@ -458,7 +992,8 @@ function renderActions(ctx) {
       failed ? `<span class="text-state-warn">the analysis catalog could not be read: ${esc(failed)}</span>`
       : !loaded ? 'reading the catalog…'
       : !runnable ? `<span class="text-accent-ink">No analyses are listed for the ${esc(ctx.stage)} stage, so there is nothing to run here — by design for Enrichment, which is served by its Context tab</span>`
-      : n ? `${n} selected` : 'all rows'}</span>
+      : n ? `${n} selected` : 'all rows'}</span>`;
+  host.innerHTML = `${runPart}
     <span class="ml-auto flex flex-wrap items-baseline gap-s3">
       <select id="wl-disposition" ${n ? '' : 'disabled'}
         class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink">
@@ -484,6 +1019,7 @@ function renderActions(ctx) {
     </span>`;
 
   host.querySelector('[data-act="run"]')?.addEventListener('click', () => runBatch(ctx));
+  host.querySelector('[data-act="run-per-kind"]')?.addEventListener('click', () => openRunPerKind(ctx));
   host.querySelector('[data-act="refresh"]')?.addEventListener('click', () => openRefreshPlan(ctx));
   host.querySelector('[data-act="promote"]')?.addEventListener('click', () => promote(ctx));
   host.querySelector('[data-act="publish"]')?.addEventListener('click', () => publish(ctx));
@@ -528,29 +1064,38 @@ async function loadGrid(ctx) {
     // It is also the honest answer to "27 columns is too many": the axis for
     // cutting them down already exists and was simply not wired up.
     const held = [...(ctx.perspectives || [])];
-    const checklist = await getQuestions(wl.members[0].entity_slug,
-                                         { phase: ctx.stage, perspectives: held, entityType: kindOf(wl) });
-    grid.questions = checklist.questions || [];
+    // One column set per VIEW: one kind's questions (a one-kind list, or a
+    // kind's chip pressed), or the questions every kind present shares.
+    const groups = viewKind() ? new Map([[viewKind(), viewMembers()]]) : byKind(wl.members);
+    const perKind = new Map();
+    for (const [k, ms] of groups) {
+      const checklist = await getQuestions(ms[0].entity_slug, { phase: ctx.stage, perspectives: held, entityType: k });
+      perKind.set(k, checklist.questions || []);
+    }
+    grid.questions = perKind.size === 1 ? [...perKind.values()][0] : sharedColumns(perKind);
+    grid.columnsNote = perKind.size === 1 ? '' : `${grid.questions.length} question(s) every kind here shares; ${
+      [...perKind].map(([k, qs]) => `${qs.length} for ${kindWords(k, 2)}`).join(', ')}`;
     grid.heldPerspectives = held;
-    if (held.length) {
+    if (held.length && perKind.size === 1) {
       // The residue, said out loud: a filtered grid that does not say what it
       // hid is a grid you cannot trust to be complete.
       try {
-        const all = await getQuestions(wl.members[0].entity_slug, { phase: ctx.stage, entityType: kindOf(wl) });
+        const all = await getQuestions(viewMembers()[0].entity_slug, { phase: ctx.stage, entityType: viewKind() });
         grid.questionsUnfiltered = (all.questions || []).length;
       } catch { grid.questionsUnfiltered = null; }
     } else {
-      grid.questionsUnfiltered = grid.questions.length;
+      grid.questionsUnfiltered = held.length ? null : grid.questions.length;
     }
   } catch (err) {
     host.innerHTML = `<div class="py-s3 text-answer text-state-warn">
       The question columns could not be read: ${esc(err.message)}</div>`;
     return;
   }
+  const members = viewMembers();
 
   // One shared rationale is said once, above the grid, rather than repeated
   // under all twelve rows — at 12 rows it was the noisiest thing on screen.
-  const rationales = new Set(wl.members.map((m) => m.rationale || ''));
+  const rationales = new Set(members.map((m) => m.rationale || ''));
   grid.commonRationale = rationales.size === 1 ? [...rationales][0] : null;
 
   renderGrid();
@@ -568,11 +1113,16 @@ async function loadGrid(ctx) {
   // pane for a minute and a usable one in a second with two columns still
   // arriving. The cells that are still coming show their pending marker,
   // which the grid already distinguishes from every other state.
-  const needed = [...new Set(qsAnalysisIds(grid.questions))];
-  const quick = needed.filter((a) => !EXPENSIVE_ANALYSES.has(a));
+  // Per kind: each kind's members are read for that kind's own analyses (the
+  // facts route builds one FactLayer per kind).
+  const groups = [...byKind(members)].map(([kind, ms]) => {
+    const ids = [...new Set(qsAnalysisIds(grid.questions.map((q) => qFor(q, ms[0]))))];
+    return { kind, slugs: ms.map((m) => m.entity_slug), needed: ids,
+      quick: ids.filter((a) => !EXPENSIVE_ANALYSES.has(a)), slow: ids.filter((a) => EXPENSIVE_ANALYSES.has(a)) };
+  });
 
-  const applyBulk = (bulk) => {
-    for (const m of wl.members) {
+  const applyBulk = (bulk, ms) => {
+    for (const m of ms) {
       const facts = bulk.subjects?.[m.entity_slug];
       const prev = grid.rows.get(m.entity_slug);
       if (facts) {
@@ -589,29 +1139,32 @@ async function loadGrid(ctx) {
     }
   };
 
-  const slugs = wl.members.map((m) => m.entity_slug);
-
   // PASS 1 — the cheap projection over EVERY column. Instant, and it carries
   // `measured_at`, so the grid can say how current it is before it knows what
   // it says.
   try {
-    const proj = await getBulkStates(slugs, needed, kindOf(wl));
-    grid.states = proj.states || {};
+    const states = {};
+    for (const g of groups) Object.assign(states, (await getBulkStates(g.slugs, g.needed, g.kind)).states || {});
+    grid.states = states;
     renderGrid();
   } catch (err) {
     grid.statesError = err.message;
   }
 
-  await loadMemberContexts(wl);
+  await loadMemberContexts(members);
 
   // Decided HERE — once, when the list opens — and never re-evaluated as the
   // background pass resolves cells underneath it.
-  decideDigest(wl.members, grid.questions);
+  decideDigest(members, grid.questions);
   renderGrid();
 
   // PASS 2 — the full read for the analyses that are cheap to read.
   try {
-    if (quick.length) { applyBulk(await getBulkFacts(slugs, quick, kindOf(wl))); }
+    for (const g of groups) {
+      if (g.quick.length) {
+        applyBulk(await getBulkFacts(g.slugs, g.quick, g.kind), members.filter((m) => memberKind(m) === g.kind));
+      }
+    }
   } catch (err) {
     grid.slowError = err.message;
   }
@@ -630,23 +1183,23 @@ async function loadGrid(ctx) {
   //
   // It yields between chunks, stops the moment another work list is opened,
   // and never blocks anything: every pass before it has already rendered.
-  const slow = needed.filter((a) => EXPENSIVE_ANALYSES.has(a));
-  if (slow.length) resolveInBackground(ctx, slugs, slow);
+  const slow = groups.filter((g) => g.slow.length);
+  if (slow.length) resolveInBackground(ctx, slow);
 }
 
 /** Read each member's Context enrichment, but ONLY when a column's answer is
  *  a Context row (context-recorded.js) -- otherwise no extra request is made.
  *  A member whose Context cannot be read is left out of the map, and its cell
  *  reads `?` ("could not read"), never a guessed state. */
-async function loadMemberContexts(wl) {
+async function loadMemberContexts(members) {
   grid.contexts = new Map();
-  const kind = kindOf(wl);
-  if (!grid.questions.some((q) => contextRecordedSpec(q.question, kind))) return;
-  const slugs = wl.members.map((m) => m.entity_slug);
-  for (let i = 0; i < slugs.length; i += 6) {
-    await Promise.all(slugs.slice(i, i + 6).map(async (slug) => {
+  const wanted = members.filter((m) => grid.questions.some((q) => contextRecordedSpec(q.question, memberKind(m))));
+  if (!wanted.length) return;
+  for (let i = 0; i < wanted.length; i += 6) {
+    await Promise.all(wanted.slice(i, i + 6).map(async (m) => {
+      const slug = m.entity_slug;
       try {
-        const ctx = await getContext(kind, slug);
+        const ctx = await getContext(memberKind(m), slug);
         grid.contexts.set(slug, (ctx && ctx.enrichment) || {});
       } catch { /* left out: the cell says it could not read */ }
     }));
@@ -655,9 +1208,12 @@ async function loadMemberContexts(wl) {
 }
 
 /** Turn `□` into real states, a few resources at a time. */
-async function resolveInBackground(ctx, slugs, analyses) {
+async function resolveInBackground(ctx, groups) {
   const token = ++grid.bgToken;
   const CHUNK = 2;
+  // One kind at a time, each kind's members for that kind's slow analyses.
+  const work = groups.flatMap((g) => g.slugs.map((slug) => ({ slug, kind: g.kind, analyses: g.slow })));
+  const slugs = work.map((w) => w.slug);
   grid.bgRemaining = slugs.length;
   grid.bgError = null;
   grid.bgErrors.clear();
@@ -666,13 +1222,18 @@ async function resolveInBackground(ctx, slugs, analyses) {
   // analyses — so rendering the notice only on chunk completion left the
   // longest silence of the whole load completely unexplained.
   renderGrid();
-  for (let i = 0; i < slugs.length; i += CHUNK) {
+  let next = 0;
+  while (next < work.length) {
     // A new work list, or a second load of this one, invalidates this pass.
     if (token !== grid.bgToken) return;
-    const chunk = slugs.slice(i, i + CHUNK);
+    // A chunk never spans two kinds: one facts call is one kind's.
+    const kind = work[next].kind;
+    const part = work.slice(next, next + CHUNK).filter((w) => w.kind === kind);
+    const chunk = part.map((w) => w.slug);
+    next += part.length;
     const started = Date.now();
     try {
-      const bulk = await getBulkFacts(chunk, analyses, kindOf(grid.workList));
+      const bulk = await getBulkFacts(chunk, part[0].analyses, kind);
       if (token !== grid.bgToken) return;
       for (const slug of chunk) {
         const facts = bulk.subjects?.[slug];
@@ -699,7 +1260,7 @@ async function resolveInBackground(ctx, slugs, analyses) {
       renderGrid();
       return;
     }
-    grid.bgRemaining = Math.max(0, slugs.length - (i + chunk.length));
+    grid.bgRemaining = Math.max(0, slugs.length - next);
     grid.bgLast = Date.now() - started;
     renderGrid();
   }
@@ -720,7 +1281,7 @@ function isNarrow() {
 
 /** One resource, questions down the page. The transposed view. */
 function renderNarrow(host, wl, qs) {
-  const members = orderedRows(wl.members, qs).filter((e) => e.member).map((e) => e.member);
+  const members = orderedRows(viewMembers(), qs).filter((e) => e.member).map((e) => e.member);
   if (!members.length) { host.innerHTML = ''; return; }
   const idx = Math.min(grid.narrowIndex, members.length - 1);
   const m = members[idx];
@@ -728,7 +1289,8 @@ function renderNarrow(host, wl, qs) {
   const row = grid.rows.get(slug);
   const per = grid.states?.[slug] || {};
 
-  const stateOf = (q) => {
+  const stateOf = (q0) => {
+    const q = qFor(q0, m);
     const ids = q.analysis_ids || [];
     const ctxSt = contextCellState(q, slug);
     if (ctxSt) return ctxSt;
@@ -910,10 +1472,11 @@ const DIGEST_TONE = {
 const DIGEST_REST = 'var(--wl-none, var(--c-rule, rgb(201 198 191)))';
 
 /** State counts for one question across the given members. */
-function columnDigest(members, q) {
+function columnDigest(members, q0) {
   const counts = {};
   let unresolved = 0;
   for (const m of members) {
+    const q = qFor(q0, m);
     const slug = m.entity_slug;
     const row = grid.rows.get(slug);
     const per = grid.states?.[slug] || {};
@@ -999,7 +1562,8 @@ function orderedRows(members, qs) {
     const per = grid.states?.[m.entity_slug] || {};
     const row = grid.rows.get(m.entity_slug);
     let n = 0;
-    for (const q of qs) {
+    for (const q0 of qs) {
+      const q = qFor(q0, m);
       const ids = q.analysis_ids || [];
       if (!ids.length) continue;
       const settled = row && !row.error
@@ -1095,7 +1659,7 @@ function renderGrid() {
   if (cr) cr.textContent = grid.commonRationale ? `All members: ${grid.commonRationale}` : '';
 
   host.innerHTML = `
-    ${digestHtml(wl.members, qs)}
+    ${digestHtml(viewMembers(), qs)}
     ${grid.bgRemaining ? `<div class="mb-s2 text-provenance text-ink-muted">
       Resolving <span class="tnum">${grid.bgRemaining}</span> more resource(s) in the
       background — <span class="font-mono">□</span> cells become their real state as they land.</div>` : ''}
@@ -1127,7 +1691,7 @@ function renderGrid() {
         </tr>
       </thead>
       <tbody>
-        ${orderedRows(wl.members, qs).map((entry) => entry.band
+        ${orderedRows(shownMembers(), qs).map((entry) => entry.band
           ? `<tr class="wl-band"><td colspan="${shown.length + 3 + (grid.scope ? 1 : 0)}"
                class="p-[6px] text-caps uppercase tracking-caps text-ink-muted">
                ${esc(entry.band)} · <span class="tnum">${entry.count}</span></td></tr>`
@@ -1138,6 +1702,7 @@ function renderGrid() {
     <div class="mt-s4">
       <div class="mb-s2 text-caps uppercase tracking-caps text-ink-muted">
         The questions · <span class="tnum">${qs.length}</span> in ${esc(grid.stageLabel || '')}${
+          grid.columnsNote ? ` · <span data-columns-note>${esc(grid.columnsNote)}</span>` : ''}${
           grid.heldPerspectives.length && grid.questionsUnfiltered != null
             ? ` · <span class="tnum">${Math.max(0, grid.questionsUnfiltered - qs.length)}</span> hidden by
                ${esc(grid.heldPerspectives.join(' · '))}`
@@ -1201,9 +1766,15 @@ function renderGrid() {
     else grid.selected.delete(cb.dataset.row);
     renderActions(window.__wlCtx);
   }));
+  // The buckets follow the cells: a background read that lands can move a row out of could-not-check.
+  renderWinnowSummary();
 }
 
-function rowHtml(member, shown, qs) {
+function rowHtml(member, shownAll, qsAll) {
+  // Each column as THIS row's kind asks it (a shared column of a list of more
+  // than one kind is answered by each kind's own analyses).
+  const shown = shownAll.map(({ q, i }) => ({ q: qFor(q, member), i }));
+  const qs = qsAll.map((q) => qFor(q, member));
   const slug = member.entity_slug;
   const row = grid.rows.get(slug);
   // Each cell carries ITS OWN measurement date, because each analysis ran
@@ -1317,7 +1888,7 @@ click for the latest results">${c.glyph}</button></td>`;
     <td class="wl-freeze-1 p-[6px]"><input type="checkbox" data-row="${esc(slug)}" ${
       grid.selected.has(slug) ? 'checked' : ''}></td>
     <td class="wl-freeze-2 p-[6px] text-ink">
-      <button type="button" data-res="${esc(slug)}"
+      ${bucketMark(slug)}<button type="button" data-res="${esc(slug)}"
         class="cursor-pointer border-0 bg-transparent p-0 text-left font-mono text-provenance text-ink underline decoration-dotted"
         title="Its verdicts, in order">${esc(slug)}</button>${
         member.disposition
@@ -1521,8 +2092,8 @@ function unresolvedShare(members, qs) {
   for (const m of members) {
     const per = grid.states?.[m.entity_slug] || {};
     const row = grid.rows.get(m.entity_slug);
-    for (const q of qs) {
-      const ids = q.analysis_ids || [];
+    for (const q0 of qs) {
+      const ids = qFor(q0, m).analysis_ids || [];
       if (!ids.length) continue;          // settled by kind, not by a read
       total += 1;
       const read = row && !row.error && ids.some((a) => row.factsById.has(a));
@@ -1702,7 +2273,7 @@ async function reportPlanMovement(slotId, slug_pairs) {
   // this session's other fixes address — so skip the doomed requests and
   // say so, rather than let the catch block quietly stand in for an
   // honest "not available for this type yet".
-  const entityType = kindOf(grid.workList);
+  const entityType = viewKind() || kindOf(grid.workList);
   if (entityType !== 'repo') {
     slot.innerHTML = `<div class="mt-s2 text-caveat text-ink-muted">
       Whether any of these run(s) would repeat an unchanged measurement
@@ -1744,7 +2315,7 @@ async function runRefresh(byAnalysis, ctx) {
   const done = [];
   for (const [aid, ss] of entries) {
     try {
-      last = await enqueueBatch(aid, ss, grid.workList.slug, kindOf(grid.workList));
+      last = await enqueueBatch(aid, ss, grid.workList.slug, viewKind());
       done.push(`${aid} \u00d7 ${ss.length}`);
       if (last?.not_permitted?.length) done.push(notPermittedHtml(last.not_permitted));
     } catch (err) {
@@ -1781,7 +2352,7 @@ function rationaleBlock(q) {
 }
 
 async function openCellDetail(slug, qi, ctx) {
-  const q = grid.questions[qi];
+  const q = qFor(grid.questions[qi], grid.workList.members.find((x) => x.entity_slug === slug));
   if (!q) return;
   const el = openDialog(q.question, slug);
   const body = el.querySelector('#wl-detail-body');
@@ -1795,7 +2366,7 @@ async function openCellDetail(slug, qi, ctx) {
   }
   let facts;
   try {
-    const res = await getBulkFacts([slug], ids, kindOf(grid.workList));
+    const res = await getBulkFacts([slug], ids, kindOfSlug(slug));
     facts = res.subjects?.[slug] || [];
   } catch (err) {
     body.innerHTML = why + `<p class="text-state-warn">Could not read the results:
@@ -1901,7 +2472,7 @@ async function rerunOne(slug, ids, ctx) {
     // One batch per analysis: enqueueBatch takes a single analysis id, and a
     // question can be answered by more than one.
     for (const aid of ids) {
-      last = await enqueueBatch(aid, [slug], grid.workList.slug, kindOf(grid.workList));
+      last = await enqueueBatch(aid, [slug], grid.workList.slug, kindOfSlug(slug));
     }
   } catch (err) {
     const networkish = /load failed|failed to fetch|networkerror/i.test(err.message || '');
@@ -1925,7 +2496,7 @@ async function rerunOne(slug, ids, ctx) {
 function targets() {
   return grid.selected.size
     ? [...grid.selected]
-    : grid.workList.members.map((m) => m.entity_slug);
+    : viewMembers().map((m) => m.entity_slug);
 }
 
 /**
@@ -1937,11 +2508,11 @@ function targets() {
  * other. So this one shows what it would run and what it already has, and
  * queues nothing until it is confirmed.
  */
-function runBatch(ctx) {
-  const analysisId = document.getElementById('wl-analysis')?.value;
+function runBatch(ctx, over = {}) {
+  const analysisId = over.analysisId || document.getElementById('wl-analysis')?.value;
   if (!analysisId) { note('<span class="text-state-warn">No analysis selected.</span>'); return; }
-  const slugs = targets();
-  const scope = grid.selected.size ? `${grid.selected.size} selected` : 'all rows';
+  const slugs = over.slugs || targets();
+  const scope = over.scope || (grid.selected.size ? `${grid.selected.size} selected` : 'all rows');
   const el = openDialog('Run across the set', `${analysisId} · ${slugs.length} resource(s) · ${scope}`);
   const body = el.querySelector('#wl-detail-body');
 
@@ -1979,15 +2550,73 @@ function runBatch(ctx) {
 
   body.querySelector('[data-act="go"]').addEventListener('click', () => {
     closeCellDetail();
-    enqueueRun(ctx, analysisId, slugs);
+    enqueueRun(ctx, analysisId, slugs, over.entityType);
   });
 }
 
-async function enqueueRun(ctx, analysisId, slugs) {
+/** A list of more than one kind, in the shared view: one run per kind, each its own analysis (the definition
+ *  catalog is per kind) and its own count, said before anything is queued. A kind left without an analysis is
+ *  named as not run, never silently skipped. */
+function openRunPerKind(ctx) {
+  const perKind = grid.analyses?.perKind;
+  if (!perKind) return;
+  const chosen = grid.selected.size ? grid.workList.members.filter((m) => grid.selected.has(m.entity_slug)) : viewMembers();
+  const groups = byKind(chosen);
+  const el = openDialog('Run per kind', `${chosen.length} resource(s) · ${groups.size} kind(s) · one run each`);
+  const body = el.querySelector('#wl-detail-body');
+  body.innerHTML = `
+    <p>A list of more than one kind runs as one batch per kind: each kind's members get an analysis from that
+      kind's own menu. "Run on all" is <span class="tnum">${groups.size}</span> runs.</p>
+    <ul class="ml-s3 mt-s2 list-none p-0" data-per-kind-plan>
+      ${[...groups].map(([k, ms]) => `<li class="mt-s2 flex flex-wrap items-baseline gap-s2">
+        <span class="min-w-[9rem]"><span class="tnum">${ms.length}</span> ${esc(kindWords(k, ms.length))}</span>
+        <select data-per-kind="${esc(k)}" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink">
+          <option value="">not this time</option>
+          ${(perKind.get(k) || []).filter((a) => a.id || a.analysis_id).map((a) => `<option value="${esc(a.id || a.analysis_id)}"
+            >${esc(a.display_name || a.name || a.id || a.analysis_id)}</option>`).join('')}
+        </select>
+        ${(perKind.get(k) || []).length ? '' : `<span class="text-ink-muted">no analyses for ${esc(kindWords(k, 2))} in this stage</span>`}
+      </li>`).join('')}
+    </ul>
+    <p class="mt-s3 text-ink">Nothing runs until you confirm.</p>
+    <div class="mt-s3 flex gap-s3 border-t border-rule pt-s2">
+      <button type="button" data-act="go" class="cursor-pointer rounded-sm border border-accent px-2 py-[2px] text-accent-ink"
+        >Run</button>
+      <button type="button" data-act="close" class="cursor-pointer bg-transparent text-ink-muted underline">Cancel</button>
+    </div>`;
+  body.querySelector('[data-act="go"]').addEventListener('click', async () => {
+    const analyses = Object.fromEntries([...body.querySelectorAll('[data-per-kind]')]
+      .map((sel) => [sel.dataset.perKind, sel.value]).filter(([, v]) => v));
+    closeCellDetail();
+    if (!Object.keys(analyses).length) { note('<span class="text-state-warn">No analysis chosen for any kind, so nothing ran.</span>'); return; }
+    let out;
+    try {
+      out = await enqueuePerKind(grid.workList.slug, analyses,
+        grid.selected.size ? chosen.map((m) => ({ entity_slug: m.entity_slug, entity_type: memberKind(m) })) : null);
+    } catch (err) {
+      note(err.status === 403 ? refusedCue(err) : `<span class="text-state-warn">The runs were refused: ${esc(err.message)}</span>`);
+      return;
+    }
+    // One run line per kind, each with its own words.
+    const lines = [
+      ...(out.runs || []).map((r) => `<li data-run-kind="${esc(r.entity_type)}">${esc(kindWords(r.entity_type, 2))}: ${
+        r.refused ? `<span class="text-state-warn">${esc(r.refused)}</span>`
+          : `<span class="font-mono">${esc(r.analysis_id)}</span> · <span class="tnum">${r.runs.length}</span> run(s) ·
+             batch <span class="font-mono">${esc(r.set_id)}</span>${r.not_permitted?.length ? ` ${notPermittedHtml(r.not_permitted)}` : ''}`}</li>`),
+      ...(out.not_run || []).map((r) => `<li data-run-kind="${esc(r.entity_type)}" class="text-ink-muted">${
+        esc(kindWords(r.entity_type, 2))}: not run · ${esc(r.words)}</li>`),
+    ];
+    note(`<ul class="m-0 list-none p-0" data-per-kind-runs>${lines.join('')}</ul>`);
+    const last = (out.runs || []).filter((r) => r.set_id).pop();
+    if (last) watchBatch(ctx, last.set_id);
+  });
+}
+
+async function enqueueRun(ctx, analysisId, slugs, entityType) {
   note(`Enqueueing <span class="tnum">${slugs.length}</span> run(s)…`);
   let started;
   try {
-    started = await enqueueBatch(analysisId, slugs, grid.workList.slug, kindOf(grid.workList));
+    started = await enqueueBatch(analysisId, slugs, grid.workList.slug, entityType || viewKind());
   } catch (err) {
     // `Load failed` / `Failed to fetch` is the browser's wording for a
     // network-level failure, not an application error — most often the
@@ -2110,6 +2739,7 @@ async function promote(ctx) {
     grid.workList = next;
     grid.selected.clear();
     grid.rows.clear();
+    grid.winnow = { open: false, criteria: [], types: new Map(), buckets: null, show: 'all' };
     note(`Promoted <span class="tnum">${next.members.length}</span> into
       <strong>${esc(next.display_name)}</strong>, which records
       <span class="font-mono">${esc(next.derived_from)}</span> as its parent.`);
@@ -2228,6 +2858,9 @@ export async function openWorkList(ctx, slug) {
   grid.workList = await getWorkList(slug);
   grid.rows.clear();
   grid.selected.clear();
+  grid.winnow = { open: false, criteria: [], types: new Map(), buckets: null, show: 'all' };
+  grid.kindFilter = '';
+  grid.autoChecked = '';
   // Invalidate any background resolve still running for the previous list —
   // its results would land in the new list's rows.
   grid.bgToken += 1;

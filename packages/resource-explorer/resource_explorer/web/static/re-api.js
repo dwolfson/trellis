@@ -1542,9 +1542,32 @@ export const addWorkListToInvestigation = (slug, investigation, entitySlugs = nu
   post(`/api/work-lists/${encodeURIComponent(slug)}/add-to-investigation`,
        { investigation, ...(entitySlugs ? { entity_slugs: [...entitySlugs] } : {}) });
 
-export const promoteWorkList = (slug, survivors, displayName = '', rationale = '') =>
+/** `filter` (optional): the filter the survivors were cut on, with its three buckets (winnow.js
+ *  `storedFilter`). Given, the survivors must be exactly its kept bucket; the server says 422 otherwise. */
+export const promoteWorkList = (slug, survivors, displayName = '', rationale = '', filter = null) =>
   post(`/api/work-lists/${encodeURIComponent(slug)}/promote`,
-       { survivors: [...survivors], display_name: displayName, rationale });
+       { survivors: [...survivors], display_name: displayName, rationale, ...(filter ? { filter } : {}) });
+
+/** Re-cut a filtered shortlist on fresher answers: same criteria, new buckets. `automatic` when the bench did it
+ *  because an answer refreshed, false for the "re-apply now" press; recorded either way. Returns {joined,
+ *  dropped, held, reapply, work_list}. */
+export const reapplyShortlist = (slug, filter, { automatic = false } = {}) =>
+  post(`/api/work-lists/${encodeURIComponent(slug)}/reapply`, { filter, automatic });
+
+/** A list of more than one kind runs one batch per kind: `analyses` maps a kind to the analysis for its members;
+ *  `members` ({entity_slug, entity_type}) narrows to the rows ticked, null for all. Returns {runs: [one per kind,
+ *  with its set_id, or `refused` with its words], not_run: [a kind with no analysis chosen]}. */
+export const enqueuePerKind = (slug, analyses, members = null) =>
+  post(`/api/work-lists/${encodeURIComponent(slug)}/runs/per-kind`,
+       { analyses, ...(members ? { members: [...members] } : {}) });
+
+/** What the analyses behind the bench's columns can be filtered by, for one kind: declared measures and
+ *  absence sentences. `{analyses: {id: {declared, measures, absence}}, unknown: [id]}`. */
+export const getColumnTypes = (entityType, analysisIds = []) => {
+  const qs = new URLSearchParams({ entity_type: requireKind('getColumnTypes', entityType) });
+  if (analysisIds.length) qs.set('analysis_ids', [...analysisIds].join(','));
+  return get(`/api/work-lists/column-types?${qs}`);
+};
 
 /**
  * Publish a work list to Egeria as a `WorkingSet` collection.

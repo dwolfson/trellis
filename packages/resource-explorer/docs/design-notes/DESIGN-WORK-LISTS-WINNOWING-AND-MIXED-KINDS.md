@@ -165,3 +165,57 @@ rule to keep is "one column set per view":
   by stored-row reads measured on the first run).
 - Whether "talks to" edges belong in Curate's dependency table as well as
   the list graph (they are the same fact; one store, two views).
+
+## 8. Rulings as built (slice 1, 2026-10-28)
+
+The owner, 2026-10-28: "I answered all the questions previously - we should be able to move forward?", then
+"yes, start Q3 and the work lists too". A search of this note, the `RULING-*` files, `exchange/REPLY-*`, the
+coordinator handoffs and the Architect Session found no recorded answer to the §6 or §7 items, so slice 1 was
+built on this note's own positions and marked "assumed". The owner then answered each of them on 2026-10-28,
+relayed by the coordinator session. One answer, §7.1, differs from this note's position:
+
+**Decision (project owner, 2026-10-28):** §6.1 and §6.3, lists of more than one kind: "keep, as built".
+
+**Decision (project owner, 2026-10-28):** §6.2, winnowing: "keep, as built".
+
+**Decision (project owner, 2026-10-28):** §7.1, re-apply: "automatic". A shortlist re-applies its filter when
+its members' answers refresh. Each re-apply is recorded with its as-of and its diff, and the shortlist shows
+"re-applied automatically <time>: +N / −M" with the diff one click away. A member that moves to could-not-check
+is never silently dropped. "Re-apply now" stays as a manual press.
+
+**Decision (project owner, 2026-10-28):** the DDL (`work_lists.filter_json`, `work_lists.filter_as_of`,
+`work_list_members.entity_type` with the wider key) is approved to apply on the next 8813 restart after merge.
+
+| Item | Answer built | Source |
+|---|---|---|
+| §6.1 relax one kind per list to one column set per view | relaxed | owner, 2026-10-28 (above). Related, recorded 2026-10-24: one shared member resolver, `member_egeria_guid` (#856). |
+| §6.2 winnowing slice | typed column filters, three buckets, saved-filter shortlist, re-apply | owner, 2026-10-28 |
+| §6.3 mixed-kind slice | `work_list_members.entity_type`, kind chips, shared columns, per-kind runs | owner, 2026-10-28; DDL approved for the restart after merge |
+| §6.4 relationship analysis | not built | left for later |
+| §6.5 measure after 2 and 3 | not built | nothing to measure until 2 and 3 ship |
+| §7.1 shortlist re-applies automatically? | yes, automatic, recorded; manual "re-apply now" kept | owner, 2026-10-28 |
+| §7.2 pairwise cap | not applicable (no §4) | — |
+| §7.3 "talks to" edges in Curate too | not applicable (no §4) | — |
+
+How §7.1 is built, and where its trigger is:
+
+- **Trigger: on read.** When a filtered shortlist is opened in the bench, its parent's current answers are read
+  for the filtered columns and compared by as-of with the cut. If any answer is newer than the filter's
+  `applied_at`, the filter is re-applied and the re-apply is recorded as automatic. A run finishing does not
+  trigger it on its own. The trigger belongs at the run queue's completion (`run_queue._handle_analysis_run`),
+  which needs the evaluator (`next/winnow.js`) in Python as well: a follow-up.
+- **The record:** the filter's `reapplies` holds the last 20 re-applies, newest last. Each entry has when it ran,
+  whether it was automatic or pressed, the as-of of the answers it read (`answers_as_of`), and who joined, who
+  dropped and who was held.
+- **Held, never silently dropped:** a current member that moves to could-not-check stays a member and is named
+  as held, with its sentence. A member the filter checks and fails is dropped.
+
+Choices the build made that §2 and §5 leave open, still **assumed: owner to confirm**:
+
+- The `kinds` summary is derived on every read from the members, not stored on the list, so it cannot drift from
+  them. `work_lists.entity_type` stays as the kind a member is given when none is named.
+- A shortlist cut by a filter holds the kept bucket. The could-not-check members of the first cut are not
+  carried in, and the stored filter names each of them with its sentence.
+- The lens columns of §2 are absent on this build: no data lens is bound to an investigation yet
+  (`batch_io.NO_LENS`). The bench says so for a list that belongs to an investigation. The stored filter
+  already accepts a `lens_dimension`, so nothing changes shape when a lens arrives.

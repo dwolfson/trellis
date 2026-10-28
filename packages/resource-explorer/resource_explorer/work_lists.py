@@ -130,6 +130,15 @@ def public_base_url() -> str:
     return raw.rstrip("/")
 
 
+def _url_kind(wl: dict) -> str:
+    """The kind the link back opens the page on: the list's one kind, or for a list of more than one the kind it
+    holds most of (the page's sidebar shows one kind at a time; the list itself shows every kind)."""
+    kinds = wl.get("kinds") or {}
+    if wl.get("entity_type") != MIXED or not kinds:
+        return wl.get("entity_type") or "repo"
+    return max(kinds, key=lambda k: kinds[k])
+
+
 def resource_explorer_url(slug: str, entity_type: str = "repo") -> str:
     """The /next work-list page for `slug` on RE's configured public URL (`RE_PUBLIC_URL`), in the shape the page
     writes itself (`next/app.js` `writeUrl`: `type=` only for a non-repo kind, then `worklist=`). "" when no valid
@@ -201,9 +210,10 @@ def recorded_memberships(registry, slug: str, collection_guid: str) -> dict[str,
         if str(payload.get("collection_guid") or "") != collection_guid or not payload.get("member_guid"):
             continue
         rec = out.setdefault(str(payload["member_guid"]), {
-            "entity_slug": "", "attached": False, "maybe": False, "unsent_adds": [], "never_sent_adds": [],
-            "adding": False, "last_add_id": 0, "unsent_removals": [], "removing": False})
+            "entity_slug": "", "entity_type": "", "attached": False, "maybe": False, "unsent_adds": [],
+            "never_sent_adds": [], "adding": False, "last_add_id": 0, "unsent_removals": [], "removing": False})
         rec["entity_slug"] = str(payload.get("member_entity_slug") or rec["entity_slug"])
+        rec["entity_type"] = str(payload.get("member_entity_type") or rec["entity_type"])
         status, row_id = row.get("status") or "", int(row["id"])
         attempted = int(row.get("attempts") or 0) > 0
         if row.get("element_kind") == "collection_membership":
@@ -230,6 +240,64 @@ def recorded_memberships(registry, slug: str, collection_guid: str) -> dict[str,
 
 # The work-list tables are created by ProjectRegistry._init_schema (a migration), not here.
 
+#: How many re-applies a shortlist's filter keeps in its record (`reapplies`), newest last.
+REAPPLY_HISTORY = 20
+
+#: What a list's `entity_type` reads when its members are of more than one kind (DESIGN-WORK-LISTS-WINNOWING-AND-
+#: MIXED-KINDS §5). Never a member's kind: each member carries its own.
+MIXED = "mixed"
+
+
+def member_refs(entity_slugs: Iterable, default_kind: str) -> list[tuple[str, str]]:
+    """(kind, slug) pairs, in order, de-duplicated. Each item is a slug (it takes `default_kind`) or a mapping with
+    `entity_slug` and, optionally, `entity_type`. A slug that would take the kind "mixed" is refused: a list of more
+    than one kind cannot say which kind a bare slug is."""
+    out: list[tuple[str, str]] = []
+    for item in entity_slugs:
+        if isinstance(item, dict):
+            slug, kind = str(item.get("entity_slug") or ""), str(item.get("entity_type") or "") or default_kind
+        else:
+            slug, kind = str(item or ""), default_kind
+        if not slug:
+            continue
+        if not kind or kind == MIXED:
+            raise ValueError(f"'{slug}' names no kind, and this list holds more than one: say which kind it is")
+        out.append((kind, slug))
+    return list(dict.fromkeys(out))
+
+
+def kinds_summary(members: list[dict]) -> dict[str, int]:
+    """How many members of each kind, in first-seen order: the chips' "12 repositories · 4 databases". Derived on
+    every read from the members, never stored, so it cannot drift from them (assumed: owner to confirm; §5 said
+    "keeps a derived kinds summary")."""
+    out: dict[str, int] = {}
+    for m in members:
+        k = m.get("entity_type") or ""
+        out[k] = out.get(k, 0) + 1
+    return out
+
+
+def list_kind(stored: str, kinds: dict[str, int]) -> str:
+    """The list's kind as read: its members' one kind, MIXED for more than one, the stored kind when it is empty."""
+    present = [k for k in kinds if k]
+    if len(present) > 1:
+        return MIXED
+    return present[0] if present else (stored or "")
+
+
+def _stored_filter(raw, slug: str) -> dict | None:
+    """A shortlist's saved filter, parsed: None when it has none. A value that does not parse is said on the list
+    (`unreadable`), never read as "no filter": the shortlist was cut on something, and the bench must not offer to
+    re-apply a filter it cannot read."""
+    if raw in (None, ""):
+        return None
+    try:
+        got = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        log.warning("work list %s: its stored filter does not parse: %s", slug, exc)
+        return {"unreadable": f"the stored filter could not be read · {type(exc).__name__}"}
+    return got if isinstance(got, dict) else {"unreadable": "the stored filter is not a mapping"}
+
 
 class WorkLists:
     """Work-list storage, over the shared registry's connection."""
@@ -249,28 +317,35 @@ class WorkLists:
                investigation: str = "", created_by: str = "",
                derived_from: str = "", rationale: str = "",
                slug: str = "") -> dict:
-        """Create a work list. LOCAL ONLY — nothing reaches Egeria here."""
+        """Create a work list. LOCAL ONLY — nothing reaches Egeria here.
+
+        `entity_slugs` items are slugs (each takes `entity_type`) or mappings naming their own `entity_type`, so a
+        list may hold more than one kind (§5). The list's stored `entity_type` is the kind a member added later
+        without one takes; for a list created with more than one kind it is "mixed", and such a member must name
+        its kind."""
         slug = slug or f"wl-{uuid.uuid4().hex[:10]}"
         # Materialise ONCE: `entity_slugs` may be a generator, and the old
         # shape consumed it in `dict.fromkeys` then counted it again, which
         # logs "0 members" for a list that has members.
-        slugs = list(dict.fromkeys(entity_slugs))
+        refs = member_refs(entity_slugs, entity_type)
+        kinds = {k for k, _ in refs}
+        stored = MIXED if len(kinds) > 1 else (next(iter(kinds)) if kinds else entity_type)
         now = _now()
         with self._conn() as conn:
             conn.execute(
                 "INSERT INTO work_lists (slug, display_name, description, entity_type,"
                 " investigation, created_by, created_at, derived_from)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (slug, display_name, description, entity_type, investigation,
+                (slug, display_name, description, stored, investigation,
                  created_by, now, derived_from),
             )
-            for entity_slug in slugs:
+            for kind, entity_slug in refs:
                 conn.execute(
-                    "INSERT INTO work_list_members (work_list_slug, entity_slug,"
-                    " rationale, confidence, added_at) VALUES (?, ?, ?, ?, ?)",
-                    (slug, entity_slug, rationale, None, now),
+                    "INSERT INTO work_list_members (work_list_slug, entity_slug, entity_type,"
+                    " rationale, confidence, added_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (slug, entity_slug, kind, rationale, None, now),
                 )
-        log.info("work list %s created with %d member(s)", slug, len(slugs))
+        log.info("work list %s created with %d member(s) of %d kind(s)", slug, len(refs), len(kinds))
         return self.get(slug)
 
     def get(self, slug: str) -> dict | None:
@@ -280,15 +355,22 @@ class WorkLists:
             if not row:
                 return None
             members = conn.execute(
-                "SELECT entity_slug, rationale, confidence, added_at"
-                " FROM work_list_members WHERE work_list_slug = ? ORDER BY added_at, entity_slug",
+                "SELECT entity_slug, entity_type, rationale, confidence, added_at"
+                " FROM work_list_members WHERE work_list_slug = ? ORDER BY added_at, entity_type, entity_slug",
                 (slug,)).fetchall()
         out = dict(row)
+        out["filter"] = _stored_filter(out.pop("filter_json", None), slug)
+        out.pop("filter_as_of", None)              # carried inside `filter` as `applied_at`
         out["members"] = [dict(m) for m in members]
-        self._attach_dispositions(out["members"], out.get("entity_type") or "repo")
+        # `entity_type` as read is the members' kind ("mixed" for more than one); `stored_entity_type` is what a
+        # member added without a kind takes. `kinds` is derived here, every read.
+        out["stored_entity_type"] = out.get("entity_type") or ""
+        out["kinds"] = kinds_summary(out["members"])
+        out["entity_type"] = list_kind(out["stored_entity_type"], out["kinds"])
+        self._attach_dispositions(out["members"])
         return out
 
-    def _attach_dispositions(self, members: list[dict], entity_type: str = "repo") -> None:
+    def _attach_dispositions(self, members: list[dict]) -> None:
         """Add each member's current disposition, for grouping in the matrix.
 
         Dispositions are keyed by github_url, not by slug, so this is a
@@ -303,7 +385,7 @@ class WorkLists:
         for m in members:
             m.setdefault("disposition", "")
             m.setdefault("github_url", "")
-            if entity_type != "repo":
+            if m.get("entity_type") != "repo":
                 # Dispositions are keyed by a repo's github_url; `registry.get` reads repos only, so a database or
                 # file-system slug that happens to name a repo would borrow that repo's verdict.
                 continue
@@ -337,9 +419,14 @@ class WorkLists:
             out = []
             for row in rows:
                 d = dict(row)
-                d["member_count"] = conn.execute(
-                    "SELECT COUNT(*) AS n FROM work_list_members WHERE work_list_slug = ?",
-                    (d["slug"],)).fetchone()["n"]
+                rows_by_kind = conn.execute(
+                    "SELECT entity_type, COUNT(*) AS n FROM work_list_members WHERE work_list_slug = ?"
+                    " GROUP BY entity_type", (d["slug"],)).fetchall()
+                d["kinds"] = {r["entity_type"]: r["n"] for r in rows_by_kind}
+                d["member_count"] = sum(d["kinds"].values())
+                d["stored_entity_type"] = d.get("entity_type") or ""
+                d["entity_type"] = list_kind(d["stored_entity_type"], d["kinds"])
+                d.pop("filter_json", None)
                 out.append(d)
         return out
 
@@ -353,8 +440,26 @@ class WorkLists:
             conn.execute("UPDATE work_lists SET investigation = ? WHERE slug = ?",
                          (investigation, slug))
 
+    def _member_kind(self, conn, slug: str, entity_slug: str, entity_type: str) -> str:
+        """The kind a member call means: the one given; else the member's own kind when exactly one member has that
+        slug; else the list's stored kind. Raises ValueError when that is "mixed" or two kinds share the slug."""
+        if entity_type:
+            return entity_type
+        have = [r["entity_type"] for r in conn.execute(
+            "SELECT entity_type FROM work_list_members WHERE work_list_slug = ? AND entity_slug = ?",
+            (slug, entity_slug)).fetchall()]
+        if len(have) > 1:
+            raise ValueError(f"'{entity_slug}' is in this list as {' and as '.join(sorted(have))}: say which kind")
+        if have:
+            return have[0]
+        row = conn.execute("SELECT entity_type FROM work_lists WHERE slug = ?", (slug,)).fetchone()
+        stored = (row["entity_type"] if row else "") or ""
+        if not stored or stored == MIXED:
+            raise ValueError(f"'{entity_slug}' names no kind, and this list holds more than one: say which kind it is")
+        return stored
+
     def set_member(self, slug: str, entity_slug: str, *,
-                   rationale: str = "", confidence=None) -> None:
+                   rationale: str = "", confidence=None, entity_type: str = "") -> None:
         """Add a member, or update the reason it is there.
 
         `confidence` is checked by the same function the outbox sends it with
@@ -367,30 +472,40 @@ class WorkLists:
         if confidence is not None:
             confidence = membership_confidence(confidence)
         with self._conn() as conn:
+            kind = self._member_kind(conn, slug, entity_slug, entity_type)
             existing = conn.execute(
-                "SELECT 1 FROM work_list_members WHERE work_list_slug = ? AND entity_slug = ?",
-                (slug, entity_slug)).fetchone()
+                "SELECT 1 FROM work_list_members WHERE work_list_slug = ? AND entity_type = ? AND entity_slug = ?",
+                (slug, kind, entity_slug)).fetchone()
             if existing and confidence is None:
                 conn.execute(
                     "UPDATE work_list_members SET rationale = ?"
-                    " WHERE work_list_slug = ? AND entity_slug = ?",
-                    (rationale, slug, entity_slug))
+                    " WHERE work_list_slug = ? AND entity_type = ? AND entity_slug = ?",
+                    (rationale, slug, kind, entity_slug))
             elif existing:
                 conn.execute(
                     "UPDATE work_list_members SET rationale = ?, confidence = ?"
-                    " WHERE work_list_slug = ? AND entity_slug = ?",
-                    (rationale, confidence, slug, entity_slug))
+                    " WHERE work_list_slug = ? AND entity_type = ? AND entity_slug = ?",
+                    (rationale, confidence, slug, kind, entity_slug))
             else:
                 conn.execute(
-                    "INSERT INTO work_list_members (work_list_slug, entity_slug,"
-                    " rationale, confidence, added_at) VALUES (?, ?, ?, ?, ?)",
-                    (slug, entity_slug, rationale, confidence, _now()))
+                    "INSERT INTO work_list_members (work_list_slug, entity_slug, entity_type,"
+                    " rationale, confidence, added_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (slug, entity_slug, kind, rationale, confidence, _now()))
 
-    def remove_member(self, slug: str, entity_slug: str) -> None:
+    def remove_member(self, slug: str, entity_slug: str, entity_type: str = "") -> None:
+        """Remove one member. Without `entity_type`, the slug must name one member (ValueError when a repository
+        and a database in the list share it)."""
         with self._conn() as conn:
+            if not entity_type:
+                have = conn.execute(
+                    "SELECT entity_type FROM work_list_members WHERE work_list_slug = ? AND entity_slug = ?",
+                    (slug, entity_slug)).fetchall()
+                if len(have) > 1:
+                    raise ValueError(f"'{entity_slug}' is in this list as more than one kind: say which")
+                entity_type = have[0]["entity_type"] if have else ""
             conn.execute(
-                "DELETE FROM work_list_members WHERE work_list_slug = ? AND entity_slug = ?",
-                (slug, entity_slug))
+                "DELETE FROM work_list_members WHERE work_list_slug = ? AND entity_type = ? AND entity_slug = ?",
+                (slug, entity_type, entity_slug))
 
     def delete(self, slug: str) -> None:
         """Remove the work list locally.
@@ -415,27 +530,132 @@ class WorkLists:
 
     def promote(self, slug: str, survivors: Iterable[str], *,
                 display_name: str = "", rationale: str = "",
-                created_by: str = "") -> dict:
+                created_by: str = "", filter: dict | None = None) -> dict:
         """The survivors of one work list become a new, narrower one.
 
         The new list records `derived_from`, so the funnel keeps its own
         trail: a shortlist that cannot say what it was shortlisted FROM is a
         list of names, not a decision.
+
+        With `filter` (DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-KINDS §2), the
+        shortlist also keeps WHAT it was cut on: the checked expression, when,
+        and all three buckets (`winnowing.check_filter`). The survivors must be
+        exactly its kept bucket, and its buckets must account for every member
+        of this list, or nothing is created (ValueError, with the words): a
+        stored filter that disagrees with the members it sits beside would say
+        one thing and hold another.
         """
         parent = self.get(slug)
         if not parent:
             raise KeyError(slug)
-        keep = [s for s in survivors if any(m["entity_slug"] == s for m in parent["members"])]
-        return self.create(
+        survivors = list(survivors)
+        stored = None
+        if filter is not None:
+            stored = self._checked_against(parent, filter, survivors)
+        # A survivor named by slug alone keeps the kind it has in the parent (every kind, if two share the slug);
+        # one named with its kind keeps exactly that member.
+        keep = [{"entity_slug": m["entity_slug"], "entity_type": m["entity_type"]} for m in parent["members"]
+                if any((s == m["entity_slug"]) if not isinstance(s, dict)
+                       else (s.get("entity_slug") == m["entity_slug"]
+                             and s.get("entity_type", m["entity_type"]) == m["entity_type"]) for s in survivors)]
+        made = self.create(
             display_name or f"{parent['display_name']} — shortlist",
             keep,
             description=f"Survivors of {parent['display_name']}",
-            entity_type=parent["entity_type"],
+            entity_type=parent["stored_entity_type"] or parent["entity_type"],
             investigation=parent["investigation"],
             created_by=created_by,
             derived_from=slug,
             rationale=rationale,
         )
+        if stored is not None:
+            self._store_filter(made["slug"], stored)
+            made = self.get(made["slug"])
+        return made
+
+    @staticmethod
+    def _checked_against(parent: dict, filter: dict, survivors: list[str]) -> dict:
+        """`filter` checked, and checked against the list it says it was cut from. Raises ValueError."""
+        from resource_explorer.winnowing import check_filter
+
+        stored = check_filter(filter)
+        # A cut made under one kind's chip covers that kind's members only; the others were not asked.
+        scope_kind = stored.get("entity_type") or ""
+        members = {m["entity_slug"] for m in parent["members"] if not scope_kind or m["entity_type"] == scope_kind}
+        if stored["parent_slug"] and stored["parent_slug"] != parent["slug"]:
+            raise ValueError(f"the filter says it was cut from {stored['parent_slug']!r}, not {parent['slug']!r}")
+        stored["parent_slug"] = parent["slug"]
+        named = set(stored["kept"]) | set(stored["dropped"]) | {u["entity_slug"] for u in stored["could_not_check"]}
+        if named != members or stored["parent_count"] != len(members):
+            missing, stray = sorted(members - named), sorted(named - members)
+            raise ValueError("the filter's buckets do not match the list's members"
+                             + (f" · not in any bucket: {', '.join(missing)}" if missing else "")
+                             + (f" · not members: {', '.join(stray)}" if stray else ""))
+        if {s if not isinstance(s, dict) else s.get("entity_slug") for s in survivors} != set(stored["kept"]):
+            raise ValueError("the shortlist's members must be exactly the filter's kept bucket")
+        return stored
+
+    def _store_filter(self, slug: str, stored: dict) -> None:
+        with self._conn() as conn:
+            conn.execute("UPDATE work_lists SET filter_json = ?, filter_as_of = ? WHERE slug = ?",
+                         (json.dumps(stored, sort_keys=True), stored["applied_at"], slug))
+
+    def reapply(self, slug: str, filter: dict, *, automatic: bool = False) -> dict:
+        """Re-cut a shortlist on fresher answers: the stored filter becomes the new one, and its members the new kept
+        bucket. AUTOMATIC when a member's answer for a filtered column refreshes (**Decision (project owner,
+        2026-10-28):** "automatic"), and also a manual press ("re-apply now"); the bench says which.
+
+        Members that stay keep their rationale and confidence; members that join get "joined when <criteria> was
+        re-applied"; members that fail now are removed. A current member that moves to could-not-check is HELD, not
+        dropped: it stays a member and is named in `held` with its sentence (the owner: never silently dropped).
+        Every re-apply is recorded on the filter (`reapplies`, newest last, the last REAPPLY_HISTORY kept): when,
+        the as-of of the answers it read, automatic or pressed, and who joined, dropped or was held.
+
+        Raises KeyError (no such list) or ValueError (not a filtered shortlist, its parent is gone, the criteria
+        differ, or the buckets do not match the parent)."""
+        from resource_explorer.winnowing import criterion_words
+
+        wl = self.get(slug)
+        if not wl:
+            raise KeyError(slug)
+        if not wl.get("filter") or not wl.get("derived_from"):
+            raise ValueError("this list was not cut by a filter, so there is nothing to re-apply")
+        if wl["filter"].get("unreadable"):
+            raise ValueError(f"{wl['filter']['unreadable']}, so it cannot be re-applied")
+        parent = self.get(wl["derived_from"])
+        if not parent:
+            raise ValueError(f"the list it was cut from ({wl['derived_from']!r}) no longer exists")
+        stored = self._checked_against(parent, filter, list((filter or {}).get("kept") or []))
+        before = [{k: c.get(k) for k in ("field", "op", "value", "analysis_ids")} for c in wl["filter"]["criteria"]]
+        after = [{k: c.get(k) for k in ("field", "op", "value", "analysis_ids")} for c in stored["criteria"]]
+        if before != after:
+            raise ValueError("re-applying keeps the shortlist's criteria; a different filter is a new shortlist")
+        current = {(m["entity_type"], m["entity_slug"]) for m in wl["members"]}
+        kept = set(stored["kept"])
+        unchecked = {u["entity_slug"]: u["words"] for u in stored["could_not_check"]}
+        scope_kind = stored.get("entity_type") or ""
+        wanted = {(m["entity_type"], m["entity_slug"]) for m in parent["members"]
+                  if m["entity_slug"] in kept and (not scope_kind or m["entity_type"] == scope_kind)}
+        # Held: a member now could-not-check stays, said, rather than leaving on an answer nobody has.
+        held_refs = {(k, s_) for k, s_ in current - wanted if s_ in unchecked}
+        joined = [s_ for k, s_ in sorted(wanted - current)]
+        dropped = sorted(s_ for k, s_ in current - wanted - held_refs)
+        held = [{"entity_slug": s_, "entity_type": k, "words": unchecked[s_]} for k, s_ in sorted(held_refs)]
+        reason = f"joined when {' and '.join(criterion_words(c) for c in stored['criteria'])} was re-applied"
+        for k, s_ in current - wanted - held_refs:
+            self.remove_member(slug, s_, k)
+        for k, s_ in sorted(wanted - current):
+            self.set_member(slug, s_, rationale=reason, entity_type=k)
+        entry = {"at": _now(), "automatic": bool(automatic), "applied_at": stored["applied_at"],
+                 "answers_as_of": stored.get("newest_answer") or stored.get("oldest_answer") or "",
+                 "joined": joined, "dropped": dropped, "held": held,
+                 "could_not_check": len(stored["could_not_check"])}
+        stored["reapplies"] = (list(wl["filter"].get("reapplies") or []) + [entry])[-REAPPLY_HISTORY:]
+        self._store_filter(slug, stored)
+        log.info("shortlist %s re-applied (%s): %d joined, %d dropped, %d held", slug,
+                 "automatic" if automatic else "pressed", len(joined), len(dropped), len(held))
+        return {"slug": slug, "automatic": bool(automatic), "joined": joined, "dropped": dropped, "held": held,
+                "reapply": entry, "work_list": self.get(slug)}
 
     # ── Batch runs ──────────────────────────────────────────────────────
 
@@ -454,10 +674,11 @@ class WorkLists:
         concept of a set and does not need one.
 
         `entity_type` defaults to "repo" for existing callers — a batch is
-        homogeneous (one work list, one entity_type, same as the `work_lists`
-        table's own column), and this is stored on each row's `target` dict
-        so `run_queue.py::_handle_analysis_run` resolves the right resource
-        type's analysis steps instead of always the repo's.
+        homogeneous (one analysis, one kind: the definition catalog is per
+        kind), and this is stored on each row's `target` dict so
+        `run_queue.py::_handle_analysis_run` resolves the right resource
+        type's analysis steps instead of always the repo's. A list of more
+        than one kind runs as one batch per kind: `enqueue_per_kind`.
         """
         slugs = list(dict.fromkeys(entity_slugs))
         if not slugs:
@@ -495,6 +716,45 @@ class WorkLists:
         log.info("batch %s: enqueued %s across %d resource(s)", set_id, analysis_id, len(slugs))
         return {"set_id": set_id, "analysis_id": analysis_id,
                 "work_list_slug": work_list_slug, "runs": enqueued, "not_permitted": not_permitted}
+
+    def enqueue_per_kind(self, analyses: dict[str, str], members: list[tuple[str, str]], *,
+                         work_list_slug: str = "", requested_by: str = "", refusal_for=None) -> dict:
+        """One batch per kind present (§5: runs stay per kind; the definition catalog is per kind), each with its
+        own set id, so the bench shows one run line per kind. "Run on all" is N runs, said so.
+
+        `analyses` maps a kind to the analysis to run on that kind's members; a kind present with none chosen is
+        reported in `not_run` with its count, never silently skipped. `refusal_for(kind)` gives the per-member
+        zone check for a kind (as `enqueue_batch`'s `refusal`). A kind whose every member is refused comes back as
+        a `refused` line with its words; the others still run. Raises `CurationDenied` only when nothing at all
+        was queued and something was refused."""
+        from resource_explorer.workflows.curate import CurationDenied
+
+        by_kind: dict[str, list[str]] = {}
+        for kind, slug in members:
+            by_kind.setdefault(kind, []).append(slug)
+        runs: list[dict] = []
+        not_run: list[dict] = []
+        refused: list[str] = []
+        for kind, slugs in by_kind.items():
+            analysis_id = (analyses or {}).get(kind) or ""
+            if not analysis_id:
+                not_run.append({"entity_type": kind, "count": len(slugs),
+                                "words": f"no analysis chosen for the {len(slugs)} {kind} member(s)"})
+                continue
+            try:
+                started = self.enqueue_batch(
+                    analysis_id, slugs, work_list_slug=work_list_slug, requested_by=requested_by,
+                    entity_type=kind, refusal=refusal_for(kind) if refusal_for else None)
+            except CurationDenied as exc:
+                refused.append(str(exc))
+                runs.append({"entity_type": kind, "analysis_id": analysis_id, "set_id": "", "runs": [],
+                             "not_permitted": [], "refused": f"not permitted · {exc}"})
+                continue
+            runs.append({"entity_type": kind, **started})
+        if refused and not any(r["runs"] for r in runs):
+            raise CurationDenied("; ".join(sorted(set(refused))))
+        return {"work_list_slug": work_list_slug, "runs": runs, "not_run": not_run,
+                "words": f"{len([r for r in runs if r['runs']])} run(s), one per kind"}
 
     def batch_progress(self, set_id: str) -> dict | None:
         """What every run in this set is doing right now.
@@ -606,20 +866,21 @@ class WorkLists:
         if refused_collection:
             raise CurationDenied(refused_collection.removeprefix("not permitted · "))
 
+        # Each member is resolved, checked and reported as ITS OWN kind (§5: a list may hold more than one).
         attachable, unpublished, unresolved = [], [], []
         for m in wl["members"]:
             try:
-                member_guid = member_egeria_guid(self.registry, wl["entity_type"], m["entity_slug"])
+                member_guid = member_egeria_guid(self.registry, m["entity_type"], m["entity_slug"])
             except MemberUnresolved as exc:
-                unresolved.append({"entity_slug": m["entity_slug"], "entity_type": wl["entity_type"],
+                unresolved.append({"entity_slug": m["entity_slug"], "entity_type": m["entity_type"],
                                    "words": f"could not resolve · {exc}"})
                 continue
             except NotInEgeriaYet:
-                unpublished.append(m["entity_slug"])
+                unpublished.append((m["entity_type"], m["entity_slug"]))
                 continue
             attachable.append({
                 "member_guid": member_guid,
-                "entity_type": wl["entity_type"],
+                "entity_type": m["entity_type"],
                 "entity_slug": m["entity_slug"],
                 "rationale": m.get("rationale") or "",
                 "confidence": m.get("confidence"),
@@ -636,18 +897,18 @@ class WorkLists:
         # GUID behind as a removal.
         current_guids = {m["member_guid"] for m in attachable} | {m["member_guid"] for m, _ in refused}
         # An unresolved member (unknown type, unreadable) is held like an unpublished one: never removed on a guess.
-        resolved = {**{s_: "" for s_ in unpublished}, **{u["entity_slug"]: "" for u in unresolved},
+        resolved = {**{s_: "" for _, s_ in unpublished}, **{u["entity_slug"]: "" for u in unresolved},
                     **{m["entity_slug"]: m["member_guid"] for m in attachable + [m for m, _ in refused]}}
         recorded = recorded_memberships(self.registry, slug, existing) if existing else {}
         removed = {g: r for g, r in recorded.items()
                    if g not in current_guids and not (r["entity_slug"] in resolved and not resolved[r["entity_slug"]])}
         detachable, detach_refused = per_member(
-            [{"member_guid": g, "entity_slug": r["entity_slug"] or g} for g, r in removed.items()
-             if r["attached"] or r["adding"] or r["maybe"]],
+            [{"member_guid": g, "entity_slug": r["entity_slug"] or g, "entity_type": r["entity_type"]}
+             for g, r in removed.items() if r["attached"] or r["adding"] or r["maybe"]],
             lambda m: access_words(
                 self.registry, [collection_detach_write(existing, "the collection"),
                                 member_detach_write(m["member_guid"])],
-                entity_type=wl["entity_type"], slug=m["entity_slug"], reader=reader))
+                entity_type=m["entity_type"] or wl["stored_entity_type"], slug=m["entity_slug"], reader=reader))
         if (refused or detach_refused) and not attachable and not detachable and existing:
             reasons = sorted({why.removeprefix("not permitted · ") for _, why in refused + detach_refused})
             raise CurationDenied(reasons[0] if len(reasons) == 1 else "; ".join(reasons))
@@ -675,7 +936,7 @@ class WorkLists:
 
         # The link back to RE's work-list page (the Portal's Resource Browser reads it). Written on create, and
         # again on every re-publish, so a list published before the URL was configured gains it.
-        url = resource_explorer_url(slug, wl["entity_type"])
+        url = resource_explorer_url(slug, _url_kind(wl))
         link_back = {"url": url, "state": "set" if url else "not configured", "words": ""}
         guid = (wl.get("egeria_guid") or "").strip()
         if not guid:
@@ -700,7 +961,7 @@ class WorkLists:
             self.registry, slug, guid, attachable, run_id=run_id)
         attached, attach_error = self._apply_adds(list(zip(row_ids, (m["entity_slug"] for m in attachable))),
                                     clients, _find_element_guid, who)
-        removals = self._apply_removals(slug, guid, wl["entity_type"], removed, detachable, detach_refused,
+        removals = self._apply_removals(slug, guid, wl["stored_entity_type"], removed, detachable, detach_refused,
                                         clients, _find_element_guid, who, run_id=run_id)
 
         return {
@@ -711,7 +972,7 @@ class WorkLists:
             "outbox_row_ids": row_ids,
             # Named, not counted: "3 could not be attached" is not actionable
             # and "3 could not be attached: a, b, c" is.
-            "members_without_an_egeria_asset": unpublished,
+            "members_without_an_egeria_asset": [s_ for _, s_ in unpublished],
             # The groups, by name: queued to attach; held in RE with no Egeria element (with its type); and ones
             # whose element RE could not establish (never folded into "not published").
             "queued_to_attach": [m["entity_slug"] for m in attachable],
@@ -721,8 +982,8 @@ class WorkLists:
             "attach": attached,
             # "" when every inline drain ran; else what raised, in words (the rows stay for the background drain).
             "attach_error": attach_error,
-            "not_published": [{"entity_slug": s_, "entity_type": wl["entity_type"],
-                               "words": str(NotInEgeriaYet(wl["entity_type"]))} for s_ in unpublished],
+            "not_published": [{"entity_slug": s_, "entity_type": k, "words": str(NotInEgeriaYet(k))}
+                              for k, s_ in unpublished],
             "not_resolved": unresolved,
             # Brief Z3: each member the caller may not attach, with its words; the rest were queued.
             "not_permitted": not_permitted,
@@ -871,7 +1132,8 @@ class WorkLists:
             if not (rec.get("attached") or rec.get("adding") or rec.get("maybe")):
                 continue                               # removed meanwhile by another press: nothing left to do
             payload: dict[str, Any] = {
-                "collection_guid": guid, "member_guid": m["member_guid"], "member_entity_type": entity_type,
+                "collection_guid": guid, "member_guid": m["member_guid"],
+                "member_entity_type": m.get("entity_type") or rec.get("entity_type") or entity_type,
                 "member_entity_slug": m["entity_slug"],
             }
             payload.update(requester_fields())

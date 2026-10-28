@@ -2259,6 +2259,53 @@ class ProjectRegistry:
             conn.execute(f"ALTER TABLE {tmp} RENAME TO repo_dispositions")
         log.info("registry: widened repo_dispositions primary key to (entity_type, entity_slug)")
 
+    def _migrate_work_list_members_to_member_kind(self, conn) -> None:
+        """Move a work list's kind from the list to each member (DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-KINDS §5).
+
+        Adds `work_list_members.entity_type`, backfills it from its list's `work_lists.entity_type` (every list
+        before this held one kind, so that IS each member's kind), and widens the key to
+        (work_list_slug, entity_type, entity_slug). A member whose list no longer exists keeps '' rather than a
+        guessed 'repo': the member resolver then says "cannot link this kind", never a wrong kind.
+
+        No-op when the column is there already (a fresh table, or a second start). Same shape as
+        `_migrate_repo_dispositions_to_entity_key`: ALTER + backfill, then a constraint swap on Postgres and a
+        table rebuild on SQLite (which cannot change a primary key in place).
+
+        DDL on the shared registry: written here, applied only on the owner's go (§5)."""
+        existing = self._get_table_columns(conn, "work_list_members")
+        if not existing or "entity_type" in existing:
+            return
+        conn.execute("ALTER TABLE work_list_members ADD COLUMN entity_type TEXT NOT NULL DEFAULT ''")
+        conn.execute(
+            "UPDATE work_list_members SET entity_type = COALESCE(("
+            "SELECT wl.entity_type FROM work_lists wl WHERE wl.slug = work_list_members.work_list_slug), '')"
+            " WHERE entity_type = ''")
+        if conn.is_postgres:
+            conn.execute("ALTER TABLE work_list_members DROP CONSTRAINT IF EXISTS work_list_members_pkey")
+            conn.execute("ALTER TABLE work_list_members ADD PRIMARY KEY (work_list_slug, entity_type, entity_slug)")
+        else:
+            tmp = "work_list_members__member_kind_migration"
+            conn.execute(f"DROP TABLE IF EXISTS {tmp}")
+            conn.execute(f"""
+                CREATE TABLE {tmp} (
+                    work_list_slug  TEXT NOT NULL,
+                    entity_slug     TEXT NOT NULL,
+                    rationale       TEXT NOT NULL DEFAULT '',
+                    confidence      INTEGER,
+                    added_at        TEXT NOT NULL,
+                    entity_type     TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (work_list_slug, entity_type, entity_slug)
+                )
+            """)
+            conn.execute(
+                f"INSERT INTO {tmp} (work_list_slug, entity_slug, rationale, confidence, added_at, entity_type) "
+                "SELECT work_list_slug, entity_slug, rationale, confidence, added_at, entity_type "
+                "FROM work_list_members")
+            conn.execute("DROP TABLE work_list_members")
+            conn.execute(f"ALTER TABLE {tmp} RENAME TO work_list_members")
+        log.info("registry: work_list_members carries each member's kind; key widened to "
+                 "(work_list_slug, entity_type, entity_slug)")
+
     def _migrate_repo_disposition_history_to_entity_key(self, conn) -> None:
         """Backfill `entity_type`/`entity_slug` on `repo_disposition_history`
         — the append-only companion to `repo_dispositions` above. No PK
@@ -3920,6 +3967,10 @@ class ProjectRegistry:
                     published_at    TEXT NOT NULL DEFAULT ''
                 )
             """)
+            # `entity_type` is the MEMBER's kind (DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-KINDS §5: one column set
+            # per view, not one kind per list). Last in the column list so a fresh table and a migrated one have
+            # the same shape on Postgres, where ADD COLUMN appends; part of the key, since a repository and a
+            # database may share a slug. `_migrate_work_list_members_to_member_kind` brings an older table here.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS work_list_members (
                     work_list_slug  TEXT NOT NULL,
@@ -3927,9 +3978,11 @@ class ProjectRegistry:
                     rationale       TEXT NOT NULL DEFAULT '',
                     confidence      INTEGER,
                     added_at        TEXT NOT NULL,
-                    PRIMARY KEY (work_list_slug, entity_slug)
+                    entity_type     TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (work_list_slug, entity_type, entity_slug)
                 )
             """)
+            self._migrate_work_list_members_to_member_kind(conn)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS work_list_runs (
                     set_id          TEXT NOT NULL,
@@ -3945,6 +3998,15 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_work_list_runs_set "
                 "ON work_list_runs(set_id)"
             )
+            # A shortlist's saved filter (DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-KINDS §2): `filter_json` is the
+            # checked expression with its three buckets (`winnowing.check_filter`), `filter_as_of` when the cut was
+            # made. NULL for a list that was not cut by a filter (every list before this, and a hand-picked
+            # promote). Nullable TEXT, the column list read first so a second start is a no-op, the same SQL on
+            # SQLite and Postgres (metadata-only on Postgres).
+            work_list_cols = self._get_table_columns(conn, "work_lists")
+            for col in ("filter_json", "filter_as_of"):
+                if col not in work_list_cols:
+                    conn.execute(f"ALTER TABLE work_lists ADD COLUMN {col} TEXT")
             # Per-resource sampling settings (design §5.8's "per resource" scope), one row per resource.
             # Its own table rather than a column on `databases`, so a file system can carry one too and
             # DatabaseEntity is untouched. Read by sampling.scoped_settings; never a measurement.
@@ -12398,6 +12460,8 @@ class ProjectRegistry:
         "egeria_outbox": "pending and failed rows are removed; done, dead and cancelled rows stay as history",
         "working_set_members": "keyed by the working set (removed through investigation_resource_lists)",
         "work_lists": "entity_type is the type of the list's members; the list keeps living, unlinked",
+        "work_list_members": "a member of a work list (its own kind since §5 of the winnowing note); the list "
+                             "keeps living, unlinked, and so do its members",
         "repo_dispositions": "a resource's own disposition, not the investigation's",
         "repo_disposition_history": "a resource's own disposition history",
         "api_reference_documents": "per surveyed resource, never an investigation",

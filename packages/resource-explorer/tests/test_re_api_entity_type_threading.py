@@ -31,7 +31,7 @@ RESOURCE_TYPE_HELPERS = {"assignGroup", "listQuestionCatalog"}
 
 # Verified against re-api.js at the time of the sweep.
 # 32: G1 added egeriaReportsPath (the Egeria reports component's per-kind route base; it requires its kind).
-EXPECTED_HELPER_COUNT = 37   # +registerWithEgeria, +checkNativeSurveyPointers (catalog-and-survey), +compileContext (parity P3), +cancelNativeAction (Egeria action cancel), +cancelProcessRun (definition-card Cancel run)
+EXPECTED_HELPER_COUNT = 38   # +getColumnTypes (work-list winnowing), +registerWithEgeria, +checkNativeSurveyPointers (catalog-and-survey), +compileContext (parity P3), +cancelNativeAction (Egeria action cancel), +cancelProcessRun (definition-card Cancel run)
 
 _DEF = r"^export (?:async )?(?:const|function\*?) {name}\b"
 
