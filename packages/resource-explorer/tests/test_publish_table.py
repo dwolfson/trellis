@@ -38,7 +38,7 @@ def _declaration(annotation: dict | None = None, kind: str = "distribution") -> 
         "extents": [{"name": "top", "fields": ["bucket", "count"], "rows": 10, "order": "by count, largest first",
                      "truncation": "{shown} of {total} buckets shown", "token_cost": 120,
                      "citation": "{analysis} · {scope} · as of {as_of}"}],
-        "confidence": {"form": "estimated", "basis": "sample_ratio"},
+        "confidence": {"form": "estimated", "basis": "sample_ratio", "method": "one row in ten, sampled"},
         "answers": ["q-example-x"], "scope": "resource"})
 
 
@@ -97,7 +97,7 @@ def test_two_declared_measures_are_two_generic_rows_with_unit_as_of_confidence_a
         assert row["analysis"] == "Example Step X"
         assert row["writes_as"]["words"] == pt.GENERIC_WORDS == "generic measure · no native type declared"
         assert row["as_of"] == "2026-10-27T08:30:00"
-        assert row["confidence"]["words"] == "estimated · sample_ratio"
+        assert row["confidence"]["words"] == "estimated · one row in ten, sampled"
         assert row["scope"] == "resource"
         assert row["publishable"] and row["choice"] is None
         assert row["published"] == {"state": "local", "words": "local · not published"}
@@ -263,7 +263,7 @@ def test_the_gate_one_measure_publishes_as_a_generic_measure_and_reads_back(regi
     assert props["resourceProperties"] == {"rows_sampled": "1200", "unit": "rows"}
     extra = props["additionalProperties"]
     assert extra["declaredRoute"] == "generic" and extra["declaredRouteWords"] == pt.GENERIC_WORDS
-    assert extra["unit"] == "rows" and extra["asOf"] == "2026-10-27T08:30:00" and extra["confidenceBasis"] == "sample_ratio"
+    assert extra["unit"] == "rows" and extra["asOf"] == "2026-10-27T08:30:00" and extra["confidenceBasis"] == "one row in ten, sampled"
     # Only the chosen measure went: the other row was not chosen and stays in RE.
     assert not [q for q in held if q.endswith("declared_measure.example_step_x.buckets")]
 
@@ -429,3 +429,23 @@ def test_a_refused_choice_is_422_with_the_reason(client):
     r = client.put(f"/api/publish-table/database/{SLUG}/choice",
                    json={"analysis_id": "example_step_x", "measure": "nope", "choice": "publish"}, headers=_as("alice"))
     assert r.status_code == 422 and "declares no measure 'nope'" in r.json()["detail"]
+
+
+def test_no_declared_confidence_shows_a_field_path_to_a_person():
+    """The catalog's own declarations: whatever the basis field is, the words a person reads never contain it."""
+    from resource_explorer.publish_table import confidence_words
+    from resource_explorer.surveyors.analysis_catalog_reader import _load
+
+    seen = 0
+    for entries in _load().values():
+        for e in entries:
+            conf = e.declaration.confidence if e.declaration else None
+            if conf is None or not conf.basis:
+                continue
+            seen += 1
+            words = confidence_words(conf)["words"]
+            assert conf.basis not in words, f"{e.id}: {words}"
+    assert seen >= 10
+    row_count = next(e for es in _load().values() for e in es if e.id == "row_count_snapshot")
+    assert confidence_words(row_count.declaration.confidence)["words"] == (
+        "estimated · PostgreSQL's row-count estimate, not a count of the rows")

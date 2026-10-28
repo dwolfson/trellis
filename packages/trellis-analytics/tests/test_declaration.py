@@ -78,7 +78,7 @@ def test_answers_empty_is_a_declaration_and_absent_is_not():
     (minimum(confidence={"form": "guessed"}), "confidence form 'guessed' is not one of the five forms"),
     (minimum(confidence={"form": "inferred", "score": "confidence", "calibrated": False}),
      "confidence form 'inferred' declares no basis"),
-    (minimum(confidence={"form": "inferred", "basis": "rules"}), "does not say whether its score is calibrated"),
+    (minimum(confidence={"form": "inferred", "basis": "rules", "method": "the rules that matched"}), "does not say whether its score is calibrated"),
     (minimum(confidence={"form": "estimated"}), "confidence form 'estimated' declares no basis and no method"),
     (minimum(confidence={"form": "measured", "score": "confidence"}), "confidence form 'measured' declares a score"),
     (minimum(confidence={"form": "estimated", "method": "a sample", "calibrated": True}),
@@ -95,6 +95,14 @@ def test_a_refusal_reads_as_sentences_not_as_pydantic_framing():
     words = refused(minimum(result_kind="chart"))
     assert "validation error" not in words and "Value error" not in words
     assert words.startswith("result_kind ")
+
+
+def test_a_basis_that_is_a_field_path_must_come_with_words():
+    refusal = refused(minimum(confidence={"form": "estimated", "basis": "tables.row_count_is_estimate"}))
+    assert "names a result field and no method" in refusal and "tables.row_count_is_estimate" in refusal
+    ok = Declaration.model_validate(full(confidence={"form": "estimated", "basis": "tables.row_count_is_estimate",
+                                                     "method": "PostgreSQL's row-count estimate"}))
+    assert ok.confidence.method
 
 
 def test_an_estimate_may_declare_its_method_instead_of_a_field():

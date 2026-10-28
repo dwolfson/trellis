@@ -1022,8 +1022,7 @@ database_analyses:
       confidence:
         form: estimated
         basis: tables.row_count_is_estimate
-        method: 'pg_stat_user_tables.n_live_tup, or pg_class.reltuples where flagged: PostgreSQL''s estimates, not a
-          count of rows'
+        method: PostgreSQL's row-count estimate, not a count of the rows
       answers: [Q-0060]
       scope: resource
 
@@ -1394,6 +1393,7 @@ database_analyses:
       confidence:
         form: inferred
         basis: signals_used
+        method: 'how many kinds of evidence were available: table shapes, key density, names, read/write activity'
         score: confidence
         calibrated: false
       answers: [Q-0067]
@@ -1662,6 +1662,7 @@ database_analyses:
       confidence:
         form: inferred
         basis: basis
+        method: "the table's primary key, or a column profile whose distinct count matches the row count"
         score: confidence
         calibrated: false
       answers: [Q-0011, Q-0069, Q-0077, Q-0090]
@@ -1860,6 +1861,7 @@ database_analyses:
       confidence:
         form: inferred
         basis: columns.sample
+        method: 'the sampled values of each column, compared with the known classes'
         score: confidence
         calibrated: false
       answers: [Q-0079, Q-0080, Q-0085]
@@ -1984,6 +1986,7 @@ database_analyses:
       confidence:
         form: judged
         basis: proposals.state
+        method: "a person's decision on each proposed check"
       answers: [Q-0096, Q-0097]
       scope: field
 
@@ -2254,6 +2257,7 @@ database_analyses:
       confidence:
         form: inferred
         basis: terms.basis
+        method: 'whether the term came from a comment, a name, or both'
         score: confidence
         calibrated: false
       answers: [Q-0011, Q-0075, Q-0077]
@@ -2339,6 +2343,7 @@ database_analyses:
       confidence:
         form: estimated
         basis: temporal.basis
+        method: "date ranges read from PostgreSQL's column statistics, not from the rows"
       answers: [Q-0011, Q-0056, Q-0076, Q-0077]
       scope: resource
 
@@ -2407,6 +2412,7 @@ database_analyses:
       confidence:
         form: inferred
         basis: inputs
+        method: 'which of the three free estimates were available to compare'
         score: confidence
         calibrated: false
       answers: [Q-0011, Q-0077]
@@ -2520,6 +2526,7 @@ database_analyses:
       confidence:
         form: inferred
         basis: evidence.source
+        method: 'the documentation the evidence was found in'
         calibrated: false
       answers: [Q-0088]
       scope: resource
@@ -2569,6 +2576,7 @@ database_analyses:
       confidence:
         form: inferred
         basis: suggestions.basis
+        method: 'the glossary term a person already confirmed'
         score: suggestions.confidence
         calibrated: false
       answers: []
@@ -2622,6 +2630,7 @@ database_analyses:
       confidence:
         form: inferred
         basis: columns.sample
+        method: 'the sampled values of each low-cardinality column, compared with the known value sets'
         score: confidence
         calibrated: false
       answers: [Q-0079, Q-0081, Q-0091]
@@ -2672,6 +2681,7 @@ database_analyses:
       confidence:
         form: estimated
         basis: nested_columns.columns.schema.sample_size
+        method: 'a sample of the rows, not every row'
       answers: [Q-0082]
       scope: field
 
@@ -2909,8 +2919,7 @@ database_analyses:
         citation: '{analysis} · {scope} · as of {as_of}'
       confidence:
         form: estimated
-        method: the difference of two pg_stat_user_tables.n_live_tup readings, PostgreSQL's live-row estimate,
-          not a count of rows
+        method: the change between two of PostgreSQL's row-count estimates, not a count of the rows
       answers:
       - Q-0041
       scope: member

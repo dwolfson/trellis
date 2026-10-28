@@ -133,7 +133,7 @@ def writes_as(measure, confidence_form: str = "") -> dict:
 def confidence_words(conf) -> dict:
     if conf is None:
         return {"form": "", "words": "confidence not declared"}
-    basis = conf.basis or conf.method
+    basis = conf.method or conf.basis   # the words; the field path only if a declaration has none (the validator forbids that)
     words = conf.form + (f" · {basis}" if basis else "")
     return {"form": conf.form, "basis": conf.basis, "method": conf.method, "score": conf.score,
             "calibrated": conf.calibrated, "words": words}
@@ -306,7 +306,7 @@ def annotation_for(row: dict):
     conf = row["confidence"]
     extra = {"declaredRoute": w["route"], "analysis": row["analysis_id"], "measure": row["measure"],
              "unit": row["unit"], "asOf": row["as_of"], "valueField": row["value_field"],
-             "confidenceForm": conf.get("form", ""), "confidenceBasis": conf.get("basis") or conf.get("method") or "",
+             "confidenceForm": conf.get("form", ""), "confidenceBasis": conf.get("method") or conf.get("basis") or "",
              "scope": row["scope"], "resultState": "measured", "measuredAt": row["as_of"]}
     if w["route"] == "generic":
         extra["declaredRouteWords"] = GENERIC_WORDS
