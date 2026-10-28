@@ -5,7 +5,7 @@ data search and survey process would look like". The kind, its thirteen
 questions, four survey definitions, DCAT/CKAN facts and the Egeria publish
 shape are in DESIGN-OPEN-DATA-RESOURCE-KIND-BRAINSTORM.md (2026-10-20, a
 brainstorm); this note is the process a person walks, from a need to a
-catalogued external dataset, and what each step reuses. It settles nothing
+cataloged external dataset, and what each step reuses. It settles nothing
 the brainstorm's §7 left to the owner; §8 restates those with a
 recommendation each.
 
@@ -30,7 +30,7 @@ step 5 path.
 | 6 Decide and publish | Curate, then Automate | the person | the resource page's headlines answer O1–O13; the person publishes the dataset as an external asset with its licence, publisher, coverage and sample-based measures; subscribes to `external_change` | Curate's single publish with the publish table, the Automate subscription |
 
 A step never fetches more than the step before it priced. Step 2 reads
-catalogue APIs only; step 3 reads metadata only; step 5 is the first byte of
+catalog APIs only; step 3 reads metadata only; step 5 is the first byte of
 data, capped and stated.
 
 ## 2. Step 1, the need: the data request
@@ -58,7 +58,7 @@ and never passes a candidate on it.
   registration needs, the cost shape (calls per page, page size) and one
   interface: `search(terms, filters, page)`, `describe(dataset_id)`,
   `distributions(dataset_id)`. Built-ins in order: **CKAN** first (the most
-  common portal software: data.gov's catalogue, most city and national
+  common portal software: data.gov's catalog, most city and national
   portals, demo instances exist), **DCAT-AP** feeds second (the EU portal;
   data.gov also exposes DCAT), Socrata third. The adapter returns the
   publisher's record verbatim plus RE's normalised candidate fields, never
@@ -75,7 +75,7 @@ and never passes a candidate on it.
   never the URL), and puts them in a work list named for the request.
 - **Already held?** Before import, the same identifiers are matched
   against registered resources and against Egeria (external identifier
-  read-first), so a dataset already catalogued shows "already in the
+  read-first), so a dataset already cataloged shows "already in the
   catalog · <where>" on its candidate row rather than being imported twice.
 - **Cross-portal duplicates** (the same identifier on two portals) collapse
   to one candidate with both portals listed; the publisher's own portal, if
