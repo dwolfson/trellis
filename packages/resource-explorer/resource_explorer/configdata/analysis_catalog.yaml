@@ -89,17 +89,29 @@
 #                         saying when), value_field, and optionally
 #                         annotation: {type, properties} — the Egeria type it
 #                         writes as, which must be one of annotation_types;
-#                         absent = "generic measure, no native type declared".
+#                         absent = "generic measure, no native type declared";
+#                         and optionally its own confidence (below) where it
+#                         differs from the declaration's.
 #     absence           - the sentence for each of not_measured,
 #                         not_permitted, not_applicable, measured_nothing.
 #     extents           - Chat's shapes: name, fields, rows, order,
 #                         truncation (with {shown} and {total}), token_cost,
-#                         citation.
+#                         citation; and, where the rows are not under the
+#                         extent's own name in the stored result, source (the
+#                         path(s) to them, '.' for the result as one row) and,
+#                         joining several, tag (the field naming which one).
 #     confidence        - form (measured | estimated | inferred | judged |
 #                         generated), basis (the result field carrying it;
 #                         required unless measured), score, and calibrated
-#                         (inferred only, required there).
-#     answers           - question ids ([] = answers none, by design).
+#                         (inferred only, required there). With per-measure
+#                         confidence, this is the weakest of the measures'.
+#     answers           - NOT written here: generated on load from the
+#                         question catalogue's answering.analysis_ids ([] for
+#                         answers_questions: false); a hand-written list is
+#                         refused (project owner, 2026-10-28). Library steps
+#                         carry their manifest's questions, generated.
+#     built             - false for an analysis declared before it has a
+#                         runner: it reads as "planned, not measured".
 #     scope             - resource | container | member | field.
 #   egeria_registration - schema-only hook for eventual GovernanceActionType
 #                       registration of this analysis as a native Egeria
@@ -951,13 +963,13 @@ database_analyses:
       - name: relations
         fields: [schema_name, table_name, table_type, column_count, row_count, row_count_is_estimate]
         rows: 30
-        order: by schema, then name
+        sort: [schema_name asc, table_name asc]
         truncation: '{shown} of {total} relations shown, by schema and name'
         token_cost: 1480
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [tables]
       confidence:
         form: measured
-      answers: [Q-0060, Q-0061, Q-0078]
       scope: resource
 
   - id: row_count_snapshot
@@ -996,6 +1008,7 @@ database_analyses:
         unit: bytes
         as_of: run.surveyed_at
         value_field: total_size_bytes
+        confidence: {form: measured}  # pg_total_relation_size: an exact read, unlike the row-count estimate
         annotation:
           type: ResourceMeasureAnnotation
       - name: estimated_relations
@@ -1015,15 +1028,15 @@ database_analyses:
       - name: tables_by_rows
         fields: [schema_name, table_name, row_count, size_bytes, row_count_is_estimate]
         rows: 20
-        order: by row count, largest first
+        sort: [row_count desc]
         truncation: '{shown} of {total} tables shown, by row count'
         token_cost: 840
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [tables]
       confidence:
         form: estimated
         basis: tables.row_count_is_estimate
         method: PostgreSQL's row-count estimate, not a count of the rows
-      answers: [Q-0060]
       scope: resource
 
   - id: privilege_audit
@@ -1073,13 +1086,12 @@ database_analyses:
       - name: roles
         fields: [rolname, rolsuper, rolcanlogin, rolbypassrls]
         rows: 20
-        order: superusers first, then by name
+        sort: [rolsuper desc, rolname asc]
         truncation: '{shown} of {total} roles shown, superusers first'
         token_cost: 680
         citation: '{analysis} · {scope} · as of {as_of}'
       confidence:
         form: measured
-      answers: [Q-0085]
       scope: resource
 
   - id: db_activity_signals
@@ -1126,6 +1138,7 @@ database_analyses:
         truncation: '{shown} of {total} summaries shown'
         token_cost: 56
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: ['.']
       - name: busiest_tables
         fields: [schemaname, tablename, rows_inserted, rows_updated, rows_deleted, seq_scan, idx_scan]
         rows: 15
@@ -1133,9 +1146,9 @@ database_analyses:
         truncation: '{shown} of {total} tables shown, by rows written'
         token_cost: 880
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [table_activity]
       confidence:
         form: measured
-      answers: [Q-0062, Q-0092]
       scope: resource
 
   - id: credential_capability
@@ -1196,6 +1209,7 @@ database_analyses:
         truncation: '{shown} of {total} summaries shown'
         token_cost: 88
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: ['.']
       - name: by_schema
         fields: [schema, usage_granted, table_select, table_total]
         rows: 20
@@ -1205,7 +1219,6 @@ database_analyses:
         citation: '{analysis} · {scope} · as of {as_of}'
       confidence:
         form: measured
-      answers: [Q-0099]
       scope: resource
 
   - id: db_resilience
@@ -1255,9 +1268,9 @@ database_analyses:
         truncation: '{shown} of {total} summaries shown'
         token_cost: 72
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: ['.']
       confidence:
         form: measured
-      answers: [Q-0065, Q-0066, Q-0093]
       scope: resource
 
   - id: db_external_dependencies
@@ -1317,15 +1330,16 @@ database_analyses:
         measured_nothing: 'Measured: no extensions, foreign servers or tables, publications or subscriptions.'
       extents:
       - name: dependencies
-        fields: [kind, name, detail]
+        fields: [kind, extname, extversion, srvname, fdwname, schema_name, table_name, pubname, subname]
         rows: 30
         order: by kind, then name
         truncation: '{shown} of {total} external dependencies shown, by kind'
         token_cost: 760
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [extensions, foreign_servers, foreign_tables, publications, subscriptions]
+        tag: kind
       confidence:
         form: measured
-      answers: [Q-0084]
       scope: resource
 
   # ── db_derived: the zero-fetch derivation tier (Phase 1 slice 9) ─────────
@@ -1390,13 +1404,13 @@ database_analyses:
         truncation: '{shown} of {total} classifications shown'
         token_cost: 88
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: ['.']
       confidence:
         form: inferred
         basis: signals_used
         method: 'how many kinds of evidence were available: table shapes, key density, names, read/write activity'
         score: confidence
         calibrated: false
-      answers: [Q-0067]
       scope: resource
 
   - id: db_relationship_graph
@@ -1463,6 +1477,7 @@ database_analyses:
         truncation: '{shown} of {total} summaries shown'
         token_cost: 80
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: ['.']
       - name: most_referenced
         fields: [table, referenced_by]
         rows: 10
@@ -1472,7 +1487,6 @@ database_analyses:
         citation: '{analysis} · {scope} · as of {as_of}'
       confidence:
         form: measured
-      answers: [Q-0068, Q-0090]
       scope: resource
 
   - id: db_hub_tables
@@ -1520,13 +1534,13 @@ database_analyses:
       - name: starting_tables
         fields: [table, score, fk_in_degree, row_count, has_comment, reads]
         rows: 10
-        order: by rank score, highest first
+        sort: [score desc]
         truncation: '{shown} of {total} ranked tables shown, by rank score'
         token_cost: 520
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [hubs]
       confidence:
         form: measured
-      answers: [Q-0072]
       scope: resource
 
   - id: db_statistics_freshness
@@ -1599,9 +1613,9 @@ database_analyses:
         truncation: '{shown} of {total} tables needing attention shown, stale first'
         token_cost: 1000
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [attention]
       confidence:
         form: measured
-      answers: [Q-0073]
       scope: resource
 
   - id: grain_determination
@@ -1665,7 +1679,6 @@ database_analyses:
         method: "the table's primary key, or a column profile whose distinct count matches the row count"
         score: confidence
         calibrated: false
-      answers: [Q-0011, Q-0069, Q-0077, Q-0090]
       scope: member
 
   - id: db_fingerprint
@@ -1717,13 +1730,12 @@ database_analyses:
       - name: matches
         fields: [slug, verdict, column_jaccard, table_jaccard, containment]
         rows: 5
-        order: by column similarity, highest first
+        sort: [column_jaccard desc]
         truncation: '{shown} of {total} similar databases shown, by similarity'
         token_cost: 240
         citation: '{analysis} · {scope} · as of {as_of}'
       confidence:
         form: measured
-      answers: [Q-0070]
       scope: resource
 
   - id: schema_conventions
@@ -1800,13 +1812,14 @@ database_analyses:
       - name: offending_items
         fields: [check, item]
         rows: 30
-        order: by check, then name
+        sort: [check asc, item asc]
         truncation: '{shown} of {total} offending tables and columns shown, by check'
         token_cost: 520
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [checks.tables_without_comment.items, checks.naming_convention.items]
+        tag: check
       confidence:
         form: measured
-      answers: [Q-0083, Q-0088, Q-0090]
       scope: resource
 
   - id: data_class_match
@@ -1858,13 +1871,13 @@ database_analyses:
         truncation: '{shown} of {total} columns shown, privacy-relevant first'
         token_cost: 1240
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [columns]
       confidence:
         form: inferred
         basis: columns.sample
         method: 'the sampled values of each column, compared with the known classes'
         score: confidence
         calibrated: false
-      answers: [Q-0079, Q-0080, Q-0085]
       scope: field
 
   # DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md: value profile -> propose -> run.
@@ -1913,13 +1926,12 @@ database_analyses:
       - name: columns
         fields: [column_path, record_ct, distinct_value_ct, null_value_ct, zero_length_ct, min_date, max_date]
         rows: 30
-        order: by schema, table and column
+        sort: [column_path asc]
         truncation: '{shown} of {total} columns shown, by schema, table and column'
         token_cost: 1720
         citation: '{analysis} · {scope} · as of {as_of}'
       confidence:
         form: measured
-      answers: [Q-0079]
       scope: field
 
   - id: quality_checks
@@ -1987,7 +1999,6 @@ database_analyses:
         form: judged
         basis: proposals.state
         method: "a person's decision on each proposed check"
-      answers: [Q-0096, Q-0097]
       scope: field
 
   - id: db_change_rates
@@ -2057,7 +2068,6 @@ database_analyses:
         citation: '{analysis} · {scope} · as of {as_of}'
       confidence:
         form: measured
-      answers: [Q-0041, Q-0086]
       scope: resource
 
   - id: schema_diff
@@ -2121,9 +2131,10 @@ database_analyses:
         truncation: '{shown} of {total} column changes shown, by kind of change'
         token_cost: 1000
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [columns_added, columns_dropped, columns_retyped]
+        tag: change
       confidence:
         form: measured
-      answers: [Q-0041, Q-0086]
       scope: resource
 
   - id: grant_change
@@ -2185,9 +2196,10 @@ database_analyses:
         truncation: '{shown} of {total} grant changes shown, PUBLIC first'
         token_cost: 520
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [grants_added, grants_revoked]
+        tag: change
       confidence:
         form: measured
-      answers: [Q-0085]
       scope: resource
 
   # ── §16's coverage/grain/fit rows (2026-09-24) ───────────────────────────
@@ -2260,7 +2272,6 @@ database_analyses:
         method: 'whether the term came from a comment, a name, or both'
         score: confidence
         calibrated: false
-      answers: [Q-0011, Q-0075, Q-0077]
       scope: resource
 
   - id: coverage_signals
@@ -2333,18 +2344,19 @@ database_analyses:
         truncation: '{shown} of {total} periods shown'
         token_cost: 72
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [temporal]
       - name: column_ranges
         fields: [schema_name, table_name, column_name, start, end, basis]
         rows: 15
-        order: earliest start first
+        sort: [start asc]
         truncation: '{shown} of {total} dated columns shown, earliest first'
         token_cost: 760
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [temporal.column_ranges]
       confidence:
         form: estimated
         basis: temporal.basis
         method: "date ranges read from PostgreSQL's column statistics, not from the rows"
-      answers: [Q-0011, Q-0056, Q-0076, Q-0077]
       scope: resource
 
   - id: preliminary_fit
@@ -2409,13 +2421,13 @@ database_analyses:
         truncation: '{shown} of {total} verdicts shown'
         token_cost: 80
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: ['.']
       confidence:
         form: inferred
         basis: inputs
         method: 'which of the three free estimates were available to compare'
         score: confidence
         calibrated: false
-      answers: [Q-0011, Q-0077]
       scope: resource
 
   # ── Enrichment-tier stubs (2026-09-29, ENRICHMENT-E1-CONTEXT-TAB) ────────
@@ -2456,6 +2468,7 @@ database_analyses:
       candidate: false
       native_process_ref: null
     declaration:
+      built: false
       result_kind: measure
       measures:
       - name: documents_ingested
@@ -2477,7 +2490,6 @@ database_analyses:
         citation: '{analysis} · {scope} · as of {as_of}'
       confidence:
         form: measured
-      answers: []
       scope: resource
 
   - id: doc_evidence_check
@@ -2503,6 +2515,7 @@ database_analyses:
       candidate: false
       native_process_ref: null
     declaration:
+      built: false
       result_kind: finding
       measures:
       - name: evidence_found
@@ -2528,7 +2541,6 @@ database_analyses:
         basis: evidence.source
         method: 'the documentation the evidence was found in'
         calibrated: false
-      answers: [Q-0088]
       scope: resource
 
   - id: semantic_suggestions
@@ -2553,6 +2565,7 @@ database_analyses:
       candidate: false
       native_process_ref: null
     declaration:
+      built: false
       result_kind: proposal
       measures:
       - name: terms_suggested
@@ -2579,7 +2592,6 @@ database_analyses:
         method: 'the glossary term a person already confirmed'
         score: suggestions.confidence
         calibrated: false
-      answers: []
       scope: resource
 
   - id: reference_data_match
@@ -2627,13 +2639,13 @@ database_analyses:
         truncation: '{shown} of {total} columns shown, partial matches first'
         token_cost: 1040
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [columns]
       confidence:
         form: inferred
         basis: columns.sample
         method: 'the sampled values of each low-cardinality column, compared with the known value sets'
         score: confidence
         calibrated: false
-      answers: [Q-0079, Q-0081, Q-0091]
       scope: field
 
   - id: nested_column_profile
@@ -2682,7 +2694,6 @@ database_analyses:
         form: estimated
         basis: nested_columns.columns.schema.sample_size
         method: 'a sample of the rows, not every row'
-      answers: [Q-0082]
       scope: field
 
   - id: sql_analysis
@@ -2731,7 +2742,6 @@ database_analyses:
         citation: '{analysis} · {scope} · as of {as_of}'
       confidence:
         form: measured
-      answers: [Q-0071]
       scope: member
 
   - id: egeria_db_survey
@@ -2777,7 +2787,6 @@ database_analyses:
         citation: '{analysis} · {scope} · as of {as_of}'
       confidence:
         form: measured
-      answers: []
       scope: resource
 
   # BEGIN GENERATED user steps (database): scripts/generate_external_step_entries.py. Do not hand-edit.
@@ -2841,7 +2850,8 @@ database_analyses:
         - fromAsOf
         - toAsOf
         rows: 20
-        order: by rows written per day, most first
+        sort:
+        - Writes Per Day desc
         truncation: '{shown} of {total} tables shown, by rows written per day'
         token_cost: 1000
         citation: '{analysis} · {scope} · as of {as_of}'
@@ -2913,7 +2923,8 @@ database_analyses:
         - previousSurvey
         - latestSurvey
         rows: 20
-        order: by rows changed, largest change first
+        sort:
+        - rowsChanged desc
         truncation: '{shown} of {total} tables shown, by rows changed'
         token_cost: 1000
         citation: '{analysis} · {scope} · as of {as_of}'
@@ -3150,9 +3161,9 @@ filesystem_analyses:
         truncation: '{shown} of {total} summaries shown'
         token_cost: 80
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: ['.']
       confidence:
         form: measured
-      answers: [Q-0094, Q-0095, Q-0100]
       scope: resource
 
   - id: resource_reachability
@@ -3194,7 +3205,6 @@ filesystem_analyses:
         citation: '{analysis} · {scope} · as of {as_of}'
       confidence:
         form: measured
-      answers: [Q-0054]
       scope: resource
 
   # BEGIN GENERATED user steps (filesystem): scripts/generate_external_step_entries.py. Do not hand-edit.

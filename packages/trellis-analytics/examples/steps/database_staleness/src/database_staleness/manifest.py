@@ -53,7 +53,7 @@ MANIFEST = StepManifest(
         extents=[ExtentDeclaration(
             name="tables_by_change", fields=["scope", "rowsChanged", "rowsBefore", "rowsAfter", "previousSurvey",
                                              "latestSurvey"],
-            rows=20, order="by rows changed, largest change first",
+            rows=20, sort=["rowsChanged desc"],
             truncation="{shown} of {total} tables shown, by rows changed", token_cost=1000,
             citation="{analysis} · {scope} · as of {as_of}")],
         # Both counts are PostgreSQL's statistics-collector figures (pg_stat_user_tables), not a count(*).

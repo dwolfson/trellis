@@ -142,3 +142,33 @@ def test_a_refused_declaration_leaves_the_entry_listed_and_saying_why(caplog):
     assert d["id"] == "x_analysis" and "declaration" not in d
     assert d["declaration_refused"] == entry.declaration_refused
     assert any("result_kind 'chart'" in r.getMessage() for r in caplog.records)
+
+
+# ── the owner's answers of 2026-10-28 ───────────────────────────────────────
+
+def test_hand_written_answers_are_refused_they_are_generated():
+    """One list, not two: a built-in entry's answers come from the question catalogue, never from the entry."""
+    declared, refused = reader.check_declaration(_raw(_good(answers=["Q-0001"])))
+    assert declared is None
+    assert "answers is written by hand; they are generated from the question catalog's analysis_ids" in refused
+
+
+def test_a_built_in_entrys_answers_are_generated_from_the_question_catalogue():
+    declared, refused = reader.check_declaration(_raw(_good(), id="db_change_rates"))
+    assert refused == "" and declared.answers == list(reader.question_binding()["db_change_rates"])
+    declared, _ = reader.check_declaration(_raw(_good(), id="x", answers_questions=False))
+    assert declared.answers == []
+
+
+def test_no_hand_written_entry_in_the_catalog_carries_answers():
+    """The staleness check the equality test became: the file holds no second list to drift."""
+    raw = yaml.safe_load((CONFIG / "analysis_catalog.yaml").read_text())
+    written = [e["id"] for t in ("database_analyses", "filesystem_analyses") for e in raw[t]
+               if not e.get("provided_by") and "answers" in (e.get("declaration") or {})]
+    assert written == []
+
+
+def test_the_not_built_analyses_are_declared_as_planned():
+    built = {e.id: e.declaration.built for e in _entries()}
+    assert {k for k, v in built.items() if not v} == {"doc_source_ingestion", "doc_evidence_check",
+                                                      "semantic_suggestions"}

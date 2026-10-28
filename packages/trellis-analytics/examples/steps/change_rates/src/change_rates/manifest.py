@@ -46,7 +46,7 @@ MANIFEST = StepManifest(
         extents=[ExtentDeclaration(
             name="tables_by_write_rate", fields=["scope", "Writes Per Day", "Writes In Interval", "Interval Days",
                                                   "fromAsOf", "toAsOf"],
-            rows=20, order="by rows written per day, most first",
+            rows=20, sort=["Writes Per Day desc"],
             truncation="{shown} of {total} tables shown, by rows written per day", token_cost=1000,
             citation="{analysis} · {scope} · as of {as_of}")],
         # PostgreSQL's cumulative counters, read exactly and differenced: no estimate, no score.
