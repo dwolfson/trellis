@@ -238,8 +238,8 @@ def report_annotations(registry, slug: str, walk_run: str) -> dict:
                 other = m.name != step
                 common = dict(summary=str(r.get("summary") or ""), analysis_step=step,
                               annotation_type_name=survey_step_host.measure_display_name(m.name) if other else entry.name,
-                              explanation=str(r.get("explanation") or ""),
-                              check_name=m.name if other else step, item_key=row["scope"])
+                              explanation=str(r.get("explanation") or ""))
+                check = m.name if other else step
                 envelope = {**extra, "surveyor": "Resource Explorer", "derivedFromWalk": walk_run,
                             "analysisId": entry.id}
                 if ann_type == "ResourceProfileAnnotation":
@@ -247,14 +247,14 @@ def report_annotations(registry, slug: str, walk_run: str) -> dict:
                     words = {k: v for k, v in props.items() if k not in counts}
                     annotations.append(ResourceProfileAnnotation(
                         value_count=counts, additional_properties={**envelope, **{k: str(v) for k, v in words.items()}},
-                        **common))
+                        check_name=check, item_key=row["scope"], **common))
                 elif ann_type == "RequestForActionAnnotation":
                     annotations.append(RequestForActionAnnotation(
                         action_requested=str(r.get("summary") or ""), json_properties=props,
-                        additional_properties=envelope, **common))
+                        additional_properties=envelope, check_name=check, item_key=row["scope"], **common))
                 else:
-                    annotations.append(ResourceMeasureAnnotation(resource_properties=props,
-                                                                 additional_properties=envelope, **common))
+                    annotations.append(ResourceMeasureAnnotation(resource_properties=props, additional_properties=envelope,
+                                                                 check_name=check, item_key=row["scope"], **common))
                 sent.append(row)
     state = "sent" if annotations else ("none_stored" if not not_sent else "none_to_send")
     return {"state": state, "annotations": annotations, "sent": sent, "not_sent": not_sent}
