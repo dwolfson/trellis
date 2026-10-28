@@ -947,3 +947,26 @@ class TestDatabaseDiffReadsRows:
         body = client.get("/api/databases/coco_ods/diff").json()
         assert body["table_diff_state"] == STATE_MEASURED
         assert body["new_tables"] == ["public.patient"]
+
+
+class TestViewLineageMaterializes:
+    """The surveyor writes `lineage` and a `complexity` metrics dict per view."""
+
+    def _view_row(self, view: dict) -> dict:
+        blob = {**local_database_blob(), "views": [view]}
+        rows = database_rows_from_survey_data(blob)
+        return next(v for v in rows["database_sql_objects"] if v["object_name"] == view["name"])
+
+    def test_surveyed_lineage_and_complexity_are_not_dropped(self):
+        row = self._view_row({
+            "name": "v", "schema": "public", "definition": "SELECT 1",
+            "lineage": {"total": {"name": "total", "source": "orders", "downstream": []}},
+            "complexity": {"complexity_score": 12, "node_count": 9},
+        })
+        assert row["column_lineage_json"] == {"total": {"name": "total", "source": "orders", "downstream": []}}
+        assert row["complexity"] == 12
+
+    def test_unanalysed_view_stays_absent(self):
+        row = self._view_row({"name": "v", "schema": "public", "definition": "SELECT 1"})
+        assert row["column_lineage_json"] is None
+        assert row["complexity"] is None

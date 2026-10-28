@@ -867,8 +867,12 @@ def database_rows_from_survey_data(survey_data: dict) -> dict[str, list[dict]]:
             "object_type": "materialized_view" if view.get("kind") == "materialized_view" else "view",
             "definition": view.get("definition") or view.get("view_definition") or "",
             "depends_on_json": view.get("depends_on") or view.get("dependencies") or None,
-            "column_lineage_json": view.get("column_lineage") or None,
-            "complexity": _blob_int(view.get("complexity")),
+            #: the surveyor writes `lineage` (database_surveyor.py's view
+            #: analysis) and a `complexity` dict of metrics; nothing writes
+            #: `column_lineage`. Reading that key made every local survey's
+            #: lineage look empty. Absent stays None, never {}.
+            "column_lineage_json": view.get("lineage") or None,
+            "complexity": _view_complexity(view.get("complexity")),
             "state": STATE_MEASURED,
         })
 
@@ -1002,6 +1006,13 @@ def filesystem_rows_from_survey_data(survey_data: dict) -> dict[str, list[dict]]
         })
 
     return {"filesystem_entries": entries, "filesystem_data_files": data_files}
+
+
+def _view_complexity(value) -> int | None:
+    """A view's complexity score from the surveyor's metrics dict (or a bare int)."""
+    if isinstance(value, dict):
+        value = value.get("complexity_score")
+    return _blob_int(value)
 
 
 def _blob_int(value) -> int | None:
