@@ -628,3 +628,27 @@ def test_a_library_step_value_at_the_top_of_the_record_still_resolves(registry, 
         analysis_id="example_step_x", state="measured", last_run_at="2026-10-27T08:31:00",
         value={**VALUE, "measurement_rows": [{"name": "public.t", "properties": {"x": 1}}]})
     assert _rows(registry)["rows_sampled"]["value"] == 1200
+
+
+def test_a_resource_scoped_library_step_reads_each_measure_from_its_own_record(registry, declared):
+    """fs_activity writes one record per measure, both with a "Cold Files" field: each row reads its own record, and
+    one whose record says it was not established says so with the step's reason. A file system still cannot publish
+    (owner answer 3); the value is what the row shows."""
+    from resource_explorer.surveyors.analysis_catalog_reader import _load
+
+    entry = next(e for e in _load()["filesystem"] if e.id == "fs_activity")
+    declared["entries"] = [entry]
+    declared["facts"] = {"fs_activity": Fact(
+        analysis_id="fs_activity", state="measured", last_run_at="2026-10-27T08:31:00",
+        value={"measurement_rows": [
+            {"name": "share", "measure": "", "state": "measured",
+             "properties": {"Cold Files": 12, "asOf": "2026-10-27T08:00:00"}},
+            {"name": "share", "measure": "fs_access_activity", "state": "not_established",
+             "reason": "access times not recorded on this mount", "properties": {}}]})}
+    rows = {r["measure"]: r for r in pt.build_rows(registry, "filesystem", "share")["rows"]}
+    assert rows["fs_activity"]["value"] == 12 and rows["fs_activity"]["as_of"] == "2026-10-27T08:00:00"
+    access = rows["fs_access_activity"]
+    assert access["value"] is None and access["absence"] == "not_measured"
+    assert access["absence_words"] == (entry.declaration.absence.sentence("not_measured")
+                                       + " · access times not recorded on this mount")
+    assert not access["publishable"] and access["why_not"] == pt.NOT_FOR_KIND_WORDS

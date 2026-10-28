@@ -34,8 +34,9 @@ those rows only, never from the press.
 
 **After slice 2** (`DECLARED-EXTENSIBILITY-SLICE1-PR2-PUBLISH-TABLE.md` §4b): a row's confidence is its measure's own
 (`Declaration.confidence_of`); an analysis declared but not built says "Planned, not built yet: not measured." and
-cannot publish; a library step's result is unwrapped as the Chat compile unwraps it (`declared_context.library_rows`),
-and a member-scoped measure with no resource-level value says it has one value per member rather than "found nothing".
+cannot publish; a library step's result is unwrapped as the Chat compile unwraps it (`declared_context.library_rows`); a
+member-scoped measure with no resource-level value says it has one value per member rather than "found nothing", and a
+resource-scoped step's measure is read from its own record (`declared_context.measure_records`).
 """
 from __future__ import annotations
 
@@ -278,7 +279,12 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
     """The table for one resource. Read-only: nothing here calls Egeria. `entries` overrides the catalogue (tests,
     and a step declared but not yet in the generated catalogue)."""
     from resource_explorer import read_memo
-    from resource_explorer.declared_context import NOT_BUILT, NOT_BUILT_WORDS, library_rows
+    from resource_explorer.declared_context import (
+        NOT_BUILT,
+        NOT_BUILT_WORDS,
+        library_rows,
+        measure_records,
+    )
     from resource_explorer.facts import FactLayer
 
     layer = layer or FactLayer(registry, resource_type=entity_type)
@@ -295,14 +301,19 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
             fact = _fact(layer, slug, entry.id)
             run = run_fields(fact)
             # A library step's record as the step declared it, not RE's reader's wrapping (the Chat compile's rule).
-            value = library_rows(fact.get("value") or {})
+            raw = fact.get("value") or {}
+            value = library_rows(raw)
+            # A resource-scoped library step keeps each measure in its own record (empty for any other result).
+            records = measure_records(raw, dec, entry.id)
             known = fact.get("state") in _KNOWN and dec.built
             per_member = dec.scope in ("member", "field") and bool(dec.extents)
             for m in dec.measures:
                 loc = locator(entry.id, m.name)
                 conf = confidence_words(dec.confidence_of(m))
-                v = resolve(value, m.value_field, run) if known else _MISSING
-                as_of = resolve(value, m.as_of, run) if known else _MISSING
+                record = records.get(m.name)
+                source = record["value"] if record else value
+                v = resolve(source, m.value_field, run) if known else _MISSING
+                as_of = resolve(source, m.as_of, run) if known else _MISSING
                 as_of = "" if as_of is _MISSING else str(as_of)
                 w = writes_as(m, conf["form"])
                 row = {"analysis_id": entry.id, "analysis": entry.name, "measure": m.name, "locator": loc,
@@ -313,6 +324,12 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
                     # Planned, not built: said first, whatever the fact layer holds (project owner, 2026-10-28).
                     row.update(value=None, value_words="—", absence=NOT_BUILT,
                                absence_words=f"{NOT_BUILT_WORDS} {dec.absence.sentence('not_measured')}")
+                elif v is _MISSING and known and record and record["state"] not in ("", "measured"):
+                    # The measure's own record says why it has no value: its state, and the step's reason.
+                    absence = _ABSENCE_OF.get(record["state"], "not_measured")
+                    reason = f" · {record['reason']}" if record["reason"] else ""
+                    row.update(value=None, value_words="—", absence=absence,
+                               absence_words=dec.absence.sentence(absence) + reason)
                 elif v is _MISSING and known and per_member:
                     # One value per member, not one for the resource: it ran, and its values are its rows.
                     names = ", ".join(e.name for e in dec.extents)

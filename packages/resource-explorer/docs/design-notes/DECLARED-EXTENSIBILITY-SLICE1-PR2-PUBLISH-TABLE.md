@@ -171,3 +171,9 @@ Tests: five more in `tests/test_publish_table.py`, covering:
 - the three shipped not-built analyses;
 - `change_rates`, wrapped as the shared reader returns it;
 - a resource-level field beside `measurement_rows` still resolving.
+
+**Update: the file-system library steps.** ext-declaration fixed the gap above for the Chat compile on
+`claude/re-ext-fs-measure-lines` (`declared_context.measure_records`), and the table now uses the same function.
+A resource-scoped step's measure is read from its own record. If that record states no value, the row shows the
+record's state and the step's reason, e.g. `fs_access_activity`'s "access times not recorded on this mount". File
+systems still cannot publish (owner answer 3); this changes only what their rows show.
