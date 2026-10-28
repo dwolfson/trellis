@@ -78,7 +78,7 @@ painted, so a failed Survey, Publish or Profile press showed nothing. The re-rea
 | "Sensitive" for F9 before F7 exists | The walk's own secret-name rule (the names it refuses to hash); data-class matches over file profiles join in step 8 | Brief F9 says "joined to F7"; F7 is not built. **Assumed, owner to confirm** |
 | Telling "access times off on this mount" from "nobody read anything" | Cannot be told apart: when no file's access time is later than its modification time, the access measure is "not measured · access times not recorded on this mount" (never cold) | Brief F8 ("can't tell when atime is off"); the test is **assumed, owner to confirm** |
 | Resource Explorer's own reads skewing access times | The access time is taken before the walk hashes; a file the previous walk hashed and last read after that walk began counts as "possibly Resource Explorer's own read", never hot | Builder's choice to keep F8 honest. **Assumed, owner to confirm** |
-| Publishing to Egeria | Types declared and emitted (ResourceMeasure, ResourceProfile, RequestForAction for the world-readable sensitive count); **the write is not built**: RE's engine host is database-only and publishes ResourceMeasure and Classification only, and the walk's own publish is not extended. Results are stored in RE and said "kept here · not published to Egeria" | Brief §3 item 3 asks for it; **follow-up** |
+| Publishing to Egeria | Types declared and emitted (ResourceMeasure, ResourceProfile, RequestForAction for the world-readable sensitive count); **the write is not built**: RE's engine host is database-only and publishes ResourceMeasure and Classification only, and the walk's own publish is not extended. Results are stored in RE and said "kept here · not published to Egeria". When built, they go in RE's own file-system survey report (decision below) | Brief §3 item 3 asks for it; **follow-up** |
 | What may be in a published result | Counts only; no file, folder, owner or group name and no hash | Step 2 fix round 1 (`folder_survey_annotations.folder_specs`, "coordinator ruling pending the owner's word") |
 | Run inline or queued | Queued, through the run queue (catalog `availability: queued`) | `survey_step_host.catalog_entry`: "a step never runs in the web process (brief 3a)" |
 | Nothing-to-derive guard | `survey-completed` for all four: an absence honestly recorded is a completed survey | Design ruling 2026-10-15 for `change_rates` (one snapshot), applied by analogy. **Assumed, owner to confirm** |
@@ -95,8 +95,14 @@ recorded on this walk". No other DDL: the walk timing is in `survey_data`, the r
 
 ## 5. Follow-ups
 
-1. The Egeria write for file-system library steps (engine host for file systems, or the walk's own publish carrying
-   the derived counts), with RequestForAction admitted to the publishable types.
+**Decision (project owner, 2026-10-28):** measures chosen in the publish table for a file system publish through a
+file-system survey report of Resource Explorer's own, not the root-folder publish (the owner's answer to publish-table
+question 3, relayed by the Monday Coordinator). The derived steps' annotations ride that report, the way a database's
+ride RE's survey report.
+
+1. The Egeria write for file-system library steps: their annotations in RE's own file-system survey report (the
+   decision above), with ResourceProfile and RequestForAction admitted to the publishable types. Coordinate the
+   report's shape with the publish-table work (ext-publish-table).
 2. Steps 7 (`fs_layout_signals`, docs ingestion) and 8 (`data_class_match` over file profiles; then F9's "sensitive"
    joins it).
 3. The per-file lists behind the counts (which files are duplicates, which are world-readable and secret-named) on the
