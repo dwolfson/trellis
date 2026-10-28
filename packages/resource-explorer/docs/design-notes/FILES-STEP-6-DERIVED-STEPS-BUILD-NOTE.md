@@ -101,8 +101,18 @@ question 3, relayed by the Monday Coordinator). The derived steps' annotations r
 ride RE's survey report.
 
 1. The Egeria write for file-system library steps: their annotations in RE's own file-system survey report (the
-   decision above), with ResourceProfile and RequestForAction admitted to the publishable types. Coordinate the
-   report's shape with the publish-table work (ext-publish-table).
+   decision above), with ResourceProfile and RequestForAction admitted to the publishable types. The same report
+   carries the publish table's chosen measures, which need three things from it (ext-publish-table, 2026-10-28,
+   mirroring the database path `publish_local_survey(declared_measures=True)` and
+   `publish_table.annotations_for` / `record_proofs`; their note `DECLARED-EXTENSIBILITY-SLICE1-PR2-PUBLISH-TABLE.md`
+   §4a):
+   - a hook that appends extra annotations AFTER the report's own, so the report's indices and qualified names do not
+     move (`publish_table.annotation_for(row)`, check_name `declared_measure.<analysis>.<measure>`);
+   - a read-back of the report by qualified name, giving each appended annotation's GUID or "" (`read_back_guids`,
+     `{index: guid}`);
+   - the report GUID, so proof rows (`catalogue_commit_proofs`, node_kind `measure`) are keyed by the file system's
+     slug.
+   Only the press that records proofs opts in (`declared_measures=False` by default).
 2. Steps 7 (`fs_layout_signals`, docs ingestion) and 8 (`data_class_match` over file profiles; then F9's "sensitive"
    joins it).
 3. The per-file lists behind the counts (which files are duplicates, which are world-readable and secret-named) on the
