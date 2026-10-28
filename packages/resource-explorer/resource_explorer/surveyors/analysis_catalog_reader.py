@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+from trellis_analytics.declaration import Declaration
+from trellis_analytics.declaration import refusal as declaration_refusal
 
 log = logging.getLogger(__name__)
 
@@ -128,6 +130,21 @@ class AnalysisCatalogEntry:
     #: registry, installed or not, so a card whose package is absent says so.
     provided_by: dict = field(default_factory=dict)
 
+    #: What this analysis declares about its results (design note
+    #: DESIGN-DECLARED-EXTENSIBILITY-RENDERING-CHAT-CONFIDENCE §1): result
+    #: kind, measures with units and as-ofs, absence sentences, Chat extents,
+    #: confidence form, answers and scope. The same model a library step's
+    #: manifest carries (`trellis_analytics.declaration.Declaration`), so a
+    #: built-in analysis and a user step are read by one set of rules. None
+    #: when the entry declares nothing, or when what it declared was refused.
+    declaration: Declaration | None = None
+
+    #: Why the entry's declaration was refused, in words naming the field and
+    #: value; "" when it was accepted or there was none. A refused declaration
+    #: does not take the entry, or the catalog, down with it: the analysis is
+    #: still listed and runnable, and says why it has no declaration.
+    declaration_refused: str = ""
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -146,6 +163,8 @@ class AnalysisCatalogEntry:
             "target_shape": self.target_shape,
             "requires_input": self.requires_input,
             **({"provided_by": self.provided_by} if self.provided_by else {}),
+            **({"declaration": self.declaration.model_dump(mode="json")} if self.declaration else {}),
+            **({"declaration_refused": self.declaration_refused} if self.declaration_refused else {}),
             # The orchestrator step keys this analysis actually runs. Present so
             # a card can offer a scoped Publish: _publishScopedSteps needs the
             # step keys, not the analysis id, and without them the local
@@ -179,7 +198,37 @@ def _re_analysis_steps_for(analysis_id: str) -> list[str]:
     return list(REPO_ANALYSIS_SOURCE_STEPS.get(analysis_id, []))
 
 
+def check_declaration(raw: dict) -> tuple[Declaration | None, str]:
+    """The entry's `declaration:` validated, or None and the sentence saying
+    why it was refused. No declaration at all is (None, "") — absent is not
+    refused; `test_analysis_declarations` is what requires one.
+
+    Beyond the model's own rules, one the catalog adds: a measure that names
+    the annotation it writes as must name one of the entry's own
+    `annotation_types`, so the two lists cannot drift apart."""
+    body = raw.get("declaration")
+    if body is None:
+        return None, ""
+    where = f"analysis catalog entry '{raw.get('id', '?')}'"
+    if not isinstance(body, dict):
+        return None, f"{where}: declaration is a {type(body).__name__}, not a mapping of declaration fields"
+    try:
+        declared = Declaration.model_validate(body)
+    except ValueError as exc:
+        return None, f"{where}: declaration refused: {declaration_refusal(exc)}"
+    types = list(raw.get("annotation_types") or [])
+    foreign = [f"{m.name} ({m.annotation.type})" for m in declared.measures
+               if m.annotation and m.annotation.type not in types]
+    if foreign:
+        return None, (f"{where}: declaration refused: measure {', '.join(foreign)} writes as an annotation type "
+                      f"the entry does not list in annotation_types ({', '.join(types) or 'none'})")
+    return declared, ""
+
+
 def _entry_from_yaml(raw: dict) -> AnalysisCatalogEntry:
+    declared, refused = check_declaration(raw)
+    if refused:
+        log.error("%s", refused)
     return AnalysisCatalogEntry(
         id=raw["id"],
         name=raw["name"],
@@ -200,6 +249,8 @@ def _entry_from_yaml(raw: dict) -> AnalysisCatalogEntry:
         availability=raw.get("availability", "queued"),
         requires_input=raw.get("requires_input", ""),
         provided_by=dict(raw.get("provided_by") or {}),
+        declaration=declared,
+        declaration_refused=refused,
     )
 
 
@@ -215,6 +266,12 @@ def _load(config_path: Path = _DEFAULT_CONFIG_PATH) -> dict[str, list[AnalysisCa
         "database": [_entry_from_yaml(e) for e in raw.get("database_analyses") or []],
         "filesystem": [_entry_from_yaml(e) for e in raw.get("filesystem_analyses") or []],
     }
+
+
+def declaration_refusals() -> list[str]:
+    """Every refused declaration in the catalog, one sentence each, naming
+    the entry and what was refused. [] when every declaration was accepted."""
+    return [e.declaration_refused for entries in _load().values() for e in entries if e.declaration_refused]
 
 
 def clear_cache() -> None:

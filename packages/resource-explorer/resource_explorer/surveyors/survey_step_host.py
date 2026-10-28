@@ -640,7 +640,7 @@ def catalog_entry(manifest, origin: dict) -> dict:
         "resource_types": list(m.resource_types),
         "intent": m.stage,
         "perspectives": list(m.perspectives),
-        "annotation_types": [m.annotation_type],
+        "annotation_types": m.annotation_types(),
         # RE runs it (its own engine), so `local` in this catalog's sense; where it reads is provided_by.source.
         "source": "local",
         "run_time": "fast",
@@ -655,7 +655,16 @@ def catalog_entry(manifest, origin: dict) -> dict:
             "step": m.name, "version": m.version, "kind": m.kind, "source": m.source,
             "credential_tier": m.credential_tier, "questions": list(m.questions), "purposes": list(m.purposes),
         },
+        # The step's declaration, unchanged: the catalog reads a library step's results by the same rules as a
+        # built-in analysis's. Absent when the manifest declares none.
+        **({"declaration": _declaration_entry(m.declaration)} if getattr(m, "declaration", None) else {}),
     }
+
+
+def _declaration_entry(declaration) -> dict:
+    """A declaration as the catalog writes it: every field the step declared, nothing defaulted left in, so the
+    generated YAML reads like a hand-written entry."""
+    return declaration.model_dump(mode="json", exclude_defaults=True)
 
 
 def _step_info(step_key: str, description: str, annotation_type: str, source: str, tier: str):
