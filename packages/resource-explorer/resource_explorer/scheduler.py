@@ -13,7 +13,9 @@ CLAUDE.md rule 16 ("Activity log entries must be written for ALL operations"),
 not a deliberate omission. This is what backs the Admin Schedules overview's
 "watch for successful completions, look for errors that need follow-up" use.
 
-Supported entity_type values: 'repo', 'database'
+Supported entity_type values: 'repo', 'database', and 'work_list' (quality slice Q3: the schedule's definition runs
+across the list's members as they are at each firing, one queued run per database, and a database whose inventory did
+not change since its last quality run is skipped and said so; `quality_batch.py`).
 
 Dispatch by analysis_id, not just entity_type: a scheduled analysis_id might be
 (a) a local analysis_catalog entry — runs RE's own scan, as before; (b) a
@@ -68,12 +70,14 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
+import json
 import logging
 import threading
 import time
 
 log = logging.getLogger(__name__)
 
+from resource_explorer.quality_batch import WORK_LIST_ENTITY, run_scheduled_batch
 from resource_explorer.registry import TARGET_ANALYSIS, TARGET_SURVEY
 
 _CHECK_INTERVAL_SECONDS = 900  # 15 minutes
@@ -441,9 +445,16 @@ def _run_due() -> None:
         analysis_id = sched["analysis_id"]
         next_run = sched.get("next_run", "")
         analysis_name = _analysis_display_name(entity_type, analysis_id)
+        batch_result: dict = {}
         try:
             batch_key = (entity_slug, analysis_id)
-            if batch_key in batched:
+            if entity_type == WORK_LIST_ENTITY:
+                # Quality Q3: a schedule on a work list runs the definition across its members as they are now,
+                # one queued run per database, skipping each whose inventory did not change (`quality_batch`).
+                with _as_schedule_creator(sched):
+                    entity_name, entity_location, errors, batch_result = run_scheduled_batch(
+                        registry, entity_slug, analysis_id, created_by=(sched.get("created_by") or "").strip())
+            elif batch_key in batched:
                 project = registry.get(entity_slug)
                 entity_name = project.display_name if project else entity_slug
                 entity_location = project.github_url if project else ""
@@ -460,6 +471,14 @@ def _run_due() -> None:
             entity_name, entity_location, status, detail = entity_slug, "", "error", str(exc)
 
         summary = f"Scheduled run of '{analysis_name}' " + ("completed with errors" if status == "error" else "completed successfully")
+        if batch_result:
+            # The batch says what it did per member, skips included ("says so", design §2.2): the sentence is the
+            # summary and every member's outcome is the detail.
+            summary = f"Scheduled batch of '{analysis_name}' across work list '{entity_slug}': {batch_result['summary']}"
+            detail = json.dumps({"set_id": batch_result["set_id"], "work_list_slug": entity_slug,
+                                 "definition": analysis_id, "errors": errors,
+                                 "members": [{k: o.get(k) for k in ("entity_slug", "outcome", "words", "run_id")}
+                                             for o in batch_result["members"]]})
         try:
             activity_id = log_survey(
                 registry=registry,
@@ -585,6 +604,14 @@ def _execute(
     Dispatch — see module docstring for the (a)/(b)/(c)/(d) breakdown
     (database) and the repo-specific paragraph beneath it.
     """
+    if entity_type == WORK_LIST_ENTITY:
+        # "Run now" on a work-list schedule (the timer goes through `_run_due`'s own branch, which keeps the
+        # per-member outcomes for its activity row): the same batch, as whoever pressed.
+        from resource_explorer.run_queue import requested_by
+
+        name, location, errors, _result = run_scheduled_batch(registry, entity_slug, analysis_id,
+                                                              created_by=requested_by() or "")
+        return (name, location, errors)
     if target_kind == TARGET_SURVEY:
         return _run_scheduled_survey(entity_type, entity_slug, analysis_id, registry)
     if entity_type == "repo":

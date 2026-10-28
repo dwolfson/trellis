@@ -842,6 +842,72 @@ def _start_override_run(registry, entity_type: str, slug: str,
     return {"status": "started", "activity_id": activity_id, "run_id": None, "ran_as": ran_as}
 
 
+def _caller_identity():
+    from resource_explorer.a2a_auth import caller
+
+    return caller()
+
+
+def enqueue_definition_run(registry, entity_type: str, slug: str, params: SurveyDefinitionRunParams, *,
+                           pressed=None, requested_by_user: str = "", as_presser: bool = True) -> dict:
+    """Queue one `survey_definition_run`: its activity row, the presser's held session (when `pressed` carries an
+    Egeria token and this process consumes the kind), and the queue row. The Survey press and the quality batch
+    (`quality_batch.enqueue_quality_batch`, one call per database) both go through here, so a batch row is the same
+    row a press makes. Synchronous: call it off the event loop.
+
+    `as_presser=False` is the unattended case (a scheduled batch): nobody pressed, so no session is held and the run
+    does not publish as a presser; it runs as the queue row's requester like any timer run."""
+    import json
+
+    from resource_explorer.activity_logger import log_survey
+
+    activity_id = log_survey(
+        registry, entity_type=entity_type, entity_slug=slug, entity_name=slug,
+        entity_location="", intent="assessment", status="running",
+        summary=f"Running Survey Definition '{params.survey_definition_ref}' on {slug}…",
+        detail=json.dumps({"survey_definition_ref": params.survey_definition_ref}),
+    )
+    # The press publishes AS the person who pressed it: their Egeria session is held in memory for this run's
+    # lifetime (`presser_hold`), keyed by the run id, which is made first so a worker can never claim a row whose
+    # session is not there yet. The token is never in the row, the params or a log line; the row carries only the flag.
+    import uuid
+
+    from resource_explorer import presser_hold
+
+    run_id = str(uuid.uuid4())
+    params.publish_as_presser = as_presser and bool(params.started_by_person)
+    from resource_explorer import run_queue
+
+    # Hold the session only when THIS process runs a queue loop that takes this kind; otherwise press as before (no
+    # hold, no stamp) and the run fails fast with the sign-in-expired words wherever it is claimed.
+    held = (params.publish_as_presser and run_queue.consumes_kind_here("survey_definition_run")
+            and presser_hold.hold(run_id, params.started_by_person, getattr(pressed, "egeria_token", None)))
+    try:
+        target = {"entity_type": entity_type, "slug": slug, "params": params.to_dict()}
+        # Claim affinity: only this process (which holds the session) may claim the row while it is alive; non-secret.
+        held_by = presser_hold.held_by_for(run_id) if held else None
+        if held_by:
+            target["held_by"] = held_by
+        elif held:
+            presser_hold.release(run_id)         # no usable stamp: do not keep a session nobody is bound to
+        registry.enqueue_run(
+            "survey_definition_run",
+            # Case 3, decision 5: RE's own Run coordinates the definition itself and creates no engine action; its
+            # params say so (`started_by: re`, and who pressed), and the run's activity detail carries them to
+            # Understanding.
+            target,
+            result_ref=activity_id, requested_by=requested_by_user, run_id=run_id,
+        )
+    except BaseException:
+        if held:
+            presser_hold.release(run_id)
+        raise
+    log.info("enqueued survey_definition_run %s for %s/%s (activity %s)",
+             run_id, entity_type, slug, activity_id)
+
+    return {"status": "started", "activity_id": activity_id, "run_id": run_id}
+
+
 @router.post("/{entity_type}/{slug}/run")
 async def run_survey_definition_route(entity_type: str, slug: str,
                                       body: SurveyDefinitionRunRequest) -> dict:
@@ -860,9 +926,6 @@ async def run_survey_definition_route(entity_type: str, slug: str,
     row records the real owner at claim time, and run_queue.execute_run stamps
     the same identity onto this activity entry when the work actually starts.
     """
-    import json
-
-    from resource_explorer.activity_logger import log_survey
     from resource_explorer.registry import ProjectRegistry
     from resource_explorer.run_queue import requested_by
 
@@ -882,51 +945,5 @@ async def run_survey_definition_route(entity_type: str, slug: str,
     if body.db_pwd:
         return _start_override_run(registry, entity_type, slug, body)
 
-    activity_id = log_survey(
-        registry, entity_type=entity_type, entity_slug=slug, entity_name=slug,
-        entity_location="", intent="assessment", status="running",
-        summary=f"Running Survey Definition '{body.survey_definition_ref}' on {slug}…",
-        detail=json.dumps({"survey_definition_ref": body.survey_definition_ref}),
-    )
-    # The press publishes AS the person who pressed it: their Egeria session is held in memory for this run's
-    # lifetime (`presser_hold`), keyed by the run id, which is made first so a worker can never claim a row whose
-    # session is not there yet. The token is never in the row, the params or a log line; the row carries only the flag.
-    import uuid
-
-    from resource_explorer import presser_hold
-    from resource_explorer.a2a_auth import caller as _caller
-
-    run_id = str(uuid.uuid4())
-    params = _params(body)
-    pressed = _caller()
-    params.publish_as_presser = bool(params.started_by_person)
-    from resource_explorer import run_queue
-
-    # Hold the session only when THIS process runs a queue loop that takes this kind; otherwise press as before (no
-    # hold, no stamp) and the run fails fast with the sign-in-expired words wherever it is claimed.
-    held = (run_queue.consumes_kind_here("survey_definition_run")
-            and presser_hold.hold(run_id, params.started_by_person, getattr(pressed, "egeria_token", None)))
-    try:
-        target = {"entity_type": entity_type, "slug": slug, "params": params.to_dict()}
-        # Claim affinity: only this process (which holds the session) may claim the row while it is alive; non-secret.
-        held_by = await asyncio.to_thread(presser_hold.held_by_for, run_id) if held else None
-        if held_by:
-            target["held_by"] = held_by
-        elif held:
-            presser_hold.release(run_id)         # no usable stamp: do not keep a session nobody is bound to
-        registry.enqueue_run(
-            "survey_definition_run",
-            # Case 3, decision 5: RE's own Run coordinates the definition itself and creates no engine action; its
-            # params say so (`started_by: re`, and who pressed), and the run's activity detail carries them to
-            # Understanding.
-            target,
-            result_ref=activity_id, requested_by=requested_by(), run_id=run_id,
-        )
-    except BaseException:
-        if held:
-            presser_hold.release(run_id)
-        raise
-    log.info("enqueued survey_definition_run %s for %s/%s (activity %s)",
-             run_id, entity_type, slug, activity_id)
-
-    return {"status": "started", "activity_id": activity_id, "run_id": run_id}
+    return await asyncio.to_thread(enqueue_definition_run, registry, entity_type, slug, _params(body),
+                                   pressed=_caller_identity(), requested_by_user=requested_by())

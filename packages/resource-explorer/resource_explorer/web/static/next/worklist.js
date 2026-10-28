@@ -467,6 +467,10 @@ function renderActions(ctx) {
       </select>
       <button data-act="promote" ${n ? '' : 'disabled'}
         class="cursor-pointer bg-transparent text-accent-ink underline">promote <span class="tnum">${n}</span> →</button>
+      ${kindOf(grid.workList) === 'database' ? `<button data-act="quality-batch"
+        class="cursor-pointer bg-transparent text-accent-ink underline"
+        title="Run the DatabaseQualitySurvey across this list, priced first, or put the list on a schedule"
+        >quality checks across this list…</button>` : ''}
       <button data-act="export-csv" class="cursor-pointer bg-transparent text-accent-ink underline"
         title="Download this work list as CSV: the same columns the Find dialog reads, status_ columns for a reader only"
         >export CSV</button>
@@ -486,6 +490,7 @@ function renderActions(ctx) {
   host.querySelector('[data-act="add-to-investigation"]')?.addEventListener('click', () => addToInvestigation(ctx));
   host.querySelector('[data-act="start-from-list"]')?.addEventListener('click', () => startFromList(ctx));
   host.querySelector('[data-act="export-csv"]')?.addEventListener('click', () => exportCsv());
+  host.querySelector('[data-act="quality-batch"]')?.addEventListener('click', () => openQualityBatch(ctx));
   host.querySelector('#wl-disposition')?.addEventListener('change', (e) => {
     const value = e.target.value;
     e.target.value = '';
@@ -1395,6 +1400,19 @@ function detailKeys(e) { if (e.key === 'Escape') closeCellDetail(); }
 /** The panel shell both the cell popup and the refresh plan use. One shell,
  *  so the two cannot drift apart in behaviour — backdrop closes, Escape
  *  closes, a click inside does not. */
+/** Quality slice Q3: the DatabaseQualitySurvey across this database list, priced before anything runs, or the list
+ *  put on a schedule (stages/quality-batch.js). Loaded on the press, so the bench does not carry it otherwise. */
+async function openQualityBatch(ctx) {
+  const el = openDialog('Quality checks across this list', `${grid.workList.members.length} database(s)`, { wide: true });
+  const body = el.querySelector('#wl-detail-body');
+  const [{ mountQualityBatch }, api] = await Promise.all([
+    import('/static/next/stages/quality-batch.js'), import('/static/re-api.js')]);
+  await mountQualityBatch(body, grid.workList, api, {
+    onStarted: (setId) => watchBatch(ctx, setId),
+    onClose: () => closeCellDetail(),
+  });
+}
+
 export function openDialog(title, sub, { wide = false } = {}) {
   closeCellDetail();
   const el = document.createElement('div');
