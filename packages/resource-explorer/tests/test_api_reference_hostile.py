@@ -3,6 +3,7 @@ proportional to an expansion, or run longer than its deadline."""
 from __future__ import annotations
 
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -34,6 +35,36 @@ def _bomb(levels=9, width=9):
 
 def _t(handler):
     return httpx.MockTransport(handler)
+
+
+def _compare_steps(a, b) -> int:
+    """Lines of compare.py executed by one compare_interfaces(a, b): the work it did, counted rather than timed,
+    so a loaded machine cannot fail it and a fast one cannot hide a pairwise loop. Restores any tracer in place
+    (coverage) afterwards."""
+    steps = 0
+
+    def local(frame, event, arg):
+        nonlocal steps
+        if event == "line":
+            steps += 1
+        return local
+
+    def tracer(frame, event, arg):
+        return local if frame.f_code.co_filename == compare.__file__ else None
+
+    old = sys.gettrace()
+    sys.settrace(tracer)
+    try:
+        compare.compare_interfaces(a, b)
+    finally:
+        sys.settrace(old)
+    return steps
+
+
+def _scales_linearly(make, small=500, large=2000):
+    """Work at 4x the operations is under 6x the work: linear is ~4x, a pairwise scan is ~16x."""
+    lo, hi = _compare_steps(*make(small)), _compare_steps(*make(large))
+    assert hi < 6 * lo, f"{small} ops: {lo} steps, {large} ops: {hi} steps -- worse than linear"
 
 
 class TestAliasBomb:
@@ -278,20 +309,19 @@ class TestCompareScale:
         return Interface(kind="http_api", source=SOURCE_LIVE, operations=[
             Operation(key=f"GET {prefix}/r{i}/{{id}}", name="x", method="GET", path=f"{prefix}/r{i}/{{id}}") for i in range(n)])
 
+    def _disjoint(self, n):
+        return self._big(n), Interface(kind="http_api", source=SOURCE_LIVE, operations=[
+            Operation(key="x", name="x", method="GET", path=f"/z{i}/q") for i in range(n)])
+
     def test_3000_by_3000_is_fast(self):
-        a, b = self._big(3000, "/api/v1"), self._big(3000)
-        t0 = time.monotonic()
-        c = compare.compare_interfaces(a, b)
-        assert time.monotonic() - t0 < 1.0
+        c = compare.compare_interfaces(self._big(3000, "/api/v1"), self._big(3000))
         assert len(c["probable"]) == 3000 and c["both"] == 0
+        _scales_linearly(lambda n: (self._big(n, "/api/v1"), self._big(n)))
 
     def test_disjoint_3000_is_fast(self):
-        a = self._big(3000)
-        b = Interface(kind="http_api", source=SOURCE_LIVE, operations=[
-            Operation(key="x", name="x", method="GET", path=f"/z{i}/q") for i in range(3000)])
-        t0 = time.monotonic()
-        compare.compare_interfaces(a, b)
-        assert time.monotonic() - t0 < 1.0
+        c = compare.compare_interfaces(*self._disjoint(3000))
+        assert len(c["only_a"]) == 3000 and len(c["only_b"]) == 3000
+        _scales_linearly(self._disjoint)
 
     def test_a_prefix_needs_a_literal_segment_in_the_shorter_path(self):
         a = Interface(kind="http_api", source=SOURCE_LIVE, operations=[Operation(key="k", name="n", method="GET", path="/api/{id}")])
@@ -336,20 +366,26 @@ class TestHardDeadline:
 
 
 class TestCompareBlowUp:
-    def test_many_operations_of_one_shape_on_each_side_are_cheap(self):
-        import tracemalloc
+    @staticmethod
+    def _one_shape(n):
         a = Interface(kind="http_api", source=SOURCE_LIVE, operations=[
-            Operation(key=f"a{i}", name="x", method="GET", path=f"/v1/p/{{a{i}}}") for i in range(3000)])
+            Operation(key=f"a{i}", name="x", method="GET", path=f"/v1/p/{{a{i}}}") for i in range(n)])
         b = Interface(kind="http_api", source=SOURCE_LIVE, operations=[
-            Operation(key=f"b{i}", name="x", method="GET", path=f"/p/{{x{i}}}") for i in range(3000)])
+            Operation(key=f"b{i}", name="x", method="GET", path=f"/p/{{x{i}}}") for i in range(n)])
+        return a, b
+
+    def test_many_operations_of_one_shape_on_each_side_are_cheap(self):
+        # 3000 operations normalising to /v1/p/{} against 3000 normalising to /p/{}: every pair is a prefix
+        # candidate, so a pairwise scan is 9M steps. Measured as work done and memory held, not seconds -- a
+        # wall-clock bound here failed only when the full suite had the machine at load 70.
+        import tracemalloc
         tracemalloc.start()
-        t0 = time.monotonic()
-        c = compare.compare_interfaces(a, b)
-        took = time.monotonic() - t0
+        c = compare.compare_interfaces(*self._one_shape(3000))
         peak = tracemalloc.get_traced_memory()[1]
         tracemalloc.stop()
-        assert took < 0.5 and peak < 100_000_000
+        assert peak < 100_000_000
         assert c["probable"] == [] and len(c["only_a"]) == 3000 and len(c["only_b"]) == 3000
+        _scales_linearly(self._one_shape)
 
 
 class TestSearchEscaping:
