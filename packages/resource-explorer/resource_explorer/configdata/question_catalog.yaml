@@ -3922,13 +3922,17 @@ filesystem_questions:
     kind: partial
     analysis_ids: []
     checks: []
-    note: 'PARTIAL: data_class_match matches columns against Egeria data classes and is built for databases;
-      over file systems it waits on the profile column rows kept per run (GAP: file_profiles, Files brief
-      §3, slice 2), plus filename rules'
+    note: 'PARTIAL: data_class_match over the file profiles is built (Files build step 8, the folder survey
+      card''s press): the columns of the newest profile run against Egeria''s data classes, with values
+      from the head of each file Resource Explorer profiled, plus filename rules, proposals only; files
+      Egeria''s CSV Survey Service profiled are not sampled yet, and it is not a catalogued file-system
+      analysis'
   answering_mechanism: Value Profiling
   rationale: data_class_match reuses the database analysis over the columns file_profiles stores, plus
     filename rules, and proposes new data classes only as drafts for a person to accept.
-  catalog_history: '2026-10-22: added: F7 of the Files brief (§2), owner pick 2026-10-20 (review §4).'
+  catalog_history: '2026-10-22: added: F7 of the Files brief (§2), owner pick 2026-10-20 (review §4).
+    | 2026-10-28: data_class_match over the file profiles built (Files build step 8); still PARTIAL until
+    Egeria-profiled files are sampled and the analysis is catalogued for file systems.'
   retired: false
 - id: Q-0104
   question: 'Does this file system contain a recognisable structure: a project, a dataset layout, an archive,
