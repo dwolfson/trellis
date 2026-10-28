@@ -345,3 +345,46 @@ def test_the_catalogue_sorts_row_count_snapshot_by_row_count():
     reader.clear_cache()
     x = {e.id: e for e in reader._load()["database"]}["row_count_snapshot"].declaration.extents[0]
     assert x.sort == ["row_count desc"] and x.order == ""
+
+
+# ── a resource-scoped library step: one record per measure ─────────────────────
+
+def _fs_activity_records(access: dict) -> dict:
+    """fs_activity as the shared reader returns it: its own measure's record ("" measure) and fs_access_activity's."""
+    own = {"name": "share-a", "measure": "", "state": "measured", "reason": "",
+           "properties": {"Cold Files": "12", "Hot Files": "3", "asOf": "2026-10-28T09:00:00"}}
+    return {"measurement_rows": [own, {"name": "share-a", "measure": "fs_access_activity", **access}],
+            "state_counts": {}}
+
+
+def test_each_measure_of_a_resource_scoped_step_is_read_from_its_own_record():
+    dec = dc.declarations("filesystem")["fs_activity"]
+    access = {"state": "measured", "reason": "",
+              "properties": {"Cold Files": "40", "asOf": "2026-10-28T09:00:00"}}
+    rungs, _ = dc.section_rungs("fs_activity", dec, fact(value=_fs_activity_records(access)))
+    full = rungs[Rung.FULL]
+    assert "- fs_activity: 12 files not modified for more than Cold Days days (cold) (as of 2026-10-28T09:00:00)" in full
+    assert "- fs_access_activity: 40 files not read for more than Cold Days days (cold) (as of 2026-10-28T09:00:00)" \
+        in full
+    assert "not in the stored result" not in full.split("activity_bands")[0]
+
+
+def test_a_measures_record_without_a_value_says_its_state_and_reason():
+    dec = dc.declarations("filesystem")["fs_activity"]
+    access = {"state": "not_established", "reason": "access times not recorded on this mount", "properties": {}}
+    rungs, _ = dc.section_rungs("fs_activity", dec, fact(value=_fs_activity_records(access)))
+    assert ("- fs_access_activity: not established: access times not recorded on this mount (as-of not recorded)"
+            in rungs[Rung.FULL])
+
+
+def test_the_shared_reader_says_which_measure_each_row_is():
+    from resource_explorer.surveyors import annotation_readers as ar
+
+    registry = MagicMock()
+    registry.query_step_annotations.return_value = ("run-1", [
+        {"scope": "share-a", "summary": "", "annotation_type": "ResourceProfileAnnotation",
+         "detail": {"measure": "", "additionalProperties": {"resultState": "measured"}}},
+        {"scope": "share-a", "summary": "", "annotation_type": "ResourceProfileAnnotation",
+         "detail": {"additionalProperties": {"resultState": "measured", "measure": "fs_access_activity"}}}])
+    _, rows = ar.read_resource_measure_rows(registry, "filesystem", "share-a", "fs_activity")
+    assert [r["measure"] for r in rows] == ["", "fs_access_activity"]
