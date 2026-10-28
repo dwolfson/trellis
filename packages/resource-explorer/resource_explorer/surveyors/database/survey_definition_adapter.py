@@ -1521,11 +1521,13 @@ def _operations_section_reader(section: str):
     read back from the latest survey's stored `survey_data` blob (there is
     no dedicated detail table for these four yet — see the module docstring
     above). Returns {} — not None — when nothing has been measured, matching
-    every other reader's "empty dict, not an exception" contract; `None` in
-    the blob means "this engine capability was not supported", which the
-    caller (has_data / the results card) treats as present-but-empty, same as
-    repo's ResourceMeasureAnnotation(confidence=0) rendering for the same
-    fact.
+    every other reader's "empty dict, not an exception" contract. `None` in
+    the blob means "this engine capability was not supported" -- a section
+    the survey tried and the engine cannot answer. That is NOT "nothing
+    found": it returns `_not_supported_payload(section)` so the results card
+    and the headlines say so, instead of folding into the empty answer
+    (the write side already records it as a confidence-0 annotation). A
+    section key that is simply absent (the step never ran) stays {}.
     """
     import json as _json
 
@@ -1537,9 +1539,36 @@ def _operations_section_reader(section: str):
             survey_data = _json.loads(survey.get("survey_data") or "{}")
         except (ValueError, TypeError):
             return {}
-        return (survey_data.get("operations") or {}).get(section) or {}
+        operations = survey_data.get("operations") or {}
+        if section in operations and operations[section] is None:
+            return _not_supported_payload(section)
+        return operations.get(section) or {}
 
     return _read
+
+
+def _not_supported_payload(section: str) -> dict:
+    """The results payload for an operations section the engine cannot answer:
+    registry's STATE_NOT_SUPPORTED, with the reason in words. Not data (no
+    counts, no lists), so a reader of it cannot mistake it for a zero."""
+    from resource_explorer.registry import STATE_NOT_SUPPORTED
+
+    return {
+        "state": STATE_NOT_SUPPORTED,
+        "explanation": (
+            f"This database engine does not support the {section.replace('_', ' ')} "
+            "check, so it was not measured -- this is not a finding of nothing."
+        ),
+    }
+
+
+def _not_supported_headline(value: dict, what: str) -> dict | None:
+    """The headline for a `_not_supported_payload`, else None (not that case)."""
+    from resource_explorer.registry import STATE_NOT_SUPPORTED
+
+    if value.get("state") == STATE_NOT_SUPPORTED:
+        return {"label": f"{what}: not supported by this database engine -- not measured.", "status": "info"}
+    return None
 
 
 def _credential_capability_results(registry, slug: str) -> dict:
@@ -2520,6 +2549,9 @@ def _db_resilience_headline(registry, slug: str) -> dict | None:
     value = _operations_section_reader("resilience")(registry, slug)
     if not value:
         return None
+    unsupported = _not_supported_headline(value, "Resilience")
+    if unsupported:
+        return unsupported
     replication = value.get("replication") or {}
     wal = value.get("wal_archiving") or {}
     backup = value.get("backup_tool_signals") or {}
@@ -2601,6 +2633,9 @@ def _db_activity_signals_headline(registry, slug: str) -> dict | None:
     value = _operations_section_reader("activity_signals")(registry, slug)
     if not value:
         return None
+    unsupported = _not_supported_headline(value, "Activity signals")
+    if unsupported:
+        return unsupported
     activity = value.get("table_activity") or []
     if not activity:
         return {"label": "No table activity recorded yet.", "status": "info"}
@@ -2634,6 +2669,9 @@ def _db_external_dependencies_headline(registry, slug: str) -> dict | None:
     value = _operations_section_reader("external_dependencies")(registry, slug)
     if not value:
         return None
+    unsupported = _not_supported_headline(value, "External dependencies")
+    if unsupported:
+        return unsupported
     if value.get("_errors"):
         return _collection_failed_headline(value["_errors"])
     counts = [
@@ -2682,6 +2720,9 @@ def _db_privilege_audit_headline(registry, slug: str) -> dict | None:
     value = _operations_section_reader("privilege_audit")(registry, slug)
     if not value:
         return None
+    unsupported = _not_supported_headline(value, "Privilege audit")
+    if unsupported:
+        return unsupported
     if value.get("_errors"):
         return _collection_failed_headline(value["_errors"])
     roles = value.get("roles") or []

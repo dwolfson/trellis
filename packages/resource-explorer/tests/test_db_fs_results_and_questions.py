@@ -255,6 +255,37 @@ class TestFilesystemResultsMap:
         assert result["directory_count"] == 1
         assert result["total_size_bytes"] == 100
 
+    def _inventory(self, fs_reg, slug, rows):
+        from resource_explorer.surveyors.filesystem.survey_definition_adapter import (
+            FILESYSTEM_ANALYSIS_RESULTS_MAP,
+        )
+        fs_reg.write_detail_rows("filesystem_entries", slug, "2026-09-22T10:00:00", rows=rows)
+        reader, _ = FILESYSTEM_ANALYSIS_RESULTS_MAP["filesystem_inventory"]
+        return reader(fs_reg, slug)
+
+    def test_unread_size_is_counted_not_treated_as_zero(self, fs_reg, slug):
+        result = self._inventory(fs_reg, slug, [
+            {"entry_path": "/d/a.csv", "entry_type": "file", "size_bytes": 100},
+            {"entry_path": "/d/b.csv", "entry_type": "file", "size_bytes": None},
+            {"entry_path": "/d/c.csv", "entry_type": "file", "size_bytes": 0},
+        ])
+        assert result["total_size_bytes"] == 100
+        # b.csv is unknown; c.csv is a measured empty file -- not the same thing.
+        assert result["unmeasured_file_count"] == 1
+
+    def test_no_known_size_is_absent_not_zero(self, fs_reg, slug):
+        result = self._inventory(fs_reg, slug, [
+            {"entry_path": "/d/a.csv", "entry_type": "file", "size_bytes": None},
+        ])
+        assert result["total_size_bytes"] is None
+        assert result["unmeasured_file_count"] == 1
+
+    def test_all_sizes_known_reports_no_unmeasured(self, fs_reg, slug):
+        result = self._inventory(fs_reg, slug, [
+            {"entry_path": "/d/a.csv", "entry_type": "file", "size_bytes": 5},
+        ])
+        assert result["unmeasured_file_count"] == 0
+
 
 class TestBuildSurveyResultsSynthesizesPerAnalysisDashboards:
     """database/filesystem have no curated SURVEY_RESULT_DASHBOARDS groupings
