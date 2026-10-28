@@ -567,3 +567,64 @@ def test_no_declared_confidence_shows_a_field_path_to_a_person():
     row_count = next(e for es in _load().values() for e in es if e.id == "row_count_snapshot")
     assert confidence_words(row_count.declaration.confidence)["words"] == (
         "estimated · PostgreSQL's row-count estimate, not a count of the rows")
+
+
+# ── slice 2's declaration fields (DECLARED-EXTENSIBILITY-SLICE2-CHAT-COMPILE.md) ────────────────────────────────
+
+
+def test_each_row_reads_its_own_measures_confidence_else_the_declarations(registry, declared):
+    dec = _declaration().model_dump()
+    dec["measures"][1]["confidence"] = {"form": "measured"}
+    declared["entries"] = [_entry(Declaration.model_validate(dec))]
+    rows = _rows(registry)
+    assert rows["rows_sampled"]["confidence"]["words"] == "measured"
+    assert rows["buckets"]["confidence"]["words"] == "estimated · one row in ten, sampled"
+    sent = pt.annotation_for(rows["rows_sampled"])
+    assert sent.additional_properties["confidenceForm"] == "measured"
+
+
+def test_an_analysis_not_built_yet_says_planned_whatever_is_stored_and_cannot_publish(registry, declared):
+    declared["entries"] = [_entry(_declaration().model_copy(update={"built": False}))]
+    rows = _rows(registry)
+    for row in rows.values():
+        assert row["value"] is None and row["absence"] == "not_built"
+        assert row["absence_words"] == f"Planned, not built yet: not measured. {ABSENCE['not_measured']}"
+        assert not row["publishable"] and row["why_not"] == "nothing to publish · Planned, not built yet: not measured."
+    with pytest.raises(pt.ChoiceRefused, match="Planned, not built yet"):
+        pt.save_choice(registry, "database", SLUG, analysis_id="example_step_x", measure="buckets",
+                       choice=pt.PUBLISH, author="alice")
+
+
+def test_the_shipped_unbuilt_analyses_are_planned_rows(registry, declared):
+    from resource_explorer.surveyors.analysis_catalog_reader import _load
+
+    unbuilt = [e for e in _load()["database"] if e.declaration and not e.declaration.built]
+    assert {e.id for e in unbuilt} >= {"doc_source_ingestion", "doc_evidence_check", "semantic_suggestions"}
+    declared["entries"] = unbuilt
+    rows = pt.build_rows(registry, "database", SLUG)["rows"]
+    assert rows and all(r["absence"] == "not_built" and not r["publishable"] for r in rows)
+
+
+def test_a_library_step_member_measure_is_one_value_per_member_not_found_nothing(registry, declared):
+    """A library step's result comes back from the shared reader wrapped as `measurement_rows`; its measure has one
+    value per table, so the row says so rather than "ran and found nothing"."""
+    from resource_explorer.surveyors.analysis_catalog_reader import _load
+
+    entry = next(e for e in _load()["database"] if e.id == "change_rates")
+    declared["entries"] = [entry]
+    declared["facts"] = {"change_rates": Fact(
+        analysis_id="change_rates", state="measured", last_run_at="2026-10-27T08:31:00",
+        value={"measurement_rows": [{"name": "public.orders", "properties": {"Writes Per Day": "40"}},
+                                    {"name": "public.items", "properties": {"Writes Per Day": "4"}}]})}
+    row = pt.build_rows(registry, "database", SLUG)["rows"][0]
+    assert row["absence"] == pt.PER_MEMBER != "measured_nothing"
+    assert row["absence_words"] == "one value per member, not one for the resource · see tables_by_write_rate"
+    assert not row["publishable"] and row["why_not"].startswith("nothing to publish · one value per member")
+
+
+def test_a_library_step_value_at_the_top_of_the_record_still_resolves(registry, declared):
+    """Unwrapping touches only `measurement_rows`; a resource-level field beside it reads as before."""
+    declared["facts"]["example_step_x"] = Fact(
+        analysis_id="example_step_x", state="measured", last_run_at="2026-10-27T08:31:00",
+        value={**VALUE, "measurement_rows": [{"name": "public.t", "properties": {"x": 1}}]})
+    assert _rows(registry)["rows_sampled"]["value"] == 1200
