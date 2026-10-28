@@ -153,7 +153,8 @@ class ConfidenceDeclaration(_Strict):
     #: (inferred), who and on what evidence (judged), the sources drawn on (generated). Empty for `measured`, whose
     #: basis is its as-of and scope.
     basis: str = ""
-    #: The method in words, when it is the same for every result and no result field carries it: an estimate's
+    #: The basis in words, which is what a person reads beside the form. Required whenever `basis` names a result
+    #: field (a field path is for the code, not the reader); alone it stands for a basis no result field carries: an estimate's
     #: source ("pg_stat_user_tables.n_live_tup, the statistics collector's live-row estimate"). An estimated or
     #: generated result declares a basis field, a method, or both; an inferred or judged one needs its basis field,
     #: because its basis differs per result.
@@ -184,6 +185,9 @@ class ConfidenceDeclaration(_Strict):
         if self.form != "inferred" and self.calibrated is not None:
             raise ValueError(f"confidence form '{self.form}' declares calibrated: only an inferred score is "
                              "calibrated or not")
+        if _words(self.basis) and not _words(self.method):
+            raise ValueError(f"confidence basis '{self.basis}' names a result field and no method: a person reads "
+                             "the method, never a field path, so say the basis in words")
         return self
 
 

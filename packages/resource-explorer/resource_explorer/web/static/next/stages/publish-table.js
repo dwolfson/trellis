@@ -13,6 +13,7 @@
 import { stateEntry } from '/static/next/glyphs.js';
 import { getPublishTable, setPublishChoice } from '/static/re-api.js';
 import { state, esc, openCurate } from '/static/next/app.js';
+import { fmtBytes } from '/static/next/stages/native-report.js';
 
 /** The heading and the one sentence under it. */
 export const TABLE_HEAD = 'Publish · declared measures';
@@ -63,7 +64,9 @@ function valueHtml(r) {
     return `<span class="text-ink-muted" data-absence="${esc(r.absence || '')}">—</span>
       <span class="block max-w-[40ch] text-provenance text-ink-muted">${esc(r.absence_words || '')}</span>`;
   }
-  return `<span class="tnum text-ink">${esc(r.value_words)}</span>`;
+  // A size in bytes reads as every other size in RE does (native-report's fmtBytes), not as a raw count.
+  const words = r.unit === 'bytes' && typeof r.value === 'number' ? fmtBytes(r.value) : r.value_words;
+  return `<span class="tnum text-ink">${esc(words)}</span>`;
 }
 
 function writesAsHtml(r) {

@@ -20,7 +20,7 @@ const GENERIC = 'generic measure · no native type declared';
 const row = (over = {}) => ({
   analysis_id: 'example_step_x', analysis: 'Example Step X', measure: 'rows_sampled', locator: 'example_step_x/rows_sampled',
   unit: 'rows', value_field: 'rows_sampled', as_of_field: 'asOf', state: 'measured', as_of: '2026-10-27T08:30:00',
-  confidence: { form: 'estimated', basis: 'sample_ratio', words: 'estimated · sample_ratio' }, scope: 'resource',
+  confidence: { form: 'estimated', basis: 'sample_ratio', method: 'one row in ten, sampled', words: 'estimated · one row in ten, sampled' }, scope: 'resource',
   writes_as: { route: 'generic', type: 'ResourceMeasureAnnotation', words: GENERIC, writable: true, why: '' },
   result_kind: 'distribution', value: 1200, value_words: '1200 rows', publishable: true, why_not: '', choice: null,
   published: { state: 'local', words: 'local · not published' }, ...over,
@@ -83,7 +83,7 @@ test('a row per declared measure, every column from the declaration', async () =
   const { document } = await open({ table: TABLE() });
   assert.equal(document.querySelectorAll('[data-publish-row]').length, 3);
   const r = flat(rowEl(document, 'example_step_x/rows_sampled'));
-  for (const words of ['Example Step X', 'rows_sampled', '· rows', '1200 rows', '2026-10-27 08:30', 'estimated · sample_ratio',
+  for (const words of ['Example Step X', 'rows_sampled', '· rows', '1200 rows', '2026-10-27 08:30', 'estimated · one row in ten, sampled',
     'resource', GENERIC, 'not chosen · stays in RE', 'local · not published']) {
     assert.ok(r.includes(words), `the row says "${words}": ${r}`);
   }
@@ -93,6 +93,17 @@ test('a row per declared measure, every column from the declaration', async () =
   assert.equal(native.querySelector('[data-published]').dataset.published, 'published');
   assert.ok(flat(native).includes('published · read back 2026-10-27 09:01'));
   assert.ok(flat(band(document)).includes("the commit on Contents · 0 chosen to publish"));
+});
+
+test('a size in bytes reads as RE reads every other size, and no row shows a field path as its basis', async () => {
+  const tbl = TABLE();
+  tbl.rows.push(row({ measure: 'total_size', locator: 'example_step_x/total_size', unit: 'bytes', value: 131072,
+    value_words: '131072 bytes' }));
+  const { document } = await open({ table: tbl });
+  const r = flat(rowEl(document, 'example_step_x/total_size'));
+  assert.ok(r.includes('128 KB'), `a size is formatted: ${r}`);
+  assert.ok(!r.includes('131072'), `no raw byte count: ${r}`);
+  assert.ok(!flat(band(document)).includes('sample_ratio'), 'the basis field path is not shown');
 });
 
 test('a row that cannot publish disables Publish, says why, and still offers Keep in RE', async () => {

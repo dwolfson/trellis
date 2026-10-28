@@ -7881,6 +7881,7 @@ export function collectMeasures(boards, boardState) {
  *  its display text separately, still showed a bare "0" for the identical
  *  value). */
 export function measureDisplay(x, key) {
+  if (x.value === null) return 'not measured';   // never blank, never 0
   return x.noLens ? '— (no lens declared)' : fmtScalar(x.value, key);
 }
 
@@ -7928,8 +7929,8 @@ export function boardCountsHtml(board, disagreeing) {
   for (const a of board.analyses || []) {
     const res = a.results || {};
     for (const [k, v] of Object.entries(res)) {
-      if (k === 'graphviz' || k === 'headline' || typeof v === 'object') continue;
-      if (typeof v !== 'number' && typeof v !== 'boolean') continue;
+      if (k === 'graphviz' || k === 'headline' || (typeof v === 'object' && v !== null)) continue;
+      if (typeof v !== 'number' && typeof v !== 'boolean' && v !== null) continue;
       const noLens = a.analysis_id === 'preliminary_fit' && k === 'confidence' && v === 0;
       groups[countGroupFor(k)].push({
         key: k, value: v, analysisId: a.analysis_id, when: a.last_surveyed_at, noLens,
@@ -10306,10 +10307,12 @@ async function rerun(entry, i, { background = false, skipPlanCheck = false, forc
  *  a dumped array is not evidence, it is a reason to stop reading. Lists of
  *  findings show their own summaries; anything else shows its shape and its
  *  size, which is enough to know whether to go and look at it properly. */
-function measureHtml(key, v) {
+export function measureHtml(key, v) {
   const label = `<span class="text-chrome-muted">${esc(key.replace(/_/g, ' '))}</span>`;
   if (v === null || v === undefined || v === '') {
-    return `<div>${label} <span class="text-chrome-muted">not set</span></div>`;
+    // No value is "not measured", never blank and never zero: the survey could not establish it. (A sibling
+    // `unmeasured_*_count` field, shown by this same loop, says how many things it left out.)
+    return `<div>${label} <span class="text-chrome-muted" data-not-measured>not measured</span></div>`;
   }
   if (Array.isArray(v)) {
     // Language/file-type breakdowns (e.g. `by_type`) are counted, sortable
@@ -10342,7 +10345,8 @@ function measureHtml(key, v) {
     const n = Object.keys(v).length;
     return `<div>${label} <span class="text-chrome-muted"><span class="tnum">${n}</span> fields</span></div>`;
   }
-  const shown = typeof v === 'boolean' ? (v ? 'yes' : 'no') : String(v);
+  const shown = typeof v === 'boolean' ? (v ? 'yes' : 'no')
+    : typeof v === 'number' && /bytes$/i.test(key) ? fmtScalar(v, key) : String(v);
   // A long string is SUMMARISED, never dumped. `architecture_diagram`'s value
   // carries 9,384 characters of Mermaid source, and rendering it as a scalar
   // filled the rail with raw diagram code — which reads as the app having
