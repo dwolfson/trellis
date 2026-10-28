@@ -217,12 +217,17 @@ export function readEnvelope(entry, env, esc, tnum) {
     // ran — printing "never run" here would report a fact about the row as
     // a fact about the repository.
     runTimeUnrecorded: false,
+    // When what a zero-fetch derivation describes was measured: its reader carries the newest stored row it read
+    // (`as_of`, from `_run.read_snapshot`), since the derivation itself is recomputed on every read and so has no
+    // run time of its own. Only set from a fact whose as_of is not its run time.
+    asOf: '',
   };
 
   for (const f of facts) {
     if (f.can_run && f.can_run.length) lines.canRun.push(...f.can_run);
     if (f.analysis_id) lines.sources.push(f.analysis_id);
     if (f.last_run_at && (!lines.lastRun || whenMs(f.last_run_at) > whenMs(lines.lastRun))) lines.lastRun = f.last_run_at;
+    if (f.as_of && f.as_of !== f.last_run_at && (!lines.asOf || whenMs(f.as_of) > whenMs(lines.asOf))) lines.asOf = f.as_of;
   }
   lines.sources = [...new Set(lines.sources)];
   lines.canRun = [...new Set(lines.canRun)];
@@ -351,7 +356,7 @@ export function readEnvelope(entry, env, esc, tnum) {
       lines.unwritten.length === 1 ? 'has' : 'have'} no written summary — the figures above are the raw measures.`.trim();
   }
 
-  lines.runTimeUnrecorded = known.length > 0 && !lines.lastRun;
+  lines.runTimeUnrecorded = known.length > 0 && !lines.lastRun && !lines.asOf;
   lines.mermaid = factMermaid(env);
 
   return lines;

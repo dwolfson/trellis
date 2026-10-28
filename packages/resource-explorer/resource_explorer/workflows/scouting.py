@@ -350,7 +350,8 @@ def results_have_data(results) -> bool:
         #
         # Same category as `surveyed_at` above: a name is evidence the resource
         # exists, never evidence an analysis found anything about it.
-        envelope = {"_status", "surveyed_at", "detail", "documentation", "slug"}
+        # `_run` is the run beside a zero-fetch derivation's payload (its read_snapshot): a time, like surveyed_at.
+        envelope = {"_status", "_run", "surveyed_at", "detail", "documentation", "slug"}
         return any(results_have_data(v) for k, v in results.items() if k not in envelope)
     if isinstance(results, (list, tuple, set)):
         return len(results) > 0

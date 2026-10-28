@@ -331,3 +331,19 @@ def test_a_409_reuse_tells_on_report_created_the_reused_guid_and_a_failed_create
     failed_told: list[str] = []
     out = s2._publish_survey_report(BODY, QN, ANNS, "db", "2026-10-03T18:07:08", on_report_created=failed_told.append)
     assert out["report_guid"] == "" and failed_told == []
+
+
+def test_manifest_counts_the_chosen_declared_measures_from_the_function_the_press_uses(world, fake, monkeypatch):
+    """Curate's publish table: the manifest's count comes from `publish_table.chosen_rows`, the same function the
+    press sends from; none chosen is no line, and with no survey of RE's own the line says they will not be sent."""
+    from resource_explorer import publish_table
+
+    choose(world, "sales", "catalogue")
+    lines = lambda: {ln["id"]: ln for ln in cc.build_preview(world["registry"], "db", view(world), fake)["manifest"]["lines"]}  # noqa: E731
+    monkeypatch.setattr(publish_table, "chosen_rows", lambda *a, **k: [])
+    assert "declared_measures" not in lines()
+    monkeypatch.setattr(publish_table, "chosen_rows", lambda *a, **k: [{}, {}])
+    assert "are not sent: RE has no survey report" in lines()["declared_measures"]["text"]
+    _measured(world, schemas=8)
+    ln = lines()["declared_measures"]
+    assert ln["count"] == 2 and ln["text"].startswith("2 declared measures you chose on Describe go inside RE's survey report")

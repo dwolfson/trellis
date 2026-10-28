@@ -9640,6 +9640,9 @@ function provenanceLine(entry, i, lines, st) {
   if (lines.lastRun) {
     const rel = ago(lines.lastRun);
     bits.push(`run ${rel ? `<span class="tnum">${esc(rel)}</span>` : esc(lines.lastRun)}`);
+  } else if (lines.asOf) {
+    // A zero-fetch derivation: no run time of its own, the as-of of the rows it read (envelope.js `asOf`).
+    bits.push(`as of <span class="tnum">${esc(String(lines.asOf).slice(0, 16).replace('T', ' '))}</span>`);
   } else if (lines.runTimeUnrecorded) {
     bits.push('run time not recorded');
   } else if (st !== 'running') {
@@ -10421,6 +10424,7 @@ function rowAnswerParts(entry) {
   const sources = (lines && lines.sources.length ? lines.sources : entry.analysis_ids) || [];
   if (sources.length) bits.push(sources.join(', '));
   if (lines && lines.lastRun) bits.push(`run ${String(lines.lastRun).slice(0, 10)}`);
+  else if (lines && lines.asOf) bits.push(`as of ${String(lines.asOf).slice(0, 10)}`);
   else if (lines && lines.runTimeUnrecorded) bits.push('run time not recorded');
   else bits.push('never run');
   bits.push(env && env.answerable

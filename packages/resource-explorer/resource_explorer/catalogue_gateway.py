@@ -1057,7 +1057,7 @@ class PyegeriaCatalogueGateway:
                 column_count=measured.get("column_count", 0), surveyed_at=measured.get("surveyed_at", ""),
                 registry=registry, db_user=db_user, db_pwd=db_pwd,
                 statistics=data.get("statistics", {}), submitted_by=submitted_by,
-                survey_after_catalog=False)
+                survey_after_catalog=False, declared_measures=True)
         except Exception as exc:
             raise GatewayError(_short(exc)) from exc
 

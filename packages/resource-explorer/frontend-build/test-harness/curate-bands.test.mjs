@@ -199,9 +199,10 @@ test('Curate on a database draws the three bands with the real controls', async 
   assert.match(p.textContent, /What people say/);
   assert.ok(p.querySelector('[data-curate-fb-rating]') && p.querySelector('[data-curate-fb-submit]'));
   assert.ok(p.querySelector('#journal-save') && p.querySelector('#journal-body'), 'notes band is the journal');
-  // order on Describe: findable, people, then Publish to Egeria LAST (Brief S2, Brief F); the scope is on Contents
+  // order on Describe: findable, people, the declared measures' publish table (declared extensibility slice 1, §5),
+  // then Publish to Egeria LAST (Brief S2, Brief F); the scope is on Contents
   const order = [...host(document).querySelector('[data-curate-tab-panel="describe"]').querySelectorAll('[data-curate-band]')].map((e) => e.dataset.curateBand);
-  assert.deepEqual(order, ['findable', 'people', 'publish']);
+  assert.deepEqual(order, ['findable', 'people', 'measures', 'publish']);
   assert.ok(host(document).querySelector('[data-curate-tab-panel="contents"] [data-curate-scope]'), 'the scope tree is on Contents');
   // the false sentences are gone and no repo-only call fired
   assert.doesNotMatch(host(document).textContent, /reachable from the resource header|offers none of them|Curate isn't available/);

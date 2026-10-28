@@ -1408,6 +1408,23 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
         report_sentence = (f"RE has no survey of its own to publish (Egeria's survey counts {n_egeria} schemas); "
                            f"elements are created for the {len(attach)} you chose.")
     lines.append({"id": "survey_report_whole", "mechanism": 0, "text": report_sentence})
+    # Curate's publish table: the measures chosen Publish on Describe ride in that report (the SAME function the press
+    # uses, `publish_table.chosen_rows`, so the count here is what goes out). None chosen: no line.
+    declared_n = None
+    try:
+        from resource_explorer.publish_table import chosen_rows
+
+        declared_n = len(chosen_rows(registry, "database", slug))
+    except Exception as exc:  # noqa: BLE001 -- unread, said as unread, never as "none chosen"
+        log.warning("commit preview: the publish table of %s could not be read: %s", slug, exc)
+        lines.append({"id": "declared_measures", "mechanism": 0,
+                      "text": "the declared measures you chose could not be read; the press will try again"})
+    if declared_n:
+        word = "measure" if declared_n == 1 else "measures"
+        lines.append({"id": "declared_measures", "mechanism": 0, "count": declared_n, "text": (
+            f"{declared_n} declared {word} you chose on Describe go inside RE's survey report, each read back by name"
+            if own else f"{declared_n} declared {word} you chose on Describe are not sent: RE has no survey report "
+                        "of its own to carry them · run a survey first")})
 
     # S19: the database itself is archived and unconfirmed (or a confirmation went stale, or it could not be checked):
     # everything hangs under it, so nothing is pressed until the person confirms (Re-include on its row).
@@ -3080,6 +3097,18 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
                                "annotation_count": res.get("annotation_count"), "report_guid": rep_guid})
             state, words = report_step_words(res, measured.get("surveyed_at", ""))
             cur.set_step(curation_id, "survey_report", state, words)
+            # Curate's publish table: one proof row per chosen measure, from the report read, never from the send.
+            declared = res.get("declared_measures") or {}
+            if declared.get("sent") or declared.get("not_built"):
+                from resource_explorer import publish_table
+
+                counts = publish_table.record_proofs(registry, slug, declared.get("sent") or [], report_guid=rep_guid,
+                                                     curation_id=curation_id, recorded_by=author)
+                _add_step_note(cur, curation_id, "survey_report",
+                               publish_table.step_words(counts, declared.get("not_built")))
+            elif declared.get("state") == "not_read":
+                _add_step_note(cur, curation_id, "survey_report",
+                               "declared measures not sent · the publish table could not be read")
         except Exception as exc:
             _fail_step(cur, curation_id, "survey_report", exc)
 

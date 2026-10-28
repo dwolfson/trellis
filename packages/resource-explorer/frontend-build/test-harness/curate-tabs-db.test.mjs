@@ -140,7 +140,9 @@ test('Describe has no commit press of its own, and its Publish band is last', as
   for (const sel of ['[data-scope-commit-btn]', '[data-publish-go]', '[data-resurvey-go]', '[data-scope-read-back]', '[data-scope-commit-panel]']) {
     assert.equal(d.querySelector(sel), null, `${sel} is not on Describe`);
   }
-  assert.deepEqual([...d.querySelectorAll('[data-curate-band]')].map((e) => e.dataset.curateBand), ['findable', 'people', 'publish']);
+  // The declared measures' publish table sits before the Publish band (declared extensibility slice 1, §5); it has
+  // selectors, never a press: the press is the commit on Contents.
+  assert.deepEqual([...d.querySelectorAll('[data-curate-band]')].map((e) => e.dataset.curateBand), ['findable', 'people', 'measures', 'publish']);
   assert.equal(d.querySelectorAll('[data-db-publish-state]').length, 1, 'ONE state line');
 });
 
