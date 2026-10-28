@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
+import time
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -163,6 +165,9 @@ class LocalFileSystemSurveyor:
         hash_limit = we.hash_limit_bytes() if walk_extensions else 0
         hash_budget = we.HashBudget() if walk_extensions else None
 
+        # The walk's own wall time (stat and hashing), kept with its limits: F12's price line reads it as this machine's
+        # measured rate. Not a price for a different machine.
+        walk_started = time.monotonic()
         walk = self._walk(inaccessible_files)
         broken_links = walk["broken_symlinks"]
         for p in walk["files"]:
@@ -213,7 +218,7 @@ class LocalFileSystemSurveyor:
 
             if walk_extensions:
                 walk_rows.append(we.build_row(rel_path, p, stat, is_symlink=is_symlink or link_unknown, limit=hash_limit,
-                                              modified_at=modify_iso, budget=hash_budget))
+                                              modified_at=modify_iso, budget=hash_budget, accessed_at=access_iso))
 
             file_info = {
                 "file_path": rel_path,
@@ -319,6 +324,8 @@ class LocalFileSystemSurveyor:
 
         # "capped at 100,000 entries": said on every result, so a capped walk never reads as the whole tree.
         survey_data["walk_limits"]["capped_words"] = we.capped_words(survey_data["walk_limits"])
+        survey_data["walk_limits"]["walk_seconds"] = round(time.monotonic() - walk_started, 3)
+        survey_data["walk_limits"]["machine"] = socket.gethostname()
         if walk_extensions:
             survey_data["walk_files"] = walk_rows
             survey_data["walk_hash_limit_bytes"] = hash_limit

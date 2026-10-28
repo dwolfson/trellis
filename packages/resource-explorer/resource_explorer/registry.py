@@ -396,6 +396,7 @@ FILESYSTEM_WALK_FILES_DDL = (
         folder_depth        INTEGER NOT NULL DEFAULT 0,
         size_bytes          BIGINT DEFAULT NULL,
         modified_at         TEXT DEFAULT '',
+        accessed_at         TEXT,
         owner_name          TEXT DEFAULT '',
         group_name          TEXT DEFAULT '',
         mode_octal          TEXT DEFAULT '',
@@ -4985,6 +4986,7 @@ class ProjectRegistry:
         self._migrate_artifact_columns()
         self._migrate_profile_proof_columns()
         self._migrate_value_profile_columns()
+        self._migrate_walk_file_columns()
 
     #: Artifacts slice 1 (DESIGN-ARTIFACTS-VIEW-AND-DOC-LINKS.md §3; owner's go 2026-10-15; DDL record
     #: docs/ddl-artifact-columns.md). file_role: core | test | generated | vendored | docs from
@@ -5029,6 +5031,18 @@ class ProjectRegistry:
         for table, column, sql_type in self.VALUE_PROFILE_COLUMNS:
             with self._conn() as conn:
                 self._add_nullable_text_column(conn, table, column, self._get_table_columns(conn, table), sql_type)
+
+    #: Files build step 6 (fs_activity, F8; DDL record docs/ddl-walk-files-accessed-at.md): each walked file's last
+    #: access time as the walk's stat read it, BEFORE the walk opened the file to hash it. NULL = walked before the
+    #: column existed: "access time not recorded on this walk", never "never accessed".
+    WALK_FILE_COLUMNS = (("filesystem_walk_files", "accessed_at"),)
+
+    def _migrate_walk_file_columns(self) -> None:
+        """The same shape as `_migrate_artifact_columns`: additive, nullable TEXT, no default, each in its own short
+        transaction with a bounded lock wait, IF NOT EXISTS on Postgres."""
+        for table, column in self.WALK_FILE_COLUMNS:
+            with self._conn() as conn:
+                self._add_nullable_text_column(conn, table, column, self._get_table_columns(conn, table))
 
     # ── the run queue ─────────────────────────────────────────────────────────
     #
@@ -14505,8 +14519,8 @@ class ProjectRegistry:
     # ── the walk's per-file rows, kept per run (Files build step 1) ─────────────────────────────────────────────────
 
     #: Runs of per-file rows kept per file system (see walk_extensions.WALK_RUNS_KEPT).
-    _WALK_COLUMNS = ("file_path", "folder_path", "folder_depth", "size_bytes", "modified_at", "owner_name", "group_name",
-                     "mode_octal", "world_readable", "content_hash", "hash_state")
+    _WALK_COLUMNS = ("file_path", "folder_path", "folder_depth", "size_bytes", "modified_at", "accessed_at", "owner_name",
+                     "group_name", "mode_octal", "world_readable", "content_hash", "hash_state")
 
     def add_filesystem_walk_files(self, fs_slug: str, run_id: str, rows: list[dict], *, led_by: str = "re",
                                   egeria_report_guid: str = "", keep_runs: int | None = None) -> dict:
