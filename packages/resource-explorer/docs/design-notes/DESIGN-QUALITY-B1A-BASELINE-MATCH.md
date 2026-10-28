@@ -1,6 +1,6 @@
 # DESIGN — Quality B1a: baseline match on the measures RE already profiles, and the TestGen-only import (2026-10-27)
 
-**Status:** built on branch `claude/re-quality-b1a-baseline-67dba5`. This is Q4 port order step 2
+**Status:** built, and merged to main as PR #887 (2026-10-27) from branch `claude/re-quality-b1a-baseline-67dba5`. This is Q4 port order step 2
 (`DESIGN-QUALITY-Q4-PORT-PLAN-AND-CALIBRATION.md` §4 B1a row, §5 row 2), plus the TestGen-only import of Q4 §6.5,
 which §7 question 6 assigns to this slice. **Decision (project owner, 2026-10-26):** all seven §7 recommendations
 accepted, so B1a is opt-in per table (question 2) and this slice builds the import (question 6).

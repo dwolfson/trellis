@@ -1,5 +1,9 @@
 # DESIGN — Analytic extensibility across Trellis and the Egeria Portal: working assumptions (2026-10-02)
 
+*(Status refreshed 2026-10-28: since overtaken in part. Declared extensibility slice 1 is built and merged
+(PRs #885 and #886); see `DECLARED-EXTENSIBILITY-SLICE1-PR1-GAPS.md` and the user guide
+`docs/extending-with-analyses.md`. The 2026-10-02 text below is unchanged.)*
+
 **Status: brainstorm captured, nothing decided, nothing built.** From the
 design session with the project owner, 2026-10-02. The owner's framing:
 *users are going to want to add and modify their own analytic steps within

@@ -1,5 +1,7 @@
 # One-run credential for Egeria-coordinated runs
 
+*(Status refreshed 2026-10-28: built on main 2026-10-18 (commit `72d1eddd`, "one-run credential for Egeria-coordinated runs"); the Q3 words are still placeholders in `engine_host.py`. The original status line is kept below.)*
+
 Status: **design note, not built; owner answered Q1, Q2 and Q4 on 2026-10-18, Q3 (designer words) open.** Written 2026-10-18 by the RE coordinator session ("do the next items"). It covers
 the design-queue item recorded 2026-10-16. Build tier: **full review** (credential handling), Opus builder.
 

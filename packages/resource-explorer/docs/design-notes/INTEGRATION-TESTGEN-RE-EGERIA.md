@@ -1,5 +1,9 @@
 # How TestGen, Resource Explorer and Egeria fit together
 
+*(Status refreshed 2026-10-28: the diagrams below draw the value profile, propose and run steps and Curate's review as
+"designed, not built". Main has since built them (#809, #816, #822, #880, #887). Publishing DataQualityRules is still
+only on a branch. The user-facing account is `docs/testgen-integration-guide.md`. The original status line is kept below.)*
+
 **Status:** reference, 2026-10-20. Two views of the same integration (owner's option C: TestGen's test
 catalogue is vendored as data; RE runs it; Egeria is the catalog of record):
 

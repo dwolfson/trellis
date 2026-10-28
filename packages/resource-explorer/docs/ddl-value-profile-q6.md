@@ -1,6 +1,7 @@
 # DDL record: quality slice Q6, `database_value_profiles.before_20yr_date_ct` (re/quality-q6-recency)
 
-**Status:** branch, not deployed. This is the deployment record for one additive column in RE's shared
+**Status:** merged to main (PR #880, 2026-10-27). The column is added by RE's schema init the first time a process
+running that code opens a registry. This is the deployment record for one additive column in RE's shared
 registry. **Decision (project owner, 2026-10-26):** the seven recommendations of
 `DESIGN-QUALITY-Q4-PORT-PLAN-AND-CALIBRATION.md` §7 are accepted, and its port order (§5, row 1) gives Q6
 "two nullable columns on `database_value_profiles`". This slice adds one of the two (`before_20yr_date_ct`);
