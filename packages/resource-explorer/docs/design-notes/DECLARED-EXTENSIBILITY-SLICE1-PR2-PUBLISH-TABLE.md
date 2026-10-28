@@ -142,3 +142,49 @@ Tests: `tests/test_publish_table.py` covers each route of answer 1 (including a 
 SchemaAnalysisAnnotation published and read back through the real surveyor publish code against a fake Egeria, the
 property map reaching `schemaType`, ResourcePhysicalStatusAnnotation still refused, and a standing choice sent by
 two commits and ended by Keep in RE. The harness pins the "elsewhere" state and the standing words.
+
+## 4b. After slice 2 (the Chat compile)
+
+Slice 2 added three things to the declaration and the compiler, and the table now reads all three the same way the
+Chat compile does:
+
+- **Confidence per measure.** Each row's confidence is `Declaration.confidence_of(measure)`: the measure's own where
+  it declares one, else the declaration's. The confidence sent with a published measure (`confidenceForm`,
+  `confidenceBasis`) is that row's. A measure whose own confidence is `generated` writes as nothing.
+- **Not built.** An analysis with `built: false` reads "Planned, not built yet: not measured." followed by its
+  declared not-measured sentence, whatever the fact layer holds. It offers Keep in RE only, and a Publish choice is
+  refused with that reason. Today that is `doc_source_ingestion`, `doc_evidence_check` and `semantic_suggestions`.
+- **Library steps.** A library step's result is unwrapped once by `declared_context.library_rows`, as the Chat
+  compile does. The database library steps (`change_rates`, `database_staleness`, `hub_tables`,
+  `statistics_freshness`) are member-scoped, so their value fields name a column of a per-table row, not a value for
+  the database. Such a row used to read "ran and found nothing". It now reads "one value per member, not one for the
+  resource · see <extent>", has absence `per_member`, and cannot publish: there is no one number to send.
+
+**Not done here.** The file-system library steps (`fs_activity` and the rest) are resource-scoped, but write one
+record per measure, distinguished by the record's `measure` key. Picking the right record for a measure is left
+for when a file system can publish (owner answer 3). Until then their rows still show the declared absence.
+The Chat compile has the same gap, in `_measure_lines`.
+
+Tests: five more in `tests/test_publish_table.py`, covering:
+- a measure's own confidence on its row and on the annotation sent;
+- a not-built analysis refusing a choice;
+- the three shipped not-built analyses;
+- `change_rates`, wrapped as the shared reader returns it;
+- a resource-level field beside `measurement_rows` still resolving.
+
+**Update: the file-system library steps.** The table and the Chat compile now share
+`declared_context.measure_records(registry, entity_type, slug, step, dec, analysis_id)`. It reads each measure from
+the key the host stored it under (`survey_step_host.measure_step_key`):
+- the step's own measure is under the step key;
+- each further measure is under `<step>:<measure>`.
+
+For each measure it takes the value from `resourceProperties` and the state and reason from the envelope, as the
+Files card's `derived_view` does. If a measure's record states no value, the row shows the record's state and the
+step's reason. For example, `fs_access_activity` on a mount without access-time updates reads "access times not
+recorded on this mount: …".
+
+A first attempt looked for a `measure` key on rows read under the step key alone. Real storage never puts another
+measure's rows there, and a test that faked that shape passed anyway. The tests now run `fs_activity` through RE's
+own host on a walked tree and check both readers against `derived_view`.
+
+File systems still cannot publish (owner answer 3): this changes only what their rows show.

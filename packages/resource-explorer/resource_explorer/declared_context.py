@@ -33,6 +33,7 @@ from resource_explorer.publish_table import (
     resolve,
     run_fields,
 )
+from resource_explorer.surveyors.annotation_readers import STATE_WORDS as _STATE_WORDS
 
 log = logging.getLogger(__name__)
 
@@ -109,6 +110,43 @@ def library_rows(value: dict) -> dict:
         return value
     flat = [{"scope": r.get("name"), **(r.get("properties") or {})} for r in rows if isinstance(r, dict)]
     return {**{k: v for k, v in value.items() if k != "measurement_rows"}, "measurement_rows": flat}
+
+
+def library_steps(resource_type: str) -> dict:
+    """{analysis id: library step key} for every catalogue entry of this type a library step provides."""
+    from resource_explorer.surveyors.analysis_catalog_reader import _load
+
+    return {e.id: (e.provided_by or {}).get("step") or e.id for e in _load().get(resource_type, []) if e.provided_by}
+
+
+def measure_records(registry, entity_type: str, slug: str, step: str, dec, analysis_id: str) -> dict:
+    """{measure name: its record} for a resource-scoped library step, read from where the host stores each measure.
+
+    The host (`survey_step_host`) stores a step's own measure under the step key and each further declared measure
+    under `<step>:<measure>` (`measure_step_key`), so the step's fact holds its own measure only; each measure is read
+    here from its own key, as `walk_derived.derived_view` reads it. Each record is {"value": {"scope", **the
+    annotation's resourceProperties}, "state", "reason", "run"}; a measure with nothing stored has no record. Empty
+    when there is no step, or the declaration is member- or field-scoped (its rows are members, not measures)."""
+    if not step or (dec.scope or "resource") != "resource":
+        return {}
+    from resource_explorer.surveyors.annotation_readers import _envelope_state
+    from resource_explorer.surveyors.survey_step_host import measure_step_key
+
+    names = [m.name for m in dec.measures]
+    # The step's own measure: the one named after the step (or the analysis), else the first declared.
+    primary = next((n for n in (step, analysis_id) if n in names), names[0] if names else "")
+    out: dict = {}
+    for name in names:
+        key = step if name == primary else measure_step_key(step, name)
+        run, rows = registry.query_step_annotations(entity_type, slug, key)
+        if not rows:
+            continue
+        a = rows[0]
+        detail = a.get("detail") or {}
+        state, _words, reason = _envelope_state(detail)
+        out[name] = {"value": {"scope": a.get("scope") or "", **(detail.get("resourceProperties") or {})},
+                     "state": state, "reason": reason, "run": run}
+    return out
 
 
 def _differing_part(path: str, paths: list[str]) -> str:
@@ -209,14 +247,23 @@ def _row_identity(row, fields: list[str]) -> str:
     return " · ".join(_cell(_field(row, f)) for f in fields[:IDENTITY_FIELDS])
 
 
-def _measure_lines(dec, value: dict, run: dict) -> list[str]:
+def _measure_lines(dec, value: dict, run: dict, records: dict | None = None) -> list[str]:
+    """One line per declared measure. `records` ({measure: record}, `measure_records`) is where a resource-scoped
+    library step keeps each measure's value; a measure with a record is read from it, and one whose record states
+    no value says the record's state and reason rather than "not in the stored result"."""
     lines = []
+    records = records or {}
     for m in dec.measures:
-        v = resolve(value, m.value_field, run)
-        as_of = resolve(value, m.as_of, run)
+        record = records.get(m.name)
+        source = record["value"] if record else value
+        v = resolve(source, m.value_field, run)
+        as_of = resolve(source, m.as_of, run)
         when = f" (as of {as_of})" if as_of is not _MISSING else " (as-of not recorded)"
         own = f" · {m.confidence.form}" if m.confidence is not None else ""
-        if v is _MISSING and dec.scope in ("member", "field") and dec.extents:
+        if v is _MISSING and record and record["state"] in _STATE_WORDS and record["state"] != "measured":
+            reason = f": {record['reason']}" if record["reason"] else ""
+            lines.append(f"- {m.name}: {_STATE_WORDS[record['state']]}{reason}{when}")
+        elif v is _MISSING and dec.scope in ("member", "field") and dec.extents:
             # A member-scoped measure has one value per member, not one for the resource: its values are the rows.
             lines.append(f"- {m.name}: one value per {dec.scope}, in {m.unit}, in the rows below")
         elif v is _MISSING:
@@ -290,12 +337,13 @@ def absence_lines(absences: dict[str, dict]) -> tuple[str, str]:
     return "\n".join(full) + "\n", summary + "\n"
 
 
-def section_rungs(analysis_id: str, dec, fact: dict) -> tuple[dict, dict]:
+def section_rungs(analysis_id: str, dec, fact: dict, records: dict | None = None) -> tuple[dict, dict]:
     """The rungs of one declared analysis's section, and what each rung shows.
 
     `fact` is `Fact.as_dict()` for a known fact (`KNOWN_STATES`): the measures, the confidence line and the extents
     (FULL at the declared rows, SUMMARY at `SUMMARY_ROWS`, IDENTIFIERS the measures alone). Returns (rungs, seen)
-    where seen is {"state", "as_of", "confidence", "extents": {name: {"FULL": ..., "SUMMARY": ...}}}.
+    where seen is {"state", "as_of", "confidence", "extents": {name: {"FULL": ..., "SUMMARY": ...}}}. `records` is
+    `measure_records` for a resource-scoped library step: where each of its measures is stored.
     """
     state = fact.get("state", "")
     head = f"## {analysis_id}"
@@ -307,7 +355,7 @@ def section_rungs(analysis_id: str, dec, fact: dict) -> tuple[dict, dict]:
     as_of = str(fact.get("as_of") or run.get("read_snapshot") or run.get("surveyed_at") or "")
     scope = dec.scope or "resource"
     seen["as_of"] = as_of
-    measures =_measure_lines(dec, value, run)
+    measures = _measure_lines(dec, value, run, records)
     lead = [head] + measures + ([dec.absence.sentence("measured_nothing")] if state == "nothing_found" else [])
     if conf:
         lead.append(conf)
