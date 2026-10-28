@@ -13,37 +13,43 @@
 name: resource-explorer
 
 on:
-  push:
-    # Every branch, not just main and re/**: since 2026-09-10 all work lands
-    # on a branch + PR (main heads the upstream sync PR), and a suite that
-    # runs only on main runs only after merge. That is how a test that timed
-    # out on CI stayed red for 20 consecutive main runs while every branch PR
-    # showed "mergeable" with no test check at all — the fix/ branch carrying
-    # the repair could not run it either. (The earlier re/** entry existed for
-    # the same reason at smaller scale: a workflow that only triggers on main
-    # is untested YAML until the day it is merged.)
-    #
-    # No separate `pull_request:` trigger, deliberately (removed 2026-09-03):
-    # every commit on an open PR from this repo already matches one of the
-    # branches above, so `pull_request:` alongside `push:` fired TWO
-    # independent runs per commit — confirmed directly, same sha producing
-    # both an `event: push` and an `event: pull_request` run, neither aware
-    # of the other. That doubled CI minutes and showed as duplicate/confusing
-    # checks on the PR merge box. This repo has no forks to cover, so `push:`
-    # alone loses no coverage. If forked PRs are ever accepted, `pull_request:`
-    # needs to come back — for a fork, `push:` never fires at all.
-    branches: ["**"]
-    # Docs-only pushes skip the ~45 minute run (owner-approved 2026-10-14).
-    # ONLY paths that nothing reads are listed. Verified by grep 2026-10-14:
-    #   - docs/dr-egeria/** is read at runtime (bootstrap.py, egeria_resync.py,
-    #     survey_definition_docs.py) and by the generator-equality tests: NOT ignored.
-    #   - docs/design-notes/** is NOT ignored: test_design_note_references_resolve.py
-    #     checks every cited note name against the files that exist there, so a
-    #     rename or delete in that directory can turn the suite red.
-    #   - the package README.md and CLAUDE.md are scanned by that same test: NOT ignored.
-    # Nothing else under docs/ is opened by any test, script or source file
-    # (every other mention is a comment or docstring).
+  # main and open PRs only (owner, 2026-10-27). Until now this fired on a push
+  # to every branch, so each builder push started a ~55 minute run for a sha
+  # that was usually still being worked on; four were queued at once for
+  # branches already inside a local gate batch. Branch work is gated locally
+  # (~/.re-gate/scripts/gate-batch.sh: the same suite in CI mode plus the
+  # render harness); this workflow is the clean-machine check: no live Egeria,
+  # no sign-ins, no local settings. That is what it catches that the gate
+  # cannot (2026-10-27: a test passed every gate because the gate machine's
+  # Egeria answered pyegeria's constructor probe, and failed here).
+  #
+  # Not a merge requirement: main has no branch protection and no rulesets
+  # requiring this check (verified 2026-10-27). The local gate is the bar for
+  # merging; a red run here is read after the fact and fixed on a branch.
+  #
+  # pull_request + push are split as in images.yml: `pull_request` covers
+  # every PR branch, `push` covers main only, so one commit never fires both
+  # (the double-run that removed `pull_request:` on 2026-09-03 came from push
+  # on every branch AND pull_request). A branch with no PR gets no run; use
+  # workflow_dispatch to run one by hand.
+  pull_request:
     paths-ignore:
+      # Docs-only changes skip the run (owner-approved 2026-10-14).
+      # ONLY paths that nothing reads are listed. Verified by grep 2026-10-14:
+      #   - docs/dr-egeria/** is read at runtime (bootstrap.py, egeria_resync.py,
+      #     survey_definition_docs.py) and by the generator-equality tests: NOT ignored.
+      #   - docs/design-notes/** is NOT ignored: test_design_note_references_resolve.py
+      #     checks every cited note name against the files that exist there, so a
+      #     rename or delete in that directory can turn the suite red.
+      #   - the package README.md and CLAUDE.md are scanned by that same test: NOT ignored.
+      # Nothing else under docs/ is opened by any test, script or source file
+      # (every other mention is a comment or docstring).
+      - "packages/resource-explorer/docs/*.md"
+      - "packages/resource-explorer/docs/archive/**"
+      - "packages/resource-explorer/docs/experiments/**"
+  push:
+    branches: [main]
+    paths-ignore:  # the same list as pull_request's, and the same reasons
       - "packages/resource-explorer/docs/*.md"
       - "packages/resource-explorer/docs/archive/**"
       - "packages/resource-explorer/docs/experiments/**"
