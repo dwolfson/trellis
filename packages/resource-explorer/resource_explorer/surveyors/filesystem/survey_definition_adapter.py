@@ -365,13 +365,19 @@ def _filesystem_inventory_results(registry, slug: str) -> dict:
     data_files = registry.query_detail_rows("filesystem_data_files", slug)
     files = [e for e in entries if (e.get("entry_type") or "file") == "file"]
     dirs = [e for e in entries if e.get("entry_type") == "directory"]
-    total_size = sum(e.get("size_bytes") or 0 for e in files)
+    # An unread size (None) is not a size of 0: leaving it out of the sum
+    # silently under-counts, so say how many files it left out. With no
+    # known size at all the total is absent, not 0 -- same `unmeasured_*_count`
+    # wording as database's table counts.
+    known_sizes = [e["size_bytes"] for e in files if e.get("size_bytes") is not None]
+    total_size = sum(known_sizes) if known_sizes or not files else None
     return {
         "entry_count": len(entries),
         "file_count": len(files),
         "directory_count": len(dirs),
         "data_file_count": len(data_files),
         "total_size_bytes": total_size,
+        "unmeasured_file_count": len(files) - len(known_sizes),
         "hidden_count": sum(1 for e in entries if e.get("is_hidden")),
         "symlink_count": sum(1 for e in entries if e.get("is_symlink")),
     }
