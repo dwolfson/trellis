@@ -2,7 +2,10 @@
 
 Branch `claude/re-files-steps-6-8`, cut from `origin/main` at `865f98a8`. Brief:
 `BRIEF-FILES-QUESTIONS-AND-ANALYSES-TO-RETIRE-CLASSIC.md` (the brief below). Nothing here writes to Egeria or to the
-shared registry; every test runs on a scratch SQLite file.
+shared registry. The new tests run on scratch SQLite files. The one full Resource Explorer suite run on this branch did
+not: its Postgres-backed fixtures opened a per-process test schema on the shared Postgres (:5442), so the `accessed_at`
+migration may have run inside that test schema (not checked). Local suite runs should set `PGVECTOR_PORT=1` so those
+fixtures skip.
 
 ## 1. What "steps 6–8" are, mapped onto the brief
 
