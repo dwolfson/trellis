@@ -1,7 +1,9 @@
 # DESIGN — Quality slice Q5: accepted checks as Egeria `DataQualityRule`s (2026-10-27)
 
-**Status:** design and a read-only probe. No RE code changed, no DDL, nothing written to Egeria or to the
-shared Postgres. The probe is `scripts/probe_data_quality_rule_readonly.py`; §2 records its one run.
+**Status:** part 1 (2026-10-27) was design and a read-only probe; the probe is
+`scripts/probe_data_quality_rule_readonly.py` and §2 records its one run. **Part 2 (2026-10-28) is built**: §12 says
+what, and §11 records each question's answer. Nothing has yet been written to Egeria: the first write is the gate
+(§9).
 
 **Builds on, does not repeat:**
 - `DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md` §7: the property mapping, the `GovernedBy` target order, the
@@ -153,14 +155,16 @@ written. A committed test injects that rejection and asserts no second create ca
 Dr.Egeria processor's fallback (`md_processing/v2/governance.py`) that RE must not copy.
 
 ### 6.2 Find, create, link once
-- **Name first.** `get_governance_definitions_by_name(<qualifiedName>)`, filtered to type `DataQualityRule`.
-  One hit: adopt it. Two or more: stop, report "2 rules named …, not touched", write no proof row: a duplicate
-  is someone else's state to resolve.
+- **Name first.** The exact unique-name read (`egeria_lookup.guid_by_qualified_name`, typed `DataQualityRule`),
+  not the governance-definition by-name search, which matches loosely. One hit: adopt it. Two holders, or a holder
+  of another type: stop, write nothing to Egeria, record `duplicate` or `name_taken`: someone else's state to
+  resolve.
 - **Create**, then **read back by GUID** before linking: `typeName == DataQualityRule`, `method`,
   `comparisonOperator`, `thresholdValues` (order preserved) equal what was sent. A mismatch or a base
-  `GovernanceDefinition` type ends that check `unverified`, no link, no proof row.
-- **Link once**: through `egeria_link_once`, reading the governed element's `GovernedBy` definitions first,
-  so a re-run or a crash between create and link converges on one edge.
+  `GovernanceDefinition` type ends that check `unverified` with no link. Its proof row is recorded with that
+  outcome, as evidence, and is never read as "published": the next Publish adopts the rule by name.
+- **Link once**: through `egeria_link_once`, reading the rule's `GovernedBy` links first (the rule is end 2 and
+  has few links; a column may have many), so a re-run or a crash between create and link converges on one edge.
 - **Crash between steps** is safe by construction: the next Publish finds the rule by name and continues.
 
 ### 6.3 Proof rows, the RE pattern
@@ -170,8 +174,9 @@ A new append-only table, in the shape of `catalogue_commit_proofs` and the value
 edited_in_egeria|not_in_egeria), re_proof_hash, detail_json, recorded_by, read_at)`. A row is written **only
 from a read-back**; `read_at` is when Egeria was read, not when Publish was pressed. `re_proof_hash` is sha256 of
 the canonical compared fields RE sent, so "unchanged" is decided from RE's own row, not a re-read diff. Rows from
-before the latest Egeria reset are ignored (`get_egeria_reset_at`), as for profile publish. DDL is part of the
-build slice and needs the owner's word for the restart on :5442; nothing here creates it.
+before the latest Egeria reset are ignored (`get_egeria_reset_at`), as for profile publish. The DDL is in
+`registry.py` beside `database_quality_verdicts` (`CREATE TABLE IF NOT EXISTS`, additive, no foreign keys); it is
+applied at the next RE start against :5442, which needs the owner's word. It has not been applied.
 
 ## 7. Zones and visibility
 
@@ -239,18 +244,45 @@ On coco_pharma, with `sales` committed in Contents: the owner accepts three prop
 - **R5. Annotation → rule `GovernedBy` volume.** One edge per check per run. At the Q3 batch scale this grows
   linearly with runs; the profile-publish re-link pattern may be wanted for annotations of unchanged results.
 
-## 11. Owner questions
+## 11. Owner questions, answered (2026-10-28)
 
-1. **Anchor the rule to the database Asset** (recommended; zones and deletion follow the asset, as Bitol does
-   with the contract), or own-anchored?
-2. **Validity's dimension word.** The 2026-10-20 ruling in `DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md` §7 says
-   Validity → `accuracy` ("conformity and validity are not equivalent - accuracy is closer"); the 10-21 inventory
-   and the code as built (`catalogue.EGERIA_DIMENSION`) say `conformity`, and Q2's annotations already publish
-   `conformity`. Rule and annotation must say the same word. Which one?
-3. **An edit in Egeria wins** over RE's local copy and RE stops writing that rule's compared fields
-   (recommended), or RE's next Publish overwrites with a warning?
-4. **Reject after publish → `DEPRECATED` and unlinked, never deleted** (recommended)?
-5. **Back-linking.** Annotations published before their rule existed stay `unpublished` (recommended), or does
-   the first rule publish back-link the latest run's annotations?
-6. **Publish includes rules automatically** whenever accepted checks are pending (recommended, named in "next
-   publish"), or an opt-in per press, as the open question for data-class verdicts asks?
+The owner: "I answered all the questions previously - we should be able to move forward?" Each question's
+recorded answer, or the recommendation taken where none is recorded, marked **assumed: owner to confirm**.
+
+| # | Question | Answer | Source |
+|---|---|---|---|
+| 1 | Anchor the rule to the database Asset? | **Yes**, anchored (`isOwnAnchor` false) | **assumed: owner to confirm**. No recorded answer; Egeria's own Bitol mapper anchors to the contract |
+| 2 | Validity's dimension word | **`accuracy`**, with `originalDimension: Validity` | **recorded**: owner, 2026-10-20, "conformity and validity are not equivalent - accuracy is closer - we could use accuracy and additionalProperties until we add validity" (`DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md` §11 item 9; the 10-20 coordinator handoff transcript). The 10-21 inventory and the Q2 code said `conformity` without the ruling; the build corrects the code, so Q2's annotations now say `accuracy` too |
+| 3 | An edit in Egeria wins? | **Yes**: RE does not overwrite, the run uses Egeria's values and says "rule edited in Egeria since acceptance" | **recorded in the design**: `DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md` §6 ("The input is the accepted checks, and Egeria wins"), the 2026-10-19 design the owner answered against; no separate owner quote found |
+| 4 | Reject after publish → DEPRECATED and unlinked, never deleted? | **Yes** | **assumed: owner to confirm** |
+| 5 | Back-link annotations published before the rule existed? | **No**: only a run that read its rule from Egeria links its annotation | **assumed: owner to confirm** |
+| 6 | Rules in Publish automatically, or opt-in per press? | **Automatically**, every accepted check pending; the press is `POST /api/quality-checks/{slug}/publish-rules` | **assumed: owner to confirm**. Recorded only that "Publish is the only action that writes rules" (§7 of the value-profile note) and its wireframe's "Publish accepted checks" (§10 there) |
+
+Also recorded and applied: `contentStatus` ACTIVE for an accepted check (owner, 2026-10-19, value-profile note §11
+item 5); `GovernedBy` from annotation to rule (owner, 2026-10-20, item 6).
+
+## 12. Built (part 2, 2026-10-28)
+
+- `surveyors/database/quality/egeria_rules.py`: the property mapping (`rule_properties`), the plan
+  (`plan_rules`, pure), Publish (`publish_rules`, `publish_database_rules`) behind a `RuleGateway` seam, the
+  pyegeria gateway (`PyegeriaRuleGateway`: the generic Governance Officer calls, `egeria_lookup` for names,
+  `egeria_link_once` for `GovernedBy` read from the rule at end 2), the run step's reader (`rules_for_run`,
+  `read_rules_for_run`) and the Curate state lines (`rule_states`).
+- `registry.py`: `database_quality_rule_proofs` (DDL in code, not applied), `record_quality_rule_proofs`,
+  `latest_quality_rule_proofs` (reset cutoff), and `remove_database` deletes its rows.
+- `run_checks.py`: `apply_rule`. A published rule's severity and threshold override the verdict's; a rule gone
+  from Egeria, deprecated there, changed to an operator the vendored SQL does not test, or changed to SQL or an
+  expression is not run, with the sentence; Egeria unreadable runs from the verdict as `local_cache`. Every
+  annotation carries `originalDimension` where the word differs, and `ruleNote`.
+- `survey_definition_adapter._run_run_quality_checks` reads the rules before the run.
+- `egeria_database_surveyor._link_quality_checks_to_rules`: `GovernedBy` from each annotation of a check run
+  under a rule read from Egeria, linked once, counted in `element_links.rule_links`.
+- Routes: `GET /api/quality-checks/{slug}/rules` (state lines) and `POST …/publish-rules` (the press, as the
+  signed-in person, with an activity entry).
+- `catalogue.py`: Validity → `accuracy` (§11 row 2), `original_dimension`, `threshold_key`.
+- Tests: `tests/test_quality_q5_data_quality_rule.py`, including the no-fallback test.
+
+**Not built here:** the Curate UI (the Structure tab's state line and the band's "next publish" line read the two
+routes); folding `publish-rules` into the page's one Publish press, which waits on row 6 and on the publish table
+of `DESIGN-DECLARED-EXTENSIBILITY…` §5 landing. No live write has been made: the gate's first write is the first
+evidence that the create works (R2).

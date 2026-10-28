@@ -305,13 +305,18 @@ def _run_run_quality_checks(
 ) -> dict:
     """run_quality_checks (design §6): the accepted checks, run with the vendored Postgres SQL, stored in
     `database_quality_results`. Every evaluated check is returned as a QualityCheckAnnotation
-    (`quality_annotations`), which the database publish sends to Egeria."""
+    (`quality_annotations`), which the database publish sends to Egeria and links by GovernedBy to the rule it ran
+    under, when that rule is published."""
     from resource_explorer.surveyors.database.connection import database_connection
+    from resource_explorer.surveyors.database.quality.egeria_rules import read_rules_for_run
     from resource_explorer.surveyors.database.quality.run_checks import run_quality_checks
 
+    # Quality Q5: a check with a published DataQualityRule runs with the rule's values as Egeria holds them (Egeria
+    # wins); None when no rule is published, and every check runs from its verdict as before.
     return run_quality_checks(
         db_entity, registry, lambda: database_connection(db_entity, {"user": db_user, "password": db_pwd}),
         bounds=_quality_bounds(), surveyed_at=scan_surveyed_at or None, ran_as=db_user,
+        rules=read_rules_for_run(registry, db_entity.slug),
     )
 
 

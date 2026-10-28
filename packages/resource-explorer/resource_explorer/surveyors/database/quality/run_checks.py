@@ -54,11 +54,13 @@ from resource_explorer.surveyors.database.quality.catalogue import (
     egeria_dimension,
     fails,
     load_catalogue,
+    original_dimension,
     quote_identifier,
     render_measure,
     text_measure_from_number,
     text_measure_number,
     threshold,
+    threshold_key,
 )
 from resource_explorer.surveyors.database.quality.value_profile import (
     ProfileBounds,
@@ -112,10 +114,50 @@ def _number(value):
     return float(value) if isinstance(value, (int, float)) else value
 
 
+def apply_rule(rule: dict, test_type, params: dict, row: dict) -> tuple[dict, str]:
+    """A published rule's say over one check (design §6 of the value-profile note: Egeria wins). `rule` is one entry
+    of `egeria_rules.rules_for_run`. Returns (the parameters to run with, a refusal sentence or ""), and labels the
+    row with where its rule came from.
+
+        egeria       the rule's severity and threshold override the verdict's; an operator other than the one the
+                     vendored SQL tests, a rule RE did not write (checkType sql, an expression) or a DEPRECATED
+                     rule is not run
+        local_cache  Egeria could not be read: the verdict's values, labelled so
+        missing      the rule is gone from Egeria: not run, "rule not found in Egeria" """
+    row.update(rule_guid=rule.get("rule_guid", ""), rule_source=rule.get("source", RULE_UNPUBLISHED),
+               rule_note=rule.get("note", ""))
+    source = rule.get("source")
+    if source == "missing":
+        return params, "rule not found in Egeria"
+    if source != "egeria":
+        return params, ""
+    props = rule.get("properties") or {}
+    if props.get("contentStatus") == "DEPRECATED":
+        return params, "rule deprecated in Egeria"
+    if props.get("checkType") == "sql" or props.get("expression"):
+        return params, "rule changed in Egeria to one Resource Explorer did not write (sql or an expression): not run"
+    want = MUST_BE.get(test_type.test_operator, test_type.test_operator)
+    if props.get("comparisonOperator") not in (None, "", want):
+        return params, (f"operator edited in Egeria to {props['comparisonOperator']}; the vendored check tests only "
+                        f"{want}")
+    merged = dict(params)
+    if props.get("severity"):
+        merged["severity"] = props["severity"]
+    values = props.get("thresholdValues") or []
+    if values:
+        try:
+            merged[threshold_key(test_type)] = values[0]
+        except ParameterError as exc:
+            return params, str(exc)
+    return merged, ""
+
+
 def run_quality_checks(
     db_entity, registry, connect: Callable[[], AbstractContextManager], *,
-    bounds: ProfileBounds, surveyed_at: str | None = None, ran_as: str = "",
+    bounds: ProfileBounds, surveyed_at: str | None = None, ran_as: str = "", rules: dict | None = None,
 ) -> dict:
+    """`rules`: `egeria_rules.rules_for_run` for the checks with a published rule (None: none read, every check
+    runs from its verdict, `rule_source = unpublished`)."""
     slug = db_entity.slug
     surveyed_at = surveyed_at or datetime.now(UTC).isoformat()
     accepted = {k: v for k, v in registry.get_quality_verdicts(slug).items() if v.get("verdict") == "accepted"}
@@ -169,6 +211,12 @@ def run_quality_checks(
         if column and (schema, table, column) not in column_set:
             row["reason"] = "column no longer in inventory"
             continue
+        rule = (rules or {}).get(key)
+        if rule:
+            params, refused = apply_rule(rule, test_type, params, row)
+            if refused:
+                row["reason"] = refused
+                continue
         severity = params.get("severity")
         if severity not in FAIL_STATUS:
             row["reason"] = f"severity must be one of {sorted(FAIL_STATUS)}, got {severity!r}"
@@ -290,6 +338,8 @@ def build_quality_annotations(results: list[dict], catalogue: dict | None = None
             "comparisonOperator": row["comparison_operator"], "threshold": limit,
             "ruleSource": row["rule_source"], "ruleGuid": row["rule_guid"],
             "baselineProfileSurveyedAt": row["baseline_profile_surveyed_at"], "ranAs": row["ran_as"],
+            "originalDimension": original_dimension(test_type.dimension) if test_type is not None else "",
+            "ruleNote": row.get("rule_note") or "",
         }
         if test_type is not None and test_type.measure_is_text and isinstance(row["measure"], (int, float)):
             detail["measureText"] = text_measure_from_number(row["measure"])

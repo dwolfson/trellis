@@ -221,7 +221,7 @@ def test_a_check_that_did_not_conclude_sends_no_quality_score_to_egeria(registry
     assert empty["additionalProperties"]["checkState"] == "not_established"
     assert empty["confidence"] == 0
     errored = build_annotation_props(by_key["sales.orders.placed::Min_Date"], "Annotation::q::2")
-    assert "qualityScore" not in errored and "sampleSize" not in errored and errored["qualityDimension"] == "conformity"
+    assert "qualityScore" not in errored and "sampleSize" not in errored and errored["qualityDimension"] == "accuracy"
     held = build_annotation_props(by_key["sales.orders.order_id::Unique"], "Annotation::q::3")
     assert held["qualityScore"] == 100 and held["sampleSize"] == 1000
     for props in (empty, errored, held):
@@ -263,19 +263,21 @@ def test_a_quality_annotation_is_egerias_quality_annotation_with_its_three_field
         "QualityAnnotationProperties"]
 
 
-def test_the_dimension_words_are_odcs_and_the_testgen_names_map_as_the_inventory_says():
+def test_the_dimension_words_are_odcs_and_the_testgen_names_map_as_the_owner_ruled():
     from resource_explorer.surveyors.database.quality.catalogue import EGERIA_DIMENSION
 
-    assert egeria_dimension("Validity") == "conformity" and egeria_dimension("Recency") == "timeliness"
+    assert egeria_dimension("Validity") == "accuracy" and egeria_dimension("Recency") == "timeliness"
     assert egeria_dimension("Completeness") == "completeness" and egeria_dimension("Uniqueness") == "uniqueness"
     assert egeria_dimension("Timeliness") == "timeliness"
     assert egeria_dimension("Nonsense") == "" and egeria_dimension("") == ""
-    assert EGERIA_DIMENSION == {"Validity": "conformity", "Recency": "timeliness"}
-    # the seven RE ports, by the INVENTORY-TESTGEN-TEST-TYPES-MAPPED.md "Egeria dimension" column
+    # Validity is accuracy by the owner's ruling of 2026-10-20 (DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md §11 item 9)
+    assert EGERIA_DIMENSION == {"Validity": "accuracy", "Recency": "timeliness"}
+    # the seven RE ports, by the INVENTORY-TESTGEN-TEST-TYPES-MAPPED.md "Egeria dimension" column, with Validity as
+    # accuracy (the owner's ruling; the inventory says Conformity)
     catalogue = load_catalogue()
     assert {t: egeria_dimension(catalogue[t].dimension).capitalize() for t in SLICE_1_TEST_TYPES} == {
         "Missing_Pct": "Completeness", "Required": "Completeness", "Required_No_Placeholder": "Completeness",
-        "Row_Ct_Pct": "Completeness", "Unique": "Uniqueness", "Future_Date": "Timeliness", "Min_Date": "Conformity"}
+        "Row_Ct_Pct": "Completeness", "Unique": "Uniqueness", "Future_Date": "Timeliness", "Min_Date": "Accuracy"}
     # and every word is one of Egeria's DataContractQualityDimension values (the Java enum, read from source)
     java = (Path(__file__).resolve().parents[4] / "egeria" / "open-metadata-implementation" / "frameworks" /
             "open-integration-framework" / "src" / "main" / "java" / "org" / "odpi" / "openmetadata" / "frameworks" /
@@ -306,7 +308,7 @@ def test_publishing_sends_the_real_create_annotation_signature_and_egerias_field
     # EXACT, in check-key order: empty.d::Missing_Pct, orders.note::Missing_Pct, orders.order_id::Unique,
     # orders.placed::Min_Date, orders.placed::Required
     assert [b["properties"]["qualityDimension"] for b in sent] == [
-        "completeness", "completeness", "uniqueness", "conformity", "completeness"]
+        "completeness", "completeness", "uniqueness", "accuracy", "completeness"]
     assert [b["properties"].get("qualityScore") for b in sent] == [None, 0, 100, None, 0]
     for body in sent:
         assert body["class"] == "NewElementRequestBody" and body["parentGUID"] == "report-1"

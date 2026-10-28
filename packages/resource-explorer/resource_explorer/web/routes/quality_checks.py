@@ -4,12 +4,17 @@ GET  /api/quality-checks/settings           the value profile's and quality chec
                                             means (the Admin page's read-only pane)
 GET  /api/quality-checks/{slug}/proposals   groups by table with counts; `?schema=&table=` adds one group's rows
 POST /api/quality-checks/{slug}/verdict     one accept or reject of one check, as the signed-in person
+GET  /api/quality-checks/{slug}/rules       each check's DataQualityRule state line (Quality Q5)
+POST /api/quality-checks/{slug}/publish-rules
+                                            Publish: accepted checks to Egeria DataQualityRules, rejected ones that
+                                            were published to DEPRECATED, as the signed-in person; read back
 POST /api/quality-checks/{slug}/table-comparison
                                             opt one table into (or out of) Table Comparison, the baseline-match
                                             checks, as the signed-in person; the next propose run reads it
 
 The write resolves the person from the session first (401 when nobody is signed in) and never takes the author, the
-parameters or the proposal id from the body. It writes RE's own verdict row only; Publish is what reaches Egeria.
+parameters or the proposal id from the body. It writes RE's own verdict row only; Publish is what reaches Egeria
+(`publish-rules`, DESIGN-QUALITY-Q5-DATA-QUALITY-RULE.md).
 """
 from __future__ import annotations
 
@@ -127,3 +132,43 @@ async def post_table_comparison(slug: str, body: TableComparisonBody, request: R
     await authorize_resource_write(registry, "database", slug)
     return await _run(review.set_table_comparison, registry, slug, body.schema_name, body.table_name, body.watch,
                       decided_by=author, note=body.note)
+
+
+@router.get("/{slug}/rules")
+async def read_rules(slug: str) -> dict:
+    from resource_explorer.surveyors.database.quality.egeria_rules import rule_states
+
+    registry = _registry_for(slug)
+    return await _run(rule_states, registry, slug)
+
+
+def _publish_rules(registry, slug: str, author: str) -> dict:
+    import uuid
+    from datetime import UTC, datetime
+
+    from resource_explorer.registry import ActivityEntry
+    from resource_explorer.surveyors.database.quality.egeria_rules import (
+        egeria_gateway,
+        publish_database_rules,
+    )
+
+    db_entity = registry.get_database(slug)
+    result = publish_database_rules(registry, db_entity, egeria_gateway(), recorded_by=author)
+    registry.write_activity(ActivityEntry(
+        id=str(uuid.uuid4()), ts=datetime.now(UTC).isoformat(),
+        operation="quality_rules_published", intent="curate", entity_type="database", entity_slug=slug,
+        summary=f"{result['line']} (by {author})",
+        annotations=[{"counts": result.get("counts", {}), "state": result.get("state", "")}],
+    ))
+    return result
+
+
+@router.post("/{slug}/publish-rules")
+async def publish_rules(slug: str, request: Request) -> dict:
+    """Publish the database's accepted checks as DataQualityRules, as the signed-in person (their own token)."""
+    author = _require_author(request, "publish quality rules")
+    registry = _registry_for(slug)
+    from resource_explorer.web.routes.curate import authorize_resource_write
+
+    await authorize_resource_write(registry, "database", slug)
+    return await _run(_publish_rules, registry, slug, author)

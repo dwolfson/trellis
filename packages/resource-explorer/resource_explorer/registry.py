@@ -3985,6 +3985,33 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_database_quality_verdicts_key "
                 "ON database_quality_verdicts(database_slug, check_key)"
             )
+            # database_quality_rule_proofs (Quality Q5, DESIGN-QUALITY-Q5-DATA-QUALITY-RULE.md §6.3): what Publish
+            # READ BACK of each accepted check's DataQualityRule. Append-only; the latest row per check_key is the
+            # rule's state. `read_at` is when Egeria was read, never when Publish was pressed. `re_proof_hash` is
+            # sha256 of the properties RE sent (egeria_rules.proof_hash): "unchanged" is decided from this row, not a
+            # re-read. `detail_json.sent` holds the compared fields RE last wrote, so a rule edited in Egeria is told
+            # from one RE changed. No foreign keys; remove_database deletes it by name.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS database_quality_rule_proofs (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    database_slug  TEXT NOT NULL,
+                    check_key      TEXT NOT NULL,
+                    rule_guid      TEXT NOT NULL DEFAULT '',
+                    qualified_name TEXT NOT NULL DEFAULT '',
+                    governed_guid  TEXT NOT NULL DEFAULT '',
+                    governed_kind  TEXT NOT NULL DEFAULT '',
+                    outcome        TEXT NOT NULL,
+                    re_proof_hash  TEXT NOT NULL DEFAULT '',
+                    detail_json    TEXT NOT NULL DEFAULT '{}',
+                    recorded_by    TEXT NOT NULL DEFAULT '',
+                    read_at        TEXT NOT NULL DEFAULT '',
+                    created_at     TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_database_quality_rule_proofs_key "
+                "ON database_quality_rule_proofs(database_slug, check_key, id)"
+            )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS architecture_materialized_components (
                     id             TEXT PRIMARY KEY,
@@ -6122,6 +6149,52 @@ class ProjectRegistry:
                 (self._normalize_slug(database_slug), check_key),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def record_quality_rule_proofs(self, rows: list[dict]) -> int:
+        """Append Publish's proof rows for quality rules (`egeria_rules.publish_rules`). Returns how many."""
+        from datetime import timezone
+        now = datetime.now(timezone.utc).isoformat()
+        cols = ("database_slug", "check_key", "rule_guid", "qualified_name", "governed_guid", "governed_kind",
+                "outcome", "re_proof_hash", "detail_json", "recorded_by", "read_at")
+        payload = []
+        for row in rows:
+            values = [self._normalize_slug(row["database_slug"]) if c == "database_slug" else
+                      json.dumps(row.get(c) or {}, sort_keys=True, default=str) if c == "detail_json" else
+                      str(row.get(c) or "") for c in cols]
+            payload.append((*values, now))
+        if payload:
+            with self._conn() as conn:
+                conn.executemany(
+                    f"INSERT INTO database_quality_rule_proofs ({', '.join(cols)}, created_at) "
+                    f"VALUES ({', '.join('?' for _ in range(len(cols) + 1))})",
+                    payload,
+                )
+        return len(payload)
+
+    def latest_quality_rule_proofs(self, database_slug: str) -> dict[str, dict]:
+        """{check_key: latest proof row}, `detail_json` decoded. Rows recorded before the latest Egeria reset
+        (`get_egeria_reset_at`) describe rules Egeria no longer holds, so they are never "latest": after a reset the
+        next Publish creates every rule again."""
+        slug = self._normalize_slug(database_slug)
+        with self._conn() as conn:
+            rows = [dict(r) for r in conn.execute(
+                "SELECT * FROM database_quality_rule_proofs WHERE database_slug = ? ORDER BY id ASC", (slug,),
+            ).fetchall()]
+        reset = self.get_egeria_reset_at(slug)
+        from resource_explorer.catalogue_commit import _ts
+        cutoff = _ts(reset) if reset else ""
+        latest: dict[str, dict] = {}
+        for row in rows:
+            # compared as PARSED times (`_ts`), never as text: the reset marker and the row are written by
+            # different code with different offsets
+            if cutoff and (_ts(row.get("created_at")) or "") < cutoff:
+                continue
+            try:
+                row["detail_json"] = json.loads(row.get("detail_json") or "{}")
+            except (ValueError, TypeError):
+                row["detail_json"] = {}
+            latest[row["check_key"]] = row
+        return latest
 
     def get_quality_proposal(self, proposal_id: int | None) -> dict | None:
         """One database_quality_proposals row by id (a verdict's `proposal_id`), `*_json` decoded; None if absent."""
@@ -13052,6 +13125,7 @@ class ProjectRegistry:
                 (normalized,),
             )
             conn.execute("DELETE FROM database_quality_verdicts WHERE database_slug = ?", (normalized,))
+            conn.execute("DELETE FROM database_quality_rule_proofs WHERE database_slug = ?", (normalized,))
             conn.execute("DELETE FROM databases WHERE slug = ?", (normalized,))
 
     def record_database_survey(
