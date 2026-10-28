@@ -59,8 +59,7 @@ MANIFEST = StepManifest(
         # Both counts are PostgreSQL's statistics-collector figures (pg_stat_user_tables), not a count(*).
         confidence=ConfidenceDeclaration(
             form="estimated",
-            method=("the difference of two pg_stat_user_tables.n_live_tup readings, PostgreSQL's live-row "
-                    "estimate, not a count of rows")),
+            method="the change between two of PostgreSQL's row-count estimates, not a count of the rows"),
         scope="member",
     ),
 )
