@@ -226,6 +226,82 @@ class OdsReader:
                                           "to_column": fk.get("foreign_column") or ""})
         return {"surveyed_at": rows[0]["surveyed_at"], "source": rows[0]["source"], "tables": list(tables.values())}
 
+    # ── a file system's walk rows (Files build step 1), as RE stores them ──
+
+    #: RE keeps the newest five walk runs per file system (`walk_extensions.WALK_RUNS_KEPT`); a step reads at most that.
+    MAX_WALK_RUNS = 5
+
+    #: How a stored walk says it stopped at a limit. RE stores `survey_data` as `json.dumps` text, so a capped walk's
+    #: limits read `"capped": true`. A LIKE on that token is the one test both SQLite and Postgres answer the same way
+    #: without parsing a blob that can hold an inventory of 100,000 files (a test pins the token to the writer).
+    CAPPED_TOKEN = '%"capped": true%'
+
+    def filesystem_walk_runs(self, slug: str, limit: int = 2) -> list[dict]:
+        """The latest `limit` (1..5) walk runs that kept per-file rows for a file system, newest first:
+        `[{"run_id", "led_by", "files", "bytes", "hashed", "with_mode", "with_access_time", "capped"}]`.
+
+        `run_id` is the walk's own time. `capped` is 1 when the walk stopped at a limit, 0 when it walked to the end,
+        and None when no stored walk row matches the run (cannot tell). `with_mode` counts rows whose stat gave a mode;
+        `with_access_time` rows that carry an access time (a walk before that column existed carries none). Two
+        parameterised statements."""
+        s = normalize_slug(slug)
+        n = max(1, min(int(limit), self.MAX_WALK_RUNS))
+        runs = self.query(
+            "SELECT run_id, MAX(led_by) AS led_by, COUNT(*) AS files, COALESCE(SUM(size_bytes), 0) AS bytes, "
+            "SUM(CASE WHEN hash_state = 'hashed' THEN 1 ELSE 0 END) AS hashed, "
+            "SUM(CASE WHEN mode_octal <> '' THEN 1 ELSE 0 END) AS with_mode, "
+            "SUM(CASE WHEN accessed_at IS NOT NULL AND accessed_at <> '' THEN 1 ELSE 0 END) AS with_access_time "
+            "FROM filesystem_walk_files WHERE filesystem_slug = ? GROUP BY run_id ORDER BY run_id DESC LIMIT ?",
+            (s, n))
+        if not runs:
+            return []
+        marks = ", ".join("?" for _ in runs)
+        capped: dict[str, int] = {}
+        for r in self.query(
+                "SELECT surveyed_at, MAX(CASE WHEN survey_data LIKE ? THEN 1 ELSE 0 END) AS capped "
+                f"FROM filesystem_surveys WHERE filesystem_slug = ? AND surveyed_at IN ({marks}) GROUP BY surveyed_at",
+                (self.CAPPED_TOKEN, s, *[r["run_id"] for r in runs])):
+            capped[r["surveyed_at"]] = int(r["capped"])
+        for r in runs:
+            r["capped"] = capped.get(r["run_id"])
+        return runs
+
+    def filesystem_walk_files(self, slug: str, run_id: str) -> list[dict]:
+        """One walk run's per-file rows, by path: `[{file_path, folder_path, folder_depth, size_bytes, modified_at,
+        accessed_at, owner_name, group_name, mode_octal, world_readable, content_hash, hash_state}]`. Names, sizes,
+        times, owner, mode and a hash only: no content. One parameterised statement."""
+        return self.query(
+            "SELECT file_path, folder_path, folder_depth, size_bytes, modified_at, accessed_at, owner_name, group_name, "
+            "mode_octal, world_readable, content_hash, hash_state FROM filesystem_walk_files "
+            "WHERE filesystem_slug = ? AND run_id = ? ORDER BY file_path", (normalize_slug(slug), str(run_id)))
+
+    def filesystem_hash_matches(self, slug: str, run_id: str) -> dict:
+        """What the OTHER registered file systems hold of this run's content, by (hash, size), from each one's newest
+        walk run: `{"peers": [{filesystem_slug, run_id, hashed}], "matches": [{filesystem_slug, content_hash,
+        size_bytes, files}]}`. `peers` is every other file system with walk rows, so "no other file system has hashes"
+        (nothing to compare) is told apart from "compared and found nothing". Empty files are never matched. Two
+        parameterised statements."""
+        s = normalize_slug(slug)
+        newest = ("SELECT filesystem_slug, MAX(run_id) AS run_id FROM filesystem_walk_files "
+                  "WHERE filesystem_slug <> ? GROUP BY filesystem_slug")
+        peers = self.query(
+            "SELECT o.filesystem_slug AS filesystem_slug, o.run_id AS run_id, "
+            "SUM(CASE WHEN o.hash_state = 'hashed' THEN 1 ELSE 0 END) AS hashed "
+            f"FROM filesystem_walk_files o JOIN ({newest}) n "
+            "ON o.filesystem_slug = n.filesystem_slug AND o.run_id = n.run_id "
+            "GROUP BY o.filesystem_slug, o.run_id ORDER BY o.filesystem_slug", (s,))
+        matches = self.query(
+            "SELECT o.filesystem_slug AS filesystem_slug, o.content_hash AS content_hash, o.size_bytes AS size_bytes, "
+            "COUNT(*) AS files "
+            f"FROM filesystem_walk_files o JOIN ({newest}) n "
+            "ON o.filesystem_slug = n.filesystem_slug AND o.run_id = n.run_id "
+            "WHERE o.hash_state = 'hashed' AND o.size_bytes > 0 AND EXISTS (SELECT 1 FROM filesystem_walk_files m "
+            "  WHERE m.filesystem_slug = ? AND m.run_id = ? AND m.hash_state = 'hashed' "
+            "  AND m.content_hash = o.content_hash AND m.size_bytes = o.size_bytes) "
+            "GROUP BY o.filesystem_slug, o.content_hash, o.size_bytes "
+            "ORDER BY o.filesystem_slug, o.content_hash", (s, s, str(run_id)))
+        return {"peers": peers, "matches": matches}
+
     def registry_view(self):
         """A read-only stand-in for ProjectRegistry (needs the optional `re` extra; see registry_view.py)."""
         from trellis_analytics.readers.registry_view import RegistryReadView
