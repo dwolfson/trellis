@@ -281,7 +281,9 @@ STEP_ODS_METHODS = ("row_count_snapshots", "commit_proofs", "catalogue_scope_eve
                     "outbox_status_counts", "table_activity_snapshots", "table_keys",
                     # a file system's walk rows (Files build step 6: fs_change_rates, fs_duplicates, fs_activity,
                     # fs_permissions): names, sizes, times, owner, mode and hash, never content
-                    "filesystem_walk_runs", "filesystem_walk_files", "filesystem_hash_matches")
+                    "filesystem_walk_runs", "filesystem_walk_files", "filesystem_hash_matches",
+                    # the noise directories a walk did not enter, by name (Files build step 7: fs_layout_signals)
+                    "filesystem_walk_not_walked")
 
 #: How long a step's read may wait for its answer.
 READ_TIMEOUT_SECONDS = 120

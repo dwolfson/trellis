@@ -275,6 +275,20 @@ class OdsReader:
             "mode_octal, world_readable, content_hash, hash_state FROM filesystem_walk_files "
             "WHERE filesystem_slug = ? AND run_id = ? ORDER BY file_path", (normalize_slug(slug), str(run_id)))
 
+    def filesystem_walk_not_walked(self, slug: str, run_id: str) -> dict | None:
+        """The directories one walk run did not enter, by noise name (`{".git": 3, "node_modules": 12}`), from the stored
+        walk row whose time is the run's. `{}` when the walk recorded the count and skipped nothing; None when no stored
+        walk row for the run records it (a walk before the count was kept: cannot tell). Names of noise directories
+        only, never a path. One parameterised statement."""
+        for r in self.query(
+                "SELECT survey_data FROM filesystem_surveys WHERE filesystem_slug = ? AND surveyed_at = ?",
+                (normalize_slug(slug), str(run_id))):
+            limits = _json_dict(_json_dict(r.get("survey_data")).get("walk_limits"))
+            by_name = limits.get("not_walked_by_name")
+            if isinstance(by_name, dict):
+                return {str(k): int(v) for k, v in by_name.items() if isinstance(v, int)}
+        return None
+
     def filesystem_hash_matches(self, slug: str, run_id: str) -> dict:
         """What the OTHER registered file systems hold of this run's content, by (hash, size), from each one's newest
         walk run: `{"peers": [{filesystem_slug, run_id, hashed}], "matches": [{filesystem_slug, content_hash,

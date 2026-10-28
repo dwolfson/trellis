@@ -3431,6 +3431,82 @@ filesystem_analyses:
       answers:
       - Q-0106
       scope: resource
+  - id: fs_layout_signals
+    name: File System Layout Signals
+    description: 'Whether the file system holds a recognisable structure (a project, a dataset layout, an
+      archive, backups) from the names on Resource Explorer''s newest walk: project manifests and .git directories,
+      dated and partition folders, dictionary and schema files, archive and backup names. Opens no file
+      and publishes no name. With no walk it is shown as "not measured", never as nothing recognised.'
+    resource_types:
+    - filesystem
+    intent: discovery
+    perspectives:
+    - Data Expert
+    - Steward
+    - Architecture
+    annotation_types:
+    - ResourceProfileAnnotation
+    source: local
+    run_time: fast
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: true
+      native_process_ref: null
+    provided_by:
+      package: trellis-step-fs-layout-signals
+      entry_point: fs_layout_signals
+      step: fs_layout_signals
+      version: 0.1.0
+      kind: step
+      source: ods
+      credential_tier: none
+      questions:
+      - Q-0104
+      purposes:
+      - Select
+      - Explore
+    declaration:
+      result_kind: measure
+      measures:
+      - name: fs_layout_signals
+        unit: recognised structures
+        as_of: asOf
+        value_field: Recognised Structures
+        annotation:
+          type: ResourceProfileAnnotation
+      absence:
+        not_measured: 'Not measured: no walk has kept per-file rows, so no name could be matched.'
+        not_permitted: 'Not permitted: the walk could not list these folders, so their names are not held.'
+        not_applicable: 'Not applicable: layout signals are measured for file systems only.'
+        measured_nothing: 'Measured: no project manifest or .git directory, no dated or partition folders
+          or dictionary file, no archive or backup file on the walk.'
+      extents:
+      - name: layout_counts
+        fields:
+        - scope
+        - Recognised As
+        - Project Manifests
+        - Git Directories Not Walked
+        - Dated Folders
+        - Partition Folders
+        - Data Dictionary Or Schema Files
+        - Archive Files
+        - Backup Files
+        - Folders With A README
+        - asOf
+        rows: 1
+        order: the one layout profile
+        truncation: '{shown} of {total} results shown'
+        token_cost: 260
+        citation: '{analysis} · {scope} · as of {as_of}'
+      confidence:
+        form: measured
+      answers:
+      - Q-0104
+      scope: resource
   - id: fs_permissions
     name: File Permissions
     description: Owners, groups and modes as counts (world-readable, world-writable, group-writable, setuid),

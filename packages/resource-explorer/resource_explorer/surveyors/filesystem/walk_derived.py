@@ -1,6 +1,7 @@
 """What the folder survey card reads for Files build step 6: the derived steps' stored results, and the price line (F12).
 
-**The derived steps** (`derived_view`). `fs_change_rates`, `fs_duplicates`, `fs_activity` and `fs_permissions` are
+**The derived steps** (`derived_view`). `fs_change_rates`, `fs_duplicates`, `fs_activity`, `fs_permissions` and (Files build
+step 7) `fs_layout_signals` are
 Analytic Library steps (packages under `trellis-analytics/examples/steps/`), attached beside filesystem_inventory by
 `survey_step_host` from their generated catalog entries. Each derives from the walk's kept per-file rows only. This
 reads, per catalogued step, what it last stored in `step_annotations` (each declared measure under its own key), with

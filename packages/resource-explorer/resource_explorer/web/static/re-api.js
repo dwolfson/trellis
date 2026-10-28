@@ -253,7 +253,7 @@ export const readFileProfilesFromEgeria = (slug) =>
 export const publishFileProfiles = (slug) =>
   post(`/api/filesystems/${encodeURIComponent(slug)}/file-profiles/publish`);
 /** Files build step 6: run ONE Analytic Library step over the walk's kept rows (fs_change_rates, fs_duplicates,
- *  fs_activity, fs_permissions). Queued: answers `{ status: 'started', activity_id, run_id }`; poll the activity. */
+ *  fs_activity, fs_permissions, fs_layout_signals). Queued: answers `{ status: 'started', activity_id, run_id }`; poll the activity. */
 export const runFilesystemAnalysis = (slug, analysisId) =>
   post(`/api/filesystems/${encodeURIComponent(slug)}/analyses/${encodeURIComponent(analysisId)}/run`);
 

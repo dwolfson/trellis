@@ -759,7 +759,7 @@ def publish_filesystem_folder_survey(slug: str) -> dict:
 @router.post("/{slug}/analyses/{analysis_id}/run")
 def run_filesystem_analysis(slug: str, analysis_id: str) -> dict:
     """Run ONE file system analysis that is an Analytic Library step (fs_change_rates, fs_duplicates, fs_activity,
-    fs_permissions): validated here (an unknown id, or a step whose package is not installed, is a 400 naming why),
+    fs_permissions, fs_layout_signals): validated here (an unknown id, or a step whose package is not installed, is a 400 naming why),
     then queued, as every step is (a step never runs in the web process). Zero-fetch: the step reads the walk's kept
     rows, opens no file and takes no credential. The answer is `{status: "started", activity_id, run_id}`; the result
     is stored, not published. The folder survey, the walk extensions and file_profiles keep their own presses."""
