@@ -74,7 +74,7 @@ class MeasureDeclaration(_Strict):
     #: nested field ("temporal.as_of"); `run.<field>` names a field of the run that produced the result rather than
     #: of the result itself (`run.read_snapshot`: the newest stored row a zero-fetch derivation read).
     as_of: str
-    #: The result field holding the value; a dotted path names a nested one ("counts.stale"), and a trailing 
+    #: The result field holding the value; a dotted path names a nested one ("counts.stale"), and a trailing `[]`
     #: declares the value as the number of items in a list field ("columns_added[]": columns added, counted).
     value_field: str
     #: What it writes as in Egeria; absent is the generic measure route, labelled as such.
@@ -123,12 +123,29 @@ class ExtentDeclaration(_Strict):
     token_cost: int
     #: How an answer cites a row of this extent ("{analysis} · {scope} · as of {as_of}").
     citation: str
+    #: Where the rows are in the result, when that is not a field named like the extent: each a dotted path to a
+    #: list (each item a row) or to a mapping (one row), "." the result itself as one row. Several are joined in
+    #: order. Empty means the extent's name is the path.
+    source: list[str] = Field(default_factory=list)
+    #: With several sources: the row field that carries which source a row came from (the path's last part:
+    #: "columns_added"), so joined rows stay told apart. Empty for none.
+    tag: str = ""
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _one_source(cls, v):
+        return [v] if isinstance(v, str) else v
 
     @model_validator(mode="after")
     def _shape(self) -> "ExtentDeclaration":
         label = f"extent '{self.name}'" if _words(self.name) else "an extent"
         if not _words(self.name):
             raise ValueError("an extent declares no name")
+        if any(not _words(s) for s in self.source):
+            raise ValueError(f"{label} declares an empty source path")
+        if _words(self.tag) and _words(self.tag) not in self.fields:
+            raise ValueError(f"{label} tags its rows with '{self.tag}', which is not one of its fields: the tag is "
+                             "how the rows are told apart, so the compiler must show it")
         if not [f for f in self.fields if _words(f)]:
             raise ValueError(f"{label} declares no fields: the compiler takes the declared fields and no others")
         if self.rows < 1:

@@ -243,6 +243,14 @@ def _evidence_of(compile_row: dict | None) -> tuple[list[str], str | None, str]:
         confidence = f"answered from {len(keys)} stored result{'' if len(keys) == 1 else 's'}"
         if gaps:
             confidence += f"; {len(gaps)} not measured ({', '.join(gaps)})"
+        # The weakest declared confidence form the answer rests on (DESIGN-DECLARED-EXTENSIBILITY §4: "reports the
+        # weakest link, not an average"), named with the sections that carry it. Absent from compiles before slice 2.
+        conf = manifest.get("confidence") or {}
+        weakest = conf.get("weakest") if isinstance(conf, dict) else ""
+        if weakest:
+            by = [k for k, f in (conf.get("by_section") or {}).items() if f == weakest]
+            confidence += f"; rests at weakest on {'an' if weakest[0] in 'aeiou' else 'a'} {weakest} result"
+            confidence += f" ({', '.join(by)})" if by else ""
     return keys, as_of, confidence
 
 

@@ -94,7 +94,10 @@
 #                         not_permitted, not_applicable, measured_nothing.
 #     extents           - Chat's shapes: name, fields, rows, order,
 #                         truncation (with {shown} and {total}), token_cost,
-#                         citation.
+#                         citation; and, where the rows are not under the
+#                         extent's own name in the stored result, source (the
+#                         path(s) to them, '.' for the result as one row) and,
+#                         joining several, tag (the field naming which one).
 #     confidence        - form (measured | estimated | inferred | judged |
 #                         generated), basis (the result field carrying it;
 #                         required unless measured), score, and calibrated
@@ -955,6 +958,7 @@ database_analyses:
         truncation: '{shown} of {total} relations shown, by schema and name'
         token_cost: 1480
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [tables]
       confidence:
         form: measured
       answers: [Q-0060, Q-0061, Q-0078]
@@ -1019,6 +1023,7 @@ database_analyses:
         truncation: '{shown} of {total} tables shown, by row count'
         token_cost: 840
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [tables]
       confidence:
         form: estimated
         basis: tables.row_count_is_estimate
@@ -1126,6 +1131,7 @@ database_analyses:
         truncation: '{shown} of {total} summaries shown'
         token_cost: 56
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: ['.']
       - name: busiest_tables
         fields: [schemaname, tablename, rows_inserted, rows_updated, rows_deleted, seq_scan, idx_scan]
         rows: 15
@@ -1133,6 +1139,7 @@ database_analyses:
         truncation: '{shown} of {total} tables shown, by rows written'
         token_cost: 880
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [table_activity]
       confidence:
         form: measured
       answers: [Q-0062, Q-0092]
@@ -1196,6 +1203,7 @@ database_analyses:
         truncation: '{shown} of {total} summaries shown'
         token_cost: 88
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: ['.']
       - name: by_schema
         fields: [schema, usage_granted, table_select, table_total]
         rows: 20
@@ -1255,6 +1263,7 @@ database_analyses:
         truncation: '{shown} of {total} summaries shown'
         token_cost: 72
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: ['.']
       confidence:
         form: measured
       answers: [Q-0065, Q-0066, Q-0093]
@@ -1317,12 +1326,14 @@ database_analyses:
         measured_nothing: 'Measured: no extensions, foreign servers or tables, publications or subscriptions.'
       extents:
       - name: dependencies
-        fields: [kind, name, detail]
+        fields: [kind, extname, extversion, srvname, fdwname, schema_name, table_name, pubname, subname]
         rows: 30
         order: by kind, then name
         truncation: '{shown} of {total} external dependencies shown, by kind'
         token_cost: 760
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [extensions, foreign_servers, foreign_tables, publications, subscriptions]
+        tag: kind
       confidence:
         form: measured
       answers: [Q-0084]
@@ -1390,6 +1401,7 @@ database_analyses:
         truncation: '{shown} of {total} classifications shown'
         token_cost: 88
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: ['.']
       confidence:
         form: inferred
         basis: signals_used
@@ -1463,6 +1475,7 @@ database_analyses:
         truncation: '{shown} of {total} summaries shown'
         token_cost: 80
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: ['.']
       - name: most_referenced
         fields: [table, referenced_by]
         rows: 10
@@ -1524,6 +1537,7 @@ database_analyses:
         truncation: '{shown} of {total} ranked tables shown, by rank score'
         token_cost: 520
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [hubs]
       confidence:
         form: measured
       answers: [Q-0072]
@@ -1599,6 +1613,7 @@ database_analyses:
         truncation: '{shown} of {total} tables needing attention shown, stale first'
         token_cost: 1000
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [attention]
       confidence:
         form: measured
       answers: [Q-0073]
@@ -1804,6 +1819,8 @@ database_analyses:
         truncation: '{shown} of {total} offending tables and columns shown, by check'
         token_cost: 520
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [checks.tables_without_comment.items, checks.naming_convention.items]
+        tag: check
       confidence:
         form: measured
       answers: [Q-0083, Q-0088, Q-0090]
@@ -1858,6 +1875,7 @@ database_analyses:
         truncation: '{shown} of {total} columns shown, privacy-relevant first'
         token_cost: 1240
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [columns]
       confidence:
         form: inferred
         basis: columns.sample
@@ -2121,6 +2139,8 @@ database_analyses:
         truncation: '{shown} of {total} column changes shown, by kind of change'
         token_cost: 1000
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [columns_added, columns_dropped, columns_retyped]
+        tag: change
       confidence:
         form: measured
       answers: [Q-0041, Q-0086]
@@ -2185,6 +2205,8 @@ database_analyses:
         truncation: '{shown} of {total} grant changes shown, PUBLIC first'
         token_cost: 520
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [grants_added, grants_revoked]
+        tag: change
       confidence:
         form: measured
       answers: [Q-0085]
@@ -2333,6 +2355,7 @@ database_analyses:
         truncation: '{shown} of {total} periods shown'
         token_cost: 72
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [temporal]
       - name: column_ranges
         fields: [schema_name, table_name, column_name, start, end, basis]
         rows: 15
@@ -2340,6 +2363,7 @@ database_analyses:
         truncation: '{shown} of {total} dated columns shown, earliest first'
         token_cost: 760
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [temporal.column_ranges]
       confidence:
         form: estimated
         basis: temporal.basis
@@ -2409,6 +2433,7 @@ database_analyses:
         truncation: '{shown} of {total} verdicts shown'
         token_cost: 80
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: ['.']
       confidence:
         form: inferred
         basis: inputs
@@ -2627,6 +2652,7 @@ database_analyses:
         truncation: '{shown} of {total} columns shown, partial matches first'
         token_cost: 1040
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: [columns]
       confidence:
         form: inferred
         basis: columns.sample
@@ -3150,6 +3176,7 @@ filesystem_analyses:
         truncation: '{shown} of {total} summaries shown'
         token_cost: 80
         citation: '{analysis} · {scope} · as of {as_of}'
+        source: ['.']
       confidence:
         form: measured
       answers: [Q-0094, Q-0095, Q-0100]

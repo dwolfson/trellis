@@ -1264,11 +1264,47 @@ def compile_context(
     #: Per packed section, the stored row ids its text was built from (persist what the model saw): kept on the
     #: recorded manifest, so a stored answer names the exact rows behind it.
     rows_seen: dict[str, dict] = {}
+    from resource_explorer import declared_context
+    from resource_explorer.facts import FactLayer
+
+    _facts = FactLayer(registry, resource_type=resource_type)
+    #: Analyses whose catalogue entry declares its results: their section is built from the declaration (§3 of
+    #: DESIGN-DECLARED-EXTENSIBILITY-RENDERING-CHAT-CONFIDENCE), not from the generic shape below.
+    _declared = declared_context.declarations(resource_type)
+    #: Per packed declared section, what each rung showed (extents, as-of, confidence form), for the manifest.
+    declared_seen: dict[str, dict] = {}
+    #: Declared analyses with nothing stored, and the sentence each declares for that.
+    declared_absent: dict[str, dict] = {}
     for rank, (analysis_id, weight) in enumerate(ranked):
         if cap > 0 and packed_count >= cap:
             deferred.append({"key": analysis_id, "weight": round(weight, 3), "rank": rank,
                              "reason": f"below the section cap of {cap}"})
             continue
+        dec = _declared.get(analysis_id)
+        fact = None
+        if dec is not None:
+            try:
+                fact = _facts.fact(slug, analysis_id).as_dict()
+            except Exception as exc:
+                # Fail-soft to the generic path below, which has its own; the declared section is the loss.
+                log.warning("fact for declared %s on %s failed: %s", analysis_id, slug, exc)
+                extra_notes.append(f"declared section for {analysis_id} unavailable ({type(exc).__name__}); "
+                                   "packed from its stored findings instead")
+            if fact is not None and fact.get("state") in declared_context.KNOWN_STATES:
+                rungs, seen = declared_context.section_rungs(analysis_id, dec, fact)
+                if analysis_id in caveat_ids:
+                    rungs = _with_caveat(rungs, coverage["caveat"])
+                sections.append(Section(analysis_id, role="evidence", weight=weight))
+                provenance = ({"analysis_id": analysis_id, "check": None,
+                               "surveyed_at": fact.get("last_run_at") or None},)
+                candidates[analysis_id] = Candidate(analysis_id, rungs, provenance=provenance,
+                                                    pointer=_pointer_for(analysis_id, slug, provenance))
+                declared_seen[analysis_id] = seen
+                lists = declared_context.list_extents(seen)
+                if lists:
+                    list_extents[analysis_id] = lists
+                packed_count += 1
+                continue
         findings = registry.query_findings(slug, analysis_id)
         rungs = _findings_to_rungs(findings, analysis_id)
         provenance = _provenance(findings, analysis_id)
@@ -1371,6 +1407,8 @@ def compile_context(
                 pointer=_pointer_for(analysis_id, slug, provenance),
             )
             packed_count += 1
+        elif dec is not None and fact is not None:
+            declared_absent[analysis_id] = declared_context.absence(dec, fact.get("state", ""))
         # No rungs => no candidate => the packer records a gap. Deliberately not
         # skipped here: a section the derivation says should exist, with nothing
         # behind it, is information -- and it does not count against the cap.
@@ -1386,10 +1424,12 @@ def compile_context(
     coverage["caveat_placed_in"] = placed if placed else (["instructions"] if coverage["caveat"] else [])
     if placed:
         caveat_line = caveat_line_short = ""
+    # A declared analysis with nothing stored is said in its own words (§3 step 3), beside the coverage line.
+    absent_line, absent_line_short = declared_context.absence_lines(declared_absent)
     candidates["instructions"] = Candidate(
         "instructions",
-        {Rung.FULL: coverage_line + caveat_line + instr_full,
-         Rung.SUMMARY: coverage_line_short + caveat_line_short + instr_short,
+        {Rung.FULL: coverage_line + caveat_line + absent_line + instr_full,
+         Rung.SUMMARY: coverage_line_short + caveat_line_short + absent_line_short + instr_short,
          Rung.IDENTIFIERS: _INSTRUCTIONS_BARE})
 
     spec = ContextSpec(
@@ -1398,18 +1438,34 @@ def compile_context(
     )
     packed = pack(spec, candidates, budget)
     m = packed.manifest
-    from resource_explorer.facts import FactLayer
-
-    _facts = FactLayer(registry, resource_type=resource_type)
     compile_id = _compile_id(spec, candidates, budget, cap)
+    text, used = packed.text(), m.used
+    # §3 step 4: a declared section the budget dropped or the cap deferred is named in the context with its declared
+    # cost. It goes in only where it fits: the budget is a hard ceiling, so what does not fit is a manifest note.
+    omitted = [(d["key"], "left out to fit the budget") for d in m.dropped if d["key"] in _declared]
+    omitted += [(d["key"], f"not read: ranked below the section cap of {cap}") for d in deferred
+                if d["key"] in _declared]
+    omitted_in_context: list[str] = []
+    if omitted:
+        block = declared_context.omission_block([(k, _declared[k], why) for k, why in omitted])
+        if used + len(block) <= budget:
+            text, used = text + block, used + len(block)
+            omitted_in_context = [k for k, _ in omitted]
+        else:
+            extra_notes.append("declared sections left out, not said in the context for want of room: "
+                               + ", ".join(k for k, _ in omitted))
+    packed_keys = {p["key"] for p in m.packed}
+    declared_packed = {k: v for k, v in declared_seen.items() if k in packed_keys}
+    for k, v in declared_packed.items():
+        v["rung"] = next(p["rung"] for p in m.packed if p["key"] == k)
     compiled = CompiledContext(
-        text=packed.text(),
+        text=text,
         compile_id=compile_id,
         manifest={
             "compile_id": compile_id,
             "resource_type": resource_type,
-            "spec_id": m.spec_id, "budget": m.budget, "max_sections": cap, "used": m.used,
-            "headroom": m.headroom, "packed": list(m.packed),
+            "spec_id": m.spec_id, "budget": m.budget, "max_sections": cap, "used": used,
+            "headroom": m.budget - used, "packed": list(m.packed),
             "dropped": list(m.dropped),
             # Ranked below the cap: never offered to the packer, so neither
             # packed, dropped nor a gap. Listed so "why these?" can show what
@@ -1429,7 +1485,20 @@ def compile_context(
             # Judged, not merely listed. The packer knows only that a section
             # had no candidate; the fact layer knows whether that is a zero or
             # an absence, and they are opposite answers to the same question.
-            "gaps": [_judge_gap(_facts, slug, g["key"]) for g in m.gaps],
+            "gaps": [{**_judge_gap(_facts, slug, g["key"]), **(
+                {"sentence": declared_absent[g["key"]]["sentence"], "absence": declared_absent[g["key"]]["absence"]}
+                if g["key"] in declared_absent else {})} for g in m.gaps],
+            # Per packed declared section (§3 step 5): the rung it went in at, the as-of, the confidence form, and
+            # per extent how many rows of how many, with the identity of each row shown at each rung.
+            "declared": declared_packed,
+            # §4: the weakest declared confidence form any packed section rests on -- what an answer reports,
+            # never an average -- and each section's form.
+            "confidence": {
+                "weakest": declared_context.weakest([v["confidence"] for v in declared_packed.values()]),
+                "by_section": {k: v["confidence"] for k, v in declared_packed.items() if v["confidence"]},
+            },
+            "absences_in_context": sorted(declared_absent),
+            "omitted_in_context": omitted_in_context,
             "notes": list(m.notes) + extra_notes,
         },
         derivation=derivation,
@@ -1437,7 +1506,10 @@ def compile_context(
     record = getattr(registry, "record_compile", None)
     if callable(record):
         try:
-            record(compile_id, slug, question, compiled.manifest, compiled.derivation,
+            # The stored row carries the text the model was given (§3 step 5: "persist what the model saw"), so a
+            # stored answer can be opened as it was, not re-compiled against results that have since moved. In the
+            # manifest's JSON rather than a column of its own: no DDL. The returned manifest stays without it.
+            record(compile_id, slug, question, {**compiled.manifest, "text": compiled.text}, compiled.derivation,
                    session_id=session_id)
         except Exception as exc:
             # Persistence is an instrument, not the product: a compile the
