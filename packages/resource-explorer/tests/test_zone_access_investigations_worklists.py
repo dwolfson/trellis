@@ -176,8 +176,8 @@ PRIVATE_UNBOUND = {"slug": "i", "display_name": "I", "project_classification": "
 #: A bound investigation whose Project is "pg".
 BOUND = {"slug": "i", "display_name": "I", "project_classification": "PersonalProject", "created_by": OWNER,
          "egeria_binding": "egeria", "egeria_project_guid": "pg", "status": "open"}
-WORK_LIST = {"slug": "w", "display_name": "W", "entity_type": "repo", "egeria_guid": "wg",
-             "members": [{"entity_slug": "p"}]}
+WORK_LIST = {"slug": "w", "display_name": "W", "entity_type": "repo", "stored_entity_type": "repo",
+             "kinds": {"repo": 1}, "egeria_guid": "wg", "members": [{"entity_slug": "p", "entity_type": "repo"}]}
 
 INV = "resource_explorer.registry.ProjectRegistry.get_investigation"
 PUB = "resource_explorer.surveyors.egeria_investigation_publisher.EgeriaInvestigationPublisher"

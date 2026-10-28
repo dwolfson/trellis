@@ -20,7 +20,7 @@ EXPECTED = {
                    ("investigation", ""), ("created_by", ""), ("created_at", None), ("derived_from", ""),
                    ("egeria_guid", ""), ("published_at", ""), ("filter_json", None), ("filter_as_of", None)],
     "work_list_members": [("work_list_slug", None), ("entity_slug", None), ("rationale", ""),
-                          ("confidence", None), ("added_at", None)],
+                          ("confidence", None), ("added_at", None), ("entity_type", "")],
     "work_list_runs": [("set_id", None), ("run_id", None), ("work_list_slug", ""), ("entity_slug", None),
                        ("analysis_id", None), ("enqueued_at", None)],
 }

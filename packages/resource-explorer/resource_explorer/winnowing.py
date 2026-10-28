@@ -36,9 +36,10 @@ MEASURE_OPS = NUMBER_OPS + DATE_OPS
 
 #: The keys of a stored criterion, and of a stored filter. Anything else is refused by name, so a stored filter
 #: cannot carry a key no reader understands.
-CRITERION_KEYS = {"question_id", "question", "analysis_ids", "field", "op", "value", "lens_dimension", "entity_type"}
+CRITERION_KEYS = {"question_id", "question", "analysis_ids", "analysis_ids_by_kind", "field", "op", "value",
+                  "lens_dimension", "entity_type"}
 FILTER_KEYS = {"criteria", "applied_at", "oldest_answer", "parent_slug", "parent_count", "kept", "dropped",
-               "could_not_check"}
+               "could_not_check", "entity_type"}
 
 
 def column_types(entity_type: str, analysis_ids: list[str]) -> dict:
@@ -90,6 +91,12 @@ def _check_criterion(raw: Any, n: int) -> dict:
         raise ValueError(f"{where}: analysis_ids must be a list of analysis ids")
     if not str(raw.get("question") or "").strip():
         raise ValueError(f"{where} names no question")
+    # A shared column of a list of more than one kind (§5) is answered per kind by that kind's own analyses.
+    by_kind = raw.get("analysis_ids_by_kind")
+    if by_kind is not None and (not isinstance(by_kind, dict) or not all(
+            isinstance(k, str) and isinstance(v, list) and all(isinstance(a, str) and a for a in v)
+            for k, v in by_kind.items())):
+        raise ValueError(f"{where}: analysis_ids_by_kind must map each kind to its analysis ids")
     if field == "state":
         if op not in STATE_OPS:
             raise ValueError(f"{where}: a state is filtered by {' or '.join(STATE_OPS)}, not {op!r}")
@@ -113,7 +120,7 @@ def _check_criterion(raw: Any, n: int) -> dict:
     else:
         raise ValueError(f"{where}: {field or '(none)'!r} is not something a column is filtered by "
                          "(state, headline, or measure:<analysis id>:<value field>)")
-    out = {k: raw.get(k) for k in CRITERION_KEYS if k in raw}
+    out = {k: raw.get(k) for k in CRITERION_KEYS if k in raw and raw.get(k) is not None}
     out.update(field=field, op=op, analysis_ids=list(ids), lens_dimension=str(raw.get("lens_dimension") or ""))
     return out
 
@@ -125,7 +132,7 @@ def _check_iso(v: Any, name: str, *, required: bool) -> str:
             raise ValueError(f"the filter has no {name}")
         return ""
     try:
-        datetime.fromisoformat(s.replace("Z", "+00:00"))
+        datetime.fromisoformat(s)
     except ValueError:
         raise ValueError(f"the filter's {name} {s!r} is not an ISO date") from None
     return s
@@ -137,7 +144,9 @@ def check_filter(raw: Any) -> dict:
     Shape: ``criteria`` (one or more, all must hold), ``applied_at`` (when the cut was made over the headlines
     then held), ``oldest_answer`` (the oldest as-of among the answers that decided it; "" when none did),
     ``parent_slug`` and ``parent_count`` (what it was cut from), and the three buckets: ``kept`` and ``dropped``
-    (slugs) and ``could_not_check`` (``{entity_slug, words}``, each with its sentence, never a bare name)."""
+    (slugs) and ``could_not_check`` (``{entity_slug, words}``, each with its sentence, never a bare name).
+    ``entity_type``, when given, says the cut was made over that kind's members only (a list of more than one
+    kind, filtered with one kind's chip pressed): the other kinds were not asked, so they are in no bucket."""
     if not isinstance(raw, dict):
         raise ValueError("the filter is not a mapping")
     stray = sorted(set(raw) - FILTER_KEYS)
@@ -181,6 +190,7 @@ def check_filter(raw: Any) -> dict:
         "parent_slug": str(raw.get("parent_slug") or ""),
         "parent_count": parent_count,
         "kept": kept, "dropped": dropped, "could_not_check": cnc,
+        **({"entity_type": str(raw["entity_type"])} if raw.get("entity_type") else {}),
     }
 
 
@@ -204,5 +214,6 @@ def filter_words(f: dict) -> str:
     crit = " and ".join(criterion_words(c) for c in f.get("criteria") or [])
     unchecked = len(f.get("could_not_check") or [])
     tail = f" · {unchecked} could not be checked" if unchecked else ""
-    return (f"kept {len(f.get('kept') or [])} of {f.get('parent_count', 0)} on {crit} "
+    of = f"{f.get('parent_count', 0)}" + (f" {f['entity_type']}" if f.get("entity_type") else "")
+    return (f"kept {len(f.get('kept') or [])} of {of} on {crit} "
             f"as of {str(f.get('applied_at') or '')[:10]}{tail}")

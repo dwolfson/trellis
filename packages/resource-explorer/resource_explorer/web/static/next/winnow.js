@@ -205,6 +205,32 @@ export function applyFilter(criteria, members, read, now = Date.now()) {
   return out;
 }
 
+/** A criterion as one kind answers it: a shared column of a list of more than one kind carries each kind's own
+ *  analysis ids (`analysis_ids_by_kind`); a member reads its kind's. */
+export function criterionFor(c, kind) {
+  const ids = c.analysis_ids_by_kind?.[kind];
+  return ids ? { ...c, analysis_ids: ids } : c;
+}
+
+/**
+ * One column set per view (DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-KINDS §5): the questions EVERY kind present
+ * carries, matched by catalog id (by text when a question has none), in the first kind's order. Each shared
+ * column keeps every kind's own entry in `byKind`, so a row is answered by its own kind's analyses; its
+ * `analysis_ids` are the union, for display. A question one kind lacks is not in the set: it is not asked of
+ * that kind, which is not "could not check".
+ */
+export function sharedColumns(perKind) {
+  const kinds = [...perKind.keys()];
+  const key = (q) => q.id || q.question;
+  const index = new Map(kinds.map((k) => [k, new Map((perKind.get(k) || []).map((q) => [key(q), q]))]));
+  const first = perKind.get(kinds[0]) || [];
+  return first.filter((q) => kinds.every((k) => index.get(k).has(key(q)))).map((q) => {
+    const byKindQ = Object.fromEntries(kinds.map((k) => [k, index.get(k).get(key(q))]));
+    return { ...q, byKind: byKindQ,
+      analysis_ids: [...new Set(kinds.flatMap((k) => byKindQ[k].analysis_ids || []))] };
+  });
+}
+
 /** One criterion in words: `Q-0010 · relation_count at least 10` (winnowing.criterion_words says the same). */
 export function criterionWords(c) {
   const field = c.field || '';
@@ -215,10 +241,13 @@ export function criterionWords(c) {
 }
 
 /** The filter a shortlist stores (`winnowing.check_filter`'s shape), from the criteria and the buckets. */
-export function storedFilter(criteria, buckets, { parentSlug, parentCount, appliedAt }) {
+export function storedFilter(criteria, buckets, { parentSlug, parentCount, appliedAt, entityType = '' }) {
   return {
+    // A cut made under one kind's chip covers that kind's members only (winnowing.check_filter).
+    ...(entityType ? { entity_type: entityType } : {}),
     criteria: criteria.map((c) => ({
       question_id: c.question_id || '', question: c.question, analysis_ids: [...(c.analysis_ids || [])],
+      ...(c.analysis_ids_by_kind ? { analysis_ids_by_kind: c.analysis_ids_by_kind } : {}),
       field: c.field, op: c.op, value: c.value, lens_dimension: c.lens_dimension || '',
       ...(c.entity_type ? { entity_type: c.entity_type } : {}),
     })),
@@ -248,7 +277,7 @@ export function shortlistWords(f) {
   if (!f) return '';
   if (f.unreadable) return f.unreadable;
   const crit = (f.criteria || []).map(criterionWords).join(' and ');
-  return `kept ${(f.kept || []).length} of ${f.parent_count ?? '?'} on ${crit} as of ${
+  return `kept ${(f.kept || []).length} of ${f.parent_count ?? '?'}${f.entity_type ? ` ${f.entity_type}` : ''} on ${crit} as of ${
     String(f.applied_at || '').slice(0, 10)}`;
 }
 
@@ -258,7 +287,7 @@ export function unrunGroups(couldNotCheck) {
   const by = new Map();
   for (const u of couldNotCheck) {
     if (u.reason !== 'unrun') continue;
-    const ids = u.criterion?.analysis_ids || [];
+    const ids = (u.criterion && criterionFor(u.criterion, u.entity_type).analysis_ids) || [];
     const key = `${u.entity_type || ''}|${ids.join(',')}`;
     if (!by.has(key)) {
       by.set(key, { analysisIds: ids, question: u.criterion?.question_id || u.criterion?.question || '',

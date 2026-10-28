@@ -1553,6 +1553,13 @@ export const promoteWorkList = (slug, survivors, displayName = '', rationale = '
 export const reapplyShortlist = (slug, filter) =>
   post(`/api/work-lists/${encodeURIComponent(slug)}/reapply`, { filter });
 
+/** A list of more than one kind runs one batch per kind: `analyses` maps a kind to the analysis for its members;
+ *  `members` ({entity_slug, entity_type}) narrows to the rows ticked, null for all. Returns {runs: [one per kind,
+ *  with its set_id, or `refused` with its words], not_run: [a kind with no analysis chosen]}. */
+export const enqueuePerKind = (slug, analyses, members = null) =>
+  post(`/api/work-lists/${encodeURIComponent(slug)}/runs/per-kind`,
+       { analyses, ...(members ? { members: [...members] } : {}) });
+
 /** What the analyses behind the bench's columns can be filtered by, for one kind: declared measures and
  *  absence sentences. `{analyses: {id: {declared, measures, absence}}, unknown: [id]}`. */
 export const getColumnTypes = (entityType, analysisIds = []) => {
