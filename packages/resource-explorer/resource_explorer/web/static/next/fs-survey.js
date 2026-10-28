@@ -9,13 +9,18 @@
  *     native-survey row below follows its run); Resource Explorer's walk runs here and is stored;
  *   - the results, ONE shape for both leads: file types, counts, the inaccessible files, and (Resource Explorer's walk)
  *     the declared limits with "capped" said plainly. The surveyor is named on the results and on the report.
+ *   - the price line BEFORE the press (Files F12): the last walk's files, bytes and time on this machine, capped or not,
+ *     what was not walked and where the bulk sits; "not priced" until a walk has measured the tree;
+ *   - "Derived from the walk" (Files build step 6): the Analytic Library steps over the kept per-file rows, each with its
+ *     stored state and its own words; "not run yet" until one has run, "not installed" naming the package.
  *
  * Every status here comes from a stored row the server read (the probe row, the run row, the walk's own limits), never
  * from which button was pressed. A number the survey did not carry is "–", never 0.
  */
 import { esc } from '/static/next/app.js';
 import { getFolderSurvey, runFolderSurvey, publishFolderSurvey, checkFilesystemReach, runWalkExtensions, publishWalkExtensions,
-  runFileProfiles, readFileProfilesFromEgeria, publishFileProfiles } from '/static/re-api.js';
+  runFileProfiles, readFileProfilesFromEgeria, publishFileProfiles, runFilesystemAnalysis, pollActivity, activityFailure,
+  failureText } from '/static/re-api.js';
 import { enhanceTable } from '/static/next/colresize.js';
 import { fmtBytes } from '/static/next/stages/native-report.js';
 
@@ -79,6 +84,14 @@ export const FOLDER_SURVEY_WORDS = {
     c.no_columns ? `${num(c.no_columns)} read back from Egeria with no column profile` : '',
     c.not_reachable ? `${num(c.not_reachable)} not reachable from here · the mount point could not be reached` : '',
     c.header_suspect ? `${num(c.header_suspect)} with a header that looks like data · those names not published` : ''].filter(Boolean).join(' · '),
+  // Files build step 6: the derived steps, and F12's price line.
+  derivedHeading: 'Derived from the walk',
+  derivePress: 'Derive',
+  deriving: 'Deriving…',
+  notRun: 'not run yet',
+  derivedAt: (date) => `derived${date ? ` · ${date}` : ''}`,
+  notPriced: 'not priced',
+  derivedKept: 'kept here · not published to Egeria',
 };
 
 const dash = '–';
@@ -322,8 +335,47 @@ export function fileProfilesHtml(fp) {
   </div>`;
 }
 
+/** F12: the price line, shown before the Survey press. The server's words, from the stored walk; never a guessed number. */
+export function priceLineHtml(price) {
+  if (!price) return '';
+  return `<div data-fs-price data-fs-priced="${price.priced ? 'yes' : 'no'}" class="mt-[2px] text-caveat text-ink-muted">${esc(price.words || FOLDER_SURVEY_WORDS.notPriced)}</div>`;
+}
+
+const STEP_GLYPH = { measured: '●', nothing_found: '○', not_established: '◌', not_applicable: '–' };
+
+/** Files build step 6: the derived steps' stored results, each in the step's own words (state words, summary, and the
+ *  reason when it could not measure). A step never run is "not run yet"; an uninstalled one names its package. */
+export function derivedHtml(derived) {
+  const W = FOLDER_SURVEY_WORDS;
+  if (!derived) return '';
+  if (derived.error) return `<div data-fs-derived data-fs-derived-state="error" class="mt-s3 text-provenance text-state-warn">${esc(derived.error)}</div>`;
+  const steps = derived.steps || [];
+  if (!steps.length) return '';
+  const rows = steps.map((s) => {
+    const head = `<span class="font-medium text-ink">${esc(s.name)}</span>`;
+    if (!s.installed) {
+      return `<li data-fs-step="${esc(s.step)}" data-fs-step-state="not_installed" class="text-provenance">${head} · <span class="text-state-warn">${esc(s.missing_reason)}</span></li>`;
+    }
+    if (!s.run) {
+      return `<li data-fs-step="${esc(s.step)}" data-fs-step-state="not_run" class="text-provenance">${head} · <span class="text-ink-muted">${esc(W.notRun)}</span></li>`;
+    }
+    const results = (s.results || []).map((r) => {
+      const absent = r.state === 'not_established' || r.state === 'not_applicable';
+      return `<div data-fs-result="${esc(r.measure)}" data-fs-result-state="${esc(r.state || 'no_envelope')}" class="ml-s3">
+        <span class="font-glyph" aria-hidden="true">${STEP_GLYPH[r.state] || '?'}</span> ${esc(r.state_words || '')} · ${esc(r.summary)}
+        ${absent && r.reason ? `<div class="ml-s3 text-ink-muted">${esc(r.reason)}</div>` : ''}</div>`;
+    }).join('');
+    return `<li data-fs-step="${esc(s.step)}" data-fs-step-state="run" class="text-provenance">${head} · <span class="text-ink-muted">${esc(W.derivedAt(day(s.run)))}</span>${results}</li>`;
+  }).join('');
+  return `<div data-fs-derived class="mt-s3">
+    <div class="text-caps uppercase tracking-caps text-ink-muted">${esc(W.derivedHeading)}</div>
+    <div class="text-provenance text-ink-muted">${esc(W.derivedKept)}</div>
+    <ul class="m-0 list-none p-0">${rows}</ul>
+  </div>`;
+}
+
 /** The whole card. `busy` is 'survey' | 'check' | 'publish' | 'measure' | 'publish-measures' | 'profile' | 'read-egeria' |
- *  'publish-profiles' | ''. */
+ *  'publish-profiles' | 'derive' | ''. */
 export function folderSurveyCardHtml(view, { busy = '', error = '' } = {}) {
   const W = FOLDER_SURVEY_WORDS;
   const reach = (view && view.reach) || {};
@@ -350,12 +402,22 @@ export function folderSurveyCardHtml(view, { busy = '', error = '' } = {}) {
       ${fp && fp.price && fp.price.walk ? btn('profile', busy === 'profile' ? W.profiling : W.profilePress, !busy) : ''}
       ${fpRun && fpRun.counts && fpRun.counts.submitted ? btn('read-egeria', busy === 'read-egeria' ? W.reading : W.readEgeria, !busy) : ''}
       ${fpRun && !(fpRun.publish && fpRun.publish.complete) && fpRun.counts && fpRun.counts.by_re ? btn('publish-profiles', busy === 'publish-profiles' ? W.publishing : W.publishProfiles, !busy) : ''}
+      ${derivable(view).length ? btn('derive', busy === 'derive' ? W.deriving : W.derivePress, !busy) : ''}
     </div>
+    ${priceLineHtml(view && view.price)}
     ${error ? `<div data-fs-error class="mt-[2px] text-provenance text-state-warn">${esc(error)}</div>` : ''}
     ${folderResultsHtml(view)}
     ${walkMeasuresHtml(view && view.extensions)}
     ${fileProfilesHtml(view && view.file_profiles)}
+    ${derivedHtml(view && view.derived)}
   </div>`;
+}
+
+/** The installed derived steps, by analysis id: what the Derive press runs. Only once a walk has kept rows to read. */
+function derivable(view) {
+  const ext = view && view.extensions;
+  if (!(ext && ext.rows && ext.rows.kept)) return [];
+  return ((view.derived && view.derived.steps) || []).filter((s) => s.installed).map((s) => s.analysis_id);
 }
 
 /** Mount the card into `host` and wire its presses. `onChange` runs after a press changed what the pane shows (the
@@ -369,8 +431,10 @@ export async function mountFolderSurvey(host, slug, { onChange = () => {} } = {}
     host.querySelectorAll('[data-fs-act]').forEach((b) => b.addEventListener('click', () => press(b.dataset.fsAct)));
     host.querySelectorAll('table[data-rc-id]').forEach((t) => enhanceTable(t));     // every /next data table resizes (colresize.js)
   };
+  // A successful re-read keeps the press's own error: it is cleared when the next press starts, never by the read
+  // that follows a failed press (which used to wipe every press's failure before it was painted).
   const read = async () => {
-    try { view = await getFolderSurvey(slug); error = ''; } catch (e) { error = `could not read the folder survey: ${e.message}`; }
+    try { view = await getFolderSurvey(slug); } catch (e) { error = `could not read the folder survey: ${e.message}`; }
   };
   const press = async (act) => {
     error = '';
@@ -384,6 +448,16 @@ export async function mountFolderSurvey(host, slug, { onChange = () => {} } = {}
       else if (act === 'profile') await runFileProfiles(slug);
       else if (act === 'read-egeria') await readFileProfilesFromEgeria(slug);
       else if (act === 'publish-profiles') await publishFileProfiles(slug);
+      else if (act === 'derive') {
+        // Each step is queued and polled to its end; a failed one is said with its own reason, the others still run.
+        const failed = [];
+        for (const id of derivable(view)) {
+          const started = await runFilesystemAnalysis(slug, id);
+          const f = activityFailure(await pollActivity(started.activity_id, { intervalMs: 500 }));
+          if (f) failed.push(`${id}: ${failureText(f)}`);
+        }
+        if (failed.length) error = failed.join(' · ');
+      }
     } catch (e) {
       error = e.message || String(e);
     }

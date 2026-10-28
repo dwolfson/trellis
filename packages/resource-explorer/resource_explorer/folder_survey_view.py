@@ -187,6 +187,24 @@ def _file_profiles(registry, slug: str) -> dict:
         return {"error": f"could not read the data-file profiles: {type(exc).__name__}: {exc}"}
 
 
+def _walk_derived(registry, slug: str, fork) -> tuple[dict, dict]:
+    """(price, derived): the price line before the Survey press (F12) and the derived steps' stored results (Files build
+    step 6). A failed read of either is said on its own line; the card still renders."""
+    from resource_explorer.surveyors.filesystem import walk_derived
+
+    try:
+        price = walk_derived.price(registry, slug, egeria_leads=fork.surveyor == file_reach.SURVEYOR_EGERIA)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("%s: the price line could not be read", slug, exc_info=True)
+        price = {"priced": False, "words": f"not priced · could not read the last walk: {type(exc).__name__}: {exc}"}
+    try:
+        derived = walk_derived.derived_view(registry, slug)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("%s: the derived steps could not be read", slug, exc_info=True)
+        derived = {"error": f"could not read the derived steps: {type(exc).__name__}: {exc}"}
+    return price, derived
+
+
 def folder_survey_view(registry, slug: str) -> dict:
     """The newest folder survey, whoever led it, with the probe state and who leads NOW."""
     fs = registry.get_filesystem(slug)
@@ -197,6 +215,7 @@ def folder_survey_view(registry, slug: str) -> dict:
     base = {"slug": slug, "reach": fork.as_dict(), "leads": fork.surveyor,
             "egeria_run_state": (egeria or {}).get("run_state", ""), "extensions": extensions_view(registry, slug),
             "file_profiles": _file_profiles(registry, slug)}
+    base["price"], base["derived"] = _walk_derived(registry, slug, fork)
     if not candidates:
         return {**base, "state": "none", "surveyor": "", "surveyed_at": "", "report_guid": "", "published": False,
                 "publish": None, "pre_reset": None, "report_sentence": "", "results": None, "limits": None, "detail_lines": []}

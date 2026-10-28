@@ -252,6 +252,10 @@ export const readFileProfilesFromEgeria = (slug) =>
   post(`/api/filesystems/${encodeURIComponent(slug)}/file-profiles/read-egeria`);
 export const publishFileProfiles = (slug) =>
   post(`/api/filesystems/${encodeURIComponent(slug)}/file-profiles/publish`);
+/** Files build step 6: run ONE Analytic Library step over the walk's kept rows (fs_change_rates, fs_duplicates,
+ *  fs_activity, fs_permissions). Queued: answers `{ status: 'started', activity_id, run_id }`; poll the activity. */
+export const runFilesystemAnalysis = (slug, analysisId) =>
+  post(`/api/filesystems/${encodeURIComponent(slug)}/analyses/${encodeURIComponent(analysisId)}/run`);
 
 /* ── Catalogue scope (Curate, database: what gets catalogued) ────────────
  * web/routes/catalogue_scope.py. A declared, signed, dated choice stored in

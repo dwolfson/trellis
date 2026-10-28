@@ -390,3 +390,21 @@ FILESYSTEM_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
 #: See DATABASE_ANALYSIS_HEADLINE_MAP's docstring — same "not built yet,
 #: doesn't block the map" gap, kept explicit rather than silently absent.
 FILESYSTEM_ANALYSIS_HEADLINE_MAP: dict = {}
+
+
+# ── user steps (extensibility brief 2c; Files build step 6) ─────────────────
+#
+# Installable steps found through the `trellis.analytics` entry point (fs_change_rates, fs_duplicates, fs_activity,
+# fs_permissions: zero-fetch derivations over the walk's kept per-file rows), attached BESIDE filesystem_inventory by
+# `survey_step_host`, from the catalog entries the generator writes from their manifests, exactly as for databases.
+# A file system has no built-in step registry of its own yet; these two start empty and hold only what attach adds.
+from resource_explorer.surveyors.repo_survey_definition_adapter import AnalysisKind, StepInfo  # noqa: E402
+
+FILESYSTEM_STEP_REGISTRY: dict[str, StepInfo] = {}
+FILESYSTEM_ANALYSIS_KINDS: dict[str, AnalysisKind] = {}
+
+from resource_explorer.surveyors import survey_step_host as _survey_step_host  # noqa: E402
+
+_survey_step_host.attach(
+    "filesystem", _ADAPTER, FILESYSTEM_STEP_REGISTRY, FILESYSTEM_ANALYSIS_STEP_MAP,
+    FILESYSTEM_ANALYSIS_RESULTS_MAP, FILESYSTEM_ANALYSIS_KINDS, FILESYSTEM_ANALYSIS_HEADLINE_MAP)

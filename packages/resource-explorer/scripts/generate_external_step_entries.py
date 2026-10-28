@@ -25,7 +25,7 @@ import yaml
 
 PKG = Path(__file__).resolve().parents[1]
 CATALOG = PKG / "resource_explorer" / "configdata" / "analysis_catalog.yaml"
-SECTIONS = {"database": "database_analyses"}
+SECTIONS = {"database": "database_analyses", "filesystem": "filesystem_analyses"}
 BEGIN = "  # BEGIN GENERATED user steps ({type}): scripts/generate_external_step_entries.py. Do not hand-edit."
 END = "  # END GENERATED user steps ({type})"
 

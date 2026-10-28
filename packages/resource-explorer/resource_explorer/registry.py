@@ -5063,6 +5063,8 @@ class ProjectRegistry:
     RUN_KINDS = (
         "analysis_run",
         "database_analysis_run",
+        # One file system Analytic Library step (Files build step 6), run by run_queue._handle_filesystem_analysis_run.
+        "filesystem_analysis_run",
         "survey_definition_run",
         "scouting_scan",
         "stage_batch",
