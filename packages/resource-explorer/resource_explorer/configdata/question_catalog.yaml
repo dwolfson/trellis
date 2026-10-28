@@ -3374,17 +3374,16 @@ filesystem_questions:
   - resource
   answering:
     kind: direct
-    analysis_ids: []
+    analysis_ids:
+    - fs_change_rates
     checks: []
-    note: 'N/A — Automate subscription (notification_detector''s change comparison), which surfaces the
-      change; GAP: fs_change_rates (Files brief §3, slice 3) is the analysis that will measure it for
-      a file system'
+    note: N/A — Automate subscription (notification_detector's change comparison), which surfaces the
+      change; fs_change_rates measures the files added, removed and modified between two walks
   answering_mechanism: Automate Change Detection
   rationale: notification_detector.py's latest-two-runs comparison, surfaced via an Automate subscription
-    once a schedule exists for the analysis; the file-system analysis that differences two walks is not
-    built.
+    once a schedule exists for the analysis; fs_change_rates is the analysis that differences two walks.
   catalog_history: '2026-10-22: answering names fs_change_rates (F5) as the gap instead of the repository''s
-    refresh_plan (review §2).'
+    refresh_plan (review §2). | 2026-10-28: fs_change_rates is built (Files build step 6).'
   retired: false
 - id: Q-0054
   question: Can Egeria's survey engine reach this resource, or must Resource Explorer survey it locally
@@ -3893,14 +3892,17 @@ filesystem_questions:
   - resource
   - container
   answering:
-    kind: gap
-    analysis_ids: []
+    kind: analysis
+    analysis_ids:
+    - fs_change_rates
     checks: []
-    note: 'GAP: fs_change_rates (Files brief §3, slice 3)'
+    note: fs_change_rates
   answering_mechanism: Code Analysis
   rationale: fs_change_rates differences two walks on path, size and modification time; it needs the per-file
     rows kept per run. With one walk only it reports 'not measured', never zero change.
-  catalog_history: '2026-10-22: added: F5 of the Files brief (§2), owner pick 2026-10-20 (review §4).'
+  catalog_history: '2026-10-22: added: F5 of the Files brief (§2), owner pick 2026-10-20 (review §4).
+    | 2026-10-28: answered by fs_change_rates, an Analytic Library step over the walk''s kept per-file
+    rows (Files build step 6); was GAP.'
   retired: false
 - id: Q-0103
   question: Which files or folders contain personal or sensitive data?
@@ -3974,6 +3976,104 @@ filesystem_questions:
     what the data is, a person confirms. For a repository the README is already read by architecture_doc_lens.
   catalog_history: '2026-10-22: added: F11 of the Files brief (§2), owner pick 2026-10-20 (review §4);
     kinds filesystem and repo (the open-data kind has no adapter yet).'
+  retired: false
+- id: Q-0106
+  question: Which files are duplicates of each other, or of files in another registered file system?
+  stage: Analysis
+  perspectives:
+  - Financial
+  - Steward
+  - Data Expert
+  purposes:
+  - Assess
+  - Maintain
+  levels:
+  - resource
+  answering:
+    kind: analysis
+    analysis_ids:
+    - fs_duplicates
+    checks: []
+    note: fs_duplicates
+  answering_mechanism: Code Analysis
+  rationale: fs_duplicates groups the files the walk hashed (SHA-256 under the walk's size limit) by size
+    and hash, here and against other registered file systems' newest walks. With no hashes it reports
+    'not measured', never 'no duplicates'.
+  catalog_history: '2026-10-28: added: F6 of the Files brief (§2), the second slice the owner named on
+    2026-10-20 ("follow"); built as Files build step 6.'
+  retired: false
+- id: Q-0107
+  question: Which files has nobody touched for a long time, and which are hot?
+  stage: Analysis
+  perspectives:
+  - Financial
+  - Steward
+  - Data Owner
+  purposes:
+  - Maintain
+  - Assess
+  levels:
+  - resource
+  answering:
+    kind: analysis
+    analysis_ids:
+    - fs_activity
+    checks: []
+    note: fs_activity
+  answering_mechanism: Code Analysis
+  rationale: fs_activity ages each file's modified time, and its access time where the mount records one,
+    at the walk's own time. Where access times are not recorded it says 'can't tell', never 'cold'.
+  catalog_history: '2026-10-28: added: F8 of the Files brief (§2), the second slice the owner named on
+    2026-10-20 ("follow"); built as Files build step 6.'
+  retired: false
+- id: Q-0108
+  question: Who owns or can read what, and are there world-readable sensitive files?
+  stage: Analysis
+  perspectives:
+  - Governance
+  - Privacy
+  - Security
+  purposes:
+  - Assess
+  - Certify
+  levels:
+  - resource
+  answering:
+    kind: analysis
+    analysis_ids:
+    - fs_permissions
+    checks: []
+    note: fs_permissions
+  answering_mechanism: Code Analysis
+  rationale: fs_permissions counts owners, groups and modes from the walk's stat, and raises a request
+    for action for world-readable files whose names look like secrets. No owner or file name is published.
+    Data-class matches (F7) are not joined yet.
+  catalog_history: '2026-10-28: added: F9 of the Files brief (§2), the second slice the owner named on
+    2026-10-20 ("follow"); built as Files build step 6.'
+  retired: false
+- id: Q-0109
+  question: How much would it cost to survey fully, and which parts are not worth it?
+  stage: Discovery
+  perspectives:
+  - Financial
+  - Admin
+  purposes:
+  - Select
+  - Explore
+  levels:
+  - resource
+  answering:
+    kind: direct
+    analysis_ids: []
+    checks: []
+    note: N/A — the folder survey's price line before the Survey press (Files brief F12, the price-before-you-run
+      rule X-06), not an analysis
+  answering_mechanism: Code Analysis
+  rationale: 'The folder survey''s price line, shown before the Survey press: the newest walk''s files,
+    bytes and wall time on this machine, whether it was capped, the directories not walked, and the heaviest
+    folders'' share of the bytes.'
+  catalog_history: '2026-10-28: added: F12 of the Files brief (§2), the second slice the owner named on
+    2026-10-20 ("follow"); built as Files build step 6.'
   retired: false
 reserved_question_ids:
 - Q-0009

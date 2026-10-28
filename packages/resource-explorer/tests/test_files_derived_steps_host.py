@@ -282,3 +282,13 @@ def test_the_filesystem_catalog_block_is_the_generated_one(tmp_path):
         assert "not measured" in e["description"], name
     assert cards["fs_permissions"]["annotation_types"] == ["ResourceProfileAnnotation", "RequestForActionAnnotation"]
 
+
+def test_the_questions_name_the_steps_that_answer_them():
+    from resource_explorer.surveyors.question_catalog_reader import get_questions
+
+    by_id = {q["id"]: q for q in get_questions("filesystem")}
+    assert by_id["Q-0102"]["answering"]["analysis_ids"] == ["fs_change_rates"]
+    assert by_id["Q-0102"]["answering"]["kind"] == "analysis"
+    for qid, step in (("Q-0106", "fs_duplicates"), ("Q-0107", "fs_activity"), ("Q-0108", "fs_permissions")):
+        assert by_id[qid]["answering"]["analysis_ids"] == [step], qid
+    assert by_id["Q-0109"]["answering"]["kind"] == "direct"
