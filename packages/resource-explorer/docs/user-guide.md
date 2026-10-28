@@ -505,6 +505,17 @@ Where you meet it:
   Explorer. The results appear as a survey report in Egeria and in the database's Understanding list, beside
   *Resource Explorer: derived checks*.
 
+**To write and install your own step**, see [extending-with-analyses.md](extending-with-analyses.md): the
+package, its declaration, the catalogue generator, and how a curator publishes its measures.
+
+## Data quality checks
+
+A PostgreSQL database can be profiled and checked for quality with the **DatabaseQualitySurvey**. You review
+the proposed checks under **Curate → Structure → Quality checks** (Accept | Reject, and **Watch for drift** per
+table), and the results reach Egeria as QualityAnnotations. The checks are DataOps TestGen's test types, which
+Resource Explorer runs itself. The whole path, including what is still arriving, is in
+[testgen-integration-guide.md](testgen-integration-guide.md).
+
 ---
 
 ## Files and File Systems
