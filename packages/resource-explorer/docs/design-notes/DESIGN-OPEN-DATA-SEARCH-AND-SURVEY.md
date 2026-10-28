@@ -183,3 +183,69 @@ what Files 5 built; OD4 waits for the Egeria types confirmation.
   cost shape and possibly an API key.
 - Whether the first real portal is one he already uses, so the gate's
   second walk has a dataset he cares about.
+
+## 11. Addendum 1 (owner, 2026-10-28): portal directories and DataCite
+
+Owner's words: "yes to the five recommendations, CKAN on demo.ckan.org
+first" and, after the question of which open-data directories to connect
+to, "add the portal directory kind and DataCite to the design".
+
+### 11.1 The sources, in tiers
+
+| Tier | Examples | Role in the process |
+|---|---|---|
+| Aggregators that harvest many portals | data.gov (CKAN), data.europa.eu (DCAT-AP), Socrata Discovery API, opendatasoft hub, HDX (CKAN) | search targets; one adapter reaches thousands of publishers |
+| Directories of portals | dataportals.org, re3data | propose portals to register, never datasets to import |
+| Identity and provenance registries | DataCite, OpenAIRE, Crossref | resolve an identifier to its metadata; settle "the same dataset on two portals"; citations (O12) |
+| Research and machine-learning hubs | Zenodo, Dataverse, Figshare, Dryad, Hugging Face Hub, Kaggle, OpenML | later adapters, each on a real request; the Hub is where the open-model sibling starts |
+| Standards rather than sites | schema.org/Dataset landing-page markup, SDMX, OGC CSW, STAC | one generic adapter each, later; the landing-page adapter is the fallback for a dataset with a page and no portal |
+
+Adapter order after CKAN: DCAT-AP second (data.europa.eu, data.gov's
+DCAT), Socrata Discovery third, schema.org landing pages fourth.
+
+### 11.2 The portal directory kind
+
+A third source kind, `portal_directory` (on screen "Portal directory"),
+registered like a portal (name, API kind, base URL) with built-in adapters
+for dataportals.org and re3data. Its Run does not search datasets: it
+proposes **portals to register**, as candidate rows (portal name, country
+or domain, API kind as the directory states it, URL, dataset count where
+stated, licence of the directory entry), each "not reported by this
+directory" when absent. Preview, then import: an imported row becomes a
+`open_data_portal` registration with the directory named as its origin and
+"adapter: CKAN" or "no adapter for <API kind> yet · register for later" on
+the row, so a portal RE cannot yet search is kept, visible and honest,
+rather than dropped. A directory entry whose URL is already a registered
+portal shows "already registered" and is not imported twice. The directory
+itself is re-run on a cadence like a scout, and `external_change` over two
+runs lists new and vanished portals.
+
+### 11.3 DataCite as the identity resolver
+
+DataCite joins OD1 as a built-in resolver, not a search target: given a
+DOI (from a candidate row, a landing page, or typed by a person), it
+returns the dataset's metadata (title, publisher, dates, subjects,
+related identifiers, versions) with no key and at negligible cost. Three
+uses, all read-first:
+
+1. **Identity.** A candidate whose record carries a DOI is keyed by that
+   DOI; two candidates with one DOI are one dataset on two portals (§3's
+   duplicate collapse), and the DOI's registered publisher names the origin.
+2. **Already held.** The identifier match before import (§3) checks the
+   DOI against registered resources and Egeria's external identifiers.
+3. **Provenance (O10) and citations (O12).** `external_provenance` reads
+   related identifiers (IsVersionOf, IsDerivedFrom, IsSupplementTo) and
+   the citation count where DataCite exposes it; "not reported by
+   DataCite" otherwise.
+
+A dataset with no DOI keeps the portal's identifier as its identity and
+the row says "no DOI reported". OpenAIRE and Crossref follow the same
+resolver interface later.
+
+### 11.4 Slice changes
+
+OD1 gains the `portal_directory` kind with the dataportals.org adapter and
+the DataCite resolver inside the identifier match; its gate adds: run the
+directory, import demo.ckan.org from it (or see "already registered" if
+registered by hand first), and import one candidate carrying a DOI whose
+DataCite record names the publisher. re3data's adapter rides OD2.
