@@ -1574,6 +1574,12 @@ export const enqueueBatch = (analysisId, entitySlugs, workListSlug = '', entityT
     entity_type: requireKind('enqueueBatch', entityType),
   });
 
+/** Quality slice Q3: the DatabaseQualitySurvey across a work list of databases. `body` = { work_list_slug } or
+ *  { entity_slugs }. The price reads only what RE stored and queues nothing; the run queues one run per database
+ *  that can run and returns every member's outcome with its words, plus a `set_id` for `getBatchProgress`. */
+export const priceQualityBatch = (body) => post('/api/quality-batch/price', body);
+export const runQualityBatch = (body) => post('/api/quality-batch/run', body);
+
 /** Progress for one batch, derived from the run rows on every read. */
 export const getBatchProgress = (setId) =>
   get(`/api/work-lists/runs/sets/${encodeURIComponent(setId)}`);

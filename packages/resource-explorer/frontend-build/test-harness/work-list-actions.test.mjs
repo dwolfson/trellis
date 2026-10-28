@@ -77,6 +77,14 @@ function stubBackend() {
       const inv = INVESTIGATIONS.find((i) => i.slug === m[1]);
       return ok({ ...inv, description: 'd', project_classification: 'StudyProject', purposes: [], visibility: 'public' });
     }
+    if (method === 'POST' && u === '/api/quality-batch/price') {
+      const wl = WORK_LISTS.find((w) => w.slug === body.work_list_slug);
+      return ok({ definition: 'DatabaseQualitySurvey', runnable: 2, total: { words: 'not measured yet · the first batch sets the price' },
+        rows: membersOf(wl.slug, 2).map((mm) => ({ entity_slug: mm.entity_slug, display_name: mm.entity_slug, can_run: true,
+          tables: { words: '2 tables' }, size: { words: '96.0 KB' }, budget_words: "each table's profile stops at 5 min",
+          time: { basis: 'not measured', words: 'time not measured yet · the first run sets it' },
+          change: { unchanged: false, words: 'never had a quality run' } })) });
+    }
     if (/\/next-steps$/.test(u)) return ok({ steps: [], complete: true });
     if (/\/dispositions$/.test(u)) return ok({});
     if (u === '/api/investigations/purposes') return ok({ purposes: ['Migration', 'Audit'] });
@@ -571,4 +579,30 @@ test('a database publish names what was queued, what has no element (with its ty
   assert.match(text(unresolved), /1 not checked: gone · could not resolve · no database 'gone' in RE's registry/);
   assert.doesNotMatch(text(document.querySelector('#wl-note [data-publish-unpublished]')), /gone/,
     'not resolved is never folded into not published');
+});
+
+
+/* ── Quality Q3: the DatabaseQualitySurvey across a database list ─────── */
+
+test('a database list offers quality checks across the list, priced before anything runs', async () => {
+  const { document } = await setUp({ open: 'sales-databases' });
+  const b = act(document, 'quality-batch');
+  assert.ok(b, 'the door is on the bench of a database list');
+  assert.equal(b.parentElement, act(document, 'publish').parentElement, 'beside the other acts on the list');
+  b.click();
+  await tick(200);
+  const dlg = document.getElementById('wl-detail');
+  assert.ok(dlg, 'opens in the bench dialog');
+  assert.equal(dlg.querySelectorAll('[data-price-rows] tbody tr').length, 2, 'one priced row per database');
+  assert.deepEqual(CALLS.filter((c) => c.url.startsWith('/api/quality-batch/')).map((c) => [c.url, c.body]),
+    [['/api/quality-batch/price', { work_list_slug: 'sales-databases' }]], 'priced, nothing run');
+  assert.match(text(dlg), /Nothing runs until you confirm\./);
+});
+
+test('a list of another kind has no quality-checks door', async () => {
+  reset();
+  const { document } = await setUp({ open: 'sales-databases' });
+  WORK_LISTS[0].entity_type = 'repo';
+  await reload(document);
+  assert.equal(act(document, 'quality-batch'), null);
 });
