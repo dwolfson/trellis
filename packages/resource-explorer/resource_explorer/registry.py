@@ -3922,6 +3922,15 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_work_list_runs_set "
                 "ON work_list_runs(set_id)"
             )
+            # A shortlist's saved filter (DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-KINDS §2): `filter_json` is the
+            # checked expression with its three buckets (`winnowing.check_filter`), `filter_as_of` when the cut was
+            # made. NULL for a list that was not cut by a filter (every list before this, and a hand-picked
+            # promote). Nullable TEXT, the column list read first so a second start is a no-op, the same SQL on
+            # SQLite and Postgres (metadata-only on Postgres).
+            work_list_cols = self._get_table_columns(conn, "work_lists")
+            for col in ("filter_json", "filter_as_of"):
+                if col not in work_list_cols:
+                    conn.execute(f"ALTER TABLE work_lists ADD COLUMN {col} TEXT")
             # Per-resource sampling settings (design §5.8's "per resource" scope), one row per resource.
             # Its own table rather than a column on `databases`, so a file system can carry one too and
             # DatabaseEntity is untouched. Read by sampling.scoped_settings; never a measurement.

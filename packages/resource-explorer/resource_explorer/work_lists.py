@@ -231,6 +231,20 @@ def recorded_memberships(registry, slug: str, collection_guid: str) -> dict[str,
 # The work-list tables are created by ProjectRegistry._init_schema (a migration), not here.
 
 
+def _stored_filter(raw, slug: str) -> dict | None:
+    """A shortlist's saved filter, parsed: None when it has none. A value that does not parse is said on the list
+    (`unreadable`), never read as "no filter": the shortlist was cut on something, and the bench must not offer to
+    re-apply a filter it cannot read."""
+    if raw in (None, ""):
+        return None
+    try:
+        got = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        log.warning("work list %s: its stored filter does not parse: %s", slug, exc)
+        return {"unreadable": f"the stored filter could not be read · {type(exc).__name__}"}
+    return got if isinstance(got, dict) else {"unreadable": "the stored filter is not a mapping"}
+
+
 class WorkLists:
     """Work-list storage, over the shared registry's connection."""
 
@@ -284,6 +298,8 @@ class WorkLists:
                 " FROM work_list_members WHERE work_list_slug = ? ORDER BY added_at, entity_slug",
                 (slug,)).fetchall()
         out = dict(row)
+        out["filter"] = _stored_filter(out.pop("filter_json", None), slug)
+        out.pop("filter_as_of", None)              # carried inside `filter` as `applied_at`
         out["members"] = [dict(m) for m in members]
         self._attach_dispositions(out["members"], out.get("entity_type") or "repo")
         return out
@@ -415,18 +431,30 @@ class WorkLists:
 
     def promote(self, slug: str, survivors: Iterable[str], *,
                 display_name: str = "", rationale: str = "",
-                created_by: str = "") -> dict:
+                created_by: str = "", filter: dict | None = None) -> dict:
         """The survivors of one work list become a new, narrower one.
 
         The new list records `derived_from`, so the funnel keeps its own
         trail: a shortlist that cannot say what it was shortlisted FROM is a
         list of names, not a decision.
+
+        With `filter` (DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-KINDS §2), the
+        shortlist also keeps WHAT it was cut on: the checked expression, when,
+        and all three buckets (`winnowing.check_filter`). The survivors must be
+        exactly its kept bucket, and its buckets must account for every member
+        of this list, or nothing is created (ValueError, with the words): a
+        stored filter that disagrees with the members it sits beside would say
+        one thing and hold another.
         """
         parent = self.get(slug)
         if not parent:
             raise KeyError(slug)
+        survivors = list(survivors)
+        stored = None
+        if filter is not None:
+            stored = self._checked_against(parent, filter, survivors)
         keep = [s for s in survivors if any(m["entity_slug"] == s for m in parent["members"])]
-        return self.create(
+        made = self.create(
             display_name or f"{parent['display_name']} — shortlist",
             keep,
             description=f"Survivors of {parent['display_name']}",
@@ -436,6 +464,72 @@ class WorkLists:
             derived_from=slug,
             rationale=rationale,
         )
+        if stored is not None:
+            self._store_filter(made["slug"], stored)
+            made = self.get(made["slug"])
+        return made
+
+    @staticmethod
+    def _checked_against(parent: dict, filter: dict, survivors: list[str]) -> dict:
+        """`filter` checked, and checked against the list it says it was cut from. Raises ValueError."""
+        from resource_explorer.winnowing import check_filter
+
+        stored = check_filter(filter)
+        members = {m["entity_slug"] for m in parent["members"]}
+        if stored["parent_slug"] and stored["parent_slug"] != parent["slug"]:
+            raise ValueError(f"the filter says it was cut from {stored['parent_slug']!r}, not {parent['slug']!r}")
+        stored["parent_slug"] = parent["slug"]
+        named = set(stored["kept"]) | set(stored["dropped"]) | {u["entity_slug"] for u in stored["could_not_check"]}
+        if named != members or stored["parent_count"] != len(members):
+            missing, stray = sorted(members - named), sorted(named - members)
+            raise ValueError("the filter's buckets do not match the list's members"
+                             + (f" · not in any bucket: {', '.join(missing)}" if missing else "")
+                             + (f" · not members: {', '.join(stray)}" if stray else ""))
+        if set(survivors) != set(stored["kept"]):
+            raise ValueError("the shortlist's members must be exactly the filter's kept bucket")
+        return stored
+
+    def _store_filter(self, slug: str, stored: dict) -> None:
+        with self._conn() as conn:
+            conn.execute("UPDATE work_lists SET filter_json = ?, filter_as_of = ? WHERE slug = ?",
+                         (json.dumps(stored, sort_keys=True), stored["applied_at"], slug))
+
+    def reapply(self, slug: str, filter: dict) -> dict:
+        """Re-cut a shortlist on fresher headlines: its members become the new kept bucket, and the stored filter
+        the new one. A press, never automatic (§7, assumed: owner to confirm); the bench shows the diff first.
+
+        Members that stay keep their rationale and confidence; members that join get "joined when <criteria> was
+        re-applied"; members that would now drop are removed. Raises KeyError (no such list) or ValueError (not a
+        filtered shortlist, its parent is gone, the criteria differ, or the buckets do not match the parent)."""
+        from resource_explorer.winnowing import criterion_words
+
+        wl = self.get(slug)
+        if not wl:
+            raise KeyError(slug)
+        if not wl.get("filter") or not wl.get("derived_from"):
+            raise ValueError("this list was not cut by a filter, so there is nothing to re-apply")
+        if wl["filter"].get("unreadable"):
+            raise ValueError(f"{wl['filter']['unreadable']}, so it cannot be re-applied")
+        parent = self.get(wl["derived_from"])
+        if not parent:
+            raise ValueError(f"the list it was cut from ({wl['derived_from']!r}) no longer exists")
+        stored = self._checked_against(parent, filter, list((filter or {}).get("kept") or []))
+        before = [{k: c.get(k) for k in ("field", "op", "value", "analysis_ids")} for c in wl["filter"]["criteria"]]
+        after = [{k: c.get(k) for k in ("field", "op", "value", "analysis_ids")} for c in stored["criteria"]]
+        if before != after:
+            raise ValueError("re-applying keeps the shortlist's criteria; a different filter is a new shortlist")
+        current = {m["entity_slug"] for m in wl["members"]}
+        kept = stored["kept"]
+        joined = [s_ for s_ in kept if s_ not in current]
+        dropped = sorted(current - set(kept))
+        reason = f"joined when {' and '.join(criterion_words(c) for c in stored['criteria'])} was re-applied"
+        for s_ in dropped:
+            self.remove_member(slug, s_)
+        for s_ in joined:
+            self.set_member(slug, s_, rationale=reason)
+        self._store_filter(slug, stored)
+        log.info("shortlist %s re-applied: %d joined, %d dropped", slug, len(joined), len(dropped))
+        return {"slug": slug, "joined": joined, "dropped": dropped, "work_list": self.get(slug)}
 
     # ── Batch runs ──────────────────────────────────────────────────────
 

@@ -1542,9 +1542,24 @@ export const addWorkListToInvestigation = (slug, investigation, entitySlugs = nu
   post(`/api/work-lists/${encodeURIComponent(slug)}/add-to-investigation`,
        { investigation, ...(entitySlugs ? { entity_slugs: [...entitySlugs] } : {}) });
 
-export const promoteWorkList = (slug, survivors, displayName = '', rationale = '') =>
+/** `filter` (optional): the filter the survivors were cut on, with its three buckets (winnow.js
+ *  `storedFilter`). Given, the survivors must be exactly its kept bucket; the server says 422 otherwise. */
+export const promoteWorkList = (slug, survivors, displayName = '', rationale = '', filter = null) =>
   post(`/api/work-lists/${encodeURIComponent(slug)}/promote`,
-       { survivors: [...survivors], display_name: displayName, rationale });
+       { survivors: [...survivors], display_name: displayName, rationale, ...(filter ? { filter } : {}) });
+
+/** Re-cut a filtered shortlist on fresher headlines: same criteria, new buckets. A press; the bench shows the
+ *  diff first. Returns {joined, dropped, work_list}. */
+export const reapplyShortlist = (slug, filter) =>
+  post(`/api/work-lists/${encodeURIComponent(slug)}/reapply`, { filter });
+
+/** What the analyses behind the bench's columns can be filtered by, for one kind: declared measures and
+ *  absence sentences. `{analyses: {id: {declared, measures, absence}}, unknown: [id]}`. */
+export const getColumnTypes = (entityType, analysisIds = []) => {
+  const qs = new URLSearchParams({ entity_type: requireKind('getColumnTypes', entityType) });
+  if (analysisIds.length) qs.set('analysis_ids', [...analysisIds].join(','));
+  return get(`/api/work-lists/column-types?${qs}`);
+};
 
 /**
  * Publish a work list to Egeria as a `WorkingSet` collection.

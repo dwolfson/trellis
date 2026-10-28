@@ -18,7 +18,7 @@ DDL_RE = re.compile(r"^\s*(CREATE|ALTER|DROP)\b", re.I)
 EXPECTED = {
     "work_lists": [("slug", None), ("display_name", None), ("description", ""), ("entity_type", "repo"),
                    ("investigation", ""), ("created_by", ""), ("created_at", None), ("derived_from", ""),
-                   ("egeria_guid", ""), ("published_at", "")],
+                   ("egeria_guid", ""), ("published_at", ""), ("filter_json", None), ("filter_as_of", None)],
     "work_list_members": [("work_list_slug", None), ("entity_slug", None), ("rationale", ""),
                           ("confidence", None), ("added_at", None)],
     "work_list_runs": [("set_id", None), ("run_id", None), ("work_list_slug", ""), ("entity_slug", None),

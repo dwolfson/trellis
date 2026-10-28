@@ -65,6 +65,14 @@ class PromoteRequest(BaseModel):
     survivors: list[str]
     display_name: str = ""
     rationale: str = ""
+    #: The filter the survivors were cut on, with its three buckets (`winnowing.check_filter`). Omit for a
+    #: hand-picked shortlist. Given, the survivors must be exactly its kept bucket (422 otherwise).
+    filter: dict | None = None
+
+
+class ReapplyRequest(BaseModel):
+    #: The same criteria, evaluated on the parent's current headlines: the new buckets and as-of.
+    filter: dict
 
 
 class BatchRunRequest(BaseModel):
@@ -171,6 +179,18 @@ async def enqueue_batch(body: BatchRunRequest) -> dict:
             entity_type=entity_type, refusal=lambda s: batch_refusal(registry, entity_type, s, reader=reader))
     except CurationDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/column-types")
+async def column_types(entity_type: str, analysis_ids: str = "") -> dict:
+    """What each analysis behind the bench's columns can be filtered by: its declared measures and its absence
+    sentences (`winnowing.column_types`). Declared BEFORE `/{slug}`, for the reason given above."""
+    from resource_explorer.member_assets import MEMBER_ENTITY_TYPES
+    from resource_explorer.winnowing import column_types as _column_types
+
+    if entity_type not in MEMBER_ENTITY_TYPES:
+        raise HTTPException(status_code=422, detail=f"{entity_type!r} is not a kind a work list holds")
+    return _column_types(entity_type, [a.strip() for a in analysis_ids.split(",") if a.strip()])
 
 
 @router.get("/runs/sets/{set_id}")
@@ -325,9 +345,23 @@ async def promote(slug: str, body: PromoteRequest) -> dict:
     try:
         return WorkLists().promote(
             slug, body.survivors, display_name=body.display_name,
-            rationale=body.rationale, created_by=_requested_by())
+            rationale=body.rationale, created_by=_requested_by(), filter=body.filter)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"work list {slug!r} not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+@router.post("/{slug}/reapply")
+async def reapply(slug: str, body: ReapplyRequest) -> dict:
+    """Re-cut a filtered shortlist on fresher headlines (a press; the bench shows the diff first). Its members
+    become the new kept bucket; who joined and who dropped come back by name."""
+    try:
+        return WorkLists().reapply(slug, body.filter)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"work list {slug!r} not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
 
 
 @router.post("/{slug}/publish")

@@ -33,11 +33,13 @@ import {
   getAnalysisTrend,
   getDispositionHistory,
   getWorkList,
+  getColumnTypes,
   listAnalyses,
   listInvestigationMembers,
   listWorkLists,
   promoteWorkList,
   publishWorkList,
+  reapplyShortlist,
   fetchWorkListCsv,
   requireKind,
   setDisposition,
@@ -50,6 +52,10 @@ import { shortName } from '/static/next/investigation-picker.js';
 import { contextRecordedSpec, contextRecordedState } from '/static/next/context-recorded.js';
 import { cue } from '/static/next/stages/repo-manifest.js';
 import { inPagePrompt } from '/static/next/confirm-dialog.js';
+import {
+  STATE_WORDS, OP_WORDS, applyFilter, criterionWords, fieldsFor, opsFor, readCriterion, reapplyDiff,
+  shortlistWords, storedFilter, unrunGroups,
+} from '/static/next/winnow.js';
 
 /** Brief Z3: the members the zone check refused (a publish or a batch), each with the no_access cue, the reason
  *  on hover; the rest went ahead. '' when none. */
@@ -288,6 +294,9 @@ export const grid = {
   ctx: null,             // the pane context, for actions raised from a popup
   contexts: new Map(),   // slug -> enrichment map, for questions Context records (context-recorded.js)
   scope: null,           // the LINKED investigation's scope, read live: { slug, name, inScope: Set, error }
+  // Winnowing (winnow.js): the criteria held, the column types read per kind (kind -> types | {error}), the
+  // three buckets they give over the rows held now, and which bucket the grid shows.
+  winnow: { open: false, criteria: [], types: new Map(), buckets: null, show: 'all' },
 };
 
 /* ── The linked investigation's scope ───────────────────────────────────
@@ -339,6 +348,347 @@ function scopeWord(slug) {
   return sc.inScope.has(slug) ? 'in scope' : 'not in scope';
 }
 
+/* ── Winnowing ─────────────────────────────────────────────────────────
+ *
+ * DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-KINDS §2: every headline a column, every column a filter. The criteria
+ * are evaluated over the cells the grid already holds (winnow.js), so the buckets move as the background read
+ * lands. Three buckets, never two: a row whose answer is absent is "could not check" with its sentence, shown,
+ * never folded into kept or dropped. Saving keeps the criteria and all three buckets on the shortlist. */
+
+/** The kind a member is read as. */
+function memberKind(m) {
+  return (m && m.entity_type) || kindOf(grid.workList);
+}
+
+/** The column types read for a kind: the types, `{error}`, or null while unread. */
+function typesFor(kind) {
+  const t = grid.winnow.types.get(kind);
+  return t && !t.error ? t : null;
+}
+
+/** What one criterion reads for one member of the open list, from the cells held now. */
+function readHeld(c, m) {
+  const slug = m.entity_slug;
+  return readCriterion(c, {
+    row: grid.rows.get(slug), per: grid.states?.[slug] || {}, q: { kind: 'analysis', analysis_ids: c.analysis_ids },
+    running: !!grid.batch?.runs?.find((r) => r.entity_slug === slug && ['queued', 'claimed', 'running'].includes(r.state)),
+    cellState, types: typesFor(memberKind(m)),
+  });
+}
+
+function computeBuckets() {
+  const w = grid.winnow;
+  w.buckets = w.criteria.length ? applyFilter(w.criteria, grid.workList.members, readHeld) : null;
+  return w.buckets;
+}
+
+/** The members the grid shows: all, or one bucket. */
+function shownMembers() {
+  const members = grid.workList.members;
+  const b = computeBuckets();
+  const show = grid.winnow.show;
+  if (!b || show === 'all') return members;
+  const want = new Set(show === 'kept' ? b.kept
+    : show === 'dropped' ? b.dropped.map((d) => d.entity_slug)
+      : b.couldNotCheck.map((u) => u.entity_slug));
+  return members.filter((m) => want.has(m.entity_slug));
+}
+
+/** The bucket word on a row, in ink; the reason on the row itself for the third bucket, never only on hover. */
+function bucketMark(slug) {
+  const b = grid.winnow.buckets;
+  if (!b) return '';
+  const drop = b.dropped.find((d) => d.entity_slug === slug);
+  if (drop) {
+    return `<span data-bucket="dropped" class="mr-s2 text-provenance text-ink-muted" title="${esc(drop.why)}">dropped</span>`;
+  }
+  const un = b.couldNotCheck.find((u) => u.entity_slug === slug);
+  if (un) {
+    return `<span data-bucket="could-not-check" class="mr-s2 text-provenance text-state-warn"
+      title="${esc(un.words)}">could not check · ${esc(un.words)}</span>`;
+  }
+  return b.kept.includes(slug) ? '<span data-bucket="kept" class="mr-s2 text-provenance text-ink">kept</span>' : '';
+}
+
+/** Read the column types for every kind the list holds, once per pane. A kind whose read fails offers state and
+ *  headline only, and the panel says so. */
+async function loadColumnTypes() {
+  const ids = [...new Set(qsAnalysisIds(grid.questions))];
+  const kinds = [...new Set(grid.workList.members.map(memberKind))];
+  await Promise.all(kinds.filter((k) => !grid.winnow.types.has(k)).map(async (k) => {
+    try { grid.winnow.types.set(k, await getColumnTypes(k, ids)); } catch (err) { grid.winnow.types.set(k, { error: err.message }); }
+  }));
+}
+
+/** The columns a filter can be built on: the open view's questions that an analysis answers. */
+function filterableColumns() {
+  return grid.questions.map((q, i) => ({ q, i })).filter(({ q }) => (q.analysis_ids || []).length);
+}
+
+function renderWinnow(ctx) {
+  const host = document.getElementById('wl-winnow');
+  if (!host || !grid.workList) return;
+  const w = grid.winnow;
+  const chips = w.criteria.map((c, n) => `<span class="inline-flex items-baseline gap-[4px] rounded-sm border border-rule-strong px-2"
+      data-criterion="${n}">${esc(criterionWords(c))}<button type="button" data-act="winnow-drop" data-n="${n}"
+      class="cursor-pointer bg-transparent text-ink-muted" aria-label="remove this condition">×</button></span>`).join(' ');
+  if (!w.open) {
+    host.innerHTML = `<div class="flex flex-wrap items-baseline gap-s2">
+      <button type="button" data-act="winnow-open" class="cursor-pointer bg-transparent text-accent-ink underline"
+        >${w.criteria.length ? 'Edit the filter' : 'Filter rows…'}</button>${chips}
+      <span data-winnow-summary></span></div>`;
+    host.querySelector('[data-act="winnow-open"]').addEventListener('click', async () => {
+      w.open = true;
+      renderWinnow(ctx);
+      await loadColumnTypes();
+      renderWinnow(ctx);
+    });
+    bindChipDrops(host, ctx);
+    renderWinnowSummary();
+    return;
+  }
+  const cols = filterableColumns();
+  const qi = Number(w.draftCol ?? cols[0]?.i ?? -1);
+  const q = grid.questions[qi];
+  const kind = kindOf(grid.workList);
+  const types = typesFor(kind);
+  const typeErr = grid.winnow.types.get(kind)?.error;
+  const fields = q ? fieldsFor(q, types) : [];
+  const field = fields.find((f) => f.field === w.draftField)?.field || fields[0]?.field || '';
+  const ops = opsFor(field);
+  const op = ops.includes(w.draftOp) ? w.draftOp : ops[0];
+  const lens = grid.workList.investigation
+    ? `<div class="text-provenance text-ink-muted" data-winnow-lens>No data lens is applied to
+        ${esc(ctx?.host?.investigationName?.(grid.workList.investigation) || grid.workList.investigation)} on this
+        build, so the lens's fit columns are not offered.</div>` : '';
+  host.innerHTML = `
+    <div class="flex flex-wrap items-baseline gap-s2" data-winnow-builder>
+      <span class="text-caps uppercase tracking-caps text-ink-muted">Filter</span>
+      ${cols.length ? `
+      <select data-winnow="col" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink">
+        ${cols.map(({ q: cq, i }) => `<option value="${i}" ${i === qi ? 'selected' : ''}>${i + 1}. ${esc(cq.question)}</option>`).join('')}
+      </select>
+      <select data-winnow="field" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink">
+        ${fields.map((f) => `<option value="${esc(f.field)}" ${f.field === field ? 'selected' : ''}>${esc(f.label)}</option>`).join('')}
+      </select>
+      <select data-winnow="op" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink">
+        ${ops.map((o) => `<option value="${esc(o)}" ${o === op ? 'selected' : ''}>${esc(OP_WORDS[o] || o)}</option>`).join('')}
+      </select>
+      ${field === 'state'
+        ? `<select data-winnow="value" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink">
+            ${STATE_WORDS.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join('')}</select>`
+        : `<input data-winnow="value" class="w-[9rem] rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-ink"
+            placeholder="${field === 'headline' ? 'words' : op?.endsWith('_days') ? 'days' : 'number'}">`}
+      <button type="button" data-act="winnow-add"
+        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-ink">Add</button>`
+      : '<span class="text-ink-muted">No column in this view has an analysis behind it, so there is nothing to filter on.</span>'}
+      <button type="button" data-act="winnow-close" class="cursor-pointer bg-transparent text-ink-muted underline">close</button>
+    </div>
+    ${typeErr ? `<div class="text-provenance text-state-warn">The declared measures could not be read (${esc(typeErr)}):
+      answer state and headline words only.</div>` : ''}
+    ${lens}
+    <div class="mt-s2 flex flex-wrap items-baseline gap-s2">${chips}</div>
+    <div data-winnow-summary class="mt-s2"></div>`;
+  const reDraft = () => {
+    w.draftCol = host.querySelector('[data-winnow="col"]')?.value;
+    w.draftField = host.querySelector('[data-winnow="field"]')?.value;
+    w.draftOp = host.querySelector('[data-winnow="op"]')?.value;
+    renderWinnow(ctx);
+  };
+  host.querySelector('[data-winnow="col"]')?.addEventListener('change', () => { w.draftField = ''; reDraft(); });
+  host.querySelector('[data-winnow="field"]')?.addEventListener('change', reDraft);
+  host.querySelector('[data-winnow="op"]')?.addEventListener('change', reDraft);
+  host.querySelector('[data-act="winnow-close"]').addEventListener('click', () => { w.open = false; renderWinnow(ctx); });
+  host.querySelector('[data-act="winnow-add"]')?.addEventListener('click', () => {
+    const raw = host.querySelector('[data-winnow="value"]').value;
+    const value = field === 'state' || field === 'headline' ? String(raw).trim() : Number(raw);
+    if (value === '' || (typeof value === 'number' && (!Number.isFinite(value) || String(raw).trim() === ''))) {
+      note(`<span class="text-state-warn">${field === 'headline' ? 'Give the words to look for.' : 'Give a number.'}</span>`);
+      return;
+    }
+    w.criteria.push({ question_id: q.id || '', question: q.question, analysis_ids: [...(q.analysis_ids || [])],
+      field, op, value });
+    note('');
+    renderGrid();
+    renderWinnow(ctx);
+  });
+  bindChipDrops(host, ctx);
+  renderWinnowSummary();
+}
+
+function bindChipDrops(host, ctx) {
+  host.querySelectorAll('[data-act="winnow-drop"]').forEach((b) => b.addEventListener('click', () => {
+    grid.winnow.criteria.splice(Number(b.dataset.n), 1);
+    if (!grid.winnow.criteria.length) grid.winnow.show = 'all';
+    renderGrid();
+    renderWinnow(ctx);
+  }));
+}
+
+/** The three counts, the show toggles, the could-not-check sentences, the "run it on them first" offers and the
+ *  save. Re-drawn whenever the grid is, since the buckets follow the cells. */
+function renderWinnowSummary() {
+  const el = document.querySelector('#wl-winnow [data-winnow-summary]');
+  if (!el) return;
+  const b = computeBuckets();
+  if (!b) { el.innerHTML = ''; return; }
+  const w = grid.winnow;
+  const ctx = grid.ctx;
+  const toggle = (key, label, n) => `<button type="button" data-show="${key}"
+    class="cursor-pointer bg-transparent ${w.show === key ? 'text-ink underline' : 'text-accent-ink'}"
+    ><span class="tnum">${n}</span> ${label}</button>`;
+  const runs = unrunGroups(b.couldNotCheck);
+  el.innerHTML = `
+    <div class="flex flex-wrap items-baseline gap-s3">
+      ${toggle('kept', 'kept', b.kept.length)} · ${toggle('dropped', 'dropped', b.dropped.length)} ·
+      ${toggle('could-not-check', 'could not check', b.couldNotCheck.length)} ·
+      ${toggle('all', 'all rows', grid.workList.members.length)}
+      <button type="button" data-act="winnow-save" ${b.kept.length ? '' : 'disabled'}
+        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-accent-ink"
+        >Save the <span class="tnum">${b.kept.length}</span> kept as a shortlist</button>
+    </div>
+    ${b.couldNotCheck.length ? `<ul class="m-0 mt-s2 list-none p-0 text-provenance" data-winnow-unchecked>
+      ${b.couldNotCheck.map((u) => `<li><span class="font-mono">${esc(u.entity_slug)}</span> · ${esc(u.words)}</li>`).join('')}
+    </ul>` : ''}
+    ${runs.map((g) => `<div class="mt-s2 text-accent-ink" data-winnow-cost>
+      <span class="tnum">${g.slugs.length}</span> ${g.slugs.length === 1 ? 'member has' : 'members have'} no answer to
+      ${esc(g.question)} · a filter on it is a run first:
+      ${g.analysisIds.map((a) => `<button type="button" data-act="winnow-run" data-analysis="${esc(a)}"
+        data-kind="${esc(g.entityType || kindOf(grid.workList))}" data-slugs="${esc(g.slugs.join(','))}"
+        class="cursor-pointer bg-transparent underline">run ${esc(a)} on them first</button>`).join(' ')}
+      <span class="text-ink-muted">(the plan and what it already holds are shown before anything runs)</span>
+    </div>`).join('')}`;
+  el.querySelectorAll('button[data-show]').forEach((btn) => btn.addEventListener('click', () => {
+    w.show = btn.dataset.show;
+    renderGrid();
+  }));
+  el.querySelector('[data-act="winnow-save"]')?.addEventListener('click', () => saveFiltered(ctx));
+  el.querySelectorAll('[data-act="winnow-run"]').forEach((btn) => btn.addEventListener('click', () => runBatch(ctx, {
+    analysisId: btn.dataset.analysis, slugs: btn.dataset.slugs.split(','), entityType: btn.dataset.kind,
+    scope: 'the members with no answer' })));
+}
+
+async function saveFiltered(ctx) {
+  const b = computeBuckets();
+  const wl = grid.workList;
+  const name = await inPagePrompt({
+    title: 'Save the kept rows as a shortlist',
+    message: `Kept ${b.kept.length} of ${wl.members.length} on ${grid.winnow.criteria.map(criterionWords).join(' and ')}.`
+      + (b.couldNotCheck.length ? ` ${b.couldNotCheck.length} could not be checked: they are not in the shortlist,`
+        + ' and it names each with the reason.' : '')
+      + ' The shortlist keeps the filter, so it can be re-applied on fresher answers later.',
+    label: 'Shortlist name',
+    defaultValue: `${wl.display_name} — shortlist`,
+    confirmLabel: 'Save',
+  });
+  if (name === null) return;
+  const filter = storedFilter(grid.winnow.criteria, b,
+    { parentSlug: wl.slug, parentCount: wl.members.length, appliedAt: new Date().toISOString() });
+  try {
+    const next = await promoteWorkList(wl.slug, b.kept, name, '', filter);
+    grid.workList = next;
+    grid.selected.clear();
+    grid.rows.clear();
+    grid.winnow = { open: false, criteria: [], types: new Map(), buckets: null, show: 'all' };
+    note(`Saved <strong>${esc(next.display_name)}</strong>: ${esc(shortlistWords(next.filter))}, cut from
+      <span class="font-mono">${esc(next.derived_from)}</span>.`);
+    await renderWorkListPane(ctx);
+  } catch (err) {
+    note(`<span class="text-state-warn">Could not save the shortlist: ${esc(err.message)}</span>`);
+  }
+}
+
+/** A filtered shortlist says what it was cut from, on what, as of when, and who could not be checked; and
+ *  offers re-applying on fresher answers (a press with the diff, never automatic). */
+function renderShortlistLine(ctx) {
+  const host = document.getElementById('wl-shortlist');
+  const f = grid.workList?.filter;
+  if (!host) return;
+  if (!f) { host.innerHTML = ''; return; }
+  if (f.unreadable) { host.innerHTML = `<span class="text-state-warn" data-shortlist-filter>${esc(f.unreadable)}</span>`; return; }
+  const un = f.could_not_check || [];
+  host.innerHTML = `<div data-shortlist-filter>${esc(shortlistWords(f))}${
+    un.length ? ` · <span class="text-state-warn"><span class="tnum">${un.length}</span> could not be checked</span>` : ''}
+    <button type="button" data-act="reapply" class="ml-s2 cursor-pointer bg-transparent text-accent-ink underline"
+      >Re-apply on fresher answers…</button></div>
+    ${un.length ? `<ul class="m-0 list-none p-0 text-provenance text-ink-muted">${un.map((u) =>
+      `<li><span class="font-mono">${esc(u.entity_slug)}</span> · ${esc(u.words)}</li>`).join('')}</ul>` : ''}`;
+  host.querySelector('[data-act="reapply"]').addEventListener('click', () => openReapply(ctx));
+}
+
+/** Evaluate the shortlist's criteria on its parent's CURRENT answers, show what would change, and change it
+ *  only on the press. */
+async function openReapply(ctx) {
+  const wl = grid.workList;
+  const f = wl.filter;
+  const el = openDialog('Re-apply the filter', `${shortlistWords(f)} · cut from ${wl.derived_from}`);
+  const body = el.querySelector('#wl-detail-body');
+  body.innerHTML = '<p class="text-ink-muted">Reading the current answers of the list it was cut from…</p>';
+  let parent;
+  const rows = new Map();
+  const states = {};
+  const types = new Map();
+  try {
+    parent = await getWorkList(wl.derived_from);
+    const ids = [...new Set(f.criteria.flatMap((c) => c.analysis_ids || []))];
+    const byKind = new Map();
+    for (const m of parent.members) {
+      const k = m.entity_type || parent.entity_type;
+      byKind.set(k, [...(byKind.get(k) || []), m.entity_slug]);
+    }
+    for (const [k, slugs] of byKind) {
+      const [proj, bulk] = await Promise.all([getBulkStates(slugs, ids, k), getBulkFacts(slugs, ids, k)]);
+      Object.assign(states, proj.states || {});
+      for (const sl of slugs) {
+        const facts = bulk.subjects?.[sl];
+        rows.set(sl, facts ? { factsById: new Map(facts.map((x) => [x.analysis_id, x])) }
+          : { error: bulk.unreadable?.[sl] || 'no facts returned for this resource' });
+      }
+      try { types.set(k, await getColumnTypes(k, ids)); } catch { types.set(k, null); }
+    }
+  } catch (err) {
+    body.innerHTML = `<p class="text-state-warn">Could not read the current answers: ${esc(err.message)}. Nothing changed.</p>`;
+    return;
+  }
+  const read = (c, m) => readCriterion(c, {
+    row: rows.get(m.entity_slug), per: states[m.entity_slug] || {}, q: { kind: 'analysis', analysis_ids: c.analysis_ids },
+    running: false, cellState, types: types.get(m.entity_type || parent.entity_type) });
+  const buckets = applyFilter(f.criteria, parent.members, read);
+  const diff = reapplyDiff(wl.members.map((m) => m.entity_slug), buckets.kept);
+  const names = (xs) => xs.map((x) => `<span class="font-mono">${esc(x)}</span>`).join(', ');
+  body.innerHTML = `
+    <p>On the current answers of the <span class="tnum">${parent.members.length}</span> members of
+      <span class="font-mono">${esc(parent.slug)}</span>:</p>
+    <ul class="ml-s3 mt-s2 list-disc" data-reapply-diff>
+      <li><span class="tnum">${diff.wouldDrop.length}</span> would now drop${diff.wouldDrop.length ? `: ${names(diff.wouldDrop)}` : ''}</li>
+      <li><span class="tnum">${diff.wouldJoin.length}</span> would now join${diff.wouldJoin.length ? `: ${names(diff.wouldJoin)}` : ''}</li>
+      <li><span class="tnum">${buckets.couldNotCheck.length}</span> could not be checked${buckets.couldNotCheck.length
+        ? `: ${buckets.couldNotCheck.map((u) => `${esc(u.entity_slug)} · ${esc(u.words)}`).join('; ')}` : ''}</li>
+    </ul>
+    <p class="mt-s3 text-ink">Nothing changes until you confirm.${
+      diff.wouldDrop.length || diff.wouldJoin.length ? '' : ' No member would change; confirming records the fresher as-of.'}</p>
+    <div class="mt-s3 flex gap-s3 border-t border-rule pt-s2">
+      <button type="button" data-act="go" class="cursor-pointer rounded-sm border border-accent px-2 py-[2px] text-accent-ink"
+        >Re-apply</button>
+      <button type="button" data-act="close" class="cursor-pointer bg-transparent text-ink-muted underline">Cancel</button>
+    </div>`;
+  body.querySelector('[data-act="go"]').addEventListener('click', async () => {
+    closeCellDetail();
+    const filter = storedFilter(f.criteria, buckets,
+      { parentSlug: parent.slug, parentCount: parent.members.length, appliedAt: new Date().toISOString() });
+    try {
+      const out = await reapplyShortlist(wl.slug, filter);
+      grid.workList = out.work_list;
+      grid.rows.clear();
+      await renderWorkListPane(ctx);
+      note(`Re-applied: <span class="tnum">${out.joined.length}</span> joined${out.joined.length ? ` (${names(out.joined)})` : ''},
+        <span class="tnum">${out.dropped.length}</span> dropped${out.dropped.length ? ` (${names(out.dropped)})` : ''}.`);
+    } catch (err) {
+      note(`<span class="text-state-warn">Could not re-apply: ${esc(err.message)}</span>`);
+    }
+  });
+}
+
 /* ── Rendering ──────────────────────────────────────────────────────── */
 
 const esc = (s) => String(s ?? '')
@@ -380,12 +730,16 @@ export async function renderWorkListPane(ctx) {
     <div id="wl-linked" class="mt-s2 text-caveat text-ink"></div>
     <div id="wl-note" class="mt-s2 text-caveat text-ink"></div>
     <div id="wl-progress" class="mt-s2"></div>
+    <div id="wl-shortlist" class="mt-s2 text-caveat text-ink"></div>
+    <div id="wl-winnow" class="mt-s2 text-caveat text-ink"></div>
     <div class="my-s3 h-px bg-rule"></div>
     <div id="wl-common-rationale" class="mb-s2 text-provenance text-ink-muted"></div>
     <div id="wl-grid" class="overflow-x-auto"></div>
     <div id="wl-legend" class="mt-s3 flex flex-wrap gap-s3 text-caveat text-ink"></div>`;
 
   el.querySelector('[data-act="exit"]').addEventListener('click', () => ctx.onExit());
+  renderShortlistLine(ctx);
+  renderWinnow(ctx);
 
   // The runnable analyses for THIS STAGE, re-read whenever the pane renders.
   //
@@ -1122,7 +1476,7 @@ function renderGrid() {
         </tr>
       </thead>
       <tbody>
-        ${orderedRows(wl.members, qs).map((entry) => entry.band
+        ${orderedRows(shownMembers(), qs).map((entry) => entry.band
           ? `<tr class="wl-band"><td colspan="${shown.length + 3 + (grid.scope ? 1 : 0)}"
                class="p-[6px] text-caps uppercase tracking-caps text-ink-muted">
                ${esc(entry.band)} · <span class="tnum">${entry.count}</span></td></tr>`
@@ -1196,6 +1550,8 @@ function renderGrid() {
     else grid.selected.delete(cb.dataset.row);
     renderActions(window.__wlCtx);
   }));
+  // The buckets follow the cells: a background read that lands can move a row out of could-not-check.
+  renderWinnowSummary();
 }
 
 function rowHtml(member, shown, qs) {
@@ -1312,7 +1668,7 @@ click for the latest results">${c.glyph}</button></td>`;
     <td class="wl-freeze-1 p-[6px]"><input type="checkbox" data-row="${esc(slug)}" ${
       grid.selected.has(slug) ? 'checked' : ''}></td>
     <td class="wl-freeze-2 p-[6px] text-ink">
-      <button type="button" data-res="${esc(slug)}"
+      ${bucketMark(slug)}<button type="button" data-res="${esc(slug)}"
         class="cursor-pointer border-0 bg-transparent p-0 text-left font-mono text-provenance text-ink underline decoration-dotted"
         title="Its verdicts, in order">${esc(slug)}</button>${
         member.disposition
@@ -1919,11 +2275,11 @@ function targets() {
  * other. So this one shows what it would run and what it already has, and
  * queues nothing until it is confirmed.
  */
-function runBatch(ctx) {
-  const analysisId = document.getElementById('wl-analysis')?.value;
+function runBatch(ctx, over = {}) {
+  const analysisId = over.analysisId || document.getElementById('wl-analysis')?.value;
   if (!analysisId) { note('<span class="text-state-warn">No analysis selected.</span>'); return; }
-  const slugs = targets();
-  const scope = grid.selected.size ? `${grid.selected.size} selected` : 'all rows';
+  const slugs = over.slugs || targets();
+  const scope = over.scope || (grid.selected.size ? `${grid.selected.size} selected` : 'all rows');
   const el = openDialog('Run across the set', `${analysisId} · ${slugs.length} resource(s) · ${scope}`);
   const body = el.querySelector('#wl-detail-body');
 
@@ -1961,15 +2317,15 @@ function runBatch(ctx) {
 
   body.querySelector('[data-act="go"]').addEventListener('click', () => {
     closeCellDetail();
-    enqueueRun(ctx, analysisId, slugs);
+    enqueueRun(ctx, analysisId, slugs, over.entityType);
   });
 }
 
-async function enqueueRun(ctx, analysisId, slugs) {
+async function enqueueRun(ctx, analysisId, slugs, entityType) {
   note(`Enqueueing <span class="tnum">${slugs.length}</span> run(s)…`);
   let started;
   try {
-    started = await enqueueBatch(analysisId, slugs, grid.workList.slug, kindOf(grid.workList));
+    started = await enqueueBatch(analysisId, slugs, grid.workList.slug, entityType || kindOf(grid.workList));
   } catch (err) {
     // `Load failed` / `Failed to fetch` is the browser's wording for a
     // network-level failure, not an application error — most often the
@@ -2092,6 +2448,7 @@ async function promote(ctx) {
     grid.workList = next;
     grid.selected.clear();
     grid.rows.clear();
+    grid.winnow = { open: false, criteria: [], types: new Map(), buckets: null, show: 'all' };
     note(`Promoted <span class="tnum">${next.members.length}</span> into
       <strong>${esc(next.display_name)}</strong>, which records
       <span class="font-mono">${esc(next.derived_from)}</span> as its parent.`);
@@ -2210,6 +2567,7 @@ export async function openWorkList(ctx, slug) {
   grid.workList = await getWorkList(slug);
   grid.rows.clear();
   grid.selected.clear();
+  grid.winnow = { open: false, criteria: [], types: new Map(), buckets: null, show: 'all' };
   // Invalidate any background resolve still running for the previous list —
   // its results would land in the new list's rows.
   grid.bgToken += 1;
