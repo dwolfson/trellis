@@ -11,7 +11,7 @@ Rows come back in the Analysis pane's measurement shape (`{name, value, opens, n
 """
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 #: The four envelope states and their words (the same words as trellis_analytics' ResultState). Kept here so
 #: Resource Explorer reads stored rows without the library installed.
@@ -51,8 +51,9 @@ def read_resource_measure_rows(registry, entity_type: str, slug: str, analysis_s
             "state_words": words,
             "reason": reason,
             "properties": detail.get("resourceProperties") or {},
-            # Which of the step's declared measures this row is ("" its own, primary one): a resource-scoped step
-            # writes one row per measure, and only this tells them apart (`StepAnnotation.measure`).
+            # Which of the step's declared measures this row is ("" its own, primary one), where the row says. The
+            # host stores each further measure under its own key (`measure_step_key`), so a reader of one key sees
+            # one measure; `declared_context.measure_records` reads each measure from its key.
             "measure": detail.get("measure") or (detail.get("additionalProperties") or {}).get("measure") or "",
             "annotation_type": a.get("annotation_type") or "",
             "run": run,

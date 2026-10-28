@@ -172,8 +172,19 @@ Tests: five more in `tests/test_publish_table.py`, covering:
 - `change_rates`, wrapped as the shared reader returns it;
 - a resource-level field beside `measurement_rows` still resolving.
 
-**Update: the file-system library steps.** ext-declaration fixed the gap above for the Chat compile on
-`claude/re-ext-fs-measure-lines` (`declared_context.measure_records`), and the table now uses the same function.
-A resource-scoped step's measure is read from its own record. If that record states no value, the row shows the
-record's state and the step's reason, e.g. `fs_access_activity`'s "access times not recorded on this mount". File
-systems still cannot publish (owner answer 3); this changes only what their rows show.
+**Update: the file-system library steps.** The table and the Chat compile now share
+`declared_context.measure_records(registry, entity_type, slug, step, dec, analysis_id)`. It reads each measure from
+the key the host stored it under (`survey_step_host.measure_step_key`):
+- the step's own measure is under the step key;
+- each further measure is under `<step>:<measure>`.
+
+For each measure it takes the value from `resourceProperties` and the state and reason from the envelope, as the
+Files card's `derived_view` does. If a measure's record states no value, the row shows the record's state and the
+step's reason. For example, `fs_access_activity` on a mount without access-time updates reads "access times not
+recorded on this mount: …".
+
+A first attempt looked for a `measure` key on rows read under the step key alone. Real storage never puts another
+measure's rows there, and a test that faked that shape passed anyway. The tests now run `fs_activity` through RE's
+own host on a walked tree and check both readers against `derived_view`.
+
+File systems still cannot publish (owner answer 3): this changes only what their rows show.

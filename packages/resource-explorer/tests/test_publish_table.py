@@ -630,25 +630,37 @@ def test_a_library_step_value_at_the_top_of_the_record_still_resolves(registry, 
     assert _rows(registry)["rows_sampled"]["value"] == 1200
 
 
-def test_a_resource_scoped_library_step_reads_each_measure_from_its_own_record(registry, declared):
-    """fs_activity writes one record per measure, both with a "Cold Files" field: each row reads its own record, and
-    one whose record says it was not established says so with the step's reason. A file system still cannot publish
-    (owner answer 3); the value is what the row shows."""
+def test_a_resource_scoped_library_step_reads_each_measure_from_where_the_host_stored_it(tmp_path, monkeypatch):
+    """fs_activity run by RE's own host on a walked tree, read by the table through the real fact layer: each measure
+    is read from its own stored key, so fs_access_activity shows its value, or its state with the step's reason,
+    never "ran and found nothing". A file system still cannot publish (owner answer 3)."""
+    from resource_explorer.surveyors import survey_step_host
     from resource_explorer.surveyors.analysis_catalog_reader import _load
+    from resource_explorer.surveyors.filesystem.walk_derived import derived_view
+    from resource_explorer.workflows.analysis import run_filesystem_analysis
+    from tests.library_step_install import _entries
+    from tests.test_files_derived_steps_host import _register, _tree, _walk
 
-    entry = next(e for e in _load()["filesystem"] if e.id == "fs_activity")
-    declared["entries"] = [entry]
-    declared["facts"] = {"fs_activity": Fact(
-        analysis_id="fs_activity", state="measured", last_run_at="2026-10-27T08:31:00",
-        value={"measurement_rows": [
-            {"name": "share", "measure": "", "state": "measured",
-             "properties": {"Cold Files": 12, "asOf": "2026-10-27T08:00:00"}},
-            {"name": "share", "measure": "fs_access_activity", "state": "not_established",
-             "reason": "access times not recorded on this mount", "properties": {}}]})}
-    rows = {r["measure"]: r for r in pt.build_rows(registry, "filesystem", "share")["rows"]}
-    assert rows["fs_activity"]["value"] == 12 and rows["fs_activity"]["as_of"] == "2026-10-27T08:00:00"
-    access = rows["fs_access_activity"]
-    assert access["value"] is None and access["absence"] == "not_measured"
-    assert access["absence_words"] == (entry.declaration.absence.sentence("not_measured")
-                                       + " · access times not recorded on this mount")
+    for entry in reversed(_entries(tmp_path, ("fs_activity",))):
+        monkeypatch.syspath_prepend(entry)
+    survey_step_host.refresh("filesystem")
+    try:
+        reg = ProjectRegistry(db_path=str(tmp_path / "fs.db"))
+        _walk(reg, _register(reg, _tree(tmp_path)))
+        assert run_filesystem_analysis("tree", "fs_activity", registry=reg).status == "ok"
+        entry = next(e for e in _load()["filesystem"] if e.id == "fs_activity")
+        rows = {r["measure"]: r for r in pt.build_rows(reg, "filesystem", "tree", entries=[entry])["rows"]}
+        stored = {r["measure"]: r for s in derived_view(reg, "tree")["steps"] if s["step"] == "fs_activity"
+                  for r in s["results"]}
+    finally:
+        monkeypatch.undo()
+        survey_step_host.refresh("filesystem")
+
+    assert rows["fs_activity"]["value"] == stored["fs_activity"]["values"]["Cold Files"]
+    access, held = rows["fs_access_activity"], stored["fs_access_activity"]
+    if held["state"] == "measured":
+        assert access["value"] == held["values"]["Cold Files"]
+    else:
+        assert access["value"] is None and access["absence"] != "measured_nothing"
+        assert access["absence_words"].endswith(f" · {held['reason']}")
     assert not access["publishable"] and access["why_not"] == pt.NOT_FOR_KIND_WORDS

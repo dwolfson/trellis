@@ -347,34 +347,67 @@ def test_the_catalogue_sorts_row_count_snapshot_by_row_count():
     assert x.sort == ["row_count desc"] and x.order == ""
 
 
-# ── a resource-scoped library step: one record per measure ─────────────────────
+# ── a resource-scoped library step: each measure stored under its own key ─────────────────────
 
-def _fs_activity_records(access: dict) -> dict:
-    """fs_activity as the shared reader returns it: its own measure's record ("" measure) and fs_access_activity's."""
-    own = {"name": "share-a", "measure": "", "state": "measured", "reason": "",
-           "properties": {"Cold Files": "12", "Hot Files": "3", "asOf": "2026-10-28T09:00:00"}}
-    return {"measurement_rows": [own, {"name": "share-a", "measure": "fs_access_activity", **access}],
-            "state_counts": {}}
+@pytest.fixture
+def fs_activity_ran(tmp_path, monkeypatch):
+    """fs_activity installed as pip would, run by RE's own host on a walked tree: its records are where the host's
+    store puts them (the step's own measure under `fs_activity`, the other under `fs_activity:fs_access_activity`)."""
+    from resource_explorer.registry import ProjectRegistry
+    from resource_explorer.surveyors import survey_step_host
+    from resource_explorer.workflows.analysis import run_filesystem_analysis
+    from tests.library_step_install import _entries
+    from tests.test_files_derived_steps_host import _register, _tree, _walk
+
+    for entry in reversed(_entries(tmp_path, ("fs_activity",))):
+        monkeypatch.syspath_prepend(entry)
+    survey_step_host.refresh("filesystem")
+    registry = ProjectRegistry(db_path=str(tmp_path / "fs.db"))
+    _walk(registry, _register(registry, _tree(tmp_path)))
+    assert run_filesystem_analysis("tree", "fs_activity", registry=registry).status == "ok"
+    yield registry
+    monkeypatch.undo()
+    survey_step_host.refresh("filesystem")
 
 
-def test_each_measure_of_a_resource_scoped_step_is_read_from_its_own_record():
+def _stored(registry, measure: str) -> dict:
+    """What the Files card's own reader (`derived_view`) says the host stored for one measure."""
+    from resource_explorer.surveyors.filesystem.walk_derived import derived_view
+
+    step = next(s for s in derived_view(registry, "tree")["steps"] if s["step"] == "fs_activity")
+    return next(r for r in step["results"] if r["measure"] == measure)
+
+
+def test_each_measure_of_a_resource_scoped_step_is_read_from_where_the_host_stored_it(fs_activity_ran):
+    registry = fs_activity_ran
     dec = dc.declarations("filesystem")["fs_activity"]
-    access = {"state": "measured", "reason": "",
-              "properties": {"Cold Files": "40", "asOf": "2026-10-28T09:00:00"}}
-    rungs, _ = dc.section_rungs("fs_activity", dec, fact(value=_fs_activity_records(access)))
+    records = dc.measure_records(registry, "filesystem", "tree", "fs_activity", dec, "fs_activity")
+    assert set(records) == {"fs_activity", "fs_access_activity"}
+    for measure in records:
+        stored = _stored(registry, measure)
+        assert records[measure]["state"] == stored["state"] and records[measure]["reason"] == stored["reason"]
+        assert {k: v for k, v in records[measure]["value"].items() if k != "scope"} == stored["values"]
+
+    fact = FactLayer(registry, resource_type="filesystem").fact("tree", "fs_activity").as_dict()
+    rungs, _ = dc.section_rungs("fs_activity", dec, fact, records)
     full = rungs[Rung.FULL]
-    assert "- fs_activity: 12 files not modified for more than Cold Days days (cold) (as of 2026-10-28T09:00:00)" in full
-    assert "- fs_access_activity: 40 files not read for more than Cold Days days (cold) (as of 2026-10-28T09:00:00)" \
-        in full
+    access = _stored(registry, "fs_access_activity")
+    if access["state"] == "measured":
+        assert f"- fs_access_activity: {access['values']['Cold Files']} files not read" in full
+    else:
+        assert f"- fs_access_activity: {dc._STATE_WORDS[access['state']]}: {access['reason']}" in full
+    own = _stored(registry, "fs_activity")
+    assert f"- fs_activity: {own['values']['Cold Files']} files not modified" in full
     assert "not in the stored result" not in full.split("activity_bands")[0]
 
 
-def test_a_measures_record_without_a_value_says_its_state_and_reason():
-    dec = dc.declarations("filesystem")["fs_activity"]
-    access = {"state": "not_established", "reason": "access times not recorded on this mount", "properties": {}}
-    rungs, _ = dc.section_rungs("fs_activity", dec, fact(value=_fs_activity_records(access)))
-    assert ("- fs_access_activity: not established: access times not recorded on this mount (as-of not recorded)"
-            in rungs[Rung.FULL])
+def test_a_member_scoped_or_stepless_declaration_has_no_measure_records():
+    registry = MagicMock()
+    dec = dc.declarations("database")["change_rates"]
+    assert dc.measure_records(registry, "database", "db", "change_rates", dec, "change_rates") == {}
+    assert dc.measure_records(registry, "filesystem", "tree", "", dc.declarations("filesystem")["fs_activity"],
+                              "fs_activity") == {}
+    registry.query_step_annotations.assert_not_called()
 
 
 def test_the_shared_reader_says_which_measure_each_row_is():

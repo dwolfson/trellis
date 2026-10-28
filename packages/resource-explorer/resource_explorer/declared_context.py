@@ -112,27 +112,40 @@ def library_rows(value: dict) -> dict:
     return {**{k: v for k, v in value.items() if k != "measurement_rows"}, "measurement_rows": flat}
 
 
-def measure_records(value: dict, dec, analysis_id: str) -> dict:
-    """{measure name: its record} for a resource-scoped library step that writes one record per measure.
+def library_steps(resource_type: str) -> dict:
+    """{analysis id: library step key} for every catalogue entry of this type a library step provides."""
+    from resource_explorer.surveyors.analysis_catalog_reader import _load
 
-    The shared reader returns one row per stored annotation, each naming its measure ("" for the step's own,
-    primary one, whose name is the step's). A resource-scoped step's value for a measure is in that measure's
-    record, not in a record of the resource as a whole, so it is picked by measure here. Each record is
-    {"value": the step's record as declared, "state", "reason"}. Empty when the result is not a library step's,
-    or the declaration is member- or field-scoped (its rows are members, not measures)."""
-    rows = value.get("measurement_rows") if isinstance(value, dict) else None
-    if not isinstance(rows, list) or (dec.scope or "resource") != "resource":
+    return {e.id: (e.provided_by or {}).get("step") or e.id for e in _load().get(resource_type, []) if e.provided_by}
+
+
+def measure_records(registry, entity_type: str, slug: str, step: str, dec, analysis_id: str) -> dict:
+    """{measure name: its record} for a resource-scoped library step, read from where the host stores each measure.
+
+    The host (`survey_step_host`) stores a step's own measure under the step key and each further declared measure
+    under `<step>:<measure>` (`measure_step_key`), so the step's fact holds its own measure only; each measure is read
+    here from its own key, as `walk_derived.derived_view` reads it. Each record is {"value": {"scope", **the
+    annotation's resourceProperties}, "state", "reason", "run"}; a measure with nothing stored has no record. Empty
+    when there is no step, or the declaration is member- or field-scoped (its rows are members, not measures)."""
+    if not step or (dec.scope or "resource") != "resource":
         return {}
+    from resource_explorer.surveyors.annotation_readers import _envelope_state
+    from resource_explorer.surveyors.survey_step_host import measure_step_key
+
     names = [m.name for m in dec.measures]
-    primary = analysis_id if analysis_id in names else (names[0] if names else "")
+    # The step's own measure: the one named after the step (or the analysis), else the first declared.
+    primary = next((n for n in (step, analysis_id) if n in names), names[0] if names else "")
     out: dict = {}
-    for r in rows:
-        if not isinstance(r, dict):
+    for name in names:
+        key = step if name == primary else measure_step_key(step, name)
+        run, rows = registry.query_step_annotations(entity_type, slug, key)
+        if not rows:
             continue
-        name = r.get("measure") or primary
-        if name in names and name not in out:
-            out[name] = {"value": {"scope": r.get("name"), **(r.get("properties") or {})},
-                         "state": r.get("state") or "", "reason": r.get("reason") or ""}
+        a = rows[0]
+        detail = a.get("detail") or {}
+        state, _words, reason = _envelope_state(detail)
+        out[name] = {"value": {"scope": a.get("scope") or "", **(detail.get("resourceProperties") or {})},
+                     "state": state, "reason": reason, "run": run}
     return out
 
 
@@ -324,19 +337,19 @@ def absence_lines(absences: dict[str, dict]) -> tuple[str, str]:
     return "\n".join(full) + "\n", summary + "\n"
 
 
-def section_rungs(analysis_id: str, dec, fact: dict) -> tuple[dict, dict]:
+def section_rungs(analysis_id: str, dec, fact: dict, records: dict | None = None) -> tuple[dict, dict]:
     """The rungs of one declared analysis's section, and what each rung shows.
 
     `fact` is `Fact.as_dict()` for a known fact (`KNOWN_STATES`): the measures, the confidence line and the extents
     (FULL at the declared rows, SUMMARY at `SUMMARY_ROWS`, IDENTIFIERS the measures alone). Returns (rungs, seen)
-    where seen is {"state", "as_of", "confidence", "extents": {name: {"FULL": ..., "SUMMARY": ...}}}.
+    where seen is {"state", "as_of", "confidence", "extents": {name: {"FULL": ..., "SUMMARY": ...}}}. `records` is
+    `measure_records` for a resource-scoped library step: where each of its measures is stored.
     """
     state = fact.get("state", "")
     head = f"## {analysis_id}"
     conf = _confidence_line(dec)
     seen: dict = {"state": state, "confidence": (dec.confidence.form if dec.confidence else ""), "extents": {}}
     value = fact.get("value") or {}
-    records = measure_records(value, dec, analysis_id)
     value = library_rows(value) if isinstance(value, dict) else {}
     run = run_fields(fact)
     as_of = str(fact.get("as_of") or run.get("read_snapshot") or run.get("surveyed_at") or "")

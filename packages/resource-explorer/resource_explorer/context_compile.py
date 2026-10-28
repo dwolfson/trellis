@@ -1271,6 +1271,7 @@ def compile_context(
     #: Analyses whose catalogue entry declares its results: their section is built from the declaration (§3 of
     #: DESIGN-DECLARED-EXTENSIBILITY-RENDERING-CHAT-CONFIDENCE), not from the generic shape below.
     _declared = declared_context.declarations(resource_type)
+    _steps = declared_context.library_steps(resource_type)
     #: Per packed declared section, what each rung showed (extents, as-of, confidence form), for the manifest.
     declared_seen: dict[str, dict] = {}
     #: Declared analyses with nothing stored, and the sentence each declares for that.
@@ -1296,7 +1297,13 @@ def compile_context(
                 extra_notes.append(f"declared section for {analysis_id} unavailable ({type(exc).__name__}); "
                                    "packed from its stored findings instead")
             if fact is not None and fact.get("state") in declared_context.KNOWN_STATES:
-                rungs, seen = declared_context.section_rungs(analysis_id, dec, fact)
+                try:
+                    records = declared_context.measure_records(registry, resource_type, slug, _steps.get(analysis_id),
+                                                               dec, analysis_id)
+                except Exception as exc:
+                    log.warning("measure records for declared %s on %s failed: %s", analysis_id, slug, exc)
+                    records = {}
+                rungs, seen = declared_context.section_rungs(analysis_id, dec, fact, records)
                 if analysis_id in caveat_ids:
                     rungs = _with_caveat(rungs, coverage["caveat"])
                 sections.append(Section(analysis_id, role="evidence", weight=weight))

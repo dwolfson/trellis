@@ -36,7 +36,7 @@ those rows only, never from the press.
 (`Declaration.confidence_of`); an analysis declared but not built says "Planned, not built yet: not measured." and
 cannot publish; a library step's result is unwrapped as the Chat compile unwraps it (`declared_context.library_rows`); a
 member-scoped measure with no resource-level value says it has one value per member rather than "found nothing", and a
-resource-scoped step's measure is read from its own record (`declared_context.measure_records`).
+resource-scoped step's measure is read from the key the host stored it under (`declared_context.measure_records`).
 """
 from __future__ import annotations
 
@@ -303,8 +303,10 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
             # A library step's record as the step declared it, not RE's reader's wrapping (the Chat compile's rule).
             raw = fact.get("value") or {}
             value = library_rows(raw)
-            # A resource-scoped library step keeps each measure in its own record (empty for any other result).
-            records = measure_records(raw, dec, entry.id)
+            # A resource-scoped library step stores each measure under its own key (empty for any other result).
+            provided = getattr(entry, "provided_by", None) or {}
+            step = (provided.get("step") or entry.id) if provided else ""
+            records = measure_records(registry, entity_type, slug, step, dec, entry.id)
             known = fact.get("state") in _KNOWN and dec.built
             per_member = dec.scope in ("member", "field") and bool(dec.extents)
             for m in dec.measures:
