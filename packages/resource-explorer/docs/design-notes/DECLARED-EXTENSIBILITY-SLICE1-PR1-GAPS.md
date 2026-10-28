@@ -101,8 +101,8 @@ declaration's headline confidence is the weakest of them." Built:
   `Declaration.confidence_of(measure)` returns whichever applies.
 - A headline that is not the weakest of the measures' forms is refused. So is a measure with a confidence of its
   own when other measures have none and the declaration declares none for them to inherit.
-- The order is `CONFIDENCE_STRENGTH`: measured, judged, estimated, inferred, generated. Placing "judged" second is
-  this slice's reading of §4 and has no ruling yet.
+- The order is `CONFIDENCE_STRENGTH`: measured, judged, estimated, inferred, generated. Placing "judged" second was
+  ruled by the project owner on 2026-10-28 (`DECLARED-EXTENSIBILITY-SLICE2-CHAT-COMPILE.md` §5).
 - `row_count_snapshot.total_size` declares `measured` (pg_total_relation_size is exact) under an `estimated`
   headline.
 

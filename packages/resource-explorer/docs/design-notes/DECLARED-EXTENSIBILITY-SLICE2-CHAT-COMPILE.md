@@ -49,8 +49,12 @@ words in `DECLARED-EXTENSIBILITY-SLICE1-PR1-GAPS.md` §3a. None is assumed.
 1. **Absences ride in the instructions section, not in sections of their own.** The rail counts `packed` as "stored
    results used", and an absence is not a stored result. They appear at FULL and SUMMARY, at most 6 sentences with
    the rest named; the bare rung carries none.
-2. **Order is the result's own.** A declared `order` is a sentence ("by row count, largest first"), not a sort key.
-   The compiler takes rows in the order the reader returns them, and the sentence tells the model what that order is.
+2. **Order is declared once.** An extent declares `sort` keys ("row_count desc") that the compiler applies before
+   it takes rows, and its order words are derived from them; or, where no key can say the order ("PUBLIC grantees
+   first, then by table"), an `order` sentence, and the rows keep the reader's order. A declaration with both is
+   refused (owner answer 2, §5). Numbers written as text sort by value, and a row without the key's field goes last.
+   Ten extents declare sort keys: eight in the catalogue, and `change_rates` and `database_staleness` in their
+   manifests.
 3. **Joined sources leave out the fields another source owns.** A row joined from several sources shows only the
    fields it carries; a field another source owns is not reported as `(none)`. For a single-source extent, a field
    the row lacks is said as `(none)`.
@@ -77,25 +81,21 @@ words in `DECLARED-EXTENSIBILITY-SLICE1-PR1-GAPS.md` §3a. None is assumed.
   allows no writes to :5442, and a compile reads the registry there. The gate (§7) still needs the owner's walk.
 - **The renderer.** The Understanding side of §2, a renderer per result kind, is the remaining half of slice 1.
 
-## 5. Owner questions, with options
+## 5. Owner questions: answered
 
-1. **Should absence sentences take budget ahead of evidence?** Today they ride in the required instructions
-   section, and the barest rung drops them, so at a very tight budget the model loses them before it loses an
-   evidence section.
-   - (a) Keep as built: absences go first into the instructions, at FULL and SUMMARY only. *Recommended:* the
-     barest rung is a last resort, reached only when nothing else fits.
-   - (b) Put them in their own required section with a one-line floor ("nothing stored for: a, b"). This costs
-     budget in every compile.
-   - (c) Put them in an optional section with a high weight. That is cheaper, but an absence could be dropped
-     silently, so a note is needed when it is.
-2. **Should the declared `order` become a sort key?** Today it is a sentence.
-   - (a) Keep it as a sentence and trust the reader's order. *Recommended for now:* no reader's order has been
-     checked against its declaration yet, and (c) checks it without a second place to say the order.
-   - (b) Add an optional `sort` field (`row_count desc`) that the compiler applies. This is exact, but it is a
-     second place to say the order.
-   - (c) Have a test compare the declared order with a live result per analysis. That needs stored results, so it
-     belongs in the gate rather than in unit tests.
-3. **Where does "judged" rank in the weakest link?** `CONFIDENCE_STRENGTH` puts it second, after measured.
-   - (a) Leave it second: a person's verdict on the evidence outranks any estimate. *Recommended.*
-   - (b) Rank it with inferred: a verdict is only as good as the evidence it saw.
-   - (c) Do not rank it at all, and report a judged section beside the weakest link rather than in it.
+The three questions this slice raised, with their options, were answered by the project owner on 2026-10-28 and
+relayed by the coordinator.
+
+**Decision (project owner, 2026-10-28):** absence sentences: "KEEP AS BUILT (option a)". They stay in the required
+instructions section at FULL and SUMMARY; only the barest rung drops them. The other options were their own
+required section with a one-line floor, or an optional high-weight section.
+
+**Decision (project owner, 2026-10-28):** row order: "ADD A SORT FIELD (option b)" (against this note's
+recommendation, which was to keep the sentence and check it in the gate), "which the compiler applies", with the
+order sentence derived from `sort` or a validator refusing disagreement. Built:
+- `ExtentDeclaration.sort`, with `sort_keys()` and `order_words()`;
+- a refusal when both `sort` and `order` are declared, so the order is said in one place;
+- `declared_context.sorted_rows`, applied before rows are left out.
+
+**Decision (project owner, 2026-10-28):** "judged": "SECOND, after measured (option a), as built." It stays in
+`CONFIDENCE_STRENGTH`.

@@ -195,3 +195,26 @@ def test_per_measure_confidence_refusals_name_what_was_refused(body, words):
 def test_built_is_the_default_and_a_planned_analysis_says_so():
     assert Declaration.model_validate(minimum()).built is True
     assert Declaration.model_validate(minimum(built=False)).built is False
+
+
+# ── sort keys (project owner, 2026-10-28): the order said once ─────────────
+
+def _ext(**over):
+    return Declaration.model_validate(minimum(extents=[{**EXTENT, **over}])).extents[0]
+
+
+def test_sort_keys_derive_the_order_words():
+    x = _ext(order="", sort=["count desc", "scope asc"])
+    assert x.sort_keys() == [("count", True), ("scope", False)]
+    assert x.order_words() == "by count, descending, then scope, ascending"
+    assert _ext().order_words() == "by count, most first"
+
+
+@pytest.mark.parametrize("over, words", [
+    ({"sort": ["count desc"]}, "declares both sort and order: the order is said in one place"),
+    ({"order": "", "sort": []}, "declares no order: declare sort keys, or the order in words"),
+    ({"order": "", "sort": ["count downwards"]}, "sort key 'count downwards' is not '<field> asc' or '<field> desc'"),
+    ({"order": "", "sort": ["rows desc"]}, "sorts by 'rows', which is not one of its fields"),
+])
+def test_sort_refusals_name_what_was_refused(over, words):
+    assert words in refused(minimum(extents=[{**EXTENT, **over}]))

@@ -124,8 +124,12 @@ class ExtentDeclaration(_Strict):
     fields: list[str]
     #: How many rows the extent carries at most.
     rows: int
-    #: The order rows are taken in, in words ("by rows changed, largest first").
-    order: str
+    #: The order rows are taken in, in words ("PUBLIC grantees first, then by table"), for an order no `sort` can
+    #: say. Not declared beside `sort`: the order is said in one place.
+    order: str = ""
+    #: The order as keys the compiler applies, each "<field> asc" or "<field> desc" on one of `fields`, first key
+    #: first ("row_count desc"); the words are derived from it (`order_words`). Project owner, 2026-10-28.
+    sort: list[str] = Field(default_factory=list)
     #: Shown when rows were dropped; carries `{shown}` and `{total}` for the compiler to fill.
     truncation: str
     #: The extent's cost at `rows` rows, in tokens, for the compiler's budget (§3 step 4).
@@ -140,10 +144,24 @@ class ExtentDeclaration(_Strict):
     #: "columns_added"), so joined rows stay told apart. Empty for none.
     tag: str = ""
 
-    @field_validator("source", mode="before")
+    @field_validator("source", "sort", mode="before")
     @classmethod
-    def _one_source(cls, v):
+    def _one_item(cls, v):
         return [v] if isinstance(v, str) else v
+
+    def sort_keys(self) -> list[tuple[str, bool]]:
+        """`sort` as (field, descending) pairs, first key first."""
+        out = []
+        for key in self.sort:
+            field, _, direction = " ".join(key.split()).rpartition(" ")
+            out.append((field, direction == "desc"))
+        return out
+
+    def order_words(self) -> str:
+        """The order in words: derived from `sort` when it is declared, else the declared sentence."""
+        if not self.sort:
+            return self.order
+        return "by " + ", then ".join(f"{f}, {'descending' if d else 'ascending'}" for f, d in self.sort_keys())
 
     @model_validator(mode="after")
     def _shape(self) -> "ExtentDeclaration":
@@ -162,9 +180,20 @@ class ExtentDeclaration(_Strict):
         if self.token_cost < 1:
             raise ValueError(f"{label} declares token_cost {self.token_cost}: the compiler budgets by it, so it "
                              "must be a positive estimate")
-        for f in ("order", "citation"):
-            if not _words(getattr(self, f)):
-                raise ValueError(f"{label} declares no {f}")
+        if not _words(self.citation):
+            raise ValueError(f"{label} declares no citation")
+        if self.sort and _words(self.order):
+            raise ValueError(f"{label} declares both sort and order: the order is said in one place, so leave the "
+                             "order sentence out and it is derived from sort")
+        if not self.sort and not _words(self.order):
+            raise ValueError(f"{label} declares no order: declare sort keys, or the order in words when no key "
+                             "can say it")
+        for key in self.sort:
+            field, _, direction = " ".join(key.split()).rpartition(" ")
+            if direction not in ("asc", "desc") or not field:
+                raise ValueError(f"{label} sort key '{key}' is not '<field> asc' or '<field> desc'")
+            if field not in self.fields:
+                raise ValueError(f"{label} sorts by '{field}', which is not one of its fields")
         lacking = [p for p in TRUNCATION_PLACEHOLDERS if p not in self.truncation]
         if lacking:
             raise ValueError(f"{label} truncation sentence '{self.truncation}' lacks {', '.join(lacking)}: it says "

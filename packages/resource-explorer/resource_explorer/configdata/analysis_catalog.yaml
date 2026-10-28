@@ -963,7 +963,7 @@ database_analyses:
       - name: relations
         fields: [schema_name, table_name, table_type, column_count, row_count, row_count_is_estimate]
         rows: 30
-        order: by schema, then name
+        sort: [schema_name asc, table_name asc]
         truncation: '{shown} of {total} relations shown, by schema and name'
         token_cost: 1480
         citation: '{analysis} · {scope} · as of {as_of}'
@@ -1028,7 +1028,7 @@ database_analyses:
       - name: tables_by_rows
         fields: [schema_name, table_name, row_count, size_bytes, row_count_is_estimate]
         rows: 20
-        order: by row count, largest first
+        sort: [row_count desc]
         truncation: '{shown} of {total} tables shown, by row count'
         token_cost: 840
         citation: '{analysis} · {scope} · as of {as_of}'
@@ -1086,7 +1086,7 @@ database_analyses:
       - name: roles
         fields: [rolname, rolsuper, rolcanlogin, rolbypassrls]
         rows: 20
-        order: superusers first, then by name
+        sort: [rolsuper desc, rolname asc]
         truncation: '{shown} of {total} roles shown, superusers first'
         token_cost: 680
         citation: '{analysis} · {scope} · as of {as_of}'
@@ -1534,7 +1534,7 @@ database_analyses:
       - name: starting_tables
         fields: [table, score, fk_in_degree, row_count, has_comment, reads]
         rows: 10
-        order: by rank score, highest first
+        sort: [score desc]
         truncation: '{shown} of {total} ranked tables shown, by rank score'
         token_cost: 520
         citation: '{analysis} · {scope} · as of {as_of}'
@@ -1730,7 +1730,7 @@ database_analyses:
       - name: matches
         fields: [slug, verdict, column_jaccard, table_jaccard, containment]
         rows: 5
-        order: by column similarity, highest first
+        sort: [column_jaccard desc]
         truncation: '{shown} of {total} similar databases shown, by similarity'
         token_cost: 240
         citation: '{analysis} · {scope} · as of {as_of}'
@@ -1812,7 +1812,7 @@ database_analyses:
       - name: offending_items
         fields: [check, item]
         rows: 30
-        order: by check, then name
+        sort: [check asc, item asc]
         truncation: '{shown} of {total} offending tables and columns shown, by check'
         token_cost: 520
         citation: '{analysis} · {scope} · as of {as_of}'
@@ -1926,7 +1926,7 @@ database_analyses:
       - name: columns
         fields: [column_path, record_ct, distinct_value_ct, null_value_ct, zero_length_ct, min_date, max_date]
         rows: 30
-        order: by schema, table and column
+        sort: [column_path asc]
         truncation: '{shown} of {total} columns shown, by schema, table and column'
         token_cost: 1720
         citation: '{analysis} · {scope} · as of {as_of}'
@@ -2348,7 +2348,7 @@ database_analyses:
       - name: column_ranges
         fields: [schema_name, table_name, column_name, start, end, basis]
         rows: 15
-        order: earliest start first
+        sort: [start asc]
         truncation: '{shown} of {total} dated columns shown, earliest first'
         token_cost: 760
         citation: '{analysis} · {scope} · as of {as_of}'
@@ -2850,7 +2850,8 @@ database_analyses:
         - fromAsOf
         - toAsOf
         rows: 20
-        order: by rows written per day, most first
+        sort:
+        - Writes Per Day desc
         truncation: '{shown} of {total} tables shown, by rows written per day'
         token_cost: 1000
         citation: '{analysis} · {scope} · as of {as_of}'
@@ -2922,7 +2923,8 @@ database_analyses:
         - previousSurvey
         - latestSurvey
         rows: 20
-        order: by rows changed, largest change first
+        sort:
+        - rowsChanged desc
         truncation: '{shown} of {total} tables shown, by rows changed'
         token_cost: 1000
         citation: '{analysis} · {scope} · as of {as_of}'

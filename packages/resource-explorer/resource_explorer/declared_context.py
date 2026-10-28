@@ -5,8 +5,8 @@
 catalogue entry carries a declaration (`trellis_analytics.declaration.Declaration`), the section is built here:
 
 - **Step 2, extents by declaration.** The measures as `name: value unit (as of ...)`, then each declared extent: its
-  declared fields only, at most its declared rows, in the result's own order (which the declaration states in
-  words), with the truncation sentence filled in when rows were left out. Nothing is invented: a field the result
+  declared fields only, at most its declared rows, in the declared `sort` order (or the result's own order where
+  the declaration states it in words), with the truncation sentence filled in when rows were left out. Nothing is invented: a field the result
   does not carry is said as `(none)`, an extent whose rows are not in the result is said to be absent from it.
 - **Step 3, absences in words.** An analysis that has not run or could not run enters the context as its declared
   absence sentence (in the instructions section, `absence_lines`), and one that ran and found nothing carries its
@@ -160,6 +160,32 @@ def extent_rows(value: dict, extent) -> list | None:
     return rows if found else None
 
 
+def _sort_value(v):
+    """A sort key for one cell: numbers, and numbers written as text (a library step's properties are strings), by
+    value; anything else by its words. Booleans count as 0/1."""
+    if isinstance(v, bool):
+        return (0, float(v))
+    if isinstance(v, (int, float)):
+        return (0, float(v))
+    try:
+        return (0, float(str(v).replace(",", "")))
+    except ValueError:
+        return (1, " ".join(str(v).split()).lower())
+
+
+def sorted_rows(rows: list, extent) -> list:
+    """The rows in the extent's declared `sort` order (stable; first key first), or as given with no sort. A row
+    missing a key's field goes last whatever the direction: an absent value is not the smallest or the largest."""
+    keys = extent.sort_keys() if hasattr(extent, "sort_keys") else []
+    out = list(rows)
+    for field, descending in reversed(keys):
+        present = [r for r in out if _field(r, field) not in (_MISSING, None)]
+        absent = [r for r in out if _field(r, field) in (_MISSING, None)]
+        present.sort(key=lambda r, f=field: _sort_value(_field(r, f)), reverse=descending)
+        out = present + absent
+    return out
+
+
 def _row_line(row, fields: list[str], joined: bool = False) -> str:
     """One row, its declared fields in declared order. A field the row lacks is said as `(none)`, except in rows
     joined from several sources, where a field belongs to another source's rows and is left out rather than
@@ -218,8 +244,9 @@ def _extent_block(extent, rows: list | None, n: int, as_of: str, scope: str, ana
     if rows is None:
         return ([f"{extent.name}: not in the stored result"],
                 {"total": None, "shown": 0, "as_of": as_of, "rows": [], "token_cost": extent.token_cost})
+    rows = sorted_rows(rows, extent)
     shown = rows[:n]
-    lines = [f"{extent.name} ({extent.order}):"]
+    lines = [f"{extent.name} ({extent.order_words()}):"]
     joined = len(getattr(extent, "source", None) or []) > 1
     lines += [_row_line(r, extent.fields, joined) for r in shown] or ["- (no rows)"]
     if len(rows) > len(shown):

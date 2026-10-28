@@ -317,3 +317,31 @@ def test_row_count_snapshot_declares_its_byte_size_exact():
     dec = {e.id: e for e in reader._load()["database"]}["row_count_snapshot"].declaration
     assert dec.confidence_of(dec.measure("total_size")).form == "measured"
     assert dec.confidence.form == "estimated"
+
+
+# ── sort keys applied (project owner, 2026-10-28) ──────────────────────────
+
+def test_declared_sort_keys_order_the_rows_before_any_are_left_out():
+    ext = _extent(order="", sort=["rows desc"])
+    rows = [{"table": "a", "rows": "9"}, {"table": "b", "rows": "10"}, {"table": "c"}, {"table": "d", "rows": 3}]
+    # Numbers written as text sort by value, and a row without the field goes last whatever the direction.
+    assert [r["table"] for r in dc.sorted_rows(rows, ext)] == ["b", "a", "d", "c"]
+
+
+def test_several_keys_sort_first_key_first():
+    ext = _extent(order="", sort=["rows desc", "table asc"])
+    rows = [{"table": "b", "rows": 1}, {"table": "a", "rows": 1}, {"table": "c", "rows": 2}]
+    assert [r["table"] for r in dc.sorted_rows(rows, ext)] == ["c", "a", "b"]
+
+
+def test_a_section_shows_the_sorted_rows_and_the_derived_order_words():
+    dec = declaration(extents=[{**EXTENT, "order": "", "sort": ["rows asc"], "rows": 2}])
+    rungs, seen = dc.section_rungs("k", dec, fact(value={"tables": TABLES}))
+    assert "tables (by rows, ascending):\n- table: t5 · rows: 95\n- table: t4 · rows: 96" in rungs[Rung.FULL]
+    assert seen["extents"]["tables"]["FULL"]["rows"] == ["t5 · 95", "t4 · 96"]
+
+
+def test_the_catalogue_sorts_row_count_snapshot_by_row_count():
+    reader.clear_cache()
+    x = {e.id: e for e in reader._load()["database"]}["row_count_snapshot"].declaration.extents[0]
+    assert x.sort == ["row_count desc"] and x.order == ""
