@@ -76,7 +76,9 @@ jobs:
     # minutes on CI when runs do not overlap; 45 left room for parallel runs
     # while still failing fast on a hung test. Raised to 60 (owner, 2026-10-11):
     # the suite grew past ~9,600 tests and #594's run was cancelled mid-suite at 45.
-    timeout-minutes: 60
+    # Raised to 90 (owner, 2026-10-28): at ~13,300 tests the Full suite step took
+    # 35 min on one run of cd44abbe and was cancelled at 55 min on its re-run.
+    timeout-minutes: 90
 
     services:
       postgres:
