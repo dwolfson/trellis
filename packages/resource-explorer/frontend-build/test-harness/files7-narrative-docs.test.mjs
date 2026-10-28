@@ -8,7 +8,8 @@
  *  - a run shows its stored words, that each passage is a proposal stated by its file, and that it is not published;
  *  - a run older than the newest walk is said to be stale;
  *  - the press is offered only when the walk found narrative files, posts once, and repaints from the re-read;
- *  - fs_layout_signals is one more derived step: its own words, nothing special-cased.
+ *  - fs_layout_signals is one more derived step: its own words, nothing special-cased;
+ *  - a derived result the walk's survey report carried says "in Egeria" with the report; one it did not, nothing.
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -117,4 +118,16 @@ test('fs_layout_signals is one more derived step, in its own stored words', asyn
   const step = host.querySelector('[data-fs-step="fs_layout_signals"]');
   assert.equal(step.dataset.fsStepState, 'run');
   assert.match(text(step), /recognised: a project \(1 project manifest, 2 \.git directories not walked\)/);
+});
+
+test('a derived result the walk report carried says it is in Egeria; one it did not says nothing of Egeria', async () => {
+  const { host, fs } = await setUp();
+  const res = (measure, published) => ({ measure, scope: 'tree', state: 'measured', state_words: 'measured', reason: '', values: {},
+    summary: `${measure} summary`, published });
+  host.innerHTML = fs.folderSurveyCardHtml(VIEW({ steps: [{ analysis_id: 'fs_duplicates', step: 'fs_duplicates', name: 'Duplicates',
+    description: '', intent: 'analysis', installed: true, missing_reason: '', run: '2026-10-28T09:00:00',
+    results: [res('fs_duplicates', { report_guid: 'abcd1234ffff', guid: 'g1', at: '2026-10-28T10:00:00' }), res('fs_duplicates_elsewhere', null)] }] }));
+  const sent = host.querySelector('[data-fs-result="fs_duplicates"]');
+  assert.match(text(sent.querySelector('[data-fs-result-published]')), /in Egeria · report abcd1234$/);
+  assert.equal(host.querySelector('[data-fs-result="fs_duplicates_elsewhere"] [data-fs-result-published]'), null);
 });

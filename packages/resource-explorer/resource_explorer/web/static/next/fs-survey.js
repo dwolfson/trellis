@@ -95,7 +95,8 @@ export const FOLDER_SURVEY_WORDS = {
   notRun: 'not run yet',
   derivedAt: (date) => `derived${date ? ` · ${date}` : ''}`,
   notPriced: 'not priced',
-  derivedKept: 'kept here · not published to Egeria',
+  derivedKept: "kept here · sent to Egeria in the walk's own survey report when that walk is published",
+  derivedPublished: (guid) => `in Egeria · report ${String(guid || '').slice(0, 8)}`,
   // Files build step 7: the narrative files read in full (F11's long form).
   narrativeHeading: 'Narrative files, read in full',
   narrativePress: 'Read narrative files',
@@ -381,7 +382,7 @@ export function derivedHtml(derived) {
     const results = (s.results || []).map((r) => {
       const absent = r.state === 'not_established' || r.state === 'not_applicable';
       return `<div data-fs-result="${esc(r.measure)}" data-fs-result-state="${esc(r.state || 'no_envelope')}" class="ml-s3">
-        <span class="font-glyph" aria-hidden="true">${STEP_GLYPH[r.state] || '?'}</span> ${esc(r.state_words || '')} · ${esc(r.summary)}
+        <span class="font-glyph" aria-hidden="true">${STEP_GLYPH[r.state] || '?'}</span> ${esc(r.state_words || '')} · ${esc(r.summary)}${r.published ? ` <span data-fs-result-published class="text-ink-muted">· ${esc(W.derivedPublished(r.published.report_guid))}</span>` : ''}
         ${absent && r.reason ? `<div class="ml-s3 text-ink-muted">${esc(r.reason)}</div>` : ''}</div>`;
     }).join('');
     return `<li data-fs-step="${esc(s.step)}" data-fs-step-state="run" class="text-provenance">${head} · <span class="text-ink-muted">${esc(W.derivedAt(day(s.run)))}</span>${results}</li>`;

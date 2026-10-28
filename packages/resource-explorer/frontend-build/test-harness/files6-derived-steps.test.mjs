@@ -84,7 +84,7 @@ test('never run says "not run yet"; not installed names the package; neither sho
   assert.equal(act.dataset.fsStepState, 'not_installed');
   assert.match(text(act), /trellis-step-fs-activity/);
   assert.doesNotMatch(text(host.querySelector('[data-fs-derived]')), /\b0 (files|sets|copies|owners)\b/);
-  assert.match(text(host.querySelector('[data-fs-derived]')), /kept here · not published to Egeria/);
+  assert.match(text(host.querySelector('[data-fs-derived]')), /kept here · sent to Egeria in the walk's own survey report when that walk is published/);
 });
 
 test('a run step shows each measure in its own words, with the reason when it could not measure', async () => {

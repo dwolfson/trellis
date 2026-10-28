@@ -653,7 +653,8 @@ def _publish_walk(registry, fs, sd: dict, slug: str, *, check_reach: bool = True
         from resource_explorer.folder_survey_view import _publish_words
 
         out.update(report_guid=published.get("report_guid", ""), annotation_count=published.get("annotation_count"),
-                   annotations_in_egeria=published.get("annotations_in_egeria"), **_publish_words(published))
+                   annotations_in_egeria=published.get("annotations_in_egeria"), derived=published.get("derived"),
+                   **_publish_words(published))
     except NothingToPublish as exc:
         out["publish_refused"] = str(exc)
     except PermissionError:
