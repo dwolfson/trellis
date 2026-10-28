@@ -274,8 +274,10 @@ def hash_file(path: Path, size: int, *, is_symlink: bool, name: str, limit: int,
 
 
 def build_row(rel_path: str, path: Path, st: os.stat_result, *, is_symlink: bool, limit: int, modified_at: str,
-              budget: HashBudget | None = None) -> dict:
-    """One per-file row from a file the walk already stat'ed. Opens the file only through `hash_file`'s guards."""
+              budget: HashBudget | None = None, accessed_at: str | None = None) -> dict:
+    """One per-file row from a file the walk already stat'ed. Opens the file only through `hash_file`'s guards.
+    `accessed_at` is the access time from that same stat, taken BEFORE `hash_file` reads the file, so this walk's own
+    read is never this walk's access time (the next walk can see it: fs_activity says so)."""
     folder, _, name = rel_path.rpartition("/")
     digest, state = hash_file(path, st.st_size, is_symlink=is_symlink, name=name, limit=limit, budget=budget)
     return {
@@ -284,6 +286,7 @@ def build_row(rel_path: str, path: Path, st: os.stat_result, *, is_symlink: bool
         "folder_depth": rel_path.count("/"),
         "size_bytes": st.st_size,
         "modified_at": modified_at,
+        "accessed_at": accessed_at,
         "owner_name": owner_name(st.st_uid),
         "group_name": group_name(st.st_gid),
         "mode_octal": mode_octal(st.st_mode),

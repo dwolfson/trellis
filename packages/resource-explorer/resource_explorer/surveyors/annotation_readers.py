@@ -60,6 +60,10 @@ def read_resource_measure_rows(registry, entity_type: str, slug: str, analysis_s
 #: annotation type -> reader. One entry per type; a step of a listed type is readable with no new code.
 READERS: dict[str, Callable] = {
     "ResourceMeasureAnnotation": read_resource_measure_rows,
+    # A file system's library steps (Files build step 6) publish Egeria's folder-survey types. Their stored rows carry
+    # the same envelope, scope, summary and resourceProperties, so they are read the same way.
+    "ResourceProfileAnnotation": read_resource_measure_rows,
+    "RequestForActionAnnotation": read_resource_measure_rows,
 }
 
 

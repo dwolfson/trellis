@@ -171,8 +171,13 @@ def _manifest():
 
 def test_the_committed_library_declaration_is_what_the_generator_writes(library_installed):
     """Every example step installed: one document and one steps file each, every committed file the generator's."""
+    from trellis_analytics.discovery import discover
+
     want = _script().render_library()
-    assert set(want) == {LIBRARY / f"{n}{ext}" for n in EXAMPLE_STEPS for ext in (".md", ".pyegeria-steps.json")}
+    # The engine host declares database steps only (Files build step 6's file-system steps are run by RE, not
+    # offered to Egeria yet).
+    database = [n for n in EXAMPLE_STEPS if "database" in discover()[n].resource_types]
+    assert set(want) == {LIBRARY / f"{n}{ext}" for n in database for ext in (".md", ".pyegeria-steps.json")}
     assert set(LIBRARY.glob("*")) == set(want), "a library declaration nothing generates, or one never committed"
     for path, text in want.items():
         assert path.read_text() == text, f"stale: {path.name}: run scripts/generate_engine_host_declaration.py"

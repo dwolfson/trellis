@@ -338,24 +338,25 @@ class TestTheCommittedCsvGeneratesTheNumbersInThePrBody:
 
     def test_row_counts(self, generated):
         rows, out, _ = generated
-        assert len(rows) == 105
+        # 2026-10-28: +4 rows (Q-0106 to Q-0109, Files build step 6)
+        assert len(rows) == 109
         statuses = Counter("retired" if r["Status"].startswith("retired") else "merged" if r["Status"].startswith("merged")
                            else "active" for r in rows)
-        assert statuses == {"active": 94, "retired": 2, "merged": 9}
+        assert statuses == {"active": 98, "retired": 2, "merged": 9}
         assert len(out["reserved_question_ids"]) == 11
 
     def test_active_questions_by_kind(self, generated):
         _, out, _ = generated
         assert {k: len(v) for k, v in out.items() if k.endswith("_questions")} == {
-            "repo_questions": 52, "database_questions": 54, "filesystem_questions": 34}
+            "repo_questions": 52, "database_questions": 54, "filesystem_questions": 38}
         assert "dataset_questions" not in out and "model_questions" not in out
 
     def test_active_questions_by_stage(self, generated):
         _, out, _ = generated
         by_id = {e["id"]: e for k, v in out.items() if k.endswith("_questions") for e in v}
-        assert len(by_id) == 94
+        assert len(by_id) == 98
         assert dict(Counter(e["stage"] for e in by_id.values())) == {
-            "Analysis": 33, "Discovery": 25, "Scouting": 13, "Assessment": 13, "Enrichment": 5,
+            "Analysis": 36, "Discovery": 26, "Scouting": 13, "Assessment": 13, "Enrichment": 5,
             "Analysis/Enrichment": 1, "Scouting/Assessment": 1, "Discovery/Enrichment": 2, "Discovery/Analysis": 1}
 
     def test_no_answer_is_unclassified(self, generated):
@@ -375,10 +376,13 @@ class TestTheCommittedCsvGeneratesTheNumbersInThePrBody:
     def test_the_gap_rows_for_unbuilt_file_analyses_parse_as_gaps(self, generated):
         _, out, _ = generated
         fs = {e["id"]: e for e in out["filesystem_questions"]}
-        for qid, name in (("Q-0101", "file_profiles"), ("Q-0102", "fs_change_rates"),
+        for qid, name in (("Q-0101", "file_profiles"),
                           ("Q-0104", "fs_layout_signals"), ("Q-0105", "folder_narratives")):
             assert fs[qid]["answering"]["kind"] == "gap", qid
             assert name in fs[qid]["answering"]["note"], qid
+        # built in Files build step 6 (2026-10-28): no longer a gap
+        assert fs["Q-0102"]["answering"]["kind"] == "analysis"
+        assert fs["Q-0102"]["answering"]["analysis_ids"] == ["fs_change_rates"]
 
     def test_the_merge_targets_name_what_they_absorbed(self, generated):
         rows, _, _ = generated

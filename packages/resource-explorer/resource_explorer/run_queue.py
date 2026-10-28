@@ -204,6 +204,15 @@ def _handle_database_analysis_run(target: dict, result_ref: str) -> RunOutcome:
     )
 
 
+def _handle_filesystem_analysis_run(target: dict, result_ref: str) -> RunOutcome:
+    """One file system Analytic Library step (Files build step 6): the file-system twin of
+    `_handle_database_analysis_run`. Stored, never published (a file system's publish stays its own press)."""
+    from resource_explorer.workflows.analysis import execute_and_record_filesystem_analysis
+
+    result = execute_and_record_filesystem_analysis(target["slug"], target["analysis_id"], result_ref)
+    return RunOutcome(state="succeeded" if result.status == "ok" else "failed", error=result.error or "")
+
+
 def _handle_stage_batch(target: dict, result_ref: str) -> RunOutcome:
     from resource_explorer.workflows.analysis import (
         execute_and_record_stage_batch,
@@ -432,6 +441,7 @@ HANDLERS: dict[str, Callable[[dict, str], RunOutcome]] = {
     "publish_architecture": _handle_publish_architecture,
     "analysis_run": _handle_analysis_run,
     "database_analysis_run": _handle_database_analysis_run,
+    "filesystem_analysis_run": _handle_filesystem_analysis_run,
     "stage_batch": _handle_stage_batch,
     "scouting_scan": _handle_scouting_scan,
     "survey_definition_run": _handle_survey_definition_run,

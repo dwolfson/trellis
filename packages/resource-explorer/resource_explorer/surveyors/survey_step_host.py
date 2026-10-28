@@ -38,7 +38,7 @@ refusals (`person_write_refusal`, and the publisher's own zone rules), with no p
 **Dispatched by Egeria (engine host, step 3).** `library_steps()` is the seam the engine host dispatches through:
 request type -> `LibraryStep`, built from the installed manifests at `attach()` (the same discovery that attached the
 runners), never from a list in RE's code. Each step declares in its manifest its request type, the resource kind it
-targets (`resource_types`; database only so far), the annotation type it emits (Egeria's type name) and the survey
+targets (`resource_types`: database, and since Files build step 6 filesystem), the annotation type it emits (Egeria's type name) and the survey
 guard that applies when it has nothing to derive. A step may take no built-in step's name or request type
 (`_BUILTIN`: every key of the resource type's step registry). A step is admitted only when this host can run and publish it
 unattended: it opens no connection (no `connection` input: the engine host has no person's credential) and emits an
@@ -256,9 +256,11 @@ def _admit(entity_type: str, found: dict, provided_by: dict[str, dict]) -> tuple
 def library_steps(entity_type: str = "database") -> dict[str, LibraryStep]:
     """{request type: LibraryStep} for every installed, admitted Analytic Library step that targets `entity_type`,
     from the discovery `attach()` last made (refresh() discovers again)."""
+    # Importing the adapter attaches its user steps (once, at import).
     if entity_type == "database":
-        # Importing the adapter attaches its user steps (once, at import).
         from resource_explorer.surveyors.database import survey_definition_adapter  # noqa: F401
+    elif entity_type == "filesystem":
+        from resource_explorer.surveyors.filesystem import survey_definition_adapter  # noqa: F401,F811
     return dict(_LIBRARY.get(entity_type, {}))
 
 
@@ -276,7 +278,10 @@ class StepNotInstalled(RuntimeError):
 #: SELECT that RE owns. A step sends no SQL text: free SQL from a step needs a read-only database role (a follow-up
 #: for the owner: ops/DDL), and validating SQL by its text cannot be made safe. `query` is NOT here.
 STEP_ODS_METHODS = ("row_count_snapshots", "commit_proofs", "catalogue_scope_events", "resource_scope_events",
-                    "outbox_status_counts", "table_activity_snapshots", "table_keys")
+                    "outbox_status_counts", "table_activity_snapshots", "table_keys",
+                    # a file system's walk rows (Files build step 6: fs_change_rates, fs_duplicates, fs_activity,
+                    # fs_permissions): names, sizes, times, owner, mode and hash, never content
+                    "filesystem_walk_runs", "filesystem_walk_files", "filesystem_hash_matches")
 
 #: How long a step's read may wait for its answer.
 READ_TIMEOUT_SECONDS = 120
@@ -753,11 +758,19 @@ def attached_user_steps(entity_type: str = "database") -> frozenset[str]:
 
 def refresh(entity_type: str = "database") -> list[str]:
     """Discover again and re-attach (after a package is installed into a running process, or in a test)."""
-    if entity_type != "database":
-        raise ValueError(f"user steps attach to databases only so far, not {entity_type}")
     from resource_explorer.surveyors.analysis_catalog_reader import clear_cache
-    from resource_explorer.surveyors.database import survey_definition_adapter as db
 
-    clear_cache()
-    return attach("database", db._ADAPTER, db.DATABASE_STEP_REGISTRY, db.DATABASE_ANALYSIS_RE_STEP_MAP,
-                  db.DATABASE_ANALYSIS_RESULTS_MAP, db.DATABASE_ANALYSIS_KINDS, db.DATABASE_ANALYSIS_HEADLINE_MAP)
+    if entity_type == "database":
+        from resource_explorer.surveyors.database import survey_definition_adapter as db
+
+        clear_cache()
+        return attach("database", db._ADAPTER, db.DATABASE_STEP_REGISTRY, db.DATABASE_ANALYSIS_RE_STEP_MAP,
+                      db.DATABASE_ANALYSIS_RESULTS_MAP, db.DATABASE_ANALYSIS_KINDS, db.DATABASE_ANALYSIS_HEADLINE_MAP)
+    if entity_type == "filesystem":
+        from resource_explorer.surveyors.filesystem import survey_definition_adapter as fs
+
+        clear_cache()
+        return attach("filesystem", fs._ADAPTER, fs.FILESYSTEM_STEP_REGISTRY, fs.FILESYSTEM_ANALYSIS_STEP_MAP,
+                      fs.FILESYSTEM_ANALYSIS_RESULTS_MAP, fs.FILESYSTEM_ANALYSIS_KINDS,
+                      fs.FILESYSTEM_ANALYSIS_HEADLINE_MAP)
+    raise ValueError(f"user steps attach to databases and file systems only so far, not {entity_type}")

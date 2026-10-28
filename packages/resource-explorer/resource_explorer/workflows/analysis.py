@@ -656,6 +656,12 @@ def run_database_analysis(slug: str, analysis_id: str, *, registry=None,
 
 def _run_database_library_step(registry, slug: str, analysis_id: str, step_key: str,
                                **runner_kwargs) -> DatabaseAnalysisRunResult:
+    """A database's library or registry step: `_run_library_step` for entity type "database"."""
+    return _run_library_step(registry, "database", slug, analysis_id, step_key, **runner_kwargs)
+
+
+def _run_library_step(registry, entity_type: str, slug: str, analysis_id: str, step_key: str,
+                      **runner_kwargs) -> DatabaseAnalysisRunResult:
     """Run ONE Analytic Library step (or one of the adapter's own registry steps, for
     `DATABASE_REGISTRY_STEP_ANALYSES`) for a database, through the executor that runs one inside a survey.
     A library step is given no credential; a registry step that opens a connection is given one in `runner_kwargs`
@@ -679,7 +685,7 @@ def _run_database_library_step(registry, slug: str, analysis_id: str, step_key: 
 
     try:
         ran = SurveyDefinitionExecutor(registry).run_synthetic_step(
-            entity_type="database", slug=slug, re_analysis_step=step_key, executes_at="resource-explorer",
+            entity_type=entity_type, slug=slug, re_analysis_step=step_key, executes_at="resource-explorer",
             engine_override="resource-explorer", publisher=_count_and_decline,
             display_name=f"{analysis_id} (per-card run)", **runner_kwargs)
     except Exception as exc:
@@ -724,6 +730,64 @@ def execute_and_record_database_analysis(slug: str, analysis_id: str, activity_i
     )
     if result.status == "ok":
         _refresh_board_summaries_after_run(registry, "database", slug, analysis_id)
+    return result
+
+
+def filesystem_library_step_key(analysis_id: str) -> str:
+    """The Analytic Library step a file system's analysis id runs, or "" when it names none. Only steps
+    `survey_step_host.attach` put beside filesystem_inventory (installed or catalogued and missing): the folder survey,
+    the walk extensions and file_profiles have their own presses and routes."""
+    from resource_explorer.surveyors import survey_step_host
+    from resource_explorer.surveyors.filesystem.survey_definition_adapter import FILESYSTEM_ANALYSIS_STEP_MAP
+
+    steps = FILESYSTEM_ANALYSIS_STEP_MAP.get(analysis_id) or []
+    attached = survey_step_host.attached_user_steps("filesystem") | set(survey_step_host.missing_library_steps("filesystem"))
+    return steps[0] if len(steps) == 1 and steps[0] in attached else ""
+
+
+def run_filesystem_analysis(slug: str, analysis_id: str, *, registry=None) -> DatabaseAnalysisRunResult:
+    """Run ONE file system analysis that is an Analytic Library step (Files build step 6: fs_change_rates,
+    fs_duplicates, fs_activity, fs_permissions): zero-fetch derivations over the walk's kept per-file rows, so no
+    file is opened and no credential is read. Through the same executor a survey uses (`_run_library_step`): cost
+    observed, `step_runs` row written, the result in `step_annotations`; stored, not published. Never raises for an
+    analysis-level failure."""
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = registry or ProjectRegistry()
+    if not registry.filesystem_exists(slug):
+        return DatabaseAnalysisRunResult(status="error", error=f"FileSystem '{slug}' not found")
+    step_key = filesystem_library_step_key(analysis_id)
+    if not step_key:
+        return DatabaseAnalysisRunResult(
+            status="error", error=f"Analysis '{analysis_id}' is not an Analytic Library step for file systems")
+    return _run_library_step(registry, "filesystem", slug, analysis_id, step_key)
+
+
+def execute_and_record_filesystem_analysis(slug: str, analysis_id: str, activity_id: str,
+                                           *, registry=None) -> DatabaseAnalysisRunResult:
+    """Run one file system analysis and write its terminal status onto `activity_id`, from the run queue's
+    `filesystem_analysis_run` handler (the file-system twin of `execute_and_record_database_analysis`)."""
+    from resource_explorer.registry import ProjectRegistry
+
+    registry = registry or ProjectRegistry()
+    try:
+        result = run_filesystem_analysis(slug, analysis_id, registry=registry)
+    except Exception as exc:  # pragma: no cover — genuinely unexpected
+        log.exception("File system analysis run crashed for %s/%s", slug, analysis_id)
+        registry.update_activity_status(
+            activity_id, "error", summary=f"'{analysis_id}' run crashed: {exc}",
+            detail=json.dumps({"analysis_id": analysis_id, "published": None, "error": str(exc)}))
+        return DatabaseAnalysisRunResult(status="error", error=str(exc))
+    detail = {"analysis_id": analysis_id, "published": None}
+    if result.status == "error":
+        detail["error"] = result.error or result.summary
+    else:
+        detail["message"] = result.summary
+    registry.update_activity_status(
+        activity_id, result.status, summary=result.summary or result.error or "",
+        detail=json.dumps(detail), annotations=result.annotations or None)
+    if result.status == "ok":
+        _refresh_board_summaries_after_run(registry, "filesystem", slug, analysis_id)
     return result
 
 
