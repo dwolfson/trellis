@@ -81,9 +81,9 @@ CONCLUDED = frozenset({"pass", "warning", "fail", "logged"})
 _REFUSED_STATUS = {"not_applicable": "not_measured", "not_measured": "not_measured", "not_permitted": "not_permitted"}
 RULE_UNPUBLISHED = "unpublished"
 UNDEFINED = "measure undefined (empty table / zero baseline)"
-#: The reason a NULL measure fails a type whose catalogue entry sets `null_measure_fails`.
+#: The reason a NULL measure fails a type whose catalog entry sets `null_measure_fails`.
 UNDEFINED_FAILS = ("measure undefined (the table or column has no values to measure); {test_type} fails on an "
-                   "undefined measure, as its catalogue entry says (null_measure_fails)")
+                   "undefined measure, as its catalog entry says (null_measure_fails)")
 #: The sentence a run with no accepted check ends with (survey-invalid). Words of the design: "no accepted checks".
 NO_ACCEPTED_CHECKS = "no accepted checks: accept proposals in Curate first; nothing was run"
 #: What Egeria's annotation says this result is (its `annotationType`).
