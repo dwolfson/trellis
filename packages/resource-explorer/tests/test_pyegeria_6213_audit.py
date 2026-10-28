@@ -26,6 +26,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from pyegeria import DataDiscovery
+from pyegeria.core._base_server_client import BaseServerClient
 from pyegeria.core._exceptions import PyegeriaUnauthorizedException
 from pyegeria.core._server_client import ServerClient
 
@@ -34,6 +35,9 @@ from resource_explorer.surveyors import survey_report as sr
 from resource_explorer.surveyors.annotation_props import build_annotation_props
 
 RE_ROOT = Path(resource_explorer.__file__).parent
+#: Never reachable (RFC 2606), so no test here can pass only because a real Egeria answers. CI has none; a laptop
+#: often does, which is how the first version passed every local gate and failed CI on its constructor probe.
+PLATFORM = "https://egeria.invalid:9443"
 SCRIPTS = RE_ROOT.parent / "scripts"
 
 #: Rerouted by #485 (deprecated wrappers) or changed by #487. Calling any of these from RE needs a review first.
@@ -45,6 +49,12 @@ REROUTED = {
     "update_data_classification", "link_data_classification_to_data_field",
     "detach_data_classification_from_data_field", "get_platform_organization",
 }
+
+
+@pytest.fixture(autouse=True)
+def _no_platform_probe(monkeypatch):
+    """pyegeria's client constructor GETs /api/about and raises when nothing answers; stub that probe only."""
+    monkeypatch.setattr(BaseServerClient, "check_connection", lambda self: "")
 
 
 def _called_names(root: Path):
@@ -70,7 +80,7 @@ def test_the_installed_pyegeria_is_at_least_6_2_13():
 
 
 def test_a_refused_token_request_raises_instead_of_returning_the_error_text():
-    client = DataDiscovery("qs-view-server", "https://localhost:9443", "u", "wrong")
+    client = DataDiscovery("qs-view-server", PLATFORM, "u", "wrong")
     refused = MagicMock(status_code=401, text="Unauthorized: bad password")
 
     class _Post:
@@ -104,7 +114,7 @@ def test_an_re_annotation_body_reaches_the_wire_unchanged(ann):
     resp = MagicMock(status_code=200)
     resp.json.return_value = {"class": "GUIDResponse", "relatedHTTPCode": 200, "guid": "g-1"}
     with patch.object(ServerClient, "_async_make_request", return_value=resp) as mk:
-        DataDiscovery("qs-view-server", "https://localhost:9443", "u", "p").create_annotation(body=body)
+        DataDiscovery("qs-view-server", PLATFORM, "u", "p").create_annotation(body=body)
     sent = mk.call_args.args[2]
     sent = json.loads(sent) if isinstance(sent, str) else sent
     assert sent["properties"] == props
