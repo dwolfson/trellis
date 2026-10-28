@@ -1085,3 +1085,31 @@ def test_s19_needs_confirmation_when_the_archived_copy_is_in_either_captured_sha
     with pytest.raises(cc.SchemaRefused, match="archived in Egeria · 2026-10-09 · re-including creates a new element"):
         cc.apply_attach(world["registry"], fake, {"slug": "db", "schema": "archive", "database_guid": fake.db_guid})
     assert len(fake.ops("create_schema_element")) == adds_before
+
+
+def test_report_step_records_a_proof_per_declared_measure_from_the_read_back(world, fake, monkeypatch):
+    """Curate's publish table (declared extensibility slice 1): the measures the report carried each leave a proof
+    row, `measure_read_back` with the annotation's GUID the report read found, `measure_not_read_back` without."""
+    from resource_explorer import publish_table as pt
+
+    _measured(world)
+    sent = [{"analysis_id": "example_step_x", "measure": "rows_sampled", "value": 1200, "unit": "rows",
+             "as_of": "2026-10-27T08:30:00", "route": "generic", "type": "ResourceMeasureAnnotation",
+             "qualified_name": "Annotation::q1", "guid": "ann-1", "why": ""},
+            {"analysis_id": "example_step_x", "measure": "buckets", "value": 2, "unit": "buckets",
+             "as_of": "2026-10-27T08:30:00", "route": "generic", "type": "ResourceMeasureAnnotation",
+             "qualified_name": "Annotation::q2", "guid": "", "why": "the report read did not show this annotation"}]
+    monkeypatch.setattr(fake, "publish_local_report", lambda *a, **k: {
+        "report_guid": "r1", "report_element_guid": "r1", "annotation_count": 5, "annotations_in_egeria": 5,
+        "declared_measures": {"state": "sent", "sent": sent}})
+    choose(world, "sales", "catalogue")
+    _, rec = press(world, fake)
+    assert step(rec, "survey_report")["detail"].endswith("1 of 2 declared measures read back")
+    proofs = {p["table_name"]: p for p in world["registry"].list_catalogue_commit_proofs("db")
+              if p["node_kind"] == pt.NODE_MEASURE}
+    assert proofs["rows_sampled"]["proof"] == pt.P_MEASURE_READ_BACK
+    assert proofs["rows_sampled"]["element_guid"] == "ann-1" and proofs["rows_sampled"]["target_guid"] == "r1"
+    assert proofs["rows_sampled"]["curation_id"] == rec["id"] and proofs["rows_sampled"]["recorded_by"] == ME
+    assert proofs["buckets"]["proof"] == pt.P_MEASURE_NOT_READ_BACK
+    # A measure proof is not a database node: the commit's own state word ignores it.
+    assert all(p["schema_name"] == "example_step_x" for p in proofs.values())

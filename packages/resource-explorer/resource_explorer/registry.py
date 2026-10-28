@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, ClassVar, NamedTuple
 from sqlalchemy import create_engine
 
 log = logging.getLogger(__name__)
@@ -16011,6 +16011,10 @@ class ProjectRegistry:
 
     SCOPE_KINDS = ("folder", "file")        # file types are a measurement, not a choice
     SCOPE_CHOICES = ("include", "leave_out", "")
+    #: Kinds that are NOT scope, sharing the same signed append-only record, each with its own choices.
+    #: `measure`: Curate's publish table, Publish | Keep in RE per declared measure (publish_table.py).
+    #: `current_resource_scope` reads SCOPE_KINDS only, so these never count as scope.
+    OTHER_CHOICE_KINDS: ClassVar[dict[str, tuple[str, ...]]] = {"measure": ("publish", "keep")}
 
     def append_resource_scope_event(self, resource_type: str, slug: str, *, locator: str, kind: str,
                                     choice: str = "", action: str = "set", source: str = "person",
@@ -16035,11 +16039,12 @@ class ProjectRegistry:
         for e in events:
             kind, action, source = e.get("kind", ""), e.get("action") or "set", e.get("source") or "person"
             choice = e.get("choice") or ""
-            if kind not in self.SCOPE_KINDS:
+            if kind not in self.SCOPE_KINDS and kind not in self.OTHER_CHOICE_KINDS:
                 raise ValueError(f"unknown kind {kind!r}")
             if action not in ("set", "clear"):
                 raise ValueError(f"unknown action {action!r}")
-            if action == "set" and choice not in ("include", "leave_out"):
+            allowed = self.OTHER_CHOICE_KINDS.get(kind, ("include", "leave_out"))
+            if action == "set" and choice not in allowed:
                 raise ValueError(f"unknown choice {choice!r}")
             if source not in ("person", "proposal"):
                 raise ValueError(f"unknown source {source!r}")

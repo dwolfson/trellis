@@ -103,6 +103,14 @@ class Fact:
     evidence_only: bool = False
 
     @property
+    def as_of(self) -> str:
+        """When what this fact describes was measured. A zero-fetch derivation is recomputed on every read, so its
+        run time says nothing; the reader carries the newest stored row it read as `_run.read_snapshot`, and that is
+        the as-of. Otherwise the run time."""
+        carried = (self.value or {}).get("_run") if isinstance(self.value, dict) else None
+        return str((carried or {}).get("read_snapshot") or self.last_run_at or "")
+
+    @property
     def is_known(self) -> bool:
         """Did we actually look, and get an answer?
 
@@ -140,7 +148,7 @@ class Fact:
             "analysis_id": self.analysis_id, "state": self.state,
             "headline": self.headline,
             "value": value, "provenance": self.provenance,
-            "last_run_at": self.last_run_at, "can_run": self.can_run,
+            "last_run_at": self.last_run_at, "as_of": self.as_of, "can_run": self.can_run,
             "note": self.note, "is_known": self.is_known,
             "evidence_only": self.evidence_only,
             "destination": destination, "destination_basis": destination_basis,
@@ -1970,7 +1978,7 @@ def _has_content(value) -> bool:
     results dict carrying only those has measured nothing, and counting them as
     content is how an empty result came to render as a populated one.
     """
-    envelope = {"_status", "surveyed_at", "detail", "scoped_to", "run_outcomes"}
+    envelope = {"_status", "_run", "surveyed_at", "detail", "scoped_to", "run_outcomes"}
     if isinstance(value, dict):
         return any(
             _has_content(v) for k, v in value.items() if k not in envelope

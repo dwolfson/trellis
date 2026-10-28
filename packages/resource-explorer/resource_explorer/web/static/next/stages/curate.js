@@ -24,6 +24,7 @@ import {
 } from '/static/next/stages/curate-bands.js';
 import { renderCatalogueScope, setCommitPanelGate, startScopeCommitIfShown } from '/static/next/stages/curate-scope.js';
 import { renderPublishBand, renderPublishRepo, renderPublishDb, paintDbPublishState, showPublishFailure } from '/static/next/stages/publish.js';
+import { renderPublishTable } from '/static/next/stages/publish-table.js';
 import { ARCHITECTURE_CHANGED } from '/static/next/stages/architecture-publish.js';
 import { repoCommitPanelHtml, commitHeaderHtml, commitResultHtml, commitVerdict, manifestCounts, publishLabel } from '/static/next/stages/repo-manifest.js';
 import { createScopeController, scopeListHtml, visibleRows } from '/static/next/stages/resource-scope.js';
@@ -537,13 +538,16 @@ function tabbedFrameHtml(active) {
 }
 
 /** A database's Curate panes (Brief S2): the same three panels, all in the document, the inactive ones hidden.
- *  Describe: Findable, What people say, and the Publish to Egeria band LAST (its state line; no press). Contents:
+ *  Describe: Findable, What people say, the declared measures' publish table (declared extensibility slice 1: a
+ *  Publish | Keep in RE choice per measure, carried by the commit), and the Publish to Egeria band LAST (its state
+ *  line; no press). Contents:
  *  the asset row, then the scope tree and the commit panel. Structure: the proposals, the rules, the dependencies. */
 function tabbedDbFrameHtml(active) {
   const hid = (tab) => (tab === active ? '' : ' hidden');
   return `<div data-curate-tab-panel="describe"${hid('curate_describe')}>
       <section data-curate-band="findable" class="mb-s4 border-b border-rule pb-s2"></section>
       <section data-curate-band="people" class="mb-s4 border-b border-rule pb-s2"></section>
+      <section data-curate-band="measures" class="mb-s4 border-b border-rule pb-s2"></section>
       <section data-curate-band="publish" class="mb-s4"></section>
     </div>
     <div data-curate-tab-panel="contents"${hid('curate_contents')}>
@@ -585,6 +589,8 @@ export async function renderCurate(slug) {
     // G1: what Egeria holds for this resource, the same band on every kind. It reads RE's own records
     // first (no Egeria contact) and is independent of the repository plan below, which can take long.
     tabbed ? publishRepo.ready : tabbedDb ? renderPublishDb({ describe: band('publish'), contents: band('publish-items') }, slug) : renderPublishBand(band('publish'), slug, entityType),
+    // The declared measures' publish table: RE's own rows only, never Egeria.
+    tabbedDb ? renderPublishTable(band('measures'), slug, 'database') : Promise.resolve(),
   ].map((p) => p.catch((err) => {
     // A band that fails says so in its own slot; it never takes the pane down.
     const slot = band('people');
@@ -601,6 +607,8 @@ export async function renderCurate(slug) {
     const p = band('people');
     if (f && f.isConnected) renderFindableBand(f, slug, entityType).catch(() => {});
     if (p && p.isConnected) renderPeopleBand(p, slug, entityType).catch(() => {});
+    const m = band('measures');
+    if (m && m.isConnected) renderPublishTable(m, slug, 'database').catch(() => {});
   };
   document.addEventListener('re:published', state.curateOnPublished);
   /** A database's tabs: the scope tree and commit panel on Contents, the placeholders and rules on Structure. The
@@ -615,12 +623,23 @@ export async function renderCurate(slug) {
     const scopeEl = contentsHost.querySelector('[data-curate-scope]');
     setCommitPanelGate(() => !superseded() && activeCurateTab() === 'curate_contents');
     state.curate.counts = null;                         // the tab counts read "reading" until the view arrives
+    let measuresHeader = null;                          // the commit header the publish table last followed
     if (state.curateOnScopeView) document.removeEventListener('re:scope-view', state.curateOnScopeView);
     state.curateOnScopeView = (ev) => {
       const d = ev.detail || {};
       if (superseded() || d.slug !== slug || slug !== state.selectedSlug || !frame.isConnected) return;
       state.curate.counts = { view: d.view || null, plan: null, planFailed: false, viewFailed: !!d.failed };
       paintDbPublishState(frame.querySelector('[data-curate-band="publish"]'), d.view || null, !!d.failed);
+      // A commit carries the chosen measures and leaves their proof rows: when the commit's header moves, the
+      // publish table re-reads them (the first view is the page's own draw, already read).
+      const header = d.view && d.view.commit ? JSON.stringify(d.view.commit.header || null) : null;
+      if (header !== null) {
+        if (measuresHeader !== null && header !== measuresHeader) {
+          const m = frame.querySelector('[data-curate-band="measures"]');
+          if (m && m.isConnected) renderPublishTable(m, slug, 'database').catch(() => {});
+        }
+        measuresHeader = header;
+      }
       refreshStageRail();
     };
     document.addEventListener('re:scope-view', state.curateOnScopeView);

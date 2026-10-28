@@ -765,6 +765,7 @@ function manifestTableHtml(preview, view, notes = '') {
   return `<div data-scope-manifest-host class="min-w-0 max-w-full overflow-x-auto"><div data-scope-manifest role="table" aria-label="What this commit does" class="text-caveat" style="${innerStyle(MANIFEST_COLS)}">
     <div role="row" class="flex items-start gap-s2 text-provenance text-ink-muted">${hc('who', '')}${hc('what', 'what')}${hc('many', 'how many')}${hc('when', 'when')}</div>
     ${row('publishes', 'RE publishes', 'the server and database', '2 elements', 'now', detail('re_publishes', 'survey_report_whole'))}
+    ${line('declared_measures') ? row('measures', 'RE publishes', 'your chosen declared measures, in its survey report', `${line('declared_measures').count ?? '?'}`, 'now', detail('declared_measures')) : ''}
     ${row('catalogs', 'Egeria adds', 'your included schemas', `${attach.length}${names(attach)}`, 'next refresh (or now, if ticked)', detail('cataloguer_creates', 'whole_schemas'))}
     ${row('surveys', 'Egeria surveys', 'the same schemas', `${((preview.survey || {}).schemas || []).length}`, 'after attach', detail('survey_measures'))}
     ${row('left_out', 'Left out', leave.length ? 'what changes in Egeria' : 'nothing in Egeria to change', leaveHow, leave.length ? 'at this commit' : '—')}

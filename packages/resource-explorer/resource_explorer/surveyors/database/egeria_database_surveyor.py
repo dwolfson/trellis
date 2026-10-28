@@ -1298,9 +1298,16 @@ class EgeriaDatabaseSurveyor:
         views: list | None = None,
         submitted_by: str = "",
         survey_after_catalog: bool = True,
+        declared_measures: bool = False,
     ) -> dict:
         """Catalog the database in Egeria, trigger a native PostgreSQL survey,
         and publish the local survey report and annotations directly to Egeria.
+
+        `declared_measures=True` adds the measures chosen Publish on Curate's
+        publish table (`publish_table.annotations_for`), after the stored
+        verdicts, and returns each with the GUID the report read found for it
+        (`declared_measures` in the result). Only the catalogue commit, the
+        database's one press, asks for them: it records their proof rows.
 
         `survey_after_catalog=False` publishes everything but starts NO native
         survey: the catalogue commit (`catalogue_commit.py`) starts its own,
@@ -1335,6 +1342,9 @@ class EgeriaDatabaseSurveyor:
         annotations = []
         verdicts = {"state": "not_read", "annotations": [], "column_paths": []}
         verdict_start = 0
+        declared = {"state": "not_asked", "rows": [], "annotations": []}
+        declared_start = 0
+        pub: dict = {}
         if db_guid:
             # Recreate annotations from local scan data using DatabaseSurveyor helpers
             try:
@@ -1353,6 +1363,13 @@ class EgeriaDatabaseSurveyor:
             verdicts = self._stored_verdict_annotations(registry, db_entity.slug, schema_info)
             verdict_start = len(annotations)
             annotations.extend(verdicts["annotations"])
+            # Curate's publish table (declared extensibility slice 1): after the verdicts, so neither moves.
+            if declared_measures and registry is not None:
+                from resource_explorer.publish_table import annotations_for
+
+                declared = annotations_for(registry, db_entity.slug)
+                declared_start = len(annotations)
+                annotations.extend(declared["annotations"])
 
             qualified_name = f"SurveyReport::PostgreSQL::{db_entity.slug}::{surveyed_at}"
             body = {
@@ -1387,6 +1404,24 @@ class EgeriaDatabaseSurveyor:
         # VERDICTS.md §1 item 10). A fresh report holds none, so there is nothing to look for.
         if db_guid and report_guid and report_reused and verdicts.get("state") == "sent" and verdicts.get("batch"):
             verdicts["superseded"] = self._retire_superseded_verdicts(report_guid, verdicts["batch"])
+
+        # Each chosen measure with what the report read found for it: its GUID, or "" (sent, not read back).
+        declared_out = []
+        if declared["annotations"]:
+            from resource_explorer.surveyors.survey_report import annotation_qualified_name
+
+            guids = pub.get("read_back_guids")
+            prefix = f"Annotation::PostgreSQL::{db_entity.slug}::{surveyed_at}"
+            why = ("" if guids is not None else
+                   (report_error or pub.get("annotation_error") or "the report could not be read back"))
+            for i, (row, ann) in enumerate(zip(declared["rows"], declared["annotations"])):
+                idx = declared_start + i
+                declared_out.append({
+                    "analysis_id": row["analysis_id"], "measure": row["measure"], "value": row["value"],
+                    "unit": row["unit"], "as_of": row["as_of"], "route": row["writes_as"]["route"],
+                    "type": row["writes_as"]["type"], "qualified_name": annotation_qualified_name(prefix, idx, ann),
+                    "guid": (guids or {}).get(idx, "") if report_guid else "",
+                    "why": why if report_guid else (report_error or "no report was written")})
 
         # Use the created report GUID if available, otherwise fall back to Egeria's native action GUID
         effective_report_guid = report_guid or survey_action_guid
@@ -1423,6 +1458,11 @@ class EgeriaDatabaseSurveyor:
             # What the stored column-profile verdicts contributed: never counts alone, always the batch and
             # whether one was stored at all (`state`: sent / none_stored / not_read).
             "verdicts": {k: v for k, v in verdicts.items() if k not in ("annotations", "column_paths")},
+            # Curate's publish table: what was chosen and sent, each with its read-back (`state`: not_asked /
+            # none_chosen / sent / not_read).
+            "declared_measures": {"state": declared["state"], "sent": declared_out,
+                                  **({"reason": declared["reason"]} if declared.get("reason") else {}),
+                                  **({"not_built": declared["not_built"]} if declared.get("not_built") else {})},
         }
 
     def publish_engine_action_report(
@@ -1581,8 +1621,10 @@ class EgeriaDatabaseSurveyor:
         Every other failure is returned as `report_error` for the caller to FAIL on: never "published"."""
         # `annotations_this_publish`: how many of THIS publish's annotations Egeria holds (None: could not tell).
         # `annotations_in_egeria`: all the report holds, which on a reused report includes earlier batches.
+        # `read_back_guids` ({index: GUID}): every annotation of this publish the report read found, by its published
+        # name; None when the report could not be read. Curate's publish table proves each chosen measure from it.
         out = {"report_guid": "", "report_error": "", "annotation_error": "", "reused": False, "annotations_in_egeria": None,
-               "annotations_this_publish": None}
+               "annotations_this_publish": None, "read_back_guids": None}
         try:
             out["report_guid"] = self._asset_maker.create_asset(body=body)
             log.info(f"Published SurveyReport in Egeria: {out['report_guid']}")
@@ -1596,6 +1638,7 @@ class EgeriaDatabaseSurveyor:
             out["annotations_in_egeria"] = read_back["held"] if read_back else None
             out["annotations_this_publish"] = read_back["this_publish"] if read_back else None
             out["quality_annotations_in_egeria"] = read_back["quality"] if read_back else None
+            out["read_back_guids"] = read_back["guids"] if read_back else None
             return out
         except Exception as exc:
             if not (not out["report_guid"] and self._is_duplicate_qualified_name(exc)):
@@ -1646,6 +1689,7 @@ class EgeriaDatabaseSurveyor:
         if read_back is not None:
             out["annotations_this_publish"] = read_back["this_publish"]
         out["quality_annotations_in_egeria"] = read_back["quality"] if read_back else None
+        out["read_back_guids"] = read_back["guids"] if read_back else None
         return out
 
     @staticmethod

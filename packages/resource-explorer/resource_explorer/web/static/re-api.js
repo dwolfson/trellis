@@ -290,6 +290,15 @@ export const getCatalogueCommitRecord = (slug, id) =>
 export const getCatalogueLatestCommit = (slug) => get(scopeUrl(slug, '/commits/latest'));
 export const postCatalogueReadBack = (slug) => post(scopeUrl(slug, '/read-back'));
 
+/* ── Curate's publish table (web/routes/publish_table.py) ───────────────
+ * A row per declared measure; a signed Publish | Keep in RE choice per row. Reads and writes RE only: the press is
+ * the database's commit above, which sends the chosen measures inside RE's survey report. */
+const publishTableUrl = (entityType, slug, tail = '') =>
+  `/api/publish-table/${encodeURIComponent(entityType)}/${encodeURIComponent(slug)}${tail}`;
+export const getPublishTable = (entityType, slug) => get(publishTableUrl(entityType, slug));
+export const setPublishChoice = (entityType, slug, analysisId, measure, choice) =>
+  put(publishTableUrl(entityType, slug, '/choice'), { analysis_id: analysisId, measure, choice });
+
 /* ── Database servers (web/routes/db_servers.py) ────────────────────────
  *
  * Classic's (index.html) real mechanism for finding databases: a server is
