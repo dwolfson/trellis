@@ -30,7 +30,7 @@ did not render in the time given, or needs a press).
 | Where the docs are (docs ✓ / unreachable / no docs found / not checked) | true | docling reads "no docs found" beside the Project site. |
 | Assessment: "open Analyses, choose Assessment intent", ⏱ ⏳ badges, ☁ 🏠 source badges | Classic | Assessment is a Questions tab like the others. |
 | Analysis: Architecture Recovery, shapes, proposed_by, confidence | true in substance, Classic in navigation | The content about shapes and confidence stands; the way in is the Analysis stage's questions and Curate › Structure, not an Analyses panel. The Analysis tab on docling showed "0 of 20 answered · 20 still loading" after 4 s: slow, see §2. |
-| Discovery: "Use the Chat panel to ask…" | stale | Discovery is a stage with 19 database questions (db_catalogued, db_existing_use, db_feedback, db_surveyed, db_disposition, reach, db_classification …), answered on the page; chat is a rail on every stage. |
+| Discovery: "Use the Chat panel to ask…" | stale | Discovery is a stage with 19 database questions (db_cataloged, db_existing_use, db_feedback, db_surveyed, db_disposition, reach, db_classification …), answered on the page; chat is a rail on every stage. |
 | Enrichment: RFAs panel, "Egeria write-back is coming", Context fields table | stale | RFAs are a drawer in the strip ("RFAs 57"); RFA answers DO sync to Egeria (`rfa_egeria_sync`); the Context tab's fields are Environment, Owner, Steward, Sensitivity, Intended use, Actual use, License, Location, Backup status, Retention, Criticality, Notes, plus documentation-source rows (user manual, api reference, data dictionary, …). The guide's seven-row table is the old form. The tab read "Reading what's been supplied…" after 8 s: slow, see §2. |
 | Understanding: "charts for a resource's history" | stale | Three tabs: At a glance (tiles and "Since the last run"), Contents, Over time. No Artifacts tab yet (design). |
 | Curate: three tabs, one Publish, FINDABLE, ratings, notes, tags, group | true for repositories, half true for databases | Repository: tabs "Describe and publish · Contents ∅ 0 chosen · ◌ 22 undecided · Structure"; FINDABLE, WHAT PEOPLE SAY (ratings, notes with "suggest to"), PUBLISH TO EGERIA. Database: one page (FINDABLE, What gets published with the three chips, Your scope with Depth, the Include/Leave out table) and no "Describe and publish / Contents / Structure" tab strip visible; the quality-checks section was not reached (see §2). The publish table of declared measures (#886) and the chips (#844) are on the database page and undocumented. |
@@ -51,7 +51,7 @@ did not render in the time given, or needs a press).
 
 ## 2. Defects found while reading (to the status-words queue, not the guide)
 
-1. **Header contradiction on a database.** coco_pharma's header reads "never surveyed · not published to Egeria" while the Curate band on the same page reads "Database element c990f349 in Egeria · published 10-24 00:45 · 4 schemas attached". One of them is wrong; the header derives from a field the reset cleared or the re-catalogue did not set.
+1. **Header contradiction on a database.** coco_pharma's header reads "never surveyed · not published to Egeria" while the Curate band on the same page reads "Database element c990f349 in Egeria · published 10-24 00:45 · 4 schemas attached". One of them is wrong; the header derives from a field the reset cleared or the re-catalog did not set.
 2. **Two counts for one fact.** The same band says "4 schemas attached · 4 in Egeria" in its sentence and "cataloged by Egeria 0 schemas ◌ not checked since 00:54" in its chip. The sentence predates the chips (#844) and should go.
 3. **"not signed in" while signed in.** The connection-details control reads "not signed in" when no investigation is selected and the user id when one is; `/api/auth/me` says authenticated in both cases.
 4. **Slow panes.** Discovery on coco_pharma (266 tables) had not rendered after 9 s ("loading…"); Enrichment on docling read "Reading what's been supplied…" after 8 s; Analysis on docling read "20 still loading" after 4 s. Discovery on adventureworks rendered after ~15 s with "5 still loading". A pane that is loading should say what it is waiting for and how many rows are back.
@@ -62,7 +62,7 @@ did not render in the time given, or needs a press).
 
 One guide, by the reader's job, each section opening with the screen's own words and ending with "what is not built yet (dated)":
 
-1. **Start here**: sign in, the strip, the sidebar, the chat rail, the three jobs (find and judge a resource; catalogue it into Egeria; extend the Explorer).
+1. **Start here**: sign in, the strip, the sidebar, the chat rail, the three jobs (find and judge a resource; catalog it into Egeria; extend the Explorer).
 2. **The words and marks**: the mark table (completed), the chips and lanes, the absence words ("not measured", "nothing found", "could not read", "not permitted", "not applicable", "planned, not built yet"), "as of", confidence badges, "local · not published", "published as <you>".
 3. **Investigations, scope and work lists** (as now, plus "unbound by reset" and the journal-from-chat rule).
 4. **A resource, stage by stage**: for each of the six run stages what the Questions tab shows and what the Survey & analyses tab runs, with the header tiles; then Understanding (three tabs), Automate (three tabs), Curate (the three tabs for a repository; the one page with chips, depth and the publish table for a database; the file system's root-folder Publish).
@@ -92,7 +92,7 @@ Each row in the tutorial is one illustrated walk, and the first row's walk is th
 
 ## 5. The tutorial's shape
 
-Six walks, each a page of screenshots from 8813 with the words the screen uses, every claim tied to a screenshot taken that day: (1) sign in, pick an investigation, find a repository; (2) judge it: Scouting to Analysis, the marks, chat; (3) catalogue a database: credentials, Contents, Curate, Publish, the chips; (4) a file system: register, reach, survey, walk measures, narratives; (5) add your own analysis: the gate walk; (6) add a question and a purpose, change a setting.
+Six walks, each a page of screenshots from 8813 with the words the screen uses, every claim tied to a screenshot taken that day: (1) sign in, pick an investigation, find a repository; (2) judge it: Scouting to Analysis, the marks, chat; (3) catalog a database: credentials, Contents, Curate, Publish, the chips; (4) a file system: register, reach, survey, walk measures, narratives; (5) add your own analysis: the gate walk; (6) add a question and a purpose, change a setting.
 
 ## 6. Division of work
 
