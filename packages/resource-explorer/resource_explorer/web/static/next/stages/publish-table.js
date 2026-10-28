@@ -10,9 +10,9 @@
  * the chosen rows inside RE's survey report and reads each back. A row's "published" word comes from the proof row
  * that read-back leaves, never from a click. A row that cannot publish says why, and offers Keep in RE only.
  *
- * The follow-up answers (DECLARED-EXTENSIBILITY-PUBLISH-TABLE-ANSWERS.md, each assumed until the owner confirms): a
- * measure already in Egeria another way shows that route as its state (`r.elsewhere`) and offers Keep in RE only;
- * a Publish choice stands across surveys, and its line says so (`r.choice.standing`).
+ * The owner's answers of 2026-10-28 (DECLARED-EXTENSIBILITY-SLICE1-PR2-PUBLISH-TABLE.md §4a): a measure already in
+ * Egeria another way shows that route as its state (`r.elsewhere`) and offers Keep in RE only; a Publish choice lasts
+ * across surveys, and its line says so (`r.choice.standing`).
  */
 import { stateEntry } from '/static/next/glyphs.js';
 import { getPublishTable, setPublishChoice } from '/static/re-api.js';

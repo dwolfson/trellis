@@ -21,17 +21,16 @@ those rows only, never from the press.
 **The two routes** (the walking skeleton's interim, now "the declared generic measure route, labelled", §8):
 - generic: a ResourceMeasureAnnotation whose `resourceProperties` hold the value under the measure's name and whose
   `additionalProperties` say `declaredRoute: generic` beside the unit, the as-of and the confidence basis;
-- native: the declared type, with the declared property map. ResourceMeasureAnnotation, SchemaAnalysisAnnotation and
-  ResourcePhysicalStatusAnnotation are written natively (`annotation_for`); any other declared type is shown as what
-  it writes as and offers Keep in RE only, saying why.
+- native: the declared type, with the declared property map. ResourceMeasureAnnotation and SchemaAnalysisAnnotation
+  are written natively (`annotation_for`); any other declared type is shown as what it writes as and offers Keep in
+  RE only, saying why.
 
-**The four follow-up answers** (`DECLARED-EXTENSIBILITY-PUBLISH-TABLE-ANSWERS.md`; each "assumed: owner to confirm"):
-1. a measure already in Egeria another way (Egeria's own survey, RE's survey report, the engine host) says so and offers
-   Keep in RE only (`published_elsewhere`), so the table never writes the same number twice;
-2. the native types after ResourceMeasureAnnotation are the two the declarations name most, SchemaAnalysisAnnotation and
-   ResourcePhysicalStatusAnnotation;
-3. a file system's measures wait for a survey report of RE's own for file systems;
-4. a choice is standing: kept across surveys, sent by every commit until someone chooses Keep in RE, and the row says so.
+**The owner's answers, 2026-10-28** (`DECLARED-EXTENSIBILITY-SLICE1-PR2-PUBLISH-TABLE.md` §4a):
+1. a number already in Egeria another way says "already in Egeria via <route>" and offers no Publish
+   (`published_elsewhere`), so a number is never written twice;
+2. SchemaAnalysisAnnotation is the next native type; ResourcePhysicalStatusAnnotation follows in a later slice;
+3. a file system's chosen measures wait for a file-system survey report of RE's own;
+4. a choice lasts across surveys, sent by every commit until someone chooses Keep in RE, and the row says so.
 """
 from __future__ import annotations
 
@@ -45,9 +44,10 @@ log = logging.getLogger(__name__)
 GENERIC_WORDS = "generic measure · no native type declared"
 #: What the generic route writes as in Egeria.
 GENERIC_TYPE = "ResourceMeasureAnnotation"
-#: Declared types this publisher can write from a declaration alone (answer 2). Every other type needs its own
+#: Declared types this publisher can write from a declaration alone (the owner's answer 2, 2026-10-28:
+#: SchemaAnalysisAnnotation first, ResourcePhysicalStatusAnnotation in a later slice). Every other type needs its own
 #: construction (a profile's value counts, a classification's name), which no declaration's property map carries yet.
-NATIVE_WRITABLE = ("ResourceMeasureAnnotation", "SchemaAnalysisAnnotation", "ResourcePhysicalStatusAnnotation")
+NATIVE_WRITABLE = ("ResourceMeasureAnnotation", "SchemaAnalysisAnnotation")
 
 #: The selection record's kind and choices (`registry.append_resource_scope_events`).
 CHOICE_KIND = "measure"
@@ -61,13 +61,14 @@ P_MEASURE_NOT_READ_BACK = "measure_not_read_back"
 
 #: What the table says about where the press is.
 PRESS_WORDS = "chosen measures go with the page's one Publish: the commit on Contents"
-#: A file system has no survey report for the measures to ride in yet (answer 3: they wait for one of RE's own).
+#: A file system has no survey report for the measures to ride in yet (the owner's answer 3: they wait for one of RE's
+#: own, which the Files steps are building toward).
 NOT_FOR_KIND_WORDS = ("a file system's measures wait for a survey report of Resource Explorer's own for file systems; "
                       "its Publish attaches the root folder only")
-#: A choice of Publish stands across surveys (answer 4): every commit sends the measure until Keep in RE is chosen.
+#: A choice of Publish lasts across surveys (the owner's answer 4): every commit sends the measure until Keep in RE is chosen.
 STANDING_WORDS = "sent by every commit until Keep in RE"
 
-#: Measures RE's own survey report already writes under annotations of its own (answer 1): the survey's database
+#: Measures RE's own survey report already writes under annotations of its own (the owner's answer 1): the survey's database
 #: counts (`DatabaseSurveyor._create_schema_annotations`: schemas, tables, columns), its database size
 #: (`_create_statistics_annotations`) and its views (`_create_views_annotations`), which the catalogue commit's step 3
 #: publishes whatever this table says. A fixed fact of RE's own survey, not of any analysis a person adds.
@@ -248,7 +249,7 @@ def engine_host_reports(registry, slug: str) -> dict[str, dict]:
 
 
 def published_elsewhere(entry, measure: str, engine_reports: dict[str, dict]) -> dict | None:
-    """How this measure is already in Egeria without the table (answer 1), or None. Three routes: an analysis Egeria
+    """How this measure is already in Egeria without the table (the owner's answer 1), or None. Three routes: an analysis Egeria
     itself runs (its own survey report), a measure RE's survey report writes under its own annotation, and a step
     the engine host ran and published for Egeria."""
     if getattr(entry, "source", "") == "egeria":
@@ -373,14 +374,11 @@ def annotation_for(row: dict):
 
     - ResourceMeasureAnnotation: the value in `resourceProperties` under the mapped property or the measure's name,
       the rest in `additionalProperties`;
-    - ResourcePhysicalStatusAnnotation: its bag (`physical_properties`, published as `additionalProperties`) holds
-      the value under the same name and the rest beside it;
     - SchemaAnalysisAnnotation: its only typed fields are `schemaName` and `schemaType`, written when the declaration
       maps a field to them; the value and the rest go in `jsonProperties`, which every annotation carries.
     """
     from resource_explorer.surveyors.survey_report import (
         ResourceMeasureAnnotation,
-        ResourcePhysicalStatusAnnotation,
         SchemaAnalysisAnnotation,
     )
 
@@ -403,9 +401,6 @@ def annotation_for(row: dict):
         "explanation": f"Declared measure '{row['measure']}' of {row['analysis']}, published from Curate's table "
                        f"({w['words']}).",
         "check_name": check_name(row["analysis_id"], row["measure"])}
-    if w["type"] == "ResourcePhysicalStatusAnnotation":
-        return ResourcePhysicalStatusAnnotation(
-            **common, physical_properties={prop: str(row["value"]), **extra})
     if w["type"] == "SchemaAnalysisAnnotation":
         typed = {field: str(row["value"]) for src, field in props.items()
                  if field in ("schemaName", "schemaType") and src == row["value_field"]}

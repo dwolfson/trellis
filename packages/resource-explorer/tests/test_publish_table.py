@@ -197,7 +197,7 @@ def test_a_file_system_shows_its_rows_but_cannot_publish_from_this_table_yet(tmp
     table = pt.build_rows(reg, "filesystem", "share")
     assert table["press"] == pt.NOT_FOR_KIND_WORDS
     assert all(not r["publishable"] and r["why_not"] == pt.NOT_FOR_KIND_WORDS for r in table["rows"])
-    # Answer 3 (assumed): they wait for a file-system survey report of RE's own, and the words say so.
+    # The owner's answer 3: they wait for a file-system survey report of RE's own, and the words say so.
     assert "wait for a survey report of Resource Explorer's own for file systems" in pt.NOT_FOR_KIND_WORDS
 
 
@@ -322,7 +322,7 @@ def test_a_value_that_moved_since_the_publish_reads_changed_since_published(regi
     assert pub["state"] == "changed" and pub["words"].startswith("changed since published")
 
 
-# ── the four follow-up answers (DECLARED-EXTENSIBILITY-PUBLISH-TABLE-ANSWERS.md; each assumed, owner to confirm) ──
+# ── the owner's four answers, 2026-10-28 (DECLARED-EXTENSIBILITY-SLICE1-PR2-PUBLISH-TABLE.md §4a) ──────────
 
 
 def _choose(registry, measure="rows_sampled", choice=pt.PUBLISH):
@@ -413,17 +413,11 @@ def test_answer2_a_schema_analysis_property_map_fills_its_typed_field(registry, 
     assert ann.schema_type == "1200" and ann.json_properties["schemaType"] == "1200"
 
 
-def test_answer2_a_physical_status_measure_publishes_natively_and_reads_back(registry, declared, monkeypatch):
-    declared["entries"] = [_entry(_declaration({"type": "ResourcePhysicalStatusAnnotation",
-                                                "properties": {"rows_sampled": "rowsSampled"}}))]
-    s, held = _surveyor(monkeypatch)
-    _choose(registry)
-    out, counts = _press(s, registry)
-    assert counts == {"sent": 1, "read_back": 1}
-    props = held[out["declared_measures"]["sent"][0]["qualified_name"]]["body"]["properties"]
-    assert props["class"] == "ResourcePhysicalStatusAnnotationProperties"
-    extra = props["additionalProperties"]
-    assert extra["rowsSampled"] == "1200" and extra["declaredRoute"] == "native" and extra["unit"] == "rows"
+def test_answer2_physical_status_waits_for_a_later_slice_and_says_so(registry, declared):
+    declared["entries"] = [_entry(_declaration({"type": "ResourcePhysicalStatusAnnotation"}))]
+    row = _rows(registry)["rows_sampled"]
+    assert row["writes_as"]["route"] == "native" and not row["writes_as"]["writable"]
+    assert row["why_not"] == "Resource Explorer does not write ResourcePhysicalStatusAnnotation from a declaration yet"
 
 
 def test_answer4_a_publish_choice_stands_across_surveys_and_the_row_says_so(registry, declared, monkeypatch):

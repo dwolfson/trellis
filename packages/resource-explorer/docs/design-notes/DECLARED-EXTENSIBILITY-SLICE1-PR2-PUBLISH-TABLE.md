@@ -68,8 +68,7 @@ rather than guessing.
 
 ## 4. Owner questions
 
-Answered and built 2026-10-28, each **assumed: owner to confirm** (no recorded answer was found): see
-`DECLARED-EXTENSIBILITY-PUBLISH-TABLE-ANSWERS.md`.
+The project owner answered all four on 2026-10-28: see §4a.
 
 1. **Rows whose analysis already publishes another way.** Should a row say "already in Egeria via <the survey report /
    the engine host>" and offer no Publish, rather than offering a second, declared copy of the same number?
@@ -79,3 +78,67 @@ Answered and built 2026-10-28, each **assumed: owner to confirm** (no recorded a
    root-folder publish?
 4. **Choice lifetime.** A choice is kept across surveys, so a measure chosen once is sent by every later commit until
    someone chooses Keep in RE. Is that the intent, or should a choice be per survey?
+
+## 4a. Owner answers (2026-10-28)
+
+**Decision (project owner, 2026-10-28):** "A number already in Egeria another way: the row says 'already in Egeria
+via <the survey report / the engine host>' and offers no Publish, so a number is never written twice."
+
+**Decision (project owner, 2026-10-28):** "Native types next: SchemaAnalysisAnnotation first, then
+ResourcePhysicalStatusAnnotation in a later slice."
+
+**Decision (project owner, 2026-10-28):** "File systems: their chosen measures wait for a file-system survey report
+of RE's own; they don't ride the root-folder publish."
+
+**Decision (project owner, 2026-10-28):** "Choice lifetime: a choice lasts across surveys (today's rule), with
+'changed since published' on the row."
+
+The words above are the coordinator's relay of the owner's answers. What was built for each:
+
+1. **Already in Egeria.** `publish_table.published_elsewhere` recognises three routes, none written per analysis:
+   - **RE's survey report.** The commit's step 3 always writes the survey's database counts, its size and its views
+     under their own annotations (`DatabaseSurveyor._create_schema_annotations`, `_create_statistics_annotations`,
+     `_create_views_annotations`). Four declared measures say the same numbers (`IN_SURVEY_REPORT`):
+     `schema_inventory` relations and columns, `row_count_snapshot` total_size, and `sql_analysis` views.
+     - A test pins each pair to a measure the shipped catalogue declares, so renaming one cannot quietly make it
+       publishable.
+     - It is per measure: `schemas_with_tables` is not in the report and stays publishable.
+   - **The engine host.** The newest `engine_action` run on this database for the analysis's step key (a library
+     step's `provided_by.step`, else the catalogue id), whose stored outcome is `survey-completed` with a report GUID.
+     - The row reads "already in Egeria via the engine host · report <time>".
+     - A failed run, or another database's run, does not count.
+     - Runs that cannot be read leave the row publishable: the table never guesses that a number is in Egeria.
+   - **Egeria's own survey.** A catalogue entry with `source: egeria` (`egeria_db_survey`). This is the same rule
+     applied to the third route the catalogue has; it is not in the owner's two examples.
+
+   On such a row, Publish is disabled and Keep in RE is still offered. The row's state shows the route, and its
+   reason reads "… publishing it here would write the same number twice". A Publish chosen earlier is no longer sent,
+   because the press sends only publishable rows.
+2. **SchemaAnalysisAnnotation, written natively.**
+   - Its only typed fields are `schemaName` and `schemaType`. Each is filled only when the declaration's property map
+     sends the value field to it; neither is ever invented.
+   - The value, and the envelope (route, analysis, measure, unit, as-of, confidence, scope), go in `jsonProperties`,
+     which every annotation type carries. `annotation_props` sends no `additionalProperties` for this type, and
+     changing that would alter every schema annotation RE already publishes.
+   - The rows this opens, beyond those already in RE's survey report or Egeria's own:
+     - `db_external_dependencies` (five);
+     - `db_relationship_graph`'s foreign_key_edges;
+     - `schema_diff` (three);
+     - `nested_column_profile`.
+   - ResourcePhysicalStatusAnnotation still reads "Resource Explorer does not write … from a declaration yet" and
+     offers Keep in RE only, until its slice.
+3. **File systems.** The row's reason now says the measures wait: "a file system's measures wait for a survey report
+   of Resource Explorer's own for file systems; its Publish attaches the root folder only". The report itself is the
+   Files steps' work (steps 6-8), not this table's. When it exists, this table needs only to:
+   - send chosen rows in it, as `annotations_for` does for a database;
+   - read them back by qualified name;
+   - and record `measure` proof rows keyed by the file system's slug.
+4. **Choice lifetime.** This was already the behaviour. The row now also says so:
+   - the choice line reads "will publish · <who> · <when> · sent by every commit until Keep in RE";
+   - a published value that has since moved reads "changed since published · read back <time> · the next commit sends
+     the new value".
+
+Tests: `tests/test_publish_table.py` covers each route of answer 1 (including a stale choice no longer sent), a
+SchemaAnalysisAnnotation published and read back through the real surveyor publish code against a fake Egeria, the
+property map reaching `schemaType`, ResourcePhysicalStatusAnnotation still refused, and a standing choice sent by
+two commits and ended by Keep in RE. The harness pins the "elsewhere" state and the standing words.
