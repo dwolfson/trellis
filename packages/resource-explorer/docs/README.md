@@ -1,6 +1,6 @@
 # Resource Explorer documentation
 
-46 documents, grouped by what they *are* rather than what they are about — the
+51 documents, grouped by what they *are* rather than what they are about — the
 distinction that matters when deciding whether one is still live.
 
 **Generated from each document's own `**Status:**` line**, not from a
@@ -11,13 +11,23 @@ someone adds a file. Regenerate after adding or reclassifying:
 python scripts/regen_docs_index.py
 ```
 
+This index covers the documents in `docs/` itself. The design notes are indexed separately, by
+where their work stands on main: [design-notes/README.md](design-notes/README.md).
+
+**Start here if you use Resource Explorer:** [user-guide.md](user-guide.md) and
+[admin-guide.md](admin-guide.md).
+
+**Known limit of the generated buckets:** a status reading "not yet built" is filed under
+"Shipped", because the script tests for "built" first. Read each entry's status line, not
+only its heading.
+
 ## Design and framing
 
 Decisions and models. Cited from source where a comment cannot restate them.
 
 - **[a2a.md](a2a.md)** — 2026-10-15  
   live. The A2A server surface (one service, routed by path)
-- **[admin-guide.md](admin-guide.md)** — 2026-10-14  
+- **[admin-guide.md](admin-guide.md)** — 2026-10-26  
   live. Operator guide; the best-maintained user-facing document
 - **[architecture-recovery-extraction-design.md](architecture-recovery-extraction-design.md)** — 2026-09-03  
   design reference. Part of the architecture-recovery design — split out 2026-09-03
@@ -25,14 +35,18 @@ Decisions and models. Cited from source where a comment cannot restate them.
   reference, current as of 2026-09-02
 - **[Architecture.md](Architecture.md)** — 2026-10-15  
   live. Module map, flows and key decisions; the zone passage was corrected 2026-10-14
-- **[Backlog.md](Backlog.md)** — 2026-10-15  
-  design question first (generalized discovery across resource kinds), then slice. Not scheduled
+- **[Backlog.md](Backlog.md)** — 2026-10-21  
+  design question, then slice. Not scheduled
 - **[BUILDER-BRIEF-CHECKLIST.md](BUILDER-BRIEF-CHECKLIST.md)** — 2026-10-14  
   live. Short checklist for every builder brief
+- **[cross-resource-test-protocols.md](cross-resource-test-protocols.md)** — 2026-10-17  
+  Ready for manual and automated verification
 - **[ddl-artifact-columns.md](ddl-artifact-columns.md)** — 2026-10-15  
-  branch, not deployed. This is the deployment record for three additive columns in RE's shared
+  merged to main (PR #700). The columns are added by RE's schema init the first time a process run
 - **[ddl-step-annotations.md](ddl-step-annotations.md)** — 2026-10-14  
   live. Deployment record for the step_annotations table (2026-10-13)
+- **[ddl-value-profile-q6.md](ddl-value-profile-q6.md)** — 2026-10-26  
+  merged to main (PR #880, 2026-10-27). The column is added by RE's schema init the first time a p
 - **[dr-egeria-engine-host-gaps.md](dr-egeria-engine-host-gaps.md)** — 2026-10-14  
   live. Request to the egeria-python maintainers (2026-10-14); open until they respond
 - **[egeria-integration.md](egeria-integration.md)** — 2026-09-03  
@@ -43,6 +57,8 @@ Decisions and models. Cited from source where a comment cannot restate them.
   validation and planning input, 2026-09-20. Expands §12 of
 - **[extending-resource-explorer.md](extending-resource-explorer.md)** — 2026-10-14  
   live. How to add a question, analysis step, annotation type or survey type
+- **[extending-with-analyses.md](extending-with-analyses.md)** —   
+  live guide, written 2026-10-28 against `origin/main` (`a1cf1925`). Sections marked
 - **[feedback-and-curation.md](feedback-and-curation.md)** — 2026-09-03  
   consolidated design. Current as of 2026-09-02
 - **[filesystem-and-database-surveying.md](filesystem-and-database-surveying.md)** — 2026-09-25  
@@ -69,9 +85,11 @@ Decisions and models. Cited from source where a comment cannot restate them.
   consolidated design. Current as of 2026-09-02
 - **[survey-model.md](survey-model.md)** — 2026-10-01  
   consolidated design and reference. Current as of 2026-09-02
-- **[surveyor-reference.md](surveyor-reference.md)** — 2026-10-14  
+- **[surveyor-reference.md](surveyor-reference.md)** — 2026-10-19  
   stale. Oldest unrevised reference (2026-08-07); predates the database surveyors and Prefect. Che
-- **[user-guide.md](user-guide.md)** — 2026-10-14  
+- **[testgen-integration-guide.md](testgen-integration-guide.md)** —   
+  live guide, written 2026-10-28 against `origin/main` (`a1cf1925`). Sections marked
+- **[user-guide.md](user-guide.md)** — 2026-10-20  
   live. Investigations, work lists, private work, scouting, Curate, Publish and live status are cu
 
 ## Findings and audits
@@ -95,6 +113,8 @@ The work is done and these are NOT archive candidates: source comments point her
   specification only, not implemented. Written per explicit direction
 - **[blueprint-materialization-plan.md](blueprint-materialization-plan.md)** — 2026-09-03  
   planned, not yet built. Written 2026-09-03 (Opus-model plan pass), scoping
+- **[cross-resource-chat-extensions-plan.md](cross-resource-chat-extensions-plan.md)** — 2026-10-20  
+  In progress (Groups 1–3 implemented and verified; Group 4 chips and A2A `input_required` impleme
 - **[curate-evidence-based-decisions-plan.md](curate-evidence-based-decisions-plan.md)** — 2026-09-03  
   design pass, not yet built. Companion to `docs/blueprint-materialization-plan.md` (the
 - **[curated-architecture-answers-design.md](curated-architecture-answers-design.md)** — 2026-10-14  
@@ -113,7 +133,7 @@ The work is done and these are NOT archive candidates: source comments point her
   implemented. Four repo-repair operations (2026-08-28), built
 - **[rfa-dismissals.md](rfa-dismissals.md)** — 2026-10-14  
   implemented. Not applicable and won't do dismissals for RFAs, built
-- **[survey-definitions.md](survey-definitions.md)** — 2026-09-02  
+- **[survey-definitions.md](survey-definitions.md)** — 2026-10-19  
   Implemented and validated end-to-end against a live Egeria server (2026-07-07/08) — both a singl
 - **[vendored-guard.md](vendored-guard.md)** — 2026-10-14  
   implemented. The vendored-walk guard and the record of it failing (2026-09-12)

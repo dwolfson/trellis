@@ -1,5 +1,8 @@
 # DESIGN — RE as an engine host, by equivalence (2026-10-13)
 
+*(Status refreshed 2026-10-28: parts of this have since been built. The "Done" markers in the body record
+them, for example engine host step 3, 2026-10-14. The original status line is kept below.)*
+
 **Status: design note for the owner and the Egeria leads. Nothing here is built
 and nothing is decided that belongs to them.** It restates a standing intent
 and turns it into contracts, a gap list and one slice.

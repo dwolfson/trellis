@@ -1,5 +1,7 @@
 # Design: publishing per-column verdicts and quality results
 
+*(Status refreshed 2026-10-28: built on main 2026-10-20 (commits `b0d246a8`, `46d743fd`, `c7cf74d5`: Curate's Publish sends the stored column-profile verdicts). The original status line is kept below.)*
+
 **Status:** design, not built. Written 2026-10-20 at the owner's request ("Write these publishing needs up
 as a design note"), after #750, #759, #766 and #767.
 

@@ -1,6 +1,6 @@
 # DESIGN — Quality slice Q6: Recency, the date branch of the functional-type inference, and Future_Date_1Y (2026-10-26)
 
-**Status:** built on branch `claude/re-quality-q6-recency-d5e308`, not merged. Step 1 of the port order in
+**Status:** built, and merged to main as PR #880 (2026-10-27) from branch `claude/re-quality-q6-recency-d5e308`. Step 1 of the port order in
 `DESIGN-QUALITY-Q4-PORT-PLAN-AND-CALIBRATION.md` (§5 row 1, §5.1), whose seven §7 recommendations the owner
 accepted:
 
