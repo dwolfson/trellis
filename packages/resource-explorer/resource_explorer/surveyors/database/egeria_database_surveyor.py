@@ -1790,6 +1790,62 @@ class EgeriaDatabaseSurveyor:
         counts["of"] = len(targets)
         counts["checks"] = checks
         counts.update(kinds)
+        counts["rule_links"] = self._link_quality_checks_to_rules(db_entity, annotations, surveyed_at)
+        return counts
+
+    def _link_quality_checks_to_rules(self, db_entity, annotations: list, surveyed_at: str) -> dict:
+        """`GovernedBy` from each QualityAnnotation to the DataQualityRule it ran under (owner, 2026-10-20: "Use
+        governedBy for Annotation to Rule"; DESIGN-QUALITY-Q5-DATA-QUALITY-RULE.md §4), once each. Only a check whose
+        rule was READ from Egeria for this run (`ruleSource` egeria) is linked: one run from the local copy or
+        before its rule existed names no rule it evaluated. The annotation is end 1, the rule end 2. Counts by
+        outcome; never raises."""
+        from pyegeria.omvs.governance_officer import GovernanceOfficer
+
+        from resource_explorer.egeria_link_once import (
+            ALREADY_LINKED,
+            COULD_NOT_CHECK,
+            LINK_FAILED,
+            LINKED,
+            link_once,
+        )
+        from resource_explorer.surveyors.survey_report import (
+            QualityCheckAnnotation,
+            annotation_qualified_name,
+        )
+
+        counts = {"linked": 0, "already_linked": 0, "not_checked": 0, "failed": 0, "of": 0}
+        targets = [(i, a) for i, a in enumerate(annotations) if isinstance(a, QualityCheckAnnotation)
+                   and (a.additional_properties or {}).get("ruleSource") == "egeria"
+                   and (a.additional_properties or {}).get("ruleGuid")]
+        if not targets:
+            return counts
+        counts["of"] = len(targets)
+        prefix = f"Annotation::PostgreSQL::{db_entity.slug}::{surveyed_at}"
+        try:
+            expert = self._metadata_expert_client()
+            officer = self._clients().of(GovernanceOfficer)
+        except Exception as exc:  # noqa: BLE001 - counted, never a failed publish
+            log.warning("Could not build the clients to link quality checks to their rules: %s", exc)
+            counts["not_checked"] = len(targets)
+            return counts
+        body = {"class": "NewRelationshipRequestBody",
+                "properties": {"class": "GovernedByProperties", "label": "evaluated by"}}
+        for index, ann in targets:
+            rule_guid = ann.additional_properties["ruleGuid"]
+            try:
+                ann_guid = self._find_element_guid(annotation_qualified_name(prefix, index, ann))
+            except EgeriaDatabaseSurveyorError:
+                counts["not_checked"] += 1
+                continue
+            if not ann_guid:
+                counts["failed"] += 1
+                continue
+            outcome = link_once(
+                expert, relationship_type="GovernedBy", read_guid=ann_guid, read_end=1, far_guid=rule_guid,
+                what=f"from quality check {ann.item_key} to rule {rule_guid}",
+                create=lambda a=ann_guid, r=rule_guid: officer.attach_governed_by_definition(a, r, body))
+            counts[{LINKED: "linked", ALREADY_LINKED: "already_linked", COULD_NOT_CHECK: "not_checked",
+                    LINK_FAILED: "failed"}.get(outcome.outcome, "failed")] += 1
         return counts
 
     def _link_annotations_to_elements(self, db_entity, annotations: list, targets: list[tuple[int, str]],

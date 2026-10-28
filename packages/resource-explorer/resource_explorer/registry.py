@@ -396,6 +396,7 @@ FILESYSTEM_WALK_FILES_DDL = (
         folder_depth        INTEGER NOT NULL DEFAULT 0,
         size_bytes          BIGINT DEFAULT NULL,
         modified_at         TEXT DEFAULT '',
+        accessed_at         TEXT,
         owner_name          TEXT DEFAULT '',
         group_name          TEXT DEFAULT '',
         mode_octal          TEXT DEFAULT '',
@@ -1114,9 +1115,14 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
     # record_ct = 0, a real zero. `general_type` is derived from the column's
     # catalog type, never measured; `sample_ratio` is NULL in slice 1, which
     # profiles whole tables only. `ran_as` is the account that profiled it.
-    # `before_20yr_date_ct` (quality slice Q6) is added to an existing table by
-    # `_migrate_value_profile_columns`; a row profiled before it existed reads
-    # NULL there, "not measured", never 0.
+    # `before_20yr_date_ct` (quality slice Q6) and the thirteen profile 1b
+    # measures (`before_5yr_date_ct` to `boolean_true_ct`) are added to an
+    # existing table by `_migrate_value_profile_columns`; a row profiled before
+    # they existed reads NULL there, "not measured", never 0. `fractional_sum`
+    # and `sum_value` are TEXT on purpose: the exact NUMERIC(38,8) decimal as
+    # the target printed it, which a float column (and SQLite's NUMERIC
+    # affinity) would round; Match_Sum and Match_Fractional_Sum compare it
+    # exactly.
     """
     CREATE TABLE IF NOT EXISTS database_value_profiles (
         id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1137,6 +1143,19 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         max_date          TEXT DEFAULT NULL,
         future_date_ct    BIGINT DEFAULT NULL,
         before_20yr_date_ct BIGINT DEFAULT NULL,
+        before_5yr_date_ct BIGINT DEFAULT NULL,
+        date_days_present BIGINT DEFAULT NULL,
+        min_length        BIGINT DEFAULT NULL,
+        max_length        BIGINT DEFAULT NULL,
+        avg_length        DOUBLE PRECISION DEFAULT NULL,
+        zero_value_ct     BIGINT DEFAULT NULL,
+        min_value         DOUBLE PRECISION DEFAULT NULL,
+        max_value         DOUBLE PRECISION DEFAULT NULL,
+        avg_value         DOUBLE PRECISION DEFAULT NULL,
+        stdev_value       DOUBLE PRECISION DEFAULT NULL,
+        fractional_sum    TEXT DEFAULT NULL,
+        sum_value         TEXT DEFAULT NULL,
+        boolean_true_ct   BIGINT DEFAULT NULL,
         sample_ratio      REAL DEFAULT NULL,
         ran_as            TEXT DEFAULT '',
         state             TEXT NOT NULL DEFAULT 'measured',
@@ -1182,7 +1201,11 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
     # reach a conclusion; `status` says which way (pass, warning, fail,
     # logged, not_established, error, not_measured) and `reason` why. The
     # threshold and operator are the ones applied, and `rule_source` says
-    # where they came from (egeria, local_cache, unpublished).
+    # where they came from (egeria, local_cache, unpublished). `measure_text`
+    # is the measure as the check compared it when that is not a float: the
+    # TO_CHAR text of a date match, or the exact decimal of a NUMERIC sum
+    # (profile 1b); `measure` then holds the same value as a number, for
+    # charts. NULL in every other row, and in rows from before it existed.
     """
     CREATE TABLE IF NOT EXISTS database_quality_results (
         id                    INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1195,6 +1218,7 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         column_name           TEXT NOT NULL DEFAULT '',
         test_type             TEXT NOT NULL,
         measure               DOUBLE PRECISION DEFAULT NULL,
+        measure_text          TEXT DEFAULT NULL,
         record_ct             BIGINT DEFAULT NULL,
         status                TEXT NOT NULL,
         reason                TEXT DEFAULT '',
@@ -2080,7 +2104,7 @@ class ProjectRegistry:
         engine_action_* columns: IF NOT EXISTS on Postgres so two processes starting together cannot fail
         each other; lock_timeout so a table another process holds fails fast instead of queueing every
         later reader behind it. SQLite has no IF NOT EXISTS here (single writer). `sql_type` is TEXT unless
-        the column is a count (BIGINT), still with no default."""
+        the column is a count (BIGINT) or a float (DOUBLE PRECISION), still with no default."""
         if not existing or column in existing:
             return
         if conn.is_postgres:
@@ -2235,6 +2259,53 @@ class ProjectRegistry:
             conn.execute("DROP TABLE repo_dispositions")
             conn.execute(f"ALTER TABLE {tmp} RENAME TO repo_dispositions")
         log.info("registry: widened repo_dispositions primary key to (entity_type, entity_slug)")
+
+    def _migrate_work_list_members_to_member_kind(self, conn) -> None:
+        """Move a work list's kind from the list to each member (DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-KINDS §5).
+
+        Adds `work_list_members.entity_type`, backfills it from its list's `work_lists.entity_type` (every list
+        before this held one kind, so that IS each member's kind), and widens the key to
+        (work_list_slug, entity_type, entity_slug). A member whose list no longer exists keeps '' rather than a
+        guessed 'repo': the member resolver then says "cannot link this kind", never a wrong kind.
+
+        No-op when the column is there already (a fresh table, or a second start). Same shape as
+        `_migrate_repo_dispositions_to_entity_key`: ALTER + backfill, then a constraint swap on Postgres and a
+        table rebuild on SQLite (which cannot change a primary key in place).
+
+        DDL on the shared registry: written here, applied only on the owner's go (§5)."""
+        existing = self._get_table_columns(conn, "work_list_members")
+        if not existing or "entity_type" in existing:
+            return
+        conn.execute("ALTER TABLE work_list_members ADD COLUMN entity_type TEXT NOT NULL DEFAULT ''")
+        conn.execute(
+            "UPDATE work_list_members SET entity_type = COALESCE(("
+            "SELECT wl.entity_type FROM work_lists wl WHERE wl.slug = work_list_members.work_list_slug), '')"
+            " WHERE entity_type = ''")
+        if conn.is_postgres:
+            conn.execute("ALTER TABLE work_list_members DROP CONSTRAINT IF EXISTS work_list_members_pkey")
+            conn.execute("ALTER TABLE work_list_members ADD PRIMARY KEY (work_list_slug, entity_type, entity_slug)")
+        else:
+            tmp = "work_list_members__member_kind_migration"
+            conn.execute(f"DROP TABLE IF EXISTS {tmp}")
+            conn.execute(f"""
+                CREATE TABLE {tmp} (
+                    work_list_slug  TEXT NOT NULL,
+                    entity_slug     TEXT NOT NULL,
+                    rationale       TEXT NOT NULL DEFAULT '',
+                    confidence      INTEGER,
+                    added_at        TEXT NOT NULL,
+                    entity_type     TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (work_list_slug, entity_type, entity_slug)
+                )
+            """)
+            conn.execute(
+                f"INSERT INTO {tmp} (work_list_slug, entity_slug, rationale, confidence, added_at, entity_type) "
+                "SELECT work_list_slug, entity_slug, rationale, confidence, added_at, entity_type "
+                "FROM work_list_members")
+            conn.execute("DROP TABLE work_list_members")
+            conn.execute(f"ALTER TABLE {tmp} RENAME TO work_list_members")
+        log.info("registry: work_list_members carries each member's kind; key widened to "
+                 "(work_list_slug, entity_type, entity_slug)")
 
     def _migrate_repo_disposition_history_to_entity_key(self, conn) -> None:
         """Backfill `entity_type`/`entity_slug` on `repo_disposition_history`
@@ -3897,6 +3968,10 @@ class ProjectRegistry:
                     published_at    TEXT NOT NULL DEFAULT ''
                 )
             """)
+            # `entity_type` is the MEMBER's kind (DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-KINDS §5: one column set
+            # per view, not one kind per list). Last in the column list so a fresh table and a migrated one have
+            # the same shape on Postgres, where ADD COLUMN appends; part of the key, since a repository and a
+            # database may share a slug. `_migrate_work_list_members_to_member_kind` brings an older table here.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS work_list_members (
                     work_list_slug  TEXT NOT NULL,
@@ -3904,9 +3979,11 @@ class ProjectRegistry:
                     rationale       TEXT NOT NULL DEFAULT '',
                     confidence      INTEGER,
                     added_at        TEXT NOT NULL,
-                    PRIMARY KEY (work_list_slug, entity_slug)
+                    entity_type     TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (work_list_slug, entity_type, entity_slug)
                 )
             """)
+            self._migrate_work_list_members_to_member_kind(conn)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS work_list_runs (
                     set_id          TEXT NOT NULL,
@@ -3922,6 +3999,15 @@ class ProjectRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_work_list_runs_set "
                 "ON work_list_runs(set_id)"
             )
+            # A shortlist's saved filter (DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-KINDS §2): `filter_json` is the
+            # checked expression with its three buckets (`winnowing.check_filter`), `filter_as_of` when the cut was
+            # made. NULL for a list that was not cut by a filter (every list before this, and a hand-picked
+            # promote). Nullable TEXT, the column list read first so a second start is a no-op, the same SQL on
+            # SQLite and Postgres (metadata-only on Postgres).
+            work_list_cols = self._get_table_columns(conn, "work_lists")
+            for col in ("filter_json", "filter_as_of"):
+                if col not in work_list_cols:
+                    conn.execute(f"ALTER TABLE work_lists ADD COLUMN {col} TEXT")
             # Per-resource sampling settings (design §5.8's "per resource" scope), one row per resource.
             # Its own table rather than a column on `databases`, so a file system can carry one too and
             # DatabaseEntity is untouched. Read by sampling.scoped_settings; never a measurement.
@@ -3984,6 +4070,33 @@ class ProjectRegistry:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_database_quality_verdicts_key "
                 "ON database_quality_verdicts(database_slug, check_key)"
+            )
+            # database_quality_rule_proofs (Quality Q5, DESIGN-QUALITY-Q5-DATA-QUALITY-RULE.md §6.3): what Publish
+            # READ BACK of each accepted check's DataQualityRule. Append-only; the latest row per check_key is the
+            # rule's state. `read_at` is when Egeria was read, never when Publish was pressed. `re_proof_hash` is
+            # sha256 of the properties RE sent (egeria_rules.proof_hash): "unchanged" is decided from this row, not a
+            # re-read. `detail_json.sent` holds the compared fields RE last wrote, so a rule edited in Egeria is told
+            # from one RE changed. No foreign keys; remove_database deletes it by name.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS database_quality_rule_proofs (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    database_slug  TEXT NOT NULL,
+                    check_key      TEXT NOT NULL,
+                    rule_guid      TEXT NOT NULL DEFAULT '',
+                    qualified_name TEXT NOT NULL DEFAULT '',
+                    governed_guid  TEXT NOT NULL DEFAULT '',
+                    governed_kind  TEXT NOT NULL DEFAULT '',
+                    outcome        TEXT NOT NULL,
+                    re_proof_hash  TEXT NOT NULL DEFAULT '',
+                    detail_json    TEXT NOT NULL DEFAULT '{}',
+                    recorded_by    TEXT NOT NULL DEFAULT '',
+                    read_at        TEXT NOT NULL DEFAULT '',
+                    created_at     TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_database_quality_rule_proofs_key "
+                "ON database_quality_rule_proofs(database_slug, check_key, id)"
             )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS architecture_materialized_components (
@@ -4985,6 +5098,7 @@ class ProjectRegistry:
         self._migrate_artifact_columns()
         self._migrate_profile_proof_columns()
         self._migrate_value_profile_columns()
+        self._migrate_walk_file_columns()
 
     #: Artifacts slice 1 (DESIGN-ARTIFACTS-VIEW-AND-DOC-LINKS.md §3; owner's go 2026-10-15; DDL record
     #: docs/ddl-artifact-columns.md). file_role: core | test | generated | vendored | docs from
@@ -5021,7 +5135,25 @@ class ProjectRegistry:
     #: Quality slice Q6 (DESIGN-QUALITY-Q6-RECENCY.md; DDL record docs/ddl-value-profile-q6.md): the whole-table
     #: measure Recency's date-branch inference reads. NULL = profiled before the column existed, or not a date
     #: column: "not measured", which every selection rule reads as not_established, never as 0.
-    VALUE_PROFILE_COLUMNS = (("database_value_profiles", "before_20yr_date_ct", "BIGINT"),)
+    #: Profile 1b (DESIGN-QUALITY-PROFILE-1B.md; DDL record docs/ddl-value-profile-1b.md): thirteen more whole-table
+    #: measures, and `database_quality_results.measure_text`. The same rule: NULL is "not measured", never 0.
+    VALUE_PROFILE_COLUMNS = (
+        ("database_value_profiles", "before_20yr_date_ct", "BIGINT"),
+        ("database_value_profiles", "before_5yr_date_ct", "BIGINT"),
+        ("database_value_profiles", "date_days_present", "BIGINT"),
+        ("database_value_profiles", "min_length", "BIGINT"),
+        ("database_value_profiles", "max_length", "BIGINT"),
+        ("database_value_profiles", "avg_length", "DOUBLE PRECISION"),
+        ("database_value_profiles", "zero_value_ct", "BIGINT"),
+        ("database_value_profiles", "min_value", "DOUBLE PRECISION"),
+        ("database_value_profiles", "max_value", "DOUBLE PRECISION"),
+        ("database_value_profiles", "avg_value", "DOUBLE PRECISION"),
+        ("database_value_profiles", "stdev_value", "DOUBLE PRECISION"),
+        ("database_value_profiles", "fractional_sum", "TEXT"),
+        ("database_value_profiles", "sum_value", "TEXT"),
+        ("database_value_profiles", "boolean_true_ct", "BIGINT"),
+        ("database_quality_results", "measure_text", "TEXT"),
+    )
 
     def _migrate_value_profile_columns(self) -> None:
         """The same shape as `_migrate_artifact_columns`: additive, nullable, no default, each in its own short
@@ -5029,6 +5161,18 @@ class ProjectRegistry:
         for table, column, sql_type in self.VALUE_PROFILE_COLUMNS:
             with self._conn() as conn:
                 self._add_nullable_text_column(conn, table, column, self._get_table_columns(conn, table), sql_type)
+
+    #: Files build step 6 (fs_activity, F8; DDL record docs/ddl-walk-files-accessed-at.md): each walked file's last
+    #: access time as the walk's stat read it, BEFORE the walk opened the file to hash it. NULL = walked before the
+    #: column existed: "access time not recorded on this walk", never "never accessed".
+    WALK_FILE_COLUMNS = (("filesystem_walk_files", "accessed_at"),)
+
+    def _migrate_walk_file_columns(self) -> None:
+        """The same shape as `_migrate_artifact_columns`: additive, nullable TEXT, no default, each in its own short
+        transaction with a bounded lock wait, IF NOT EXISTS on Postgres."""
+        for table, column in self.WALK_FILE_COLUMNS:
+            with self._conn() as conn:
+                self._add_nullable_text_column(conn, table, column, self._get_table_columns(conn, table))
 
     # ── the run queue ─────────────────────────────────────────────────────────
     #
@@ -5049,6 +5193,8 @@ class ProjectRegistry:
     RUN_KINDS = (
         "analysis_run",
         "database_analysis_run",
+        # One file system Analytic Library step (Files build step 6), run by run_queue._handle_filesystem_analysis_run.
+        "filesystem_analysis_run",
         "survey_definition_run",
         "scouting_scan",
         "stage_batch",
@@ -6122,6 +6268,52 @@ class ProjectRegistry:
                 (self._normalize_slug(database_slug), check_key),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def record_quality_rule_proofs(self, rows: list[dict]) -> int:
+        """Append Publish's proof rows for quality rules (`egeria_rules.publish_rules`). Returns how many."""
+        from datetime import timezone
+        now = datetime.now(timezone.utc).isoformat()
+        cols = ("database_slug", "check_key", "rule_guid", "qualified_name", "governed_guid", "governed_kind",
+                "outcome", "re_proof_hash", "detail_json", "recorded_by", "read_at")
+        payload = []
+        for row in rows:
+            values = [self._normalize_slug(row["database_slug"]) if c == "database_slug" else
+                      json.dumps(row.get(c) or {}, sort_keys=True, default=str) if c == "detail_json" else
+                      str(row.get(c) or "") for c in cols]
+            payload.append((*values, now))
+        if payload:
+            with self._conn() as conn:
+                conn.executemany(
+                    f"INSERT INTO database_quality_rule_proofs ({', '.join(cols)}, created_at) "
+                    f"VALUES ({', '.join('?' for _ in range(len(cols) + 1))})",
+                    payload,
+                )
+        return len(payload)
+
+    def latest_quality_rule_proofs(self, database_slug: str) -> dict[str, dict]:
+        """{check_key: latest proof row}, `detail_json` decoded. Rows recorded before the latest Egeria reset
+        (`get_egeria_reset_at`) describe rules Egeria no longer holds, so they are never "latest": after a reset the
+        next Publish creates every rule again."""
+        slug = self._normalize_slug(database_slug)
+        with self._conn() as conn:
+            rows = [dict(r) for r in conn.execute(
+                "SELECT * FROM database_quality_rule_proofs WHERE database_slug = ? ORDER BY id ASC", (slug,),
+            ).fetchall()]
+        reset = self.get_egeria_reset_at(slug)
+        from resource_explorer.catalogue_commit import _ts
+        cutoff = _ts(reset) if reset else ""
+        latest: dict[str, dict] = {}
+        for row in rows:
+            # compared as PARSED times (`_ts`), never as text: the reset marker and the row are written by
+            # different code with different offsets
+            if cutoff and (_ts(row.get("created_at")) or "") < cutoff:
+                continue
+            try:
+                row["detail_json"] = json.loads(row.get("detail_json") or "{}")
+            except (ValueError, TypeError):
+                row["detail_json"] = {}
+            latest[row["check_key"]] = row
+        return latest
 
     def get_quality_proposal(self, proposal_id: int | None) -> dict | None:
         """One database_quality_proposals row by id (a verdict's `proposal_id`), `*_json` decoded; None if absent."""
@@ -12284,6 +12476,8 @@ class ProjectRegistry:
         "egeria_outbox": "pending and failed rows are removed; done, dead and cancelled rows stay as history",
         "working_set_members": "keyed by the working set (removed through investigation_resource_lists)",
         "work_lists": "entity_type is the type of the list's members; the list keeps living, unlinked",
+        "work_list_members": "a member of a work list (its own kind since §5 of the winnowing note); the list "
+                             "keeps living, unlinked, and so do its members",
         "repo_dispositions": "a resource's own disposition, not the investigation's",
         "repo_disposition_history": "a resource's own disposition history",
         "api_reference_documents": "per surveyed resource, never an investigation",
@@ -13052,6 +13246,7 @@ class ProjectRegistry:
                 (normalized,),
             )
             conn.execute("DELETE FROM database_quality_verdicts WHERE database_slug = ?", (normalized,))
+            conn.execute("DELETE FROM database_quality_rule_proofs WHERE database_slug = ?", (normalized,))
             conn.execute("DELETE FROM databases WHERE slug = ?", (normalized,))
 
     def record_database_survey(
@@ -14505,8 +14700,8 @@ class ProjectRegistry:
     # ── the walk's per-file rows, kept per run (Files build step 1) ─────────────────────────────────────────────────
 
     #: Runs of per-file rows kept per file system (see walk_extensions.WALK_RUNS_KEPT).
-    _WALK_COLUMNS = ("file_path", "folder_path", "folder_depth", "size_bytes", "modified_at", "owner_name", "group_name",
-                     "mode_octal", "world_readable", "content_hash", "hash_state")
+    _WALK_COLUMNS = ("file_path", "folder_path", "folder_depth", "size_bytes", "modified_at", "accessed_at", "owner_name",
+                     "group_name", "mode_octal", "world_readable", "content_hash", "hash_state")
 
     def add_filesystem_walk_files(self, fs_slug: str, run_id: str, rows: list[dict], *, led_by: str = "re",
                                   egeria_report_guid: str = "", keep_runs: int | None = None) -> dict:

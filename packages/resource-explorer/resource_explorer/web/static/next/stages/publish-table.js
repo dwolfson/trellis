@@ -9,6 +9,10 @@
  * the declarations. There is no press on this table: the page's one press is the commit on Contents, which carries
  * the chosen rows inside RE's survey report and reads each back. A row's "published" word comes from the proof row
  * that read-back leaves, never from a click. A row that cannot publish says why, and offers Keep in RE only.
+ *
+ * The owner's answers of 2026-10-28 (DECLARED-EXTENSIBILITY-SLICE1-PR2-PUBLISH-TABLE.md §4a): a measure already in
+ * Egeria another way shows that route as its state (`r.elsewhere`) and offers Keep in RE only; a Publish choice lasts
+ * across surveys, and its line says so (`r.choice.standing`).
  */
 import { stateEntry } from '/static/next/glyphs.js';
 import { getPublishTable, setPublishChoice } from '/static/re-api.js';
@@ -56,7 +60,8 @@ function selectorHtml(r, signedIn) {
 function choiceLineHtml(r) {
   if (!r.choice) return '<span class="text-provenance text-ink-muted" data-choice-line>not chosen · stays in RE</span>';
   const word = r.choice.choice === 'publish' ? 'will publish' : 'kept in RE';
-  return `<span class="text-provenance text-ink-muted" data-choice-line>${esc(word)} · ${esc(r.choice.by)} · ${esc(when(r.choice.at))}</span>`;
+  const standing = r.choice.standing ? ` · <span data-choice-standing>${esc(r.choice.standing)}</span>` : '';
+  return `<span class="text-provenance text-ink-muted" data-choice-line>${esc(word)} · ${esc(r.choice.by)} · ${esc(when(r.choice.at))}${standing}</span>`;
 }
 
 function valueHtml(r) {
@@ -75,6 +80,10 @@ function writesAsHtml(r) {
 }
 
 function stateHtml(r) {
+  // Already in Egeria another way: that route is the row's state, whatever this table has sent before.
+  if (r.elsewhere) {
+    return `<span data-published="elsewhere" data-elsewhere="${esc(r.elsewhere.route)}">${cue('measured', r.elsewhere.words)}</span>`;
+  }
   const p = r.published || { state: 'local', words: 'local · not published' };
   return `<span data-published="${esc(p.state)}">${cue(PUBLISHED_CUE[p.state] || 'unrun', p.words, p.why || '')}</span>`;
 }

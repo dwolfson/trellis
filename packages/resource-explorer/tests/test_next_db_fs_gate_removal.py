@@ -208,6 +208,9 @@ class TestAutomateNoLongerHardcodesRepo:
 class TestWorklistNoLongerHardcodesRepo:
     def test_analysis_menu_reads_the_work_lists_own_entity_type(self):
         src = _worklist_src()
-        assert "listAnalyses(kindOf(wl)" in src
+        # The VIEW's kind since a list may hold more than one (DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-KINDS §5):
+        # one kind's list or chip reads its own menu, the shared view one menu per kind present.
+        assert "listAnalyses(viewKind()" in src
+        assert "listAnalyses(k, { intent: stage })" in src
         assert "entity_type || 'repo'" not in src
         assert "listAnalyses('repo'" not in src

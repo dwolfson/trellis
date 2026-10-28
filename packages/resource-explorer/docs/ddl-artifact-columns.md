@@ -1,6 +1,7 @@
 # DDL record: artifacts slice-1 columns (re/artifact-columns)
 
-**Status:** branch, not deployed. This is the deployment record for three additive columns in RE's shared
+**Status:** merged to main (PR #700). The columns are added by RE's schema init the first time a process running
+that code opens a registry, so the record below is current. This is the deployment record for three additive columns in RE's shared
 registry. **Decision (project owner, 2026-10-15):** go on the artifacts slice-1 DDL columns, which are
 `survey_commit_sha` per run and `file_role` per symbol and marker row from one shared classifier
 (DESIGN-ARTIFACTS-VIEW-AND-DOC-LINKS.md §3, §7.1).

@@ -1,5 +1,7 @@
 # Engine host on the Governance Engine view service
 
+*(Status refreshed 2026-10-28: built on main 2026-10-17 (commit `8a647461`, "Governance Engine view service, per-target status, Cancel"). The original status line is kept below.)*
+
 Status: **design note, not built; owner answered Q1–Q3 2026-10-17, Q4 (designer words) open.** Written 2026-10-17 (ops note item 3). The build
 goes to one Opus builder; review is the full multi-round tier (it changes an Egeria write path).
 

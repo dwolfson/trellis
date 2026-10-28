@@ -3206,3 +3206,321 @@ filesystem_analyses:
       confidence:
         form: measured
       scope: resource
+
+  # BEGIN GENERATED user steps (filesystem): scripts/generate_external_step_entries.py. Do not hand-edit.
+  - id: fs_activity
+    name: File Activity
+    description: 'How long since each file was modified, and since it was read where the mount records access
+      times: hot, warm and cold files and bytes, aged at the newest walk''s own time, from the per-file
+      rows Resource Explorer kept. Opens no file. Where access times were not recorded on the walk or the
+      mount does not update them, reads are shown as "not measured" (can''t tell), never as cold.'
+    resource_types:
+    - filesystem
+    intent: analysis
+    perspectives:
+    - Steward
+    - Financial
+    - Data Owner
+    annotation_types:
+    - ResourceProfileAnnotation
+    source: local
+    run_time: fast
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: true
+      native_process_ref: null
+    provided_by:
+      package: trellis-step-fs-activity
+      entry_point: fs_activity
+      step: fs_activity
+      version: 0.1.0
+      kind: step
+      source: ods
+      credential_tier: none
+      questions:
+      - Q-0107
+      purposes:
+      - Maintain
+      - Assess
+    declaration:
+      result_kind: distribution
+      measures:
+      - name: fs_activity
+        unit: files not modified for more than Cold Days days (cold)
+        as_of: asOf
+        value_field: Cold Files
+        annotation:
+          type: ResourceProfileAnnotation
+      - name: fs_access_activity
+        unit: files not read for more than Cold Days days (cold)
+        as_of: asOf
+        value_field: Cold Files
+        annotation:
+          type: ResourceProfileAnnotation
+      absence:
+        not_measured: 'Not measured: no walk has kept per-file rows, or (for reads) access times were not
+          recorded on the walk or the mount does not update them, so which files are read cannot be told.'
+        not_permitted: 'Not permitted: the walk could not read these files'' times, so no age is held for
+          them.'
+        not_applicable: 'Not applicable: file activity is measured for file systems only.'
+        measured_nothing: 'Measured: the walk found no files.'
+      extents:
+      - name: activity_bands
+        fields:
+        - scope
+        - Hot Files
+        - Warm Files
+        - Cold Files
+        - Cold Bytes
+        - Hot Days
+        - Cold Days
+        - Access Possibly Resource Explorer's Own Read
+        - asOf
+        rows: 2
+        order: by modification, then by access
+        truncation: '{shown} of {total} results shown'
+        token_cost: 300
+        citation: '{analysis} · {scope} · as of {as_of}'
+      confidence:
+        form: measured
+      answers:
+      - Q-0107
+      scope: resource
+  - id: fs_change_rates
+    name: File System Change
+    description: Files added, removed and modified, and the growth in bytes, between the latest two walks
+      Resource Explorer kept for a file system, over their interval. Reads the walks' per-file rows; opens
+      no file. With one walk only it is shown as "not measured", never as no change; where a walk was capped,
+      files added, removed and growth are "not measured" and only the files both walks saw are compared.
+    resource_types:
+    - filesystem
+    intent: discovery
+    perspectives:
+    - Steward
+    - Data Expert
+    annotation_types:
+    - ResourceMeasureAnnotation
+    source: local
+    run_time: fast
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: true
+      native_process_ref: null
+    provided_by:
+      package: trellis-step-fs-change-rates
+      entry_point: fs_change_rates
+      step: fs_change_rates
+      version: 0.1.0
+      kind: step
+      source: ods
+      credential_tier: none
+      questions:
+      - Q-0102
+      purposes:
+      - Maintain
+    declaration:
+      result_kind: measure
+      measures:
+      - name: fs_change_rates
+        unit: files added, removed or modified between two walks
+        as_of: toAsOf
+        value_field: Files Changed
+        annotation:
+          type: ResourceMeasureAnnotation
+      absence:
+        not_measured: 'Not measured: Resource Explorer has kept per-file rows from one walk of this file
+          system, or none; a change needs two walks.'
+        not_permitted: 'Not permitted: the walk could not read this file system''s folders, so no per-file
+          rows were kept to compare.'
+        not_applicable: 'Not applicable: a change between walks is measured for file systems only.'
+        measured_nothing: 'Measured: no file was added, removed or modified between the two walks.'
+      extents:
+      - name: change_since_last_walk
+        fields:
+        - scope
+        - Files Added
+        - Files Removed
+        - Files Modified
+        - Bytes Growth
+        - Interval Days
+        - fromAsOf
+        - toAsOf
+        rows: 1
+        order: one row for the file system
+        truncation: '{shown} of {total} file systems shown'
+        token_cost: 200
+        citation: '{analysis} · {scope} · as of {as_of}'
+      confidence:
+        form: measured
+      answers:
+      - Q-0102
+      scope: resource
+  - id: fs_duplicates
+    name: Duplicate Files
+    description: Files with the same content (size and SHA-256) within a file system, and files whose content
+      another registered file system also holds, from the hashes Resource Explorer's newest walk kept. Opens
+      no file. Where the walk hashed nothing (hashing off, every file over the limit) it is shown as "not
+      measured", never as no duplicates; files the walk did not hash are counted as not compared.
+    resource_types:
+    - filesystem
+    intent: analysis
+    perspectives:
+    - Steward
+    - Data Expert
+    - Financial
+    annotation_types:
+    - ResourceMeasureAnnotation
+    source: local
+    run_time: fast
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: true
+      native_process_ref: null
+    provided_by:
+      package: trellis-step-fs-duplicates
+      entry_point: fs_duplicates
+      step: fs_duplicates
+      version: 0.1.0
+      kind: step
+      source: ods
+      credential_tier: none
+      questions:
+      - Q-0106
+      purposes:
+      - Assess
+      - Maintain
+    declaration:
+      result_kind: measure
+      measures:
+      - name: fs_duplicates
+        unit: copies beyond the first of identical files
+        as_of: asOf
+        value_field: Redundant Files
+        annotation:
+          type: ResourceMeasureAnnotation
+      - name: fs_duplicates_elsewhere
+        unit: files whose content another registered file system also holds
+        as_of: asOf
+        value_field: Files Also Elsewhere
+        annotation:
+          type: ResourceMeasureAnnotation
+      absence:
+        not_measured: 'Not measured: the newest walk hashed no file (hashing off, or every file over the
+          limit or secret-named), or no other registered file system has hashes to compare with.'
+        not_permitted: 'Not permitted: the walk could not read these files, so none was hashed and none
+          can be compared.'
+        not_applicable: 'Not applicable: duplicate content is measured for file systems only.'
+        measured_nothing: 'Measured: no two hashed files have the same content.'
+      extents:
+      - name: duplicate_content
+        fields:
+        - scope
+        - Duplicate Sets
+        - Redundant Files
+        - Redundant Bytes
+        - Files Not Hashed
+        - Files Also Elsewhere
+        - Matches By File System
+        - asOf
+        rows: 2
+        order: duplicates here, then content also held elsewhere
+        truncation: '{shown} of {total} results shown'
+        token_cost: 300
+        citation: '{analysis} · {scope} · as of {as_of}'
+      confidence:
+        form: measured
+      answers:
+      - Q-0106
+      scope: resource
+  - id: fs_permissions
+    name: File Permissions
+    description: Owners, groups and modes as counts (world-readable, world-writable, group-writable, setuid),
+      and world-readable files whose names look like secrets as a request for action, from the owner, group
+      and mode Resource Explorer's newest walk kept. Opens no file and publishes no name. With no stat fields,
+      or no file name classified, it is shown as "not measured", never as none found.
+    resource_types:
+    - filesystem
+    intent: analysis
+    perspectives:
+    - Security
+    - Privacy
+    - Governance
+    annotation_types:
+    - ResourceProfileAnnotation
+    - RequestForActionAnnotation
+    source: local
+    run_time: fast
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: true
+      native_process_ref: null
+    provided_by:
+      package: trellis-step-fs-permissions
+      entry_point: fs_permissions
+      step: fs_permissions
+      version: 0.1.0
+      kind: step
+      source: ods
+      credential_tier: none
+      questions:
+      - Q-0108
+      purposes:
+      - Assess
+      - Certify
+    declaration:
+      result_kind: measure
+      measures:
+      - name: fs_permissions
+        unit: world-readable files
+        as_of: asOf
+        value_field: World Readable Files
+        annotation:
+          type: ResourceProfileAnnotation
+      - name: world_readable_sensitive
+        unit: world-readable files with a secret-looking name
+        as_of: asOf
+        value_field: World Readable Secret Named Files
+        annotation:
+          type: RequestForActionAnnotation
+      absence:
+        not_measured: 'Not measured: no walk has kept per-file rows, the walk recorded no owner, group or
+          mode (no stat fields), or it classified no file name, so who can read what cannot be told.'
+        not_permitted: 'Not permitted: the walk could not stat these files, so no owner or mode is held
+          for them.'
+        not_applicable: 'Not applicable: file permissions are measured for file systems only.'
+        measured_nothing: 'Measured: no world-readable file has a secret-looking name.'
+      extents:
+      - name: permission_counts
+        fields:
+        - scope
+        - Distinct Owners
+        - Distinct Groups
+        - World Readable Files
+        - World Writable Files
+        - World Readable Secret Named Files
+        - Files Whose Names Were Not Classified
+        - asOf
+        rows: 2
+        order: the permissions profile, then the request for action
+        truncation: '{shown} of {total} results shown'
+        token_cost: 300
+        citation: '{analysis} · {scope} · as of {as_of}'
+      confidence:
+        form: measured
+      answers:
+      - Q-0108
+      scope: resource
+  # END GENERATED user steps (filesystem)
+

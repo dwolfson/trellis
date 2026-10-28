@@ -36,6 +36,7 @@ from resource_explorer.surveyors.database.quality.run_checks import (
     run_quality_checks,
 )
 from resource_explorer.surveyors.database.quality.value_profile import (
+    COLUMNS_PER_QUERY,
     ProfileBounds,
     incomplete_reason,
     run_value_profile,
@@ -221,7 +222,7 @@ def test_a_check_that_did_not_conclude_sends_no_quality_score_to_egeria(registry
     assert empty["additionalProperties"]["checkState"] == "not_established"
     assert empty["confidence"] == 0
     errored = build_annotation_props(by_key["sales.orders.placed::Min_Date"], "Annotation::q::2")
-    assert "qualityScore" not in errored and "sampleSize" not in errored and errored["qualityDimension"] == "conformity"
+    assert "qualityScore" not in errored and "sampleSize" not in errored and errored["qualityDimension"] == "accuracy"
     held = build_annotation_props(by_key["sales.orders.order_id::Unique"], "Annotation::q::3")
     assert held["qualityScore"] == 100 and held["sampleSize"] == 1000
     for props in (empty, errored, held):
@@ -263,19 +264,21 @@ def test_a_quality_annotation_is_egerias_quality_annotation_with_its_three_field
         "QualityAnnotationProperties"]
 
 
-def test_the_dimension_words_are_odcs_and_the_testgen_names_map_as_the_inventory_says():
+def test_the_dimension_words_are_odcs_and_the_testgen_names_map_as_the_owner_ruled():
     from resource_explorer.surveyors.database.quality.catalogue import EGERIA_DIMENSION
 
-    assert egeria_dimension("Validity") == "conformity" and egeria_dimension("Recency") == "timeliness"
+    assert egeria_dimension("Validity") == "accuracy" and egeria_dimension("Recency") == "timeliness"
     assert egeria_dimension("Completeness") == "completeness" and egeria_dimension("Uniqueness") == "uniqueness"
     assert egeria_dimension("Timeliness") == "timeliness"
     assert egeria_dimension("Nonsense") == "" and egeria_dimension("") == ""
-    assert EGERIA_DIMENSION == {"Validity": "conformity", "Recency": "timeliness"}
-    # the seven RE ports, by the INVENTORY-TESTGEN-TEST-TYPES-MAPPED.md "Egeria dimension" column
+    # Validity is accuracy by the owner's ruling of 2026-10-20 (DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md §11 item 9)
+    assert EGERIA_DIMENSION == {"Validity": "accuracy", "Recency": "timeliness"}
+    # the seven RE ports, by the INVENTORY-TESTGEN-TEST-TYPES-MAPPED.md "Egeria dimension" column, with Validity as
+    # accuracy (the owner's ruling; the inventory says Conformity)
     catalogue = load_catalogue()
     assert {t: egeria_dimension(catalogue[t].dimension).capitalize() for t in SLICE_1_TEST_TYPES} == {
         "Missing_Pct": "Completeness", "Required": "Completeness", "Required_No_Placeholder": "Completeness",
-        "Row_Ct_Pct": "Completeness", "Unique": "Uniqueness", "Future_Date": "Timeliness", "Min_Date": "Conformity"}
+        "Row_Ct_Pct": "Completeness", "Unique": "Uniqueness", "Future_Date": "Timeliness", "Min_Date": "Accuracy"}
     # and every word is one of Egeria's DataContractQualityDimension values (the Java enum, read from source)
     java = (Path(__file__).resolve().parents[4] / "egeria" / "open-metadata-implementation" / "frameworks" /
             "open-integration-framework" / "src" / "main" / "java" / "org" / "odpi" / "openmetadata" / "frameworks" /
@@ -306,7 +309,7 @@ def test_publishing_sends_the_real_create_annotation_signature_and_egerias_field
     # EXACT, in check-key order: empty.d::Missing_Pct, orders.note::Missing_Pct, orders.order_id::Unique,
     # orders.placed::Min_Date, orders.placed::Required
     assert [b["properties"]["qualityDimension"] for b in sent] == [
-        "completeness", "completeness", "uniqueness", "conformity", "completeness"]
+        "completeness", "completeness", "uniqueness", "accuracy", "completeness"]
     assert [b["properties"].get("qualityScore") for b in sent] == [None, 0, 100, None, 0]
     for body in sent:
         assert body["class"] == "NewElementRequestBody" and body["parentGUID"] == "report-1"
@@ -604,7 +607,7 @@ class _SlowConn(FakeConn):
 
 
 def _wide_registry(registry, columns=450):
-    """`sales.wide`: 450 integer columns, so the profile reads it as three chunks of at most 200."""
+    """`sales.wide`: 450 integer columns, so the profile reads it as three chunks of at most COLUMNS_PER_QUERY (150)."""
     tables = registry.query_detail_rows("database_tables", SLUG)
     cols = registry.query_detail_rows("database_columns", SLUG)
     tables.append({"schema_name": "sales", "table_name": "wide", "table_type": "BASE TABLE", "row_count": 1000})
@@ -627,7 +630,7 @@ def test_a_table_that_runs_past_five_minutes_is_incomplete_with_every_count_not_
     out = _wide_profile(registry, entity, conn, clock, bounds)
     wide = [r for r in registry.query_detail_rows("database_value_profiles", SLUG) if r["table_name"] == "wide"]
     # Chunks 1 and 2 took 260 s and finished; the third started with 40 s left, ran into it and was cancelled: the
-    # whole table is incomplete, including the 400 columns whose counts had been read.
+    # whole table is incomplete, including the 300 columns whose counts had been read.
     assert len(wide) == 450
     assert {r["state"] for r in wide} == {"not_measured"}
     assert {r["reason"] for r in wide} == {"profile incomplete · exceeded 5 min · counts not measured"}
@@ -670,13 +673,13 @@ def test_a_table_whose_budget_is_spent_between_chunks_starts_no_more_and_is_inco
 def test_a_chunk_that_takes_100_seconds_inside_the_budget_is_measured(registry, entity):
     """H2: the 5-minute budget is the EFFECTIVE bound. Slice 1's fixed 60 s statement timeout would have cancelled a
     100 s chunk with 200 s of the table's budget left; now each chunk may take what is left of the budget."""
-    _wide_registry(registry, columns=200)             # one chunk
+    _wide_registry(registry, columns=COLUMNS_PER_QUERY)   # one chunk
     clock = _Clock()
     conn = _SlowConn(clock, seconds=100, profile=PROFILE, reltuples={("sales", "wide"): 1000})
     bounds = ProfileBounds(statement_timeout_seconds=60, table_budget_seconds=300)      # the old 60 s setting present
     _wide_profile(registry, entity, conn, clock, bounds)
     wide = [r for r in registry.query_detail_rows("database_value_profiles", SLUG) if r["table_name"] == "wide"]
-    assert len(wide) == 200 and {r["state"] for r in wide} == {"measured"}
+    assert len(wide) == COLUMNS_PER_QUERY and {r["state"] for r in wide} == {"measured"}
     assert wide[0]["record_ct"] == 1000 and clock.now == 100
     assert conn.timeouts[-1] == 300                   # the chunk was given the whole budget, not 60 s
 
@@ -685,7 +688,7 @@ def test_a_privilege_error_after_the_budget_is_spent_is_still_not_permitted_not_
     """L2: the exception is classified before the table is labelled 'profile incomplete'."""
     from tests.test_value_profile_quality_checks import PgError
 
-    _wide_registry(registry, columns=200)
+    _wide_registry(registry, columns=COLUMNS_PER_QUERY)
     clock = _Clock()
 
     class Denied(_SlowConn):

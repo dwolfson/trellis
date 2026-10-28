@@ -42,8 +42,9 @@ def _declaration(annotation: dict | None = None, kind: str = "distribution") -> 
         "answers": ["q-example-x"], "scope": "resource"})
 
 
-def _entry(declaration, id_="example_step_x", name="Example Step X"):
-    return SimpleNamespace(id=id_, name=name, declaration=declaration)
+def _entry(declaration, id_="example_step_x", name="Example Step X", source="local", provided_by=None):
+    return SimpleNamespace(id=id_, name=name, declaration=declaration, source=source,
+                           provided_by=dict(provided_by or {}))
 
 
 VALUE = {"buckets": [{"bucket": "a", "count": 3}, {"bucket": "b", "count": 2}], "rows_sampled": 1200,
@@ -196,6 +197,8 @@ def test_a_file_system_shows_its_rows_but_cannot_publish_from_this_table_yet(tmp
     table = pt.build_rows(reg, "filesystem", "share")
     assert table["press"] == pt.NOT_FOR_KIND_WORDS
     assert all(not r["publishable"] and r["why_not"] == pt.NOT_FOR_KIND_WORDS for r in table["rows"])
+    # The owner's answer 3: they wait for a file-system survey report of RE's own, and the words say so.
+    assert "wait for a survey report of Resource Explorer's own for file systems" in pt.NOT_FOR_KIND_WORDS
 
 
 # ── the press: published, read back, and the native type ───────────────────────────────────────────────────────
@@ -317,6 +320,121 @@ def test_a_value_that_moved_since_the_publish_reads_changed_since_published(regi
     declared["facts"]["example_step_x"].value = {**VALUE, "rows_sampled": 1300, "asOf": "2026-10-28T08:30:00"}
     pub = _rows(registry)["rows_sampled"]["published"]
     assert pub["state"] == "changed" and pub["words"].startswith("changed since published")
+
+
+# ── the owner's four answers, 2026-10-28 (DECLARED-EXTENSIBILITY-SLICE1-PR2-PUBLISH-TABLE.md §4a) ──────────
+
+
+def _choose(registry, measure="rows_sampled", choice=pt.PUBLISH):
+    return pt.save_choice(registry, "database", SLUG, analysis_id="example_step_x", measure=measure, choice=choice,
+                          author="dwolfson")
+
+
+def test_answer1_an_analysis_egeria_runs_itself_is_already_in_egeria_and_offers_keep_only(registry, declared):
+    declared["entries"] = [_entry(_declaration(), source="egeria")]
+    row = _rows(registry)["rows_sampled"]
+    assert row["elsewhere"]["route"] == "egeria_survey"
+    assert not row["publishable"]
+    assert row["why_not"] == ("already in Egeria via Egeria's own survey report; publishing it here would write the "
+                              "same number twice")
+    with pytest.raises(pt.ChoiceRefused, match="write the same number twice"):
+        _choose(registry)
+    assert _choose(registry, choice=pt.KEEP)["choice"]["choice"] == pt.KEEP      # Keep in RE is still offered
+
+
+def test_answer1_a_measure_res_survey_report_writes_is_not_sent_again_even_if_chosen_before(registry, declared,
+                                                                                         monkeypatch):
+    _choose(registry)                                       # chosen while it was still publishable
+    monkeypatch.setattr(pt, "IN_SURVEY_REPORT", frozenset({("example_step_x", "rows_sampled")}))
+    rows = _rows(registry)
+    assert rows["rows_sampled"]["elsewhere"]["route"] == "survey_report"
+    assert rows["rows_sampled"]["why_not"].startswith("already in Egeria via Resource Explorer's survey report")
+    assert rows["buckets"]["elsewhere"] is None and rows["buckets"]["publishable"]   # per measure, not per analysis
+    assert pt.chosen_rows(registry, "database", SLUG) == []                          # the press sends nothing
+    assert pt.build_rows(registry, "database", SLUG)["chosen"] == 0
+
+
+def test_the_survey_reports_own_measures_are_named_in_the_shipped_catalogue():
+    """`IN_SURVEY_REPORT` names real declared measures: a renamed measure must not silently become publishable."""
+    from resource_explorer.surveyors.analysis_catalog_reader import _load
+
+    declared = {(e.id, m.name) for e in _load()["database"] if e.declaration for m in e.declaration.measures}
+    assert pt.IN_SURVEY_REPORT <= declared
+
+
+def _engine_run(registry, *, slug=SLUG, step="example_step_x", guard="survey-completed", report="report-9"):
+    run = registry.enqueue_run("engine_action", {"slug": slug, "step_key": step, "entity_type": "database"})
+    registry.merge_run_target(run, {"outcome": {"guard": guard, "report_guid": report,
+                                                "decided_at": "2026-10-26T07:15:00"}})
+    return run
+
+
+def test_answer1_a_step_the_engine_host_ran_and_published_is_already_in_egeria(registry, declared):
+    _engine_run(registry, guard="survey-failed")                 # a failed run published nothing
+    _engine_run(registry, slug="another_db")                     # another database's run is not this one's
+    assert all(r["elsewhere"] is None for r in _rows(registry).values())
+    _engine_run(registry)
+    row = _rows(registry)["rows_sampled"]
+    assert row["elsewhere"] == {"route": "engine_host", "words": "already in Egeria via the engine host · report "
+                                "2026-10-26 07:15", "report_guid": "report-9", "at": "2026-10-26T07:15:00"}
+    assert not row["publishable"]
+
+
+def test_answer1_a_library_step_is_matched_by_its_step_key_not_its_catalogue_id(registry, declared):
+    declared["entries"] = [_entry(_declaration(), provided_by={"step": "x_step", "package": "trellis-step-x"})]
+    _engine_run(registry, step="x_step")
+    assert _rows(registry)["rows_sampled"]["elsewhere"]["route"] == "engine_host"
+
+
+def test_answer2_a_schema_analysis_measure_publishes_natively_and_reads_back(registry, declared, monkeypatch):
+    import json
+
+    declared["entries"] = [_entry(_declaration({"type": "SchemaAnalysisAnnotation"}))]
+    row = _rows(registry)["rows_sampled"]
+    assert row["writes_as"] == {"route": "native", "type": "SchemaAnalysisAnnotation",
+                                "words": "SchemaAnalysisAnnotation", "writable": True, "properties": {}, "why": ""}
+    s, held = _surveyor(monkeypatch)
+    _choose(registry)
+    out, counts = _press(s, registry)
+    assert counts == {"sent": 1, "read_back": 1}
+    props = held[out["declared_measures"]["sent"][0]["qualified_name"]]["body"]["properties"]
+    assert props["class"] == "SchemaAnalysisAnnotationProperties"
+    carried = json.loads(props["jsonProperties"])
+    assert carried["rows_sampled"] == "1200" and carried["declaredRoute"] == "native"
+    assert carried["unit"] == "rows" and carried["asOf"] == "2026-10-27T08:30:00"
+    assert "schemaName" not in props                       # nothing maps a field to it: never invented
+    assert _rows(registry)["rows_sampled"]["published"]["state"] == "published"
+
+
+def test_answer2_a_schema_analysis_property_map_fills_its_typed_field(registry, declared):
+    declared["entries"] = [_entry(_declaration({"type": "SchemaAnalysisAnnotation",
+                                                "properties": {"rows_sampled": "schemaType"}}))]
+    ann = pt.annotation_for(_rows(registry)["rows_sampled"])
+    assert ann.schema_type == "1200" and ann.json_properties["schemaType"] == "1200"
+
+
+def test_answer2_physical_status_waits_for_a_later_slice_and_says_so(registry, declared):
+    declared["entries"] = [_entry(_declaration({"type": "ResourcePhysicalStatusAnnotation"}))]
+    row = _rows(registry)["rows_sampled"]
+    assert row["writes_as"]["route"] == "native" and not row["writes_as"]["writable"]
+    assert row["why_not"] == "Resource Explorer does not write ResourcePhysicalStatusAnnotation from a declaration yet"
+
+
+def test_answer4_a_publish_choice_stands_across_surveys_and_the_row_says_so(registry, declared, monkeypatch):
+    s, _ = _surveyor(monkeypatch)
+    row = _choose(registry)
+    assert row["choice"]["standing"] == pt.STANDING_WORDS == "sent by every commit until Keep in RE"
+    _press(s, registry)
+    declared["facts"]["example_step_x"].value = {**VALUE, "rows_sampled": 1300, "asOf": "2026-10-28T08:30:00"}
+    pub = _rows(registry)["rows_sampled"]["published"]
+    assert pub["state"] == "changed" and pub["words"].endswith(" · the next commit sends the new value")
+    _, counts = _press(s, registry, surveyed_at="2026-10-28T09:00:00")     # the next survey's commit, no new choice
+    assert counts == {"sent": 1, "read_back": 1}
+    assert _rows(registry)["rows_sampled"]["published"]["state"] == "published"
+    _choose(registry, choice=pt.KEEP)
+    assert "standing" not in _rows(registry)["rows_sampled"]["choice"]
+    _, counts = _press(s, registry, surveyed_at="2026-10-29T09:00:00")
+    assert counts["sent"] == 0                                            # Keep in RE ends it
 
 
 def test_nothing_chosen_adds_nothing_to_the_report_and_no_caller_but_the_commit_asks(registry, declared,

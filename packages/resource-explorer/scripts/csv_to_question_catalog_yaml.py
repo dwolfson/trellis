@@ -736,16 +736,16 @@ PER_TYPE_ANSWERING_OVERRIDES: dict[str, dict[str, dict[str, str]]] = {
         "filesystem": {
             "Answering Analysis": (
                 "N/A — Automate subscription (notification_detector's change comparison), which surfaces the change; "
-                "GAP: fs_change_rates (Files brief §3, slice 3) is the analysis that will measure it for a file system"
+                "fs_change_rates measures the files added, removed and modified between two walks"
             ),
             "Answering Mechanism": "Automate Change Detection",
             "Rationale/Source": (
                 "notification_detector.py's latest-two-runs comparison, surfaced via an Automate subscription once a "
-                "schedule exists for the analysis; the file-system analysis that differences two walks is not built."
+                "schedule exists for the analysis; fs_change_rates is the analysis that differences two walks."
             ),
             "Catalog History": (
                 "2026-10-22: answering names fs_change_rates (F5) as the gap instead of the repository's "
-                "refresh_plan (review §2)."
+                "refresh_plan (review §2). | 2026-10-28: fs_change_rates is built (Files build step 6)."
             ),
         },
     },

@@ -104,8 +104,9 @@ export function checkRow(row, ui) {
   };
 }
 
-export const WATCH_SENTENCE = 'Table Comparison: the baseline-match checks (row, distinct, null and empty-string counts, '
-  + 'earliest and latest date), each failing when the table moves from the profile it was accepted against. '
+export const WATCH_SENTENCE = 'Table Comparison: the baseline-match checks (row, distinct, null, empty-string, zero and '
+  + 'true counts; lowest, highest, sum, spread and fractional sum of numbers; text lengths; earliest and latest date '
+  + 'and the number of distinct dates), each failing when the table moves from the profile it was accepted against. '
   + 'Proposed at the next propose run.';
 
 /** A table's Table Comparison line: its state cue and one button. `tc` is the group's `table_comparison`. Pure. */

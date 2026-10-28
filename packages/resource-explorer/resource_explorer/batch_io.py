@@ -853,10 +853,10 @@ def scope_export_rows(registry, investigation_slug: str) -> list[dict[str, Any]]
 
 
 def work_list_export_rows(registry, work_list: dict) -> list[dict[str, Any]]:
-    """A work list's members (one kind) as CSV rows, stated against the work
-    list's investigation if it has one."""
+    """A work list's members as CSV rows, each as its own kind, stated against
+    the work list's investigation if it has one."""
     kind = work_list.get("entity_type") or "repo"
-    members = [{"entity_type": kind, "entity_slug": m["entity_slug"], "state": None}
+    members = [{"entity_type": m.get("entity_type") or kind, "entity_slug": m["entity_slug"], "state": None}
                for m in work_list.get("members", [])]
     inv = work_list.get("investigation") or ""
     return _rows_for_members(registry, members, inv)

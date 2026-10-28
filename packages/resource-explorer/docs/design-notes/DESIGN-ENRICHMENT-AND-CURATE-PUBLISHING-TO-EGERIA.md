@@ -5,7 +5,7 @@ live evidence. Status: design for discussion; nothing here is built. Companion
 notes: `BRIEF-ENRICHMENT-E3-OBSERVATION-STATES.md` and its implemented note,
 `BRIEF-CURATE-CATALOGUE-COMMIT-DATABASES.md`, `NOTE-ANNOTATION-ENVELOPE-ATTRIBUTES.md`,
 `DESIGN-ANALYTIC-EXTENSIBILITY-WORKING-ASSUMPTIONS.md` (A3, A7, R5, R9, R10),
-`evidence/INCIDENT-117-ARCHIVE-CASCADE-2026-10-06.md`.
+`evidence/INCIDENT-2026-10-06-ARCHIVE-CASCADE-ISSUE-117.md`.
 
 ## 1. The owner's rule
 

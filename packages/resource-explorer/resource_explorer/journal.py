@@ -143,7 +143,8 @@ class Journal:
                                   "Each member's rationale is their journal entry.",
                       rationale=body)
         else:
-            wl.set_member(slug, entity_slug, rationale=body)
+            # As its own kind: an audience's list collects resources of any kind (§5).
+            wl.set_member(slug, entity_slug, rationale=body, entity_type=entity_type)
             name = (existing.get("display_name") if isinstance(existing, dict)
                     else getattr(existing, "display_name", None)) or name
         # The NAME is where it landed; the slug is how the server finds it.

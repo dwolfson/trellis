@@ -305,13 +305,18 @@ def _run_run_quality_checks(
 ) -> dict:
     """run_quality_checks (design §6): the accepted checks, run with the vendored Postgres SQL, stored in
     `database_quality_results`. Every evaluated check is returned as a QualityCheckAnnotation
-    (`quality_annotations`), which the database publish sends to Egeria."""
+    (`quality_annotations`), which the database publish sends to Egeria and links by GovernedBy to the rule it ran
+    under, when that rule is published."""
     from resource_explorer.surveyors.database.connection import database_connection
+    from resource_explorer.surveyors.database.quality.egeria_rules import read_rules_for_run
     from resource_explorer.surveyors.database.quality.run_checks import run_quality_checks
 
+    # Quality Q5: a check with a published DataQualityRule runs with the rule's values as Egeria holds them (Egeria
+    # wins); None when no rule is published, and every check runs from its verdict as before.
     return run_quality_checks(
         db_entity, registry, lambda: database_connection(db_entity, {"user": db_user, "password": db_pwd}),
         bounds=_quality_bounds(), surveyed_at=scan_surveyed_at or None, ran_as=db_user,
+        rules=read_rules_for_run(registry, db_entity.slug),
     )
 
 
@@ -1041,8 +1046,9 @@ _ADAPTER = ResourceTypeAdapter(
         "postgres_value_profile": {
             "description": (
                 "Whole-table value profile: record_ct, value_ct, distinct_value_ct, null_value_ct, "
-                "zero_length_ct and filled_value_ct (text), min_date, max_date, future_date_ct and "
-                "before_20yr_date_ct (dates), "
+                "zero_length_ct, filled_value_ct and min/max/avg length (text), min_date, max_date, future_date_ct, "
+                "before_20yr_date_ct, before_5yr_date_ct and date_days_present (dates), zero_value_ct, min/max/avg/"
+                "stdev value, fractional_sum and sum_value (numbers), boolean_true_ct (booleans), "
                 "measured with the vendored catalog's Postgres measures, one aggregate SELECT per table. "
                 "No sampling and no size cap: a table is read whole, within 5 minutes per table "
                 "(VALUE_PROFILE_TABLE_BUDGET_SECONDS). A table that does not finish is not_measured as "
@@ -1264,6 +1270,8 @@ def _column_match_reader(question: str):
 def _value_profile_results(registry, slug: str) -> dict:
     """The latest value-profile batch: every column with its measures, and the not-profiled ones with their state
     and reason (so "not profiled" never reads as "no values"). {} when no profile is stored: never run."""
+    from resource_explorer.surveyors.database.quality.value_profile import PROFILE_1B_MEASURES
+
     rows = registry.query_detail_rows("database_value_profiles", slug)
     if not rows:
         return {}
@@ -1271,7 +1279,7 @@ def _value_profile_results(registry, slug: str) -> dict:
     for r in rows:
         states[r.get("state", "")] = states.get(r.get("state", ""), 0) + 1
     measures = ("general_type", "record_ct", "value_ct", "distinct_value_ct", "null_value_ct", "zero_length_ct",
-                "filled_value_ct", "min_date", "max_date", "future_date_ct", "before_20yr_date_ct")
+                "filled_value_ct", "min_date", "max_date", "future_date_ct", "before_20yr_date_ct") + PROFILE_1B_MEASURES
     return {
         "surveyed_at": rows[0].get("surveyed_at", ""),
         "column_count": len(rows),

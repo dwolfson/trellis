@@ -754,6 +754,58 @@ def publish_filesystem_folder_survey(slug: str) -> dict:
     return _publish_walk(registry, fs, newest["survey_data"], slug)
 
 
+# ── Files build step 6: the derived steps (Analytic Library steps over the walk's kept per-file rows) ───────────────
+
+@router.post("/{slug}/analyses/{analysis_id}/run")
+def run_filesystem_analysis(slug: str, analysis_id: str) -> dict:
+    """Run ONE file system analysis that is an Analytic Library step (fs_change_rates, fs_duplicates, fs_activity,
+    fs_permissions): validated here (an unknown id, or a step whose package is not installed, is a 400 naming why),
+    then queued, as every step is (a step never runs in the web process). Zero-fetch: the step reads the walk's kept
+    rows, opens no file and takes no credential. The answer is `{status: "started", activity_id, run_id}`; the result
+    is stored, not published. The folder survey, the walk extensions and file_profiles keep their own presses."""
+    from resource_explorer.activity_logger import log_analysis_run
+    from resource_explorer.run_queue import requested_by
+    from resource_explorer.surveyors import survey_step_host
+    from resource_explorer.web.routes.curate import require_resource_write
+    from resource_explorer.workflows.analysis import filesystem_library_step_key
+
+    registry = ProjectRegistry()
+    fs = registry.get_filesystem(slug)
+    if not fs:
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    require_resource_write(registry, "filesystem", slug, "start_action")
+    step = filesystem_library_step_key(analysis_id)
+    if not step:
+        raise HTTPException(status_code=400, detail=(
+            f"Analysis '{analysis_id}' is not a file system analysis this route runs: it runs the Analytic Library "
+            "steps over the walk's rows (the folder survey, walk extensions and data-file profiles have their own presses)."))
+    missing = survey_step_host.library_step_missing_reason(step, "filesystem")
+    if missing:
+        raise HTTPException(status_code=400, detail=missing)
+    activity_id = log_analysis_run(registry, "filesystem", slug, fs.display_name, "running",
+                                   f"Running '{analysis_id}' on {slug}…", analysis_id, published=None)
+    run_id = registry.enqueue_run("filesystem_analysis_run", {"slug": slug, "analysis_id": analysis_id},
+                                  result_ref=activity_id, requested_by=requested_by())
+    log.info("enqueued filesystem_analysis_run %s for %s/%s (activity %s)", run_id, slug, analysis_id, activity_id)
+    return {"status": "started", "slug": slug, "analysis_id": analysis_id, "activity_id": activity_id, "run_id": run_id}
+
+
+@router.get("/{slug}/derived")
+def get_filesystem_derived(slug: str) -> dict:
+    """The derived steps' stored results (Files build step 6) and the price line before the Survey press (F12).
+    Registry-only. Also in the folder survey's own read (`price`, `derived`)."""
+    from resource_explorer import file_reach
+    from resource_explorer.surveyors.filesystem import walk_derived
+
+    registry = ProjectRegistry()
+    fs = registry.get_filesystem(slug)
+    if not fs:
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    fork = file_reach.fork_for(registry, fs)
+    return {"slug": slug, "price": walk_derived.price(registry, slug, egeria_leads=fork.surveyor == file_reach.SURVEYOR_EGERIA),
+            **walk_derived.derived_view(registry, slug)}
+
+
 # ── Files build step 5: file_profiles (column profiles of the walk's data files, priced before the run) ──────────────
 
 @router.get("/{slug}/file-profiles")

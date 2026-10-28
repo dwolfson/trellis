@@ -21,11 +21,20 @@ those rows only, never from the press.
 **The two routes** (the walking skeleton's interim, now "the declared generic measure route, labelled", §8):
 - generic: a ResourceMeasureAnnotation whose `resourceProperties` hold the value under the measure's name and whose
   `additionalProperties` say `declaredRoute: generic` beside the unit, the as-of and the confidence basis;
-- native: the declared type, with the declared property map. This PR writes ResourceMeasureAnnotation natively;
-  any other declared type is shown as what it writes as and offers Keep in RE only, saying why (gaps note §2).
+- native: the declared type, with the declared property map. ResourceMeasureAnnotation and SchemaAnalysisAnnotation
+  are written natively (`annotation_for`); any other declared type is shown as what it writes as and offers Keep in
+  RE only, saying why.
+
+**The owner's answers, 2026-10-28** (`DECLARED-EXTENSIBILITY-SLICE1-PR2-PUBLISH-TABLE.md` §4a):
+1. a number already in Egeria another way says "already in Egeria via <route>" and offers no Publish
+   (`published_elsewhere`), so a number is never written twice;
+2. SchemaAnalysisAnnotation is the next native type; ResourcePhysicalStatusAnnotation follows in a later slice;
+3. a file system's chosen measures wait for a file-system survey report of RE's own;
+4. a choice lasts across surveys, sent by every commit until someone chooses Keep in RE, and the row says so.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 
@@ -35,9 +44,10 @@ log = logging.getLogger(__name__)
 GENERIC_WORDS = "generic measure · no native type declared"
 #: What the generic route writes as in Egeria.
 GENERIC_TYPE = "ResourceMeasureAnnotation"
-#: Declared types this publisher can write from a declaration alone. Every other type needs its own construction
-#: (a profile's value counts, a classification's name), which no declaration's property map carries yet.
-NATIVE_WRITABLE = ("ResourceMeasureAnnotation",)
+#: Declared types this publisher can write from a declaration alone (the owner's answer 2, 2026-10-28:
+#: SchemaAnalysisAnnotation first, ResourcePhysicalStatusAnnotation in a later slice). Every other type needs its own
+#: construction (a profile's value counts, a classification's name), which no declaration's property map carries yet.
+NATIVE_WRITABLE = ("ResourceMeasureAnnotation", "SchemaAnalysisAnnotation")
 
 #: The selection record's kind and choices (`registry.append_resource_scope_events`).
 CHOICE_KIND = "measure"
@@ -51,8 +61,21 @@ P_MEASURE_NOT_READ_BACK = "measure_not_read_back"
 
 #: What the table says about where the press is.
 PRESS_WORDS = "chosen measures go with the page's one Publish: the commit on Contents"
-#: A file system has no survey report for the measures to ride in yet.
-NOT_FOR_KIND_WORDS = "publishing from this table is built for databases only so far"
+#: A file system has no survey report for the measures to ride in yet (the owner's answer 3: they wait for one of RE's
+#: own, which the Files steps are building toward).
+NOT_FOR_KIND_WORDS = ("a file system's measures wait for a survey report of Resource Explorer's own for file systems; "
+                      "its Publish attaches the root folder only")
+#: A choice of Publish lasts across surveys (the owner's answer 4): every commit sends the measure until Keep in RE is chosen.
+STANDING_WORDS = "sent by every commit until Keep in RE"
+
+#: Measures RE's own survey report already writes under annotations of its own (the owner's answer 1): the survey's database
+#: counts (`DatabaseSurveyor._create_schema_annotations`: schemas, tables, columns), its database size
+#: (`_create_statistics_annotations`) and its views (`_create_views_annotations`), which the catalogue commit's step 3
+#: publishes whatever this table says. A fixed fact of RE's own survey, not of any analysis a person adds.
+IN_SURVEY_REPORT = frozenset({("schema_inventory", "relations"), ("schema_inventory", "columns"),
+                              ("row_count_snapshot", "total_size"), ("sql_analysis", "views")})
+#: The engine host's guard for a step that ran and published its report (`step_outcome.SURVEY_GUARDS`).
+_ENGINE_COMPLETED = "survey-completed"
 #: The fact states that carry a value (facts.Fact.is_known).
 _KNOWN = ("measured", "nothing_found", "partial", "measured_within_credential_scope")
 #: The fact layer's state -> the declared absence that says it (Declaration.absence keys).
@@ -202,6 +225,47 @@ def _published_word(proof: dict | None, value, as_of) -> dict:
     return out
 
 
+def engine_host_reports(registry, slug: str) -> dict[str, dict]:
+    """step key -> the newest engine-host run that completed a step on this database with a survey report
+    (`engine_host.run_engine_action` stores its outcome on the `runs` row). Read-only; a registry that cannot list
+    runs gives nothing, which leaves the rows publishable rather than guessing they are in Egeria."""
+    out: dict[str, dict] = {}
+    try:
+        runs = registry.list_runs(kind="engine_action", limit=500)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("publish table: engine-host runs could not be read: %s", exc)
+        return out
+    for r in runs:                                   # newest first (`list_runs` orders by enqueued_at desc)
+        try:
+            t = json.loads(r.get("target") or "{}")
+        except (TypeError, ValueError):
+            continue
+        o = t.get("outcome") or {}
+        key = t.get("step_key") or ""
+        if (t.get("slug") == slug and key and key not in out and o.get("guard") == _ENGINE_COMPLETED
+                and o.get("report_guid")):
+            out[key] = {"report_guid": o["report_guid"], "at": o.get("decided_at") or r.get("finished_at") or ""}
+    return out
+
+
+def published_elsewhere(entry, measure: str, engine_reports: dict[str, dict]) -> dict | None:
+    """How this measure is already in Egeria without the table (the owner's answer 1), or None. Three routes: an analysis Egeria
+    itself runs (its own survey report), a measure RE's survey report writes under its own annotation, and a step
+    the engine host ran and published for Egeria."""
+    if getattr(entry, "source", "") == "egeria":
+        return {"route": "egeria_survey", "words": "already in Egeria via Egeria's own survey report"}
+    if (entry.id, measure) in IN_SURVEY_REPORT:
+        return {"route": "survey_report",
+                "words": "already in Egeria via Resource Explorer's survey report (the commit on Contents)"}
+    step = (getattr(entry, "provided_by", None) or {}).get("step") or entry.id
+    ran = engine_reports.get(step)
+    if ran:
+        when = str(ran.get("at") or "")[:16].replace("T", " ")
+        return {"route": "engine_host", "words": f"already in Egeria via the engine host · report {when}".rstrip(),
+                "report_guid": ran["report_guid"], "at": ran.get("at", "")}
+    return None
+
+
 def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: list | None = None) -> dict:
     """The table for one resource. Read-only: nothing here calls Egeria. `entries` overrides the catalogue (tests,
     and a step declared but not yet in the generated catalogue)."""
@@ -212,6 +276,7 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
     entries = _entries(entity_type) if entries is None else entries
     choices = current_choices(registry, entity_type, slug)
     proofs = published_states(registry, slug) if entity_type == "database" else {}
+    engine_reports = engine_host_reports(registry, slug) if entity_type == "database" else {}
     rows = []
     with read_memo.scope():
         for entry in entries:
@@ -239,9 +304,13 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
                                absence_words=dec.absence.sentence(absence))
                 else:
                     row.update(value=v, value_words=_value_words(v, m.unit) if _scalar(v) else f"a {type(v).__name__}")
+                elsewhere = published_elsewhere(entry, m.name, engine_reports)
+                row["elsewhere"] = elsewhere
                 why = ""
                 if entity_type != "database":
                     why = NOT_FOR_KIND_WORDS
+                elif elsewhere:
+                    why = f"{elsewhere['words']}; publishing it here would write the same number twice"
                 elif not w["writable"]:
                     why = w["why"]
                 elif v is _MISSING:
@@ -254,7 +323,12 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
                 ch = choices.get(loc)
                 row["choice"] = ({"choice": ch["choice"], "by": ch["author"], "at": ch["changed_at"]}
                                  if ch and ch.get("choice") else None)
+                if row["choice"] and row["choice"]["choice"] == PUBLISH:
+                    row["choice"]["standing"] = STANDING_WORDS
                 row["published"] = _published_word(proofs.get(loc), row.get("value"), as_of)
+                if (row["published"]["state"] == "changed" and row["publishable"]
+                        and (row["choice"] or {}).get("choice") == PUBLISH):
+                    row["published"]["words"] += " · the next commit sends the new value"
                 rows.append(row)
     chosen = [r for r in rows if r["publishable"] and (r["choice"] or {}).get("choice") == PUBLISH]
     return {"entity_type": entity_type, "slug": slug, "rows": rows, "chosen": len(chosen),
@@ -295,14 +369,24 @@ def save_choice(registry, entity_type: str, slug: str, *, analysis_id: str, meas
 # ── the press ───────────────────────────────────────────────────────────────────────────────────────────────────
 
 def annotation_for(row: dict):
-    """The annotation a chosen row writes as. Generic and native ResourceMeasureAnnotation differ in what they say
-    about themselves (`declaredRoute`) and in the property name the value is written under."""
-    from resource_explorer.surveyors.survey_report import ResourceMeasureAnnotation
+    """The annotation a chosen row writes as. Every route says the same things about itself (`declaredRoute`, the
+    analysis and measure, unit, as-of, confidence, scope); where they go depends on what the type carries:
+
+    - ResourceMeasureAnnotation: the value in `resourceProperties` under the mapped property or the measure's name,
+      the rest in `additionalProperties`;
+    - SchemaAnalysisAnnotation: its only typed fields are `schemaName` and `schemaType`, written when the declaration
+      maps a field to them; the value and the rest go in `jsonProperties`, which every annotation carries.
+    """
+    from resource_explorer.surveyors.survey_report import (
+        ResourceMeasureAnnotation,
+        SchemaAnalysisAnnotation,
+    )
 
     w = row["writes_as"]
     if not w["writable"]:
         raise ValueError(f"{row['locator']} writes as {w['words']}, which this publisher cannot write")
-    prop = (w.get("properties") or {}).get(row["value_field"]) or row["measure"]
+    props = w.get("properties") or {}
+    prop = props.get(row["value_field"]) or row["measure"]
     conf = row["confidence"]
     extra = {"declaredRoute": w["route"], "analysis": row["analysis_id"], "measure": row["measure"],
              "unit": row["unit"], "asOf": row["as_of"], "valueField": row["value_field"],
@@ -310,14 +394,21 @@ def annotation_for(row: dict):
              "scope": row["scope"], "resultState": "measured", "measuredAt": row["as_of"]}
     if w["route"] == "generic":
         extra["declaredRouteWords"] = GENERIC_WORDS
+    extra = {k: str(v) for k, v in extra.items() if v not in (None, "")}
+    common = {
+        "summary": f"{row['analysis']} · {row['measure']}: {row['value_words']} · as of {row['as_of']}",
+        "analysis_step": row["analysis_id"], "annotation_type_name": row["measure"].replace("_", " ").title(),
+        "explanation": f"Declared measure '{row['measure']}' of {row['analysis']}, published from Curate's table "
+                       f"({w['words']}).",
+        "check_name": check_name(row["analysis_id"], row["measure"])}
+    if w["type"] == "SchemaAnalysisAnnotation":
+        typed = {field: str(row["value"]) for src, field in props.items()
+                 if field in ("schemaName", "schemaType") and src == row["value_field"]}
+        return SchemaAnalysisAnnotation(
+            **common, schema_name=typed.get("schemaName", ""), schema_type=typed.get("schemaType", ""),
+            json_properties={prop: str(row["value"]), **extra})
     return ResourceMeasureAnnotation(
-        summary=f"{row['analysis']} · {row['measure']}: {row['value_words']} · as of {row['as_of']}",
-        analysis_step=row["analysis_id"], annotation_type_name=row["measure"].replace("_", " ").title(),
-        explanation=f"Declared measure '{row['measure']}' of {row['analysis']}, published from Curate's table "
-                    f"({w['words']}).",
-        resource_properties={prop: str(row["value"]), "unit": row["unit"]},
-        additional_properties={k: str(v) for k, v in extra.items() if v not in (None, "")},
-        check_name=check_name(row["analysis_id"], row["measure"]))
+        **common, resource_properties={prop: str(row["value"]), "unit": row["unit"]}, additional_properties=extra)
 
 
 def annotations_for(registry, slug: str) -> dict:

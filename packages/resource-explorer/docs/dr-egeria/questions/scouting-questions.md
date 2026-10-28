@@ -7210,3 +7210,289 @@ Asked At
 
 ___
 
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Which files are duplicates of each other, or of files in another registered file system?
+
+### Description
+fs_duplicates groups the files the walk hashed (SHA-256 under the walk's size limit) by size and hash, here and against other registered file systems' newest walks. With no hashes it reports 'not measured', never 'no duplicates'.
+
+### Summary
+Duplicate content costs storage and makes it unclear which copy is the one to use, keep or govern.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0106 |
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Which files are duplicates of each other, or of files in another registered file system?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Financial
+
+### Question Name
+Which files are duplicates of each other, or of files in another registered file system?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+Which files are duplicates of each other, or of files in another registered file system?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+Which files are duplicates of each other, or of files in another registered file system?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Which files are duplicates of each other, or of files in another registered file system?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Which files has nobody touched for a long time, and which are hot?
+
+### Description
+fs_activity ages each file's modified time, and its access time where the mount records one, at the walk's own time. Where access times are not recorded it says 'can't tell', never 'cold'.
+
+### Summary
+Cold data is a candidate for archiving or removal; hot data is what people depend on today.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0107 |
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Which files has nobody touched for a long time, and which are hot?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Financial
+
+### Question Name
+Which files has nobody touched for a long time, and which are hot?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+Which files has nobody touched for a long time, and which are hot?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Owner
+
+### Question Name
+Which files has nobody touched for a long time, and which are hot?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Which files has nobody touched for a long time, and which are hot?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Who owns or can read what, and are there world-readable sensitive files?
+
+### Description
+fs_permissions counts owners, groups and modes from the walk's stat, and raises a request for action for world-readable files whose names look like secrets. No owner or file name is published. Data-class matches (F7) are not joined yet.
+
+### Summary
+A sensitive file anyone on the machine can read is an exposure that needs an owner to act.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0108 |
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Who owns or can read what, and are there world-readable sensitive files?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Governance
+
+### Question Name
+Who owns or can read what, and are there world-readable sensitive files?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Privacy
+
+### Question Name
+Who owns or can read what, and are there world-readable sensitive files?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Security
+
+### Question Name
+Who owns or can read what, and are there world-readable sensitive files?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Who owns or can read what, and are there world-readable sensitive files?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+How much would it cost to survey fully, and which parts are not worth it?
+
+### Description
+The folder survey's price line, shown before the Survey press: the newest walk's files, bytes and wall time on this machine, whether it was capped, the directories not walked, and the heaviest folders' share of the bytes.
+
+### Summary
+A survey should be priced before it runs, and the bulk that is not worth walking said before anyone waits for it.
+
+### Usage
+Typically asked and answerable during Discovery.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0109 |
+
+___
+
+## Classify Term as Question
+
+### Term Name
+How much would it cost to survey fully, and which parts are not worth it?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Financial
+
+### Question Name
+How much would it cost to survey fully, and which parts are not worth it?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Admin
+
+### Question Name
+How much would it cost to survey fully, and which parts are not worth it?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+How much would it cost to survey fully, and which parts are not worth it?
+
+### Scope Reference
+Discovery
+
+### Scope Category
+Asked At
+
+___
+

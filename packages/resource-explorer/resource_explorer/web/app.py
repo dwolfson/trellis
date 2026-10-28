@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from resource_explorer.web.routes import work_lists as work_lists_routes
+from resource_explorer.web.routes import quality_batch as quality_batch_routes
 from resource_explorer.web.routes import publish_table as publish_table_routes
 from resource_explorer.web.routes import api_reference as api_reference_routes, analytics as analytics_routes, activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, catalogue_scope, quality_checks, curate, databases, first_index as first_index_routes, db_servers as db_servers_routes, diagrams, discovery, doc_sources, egeria, feedback, investigations, journal, logs as logs_routes, prefect_status, prerequisites as prerequisite_routes, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions, native_surveys
 from resource_explorer.web.routes import table_preview as table_preview_routes
@@ -407,6 +408,8 @@ app.include_router(runs_routes.router, prefix="/api/runs", tags=["runs"])
 # executor (and so the same cost observation) as any other step.
 app.include_router(prerequisite_routes.router, prefix="/api/prerequisites", tags=["prerequisites"])
 app.include_router(work_lists_routes.router, prefix="/api/work-lists", tags=["work-lists"])
+# Quality slice Q3: the DatabaseQualitySurvey across a work list, priced before it starts.
+app.include_router(quality_batch_routes.router, prefix="/api/quality-batch", tags=["quality-batch"])
 
 _STATIC = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=_STATIC), name="static")

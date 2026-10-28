@@ -39,7 +39,11 @@ from resource_explorer.surveyors.database.quality.catalogue import (
 ORIGIN = "testgen"
 PROPOSALS_TABLE = "database_quality_proposals"
 #: TestGen's test-definition parameter columns RE's checks read, by the params_json key they fill (same names).
-PARAM_COLUMNS = ("baseline_ct", "baseline_unique_ct", "baseline_value", "baseline_value_ct", "threshold_value")
+PARAM_COLUMNS = ("baseline_ct", "baseline_unique_ct", "baseline_value", "baseline_value_ct", "threshold_value",
+                 "baseline_sum", "baseline_sd", "upper_tolerance")
+#: Parameters kept as TestGen's text: a baseline date, and the sums Match_Sum and Match_Fractional_Sum compare exactly
+#: (a float would round them). Each is still validated by `threshold` before it can be proposed.
+TEXT_PARAMS = frozenset({"baseline_value", "baseline_sum"})
 #: RE's own row for a key stands (the import is a match) when it is in one of these states.
 RE_DECIDED = frozenset({"proposed", "accepted", "suppressed"})
 #: The run date put into a measure while validating it: any well-formed instant will do; nothing is executed here.
@@ -68,7 +72,7 @@ def _params(test_type, definition: dict) -> dict:
         value = definition.get(column)
         if value in (None, ""):
             continue
-        if column == "baseline_value":
+        if column in TEXT_PARAMS:
             params[column] = str(value)
         else:
             params[column] = as_number(column, value)

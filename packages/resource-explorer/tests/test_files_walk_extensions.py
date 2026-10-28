@@ -469,8 +469,9 @@ def test_the_table_is_created_on_a_fresh_sqlite_registry_and_a_reopen_is_idempot
     ProjectRegistry(db_path=path)
     con = sqlite3.connect(path)
     cols = [c[1] for c in con.execute("PRAGMA table_info(filesystem_walk_files)")]
+    # accessed_at: Files build step 6 (docs/ddl-walk-files-accessed-at.md); an existing table gains it at the end instead
     assert cols == ["id", "filesystem_slug", "run_id", "file_path", "folder_path", "folder_depth", "size_bytes", "modified_at",
-                    "owner_name", "group_name", "mode_octal", "world_readable", "content_hash", "hash_state", "led_by",
+                    "accessed_at", "owner_name", "group_name", "mode_octal", "world_readable", "content_hash", "hash_state", "led_by",
                     "egeria_report_guid"]
     idx = {i[1] for i in con.execute("PRAGMA index_list(filesystem_walk_files)")}
     assert {"idx_fs_walk_files_folder", "idx_fs_walk_files_hash"} <= idx

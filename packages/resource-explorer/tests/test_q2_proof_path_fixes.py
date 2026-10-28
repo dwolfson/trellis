@@ -163,7 +163,7 @@ def _row_for(test_type, schema, table, column, measure, records, status="pass", 
 #: (QUALITY_DIMENSION("qualityDimension", String)), OpenMetadataTypesArchive1_2.java:10660 (a QualityAnnotation
 #: attribute). The word is the ODCS `DataContractQualityDimension`.
 EXPECTED_DIMENSION = {"Missing_Pct": "completeness", "Required": "completeness", "Required_No_Placeholder": "completeness",
-                      "Unique": "uniqueness", "Future_Date": "timeliness", "Min_Date": "conformity",
+                      "Unique": "uniqueness", "Future_Date": "timeliness", "Min_Date": "accuracy",
                       "Row_Ct_Pct": "completeness"}
 
 
