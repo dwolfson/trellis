@@ -165,3 +165,32 @@ rule to keep is "one column set per view":
   by stored-row reads measured on the first run).
 - Whether "talks to" edges belong in Curate's dependency table as well as
   the list graph (they are the same fact; one store, two views).
+
+## 8. Rulings as built (slice 1, 2026-10-28)
+
+The owner, 2026-10-28: "I answered all the questions previously - we should be able to move forward?", then
+"yes, start Q3 and the work lists too". A search of this note, the `RULING-*` files, `exchange/REPLY-*`, the
+coordinator handoffs and the Architect Session found no recorded answer to the §6 or §7 items themselves; the
+2026-10-24 record says "the five rulings are with the owner". So each row below is either a recorded answer with
+its source, or this note's own position marked **assumed: owner to confirm**.
+
+| Item | Answer built | Source |
+|---|---|---|
+| §6.1 relax one kind per list to one column set per view | relaxed | **assumed: owner to confirm.** Recorded nearby: the owner tied the investigation-members defect to this note and ruled one shared resolver, `member_egeria_guid(registry, entity_type, slug)` (2026-10-24, coordinator handoff 01:01Z; built as `member_assets.py`, #856). The designer wireframe §6.1 asks for first was not made. |
+| §6.2 winnowing slice | built: typed column filters, three buckets, saved-filter shortlist, re-apply with the diff | **assumed: owner to confirm** (the owner's go to build, 2026-10-28) |
+| §6.3 mixed-kind slice | built in its own commit: `work_list_members.entity_type`, kind chips, shared columns, per-kind runs | **assumed: owner to confirm.** The DDL is a migration in code; it is not applied to 5442 (the owner's separate go, as §5 says). |
+| §6.4 relationship analysis | not built | left for later (brief) |
+| §6.5 measure after 2 and 3 | not built | nothing to measure until 2 and 3 ship |
+| §7.1 shortlist re-applies automatically? | never: a press, with "N would now drop, M would now join" shown first | **assumed: owner to confirm** (this note's position) |
+| §7.2 pairwise cap | not applicable (no §4) | — |
+| §7.3 "talks to" edges in Curate too | not applicable (no §4) | — |
+
+Choices the build made that §2 and §5 leave open, also **assumed: owner to confirm**:
+
+- The `kinds` summary is derived on every read from the members, not stored on the list, so it cannot drift from
+  them. `work_lists.entity_type` stays as the kind a member is given when none is named.
+- A shortlist's members are the kept bucket only. The could-not-check bucket is not carried in and not dropped
+  silently: the stored filter names each such member with its sentence, and the shortlist says how many.
+- The lens columns of §2 are absent on this build: no data lens is bound to an investigation yet
+  (`batch_io.NO_LENS`). The bench says so for a list that belongs to an investigation; the stored filter accepts
+  a `lens_dimension` so nothing changes shape when one is.

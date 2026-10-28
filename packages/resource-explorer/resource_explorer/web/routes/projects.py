@@ -727,6 +727,9 @@ async def run_scouting_scan(slug: str) -> ScoutingScanStarted:
 
 
 class QuestionChecklistEntry(BaseModel):
+    #: The catalog's question id (Q-00NN). The bench matches columns across kinds by it (one column set per view:
+    #: a mixed list shows the questions every kind present carries), so it must survive this model.
+    id: str = ""
     question: str
     stage: str  # single Funnel Stage, may be slash-combined (e.g. "Analysis/Enrichment")
     perspectives: list[str] = []

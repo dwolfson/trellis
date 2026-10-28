@@ -144,7 +144,7 @@ test('the list of work lists opens with the one-sentence definition, and never s
   document.querySelector('[data-act="worklists"]').click();
   await tick(100);
   const c = text(document.getElementById('content'));
-  assert.ok(c.includes('An investigation says why, and its scope says which resources, of any kind; a work list is a bench: one kind of resource, laid out against one stage’s questions, so you can decide which belong in a scope.'), c.slice(0, 300));
+  assert.ok(c.includes('An investigation says why, and its scope says which resources, of any kind; a work list is a bench: resources laid out against one stage’s questions, one column set per view, so you can narrow them and decide which belong in a scope.'), c.slice(0, 300));
   assert.doesNotMatch(document.body.textContent, /working set/i);
 });
 

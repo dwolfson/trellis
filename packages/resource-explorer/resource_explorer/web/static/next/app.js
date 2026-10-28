@@ -1083,8 +1083,8 @@ function ensureRunStageForList() {
 /** The list OF work lists — the front door the matrix never had. */
 const WORK_LIST_DEFINITION =
   'An investigation says why, and its scope says which resources, of any kind; '
-  + 'a work list is a bench: one kind of resource, laid out against one stage’s '
-  + 'questions, so you can decide which belong in a scope.';
+  + 'a work list is a bench: resources laid out against one stage’s questions, '
+  + 'one column set per view, so you can narrow them and decide which belong in a scope.';
 
 /** An investigation's name for display; the slug only when it is not loaded. */
 function investigationName(slug) {
