@@ -76,8 +76,12 @@ _FROM = re.compile(r'FROM "([^"]+)"\."([^"]+)"\s*$')
 class FakeConn:
     """Answers the profile's and the checks' SELECTs from canned values; records every statement."""
 
-    def __init__(self, profile=None, checks=None, reltuples=None, facts=None, catalog_error=None):
+    def __init__(self, profile=None, checks=None, reltuples=None, facts=None, catalog_error=None, numeric=None,
+                 numeric_error=None):
         self.profile = profile or {}
+        # (schema, table, column) -> (data_type, numeric_scale): what information_schema.columns says (profile 1b).
+        self.numeric = numeric or {}
+        self.numeric_error = numeric_error
         self.checks = checks or {}
         self.reltuples = {("sales", "big"): 9_000_000} if reltuples is None else reltuples
         self.facts = facts or {}  # (schema, table) -> {"relkind": ..., "rls_filters": ...}
@@ -111,6 +115,11 @@ class FakeConn:
             keys = set(self.reltuples) | set(self.facts)
             return [{"schema_name": s, "table_name": t, "reltuples": self.reltuples.get((s, t), -1),
                      "relkind": "r", "rls_filters": False, **self.facts.get((s, t), {})} for s, t in keys]
+        if "FROM information_schema.columns" in sql:
+            if self.numeric_error:
+                raise self.numeric_error
+            return [{"schema_name": s, "table_name": t, "column_name": c, "data_type": d, "numeric_scale": n}
+                    for (s, t, c), (d, n) in self.numeric.items()]
         assert self.in_read_only, "a table was read outside a read-only transaction"
         table = _FROM.search(sql).groups()
         if sql.startswith("SELECT COUNT(*) AS record_ct, "):
@@ -129,7 +138,7 @@ class FakeConn:
         if isinstance(handler, Exception):
             raise handler
         body = sql[len("SELECT COUNT(*) AS record_ct, "):_FROM.search(sql).start()].rstrip()
-        parts = re.split(r" AS (q\d+)(?:, )?", body)
+        parts = re.split(r" AS (q\d+(?:_x)?)(?:, )?", body)
         measures = dict(zip(parts[1::2], parts[0::2]))
         return [{"record_ct": handler.get("record_ct"), **{q: handler["measure"](m) for q, m in measures.items()}}]
 
@@ -277,7 +286,8 @@ def test_each_table_is_read_in_its_own_read_only_transaction(registry, entity):
     reads = [i for i, s in enumerate(conn.statements) if s.startswith("SELECT\n")]
     assert reads
     for i in reads:
-        assert conn.statements[i - 2:i] == ["SET TRANSACTION READ ONLY", "SET LOCAL statement_timeout = 300000"]
+        assert conn.statements[i - 3:i] == ["SET TRANSACTION READ ONLY", "SET LOCAL statement_timeout = 300000",
+                                            "SET LOCAL TIME ZONE 'UTC'"]
         assert conn.statements[i + 1] == "<end transaction>"
 
 
@@ -309,8 +319,10 @@ def test_every_assembled_statement_parses_as_postgres():
     cols = [("a", "A"), ("b", "N"), ("c", "D"), ("d", "B"), ("e", "X"), ('we"ird', "A"), ("pct%", "T")]
     sql, aliases = build_table_query("sales", "orders", cols, "2026-10-20 12:00:00")
     # value_ct + null_value_ct for all 7, distinct + zero_length + filled for the 2 text columns, 4 date measures
-    # (min_date, max_date, future_date_ct, before_20yr_date_ct), distinct for B, D, N and T (none for X).
-    assert len(aliases) == 2 * 7 + 3 * 2 + 4 + 4
+    # (min_date, max_date, future_date_ct, before_20yr_date_ct), distinct for B, D, N and T (none for X). Profile 1b:
+    # min/max/avg length for each text column, 5 numeric measures (no decimal or exact-sum flag on a bare
+    # general_type), before_5yr_date_ct and date_days_present, boolean_true_ct.
+    assert len(aliases) == 2 * 7 + 3 * 2 + 4 + 4 + 3 * 2 + 5 + 2 + 1
     sqlglot.parse_one(sql, read="postgres")
     sqlglot.parse_one(TABLE_FACTS_SQL, read="postgres")
     params = {"baseline_ct": 10, "baseline_value_ct": 9, "baseline_value": "2020-01-01", "threshold_value": 2}

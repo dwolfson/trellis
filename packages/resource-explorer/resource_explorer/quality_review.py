@@ -21,12 +21,18 @@ from __future__ import annotations
 
 from resource_explorer.surveyors.database.quality import table_comparison
 from resource_explorer.surveyors.database.quality.catalogue import (
-    B1A_TEST_TYPES,
+    PORTED_TEST_TYPES,
     egeria_dimension,
     load_catalogue,
 )
 
 PROPOSALS_TABLE = "database_quality_proposals"
+
+
+def table_comparison_types() -> list[str]:
+    """The ported Table Comparison types an opt-in brings in (B1a and, since profile 1b, B1b), in proposal order."""
+    catalogue = load_catalogue()
+    return [name for name in PORTED_TEST_TYPES if catalogue[name].is_table_comparison]
 
 #: The two verdicts a person gives here. `retired` belongs to the retire flow, not to this review.
 PERSON_VERDICTS = ("accepted", "rejected")
@@ -160,7 +166,7 @@ def build_review(registry, slug: str, *, test_type: str = "", dimension: str = "
             "states": [{"value": s, "count": overall[s]} for s in STATES],
         },
         "applied": {"test_type": test_type, "dimension": dimension, "state": state},
-        "table_comparison": {"test_types": list(B1A_TEST_TYPES), "tables_opted_in": len(watched)},
+        "table_comparison": {"test_types": table_comparison_types(), "tables_opted_in": len(watched)},
         "groups": out,
     }
 
@@ -188,7 +194,7 @@ def set_table_comparison(registry, slug: str, schema: str, table: str, watch: bo
         and latest.get("by") == decided_by
     state = _watch_state(latest if latest.get("action") == table_comparison.WATCH else None)
     return {"recorded": recorded, "schema_name": schema, "table_name": table, "table_comparison": state,
-            "test_types": list(B1A_TEST_TYPES),
+            "test_types": table_comparison_types(),
             "takes_effect": "at the next propose run (propose_quality_checks)"}
 
 

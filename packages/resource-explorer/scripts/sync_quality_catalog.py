@@ -7,7 +7,8 @@ The vendored copy lives in `resource_explorer/configdata/quality/testgen/` (see 
 vendored test type this compares, against `testgen/template/dbsetup_test_types/test_types_<Name>.yaml` upstream:
 `selection_criteria`, `default_parm_columns`, `default_parm_values` and the Postgres `cat_test_conditions` entry
 (`measure`, `test_operator`, `test_condition`), and says whether the whole file is still byte-identical. It checks
-that every measure in `postgresql/profile_measures.sql`, the `general_type` CASE, every entry of
+that every measure in `postgresql/profile_measures.sql`, the `general_type` CASE, the `logical_type` and `is_decimal`
+CASEs of `postgresql/numeric_chars.sql`, every entry of
 `postgresql/templated_functions.yaml` and every statement of `profiling/functional_datatype_date.sql` still appear
 verbatim upstream, that each vendored generation template (`gen_query_tests/`) is byte-identical upstream, and lists
 upstream test types that are not vendored.
@@ -37,6 +38,7 @@ from resource_explorer.surveyors.database.quality.catalogue import (
 from resource_explorer.surveyors.database.quality.functional_type import FUNCTIONAL_DATATYPE_SQL
 from resource_explorer.surveyors.database.quality.general_type import (
     vendored_case_text,
+    vendored_numeric_cases,
 )
 from resource_explorer.surveyors.database.quality.value_profile import measure_blocks
 
@@ -94,8 +96,12 @@ def compare_sql(upstream: Path) -> list[str]:
     ddf = upstream / UPSTREAM_SCHEMA_DDF
     if not ddf.exists():
         diffs.append(f"upstream {UPSTREAM_SCHEMA_DDF} is gone")
-    elif _squash(vendored_case_text()) not in _squash(ddf.read_text(encoding="utf-8")):
-        diffs.append("general_type.sql: the general_type CASE is no longer verbatim upstream")
+    else:
+        ddf_text = _squash(ddf.read_text(encoding="utf-8"))
+        if _squash(vendored_case_text()) not in ddf_text:
+            diffs.append("general_type.sql: the general_type CASE is no longer verbatim upstream")
+        diffs += [f"numeric_chars.sql CASE {i + 1}: no longer verbatim upstream"
+                  for i, case in enumerate(vendored_numeric_cases()) if _squash(case) not in ddf_text]
     diffs += compare_functions(upstream)
     diffs += compare_functional_type(upstream)
     diffs += compare_generation_templates(upstream)

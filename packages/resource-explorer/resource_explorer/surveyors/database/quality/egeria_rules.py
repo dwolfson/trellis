@@ -41,7 +41,7 @@ from resource_explorer.surveyors.database.quality.catalogue import (
     TestType,
     egeria_dimension,
     original_dimension,
-    threshold,
+    published_threshold,
 )
 
 log = logging.getLogger(__name__)
@@ -104,7 +104,7 @@ def rule_properties(check_key: str, test_type: TestType, params: dict, *, verdic
     severity = params.get("severity")
     if severity not in SEVERITY.values():
         raise ParameterError(f"severity must be one of {sorted(SEVERITY.values())}, got {severity!r}")
-    limit = threshold(test_type, params)
+    values = published_threshold(test_type, params)
     path = check_path(check_key)
     metric = ODCS_METRIC.get(test_type.test_type)
     extra = {
@@ -118,7 +118,9 @@ def rule_properties(check_key: str, test_type: TestType, params: dict, *, verdic
         "originalDimension": original_dimension(test_type.dimension),
     }
     for key, name in (("baseline_ct", "baselineCt"), ("baseline_value_ct", "baselineValueCt"),
-                      ("baseline_value", "baselineValue"), ("baseline_unique_ct", "baselineUniqueCt")):
+                      ("baseline_value", "baselineValue"), ("baseline_unique_ct", "baselineUniqueCt"),
+                      ("baseline_sum", "baselineSum"), ("baseline_sd", "baselineSd"),
+                      ("upper_tolerance", "upperTolerance")):
         if params.get(key) not in (None, ""):
             extra[name] = str(params[key])
     props = {
@@ -134,7 +136,7 @@ def rule_properties(check_key: str, test_type: TestType, params: dict, *, verdic
         "method": test_type.test_type,
         "qualityEngine": QUALITY_ENGINE,
         "comparisonOperator": MUST_BE.get(test_type.test_operator, test_type.test_operator),
-        "thresholdValues": [str(limit)],
+        "thresholdValues": values,
         "severity": severity,
         "units": test_type.measure_uom or "",
         "contentStatus": ACTIVE,

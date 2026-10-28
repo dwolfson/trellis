@@ -12,7 +12,7 @@ the ported rule (`catalogue.PREDICATES`) gives one of three answers:
 
 Row_Ct_Pct is proposed by RE itself (origin `re`) for every table with `record_ct > 0`.
 
-The Table Comparison types (B1a, `Match_*`) are considered only for a table a person opted in
+The Table Comparison types (B1a and B1b, `Match_*`) are considered only for a table a person opted in
 (`table_comparison.watched_tables`), or for a check that already has a verdict, so an opt-out never hides a decision.
 A table that is not opted in is counted (`not_opted_in_ct`), not proposed.
 
@@ -56,7 +56,8 @@ PROFILE_TABLE = "database_value_profiles"
 ANALYSIS_STEP = "propose_quality_checks"
 
 #: Parameters compared between the accepted check and the new profile's defaults to report drift.
-BASELINE_KEYS = ("baseline_ct", "baseline_value_ct", "baseline_unique_ct", "baseline_value")
+BASELINE_KEYS = ("baseline_ct", "baseline_value_ct", "baseline_unique_ct", "baseline_value", "baseline_sum",
+                 "baseline_sd")
 #: Types whose baseline is their threshold_value (gen_Match_Row_Ct.sql: `record_ct AS threshold_value`).
 THRESHOLD_IS_BASELINE = frozenset({"Match_Row_Ct"})
 

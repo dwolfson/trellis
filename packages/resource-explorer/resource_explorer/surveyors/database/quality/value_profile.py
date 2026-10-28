@@ -13,6 +13,15 @@ other than running out of time (a privilege error is `not_permitted`, anything e
 words) is classified first, whatever the clock says. A view, materialized view or foreign table is
 `not_applicable`. Every column the inventory names gets a row; a column that was not profiled has every measure
 NULL, never zeros.
+
+Profile 1b (DESIGN-QUALITY-PROFILE-1B.md) adds the whole-table numeric, length, boolean and date-days measures, still
+in the same one SELECT per table. Two of them depend on the column's declared scale (upstream's `is_N_decimal`,
+`is_N_exact_sum`), which the stored inventory does not keep, so one catalog read (`general_type.NUMERIC_CHARS_QUERY`)
+beside the table facts supplies it. When that read fails, `fractional_sum` and `sum_value` are not taken for any
+column and the batch says so (`numeric_chars`); every other measure is unaffected.
+
+Each read runs with the session time zone set to UTC (`begin_read`, shared with the check run), so a
+`timestamptz` date is printed, compared with `{RUN_DATE}` and baselined on one clock whatever the account's default.
 """
 from __future__ import annotations
 
@@ -30,8 +39,14 @@ from functools import lru_cache
 
 from resource_explorer.surveyors.database.quality.catalogue import (
     POSTGRES_DIR,
+    column_num,
     expand_templated_functions,
     quote_identifier,
+)
+from resource_explorer.surveyors.database.quality.general_type import (
+    NUMERIC_CHARS_QUERY,
+    exact_sum,
+    is_n_decimal,
 )
 from resource_explorer.surveyors.database.quality.general_type import (
     general_type as derive_general_type,
@@ -43,20 +58,34 @@ PROFILE_TABLE = "database_value_profiles"
 ANALYSIS_STEP = "postgres_value_profile"
 PROFILE_MEASURES_SQL = POSTGRES_DIR / "profile_measures.sql"
 
+#: Profile 1b's measures (Q4 port order step 3), each in upstream's whole-table block, never sampled.
+PROFILE_1B_MEASURES = ("before_5yr_date_ct", "date_days_present", "min_length", "max_length", "avg_length",
+                       "zero_value_ct", "min_value", "max_value", "avg_value", "stdev_value", "fractional_sum",
+                       "sum_value", "boolean_true_ct")
 #: The measures a profile row carries, in the vendored names. `record_ct` is per table.
 COLUMN_MEASURES = ("value_ct", "distinct_value_ct", "null_value_ct", "zero_length_ct", "filled_value_ct",
-                   "min_date", "max_date", "future_date_ct", "before_20yr_date_ct")
+                   "min_date", "max_date", "future_date_ct", "before_20yr_date_ct") + PROFILE_1B_MEASURES
 DATE_MEASURES = frozenset({"min_date", "max_date"})
+#: Measures that are not counts: floats as the target returned them, never truncated to an integer.
+FLOAT_MEASURES = frozenset({"avg_length", "min_value", "max_value", "avg_value", "stdev_value"})
+#: NUMERIC sums kept as the exact decimal text the target printed (a float would round them; Match_Sum and
+#: Match_Fractional_Sum compare exactly).
+EXACT_MEASURES = frozenset({"fractional_sum", "sum_value"})
+#: The counts the published annotation carries in `value_count`: slice 1's, unchanged by profile 1b. Profile 1b's
+#: measures stay in RE's own rows (the checks read them there): publishing them is not part of this step, and
+#: adding them would change every published measure's content hash, re-publishing every unchanged column once.
+PUBLISHED_COUNTS = ("record_ct", "value_ct", "distinct_value_ct", "null_value_ct", "zero_length_ct",
+                    "filled_value_ct")
 #: Measures taken against the profile's own instant (`{RUN_DATE}`), so they move with the clock on a table nobody
 #: wrote to. RE's own rows keep them (the Future_Date check reads `future_date_ct`, Recency's inference
 #: `before_20yr_date_ct`), but the published annotation
 #: does not carry them in `value_count`, and the profile publish reshape never hashes them (architect ruling
 #: 2026-10-24): `profileDates` carries the max date and the as-of instead, so a reader can tell.
-RELATIVE_TO_NOW_MEASURES = frozenset({"future_date_ct", "before_20yr_date_ct"})
+RELATIVE_TO_NOW_MEASURES = frozenset({"future_date_ct", "before_20yr_date_ct", "before_5yr_date_ct"})
 
-#: Postgres's target-list limit is 1664 entries; columns are profiled in chunks well under it (each column
-#: contributes at most seven measures, a date column). Each chunk is its own scan.
-COLUMNS_PER_QUERY = 200
+#: Postgres's target-list limit is 1664 entries; columns are profiled in chunks well under it (since profile 1b a
+#: column contributes at most ten measures, a decimal number: 150 x 10 + record_ct = 1501). Each chunk is its own scan.
+COLUMNS_PER_QUERY = 150
 
 _AS = re.compile(r"^(?P<expr>.*?)\s+AS\s+(?P<alias>[a-z0-9_]+),?\s*$", re.DOTALL)
 
@@ -88,14 +117,66 @@ def measure_blocks() -> dict[str, tuple[tuple[str, str], ...]]:
     return {k: tuple(v) for k, v in blocks.items()}
 
 
-def flags_for(general_type: str) -> list[str]:
-    """The vendored blocks that apply to a column of this general_type (upstream's flag meanings)."""
-    flags = ["is_type_A"] if general_type == "A" else ["is_not_A"]
-    if general_type not in ("A", "X"):
+@dataclass(frozen=True)
+class ColumnChars:
+    """What a column's profile depends on beyond its name: its general_type, and for a number the two flags upstream
+    reads from the catalog (`is_N_decimal`, `is_N_exact_sum`) and whether it is money (read through ::NUMERIC).
+    `numeric_chars_read` is False when the catalog read failed: the two flags are then unknown, not false."""
+
+    general_type: str
+    is_decimal: bool = False
+    exact_sum: bool = False
+    is_money: bool = False
+    numeric_chars_read: bool = True
+
+
+def flags_for(general_type: str | ColumnChars) -> list[str]:
+    """The vendored blocks that apply to a column (upstream's flag meanings). A bare general_type means no numeric
+    characteristics are known: neither decimal nor exact-summed."""
+    chars = general_type if isinstance(general_type, ColumnChars) else ColumnChars(general_type)
+    gtype = chars.general_type
+    flags = ["is_type_A"] if gtype == "A" else ["is_not_A"]
+    if gtype not in ("A", "X"):
         flags.append("is_distinct_countable")
-    if general_type == "D":
+    if gtype == "D":
         flags.append("is_type_D")
+    if gtype == "N":
+        flags.append("is_type_N")
+        if chars.is_decimal:
+            flags.append("is_N_decimal")
+        if chars.exact_sum:
+            flags.append("is_N_exact_sum")
+    if gtype == "B":
+        flags.append("is_type_B")
     return flags
+
+
+def read_numeric_chars(conn) -> dict[tuple[str, str, str], tuple[str, int | None]] | None:
+    """{(schema, table, column): (data_type, numeric_scale)} for every numeric column, from
+    `information_schema.columns` as upstream reads it; None when the catalog could not be read. Ends its own
+    transaction."""
+    try:
+        rows = conn.execute_query_isolated(NUMERIC_CHARS_QUERY, None)
+    except Exception as exc:
+        log.warning("value profile: could not read numeric scales: %s", exc)
+        return None
+    finally:
+        conn.end_transaction()
+    return {(r["schema_name"], r["table_name"], r["column_name"]):
+            (r.get("data_type") or "", None if r.get("numeric_scale") is None else int(r["numeric_scale"]))
+            for r in rows}
+
+
+def column_chars(schema: str, table: str, column: str, gtype: str,
+                 numeric: dict[tuple[str, str, str], tuple[str, int | None]] | None) -> ColumnChars:
+    """A column's ColumnChars from its general_type and the catalog read (`read_numeric_chars`; None = not read)."""
+    if gtype != "N":
+        return ColumnChars(gtype)
+    if numeric is None or (schema, table, column) not in numeric:
+        return ColumnChars(gtype, numeric_chars_read=False)
+    data_type, scale = numeric[(schema, table, column)]
+    return ColumnChars(gtype, is_decimal=is_n_decimal(gtype, data_type, scale),
+                       exact_sum=exact_sum(gtype, data_type, scale), is_money=data_type.lower() == "money")
 
 
 def run_date_text(surveyed_at: str) -> str:
@@ -115,26 +196,28 @@ def as_of_text(surveyed_at: str) -> str:
     return run_date_text(surveyed_at).replace(" ", "T") + "Z"
 
 
-def _fill(expr: str, column: str, run_date: str) -> str:
+def _fill(expr: str, column: str, run_date: str, is_money: bool = False) -> str:
     # Upstream's templated functions are expanded in the vendored text first, so the name never passes through
     # the expansion. The template quotes "{COL_NAME}" itself, so the name goes in with only its double quotes
     # doubled.
     expr = expand_templated_functions(expr)
-    return expr.replace('"{COL_NAME}"', quote_identifier(column)).replace("{RUN_DATE}", run_date)
+    return (expr.replace('"{COL_NAME}"', quote_identifier(column)).replace("{COL_NUM}", column_num(column, is_money))
+            .replace("{RUN_DATE}", run_date))
 
 
-def build_table_query(schema: str, table: str, columns: list[tuple[str, str]], run_date: str
+def build_table_query(schema: str, table: str, columns: list[tuple[str, str | ColumnChars]], run_date: str
                       ) -> tuple[str, dict[str, tuple[int, str]]]:
-    """One SELECT over `schema.table` for `columns` [(name, general_type)]. Returns the SQL and
+    """One SELECT over `schema.table` for `columns` [(name, general_type or ColumnChars)]. Returns the SQL and
     {result alias: (column index, measure name)}; `record_ct` comes back under its own name."""
     blocks = measure_blocks()
     items = [f"{expr} AS record_ct" for expr, _ in blocks.get("is_table", ())]
     aliases: dict[str, tuple[int, str]] = {}
-    for i, (name, gtype) in enumerate(columns):
-        for flag in flags_for(gtype):
+    for i, (name, chars) in enumerate(columns):
+        chars = chars if isinstance(chars, ColumnChars) else ColumnChars(chars)
+        for flag in flags_for(chars):
             for expr, measure in blocks.get(flag, ()):
                 alias = f"c{i}__{measure}"
-                items.append(f"{_fill(expr, name, run_date)} AS {alias}")
+                items.append(f"{_fill(expr, name, run_date, chars.is_money)} AS {alias}")
                 aliases[alias] = (i, measure)
     sql = "SELECT\n" + ",\n".join(items) + f"\nFROM {quote_identifier(schema)}.{quote_identifier(table)}"
     return sql, aliases
@@ -149,6 +232,10 @@ def _value(measure: str, value):
         if isinstance(value, date):
             return value.isoformat()
         return str(value)
+    if measure in EXACT_MEASURES:
+        return str(value)
+    if measure in FLOAT_MEASURES:
+        return float(value)
     if isinstance(value, Decimal):
         return int(value)
     return int(value) if isinstance(value, (int, float)) else value
@@ -261,10 +348,18 @@ def refusal(info: dict, facts: TableFacts | None, catalog_read: bool) -> tuple[s
     return None
 
 
+#: The session time zone every profile read and check run uses (profile 1b; DESIGN-QUALITY-B1A-BASELINE-MATCH.md §7
+#: question 2). A `timestamptz` prints in the session's zone and `{RUN_DATE}` is UTC text, so both reads use UTC:
+#: a date baseline taken by the profile and the measure the run compares with it are then the same clock.
+SESSION_TIME_ZONE = "UTC"
+
+
 def begin_read(conn, bounds: ProfileBounds) -> None:
-    """Open one table's transaction: read-only, with the statement timeout. Pair with `conn.end_transaction()`."""
+    """Open one table's transaction: read-only, with the statement timeout and the session time zone set for this
+    transaction only. Pair with `conn.end_transaction()`."""
     conn.execute_query("SET TRANSACTION READ ONLY", None)
     conn.execute_query(f"SET LOCAL statement_timeout = {int(bounds.statement_timeout_seconds) * 1000}", None)
+    conn.execute_query(f"SET LOCAL TIME ZONE '{SESSION_TIME_ZONE}'", None)
 
 
 def run_value_profile(
@@ -296,12 +391,16 @@ def run_value_profile(
         by_table.setdefault(key, []).append(
             (col["column_name"], derive_general_type(col.get("base_type") or col.get("data_type"),
                                                      col.get("column_size"))))
+    has_numbers = any(g == "N" for cols in by_table.values() for _, g in cols)
 
     run_date = run_date_text(surveyed_at)
     rows: list[dict] = []
     table_outcomes: list[dict] = []
+    numeric: dict | None = {}
     with connect() as conn:
         facts = read_table_facts(conn)
+        if has_numbers:
+            numeric = read_numeric_chars(conn)
         for (schema, table), cols in sorted(by_table.items()):
             info = tables.get((schema, table)) or {}
             refused = refusal(info, (facts or {}).get((schema, table)), facts is not None)
@@ -323,7 +422,8 @@ def run_value_profile(
                     break
                 chunk_bounds = replace(bounds, statement_timeout_seconds=max(1, math.ceil(remaining)))
                 chunk = cols[start:start + COLUMNS_PER_QUERY]
-                sql, aliases = build_table_query(schema, table, chunk, run_date)
+                sql, aliases = build_table_query(
+                    schema, table, [(c, column_chars(schema, table, c, g, numeric)) for c, g in chunk], run_date)
                 try:
                     # One read-only transaction per query, ended at once: no lock outlives its table. Params None,
                     # so psycopg2 never reads a "%" in a name as a placeholder.
@@ -383,6 +483,9 @@ def run_value_profile(
             "tables_not_profiled": table_outcomes,
             "ran_as": ran_as,
             "bounds": {"table_budget_seconds": bounds.table_budget_seconds},
+            # Whether the catalog read profile 1b's decimal and exact-sum measures depend on succeeded. "not_read":
+            # fractional_sum and sum_value were not taken for any number column (NULL, never 0).
+            "numeric_chars": "not_needed" if not has_numbers else ("read" if numeric is not None else "not_read"),
         },
         "annotations": build_annotations(rows, table_outcomes, as_of=as_of_text(surveyed_at)),
     }
@@ -425,8 +528,7 @@ def build_annotations(rows: list[dict], table_outcomes: list[dict], *, as_of: st
             continue
         path = f"{row['schema_name']}.{row['table_name']}.{row['column_name']}"
         key = measure_key(row["schema_name"], row["table_name"], row["column_name"])
-        counts = {k: row[k] for k in ("record_ct",) + COLUMN_MEASURES
-                  if k not in DATE_MEASURES | RELATIVE_TO_NOW_MEASURES and row.get(k) is not None}
+        counts = {k: row[k] for k in PUBLISHED_COUNTS if row.get(k) is not None}
         dates = {k: row.get(k) for k in DATE_MEASURES if row.get(k) is not None}
         if as_of and row.get("general_type") == "D":
             dates["asOf"] = as_of

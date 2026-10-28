@@ -117,6 +117,12 @@ Row 2 is built (2026-10-27), with the TestGen-only import of §6.5: `DESIGN-QUAL
 records where "no new measure, no DDL" needed more than this table says: the two date matches measure text, which
 the results table's numeric `measure` column cannot hold as text, and all six carry upstream's `null_measure_fails`.
 
+Row 3 is built (2026-10-28), not deployed: `DESIGN-QUALITY-PROFILE-1B.md`, DDL record `../ddl-value-profile-1b.md`. It
+has twelve types, not thirteen: Match_Epoch_Sum's `epoch_sum` is taken upstream only for a hashed column, so it moves
+to row 8. Its thirteenth measure is `before_5yr_date_ct`, deferred from row 1. It also adds
+`database_quality_results.measure_text` and UTC for both reads (B1a's questions 1 and 2, built on their
+recommendations, owner to confirm).
+
 **Out of scope for proposals:** family H (5, manual-only in TestGen), family E (8, cross-table and
 person-authored), family F (4, custom SQL). They need a check editor, not a selection rule, and F
 is the owner's "define your own rules" backlog stage. F carries an extra warning from RE's own
