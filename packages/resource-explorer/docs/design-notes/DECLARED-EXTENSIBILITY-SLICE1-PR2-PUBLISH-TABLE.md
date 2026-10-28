@@ -68,6 +68,9 @@ rather than guessing.
 
 ## 4. Owner questions
 
+Answered and built 2026-10-28, each **assumed: owner to confirm** (no recorded answer was found): see
+`DECLARED-EXTENSIBILITY-PUBLISH-TABLE-ANSWERS.md`.
+
 1. **Rows whose analysis already publishes another way.** Should a row say "already in Egeria via <the survey report /
    the engine host>" and offer no Publish, rather than offering a second, declared copy of the same number?
 2. **Native types next.** Which declared types should the publisher learn first? The PR 1 declarations name
