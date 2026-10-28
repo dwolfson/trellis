@@ -150,7 +150,7 @@ def test_hand_written_answers_are_refused_they_are_generated():
     """One list, not two: a built-in entry's answers come from the question catalogue, never from the entry."""
     declared, refused = reader.check_declaration(_raw(_good(answers=["Q-0001"])))
     assert declared is None
-    assert "answers is written by hand; they are generated from the question catalogue's analysis_ids" in refused
+    assert "answers is written by hand; they are generated from the question catalog's analysis_ids" in refused
 
 
 def test_a_built_in_entrys_answers_are_generated_from_the_question_catalogue():

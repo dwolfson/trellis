@@ -254,7 +254,7 @@ def check_declaration(raw: dict) -> tuple[Declaration | None, str]:
         return None, f"{where}: declaration is a {type(body).__name__}, not a mapping of declaration fields"
     if "answers" in body and not raw.get("provided_by"):
         return None, (f"{where}: declaration refused: answers is written by hand; they are generated from the "
-                      "question catalogue's analysis_ids, so remove them here and bind the question there")
+                      "question catalog's analysis_ids, so remove them here and bind the question there")
     body = {**body, "answers": generated_answers(raw)} if "answers" not in body else body
     try:
         declared = Declaration.model_validate(body)
