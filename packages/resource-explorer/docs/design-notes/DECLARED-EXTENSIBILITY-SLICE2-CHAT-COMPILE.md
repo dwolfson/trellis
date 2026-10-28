@@ -6,22 +6,23 @@ three slices: declaration plus a generic renderer, the Chat compile, the publish
 declaration and the publish table. This is the Chat compile. The Understanding renderer by result kind is still to
 come; only `graph-renderer.js` exists.
 
-## 1. Owner questions from slice 1 PR 1, and their answers
+## 1. Owner questions from slice 1 PR 1: answered
 
-The project owner's word, relayed by the coordinator on 2026-10-28: "I answered all the questions previously - we
-should be able to move forward?" The table records where each answer was found, or what was assumed where none was.
+The project owner answered all four on 2026-10-28; the coordinator relayed them. They are recorded with their
+words in `DECLARED-EXTENSIBILITY-SLICE1-PR1-GAPS.md` §3a. None is assumed.
 
-| Question (PR 1 gaps §3) | Answer | Source |
+| Question | Answer (project owner, 2026-10-28) | Built here |
 |---|---|---|
-| 1. Should a catalogue entry's `answers` be generated from the question catalogue? | **Assumed, owner to confirm:** no. They stay declared, and `test_analysis_declarations` holds them equal to the question catalogue's binding. The design's route step (§3.1) reads "the analyses that declare they answer it", so the declaration is the source. The compile still routes through the question catalogue, which the test keeps identical. | Design §1 (`answers[]` is a declared field) and §3.1. Nothing on generating them was found. |
-| 2. Should a not-built analysis declare at all? | **Assumed, owner to confirm:** yes, as now. A not-built analysis is registered and listed (CLAUDE.md rule 17 names the three stub registrations), so it needs its absence sentence in Chat. Its value fields bind whoever builds it. | Rule 17. No ruling was found on declaring before building. |
-| 3. Weakest link per declaration, or confidence per measure? | **Recorded:** a Chat answer reports the weakest link, never an average. It is now in each compile's manifest (`confidence.weakest`) and in the journal entry's confidence words. **Assumed, owner to confirm:** confidence stays one per declaration, not one per measure. | Design §4, "No aggregation into one number", from the owner's conversation with the architect on 2026-10-21. |
-| 4. Repository analyses are not declared | **Recorded:** they are to be declared. `chaoss_metrics` declares the "top contributors by commit share, with names" extent. The Classic-view one-offs become declared users "by deleting code". **Assumed:** this slice does not declare them. The compile takes a declaration wherever one exists, so a repository analysis joins by declaring, and `_with_contributors` and its siblings retire then. | `REVIEW-QUESTIONS-AND-ANALYTICS-2026-10-22.md` addendum item 3. The architect's three-views ruling, 2026-10-21 (Architect Session). |
+| 1. `answers`: one list or two? | Generate them from the question catalogue's analysis_ids. | Generated on load. A hand-written list is refused, and the staleness check is a test. |
+| 2. Should a not-built analysis declare? | Yes, marked "not built yet", so it reads as "planned, not measured". | `built: false` on the three stubs; Chat says "Planned, not built yet: not measured." |
+| 3. Confidence per measure? | Yes, per measure; the headline is the weakest. | `MeasureDeclaration.confidence`, `confidence_of`, and the headline is refused unless it is the weakest. |
+| 4. Repository analyses? | Declare them in the next slice and clear the four TODO markers. | Not here: that is slice 3. |
 
 ## 2. What was built
 
 - **`resource_explorer/declared_context.py`.** One declared analysis's section, from its declaration alone.
   - The measures appear as `name: value unit (as of …)`. A member-scoped measure says its values are the rows.
+    A measure with its own confidence adds its form (`· measured`), and the confidence line says it is the weakest.
   - Then comes the confidence line: the form, the basis or method, and for `inferred` whether the score is calibrated or a rule count.
   - Then each extent:
     - its declared fields only, in declared order;
@@ -31,6 +32,7 @@ should be able to move forward?" The table records where each answer was found, 
   - If an extent's rows are not in the result, the section says so; it never shows an empty list in their place.
 - **`compile_context`.**
   - For an analysis whose catalogue entry declares itself, the compiler reads the fact. If it is known, the section is the declared one, replacing the generic flattening. The caveat still goes inside it, and the section counts toward the cap like any other.
+  - A declared analysis that is not built yet is not read at all: it enters as planned, not measured.
   - If it is not known, the compiler takes the existing path, since findings may still say something. If that yields nothing, the analysis's declared absence sentence goes into the instructions section, after the coverage line. The manifest's gap entry gains `sentence` and `absence`.
   - After packing, any declared section the budget dropped or the cap deferred is named in a "Left out of this context" block, with its declared token cost. The block is added only if it fits the budget; otherwise it becomes a manifest note.
 - **Manifest.**
@@ -75,9 +77,25 @@ should be able to move forward?" The table records where each answer was found, 
   allows no writes to :5442, and a compile reads the registry there. The gate (§7) still needs the owner's walk.
 - **The renderer.** The Understanding side of §2, a renderer per result kind, is the remaining half of slice 1.
 
-## 5. Owner questions
+## 5. Owner questions, with options
 
-1. Should absence sentences take budget ahead of evidence? Today they ride in the required instructions section
-   and the bare rung drops them, so at a very tight budget the model loses them before it loses an evidence section.
-2. Should the declared `order` become a sort key the compiler applies ("row_count desc") rather than a sentence? A
-   reader that returns rows in another order today would contradict its own declaration without anyone noticing.
+1. **Should absence sentences take budget ahead of evidence?** Today they ride in the required instructions
+   section, and the barest rung drops them, so at a very tight budget the model loses them before it loses an
+   evidence section.
+   - (a) Keep as built: absences go first into the instructions, at FULL and SUMMARY only. *Recommended:* the
+     barest rung is a last resort, reached only when nothing else fits.
+   - (b) Put them in their own required section with a one-line floor ("nothing stored for: a, b"). This costs
+     budget in every compile.
+   - (c) Put them in an optional section with a high weight. That is cheaper, but an absence could be dropped
+     silently, so a note is needed when it is.
+2. **Should the declared `order` become a sort key?** Today it is a sentence.
+   - (a) Keep it as a sentence and trust the reader's order. *Recommended for now:* no reader's order has been
+     checked against its declaration yet, and (c) checks it without a second place to say the order.
+   - (b) Add an optional `sort` field (`row_count desc`) that the compiler applies. This is exact, but it is a
+     second place to say the order.
+   - (c) Have a test compare the declared order with a live result per analysis. That needs stored results, so it
+     belongs in the gate rather than in unit tests.
+3. **Where does "judged" rank in the weakest link?** `CONFIDENCE_STRENGTH` puts it second, after measured.
+   - (a) Leave it second: a person's verdict on the evidence outranks any estimate. *Recommended.*
+   - (b) Rank it with inferred: a verdict is only as good as the evidence it saw.
+   - (c) Do not rank it at all, and report a judged section beside the weakest link rather than in it.

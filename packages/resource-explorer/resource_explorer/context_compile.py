@@ -1282,6 +1282,11 @@ def compile_context(
             continue
         dec = _declared.get(analysis_id)
         fact = None
+        if dec is not None and not dec.built:
+            # Declared before it has a runner: planned, not measured. Nothing stored can exist, so nothing is read.
+            sections.append(Section(analysis_id, role="evidence", weight=weight))
+            declared_absent[analysis_id] = declared_context.absence(dec, "never_run")
+            continue
         if dec is not None:
             try:
                 fact = _facts.fact(slug, analysis_id).as_dict()

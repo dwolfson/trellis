@@ -159,3 +159,39 @@ def test_every_library_step_declares_in_full(monkeypatch, name):
     assert d is not None and d.missing() == [], name
     assert [x.name for x in d.measures] == m.measure_names()
     assert d.answers == m.questions
+
+
+# ── the owner's answers of 2026-10-28: per-measure confidence, not built ────
+
+def test_a_measure_may_carry_its_own_confidence_and_the_headline_is_the_weakest():
+    body = minimum(measures=[{**MEASURE, "confidence": {"form": "measured"}},
+                             {**MEASURE, "name": "e", "confidence": {"form": "estimated", "method": "a sample"}}])
+    d = Declaration.model_validate(body)
+    assert d.confidence.form == "estimated"
+    assert d.confidence_of(d.measures[0]).form == "measured"
+
+
+def test_a_measure_without_its_own_confidence_inherits_the_declarations():
+    d = Declaration.model_validate(minimum(confidence={"form": "estimated", "method": "a sample"},
+                                           measures=[{**MEASURE, "confidence": {"form": "measured"}},
+                                                     {**MEASURE, "name": "e"}]))
+    assert d.confidence_of(d.measures[1]).form == "estimated"
+
+
+@pytest.mark.parametrize("body, words", [
+    (minimum(confidence={"form": "measured"},
+             measures=[{**MEASURE, "confidence": {"form": "estimated", "method": "a sample"}}]),
+     "confidence form 'measured' is not the weakest of its measures' ('estimated')"),
+    (minimum(measures=[{**MEASURE, "confidence": {"form": "measured"}}, {**MEASURE, "name": "e"}]),
+     "the measures without one have no confidence to inherit"),
+    (minimum(measures=[{**MEASURE, "confidence": {"form": "generated", "method": "a model"},
+                        "annotation": {"type": "ResourceMeasureAnnotation"}}]),
+     "a generated answer is not published"),
+])
+def test_per_measure_confidence_refusals_name_what_was_refused(body, words):
+    assert words in refused(body)
+
+
+def test_built_is_the_default_and_a_planned_analysis_says_so():
+    assert Declaration.model_validate(minimum()).built is True
+    assert Declaration.model_validate(minimum(built=False)).built is False

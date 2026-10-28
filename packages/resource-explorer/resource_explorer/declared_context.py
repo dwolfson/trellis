@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 
+from trellis_analytics.declaration import CONFIDENCE_STRENGTH
 from trellis_artifact_tree.model import Rung
 
 from resource_explorer.publish_table import (
@@ -41,10 +42,13 @@ KNOWN_STATES = ("measured", "nothing_found", "partial", "measured_within_credent
 #: Rows an extent shows at the SUMMARY rung, whatever it declares for FULL.
 SUMMARY_ROWS = 3
 
-#: §4's forms from strongest to weakest, for "the weakest link". A measured read is exact; a judged result carries
-#: a person's signature on the evidence; an estimate has a known error; an inferred match a rule or model score; a
-#: generated answer is only as good as what it drew on.
-FORM_STRENGTH = ("measured", "judged", "estimated", "inferred", "generated")
+#: §4's forms from strongest to weakest, for "the weakest link" (the declaration's own ordering).
+FORM_STRENGTH = CONFIDENCE_STRENGTH
+
+#: The absence of an analysis declared before it has a runner (`Declaration.built` false): "planned, not measured"
+#: (project owner, 2026-10-28), ahead of its declared not-measured sentence.
+NOT_BUILT = "not_built"
+NOT_BUILT_WORDS = "Planned, not built yet: not measured."
 
 #: A cell's characters at most: a value that is a whole document must not take the section.
 CELL_CHARS = 80
@@ -185,13 +189,14 @@ def _measure_lines(dec, value: dict, run: dict) -> list[str]:
         v = resolve(value, m.value_field, run)
         as_of = resolve(value, m.as_of, run)
         when = f" (as of {as_of})" if as_of is not _MISSING else " (as-of not recorded)"
+        own = f" · {m.confidence.form}" if m.confidence is not None else ""
         if v is _MISSING and dec.scope in ("member", "field") and dec.extents:
             # A member-scoped measure has one value per member, not one for the resource: its values are the rows.
             lines.append(f"- {m.name}: one value per {dec.scope}, in {m.unit}, in the rows below")
         elif v is _MISSING:
             lines.append(f"- {m.name}: not in the stored result{when}")
         else:
-            lines.append(f"- {m.name}: {_cell(v)} {m.unit}{when}")
+            lines.append(f"- {m.name}: {_cell(v)} {m.unit}{when}{own}")
     return lines
 
 
@@ -200,6 +205,8 @@ def _confidence_line(dec) -> str:
     if not words.get("form"):
         return ""
     line = f"confidence: {words['words']}"
+    if any(m.confidence is not None for m in dec.measures):
+        line += " (the weakest of its measures)"
     if words.get("form") == "inferred":
         line += " · score calibrated" if words.get("calibrated") else " · score is a rule count, not a probability"
     return line
@@ -225,7 +232,11 @@ def _extent_block(extent, rows: list | None, n: int, as_of: str, scope: str, ana
 
 
 def absence(dec, state: str) -> dict:
-    """§3 step 3: the declared sentence for an analysis with nothing stored, keyed by the fact layer's state."""
+    """§3 step 3: the declared sentence for an analysis with nothing stored, keyed by the fact layer's state. One not
+    built yet says so first, whatever its state: planned is not the same as never run."""
+    if not dec.built:
+        return {"state": state, "absence": NOT_BUILT,
+                "sentence": f"{NOT_BUILT_WORDS} {dec.absence.sentence('not_measured')}"}
     key = absence_key(state)
     return {"state": state, "absence": key, "sentence": dec.absence.sentence(key)}
 

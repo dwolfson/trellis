@@ -198,6 +198,46 @@ def _re_analysis_steps_for(analysis_id: str) -> list[str]:
     return list(REPO_ANALYSIS_SOURCE_STEPS.get(analysis_id, []))
 
 
+@functools.lru_cache(maxsize=1)
+def question_binding() -> dict[str, tuple[str, ...]]:
+    """{analysis id: the question ids whose `answering.analysis_ids` name it}, in catalogue order, from every
+    `<type>_questions` section of the question catalogue, retired rows excluded.
+
+    This is where a built-in analysis's declared `answers` come from (project owner, 2026-10-28: "generate the
+    declaration's answers from the question catalogue's analysis_ids"; one place to edit)."""
+    from resource_explorer.surveyors.question_catalog_reader import (
+        _DEFAULT_CONFIG_PATH as questions_path,
+    )
+
+    if not questions_path.exists():
+        return {}
+    with open(questions_path) as f:
+        raw = yaml.safe_load(f) or {}
+    bound: dict[str, list[str]] = {}
+    for key, items in raw.items():
+        if not key.endswith("_questions") or not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict) or item.get("retired"):
+                continue
+            for a in (item.get("answering") or {}).get("analysis_ids") or []:
+                if item.get("id") and item["id"] not in bound.setdefault(a, []):
+                    bound[a].append(item["id"])
+    return {a: tuple(qs) for a, qs in bound.items()}
+
+
+def generated_answers(raw: dict) -> list[str]:
+    """The `answers` an entry's declaration carries, generated rather than written: a library step's are its
+    manifest's questions (`provided_by.questions`, copied by the generator); infrastructure that answers no question
+    by declaration (`answers_questions: false`) answers none; every other entry's are the question catalogue's
+    binding (`question_binding`)."""
+    if raw.get("provided_by"):
+        return list((raw.get("provided_by") or {}).get("questions") or [])
+    if raw.get("answers_questions") is False:
+        return []
+    return list(question_binding().get(raw.get("id", ""), ()))
+
+
 def check_declaration(raw: dict) -> tuple[Declaration | None, str]:
     """The entry's `declaration:` validated, or None and the sentence saying
     why it was refused. No declaration at all is (None, "") — absent is not
@@ -212,6 +252,10 @@ def check_declaration(raw: dict) -> tuple[Declaration | None, str]:
     where = f"analysis catalog entry '{raw.get('id', '?')}'"
     if not isinstance(body, dict):
         return None, f"{where}: declaration is a {type(body).__name__}, not a mapping of declaration fields"
+    if "answers" in body and not raw.get("provided_by"):
+        return None, (f"{where}: declaration refused: answers is written by hand; they are generated from the "
+                      "question catalogue's analysis_ids, so remove them here and bind the question there")
+    body = {**body, "answers": generated_answers(raw)} if "answers" not in body else body
     try:
         declared = Declaration.model_validate(body)
     except ValueError as exc:
@@ -277,6 +321,7 @@ def declaration_refusals() -> list[str]:
 def clear_cache() -> None:
     """Testing hook — the loader result is cached via lru_cache."""
     _load.cache_clear()
+    question_binding.cache_clear()
     _last_merge_status.clear()
 
 

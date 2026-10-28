@@ -280,3 +280,40 @@ def test_a_journal_entry_names_the_weakest_link():
                           "(row_count_snapshot)")
     _, _, before = _evidence_of({"manifest": {"packed": [{"key": "a"}], "gaps": []}})
     assert before == "answered from 1 stored result"
+
+
+# ── the owner's answers of 2026-10-28 in the compile ───────────────────────
+
+def test_a_not_built_analysis_reads_planned_not_measured():
+    a = dc.absence(declaration(built=False), "never_run")
+    assert a["absence"] == "not_built"
+    assert a["sentence"] == "Planned, not built yet: not measured. Not measured: nobody has looked yet."
+
+
+def test_a_not_built_analysis_is_said_as_planned_in_a_compile(facts):
+    c = compile_context(_registry(), "coco", "What does the documentation say about this database?",
+                        resource_type="database", budget=12000)
+    gaps = {g["key"]: g for g in c.manifest["gaps"]}
+    planned = {"doc_evidence_check", "semantic_suggestions"} & set(gaps)
+    assert planned
+    for aid in planned:
+        assert gaps[aid]["absence"] == "not_built"
+        assert gaps[aid]["sentence"].startswith("Planned, not built yet: not measured.")
+
+
+def test_a_measure_with_its_own_confidence_says_it_beside_its_value():
+    dec = declaration(confidence={"form": "estimated", "method": "an estimate"},
+                      measures=[{"name": "table_count", "unit": "tables", "as_of": "run.read_snapshot",
+                                 "value_field": "tables[]", "confidence": {"form": "measured"}},
+                                {"name": "rows", "unit": "rows", "as_of": "run.read_snapshot", "value_field": "n"}])
+    rungs, _ = dc.section_rungs("k", dec, fact(value={"tables": TABLES, "n": 5}))
+    assert "- table_count: 6 tables (as-of not recorded) · measured" in rungs[Rung.FULL]
+    assert "- rows: 5 rows (as-of not recorded)\n" in rungs[Rung.FULL]
+    assert "confidence: estimated · an estimate (the weakest of its measures)" in rungs[Rung.FULL]
+
+
+def test_row_count_snapshot_declares_its_byte_size_exact():
+    reader.clear_cache()
+    dec = {e.id: e for e in reader._load()["database"]}["row_count_snapshot"].declaration
+    assert dec.confidence_of(dec.measure("total_size")).form == "measured"
+    assert dec.confidence.form == "estimated"

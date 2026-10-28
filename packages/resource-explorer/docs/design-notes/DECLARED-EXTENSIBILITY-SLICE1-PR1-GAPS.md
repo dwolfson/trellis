@@ -63,6 +63,8 @@ Found in passing; out of this PR's scope, listed for whoever owns them:
 
 ## 3. Owner questions
 
+All four are answered: see §3a. The questions are kept as they were asked.
+
 1. **Answers: one list or two?** A built-in analysis's `answers` repeats the question catalogue's
    `analysis_ids` binding; a test holds the two equal. Should the catalogue's `answers` be generated from the
    question catalogue instead, so there is one place to edit?
@@ -73,6 +75,40 @@ Found in passing; out of this PR's scope, listed for whoever owns them:
 4. **Repository analyses.** This PR declares database and filesystem entries only, as briefed. The four
    `TODO(declared-extensibility)` markers in `repo-analysis-views.js` and `declared-topology.js` wait on repo
    declarations.
+
+## 3a. Owner answers (2026-10-28)
+
+The project owner answered in the coordinator session; the coordinator relayed the answers on 2026-10-28. Each is
+built in slice 2 (`DECLARED-EXTENSIBILITY-SLICE2-CHAT-COMPILE.md`), except the fourth, which is the next slice.
+
+**Decision (project owner, 2026-10-28):** "GENERATE the declaration's `answers` from the question catalogue's
+analysis_ids. One place to edit; the equality test becomes a staleness check." Built:
+- `analysis_catalog_reader` fills a built-in entry's `answers` on load from `question_binding()`.
+  `answers_questions: false` gives `[]`, and a library step keeps its manifest's questions.
+- A hand-written `answers` in the catalogue is refused.
+- `test_no_hand_written_entry_in_the_catalog_carries_answers` is the staleness check.
+
+**Decision (project owner, 2026-10-28):** "DECLARE them, marked 'not built yet', so they read as 'planned, not
+measured' rather than nothing." Built:
+- `Declaration.built` defaults to true. `doc_source_ingestion`, `doc_evidence_check` and `semantic_suggestions`
+  declare `built: false`.
+- Chat says "Planned, not built yet: not measured." ahead of the declared not-measured sentence, and records the
+  absence as `not_built`.
+
+**Decision (project owner, 2026-10-28):** "PER MEASURE. Each measure carries its own form and basis, and the
+declaration's headline confidence is the weakest of them." Built:
+- `MeasureDeclaration.confidence` is optional. A measure without one inherits the declaration's confidence, and
+  `Declaration.confidence_of(measure)` returns whichever applies.
+- A headline that is not the weakest of the measures' forms is refused. So is a measure with a confidence of its
+  own when other measures have none and the declaration declares none for them to inherit.
+- The order is `CONFIDENCE_STRENGTH`: measured, judged, estimated, inferred, generated. Placing "judged" second is
+  this slice's reading of §4 and has no ruling yet.
+- `row_count_snapshot.total_size` declares `measured` (pg_total_relation_size is exact) under an `estimated`
+  headline.
+
+**Decision (project owner, 2026-10-28):** "Repository analyses: declare them in the NEXT SLICE, clearing the four
+TODO(declared-extensibility) markers in repo-analysis-views.js and declared-topology.js." Not built in slice 2:
+it is the next slice.
 
 ## 4. What PR 2 (the Curate publish table) can rely on
 

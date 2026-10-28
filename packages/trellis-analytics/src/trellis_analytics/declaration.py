@@ -30,6 +30,12 @@ ABSENCE_STATES = ("not_measured", "not_permitted", "not_applicable", "measured_n
 #: §4: a result's confidence is one of five forms, and a score never travels without its basis.
 CONFIDENCE_FORMS = ("measured", "estimated", "inferred", "judged", "generated")
 
+#: The forms from strongest to weakest, for §4's "weakest link": a declaration's headline confidence is the weakest
+#: of its measures' (project owner, 2026-10-28). A measured read is exact; a judged result carries a person's
+#: signature on its evidence; an estimate has a known error; an inferred match a rule or model score; a generated
+#: answer is only as good as what it drew on.
+CONFIDENCE_STRENGTH = ("measured", "judged", "estimated", "inferred", "generated")
+
 #: §1 `scope`: the level a result is about.
 SCOPES = ("resource", "container", "member", "field")
 
@@ -79,6 +85,9 @@ class MeasureDeclaration(_Strict):
     value_field: str
     #: What it writes as in Egeria; absent is the generic measure route, labelled as such.
     annotation: AnnotationDeclaration | None = None
+    #: This measure's own confidence, where it differs from the declaration's (project owner, 2026-10-28: confidence
+    #: is per measure). Absent means the declaration's confidence is this measure's.
+    confidence: "ConfidenceDeclaration | None" = None
 
     @model_validator(mode="after")
     def _filled(self) -> "MeasureDeclaration":
@@ -218,8 +227,12 @@ class Declaration(_Strict):
     extents: list[ExtentDeclaration] = Field(default_factory=list)
     confidence: ConfidenceDeclaration | None = None
     #: The question ids this answers. None means not yet declared; [] declares that it answers none, which keeps it
-    #: runnable and rendered and out of every chat answer (§3 step 1).
+    #: runnable and rendered and out of every chat answer (§3 step 1). For Resource Explorer's own analyses it is
+    #: generated from the question catalogue (project owner, 2026-10-28), never written by hand.
     answers: list[str] | None = None
+    #: False for an analysis that is registered and declared but has no runner yet (project owner, 2026-10-28:
+    #: declare them, marked not built, so they read as "planned, not measured" rather than as nothing).
+    built: bool = True
     scope: Literal["resource", "container", "member", "field"] | None = None
 
     @field_validator("result_kind")
@@ -257,10 +270,29 @@ class Declaration(_Strict):
             blank = [a for a in self.answers if not _words(a)]
             if blank:
                 raise ValueError("answers carries an empty question id")
-        if self.confidence and self.confidence.form == "generated" and any(m.annotation for m in self.measures):
+        generated = [m.name for m in self.measures if m.annotation and self.confidence_of(m)
+                     and self.confidence_of(m).form == "generated"]
+        if generated:
             raise ValueError("confidence form 'generated' declares an annotation: a generated answer is not "
-                             "published, so it writes as nothing")
+                             f"published, so it writes as nothing (measure {', '.join(generated)})")
+        own = [m.confidence for m in self.measures if m.confidence is not None]
+        if own:
+            forms = [c.form for c in own] + ([self.confidence.form] if self.confidence and
+                                              len(own) < len(self.measures) else [])
+            weakest = max(forms, key=CONFIDENCE_STRENGTH.index)
+            if self.confidence is None:
+                if len(own) < len(self.measures):
+                    raise ValueError("a measure declares its own confidence and the declaration none: the measures "
+                                     "without one have no confidence to inherit")
+                self.confidence = next(c for c in own if c.form == weakest)
+            elif self.confidence.form != weakest:
+                raise ValueError(f"confidence form '{self.confidence.form}' is not the weakest of its measures' "
+                                 f"('{weakest}'): the declaration's confidence is its weakest link")
         return self
+
+    def confidence_of(self, measure: MeasureDeclaration) -> ConfidenceDeclaration | None:
+        """A measure's confidence: its own, else the declaration's."""
+        return measure.confidence or self.confidence
 
     def measure(self, name: str) -> MeasureDeclaration | None:
         return next((m for m in self.measures if m.name == name), None)
@@ -272,6 +304,9 @@ class Declaration(_Strict):
 
     def is_complete(self) -> bool:
         return not self.missing()
+
+
+MeasureDeclaration.model_rebuild()
 
 
 def refusal(exc: Exception) -> str:
