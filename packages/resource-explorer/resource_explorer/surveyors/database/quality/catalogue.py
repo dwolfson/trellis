@@ -73,9 +73,11 @@ SEVERITY = {"Fail": "error", "Warning": "warning", "Log": "info"}
 
 #: TestGen's data quality dimension -> the ODCS dimension word Egeria's `qualityDimension` carries
 #: (`DataContractQualityDimension`: accuracy, completeness, conformity, consistency, coverage, timeliness,
-#: uniqueness). Validity is Conformity and Recency is Timeliness; the rest map by name
-#: (INVENTORY-TESTGEN-TEST-TYPES-MAPPED.md).
-EGERIA_DIMENSION = {"Validity": "conformity", "Recency": "timeliness"}
+#: uniqueness). Validity is ACCURACY, by the owner's ruling of 2026-10-20 ("conformity and validity are not
+#: equivalent - accuracy is closer"; DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md §11 item 9), carried with
+#: `originalDimension: Validity` until Egeria adds a `validity` value; Recency is Timeliness; the rest map by name.
+#: INVENTORY-TESTGEN-TEST-TYPES-MAPPED.md (2026-10-21) says "Conformity" for Validity; it did not carry the ruling.
+EGERIA_DIMENSION = {"Validity": "accuracy", "Recency": "timeliness"}
 ODCS_DIMENSIONS = frozenset({"accuracy", "completeness", "conformity", "consistency", "coverage", "timeliness",
                              "uniqueness"})
 
@@ -84,6 +86,13 @@ def egeria_dimension(testgen_dimension: str) -> str:
     """The ODCS dimension word for a TestGen `dq_dimension`; "" when it is not one Egeria names."""
     word = EGERIA_DIMENSION.get(testgen_dimension, (testgen_dimension or "").strip().lower())
     return word if word in ODCS_DIMENSIONS else ""
+
+
+def original_dimension(testgen_dimension: str) -> str:
+    """TestGen's own dimension name when Egeria's word is a different one (Validity -> accuracy), for
+    `additionalProperties.originalDimension`; "" when the word is the name itself or there is none."""
+    word = egeria_dimension(testgen_dimension)
+    return testgen_dimension if word and word != (testgen_dimension or "").strip().lower() else ""
 
 
 #: TestGen's FAIL-WHEN operator -> the ODCS MUST-BE operator (its inverse), as Publish will write it (design §7).
@@ -766,13 +775,20 @@ _CONDITIONS = {"{THRESHOLD_VALUE}": "threshold_value", "{BASELINE_CT}": "baselin
                "{BASELINE_UNIQUE_CT}": "baseline_unique_ct", "{BASELINE_VALUE_LITERAL}": "baseline_value"}
 
 
-def threshold(test_type: TestType, params: dict) -> float | int | str:
-    """The condition's value, validated: a number, or for a text measure (`measure_is_text`) the baseline date text.
-    Every ported condition is one placeholder; anything else means the vendored condition changed under us."""
+def threshold_key(test_type: TestType) -> str:
+    """The accepted parameter the condition reads (`threshold_value`, `baseline_ct`, ...): where a threshold edited in
+    Egeria goes back in. Raises ParameterError when the vendored condition is not one placeholder."""
     key = _CONDITIONS.get(test_type.test_condition.strip())
     if key is None:
         raise ParameterError(f"{test_type.test_type}: condition {test_type.test_condition!r} is not one placeholder "
                              f"this port reads")
+    return key
+
+
+def threshold(test_type: TestType, params: dict) -> float | int | str:
+    """The condition's value, validated: a number, or for a text measure (`measure_is_text`) the baseline date text.
+    Every ported condition is one placeholder; anything else means the vendored condition changed under us."""
+    key = threshold_key(test_type)
     if test_type.measure_is_text:
         return as_to_char_seconds(key, params.get(key))
     return as_number(key, params.get(key))
