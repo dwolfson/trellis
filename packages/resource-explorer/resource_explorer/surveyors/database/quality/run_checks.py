@@ -9,7 +9,10 @@ checks is re-run alone so one bad check cannot hide the others. Results go to `d
 ELSE pass END`, so a NULL measure (Missing_Pct on an empty table, a zero baseline) falls through to pass. Here the
 measure itself is read and mapped:
 
-    NULL measure, or division by zero          -> not_established ("measure undefined ...")
+    NULL measure, or division by zero          -> not_established ("measure undefined ..."), except for a type
+                                                  whose catalogue entry sets `null_measure_fails` (the B1a
+                                                  `Match_*` types): fail at its severity, as upstream, since an
+                                                  emptied table or column departs from the baseline
     query error or timeout                     -> error, with Postgres's words
     privilege error, or row-level security     -> not_permitted
       that filters this account
@@ -27,6 +30,11 @@ database publish turns into annotations on the run's SurveyReport. The outcome i
 check that reached a conclusion has a `qualityScore` (a check that did not conclude is published too, with none, so
 a 0 never reads as failed). When Publish lands, the rule read
 from Egeria overrides the verdict's threshold, operator and severity here (design §6's table).
+
+**Text measures.** Match_Min_Date and Match_Max_Date measure `TO_CHAR(..., 'YYYY-MM-DD HH24:MI:SS')` and compare it
+with the baseline text, as upstream; the comparison is on the text. `measure` is a DOUBLE PRECISION column, so the
+date is stored as seconds from 1970-01-01 of the same wall clock (`catalogue.text_measure_number`), and the text is
+in `reason` and in the annotation (DESIGN-QUALITY-B1A-BASELINE-MATCH.md §4).
 
 The baseline is the last ACCEPTED one, never the current profile, so a scheduled run of this step on its own is
 valid; each result records the profile run it was measured against. Each table is read in its own read-only
@@ -48,6 +56,8 @@ from resource_explorer.surveyors.database.quality.catalogue import (
     load_catalogue,
     quote_identifier,
     render_measure,
+    text_measure_from_number,
+    text_measure_number,
     threshold,
 )
 from resource_explorer.surveyors.database.quality.value_profile import (
@@ -71,6 +81,9 @@ CONCLUDED = frozenset({"pass", "warning", "fail", "logged"})
 _REFUSED_STATUS = {"not_applicable": "not_measured", "not_measured": "not_measured", "not_permitted": "not_permitted"}
 RULE_UNPUBLISHED = "unpublished"
 UNDEFINED = "measure undefined (empty table / zero baseline)"
+#: The reason a NULL measure fails a type whose catalog entry sets `null_measure_fails`.
+UNDEFINED_FAILS = ("measure undefined (the table or column has no values to measure); {test_type} fails on an "
+                   "undefined measure, as its catalog entry says (null_measure_fails)")
 #: The sentence a run with no accepted check ends with (survey-invalid). Words of the design: "no accepted checks".
 NO_ACCEPTED_CHECKS = "no accepted checks: accept proposals in Curate first; nothing was run"
 #: What Egeria's annotation says this result is (its `annotationType`).
@@ -210,9 +223,9 @@ CHECK_STATE = {"pass": "passed", "warning": "failed", "fail": "failed", "logged"
 
 
 #: Measure units that count things in the table, so "N <uom> of <records>" reads true ("0 future dates of 66").
-#: Every other unit (a difference measure, a percent of baseline, Recency's days before the test) is a figure of
-#: its own: "<uom> <value>".
-_MEASURE_IS_NOT_A_COUNT = ("measure", "percent", "days before")
+#: Every other unit (a difference measure, a percent of baseline, Recency's days before the test, Match_Row_Ct's row
+#: count, which IS the record count) is a figure of its own: "<uom> <value>".
+_MEASURE_IS_NOT_A_COUNT = ("measure", "percent", "days before", "row count")
 
 
 def outcome_words(row: dict, test_type) -> str:
@@ -223,7 +236,9 @@ def outcome_words(row: dict, test_type) -> str:
     if value is None or test_type is None:
         return ""
     uom = (test_type.measure_uom or "measure").strip().lower()
-    figure = f"{value:g}" if isinstance(value, (int, float)) else str(value)
+    if getattr(test_type, "measure_is_text", False) and isinstance(value, (int, float)):
+        return f"{uom} {text_measure_from_number(value)}"
+    figure = _figure(value)
     records = row.get("record_ct")
     if isinstance(records, int) and not any(w in uom for w in _MEASURE_IS_NOT_A_COUNT):
         return f"{figure} {uom} of {records}"
@@ -276,6 +291,8 @@ def build_quality_annotations(results: list[dict], catalogue: dict | None = None
             "ruleSource": row["rule_source"], "ruleGuid": row["rule_guid"],
             "baselineProfileSurveyedAt": row["baseline_profile_surveyed_at"], "ranAs": row["ran_as"],
         }
+        if test_type is not None and test_type.measure_is_text and isinstance(row["measure"], (int, float)):
+            detail["measureText"] = text_measure_from_number(row["measure"])
         out.append(QualityCheckAnnotation(
             summary=check_summary(row, test_type, path, state),
             analysis_step=ANALYSIS_STEP,
@@ -303,22 +320,33 @@ def _select(schema: str, table: str, measures: list[str]) -> str:
     return "SELECT " + ", ".join(items) + f" FROM {quote_identifier(schema)}.{quote_identifier(table)}"
 
 
+def _figure(value) -> str:
+    return f"{value:g}" if isinstance(value, (int, float)) else str(value)
+
+
 def _conclude(check: dict, measure, record_ct) -> None:
     row = check["row"]
     row["record_ct"] = int(record_ct) if record_ct is not None else None
     value = _number(measure)
-    if value is None:
-        row.update(status="not_established", reason=UNDEFINED)
-        return
-    row["measure"] = value
     test_type = check["type"]
+    if value is None:
+        if test_type.null_measure_fails:
+            row.update(status=FAIL_STATUS[row["severity"]], reason=UNDEFINED_FAILS.format(test_type=test_type.test_type))
+        else:
+            row.update(status="not_established", reason=UNDEFINED)
+        return
+    if test_type.measure_is_text:
+        value = str(value)
+        row["measure"] = text_measure_number(value)
+    else:
+        row["measure"] = value
+    uom = test_type.measure_uom or "measure"
     if fails(test_type, value, check["limit"]):
         row["status"] = FAIL_STATUS[row["severity"]]
-        row["reason"] = f"{test_type.measure_uom or 'measure'} {value:g} {test_type.test_operator} {check['limit']}"
+        row["reason"] = f"{uom} {_figure(value)} {test_type.test_operator} {check['limit']}"
     else:
         row["status"] = "pass"
-        row["reason"] = f"{test_type.measure_uom or 'measure'} {value:g} (fails when {test_type.test_operator} " \
-                        f"{check['limit']})"
+        row["reason"] = f"{uom} {_figure(value)} (fails when {test_type.test_operator} {check['limit']})"
 
 
 def _failed(check: dict, exc: Exception) -> None:

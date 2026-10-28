@@ -25,7 +25,7 @@ PKG = Path(__file__).resolve().parent.parent
 # ── provenance and pins ──────────────────────────────────────────────────────────────────────────────────────
 
 def test_the_ported_test_types_are_vendored_with_licence_and_provenance():
-    assert set(cat.load_catalogue()) == set(cat.SLICE_1_TEST_TYPES) | set(cat.Q6_TEST_TYPES)
+    assert set(cat.load_catalogue()) == set(cat.SLICE_1_TEST_TYPES) | set(cat.Q6_TEST_TYPES) | set(cat.B1A_TEST_TYPES)
     assert set(cat.Q6_TEST_TYPES) == {"Recency", "Future_Date_1Y"}
     for name in ("LICENSE", "NOTICE", "PROVENANCE.md"):
         assert (cat.CATALOGUE_DIR / name).is_file(), name
@@ -43,7 +43,8 @@ def test_every_predicate_is_pinned_to_the_fragment_it_was_ported_from(name):
     if test_type.selection_criteria is None:
         assert predicate.fragment_sha256 is None, f"{name} gained a selection rule upstream: port it"
     else:
-        assert predicate.fragment_sha256 == cat.sha256_text(test_type.selection_criteria), (
+        # A TEMPLATE type is pinned to its vendored generation template (Match_Row_Ct).
+        assert predicate.fragment_sha256 == cat.sha256_text(cat.selection_source(test_type)), (
             f"{name}'s vendored selection_criteria changed: re-port the predicate, then update its pin")
 
 
@@ -54,7 +55,7 @@ def test_the_general_type_port_is_pinned_to_the_vendored_case():
 def test_every_test_type_has_a_postgres_condition_and_a_known_operator():
     for test_type in cat.load_catalogue().values():
         assert test_type.measure and test_type.test_operator in cat.MUST_BE, test_type.test_type
-        assert test_type.test_condition.strip() == "{THRESHOLD_VALUE}", test_type.test_type
+        assert test_type.test_condition.strip() in cat._CONDITIONS, test_type.test_type
 
 
 def test_row_ct_pct_is_the_one_check_re_proposes_itself():
@@ -255,6 +256,7 @@ def _fake_upstream(root: Path) -> Path:
     (root / "testgen/template/profiling").mkdir()
     shutil.copy(cat.CATALOGUE_DIR / "profiling/functional_datatype_date.sql",
                 root / "testgen/template/profiling/functional_datatype.sql")
+    shutil.copytree(cat.GENERATION_TEMPLATES_DIR, root / "testgen/template/gen_query_tests")
     return root
 
 

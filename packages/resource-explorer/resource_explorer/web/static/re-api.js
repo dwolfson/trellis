@@ -2298,3 +2298,7 @@ export const getQualityProposals = (slug, params = {}) => {
 };
 export const postQualityVerdict = (slug, checkKey, verdict, note = '') =>
   post(`/api/quality-checks/${encodeURIComponent(slug)}/verdict`, { check_key: checkKey, verdict, note });
+/** Opt one table into (watch = true) or out of Table Comparison, the baseline-match checks; read back like a verdict. */
+export const postQualityTableComparison = (slug, schemaName, tableName, watch, note = '') =>
+  post(`/api/quality-checks/${encodeURIComponent(slug)}/table-comparison`,
+    { schema_name: schemaName, table_name: tableName, watch, note });

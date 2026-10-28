@@ -12,10 +12,19 @@ of four things, always from persisted rows:
 A verdict is a new row every time (append-only; the latest wins), recorded as the signed-in person. It is local: no
 Egeria call here, Publish is the verb that writes rules. There is no bulk verdict: the design speaks of accepting,
 editing and rejecting one check at a time, so this module records one `check_key` per call.
+
+Each table group also says whether the table is opted into Table Comparison (the baseline-match checks, B1a), and
+`set_table_comparison` records a person's opt-in or opt-out from the table's card
+(DESIGN-QUALITY-B1A-BASELINE-MATCH.md §3). The next propose run reads it.
 """
 from __future__ import annotations
 
-from resource_explorer.surveyors.database.quality.catalogue import egeria_dimension, load_catalogue
+from resource_explorer.surveyors.database.quality import table_comparison
+from resource_explorer.surveyors.database.quality.catalogue import (
+    B1A_TEST_TYPES,
+    egeria_dimension,
+    load_catalogue,
+)
 
 PROPOSALS_TABLE = "database_quality_proposals"
 
@@ -105,6 +114,7 @@ def build_review(registry, slug: str, *, test_type: str = "", dimension: str = "
     proposals = registry.query_detail_rows(PROPOSALS_TABLE, slug)
     verdicts = registry.get_quality_verdicts(slug)
     catalogue = load_catalogue()
+    watched = table_comparison.watched_tables(registry, slug)
     rows = [_row(p, verdicts.get(p["check_key"]), catalogue) for p in proposals]
 
     overall, test_types, dimensions = _zero(), {}, {}
@@ -117,7 +127,8 @@ def build_review(registry, slug: str, *, test_type: str = "", dimension: str = "
     groups: dict[tuple[str, str], dict] = {}
     for r in rows:
         key = (r["schema_name"], r["table_name"])
-        g = groups.setdefault(key, {"schema_name": key[0], "table_name": key[1], "counts": _zero(), "rows": []})
+        g = groups.setdefault(key, {"schema_name": key[0], "table_name": key[1], "counts": _zero(), "rows": [],
+                                    "table_comparison": _watch_state(watched.get(key))})
         if _matches(r, test_type=test_type, dimension=dimension, state=state):
             g["counts"]["total"] += 1
             g["counts"][r["status"]] += 1
@@ -149,8 +160,36 @@ def build_review(registry, slug: str, *, test_type: str = "", dimension: str = "
             "states": [{"value": s, "count": overall[s]} for s in STATES],
         },
         "applied": {"test_type": test_type, "dimension": dimension, "state": state},
+        "table_comparison": {"test_types": list(B1A_TEST_TYPES), "tables_opted_in": len(watched)},
         "groups": out,
     }
+
+
+def _watch_state(entry: dict | None) -> dict:
+    """A table's Table Comparison opt-in as a group shows it: watched or not, and by whom and when if it is."""
+    if not entry:
+        return {"watched": False}
+    return {"watched": True, "by": entry["by"], "at": entry["at"], "note": entry.get("note") or ""}
+
+
+def set_table_comparison(registry, slug: str, schema: str, table: str, watch: bool, *, decided_by: str,
+                         note: str = "") -> dict:
+    """One person's opt-in (or opt-out) of one table for Table Comparison, then read back. `recorded` is true only when
+    the table's latest entry, read again, is the one just written. The checks appear at the next propose run."""
+    if not decided_by:
+        raise ReviewError(401, "an opt-in needs a person to attribute it to")
+    try:
+        written = table_comparison.set_watch(registry, slug, schema, table, watch, by=decided_by, note=note)
+    except ValueError as exc:
+        raise ReviewError(400, str(exc)) from exc
+    trail = table_comparison.history(registry, slug).get((schema, table)) or []
+    latest = trail[-1] if trail else {}
+    recorded = latest.get("action") == written["action"] and latest.get("at") == written["at"] \
+        and latest.get("by") == decided_by
+    state = _watch_state(latest if latest.get("action") == table_comparison.WATCH else None)
+    return {"recorded": recorded, "schema_name": schema, "table_name": table, "table_comparison": state,
+            "test_types": list(B1A_TEST_TYPES),
+            "takes_effect": "at the next propose run (propose_quality_checks)"}
 
 
 def record_verdict(registry, slug: str, check_key: str, verdict: str, *, decided_by: str, note: str = "") -> dict:

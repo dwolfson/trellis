@@ -42,6 +42,7 @@ from resource_explorer.surveyors.database.quality.functional_type import (
 CATALOGUE_DIR = Path(__file__).resolve().parents[3] / "configdata" / "quality" / "testgen"
 TEST_TYPES_DIR = CATALOGUE_DIR / "test_types"
 POSTGRES_DIR = CATALOGUE_DIR / "postgresql"
+GENERATION_TEMPLATES_DIR = CATALOGUE_DIR / "gen_query_tests"
 
 #: The upstream commit the catalogue was copied from (PROVENANCE.md). Part of every proposal's catalogue_ref.
 UPSTREAM_COMMIT = "3606859c"
@@ -53,8 +54,16 @@ SLICE_1_TEST_TYPES = (
 #: Quality slice Q6 (DESIGN-QUALITY-Q6-RECENCY.md): Recency, whose rule reads the date branch of the
 #: functional-type inference (`functional_type.py`), and Future_Date_1Y, which rides with it.
 Q6_TEST_TYPES = ("Recency", "Future_Date_1Y")
+#: Q4 port order step 2, B1a (DESIGN-QUALITY-B1A-BASELINE-MATCH.md): the Table Comparison types whose baseline is a
+#: measure the value profile already takes. Proposed only for a table a person opted in (`table_comparison.py`).
+B1A_TEST_TYPES = ("Match_Row_Ct", "Match_Distinct_Ct", "Match_Null_Ct", "Match_Zero_Length_Ct", "Match_Min_Date",
+                  "Match_Max_Date")
 #: Every test type RE has ported, in the order proposals are considered.
-PORTED_TEST_TYPES = SLICE_1_TEST_TYPES + Q6_TEST_TYPES
+PORTED_TEST_TYPES = SLICE_1_TEST_TYPES + Q6_TEST_TYPES + B1A_TEST_TYPES
+
+#: TestGen's generation set for the baseline-match types. TestGen generates them only for a table group a person
+#: opted into it; RE proposes them only for a table a person opted in (Q4 §7, question 2).
+TABLE_COMPARISON = "Table Comparison"
 
 #: The test type RE proposes on its own initiative: TestGen has no selection rule for it (manual-only there).
 RE_PROPOSED = frozenset({"Row_Ct_Pct"})
@@ -113,6 +122,10 @@ class TestType:
     measure: str
     test_operator: str
     test_condition: str
+    generation_sets: tuple[str, ...] = ()
+    generation_template: str | None = None
+    #: Upstream's flag: a NULL measure is a failure rather than a pass. Read by `run_quality_checks`.
+    null_measure_fails: bool = False
 
     @property
     def severity(self) -> str:
@@ -126,6 +139,16 @@ class TestType:
     @property
     def is_table_check(self) -> bool:
         return self.test_scope == "table"
+
+    @property
+    def is_table_comparison(self) -> bool:
+        """A baseline-match type: proposed only for a table a person opted in."""
+        return TABLE_COMPARISON in self.generation_sets
+
+    @property
+    def measure_is_text(self) -> bool:
+        """The measure is text compared with a quoted baseline (Match_Min_Date, Match_Max_Date), not a number."""
+        return self.test_condition.strip() == "{BASELINE_VALUE_LITERAL}"
 
 
 def sha256_text(text: str | None) -> str:
@@ -157,6 +180,9 @@ def parse_test_type(raw: dict) -> TestType:
         measure=cond["measure"],
         test_operator=cond["test_operator"],
         test_condition=cond["test_condition"],
+        generation_sets=tuple(raw.get("generation_sets") or ()),
+        generation_template=raw.get("generation_template"),
+        null_measure_fails=bool(raw.get("null_measure_fails")),
     )
 
 
@@ -205,9 +231,23 @@ def expand_templated_functions(text: str) -> str:
     return _FUNCTION_CALL.sub(call, text)
 
 
+def selection_source(test_type: TestType) -> str | None:
+    """The vendored text a selection rule was ported from: the `selection_criteria` fragment, or, when that is
+    upstream's `TEMPLATE` marker, the vendored generation template it names (Match_Row_Ct). None when there is no
+    upstream rule (Row_Ct_Pct)."""
+    if test_type.selection_criteria == "TEMPLATE":
+        if not test_type.generation_template:
+            raise ValueError(f"{test_type.test_type}: selection is TEMPLATE but no generation_template is named")
+        return (GENERATION_TEMPLATES_DIR / test_type.generation_template).read_text(encoding="utf-8")
+    return test_type.selection_criteria
+
+
 def catalogue_ref(test_type: TestType) -> str:
-    """Where a proposal's rule came from: the upstream commit and the SHA-256 of the selection fragment (or of
-    the Postgres measure, for a check RE proposes itself)."""
+    """Where a proposal's rule came from: the upstream commit and the SHA-256 of the selection fragment (or of the
+    generation template, for a TEMPLATE type; or of the Postgres measure, for a check RE proposes itself)."""
+    if test_type.selection_criteria == "TEMPLATE":
+        return f"vendored-catalog@{UPSTREAM_COMMIT}:{test_type.test_type}:generation_template:sha256:" \
+               f"{sha256_text(selection_source(test_type))}"
     if test_type.selection_criteria is not None:
         return f"vendored-catalog@{UPSTREAM_COMMIT}:{test_type.test_type}:selection_criteria:sha256:" \
                f"{sha256_text(test_type.selection_criteria)}"
@@ -373,6 +413,53 @@ PREDICATES: dict[str, Predicate] = {
             _cmp(as_timestamp(_p(p, "max_date")), "<=", _shift(_midnight(as_timestamp(_p(p, "as_of_date"))), days=365)),
         ),
     ),
+    # ── B1a, the Table Comparison set: each runs only for a table a person opted in (propose.py) ──
+    # gen_Match_Row_Ct.sql: every table of the profile run, with no condition (threshold_value = MAX(record_ct)).
+    # A table RE could not profile has no record_ct; its default then reads NULL and it is not_established.
+    "Match_Row_Ct": Predicate(
+        "388b034e415c0229391f2e2405019fe5fc33df6c6113cdc75830be395f88c421",
+        (),
+        lambda p: True,
+    ),
+    # record_ct > 0 AND general_type <> 'X'
+    "Match_Distinct_Ct": Predicate(
+        "58e585157796b4807f7c5e18560ab021f575a3acabbbc0ed6c55cd7ea14245a5",
+        ("record_ct", "general_type"),
+        lambda p: _and(_cmp(_p(p, "record_ct"), ">", 0), _cmp(_p(p, "general_type"), "<>", "X")),
+    ),
+    # record_ct > 0 AND NOT (general_type = 'X' AND query_error IS NOT NULL)
+    # query_error is TestGen's per-column profiling error. RE keeps no measured row with an error: a column whose read
+    # failed is a row whose state is not `measured`, so that is the port of `query_error IS NOT NULL`.
+    "Match_Null_Ct": Predicate(
+        "a47c1abddc42557952036c5548933ff1bca2f940604b3a0633e60ecffa3442da",
+        ("record_ct", "general_type"),
+        lambda p: _and(
+            _cmp(_p(p, "record_ct"), ">", 0),
+            _not(_and(_cmp(_p(p, "general_type"), "=", "X"), (_p(p, "state") or "measured") != "measured")),
+        ),
+    ),
+    # general_type = 'A' AND value_ct > 0\nAND sample_ratio IS NULL
+    "Match_Zero_Length_Ct": Predicate(
+        "359e71c7c48e6d6e625aefc828c381cbdae63f00a62fa74b6097fd0728f47e78",
+        ("general_type", "value_ct", "sample_ratio"),
+        lambda p: _and(
+            _cmp(_p(p, "general_type"), "=", "A"),
+            _cmp(_p(p, "value_ct"), ">", 0),
+            _p(p, "sample_ratio") is None,
+        ),
+    ),
+    # general_type = 'D' AND value_ct > 0
+    "Match_Min_Date": Predicate(
+        "d37f535f28c39a6fec1b6602b138cd7b327ca3c1e08d1db2246ea7043c2d19a7",
+        ("general_type", "value_ct"),
+        lambda p: _and(_cmp(_p(p, "general_type"), "=", "D"), _cmp(_p(p, "value_ct"), ">", 0)),
+    ),
+    # general_type = 'D' AND value_ct > 0
+    "Match_Max_Date": Predicate(
+        "d37f535f28c39a6fec1b6602b138cd7b327ca3c1e08d1db2246ea7043c2d19a7",
+        ("general_type", "value_ct"),
+        lambda p: _and(_cmp(_p(p, "general_type"), "=", "D"), _cmp(_p(p, "value_ct"), ">", 0)),
+    ),
 }
 
 #: Inputs whose NULL is a real value rather than a missing measure: min_date is read by IS NOT NULL. Recency's
@@ -436,7 +523,7 @@ def _default_value(expr: str, profile: dict):
 
 #: catalogue column name -> the params_json key it fills.
 _PARAM_KEYS = {
-    "baseline_ct": "baseline_ct", "baseline_value_ct": "baseline_value_ct",
+    "baseline_ct": "baseline_ct", "baseline_value_ct": "baseline_value_ct", "baseline_unique_ct": "baseline_unique_ct",
     "baseline_value": "baseline_value", "threshold_value": "threshold_value",
 }
 
@@ -456,11 +543,65 @@ def _recency_threshold(profile: dict):
     return math.ceil(d / 30.0) * 30
 
 
+#: `TO_CHAR(<ts>, 'YYYY-MM-DD HH24:MI:SS')`: the text form the Match_Min_Date/Match_Max_Date baseline and measure take.
+TO_CHAR_SECONDS = "%Y-%m-%d %H:%M:%S"
+_TO_CHAR_SECONDS = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+
+
+def to_char_seconds(value) -> str | None:
+    """Upstream's `TO_CHAR(min_date, 'YYYY-MM-DD HH24:MI:SS')` over a stored profile date. The profile stores the date
+    as the target returned it (`value_profile._value`: ISO text, with an offset for a timestamptz, in the reading
+    session's zone). TO_CHAR prints the wall-clock time and drops fractional seconds, so the offset is dropped, not
+    converted: the run step's `CAST(MAX(col) AS TIMESTAMP)` reads the same wall clock through the same account's
+    session. None for NULL."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        ts = value
+    elif isinstance(value, date):
+        ts = datetime(value.year, value.month, value.day)  # noqa: DTZ001 - a date has no zone
+    else:
+        try:
+            ts = datetime.fromisoformat(str(value).strip())
+        except ValueError:
+            raise ParameterError(f"the profile's date {value!r} is not an ISO date") from None
+    return ts.replace(tzinfo=None).strftime(TO_CHAR_SECONDS)
+
+
+_EPOCH = datetime(1970, 1, 1)  # noqa: DTZ001 - the text measure carries no zone; neither does its number
+
+
+def text_measure_number(text: str) -> float | None:
+    """A TO_CHAR date measure as the number `database_quality_results.measure` (DOUBLE PRECISION) can hold: seconds
+    from 1970-01-01 00:00:00 of the same wall-clock text, lossless to the second TO_CHAR prints. None when the text is
+    not that shape (the comparison itself is on the text, so the result does not depend on this)."""
+    try:
+        return (datetime.strptime(text, TO_CHAR_SECONDS) - _EPOCH).total_seconds()  # noqa: DTZ007
+    except (TypeError, ValueError):
+        return None
+
+
+def text_measure_from_number(number: float) -> str:
+    """`text_measure_number`, inverted: the TO_CHAR text a stored date measure stands for."""
+    return (_EPOCH + timedelta(seconds=number)).strftime(TO_CHAR_SECONDS)
+
+
+def _date_baseline(measure: str) -> Callable[[dict], Any]:
+    return lambda profile: to_char_seconds(profile.get(measure))
+
+
 #: Defaults that are an expression over the profile rather than a list of columns and literals: the SHA-256 of
-#: the vendored `default_parm_values` each port was made from, and the port.
-DEFAULT_PORTS: dict[str, tuple[str, Callable[[dict], Any]]] = {
+#: the vendored `default_parm_values` each port was made from, the parameter it fills, and the port.
+DEFAULT_PORTS: dict[str, tuple[str, str, Callable[[dict], Any]]] = {
     # CASE WHEN DATEDIFF( 'DAY' , max_date, run_date) <= 3 THEN DATEDIFF('DAY', max_date, run_date) + 3 WHEN ...
-    "Recency": ("4a8f8bd298ae8f1e20ff4b7251454697078c503ab760aed919b698a466a00622", _recency_threshold),
+    "Recency": ("4a8f8bd298ae8f1e20ff4b7251454697078c503ab760aed919b698a466a00622", "threshold_value",
+                _recency_threshold),
+    # TO_CHAR(min_date, 'YYYY-MM-DD HH24:MI:SS')
+    "Match_Min_Date": ("a249544a0f690252db818b4c436431f6832f3b1be4d36910982e8ecbf5e01f40", "baseline_value",
+                       _date_baseline("min_date")),
+    # TO_CHAR(max_date, 'YYYY-MM-DD HH24:MI:SS')
+    "Match_Max_Date": ("969773ce43fed7c2b153de336efddc38528ae80d47417d9ed31b10d73de93e97", "baseline_value",
+                       _date_baseline("max_date")),
 }
 
 
@@ -469,15 +610,23 @@ def default_params(test_type: TestType, profile: dict, row_ct_pct_threshold: flo
     severity. Raises ParameterError when a default reads a profile measure that is NULL."""
     params: dict[str, Any] = {"baseline_ct": None, "baseline_value_ct": None, "baseline_value": None,
                               "threshold_value": None, "severity": test_type.severity}
+    if "baseline_unique_ct" in test_type.default_parm_columns:
+        params["baseline_unique_ct"] = None
     if test_type.test_type == "Row_Ct_Pct":
         # TestGen has no defaults for it: RE's baseline is the measured count, the threshold a setting.
         params["baseline_ct"] = profile.get("record_ct")
         params["threshold_value"] = row_ct_pct_threshold
+    elif test_type.test_type == "Match_Row_Ct":
+        # gen_Match_Row_Ct.sql: `s.record_ct AS threshold_value`, the table's MAX(record_ct) in the profile run. RE's
+        # record_ct is per table (every measured column's row carries the same count). Pinned with the predicate.
+        if sha256_text(selection_source(test_type)) != PREDICATES["Match_Row_Ct"].fragment_sha256:
+            raise ParameterError("Match_Row_Ct's vendored generation template changed: re-port it")
+        params["threshold_value"] = profile.get("record_ct")
     elif test_type.test_type in DEFAULT_PORTS:
-        sha, port = DEFAULT_PORTS[test_type.test_type]
+        sha, key, port = DEFAULT_PORTS[test_type.test_type]
         if sha256_text(test_type.default_parm_values) != sha:
             raise ParameterError(f"{test_type.test_type}'s vendored default_parm_values changed: re-port it")
-        params["threshold_value"] = port(profile)
+        params[key] = port(profile)
     else:
         values = _split_sql_list(test_type.default_parm_values or "")
         if len(values) != len(test_type.default_parm_columns):
@@ -498,8 +647,9 @@ def default_params(test_type: TestType, profile: dict, row_ct_pct_threshold: flo
 _PLACEHOLDER = re.compile(r"\{([A-Z_]+)\}")
 #: placeholder -> the params key it is filled from (the identifiers and RUN_DATE are filled by RE itself).
 _PLACEHOLDER_PARAM = {
-    "BASELINE_CT": "baseline_ct", "BASELINE_VALUE_CT": "baseline_value_ct",
+    "BASELINE_CT": "baseline_ct", "BASELINE_VALUE_CT": "baseline_value_ct", "BASELINE_UNIQUE_CT": "baseline_unique_ct",
     "BASELINE_VALUE": "baseline_value", "BASELINE_VALUE_LIST": "baseline_value",
+    "BASELINE_VALUE_LITERAL": "baseline_value",
     "THRESHOLD_VALUE": "threshold_value",
 }
 _RE_FILLED = {"COLUMN_NAME", "RUN_DATE"}
@@ -599,14 +749,36 @@ def render_measure(test_type: TestType, column_name: str, params: dict, run_date
     return _PLACEHOLDER.sub(lambda m: fills[m.group(1)], measure)
 
 
-def threshold(test_type: TestType, params: dict) -> float | int:
-    """The condition's value: the vendored condition is `{THRESHOLD_VALUE}` for every ported type."""
-    if test_type.test_condition.strip() != "{THRESHOLD_VALUE}":
-        raise ParameterError(f"{test_type.test_type}: condition {test_type.test_condition!r} is not a plain threshold")
-    return as_number("threshold_value", params.get("threshold_value"))
+def as_to_char_seconds(name: str, value) -> str:
+    """A parameter that must be TO_CHAR's 'YYYY-MM-DD HH24:MI:SS' text (a Match_Min_Date/Match_Max_Date baseline) and
+    a real date: returned as it is. It reaches the SQL only through `string_literal`, never formatted in."""
+    if not isinstance(value, str) or not _TO_CHAR_SECONDS.match(value):
+        raise ParameterError(f"{name} must be a date as 'YYYY-MM-DD HH:MM:SS', got {value!r}")
+    try:
+        datetime.strptime(value, TO_CHAR_SECONDS)  # noqa: DTZ007 - text compared as text, no zone involved
+    except ValueError:
+        raise ParameterError(f"{name} must be a date as 'YYYY-MM-DD HH:MM:SS', got {value!r}") from None
+    return value
 
 
-def fails(test_type: TestType, measure: float, limit: float) -> bool:
+#: The conditions the ported types use: each is one placeholder, read from one parameter.
+_CONDITIONS = {"{THRESHOLD_VALUE}": "threshold_value", "{BASELINE_CT}": "baseline_ct",
+               "{BASELINE_UNIQUE_CT}": "baseline_unique_ct", "{BASELINE_VALUE_LITERAL}": "baseline_value"}
+
+
+def threshold(test_type: TestType, params: dict) -> float | int | str:
+    """The condition's value, validated: a number, or for a text measure (`measure_is_text`) the baseline date text.
+    Every ported condition is one placeholder; anything else means the vendored condition changed under us."""
+    key = _CONDITIONS.get(test_type.test_condition.strip())
+    if key is None:
+        raise ParameterError(f"{test_type.test_type}: condition {test_type.test_condition!r} is not one placeholder "
+                             f"this port reads")
+    if test_type.measure_is_text:
+        return as_to_char_seconds(key, params.get(key))
+    return as_number(key, params.get(key))
+
+
+def fails(test_type: TestType, measure: float | str, limit: float | str) -> bool:
     """TestGen's fail-when comparison, `measure <op> condition`, evaluated by RE on a non-NULL measure."""
     try:
         return _FAIL_WHEN[test_type.test_operator](measure, limit)
