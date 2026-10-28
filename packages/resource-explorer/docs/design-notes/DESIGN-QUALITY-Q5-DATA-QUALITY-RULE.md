@@ -188,9 +188,9 @@ applied at the next RE start against :5442, which needs the owner's word. It has
 The rule is its own anchor (owner, 2026-10-28), so it does **not** inherit the database Asset's zones and it
 **survives the asset's deletion**. That is what a reusable rule should do, and two consequences follow:
 
-- **Visibility.** An own-anchored rule with no `ZoneMembership` is visible to whoever the server's default lets
-  read unzoned elements. RE writes no zone unless `EXPLORER_PUBLISH_ZONES` is configured (the existing Curate
-  rule), and the build does not yet write one on a rule even then: open item R6.
+- **Visibility.** RE writes no `ZoneMembership` on a rule (owner, 2026-10-28, R6): a reusable governance
+  definition is visible to everyone who can see governance definitions. `EXPLORER_PUBLISH_ZONES` does not apply
+  to rules.
 - **Lifecycle.** Deleting or archiving the database Asset leaves its rules, with their `GovernedBy` links to that
   asset gone. A rule left governing nothing is a candidate for retire; RE does not delete it.
 
@@ -247,8 +247,11 @@ On coco_pharma, with `sales` committed in Contents: the owner accepts three prop
   RE's job, and §6.2's "two hits" rule covers the rest.
 - **R4. (Closed 2026-10-28.)** The anchor question no longer arises: rules are their own anchor, the
   Governance Officer create's default.
-- **R6. Zones on a reusable rule.** Own-anchored, a rule does not take the asset's zones (§7). Whether RE should
-  zone rules from `EXPLORER_PUBLISH_ZONES`, and to which zone a reusable rule belongs, is open.
+- **R6. (Closed 2026-10-28.)** Zones on a reusable rule: none.
+
+  **Decision (project owner, 2026-10-28):** no zones on published rules. They are reusable governance
+  definitions, visible to everyone who can see governance definitions. This is the behaviour as built; RE writes no
+  `ZoneMembership` on a rule, whatever `EXPLORER_PUBLISH_ZONES` says.
 - **R5. Annotation → rule `GovernedBy` volume.** One edge per check per run. At the Q3 batch scale this grows
   linearly with runs; the profile-publish re-link pattern may be wanted for annotations of unchanged results.
 
