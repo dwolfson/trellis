@@ -51,6 +51,9 @@ def read_resource_measure_rows(registry, entity_type: str, slug: str, analysis_s
             "state_words": words,
             "reason": reason,
             "properties": detail.get("resourceProperties") or {},
+            # Which of the step's declared measures this row is ("" its own, primary one): a resource-scoped step
+            # writes one row per measure, and only this tells them apart (`StepAnnotation.measure`).
+            "measure": detail.get("measure") or (detail.get("additionalProperties") or {}).get("measure") or "",
             "annotation_type": a.get("annotation_type") or "",
             "run": run,
         })
