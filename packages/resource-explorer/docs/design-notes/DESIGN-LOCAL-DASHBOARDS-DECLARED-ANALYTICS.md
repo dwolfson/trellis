@@ -85,7 +85,7 @@ tile, in RE or in the Portal, with RE's provenance words.
 ## 3. The adapter: declaration → report spec
 
 One generator, in trellis-analytics (not RE), run at load like the
-catalogue generator:
+catalog generator:
 
 | Declaration | Report spec |
 |---|---|
