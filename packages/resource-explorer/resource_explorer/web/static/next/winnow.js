@@ -172,9 +172,10 @@ export function passes(c, value, now = Date.now()) {
  *   dropped        [{entity_slug, why}]        why: the first criterion it failed, in words
  *   couldNotCheck  [{entity_slug, words, reason, criterion}]   the first absence, with its sentence
  *   oldestAnswer   the oldest as-of among the answers that decided kept or dropped ('' when none did)
+ *   newestAnswer   the newest of them: what an automatic re-apply compares with the cut's applied_at
  */
 export function applyFilter(criteria, members, read, now = Date.now()) {
-  const out = { kept: [], dropped: [], couldNotCheck: [], oldestAnswer: '' };
+  const out = { kept: [], dropped: [], couldNotCheck: [], oldestAnswer: '', newestAnswer: '' };
   const seen = [];
   for (const m of members) {
     let failed = null;
@@ -201,7 +202,9 @@ export function applyFilter(criteria, members, read, now = Date.now()) {
       seen.push(...used);
     }
   }
-  out.oldestAnswer = seen.filter(Boolean).sort()[0] || '';
+  const sorted = seen.filter(Boolean).sort((a, b) => Date.parse(a) - Date.parse(b));
+  out.oldestAnswer = sorted[0] || '';
+  out.newestAnswer = sorted[sorted.length - 1] || '';
   return out;
 }
 
@@ -253,6 +256,7 @@ export function storedFilter(criteria, buckets, { parentSlug, parentCount, appli
     })),
     applied_at: appliedAt,
     oldest_answer: buckets.oldestAnswer || '',
+    newest_answer: buckets.newestAnswer || '',
     parent_slug: parentSlug,
     parent_count: parentCount,
     kept: [...buckets.kept],
@@ -262,13 +266,16 @@ export function storedFilter(criteria, buckets, { parentSlug, parentCount, appli
   };
 }
 
-/** What re-applying would change: `{wouldDrop, wouldJoin}`, by slug, before anything changes. */
-export function reapplyDiff(currentSlugs, newKept) {
+/** What re-applying would change, by slug, before anything changes: `{wouldDrop, wouldJoin, wouldHold}`. A current
+ *  member that can no longer be checked is HELD, never dropped (Decision (project owner, 2026-10-28)). */
+export function reapplyDiff(currentSlugs, newKept, couldNotCheck = []) {
   const now = new Set(currentSlugs);
   const next = new Set(newKept);
+  const unchecked = new Set(couldNotCheck);
   return {
-    wouldDrop: [...now].filter((s) => !next.has(s)),
+    wouldDrop: [...now].filter((s) => !next.has(s) && !unchecked.has(s)),
     wouldJoin: [...next].filter((s) => !now.has(s)),
+    wouldHold: [...now].filter((s) => !next.has(s) && unchecked.has(s)),
   };
 }
 

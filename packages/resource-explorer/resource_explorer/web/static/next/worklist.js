@@ -673,8 +673,9 @@ async function saveFiltered(ctx) {
   }
 }
 
-/** A filtered shortlist says what it was cut from, on what, as of when, and who could not be checked; and
- *  offers re-applying on fresher answers (a press with the diff, never automatic). */
+/** A filtered shortlist says what it was cut from, on what, as of when, and who could not be checked; what its
+ *  last re-apply changed ("re-applied automatically <time>: +N / −M", the diff one click away); and offers
+ *  "Re-apply now…" (a press with the diff shown first). */
 function renderShortlistLine(ctx) {
   const host = document.getElementById('wl-shortlist');
   const f = grid.workList?.filter;
@@ -682,50 +683,53 @@ function renderShortlistLine(ctx) {
   if (!f) { host.innerHTML = ''; return; }
   if (f.unreadable) { host.innerHTML = `<span class="text-state-warn" data-shortlist-filter>${esc(f.unreadable)}</span>`; return; }
   const un = f.could_not_check || [];
+  const last = (f.reapplies || []).slice(-1)[0];
+  const lastHtml = last ? `<details class="mt-[2px]" data-shortlist-reapplied>
+      <summary class="cursor-pointer">${last.automatic ? 're-applied automatically' : 're-applied'}
+        ${esc(ago(last.at))}: +<span class="tnum">${(last.joined || []).length}</span> /
+        −<span class="tnum">${(last.dropped || []).length}</span>${(last.held || []).length
+          ? ` · <span class="text-state-warn"><span class="tnum">${last.held.length}</span> held, could not be checked</span>` : ''}</summary>
+      <ul class="m-0 list-none p-0 text-provenance text-ink-muted" data-reapply-record>
+        <li>answers as of ${esc(String(last.answers_as_of || '').slice(0, 16) || 'unknown')} · re-applied ${esc(String(last.at).slice(0, 16))}</li>
+        <li>joined: ${(last.joined || []).map(esc).join(', ') || 'none'}</li>
+        <li>dropped: ${(last.dropped || []).map(esc).join(', ') || 'none'}</li>
+        <li>held: ${(last.held || []).map((h) => `${esc(h.entity_slug)} · ${esc(h.words)}`).join('; ') || 'none'}</li>
+      </ul></details>` : '';
   host.innerHTML = `<div data-shortlist-filter>${esc(shortlistWords(f))}${
     un.length ? ` · <span class="text-state-warn"><span class="tnum">${un.length}</span> could not be checked</span>` : ''}
     <button type="button" data-act="reapply" class="ml-s2 cursor-pointer bg-transparent text-accent-ink underline"
-      >Re-apply on fresher answers…</button></div>
+      >Re-apply now…</button></div>
+    ${lastHtml}
     ${un.length ? `<ul class="m-0 list-none p-0 text-provenance text-ink-muted">${un.map((u) =>
       `<li><span class="font-mono">${esc(u.entity_slug)}</span> · ${esc(u.words)}</li>`).join('')}</ul>` : ''}`;
   host.querySelector('[data-act="reapply"]').addEventListener('click', () => openReapply(ctx));
 }
 
-/** Evaluate the shortlist's criteria on its parent's CURRENT answers, show what would change, and change it
- *  only on the press. */
-async function openReapply(ctx) {
-  const wl = grid.workList;
+/** The shortlist's criteria evaluated on its parent's CURRENT answers: {parent, buckets, diff}. Throws when the
+ *  answers cannot be read (the caller says so; nothing changes). */
+async function evaluateShortlist(wl) {
   const f = wl.filter;
-  const el = openDialog('Re-apply the filter', `${shortlistWords(f)} · cut from ${wl.derived_from}`);
-  const body = el.querySelector('#wl-detail-body');
-  body.innerHTML = '<p class="text-ink-muted">Reading the current answers of the list it was cut from…</p>';
-  let parent;
   const rows = new Map();
   const states = {};
   const types = new Map();
-  try {
-    parent = await getWorkList(wl.derived_from);
-    // A cut made under one kind's chip is re-made over that kind's members only.
-    if (f.entity_type) parent.members = parent.members.filter((m) => m.entity_type === f.entity_type);
-    const groups = new Map();
-    for (const m of parent.members) {
-      const k = m.entity_type || parent.entity_type;
-      groups.set(k, [...(groups.get(k) || []), m.entity_slug]);
+  const parent = await getWorkList(wl.derived_from);
+  // A cut made under one kind's chip is re-made over that kind's members only.
+  if (f.entity_type) parent.members = parent.members.filter((m) => m.entity_type === f.entity_type);
+  const groups = new Map();
+  for (const m of parent.members) {
+    const k = m.entity_type || parent.entity_type;
+    groups.set(k, [...(groups.get(k) || []), m.entity_slug]);
+  }
+  for (const [k, slugs] of groups) {
+    const ids = [...new Set(f.criteria.flatMap((c) => criterionFor(c, k).analysis_ids || []))];
+    const [proj, bulk] = await Promise.all([getBulkStates(slugs, ids, k), getBulkFacts(slugs, ids, k)]);
+    Object.assign(states, proj.states || {});
+    for (const sl of slugs) {
+      const facts = bulk.subjects?.[sl];
+      rows.set(sl, facts ? { factsById: new Map(facts.map((x) => [x.analysis_id, x])) }
+        : { error: bulk.unreadable?.[sl] || 'no facts returned for this resource' });
     }
-    for (const [k, slugs] of groups) {
-      const ids = [...new Set(f.criteria.flatMap((c) => criterionFor(c, k).analysis_ids || []))];
-      const [proj, bulk] = await Promise.all([getBulkStates(slugs, ids, k), getBulkFacts(slugs, ids, k)]);
-      Object.assign(states, proj.states || {});
-      for (const sl of slugs) {
-        const facts = bulk.subjects?.[sl];
-        rows.set(sl, facts ? { factsById: new Map(facts.map((x) => [x.analysis_id, x])) }
-          : { error: bulk.unreadable?.[sl] || 'no facts returned for this resource' });
-      }
-      try { types.set(k, await getColumnTypes(k, ids)); } catch { types.set(k, null); }
-    }
-  } catch (err) {
-    body.innerHTML = `<p class="text-state-warn">Could not read the current answers: ${esc(err.message)}. Nothing changed.</p>`;
-    return;
+    try { types.set(k, await getColumnTypes(k, ids)); } catch { types.set(k, null); }
   }
   const read = (c0, m) => {
     const k = m.entity_type || parent.entity_type;
@@ -735,7 +739,74 @@ async function openReapply(ctx) {
       running: false, cellState, types: types.get(k) });
   };
   const buckets = applyFilter(f.criteria, parent.members, read);
-  const diff = reapplyDiff(wl.members.map((m) => m.entity_slug), buckets.kept);
+  const diff = reapplyDiff(wl.members.map((m) => m.entity_slug), buckets.kept,
+    buckets.couldNotCheck.map((u) => u.entity_slug));
+  return { parent, buckets, diff };
+}
+
+/** POST the re-apply; the server records it (automatic or pressed) and returns the list as it now stands. */
+async function sendReapply(ctx, { parent, buckets }, automatic) {
+  const wl = grid.workList;
+  const filter = storedFilter(wl.filter.criteria, buckets,
+    { parentSlug: parent.slug, parentCount: parent.members.length, appliedAt: new Date().toISOString(),
+      entityType: wl.filter.entity_type || '' });
+  const out = await reapplyShortlist(wl.slug, filter, { automatic });
+  grid.workList = out.work_list;
+  grid.rows.clear();
+  grid.autoChecked = wl.slug;          // just re-cut: the answers it read are not newer than itself
+  await renderWorkListPane(ctx);
+  return out;
+}
+
+/**
+ * AUTOMATIC RE-APPLY (Decision (project owner, 2026-10-28): "automatic").
+ *
+ * The trigger is the nearest one this code has: ON READ, when a filtered shortlist is opened in the bench, its
+ * parent's current answers are read and compared by as-of with the cut — if any answer behind the filter is newer
+ * than `applied_at`, the filter is re-applied and the re-apply recorded. A run finishing does not trigger it on
+ * its own: the run queue's completion (`run_queue._handle_analysis_run`) is where a server-side trigger belongs,
+ * and it would need the evaluator in Python (follow-up). Never silent: the line says "re-applied automatically
+ * <time>: +N / −M" with the diff a click away, and a member that moves to could-not-check is held, not dropped.
+ */
+async function maybeAutoReapply(ctx) {
+  const wl = grid.workList;
+  const f = wl?.filter;
+  if (!f || f.unreadable || !wl.derived_from || grid.autoChecked === wl.slug) return;
+  grid.autoChecked = wl.slug;
+  let evaluated;
+  try {
+    evaluated = await evaluateShortlist(wl);
+  } catch (err) {
+    note(`<span class="text-state-warn" data-auto-reapply>Could not check whether the shortlist's answers changed:
+      ${esc(err.message)}. It was not re-applied.</span>`);
+    return;
+  }
+  const newest = evaluated.buckets.newestAnswer;
+  if (!newest || grid.workList?.slug !== wl.slug || Date.parse(newest) <= Date.parse(f.applied_at)) return;
+  try {
+    await sendReapply(ctx, evaluated, true);
+  } catch (err) {
+    note(`<span class="text-state-warn" data-auto-reapply>An answer behind this shortlist's filter is newer than its
+      cut, but re-applying it failed: ${esc(err.message)}.</span>`);
+  }
+}
+
+/** "Re-apply now…": evaluate on the parent's current answers, show what would change, change it only on the
+ *  press. */
+async function openReapply(ctx) {
+  const wl = grid.workList;
+  const f = wl.filter;
+  const el = openDialog('Re-apply the filter', `${shortlistWords(f)} · cut from ${wl.derived_from}`);
+  const body = el.querySelector('#wl-detail-body');
+  body.innerHTML = '<p class="text-ink-muted">Reading the current answers of the list it was cut from…</p>';
+  let evaluated;
+  try {
+    evaluated = await evaluateShortlist(wl);
+  } catch (err) {
+    body.innerHTML = `<p class="text-state-warn">Could not read the current answers: ${esc(err.message)}. Nothing changed.</p>`;
+    return;
+  }
+  const { parent, buckets, diff } = evaluated;
   const names = (xs) => xs.map((x) => `<span class="font-mono">${esc(x)}</span>`).join(', ');
   body.innerHTML = `
     <p>On the current answers of the <span class="tnum">${parent.members.length}</span> members of
@@ -743,6 +814,8 @@ async function openReapply(ctx) {
     <ul class="ml-s3 mt-s2 list-disc" data-reapply-diff>
       <li><span class="tnum">${diff.wouldDrop.length}</span> would now drop${diff.wouldDrop.length ? `: ${names(diff.wouldDrop)}` : ''}</li>
       <li><span class="tnum">${diff.wouldJoin.length}</span> would now join${diff.wouldJoin.length ? `: ${names(diff.wouldJoin)}` : ''}</li>
+      ${diff.wouldHold.length ? `<li><span class="tnum">${diff.wouldHold.length}</span> would be held (members that can no
+        longer be checked stay): ${names(diff.wouldHold)}</li>` : ''}
       <li><span class="tnum">${buckets.couldNotCheck.length}</span> could not be checked${buckets.couldNotCheck.length
         ? `: ${buckets.couldNotCheck.map((u) => `${esc(u.entity_slug)} · ${esc(u.words)}`).join('; ')}` : ''}</li>
     </ul>
@@ -755,16 +828,11 @@ async function openReapply(ctx) {
     </div>`;
   body.querySelector('[data-act="go"]').addEventListener('click', async () => {
     closeCellDetail();
-    const filter = storedFilter(f.criteria, buckets,
-      { parentSlug: parent.slug, parentCount: parent.members.length, appliedAt: new Date().toISOString(),
-        entityType: f.entity_type || '' });
     try {
-      const out = await reapplyShortlist(wl.slug, filter);
-      grid.workList = out.work_list;
-      grid.rows.clear();
-      await renderWorkListPane(ctx);
+      const out = await sendReapply(ctx, evaluated, false);
       note(`Re-applied: <span class="tnum">${out.joined.length}</span> joined${out.joined.length ? ` (${names(out.joined)})` : ''},
-        <span class="tnum">${out.dropped.length}</span> dropped${out.dropped.length ? ` (${names(out.dropped)})` : ''}.`);
+        <span class="tnum">${out.dropped.length}</span> dropped${out.dropped.length ? ` (${names(out.dropped)})` : ''}${
+        out.held?.length ? `, <span class="tnum">${out.held.length}</span> held (${names(out.held.map((h) => h.entity_slug))})` : ''}.`);
     } catch (err) {
       note(`<span class="text-state-warn">Could not re-apply: ${esc(err.message)}</span>`);
     }
@@ -833,6 +901,8 @@ export async function renderWorkListPane(ctx) {
   }));
   renderShortlistLine(ctx);
   renderWinnow(ctx);
+  // Off the render path: the grid opens at once, and the shortlist re-cuts itself behind it if its answers moved.
+  if (grid.workList.filter) maybeAutoReapply(ctx);
 
   // The runnable analyses for THIS STAGE, re-read whenever the pane renders.
   //
@@ -2772,6 +2842,7 @@ export async function openWorkList(ctx, slug) {
   grid.selected.clear();
   grid.winnow = { open: false, criteria: [], types: new Map(), buckets: null, show: 'all' };
   grid.kindFilter = '';
+  grid.autoChecked = '';
   // Invalidate any background resolve still running for the previous list —
   // its results would land in the new list's rows.
   grid.bgToken += 1;

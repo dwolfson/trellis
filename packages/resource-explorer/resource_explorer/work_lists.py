@@ -240,6 +240,9 @@ def recorded_memberships(registry, slug: str, collection_guid: str) -> dict[str,
 
 # The work-list tables are created by ProjectRegistry._init_schema (a migration), not here.
 
+#: How many re-applies a shortlist's filter keeps in its record (`reapplies`), newest last.
+REAPPLY_HISTORY = 20
+
 #: What a list's `entity_type` reads when its members are of more than one kind (DESIGN-WORK-LISTS-WINNOWING-AND-
 #: MIXED-KINDS §5). Never a member's kind: each member carries its own.
 MIXED = "mixed"
@@ -597,13 +600,19 @@ class WorkLists:
             conn.execute("UPDATE work_lists SET filter_json = ?, filter_as_of = ? WHERE slug = ?",
                          (json.dumps(stored, sort_keys=True), stored["applied_at"], slug))
 
-    def reapply(self, slug: str, filter: dict) -> dict:
-        """Re-cut a shortlist on fresher headlines: its members become the new kept bucket, and the stored filter
-        the new one. A press, never automatic (§7, assumed: owner to confirm); the bench shows the diff first.
+    def reapply(self, slug: str, filter: dict, *, automatic: bool = False) -> dict:
+        """Re-cut a shortlist on fresher answers: the stored filter becomes the new one, and its members the new kept
+        bucket. AUTOMATIC when a member's answer for a filtered column refreshes (**Decision (project owner,
+        2026-10-28):** "automatic"), and also a manual press ("re-apply now"); the bench says which.
 
         Members that stay keep their rationale and confidence; members that join get "joined when <criteria> was
-        re-applied"; members that would now drop are removed. Raises KeyError (no such list) or ValueError (not a
-        filtered shortlist, its parent is gone, the criteria differ, or the buckets do not match the parent)."""
+        re-applied"; members that fail now are removed. A current member that moves to could-not-check is HELD, not
+        dropped: it stays a member and is named in `held` with its sentence (the owner: never silently dropped).
+        Every re-apply is recorded on the filter (`reapplies`, newest last, the last REAPPLY_HISTORY kept): when,
+        the as-of of the answers it read, automatic or pressed, and who joined, dropped or was held.
+
+        Raises KeyError (no such list) or ValueError (not a filtered shortlist, its parent is gone, the criteria
+        differ, or the buckets do not match the parent)."""
         from resource_explorer.winnowing import criterion_words
 
         wl = self.get(slug)
@@ -623,19 +632,30 @@ class WorkLists:
             raise ValueError("re-applying keeps the shortlist's criteria; a different filter is a new shortlist")
         current = {(m["entity_type"], m["entity_slug"]) for m in wl["members"]}
         kept = set(stored["kept"])
+        unchecked = {u["entity_slug"]: u["words"] for u in stored["could_not_check"]}
         scope_kind = stored.get("entity_type") or ""
         wanted = {(m["entity_type"], m["entity_slug"]) for m in parent["members"]
                   if m["entity_slug"] in kept and (not scope_kind or m["entity_type"] == scope_kind)}
+        # Held: a member now could-not-check stays, said, rather than leaving on an answer nobody has.
+        held_refs = {(k, s_) for k, s_ in current - wanted if s_ in unchecked}
         joined = [s_ for k, s_ in sorted(wanted - current)]
-        dropped = sorted(s_ for k, s_ in current - wanted)
+        dropped = sorted(s_ for k, s_ in current - wanted - held_refs)
+        held = [{"entity_slug": s_, "entity_type": k, "words": unchecked[s_]} for k, s_ in sorted(held_refs)]
         reason = f"joined when {' and '.join(criterion_words(c) for c in stored['criteria'])} was re-applied"
-        for k, s_ in current - wanted:
+        for k, s_ in current - wanted - held_refs:
             self.remove_member(slug, s_, k)
         for k, s_ in sorted(wanted - current):
             self.set_member(slug, s_, rationale=reason, entity_type=k)
+        entry = {"at": _now(), "automatic": bool(automatic), "applied_at": stored["applied_at"],
+                 "answers_as_of": stored.get("newest_answer") or stored.get("oldest_answer") or "",
+                 "joined": joined, "dropped": dropped, "held": held,
+                 "could_not_check": len(stored["could_not_check"])}
+        stored["reapplies"] = (list(wl["filter"].get("reapplies") or []) + [entry])[-REAPPLY_HISTORY:]
         self._store_filter(slug, stored)
-        log.info("shortlist %s re-applied: %d joined, %d dropped", slug, len(joined), len(dropped))
-        return {"slug": slug, "joined": joined, "dropped": dropped, "work_list": self.get(slug)}
+        log.info("shortlist %s re-applied (%s): %d joined, %d dropped, %d held", slug,
+                 "automatic" if automatic else "pressed", len(joined), len(dropped), len(held))
+        return {"slug": slug, "automatic": bool(automatic), "joined": joined, "dropped": dropped, "held": held,
+                "reapply": entry, "work_list": self.get(slug)}
 
     # ── Batch runs ──────────────────────────────────────────────────────
 

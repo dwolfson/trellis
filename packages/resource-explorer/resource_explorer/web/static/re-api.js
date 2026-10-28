@@ -1548,10 +1548,11 @@ export const promoteWorkList = (slug, survivors, displayName = '', rationale = '
   post(`/api/work-lists/${encodeURIComponent(slug)}/promote`,
        { survivors: [...survivors], display_name: displayName, rationale, ...(filter ? { filter } : {}) });
 
-/** Re-cut a filtered shortlist on fresher headlines: same criteria, new buckets. A press; the bench shows the
- *  diff first. Returns {joined, dropped, work_list}. */
-export const reapplyShortlist = (slug, filter) =>
-  post(`/api/work-lists/${encodeURIComponent(slug)}/reapply`, { filter });
+/** Re-cut a filtered shortlist on fresher answers: same criteria, new buckets. `automatic` when the bench did it
+ *  because an answer refreshed, false for the "re-apply now" press; recorded either way. Returns {joined,
+ *  dropped, held, reapply, work_list}. */
+export const reapplyShortlist = (slug, filter, { automatic = false } = {}) =>
+  post(`/api/work-lists/${encodeURIComponent(slug)}/reapply`, { filter, automatic });
 
 /** A list of more than one kind runs one batch per kind: `analyses` maps a kind to the analysis for its members;
  *  `members` ({entity_slug, entity_type}) narrows to the rows ticked, null for all. Returns {runs: [one per kind,

@@ -83,6 +83,9 @@ class PromoteRequest(BaseModel):
 class ReapplyRequest(BaseModel):
     #: The same criteria, evaluated on the parent's current headlines: the new buckets and as-of.
     filter: dict
+    #: True when the bench re-applied on its own because an answer behind the filter refreshed; false for the
+    #: "re-apply now" press. Recorded on the shortlist either way.
+    automatic: bool = False
 
 
 class PerKindRunRequest(BaseModel):
@@ -441,10 +444,12 @@ async def promote(slug: str, body: PromoteRequest) -> dict:
 
 @router.post("/{slug}/reapply")
 async def reapply(slug: str, body: ReapplyRequest) -> dict:
-    """Re-cut a filtered shortlist on fresher headlines (a press; the bench shows the diff first). Its members
-    become the new kept bucket; who joined and who dropped come back by name."""
+    """Re-cut a filtered shortlist on fresher answers: automatically when an answer behind its filter refreshed
+    (`automatic`), or on the "re-apply now" press. Its members become the new kept bucket, plus any member now
+    could-not-check, which is held; who joined, dropped and was held come back by name, and the re-apply is
+    recorded on the shortlist."""
     try:
-        return WorkLists().reapply(slug, body.filter)
+        return WorkLists().reapply(slug, body.filter, automatic=body.automatic)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"work list {slug!r} not found")
     except ValueError as exc:

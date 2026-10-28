@@ -38,8 +38,8 @@ MEASURE_OPS = NUMBER_OPS + DATE_OPS
 #: cannot carry a key no reader understands.
 CRITERION_KEYS = {"question_id", "question", "analysis_ids", "analysis_ids_by_kind", "field", "op", "value",
                   "lens_dimension", "entity_type"}
-FILTER_KEYS = {"criteria", "applied_at", "oldest_answer", "parent_slug", "parent_count", "kept", "dropped",
-               "could_not_check", "entity_type"}
+FILTER_KEYS = {"criteria", "applied_at", "oldest_answer", "newest_answer", "parent_slug", "parent_count", "kept",
+               "dropped", "could_not_check", "entity_type"}
 
 
 def column_types(entity_type: str, analysis_ids: list[str]) -> dict:
@@ -187,6 +187,8 @@ def check_filter(raw: Any) -> dict:
         "criteria": checked,
         "applied_at": _check_iso(raw.get("applied_at"), "applied_at", required=True),
         "oldest_answer": _check_iso(raw.get("oldest_answer"), "oldest_answer", required=False),
+        # The newest as-of among the answers read: what an automatic re-apply compares against `applied_at`.
+        "newest_answer": _check_iso(raw.get("newest_answer"), "newest_answer", required=False),
         "parent_slug": str(raw.get("parent_slug") or ""),
         "parent_count": parent_count,
         "kept": kept, "dropped": dropped, "could_not_check": cnc,

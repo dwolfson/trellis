@@ -1,9 +1,11 @@
-/** Behavior: winnowing a work list (DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-KINDS §2, §6.2).
+/** Behavior: winnowing a work list (DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-KINDS §2, §6.2, §7.1).
  *
  *  Every column with an analysis is a filter; a filter splits the rows into kept, dropped and could-not-check,
  *  and a could-not-check row says why on the row itself. "Save as a shortlist" sends the criteria with all three
- *  buckets; a filtered shortlist says "kept N of M on <criteria> as of <date>" and re-applies only on a press,
- *  after the diff ("1 would now drop, 1 would now join") is shown.
+ *  buckets; a filtered shortlist says "kept N of M on <criteria> as of <date>". It re-applies itself when an answer
+ *  behind its filter is newer than the cut (owner, 2026-10-28: automatic), records it and says "re-applied
+ *  automatically <time>: +N / −M"; "Re-apply now" shows the diff first. A member that can no longer be checked is
+ *  held, never silently dropped.
  *
  *  Pure winnow.js first, then the real app.js and worklist.js over the shipped index.html; only fetch is stubbed.
  */
@@ -62,12 +64,20 @@ function stubBackend() {
     }
     m = u.match(/^\/api\/work-lists\/([^/?]+)\/reapply$/);
     if (m) {
+      // Plays WorkLists.reapply: kept become members, a member now could-not-check is held, the re-apply recorded.
       const wl = LISTS[m[1]];
       const before = wl.members.map((x) => x.entity_slug);
-      wl.filter = body.filter;
-      wl.members = body.filter.kept.map((s) => ({ entity_slug: s, entity_type: 'database', rationale: '' }));
-      return ok({ joined: body.filter.kept.filter((s) => !before.includes(s)),
-        dropped: before.filter((s) => !body.filter.kept.includes(s)), work_list: wl });
+      const unchecked = Object.fromEntries(body.filter.could_not_check.map((x) => [x.entity_slug, x.words]));
+      const held = before.filter((s) => !body.filter.kept.includes(s) && unchecked[s])
+        .map((s) => ({ entity_slug: s, entity_type: 'database', words: unchecked[s] }));
+      const joined = body.filter.kept.filter((s) => !before.includes(s));
+      const dropped = before.filter((s) => !body.filter.kept.includes(s) && !unchecked[s]);
+      const entry = { at: new Date().toISOString(), automatic: body.automatic, applied_at: body.filter.applied_at,
+        answers_as_of: body.filter.newest_answer, joined, dropped, held, could_not_check: body.filter.could_not_check.length };
+      wl.filter = { ...body.filter, reapplies: [...(wl.filter.reapplies || []), entry] };
+      wl.members = [...body.filter.kept, ...held.map((h) => h.entity_slug)]
+        .map((s) => ({ entity_slug: s, entity_type: 'database', rationale: '' }));
+      return ok({ automatic: body.automatic, joined, dropped, held, reapply: entry, work_list: wl });
     }
     if (u.startsWith('/api/work-lists/') && !u.startsWith('/api/work-lists/runs')) {
       const slug = decodeURIComponent(u.replace('/api/work-lists/', '').split('?')[0]);
@@ -179,7 +189,7 @@ test('winnow.js: an incomparable value is could-not-check, never a silent drop',
   assert.equal(w.passes({ field: 'headline', op: 'lacks', value: 'Orders' }, '3 orders tables'), false);
   assert.equal(w.resolvePath({ value: { roles: [1, 2, 3] } }, 'roles[]'), 3);
   assert.equal(w.resolvePath({ value: { wal: { failed: 0 } } }, 'wal.failed'), 0);
-  assert.deepEqual(w.reapplyDiff(['a', 'b'], ['b', 'c']), { wouldDrop: ['a'], wouldJoin: ['c'] });
+  assert.deepEqual(w.reapplyDiff(['a', 'b', 'd'], ['b', 'c'], ['d']), { wouldDrop: ['a'], wouldJoin: ['c'], wouldHold: ['d'] });
 });
 
 /* ── The bench ──────────────────────────────────────────────────────────── */
@@ -271,5 +281,60 @@ test('re-apply shows the diff on the parent\'s current answers and changes nothi
   await tick(200);
   const call = CALLS.find((c) => c.url.endsWith('/reapply'));
   assert.deepEqual(call.body.filter.kept, ['b']);
+  assert.equal(call.body.automatic, false, 'the press is recorded as a press');
   assert.ok(text(document.getElementById('wl-note')).startsWith('Re-applied: 1 joined (b), 1 dropped (a).'));
+  assert.ok(text(document.querySelector('[data-shortlist-reapplied] summary')).startsWith('re-applied '));
+});
+
+function filteredShortlist(appliedAt) {
+  LISTS.short = { slug: 'short', display_name: 'Big ones', entity_type: 'database', investigation: '', derived_from: 'sales',
+    egeria_guid: '', members: [{ entity_slug: 'a', entity_type: 'database', rationale: '' }],
+    filter: { criteria: [{ question_id: 'Q-0010', question: 'How big is it?', analysis_ids: ['schema_inventory'],
+      field: 'measure:schema_inventory:relation_count', op: '>=', value: 10 }],
+    applied_at: appliedAt, oldest_answer: '', parent_slug: 'sales', parent_count: 4,
+    kept: ['a'], dropped: ['b'], could_not_check: [{ entity_slug: 'c', words: NOT_MEASURED }, { entity_slug: 'd', words: 'x' }] } };
+}
+
+test('a shortlist whose answers refreshed re-applies itself on open, records it, and shows +N / −M with the diff', async () => {
+  const { document } = await setUp('sales');
+  filteredShortlist('2026-10-21T00:00:00Z');
+  FACTS.a = fact(3, '2026-10-27T00:00:00Z');          // a's answer refreshed after the cut, and now fails
+  FACTS.b = fact(40, '2026-10-27T00:00:00Z');
+  const wlmod = await import('/static/next/worklist.js');
+  await wlmod.openWorkList(wlmod.grid.ctx, 'short');
+  await tick(400);
+  const calls = CALLS.filter((c) => c.url.endsWith('/reapply'));
+  assert.equal(calls.length, 1, 'exactly one automatic re-apply');
+  assert.equal(calls[0].body.automatic, true);
+  assert.equal(calls[0].body.filter.newest_answer, '2026-10-27T00:00:00Z');
+  const summary = text(document.querySelector('[data-shortlist-reapplied] summary'));
+  assert.ok(/^re-applied automatically .*: \+1 \/ −1$/.test(summary), summary);
+  const record = text(document.querySelector('[data-reapply-record]'));
+  assert.ok(record.includes('answers as of 2026-10-27T00:00') && record.includes('joined: b') && record.includes('dropped: a'), record);
+});
+
+test('nothing newer than the cut: no automatic re-apply', async () => {
+  const { document } = await setUp('sales');
+  filteredShortlist('2026-10-25T00:00:00Z');           // the answers (2026-10-20) are older than the cut
+  const wlmod = await import('/static/next/worklist.js');
+  await wlmod.openWorkList(wlmod.grid.ctx, 'short');
+  await tick(400);
+  assert.equal(CALLS.filter((c) => c.url.endsWith('/reapply')).length, 0);
+  assert.equal(document.querySelector('[data-shortlist-reapplied]'), null);
+});
+
+test('a member that can no longer be checked is held on an automatic re-apply, never silently dropped', async () => {
+  const { document } = await setUp('sales');
+  filteredShortlist('2026-10-21T00:00:00Z');
+  FACTS.a = [{ analysis_id: 'schema_inventory', state: 'never_run', headline: '' }];   // a: no answer now
+  FACTS.b = fact(40, '2026-10-27T00:00:00Z');
+  const wlmod = await import('/static/next/worklist.js');
+  await wlmod.openWorkList(wlmod.grid.ctx, 'short');
+  await tick(400);
+  const call = CALLS.find((c) => c.url.endsWith('/reapply'));
+  assert.ok(call.body.filter.could_not_check.some((u) => u.entity_slug === 'a'));
+  const summary = text(document.querySelector('[data-shortlist-reapplied] summary'));
+  assert.ok(summary.endsWith('+1 / −0 · 1 held, could not be checked'), summary);
+  assert.ok(text(document.querySelector('[data-reapply-record]')).includes(`held: a · ${NOT_MEASURED}`));
+  assert.deepEqual(wlmod.grid.workList.members.map((m) => m.entity_slug).sort(), ['a', 'b'], 'a stays a member');
 });

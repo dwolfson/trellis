@@ -2,7 +2,8 @@
 
 Three buckets, never two: every member of the list it was cut from is kept, dropped or could-not-check, and a
 could-not-check member carries its sentence. A stored filter that disagrees with the members beside it is refused
-before anything is written. Re-applying is a press with the diff, never automatic (§7, assumed: owner to confirm).
+before anything is written. Re-applying is automatic when an answer refreshes, and a press too (owner, 2026-10-28);
+every re-apply is recorded, and a member that can no longer be checked is held, never silently dropped.
 """
 from __future__ import annotations
 
@@ -158,6 +159,33 @@ def test_reapply_moves_members_to_the_new_kept_bucket_and_keeps_old_reasons(wls,
     assert out["work_list"]["filter"]["applied_at"] == "2026-10-29T09:00:00+00:00"
 
 
+def test_a_member_that_moves_to_could_not_check_is_held_and_every_reapply_is_recorded(wls, parent):
+    short = wls.promote(parent["slug"], ["a", "b"], filter=_filter(["a", "b"], ["c"], ["d"]))
+    f = _filter(["c"], ["b"], ["a", "d"], applied="2026-10-29T09:00:00+00:00")
+    f["newest_answer"] = "2026-10-29T08:00:00+00:00"
+    out = wls.reapply(short["slug"], f, automatic=True)
+    assert out["joined"] == ["c"] and out["dropped"] == ["b"]
+    assert out["held"] == [{"entity_slug": "a", "entity_type": "database",
+                            "words": "never measured · run schema_inventory first"}]
+    assert sorted(m["entity_slug"] for m in out["work_list"]["members"]) == ["a", "c"]   # a stays, said
+    rec = out["work_list"]["filter"]["reapplies"]
+    assert len(rec) == 1 and rec[0]["automatic"] is True
+    assert rec[0]["answers_as_of"] == "2026-10-29T08:00:00+00:00" and rec[0]["could_not_check"] == 2
+    wls.reapply(short["slug"], _filter(["c"], ["a", "b", "d"]))
+    rec = wls.get(short["slug"])["filter"]["reapplies"]
+    assert [r["automatic"] for r in rec] == [True, False]                 # newest last, pressed recorded too
+    assert rec[1]["dropped"] == ["a"]                                    # checked again and failed: dropped
+
+
+def test_the_reapply_record_keeps_the_last_twenty(wls, parent):
+    from resource_explorer.work_lists import REAPPLY_HISTORY
+
+    short = wls.promote(parent["slug"], ["a"], filter=_filter(["a"], ["b", "c", "d"]))
+    for _ in range(REAPPLY_HISTORY + 3):
+        wls.reapply(short["slug"], _filter(["a"], ["b", "c", "d"]), automatic=True)
+    assert len(wls.get(short["slug"])["filter"]["reapplies"]) == REAPPLY_HISTORY
+
+
 def test_reapply_refuses_a_list_with_no_filter_or_different_criteria(wls, parent):
     plain = wls.promote(parent["slug"], ["a"])
     with pytest.raises(ValueError, match="not cut by a filter"):
@@ -207,8 +235,10 @@ def test_routes_promote_with_a_filter_and_reapply(client, parent):
     assert r.status_code == 200, r.text
     short = r.json()
     assert short["filter"]["kept"] == ["a"]
-    r = client.post(f"/api/work-lists/{short['slug']}/reapply", json={"filter": _filter(["b"], ["a", "c", "d"])})
+    r = client.post(f"/api/work-lists/{short['slug']}/reapply",
+                    json={"filter": _filter(["b"], ["a", "c", "d"]), "automatic": True})
     assert r.status_code == 200 and r.json()["joined"] == ["b"] and r.json()["dropped"] == ["a"]
+    assert r.json()["reapply"]["automatic"] is True
 
 
 def test_routes_say_422_with_the_words(client, parent):
