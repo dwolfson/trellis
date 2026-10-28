@@ -143,6 +143,34 @@ test('Publish saves at once and the row redraws from the saved row, never from t
   assert.equal(flat(document.querySelector('[data-publish-table-chosen]')), '0');
 });
 
+test('a measure already in Egeria another way names that route as its state and offers Keep in RE only', async () => {
+  const words = "already in Egeria via Resource Explorer's survey report (the commit on Contents)";
+  const t = TABLE();
+  t.rows[0] = row({ publishable: false, elsewhere: { route: 'survey_report', words },
+    why_not: `${words}; publishing it here would write the same number twice`,
+    published: { state: 'published', words: 'published · read back 2026-10-27 09:01' } });
+  const { document } = await open({ table: t });
+  const r = rowEl(document, 'example_step_x/rows_sampled');
+  const st = r.querySelector('[data-published]');
+  assert.equal(st.dataset.published, 'elsewhere');
+  assert.equal(st.dataset.elsewhere, 'survey_report');
+  assert.ok(flat(st).includes(words));
+  assert.ok(!flat(st).includes('read back'), 'the route wins over an earlier proof row of this table');
+  assert.equal(r.querySelector('[data-publish-choice="publish"]').disabled, true);
+  assert.equal(r.querySelector('[data-publish-choice="keep"]').disabled, false);
+  assert.ok(flat(r.querySelector('[data-why-not]')).endsWith('would write the same number twice'));
+});
+
+test('a Publish choice says it stands: sent by every commit until Keep in RE', async () => {
+  const t = TABLE();
+  t.rows[0] = row({ choice: { choice: 'publish', by: 'me', at: '2026-10-27T10:15:00', standing: 'sent by every commit until Keep in RE' } });
+  t.chosen = 1;
+  const { document } = await open({ table: t });
+  const line = rowEl(document, 'example_step_x/rows_sampled').querySelector('[data-choice-line]');
+  assert.equal(flat(line), 'will publish · me · 2026-10-27 10:15 · sent by every commit until Keep in RE');
+  assert.ok(line.querySelector('[data-choice-standing]'));
+});
+
 test('a refused choice stays under its row and changes nothing else', async () => {
   const pt = { table: TABLE() };
   pt.answer = () => ({ ok: false, status: 422, statusText: 'refused', json: async () => ({ detail: 'Example Step X · rows_sampled cannot publish: no as-of' }) });
