@@ -1114,9 +1114,14 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
     # record_ct = 0, a real zero. `general_type` is derived from the column's
     # catalog type, never measured; `sample_ratio` is NULL in slice 1, which
     # profiles whole tables only. `ran_as` is the account that profiled it.
-    # `before_20yr_date_ct` (quality slice Q6) is added to an existing table by
-    # `_migrate_value_profile_columns`; a row profiled before it existed reads
-    # NULL there, "not measured", never 0.
+    # `before_20yr_date_ct` (quality slice Q6) and the thirteen profile 1b
+    # measures (`before_5yr_date_ct` to `boolean_true_ct`) are added to an
+    # existing table by `_migrate_value_profile_columns`; a row profiled before
+    # they existed reads NULL there, "not measured", never 0. `fractional_sum`
+    # and `sum_value` are TEXT on purpose: the exact NUMERIC(38,8) decimal as
+    # the target printed it, which a float column (and SQLite's NUMERIC
+    # affinity) would round; Match_Sum and Match_Fractional_Sum compare it
+    # exactly.
     """
     CREATE TABLE IF NOT EXISTS database_value_profiles (
         id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1137,6 +1142,19 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         max_date          TEXT DEFAULT NULL,
         future_date_ct    BIGINT DEFAULT NULL,
         before_20yr_date_ct BIGINT DEFAULT NULL,
+        before_5yr_date_ct BIGINT DEFAULT NULL,
+        date_days_present BIGINT DEFAULT NULL,
+        min_length        BIGINT DEFAULT NULL,
+        max_length        BIGINT DEFAULT NULL,
+        avg_length        DOUBLE PRECISION DEFAULT NULL,
+        zero_value_ct     BIGINT DEFAULT NULL,
+        min_value         DOUBLE PRECISION DEFAULT NULL,
+        max_value         DOUBLE PRECISION DEFAULT NULL,
+        avg_value         DOUBLE PRECISION DEFAULT NULL,
+        stdev_value       DOUBLE PRECISION DEFAULT NULL,
+        fractional_sum    TEXT DEFAULT NULL,
+        sum_value         TEXT DEFAULT NULL,
+        boolean_true_ct   BIGINT DEFAULT NULL,
         sample_ratio      REAL DEFAULT NULL,
         ran_as            TEXT DEFAULT '',
         state             TEXT NOT NULL DEFAULT 'measured',
@@ -1182,7 +1200,11 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
     # reach a conclusion; `status` says which way (pass, warning, fail,
     # logged, not_established, error, not_measured) and `reason` why. The
     # threshold and operator are the ones applied, and `rule_source` says
-    # where they came from (egeria, local_cache, unpublished).
+    # where they came from (egeria, local_cache, unpublished). `measure_text`
+    # is the measure as the check compared it when that is not a float: the
+    # TO_CHAR text of a date match, or the exact decimal of a NUMERIC sum
+    # (profile 1b); `measure` then holds the same value as a number, for
+    # charts. NULL in every other row, and in rows from before it existed.
     """
     CREATE TABLE IF NOT EXISTS database_quality_results (
         id                    INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1195,6 +1217,7 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         column_name           TEXT NOT NULL DEFAULT '',
         test_type             TEXT NOT NULL,
         measure               DOUBLE PRECISION DEFAULT NULL,
+        measure_text          TEXT DEFAULT NULL,
         record_ct             BIGINT DEFAULT NULL,
         status                TEXT NOT NULL,
         reason                TEXT DEFAULT '',
@@ -2080,7 +2103,7 @@ class ProjectRegistry:
         engine_action_* columns: IF NOT EXISTS on Postgres so two processes starting together cannot fail
         each other; lock_timeout so a table another process holds fails fast instead of queueing every
         later reader behind it. SQLite has no IF NOT EXISTS here (single writer). `sql_type` is TEXT unless
-        the column is a count (BIGINT), still with no default."""
+        the column is a count (BIGINT) or a float (DOUBLE PRECISION), still with no default."""
         if not existing or column in existing:
             return
         if conn.is_postgres:
@@ -5021,7 +5044,25 @@ class ProjectRegistry:
     #: Quality slice Q6 (DESIGN-QUALITY-Q6-RECENCY.md; DDL record docs/ddl-value-profile-q6.md): the whole-table
     #: measure Recency's date-branch inference reads. NULL = profiled before the column existed, or not a date
     #: column: "not measured", which every selection rule reads as not_established, never as 0.
-    VALUE_PROFILE_COLUMNS = (("database_value_profiles", "before_20yr_date_ct", "BIGINT"),)
+    #: Profile 1b (DESIGN-QUALITY-PROFILE-1B.md; DDL record docs/ddl-value-profile-1b.md): thirteen more whole-table
+    #: measures, and `database_quality_results.measure_text`. The same rule: NULL is "not measured", never 0.
+    VALUE_PROFILE_COLUMNS = (
+        ("database_value_profiles", "before_20yr_date_ct", "BIGINT"),
+        ("database_value_profiles", "before_5yr_date_ct", "BIGINT"),
+        ("database_value_profiles", "date_days_present", "BIGINT"),
+        ("database_value_profiles", "min_length", "BIGINT"),
+        ("database_value_profiles", "max_length", "BIGINT"),
+        ("database_value_profiles", "avg_length", "DOUBLE PRECISION"),
+        ("database_value_profiles", "zero_value_ct", "BIGINT"),
+        ("database_value_profiles", "min_value", "DOUBLE PRECISION"),
+        ("database_value_profiles", "max_value", "DOUBLE PRECISION"),
+        ("database_value_profiles", "avg_value", "DOUBLE PRECISION"),
+        ("database_value_profiles", "stdev_value", "DOUBLE PRECISION"),
+        ("database_value_profiles", "fractional_sum", "TEXT"),
+        ("database_value_profiles", "sum_value", "TEXT"),
+        ("database_value_profiles", "boolean_true_ct", "BIGINT"),
+        ("database_quality_results", "measure_text", "TEXT"),
+    )
 
     def _migrate_value_profile_columns(self) -> None:
         """The same shape as `_migrate_artifact_columns`: additive, nullable, no default, each in its own short

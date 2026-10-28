@@ -1,4 +1,4 @@
-# Vendored catalogue: DataKitchen DataOps TestGen test types (Postgres, slice 1, Q6 and B1a)
+# Vendored catalogue: DataKitchen DataOps TestGen test types (Postgres, slice 1, Q6, B1a and profile 1b)
 
 Data only. No TestGen code is vendored and TestGen is never run: Resource Explorer reads these files
 and executes the checks with its own steps (`surveyors/database/quality/`). The engine and analysis names
@@ -16,6 +16,8 @@ so the upstream product name appears only here, in `NOTICE` and in the developer
   HEAD was `e8a5a906`, one docs commit on top of `3606859c`; its `testgen/` tree is identical to `3606859c`.
   2026-10-27 (B1a: the six Table Comparison types on measures RE already profiles, and `gen_Match_Row_Ct.sql`),
   from the same clone and commit, `testgen/` again identical to `3606859c`.
+  2026-10-28 (profile 1b: thirteen whole-table measures, the twelve B1b types that read them, and the `logical_type`
+  and `is_decimal` CASEs), from the same clone and commit, `testgen/` again identical to `3606859c`.
 - **License:** Apache-2.0 (`LICENSE`, verbatim). `NOTICE` is DataKitchen's, verbatim.
 
 ## Files
@@ -37,8 +39,21 @@ so the upstream product name appears only here, in `NOTICE` and in the developer
 | `test_types/Match_Zero_Length_Ct.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Zero_Length_Ct.yaml` | unchanged (B1a) |
 | `test_types/Match_Min_Date.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Min_Date.yaml` | unchanged (B1a) |
 | `test_types/Match_Max_Date.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Max_Date.yaml` | unchanged (B1a) |
+| `test_types/Match_Min_Val.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Min_Val.yaml` | unchanged (profile 1b) |
+| `test_types/Match_Max_Val.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Max_Val.yaml` | unchanged (profile 1b) |
+| `test_types/Match_Sum.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Sum.yaml` | unchanged (profile 1b) |
+| `test_types/Match_Stdev.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Stdev.yaml` | unchanged (profile 1b) |
+| `test_types/Match_Zero_Ct.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Zero_Ct.yaml` | unchanged (profile 1b) |
+| `test_types/Match_Fractional_Sum.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Fractional_Sum.yaml` | unchanged (profile 1b) |
+| `test_types/Match_Min_Length.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Min_Length.yaml` | unchanged (profile 1b) |
+| `test_types/Match_Max_Length.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Max_Length.yaml` | unchanged (profile 1b) |
+| `test_types/Match_Total_Length.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Total_Length.yaml` | unchanged (profile 1b) |
+| `test_types/Match_True_Ct.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_True_Ct.yaml` | unchanged (profile 1b) |
+| `test_types/Match_Distinct_Date_Ct.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Distinct_Date_Ct.yaml` | unchanged (profile 1b) |
+| `test_types/Daily_Record_Ct.yaml` | `testgen/template/dbsetup_test_types/test_types_Daily_Record_Ct.yaml` | unchanged (profile 1b) |
 | `gen_query_tests/gen_Match_Row_Ct.sql` | `testgen/template/gen_query_tests/gen_Match_Row_Ct.sql` | unchanged (B1a): Match_Row_Ct's selection is this template, not a fragment; its port is pinned to the file's hash |
-| `postgresql/profile_measures.sql` | `testgen/template/flavors/postgresql/profiling/project_profiling_query.sql` | subset: the measure lines for `record_ct`, `value_ct`, `distinct_value_ct`, `null_value_ct`, `zero_length_ct`, `filled_value_ct`, `min_date`, `max_date`, `future_date_ct` and (Q6) `before_20yr_date_ct`, each verbatim, under upstream's `TG-IF` flag names; a header comment added |
+| `postgresql/profile_measures.sql` | `testgen/template/flavors/postgresql/profiling/project_profiling_query.sql` | subset: the measure lines for `record_ct`, `value_ct`, `distinct_value_ct`, `null_value_ct`, `zero_length_ct`, `filled_value_ct`, `min_date`, `max_date`, `future_date_ct`, (Q6) `before_20yr_date_ct` and (profile 1b) `min_length`, `max_length`, `avg_length`, `before_5yr_date_ct`, `date_days_present`, `zero_value_ct`, `min_value`, `max_value`, `avg_value`, `stdev_value`, `fractional_sum`, `sum_value` and `boolean_true_ct`, each verbatim, under upstream's `TG-IF` flag names; a header comment added |
+| `postgresql/numeric_chars.sql` | `testgen/template/flavors/postgresql/data_chars/get_schema_ddf.sql` | subset (profile 1b): the `logical_type` CASE (upstream lines 28-49) and the `is_decimal` CASE (67-71), verbatim, each headed by its line range; a header comment added |
 | `postgresql/templated_functions.yaml` | `testgen/template/flavors/postgresql/profiling/templated_functions.yaml` | subset (Q6): `DATEDIFF_DAY` and `DATEDIFF_MONTH`, verbatim; a header comment added |
 | `profiling/functional_datatype_date.sql` | `testgen/template/profiling/functional_datatype.sql` | subset (Q6): the eight statements that can label a date column (upstream lines 18-25, 28-36, 39-43, 45-49, 72-116, 136-142, 228-262, 356-366), verbatim and in upstream order, each headed by its line range; a header comment added |
 | `postgresql/general_type.sql` | `testgen/template/flavors/postgresql/data_chars/get_schema_ddf.sql` | subset: the `general_type` CASE, verbatim; a header comment added |
@@ -48,7 +63,10 @@ Slice 1 is seven test types (`docs/design-notes/DESIGN-VALUE-PROFILE-AND-QUALITY
 Recency, whose selection rule reads `functional_data_type`, and Future_Date_1Y
 (`docs/design-notes/DESIGN-QUALITY-Q6-RECENCY.md`). B1a adds the six Table Comparison types whose baseline is
 a measure the value profile already takes, proposed only for a table a person opted in
-(`docs/design-notes/DESIGN-QUALITY-B1A-BASELINE-MATCH.md`).
+(`docs/design-notes/DESIGN-QUALITY-B1A-BASELINE-MATCH.md`). Profile 1b adds the whole-table numeric, length, boolean
+and date-days measures and the eleven Table Comparison types that read them, plus Daily_Record_Ct (Standard set);
+Match_Epoch_Sum is not vendored, because upstream takes `epoch_sum` only for a hashed column
+(`docs/design-notes/DESIGN-QUALITY-PROFILE-1B.md`).
 
 ## How the catalogue is used
 
@@ -60,7 +78,9 @@ a measure the value profile already takes, proposed only for a table a person op
   predicate pinned to the SHA-256 of the fragment it came from (`quality/catalogue.py`), and a test fails
   when the vendored fragment no longer matches its pin. The `general_type` CASE is ported the same way, and
   so are the date statements of the functional-type inference (`quality/functional_type.py`) and
-  Recency's default threshold, which is an expression rather than a value.
+  Recency's default threshold, which is an expression rather than a value. Profile 1b's two numeric CASEs
+  (`quality/general_type.py`), Match_Sum's and Match_Total_Length's defaults, and the five B1b conditions that are
+  an expression rather than one placeholder (`catalogue.CONDITION_PORTS`) are pinned the same way.
 
 ## Updating
 

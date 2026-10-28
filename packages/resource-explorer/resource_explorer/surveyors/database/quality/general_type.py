@@ -81,3 +81,65 @@ def general_type(catalog_type: str | None, character_maximum_length: int | None 
 
 def case_matches_pin() -> bool:
     return sha256_text(vendored_case_text()) == GENERAL_TYPE_CASE_SHA256
+
+
+# ── profile 1b: which numeric measures a column takes (upstream's is_decimal and logical_type) ────────────────────
+
+NUMERIC_CHARS_SQL = POSTGRES_DIR / "numeric_chars.sql"
+#: SHA-256 of the two vendored CASE texts, in file order: logical_type, then is_decimal.
+NUMERIC_CHARS_SHA256 = ("55c1c8dec4374daf963b6953f68d23c44865fe23de0e842934f74f4f844cc511",
+                        "b4a11c5e6316ed99daa71f25c0ee5b193d17633a5dce789de063668951885255")
+
+
+def vendored_numeric_cases() -> list[str]:
+    """The CASE texts of `numeric_chars.sql`, each the text after its `-- upstream lines` header."""
+    blocks = NUMERIC_CHARS_SQL.read_text(encoding="utf-8").split("-- upstream lines ")[1:]
+    return [block.split("\n", 1)[1].rstrip("\n") + "\n" for block in blocks]
+
+
+def numeric_cases_match_pins() -> bool:
+    return tuple(sha256_text(text) for text in vendored_numeric_cases()) == NUMERIC_CHARS_SHA256
+
+
+#: The catalog read for the two CASEs: `information_schema.columns` as upstream's get_schema_ddf.sql reads it, for the
+#: types general_type calls N. One statement for the whole database, beside the table facts.
+NUMERIC_CHARS_QUERY = (
+    "SELECT table_schema AS schema_name, table_name, column_name, data_type, numeric_scale "
+    "FROM information_schema.columns "
+    "WHERE LOWER(data_type) IN ('bigint', 'integer', 'smallint', 'double precision', 'real', 'numeric', 'money')"
+)
+
+
+def is_decimal(data_type: str | None, numeric_scale: int | None) -> bool | None:
+    """The `is_decimal` CASE, term for term (NULL stays None):
+
+        WHEN c.data_type = 'numeric' THEN COALESCE(numeric_scale, 1) > 0
+        WHEN c.data_type = 'money' THEN TRUE
+        ELSE numeric_scale > 0"""
+    if data_type == "numeric":
+        return (numeric_scale if numeric_scale is not None else 1) > 0
+    if data_type == "money":
+        return True
+    return None if numeric_scale is None else numeric_scale > 0
+
+
+def logical_type_is_integer(data_type: str | None, numeric_scale: int | None) -> bool:
+    """The `logical_type` CASE's first arm, the only one the profile reads:
+
+        WHEN LOWER(c.data_type) IN ('bigint', 'integer', 'smallint')
+            OR (c.data_type = 'numeric' AND c.numeric_scale = 0) THEN 'integer'"""
+    return (data_type or "").lower() in ("bigint", "integer", "smallint") or (
+        data_type == "numeric" and numeric_scale == 0)
+
+
+def exact_sum(general_type_: str, data_type: str | None, numeric_scale: int | None) -> bool:
+    """Upstream's `is_N_exact_sum` (ProfilingSQL.run_column_profiling): a number whose logical type is integer or that
+    is decimal, and whose type the flavour can cast to DECIMAL (Postgres excludes none). A double or real column is
+    neither, so its sum is not taken exactly (Match_Sum then baselines on avg_value * value_ct, as upstream)."""
+    return general_type_ == "N" and (logical_type_is_integer(data_type, numeric_scale)
+                                     or bool(is_decimal(data_type, numeric_scale)))
+
+
+def is_n_decimal(general_type_: str, data_type: str | None, numeric_scale: int | None) -> bool:
+    """Upstream's `is_N_decimal`: `general_type == "N" and column_chars.is_decimal` (a NULL is_decimal is false)."""
+    return general_type_ == "N" and bool(is_decimal(data_type, numeric_scale))

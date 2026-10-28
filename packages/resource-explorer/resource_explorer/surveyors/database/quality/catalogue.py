@@ -24,6 +24,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal, localcontext
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -58,8 +59,14 @@ Q6_TEST_TYPES = ("Recency", "Future_Date_1Y")
 #: measure the value profile already takes. Proposed only for a table a person opted in (`table_comparison.py`).
 B1A_TEST_TYPES = ("Match_Row_Ct", "Match_Distinct_Ct", "Match_Null_Ct", "Match_Zero_Length_Ct", "Match_Min_Date",
                   "Match_Max_Date")
+#: Q4 port order step 3, profile 1b then B1b (DESIGN-QUALITY-PROFILE-1B.md): the Table Comparison types whose baseline
+#: is a measure profile 1b adds, and Daily_Record_Ct (TestGen's Standard set, proposed without an opt-in). Match_Epoch_Sum
+#: is not ported: upstream takes `epoch_sum` only for a column in its hashed set (step 8).
+B1B_TEST_TYPES = ("Match_Min_Val", "Match_Max_Val", "Match_Sum", "Match_Stdev", "Match_Zero_Ct", "Match_Fractional_Sum",
+                  "Match_Min_Length", "Match_Max_Length", "Match_Total_Length", "Match_True_Ct",
+                  "Match_Distinct_Date_Ct", "Daily_Record_Ct")
 #: Every test type RE has ported, in the order proposals are considered.
-PORTED_TEST_TYPES = SLICE_1_TEST_TYPES + Q6_TEST_TYPES + B1A_TEST_TYPES
+PORTED_TEST_TYPES = SLICE_1_TEST_TYPES + Q6_TEST_TYPES + B1A_TEST_TYPES + B1B_TEST_TYPES
 
 #: TestGen's generation set for the baseline-match types. TestGen generates them only for a table group a person
 #: opted into it; RE proposes them only for a table a person opted in (Q4 §7, question 2).
@@ -94,10 +101,24 @@ MUST_BE = {
     "<=": "mustBeGreaterThan",
     "=": "mustNotBe",
     "<>": "mustBe",
+    "NOT BETWEEN": "mustBeBetween",
 }
 
-_FAIL_WHEN: dict[str, Callable[[float, float], bool]] = {
+
+@dataclass(frozen=True)
+class Between:
+    """The limit of a `NOT BETWEEN low AND high` condition (Match_Sum, Match_Stdev): the check fails outside it."""
+
+    low: Any
+    high: Any
+
+    def __str__(self) -> str:
+        return f"{self.low} AND {self.high}"
+
+
+_FAIL_WHEN: dict[str, Callable[[Any, Any], bool]] = {
     ">": operator.gt, ">=": operator.ge, "<": operator.lt, "<=": operator.le, "=": operator.eq, "<>": operator.ne,
+    "NOT BETWEEN": lambda measure, limit: not (limit.low <= measure <= limit.high),
 }
 
 
@@ -149,6 +170,12 @@ class TestType:
     def measure_is_text(self) -> bool:
         """The measure is text compared with a quoted baseline (Match_Min_Date, Match_Max_Date), not a number."""
         return self.test_condition.strip() == "{BASELINE_VALUE_LITERAL}"
+
+    @property
+    def measure_is_exact(self) -> bool:
+        """The measure is an exact NUMERIC compared with an exact decimal (Match_Sum, Match_Fractional_Sum), never
+        through a float."""
+        return self.test_type in EXACT_TEST_TYPES
 
 
 def sha256_text(text: str | None) -> str:
@@ -315,6 +342,72 @@ def _datediff_day(first, second) -> int | None:
     return None if a is None or b is None else datediff_day(a, b)
 
 
+def _greatest(*values):
+    """Postgres GREATEST: NULL arguments are ignored; NULL only when every argument is NULL."""
+    known = [v for v in values if v is not None]
+    return max(known) if known else None
+
+
+def _abs(value):
+    return None if value is None else abs(value)
+
+
+def _mul(*values):
+    return None if any(v is None for v in values) else math.prod(values)
+
+
+def _sub(a, b):
+    return None if a is None or b is None else a - b
+
+
+#: The measure profile 1b always takes for a column of each general_type that has a value: NULL there, with
+#: value_ct > 0, means the row was profiled before profile 1b existed (its migration left the column NULL).
+PROFILE_1B_WITNESS = {"N": "min_value", "A": "min_length", "B": "boolean_true_ct", "D": "date_days_present"}
+
+
+def _profiled_by_1b(row: dict) -> bool | None:
+    """None when profile 1b's measures cannot be read from this row: the column was not profiled (`state`), or the row
+    predates profile 1b (its general_type's witness measure is NULL though the column has values). Else True. A B1b
+    rule ANDs this in, so either reads `not_established`, never a silent no: several of their fragments read a 1b
+    measure with IS NOT NULL, where upstream's NULL means "not applicable" and an unprofiled column has no row."""
+    if (row.get("state") or "measured") != "measured":
+        return None
+    witness = PROFILE_1B_WITNESS.get(row.get("general_type") or "")
+    if witness is None:
+        return True
+    if row.get("value_ct") is None:
+        return None
+    if row["value_ct"] == 0:
+        return True
+    return None if row.get(witness) is None else True
+
+
+def _is_not_null_1b(row: dict, measure: str) -> bool | None:
+    """`<1b measure> IS NOT NULL`, unknown (None) when the row cannot carry 1b measures (`_profiled_by_1b`): FALSE
+    there would win any SQL AND and turn "not measured" into a silent no."""
+    return None if _profiled_by_1b(row) is None else row.get(measure) is not None
+
+
+def _sql_or(*values: bool | None) -> bool | None:
+    """SQL OR: TRUE if any operand is TRUE, else NULL if any is NULL, else FALSE."""
+    if any(v is True for v in values):
+        return True
+    if any(v is None for v in values):
+        return None
+    return False
+
+
+#: Daily_Record_Ct's anchor date, `'1800-01-05'::DATE` (its midnight).
+_DAILY_ANCHOR = datetime(1800, 1, 5)  # noqa: DTZ001 - naive, as upstream's timestamp columns
+
+
+def _date_span_days(min_date, max_date) -> int | None:
+    """`DATEDIFF('day', '1800-01-05'::DATE, max_date) - DATEDIFF('day', '1800-01-05'::DATE, min_date) + 1`: the
+    calendar days from the first date to the last, both counted."""
+    first, last = _datediff_day(_DAILY_ANCHOR, max_date), _datediff_day(_DAILY_ANCHOR, min_date)
+    return None if first is None or last is None else first - last + 1
+
+
 # Each rule below is the vendored fragment, term for term. The fragment is quoted above its port.
 PREDICATES: dict[str, Predicate] = {
     # record_ct <> value_ct
@@ -460,13 +553,122 @@ PREDICATES: dict[str, Predicate] = {
         ("general_type", "value_ct"),
         lambda p: _and(_cmp(_p(p, "general_type"), "=", "D"), _cmp(_p(p, "value_ct"), ">", 0)),
     ),
+    # ── B1b, on profile 1b's measures. Each ANDs in `_profiled_by_1b` (an RE addition, named in its inputs) ──
+    # general_type = 'N' AND value_ct > 0
+    "Match_Min_Val": Predicate(
+        "b5e6d3de37808d45817466a91cddf37dc88632bab718dff3d716ebb801b9ac09",
+        ("general_type", "value_ct", "min_value"),
+        lambda p: _and(_cmp(_p(p, "general_type"), "=", "N"), _cmp(_p(p, "value_ct"), ">", 0), _profiled_by_1b(p)),
+    ),
+    # general_type = 'N' AND value_ct > 0
+    "Match_Max_Val": Predicate(
+        "b5e6d3de37808d45817466a91cddf37dc88632bab718dff3d716ebb801b9ac09",
+        ("general_type", "value_ct", "min_value"),
+        lambda p: _and(_cmp(_p(p, "general_type"), "=", "N"), _cmp(_p(p, "value_ct"), ">", 0), _profiled_by_1b(p)),
+    ),
+    # general_type = 'N' AND value_ct > 0 AND GREATEST(ABS(min_value), ABS(max_value)) * value_ct < 1e30
+    # AND (sum_value IS NOT NULL OR ABS(avg_value) >= 1e-5 * GREATEST(ABS(min_value), ABS(max_value)))
+    "Match_Sum": Predicate(
+        "18c91beb2f1dedf1164c971104dcac5ec6001004182898373d36333f0b9953bd",
+        ("general_type", "value_ct", "min_value", "max_value", "sum_value", "avg_value"),
+        lambda p: _and(
+            _cmp(_p(p, "general_type"), "=", "N"),
+            _cmp(_p(p, "value_ct"), ">", 0),
+            _cmp(_mul(_greatest(_abs(_p(p, "min_value")), _abs(_p(p, "max_value"))), _p(p, "value_ct")), "<", 1e30),
+            _sql_or(_is_not_null_1b(p, "sum_value"),
+                    _cmp(_abs(_p(p, "avg_value")), ">=",
+                         _mul(1e-5, _greatest(_abs(_p(p, "min_value")), _abs(_p(p, "max_value")))))),
+            _profiled_by_1b(p),
+        ),
+    ),
+    # general_type = 'N' AND value_ct > 1 AND distinct_value_ct > 1 AND stdev_value IS NOT NULL
+    "Match_Stdev": Predicate(
+        "37c334e78f5ebb4ebc3069b433808a25ca9a4685edfece61adc863f868907572",
+        ("general_type", "value_ct", "distinct_value_ct", "stdev_value", "min_value"),
+        lambda p: _and(
+            _cmp(_p(p, "general_type"), "=", "N"),
+            _cmp(_p(p, "value_ct"), ">", 1),
+            _cmp(_p(p, "distinct_value_ct"), ">", 1),
+            _is_not_null_1b(p, "stdev_value"),
+        ),
+    ),
+    # general_type = 'N' AND value_ct > 0
+    "Match_Zero_Ct": Predicate(
+        "b5e6d3de37808d45817466a91cddf37dc88632bab718dff3d716ebb801b9ac09",
+        ("general_type", "value_ct", "min_value"),
+        lambda p: _and(_cmp(_p(p, "general_type"), "=", "N"), _cmp(_p(p, "value_ct"), ">", 0), _profiled_by_1b(p)),
+    ),
+    # general_type = 'N' AND fractional_sum IS NOT NULL
+    "Match_Fractional_Sum": Predicate(
+        "3a01ea588bc1e733473008b3b9557fed37fb8f6652756cb2cef83a765d7cb81c",
+        ("general_type", "fractional_sum", "min_value"),
+        lambda p: _and(_cmp(_p(p, "general_type"), "=", "N"), _is_not_null_1b(p, "fractional_sum")),
+    ),
+    # general_type = 'A' AND value_ct > 0
+    "Match_Min_Length": Predicate(
+        "d0557b9d9bd6b14ed583462b330402c1559fa790d99f26941badd66ddba9a283",
+        ("general_type", "value_ct", "min_length"),
+        lambda p: _and(_cmp(_p(p, "general_type"), "=", "A"), _cmp(_p(p, "value_ct"), ">", 0), _profiled_by_1b(p)),
+    ),
+    # general_type = 'A' AND value_ct > 0
+    "Match_Max_Length": Predicate(
+        "d0557b9d9bd6b14ed583462b330402c1559fa790d99f26941badd66ddba9a283",
+        ("general_type", "value_ct", "min_length"),
+        lambda p: _and(_cmp(_p(p, "general_type"), "=", "A"), _cmp(_p(p, "value_ct"), ">", 0), _profiled_by_1b(p)),
+    ),
+    # general_type = 'A' AND value_ct > 0\nAND sample_ratio IS NULL
+    "Match_Total_Length": Predicate(
+        "359e71c7c48e6d6e625aefc828c381cbdae63f00a62fa74b6097fd0728f47e78",
+        ("general_type", "value_ct", "sample_ratio", "min_length"),
+        lambda p: _and(
+            _cmp(_p(p, "general_type"), "=", "A"),
+            _cmp(_p(p, "value_ct"), ">", 0),
+            _p(p, "sample_ratio") is None,
+            _profiled_by_1b(p),
+        ),
+    ),
+    # general_type = 'B' AND value_ct > 0
+    "Match_True_Ct": Predicate(
+        "b9c4460a9ceea97b193b0c5e58f3468d43e8dbdd1c06d8cf144a01e311484c13",
+        ("general_type", "value_ct", "boolean_true_ct"),
+        lambda p: _and(_cmp(_p(p, "general_type"), "=", "B"), _cmp(_p(p, "value_ct"), ">", 0), _profiled_by_1b(p)),
+    ),
+    # general_type = 'D' AND date_days_present IS NOT NULL
+    # COUNT(DISTINCT ...) is never NULL once taken, so upstream's IS NOT NULL is "was profiled"; RE's NULL here is a row
+    # from before profile 1b, or a column not profiled, read as not_established rather than "no".
+    "Match_Distinct_Date_Ct": Predicate(
+        "84883274b83c4a9d84624f2c445158921eaf0335d159fb7b4740d36159ec674e",
+        ("general_type", "date_days_present"),
+        lambda p: _and(_cmp(_p(p, "general_type"), "=", "D"), _is_not_null_1b(p, "date_days_present")),
+    ),
+    # general_type= 'D' AND date_days_present > 21 AND date_days_present - (DATEDIFF('day', '1800-01-05'::DATE,
+    #   max_date) - DATEDIFF('day', '1800-01-05'::DATE, min_date) + 1) = 0 AND future_date_ct::FLOAT /
+    #   NULLIF(value_ct, 0) <= 0.75
+    # Standard set: proposed without an opt-in, as TestGen generates it for every table group.
+    "Daily_Record_Ct": Predicate(
+        "74ba0096f8ab06169623e9b5b18e2089faa3ddc929e3fe92c521a5e0a74eba49",
+        ("general_type", "date_days_present", "min_date", "max_date", "future_date_ct", "value_ct"),
+        lambda p: _and(
+            _cmp(_p(p, "general_type"), "=", "D"),
+            _cmp(_p(p, "date_days_present"), ">", 21),
+            _cmp(_sub(_p(p, "date_days_present"),
+                      _date_span_days(_p(p, "min_date"), _p(p, "max_date"))), "=", 0),
+            _cmp(None if _p(p, "future_date_ct") is None or not _p(p, "value_ct")
+                 else _p(p, "future_date_ct") / float(_p(p, "value_ct")), "<=", 0.75),
+        ),
+    ),
 }
 
 #: Inputs whose NULL is a real value rather than a missing measure: min_date is read by IS NOT NULL. Recency's
 #: inference reads zero_length_ct and filled_value_ct only through upstream's own NULL handling (neither is
-#: measured on a date column, upstream either), and min_date only for the Period overrides.
+#: measured on a date column, upstream either), and min_date only for the Period overrides. A B1b rule reads its
+#: own measure with IS NOT NULL (NULL is "not applicable" there: no exact sum on a float column, no stdev of one
+#: value); a missing measure is named through the profile 1b witness instead.
 _NULL_IS_A_VALUE = {"Min_Date": {"min_date"},
-                    "Recency": {"zero_length_ct", "filled_value_ct", "min_date"}}
+                    "Recency": {"zero_length_ct", "filled_value_ct", "min_date"},
+                    "Match_Sum": {"sum_value"},
+                    "Match_Stdev": {"stdev_value"},
+                    "Match_Fractional_Sum": {"fractional_sum"}}
 
 
 def not_established_inputs(test_type: str, profile: dict) -> list[str]:
@@ -525,7 +727,11 @@ def _default_value(expr: str, profile: dict):
 _PARAM_KEYS = {
     "baseline_ct": "baseline_ct", "baseline_value_ct": "baseline_value_ct", "baseline_unique_ct": "baseline_unique_ct",
     "baseline_value": "baseline_value", "threshold_value": "threshold_value",
+    "baseline_sum": "baseline_sum", "baseline_sd": "baseline_sd", "upper_tolerance": "upper_tolerance",
 }
+#: Parameter keys a type carries only when its catalogue entry names them (so an earlier type's params_json keeps the
+#: shape it was accepted with).
+_OPTIONAL_PARAM_KEYS = ("baseline_unique_ct", "baseline_sum", "baseline_sd", "upper_tolerance")
 
 
 def _recency_threshold(profile: dict):
@@ -590,9 +796,42 @@ def _date_baseline(measure: str) -> Callable[[dict], Any]:
     return lambda profile: to_char_seconds(profile.get(measure))
 
 
+def _rtrim(text: str, chars: str) -> str:
+    return text.rstrip(chars)
+
+
+def _match_sum_defaults(profile: dict) -> tuple[Any, Any]:
+    """Match_Sum's two defaults, term for term:
+
+        COALESCE(RTRIM(RTRIM(sum_value::VARCHAR, '0'), '.'), (avg_value * value_ct)::VARCHAR)
+        CASE WHEN sum_value IS NULL THEN '0.000000001' ELSE '0' END
+
+    `sum_value` is the exact decimal text the profile stored; `(avg_value * value_ct)::VARCHAR` is the float's
+    shortest text, which Python's `repr` prints the same way. Both stay text, as upstream's parameters are, so the
+    exact sum never passes through a float. NULL when neither measure was taken."""
+    sum_value, avg, value_ct = profile.get("sum_value"), profile.get("avg_value"), profile.get("value_ct")
+    if sum_value is not None:
+        trimmed = _rtrim(_rtrim(str(sum_value), "0"), ".") if "." in str(sum_value) else str(sum_value)
+        baseline = trimmed
+    else:
+        baseline = None if avg is None or value_ct is None else repr(float(avg) * value_ct)
+    return baseline, ("0.000000001" if sum_value is None else "0")
+
+
+def _total_length_default(profile: dict):
+    """`CAST(ROUND(COALESCE(avg_length, 0) * (value_ct - COALESCE(zero_length_ct, 0))) AS BIGINT)`: avg_length is the
+    mean over non-empty values (upstream's NULLIF(LENGTH, 0)), so times the non-empty count it is the total. Postgres
+    rounds a double half to even, as Python's round does. NULL when value_ct is."""
+    value_ct = profile.get("value_ct")
+    if value_ct is None:
+        return None
+    return round((profile.get("avg_length") or 0) * (value_ct - (profile.get("zero_length_ct") or 0)))
+
+
 #: Defaults that are an expression over the profile rather than a list of columns and literals: the SHA-256 of
-#: the vendored `default_parm_values` each port was made from, the parameter it fills, and the port.
-DEFAULT_PORTS: dict[str, tuple[str, str, Callable[[dict], Any]]] = {
+#: the vendored `default_parm_values` each port was made from, the parameter (or parameters, in order) it fills, and
+#: the port (returning a tuple when it fills several).
+DEFAULT_PORTS: dict[str, tuple[str, str | tuple[str, ...], Callable[[dict], Any]]] = {
     # CASE WHEN DATEDIFF( 'DAY' , max_date, run_date) <= 3 THEN DATEDIFF('DAY', max_date, run_date) + 3 WHEN ...
     "Recency": ("4a8f8bd298ae8f1e20ff4b7251454697078c503ab760aed919b698a466a00622", "threshold_value",
                 _recency_threshold),
@@ -602,6 +841,13 @@ DEFAULT_PORTS: dict[str, tuple[str, str, Callable[[dict], Any]]] = {
     # TO_CHAR(max_date, 'YYYY-MM-DD HH24:MI:SS')
     "Match_Max_Date": ("969773ce43fed7c2b153de336efddc38528ae80d47417d9ed31b10d73de93e97", "baseline_value",
                        _date_baseline("max_date")),
+    # COALESCE(RTRIM(RTRIM(sum_value::VARCHAR, '0'), '.'), (avg_value * value_ct)::VARCHAR),CASE WHEN sum_value IS
+    #   NULL THEN '0.000000001' ELSE '0' END
+    "Match_Sum": ("baea8f54d3d7a291bc57510dcb93fd5548b3433a575ca830fb5f1373aa2c696b",
+                  ("baseline_sum", "upper_tolerance"), _match_sum_defaults),
+    # CAST(ROUND(COALESCE(avg_length, 0) * (value_ct - COALESCE(zero_length_ct, 0))) AS BIGINT)
+    "Match_Total_Length": ("764c27fe862246b3e311ea6030ec1212802f99d752fd4f04b2575c469207bd6a", "baseline_sum",
+                           _total_length_default),
 }
 
 
@@ -610,8 +856,9 @@ def default_params(test_type: TestType, profile: dict, row_ct_pct_threshold: flo
     severity. Raises ParameterError when a default reads a profile measure that is NULL."""
     params: dict[str, Any] = {"baseline_ct": None, "baseline_value_ct": None, "baseline_value": None,
                               "threshold_value": None, "severity": test_type.severity}
-    if "baseline_unique_ct" in test_type.default_parm_columns:
-        params["baseline_unique_ct"] = None
+    for optional in _OPTIONAL_PARAM_KEYS:
+        if optional in test_type.default_parm_columns:
+            params[optional] = None
     if test_type.test_type == "Row_Ct_Pct":
         # TestGen has no defaults for it: RE's baseline is the measured count, the threshold a setting.
         params["baseline_ct"] = profile.get("record_ct")
@@ -626,7 +873,10 @@ def default_params(test_type: TestType, profile: dict, row_ct_pct_threshold: flo
         sha, key, port = DEFAULT_PORTS[test_type.test_type]
         if sha256_text(test_type.default_parm_values) != sha:
             raise ParameterError(f"{test_type.test_type}'s vendored default_parm_values changed: re-port it")
-        params[key] = port(profile)
+        if isinstance(key, tuple):
+            params.update(zip(key, port(profile)))
+        else:
+            params[key] = port(profile)
     else:
         values = _split_sql_list(test_type.default_parm_values or "")
         if len(values) != len(test_type.default_parm_columns):
@@ -651,8 +901,9 @@ _PLACEHOLDER_PARAM = {
     "BASELINE_VALUE": "baseline_value", "BASELINE_VALUE_LIST": "baseline_value",
     "BASELINE_VALUE_LITERAL": "baseline_value",
     "THRESHOLD_VALUE": "threshold_value",
+    "BASELINE_SUM": "baseline_sum", "BASELINE_SD": "baseline_sd", "UPPER_TOLERANCE": "upper_tolerance",
 }
-_RE_FILLED = {"COLUMN_NAME", "RUN_DATE"}
+_RE_FILLED = {"COLUMN_NAME", "COLUMN_NUM", "RUN_DATE"}
 
 
 def _required_params(test_type: TestType) -> list[str]:
@@ -667,6 +918,17 @@ def _required_params(test_type: TestType) -> list[str]:
 
 def quote_identifier(name: str) -> str:
     return '"' + str(name).replace('"', '""') + '"'
+
+
+def column_num(column: str, is_money: bool = False) -> str:
+    """Upstream's `{COL_NUM}` / `{COLUMN_NUM}` for Postgres (PostgresqlFlavorService.numeric_value): the quoted column,
+    read through ::NUMERIC when it is money, which compares only with money and has no modulo or cast to float."""
+    return f"{quote_identifier(column)}::NUMERIC" if is_money else quote_identifier(column)
+
+
+def is_money_type(catalog_type: str | None) -> bool:
+    """Whether a stored catalog type is Postgres's money (the one type `{COLUMN_NUM}` casts)."""
+    return (catalog_type or "").strip().lower() == "money"
 
 
 def string_literal(value: str) -> str:
@@ -721,14 +983,17 @@ def _sql_number(number: float) -> str:
     return repr(number) if isinstance(number, float) else str(number)
 
 
-def render_measure(test_type: TestType, column_name: str, params: dict, run_date: str) -> str:
+def render_measure(test_type: TestType, column_name: str, params: dict, run_date: str, *,
+                   is_money: bool = False) -> str:
     """The test type's vendored Postgres measure with every placeholder filled from validated values.
 
     `params` is the check's parameters as accepted (or as Egeria holds them); each is validated by type here
     (numbers parse as numbers, the Min_Date baseline as an ISO date, the placeholder list item by item as string
     literals). Raises ParameterError, quoting the bad value, for anything that does not validate, and for any
-    placeholder this port does not know: an unknown placeholder means the vendored SQL changed under us."""
-    fills: dict[str, str] = {"COLUMN_NAME": quote_identifier(column_name), "RUN_DATE": run_date}
+    placeholder this port does not know: an unknown placeholder means the vendored SQL changed under us.
+    `{COLUMN_NUM}` is the column read as a number (`column_num`; `is_money` for a money column)."""
+    fills: dict[str, str] = {"COLUMN_NAME": quote_identifier(column_name), "RUN_DATE": run_date,
+                             "COLUMN_NUM": column_num(column_name, is_money)}
     measure = expand_templated_functions(test_type.measure)
     for placeholder in set(_PLACEHOLDER.findall(measure)):
         if placeholder in _RE_FILLED:
@@ -761,14 +1026,114 @@ def as_to_char_seconds(name: str, value) -> str:
     return value
 
 
-#: The conditions the ported types use: each is one placeholder, read from one parameter.
+#: The conditions that are one placeholder, read from one parameter.
 _CONDITIONS = {"{THRESHOLD_VALUE}": "threshold_value", "{BASELINE_CT}": "baseline_ct",
-               "{BASELINE_UNIQUE_CT}": "baseline_unique_ct", "{BASELINE_VALUE_LITERAL}": "baseline_value"}
+               "{BASELINE_UNIQUE_CT}": "baseline_unique_ct", "{BASELINE_VALUE_LITERAL}": "baseline_value",
+               "{BASELINE_VALUE}": "baseline_value", "{BASELINE_SUM}": "baseline_sum"}
+
+_DECIMAL = re.compile(r"^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$")
+#: Postgres NUMERIC rounds half away from zero; Decimal's ROUND_HALF_UP is that rule.
+_EIGHT_PLACES, _FIVE_PLACES = Decimal("1e-8"), Decimal("1e-5")
 
 
-def threshold(test_type: TestType, params: dict) -> float | int | str:
-    """The condition's value, validated: a number, or for a text measure (`measure_is_text`) the baseline date text.
-    Every ported condition is one placeholder; anything else means the vendored condition changed under us."""
+def as_decimal(name: str, value) -> Decimal:
+    """A parameter that must be an exact finite number: an int, a Decimal, or numeric text (TestGen's parameters are
+    text). A float is read through its shortest text, as Postgres reads a float literal. Raises ParameterError
+    quoting the value. Never formatted into SQL: the condition is evaluated in Python."""
+    if isinstance(value, bool) or value is None:
+        raise ParameterError(f"{name} must be a number, got {value!r}")
+    if isinstance(value, Decimal):
+        number = value
+    elif isinstance(value, int):
+        number = Decimal(value)
+    elif isinstance(value, float):
+        number = Decimal(repr(value))
+    elif isinstance(value, str) and _DECIMAL.match(value.strip()):
+        number = Decimal(value.strip())
+    else:
+        raise ParameterError(f"{name} must be a number, got {value!r}")
+    if not number.is_finite():
+        raise ParameterError(f"{name} must be a finite number, got {value!r}")
+    return number
+
+
+def _numeric(value: Decimal, places: Decimal) -> Decimal:
+    """`CAST(value AS NUMERIC(38, n))` / `ROUND(value, n)`: rounded to n places, half away from zero."""
+    with localcontext() as ctx:
+        ctx.prec = 80
+        return value.quantize(places, rounding=ROUND_HALF_UP)
+
+
+@dataclass(frozen=True)
+class SumTolerance:
+    """Match_Sum's NOT BETWEEN limit before the run: its bounds read `COUNT({COLUMN_NAME})`, which the run measures
+    beside the sum (`between`)."""
+
+    baseline: Decimal
+    tolerance: Decimal
+
+    def between(self, count: int) -> Between:
+        """`CAST(B AS NUMERIC(38,8)) -/+ CAST(ABS(B * T) + SIGN(ABS(T)) * COUNT(col) * 0.000000005 AS NUMERIC(38,8))`."""
+        with localcontext() as ctx:
+            ctx.prec = 80
+            base = _numeric(self.baseline, _EIGHT_PLACES)
+            sign = Decimal(1) if self.tolerance != 0 else Decimal(0)
+            margin = _numeric(abs(self.baseline * self.tolerance) + sign * Decimal(count) * Decimal("0.000000005"),
+                              _EIGHT_PLACES)
+            return Between(base - margin, base + margin)
+
+    def __str__(self) -> str:
+        return f"{self.baseline} within tolerance {self.tolerance}"
+
+
+def _match_sum_condition(params: dict) -> SumTolerance:
+    return SumTolerance(as_decimal("baseline_sum", params.get("baseline_sum")),
+                        as_decimal("upper_tolerance", params.get("upper_tolerance")))
+
+
+def _match_stdev_condition(params: dict) -> Between:
+    """`CAST(SD AS DOUBLE PRECISION) -/+ ABS(CAST(SD AS DOUBLE PRECISION) * {UPPER_TOLERANCE})`, in doubles."""
+    sd = float(as_number("baseline_sd", params.get("baseline_sd")))
+    margin = abs(sd * float(as_number("upper_tolerance", params.get("upper_tolerance"))))
+    return Between(sd - margin, sd + margin)
+
+
+#: Conditions that are an expression rather than one placeholder: the SHA-256 of the vendored Postgres
+#: `test_condition` each port was made from, and the port (params -> limit). The test types in EXACT_TEST_TYPES
+#: compare as Decimal, never as float.
+CONDITION_PORTS: dict[str, tuple[str, Callable[[dict], Any]]] = {
+    # CAST({BASELINE_VALUE} AS DOUBLE PRECISION)
+    "Match_Min_Val": ("8a31c67d694efd17306b33f1e680fc5573fefdc4af6fba52bebe86bc69ffe380",
+                      lambda params: float(as_number("baseline_value", params.get("baseline_value")))),
+    "Match_Max_Val": ("8a31c67d694efd17306b33f1e680fc5573fefdc4af6fba52bebe86bc69ffe380",
+                      lambda params: float(as_number("baseline_value", params.get("baseline_value")))),
+    # CAST({BASELINE_SUM} AS NUMERIC(38,8)) - CAST(ABS({BASELINE_SUM} * {UPPER_TOLERANCE}) + SIGN(ABS({UPPER_TOLERANCE}))
+    #   * COUNT({COLUMN_NAME}) * 0.000000005 AS NUMERIC(38,8)) AND <the same, +>
+    "Match_Sum": ("0d6aa8bba2b6a3646a3f6498f845d88ede57123b5a6ea44c91ffc882331f1efc", _match_sum_condition),
+    # CAST({BASELINE_SD} AS DOUBLE PRECISION) - ABS(CAST({BASELINE_SD} AS DOUBLE PRECISION) * {UPPER_TOLERANCE}) AND
+    #   <the same, +>
+    "Match_Stdev": ("83ee4adff0b3c7fff26b7b82b97a7df5729cdc33407733e6935f2748099ef7ac", _match_stdev_condition),
+    # ROUND({BASELINE_SUM}, 5)
+    "Match_Fractional_Sum": ("8404752672096b49e556cad30e0a0c0252e0e4220f3fe47c295d8038803507ec",
+                             lambda params: _numeric(as_decimal("baseline_sum", params.get("baseline_sum")),
+                                                     _FIVE_PLACES)),
+}
+#: Types whose measure is an exact NUMERIC: SUM(CAST(... AS NUMERIC(38,8))) and the fractional sum at NUMERIC(38,5).
+EXACT_TEST_TYPES = frozenset({"Match_Sum", "Match_Fractional_Sum"})
+#: Run-time aggregates a condition reads beyond the measure, as vendored text (Match_Sum's tolerance counts values).
+CONDITION_AGGREGATES = {"Match_Sum": "COUNT({COLUMN_NAME})"}
+
+
+def threshold(test_type: TestType, params: dict) -> Any:
+    """The condition's value, validated: a number; for a text measure (`measure_is_text`) the baseline date text; for
+    an exact measure a Decimal; for a NOT BETWEEN condition a `Between` (or Match_Sum's `SumTolerance`, whose bounds
+    the run finishes). A condition that is neither one placeholder nor a pinned port means the vendored condition
+    changed under us."""
+    if test_type.test_type in CONDITION_PORTS:
+        sha, port = CONDITION_PORTS[test_type.test_type]
+        if sha256_text(test_type.test_condition) != sha:
+            raise ParameterError(f"{test_type.test_type}'s vendored test_condition changed: re-port it")
+        return port(params)
     key = _CONDITIONS.get(test_type.test_condition.strip())
     if key is None:
         raise ParameterError(f"{test_type.test_type}: condition {test_type.test_condition!r} is not one placeholder "
@@ -778,7 +1143,7 @@ def threshold(test_type: TestType, params: dict) -> float | int | str:
     return as_number(key, params.get(key))
 
 
-def fails(test_type: TestType, measure: float | str, limit: float | str) -> bool:
+def fails(test_type: TestType, measure: Any, limit: Any) -> bool:
     """TestGen's fail-when comparison, `measure <op> condition`, evaluated by RE on a non-NULL measure."""
     try:
         return _FAIL_WHEN[test_type.test_operator](measure, limit)

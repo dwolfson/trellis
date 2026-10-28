@@ -25,7 +25,8 @@ PKG = Path(__file__).resolve().parent.parent
 # ── provenance and pins ──────────────────────────────────────────────────────────────────────────────────────
 
 def test_the_ported_test_types_are_vendored_with_licence_and_provenance():
-    assert set(cat.load_catalogue()) == set(cat.SLICE_1_TEST_TYPES) | set(cat.Q6_TEST_TYPES) | set(cat.B1A_TEST_TYPES)
+    assert set(cat.load_catalogue()) == (set(cat.SLICE_1_TEST_TYPES) | set(cat.Q6_TEST_TYPES) | set(cat.B1A_TEST_TYPES)
+                                         | set(cat.B1B_TEST_TYPES))
     assert set(cat.Q6_TEST_TYPES) == {"Recency", "Future_Date_1Y"}
     for name in ("LICENSE", "NOTICE", "PROVENANCE.md"):
         assert (cat.CATALOGUE_DIR / name).is_file(), name
@@ -55,7 +56,9 @@ def test_the_general_type_port_is_pinned_to_the_vendored_case():
 def test_every_test_type_has_a_postgres_condition_and_a_known_operator():
     for test_type in cat.load_catalogue().values():
         assert test_type.measure and test_type.test_operator in cat.MUST_BE, test_type.test_type
-        assert test_type.test_condition.strip() in cat._CONDITIONS, test_type.test_type
+        # One placeholder, or an expression ported and pinned to its vendored text (CONDITION_PORTS).
+        assert test_type.test_condition.strip() in cat._CONDITIONS or test_type.test_type in cat.CONDITION_PORTS, \
+            test_type.test_type
 
 
 def test_row_ct_pct_is_the_one_check_re_proposes_itself():
@@ -251,7 +254,8 @@ def _fake_upstream(root: Path) -> Path:
     (flavor / "profiling").mkdir(parents=True)
     (flavor / "data_chars").mkdir(parents=True)
     shutil.copy(cat.POSTGRES_DIR / "profile_measures.sql", flavor / "profiling/project_profiling_query.sql")
-    shutil.copy(cat.POSTGRES_DIR / "general_type.sql", flavor / "data_chars/get_schema_ddf.sql")
+    (flavor / "data_chars/get_schema_ddf.sql").write_text(
+        (cat.POSTGRES_DIR / "general_type.sql").read_text() + (cat.POSTGRES_DIR / "numeric_chars.sql").read_text())
     shutil.copy(cat.POSTGRES_DIR / "templated_functions.yaml", flavor / "profiling/templated_functions.yaml")
     (root / "testgen/template/profiling").mkdir()
     shutil.copy(cat.CATALOGUE_DIR / "profiling/functional_datatype_date.sql",

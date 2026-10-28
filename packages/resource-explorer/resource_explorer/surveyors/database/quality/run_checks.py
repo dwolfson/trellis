@@ -10,8 +10,8 @@ ELSE pass END`, so a NULL measure (Missing_Pct on an empty table, a zero baselin
 measure itself is read and mapped:
 
     NULL measure, or division by zero          -> not_established ("measure undefined ..."), except for a type
-                                                  whose catalogue entry sets `null_measure_fails` (the B1a
-                                                  `Match_*` types): fail at its severity, as upstream, since an
+                                                  whose catalogue entry sets `null_measure_fails` (the B1a and
+                                                  B1b `Match_*` types): fail at its severity, as upstream, since an
                                                   emptied table or column departs from the baseline
     query error or timeout                     -> error, with Postgres's words
     privilege error, or row-level security     -> not_permitted
@@ -31,10 +31,15 @@ check that reached a conclusion has a `qualityScore` (a check that did not concl
 a 0 never reads as failed). When Publish lands, the rule read
 from Egeria overrides the verdict's threshold, operator and severity here (design §6's table).
 
-**Text measures.** Match_Min_Date and Match_Max_Date measure `TO_CHAR(..., 'YYYY-MM-DD HH24:MI:SS')` and compare it
-with the baseline text, as upstream; the comparison is on the text. `measure` is a DOUBLE PRECISION column, so the
-date is stored as seconds from 1970-01-01 of the same wall clock (`catalogue.text_measure_number`), and the text is
-in `reason` and in the annotation (DESIGN-QUALITY-B1A-BASELINE-MATCH.md §4).
+**Text and exact measures.** Match_Min_Date and Match_Max_Date measure `TO_CHAR(..., 'YYYY-MM-DD HH24:MI:SS')` and
+compare it with the baseline text, as upstream; the comparison is on the text. Match_Sum and Match_Fractional_Sum
+measure an exact NUMERIC and compare it as a Decimal, never through a float. Either way the value as compared is
+stored in `measure_text` (profile 1b), and `measure` holds it as a number for charts: a date as seconds from
+1970-01-01 of the same wall clock (`catalogue.text_measure_number`), a sum as its nearest float
+(DESIGN-QUALITY-B1A-BASELINE-MATCH.md §4, DESIGN-QUALITY-PROFILE-1B.md).
+
+**NOT BETWEEN.** Match_Sum and Match_Stdev fail outside a range (`catalogue.Between`). Match_Sum's range reads
+`COUNT(column)` (its tolerance counts values), which is measured beside the sum in the same SELECT.
 
 The baseline is the last ACCEPTED one, never the current profile, so a scheduled run of this step on its own is
 valid; each result records the profile run it was measured against. Each table is read in its own read-only
@@ -48,11 +53,15 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from resource_explorer.surveyors.database.quality.catalogue import (
+    CONDITION_AGGREGATES,
     MUST_BE,
+    Between,
     ParameterError,
+    SumTolerance,
     as_number,
     egeria_dimension,
     fails,
+    is_money_type,
     load_catalogue,
     quote_identifier,
     render_measure,
@@ -112,6 +121,16 @@ def _number(value):
     return float(value) if isinstance(value, (int, float)) else value
 
 
+def _limit_json(limit):
+    """A condition's limit as `threshold_values_json` holds it: a range as its two bounds, an exact decimal as its text
+    (so no digit is lost to a float), anything else as it is."""
+    if isinstance(limit, Between):
+        return [_limit_json(limit.low), _limit_json(limit.high)]
+    if isinstance(limit, Decimal):
+        return format(limit, "f")
+    return limit
+
+
 def run_quality_checks(
     db_entity, registry, connect: Callable[[], AbstractContextManager], *,
     bounds: ProfileBounds, surveyed_at: str | None = None, ran_as: str = "",
@@ -129,6 +148,8 @@ def run_quality_checks(
     catalogue = load_catalogue()
     columns = registry.query_detail_rows("database_columns", slug)
     column_set = {(c["schema_name"], c["table_name"], c["column_name"]) for c in columns}
+    money = {(c["schema_name"], c["table_name"], c["column_name"]) for c in columns
+             if is_money_type(c.get("base_type") or c.get("data_type"))}
     table_set = {(c["schema_name"], c["table_name"]) for c in columns}
     tables = {(t["schema_name"], t["table_name"]): t for t in registry.query_detail_rows("database_tables", slug)}
     run_date = run_date_text(surveyed_at)
@@ -139,7 +160,7 @@ def run_quality_checks(
     for key, verdict in sorted(accepted.items()):
         params = verdict.get("params_json")
         row = {"check_key": key, "schema_name": "", "table_name": "", "column_name": "", "test_type": "",
-               "measure": None, "record_ct": None, "status": "not_established", "reason": "",
+               "measure": None, "measure_text": None, "record_ct": None, "status": "not_established", "reason": "",
                "severity": "", "comparison_operator": "", "threshold_values_json": None,
                "params_json": params if isinstance(params, dict) else None,
                "baseline_profile_surveyed_at": (params or {}).get("profile_surveyed_at", "")
@@ -177,15 +198,23 @@ def run_quality_checks(
         row["comparison_operator"] = MUST_BE.get(test_type.test_operator, test_type.test_operator)
         try:
             limit = threshold(test_type, params)
-            row["threshold_values_json"] = [limit]
+            # Match_Sum's bounds read the run's COUNT, so they are recorded only once the run has them: until then
+            # NULL, never the baseline and tolerance, which would read as bounds.
+            row["threshold_values_json"] = (None if isinstance(limit, SumTolerance) else
+                                            _limit_json(limit) if isinstance(limit, Between) else [_limit_json(limit)])
             if "{BASELINE_CT}" in test_type.measure and as_number("baseline_ct", params.get("baseline_ct")) == 0:
                 row["reason"] = f"{UNDEFINED}: baseline_ct is 0"
                 continue
-            sql = render_measure(test_type, column, params, run_date)
+            is_money = (schema, table, column) in money
+            sql = render_measure(test_type, column, params, run_date, is_money=is_money)
+            # A run-time aggregate the condition reads (Match_Sum's COUNT), from the vendored text, filled the same way.
+            extra = CONDITION_AGGREGATES.get(type_name)
+            extra_sql = extra.replace("{COLUMN_NAME}", quote_identifier(column)) if extra else None
         except ParameterError as exc:
             row["reason"] = str(exc)
             continue
-        runnable.setdefault((schema, table), []).append({"row": row, "sql": sql, "type": test_type, "limit": limit})
+        runnable.setdefault((schema, table), []).append(
+            {"row": row, "sql": sql, "type": test_type, "limit": limit, "extra_sql": extra_sql})
 
     if runnable:
         with connect() as conn:
@@ -225,7 +254,8 @@ CHECK_STATE = {"pass": "passed", "warning": "failed", "fail": "failed", "logged"
 #: Measure units that count things in the table, so "N <uom> of <records>" reads true ("0 future dates of 66").
 #: Every other unit (a difference measure, a percent of baseline, Recency's days before the test, Match_Row_Ct's row
 #: count, which IS the record count) is a figure of its own: "<uom> <value>".
-_MEASURE_IS_NOT_A_COUNT = ("measure", "percent", "days before", "row count")
+_MEASURE_IS_NOT_A_COUNT = ("measure", "percent", "days before", "row count", "minimum ", "maximum ", "sum",
+                          "deviation", "length", "missing dates")
 
 
 def outcome_words(row: dict, test_type) -> str:
@@ -236,6 +266,8 @@ def outcome_words(row: dict, test_type) -> str:
     if value is None or test_type is None:
         return ""
     uom = (test_type.measure_uom or "measure").strip().lower()
+    if row.get("measure_text"):
+        return f"{uom} {row['measure_text']}"
     if getattr(test_type, "measure_is_text", False) and isinstance(value, (int, float)):
         return f"{uom} {text_measure_from_number(value)}"
     figure = _figure(value)
@@ -274,7 +306,9 @@ def build_quality_annotations(results: list[dict], catalogue: dict | None = None
         concluded = row["status"] in CONCLUDED
         test_type = catalogue.get(row["test_type"]) if row["test_type"] else None
         path = ".".join(p for p in (row["schema_name"], row["table_name"], row["column_name"]) if p) or row["check_key"]
-        limit = (row.get("threshold_values_json") or [None])[0]
+        limits = row.get("threshold_values_json") or [None]
+        limit = f"{limits[0]} AND {limits[1]}" if test_type is not None and test_type.test_operator == "NOT BETWEEN" \
+            and len(limits) == 2 else limits[0]
         reason = row["reason"] or "no reason recorded"
         if concluded and test_type is not None:
             description = (f"{state}: {reason}. Severity {row['severity']}; "
@@ -291,7 +325,9 @@ def build_quality_annotations(results: list[dict], catalogue: dict | None = None
             "ruleSource": row["rule_source"], "ruleGuid": row["rule_guid"],
             "baselineProfileSurveyedAt": row["baseline_profile_surveyed_at"], "ranAs": row["ran_as"],
         }
-        if test_type is not None and test_type.measure_is_text and isinstance(row["measure"], (int, float)):
+        if row.get("measure_text"):
+            detail["measureText"] = row["measure_text"]
+        elif test_type is not None and test_type.measure_is_text and isinstance(row["measure"], (int, float)):
             detail["measureText"] = text_measure_from_number(row["measure"])
         out.append(QualityCheckAnnotation(
             summary=check_summary(row, test_type, path, state),
@@ -315,38 +351,57 @@ def build_quality_annotations(results: list[dict], catalogue: dict | None = None
     return out
 
 
-def _select(schema: str, table: str, measures: list[str]) -> str:
-    items = ["COUNT(*) AS record_ct"] + [f"{m} AS q{i}" for i, m in enumerate(measures)]
+def _select(schema: str, table: str, checks: list[dict | str]) -> str:
+    """One SELECT: the record count, each check's measure as q<i>, and a condition's extra aggregate as q<i>_x. A
+    check may be given as its measure SQL alone."""
+    items = ["COUNT(*) AS record_ct"]
+    for i, check in enumerate(checks):
+        check = {"sql": check} if isinstance(check, str) else check
+        items.append(f"{check['sql']} AS q{i}")
+        if check.get("extra_sql"):
+            items.append(f"{check['extra_sql']} AS q{i}_x")
     return "SELECT " + ", ".join(items) + f" FROM {quote_identifier(schema)}.{quote_identifier(table)}"
 
 
 def _figure(value) -> str:
+    if isinstance(value, Decimal):
+        return format(value, "f")
     return f"{value:g}" if isinstance(value, (int, float)) else str(value)
 
 
-def _conclude(check: dict, measure, record_ct) -> None:
+def _conclude(check: dict, measure, record_ct, extra=None) -> None:
     row = check["row"]
     row["record_ct"] = int(record_ct) if record_ct is not None else None
-    value = _number(measure)
     test_type = check["type"]
+    value = measure if test_type.measure_is_exact or test_type.measure_is_text else _number(measure)
     if value is None:
         if test_type.null_measure_fails:
             row.update(status=FAIL_STATUS[row["severity"]], reason=UNDEFINED_FAILS.format(test_type=test_type.test_type))
         else:
             row.update(status="not_established", reason=UNDEFINED)
         return
+    limit = check["limit"]
     if test_type.measure_is_text:
         value = str(value)
-        row["measure"] = text_measure_number(value)
+        row["measure"], row["measure_text"] = text_measure_number(value), value
+    elif test_type.measure_is_exact:
+        value = value if isinstance(value, Decimal) else Decimal(str(value))
+        row["measure"], row["measure_text"] = float(value), format(value, "f")
     else:
         row["measure"] = value
+    if isinstance(limit, SumTolerance):
+        if extra is None:
+            row.update(status="error", reason="the count Match_Sum's tolerance reads was not returned")
+            return
+        limit = limit.between(int(extra))
+        row["threshold_values_json"] = _limit_json(limit)
     uom = test_type.measure_uom or "measure"
-    if fails(test_type, value, check["limit"]):
+    if fails(test_type, value, limit):
         row["status"] = FAIL_STATUS[row["severity"]]
-        row["reason"] = f"{uom} {_figure(value)} {test_type.test_operator} {check['limit']}"
+        row["reason"] = f"{uom} {_figure(value)} {test_type.test_operator} {_figure(limit)}"
     else:
         row["status"] = "pass"
-        row["reason"] = f"{uom} {_figure(value)} (fails when {test_type.test_operator} {check['limit']})"
+        row["reason"] = f"{uom} {_figure(value)} (fails when {test_type.test_operator} {_figure(limit)})"
 
 
 def _failed(check: dict, exc: Exception) -> None:
@@ -376,23 +431,23 @@ def _no_row(check: dict) -> None:
 def _run_table(conn, schema: str, table: str, checks: list[dict], bounds: ProfileBounds) -> None:
     """One aggregate SELECT for the table's checks; on error, each check alone (TestGen's CAT fallback)."""
     try:
-        result = _query(conn, _select(schema, table, [c["sql"] for c in checks]), bounds)
+        result = _query(conn, _select(schema, table, checks), bounds)
     except Exception:
         result = None
     if result is not None:
         for i, check in enumerate(checks):
             if result:
-                _conclude(check, result[0].get(f"q{i}"), result[0].get("record_ct"))
+                _conclude(check, result[0].get(f"q{i}"), result[0].get("record_ct"), result[0].get(f"q{i}_x"))
             else:
                 _no_row(check)
         return
     for check in checks:
         try:
-            result = _query(conn, _select(schema, table, [check["sql"]]), bounds)
+            result = _query(conn, _select(schema, table, [check]), bounds)
         except Exception as exc:
             _failed(check, exc)
             continue
         if result:
-            _conclude(check, result[0].get("q0"), result[0].get("record_ct"))
+            _conclude(check, result[0].get("q0"), result[0].get("record_ct"), result[0].get("q0_x"))
         else:
             _no_row(check)
