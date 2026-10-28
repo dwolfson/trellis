@@ -806,6 +806,40 @@ def get_filesystem_derived(slug: str) -> dict:
             **walk_derived.derived_view(registry, slug)}
 
 
+# ── Files build step 7: the narrative files read in full, chunked by section into RE's search index (F11's long form) ─
+
+@router.get("/{slug}/narrative-docs")
+def get_filesystem_narrative_docs(slug: str) -> dict:
+    """The price (the narrative files the newest walk found, their bytes) and the newest run. Registry-only."""
+    from resource_explorer.surveyors.filesystem import narrative_docs
+
+    registry = ProjectRegistry()
+    if not registry.filesystem_exists(slug):
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    return narrative_docs.view(registry, slug)
+
+
+@router.post("/{slug}/narrative-docs")
+def run_filesystem_narrative_docs(slug: str) -> dict:
+    """The press (consent is this press; the card showed the price before it): read the narrative files the newest walk
+    found, whole and size-capped, chunk them by section and replace this file system's collection in Resource Explorer's
+    search index. Opens no other file, writes nothing into the path, publishes nothing to Egeria. 409 when no walk has
+    found narrative files, while a run for this file system is in flight, or when the mount cannot be reached."""
+    from resource_explorer.surveyors.filesystem import narrative_docs
+    from resource_explorer.web.routes.curate import require_resource_write
+
+    registry = ProjectRegistry()
+    fs = registry.get_filesystem(slug)
+    if not fs:
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    require_resource_write(registry, "filesystem", slug, "start_action")
+    try:
+        summary = narrative_docs.run_narrative_docs(fs, registry)
+    except (narrative_docs.NothingToRead, narrative_docs.AlreadyRunning, narrative_docs.NotReachable) as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {**summary, "view": narrative_docs.view(registry, slug)}
+
+
 # ── Files build step 5: file_profiles (column profiles of the walk's data files, priced before the run) ──────────────
 
 @router.get("/{slug}/file-profiles")

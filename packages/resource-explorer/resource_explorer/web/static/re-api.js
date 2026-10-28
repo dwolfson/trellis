@@ -256,6 +256,8 @@ export const publishFileProfiles = (slug) =>
  *  fs_activity, fs_permissions, fs_layout_signals). Queued: answers `{ status: 'started', activity_id, run_id }`; poll the activity. */
 export const runFilesystemAnalysis = (slug, analysisId) =>
   post(`/api/filesystems/${encodeURIComponent(slug)}/analyses/${encodeURIComponent(analysisId)}/run`);
+/** Files build step 7: read the narrative files the newest walk found, in full, into RE's search index (F11's long form). */
+export const runNarrativeDocs = (slug) => post(`/api/filesystems/${encodeURIComponent(slug)}/narrative-docs`);
 
 /* ── Catalogue scope (Curate, database: what gets catalogued) ────────────
  * web/routes/catalogue_scope.py. A declared, signed, dated choice stored in

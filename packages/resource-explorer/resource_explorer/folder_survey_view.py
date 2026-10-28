@@ -205,6 +205,18 @@ def _walk_derived(registry, slug: str, fork) -> tuple[dict, dict]:
     return price, derived
 
 
+def _narrative_docs(registry, slug: str) -> dict:
+    """The narrative files read in full (Files build step 7, F11's long form): the price before the press and the newest
+    run. A failed read is said on its own line; the card still renders."""
+    from resource_explorer.surveyors.filesystem import narrative_docs
+
+    try:
+        return narrative_docs.view(registry, slug)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("%s: the narrative files' run could not be read", slug, exc_info=True)
+        return {"error": f"could not read the narrative files' run: {type(exc).__name__}: {exc}"}
+
+
 def folder_survey_view(registry, slug: str) -> dict:
     """The newest folder survey, whoever led it, with the probe state and who leads NOW."""
     fs = registry.get_filesystem(slug)
@@ -214,7 +226,7 @@ def folder_survey_view(registry, slug: str) -> dict:
     candidates = [c for c in (egeria, re_walk) if c and not c.get("none")]
     base = {"slug": slug, "reach": fork.as_dict(), "leads": fork.surveyor,
             "egeria_run_state": (egeria or {}).get("run_state", ""), "extensions": extensions_view(registry, slug),
-            "file_profiles": _file_profiles(registry, slug)}
+            "file_profiles": _file_profiles(registry, slug), "narrative_docs": _narrative_docs(registry, slug)}
     base["price"], base["derived"] = _walk_derived(registry, slug, fork)
     if not candidates:
         return {**base, "state": "none", "surveyor": "", "surveyed_at": "", "report_guid": "", "published": False,

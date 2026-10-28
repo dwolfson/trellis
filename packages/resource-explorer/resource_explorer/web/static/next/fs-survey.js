@@ -12,15 +12,17 @@
  *   - the price line BEFORE the press (Files F12): the last walk's files, bytes and time on this machine, capped or not,
  *     what was not walked and where the bulk sits; "not priced" until a walk has measured the tree;
  *   - "Derived from the walk" (Files build step 6): the Analytic Library steps over the kept per-file rows, each with its
- *     stored state and its own words; "not run yet" until one has run, "not installed" naming the package.
+ *     stored state and its own words; "not run yet" until one has run, "not installed" naming the package;
+ *   - "Narrative files, read in full" (Files build step 7, F11's long form): the price before the press (the files the
+ *     walk found, their bytes), then the run's counts; every passage is a proposal stated by its file.
  *
  * Every status here comes from a stored row the server read (the probe row, the run row, the walk's own limits), never
  * from which button was pressed. A number the survey did not carry is "–", never 0.
  */
 import { esc } from '/static/next/app.js';
 import { getFolderSurvey, runFolderSurvey, publishFolderSurvey, checkFilesystemReach, runWalkExtensions, publishWalkExtensions,
-  runFileProfiles, readFileProfilesFromEgeria, publishFileProfiles, runFilesystemAnalysis, pollActivity, activityFailure,
-  failureText } from '/static/re-api.js';
+  runFileProfiles, readFileProfilesFromEgeria, publishFileProfiles, runFilesystemAnalysis, runNarrativeDocs, pollActivity,
+  activityFailure, failureText } from '/static/re-api.js';
 import { enhanceTable } from '/static/next/colresize.js';
 import { fmtBytes } from '/static/next/stages/native-report.js';
 
@@ -92,6 +94,13 @@ export const FOLDER_SURVEY_WORDS = {
   derivedAt: (date) => `derived${date ? ` · ${date}` : ''}`,
   notPriced: 'not priced',
   derivedKept: 'kept here · not published to Egeria',
+  // Files build step 7: the narrative files read in full (F11's long form).
+  narrativeHeading: 'Narrative files, read in full',
+  narrativePress: 'Read narrative files',
+  narrativeReading: 'Reading…',
+  narrativeNotRead: 'not read yet',
+  narrativeReadAt: (date) => `read${date ? ` · ${date}` : ''}`,
+  narrativeStale: 'a newer walk found these files · read them again to bring the index up to date',
 };
 
 const dash = '–';
@@ -374,8 +383,26 @@ export function derivedHtml(derived) {
   </div>`;
 }
 
+/** Files build step 7: the narrative files read in full. The price BEFORE the press, then the stored run's own words. */
+export function narrativeDocsHtml(nd) {
+  const W = FOLDER_SURVEY_WORDS;
+  if (!nd) return '';
+  if (nd.error) return `<div data-fs-narr data-fs-narr-state="error" class="mt-s3 text-provenance text-state-warn">${esc(nd.error)}</div>`;
+  const price = nd.price || {};
+  const head = `<div class="text-caps uppercase tracking-caps text-ink-muted">${esc(W.narrativeHeading)}</div>
+    <div data-fs-narr-price data-fs-narr-priced="${price.priced ? 'yes' : 'no'}" class="text-caveat text-ink">${esc(price.words || W.notPriced)}</div>`;
+  const run = nd.run;
+  if (!run) return `<div data-fs-narr data-fs-narr-state="none" class="mt-s3">${head}<div class="text-provenance text-ink-muted">${esc(W.narrativeNotRead)}</div></div>`;
+  return `<div data-fs-narr data-fs-narr-state="read" class="mt-s3">${head}
+    <div data-fs-narr-run class="text-caveat text-ink">${esc(W.narrativeReadAt(day(run.ran_at)))} · <span data-fs-narr-words>${esc(run.words || '')}</span></div>
+    ${run.stale ? `<div data-fs-narr-stale class="text-provenance text-state-warn"><span class="font-glyph" aria-hidden="true">⚠</span> ${esc(W.narrativeStale)}</div>` : ''}
+    <div class="text-provenance text-ink-muted">${esc(run.stated || '')}</div>
+    <div class="text-provenance text-ink-muted">${esc(nd.kept || '')}</div>
+  </div>`;
+}
+
 /** The whole card. `busy` is 'survey' | 'check' | 'publish' | 'measure' | 'publish-measures' | 'profile' | 'read-egeria' |
- *  'publish-profiles' | 'derive' | ''. */
+ *  'publish-profiles' | 'derive' | 'read-narratives' | ''. */
 export function folderSurveyCardHtml(view, { busy = '', error = '' } = {}) {
   const W = FOLDER_SURVEY_WORDS;
   const reach = (view && view.reach) || {};
@@ -403,11 +430,13 @@ export function folderSurveyCardHtml(view, { busy = '', error = '' } = {}) {
       ${fpRun && fpRun.counts && fpRun.counts.submitted ? btn('read-egeria', busy === 'read-egeria' ? W.reading : W.readEgeria, !busy) : ''}
       ${fpRun && !(fpRun.publish && fpRun.publish.complete) && fpRun.counts && fpRun.counts.by_re ? btn('publish-profiles', busy === 'publish-profiles' ? W.publishing : W.publishProfiles, !busy) : ''}
       ${derivable(view).length ? btn('derive', busy === 'derive' ? W.deriving : W.derivePress, !busy) : ''}
+      ${view && view.narrative_docs && view.narrative_docs.price && view.narrative_docs.price.files ? btn('read-narratives', busy === 'read-narratives' ? W.narrativeReading : W.narrativePress, !busy) : ''}
     </div>
     ${priceLineHtml(view && view.price)}
     ${error ? `<div data-fs-error class="mt-[2px] text-provenance text-state-warn">${esc(error)}</div>` : ''}
     ${folderResultsHtml(view)}
     ${walkMeasuresHtml(view && view.extensions)}
+    ${narrativeDocsHtml(view && view.narrative_docs)}
     ${fileProfilesHtml(view && view.file_profiles)}
     ${derivedHtml(view && view.derived)}
   </div>`;
@@ -448,6 +477,7 @@ export async function mountFolderSurvey(host, slug, { onChange = () => {} } = {}
       else if (act === 'profile') await runFileProfiles(slug);
       else if (act === 'read-egeria') await readFileProfilesFromEgeria(slug);
       else if (act === 'publish-profiles') await publishFileProfiles(slug);
+      else if (act === 'read-narratives') await runNarrativeDocs(slug);
       else if (act === 'derive') {
         // Each step is queued and polled to its end; a failed one is said with its own reason, the others still run.
         const failed = [];
