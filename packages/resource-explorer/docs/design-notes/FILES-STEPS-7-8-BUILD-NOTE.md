@@ -82,17 +82,21 @@ found, or "" with the reason. The report GUID is in the proof. On the card, a de
 
 ## 3. Open points and their answers
 
+**Decision (project owner, 2026-10-28):** "accept all six, approve the narratives press after merge" (relayed by the
+Monday Coordinator). The six rows marked "Owner accepted 2026-10-28" below were the six marked "assumed, owner to
+confirm" when this note was written. The narratives press is covered in §4.
+
 | Open point | Answer | Source |
 |---|---|---|
-| What counts as each layout signal | The fixed lists in `fs_layout_signals/step.py` (manifests, dated-folder regex, `key=value`, the narrative rule's dictionary words minus code files, archive and backup suffixes, backup folder names); a dataset layout needs two or more dated or partition folders | Brief F10's examples. **Assumed, owner to confirm** |
-| Where the long-form narratives live | Resource Explorer's search index (pgvector), one collection per file system, replaced whole per run; never in Egeria | Brief §2a (quotable "with its source"). **Assumed, owner to confirm** |
+| What counts as each layout signal | The fixed lists in `fs_layout_signals/step.py` (manifests, dated-folder regex, `key=value`, the narrative rule's dictionary words minus code files, archive and backup suffixes, backup folder names); a dataset layout needs two or more dated or partition folders | Brief F10's examples. **Owner accepted 2026-10-28** |
+| Where the long-form narratives live | Resource Explorer's search index (pgvector), one collection per file system, replaced whole per run; never in Egeria | Brief §2a (quotable "with its source"). **Owner accepted 2026-10-28** |
 | Narrative chunk sizes | `DocParser`'s defaults (384 words, 48 overlap), sections first | Existing repo ingestion. **Assumed** |
-| Run inline or queued (narratives, class match) | Inline, under a per-file-system claim, like `file_profiles` (step 5) | Step 5's precedent. **Assumed, owner to confirm** |
-| How values are sampled from files | The head of the file: 1 MB cut at a whole line, or the first Parquet row group; 200 values per column | None recorded. **Assumed, owner to confirm** |
+| Run inline or queued (narratives, class match) | Inline, under a per-file-system claim, like `file_profiles` (step 5) | Step 5's precedent. **Owner accepted 2026-10-28** |
+| How values are sampled from files | The head of the file: 1 MB cut at a whole line, or the first Parquet row group; 200 values per column | None recorded. **Owner accepted 2026-10-28** |
 | Files Egeria profiled | Not opened; `not_sampled` with why. Reading Egeria's `InspectDataValues` value counts as the sample is a follow-up | Step 5's rule ("measures nothing Egeria measured") |
-| Personal-data name words | `PERSONAL_NAME_WORDS` in `file_class_match.py`, a proposal on the name only | None recorded. **Assumed, owner to confirm** |
+| Personal-data name words | `PERSONAL_NAME_WORDS` in `file_class_match.py`, a proposal on the name only | None recorded. **Owner accepted 2026-10-28** |
 | Proposed classes for files | Kept as proposals in RE; no DRAFT DataClass is created in Egeria for files | Brief §3 item 5 ("same proposal-only rule"); the Egeria write is a follow-up |
-| Which derived results publish | `measured` and `nothing_found` for the same walk; a request for action only when measured | Absence is never published as a finding. **Assumed, owner to confirm** |
+| Which derived results publish | `measured` and `nothing_found` for the same walk; a request for action only when measured | Absence is never published as a finding. **Owner accepted 2026-10-28** |
 | The report's types vs the engine host's | The report carries ResourceMeasure, ResourceProfile, RequestForAction; the engine host's `PUBLISHABLE_ANNOTATION_TYPES` is unchanged, so Egeria still may not dispatch fs_activity, fs_permissions or fs_layout_signals | Kept apart on purpose: one governs RE's own report, the other Egeria's dispatch |
 
 ## 4. DDL and shared writes for the owner
@@ -103,8 +107,9 @@ found, or "" with the reason. The report GUID is in the proof. On the card, a de
   pgvector store (:5442), and on the first press for a file system it creates that collection's table,
   `fs_<slug>_narratives` (`trellis_vectorstore.pg.create_collection`, `CREATE TABLE IF NOT EXISTS`). Each later press
   drops that table and creates it again, because the collection is replaced whole. This uses the same mechanism
-  repository ingestion already uses (`MultiCollectionStore`). No test made this write. **It needs the owner's word**
-  before the first press against the shared Postgres.
+  repository ingestion already uses (`MultiCollectionStore`). No test made this write. **Approved by the project
+  owner on 2026-10-28, for after this branch merges.** The coordinator runs a peer round first and names the file
+  system. The builder does not press it.
 - **One runtime Egeria read, by the class-match press.** It reads Egeria's DataClasses and ValidValueSets as the
   signed-in person. It writes nothing to Egeria.
 - The report publish writes to Egeria only when a person presses Publish on the walk, which is unchanged. It now
