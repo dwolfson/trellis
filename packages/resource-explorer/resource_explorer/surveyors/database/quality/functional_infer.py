@@ -65,14 +65,14 @@ VENDORED_SQL_SHA256 = {
 #: Measures upstream takes that RE does not (yet). Each is read by some statement; on a TEXT column it is unknown, on
 #: any other column it is NULL by construction upstream. The reason a type was not inferred names the ones it needed.
 NOT_TAKEN = {
-    "datatype_suggestion": "not planned",
-    "percentile_25/50/75": "the percentile statement did not run or ran out of its budget", "date_weeks_present": "not planned", "date_months_present": "not planned",
+    "datatype_suggestion": "needs frequent_values (port step 8b) and TestGen's catalog column_type text",
+    "percentile_25/50/75": "the percentile statement did not run or ran out of its budget", "date_weeks_present": "not planned",
+    "date_months_present": "not planned",
 }
-#: Measures the profile takes since port step 7 (text_shape.py) but whose text branches of this inference are not ported
-#: over them yet (DESIGN-QUALITY-STEP-7-SAMPLED-TEXT-SHAPE.md §6): on a TEXT column they stay unknown, so a text
-#: column's type is "not inferred", never defaulted. Reason words differ from NOT_TAKEN's, which are about the profile.
-TAKEN_NOT_READ = frozenset({"numeric_ct", "date_ct", "includes_digit_ct", "avg_embedded_spaces", "min_text", "max_text",
-                            "distinct_pattern_ct", "frequent_patterns", "std_pattern_match"})
+#: Port step 7b: a text column's sampled text-shape measures are read by the text branches below. A row from before step 7
+#: (or a column whose read did not finish) has no `sample_value_ct`; its text conditions are unknown, and the reason says so.
+TEXT_SHAPE_UNREAD = "its sampled text shape was not measured (profiled before step 7, or this column's read did not finish)"
+TAKEN_NOT_READ = frozenset()
 
 KEEP = object()          # a statement's CASE left the value as it was
 
@@ -168,6 +168,20 @@ def apply(current: set, where, results, *, null_guard: bool) -> set:
 
 # ── the column's view of the profile ──────────────────────────────────────────────────────────────────────────
 
+def _first_pattern(stored) -> str | None:
+    """`fn_frequent_value(frequent_patterns, 1)`: the most frequent pattern of a stored `frequent_patterns` (JSON text or an
+    already parsed dict), or None."""
+    import json
+
+    if isinstance(stored, str):
+        try:
+            stored = json.loads(stored)
+        except ValueError:
+            return None
+    values = (stored or {}).get("values") if isinstance(stored, dict) else None
+    return values[0].get("value") if values else None
+
+
 class _Col:
     """A profile row read for the inference. `text` is True for a general_type 'A' column: the measures upstream takes
     only for text are unknown there and NULL-by-construction anywhere else."""
@@ -178,6 +192,28 @@ class _Col:
         self.text = self.gt == "A"
         self.name = p.get("column_name") or ""
         self.missed: set[str] = set()
+        # The sampled text-shape measures (port step 7b): "na" on a column that is not text (NULL by construction, so a
+        # condition on them is false), "read" on a text column whose shape was read or that holds no value, "unread" on a
+        # text column that has values but no shape (its conditions on them are unknown).
+        self.top1 = _first_pattern(p.get("frequent_patterns"))
+        if not self.text:
+            self.ts = "na"
+        elif p.get("value_ct") == 0 or p.get("sample_value_ct") is not None:
+            self.ts = "read"
+        else:
+            self.ts = "unread"
+
+    def tcond(self, fn, *keys: str):
+        """A condition over text-shape measures, `fn(*values)`, as a positive WHERE reads it: an unread text column is
+        unknown (and `missed` says why); a measure that is SQL NULL (not text, a column with no value, an empty string
+        that NULLIF removed) makes the condition not true; otherwise it is `fn`'s answer."""
+        if self.ts == "unread":
+            self.missed.add("sample_value_ct")
+            return None
+        values = [self.top1 if k == "_top1" else self.p.get(k) for k in keys]
+        if any(v is None for v in values):
+            return False
+        return bool(fn(*values))
 
     def get(self, key):
         return self.p.get(key)
@@ -197,8 +233,8 @@ def _name_year(c: _Col, now: datetime) -> bool | None:
     numeric = _and(_cmp(c.get("min_value"), ">=", 1900), _cmp(c.get("max_value"), "<=", now.year + 20),
                    _cmp(_num(c.get("fractional_sum")) or Decimal(0), "=", 0)
                    if c.get("fractional_sum") is not None else (True if _profiled_by_1b(c.p) else None))
-    text = None if c.text else False
-    c.missed.add("min_text")
+    text = c.tcond(lambda lo, hi, al, es: lo >= "1900" and hi <= str(now.year + 20) and al == 4 and es == 0,
+                   "min_text", "max_text", "avg_length", "avg_embedded_spaces")
     return _sql_or(numeric, text)
 
 
@@ -398,7 +434,7 @@ def _date_case_results(c: _Col, now: datetime) -> set:
     return out
 
 
-def _stage_a(c: _Col, now: datetime) -> tuple[set, set[str]]:
+def _stage_a(c: _Col, now: datetime, by_pos: dict | None = None) -> tuple[set, set[str]]:
     """Every statement up to and including 'ID-Unique' (upstream 1-557), in order. Returns (the value set, the
     statements whose condition stayed unknown, by name)."""
     s: set = {None}
@@ -425,38 +461,52 @@ def _stage_a(c: _Col, now: datetime) -> tuple[set, set[str]]:
     step("ID-SK", _ilike(name, PROFILE_SK_COLUMN_MASK), {"ID-SK"})
     step("ID", _ilike(name, PROFILE_ID_COLUMN_MASK), {"ID"})
     # 72-116: the date CASE (a date column, or text that is all dates: unknown on text, date_ct is not taken)
-    where_date = (True if gt == "D" else None if gt == "A" else False)
-    if where_date is None:
-        c.missed.add("date_ct")
-    step("Date", where_date, _date_case_results(c, now) if where_date is not False else {KEEP})
+    # For a text column that is all dates (value_ct = date_ct + zero_length_ct) the date measures are NULL, every CASE arm is
+    # NULL and the ELSE leaves the label as it was: the statement changes nothing, whatever the text holds.
+    step("Date", gt == "D", _date_case_results(c, now) if gt == "D" else {KEEP})
     # 119-134: character dates read frequent_patterns / min_text
-    for label, out in (("Character Date", "Date Stamp"), ("Character Timestamp", "DateTime Stamp")):
-        c.missed.update(("distinct_pattern_ct", "frequent_patterns"))
-        step(label, None if gt == "A" else False, {out})
+    step("Character Date", c.tcond(lambda dp, mn, mx, t: dp == 1 and mn >= "1900" and mx <= "2200" and t.strip() == "NNNN-NN-NN",
+                                   "distinct_pattern_ct", "min_text", "max_text", "_top1"), {"Date Stamp"})
+    step("Character Timestamp", c.tcond(lambda dp, t: dp == 1 and t.strip() in ("NNNN-NN-NN NN:NN:NN", "NNNN-NN-NNANN:NN:NN+NN:NN"),
+                                        "distinct_pattern_ct", "_top1"), {"DateTime Stamp"})
     # 136-142: Process <label>, general_type IN (A, D)
     process = _and(gt in ("A", "D"), any(rx.search(name) for rx in _PROCESS_DATE))
     step("Process", process, {lambda old: None if old is None else "Process " + old}, null_guard=False)
     # 146-226: the Periods, by name first
-    c.missed.update(("min_text", "max_text", "avg_embedded_spaces"))
     year = _name_year(c, now)
     step("Period Year", year, {"Period Year"})
     qtr_name = bool(re.search("qtr|quarter", name, re.IGNORECASE))
     qtr_numeric = _and(_cmp(c.get("min_value"), "=", 1), _cmp(c.get("max_value"), "=", 4), _fractional_sum_zero(c))
-    step("Period Quarter", _and(qtr_name, _sql_or(None if c.text else False, qtr_numeric)), {"Period Quarter"})
+    qtr_text = c.tcond(lambda mn, mx, al, t: mn >= "1900" and mx <= "2200" and 6 <= al <= 7
+                       and re.search(r"^\s*NNNN[-_]AN\s*$", t) is not None, "min_text", "max_text", "avg_length", "_top1") \
+       
+    step("Period Quarter", _and(qtr_name, _sql_or(qtr_text, qtr_numeric)), {"Period Quarter"})
     mo = bool(re.search("mo", name, re.IGNORECASE))
-    step("Period Year-Mon", None if gt == "A" and mo else False, {"Period Year-Mon"})
+    yearmon = c.tcond(lambda mn, mx, al, t: mn >= "1900" and mx <= "2200"
+                      and ((6.8 <= al <= 7.2 and re.search(r"^\s*NNNN[-_]NN\s*$", t) is not None)
+                           or (7.8 <= al <= 8.2 and re.search(r"^\s*NNNN[-_]AAA\s*$", t.upper()) is not None)),
+                      "min_text", "max_text", "avg_length", "_top1")
+    step("Period Year-Mon", _and(mo, yearmon), {"Period Year-Mon"})
     month_numeric = _and(_cmp(c.get("min_value"), "=", 1), _cmp(c.get("max_value"), "=", 12), _fractional_sum_zero(c))
-    step("Period Month", _and(mo, _sql_or(None if c.text else False, month_numeric)), {"Period Month"})
-    step("Period Mon-NN", None if gt == "A" else False, {"Period Mon-NN"})
+    month_text = c.tcond(lambda ml, mn, mx: (ml == 2 and mn in ("01", "1") and mx == "12")
+                         or (ml == 9 and mn.upper() == "APRIL" and mx.upper() == "SEPTEMBER")
+                         or (ml == 3 and mn.upper() == "APR" and mx.upper() == "SEP"),
+                         "max_length", "min_text", "max_text")
+    step("Period Month", _and(mo, _sql_or(month_text, month_numeric)), {"Period Month"})
+    monnn = re.compile(r"^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[\s-]?\d{1,2}$", re.IGNORECASE)
+    step("Period Mon-NN", c.tcond(lambda mn, mx, al, t: monnn.search(mn) is not None and monnn.search(mx) is not None
+                                  and 5.8 <= al <= 6.2 and re.search(r"AAA[\s-]NN", t.strip(), re.IGNORECASE) is not None,
+                                  "min_text", "max_text", "avg_length", "_top1"), {"Period Mon-NN"})
     wk = bool(re.search("wk|week", name, re.IGNORECASE))
     max_52_53 = None if c.get("max_value") is None else c.get("max_value") in (52, 53)
     wk_numeric = _and(_cmp(c.get("min_value"), "=", 1), max_52_53, _fractional_sum_zero(c))
-    step("Period Week", _and(wk, _between(dv, 10, 53), _sql_or(None if c.text else False, wk_numeric)),
-         {"Period Week"})
+    wk_text = c.tcond(lambda mn, mx: mn in ("1", "01") and mx in ("52", "53"), "min_text", "max_text")
+    step("Period Week", _and(wk, _between(dv, 10, 53), _sql_or(wk_text, wk_numeric)), {"Period Week"})
     dow_name = bool(re.search("day|dow", name, re.IGNORECASE))
     dow_numeric = _and(_cmp(c.get("min_value"), "=", 1), _cmp(c.get("max_value"), "=", 7), _fractional_sum_zero(c))
-    step("Period DOW", _and(dow_name, _cmp(dv, "=", 7), _sql_or(None if c.text else False, dow_numeric)),
-         {"Period DOW"})
+    dow_text = c.tcond(lambda ml, mn, mx: (mn == "1" and mx == "7") or (mn.upper() == "FRIDAY" and mx.upper() == "WEDNESDAY" and ml == 9)
+                       or (mn.upper() == "FRI" and mx.upper() == "WED" and ml == 3), "max_length", "min_text", "max_text")
+    step("Period DOW", _and(dow_name, _cmp(dv, "=", 7), _sql_or(dow_text, dow_numeric)), {"Period DOW"})
     # 230-250: Period overrides, no IS NULL guard; they also read date_days/weeks/months_present (weeks/months not taken)
     lo, hi = as_timestamp(c.get("min_date")), as_timestamp(c.get("max_date"))
     if gt == "D":
@@ -487,25 +537,38 @@ def _stage_a(c: _Col, now: datetime) -> tuple[set, set[str]]:
     phone_name = bool(re.search("phone", name, re.IGNORECASE))
     phone_len = _between(c.get("max_length"), 7, 11)
     addr_name = bool(re.search("address$", name, re.IGNORECASE)) and not re.search("email", name, re.IGNORECASE)
-    can_std = None if gt == "A" else False
-    zip_where = _sql_or(_and(can_std, zip_name), _and(gt == "A", zip_exact, None))
-    arms = [(zip_where, "Zip"), (can_std, "Email"),
-            (_sql_or(_and(phone_name, c.na(phone_len) if c.text else False), can_std), "Phone"),
-            (_sql_or(addr_name, can_std), "Address"), (can_std, "State")]
-    c.missed.update(("std_pattern_match", "numeric_ct"))
+
+    def std(label):
+        # std_pattern_match = label: NULL (no standard pattern, or not text) is not true once the shape is read
+        return c.tcond(lambda v: v == label, "std_pattern_match")
+
+    zip_text_digits = c.tcond(lambda nc, vc_, zl_, ml: nc > 0 and vc_ == nc + zl_ and ml <= 9,
+                              "numeric_ct", "value_ct", "zero_length_ct", "max_length") if zip_exact and gt == "A" else False
+    zip_where = _sql_or(_and(std("ZIP_USA"), zip_name), zip_text_digits)
+    arms = [(zip_where, "Zip"), (std("EMAIL"), "Email"),
+            (_sql_or(_and(phone_name, phone_len), std("PHONE_USA")), "Phone"),
+            (_sql_or(addr_name, std("STREET_ADDR")), "Address"), (std("STATE_USA"), "State")]
     step("Zip/Email/Phone/Address/State", True, case_set(arms, KEEP))
     # 301-317 and 520-536: City, from the neighbours' labels / text shape
-    step("City", None if gt == "A" else False, {"City"})
-    # 320-347: person names
-    c.missed.add("avg_embedded_spaces")
-    pn = None if gt == "A" else False
-    step("Person Full Name", _and(_PERSON_FULL.search(name) is not None or name in ("name", "nm"), pn), {"Person Full Name"})
+    # City is set from the neighbours' labels (State at position + 1, Zip at + 2), which are decided in this very statement
+    # for another column. A column whose name has no 'city'/'cty' cannot take the first form, and the second needs the
+    # next column to be State, which only a column whose std_pattern_match is STATE_USA can be; both are false then.
+    step("City (by position)", _city_by_position(c, by_pos or {}), {"City"}, null_guard=False)
+    # 320-347: person names. avg_length is a profile 1b measure (also taken for a number or a date); avg_embedded_spaces is
+    # text-only, so it is NULL, and the condition not true, on any other column.
+    def spaces(fn):
+        return c.tcond(lambda al, es: fn(al, es), "avg_length", "avg_embedded_spaces")
+
+    step("Person Full Name", _and(_PERSON_FULL.search(name) is not None or name in ("name", "nm"),
+                                  spaces(lambda al, es: al <= 20 and 0.9 <= es <= 2.0)), {"Person Full Name"})
     given = (_similar(lower, "%f(|i)rst(_| |)n(|a)m%%") or _similar(lower, "%(middle|mdl)(_| |)n(|a)m%%")
              or _similar(lower, "%nick(_| |)n(|a)m%%"))
-    step("Person Given Name", _and(given, pn), {"Person Given Name"}, null_guard=False)
+    step("Person Given Name", _and(given, spaces(lambda al, es: al <= 8 and es < 0.2)), {"Person Given Name"},
+         null_guard=False)
     last = (_similar(lower, "%l(|a)st(_| |)n(|a)m%") or _similar(lower, "%maiden(_| |)n(|a)m%")
             or _similar(lower, "%sur(_| |)n(|a)m%"))
-    step("Person Last Name", _and(last, pn), {"Person Last Name"}, null_guard=False)
+    step("Person Last Name", _and(last, spaces(lambda al, es: 5 <= al <= 8 and es < 0.2)), {"Person Last Name"},
+         null_guard=False)
     step("Entity Name", _and(gt == "A", _ENTITY.search(name) is not None), {"Entity Name"})
     # 356-366: Process User, System User, by name (no IS NULL guard, no type filter)
     step("Process User", _PROCESS_USER.search(name) is not None, {"Process User"}, null_guard=False)
@@ -515,15 +578,18 @@ def _stage_a(c: _Col, now: datetime) -> tuple[set, set[str]]:
     one = _cmp(dv, "=", 1)
     bool01 = _and(_cmp(c.get("min_value"), "=", 0), _cmp(c.get("max_value"), "=", 1),
                   None if c.get("catalog_type") is None else "numeric" not in (c.get("catalog_type") or "").lower())
-    text_bool = None if c.text else False
-    b_arms = [(_sql_or(gt == "B", _and(two, _sql_or(text_bool, bool01))), "Boolean"),
-              (_sql_or(gt == "B", _and(one, _sql_or(text_bool, bool01))), "Boolean")]
-    c.missed.add("min_text")
+    pairs2 = (("no", "yes"), ("n", "y"), ("false", "true"), ("0", "1"))
+    text2 = c.tcond(lambda mn, mx: (mn.lower(), mx.lower()) in pairs2, "min_text", "max_text")
+    text1 = c.tcond(lambda mn, mx: (mn.lower() in ("no", "yes") and mx.lower() in ("no", "yes"))
+                    or (mn.lower() in ("n", "y") and mx.lower() in ("n", "y"))
+                    or (mn.lower() in ("false", "true") and mx.lower() in ("f", "t"))
+                    or (mn.lower() in ("0", "1") and mx.lower() in ("0", "1")), "min_text", "max_text")
+    b_arms = [(_sql_or(gt == "B", _and(two, _sql_or(text2, bool01))), "Boolean"),
+              (_sql_or(gt == "B", _and(one, _sql_or(text1, bool01))), "Boolean")]
     step("Boolean", True, case_set(b_arms, KEEP))
     # 412-448: Code / Category / ID / Attribute / Description / Measurement Text, character columns only
     if gt == "A":
-        c.missed.update(("numeric_ct", "includes_digit_ct", "avg_embedded_spaces", "datatype_suggestion",
-                         "frequent_patterns"))
+        c.missed.add("datatype_suggestion")      # the statement's WHERE reads it; see NOT_TAKEN
         measure_name = any(rx.search(name.lower()) for rx in _MEASURE_TEXT_NAME)
         text_results = {"ID", "Code", "Attribute", "Description", "Category", KEEP}
         if measure_name:
@@ -531,9 +597,15 @@ def _stage_a(c: _Col, now: datetime) -> tuple[set, set[str]]:
         step("Code/Category/ID/Attribute/Description", None, text_results)
     # 456-467: Flag
     if gt == "A":
-        step("Flag", None, {"Flag"})
+        # the column's catalog type is not numeric for a text column, so `lower(column_type) NOT ILIKE '%numeric%'` is true and
+        # the OR with datatype_suggestion needs nothing more
+        flag = _and(_between(dv, 3, 5), c.tcond(lambda mn, ml, pats: mn > 1 and ml <= 7 and _has_alpha(pats),
+                                                 "min_length", "max_length", "frequent_patterns"))
+        step("Flag", flag, {"Flag"})
     # 472-517: the remaining NULLs
     step("Remaining", True, _tail(c), null_guard=True)
+    # 520-536: City by text shape and a State neighbour; no IS NULL guard, so it overrides whatever the column was labelled
+    step("City (by shape)", _city_by_shape(c, by_pos or {}), {"City"}, null_guard=False)
     # 538-565: ID-Secondary / ID-Group / ID-Unique
     id_pct = None if rc in (None, 0) or vc is None else round(100.0 * vc / rc)
     uniq_pct = None if vc in (None, 0) or dv is None else round(100.0 * dv / vc)
@@ -544,6 +616,65 @@ def _stage_a(c: _Col, now: datetime) -> tuple[set, set[str]]:
     s = _relabel(s, {"ID", "ID-Secondary"}, unique_where, "ID-Unique")
     s = _relabel(s, {"ID-SK"}, unique_where, "ID-Unique-SK")
     return s, unknown
+
+
+def _neighbour(c: _Col, by_pos: dict, offset: int):
+    pos = c.get("position")
+    if pos is None:
+        return None
+    return by_pos.get((c.p.get("schema_name"), c.p.get("table_name"), pos + offset))
+
+
+def _may_be_state(n: dict | None) -> bool | None:
+    """Whether a neighbouring column could carry the label 'State': only a column whose std_pattern_match is STATE_USA can.
+    False is exact (the State arm cannot fire); True is only "possible" (earlier statements may have labelled it), so None."""
+    if n is None:
+        return False
+    if n.get("general_type") == "A" and n.get("value_ct") and n.get("sample_value_ct") is None:
+        return None                                   # its text shape was not read: unknown
+    return None if n.get("std_pattern_match") == "STATE_USA" else False
+
+
+def _may_be_zip(n: dict | None) -> bool | None:
+    if n is None:
+        return False
+    name = (n.get("column_name") or "")
+    named = bool(re.search("zip|postal", name, re.IGNORECASE))
+    if n.get("general_type") == "A" and n.get("value_ct") and n.get("sample_value_ct") is None:
+        return None if named or name.lower() in ("zip_code", "zip") else False
+    return None if (n.get("std_pattern_match") == "ZIP_USA" and named) or name.lower() in ("zip_code", "zip") else False
+
+
+def _city_by_position(c: _Col, by_pos: dict) -> bool | None:
+    """Upstream 301-317: a column named like 'city' (`SIMILAR TO '%c(|i)ty%'`), with a State two columns on... one column on and a Zip two on,
+    that is not itself State or Zip. Never TRUE here (the neighbours' labels are decided in the same statement); False exactly
+    when it cannot fire."""
+    if not _similar(c.name.lower(), "%c(|i)ty%"):
+        return False
+    return _and(_may_be_state(_neighbour(c, by_pos, 1)), _may_be_zip(_neighbour(c, by_pos, 2)))
+
+
+def _city_by_shape(c: _Col, by_pos: dict) -> bool | None:
+    """Upstream 520-536: no digits, numbers or dates in the values, average length 7-12, fewer than one embedded space on
+    average, 15 to 40,000 distinct values, and a State in the next column."""
+    shape = c.tcond(lambda dg, nc, dc, vc_, al, es, dv_: vc_ and dg / vc_ < 0.05 and nc / vc_ < 0.05 and dc / vc_ < 0.05
+                    and 7 <= al <= 12 and es < 1 and 15 <= dv_ <= 40000,
+                    "includes_digit_ct", "numeric_ct", "date_ct", "value_ct", "avg_length", "avg_embedded_spaces",
+                    "distinct_value_ct")
+    return _and(shape, _may_be_state(_neighbour(c, by_pos, 1)))
+
+
+def _has_alpha(stored) -> bool:
+    """`fn_frequent_like(frequent_patterns, '%A%')`: some stored pattern contains an upper-case A (a letter)."""
+    import json
+
+    if isinstance(stored, str):
+        try:
+            stored = json.loads(stored)
+        except ValueError:
+            return False
+    values = (stored or {}).get("values") if isinstance(stored, dict) else None
+    return any("A" in (v.get("value") or "") for v in values or ())
 
 
 def _guarded_on(s: set, old_label: str, results: set) -> set:
@@ -644,11 +775,12 @@ def infer_batch(rows: list[dict], *, now: datetime | None = None) -> dict[tuple,
     profiled has no inference (`possible` is every label)."""
     now = now or datetime.now(UTC).replace(tzinfo=None)
     cols = {(r["schema_name"], r["table_name"], r["column_name"]): _Col(r) for r in rows}
+    by_pos = {(r["schema_name"], r["table_name"], r["position"]): r for r in rows if r.get("position") is not None}
     stage_a: dict[tuple, tuple[set, set]] = {}
     for key, c in cols.items():
         if (c.get("state") or "measured") != "measured":
             continue
-        stage_a[key] = _stage_a(c, now)
+        stage_a[key] = _stage_a(c, now, by_pos)
     unique_names: dict[str, set[tuple[str, str]]] = defaultdict(set)
     maybe_names: dict[str, set[tuple[str, str]]] = defaultdict(set)
     for (schema, table, column), (s, _u) in stage_a.items():
@@ -673,12 +805,10 @@ def _reasons(final: set, c: _Col, unknown: set[str]) -> list[str]:
     if len(final) == 1:
         return []
     needed = sorted(m for m in c.missed if m in NOT_TAKEN)
-    unread = sorted(m for m in c.missed if m in TAKEN_NOT_READ)
-    if c.text and (needed or unread):
+    if c.text and (needed or "sample_value_ct" in c.missed):
         said = []
-        if unread:
-            said.append(f"reads {', '.join(unread)}, which the profile takes but this inference does not read yet "
-                        "(its text branches are not ported over them)")
+        if "sample_value_ct" in c.missed:
+            said.append(TEXT_SHAPE_UNREAD)
         if needed:
             said.append(f"needs {', '.join(needed)}, which the profile does not take "
                         f"({'; '.join(sorted({NOT_TAKEN[m] for m in needed}))})")
@@ -759,13 +889,16 @@ def functional_table_type(period: str | None, kind: str | None) -> str | None:
 # ── applying it to a profile batch ────────────────────────────────────────────────────────────────────────────
 
 def _inference_rows(rows: list[dict], catalog_types: dict[tuple, str],
-                    scales: dict[tuple, tuple[str, int | None]] | None) -> list[dict]:
+                    scales: dict[tuple, tuple[str, int | None]] | None,
+                    positions: dict[tuple, int] | None = None) -> list[dict]:
     """Copies of the profile rows with the two inventory facts the inference reads: the column's catalog type, and for a
     number its numeric scale (the profile's own catalog read; None when it was not read)."""
     out = []
     for r in rows:
         key = (r["schema_name"], r["table_name"], r["column_name"])
         extra = {"catalog_type": catalog_types.get(key)}
+        if positions is not None and key in positions:
+            extra["position"] = positions[key]
         if scales is not None and key in scales:
             extra["numeric_scale"] = scales[key][1]
         out.append({**r, **extra})
@@ -774,13 +907,14 @@ def _inference_rows(rows: list[dict], catalog_types: dict[tuple, str],
 
 def label_rows(rows: list[dict], *, catalog_types: dict[tuple, str],
                scales: dict[tuple, tuple[str, int | None]] | None,
-               history: dict[tuple[str, str], list[int | None]], now: datetime | None = None) -> dict[tuple, Inference]:
+               history: dict[tuple[str, str], list[int | None]], now: datetime | None = None,
+               positions: dict[tuple, int] | None = None) -> dict[tuple, Inference]:
     """Fill `functional_data_type` and `functional_table_type` on a batch of freshly measured profile rows, in place.
     A column the inference could not settle stays NULL (and says why through `infer_batch` at read time); a table whose
     period cannot be told (fewer than two profile runs) stays NULL.
 
     `history` is each table's record_ct over the stored batches BEFORE this one; this batch's own count is added."""
-    inferred = infer_batch(_inference_rows(rows, catalog_types, scales), now=now)
+    inferred = infer_batch(_inference_rows(rows, catalog_types, scales, positions), now=now)
     by_table: dict[tuple[str, str], list[Inference]] = defaultdict(list)
     counts: dict[tuple[str, str], int | None] = {}
     for r in rows:

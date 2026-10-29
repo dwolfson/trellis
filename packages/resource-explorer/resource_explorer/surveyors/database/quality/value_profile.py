@@ -540,8 +540,9 @@ def run_value_profile(
 
     catalog_types = {(c["schema_name"], c["table_name"], c["column_name"]): c.get("base_type") or c.get("data_type")
                      for c in columns}
+    positions = {(c["schema_name"], c["table_name"], c["column_name"]): c.get("ordinal_position") or 0 for c in columns}
     functional_infer.label_rows(rows, catalog_types=catalog_types, scales=numeric,
-                                history=registry.value_profile_record_counts(slug))
+                                history=registry.value_profile_record_counts(slug), positions=positions)
     registry.write_detail_rows(PROFILE_TABLE, slug, surveyed_at, rows=rows)
     states: dict[str, int] = {}
     for row in rows:

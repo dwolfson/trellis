@@ -216,7 +216,9 @@ def run_propose(registry, slug: str, *, row_ct_pct_threshold: float, surveyed_at
     # and the table periods; a stored label is used as it is.
     catalog_types = {(c["schema_name"], c["table_name"], c["column_name"]): c.get("base_type") or c.get("data_type")
                      for c in registry.query_detail_rows("database_columns", slug)}
-    inferred = functional_infer.infer_batch(functional_infer._inference_rows(profile, catalog_types, None))
+    positions = {(c["schema_name"], c["table_name"], c["column_name"]): c.get("ordinal_position")
+                 for c in registry.query_detail_rows("database_columns", slug) if c.get("ordinal_position") is not None}
+    inferred = functional_infer.infer_batch(functional_infer._inference_rows(profile, catalog_types, None, positions))
     record_series = registry.value_profile_record_counts(slug)
 
     def with_inference(prow: dict) -> dict:
