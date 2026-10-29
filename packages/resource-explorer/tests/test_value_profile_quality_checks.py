@@ -325,12 +325,16 @@ def test_every_assembled_statement_parses_as_postgres():
     assert len(aliases) == 2 * 7 + 3 * 2 + 4 + 4 + 3 * 2 + 5 + 2 + 1
     sqlglot.parse_one(sql, read="postgres")
     sqlglot.parse_one(TABLE_FACTS_SQL, read="postgres")
-    params = {"baseline_ct": 10, "baseline_value_ct": 9, "baseline_value": "2020-01-01", "threshold_value": 2}
+    params = {"baseline_ct": 10, "baseline_value_ct": 9, "baseline_value": "2020-01-01", "threshold_value": 2,
+              "baseline_avg": 3.5, "baseline_sd": 1.25, "baseline_sum": 31.5, "baseline_unique_ct": 7}
     measures = []
     for name, test_type in cat.load_catalogue().items():
         if test_type.run_type != cat.RUN_CAT:
             continue  # Dupe_Rows and the drift checks have no aggregate measure; their statement is parsed below
-        p = dict(params, baseline_value='"",n/a,it\'s' if name == "Required_No_Placeholder" else "2020-01-01")
+        p = dict(params, baseline_value='"",n/a,it\'s' if name == "Required_No_Placeholder"
+                 else 1.5 if name == "Min_Val" else "2020-01-01")
+        if name in ("LOV_Match", "Pattern_Match", "Valid_Month"):
+            continue  # their baselines are text lists and regexes, not built until profile slice 2 gives them an input
         measures.append(cat.render_measure(test_type, "" if test_type.is_table_check else "col", p,
                                            "2026-10-20 12:00:00"))
     sqlglot.parse_one(_select("sales", "orders", measures), read="postgres")
@@ -394,6 +398,8 @@ def test_proposals_follow_the_selection_rules(registry, entity):
         "sales.orders.payload::Missing_Pct", "sales.orders::Row_Ct_Pct",
         # steps 4 and 5: Dupe_Rows and Schema_Drift on every table that was profiled (not Match_Column_*: opt-in)
         "sales.orders::Dupe_Rows", "sales.orders::Schema_Drift", "sales.empty::Dupe_Rows", "sales.empty::Schema_Drift",
+        # step 6: Unique_Pct on a column of more than ten distinct values whose type is not a Measurement
+        "sales.orders.order_id::Unique_Pct", "sales.orders.placed::Unique_Pct",
     }
     # note is text with placeholders (filled_value_ct 3): neither Required nor Required_No_Placeholder.
     assert "sales.orders.note::Required_No_Placeholder" not in rows
@@ -408,7 +414,7 @@ def test_proposals_follow_the_selection_rules(registry, entity):
     row_ct = rows["sales.orders::Row_Ct_Pct"]
     assert (row_ct["origin"], row_ct["params_json"]["threshold_value"], row_ct["column_name"]) == ("re", 10, "")
     assert "vendored-catalog@3606859c" in row_ct["catalogue_ref"]
-    assert out["proposed_ct"] == 12 and out["not_applicable_ct"] > 0
+    assert out["proposed_ct"] == 14 and out["not_applicable_ct"] > 0
 
 
 def test_an_unprofiled_column_is_not_established_by_column_never_a_silent_no(registry, entity):
@@ -501,7 +507,7 @@ def test_the_propose_step_opens_no_connection(registry, entity, monkeypatch):
     _profile(registry, entity)
     monkeypatch.setattr(connection, "database_connection", lambda *a, **k: pytest.fail("connected"))
     out = _ADAPTER.re_analysis_steps["propose_quality_checks"](entity, registry, scan_surveyed_at=None)
-    assert out["quality_proposals"]["proposed_ct"] == 12
+    assert out["quality_proposals"]["proposed_ct"] == 14
 
 
 # ── run_quality_checks ───────────────────────────────────────────────────────────────────────────────────────

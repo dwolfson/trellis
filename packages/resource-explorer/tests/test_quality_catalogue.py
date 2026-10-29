@@ -27,7 +27,7 @@ PKG = Path(__file__).resolve().parent.parent
 def test_the_ported_test_types_are_vendored_with_licence_and_provenance():
     assert set(cat.load_catalogue()) == (set(cat.SLICE_1_TEST_TYPES) | set(cat.Q6_TEST_TYPES) | set(cat.B1A_TEST_TYPES)
                                          | set(cat.B1B_TEST_TYPES) | set(cat.STEP_4_TEST_TYPES)
-                                         | set(cat.STEP_5_TEST_TYPES))
+                                         | set(cat.STEP_5_TEST_TYPES) | set(cat.STEP_6_TEST_TYPES))
     assert set(cat.Q6_TEST_TYPES) == {"Recency", "Future_Date_1Y"}
     for name in ("LICENSE", "NOTICE", "PROVENANCE.md"):
         assert (cat.CATALOGUE_DIR / name).is_file(), name
@@ -263,8 +263,11 @@ def _fake_upstream(root: Path) -> Path:
         (cat.POSTGRES_DIR / "general_type.sql").read_text() + (cat.POSTGRES_DIR / "numeric_chars.sql").read_text())
     shutil.copy(cat.POSTGRES_DIR / "templated_functions.yaml", flavor / "profiling/templated_functions.yaml")
     (root / "testgen/template/profiling").mkdir()
-    shutil.copy(cat.CATALOGUE_DIR / "profiling/functional_datatype_date.sql",
+    # step 6 vendors the whole file, which the fake upstream carries as it is; Q6's subset is checked against it
+    shutil.copy(cat.CATALOGUE_DIR / "profiling/functional_datatype.sql",
                 root / "testgen/template/profiling/functional_datatype.sql")
+    shutil.copy(cat.CATALOGUE_DIR / "profiling/functional_tabletype_stage.sql",
+                root / "testgen/template/profiling/functional_tabletype_stage.sql")
     shutil.copytree(cat.GENERATION_TEMPLATES_DIR, root / "testgen/template/gen_query_tests")
     return root
 

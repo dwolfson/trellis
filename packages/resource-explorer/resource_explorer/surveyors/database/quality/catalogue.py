@@ -24,7 +24,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from decimal import ROUND_HALF_UP, Decimal, localcontext
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation, localcontext
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -72,9 +72,16 @@ STEP_4_TEST_TYPES = ("Dupe_Rows",)
 #: run no query against the surveyed database (`schema_drift.py`). Schema_Conformance is vendored but has no declared
 #: schema in RE to compare with, so it never proposes and never concludes (see the note, section 5).
 STEP_5_TEST_TYPES = ("Match_Column_Ct", "Match_Column_Type", "Schema_Conformance", "Schema_Drift")
+#: Q4 port order step 6 (DESIGN-QUALITY-STEP-6-FUNCTIONAL-TYPE-INFERENCE.md): the types whose selection rules read the
+#: functional-type inference (`functional_infer.py`) or the measures it needs. All CAT. Several can propose only once
+#: profile slice 2 (text shape) lands: their rules read `not_established` until then, naming what is missing.
+STEP_6_TEST_TYPES = ("Alpha_Trunc", "Avg_Shift", "Dec_Trunc", "Distinct_Date_Ct", "Distinct_Value_Ct", "Incr_Avg_Shift",
+                     "LOV_Match", "Min_Val", "Monthly_Rec_Ct", "Outlier_Pct_Above", "Outlier_Pct_Below", "Pattern_Match",
+                     "Unique_Pct", "Valid_Month", "Valid_US_Zip", "Valid_US_Zip3", "Variability_Decrease",
+                     "Variability_Increase", "Weekly_Rec_Ct")
 #: Every test type RE has ported, in the order proposals are considered.
 PORTED_TEST_TYPES = (SLICE_1_TEST_TYPES + Q6_TEST_TYPES + B1A_TEST_TYPES + B1B_TEST_TYPES + STEP_4_TEST_TYPES
-                     + STEP_5_TEST_TYPES)
+                     + STEP_5_TEST_TYPES + STEP_6_TEST_TYPES)
 
 #: TestGen's `run_type` values: CAT is an aggregate in the per-table SELECT, QUERY is a statement of its own, METADATA
 #: reads TestGen's own metadata tables (RE: its stored surveys).
@@ -458,6 +465,100 @@ def _profiled(row: dict) -> bool | None:
     return True if (row.get("state") or "measured") == "measured" else None
 
 
+def _between_ct(row: dict, low: int, high: int) -> bool | None:
+    """`distinct_value_ct BETWEEN low AND high`."""
+    value = row.get("distinct_value_ct")
+    return None if value is None else low <= value <= high
+
+
+def _outlier(p: dict) -> bool | None:
+    dv, vc, hi, lo = p.get("distinct_value_ct"), p.get("value_ct"), p.get("max_value"), p.get("min_value")
+    span = None if hi is None or lo is None or dv is None else dv == hi - lo + 1
+    ratio = None if dv is None or not vc else dv / vc
+    avg, sd = p.get("avg_value"), p.get("stdev_value")
+    cv = None if sd is None or not avg else sd / avg   # a zero mean is a division error upstream: unknown here
+    return _and(_fdt_is(p, "Measurement"), _cmp(dv, ">", 30), _not(span), _cmp(ratio, ">", 0.1), _cmp(cv, ">", 0.01),
+                _not_geo(p))
+
+
+def _variability(p: dict) -> bool | None:
+    dv, vc, hi, lo = p.get("distinct_value_ct"), p.get("value_ct"), p.get("max_value"), p.get("min_value")
+    consecutive = _and(None if hi is None or lo is None or dv is None else dv == hi - lo + 1, _cmp(dv, ">", 2))
+    return _and(_cmp(p.get("general_type"), "=", "N"), _fdt_measure(p), _not_geo(p), _cmp(vc, "<>", dv),
+                _cmp(dv, ">", 10), _cmp(p.get("stdev_value"), ">", 0), _is_not_null_1b(p, "avg_value"),
+                _not(consecutive))
+
+
+def label_in(possible, test) -> bool | None:
+    """Whether a column's functional_data_type satisfies `test` (a function of a label): True when every label it could
+    still end with does, False when none does, else None. `possible` None = the type is not known at all. NULL (no
+    label) satisfies nothing. The inference that produces the set is `functional_infer`."""
+    if possible is None:
+        return None
+    hits = [bool(v is not None and test(v)) for v in possible]
+    if all(hits):
+        return True
+    return False if not any(hits) else None
+
+
+def _possible(row: dict):
+    """The labels a profile row's type could be: `fdt_possible` when propose supplied it (the stored label, or the set
+    the stored measures narrow it to), else the stored `functional_data_type` alone, else unknown."""
+    if "fdt_possible" in row:
+        return row["fdt_possible"]
+    stored = row.get("functional_data_type")
+    return frozenset({stored}) if stored else None
+
+
+def _fdt_is(row: dict, label: str) -> bool | None:
+    return label_in(_possible(row), lambda v: v == label)
+
+
+def _fdt_in(row: dict, labels: tuple[str, ...]) -> bool | None:
+    return label_in(_possible(row), lambda v: v in labels)
+
+
+def _fdt_ilike_prefix(row: dict, prefix: str) -> bool | None:
+    """`functional_data_type ILIKE '<prefix>%'`."""
+    return label_in(_possible(row), lambda v: v.lower().startswith(prefix.lower()))
+
+
+def _fdt_measure(row: dict) -> bool | None:
+    """`functional_data_type ILIKE 'Measure%' AND functional_data_type <> 'Measurement Spike'`."""
+    return _and(_fdt_ilike_prefix(row, "Measure"), label_in(_possible(row), lambda v: v != "Measurement Spike"))
+
+
+def _table_like(row: dict, needle: str) -> bool | None:
+    """`functional_table_type LIKE '%<needle>%'`; unknown when the table type was not inferred."""
+    value = row.get("functional_table_type")
+    return None if value is None else needle.lower() in value.lower()
+
+
+def _not_geo(row: dict) -> bool | None:
+    name = (row.get("column_name") or "").lower()
+    return "latitude" not in name and "longitude" not in name
+
+
+def _fractional_positive(row: dict) -> bool | None:
+    """`fractional_sum > 0`: NULL there means "not a decimal column" (so FALSE) once profile 1b has taken the row, and
+    "not measured" before it."""
+    if _profiled_by_1b(row) is None:
+        return None
+    text = row.get("fractional_sum")
+    if text is None:
+        return False
+    try:
+        return Decimal(str(text)) > 0
+    except InvalidOperation:
+        return None
+
+
+def _unrelated(value) -> None:
+    """A measure RE does not take yet (text shape, frequent values and patterns, week and month presence, percentiles):
+    its term is unknown on every column, and named in the not_established reason by its input name."""
+    return None  # noqa: RET501 - the value is the measure's name for the reader; the answer is always unknown
+
+
 # Each rule below is the vendored fragment, term for term. The fragment is quoted above its port.
 PREDICATES: dict[str, Predicate] = {
     # record_ct <> value_ct
@@ -742,6 +843,145 @@ PREDICATES: dict[str, Predicate] = {
     # No selection rule and no generation template upstream: a person declares the schema (an ODCS contract), and RE
     # holds no declared schema. Never proposed (`TestType.manual_only`).
     "Schema_Conformance": Predicate(None, (), lambda p: False),
+    # ── step 6: the functional-type family (functional_infer.py). `functional_data_type` is read as the set of labels
+    # the stored measures leave possible: a numeric column is not flooded with not_established for a text rule. ──
+    # general_type ='A' AND max_length > 0 AND ( (min_length = avg_length AND max_length = avg_length) OR (numeric_ct <>
+    #   value_ct ) ) AND functional_table_type NOT LIKE '%window%' AND ( (distinct_value_ct NOT BETWEEN 2 AND 10 AND
+    #   functional_data_type NOT IN ( 'Constant', 'Boolean') ) AND NOT ( fn_frequent_size(frequent_patterns) = 1 ))
+    "Alpha_Trunc": Predicate(
+        "e6c0ffd7a754d2804d83eaa259fd4314e0f9c5e899d07d54c0e962ed8f94e075",
+        ("general_type", "max_length", "min_length", "avg_length", "numeric_ct", "value_ct", "functional_table_type",
+         "distinct_value_ct", "functional_data_type", "frequent_patterns"),
+        lambda p: _and(
+            _cmp(_p(p, "general_type"), "=", "A"), _cmp(_p(p, "max_length"), ">", 0),
+            _sql_or(_and(_cmp(_p(p, "min_length"), "=", _p(p, "avg_length")),
+                         _cmp(_p(p, "max_length"), "=", _p(p, "avg_length"))), _unrelated(_p(p, "numeric_ct"))),
+            _not(_table_like(p, "window")),
+            _and(_not(_between_ct(p, 2, 10)), label_in(_possible(p), lambda v: v not in ("Constant", "Boolean"))),
+            _not(_unrelated(_p(p, "frequent_patterns"))))),
+    # general_type='N' AND distinct_value_ct > 10 AND functional_data_type ilike 'Measure%' AND functional_data_type <>
+    #   'Measurement Spike' AND column_name NOT ilike '%latitude%' AND column_name NOT ilike '%longitude%'
+    "Avg_Shift": Predicate(
+        "bde6e83d885b546f9c9bd0575ab448bbbd4472283b180135066cace7df4bdbf2",
+        ("general_type", "distinct_value_ct", "functional_data_type"),
+        lambda p: _and(_cmp(_p(p, "general_type"), "=", "N"), _cmp(_p(p, "distinct_value_ct"), ">", 10),
+                       _fdt_measure(p), _not_geo(p))),
+    # fractional_sum > 0 AND functional_table_type LIKE'%cumulative%'
+    "Dec_Trunc": Predicate(
+        "7eaac30c6b8bc8c33beb3cdd788bd5b782292ce2865ec48621c3250c40daafd8",
+        ("fractional_sum", "functional_table_type"),
+        lambda p: _and(_fractional_positive(p), _table_like(p, "cumulative"))),
+    # functional_data_type ILIKE 'Transactional Date%' AND date_days_present > 1 AND functional_table_type ILIKE
+    #   '%cumulative%'
+    "Distinct_Date_Ct": Predicate(
+        "bd30cbed60ba1c07557b2729b235290d5d6588934320131a33a0598afda4dde2",
+        ("functional_data_type", "date_days_present", "functional_table_type"),
+        lambda p: _and(_fdt_ilike_prefix(p, "Transactional Date"), _cmp(_p(p, "date_days_present"), ">", 1),
+                       _table_like(p, "cumulative"))),
+    # distinct_value_ct between 2 and 10 AND value_ct > 50 AND functional_data_type IN ('Code', 'Category', 'Attribute',
+    #   'Description') AND frequent_values IS NULL
+    "Distinct_Value_Ct": Predicate(
+        "f13cceae802041f9c65afcf4627c8a8de8a2bb72f254d15b092e9963f94e8e94",
+        ("distinct_value_ct", "value_ct", "functional_data_type", "frequent_values"),
+        lambda p: _and(_between_ct(p, 2, 10), _cmp(_p(p, "value_ct"), ">", 50),
+                       _fdt_in(p, ("Code", "Category", "Attribute", "Description")), _unrelated(_p(p, "frequent_values")))),
+    # (same selection as Avg_Shift)
+    "Incr_Avg_Shift": Predicate(
+        "bde6e83d885b546f9c9bd0575ab448bbbd4472283b180135066cace7df4bdbf2",
+        ("general_type", "distinct_value_ct", "functional_data_type"),
+        lambda p: _and(_cmp(_p(p, "general_type"), "=", "N"), _cmp(_p(p, "distinct_value_ct"), ">", 10),
+                       _fdt_measure(p), _not_geo(p))),
+    # functional_data_type IN ('Boolean', 'Code', 'Category') AND frequent_values IS NOT NULL AND distinct_value_ct
+    #   BETWEEN 2 and 10 AND value_ct > 5
+    "LOV_Match": Predicate(
+        "105b97ed128cf19417641a902412241358633940384f0d723ada46d1ab84fdd1",
+        ("functional_data_type", "frequent_values", "distinct_value_ct", "value_ct"),
+        lambda p: _and(_fdt_in(p, ("Boolean", "Code", "Category")), _unrelated(_p(p, "frequent_values")),
+                       _between_ct(p, 2, 10), _cmp(_p(p, "value_ct"), ">", 5))),
+    # general_type='N' AND functional_data_type ILIKE 'Measure%' AND min_value IS NOT NULL AND (distinct_value_ct >= 2
+    #   OR (distinct_value_ct=2 and min_value<>0 and max_value<>1))
+    "Min_Val": Predicate(
+        "133e1e51624645220be07d7712ba2f7470a3d306b760542ffd9ae6485f33bba1",
+        ("general_type", "functional_data_type", "min_value", "distinct_value_ct", "max_value"),
+        lambda p: _and(_cmp(_p(p, "general_type"), "=", "N"), _fdt_ilike_prefix(p, "Measure"),
+                       _is_not_null_1b(p, "min_value"),
+                       _sql_or(_cmp(_p(p, "distinct_value_ct"), ">=", 2),
+                               _and(_cmp(_p(p, "distinct_value_ct"), "=", 2), _cmp(_p(p, "min_value"), "<>", 0),
+                                    _cmp(_p(p, "max_value"), "<>", 1))))),
+    # functional_data_type ILIKE 'Transactional Date%' AND date_days_present > 1 AND functional_table_type ILIKE
+    #   '%cumulative%' AND date_months_present > 2 AND date_months_present - (datediff( 'MON' , min_date, max_date) +
+    #   1) = 0 AND future_date_ct::FLOAT / NULLIF(value_ct, 0) <= 0.75
+    "Monthly_Rec_Ct": Predicate(
+        "b0e2f84a3f3f3639f479e6d5c046602559dd06ff30c62e42ee44b8eab6cbb65e",
+        ("functional_data_type", "date_days_present", "functional_table_type", "date_months_present", "min_date",
+         "max_date", "future_date_ct", "value_ct"),
+        lambda p: _and(_fdt_ilike_prefix(p, "Transactional Date"), _cmp(_p(p, "date_days_present"), ">", 1),
+                       _table_like(p, "cumulative"), _unrelated(_p(p, "date_months_present")),
+                       _cmp(None if not _p(p, "value_ct") or _p(p, "future_date_ct") is None
+                            else _p(p, "future_date_ct") / _p(p, "value_ct"), "<=", 0.75))),
+    # functional_data_type = 'Measurement' AND distinct_value_ct > 30 AND NOT distinct_value_ct = max_value - min_value
+    #   + 1 AND distinct_value_ct::FLOAT/value_ct::FLOAT > 0.1 AND stdev_value::FLOAT/avg_value::FLOAT > 0.01 AND
+    #   column_name NOT ILIKE '%latitude%' AND column_name NOT ilike '%longitude%'
+    "Outlier_Pct_Above": Predicate(
+        "382b204165f890443850d6b2740636a204de7ff06f99f630a5e68e98856c5e56",
+        ("functional_data_type", "distinct_value_ct", "max_value", "min_value", "value_ct", "stdev_value", "avg_value"),
+        lambda p: _outlier(p)),
+    "Outlier_Pct_Below": Predicate(
+        "382b204165f890443850d6b2740636a204de7ff06f99f630a5e68e98856c5e56",
+        ("functional_data_type", "distinct_value_ct", "max_value", "min_value", "value_ct", "stdev_value", "avg_value"),
+        lambda p: _outlier(p)),
+    # (functional_data_type IN ('Attribute', 'DateTime Stamp', 'Phone') OR functional_data_type ILIKE 'ID%' OR
+    #   functional_data_type ILIKE 'Period%') AND fn_frequent_size(frequent_patterns) = 1 AND distinct_value_ct > 10
+    "Pattern_Match": Predicate(
+        "e5663d5846832b0a0c1aefdc3ead0675f84c56f0a55e47ef970003bbe1952540",
+        ("functional_data_type", "frequent_patterns", "distinct_value_ct"),
+        lambda p: _and(label_in(_possible(p), lambda v: v in ("Attribute", "DateTime Stamp", "Phone")
+                                or v.lower().startswith(("id", "period"))),
+                       _unrelated(_p(p, "frequent_patterns")), _cmp(_p(p, "distinct_value_ct"), ">", 10))),
+    # distinct_value_ct > 10 AND functional_data_type NOT ILIKE 'Measurement%'
+    "Unique_Pct": Predicate(
+        "0e6748217c9a4e6e22873810a2c1322f36b8b0c12e1fe27f1e4c20c809729922",
+        ("distinct_value_ct", "functional_data_type"),
+        lambda p: _and(_cmp(_p(p, "distinct_value_ct"), ">", 10),
+                       label_in(_possible(p), lambda v: not v.lower().startswith("measurement")))),
+    # functional_data_type = 'Period Month'
+    "Valid_Month": Predicate(
+        "bacabcc021b881d3eb371c1c2d42c6777d3e99c568bf608fe7d2342e9562fcd8", ("functional_data_type",),
+        lambda p: _fdt_is(p, "Period Month")),
+    # functional_data_type = 'Zip'
+    "Valid_US_Zip": Predicate(
+        "733e0d0d1b9e6557817dd685681706f447c0836377e716b09b7ad55b97e2afe4", ("functional_data_type",),
+        lambda p: _fdt_is(p, "Zip")),
+    # functional_data_type = 'Zip3'
+    "Valid_US_Zip3": Predicate(
+        "c4c5d8d57f6326af5382725134c4c84a6beb5eba5ce3c33ed7a33ca1c3d0017c", ("functional_data_type",),
+        lambda p: _fdt_is(p, "Zip3")),
+    # general_type = 'N' AND functional_data_type ilike 'Measure%' AND functional_data_type <> 'Measurement Spike' AND
+    #   column_name NOT ilike '%latitude%' AND column_name NOT ilike '%longitude%' AND value_ct <> distinct_value_ct AND
+    #   distinct_value_ct > 10 AND stdev_value > 0 AND avg_value IS NOT NULL AND NOT (distinct_value_ct = max_value -
+    #   min_value + 1 AND distinct_value_ct > 2)
+    "Variability_Decrease": Predicate(
+        "ee60f52c07da58ce3d36ba7b432e783ac0c6ecb32388595a50f59aa1cfacbd79",
+        ("general_type", "functional_data_type", "value_ct", "distinct_value_ct", "stdev_value", "avg_value",
+         "max_value", "min_value"),
+        lambda p: _variability(p)),
+    "Variability_Increase": Predicate(
+        "ee60f52c07da58ce3d36ba7b432e783ac0c6ecb32388595a50f59aa1cfacbd79",
+        ("general_type", "functional_data_type", "value_ct", "distinct_value_ct", "stdev_value", "avg_value",
+         "max_value", "min_value"),
+        lambda p: _variability(p)),
+    # functional_data_type ILIKE 'Transactional Date%' AND date_days_present > 1 AND functional_table_type ILIKE
+    #   '%cumulative%' AND date_weeks_present > 3 AND date_weeks_present - (DATEDIFF('week', '1800-01-05'::DATE,
+    #   max_date) - DATEDIFF('week', '1800-01-05'::DATE, min_date) + 1) = 0 AND future_date_ct::FLOAT / NULLIF(value_ct,
+    #   0) <= 0.75
+    "Weekly_Rec_Ct": Predicate(
+        "61c72522c09e9c4d29b59f14180b78d42a5ccb3c99b7dab1741ac017562a9693",
+        ("functional_data_type", "date_days_present", "functional_table_type", "date_weeks_present", "min_date",
+         "max_date", "future_date_ct", "value_ct"),
+        lambda p: _and(_fdt_ilike_prefix(p, "Transactional Date"), _cmp(_p(p, "date_days_present"), ">", 1),
+                       _table_like(p, "cumulative"), _unrelated(_p(p, "date_weeks_present")),
+                       _cmp(None if not _p(p, "value_ct") or _p(p, "future_date_ct") is None
+                            else _p(p, "future_date_ct") / _p(p, "value_ct"), "<=", 0.75))),
 }
 
 #: Inputs whose NULL is a real value rather than a missing measure: min_date is read by IS NOT NULL. Recency's
@@ -813,10 +1053,11 @@ _PARAM_KEYS = {
     "baseline_ct": "baseline_ct", "baseline_value_ct": "baseline_value_ct", "baseline_unique_ct": "baseline_unique_ct",
     "baseline_value": "baseline_value", "threshold_value": "threshold_value",
     "baseline_sum": "baseline_sum", "baseline_sd": "baseline_sd", "upper_tolerance": "upper_tolerance",
+    "baseline_avg": "baseline_avg",
 }
 #: Parameter keys a type carries only when its catalogue entry names them (so an earlier type's params_json keeps the
 #: shape it was accepted with).
-_OPTIONAL_PARAM_KEYS = ("baseline_unique_ct", "baseline_sum", "baseline_sd", "upper_tolerance")
+_OPTIONAL_PARAM_KEYS = ("baseline_unique_ct", "baseline_sum", "baseline_sd", "upper_tolerance", "baseline_avg")
 
 
 def _recency_threshold(profile: dict):
@@ -913,6 +1154,18 @@ def _total_length_default(profile: dict):
     return round((profile.get("avg_length") or 0) * (value_ct - (profile.get("zero_length_ct") or 0)))
 
 
+def _round_half_up(text):
+    """Postgres `ROUND(numeric, 0)`: half away from zero. None when the sum was not measured."""
+    if text is None:
+        return None
+    return int(Decimal(str(text)).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+
+
+def _needs(test_type: str, measure: str):
+    raise ParameterError(f"{test_type}'s default parameter reads {measure}, which the value profile does not take yet "
+                         f"(profile slice 2, port step 7)")
+
+
 #: Defaults that are an expression over the profile rather than a list of columns and literals: the SHA-256 of
 #: the vendored `default_parm_values` each port was made from, the parameter (or parameters, in order) it fills, and
 #: the port (returning a tuple when it fills several).
@@ -930,6 +1183,27 @@ DEFAULT_PORTS: dict[str, tuple[str, str | tuple[str, ...], Callable[[dict], Any]
     #   NULL THEN '0.000000001' ELSE '0' END
     "Match_Sum": ("baea8f54d3d7a291bc57510dcb93fd5548b3433a575ca830fb5f1373aa2c696b",
                   ("baseline_sum", "upper_tolerance"), _match_sum_defaults),
+    # ROUND(fractional_sum, 0)
+    "Dec_Trunc": ("95230af0160b048103c8ff0406968834f67c58873fe3d2578853479f52f280d4", "threshold_value",
+                  lambda profile: _round_half_up(profile.get("fractional_sum"))),
+    # value_ct,(avg_value * value_ct)::FLOAT,avg_value,stdev_value,2
+    "Incr_Avg_Shift": ("c72f2e463bc297dbc5784f390931c10e908495e5d6d57a44f07774ff255929ba",
+                       ("baseline_value_ct", "baseline_sum", "baseline_avg", "baseline_sd", "threshold_value"),
+                       lambda profile: (profile.get("value_ct"),
+                                        None if profile.get("avg_value") is None or profile.get("value_ct") is None
+                                        else float(profile["avg_value"] * profile["value_ct"]),
+                                        profile.get("avg_value"), profile.get("stdev_value"), 2)),
+    # FLOOR(0.95 * max_length::FLOAT)
+    "Alpha_Trunc": ("1b45b0f0f387039178ff6c7b4544691d723e04fd8ccb2a979162ee66f5dffdfd", "threshold_value",
+                    lambda profile: None if profile.get("max_length") is None
+                    else math.floor(0.95 * float(profile["max_length"]))),
+    # the three below read frequent_values, frequent_patterns and min_text/max_text: not taken until profile slice 2
+    "LOV_Match": ("2b9503536f33be15fbb794c4b570cd3b4b7b6e7883917f30639832f8a7c1c00a", ("baseline_value", "threshold_value"),
+                  lambda profile: _needs("LOV_Match", "frequent_values")),
+    "Pattern_Match": ("0d3ff1531d5030da37e0d62790fa5fe994ab170c95dcb44a5df5b88286af7d6e",
+                      ("baseline_value", "threshold_value"), lambda profile: _needs("Pattern_Match", "frequent_patterns")),
+    "Valid_Month": ("860b9139ef54da1331d851ac3a93e5ed0db594aeefeddc7910faec57cb62ab2f",
+                    ("threshold_value", "baseline_value"), lambda profile: _needs("Valid_Month", "min_text")),
     # CAST(ROUND(COALESCE(avg_length, 0) * (value_ct - COALESCE(zero_length_ct, 0))) AS BIGINT)
     "Match_Total_Length": ("764c27fe862246b3e311ea6030ec1212802f99d752fd4f04b2575c469207bd6a", "baseline_sum",
                            _total_length_default),
@@ -987,6 +1261,7 @@ _PLACEHOLDER_PARAM = {
     "BASELINE_VALUE_LITERAL": "baseline_value",
     "THRESHOLD_VALUE": "threshold_value",
     "BASELINE_SUM": "baseline_sum", "BASELINE_SD": "baseline_sd", "UPPER_TOLERANCE": "upper_tolerance",
+    "BASELINE_AVG": "baseline_avg",
 }
 _RE_FILLED = {"COLUMN_NAME", "COLUMN_NUM", "RUN_DATE"}
 
@@ -1091,9 +1366,13 @@ def render_measure(test_type: TestType, column_name: str, params: dict, run_date
             items = parse_value_list(value)
             fills[placeholder] = ", ".join(string_literal(v) for v in items) or "NULL"
         elif placeholder == "BASELINE_VALUE":
-            if test_type.test_type != "Min_Date":
-                raise ParameterError(f"{{BASELINE_VALUE}} is only validated for Min_Date, not {test_type.test_type}")
-            fills[placeholder] = as_iso_date("baseline_value", value)
+            if test_type.test_type == "Min_Date":
+                fills[placeholder] = as_iso_date("baseline_value", value)
+            elif test_type.test_type == "Min_Val":
+                fills[placeholder] = _sql_number(as_number("baseline_value", value))
+            else:
+                raise ParameterError(f"{{BASELINE_VALUE}} is only validated for Min_Date and Min_Val, not "
+                                     f"{test_type.test_type}")
         else:
             fills[placeholder] = _sql_number(as_number(key, value))
     return _PLACEHOLDER.sub(lambda m: fills[m.group(1)], measure)

@@ -116,6 +116,7 @@ def compare_sql(upstream: Path) -> list[str]:
                   for i, case in enumerate(vendored_numeric_cases()) if _squash(case) not in ddf_text]
     diffs += compare_functions(upstream)
     diffs += compare_functional_type(upstream)
+    diffs += compare_whole_profiling_files(upstream)
     diffs += compare_generation_templates(upstream)
     return diffs
 
@@ -141,6 +142,19 @@ def compare_functions(upstream: Path) -> list[str]:
     ours = yaml.safe_load((TEST_TYPES_DIR.parent / "postgresql" / "templated_functions.yaml").read_text()) or {}
     return [f"templated_functions.yaml {name}: no longer verbatim upstream"
             for name in sorted(ours) if theirs.get(name) != ours[name] or name not in templated_functions()]
+
+
+def compare_whole_profiling_files(upstream: Path) -> list[str]:
+    """Step 6 vendors the whole functional-type inference and the table-type stage, unchanged: byte-identical upstream."""
+    diffs = []
+    for ours in ("functional_datatype.sql", "functional_tabletype_stage.sql"):
+        theirs = upstream / "testgen/template/profiling" / ours
+        vendored = TEST_TYPES_DIR.parent / "profiling" / ours
+        if not theirs.exists():
+            diffs.append(f"upstream profiling/{ours} is gone")
+        elif theirs.read_bytes() != vendored.read_bytes():
+            diffs.append(f"profiling/{ours}: differs from upstream (re-port functional_infer.py)")
+    return diffs
 
 
 def vendored_statements() -> list[str]:

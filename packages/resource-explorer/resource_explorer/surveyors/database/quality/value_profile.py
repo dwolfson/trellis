@@ -276,6 +276,7 @@ def _empty_row(schema: str, table: str, column: str, gtype: str, state: str, rea
     row = {"schema_name": schema, "table_name": table, "column_name": column, "general_type": gtype,
            "record_ct": None, "sample_ratio": None, "state": state, "reason": reason, "ran_as": ran_as}
     row.update({m: None for m in COLUMN_MEASURES})
+    row.update(functional_data_type=None, functional_table_type=None)
     return row
 
 
@@ -472,6 +473,14 @@ def run_value_profile(
                 state, reason = failures[0]
                 table_outcomes.append(_table_outcome(schema, table, state, reason))
 
+    # Q4 port order step 6: the functional-type inference, over what was just measured and the stored inventory. Pure and
+    # zero-fetch; a column it cannot settle stays NULL, and so does a table whose record count has one measured run.
+    from resource_explorer.surveyors.database.quality import functional_infer
+
+    catalog_types = {(c["schema_name"], c["table_name"], c["column_name"]): c.get("base_type") or c.get("data_type")
+                     for c in columns}
+    functional_infer.label_rows(rows, catalog_types=catalog_types, scales=numeric,
+                                history=registry.value_profile_record_counts(slug))
     registry.write_detail_rows(PROFILE_TABLE, slug, surveyed_at, rows=rows)
     states: dict[str, int] = {}
     for row in rows:
