@@ -30,6 +30,9 @@ log = logging.getLogger(__name__)
 ENTRY_POINT_GROUP = "trellis.open_data"
 ROLES = ("portal", "directory", "resolver")
 
+#: Entry points the last discovery skipped, with the reason (read through `adapter_load_failures`).
+LOAD_FAILURES: dict[str, str] = {}
+
 
 class ManifestError(ValueError):
     """An adapter manifest that cannot be priced or registered."""
@@ -110,9 +113,11 @@ def _entry_points():
 
 def discover_adapters() -> dict[str, type[Adapter]]:
     """name -> adapter class: the built-ins, then every installed entry point (which wins on a name clash).
-    An entry point that fails to load, or whose manifest is refused, is logged and skipped: one bad package must
-    not take the others down, and what it would have added is simply not listed."""
+    An entry point that fails to load, or whose manifest is refused, is skipped: one bad package must not take the
+    others down. It is not silent: the failure is kept in `adapter_load_failures()` (listed on the Admin screen) and
+    logged."""
     found: dict[str, type[Adapter]] = {}
+    LOAD_FAILURES.clear()
     for cls in _builtins():
         found[cls.manifest.validate().name] = cls
     for ep in _entry_points():
@@ -122,9 +127,15 @@ def discover_adapters() -> dict[str, type[Adapter]]:
             if not isinstance(manifest, AdapterManifest):
                 raise ManifestError("no AdapterManifest on the adapter")
             found[manifest.validate().name] = cls
-        except Exception as exc:
+        except (ImportError, AttributeError, TypeError, ManifestError) as exc:
+            LOAD_FAILURES[ep.name] = f"{type(exc).__name__}: {exc}"[:240]
             log.warning("open data: adapter entry point %r skipped: %s", ep.name, exc)
     return found
+
+
+def adapter_load_failures() -> dict[str, str]:
+    """entry point name -> why it was skipped, as of the last `discover_adapters()`."""
+    return dict(LOAD_FAILURES)
 
 
 def adapter_for_api_kind(api_kind: str, role: str | None = None) -> type[Adapter] | None:

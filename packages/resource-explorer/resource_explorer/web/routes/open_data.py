@@ -102,10 +102,16 @@ def _portal_summary(p: dict) -> dict:
 
 @router.get("/adapters")
 def list_adapters() -> list[dict]:
-    """What is installed (built-ins plus the `trellis.open_data` entry points), by manifest."""
-    return [{"name": c.manifest.name, "api_kind": c.manifest.api_kind, "role": c.manifest.role,
+    """What is installed (built-ins plus the `trellis.open_data` entry points), by manifest; an entry point that
+    failed to load is listed too, with `error` and no cost shape."""
+    from resource_explorer.open_data.adapters import adapter_load_failures
+
+    rows = [{"name": c.manifest.name, "api_kind": c.manifest.api_kind, "role": c.manifest.role,
              "calls_per_page": c.manifest.calls_per_page, "page_size": c.manifest.page_size,
-             "needs_key": c.manifest.needs_key} for c in discover_adapters().values()]
+             "needs_key": c.manifest.needs_key, "error": ""} for c in discover_adapters().values()]
+    rows += [{"name": n, "api_kind": "", "role": "", "calls_per_page": None, "page_size": None, "needs_key": False,
+              "error": e} for n, e in adapter_load_failures().items()]
+    return rows
 
 
 # ── portals ──────────────────────────────────────────────────────────────────

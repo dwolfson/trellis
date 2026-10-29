@@ -140,6 +140,7 @@ def test_a_fake_adapter_package_is_found_by_entry_point_with_no_re_change(monkey
     monkeypatch.setattr(adapters, "_entry_points", lambda: [Ep(), Broken()])
     found = adapters.discover_adapters()
     assert found["fakeportal"] is Fake and "ckan" in found          # listed; a broken one is skipped, not fatal
+    assert "not installed properly" in adapters.adapter_load_failures()["broken"]   # ...and said, not swallowed
     assert adapters.adapter_for_api_kind("fakeportal") is Fake
 
 
