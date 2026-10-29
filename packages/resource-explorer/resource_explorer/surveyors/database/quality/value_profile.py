@@ -265,6 +265,9 @@ class ProfileBounds:
     #: Dupe_Rows' own per-table budget (owner, 2026-10-26, Q4 section 7 question 3: "its own per-table budget of 5
     #: minutes"). Separate from the profile's: a GROUP BY over every column does not fit inside it.
     dupe_rows_budget_seconds: float = 300.0
+    #: The exact percentiles of a table's number columns, their own statement and budget (percentiles.py; owner,
+    #: 2026-10-29). Not part of `table_budget_seconds`: running out leaves every other measure in place.
+    percentile_budget_seconds: float = 300.0
 
 
 def incomplete_reason(budget_seconds: float) -> str:
@@ -276,7 +279,8 @@ def _empty_row(schema: str, table: str, column: str, gtype: str, state: str, rea
     row = {"schema_name": schema, "table_name": table, "column_name": column, "general_type": gtype,
            "record_ct": None, "sample_ratio": None, "state": state, "reason": reason, "ran_as": ran_as}
     row.update({m: None for m in COLUMN_MEASURES})
-    row.update(functional_data_type=None, functional_table_type=None)
+    row.update(functional_data_type=None, functional_table_type=None, percentile_25=None, percentile_50=None,
+               percentile_75=None)
     return row
 
 
@@ -366,6 +370,25 @@ def begin_read(conn, bounds: ProfileBounds) -> None:
     conn.execute_query(f"SET LOCAL TIME ZONE '{SESSION_TIME_ZONE}'", None)
 
 
+def _take_percentiles(conn, schema: str, table: str, table_rows: list[dict], bounds: ProfileBounds, clock,
+                      gaps: list[dict]) -> None:
+    """Step 6: the exact percentiles of the table's measured number columns, in a statement of their own. A table that
+    could not give them keeps every other measure; its number columns read NULL there and the gap is reported."""
+    from resource_explorer.surveyors.database.quality import percentiles
+
+    wanted = [r for r in table_rows if r["state"] == "measured" and r["general_type"] == "N" and r.get("value_ct")]
+    if not wanted:
+        return
+    found, reason = percentiles.measure_table(conn, schema, table, [r["column_name"] for r in wanted], bounds, clock)
+    for row in wanted:
+        trio = found.get(row["column_name"])
+        if trio:
+            row["percentile_25"], row["percentile_50"], row["percentile_75"] = trio
+    if reason:
+        gaps.append({"schema_name": schema, "table_name": table, "reason": reason,
+                     "columns": [r["column_name"] for r in wanted if r["column_name"] not in found]})
+
+
 def run_value_profile(
     db_entity, registry, connect: Callable[[], AbstractContextManager], *,
     bounds: ProfileBounds, surveyed_at: str | None = None, ran_as: str = "",
@@ -401,6 +424,7 @@ def run_value_profile(
     rows: list[dict] = []
     table_outcomes: list[dict] = []
     numeric: dict | None = {}
+    percentile_gaps: list[dict] = []
     with connect() as conn:
         facts = read_table_facts(conn)
         if has_numbers:
@@ -469,6 +493,7 @@ def run_value_profile(
                 table_outcomes.append(_table_outcome(schema, table, "not_measured", reason))
                 continue
             rows.extend(table_rows)
+            _take_percentiles(conn, schema, table, table_rows, bounds, clock, percentile_gaps)
             if failures:
                 state, reason = failures[0]
                 table_outcomes.append(_table_outcome(schema, table, state, reason))
@@ -493,6 +518,7 @@ def run_value_profile(
             "column_count": len(rows),
             "states": states,
             "tables_not_profiled": table_outcomes,
+            "percentiles_not_measured": percentile_gaps,
             "ran_as": ran_as,
             "bounds": {"table_budget_seconds": bounds.table_budget_seconds},
             # Whether the catalog read profile 1b's decimal and exact-sum measures depend on succeeded. "not_read":

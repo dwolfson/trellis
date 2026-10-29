@@ -69,7 +69,7 @@ NOT_TAKEN = {
     "avg_embedded_spaces": "profile slice 2", "min_text": "profile slice 2", "max_text": "profile slice 2",
     "distinct_pattern_ct": "profile slice 2", "frequent_patterns": "profile slice 2",
     "std_pattern_match": "profile slice 2", "datatype_suggestion": "profile slice 2",
-    "percentile_25/50/75": "not planned", "date_weeks_present": "not planned", "date_months_present": "not planned",
+    "percentile_25/50/75": "the percentile statement did not run or ran out of its budget", "date_weeks_present": "not planned", "date_months_present": "not planned",
 }
 
 KEEP = object()          # a statement's CASE left the value as it was
@@ -280,6 +280,73 @@ def _spike_ruled_out(c: _Col) -> bool:
     if lo is not None and hi is not None and (lo > 0 or hi < 0):
         return True
     return zeros is not None and value_ct > 0 and zeros < (value_ct - 1) / 2 - 1
+
+
+# ── Measurement Spike: the evidence threshold is a declared choice ────────────────────────────────────────────────
+
+#: How "extreme non-zero values" is expressed (owner, 2026-10-29: "sometimes the user may want to express in absolute
+#: terms and other times as percent change - or other"). A kind is a function (p25, p50, p75, avg, limit) -> bool; the
+#: configured kind and its limit are `SPIKE_EVIDENCE`. Upstream's own form is `upstream_ratio`, TestGen's default:
+#: (p75 - p25) > 2 * |avg|  OR  |avg| > 5 * |p50|, which `limit` does not change.
+SPIKE_KINDS: dict = {}
+
+
+def spike_kind(name: str):
+    """Register a way to express the spike evidence. Add a new kind by decorating a function (p25, p50, p75, avg,
+    limit) -> bool with `@spike_kind("name")`, then set `SPIKE_EVIDENCE = {"kind": "name", "limit": ...}`; the
+    inference, the tests' parametrization and the design note's table pick it up from `SPIKE_KINDS`."""
+    def register(fn):
+        SPIKE_KINDS[name] = fn
+        return fn
+    return register
+
+
+@spike_kind("upstream_ratio")
+def _upstream_ratio(p25, p50, p75, avg, limit=None) -> bool:
+    return (p75 - p25) > 2 * abs(avg) or abs(avg) > 5 * abs(p50)
+
+
+@spike_kind("absolute")
+def _absolute(p25, p50, p75, avg, limit) -> bool:
+    """The spread between the quartiles, or the mean's distance from the median, is more than `limit` in the column's
+    own units."""
+    return (p75 - p25) > limit or abs(avg - p50) > limit
+
+
+@spike_kind("percent_change")
+def _percent_change(p25, p50, p75, avg, limit) -> bool:
+    """The mean differs from the median by more than `limit` percent of the median (a zero median with a non-zero
+    mean is an unbounded change)."""
+    if p50 == 0:
+        return avg != 0
+    return abs(avg - p50) / abs(p50) * 100 > limit
+
+
+#: The configured form. TestGen's own by default, so a label agrees with TestGen's unless a person chooses otherwise.
+SPIKE_EVIDENCE = {"kind": "upstream_ratio", "limit": None}
+
+
+def _spike(c: _Col) -> bool | None:
+    """Whether the column is a 'Measurement Spike' (upstream lines 488-497): `general_type = 'N'` AND (the 25th, 50th
+    and 75th percentiles are all 0 OR fewer than 5 % of the records are filled) AND (the evidence, in the configured
+    form). With the percentiles it is exact; without them (a profile from before they were taken, or a table that ran
+    out of its percentile budget) the bound of `_spike_ruled_out` can still rule it out, else it is unknown."""
+    if c.gt != "N":
+        return False
+    vc, rc, avg = c.get("value_ct"), c.get("record_ct"), c.get("avg_value")
+    mostly_null = None if vc is None or rc is None else (vc > 0 and rc > 0 and vc / rc < 0.05)
+    trio = (c.get("percentile_25"), c.get("percentile_50"), c.get("percentile_75"))
+    have = None not in trio
+    sparse = _sql_or((trio[0] == 0 and trio[1] == 0 and trio[2] == 0) if have else None, mostly_null)
+    evidence = None
+    if have and avg is not None:
+        evidence = SPIKE_KINDS[SPIKE_EVIDENCE["kind"]](*trio, avg, SPIKE_EVIDENCE["limit"])
+    result = _and(sparse, evidence)
+    if result is None and _spike_ruled_out(c):
+        return False
+    if result is None:
+        c.missed.add("percentile_25/50/75")
+    return result
 
 
 def _datediff_week(first: datetime, second: datetime) -> int:
@@ -518,15 +585,15 @@ def _tail(c: _Col) -> set:
                       _sql_or(_integer_type(c), _and(_scale_gt_zero(c), _fractional_sum_zero(c))))
     id_pct = None if rc in (None, 0) or vc is None else round(100.0 * vc / rc)
     id_results = case_set([(_cmp(id_pct, ">", 70), "ID")], "Attribute-Numeric")
-    spike = _and(is_n, None if _spike_ruled_out(c) is False else False)
-    if is_n and not _spike_ruled_out(c):
-        spike = None
-        c.missed.add("percentile_25/50/75")
+    spike = _spike(c)
     discrete = _and(is_n, _sql_or(_integer_type(c), _scale_is_zero(c), _and(_scale_gt_zero(c), _fractional_sum_zero(c))))
     avg, sd = c.get("avg_value"), c.get("stdev_value")
-    ratio = None if sd is None or not avg else sd / avg
+    # stdev_value / NULLIF(avg_value, 0): a zero mean makes the quotient NULL, so that arm is FALSE (a real NULL, not a
+    # missing measure); a missing stdev or mean leaves it unknown
+    ratio = None if sd is None or avg is None or avg == 0 else sd / avg
+    cv_arm = False if avg == 0 else _cmp(ratio, ">=", 0.10)
     measure = _sql_or(_and(is_n, _cmp(dv, ">", 1), _cmp(lo, "<", 0)),
-                      _and(is_n, _cmp(dv, ">", 1), _cmp(lo, ">=", 0), _cmp(ratio, ">=", 0.10)))
+                      _and(is_n, _cmp(dv, ">", 1), _cmp(lo, ">=", 0), cv_arm))
     out: set = set()
     for cond, results in ((sequence, {"Sequence"}), (id_by_name, id_results), (spike, {"Measurement Spike"}),
                           (discrete, {"Measurement Discrete"}), (measure, {"Measurement"})):
@@ -623,10 +690,11 @@ def label_is(possible, label: str) -> bool | None:
 # ── the table type ────────────────────────────────────────────────────────────────────────────────────────────
 
 #: TestGen calls a table 'cumulative' when its record count never fell between two profile runs. With a single run
-#: nothing has been compared, and upstream's SUM over a NULL difference makes the first run 'cumulative'. RE does not
-#: read one point as a trend: with fewer than two measured profiles the period is NOT inferred. Set True to match
-#: upstream (owner decision, see the design note).
-SINGLE_PROFILE_IS_CUMULATIVE = False
+#: nothing has been compared, and upstream's SUM over a NULL difference makes the first run 'cumulative'. **Decision
+#: (project owner, 2026-10-29):** "keep TestGen's cumulative": a table with one measured profile is 'cumulative', as
+#: upstream, so Dec_Trunc, Distinct_Date_Ct and the other cumulative checks are considered on a first profile. Set
+#: False to read one point as "not inferred" (the earlier build). A table with NO measured profile has no period.
+SINGLE_PROFILE_IS_CUMULATIVE = True
 
 
 def table_period(record_cts: list[int | None]) -> tuple[str | None, str]:

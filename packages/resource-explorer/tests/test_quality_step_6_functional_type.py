@@ -29,6 +29,20 @@ from tests.test_value_profile_quality_checks import (  # noqa: F401 - fixtures a
 RUN = "2026-10-29T00:00:00+00:00"
 
 
+@pytest.fixture(autouse=True)
+def _no_live_database_or_egeria(monkeypatch):
+    """Nothing here reaches a database or Egeria: a real connection or a real gateway fails the test."""
+    import psycopg2
+
+    from resource_explorer.surveyors.database.quality import egeria_rules
+
+    def refuse(*a, **k):
+        raise AssertionError("a test reached a live service")
+
+    monkeypatch.setattr(psycopg2, "connect", refuse)
+    monkeypatch.setattr(egeria_rules, "egeria_gateway", refuse)
+
+
 def _row(column, general_type, **kw):
     base = dict(schema_name="s", table_name="t", column_name=column, general_type=general_type, state="measured",
                 record_ct=1000, value_ct=1000, distinct_value_ct=900, null_value_ct=0, zero_length_ct=None,
@@ -183,17 +197,25 @@ def test_effective_uses_the_stored_label_and_refuses_to_decide_for_an_old_row():
 
 # ── the table period and type ───────────────────────────────────────────────────────────────────────────────────
 
-def test_a_table_is_cumulative_or_window_only_after_two_measured_profiles():
-    assert fi.table_period([1000])[0] is None and "at least 2" in fi.table_period([1000])[1]
-    assert fi.table_period([])[0] is None
+def test_a_table_with_one_measured_profile_is_cumulative_as_testgen_has_it():
+    # Decision (project owner, 2026-10-29): "keep TestGen's cumulative". Pinned: a first profile is cumulative.
+    assert fi.SINGLE_PROFILE_IS_CUMULATIVE is True
+    assert fi.table_period([1000]) == ("cumulative", "")
+    assert fi.table_period([None, 1000]) == ("cumulative", "")           # a run that did not measure it is skipped
+
+
+def test_a_table_is_cumulative_or_window_by_whether_its_count_ever_fell():
+    assert fi.table_period([])[0] is None and "0 measured profile runs" in fi.table_period([])[1]
+    assert fi.table_period([None])[0] is None
     assert fi.table_period([1000, 1200, 1500])[0] == "cumulative"
     assert fi.table_period([1000, 800, 900])[0] == "window"
     assert fi.table_period([1000, None, 1100])[0] == "cumulative"           # an unmeasured run is skipped, not a drop to 0
 
 
-def test_single_profile_is_cumulative_only_when_the_flag_says_to_match_upstream(monkeypatch):
-    monkeypatch.setattr(fi, "SINGLE_PROFILE_IS_CUMULATIVE", True)
-    assert fi.table_period([1000]) == ("cumulative", "")
+def test_the_single_profile_rule_can_be_turned_off_by_its_one_constant(monkeypatch):
+    monkeypatch.setattr(fi, "SINGLE_PROFILE_IS_CUMULATIVE", False)
+    period, why = fi.table_period([1000])
+    assert period is None and "at least 2" in why
 
 
 def test_the_table_type_needs_every_column_label_and_the_period_alone_still_answers_a_like():
@@ -238,8 +260,11 @@ def test_a_profile_stores_the_label_and_leaves_null_what_it_cannot_settle(regist
     assert labels["sales", "orders", "order_id"] is not None                      # an integer id with many values
     note = rows["sales", "orders", "note"]
     assert note["functional_data_type"] is None                                   # text: needs profile slice 2
-    # one profile run: the period cannot be told, so no table type
-    assert {r["functional_table_type"] for r in rows.values()} == {None}
+    # one profile run is 'cumulative' (TestGen's); the type half waits for every column to have a label
+    measured = {k: r for k, r in rows.items() if r["state"] == "measured"}
+    assert all(r["functional_table_type"].startswith("cumulative") for r in measured.values())
+    orders = {r["functional_table_type"] for k, r in measured.items() if k[:2] == ("sales", "orders")}
+    assert orders == {"cumulative"}                      # a text column has no label, so only the period is known
 
 
 def test_two_profiles_give_the_table_a_period(registry, entity):
@@ -400,3 +425,198 @@ def test_fractional_sum_text_compares_as_a_decimal_not_a_float():
     assert cat._fractional_positive({"fractional_sum": "0.000000001", "general_type": "N", "min_value": 1.0,
                                      "value_ct": 5}) is True
     assert Decimal("0.1") + Decimal("0.2") == Decimal("0.3")
+
+
+# ── the exact percentiles and Measurement Spike (owner, 2026-10-29: "add the columns") ──────────────────────────
+
+import re as _re  # noqa: E402
+
+from resource_explorer.surveyors.database.quality import percentiles as pct  # noqa: E402
+from resource_explorer.surveyors.database.quality.value_profile import ProfileBounds  # noqa: E402
+from tests.test_value_profile_quality_checks import BOUNDS, FakeConn, PgError  # noqa: E402
+
+
+class PctConn(FakeConn):
+    """A FakeConn that also answers the percentile statement: `trios` are the (p25, p50, p75) of each number column, in
+    the order the statement lists them; `fail` is raised instead."""
+
+    def __init__(self, *a, trios=None, fail=None, **kw):
+        super().__init__(*a, **kw)
+        self.trios, self.fail = trios or [], fail
+
+    def execute_query_isolated(self, sql, params=()):
+        if "PERCENTILE_CONT" not in sql:
+            return super().execute_query_isolated(sql, params)
+        self.statements.append(sql)
+        assert self.in_read_only, "the percentiles were read outside a read-only transaction"
+        if self.fail:
+            raise self.fail
+        row = {}
+        for alias, i, p in _re.findall(r"AS (c(\d+)_pct_(\d+))", sql):
+            row[alias] = self.trios[int(i)][{"25": 0, "50": 1, "75": 2}[p]]
+        return [row]
+
+
+def test_the_percentile_statement_is_the_vendored_one_pinned_and_quotes_its_names():
+    assert pct.pin_matches() and len(pct.vendored_lines()) == 3
+    sql, aliases = pct.build_statement("s", "t", ["a", 'we"ird'])
+    assert sql.count("PERCENTILE_CONT") == 6 and 'ORDER BY "we""ird"::NUMERIC' in sql and sql.endswith('FROM "s"."t"')
+    assert aliases["c1_pct_75"] == ('we"ird', 2)
+    import sqlglot
+
+    sqlglot.parse_one(sql, read="postgres")
+
+
+def test_percentiles_are_measured_per_table_and_stored(registry, entity):
+    conn = PctConn(profile=__import__("tests.test_value_profile_quality_checks", fromlist=["PROFILE"]).PROFILE,
+                   trios=[(10.0, 20.0, 35.5)])
+    out, _ = _profile(registry, entity, conn=conn)
+    rows = _rows(registry, "database_value_profiles")
+    order_id = rows["sales", "orders", "order_id"]
+    assert (order_id["percentile_25"], order_id["percentile_50"], order_id["percentile_75"]) == (10.0, 20.0, 35.5)
+    # only number columns are asked, and only once per table
+    assert sum("PERCENTILE_CONT" in s for s in conn.statements) == 1
+    assert rows["sales", "orders", "note"]["percentile_50"] is None and out["value_profile"]["percentiles_not_measured"] == []
+
+
+def test_a_table_that_cannot_give_percentiles_keeps_every_other_measure_and_says_why(registry, entity):
+    timeout = PgError("canceling statement due to statement timeout")
+    conn = PctConn(profile=__import__("tests.test_value_profile_quality_checks", fromlist=["PROFILE"]).PROFILE,
+                   fail=timeout)
+    out, _ = _profile(registry, entity, conn=conn)
+    order_id = _rows(registry, "database_value_profiles")["sales", "orders", "order_id"]
+    assert order_id["state"] == "measured" and order_id["value_ct"] == 1000          # nothing else was lost
+    assert order_id["percentile_50"] is None                                         # not measured, never 0
+    (gap,) = out["value_profile"]["percentiles_not_measured"]
+    assert gap["table_name"] == "orders" and gap["columns"] == ["order_id"] and "percentiles not measured" in gap["reason"] \
+        or "exceeded" in gap["reason"]
+
+
+def test_the_percentile_budget_is_its_own_and_a_spent_one_reads_nothing():
+    conn = PctConn(trios=[(1.0, 2.0, 3.0)])
+    found, reason = pct.measure_table(conn, "s", "t", ["a"], ProfileBounds(1, percentile_budget_seconds=0))
+    assert found == {} and "exceeded" in reason and not conn.statements
+    assert ProfileBounds(1).percentile_budget_seconds == 300.0 and ProfileBounds(1).table_budget_seconds == 300.0
+
+
+def _num(name="refunds", **kw):
+    return _row(name, "N", catalog_type="double precision", distinct_value_ct=120, **kw)
+
+
+def test_with_the_percentiles_a_spike_is_settled_exactly():
+    sparse_extreme = _num(min_value=0.0, max_value=900.0, zero_value_ct=800, avg_value=40.0, stdev_value=90.0,
+                          percentile_25=0.0, percentile_50=0.0, percentile_75=0.0)
+    assert _one(sparse_extreme).label == "Measurement Spike"
+    sparse_calm = _num(min_value=0.0, max_value=900.0, zero_value_ct=800, avg_value=0.0, stdev_value=0.0,
+                       percentile_25=0.0, percentile_50=0.0, percentile_75=0.0)
+    assert _one(sparse_calm).label != "Measurement Spike" and _one(sparse_calm).label is not None
+    not_sparse = _num(min_value=-5.0, max_value=900.0, zero_value_ct=10, avg_value=40.0, stdev_value=90.0,
+                      percentile_25=2.0, percentile_50=30.0, percentile_75=60.0)
+    assert _one(not_sparse).label == "Measurement"                       # a zero count could not decide this: exact now
+    mostly_null = _num(min_value=-5.0, max_value=900.0, record_ct=10000, value_ct=300, zero_value_ct=0, avg_value=500.0,
+                       stdev_value=90.0, percentile_25=1.0, percentile_50=3.0, percentile_75=700.0)
+    assert _one(mostly_null).label == "Measurement Spike"                # < 5 % filled, and the mean is far from the median
+
+
+def test_without_the_percentiles_the_old_bound_still_applies_and_otherwise_it_says_so():
+    undecided = _num(min_value=-5.0, max_value=900.0, zero_value_ct=800, avg_value=40.0, stdev_value=90.0)
+    result = _one(undecided)
+    assert result.label is None and "Measurement Spike" in result.possible and "percentile_25/50/75" in result.needed
+
+
+def test_the_spike_evidence_is_a_declared_choice_with_room_for_more(monkeypatch):
+    assert set(fi.SPIKE_KINDS) >= {"upstream_ratio", "absolute", "percent_change"}
+    assert fi.SPIKE_EVIDENCE == {"kind": "upstream_ratio", "limit": None}               # TestGen's own, by default
+    row = _num(min_value=0.0, max_value=900.0, zero_value_ct=800, avg_value=10.0, stdev_value=30.0,
+               percentile_25=0.0, percentile_50=0.0, percentile_75=0.0)
+    assert _one(row).label == "Measurement Spike"                                       # (75-25)=0 > 20 is false; 10 > 0 is true
+    monkeypatch.setattr(fi, "SPIKE_EVIDENCE", {"kind": "absolute", "limit": 50})
+    assert _one(row).label != "Measurement Spike"                                       # a 10-unit mean is not a spike in absolute terms
+    monkeypatch.setattr(fi, "SPIKE_EVIDENCE", {"kind": "absolute", "limit": 5})
+    assert _one(row).label == "Measurement Spike"
+    monkeypatch.setattr(fi, "SPIKE_EVIDENCE", {"kind": "percent_change", "limit": 100})
+    assert _one(row).label == "Measurement Spike"                                       # a zero median with a non-zero mean
+    steady = _num(min_value=1.0, max_value=900.0, record_ct=10000, value_ct=300, avg_value=105.0, stdev_value=9.0,
+                  percentile_25=95.0, percentile_50=100.0, percentile_75=110.0)
+    assert _one(steady).label != "Measurement Spike"                                    # 5 % from the median, limit 100 %
+    monkeypatch.setattr(fi, "SPIKE_EVIDENCE", {"kind": "percent_change", "limit": 2})
+    assert _one(steady).label == "Measurement Spike"                                    # the same column, a tighter percent
+
+
+def test_a_new_kind_is_one_registered_function_and_an_unknown_kind_is_refused(monkeypatch):
+    monkeypatch.setitem(fi.SPIKE_KINDS, "always", lambda p25, p50, p75, avg, limit: True)
+    monkeypatch.setattr(fi, "SPIKE_EVIDENCE", {"kind": "always", "limit": None})
+    row = _num(min_value=0.0, max_value=900.0, record_ct=10000, value_ct=300, avg_value=5.0, stdev_value=9.0,
+               percentile_25=1.0, percentile_50=3.0, percentile_75=4.0)
+    assert _one(row).label == "Measurement Spike"
+    monkeypatch.setattr(fi, "SPIKE_EVIDENCE", {"kind": "no_such_kind", "limit": None})
+    with pytest.raises(KeyError):
+        _one(row)
+
+
+# ── publishing the nineteen as Egeria DataQualityRules (owner, 2026-10-29) ─────────────────────────────────────────
+
+import dataclasses  # noqa: E402
+
+from resource_explorer.surveyors.database.quality import egeria_rules as er  # noqa: E402
+from tests.test_quality_q5_data_quality_rule import (  # noqa: E402,F401
+    ASSET_GUID,
+    COLUMN_GUID,
+    FakeGateway,
+    _element_qn,
+    _gateway,
+    _published,
+)
+from tests.test_value_profile_quality_checks import _accept  # noqa: E402
+
+_PARAMS = {"baseline_ct": 10, "baseline_value_ct": 900, "baseline_value": 1.5, "threshold_value": 2,
+           "baseline_avg": 3.5, "baseline_sd": 1.25, "baseline_sum": 31.5, "baseline_unique_ct": 700, "severity": "warning"}
+
+
+@pytest.mark.parametrize("name", cat.STEP_6_TEST_TYPES)
+def test_each_of_the_nineteen_maps_to_a_data_quality_rule(name):
+    test_type = cat.load_catalogue()[name]
+    props = er.rule_properties(f"sales.orders.amount::{name}", test_type, _PARAMS)
+    assert props["class"] == "DataQualityRuleProperties" and props["method"] == name
+    assert props["comparisonOperator"] == cat.MUST_BE[test_type.test_operator]
+    assert props["thresholdValues"] == ["2"] and props["severity"] == "warning" and props["qualityEngine"] == "resource-explorer"
+    assert "expression" not in props                                          # RE never stores runnable SQL
+    if "baseline_avg" in test_type.default_parm_columns or name in ("Avg_Shift", "Incr_Avg_Shift", "Outlier_Pct_Above",
+                                                                    "Outlier_Pct_Below"):
+        assert props["additionalProperties"]["baselineAvg"] == "3.5"
+
+
+def test_an_accepted_step_6_check_is_published_read_back_and_linked_with_no_live_egeria(registry, entity):
+    _profile(registry, entity)
+    _propose(registry)
+    key = "sales.orders.order_id::Unique_Pct"
+    proposal = _by_key(registry, "database_quality_proposals")[key]
+    assert proposal["state"] == "proposed"
+    _accept(registry, key, "Unique_Pct", **{k: v for k, v in proposal["params_json"].items() if k != "severity"},
+            severity="warning")
+    gateway = _gateway(entity)
+    out = er.publish_database_rules(registry, _published(entity), gateway, recorded_by="steward")
+    assert out["counts"] == {"created": 1}
+    (create,) = gateway.made("create")
+    sent = create[1]
+    assert sent["method"] == "Unique_Pct" and sent["comparisonOperator"] == "mustBeLessThan"       # '>=' fails the check
+    assert sent["thresholdValues"] == ["0.5"] and sent["qualityDimension"] == "uniqueness"
+    assert gateway.links == {(COLUMN_GUID, "rule-1"), (ASSET_GUID, "rule-1")}
+    assert registry.latest_quality_rule_proofs(SLUG)[key]["outcome"] == "created"
+    # nothing about this reached a real Egeria: the gateway is the in-memory one
+    assert isinstance(gateway, FakeGateway)
+
+
+def test_a_published_step_6_rule_edited_in_egeria_is_the_one_the_run_uses(registry, entity):
+    _profile(registry, entity)
+    _propose(registry)
+    key = "sales.orders.order_id::Unique_Pct"
+    proposal = _by_key(registry, "database_quality_proposals")[key]
+    _accept(registry, key, "Unique_Pct", **{k: v for k, v in proposal["params_json"].items() if k != "severity"},
+            severity="warning")
+    gateway = _gateway(entity)
+    er.publish_database_rules(registry, _published(entity), gateway, recorded_by="steward")
+    gateway.rules["rule-1"].properties["thresholdValues"] = ["0.2"]
+    again = er.publish_database_rules(registry, _published(entity), gateway, recorded_by="steward")
+    assert again["counts"] == {"edited_in_egeria": 1}
+    assert not gateway.made("update")                                         # Egeria wins: RE does not overwrite it

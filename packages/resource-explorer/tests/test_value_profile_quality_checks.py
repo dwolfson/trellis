@@ -790,7 +790,10 @@ def test_the_value_profile_runner_uses_the_settings(registry, entity, monkeypatc
     # the profile's bound is the table budget (statement_timeout_seconds belongs to the quality CHECKS)
     assert out["value_profile"]["bounds"] == {"table_budget_seconds": 120}
     timeouts = [int(t.rsplit("=", 1)[1]) for t in conn.statements if t.startswith("SET LOCAL statement_timeout")]
-    assert timeouts and all(115_000 <= t <= 120_000 for t in timeouts), timeouts       # what is left of 120 s
+    # what is left of 120 s; the exact percentiles (step 6) are a statement of their own with their own 5 minutes
+    own = [t for t in timeouts if t == 300_000]
+    assert timeouts and all(115_000 <= t <= 120_000 for t in timeouts if t != 300_000), timeouts
+    assert len(own) == sum("PERCENTILE_CONT" in t for t in conn.statements)
     assert _rows(registry, "database_value_profiles")["sales", "orders", "note"]["state"] == "measured"
 
 

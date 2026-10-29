@@ -259,6 +259,9 @@ def _fake_upstream(root: Path) -> Path:
     (flavor / "profiling").mkdir(parents=True)
     (flavor / "data_chars").mkdir(parents=True)
     shutil.copy(cat.POSTGRES_DIR / "profile_measures.sql", flavor / "profiling/project_profiling_query.sql")
+    # the percentile lines (step 6) live in the real project_profiling_query.sql beside the measures
+    with open(flavor / "profiling/project_profiling_query.sql", "a", encoding="utf-8") as handle:
+        handle.write("\n" + "\n".join(cat.POSTGRES_DIR.joinpath("percentiles.sql").read_text().splitlines()[-3:]) + "\n")
     (flavor / "data_chars/get_schema_ddf.sql").write_text(
         (cat.POSTGRES_DIR / "general_type.sql").read_text() + (cat.POSTGRES_DIR / "numeric_chars.sql").read_text())
     shutil.copy(cat.POSTGRES_DIR / "templated_functions.yaml", flavor / "profiling/templated_functions.yaml")

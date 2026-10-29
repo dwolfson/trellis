@@ -70,6 +70,7 @@ so the upstream product name appears only here, in `NOTICE` and in the developer
 | `profiling/functional_datatype.sql` | `testgen/template/profiling/functional_datatype.sql` | unchanged (step 6): the whole 629-line file, which `quality/functional_infer.py` ports in upstream order; pinned by SHA-256 |
 | `profiling/functional_tabletype_stage.sql` | `testgen/template/profiling/functional_tabletype_stage.sql` | unchanged (step 6): the table period (cumulative or window) and table type; ported in `functional_infer.table_period` and `table_kind`; pinned by SHA-256 |
 | `test_types/{Alpha_Trunc,Avg_Shift,Dec_Trunc,Distinct_Date_Ct,Distinct_Value_Ct,Incr_Avg_Shift,LOV_Match,Min_Val,Monthly_Rec_Ct,Outlier_Pct_Above,Outlier_Pct_Below,Pattern_Match,Unique_Pct,Valid_Month,Valid_US_Zip,Valid_US_Zip3,Variability_Decrease,Variability_Increase,Weekly_Rec_Ct}.yaml` | `testgen/template/dbsetup_test_types/test_types_<Name>.yaml` | unchanged (step 6) |
+| `postgresql/percentiles.sql` | `testgen/template/flavors/postgresql/profiling/project_profiling_query.sql` | subset (step 6): the three PERCENTILE_CONT lines of the `is_N_exact_pctile` block (upstream lines 242-244), verbatim; a header comment added. Run as a statement of their own per table (`quality/percentiles.py`) |
 | `postgresql/general_type.sql` | `testgen/template/flavors/postgresql/data_chars/get_schema_ddf.sql` | subset: the `general_type` CASE, verbatim; a header comment added |
 | `LICENSE`, `NOTICE` | `LICENSE`, `NOTICE` | unchanged |
 

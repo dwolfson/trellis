@@ -1158,6 +1158,9 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         boolean_true_ct   BIGINT DEFAULT NULL,
         functional_data_type  TEXT DEFAULT NULL,
         functional_table_type TEXT DEFAULT NULL,
+        percentile_25     DOUBLE PRECISION DEFAULT NULL,
+        percentile_50     DOUBLE PRECISION DEFAULT NULL,
+        percentile_75     DOUBLE PRECISION DEFAULT NULL,
         sample_ratio      REAL DEFAULT NULL,
         ran_as            TEXT DEFAULT '',
         state             TEXT NOT NULL DEFAULT 'measured',
@@ -5161,6 +5164,10 @@ class ProjectRegistry:
         # default type.
         ("database_value_profiles", "functional_data_type", "TEXT"),
         ("database_value_profiles", "functional_table_type", "TEXT"),
+        # The exact percentiles Measurement Spike reads (percentiles.py); NULL = not measured, never 0.
+        ("database_value_profiles", "percentile_25", "DOUBLE PRECISION"),
+        ("database_value_profiles", "percentile_50", "DOUBLE PRECISION"),
+        ("database_value_profiles", "percentile_75", "DOUBLE PRECISION"),
         ("database_quality_results", "measure_text", "TEXT"),
     )
 

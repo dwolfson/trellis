@@ -117,6 +117,7 @@ def compare_sql(upstream: Path) -> list[str]:
     diffs += compare_functions(upstream)
     diffs += compare_functional_type(upstream)
     diffs += compare_whole_profiling_files(upstream)
+    diffs += compare_percentiles(upstream)
     diffs += compare_generation_templates(upstream)
     return diffs
 
@@ -155,6 +156,18 @@ def compare_whole_profiling_files(upstream: Path) -> list[str]:
         elif theirs.read_bytes() != vendored.read_bytes():
             diffs.append(f"profiling/{ours}: differs from upstream (re-port functional_infer.py)")
     return diffs
+
+
+def compare_percentiles(upstream: Path) -> list[str]:
+    """Step 6's `postgresql/percentiles.sql`: its three PERCENTILE_CONT lines still appear verbatim upstream."""
+    from resource_explorer.surveyors.database.quality.percentiles import vendored_lines
+
+    path = upstream / UPSTREAM_PROFILE_SQL
+    if not path.exists():
+        return [f"upstream {UPSTREAM_PROFILE_SQL} is gone"]
+    text = _squash(path.read_text(encoding="utf-8"))
+    return [f"percentiles.sql: {line.strip()!r} is no longer verbatim upstream"
+            for line in vendored_lines() if _squash(line).rstrip(",") not in text]
 
 
 def vendored_statements() -> list[str]:
