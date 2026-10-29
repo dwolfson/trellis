@@ -27,22 +27,26 @@
 
 ## 1. The reader and the promise
 
-**Who this is for.** A data steward or data engineer. They know databases, files and data catalogs. They have never
-used Resource Explorer or Egeria. *(Part 1 is to be expanded with the owner: who else RE is for and what they come to
-it with.)*
+**Who this is for.** Technical professionals who work with data (owner, 2026-10-29): data scientists (including AI),
+data engineers, curators, security specialists, DevOps engineers, architects and developers. The tutorial assumes they
+know databases, files and data catalogs, and have never used Resource Explorer or Egeria. The worked example follows a
+database, so the prose speaks most directly to a data engineer or curator, with short asides for the others where a
+stage matters to them (for example security specialists at Assessment, architects at Analysis).
 
-**What you need first: the Egeria Quickstart.** The tutorial runs on the Egeria Quickstart, set up by the Getting
-Started tutorial. The prose says this at the very top, in plain words:
+**What you need first: the Egeria Quickstart.** The Egeria Quickstart is a demonstration environment. It is set up
+around Coco Pharmaceuticals, a fictitious company. The prose says this at the very top, in plain words:
 
-- The Quickstart is a demonstration environment. Its people, such as Peter Profile and Erin Overview, are made-up
-  users of a made-up company, Coco Pharmaceuticals. None of them is a real person.
-- Everything in it can be thrown away and set up again. So you may change, publish and delete freely while you learn.
-  Nothing you do here touches real data.
-- Every screenshot was taken on the Quickstart, so your screens should match.
-- There are two ways to have it (blog post "Egeria Workspaces 6.1", pdr-associates.com): the hosted demo at
-  egeria.pdr-associates.com (register free, no install), or a local Quickstart from the egeria-workspaces repository.
-  **Open (D2b):** which one the tutorial assumes. The hosted demo is shared with other visitors, so what one reader
-  publishes, others see; and it is not yet confirmed that the hosted demo includes Resource Explorer.
+- The Quickstart's users, such as Peter Profile and Erin Overview, are made-up people at Coco Pharmaceuticals. None of
+  them is a real person.
+- Nothing in it is permanent. You may change, publish and delete freely while you learn. Nothing you do touches real
+  data.
+- Every screenshot was taken on the Quickstart, so your screens should match closely.
+- There are two ways to reach it:
+  - **The hosted demo** at egeria.pdr-associates.com: register free, no install. Its data is reset every day, so work
+    from one day is gone the next. It is sometimes a little behind the latest code, so a screen may differ slightly
+    from a screenshot.
+  - **Your own Egeria Workspaces** from the egeria-workspaces repository. Resource Explorer (part of Trellis) is
+    installed and configured in a separate step today; the Getting Started tutorial covers both.
 
 **What you can do at the end.**
 
@@ -111,8 +115,8 @@ Every part needs the Quickstart running and needs you signed in, except parts 1 
   part 12 can explain the difference with both in front of you.
 - **Where next last (13).**
 
-**The setup.** The Egeria Quickstart (Coco Pharmaceuticals), with Resource Explorer connected to it, a Quickstart user
-id and password, and one public GitHub repository. **Decided (D2):** the tutorial names its sample, so every reader sees
+**The setup.** The Egeria Quickstart environment (its fictitious company is Coco Pharmaceuticals), with Resource
+Explorer connected to it, a Quickstart user id and password, and one public GitHub repository. **Decided (D2):** the tutorial names its sample, so every reader sees
 the same screens. **Open (D2a):** which Quickstart database and folder, and which repository. This outline suggests
 the Quickstart's `coco_pharma` database and its `loading_bay` folder, both used by the merged walks.
 
@@ -151,9 +155,15 @@ the tutorial's reader. To be reviewed with the owner (D8).
    Explorer keeps its working results in its own store while you evaluate; that store is not a second catalog and can
    be rebuilt by running the surveys again. Egeria holds what you publish. Resource Explorer reads from and writes to
    Egeria always as you.
-8. **Who uses it.** Data stewards and data owners deciding what to catalog; data engineers and architects judging
-   what a source is and how it fits; security and privacy reviewers; people building AI applications who need to know
-   which data they can rely on. The tutorial follows a data steward. *(Owner to confirm the list, D8.)*
+8. **Who uses it**, each with one line on what they come for (the owner's list, 2026-10-29; the lines are the
+   writer's, to review):
+   - *data scientists, including AI builders:* which data can I rely on, and what is in it?
+   - *data engineers:* what is this source, how big, how is it built, what depends on it?
+   - *curators:* what is worth cataloging, and is it described well enough to be found and reused?
+   - *security specialists:* secrets, vulnerabilities, who can read what?
+   - *DevOps engineers:* is it maintained, deployed, changing?
+   - *architects:* its structure, its parts and how it fits with the rest;
+   - *developers:* the code repository's interfaces, dependencies and health.
 9. **Three promises the screen keeps**, one sentence each:
    - nothing reaches Egeria until you press Publish;
    - "nothing found" and "not looked at yet" are always shown differently;
@@ -202,6 +212,8 @@ tutorial names one).
   confirmed.)
 - After about an hour: a "Signed out" banner with a **Sign in** button (seen, user guide). Sign in again and carry on;
   nothing you saved is lost.
+- On the hosted demo, the data is reset every day. If you stop and come back the next day, the data sources you added
+  are gone. Each part says what it needs, so you can add them again; or do parts 3 to 10 in one sitting.
 - The header can read "not signed in" while you are signed in, when no investigation is chosen (gap G9). Until
   part 12 no investigation is chosen, so the reader will see this. Tell them to ignore it until the fix lands.
 
@@ -552,8 +564,10 @@ surveying again. Curate runs no checks; it asks you for a decision.
    … · N annotations" (seen).
    - *Explain "annotation":* one measurement or observation, attached to the data source in Egeria.
 6. Go back to **Contents** and read the chips again: "published by RE" now counts this press.
-7. Check from Egeria's side: open the data source in the Egeria Portal (or another Egeria tool) and find the tag and the
-   survey report. **Gap G17:** the tutorial needs one named place in Egeria to look.
+7. Check from Egeria's side: open **Egeria Explorer** from the Quickstart portal, find your database, and see the tag
+   and the survey report (owner, 2026-10-29). Egeria Explorer also shows Resource Explorer's questions and
+   perspectives as Egeria holds them; one sentence, as a pointer. The exact clicks in Egeria Explorer are to be read
+   on the screen.
 
 **What can go wrong.**
 
@@ -685,7 +699,9 @@ Plain definitions, one or two sentences each. The tutorial links each term to th
 |---|---|
 | **Resource Explorer** | A web tool that looks at data sources, measures them, records what people know about them, and publishes what it learns to Egeria. |
 | **Egeria** | An open-source metadata catalog: the shared record of what data an organization has. Resource Explorer reads from it and writes to it. |
-| **Egeria Quickstart** | A demonstration setup of Egeria with a made-up company, Coco Pharmaceuticals, and made-up users. Safe to change and set up again. |
+| **Egeria Quickstart** | A demonstration environment of Egeria, set up around a fictitious company, Coco Pharmaceuticals, with made-up users. Nothing in it is permanent. |
+| **Coco Pharmaceuticals** | The fictitious company whose data and people fill the Egeria Quickstart. |
+| **Egeria Explorer** | A tool in the Quickstart portal for browsing what Egeria holds, including what you published and Resource Explorer's questions and perspectives. |
 | **Catalog** | The shared record of data sources and what is known about them. Here, the catalog is Egeria. |
 | **Data source (resource)** | Something that holds data: a database, a file system or a code repository. The screen says "resource"; the tutorial says "data source" and notes once that they are the same. |
 | **Repository** | A code repository on GitHub. Resource Explorer reads its files and history. |
@@ -823,7 +839,7 @@ from the merged walks are listed where one may be reused, after a check that the
 | S33 | 10 · 2 | Publish band before | "next publish" and **Publish** | new |
 | S34 | 10 · 4 | Publish band after | "✓ in Egeria · … · confirmed" | new |
 | S35 | 10 · 5 | Egeria reports | Report rows | `03-curate-publish-to-egeria.webp` if unchanged |
-| S36 | 10 · 7 | Egeria Portal | The data source with the tag and survey report | new (depends on G17) |
+| S36 | 10 · 7 | Egeria Explorer | The database with the tag and survey report | new |
 | S37 | 11 · 2 | Select several | Three ticked, save as work list… | new |
 | S38 | 11 · 4 | A work list | Rows × questions | new |
 | S39 | 11 · 7 | The shortlist | After promote | new |
@@ -842,7 +858,7 @@ carry words the tutorial avoids, so each needs a check, and some a redrawn label
 | Part 4, what a question is | part 2, `anatomy-of-a-question.png` | Optional; may be Advanced material. |
 | Part 9, Include / Leave out | part 3, `curate-decision-table-v2.png` | A database's schemas with a decision each. Can replace S29 if the screen still matches. |
 | Part 10, before Publish | part 3, `curate-commit-summary.png` | "What this commit does". Check it is still the screen; "commit" needs explaining or avoiding. |
-| Part 10 · 7, checking in Egeria | part 3, `question-in-egeria-1600.jpg` (a question viewed in Egeria Explorer); Workspaces 6.1, `Portal-6.1.png` (the Quickstart portal home) | A lead for gap G17: Egeria Explorer in the Quickstart portal may be the named place to look. |
+| Part 10 · 7, checking in Egeria | part 3, `question-in-egeria-1600.jpg` (a question viewed in Egeria Explorer); Workspaces 6.1, `Portal-6.1.png` (the Quickstart portal home) | Egeria Explorer is the place to look (owner, 2026-10-29); the portal home shows where to open it. |
 | Part 8, an answer and its sources | part 4, `p4-fig2a-docling-answer.png` | The answer with its stored results listed above it. |
 | Part 8 · 5, what would answer this | part 4, `p4-fig2b-docling-gaps-v3.png` | Analyses with no stored result, each with Run. |
 | Part 8, how questions improve | part 4, `part4-fig3-question-loop-v2.png` | The surveys-and-chat loop; a good closing picture for part 8. |
@@ -864,7 +880,7 @@ in this outline; each is named where it bites.
 | G4 | A file system's survey page offers seven start buttons (Survey, Measure beside Egeria's survey, Publish these measures to Egeria, Profile data files, Derive, Read narrative files, Match data classes) and no overview survey is marked. A repository's and a database's overview survey is not marked either. | 4, 5 | Mark each stage's overview survey on the screen, and give the file-system buttons an order. |
 | G5 | File-system registration says "Mount (local path)" and "Canonical mount (blank = the mount)". The user guide says "host and container path". The survey then reports the path Egeria reads ("/deployments/loading-bay"). A reader cannot tell which path to type. | 3b | One explanation of the paths, on the form. |
 | G6 | "Slug *" is a required field on both register forms. Dashes are silently turned into underscores. | 3a, 3b | A plain label ("Short name"), or a hint under the box. |
-| G7 | "Egeria connection (optional)" on the database form asks for "Egeria-visible host", "Egeria platform URL" and "View server". A data steward cannot know these. | 3a | Hide it from non-admins, or say when it is needed. |
+| G7 | "Egeria connection (optional)" on the database form asks for "Egeria-visible host", "Egeria platform URL" and "View server". Most readers cannot know these. | 3a | Hide it from non-admins, or say when it is needed. |
 | G8 | File-system survey says "a proposal · confirm it on Curate"; Curate says "Nothing to review for file systems yet." A dead end. | 5, 9 | Build the review, or remove the pointer. |
 | G9 | Header can read "not signed in" while signed in (no investigation chosen). With investigations moved to part 12, the reader sees this for most of the tutorial. | 2–11 | Already queued as a defect. More urgent now. |
 | G10 | Slow panes say "still loading" for 9–15 seconds without saying what they wait for (Discovery, Analysis, Enrichment). | 4, 6, 7 | Already queued as a defect. |
@@ -874,7 +890,7 @@ in this outline; each is named where it bites.
 | G14 | The user guide says a database's Curate is one page; walk 3 shows tabs ("Describe and publish · Contents · Structure · …") on a database. One of them is out of date. | 9 | Read the screen and correct the guide. |
 | G15 | "RFAs" is an unexplained abbreviation in the strip. | 7 | Spell it out on hover, or rename. |
 | G16 | Internal words on screen: "ran via Prefect"; "compile" in the chat rail ("a compile reads one resource's stored results"); chat source lines list raw analysis ids ("fs_permissions, fs_activity"). | 5, 8 | Plain words, or analysis display names. |
-| G17 | No single named place in Egeria for the reader to check that a publish arrived. | 10 | Name it (the Egeria Portal page, or a "Show in Egeria" link that opens Egeria itself). |
+| G17 | No single named place in Egeria for the reader to check that a publish arrived. | 10 | **Settled (owner, 2026-10-29):** Egeria Explorer. Still worth having: a link from Resource Explorer's "Show in Egeria" that opens Egeria Explorer on the element. |
 | G18 | Publish-band words a new user cannot read: "kept survey", "◐ behind · 76 annotations", "◐ stale 9 of 12 steps are stale", "◐ partly committed · 4 queued". | 10 | Plain sentences, or a hover that explains each. |
 | G19 | The Admin dialog says "the eight intents"; the word appears nowhere else on screen. | Advanced tutorial | Say "the stages". |
 | G20 | The sign-in panel says "EXPERIMENTAL UI". A new reader may doubt they are in the right place. | 2 | Remove, or explain. |
@@ -897,5 +913,5 @@ in this outline; each is named where it bites.
 | D5 | Automate in the tutorial | **Decided (project owner, 2026-10-29):** no. Automate, extensibility and Admin go to an Advanced tutorial. Installing and configuring goes to a Getting Started tutorial. This is the Core tutorial. |
 | D6 | Publishing during screenshots | **Decided (project owner, 2026-10-29):** the tutorial is based on the Egeria Quickstart, a demonstration environment whose users are all made up. That is stated at the start. Everything can be thrown away, so the tutorial presses, saves and publishes for real. |
 | D7 | Work lists and investigations | **Decided (project owner, 2026-10-29):** work lists get their own part (11), and the relationship to investigations is described (part 12). |
-| D2b | Hosted demo or local Quickstart | Open. The hosted demo needs no install but is shared with other visitors; a local Quickstart is private and fully throwaway. |
-| D8 | Part 1: what Resource Explorer is for, and who it is for | Drafted from blog part 1 (part 1 above). Open: the owner's review, and the list of who uses it. |
+| D2b | Hosted demo or your own Egeria Workspaces | **Settled by the owner's facts (2026-10-29):** both work. The hosted demo is reset daily and is sometimes a little behind the latest code. Your own Workspaces needs Trellis installed and configured in a separate step, which the Getting Started tutorial covers. The tutorial offers both (section 1). |
+| D8 | Part 1: what Resource Explorer is for, and who it is for | Drafted from blog part 1. **Users decided (project owner, 2026-10-29):** data scientists (including AI), data engineers, curators, security specialists, DevOps engineers, architects, developers. Open: the owner's review of the one-line "what they come for" per role (part 1, item 8). |
