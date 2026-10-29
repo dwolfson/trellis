@@ -36,6 +36,7 @@ agreed" and "the detector was sure" are different claims.
 """
 from __future__ import annotations
 
+import contextlib
 import functools
 import logging
 from dataclasses import dataclass, field
@@ -1587,7 +1588,20 @@ class FactLayer:
         return ""
 
     # ── many analyses ───────────────────────────────────────────────────────
+    def one_read(self):
+        """One read's shared derivations (db_derived's `one_read`): every analysis behind a database question reads
+        the same recomputed `run_db_derived`, so it is computed once per read, not twice per analysis id."""
+        if self.resource_type != "database":
+            return contextlib.nullcontext()
+        from resource_explorer.surveyors.database.db_derived import one_read
+
+        return one_read()
+
     def facts(self, slug: str, analysis_ids: list, level: str = "resource") -> list:
+        with self.one_read():
+            return self._facts(slug, analysis_ids, level)
+
+    def _facts(self, slug: str, analysis_ids: list, level: str) -> list:
         results = [self.fact(slug, a, level) for a in analysis_ids]
         # The one choke point every consumer of "what is known about this
         # resource" already goes through (resource_facts, bulk_resource_facts,
@@ -1612,6 +1626,10 @@ class FactLayer:
         is a lookup rather than an inference — and for 18 of the 41 the correct
         behaviour is to produce no answer about the resource at all.
         """
+        with self.one_read():
+            return self._answer(slug, question)
+
+    def _answer(self, slug: str, question: dict) -> Envelope:
         answering = question.get("answering") or {}
         kind = answering.get("kind") or "unknown"
         env = Envelope(
