@@ -258,6 +258,8 @@ export const runFilesystemAnalysis = (slug, analysisId) =>
   post(`/api/filesystems/${encodeURIComponent(slug)}/analyses/${encodeURIComponent(analysisId)}/run`);
 /** Files build step 7: read the narrative files the newest walk found, in full, into RE's search index (F11's long form). */
 export const runNarrativeDocs = (slug) => post(`/api/filesystems/${encodeURIComponent(slug)}/narrative-docs`);
+/** The Resource Locator's passage search: file systems whose pressed narrative files say something about `q`. */
+export const findFilesystemsByPassages = (q) => get(`/api/filesystems/by-passages?q=${encodeURIComponent(q)}`);
 /** Files build step 8: data_class_match over the file profiles (F7). Every match a proposal; nothing published. */
 export const runClassMatch = (slug) => post(`/api/filesystems/${encodeURIComponent(slug)}/class-match`);
 
