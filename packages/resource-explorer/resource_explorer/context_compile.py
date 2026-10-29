@@ -1083,6 +1083,7 @@ def compile_context(
     session_id: str | None = None,
     max_sections: int | None = None,
     instructions_variant: str = "default",
+    narrative_store_factory=None,
 ) -> CompiledContext:
     """Build, resolve and pack a context for `question` about resource `slug`.
 
@@ -1425,6 +1426,18 @@ def compile_context(
         # skipped here: a section the derivation says should exist, with nothing
         # behind it, is information -- and it does not count against the cap.
 
+    # A file system's narrative passages ride beside its analyses (Files follow-up 1): one section, always present, so
+    # "never pressed", "no passage matched" and "index unreachable" are each said, never an empty gap.
+    narrative_info: dict | None = None
+    if resource_type == "filesystem":
+        from resource_explorer import narrative_context
+
+        n_rungs, narrative_info = narrative_context.build(registry, slug, question, store_factory=narrative_store_factory)
+        sections.append(Section(narrative_context.SECTION_KEY, role="evidence", weight=2.0))
+        candidates[narrative_context.SECTION_KEY] = Candidate(
+            narrative_context.SECTION_KEY, n_rungs,
+            provenance=({"analysis_id": narrative_context.SECTION_KEY, "check": None, "surveyed_at": None},))
+
     # The instructions candidate is built last because its text depends on
     # where the caveat went. The coverage line (and the caveat, when it has no
     # section to live in) ride INSIDE this candidate rather than being
@@ -1467,6 +1480,15 @@ def compile_context(
             extra_notes.append("declared sections left out, not said in the context for want of room: "
                                + ", ".join(k for k, _ in omitted))
     packed_keys = {p["key"] for p in m.packed}
+    narrative_manifest = None
+    if narrative_info is not None:
+        # Citations only (the text is in the stored context): what an answer may cite, and what the journal stores.
+        cited = [{k: v for k, v in p.items() if k != "text"} for p in narrative_info["passages"]]
+        narrative_manifest = {"state": narrative_info["state"], "collection": narrative_info["collection"],
+                              "passages": cited, "packed": "narratives" in packed_keys}
+        for p in m.packed:
+            if p["key"] == "narratives":
+                p["passages"] = cited
     declared_packed = {k: v for k, v in declared_seen.items() if k in packed_keys}
     for k, v in declared_packed.items():
         v["rung"] = next(p["rung"] for p in m.packed if p["key"] == k)
@@ -1509,6 +1531,7 @@ def compile_context(
                 "weakest": declared_context.weakest([v["confidence"] for v in declared_packed.values()]),
                 "by_section": {k: v["confidence"] for k, v in declared_packed.items() if v["confidence"]},
             },
+            **({"narratives": narrative_manifest} if narrative_manifest is not None else {}),
             "absences_in_context": sorted(declared_absent),
             "omitted_in_context": omitted_in_context,
             "notes": list(m.notes) + extra_notes,

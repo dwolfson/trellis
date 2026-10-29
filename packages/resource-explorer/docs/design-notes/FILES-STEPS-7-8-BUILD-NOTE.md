@@ -144,6 +144,19 @@ confirm" when this note was written. The narratives press is covered in §4.
 
 1. Chat and the Resource Locator do not query `fs_<slug>_narratives` yet. Wiring file-system retrieval with "stated by
    <file>" citations is the reader half of F11's long form.
+   **Chat: built (Files follow-up 1, `narrative_context.py`).** A compile scoped to a file system, or to an investigation
+   holding one, adds a `narratives` section: the top 5 passages for the question, packed inside the compile's own budget,
+   each cited "stated by <path> § <section> — proposal". The manifest carries `narratives` (state, passages with
+   `passage_id` = walk_run|path|section), and the journal entry stores those ids. Absence is said three ways: "not read yet"
+   (never pressed), "read, and no passage matched" (no hit), "index could not be reached" (a failure, never an absence).
+   Rows from an old press are cited as they hold stated_by, with the metadata's `file_path` added.
+
+   **Resource Locator: not built; open question.** The repository has no Locator code, only design mentions
+   (`PLAN-OPEN-FRONTS-2026-10-14.md`). Finding a file system *by its passages* means searching every file system's
+   collection and ranking file systems, not passages, which is a design choice the owner has not made: rank by best
+   passage or by count of matching passages? search only pressed file systems (and say how many were never read, so an
+   unpressed one is not read as a non-match)? Whatever the answer, it should reuse `narrative_context.citation` and
+   `passage_of` so the citation and proposal label stay the same.
 2. Q-0105 (F11) stays GAP and Q-0101 (F3) stays GAP in the CSV, although `folder_narratives`, `narrative_docs` and
    `file_profiles` are built. None of them has a catalog entry for the question catalog to name.
 3. For files Egeria profiled, read the value counts from Egeria's CSV report, so their columns can be matched too.
