@@ -269,7 +269,7 @@ export async function renderContext(slug) {
     // re-entered: say it is loading rather than leave the slot blank.
     renderEnrichmentEvidenceLoading(slug);
   }
-  host.innerHTML = `<div class="text-caveat text-ink-muted">Reading what's been supplied…</div>`;
+  host.innerHTML = `<div class="text-caveat text-ink-muted">Reading what's been supplied for ${esc(slug)} · waiting on its context and enrichment reads · nothing back yet</div>`;
 
   try {
     const ctx = await getContext(apiEntityType(state.resourceType), slug);

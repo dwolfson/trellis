@@ -60,3 +60,18 @@ class TestAnonymousDismiss:
         js = (STATIC / "auth.js").read_text(encoding="utf-8")
         assert "anonymousRead = data.anonymous_read === true;" in js
         assert "dismiss.style.display = anonymousRead ? '' : 'none';" in js
+
+
+class TestLoadingPanesSayWhatTheyWaitFor:
+    def test_no_bare_loading_words_remain(self):
+        app = _app()
+        ctx = (NEXT / "stages" / "context.js").read_text(encoding="utf-8")
+        assert ">loading…<" not in app and "still loading</span>" not in app and "pending}</span> still loading" not in app
+        assert "Reading what's been supplied…" not in ctx
+
+    def test_each_names_its_wait_and_how_many_are_back(self):
+        app = _app()
+        ctx = (NEXT / "stages" / "context.js").read_text(encoding="utf-8")
+        assert "questions still being read" in app and "none back yet" in app
+        assert "still reading <span class=\"tnum\">${pending}</span> · <span class=\"tnum\">${settled.length}</span> back" in app
+        assert "waiting on its context and enrichment reads" in ctx

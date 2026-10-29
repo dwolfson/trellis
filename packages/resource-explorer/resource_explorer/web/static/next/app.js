@@ -8666,8 +8666,11 @@ export function renderLegend() {
     </span>`);
 
   if (pending) {
-    items.push(`<span class="text-ink-muted">
-      <span class="tnum">${pending}</span> still loading</span>`);
+    // What it waits for and how many are back: a bare "loading" gives no reason for the wait.
+    const total = state.questions.length;
+    items.push(`<span class="text-ink-muted" data-legend-pending>
+      <span class="tnum">${pending}</span> of <span class="tnum">${total}</span> questions still being read ·
+      <span class="tnum">${total - pending}</span> back</span>`);
   }
 
   // The ordering legend sits beside the state key, not inside it: the key
@@ -8982,7 +8985,7 @@ async function loadPane() {
   el.innerHTML = `${subTabsHtml()}
     <div id="resource-header">${resourceHeaderHtml(slug)}</div>
     <div class="mt-s3 flex flex-wrap items-baseline gap-s3 text-provenance">
-      <span id="answered-count" class="tnum text-caveat text-ink-muted">loading…</span>
+      <span id="answered-count" class="tnum text-caveat text-ink-muted">reading the questions for ${esc(slug || 'this resource')} · none back yet</span>
     </div>
     <div id="state-legend" class="mt-s2 flex flex-wrap items-baseline gap-s3 text-caveat"></div>
     <div class="my-s3 h-px bg-rule"></div>
@@ -9744,7 +9747,7 @@ function updateAnsweredCount() {
   }).length;
   const pending = total - settled.length;
   el.innerHTML = `<span class="tnum">${answered}</span> of <span class="tnum">${total}</span> answered`
-    + (pending ? ` · <span class="tnum">${pending}</span> still loading` : '')
+    + (pending ? ` · still reading <span class="tnum">${pending}</span> · <span class="tnum">${settled.length}</span> back` : '')
     + ` · ${stageLabel()}`;
 }
 
