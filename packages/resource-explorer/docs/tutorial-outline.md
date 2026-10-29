@@ -587,14 +587,14 @@ surveying again. Curate runs no checks; it asks you for a decision.
 ones worth more work.
 
 **Before you start.** Three or more data sources of one kind, scouted. Repositories are easiest: import three with
-**＋ Find repos** (part 3c) and run each one's Scouting Survey, or run one survey across the list (step 5). OpenLineage
-plus two more; which two is open (D2c). This outline suggests two related lineage projects, so the comparison means
+**＋ Find repos** (part 3c) and run each one's Scouting Survey, or run one survey across the list (step 5). Use
+OpenLineage, Marquez and Egeria (D2c): three related open-source metadata and lineage projects, so the comparison means
 something.
 
 **Steps.**
 
 1. In the sidebar, click **Select several…** (seen).
-2. Tick three repositories, then click **save as work list…** (seen).
+2. Tick OpenLineage, Marquez and Egeria, then click **save as work list…** (seen).
 3. Name the list and save it.
    - *You see:* "▦ Work lists" in the strip counts one more (seen).
 4. Click **▦ Work lists** and open your list.
@@ -915,6 +915,6 @@ in this outline; each is named where it bites.
 | D5 | Automate in the tutorial | **Decided (project owner, 2026-10-29):** no. Automate, extensibility and Admin go to an Advanced tutorial. Installing and configuring goes to a Getting Started tutorial. This is the Core tutorial. |
 | D6 | Publishing during screenshots | **Decided (project owner, 2026-10-29):** the tutorial is based on the Egeria Quickstart, a demonstration environment whose users are all made up. That is stated at the start. Everything can be thrown away, so the tutorial presses, saves and publishes for real. |
 | D7 | Work lists and investigations | **Decided (project owner, 2026-10-29):** work lists get their own part (11), and the relationship to investigations is described (part 12). |
-| D2c | The two extra repositories for the work list (part 11) | Open. Suggested: two lineage-related projects beside OpenLineage. |
+| D2c | The two extra repositories for the work list (part 11) | **Decided (project owner, 2026-10-29):** Marquez and Egeria, beside OpenLineage. |
 | D2b | Hosted demo or your own Egeria Workspaces | **Settled by the owner's facts (2026-10-29):** both work. The hosted demo is reset daily and is sometimes a little behind the latest code. Your own Workspaces needs Trellis installed and configured in a separate step, which the Getting Started tutorial covers. The tutorial offers both (section 1). |
 | D8 | Part 1: what Resource Explorer is for, and who it is for | Drafted from blog part 1. **Users decided (project owner, 2026-10-29):** data scientists (including AI), data engineers, curators, security specialists, DevOps engineers, architects, developers. Open: the owner's review of the one-line "what they come for" per role (part 1, item 8). |
