@@ -73,6 +73,8 @@ LOAD_ERRORS: dict[str, str] = {}
 #: PROPOSAL (`contentStatus` DRAFT, its `candidateClassifications`), never a classification on the element: facts come
 #: only through Curate (owner, 2026-10-15: the two channels stay separate).
 PUBLISHABLE_ANNOTATION_TYPES = ("ResourceMeasureAnnotation", "ClassificationAnnotation")
+#: Where the annotation types Egeria is wanted to support are tracked, named in the "not offered to Egeria" warning.
+WANTED_TYPES_DOC = "docs/design-notes/EGERIA-ANNOTATION-TYPES-WANTED.md"
 
 #: Egeria's `contentStatus` for a library step's proposal: the content asks a curator to decide.
 PROPOSAL_CONTENT_STATUS = "DRAFT"
@@ -238,8 +240,10 @@ def _admit(entity_type: str, found: dict, provided_by: dict[str, dict]) -> tuple
             continue
         cannot = [t for t in _annotation_types(m) if t not in PUBLISHABLE_ANNOTATION_TYPES]
         if cannot:
-            refused[name] = (f"emits {', '.join(cannot)}; the engine host publishes "
-                             f"{', '.join(PUBLISHABLE_ANNOTATION_TYPES)} only")
+            emits = _annotation_types(m)
+            refused[name] = (f"emits {', '.join(emits)}, of which {', '.join(cannot)} cannot be published by the "
+                             f"engine host (it publishes {', '.join(PUBLISHABLE_ANNOTATION_TYPES)} only); "
+                             f"see {WANTED_TYPES_DOC}")
             continue
         rt = m.request_type
         by_type.setdefault(rt, []).append(name)
@@ -778,8 +782,10 @@ def attached_user_steps(entity_type: str = "database") -> frozenset[str]:
 
 def refresh(entity_type: str = "database") -> list[str]:
     """Discover again and re-attach (after a package is installed into a running process, or in a test)."""
+    from resource_explorer.surveyors import question_catalog_reader
     from resource_explorer.surveyors.analysis_catalog_reader import clear_cache
 
+    question_catalog_reader.clear_cache()      # a step's own questions are merged into it when it is read
     if entity_type == "database":
         from resource_explorer.surveyors.database import survey_definition_adapter as db
 

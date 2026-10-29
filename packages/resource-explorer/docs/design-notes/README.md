@@ -70,6 +70,7 @@ Declared extensibility (the user guide is [`../extending-with-analyses.md`](../e
 - [DESIGN-DECLARED-EXTENSIBILITY-RENDERING-CHAT-CONFIDENCE.md](DESIGN-DECLARED-EXTENSIBILITY-RENDERING-CHAT-CONFIDENCE.md): one declaration, three consumers. The parent design
 - ⚑ [DECLARED-EXTENSIBILITY-SLICE1-PR1-GAPS.md](DECLARED-EXTENSIBILITY-SLICE1-PR1-GAPS.md): slice 1, the declaration (PR #885). Branch `claude/re-ext-slice2-chat-compile` edits it
 - ⚑ [DECLARED-EXTENSIBILITY-SLICE1-PR2-PUBLISH-TABLE.md](DECLARED-EXTENSIBILITY-SLICE1-PR2-PUBLISH-TABLE.md): slice 1, the Curate publish table (PR #886). Branch `claude/re-ext-publish-table-answers` edits it
+- [EGERIA-ANNOTATION-TYPES-WANTED.md](EGERIA-ANNOTATION-TYPES-WANTED.md): annotation types library steps emit that the engine host cannot publish, and what we ask of Egeria
 - [DESIGN-STEP-MANIFESTS-MERGED-AT-READ-TIME.md](DESIGN-STEP-MANIFESTS-MERGED-AT-READ-TIME.md): installed step manifests merge into the analysis catalog when it is read (F1); the committed entries stay as the fallback; a step-declared new question is an open question. On branch `claude/re-ext-followups-928989`
 - ⚑ `DECLARED-EXTENSIBILITY-SLICE2-CHAT-COMPILE.md`: slice 2, chat. Only on branch `claude/re-ext-slice2-chat-compile` so far
 - [DESIGN-ANALYTIC-EXTENSIBILITY-WORKING-ASSUMPTIONS.md](DESIGN-ANALYTIC-EXTENSIBILITY-WORKING-ASSUMPTIONS.md): the 2026-10-02 brainstorm that started it

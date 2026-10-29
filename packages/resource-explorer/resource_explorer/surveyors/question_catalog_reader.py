@@ -40,10 +40,13 @@ Unification Thread) — deliberately not built yet.
 from __future__ import annotations
 
 import functools
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+log = logging.getLogger(__name__)
 
 _DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "configdata" / "question_catalog.yaml"
 
@@ -227,11 +230,47 @@ def _load(config_path: Path = _DEFAULT_CONFIG_PATH) -> dict[str, list[QuestionCa
     with open(config_path) as f:
         raw = yaml.safe_load(f) or {}
 
-    return {
+    loaded = {
         key[: -len(_QUESTIONS_KEY_SUFFIX)]: [_entry_from_yaml(e) for e in (value or [])]
         for key, value in raw.items()
         if key.endswith(_QUESTIONS_KEY_SUFFIX) and key != _QUESTIONS_KEY_SUFFIX
     }
+    if config_path == _DEFAULT_CONFIG_PATH:
+        _merge_step_questions(loaded)
+    return loaded
+
+
+def _merge_step_questions(loaded: dict[str, list[QuestionCatalogEntry]]) -> None:
+    """Add the questions installed Analytic Library steps declare in their manifests (`question_defs`) to each resource
+    type the step measures, at read time, the way the analysis catalogue merges the step's own entry (owner ruling
+    2026-10-29, "namespaced id in manifest"). Their ids are under the step's own prefix (`fs_permissions:Q1`), so no
+    central allocation is needed and none can collide with the catalogue's `Q-0001` sequence. Nothing is written to
+    configdata. A row already in a section with the same id is left as it is."""
+    try:
+        from trellis_analytics.discovery import discover
+
+        # `check=False`: the discovery's question check reads THIS catalogue's ids, which would ask it to load itself.
+        manifests = discover(check=False)
+    except ImportError:
+        return
+    except Exception as exc:  # noqa: BLE001 -- a broken package must not take the catalogue down; discover names it
+        log.error("step-declared questions not merged: %s", exc)
+        return
+    for manifest in manifests.values():
+        if getattr(manifest, "kind", "") != "step":
+            continue
+        for q in manifest.question_defs:
+            row = QuestionCatalogEntry(
+                id=q.id, question=q.question, stage=q.stage or manifest.stage.capitalize(),
+                perspectives=list(q.perspectives or [p for p in manifest.perspectives if p != "all"]),
+                purposes=list(q.purposes or manifest.purposes), levels=list(q.levels),
+                answering=QuestionAnswering(kind="analysis", analysis_ids=[manifest.name], note=manifest.name),
+                answering_mechanism="Code Analysis", rationale=q.rationale,
+                catalog_history=f"from the step '{manifest.name}' (version {manifest.version}), merged at read time")
+            for resource_type in manifest.resource_types:
+                section = loaded.setdefault(resource_type, [])
+                if all(e.id != row.id for e in section):
+                    section.append(row)
 
 
 #: The top-level YAML key listing the ids of rows the generator skipped (Status `retired <date>: ...` or

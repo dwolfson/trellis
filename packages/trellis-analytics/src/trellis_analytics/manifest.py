@@ -22,12 +22,38 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pyegeria.view.analytic_registry import AnalyticFunctionSpec
 
-from trellis_analytics.declaration import Declaration
+from trellis_analytics.declaration import AnnotationDeclaration, Declaration
 
 Source = Literal["ods", "egeria", "resource"]
+
+
+class QuestionDeclaration(BaseModel):
+    """A question a step brings with it (owner ruling 2026-10-29, "namespaced id in manifest"): its text and an id under
+    the step's own prefix (`fs_permissions:Q1`), so no central allocation is needed and two packages cannot collide.
+    Resource Explorer merges it into its question catalogue when it reads it, the way it merges the step's analysis
+    entry; the row is never written to configdata. Everything but the id and the text has a default."""
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    question: str
+    #: The funnel stage that asks it (RE's stage vocabulary); the step's own `stage` when empty.
+    stage: str = ""
+    #: Empty means the manifest's perspectives (without "all").
+    perspectives: list[str] = Field(default_factory=list)
+    #: Empty means the manifest's purposes.
+    purposes: list[str] = Field(default_factory=list)
+    levels: list[str] = Field(default_factory=lambda: ["resource"])
+    #: What the answer can and cannot claim, in words.
+    rationale: str = ""
+
+    @field_validator("question")
+    @classmethod
+    def _text(cls, v: str) -> str:
+        if not " ".join(v.split()):
+            raise ValueError("a question declared by a step needs its text")
+        return " ".join(v.split())
 
 
 class _TrellisManifest(AnalyticFunctionSpec):
@@ -41,12 +67,32 @@ class _TrellisManifest(AnalyticFunctionSpec):
     #: catalog), never by wording: the wording is edited, the id is not. Checked at load against the catalog
     #: (`discovery.check_questions`); suggestive, so an unknown id warns, naming it, and is kept.
     questions: list[str] = Field(default_factory=list)
+    #: New questions this step brings, each with its text and an id under the step's own name (`<name>:Q1`). Their ids
+    #: are added to `questions` when left out of it, so `questions` stays the one list of what the step answers.
+    question_defs: list[QuestionDeclaration] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _own_questions(self) -> "_TrellisManifest":
+        seen: set[str] = set()
+        for q in self.question_defs:
+            if not q.id.startswith(f"{self.name}:") or not q.id[len(self.name) + 1:].strip():
+                raise ValueError(f"question '{q.id}' must have an id under the step's own prefix "
+                                 f"('{self.name}:Q1'): a step cannot allocate an id in the central catalog's "
+                                 "sequence or another step's")
+            if q.id in seen:
+                raise ValueError(f"question '{q.id}' is declared twice")
+            seen.add(q.id)
+            if q.id not in self.questions:
+                self.questions.append(q.id)
+        return self
 
 
 def question_warnings(manifest: _TrellisManifest, known: set[str]) -> list[str]:
-    """One sentence per declared question id outside `known`, naming the manifest and the id. Never raises."""
+    """One sentence per declared question id outside `known` (and not declared by the manifest itself), naming the
+    manifest and the id. Never raises."""
+    own = {q.id for q in manifest.question_defs}
     return [f"manifest '{manifest.name}': question '{q}' is not an id in the question catalog; kept as written"
-            for q in manifest.questions if q and q.strip() not in known]
+            for q in manifest.questions if q and q.strip() not in known and q.strip() not in own]
 
 
 def purpose_warnings(manifest: _TrellisManifest, known: list[str]) -> list[str]:
@@ -205,6 +251,45 @@ class StepManifest(_TrellisManifest):
                              "'read_only'; with 'none' there is no connection to hand it")
         return self
 
+    def _one_type_declaration(self, d: Declaration) -> None:
+        """A measure's Egeria type is one fact declared in two places: the manifest (`annotation_type`, or
+        `measure_annotation_types` for a measure other than the default) and the measure's own
+        `annotation`. One derives from the other, so changing one field cannot make the step fail to load:
+
+        - the manifest names a type for the measure and the measure declares none: the measure's `annotation` is
+          filled from the manifest (a step's library measure then reads as that native type, never "generic");
+        - the measure declares a type and the manifest names none (`annotation_type` left at its default): the manifest's
+          type follows the measure's;
+        - both are written and they differ: the error names both fields, because that is a contradiction no default can
+          settle."""
+        explicit_default = "annotation_type" in self.model_fields_set
+        for m in d.measures:
+            writes = self.annotation_type_for(m.name)
+            by_manifest = m.name in self.measure_annotation_types or explicit_default
+            says = m.annotation.type if m.annotation else None
+            if says and by_manifest and says != writes:
+                field = (f"measure_annotation_types['{m.name}']" if m.name in self.measure_annotation_types
+                         else "annotation_type")
+                raise ValueError(f"measure '{m.name}' is declared as {says} in declaration.measures[{m.name}]."
+                                 f"annotation.type and as {writes} in the manifest's {field}: they are one fact, so "
+                                 "write it once (leave one out and the other is used)")
+            if says and not by_manifest:
+                self._follow_measure(m.name, says)
+            elif not says and by_manifest:
+                m.annotation = AnnotationDeclaration(type=writes)
+
+    def _follow_measure(self, measure: str, type_: str) -> None:
+        """The manifest takes the type a measure declared, when the manifest named none."""
+        if measure == self.name:
+            old = self.annotation_type
+            # The step's other measures inherit `annotation_type`: pin them, so changing the primary moves only it.
+            for other in self.measure_names():
+                if other != measure and other not in self.measure_annotation_types and type_ != old:
+                    self.measure_annotation_types[other] = old
+            self.annotation_type = type_
+        elif type_ != self.annotation_type:
+            self.measure_annotation_types[measure] = type_
+
     @model_validator(mode="after")
     def _declaration_matches(self) -> "StepManifest":
         d = self.declaration
@@ -220,14 +305,7 @@ class StepManifest(_TrellisManifest):
         if unknown:
             raise ValueError(f"declaration declares measure {', '.join(unknown)}, which the step does not report "
                              f"({', '.join(names)})")
-        for m in d.measures:
-            writes = self.annotation_type_for(m.name)
-            if m.annotation and m.annotation.type != writes:
-                raise ValueError(f"declaration says measure '{m.name}' writes as {m.annotation.type}; the step "
-                                 f"publishes it as {writes}")
-            if not m.annotation and writes != "ResourceMeasureAnnotation":
-                raise ValueError(f"declaration gives measure '{m.name}' no annotation, which reads as a generic "
-                                 f"measure; the step publishes it as {writes}, so declare that type")
+        self._one_type_declaration(d)
         if d.answers is None:
             d.answers = list(self.questions)
         elif sorted(d.answers) != sorted(self.questions):
