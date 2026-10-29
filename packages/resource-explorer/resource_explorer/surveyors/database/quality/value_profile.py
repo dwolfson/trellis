@@ -262,6 +262,9 @@ class ProfileBounds:
     #: The whole-table time budget (owner, 2026-10-21: "5 minutes per table"): the total across a table's chunks,
     #: not a timeout on each chunk. A table that has not finished in this time is "profile incomplete".
     table_budget_seconds: float = 300.0
+    #: Dupe_Rows' own per-table budget (owner, 2026-10-26, Q4 section 7 question 3: "its own per-table budget of 5
+    #: minutes"). Separate from the profile's: a GROUP BY over every column does not fit inside it.
+    dupe_rows_budget_seconds: float = 300.0
 
 
 def incomplete_reason(budget_seconds: float) -> str:

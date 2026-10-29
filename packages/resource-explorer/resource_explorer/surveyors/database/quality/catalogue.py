@@ -65,8 +65,20 @@ B1A_TEST_TYPES = ("Match_Row_Ct", "Match_Distinct_Ct", "Match_Null_Ct", "Match_Z
 B1B_TEST_TYPES = ("Match_Min_Val", "Match_Max_Val", "Match_Sum", "Match_Stdev", "Match_Zero_Ct", "Match_Fractional_Sum",
                   "Match_Min_Length", "Match_Max_Length", "Match_Total_Length", "Match_True_Ct",
                   "Match_Distinct_Date_Ct", "Daily_Record_Ct")
+#: Q4 port order step 4 (DESIGN-QUALITY-STEPS-4-5-DUPE-ROWS-AND-DRIFT.md): Dupe_Rows, a QUERY type with its own
+#: statement and its own per-table time budget (`dupe_rows.py`).
+STEP_4_TEST_TYPES = ("Dupe_Rows",)
+#: Q4 port order step 5: the schema-drift checks, METADATA types that read what RE already stored from its surveys and
+#: run no query against the surveyed database (`schema_drift.py`). Schema_Conformance is vendored but has no declared
+#: schema in RE to compare with, so it never proposes and never concludes (see the note, section 5).
+STEP_5_TEST_TYPES = ("Match_Column_Ct", "Match_Column_Type", "Schema_Conformance", "Schema_Drift")
 #: Every test type RE has ported, in the order proposals are considered.
-PORTED_TEST_TYPES = SLICE_1_TEST_TYPES + Q6_TEST_TYPES + B1A_TEST_TYPES + B1B_TEST_TYPES
+PORTED_TEST_TYPES = (SLICE_1_TEST_TYPES + Q6_TEST_TYPES + B1A_TEST_TYPES + B1B_TEST_TYPES + STEP_4_TEST_TYPES
+                     + STEP_5_TEST_TYPES)
+
+#: TestGen's `run_type` values: CAT is an aggregate in the per-table SELECT, QUERY is a statement of its own, METADATA
+#: reads TestGen's own metadata tables (RE: its stored surveys).
+RUN_CAT, RUN_QUERY, RUN_METADATA = "CAT", "QUERY", "METADATA"
 
 #: TestGen's generation set for the baseline-match types. TestGen generates them only for a table group a person
 #: opted into it; RE proposes them only for a table a person opted in (Q4 §7, question 2).
@@ -156,6 +168,9 @@ class TestType:
     generation_template: str | None = None
     #: Upstream's flag: a NULL measure is a failure rather than a pass. Read by `run_quality_checks`.
     null_measure_fails: bool = False
+    #: How upstream runs it: CAT (the default), QUERY (Dupe_Rows) or METADATA (the drift checks). Only a CAT type has
+    #: a `cat_test_conditions` entry, so `measure`, `test_operator` and `test_condition` are empty for the others.
+    run_type: str = RUN_CAT
 
     @property
     def severity(self) -> str:
@@ -168,7 +183,14 @@ class TestType:
 
     @property
     def is_table_check(self) -> bool:
-        return self.test_scope == "table"
+        """A check on a table. Upstream's Schema_Drift is `tablegroup` scope, but its result rows are per table, and RE
+        keeps one check per table (the note, section 5)."""
+        return self.test_scope in ("table", "tablegroup")
+
+    @property
+    def manual_only(self) -> bool:
+        """No selection rule upstream and not one RE proposes itself: a person defines it (Schema_Conformance)."""
+        return self.selection_criteria is None and self.test_type not in RE_PROPOSED
 
     @property
     def is_table_comparison(self) -> bool:
@@ -195,7 +217,17 @@ def _postgres_condition(raw: dict) -> dict:
     for cond in raw.get("cat_test_conditions") or []:
         if cond.get("sql_flavor") == "postgresql":
             return cond
+    if (raw.get("run_type") or RUN_CAT) != RUN_CAT:
+        return {"measure": "", "test_operator": "", "test_condition": ""}
     raise ValueError(f"{raw.get('test_type')}: no postgresql cat_test_conditions entry")
+
+
+def postgres_template(raw: dict) -> str:
+    """The Postgres `test_templates` entry of a QUERY or METADATA type: the statement upstream runs for it."""
+    for entry in raw.get("test_templates") or []:
+        if entry.get("sql_flavor") == "postgresql":
+            return entry["template"]
+    raise ValueError(f"{raw.get('test_type')}: no postgresql test_templates entry")
 
 
 def parse_test_type(raw: dict) -> TestType:
@@ -219,6 +251,7 @@ def parse_test_type(raw: dict) -> TestType:
         generation_sets=tuple(raw.get("generation_sets") or ()),
         generation_template=raw.get("generation_template"),
         null_measure_fails=bool(raw.get("null_measure_fails")),
+        run_type=raw.get("run_type") or RUN_CAT,
     )
 
 
@@ -415,6 +448,14 @@ def _date_span_days(min_date, max_date) -> int | None:
     calendar days from the first date to the last, both counted."""
     first, last = _datediff_day(_DAILY_ANCHOR, max_date), _datediff_day(_DAILY_ANCHOR, min_date)
     return None if first is None or last is None else first - last + 1
+
+
+def _profiled(row: dict) -> bool | None:
+    """True for a profile row that was measured, None (unknown) otherwise. The templates of steps 4 and 5 select every
+    table of a profile run upstream; a table RE could not profile (budget, privilege, error) has no such row, and the
+    owner's rule is that an incomplete table gets no proposals (2026-10-21), so their rules read "unknown" there and
+    propose reports `not_established` with the profile's own reason."""
+    return True if (row.get("state") or "measured") == "measured" else None
 
 
 # Each rule below is the vendored fragment, term for term. The fragment is quoted above its port.
@@ -666,6 +707,41 @@ PREDICATES: dict[str, Predicate] = {
                  else _p(p, "future_date_ct") / float(_p(p, "value_ct")), "<=", 0.75),
         ),
     ),
+    # ── Q4 port order steps 4 and 5 ──
+    # gen_Dupe_Rows.sql: every profiled table, no condition (groupby_names = all its columns, STRING_AGG by position).
+    # The columns themselves, less the general_type X ones, are `dupe_rows.default_params`.
+    "Dupe_Rows": Predicate(
+        "bb8ea6de17f82094d69f4457f274862df32e1eb78915ccf63cf950694d63bd95",
+        (),
+        lambda p: _profiled(p),
+    ),
+    # gen_Match_Column_Ct.sql: every profiled table, threshold_value = its column count from the column catalog.
+    "Match_Column_Ct": Predicate(
+        "583550e28097785940d76f45bbcf9f13f2a996fa775a09d7efcbcb620454f9c1",
+        (),
+        lambda p: _profiled(p),
+    ),
+    # general_type IS NOT NULL AND NOT (general_type = 'X' AND query_error IS NOT NULL)
+    # query_error is TestGen's per-column profiling error; RE's port of it is a row whose state is not `measured`
+    # (as Match_Null_Ct reads it).
+    "Match_Column_Type": Predicate(
+        "592885c4a5b9904f29657c1fe5eb71d47301ce0d42d8fc5e533b258b69ae45b0",
+        ("general_type",),
+        lambda p: _and(
+            _profiled(p),
+            _p(p, "general_type") is not None and _p(p, "general_type") != "",
+            _not(_and(_cmp(_p(p, "general_type"), "=", "X"), (_p(p, "state") or "measured") != "measured")),
+        ),
+    ),
+    # gen_Schema_Drift.sql: one test for the schema, no condition. RE keeps one check per table (the note, section 5).
+    "Schema_Drift": Predicate(
+        "a7cf8b51bb6345e4f0b2a16fcc8e494ba515b2fb9506d997ae70d96168e543bb",
+        (),
+        lambda p: _profiled(p),
+    ),
+    # No selection rule and no generation template upstream: a person declares the schema (an ODCS contract), and RE
+    # holds no declared schema. Never proposed (`TestType.manual_only`).
+    "Schema_Conformance": Predicate(None, (), lambda p: False),
 }
 
 #: Inputs whose NULL is a real value rather than a missing measure: min_date is read by IS NOT NULL. Recency's
@@ -1173,6 +1249,9 @@ def published_threshold(test_type: TestType, params: dict) -> list[str]:
     expression condition it is the baseline the condition is built around (`threshold_key`), not the computed limit:
     Match_Sum's bounds depend on the run's count, and a value edited in Egeria goes back into that same parameter.
     The tolerance of a range rides in `additionalProperties.upperTolerance`. Validated by `threshold` first."""
+    if test_type.run_type != RUN_CAT:
+        raise ParameterError(f"{test_type.test_type} is run as {test_type.run_type}, not as a measure with a condition, "
+                             f"so it is not published as a DataQualityRule yet")
     limit = threshold(test_type, params)
     if test_type.test_type in CONDITION_PORTS:
         return [str(params.get(threshold_key(test_type)))]

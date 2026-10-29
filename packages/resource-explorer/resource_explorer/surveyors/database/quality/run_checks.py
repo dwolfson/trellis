@@ -47,14 +47,18 @@ transaction, ended at once, so no lock outlives its table.
 """
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from resource_explorer.surveyors.database.quality import dupe_rows, schema_drift
 from resource_explorer.surveyors.database.quality.catalogue import (
     CONDITION_AGGREGATES,
     MUST_BE,
+    RUN_METADATA,
+    RUN_QUERY,
     Between,
     ParameterError,
     SumTolerance,
@@ -174,6 +178,7 @@ def _limit_json(limit):
 def run_quality_checks(
     db_entity, registry, connect: Callable[[], AbstractContextManager], *,
     bounds: ProfileBounds, surveyed_at: str | None = None, ran_as: str = "", rules: dict | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict:
     """`rules`: `egeria_rules.rules_for_run` for the checks with a published rule (None: none read, every check
     runs from its verdict, `rule_source = unpublished`)."""
@@ -198,6 +203,8 @@ def run_quality_checks(
 
     results: list[dict] = []
     runnable: dict[tuple[str, str], list[dict]] = {}
+    dupe_runnable: dict[tuple[str, str], list[dict]] = {}
+    drift_checks: list[tuple[dict, object, dict]] = []
 
     for key, verdict in sorted(accepted.items()):
         params = verdict.get("params_json")
@@ -226,8 +233,29 @@ def run_quality_checks(
         if not isinstance(params, dict):
             row["reason"] = f"the accepted parameters are not a JSON object: {params!r}"
             continue
+        if test_type.run_type == RUN_METADATA:
+            # The drift checks compare surveys, so a table or column that is gone from the newest one is their
+            # finding, not "no longer in inventory". No connection is used.
+            drift_checks.append((row, test_type, params))
+            continue
         if (schema, table) not in table_set:
             row["reason"] = "table no longer in inventory"
+            continue
+        if test_type.run_type == RUN_QUERY:
+            severity = params.get("severity")
+            if severity not in FAIL_STATUS:
+                row["reason"] = f"severity must be one of {sorted(FAIL_STATUS)}, got {severity!r}"
+                continue
+            known = {c for (s_, t_, c) in column_set if (s_, t_) == (schema, table)}
+            try:
+                key_columns, skip, left_out = dupe_rows.validated(params, known)
+            except ParameterError as exc:
+                row["reason"] = str(exc)
+                continue
+            row.update(severity=severity, comparison_operator=MUST_BE[">"], threshold_values_json=[skip])
+            dupe_runnable.setdefault((schema, table), []).append(
+                {"row": row, "key": key_columns, "skip": skip, "left_out": left_out,
+                 "fail_status": FAIL_STATUS[severity]})
             continue
         if column and (schema, table, column) not in column_set:
             row["reason"] = "column no longer in inventory"
@@ -264,7 +292,12 @@ def run_quality_checks(
         runnable.setdefault((schema, table), []).append(
             {"row": row, "sql": sql, "type": test_type, "limit": limit, "extra_sql": extra_sql})
 
-    if runnable:
+    if drift_checks:
+        drift = schema_drift.Drift(registry, slug)
+        for row, test_type, params in drift_checks:
+            schema_drift.evaluate(drift, row, test_type, params, FAIL_STATUS)
+
+    if runnable or dupe_runnable:
         with connect() as conn:
             facts = read_table_facts(conn)
             for (schema, table), checks in sorted(runnable.items()):
@@ -275,6 +308,14 @@ def run_quality_checks(
                         check["row"].update(status=_REFUSED_STATUS[refused[0]], reason=refused[1])
                     continue
                 _run_table(conn, schema, table, checks, bounds)
+            for (schema, table), checks in sorted(dupe_runnable.items()):
+                refused = refusal(tables.get((schema, table)) or {}, (facts or {}).get((schema, table)),
+                                  facts is not None)
+                for check in checks:
+                    if refused:
+                        check["row"].update(status=_REFUSED_STATUS[refused[0]], reason=refused[1])
+                    else:
+                        dupe_rows.run_table(conn, schema, table, check, bounds, clock)
 
     for row in results:
         if row["status"] in CONCLUDED:

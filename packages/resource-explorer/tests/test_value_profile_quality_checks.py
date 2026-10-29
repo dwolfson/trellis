@@ -328,10 +328,15 @@ def test_every_assembled_statement_parses_as_postgres():
     params = {"baseline_ct": 10, "baseline_value_ct": 9, "baseline_value": "2020-01-01", "threshold_value": 2}
     measures = []
     for name, test_type in cat.load_catalogue().items():
+        if test_type.run_type != cat.RUN_CAT:
+            continue  # Dupe_Rows and the drift checks have no aggregate measure; their statement is parsed below
         p = dict(params, baseline_value='"",n/a,it\'s' if name == "Required_No_Placeholder" else "2020-01-01")
         measures.append(cat.render_measure(test_type, "" if test_type.is_table_check else "col", p,
                                            "2026-10-20 12:00:00"))
     sqlglot.parse_one(_select("sales", "orders", measures), read="postgres")
+    from resource_explorer.surveyors.database.quality.dupe_rows import build_statement
+
+    sqlglot.parse_one(build_statement("sales", "orders", ["a", 'we"ird', "pct%"]), read="postgres")
 
 
 def test_the_profile_annotations(registry, entity):
@@ -387,6 +392,8 @@ def test_proposals_follow_the_selection_rules(registry, entity):
         "sales.orders.order_id::Required", "sales.orders.order_id::Unique", "sales.orders.note::Missing_Pct",
         "sales.orders.placed::Required", "sales.orders.placed::Future_Date", "sales.orders.placed::Min_Date",
         "sales.orders.payload::Missing_Pct", "sales.orders::Row_Ct_Pct",
+        # steps 4 and 5: Dupe_Rows and Schema_Drift on every table that was profiled (not Match_Column_*: opt-in)
+        "sales.orders::Dupe_Rows", "sales.orders::Schema_Drift", "sales.empty::Dupe_Rows", "sales.empty::Schema_Drift",
     }
     # note is text with placeholders (filled_value_ct 3): neither Required nor Required_No_Placeholder.
     assert "sales.orders.note::Required_No_Placeholder" not in rows
@@ -401,7 +408,7 @@ def test_proposals_follow_the_selection_rules(registry, entity):
     row_ct = rows["sales.orders::Row_Ct_Pct"]
     assert (row_ct["origin"], row_ct["params_json"]["threshold_value"], row_ct["column_name"]) == ("re", 10, "")
     assert "vendored-catalog@3606859c" in row_ct["catalogue_ref"]
-    assert out["proposed_ct"] == 8 and out["not_applicable_ct"] > 0
+    assert out["proposed_ct"] == 12 and out["not_applicable_ct"] > 0
 
 
 def test_an_unprofiled_column_is_not_established_by_column_never_a_silent_no(registry, entity):
@@ -494,7 +501,7 @@ def test_the_propose_step_opens_no_connection(registry, entity, monkeypatch):
     _profile(registry, entity)
     monkeypatch.setattr(connection, "database_connection", lambda *a, **k: pytest.fail("connected"))
     out = _ADAPTER.re_analysis_steps["propose_quality_checks"](entity, registry, scan_surveyed_at=None)
-    assert out["quality_proposals"]["proposed_ct"] == 8
+    assert out["quality_proposals"]["proposed_ct"] == 12
 
 
 # ── run_quality_checks ───────────────────────────────────────────────────────────────────────────────────────

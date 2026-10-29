@@ -257,7 +257,9 @@ def test_every_test_type_in_the_catalogue_summarises_with_its_key_not_its_displa
     for key, test_type in catalogue.items():
         [ann] = build_quality_annotations([_row_for(key, "s", "t", "c", 1, 10)], catalogue)
         assert ann.summary.startswith(f"{key} on s.t.c: passed (")
-        assert test_type.name_short not in ann.summary or test_type.name_short == key
+        # The key is stripped first: a display name that is a piece of its own key (Schema in Schema_Drift) is
+        # not a leak. Anything the summary says beyond the key must not carry the display name.
+        assert test_type.name_short not in ann.summary.replace(key, "", 1) or test_type.name_short == key
 
 
 def test_a_check_that_reached_no_measure_gives_its_reason_shortened():

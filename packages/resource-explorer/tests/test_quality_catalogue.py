@@ -26,7 +26,8 @@ PKG = Path(__file__).resolve().parent.parent
 
 def test_the_ported_test_types_are_vendored_with_licence_and_provenance():
     assert set(cat.load_catalogue()) == (set(cat.SLICE_1_TEST_TYPES) | set(cat.Q6_TEST_TYPES) | set(cat.B1A_TEST_TYPES)
-                                         | set(cat.B1B_TEST_TYPES))
+                                         | set(cat.B1B_TEST_TYPES) | set(cat.STEP_4_TEST_TYPES)
+                                         | set(cat.STEP_5_TEST_TYPES))
     assert set(cat.Q6_TEST_TYPES) == {"Recency", "Future_Date_1Y"}
     for name in ("LICENSE", "NOTICE", "PROVENANCE.md"):
         assert (cat.CATALOGUE_DIR / name).is_file(), name
@@ -55,6 +56,10 @@ def test_the_general_type_port_is_pinned_to_the_vendored_case():
 
 def test_every_test_type_has_a_postgres_condition_and_a_known_operator():
     for test_type in cat.load_catalogue().values():
+        if test_type.run_type != cat.RUN_CAT:
+            # A QUERY or METADATA type has no cat_test_conditions: its run is its own path (dupe_rows, schema_drift).
+            assert not test_type.measure and not test_type.test_operator, test_type.test_type
+            continue
         assert test_type.measure and test_type.test_operator in cat.MUST_BE, test_type.test_type
         # One placeholder, or an expression ported and pinned to its vendored text (CONDITION_PORTS).
         assert test_type.test_condition.strip() in cat._CONDITIONS or test_type.test_type in cat.CONDITION_PORTS, \
@@ -249,7 +254,7 @@ def _fake_upstream(root: Path) -> Path:
     types.mkdir(parents=True)
     for name in cat.PORTED_TEST_TYPES:
         shutil.copy(cat.TEST_TYPES_DIR / f"{name}.yaml", types / f"test_types_{name}.yaml")
-    shutil.copy(cat.TEST_TYPES_DIR / "Unique.yaml", types / "test_types_Dupe_Rows.yaml")
+    shutil.copy(cat.TEST_TYPES_DIR / "Unique.yaml", types / "test_types_Table_Freshness.yaml")
     flavor = root / "testgen/template/flavors/postgresql"
     (flavor / "profiling").mkdir(parents=True)
     (flavor / "data_chars").mkdir(parents=True)
@@ -269,7 +274,7 @@ def test_sync_check_reports_in_step_and_lists_new_test_types(tmp_path, capsys):
     before = sorted(p.read_bytes() for p in cat.CATALOGUE_DIR.rglob("*") if p.is_file())
     assert _sync_module().main(["--check", "--upstream", str(upstream)]) == 0
     out = capsys.readouterr().out
-    assert "in step with upstream" in out and "Dupe_Rows" in out
+    assert "in step with upstream" in out and "Table_Freshness" in out
     assert sorted(p.read_bytes() for p in cat.CATALOGUE_DIR.rglob("*") if p.is_file()) == before  # writes nothing
 
 
