@@ -1,0 +1,20 @@
+# Resource Explorer tutorial — six walks
+
+Six illustrated walks through the running Explorer. Each page follows one job from the [user guide](../user-guide.md), using the words the screen uses.
+
+| Walk | Job |
+|---|---|
+| [1. Sign in, pick an investigation, find a repository](01-sign-in-and-find.md) | Start here |
+| [2. Judge a repository](02-judge-a-resource.md) | Scouting to Analysis, the marks |
+| [3. Catalog a database](03-catalog-a-database.md) | Contents, Curate, the chips |
+| [4. A file system](04-a-file-system.md) | Reach, survey, walk measures, narratives |
+| [5. Add your own analysis](05-add-your-own-analysis.md) | The extensibility gate walk |
+| [6. Add a question and a purpose, change a setting](06-question-purpose-setting.md) | Admin and investigations |
+
+## How these pages were made
+
+- Every screenshot was taken on 2026-10-29 from the Explorer on port 8813 running `origin/main` at `afdac240`, signed in as `peterprofile`, with the "Paper" look and normal text size.
+- Screenshots are 1382 px wide. The browser window the capture ran in could not be made wider than that on the machine used. The brief asked for 1452 px.
+- Nothing was pressed that writes: no Publish, no Re-run, no Ask in the chat rail, no journal entry. A step that needs one of those is described from the guide and marked "not pressed".
+- Every caption uses the words on the screen. Where a surface shows a mark or word that differs from the user guide, the caption follows the screen and the walk says so.
+- A thing that is designed and not built appears only in "Not built yet" at the foot of its walk, and in [the guide's list](../user-guide.md#10-not-built-yet).
