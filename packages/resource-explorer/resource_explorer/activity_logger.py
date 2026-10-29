@@ -195,6 +195,20 @@ def log_preview_credential(
     return entry_id
 
 
+def _declared_stage(entity_type: str, analysis_id: str) -> str:
+    """The stage the catalog declares for this analysis ("analysis", "discovery", ...), so a row for an
+    Analysis-stage step does not say 'assessment'. 'assessment' only when the catalog names no stage for it."""
+    try:
+        from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+        for a in get_analyses(entity_type, include_egeria_live=False):
+            if a.get("id") == analysis_id and a.get("intent"):
+                return a["intent"]
+    except Exception:  # noqa: BLE001 — the row is still written, with the old default
+        pass
+    return "assessment"
+
+
 def log_analysis_run(
     registry: "ProjectRegistry",
     entity_type: str,
@@ -246,7 +260,7 @@ def log_analysis_run(
         id=entry_id,
         ts=_now(),
         operation="analysis_run",
-        intent="assessment",
+        intent=_declared_stage(entity_type, analysis_id),
         entity_type=entity_type,
         entity_slug=entity_slug,
         entity_name=entity_name,

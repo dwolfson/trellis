@@ -763,6 +763,19 @@ def run_filesystem_analysis(slug: str, analysis_id: str, *, registry=None) -> Da
     return _run_library_step(registry, "filesystem", slug, analysis_id, step_key)
 
 
+def _executor_of_step(registry, slug: str, step_key: str) -> dict:
+    """{"executor": ...} from the step's latest `step_runs` row (who actually ran it: `local` or `prefect`), or {}
+    when no row is there. Never a guess: an absent executor stays absent."""
+    if not step_key:
+        return {}
+    try:
+        rows = registry.query_step_runs(slug=slug, step_key=step_key, entity_type="filesystem", limit=1)
+    except Exception:  # noqa: BLE001 — a missing fact must not fail the run's own record
+        return {}
+    executor = (rows[0] if rows else {}).get("executor") or ""
+    return {"executor": executor} if executor else {}
+
+
 def execute_and_record_filesystem_analysis(slug: str, analysis_id: str, activity_id: str,
                                            *, registry=None) -> DatabaseAnalysisRunResult:
     """Run one file system analysis and write its terminal status onto `activity_id`, from the run queue's
@@ -770,15 +783,18 @@ def execute_and_record_filesystem_analysis(slug: str, analysis_id: str, activity
     from resource_explorer.registry import ProjectRegistry
 
     registry = registry or ProjectRegistry()
+    started = time.monotonic()
     try:
         result = run_filesystem_analysis(slug, analysis_id, registry=registry)
     except Exception as exc:  # pragma: no cover — genuinely unexpected
         log.exception("File system analysis run crashed for %s/%s", slug, analysis_id)
         registry.update_activity_status(
             activity_id, "error", summary=f"'{analysis_id}' run crashed: {exc}",
-            detail=json.dumps({"analysis_id": analysis_id, "published": None, "error": str(exc)}))
+            detail=json.dumps({"analysis_id": analysis_id, "published": None, "error": str(exc),
+                               "duration_s": round(time.monotonic() - started, 3)}))
         return DatabaseAnalysisRunResult(status="error", error=str(exc))
-    detail = {"analysis_id": analysis_id, "published": None}
+    detail = {"analysis_id": analysis_id, "published": None, "duration_s": round(time.monotonic() - started, 3),
+              **_executor_of_step(registry, slug, filesystem_library_step_key(analysis_id))}
     if result.status == "error":
         detail["error"] = result.error or result.summary
     else:
