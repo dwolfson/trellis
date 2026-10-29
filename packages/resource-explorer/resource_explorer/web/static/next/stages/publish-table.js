@@ -6,8 +6,8 @@
  *   RE selector per row, saved at once as a signed choice; the state of the last publish, from proof rows.
  *
  * Nothing here is written per analysis: every word comes from the server's `publish_table.build_rows`, which reads
- * the declarations. There is no press on this table: the page's one press is the commit on Contents, which carries
- * the chosen rows inside RE's survey report and reads each back. A row's "published" word comes from the proof row
+ * the declarations. There is no press on this table: a database's one press is the commit on Contents, a file
+ * system's is the folder survey's Publish; each carries the chosen rows inside RE's own survey report and reads each back. A row's "published" word comes from the proof row
  * that read-back leaves, never from a click. A row that cannot publish says why, and offers Keep in RE only.
  *
  * The owner's answers of 2026-10-28 (DECLARED-EXTENSIBILITY-SLICE1-PR2-PUBLISH-TABLE.md §4a): a measure already in
@@ -42,7 +42,7 @@ const when = (iso) => String(iso || '').slice(0, 16).replace('T', ' ');
 
 /** Publish | Keep in RE, the pressed half marked. Publish is disabled when the row cannot publish (the reason is its
  *  title and the line under the row); both are disabled for someone not signed in. */
-function selectorHtml(r, signedIn) {
+function selectorHtml(r, signedIn, entityType = 'database') {
   const chosen = (r.choice && r.choice.choice) || '';
   // The pressed half and the other are two literal class strings (no class interpolation, for the coverage check).
   const half = (choice, label, disabled, title) => `<button type="button" data-publish-choice="${choice}"
@@ -50,7 +50,8 @@ function selectorHtml(r, signedIn) {
     class="${chosen === choice
     ? 'cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[2px] text-caveat text-accent-ink disabled:cursor-default disabled:opacity-60'
     : 'cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent disabled:cursor-default disabled:opacity-60'}"${disabled ? ' disabled' : ''}>${label}</button>`;
-  const pubTitle = r.publishable ? `Publish ${r.measure} with the commit on Contents` : r.why_not;
+  const press = entityType === 'filesystem' ? "the folder survey's Publish" : 'the commit on Contents';
+  const pubTitle = r.publishable ? `Publish ${r.measure} with ${press}` : r.why_not;
   return `<span class="inline-flex gap-s1" role="group" aria-label="Publish or keep ${esc(r.measure)}">
     ${half('publish', 'Publish', !signedIn || !r.publishable, signedIn ? pubTitle : SIGN_IN_WORDS)}
     ${half('keep', 'Keep in RE', !signedIn, signedIn ? 'Keep this measure in Resource Explorer only' : SIGN_IN_WORDS)}</span>`;
@@ -89,7 +90,7 @@ function stateHtml(r) {
 }
 
 /** One row; the reason a row cannot publish sits under it, in words. */
-export function rowHtml(r, signedIn) {
+export function rowHtml(r, signedIn, entityType = 'database') {
   return `<tr class="border-b border-rule align-top" data-publish-row="${esc(r.locator)}">
     <td class="py-[4px] pr-s2 text-left">${esc(r.analysis)}</td>
     <td class="py-[4px] pr-s2 text-left">${esc(r.measure)} <span class="text-provenance text-ink-muted">· ${esc(r.unit)}</span></td>
@@ -98,7 +99,7 @@ export function rowHtml(r, signedIn) {
     <td class="py-[4px] pr-s2 text-left">${esc((r.confidence && r.confidence.words) || '')}</td>
     <td class="py-[4px] pr-s2 text-left">${esc(r.scope || '—')}</td>
     <td class="py-[4px] pr-s2 text-left">${writesAsHtml(r)}</td>
-    <td class="py-[4px] pr-s2 text-left">${selectorHtml(r, signedIn)}
+    <td class="py-[4px] pr-s2 text-left">${selectorHtml(r, signedIn, entityType)}
       <span class="block">${choiceLineHtml(r)}</span>
       ${!r.publishable && r.why_not ? `<span class="block max-w-[40ch] text-provenance text-ink-muted" data-why-not>${esc(r.why_not)}</span>` : ''}
       <span class="block text-provenance text-state-warn" data-choice-feedback></span></td>
@@ -107,7 +108,7 @@ export function rowHtml(r, signedIn) {
 }
 
 /** The whole table. `table` is the server's answer; null = not read. */
-export function publishTableHtml(table, signedIn) {
+export function publishTableHtml(table, signedIn, entityType = 'database') {
   const head = `<div class="mb-s1 text-caps uppercase tracking-caps text-ink">${TABLE_HEAD}</div>`;
   if (!table || !Array.isArray(table.rows)) {
     return `${head}<div class="text-caveat" data-publish-table-state="not_read">${cue('unknown', NOT_READ_WORDS)}</div>`;
@@ -119,7 +120,7 @@ export function publishTableHtml(table, signedIn) {
   return `${head}
     <div class="text-caveat text-ink-muted" data-publish-table-press>${esc(table.press || '')}
       · <span class="tnum" data-publish-table-chosen>${n}</span> chosen to publish
-      · <button type="button" data-publish-table-goto="curate_contents" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">Contents ›</button>
+      ${entityType === 'database' ? '· <button type="button" data-publish-table-goto="curate_contents" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">Contents ›</button>' : ''}
       ${signedIn ? '' : `· <span>${esc(SIGN_IN_WORDS)}</span>`}</div>
     <div class="min-w-0 max-w-full overflow-x-auto" data-publish-table-state="read">
       <table class="mt-s2 w-full border-collapse text-caveat">
@@ -134,7 +135,7 @@ export function publishTableHtml(table, signedIn) {
           <th class="py-[4px] pr-s2 text-left">Choice</th>
           <th class="py-[4px] text-left">State</th>
         </tr></thead>
-        <tbody>${table.rows.map((r) => rowHtml(r, signedIn)).join('')}</tbody>
+        <tbody>${table.rows.map((r) => rowHtml(r, signedIn, entityType)).join('')}</tbody>
       </table></div>`;
 }
 
@@ -146,7 +147,7 @@ export async function renderPublishTable(el, slug, entityType = 'database') {
   let table = null;
   try { table = await getPublishTable(entityType, slug); } catch (_) { table = null; }
   if (!el.isConnected || slug !== state.selectedSlug) return;
-  el.innerHTML = publishTableHtml(table, signedIn);
+  el.innerHTML = publishTableHtml(table, signedIn, entityType);
   const go = el.querySelector('[data-publish-table-goto]');
   if (go) go.onclick = () => openCurate({ tab: go.dataset.publishTableGoto });
   el.querySelectorAll('[data-publish-row]').forEach((tr) => bindRow(el, tr, slug, entityType, table, signedIn));
@@ -165,7 +166,7 @@ function bindRow(el, tr, slug, entityType, table, signedIn) {
       Object.assign(row, saved);
       table.chosen = table.rows.filter((r) => r.publishable && r.choice && r.choice.choice === 'publish').length;
       const fresh = el.ownerDocument.createElement('tbody');
-      fresh.innerHTML = rowHtml(row, signedIn);
+      fresh.innerHTML = rowHtml(row, signedIn, entityType);
       const next = fresh.firstElementChild;
       tr.replaceWith(next);
       const count = el.querySelector('[data-publish-table-chosen]');

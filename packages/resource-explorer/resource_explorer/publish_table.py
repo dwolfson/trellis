@@ -29,7 +29,8 @@ those rows only, never from the press.
 1. a number already in Egeria another way says "already in Egeria via <route>" and offers no Publish
    (`published_elsewhere`), so a number is never written twice;
 2. SchemaAnalysisAnnotation is the next native type; ResourcePhysicalStatusAnnotation follows in a later slice;
-3. a file system's chosen measures wait for a file-system survey report of RE's own;
+3. a file system's chosen measures wait for a file-system survey report of RE's own (built by Files steps 7-8, #905;
+   the wait is lifted, 2026-10-29: they ride in that report, `EgeriaFileSystemSurveyor._publish_step_annotations`);
 4. a choice lasts across surveys, sent by every commit until someone chooses Keep in RE, and the row says so.
 
 **After slice 2** (`DECLARED-EXTENSIBILITY-SLICE1-PR2-PUBLISH-TABLE.md` §4b): a row's confidence is its measure's own
@@ -62,15 +63,24 @@ CHOICES = (PUBLISH, KEEP)
 
 #: Proof rows (`catalogue_commit_proofs`, node_kind `measure`, schema_name = analysis id, table_name = measure).
 NODE_MEASURE = "measure"
+#: A file system's measure proofs. `catalogue_commit_proofs` is keyed by slug alone, so a file system's rows carry their
+#: own node kind: a database and a file system that share a slug never read each other's proofs.
+NODE_FS_MEASURE = "fs_measure"
 P_MEASURE_READ_BACK = "measure_read_back"
 P_MEASURE_NOT_READ_BACK = "measure_not_read_back"
 
 #: What the table says about where the press is.
 PRESS_WORDS = "chosen measures go with the page's one Publish: the commit on Contents"
-#: A file system has no survey report for the measures to ride in yet (the owner's answer 3: they wait for one of RE's
-#: own, which the Files steps are building toward).
-NOT_FOR_KIND_WORDS = ("a file system's measures wait for a survey report of Resource Explorer's own for file systems; "
-                      "its Publish attaches the root folder only")
+#: Where a file system's chosen measures go: Resource Explorer's own file-system survey report (the owner's answer 3),
+#: sent by the folder-survey and walk-extensions Publish (`web/routes/filesystems._publish_walk`), not the root-folder
+#: Publish, which attaches the root folder only.
+FS_PRESS_WORDS = ("chosen measures go inside Resource Explorer's own file-system survey report: the folder survey's "
+                  "Publish sends them, each read back by name")
+#: Any other kind has no survey report to carry measures.
+NOT_FOR_KIND_WORDS = "this kind of resource has no survey report of Resource Explorer's own to carry measures"
+#: A measure the step ran for and could not establish: said as such, never as a zero.
+NOT_MEASURED_WORDS = "not measured this run"
+PRESS_KINDS = ("database", "filesystem")
 #: A choice of Publish lasts across surveys (the owner's answer 4): every commit sends the measure until Keep in RE is chosen.
 STANDING_WORDS = "sent by every commit until Keep in RE"
 
@@ -92,6 +102,10 @@ _ABSENCE_OF = {"never_run": "not_measured", "not_established": "not_measured", "
 
 def locator(analysis_id: str, measure: str) -> str:
     return f"{analysis_id}/{measure}"
+
+
+def node_kind(entity_type: str) -> str:
+    return NODE_FS_MEASURE if entity_type == "filesystem" else NODE_MEASURE
 
 
 def check_name(analysis_id: str, measure: str) -> str:
@@ -208,11 +222,12 @@ def current_choices(registry, entity_type: str, slug: str) -> dict[str, dict]:
     return out
 
 
-def published_states(registry, slug: str) -> dict[str, dict]:
-    """locator -> the newest measure proof row, for a database."""
+def published_states(registry, slug: str, entity_type: str = "database") -> dict[str, dict]:
+    """locator -> the newest measure proof row, for a database or a file system."""
     out: dict[str, dict] = {}
+    kind = node_kind(entity_type)
     for p in registry.list_catalogue_commit_proofs(slug):
-        if p.get("node_kind") == NODE_MEASURE and p.get("proof") in (P_MEASURE_READ_BACK, P_MEASURE_NOT_READ_BACK):
+        if p.get("node_kind") == kind and p.get("proof") in (P_MEASURE_READ_BACK, P_MEASURE_NOT_READ_BACK):
             out[locator(p["schema_name"], p["table_name"])] = p
     return out
 
@@ -290,7 +305,7 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
     layer = layer or FactLayer(registry, resource_type=entity_type)
     entries = _entries(entity_type) if entries is None else entries
     choices = current_choices(registry, entity_type, slug)
-    proofs = published_states(registry, slug) if entity_type == "database" else {}
+    proofs = published_states(registry, slug, entity_type) if entity_type in PRESS_KINDS else {}
     engine_reports = engine_host_reports(registry, slug) if entity_type == "database" else {}
     rows = []
     with read_memo.scope():
@@ -346,12 +361,15 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
                 elsewhere = published_elsewhere(entry, m.name, engine_reports)
                 row["elsewhere"] = elsewhere
                 why = ""
-                if entity_type != "database":
+                if entity_type not in PRESS_KINDS:
                     why = NOT_FOR_KIND_WORDS
                 elif elsewhere:
                     why = f"{elsewhere['words']}; publishing it here would write the same number twice"
                 elif not dec.built:
                     why = f"nothing to publish · {NOT_BUILT_WORDS}"
+                elif row.get("absence") == "not_measured" and v is _MISSING and known:
+                    # The step ran and could not establish it: said as that, with the step's own reason.
+                    why = f"{NOT_MEASURED_WORDS} · {row['absence_words']}"
                 elif row.get("absence") == PER_MEMBER:
                     why = f"nothing to publish · {row['absence_words']}"
                 elif not w["writable"]:
@@ -375,7 +393,8 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
                 rows.append(row)
     chosen = [r for r in rows if r["publishable"] and (r["choice"] or {}).get("choice") == PUBLISH]
     return {"entity_type": entity_type, "slug": slug, "rows": rows, "chosen": len(chosen),
-            "press": PRESS_WORDS if entity_type == "database" else NOT_FOR_KIND_WORDS}
+            "press": (PRESS_WORDS if entity_type == "database"
+                      else FS_PRESS_WORDS if entity_type == "filesystem" else NOT_FOR_KIND_WORDS)}
 
 
 def chosen_rows(registry, entity_type: str, slug: str, **kw) -> list[dict]:
@@ -454,11 +473,11 @@ def annotation_for(row: dict):
         **common, resource_properties={prop: str(row["value"]), "unit": row["unit"]}, additional_properties=extra)
 
 
-def annotations_for(registry, slug: str) -> dict:
-    """What the next database press adds to RE's survey report: `{"rows", "annotations"}`, index-aligned. A table
+def annotations_for(registry, slug: str, entity_type: str = "database") -> dict:
+    """What the next press of a database or a file system adds to RE's survey report: `{"rows", "annotations"}`, index-aligned. A table
     that cannot be read sends nothing and says so (`state: not_read`), never an empty choice."""
     try:
-        rows = chosen_rows(registry, "database", slug)
+        rows = chosen_rows(registry, entity_type, slug)
     except Exception as exc:  # noqa: BLE001
         log.warning("publish table: the chosen measures of %s could not be read: %s", slug, exc)
         return {"state": "not_read", "reason": str(exc), "rows": [], "annotations": []}
@@ -474,7 +493,7 @@ def annotations_for(registry, slug: str) -> dict:
 
 
 def record_proofs(registry, slug: str, sent: list[dict], *, report_guid: str, curation_id: str = "",
-                  recorded_by: str = "") -> dict:
+                  recorded_by: str = "", entity_type: str = "database") -> dict:
     """One proof row per measure the press sent, from the report read (`sent[i]["guid"]`: the annotation's GUID the
     read found under the report, "" when it was not there). Returns the counts for the step's words."""
     read_back = 0
@@ -482,7 +501,8 @@ def record_proofs(registry, slug: str, sent: list[dict], *, report_guid: str, cu
         found = bool(s.get("guid"))
         read_back += found
         registry.append_catalogue_commit_proof(
-            slug, proof=P_MEASURE_READ_BACK if found else P_MEASURE_NOT_READ_BACK, node_kind=NODE_MEASURE,
+            slug, proof=P_MEASURE_READ_BACK if found else P_MEASURE_NOT_READ_BACK,
+            node_kind=node_kind(entity_type),
             schema_name=s["analysis_id"], table_name=s["measure"], curation_id=curation_id,
             element_guid=s.get("guid") or "", target_guid=report_guid or "", qualified_name=s.get("qualified_name", ""),
             detail={"value": s.get("value"), "unit": s.get("unit", ""), "as_of": s.get("as_of", ""),

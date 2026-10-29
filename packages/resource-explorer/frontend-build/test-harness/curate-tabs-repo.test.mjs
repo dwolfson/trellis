@@ -356,7 +356,7 @@ test('a reload while a commit is running: the line comes from the cheap latest-c
 
 const FIXTURE = JSON.parse(readFileSync(new URL('./curate-nonrepo.fixture.json', import.meta.url), 'utf8'));
 for (const kind of ['filesystem']) {
-  test(`${kind}: Curate draws byte-for-byte what main drew (gate off for the kind)`, async () => {
+  test(`${kind}: Curate draws what main drew plus the declared measures' publish table (gate off for the kind)`, async () => {
     const out = await snapshotNonRepoCurate(kind);
     assert.equal(out.rail, FIXTURE[kind].rail, 'the rail');
     assert.equal(out.content, FIXTURE[kind].content, 'the pane');
