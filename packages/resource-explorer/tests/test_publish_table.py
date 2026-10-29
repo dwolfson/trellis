@@ -153,7 +153,20 @@ def test_run_fields_resolve_from_the_run_the_reader_carried(registry, declared):
     declared["facts"]["example_step_x"].value = {**VALUE, "_run": {"read_snapshot": "2026-10-20T07:00:00"}}
     rows = _rows(registry)
     assert rows["buckets"]["as_of"] == "2026-10-20T07:00:00"
-    assert rows["rows_sampled"]["as_of"] == "2026-10-27T08:31:00"
+    # A derivation has no measurement time of its own: the fact layer's run time is not a stand-in (F18).
+    assert rows["rows_sampled"]["as_of"] == ""
+    declared["facts"]["example_step_x"].value = {**VALUE}
+    assert _rows(registry)["rows_sampled"]["as_of"] == "2026-10-27T08:31:00"
+
+
+def test_a_derived_rows_measured_date_is_its_read_snapshot_never_the_recompute_clock(registry, declared):
+    """F18: `_run.computed_at` is stamped on every read; the second date a derived row shows is `read_snapshot`."""
+    declared["entries"] = [_entry(_declaration())]
+    declared["facts"]["example_step_x"].value = {**VALUE, "_run": {"read_snapshot": "2026-10-20T07:00:00",
+                                                                   "computed_at": "2026-10-29T18:48:00"}}
+    assert _rows(registry)["buckets"]["measured_at"] == "2026-10-20T07:00:00"
+    declared["facts"]["example_step_x"].value = {**VALUE, "_run": {"read_snapshot": "", "computed_at": "2026-10-29T18:48:00"}}
+    assert _rows(registry)["buckets"]["measured_at"] == ""
 
 
 def test_the_shipped_catalogue_builds_a_table_with_no_proposal_rows(registry):
@@ -484,7 +497,7 @@ def test_the_zero_fetch_reader_carries_the_runs_read_snapshot(monkeypatch):
     monkeypatch.setattr(sda, "_attach_container_credential_scope", lambda *a, **k: None)
     monkeypatch.setattr(sda, "_attach_coverage_status", lambda *a, **k: None)
     data = sda._db_derived_field_reader("schema_diff")(None, SLUG)
-    assert data["_run"] == {"read_snapshot": "2026-10-20T07:00:00", "surveyed_at": "2026-10-27T12:00:00"}
+    assert data["_run"] == {"read_snapshot": "2026-10-20T07:00:00", "computed_at": "2026-10-27T12:00:00"}
 
 
 def test_the_run_beside_the_payload_is_not_content_and_is_the_facts_as_of():
