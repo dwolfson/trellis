@@ -1305,6 +1305,9 @@ def compile_context(
                     log.warning("measure records for declared %s on %s failed: %s", analysis_id, slug, exc)
                     records = {}
                 rungs, seen = declared_context.section_rungs(analysis_id, dec, fact, records)
+                _ids = [r["row_id"] for r in records.values() if r.get("row_id")]
+                if _ids:
+                    rows_seen.setdefault(analysis_id, {})["step_annotations"] = _ids
                 if analysis_id in caveat_ids:
                     rungs = _with_caveat(rungs, coverage["caveat"])
                 sections.append(Section(analysis_id, role="evidence", weight=weight))
@@ -1319,6 +1322,10 @@ def compile_context(
                 packed_count += 1
                 continue
         findings = registry.query_findings(slug, analysis_id)
+        _fids = [f"project_analysis_findings:{slug}/{analysis_id}/{f.get('scope_locator') or ''}/"
+                 f"{f.get('surveyed_at') or ''}/{f.get('check_name') or ''}" for f in findings]
+        if _fids:
+            rows_seen.setdefault(analysis_id, {})["findings"] = _fids
         rungs = _findings_to_rungs(findings, analysis_id)
         provenance = _provenance(findings, analysis_id)
 
@@ -1400,7 +1407,7 @@ def compile_context(
             if c_extent:
                 list_extents.setdefault(analysis_id, {}).update(c_extent)
             if c_ids and (c_ids["FULL"] or c_ids["SUMMARY"]):
-                rows_seen[analysis_id] = {"project_contributors": c_ids}
+                rows_seen.setdefault(analysis_id, {})["project_contributors"] = c_ids
             if rungs and not provenance:
                 provenance = ({"analysis_id": analysis_id, "check": None, "surveyed_at": None},)
 

@@ -403,7 +403,7 @@ test('PI-118: a free-text answer lists the analyses its compile found missing; r
   await wait(300);
   const ids = () => [...document.querySelectorAll('[data-runnable]')].map((r) => r.dataset.runnable);
   assert.deepEqual(ids(), ['cve_scan', 'activity_metrics'], 'the compile\'s own gap list');
-  assert.match(text(document.querySelector('[data-runnable-box]')), /would answer this and have no stored result/);
+  assert.match(text(document.querySelector('[data-runnable-box]')), /Analyses that have not run here/);
   document.querySelector('[data-runnable="cve_scan"] [data-run]').click();
   await wait(250);
   assert.equal(posts(server, /cve_scan\/run$/).length, 1);

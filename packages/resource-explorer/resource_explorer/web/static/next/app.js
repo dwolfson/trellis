@@ -292,6 +292,7 @@ export const state = {
   workLists: [],               // saved work lists
   workListSlug: null,          // the open one; the pane takes over when set
   urlTypeMissing: false,       // the URL named a resource without `type=`; resolveUrlKind() settles it
+  unknownType: '',             // a `?type=` value that names no kind (repo | db | filesystem); said in the kind note
   unknownResource: '',         // a URL slug no list holds
   otherKinds: [],              // kinds, besides the open one, that also hold selectedSlug
   otherKindsSlug: '',
@@ -702,6 +703,9 @@ export function rowState(entry, env) {
     if (kind === 'direct' && known.length && known.every((f) => f.state === 'nothing_found')) return 'nothing';
     return ['direct', 'registry', 'chart'].includes(kind) ? 'automatic' : 'answered';
   }
+  // Something ran and could not settle an answer (a CVE scan that could query none of its dependencies): the state
+  // says so, and the row is never ticked as answered nor called "not run" -- both would be false.
+  if (env && (env.facts || []).some((f) => f.state === 'not_established' && f.last_run_at)) return 'not_established';
   // A `direct`/`chart` row with no declared reader is NOT "not run" --
   // `unrun` promises a real analysis exists and just has not been
   // triggered yet, which is false here: nothing was ever built to answer
@@ -772,6 +776,7 @@ const GLYPH_KEYS = [
   // (`direct`/`chart`) but no reader has been wired up for it yet. Distinct
   // states, same reasoning as `unrun` vs `no-surveyor` already had.
   'no_reader',
+  'not_established',
   'unclassified', 'running', 'error', 'proposal',
 ];
 const GLYPH = Object.fromEntries(GLYPH_KEYS.map((k) => [k, GLYPH_STATES[k].glyph]));
@@ -2389,6 +2394,7 @@ export async function selectResourceFromChat(type, slug) {
  *  fetch settles. */
 async function switchResourceType(type) {
   state.resourceType = type;
+  state.unknownType = '';
   // A selection (and select-mode) is per-resource-type: `state.selected`
   // holds slugs, and a repo slug surviving a switch to 'db' would let a
   // bulk action fire against `state.databases` rows that don't exist, or
@@ -3345,15 +3351,24 @@ export async function resolveUrlKind() {
 }
 
 /** Read the URL into state. Returns true if it named a resource. */
+/** The kinds `?type=` may name. */
+const RESOURCE_KINDS = ['repo', 'db', 'filesystem'];
+
 export function readUrl() {
   const p = new URLSearchParams(location.search);
   let rewriteUrl = false;
   _restoringUrl = true;
   try {
-    if (p.get('type')) state.resourceType = p.get('type');
+    // An unknown `type=` ('database' for 'db') is not painted over the list's state: it is said, then treated as
+    // no kind, so the kind is resolved from the slug (or stays as it was) and the URL is rewritten.
+    const wantType = p.get('type') || '';
+    const typeOk = RESOURCE_KINDS.includes(wantType);
+    state.unknownType = wantType && !typeOk ? wantType : '';
+    if (typeOk) state.resourceType = wantType;
+    else if (wantType) rewriteUrl = true;
     if (p.get('resource')) state.selectedSlug = p.get('resource');
     // A link naming a resource but no kind: start() resolves the kind from the loaded lists (resolveUrlKind).
-    state.urlTypeMissing = Boolean(p.get('resource')) && !p.get('type');
+    state.urlTypeMissing = Boolean(p.get('resource')) && !typeOk;
     if (p.get('stage')) state.stage = p.get('stage');
     // A `tab=` is kept only when the strip for THIS stage and kind offers it (visibleSubTabs()); a hand-edited
     // or stale id falls to the stage's landing tab, same as no `tab=`. 'dashboard' is the retired id loadPane()
@@ -8702,6 +8717,18 @@ export function renderKindChooser() {
   const content = $('content');
   let host = document.getElementById('kind-chooser');
   const others = state.otherKindsSlug === state.selectedSlug ? (state.otherKinds || []) : [];
+  if (state.unknownType && content) {
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'kind-chooser';
+      content.parentNode.insertBefore(host, content);
+    }
+    const names = { repo: 'repositories', db: 'databases', filesystem: 'file systems' };
+    host.setAttribute('data-unknown-type', '');
+    host.className = 'mb-s2 text-chip text-ink-muted';
+    host.textContent = `◐ "${state.unknownType}" is not a kind of resource (${RESOURCE_KINDS.join(', ')}), so it was ignored; showing ${names[state.resourceType] || state.resourceType}.`;
+    return;
+  }
   if (!others.length || !content) { host?.remove(); return; }
   if (!host) {
     host = document.createElement('div');
@@ -8709,6 +8736,7 @@ export function renderKindChooser() {
     content.parentNode.insertBefore(host, content);
   }
   const label = { repo: 'repository', db: 'database', filesystem: 'file system' };
+  host.removeAttribute('data-unknown-type');
   host.setAttribute('data-kind-chooser', '');
   host.className = 'mb-s2 text-chip text-ink-muted';
   host.innerHTML = `<span class="font-glyph" aria-hidden="true">◐</span> ${esc(state.selectedSlug)} is also a ${

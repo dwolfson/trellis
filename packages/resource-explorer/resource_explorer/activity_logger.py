@@ -1,6 +1,7 @@
 """Convenience helpers for writing activity log entries."""
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -195,6 +196,22 @@ def log_preview_credential(
     return entry_id
 
 
+def _declared_stage(entity_type: str, analysis_id: str) -> str:
+    """The stage the catalog declares for this analysis ("analysis", "discovery", ...), so a row for an
+    Analysis-stage step does not say 'assessment'. 'assessment' only when the catalog names no stage for it."""
+    try:
+        from resource_explorer.surveyors.analysis_catalog_reader import get_analyses
+
+        for a in get_analyses(entity_type, include_egeria_live=False):
+            if a.get("id") == analysis_id and a.get("intent"):
+                return a["intent"]
+    except (ImportError, OSError, ValueError, KeyError) as exc:
+        # The catalog could not be read: the row is still written, but the lapse is said, not swallowed.
+        logging.getLogger(__name__).warning(
+            "analysis catalog unreadable for %s/%s (%s); the row says 'assessment'", entity_type, analysis_id, exc)
+    return "assessment"
+
+
 def log_analysis_run(
     registry: "ProjectRegistry",
     entity_type: str,
@@ -246,7 +263,7 @@ def log_analysis_run(
         id=entry_id,
         ts=_now(),
         operation="analysis_run",
-        intent="assessment",
+        intent=_declared_stage(entity_type, analysis_id),
         entity_type=entity_type,
         entity_slug=entity_slug,
         entity_name=entity_name,

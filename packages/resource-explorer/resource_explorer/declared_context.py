@@ -149,7 +149,10 @@ def measure_records(registry, entity_type: str, slug: str, step: str, dec, analy
         detail = a.get("detail") or {}
         state, _words, reason = _envelope_state(detail)
         out[name] = {"value": {"scope": a.get("scope") or "", **(detail.get("resourceProperties") or {})},
-                     "state": state, "reason": reason, "run": run, "measured_at": a.get("measured_at") or ""}
+                     "state": state, "reason": reason, "run": run, "measured_at": a.get("measured_at") or "",
+                     "summary": a.get("summary") or "",
+                     # Which stored row this is: the key a stored answer names it by (no integer id is selected).
+                     "row_id": f"step_annotations:{entity_type}/{slug}/{key}/{run}/{a.get('scope') or ''}"}
     return out
 
 
@@ -264,7 +267,10 @@ def _measure_lines(dec, value: dict, run: dict, records: dict | None = None) -> 
         as_of = resolve(source, m.as_of, run)
         when = f" (as of {as_of})" if as_of is not _MISSING else " (as-of not recorded)"
         own = f" · {m.confidence.form}" if m.confidence is not None else ""
-        if v is _MISSING and record and record["state"] in _STATE_WORDS and record["state"] != "measured":
+        if record and record["state"] == "nothing_found" and record.get("summary"):
+            # The step declared this sentence for a nothing-found result: quote it, never the 0 its row stores.
+            lines.append(f"- {m.name}: {record['summary']}{when}")
+        elif v is _MISSING and record and record["state"] in _STATE_WORDS and record["state"] != "measured":
             reason = f": {record['reason']}" if record["reason"] else ""
             lines.append(f"- {m.name}: {_STATE_WORDS[record['state']]}{reason}{when}")
         elif v is _MISSING and dec.scope_of(m) in ("member", "field") and dec.extents:

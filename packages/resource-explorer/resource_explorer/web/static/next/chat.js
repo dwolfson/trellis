@@ -802,9 +802,9 @@ function gapRowHtml(g, k) {
 function gapsHeadCue(gaps) {
   const notRun = gaps.filter((g) => g && g.state === 'never_run').length;
   return notRun === gaps.length
-    ? cue('unrun', `${gaps.length} not run`, 'Analyses that would answer this and have never run on this resource.', 'chrome')
+    ? cue('unrun', `${gaps.length} not run`, 'Analyses that have not run on this resource.', 'chrome')
     : cue('not_established', `${gaps.length} with no stored result${notRun ? ` · ${notRun} not run` : ''}`,
-      'Analyses that would answer this and have no stored result; each row says why.', 'chrome');
+      'Analyses with no stored result on this resource; each row says why.', 'chrome');
 }
 
 /** The compile panel's narratives block: each passage the answer could cite, with its citation and "proposal"; a
@@ -1172,7 +1172,7 @@ function runnableBoxHtml(turn) {
   const rows = turn.runnable || [];
   if (!rows.length) return '';
   return `<div data-runnable-box class="mt-s3 border-t border-rule pt-s2">
-    <div class="mb-s1 text-caps uppercase tracking-caps text-ink-muted">${turn.factLayer ? 'Analyses behind this answer' : 'Analyses that would answer this and have no stored result'}</div>
+    <div class="mb-s1 text-caps uppercase tracking-caps text-ink-muted">${turn.factLayer ? 'Analyses behind this answer' : 'Analyses that have not run here'}</div>
     ${rows.map(runnableRowHtml).join('')}
     ${turn.rechecked ? `<div data-recheck-note class="mt-s1 text-caveat text-ink-muted">${turn.rechecked}</div>` : ''}
   </div>`;
