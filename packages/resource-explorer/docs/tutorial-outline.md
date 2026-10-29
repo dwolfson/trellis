@@ -80,7 +80,7 @@ Every part needs the Quickstart running and needs you signed in, except parts 1 
 |---|---|---|---|
 | 1 | What Resource Explorer is for | no | no |
 | 2 | Sign in and find your way around | no | no |
-| 3 | Add data sources, and find them again | the Quickstart's database, folder, and a public repository | yes, in Resource Explorer only |
+| 3 | Add data sources, and find them again | `coco_pharma`, `loading_bay`, and the OpenLineage repository | yes, in Resource Explorer only |
 | 4 | The stages: a funnel from cheap to costly | no | no |
 | 5 | Scouting: run the overview survey and read the answers | your database from part 3 | yes, stored results |
 | 6 | Discovery, Assessment and Analysis: go further down the funnel | part 5 | yes, stored results |
@@ -116,9 +116,9 @@ Every part needs the Quickstart running and needs you signed in, except parts 1 
 - **Where next last (13).**
 
 **The setup.** The Egeria Quickstart environment (its fictitious company is Coco Pharmaceuticals), with Resource
-Explorer connected to it, a Quickstart user id and password, and one public GitHub repository. **Decided (D2):** the tutorial names its sample, so every reader sees
-the same screens. **Open (D2a):** which Quickstart database and folder, and which repository. This outline suggests
-the Quickstart's `coco_pharma` database and its `loading_bay` folder, both used by the merged walks.
+Explorer connected to it, a Quickstart user id and password, and the public OpenLineage repository on GitHub.
+**Decided (D2, D2a):** the tutorial names its sample, so every reader sees the same screens: the Quickstart's
+`coco_pharma` database (the main example), its `loading_bay` folder, and the OpenLineage repository.
 
 ---
 
@@ -224,7 +224,7 @@ tutorial names one).
 **Goal.** Register a database, a file system and a repository, and find each one in the sidebar.
 
 **Before you start.** Part 2. The Quickstart database's host, port, name, and a read-only user name and password. The
-Quickstart folder's path. A public GitHub repository's address. The Getting Started tutorial lists all of these.
+Quickstart folder's path (`loading_bay`). The OpenLineage repository's GitHub address. The Getting Started tutorial lists all of these.
 
 **3a. A database.**
 
@@ -274,7 +274,7 @@ Quickstart folder's path. A public GitHub repository's address. The Getting Star
 
 1. Click **Repos**, then **＋ Find repos** (seen).
    - *You see:* two ways in, a search and "From a list" (seen, user guide).
-2. Choose **From a list** and paste one GitHub address.
+2. Choose **From a list** and paste the OpenLineage repository's GitHub address.
 3. Tick the row and click **Import Selected**.
    - *You see:* the button reads "Importing…", the row shows its own state, and the repository appears in the sidebar
      (seen, user guide). Nothing is registered until you click Import Selected.
@@ -587,7 +587,9 @@ surveying again. Curate runs no checks; it asks you for a decision.
 ones worth more work.
 
 **Before you start.** Three or more data sources of one kind, scouted. Repositories are easiest: import three with
-**＋ Find repos** (part 3c) and run each one's Scouting Survey, or run one survey across the list (step 5).
+**＋ Find repos** (part 3c) and run each one's Scouting Survey, or run one survey across the list (step 5). OpenLineage
+plus two more; which two is open (D2c). This outline suggests two related lineage projects, so the comparison means
+something.
 
 **Steps.**
 
@@ -645,8 +647,8 @@ investigation: the sidebar shows "WORK LISTS FOR <NAME>" and "OTHER WORK LISTS" 
      to you, and a private investigation cannot yet publish a database or a file system (seen, user guide).
 4. For **Where it lives**, choose **Ad-hoc**: "Stays local. Nothing is written to Egeria" (code).
    - *Explain:* Ad-hoc is the simplest start, and you can promote it to Egeria later. "Create in Egeria" makes it a
-     shared project in Egeria at once (D3). **Open (D3a):** the dialog's default today is "Create in Egeria" (code),
-     so the reader has to change it. Either the tutorial says so, or the app's default changes (gap G3).
+     shared project in Egeria at once (D3). The dialog's default today is "Create in Egeria" (code), so the step
+     tells the reader plainly to change it (D3a; gap G3).
 5. Create it, then click **Make current** on its page.
    - *You see:* the button reads "Current investigation" (code), the header shows its name, and the sidebar shows
      "SCOPE · 3" (seen, user guide, for another name).
@@ -874,9 +876,9 @@ in this outline; each is named where it bites.
 
 | # | Gap or defect | Where it bites | What would fix it, or what the writer needs |
 |---|---|---|---|
-| G1 | No named starter setup. The merged walks used whatever was loaded on the developer's server. | all parts | **Settled by D2 and D6:** the Egeria Quickstart, set up by Getting Started. Still to name: the database, folder and repository (D2a). |
+| G1 | No named starter setup. The merged walks used whatever was loaded on the developer's server. | all parts | **Settled by D2 and D6:** the Egeria Quickstart, set up by Getting Started. Named (D2a): `coco_pharma`, `loading_bay`, the OpenLineage repository. |
 | G2 | The merged walks pressed nothing that writes, so every step that runs, saves or publishes was described, not shown. That is the main reason they "skip steps". | 3, 5–12 | **Settled by D6:** the Quickstart is throwaway, so the prose writer presses for real. |
-| G3 | "Where it lives" defaults to "Create in Egeria". "Ad-hoc" (dialog) and "🏠 local" (table) are two words for one thing. | 12 | Choose one word. D3a: change the default, or say so in the tutorial. |
+| G3 | "Where it lives" defaults to "Create in Egeria". "Ad-hoc" (dialog) and "🏠 local" (table) are two words for one thing. | 12 | Choose one word. The tutorial tells the reader to change the default (D3a); changing the app's default is still worth considering. |
 | G4 | A file system's survey page offers seven start buttons (Survey, Measure beside Egeria's survey, Publish these measures to Egeria, Profile data files, Derive, Read narrative files, Match data classes) and no overview survey is marked. A repository's and a database's overview survey is not marked either. | 4, 5 | Mark each stage's overview survey on the screen, and give the file-system buttons an order. |
 | G5 | File-system registration says "Mount (local path)" and "Canonical mount (blank = the mount)". The user guide says "host and container path". The survey then reports the path Egeria reads ("/deployments/loading-bay"). A reader cannot tell which path to type. | 3b | One explanation of the paths, on the form. |
 | G6 | "Slug *" is a required field on both register forms. Dashes are silently turned into underscores. | 3a, 3b | A plain label ("Short name"), or a hint under the box. |
@@ -906,12 +908,13 @@ in this outline; each is named where it bites.
 |---|---|---|
 | D1 | The main example data source | **Decided (project owner, 2026-10-29):** a database. Set the expectation that each kind's Curate page differs but the structure is the same, and show all three Curate pages (part 9, step 7). |
 | D2 | The named sample setup | **Decided (project owner, 2026-10-29):** yes, the Egeria Quickstart, set up by the Getting Started tutorial. |
-| D2a | Which database, folder and repository | Open. Suggested: the Quickstart's `coco_pharma` and `loading_bay`, and one public repository. |
+| D2a | Which database, folder and repository | **Decided (project owner, 2026-10-29):** the `coco_pharma` database, the `loading_bay` folder and the OpenLineage repository. |
 | D3 | Ad-hoc or "Create in Egeria" for the tutorial's investigation | **Decided (project owner, 2026-10-29):** Ad-hoc, described as the simplest starting point. Investigations come late (part 12), so the choice is not met until then. |
-| D3a | The dialog's default is "Create in Egeria" | Open. The tutorial tells the reader to change it, or the app's default changes. |
+| D3a | The dialog's default is "Create in Egeria" | **Decided (project owner, 2026-10-29):** the tutorial tells the reader to change it. |
 | D4 | How the first survey is started | **Decided (project owner, 2026-10-29):** explain the funnel first (part 4); then run the stage's overview survey to see what the stage offers, and narrower surveys for subsets. Each of the first four stages has one. G23 notes where the definitions are uneven. |
 | D5 | Automate in the tutorial | **Decided (project owner, 2026-10-29):** no. Automate, extensibility and Admin go to an Advanced tutorial. Installing and configuring goes to a Getting Started tutorial. This is the Core tutorial. |
 | D6 | Publishing during screenshots | **Decided (project owner, 2026-10-29):** the tutorial is based on the Egeria Quickstart, a demonstration environment whose users are all made up. That is stated at the start. Everything can be thrown away, so the tutorial presses, saves and publishes for real. |
 | D7 | Work lists and investigations | **Decided (project owner, 2026-10-29):** work lists get their own part (11), and the relationship to investigations is described (part 12). |
+| D2c | The two extra repositories for the work list (part 11) | Open. Suggested: two lineage-related projects beside OpenLineage. |
 | D2b | Hosted demo or your own Egeria Workspaces | **Settled by the owner's facts (2026-10-29):** both work. The hosted demo is reset daily and is sometimes a little behind the latest code. Your own Workspaces needs Trellis installed and configured in a separate step, which the Getting Started tutorial covers. The tutorial offers both (section 1). |
 | D8 | Part 1: what Resource Explorer is for, and who it is for | Drafted from blog part 1. **Users decided (project owner, 2026-10-29):** data scientists (including AI), data engineers, curators, security specialists, DevOps engineers, architects, developers. Open: the owner's review of the one-line "what they come for" per role (part 1, item 8). |
