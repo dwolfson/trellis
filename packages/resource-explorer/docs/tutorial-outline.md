@@ -39,6 +39,10 @@ Started tutorial. The prose says this at the very top, in plain words:
 - Everything in it can be thrown away and set up again. So you may change, publish and delete freely while you learn.
   Nothing you do here touches real data.
 - Every screenshot was taken on the Quickstart, so your screens should match.
+- There are two ways to have it (blog post "Egeria Workspaces 6.1", pdr-associates.com): the hosted demo at
+  egeria.pdr-associates.com (register free, no install), or a local Quickstart from the egeria-workspaces repository.
+  **Open (D2b):** which one the tutorial assumes. The hosted demo is shared with other visitors, so what one reader
+  publishes, others see; and it is not yet confirmed that the hosted demo includes Resource Explorer.
 
 **What you can do at the end.**
 
@@ -122,24 +126,43 @@ the Quickstart's `coco_pharma` database and its `loading_bay` folder, both used 
 
 **Before you start.** Nothing.
 
-**Content (no steps; one page, one diagram).** *To be expanded with the owner.*
+**Content (no steps; two pages, one diagram).** Drawn from the blog series *Egeria Resource Explorer*, part 1,
+"Effective Exploration and the Survey Funnel" (pdr-associates.com, 2026-09-18). Use it for substance, written down to
+the tutorial's reader. To be reviewed with the owner (D8).
 
-1. The problem: your organization has many databases, file shares and code repositories. Nobody can say what is in
-   each one, who owns it, or whether it can be trusted.
-2. What Resource Explorer does: it looks at a data source, measures it, asks you what only a person knows, and lets
-   you publish what you have learned to a shared catalog.
-3. What Egeria is: an open-source metadata catalog. It holds the shared record. Resource Explorer reads from it and
-   writes to it, always as you.
-4. The flow in one picture: add a data source → survey it, cheapest questions first → read the answers → add what you
-   know → choose what to publish → publish → check it in Egeria.
-5. Three promises the tool keeps, each in one sentence:
+1. **The situation.** A department has eighty databases nobody has written down, a few hundred internal repositories,
+   and file shares that have grown for a decade. None of it is in a catalog. Someone is asked which of it matters for a
+   new project (an AI project, a migration, a report), and they have a week.
+2. **Why a catalog alone does not solve it.** Catalogs are built for a purpose and then the organization moves on: new
+   priorities, new platforms, acquisitions. Putting everything into the catalog "just in case" fills it with noise and
+   stale entries, and people stop trusting it.
+3. **The core idea: looking is separate from cataloging.** You can survey a data source without putting it in the
+   catalog. You catalog only what proves worth keeping, when you need it.
+4. **What Resource Explorer does, in three things.**
+   - You can look at a candidate data source without putting it in your catalog first.
+   - Every answer cites the measurement it came from, so you can check it rather than trust it.
+   - What you decide, and why, is recorded, and goes into Egeria when you decide something is worth keeping.
+5. **The funnel, in one paragraph.** Start broad and cheap across many candidates; keep the slow, deep checks for the
+   few worth them. Part 4 explains it fully.
+6. **Many points of view.** The same data source matters differently to a security reviewer, an architect, a data
+   owner or someone building an AI application. Resource Explorer tags each question with the perspectives that care
+   about it (part 3d).
+7. **What Egeria is, and how the two fit.** Egeria is an open-source metadata catalog: the shared record. Resource
+   Explorer keeps its working results in its own store while you evaluate; that store is not a second catalog and can
+   be rebuilt by running the surveys again. Egeria holds what you publish. Resource Explorer reads from and writes to
+   Egeria always as you.
+8. **Who uses it.** Data stewards and data owners deciding what to catalog; data engineers and architects judging
+   what a source is and how it fits; security and privacy reviewers; people building AI applications who need to know
+   which data they can rely on. The tutorial follows a data steward. *(Owner to confirm the list, D8.)*
+9. **Three promises the screen keeps**, one sentence each:
    - nothing reaches Egeria until you press Publish;
    - "nothing found" and "not looked at yet" are always shown differently;
    - every answer can show where it came from.
-6. The Quickstart reminder: a demonstration company with made-up people, so change anything (section 1).
+10. **The Quickstart reminder:** a demonstration company with made-up people, so change anything (section 1).
 
-**What can go wrong.** Nothing on screen. The risk is in the writing: do not explain Egeria's architecture here. One
-sentence and the glossary are enough.
+**What can go wrong.** Nothing on screen. The risks are in the writing. Do not explain Egeria's architecture, the
+survey engines or where surveys run; one sentence and the glossary are enough. Do not use the blog's insider words
+(ODS, outbox, graduate, governance action process, microflow).
 
 ---
 
@@ -277,6 +300,14 @@ ones later, and inside each stage, questions and the surveys that answer them.
    - **Curate:** choose what to publish to Egeria, then publish.
    - *Explain:* you go down the funnel only as far as you need. Many data sources stop at Scouting or Discovery. Only
      the ones worth it get Assessment and Analysis.
+   - *Why it saves so much (from blog part 1):* checks differ in cost enormously; later checks build on what earlier
+     ones stored; and the saving multiplies, because the expensive stages run only on the data sources that survive
+     the cheap ones. One measured example, optional in the prose: on a sample database, Scouting took about 13
+     seconds, every Discovery question then answered in under a second from what Scouting stored, and the first stage
+     that read rows took about as long as Scouting.
+   - *Screening out is not throwing away:* a data source set aside today can be looked at again later.
+   - *Around the funnel, not in it:* Investigation (why you are looking, part 12), Understanding (a view over what has
+     been measured so far) and Automate (re-running on a schedule). The last two are for the Advanced tutorial.
 2. **Inside a stage.** Every stage has the same tabs: **Questions**, **Survey & analyses**, **By analysis**,
    **Disposition** (seen).
    - **Questions** lists what this stage asks about this data source, and the answers so far.
@@ -423,6 +454,11 @@ needs to read rows asks for a broader account (part 5).
 
 **Before you start.** Parts 5 and 6, so there are stored results to answer from.
 
+**Open with one idea (blog part 4, "Surveys Measure, Chat Asks").** Surveys answer the questions someone planned for.
+Chat is for everything else: a follow-up, a better explanation of a result, a question nobody planned. Chat answers
+only from what surveys have stored, and shows which results it used. When nothing stored can answer, it says which
+survey would.
+
 **Steps.**
 
 1. With your database open, look at the rail: "ASK scoped to <your database>" (seen).
@@ -456,6 +492,11 @@ needs to read rows asks for a broader account (part 5).
 for a repository and a file system.
 
 **Before you start.** Parts 5 and 7.
+
+**Open with one idea (blog part 3, "Curate: The Stage That Asks for a Decision").** The stages before Curate narrow
+down *which data sources* are worth keeping. Curate narrows down *what inside one data source* is worth cataloging
+today: perhaps three schemas of a database, not its staging tables. You can come back next week and add more without
+surveying again. Curate runs no checks; it asks you for a decision.
 
 **Steps.**
 
@@ -601,7 +642,11 @@ investigation: the sidebar shows "WORK LISTS FOR <NAME>" and "OTHER WORK LISTS" 
    - *You see:* "already in <name>'s scope". The scope now mixes kinds, which a work list cannot.
 8. Ask a question in the chat rail, then click **add to investigation journal** under the answer. Read "Add this turn
    to the investigation journal?" and click **Add** (code).
-   - *You see:* the entry at the foot of the investigation page.
+   - *You see:* the entry at the foot of the investigation page: your question, the answer as shown, and the stored
+     results it drew on (blog part 4).
+   - *Explain:* your chat is private to you; nothing is kept in the journal unless you choose it. The entry cannot be
+     edited afterwards, so readers can tell what the answer said from what a person thought. You may add your own
+     note beside it.
 9. Click **Investigation** in the strip to see every investigation: "An investigation is the frame a body of work
    runs inside — why it exists, not what kind of work it is." and the table INVESTIGATION, PURPOSES, STATUS, SCOPE,
    EGERIA (seen). **+ New investigation** starts one from nothing, with the same dialog.
@@ -787,6 +832,23 @@ from the merged walks are listed where one may be reused, after a check that the
 | S42 | 12 · 6 | Questions ordered by purpose | "ordered by purpose · …" and "NOT AMONG …" | new |
 | S43 | 12 · 9 | Investigations table | Every investigation | `01-investigation-stage.webp` if unchanged |
 
+**Diagrams and images to reuse from the blog series** (pdr-associates.com, by the owner's leave, 2026-10-29). Most
+carry words the tutorial avoids, so each needs a check, and some a redrawn label, before use.
+
+| Use for | Blog image | Note |
+|---|---|---|
+| S1 (part 1) and S12 (part 4), the funnel | part 1, `resource-explorer-funnel-v5.png` | The best single picture of the tool. Labels "Curate and graduate" and "outbox" need plain words. |
+| Part 1, the screen in use | part 1, `Portal-6.1-overview_2.png` (Assessment question cards) | Shows questions tagged by perspective, each answer naming its analysis. |
+| Part 4, what a question is | part 2, `anatomy-of-a-question.png` | Optional; may be Advanced material. |
+| Part 9, Include / Leave out | part 3, `curate-decision-table-v2.png` | A database's schemas with a decision each. Can replace S29 if the screen still matches. |
+| Part 10, before Publish | part 3, `curate-commit-summary.png` | "What this commit does". Check it is still the screen; "commit" needs explaining or avoiding. |
+| Part 10 · 7, checking in Egeria | part 3, `question-in-egeria-1600.jpg` (a question viewed in Egeria Explorer); Workspaces 6.1, `Portal-6.1.png` (the Quickstart portal home) | A lead for gap G17: Egeria Explorer in the Quickstart portal may be the named place to look. |
+| Part 8, an answer and its sources | part 4, `p4-fig2a-docling-answer.png` | The answer with its stored results listed above it. |
+| Part 8 · 5, what would answer this | part 4, `p4-fig2b-docling-gaps-v3.png` | Analyses with no stored result, each with Run. |
+| Part 8, how questions improve | part 4, `part4-fig3-question-loop-v2.png` | The surveys-and-chat loop; a good closing picture for part 8. |
+| Part 12 · 8, the journal entry | part 4, `p4-fig2c-docling-journal.png` | Shows the entry's provenance. |
+| Not for the Core tutorial | part 4, `part4-fig1-chat-turn-v2.png` and `part4-fig4-compile-budget.png` | Internal mechanics (compile id, manifest, budget). Advanced, if anywhere. |
+
 ---
 
 ## 7. Gaps and screen defects
@@ -835,4 +897,5 @@ in this outline; each is named where it bites.
 | D5 | Automate in the tutorial | **Decided (project owner, 2026-10-29):** no. Automate, extensibility and Admin go to an Advanced tutorial. Installing and configuring goes to a Getting Started tutorial. This is the Core tutorial. |
 | D6 | Publishing during screenshots | **Decided (project owner, 2026-10-29):** the tutorial is based on the Egeria Quickstart, a demonstration environment whose users are all made up. That is stated at the start. Everything can be thrown away, so the tutorial presses, saves and publishes for real. |
 | D7 | Work lists and investigations | **Decided (project owner, 2026-10-29):** work lists get their own part (11), and the relationship to investigations is described (part 12). |
-| D8 | Part 1: what Resource Explorer is for, and who it is for | Open. To be expanded with the owner. |
+| D2b | Hosted demo or local Quickstart | Open. The hosted demo needs no install but is shared with other visitors; a local Quickstart is private and fully throwaway. |
+| D8 | Part 1: what Resource Explorer is for, and who it is for | Drafted from blog part 1 (part 1 above). Open: the owner's review, and the list of who uses it. |
