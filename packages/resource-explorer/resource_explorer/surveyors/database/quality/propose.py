@@ -69,6 +69,12 @@ BASELINE_KEYS = ("baseline_ct", "baseline_value_ct", "baseline_unique_ct", "base
 THRESHOLD_IS_BASELINE = frozenset({"Match_Row_Ct", "Match_Column_Ct"})
 
 
+#: The words for a text column whose sampled text shape is not in the profile row (port step 7): a row profiled before
+#: the measures existed, or a column whose read did not finish (the run summary's `text_shape_not_measured` says which).
+TEXT_SHAPE_NOT_READ = ("its sampled text shape was not measured (profiled before text shape was taken, or this "
+                       "column's read did not finish): run the value profile again")
+
+
 def _not_established_reason(test_type: str, profile: dict) -> str:
     state = profile.get("state") or "measured"
     if state != "measured":
@@ -77,7 +83,8 @@ def _not_established_reason(test_type: str, profile: dict) -> str:
     missing = not_established_inputs(test_type, profile)
     # The functional-type inputs say why in their own words ("type not inferred · ..."), not as a bare NULL.
     words = [profile.get("fdt_why") or "type not inferred" if m == "functional_data_type"
-             else profile.get("ftt_why") or "table type not inferred" if m == "functional_table_type" else m
+             else profile.get("ftt_why") or "table type not inferred" if m == "functional_table_type"
+             else TEXT_SHAPE_NOT_READ if m == "sample_value_ct" else m
              for m in missing]
     if len(words) != len(missing) or words != missing:
         plain = [w for w, m in zip(words, missing, strict=True) if w == m]

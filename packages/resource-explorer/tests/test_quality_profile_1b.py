@@ -466,8 +466,14 @@ def test_drift_names_the_new_baseline_keys(registry, entity):
 #: Profile 1b's own columns: not Q6's before_20yr_date_ct, and not step 6's (the inference and the percentiles, which have
 #: their own record, docs/ddl-value-profile-step6.md, and test, tests/test_quality_step_6_functional_type.py).
 _STEP_6_COLUMNS = {"functional_data_type", "functional_table_type", "percentile_25", "percentile_50", "percentile_75"}
+#: ... and not step 7's (the text-shape measures: docs/ddl-value-profile-step7.md, tests/test_quality_step_7_text_shape.py).
+_STEP_7_COLUMNS = {"distinct_std_value_ct", "min_text", "max_text", "sample_value_ct", "sample_pattern_value_ct",
+                   "lead_space_ct", "quoted_value_ct", "includes_digit_ct", "upper_case_ct", "lower_case_ct",
+                   "non_alpha_ct", "non_printing_ct", "numeric_ct", "date_ct", "embedded_space_ct",
+                   "avg_embedded_spaces", "std_pattern_match", "distinct_pattern_ct", "frequent_patterns"}
 NEW_COLUMNS = {(t, c): sql_type for t, c, sql_type in ProjectRegistry.VALUE_PROFILE_COLUMNS
-               if (t, c) != ("database_value_profiles", "before_20yr_date_ct") and c not in _STEP_6_COLUMNS}
+               if (t, c) != ("database_value_profiles", "before_20yr_date_ct")
+               and c not in _STEP_6_COLUMNS | _STEP_7_COLUMNS}
 
 
 def _decls(reg, table):

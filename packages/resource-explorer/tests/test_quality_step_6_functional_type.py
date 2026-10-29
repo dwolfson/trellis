@@ -120,7 +120,7 @@ def test_a_text_column_the_text_shape_measures_cannot_settle_says_why_and_gets_n
                      distinct_value_ct=800))
     assert name.label is None and "Code" in name.possible and "Description" in name.possible
     assert "UNKNOWN" not in name.possible or name.label is None
-    assert "a text column" in name.why and "profile slice 2" in name.why
+    assert "a text column" in name.why and "text branches are not ported" in name.why
     assert "min_text" in name.why or "avg_embedded_spaces" in name.why
 
 

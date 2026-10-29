@@ -27,7 +27,8 @@ PKG = Path(__file__).resolve().parent.parent
 def test_the_ported_test_types_are_vendored_with_licence_and_provenance():
     assert set(cat.load_catalogue()) == (set(cat.SLICE_1_TEST_TYPES) | set(cat.Q6_TEST_TYPES) | set(cat.B1A_TEST_TYPES)
                                          | set(cat.B1B_TEST_TYPES) | set(cat.STEP_4_TEST_TYPES)
-                                         | set(cat.STEP_5_TEST_TYPES) | set(cat.STEP_6_TEST_TYPES))
+                                         | set(cat.STEP_5_TEST_TYPES) | set(cat.STEP_6_TEST_TYPES)
+                                         | set(cat.STEP_7_TEST_TYPES))
     assert set(cat.Q6_TEST_TYPES) == {"Recency", "Future_Date_1Y"}
     for name in ("LICENSE", "NOTICE", "PROVENANCE.md"):
         assert (cat.CATALOGUE_DIR / name).is_file(), name
@@ -259,9 +260,12 @@ def _fake_upstream(root: Path) -> Path:
     (flavor / "profiling").mkdir(parents=True)
     (flavor / "data_chars").mkdir(parents=True)
     shutil.copy(cat.POSTGRES_DIR / "profile_measures.sql", flavor / "profiling/project_profiling_query.sql")
-    # the percentile lines (step 6) live in the real project_profiling_query.sql beside the measures
+    # the percentile lines (step 6) and the text-shape blocks (step 7) live in the real project_profiling_query.sql
+    # beside the measures
     with open(flavor / "profiling/project_profiling_query.sql", "a", encoding="utf-8") as handle:
         handle.write("\n" + "\n".join(cat.POSTGRES_DIR.joinpath("percentiles.sql").read_text().splitlines()[-3:]) + "\n")
+        handle.write("\n".join(ln for ln in cat.POSTGRES_DIR.joinpath("text_shape.sql").read_text().splitlines()
+                               if not ln.startswith("--")) + "\n")
     (flavor / "data_chars/get_schema_ddf.sql").write_text(
         (cat.POSTGRES_DIR / "general_type.sql").read_text() + (cat.POSTGRES_DIR / "numeric_chars.sql").read_text())
     shutil.copy(cat.POSTGRES_DIR / "templated_functions.yaml", flavor / "profiling/templated_functions.yaml")

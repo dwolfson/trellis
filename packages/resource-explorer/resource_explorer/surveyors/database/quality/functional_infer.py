@@ -65,12 +65,14 @@ VENDORED_SQL_SHA256 = {
 #: Measures upstream takes that RE does not (yet). Each is read by some statement; on a TEXT column it is unknown, on
 #: any other column it is NULL by construction upstream. The reason a type was not inferred names the ones it needed.
 NOT_TAKEN = {
-    "numeric_ct": "profile slice 2", "date_ct": "profile slice 2", "includes_digit_ct": "profile slice 2",
-    "avg_embedded_spaces": "profile slice 2", "min_text": "profile slice 2", "max_text": "profile slice 2",
-    "distinct_pattern_ct": "profile slice 2", "frequent_patterns": "profile slice 2",
-    "std_pattern_match": "profile slice 2", "datatype_suggestion": "profile slice 2",
+    "datatype_suggestion": "not planned",
     "percentile_25/50/75": "the percentile statement did not run or ran out of its budget", "date_weeks_present": "not planned", "date_months_present": "not planned",
 }
+#: Measures the profile takes since port step 7 (text_shape.py) but whose text branches of this inference are not ported
+#: over them yet (DESIGN-QUALITY-STEP-7-SAMPLED-TEXT-SHAPE.md §6): on a TEXT column they stay unknown, so a text
+#: column's type is "not inferred", never defaulted. Reason words differ from NOT_TAKEN's, which are about the profile.
+TAKEN_NOT_READ = frozenset({"numeric_ct", "date_ct", "includes_digit_ct", "avg_embedded_spaces", "min_text", "max_text",
+                            "distinct_pattern_ct", "frequent_patterns", "std_pattern_match"})
 
 KEEP = object()          # a statement's CASE left the value as it was
 
@@ -671,9 +673,16 @@ def _reasons(final: set, c: _Col, unknown: set[str]) -> list[str]:
     if len(final) == 1:
         return []
     needed = sorted(m for m in c.missed if m in NOT_TAKEN)
-    if c.text and needed:
-        pools = sorted({NOT_TAKEN[m] for m in needed})
-        return [f"a text column; needs {', '.join(needed)}, which the profile does not take yet ({'; '.join(pools)})"]
+    unread = sorted(m for m in c.missed if m in TAKEN_NOT_READ)
+    if c.text and (needed or unread):
+        said = []
+        if unread:
+            said.append(f"reads {', '.join(unread)}, which the profile takes but this inference does not read yet "
+                        "(its text branches are not ported over them)")
+        if needed:
+            said.append(f"needs {', '.join(needed)}, which the profile does not take "
+                        f"({'; '.join(sorted({NOT_TAKEN[m] for m in needed}))})")
+        return ["a text column; " + "; ".join(said)]
     if _profiled_by_1b(c.p) is None:
         return ["profiled before profile 1b: run the value profile again"]
     if needed:

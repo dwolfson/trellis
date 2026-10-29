@@ -79,9 +79,13 @@ STEP_6_TEST_TYPES = ("Alpha_Trunc", "Avg_Shift", "Dec_Trunc", "Distinct_Date_Ct"
                      "LOV_Match", "Min_Val", "Monthly_Rec_Ct", "Outlier_Pct_Above", "Outlier_Pct_Below", "Pattern_Match",
                      "Unique_Pct", "Valid_Month", "Valid_US_Zip", "Valid_US_Zip3", "Variability_Decrease",
                      "Variability_Increase", "Weekly_Rec_Ct")
+#: Q4 port order step 7 (DESIGN-QUALITY-STEP-7-SAMPLED-TEXT-SHAPE.md): the types that read a text column's sampled
+#: text-shape measures (`text_shape.py`), families D and B1c. All CAT.
+STEP_7_TEST_TYPES = ("Email_Format", "Street_Addr_Pattern", "US_State", "Valid_Characters", "Match_Lead_Space_Ct",
+                     "Match_Upper_Case_Ct", "Match_Non_Printing_Ct")
 #: Every test type RE has ported, in the order proposals are considered.
 PORTED_TEST_TYPES = (SLICE_1_TEST_TYPES + Q6_TEST_TYPES + B1A_TEST_TYPES + B1B_TEST_TYPES + STEP_4_TEST_TYPES
-                     + STEP_5_TEST_TYPES + STEP_6_TEST_TYPES)
+                     + STEP_5_TEST_TYPES + STEP_6_TEST_TYPES + STEP_7_TEST_TYPES)
 
 #: TestGen's `run_type` values: CAT is an aggregate in the per-table SELECT, QUERY is a statement of its own, METADATA
 #: reads TestGen's own metadata tables (RE: its stored surveys).
@@ -539,6 +543,47 @@ def _not_geo(row: dict) -> bool | None:
     return "latitude" not in name and "longitude" not in name
 
 
+def _text_shape_read(row: dict) -> bool | None:
+    """None when this row's sampled text-shape measures cannot be read: the column was not profiled (`state`), or it is a
+    text column with values whose `sample_value_ct` (the witness: the text-shape statement always returns it) is NULL,
+    because the row predates step 7 or that column's read did not finish. Else True. A rule that reads a text-shape
+    measure ANDs this in, so it reads `not_established`, never a silent no. A column that is not text, or holds no value,
+    has no text shape upstream either: True, and the measure it reads is NULL there, which upstream reads as no."""
+    if (row.get("state") or "measured") != "measured":
+        return None
+    if row.get("general_type") != "A" or row.get("value_ct") == 0:
+        return True
+    if row.get("value_ct") is None:
+        return None
+    return None if row.get("sample_value_ct") is None else True
+
+
+def _std_pattern(row: dict, name: str) -> bool | None:
+    """`std_pattern_match = name`: NULL there is upstream's "no standard pattern", so FALSE once the text shape was read
+    for the row, and "not measured" before it."""
+    read = _text_shape_read(row)
+    if read is None:
+        return None
+    return row.get("std_pattern_match") == name
+
+
+def _street_address(row: dict) -> bool | None:
+    avg = row.get("avg_length")
+    return _and(
+        _std_pattern(row, "STREET_ADDR"),
+        _cmp(avg, "<>", None if avg is None else round(avg)),
+        None if row.get("avg_embedded_spaces") is None else 2 <= row["avg_embedded_spaces"] <= 6,
+        _cmp(avg, "<", 35),
+    )
+
+
+def _text_baseline(row: dict) -> bool | None:
+    """`general_type = 'A' AND value_ct > 0 AND sample_ratio IS NULL`, and the text shape was read: a sampled estimate is
+    never an accepted baseline (upstream's rule), and an unread one is not_established."""
+    return _and(_cmp(_p(row, "general_type"), "=", "A"), _cmp(_p(row, "value_ct"), ">", 0),
+                _p(row, "sample_ratio") is None, _text_shape_read(row))
+
+
 def _fractional_positive(row: dict) -> bool | None:
     """`fractional_sum > 0`: NULL there means "not a decimal column" (so FALSE) once profile 1b has taken the row, and
     "not measured" before it."""
@@ -982,6 +1027,38 @@ PREDICATES: dict[str, Predicate] = {
                        _table_like(p, "cumulative"), _unrelated(_p(p, "date_weeks_present")),
                        _cmp(None if not _p(p, "value_ct") or _p(p, "future_date_ct") is None
                             else _p(p, "future_date_ct") / _p(p, "value_ct"), "<=", 0.75))),
+    # std_pattern_match='EMAIL'
+    "Email_Format": Predicate(
+        "ef044052518d6eed7c8ad94a2eeb3a465bc21e05d1944eb56413849b9c522664", ("sample_value_ct", "std_pattern_match"),
+        lambda p: _std_pattern(p, "EMAIL")),
+    # (std_pattern_match='STREET_ADDR') AND (avg_length <> round(avg_length)) AND (avg_embedded_spaces BETWEEN 2 AND 6)
+    #   AND (avg_length < 35)
+    "Street_Addr_Pattern": Predicate(
+        "aaf41b66925f84286e603d426370cc88eb89dc4f829c8cd86eea85ea2cd19a27",
+        ("sample_value_ct", "std_pattern_match", "avg_length", "avg_embedded_spaces"), _street_address),
+    # general_type= 'A' AND column_name ILIKE '%state%' AND distinct_value_ct < 70 AND max_length = 2
+    "US_State": Predicate(
+        "c1deae601c98bd5392d1e8756d32de9f43aaa39745860c7fe5792b61498e01f2",
+        ("general_type", "column_name", "distinct_value_ct", "max_length"),
+        lambda p: _and(_cmp(_p(p, "general_type"), "=", "A"), "state" in (_p(p, "column_name") or "").lower(),
+                       _cmp(_p(p, "distinct_value_ct"), "<", 70), _cmp(_p(p, "max_length"), "=", 2),
+                       _profiled_by_1b(p))),
+    # general_type = 'A'
+    "Valid_Characters": Predicate(
+        "607214ad6b295cebd42ca3c0cb4e34093527ace61a9552253c1ec77991f05450", ("general_type",),
+        # upstream's rule reads no measure; a column that was not profiled is not proposed on its type alone
+        lambda p: _and(_cmp(_p(p, "general_type"), "=", "A"),
+                       None if (_p(p, "state") or "measured") != "measured" else True)),
+    # general_type = 'A' AND value_ct > 0\nAND sample_ratio IS NULL
+    "Match_Lead_Space_Ct": Predicate(
+        "359e71c7c48e6d6e625aefc828c381cbdae63f00a62fa74b6097fd0728f47e78",
+        ("general_type", "value_ct", "sample_ratio", "sample_value_ct"), _text_baseline),
+    "Match_Upper_Case_Ct": Predicate(
+        "359e71c7c48e6d6e625aefc828c381cbdae63f00a62fa74b6097fd0728f47e78",
+        ("general_type", "value_ct", "sample_ratio", "sample_value_ct"), _text_baseline),
+    "Match_Non_Printing_Ct": Predicate(
+        "359e71c7c48e6d6e625aefc828c381cbdae63f00a62fa74b6097fd0728f47e78",
+        ("general_type", "value_ct", "sample_ratio", "sample_value_ct"), _text_baseline),
 }
 
 #: Inputs whose NULL is a real value rather than a missing measure: min_date is read by IS NOT NULL. Recency's
@@ -990,6 +1067,8 @@ PREDICATES: dict[str, Predicate] = {
 #: own measure with IS NOT NULL (NULL is "not applicable" there: no exact sum on a float column, no stdev of one
 #: value); a missing measure is named through the profile 1b witness instead.
 _NULL_IS_A_VALUE = {"Min_Date": {"min_date"},
+                    "Email_Format": {"std_pattern_match"},
+                    "Street_Addr_Pattern": {"std_pattern_match"},
                     "Recency": {"zero_length_ct", "filled_value_ct", "min_date"},
                     "Match_Sum": {"sum_value"},
                     "Match_Stdev": {"stdev_value"},
@@ -1162,8 +1241,9 @@ def _round_half_up(text):
 
 
 def _needs(test_type: str, measure: str):
-    raise ParameterError(f"{test_type}'s default parameter reads {measure}, which the value profile does not take yet "
-                         f"(profile slice 2, port step 7)")
+    when = ("port step 8" if measure == "frequent_values"
+            else "profiled since port step 7, but this default is not ported over it yet")
+    raise ParameterError(f"{test_type}'s default parameter reads {measure}, which this port cannot evaluate yet ({when})")
 
 
 #: Defaults that are an expression over the profile rather than a list of columns and literals: the SHA-256 of

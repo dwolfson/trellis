@@ -64,7 +64,13 @@ PROFILE_1B_MEASURES = ("before_5yr_date_ct", "date_days_present", "min_length", 
                        "sum_value", "boolean_true_ct")
 #: The measures a profile row carries, in the vendored names. `record_ct` is per table.
 COLUMN_MEASURES = ("value_ct", "distinct_value_ct", "null_value_ct", "zero_length_ct", "filled_value_ct",
-                   "min_date", "max_date", "future_date_ct", "before_20yr_date_ct") + PROFILE_1B_MEASURES
+                   "min_date", "max_date", "future_date_ct", "before_20yr_date_ct") + PROFILE_1B_MEASURES \
+    + ("distinct_std_value_ct", "min_text", "max_text")
+#: Step 7's sampled text-shape measures (text_shape.py): a text column's, one sampled statement per column.
+TEXT_SHAPE_MEASURES = ("sample_value_ct", "sample_pattern_value_ct", "lead_space_ct", "quoted_value_ct",
+                       "includes_digit_ct", "upper_case_ct", "lower_case_ct", "non_alpha_ct", "non_printing_ct",
+                       "numeric_ct", "date_ct", "embedded_space_ct", "avg_embedded_spaces", "std_pattern_match",
+                       "distinct_pattern_ct", "frequent_patterns")
 DATE_MEASURES = frozenset({"min_date", "max_date"})
 #: Measures that are not counts: floats as the target returned them, never truncated to an integer.
 FLOAT_MEASURES = frozenset({"avg_length", "min_value", "max_value", "avg_value", "stdev_value"})
@@ -135,7 +141,7 @@ def flags_for(general_type: str | ColumnChars) -> list[str]:
     characteristics are known: neither decimal nor exact-summed."""
     chars = general_type if isinstance(general_type, ColumnChars) else ColumnChars(general_type)
     gtype = chars.general_type
-    flags = ["is_type_A"] if gtype == "A" else ["is_not_A"]
+    flags = ["is_type_A", "is_A_text"] if gtype == "A" else ["is_not_A"]
     if gtype not in ("A", "X"):
         flags.append("is_distinct_countable")
     if gtype == "D":
@@ -268,6 +274,9 @@ class ProfileBounds:
     #: The exact percentiles of a table's number columns, their own statement and budget (percentiles.py; owner,
     #: 2026-10-29). Not part of `table_budget_seconds`: running out leaves every other measure in place.
     percentile_budget_seconds: float = 300.0
+    #: A table's text columns' sampled text-shape reads, one statement per column inside this one budget
+    #: (text_shape.py; step 7). Not part of `table_budget_seconds`: running out leaves every other measure in place.
+    text_shape_budget_seconds: float = 300.0
 
 
 def incomplete_reason(budget_seconds: float) -> str:
@@ -281,6 +290,7 @@ def _empty_row(schema: str, table: str, column: str, gtype: str, state: str, rea
     row.update({m: None for m in COLUMN_MEASURES})
     row.update(functional_data_type=None, functional_table_type=None, percentile_25=None, percentile_50=None,
                percentile_75=None)
+    row.update({m: None for m in TEXT_SHAPE_MEASURES})
     return row
 
 
@@ -389,6 +399,30 @@ def _take_percentiles(conn, schema: str, table: str, table_rows: list[dict], bou
                      "columns": [r["column_name"] for r in wanted if r["column_name"] not in found]})
 
 
+def _take_text_shape(conn, schema: str, table: str, table_rows: list[dict], bounds: ProfileBounds, clock,
+                     gaps: list[dict]) -> None:
+    """Step 7: the sampled text-shape measures of the table's measured text columns, one statement each inside the
+    table's text-shape budget. A column that could not give them keeps every other measure and reads NULL there, the
+    reason in the run summary; a column read on a sample carries the table's `sample_ratio`."""
+    from resource_explorer.surveyors.database.quality import text_shape
+
+    wanted = [r for r in table_rows if r["state"] == "measured" and r["general_type"] == "A" and r.get("value_ct")]
+    if not wanted:
+        return
+    record_ct = wanted[0].get("record_ct")
+    found, reasons = text_shape.measure_table(
+        conn, schema, table, [(r["column_name"], r["value_ct"]) for r in wanted], record_ct, bounds, clock)
+    for row in wanted:
+        hit = found.get(row["column_name"])
+        if hit:
+            measures, sampling = hit
+            row.update(measures)
+            row["sample_ratio"] = sampling.sample_ratio if sampling else None
+    if reasons:
+        gaps.append({"schema_name": schema, "table_name": table, "reason": reasons[0][1],
+                     "columns": [c for c, _ in reasons]})
+
+
 def run_value_profile(
     db_entity, registry, connect: Callable[[], AbstractContextManager], *,
     bounds: ProfileBounds, surveyed_at: str | None = None, ran_as: str = "",
@@ -425,6 +459,7 @@ def run_value_profile(
     table_outcomes: list[dict] = []
     numeric: dict | None = {}
     percentile_gaps: list[dict] = []
+    text_shape_gaps: list[dict] = []
     with connect() as conn:
         facts = read_table_facts(conn)
         if has_numbers:
@@ -494,6 +529,7 @@ def run_value_profile(
                 continue
             rows.extend(table_rows)
             _take_percentiles(conn, schema, table, table_rows, bounds, clock, percentile_gaps)
+            _take_text_shape(conn, schema, table, table_rows, bounds, clock, text_shape_gaps)
             if failures:
                 state, reason = failures[0]
                 table_outcomes.append(_table_outcome(schema, table, state, reason))
@@ -519,6 +555,7 @@ def run_value_profile(
             "states": states,
             "tables_not_profiled": table_outcomes,
             "percentiles_not_measured": percentile_gaps,
+            "text_shape_not_measured": text_shape_gaps,
             "ran_as": ran_as,
             "bounds": {"table_budget_seconds": bounds.table_budget_seconds},
             # Whether the catalog read profile 1b's decimal and exact-sum measures depend on succeeded. "not_read":
@@ -582,7 +619,7 @@ def build_annotations(rows: list[dict], table_outcomes: list[dict], *, as_of: st
             json_properties={
                 "generalType": row["general_type"],
                 "profileDates": dates,
-                "sampleRatio": None,
+                "sampleRatio": row.get("sample_ratio"),
                 "ranAs": row.get("ran_as", ""),
             },
         ))

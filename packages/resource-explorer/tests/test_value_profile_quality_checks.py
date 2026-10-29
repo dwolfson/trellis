@@ -321,8 +321,9 @@ def test_every_assembled_statement_parses_as_postgres():
     # value_ct + null_value_ct for all 7, distinct + zero_length + filled for the 2 text columns, 4 date measures
     # (min_date, max_date, future_date_ct, before_20yr_date_ct), distinct for B, D, N and T (none for X). Profile 1b:
     # min/max/avg length for each text column, 5 numeric measures (no decimal or exact-sum flag on a bare
-    # general_type), before_5yr_date_ct and date_days_present, boolean_true_ct.
-    assert len(aliases) == 2 * 7 + 3 * 2 + 4 + 4 + 3 * 2 + 5 + 2 + 1
+    # general_type), before_5yr_date_ct and date_days_present, boolean_true_ct. Step 7: four whole-table text measures
+    # (zero_value_ct, distinct_std_value_ct, min_text, max_text) for each text column.
+    assert len(aliases) == 2 * 7 + 3 * 2 + 4 + 4 + 3 * 2 + 5 + 2 + 1 + 4 * 2
     sqlglot.parse_one(sql, read="postgres")
     sqlglot.parse_one(TABLE_FACTS_SQL, read="postgres")
     params = {"baseline_ct": 10, "baseline_value_ct": 9, "baseline_value": "2020-01-01", "threshold_value": 2,
@@ -400,6 +401,8 @@ def test_proposals_follow_the_selection_rules(registry, entity):
         "sales.orders::Dupe_Rows", "sales.orders::Schema_Drift", "sales.empty::Dupe_Rows", "sales.empty::Schema_Drift",
         # step 6: Unique_Pct on a column of more than ten distinct values whose type is not a Measurement
         "sales.orders.order_id::Unique_Pct", "sales.orders.placed::Unique_Pct",
+        # step 7: Valid_Characters selects every profiled text column
+        "sales.orders.note::Valid_Characters",
     }
     # note is text with placeholders (filled_value_ct 3): neither Required nor Required_No_Placeholder.
     assert "sales.orders.note::Required_No_Placeholder" not in rows
@@ -414,7 +417,7 @@ def test_proposals_follow_the_selection_rules(registry, entity):
     row_ct = rows["sales.orders::Row_Ct_Pct"]
     assert (row_ct["origin"], row_ct["params_json"]["threshold_value"], row_ct["column_name"]) == ("re", 10, "")
     assert "vendored-catalog@3606859c" in row_ct["catalogue_ref"]
-    assert out["proposed_ct"] == 14 and out["not_applicable_ct"] > 0
+    assert out["proposed_ct"] == 15 and out["not_applicable_ct"] > 0
 
 
 def test_an_unprofiled_column_is_not_established_by_column_never_a_silent_no(registry, entity):
@@ -507,7 +510,7 @@ def test_the_propose_step_opens_no_connection(registry, entity, monkeypatch):
     _profile(registry, entity)
     monkeypatch.setattr(connection, "database_connection", lambda *a, **k: pytest.fail("connected"))
     out = _ADAPTER.re_analysis_steps["propose_quality_checks"](entity, registry, scan_surveyed_at=None)
-    assert out["quality_proposals"]["proposed_ct"] == 14
+    assert out["quality_proposals"]["proposed_ct"] == 15
 
 
 # ── run_quality_checks ───────────────────────────────────────────────────────────────────────────────────────
@@ -791,9 +794,10 @@ def test_the_value_profile_runner_uses_the_settings(registry, entity, monkeypatc
     assert out["value_profile"]["bounds"] == {"table_budget_seconds": 120}
     timeouts = [int(t.rsplit("=", 1)[1]) for t in conn.statements if t.startswith("SET LOCAL statement_timeout")]
     # what is left of 120 s; the exact percentiles (step 6) are a statement of their own with their own 5 minutes
+    # and a text column's sampled read (step 7) has its own 5 minutes too
     own = [t for t in timeouts if t == 300_000]
     assert timeouts and all(115_000 <= t <= 120_000 for t in timeouts if t != 300_000), timeouts
-    assert len(own) == sum("PERCENTILE_CONT" in t for t in conn.statements)
+    assert len(own) == sum("PERCENTILE_CONT" in t or "sampleable_measures" in t for t in conn.statements)
     assert _rows(registry, "database_value_profiles")["sales", "orders", "note"]["state"] == "measured"
 
 
