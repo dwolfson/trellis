@@ -612,6 +612,13 @@ def missing_library_steps(entity_type: str = "database") -> dict[str, dict]:
     return {k: dict(v) for k, v in _MISSING.get(entity_type, {}).items()}
 
 
+def installed_library_steps(entity_type: str = "database") -> list[str]:
+    """Sorted step keys of the Analytic Library steps installed here that target `entity_type`: every step `attach()`
+    attached except the catalogued ones whose package is absent (`missing_library_steps`)."""
+    missing = missing_library_steps(entity_type)
+    return sorted(k for k in _ATTACHED.get(entity_type, set()) if k not in missing)
+
+
 def library_step_missing_reason(step_key: str, entity_type: str = "database") -> str:
     """The `not_installed_sentence` when `step_key` is a catalogued library step whose package is absent, else ""."""
     provided_by = missing_library_steps(entity_type).get(step_key)
