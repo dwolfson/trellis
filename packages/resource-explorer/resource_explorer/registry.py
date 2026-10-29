@@ -1180,6 +1180,11 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         std_pattern_match     TEXT DEFAULT NULL,
         distinct_pattern_ct   BIGINT DEFAULT NULL,
         frequent_patterns     TEXT DEFAULT NULL,
+        multiset_hash         TEXT DEFAULT NULL,
+        epoch_sum             TEXT DEFAULT NULL,
+        keyed_hash            TEXT DEFAULT NULL,
+        key_column_name       TEXT DEFAULT NULL,
+        hash_state            TEXT DEFAULT NULL,
         sample_ratio      REAL DEFAULT NULL,
         ran_as            TEXT DEFAULT '',
         state             TEXT NOT NULL DEFAULT 'measured',
@@ -5210,6 +5215,13 @@ class ProjectRegistry:
         ("database_value_profiles", "std_pattern_match", "TEXT"),
         ("database_value_profiles", "distinct_pattern_ct", "BIGINT"),
         ("database_value_profiles", "frequent_patterns", "TEXT"),
+        # Q4 port order step 8 (DESIGN-QUALITY-STEP-8-HASHES.md; DDL record docs/ddl-value-profile-step8.md): value hashes,
+        # taken only when asked (off by default). Exact decimal text, NULL = not taken or not measured, never 0.
+        ("database_value_profiles", "multiset_hash", "TEXT"),
+        ("database_value_profiles", "epoch_sum", "TEXT"),
+        ("database_value_profiles", "keyed_hash", "TEXT"),
+        ("database_value_profiles", "key_column_name", "TEXT"),
+        ("database_value_profiles", "hash_state", "TEXT"),
         ("database_quality_results", "measure_text", "TEXT"),
     )
 

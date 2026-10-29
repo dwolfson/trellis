@@ -57,7 +57,8 @@ def test_the_twelve_are_vendored_and_match_epoch_sum_is_left_for_the_hashes():
     assert B1B == {"Match_Min_Val", "Match_Max_Val", "Match_Sum", "Match_Stdev", "Match_Zero_Ct",
                    "Match_Fractional_Sum", "Match_Min_Length", "Match_Max_Length", "Match_Total_Length",
                    "Match_True_Ct", "Match_Distinct_Date_Ct", "Daily_Record_Ct"}
-    assert "Match_Epoch_Sum" not in catalogue                    # upstream takes epoch_sum only for a hashed column
+    # upstream takes epoch_sum only for a hashed column: Match_Epoch_Sum arrived with the hashes (port step 8)
+    assert "Match_Epoch_Sum" in cat.STEP_8_TEST_TYPES and "Match_Epoch_Sum" not in cat.B1B_TEST_TYPES
     for name in TABLE_COMPARISON_B1B:
         t = catalogue[name]
         assert t.is_table_comparison and t.null_measure_fails and t.severity == "error", name
@@ -471,9 +472,11 @@ _STEP_7_COLUMNS = {"distinct_std_value_ct", "min_text", "max_text", "sample_valu
                    "lead_space_ct", "quoted_value_ct", "includes_digit_ct", "upper_case_ct", "lower_case_ct",
                    "non_alpha_ct", "non_printing_ct", "numeric_ct", "date_ct", "embedded_space_ct",
                    "avg_embedded_spaces", "std_pattern_match", "distinct_pattern_ct", "frequent_patterns"}
+#: ... and not step 8's (value hashes: docs/ddl-value-profile-step8.md, tests/test_quality_step_8_hashes.py).
+_STEP_8_COLUMNS = {"multiset_hash", "epoch_sum", "keyed_hash", "key_column_name", "hash_state"}
 NEW_COLUMNS = {(t, c): sql_type for t, c, sql_type in ProjectRegistry.VALUE_PROFILE_COLUMNS
                if (t, c) != ("database_value_profiles", "before_20yr_date_ct")
-               and c not in _STEP_6_COLUMNS | _STEP_7_COLUMNS}
+               and c not in _STEP_6_COLUMNS | _STEP_7_COLUMNS | _STEP_8_COLUMNS}
 
 
 def _decls(reg, table):

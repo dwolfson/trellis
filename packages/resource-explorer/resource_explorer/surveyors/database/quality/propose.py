@@ -75,6 +75,12 @@ TEXT_SHAPE_NOT_READ = ("its sampled text shape was not measured (profiled before
                        "column's read did not finish): run the value profile again")
 
 
+#: The words for a column whose value hashes are not in the profile row (port step 8): they are off by default.
+HASHES_NOT_READ = ("value hashes were not taken (they are off by default: set VALUE_PROFILE_HASHES=true and run the "
+                   "value profile again) or this column's hash read did not finish (the run summary's "
+                   "hashes_not_measured says which)")
+
+
 def _not_established_reason(test_type: str, profile: dict) -> str:
     state = profile.get("state") or "measured"
     if state != "measured":
@@ -84,7 +90,8 @@ def _not_established_reason(test_type: str, profile: dict) -> str:
     # The functional-type inputs say why in their own words ("type not inferred · ..."), not as a bare NULL.
     words = [profile.get("fdt_why") or "type not inferred" if m == "functional_data_type"
              else profile.get("ftt_why") or "table type not inferred" if m == "functional_table_type"
-             else TEXT_SHAPE_NOT_READ if m == "sample_value_ct" else m
+             else TEXT_SHAPE_NOT_READ if m == "sample_value_ct"
+             else HASHES_NOT_READ if m == "hash_state" else m
              for m in missing]
     if len(words) != len(missing) or words != missing:
         plain = [w for w, m in zip(words, missing, strict=True) if w == m]

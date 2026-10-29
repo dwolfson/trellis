@@ -198,6 +198,8 @@ def run_quality_checks(
     money = {(c["schema_name"], c["table_name"], c["column_name"]) for c in columns
              if is_money_type(c.get("base_type") or c.get("data_type"))}
     table_set = {(c["schema_name"], c["table_name"]) for c in columns}
+    catalog_types = {(c["schema_name"], c["table_name"], c["column_name"]): c.get("base_type") or c.get("data_type")
+                     for c in columns}
     tables = {(t["schema_name"], t["table_name"]): t for t in registry.query_detail_rows("database_tables", slug)}
     run_date = run_date_text(surveyed_at)
 
@@ -282,7 +284,9 @@ def run_quality_checks(
                 row["reason"] = f"{UNDEFINED}: baseline_ct is 0"
                 continue
             is_money = (schema, table, column) in money
-            sql = render_measure(test_type, column, params, run_date, is_money=is_money)
+            hash_column, key_column = _hash_columns(test_type, schema, table, column, params, catalog_types)
+            sql = render_measure(test_type, column, params, run_date, is_money=is_money, hash_column=hash_column,
+                                 key_column=key_column)
             # A run-time aggregate the condition reads (Match_Sum's COUNT), from the vendored text, filled the same way.
             extra = CONDITION_AGGREGATES.get(type_name)
             extra_sql = extra.replace("{COLUMN_NAME}", quote_identifier(column)) if extra else None
@@ -440,6 +444,25 @@ def build_quality_annotations(results: list[dict], catalogue: dict | None = None
             additional_properties={k: v for k, v in detail.items() if v not in (None, "")},
         ))
     return out
+
+
+def _hash_columns(test_type, schema: str, table: str, column: str, params: dict, catalog_types: dict):
+    """(the column, the key) as `HashColumn`s for a value-hash type (port step 8), else (None, None). The general type is
+    derived from the stored catalog type exactly as the profile derived it, so the run hashes what the profile hashed."""
+    if not any(p in test_type.measure for p in ("{MULTISET_HASH_TERM}", "{EPOCH_SUM_TERM}", "{KEYED_HASH_TERM}")):
+        return None, None
+    from resource_explorer.surveyors.database.quality import value_hashes
+    from resource_explorer.surveyors.database.quality.general_type import general_type as derive_general_type
+
+    def hash_column(name: str):
+        declared = catalog_types.get((schema, table, name))
+        return value_hashes.HashColumn(name, derive_general_type(declared, None), declared or "")
+
+    key_name = params.get("key_column_name")
+    if "{KEYED_HASH_TERM}" in test_type.measure and (not isinstance(key_name, str) or
+                                                     (schema, table, key_name) not in catalog_types):
+        raise ParameterError(f"the keyed hash needs the table's key column, got {key_name!r}")
+    return hash_column(column), hash_column(key_name) if "{KEYED_HASH_TERM}" in test_type.measure else None
 
 
 def _select(schema: str, table: str, checks: list[dict | str]) -> str:

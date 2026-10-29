@@ -28,7 +28,7 @@ def test_the_ported_test_types_are_vendored_with_licence_and_provenance():
     assert set(cat.load_catalogue()) == (set(cat.SLICE_1_TEST_TYPES) | set(cat.Q6_TEST_TYPES) | set(cat.B1A_TEST_TYPES)
                                          | set(cat.B1B_TEST_TYPES) | set(cat.STEP_4_TEST_TYPES)
                                          | set(cat.STEP_5_TEST_TYPES) | set(cat.STEP_6_TEST_TYPES)
-                                         | set(cat.STEP_7_TEST_TYPES))
+                                         | set(cat.STEP_7_TEST_TYPES) | set(cat.STEP_8_TEST_TYPES))
     assert set(cat.Q6_TEST_TYPES) == {"Recency", "Future_Date_1Y"}
     for name in ("LICENSE", "NOTICE", "PROVENANCE.md"):
         assert (cat.CATALOGUE_DIR / name).is_file(), name
