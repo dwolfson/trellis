@@ -261,6 +261,10 @@ def _passages_of(compile_row: dict | None) -> list[str]:
     packed = [p for p in ((compile_row or {}).get("manifest") or {}).get("packed") or [] if isinstance(p, dict)]
     out: list[str] = []
     for p in packed:
+        for q in p.get("passages") or []:
+            pid = q.get("passage_id") if isinstance(q, dict) else ""
+            if pid and pid not in out:
+                out.append(pid)
         ptr = p.get("pointer") if isinstance(p.get("pointer"), dict) else {}
         pid = p.get("passage_id") or ptr.get("passage_id")
         walk_run, path = p.get("walk_run") or ptr.get("walk_run"), p.get("file_path") or ptr.get("file_path")
