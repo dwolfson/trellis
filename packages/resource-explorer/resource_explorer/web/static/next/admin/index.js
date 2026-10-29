@@ -58,6 +58,7 @@ import { renderOutbox } from '/static/next/admin/outbox.js';
 import { renderApiFetch } from '/static/next/admin/api_fetch.js';
 import { renderQualitySettings } from '/static/next/admin/quality_settings.js';
 import { renderEgeriaMounts } from '/static/next/admin/egeria_mounts.js';
+import { renderDataPortals, renderPortalDirectories, renderOpenData } from '/static/next/admin/open_data.js';
 
 const PANEL_ID = 'admin-panel';
 
@@ -84,6 +85,11 @@ const GROUPS = [
     { id: 'admin-prefect', label: '⚡ Prefect', render: renderPrefect },
     { id: 'admin-feedback', label: '💬 Feedback', render: renderFeedback },
     { id: 'admin-logs', label: '📜 Logs', render: renderLogs },
+  ]},
+  { name: 'Open data', tabs: [
+    { id: 'admin-od-portals', label: '🌐 Data portals', render: renderDataPortals },
+    { id: 'admin-od-directories', label: '📚 Portal directories', render: renderPortalDirectories },
+    { id: 'admin-od-datasets', label: '🗂 Open data', render: renderOpenData },
   ]},
 ];
 

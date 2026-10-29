@@ -29,6 +29,9 @@ NEXT = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "stat
 #: Egeria Links and Publish Queue were the two named deferrals; both were built under parity P1
 #: (PI-130, PI-131). The not-built page in admin/index.js was removed as unreachable.
 BUILT_TAB_IDS = [
+    "admin-od-portals",
+    "admin-od-directories",
+    "admin-od-datasets",
     "admin-egeria-links",
     "admin-outbox",
     "annotations",

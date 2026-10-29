@@ -212,6 +212,23 @@ export const getSchemaInventoryTree = (slug) =>
   get(`/api/databases/${encodeURIComponent(slug)}/schema-inventory-tree`);
 export const listFilesystems = () => get('/api/filesystems/');
 
+// ── Open data (OD1): portals, directories, search, import, the dataset page ──
+const od = (path) => `/api/open-data${path}`;
+export const listOpenDataPortals = () => get(od('/portals'));
+export const registerOpenDataPortal = (body) => post(od('/portals'), body);
+export const checkOpenDataPortal = (body) => post(od('/portals/check'), body);
+export const openDataPrice = (slug, pages) => get(od(`/portals/${encodeURIComponent(slug)}/price?pages=${pages}`));
+export const searchOpenData = (slug, body) => post(od(`/portals/${encodeURIComponent(slug)}/search`), body);
+export const importOpenData = (slug, body) => post(od(`/portals/${encodeURIComponent(slug)}/import`), body);
+export const openDataLensTerms = (lens, investigation = '') =>
+  post(od(`/lens-terms${investigation ? `?investigation=${encodeURIComponent(investigation)}` : ''}`), lens);
+export const listPortalDirectories = () => get(od('/directories'));
+export const registerPortalDirectory = (body) => post(od('/directories'), body);
+export const runPortalDirectory = (slug, body) => post(od(`/directories/${encodeURIComponent(slug)}/run`), body);
+export const importDirectoryPortals = (slug, body) => post(od(`/directories/${encodeURIComponent(slug)}/import`), body);
+export const listOpenData = () => get(od('/datasets'));
+export const getOpenData = (slug) => get(od(`/datasets/${encodeURIComponent(slug)}`));
+
 /** Register a file system (Files step 1). The body is the route's own model: slug, display_name,
  *  local_mount_point, canonical_mount_point, group_slug. The Egeria server and platform come from the platform
  *  configuration the server already reads, never from this call. The answer is the STORED row. */

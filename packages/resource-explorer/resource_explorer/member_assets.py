@@ -11,10 +11,10 @@ It returns a GUID or raises. It never returns "": an empty stored pointer is its
 """
 from __future__ import annotations
 
-from resource_explorer.resource_types import SURVEYED_RESOURCE_TYPES
+from resource_explorer.resource_types import MEMBER_RESOURCE_TYPES
 
 #: The resource kinds a list's members can be, and so the ones `member_egeria_guid` knows how to read.
-MEMBER_ENTITY_TYPES = SURVEYED_RESOURCE_TYPES
+MEMBER_ENTITY_TYPES = MEMBER_RESOURCE_TYPES
 
 
 class MemberUnresolved(Exception):
@@ -29,6 +29,10 @@ class NotInEgeriaYet(Exception):
         super().__init__(f"not in Egeria yet · {entity_type}")
 
 
+class _NoAsset:
+    egeria_asset_guid = ""
+
+
 def _entity(registry, entity_type: str, slug: str):
     if entity_type == "repo":
         return registry.get(slug)
@@ -36,6 +40,12 @@ def _entity(registry, entity_type: str, slug: str):
         return registry.get_database(slug, allow_unreadable=True)
     if entity_type == "filesystem":
         return registry.get_filesystem(slug)
+    if entity_type == "open_data":
+        # Registered in RE only: its own pointer is always empty (nothing publishes it in OD1), so it reads
+        # "not in Egeria yet", never "cannot link this kind".
+        from resource_explorer.open_data.store import OpenDataStore
+
+        return OpenDataStore(registry).get_dataset(slug) and _NoAsset()
     return None
 
 
