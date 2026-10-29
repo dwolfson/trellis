@@ -6,7 +6,8 @@
 The vendored copy lives in `resource_explorer/configdata/quality/testgen/` (see its PROVENANCE.md). For each
 vendored test type this compares, against `testgen/template/dbsetup_test_types/test_types_<Name>.yaml` upstream:
 `selection_criteria`, `default_parm_columns`, `default_parm_values` and the Postgres `cat_test_conditions` entry
-(`measure`, `test_operator`, `test_condition`), and says whether the whole file is still byte-identical. It checks
+(`measure`, `test_operator`, `test_condition`; for a QUERY or METADATA type, `run_type` and the Postgres
+`test_templates` entry), and says whether the whole file is still byte-identical. It checks
 that every measure in `postgresql/profile_measures.sql`, the `general_type` CASE, the `logical_type` and `is_decimal`
 CASEs of `postgresql/numeric_chars.sql`, every entry of
 `postgresql/templated_functions.yaml` and every statement of `profiling/functional_datatype_date.sql` still appear
@@ -57,6 +58,10 @@ def _postgres(raw: dict) -> dict:
     return next((c for c in raw.get("cat_test_conditions") or [] if c.get("sql_flavor") == "postgresql"), {})
 
 
+def _template(raw: dict) -> str:
+    return next((t.get("template") for t in raw.get("test_templates") or [] if t.get("sql_flavor") == "postgresql"), "")
+
+
 def _squash(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
@@ -77,6 +82,13 @@ def compare_test_type(name: str, upstream: Path) -> tuple[list[str], list[str]]:
         if ours_pg.get(field) != theirs_pg.get(field):
             diffs.append(f"{name}.postgresql.{field}: vendored {ours_pg.get(field)!r} | "
                          f"upstream {theirs_pg.get(field)!r}")
+    if ours.get("run_type") not in (None, "CAT") or theirs.get("run_type") not in (None, "CAT"):
+        # A QUERY or METADATA type has no cat_test_conditions: what runs is the Postgres `test_templates` entry
+        # (Dupe_Rows' grouping subselect, the drift checks' reads), and how upstream runs it.
+        if ours.get("run_type") != theirs.get("run_type"):
+            diffs.append(f"{name}.run_type: vendored {ours.get('run_type')!r} | upstream {theirs.get('run_type')!r}")
+        if _template(ours) != _template(theirs):
+            diffs.append(f"{name}.postgresql.test_templates: no longer the vendored statement")
     notes = []
     if vendored_path.read_bytes() != upstream_path.read_bytes():
         notes.append(f"{name}: file differs from upstream in fields no check reads")

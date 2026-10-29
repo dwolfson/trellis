@@ -35,9 +35,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from resource_explorer.surveyors.database.quality import table_comparison
+from resource_explorer.surveyors.database.quality import dupe_rows, schema_drift, table_comparison
 from resource_explorer.surveyors.database.quality.catalogue import (
     PREDICATES,
+    RUN_METADATA,
     ParameterError,
     TestType,
     catalogue_ref,
@@ -46,6 +47,7 @@ from resource_explorer.surveyors.database.quality.catalogue import (
     load_catalogue,
     not_established_inputs,
 )
+from resource_explorer.surveyors.database.quality.general_type import general_type
 
 #: What a run of this step leaves on the database in Egeria (design: a dispatched step never makes an empty report).
 CHECK_NAME = "quality_proposals"
@@ -59,7 +61,7 @@ ANALYSIS_STEP = "propose_quality_checks"
 BASELINE_KEYS = ("baseline_ct", "baseline_value_ct", "baseline_unique_ct", "baseline_value", "baseline_sum",
                  "baseline_sd")
 #: Types whose baseline is their threshold_value (gen_Match_Row_Ct.sql: `record_ct AS threshold_value`).
-THRESHOLD_IS_BASELINE = frozenset({"Match_Row_Ct"})
+THRESHOLD_IS_BASELINE = frozenset({"Match_Row_Ct", "Match_Column_Ct"})
 
 
 def _not_established_reason(test_type: str, profile: dict) -> str:
@@ -125,7 +127,10 @@ def build_proposal_annotation(slug: str, *, run_id: str, proposed_ct: int, colum
     not merely as many (round 2, architect ruling 2026-10-24: the request re-links when unchanged)."""
     import hashlib
 
-    from resource_explorer.surveyors.survey_report import RequestForActionAnnotation, ResourceMeasureAnnotation
+    from resource_explorer.surveyors.survey_report import (
+        RequestForActionAnnotation,
+        ResourceMeasureAnnotation,
+    )
 
     counts = {"proposedChecks": str(proposed_ct), "columnsProfiled": str(columns_profiled),
               "acceptedChecks": str(accepted_ct), "suppressedChecks": str(suppressed_ct),
@@ -177,6 +182,14 @@ def run_propose(registry, slug: str, *, row_ct_pct_threshold: float, surveyed_at
     verdicts = registry.get_quality_verdicts(slug)
     batches = _Batches(registry, slug)
     watched = table_comparison.watched_tables(registry, slug)
+    # What the Dupe_Rows key and the drift baselines read: the stored inventory, in column order, and the newest survey.
+    inventory_at, column_counts = schema_drift.current_inventory(registry, slug)
+    table_columns: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    profiled_types = {(r["schema_name"], r["table_name"], r["column_name"]): r.get("general_type") for r in profile}
+    for c in registry.query_detail_rows("database_columns", slug):
+        key_ = (c["schema_name"], c["table_name"])
+        gtype = profiled_types.get((*key_, c["column_name"])) or general_type(c.get("base_type") or c.get("data_type"))
+        table_columns.setdefault(key_, []).append((c["column_name"], gtype))
 
     rows: list[dict] = []
     not_applicable_ct = 0
@@ -200,8 +213,15 @@ def run_propose(registry, slug: str, *, row_ct_pct_threshold: float, surveyed_at
         if selected is None:
             state, reason = "not_established", _not_established_reason(test_type.test_type, prow)
         elif selected:
+            table_key = (prow["schema_name"], prow["table_name"])
             try:
-                params = default_params(test_type, prow, row_ct_pct_threshold)
+                if test_type.test_type == "Dupe_Rows":
+                    params = dupe_rows.default_params(test_type, {**prow, "table_columns": table_columns.get(table_key)})
+                elif test_type.run_type == RUN_METADATA:
+                    params = schema_drift.default_params(test_type, {
+                        **prow, "column_ct": column_counts.get(table_key), "inventory_surveyed_at": inventory_at})
+                else:
+                    params = default_params(test_type, prow, row_ct_pct_threshold)
                 params["profile_surveyed_at"] = profile_surveyed_at
             except ParameterError as exc:
                 state, reason = "not_established", str(exc)
@@ -241,8 +261,10 @@ def run_propose(registry, slug: str, *, row_ct_pct_threshold: float, surveyed_at
             "catalogue_ref": catalogue_ref(test_type), "state": state, "reason": reason,
         })
 
-    column_types = [t for t in catalogue.values() if not t.is_table_check]
-    table_types = [t for t in catalogue.values() if t.is_table_check]
+    # A type with no selection rule that RE does not propose itself (Schema_Conformance) is defined by a person.
+    proposable = [t for t in catalogue.values() if not t.manual_only]
+    column_types = [t for t in proposable if not t.is_table_check]
+    table_types = [t for t in proposable if t.is_table_check]
     tables: dict[tuple[str, str], list[dict]] = {}
     for prow in profile:
         tables.setdefault((prow["schema_name"], prow["table_name"]), []).append(prow)

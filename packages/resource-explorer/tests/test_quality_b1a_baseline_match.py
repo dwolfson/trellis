@@ -187,7 +187,7 @@ def test_nothing_is_proposed_for_a_table_nobody_opted_in(registry, entity):
     out = _propose(registry)["quality_proposals"]
     assert not any(r["test_type"] in B1A for r in registry.query_detail_rows("database_quality_proposals", SLUG))
     assert out["not_opted_in_ct"] > 0 and out["tables_opted_in"] == 0
-    assert out["proposed_ct"] == 8          # slice 1's set is unchanged (test_proposals_follow_the_selection_rules)
+    assert out["proposed_ct"] == 12         # slice 1's set, plus Dupe_Rows and Schema_Drift on the two profiled tables
 
 
 def test_an_opt_in_is_append_only_latest_wins_and_refused_for_a_table_not_in_the_inventory(registry):
@@ -344,7 +344,7 @@ EXPORT = {
                           _test("Match_Row_Ct", threshold_value="1000", severity="Warning", id="td-2"),
                           _test("Unique", column="order_id"),                        # RE proposes it too
                           _test("Match_Max_Date", column="placed", baseline_value="10/01/2026"),
-                          _test("Dupe_Rows"), _test("Dupe_Rows", table="big"),       # not ported in RE
+                          _test("Table_Freshness"), _test("Table_Freshness", table="big"),   # not ported in RE
                           _test("Match_Null_Ct", column="order_id", test_active="N", baseline_ct="0"),
                           _test("Match_Distinct_Ct", column="note", baseline_unique_ct="40"),
                       ]}]}],
@@ -363,7 +363,7 @@ def test_the_import_proposes_testgen_only_ported_tests_and_says_what_it_left_out
     before = _proposals(registry)
     out = tg.import_export(registry, SLUG, EXPORT, surveyed_at="2026-10-27T09:00:00+00:00")
     assert (out["imported_ct"], out["not_established_ct"], out["matched_re_ct"], out["rejected_ct"],
-            out["inactive_ct"], out["unported"]) == (2, 1, 1, 1, 1, {"Dupe_Rows": 2})
+            out["inactive_ct"], out["unported"]) == (2, 1, 1, 1, 1, {"Table_Freshness": 2})
     rows = _proposals(registry)
     assert set(rows) - set(before) == {"sales.orders.note::Match_Null_Ct", "sales.orders::Match_Row_Ct",
                                        "sales.orders.placed::Match_Max_Date"}
@@ -499,7 +499,7 @@ def test_the_cli_import_reads_the_file_and_a_dry_run_writes_nothing(registry, en
     batches = registry.list_detail_batches("database_quality_proposals", SLUG)
     out = CliRunner().invoke(app, ["database", "quality-import-testgen", SLUG, "--export", str(path), "--dry-run"])
     assert out.exit_code == 0, out.output
-    assert "imported 3" in out.output and "Dupe_Rows (2)" in out.output and "dry run: nothing written" in out.output
+    assert "imported 3" in out.output and "Table_Freshness (2)" in out.output and "dry run: nothing written" in out.output
     assert registry.list_detail_batches("database_quality_proposals", SLUG) == batches
     out = CliRunner().invoke(app, ["database", "quality-import-testgen", SLUG, "--export", str(path)])
     assert out.exit_code == 0 and "written as proposals batch" in out.output

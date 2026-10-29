@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 
 from resource_explorer.surveyors.database.quality.catalogue import (
     PORTED_TEST_TYPES,
+    RUN_CAT,
     SEVERITY,
     ParameterError,
     as_number,
@@ -67,6 +68,11 @@ def _project(export: dict, slug: str) -> dict:
 def _params(test_type, definition: dict) -> dict:
     """RE's params_json from one TestGen test definition. TestGen keeps its parameters as text; counts become numbers
     here, and everything is validated by `threshold` and `render_measure` before it can be proposed."""
+    if test_type.run_type != RUN_CAT:
+        # Dupe_Rows' key and the drift checks' baselines are not the parameters below; importing TestGen's definition of
+        # them is not built, and the row says so rather than carrying parameters nothing can run.
+        raise ParameterError(f"{test_type.test_type} runs as {test_type.run_type}: importing TestGen's definition of "
+                             f"it is not built yet")
     params: dict = {"baseline_ct": None, "baseline_value_ct": None, "baseline_value": None, "threshold_value": None}
     for column in PARAM_COLUMNS:
         value = definition.get(column)
