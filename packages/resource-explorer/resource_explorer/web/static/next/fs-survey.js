@@ -302,7 +302,7 @@ export function walkMeasuresHtml(ext) {
       <div class="text-caps uppercase tracking-caps text-ink-muted">Folders that describe themselves</div>
       ${narr.length ? narr.map((n) => `<div class="mb-[2px] text-caveat" data-fs-narrative>
         <span class="break-words text-ink">${esc(n.folder || '(root)')}</span>
-        <span class="text-ink-muted"> · ${esc(W.narrativeLine(n.stated_by, day(n.modified_at)))}${n.licence ? ` · licence ${esc(n.licence)}` : ''}</span>
+        <span class="text-ink-muted" title="${esc(n.file || '')}"> · ${esc(W.narrativeLine(n.stated_by, day(n.modified_at)))}${n.licence ? ` · licence ${esc(n.licence)}` : ''}</span>
         <div class="break-words text-provenance text-ink-muted">${esc(n.title || '')}${n.description ? ` · ${esc(n.description)}` : ''} · ${esc(W.proposal)}</div></div>`).join('')
       : `<div class="text-provenance text-ink-muted">${esc(W.noNarratives)}</div>`}
       ${ext.narratives_not_shown ? `<div class="text-provenance text-ink-muted">and ${num(ext.narratives_not_shown)} more</div>` : ''}
