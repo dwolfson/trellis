@@ -90,3 +90,35 @@ def test_a_measure_record_names_its_stored_row(fs_activity_ran):
     dec = dc.declarations("filesystem")["fs_activity"]
     records = dc.measure_records(registry, "filesystem", "tree", "fs_activity", dec, "fs_activity")
     assert records and all(r["row_id"].startswith("step_annotations:filesystem/tree/fs_activity") for r in records.values())
+
+
+class _CveRegistry:
+    def __init__(self, metrics):
+        self._metrics = metrics
+
+    def query_findings(self, slug, kind):
+        return []
+
+    def query_metrics(self, slug, kind):
+        return self._metrics
+
+
+def _cve(checked, recorded=65, advisories=0):
+    from resource_explorer.surveyors.repo_survey_definition_adapter import _cve_scan_results
+
+    return _cve_scan_results(_CveRegistry({"checked": checked, "advisories": advisories,
+                                            "detail": {"scanned": True, "recorded": recorded}}), "docling")
+
+
+def test_a_cve_scan_that_queried_nothing_is_not_established_not_answered():
+    from resource_explorer.facts import FactLayer, NOT_ESTABLISHED
+
+    out = _cve(0)
+    assert out["_status"]["state"] == "not_established"
+    state = FactLayer._state_for(out, {})
+    assert state == NOT_ESTABLISHED
+
+
+def test_a_cve_scan_that_queried_something_keeps_its_state():
+    assert "_status" not in _cve(40)
+    assert "_status" not in _cve(0, advisories=3)

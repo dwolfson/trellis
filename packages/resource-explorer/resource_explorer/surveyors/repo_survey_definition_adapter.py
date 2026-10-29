@@ -1939,6 +1939,11 @@ def _cve_scan_results(registry, slug: str) -> dict:
         for key in ("ecosystems_seen", "recorded", "scanned", "excludes_transitive"):
             if key in detail:
                 out[key] = detail[key]
+    if out.get("scanned") and not out.get("advisories") and not int(out.get("checked") or 0):
+        # Nothing could be queried: no CVE result exists. The state says so, so no screen ticks it as an answer
+        # (the headline already reads "not checked: 0 of N ...").
+        out["_status"] = {"state": result_status.NOT_ESTABLISHED,
+                          "hint": "None of the declared dependencies could be queried, so no CVE result exists."}
     return out
 
 
