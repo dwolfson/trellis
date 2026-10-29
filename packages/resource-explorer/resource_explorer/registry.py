@@ -5242,7 +5242,7 @@ class ProjectRegistry:
         ("database_value_profiles", "std_pattern_match", "TEXT"),
         ("database_value_profiles", "distinct_pattern_ct", "BIGINT"),
         ("database_value_profiles", "frequent_patterns", "TEXT"),
-        # Q4 port order step 8 (DESIGN-QUALITY-STEP-8-HASHES.md; DDL record docs/ddl-value-profile-step8.md): value hashes,
+        # Q4 port order step 8 (DESIGN-QUALITY-STEP-8-HASHES-AND-FREQUENT-VALUES.md; DDL record docs/ddl-value-profile-step8.md): value hashes,
         # taken only when asked (off by default). Exact decimal text, NULL = not taken or not measured, never 0.
         ("database_value_profiles", "multiset_hash", "TEXT"),
         ("database_value_profiles", "epoch_sum", "TEXT"),

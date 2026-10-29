@@ -83,7 +83,7 @@ STEP_6_TEST_TYPES = ("Alpha_Trunc", "Avg_Shift", "Dec_Trunc", "Distinct_Date_Ct"
 #: text-shape measures (`text_shape.py`), families D and B1c. All CAT.
 STEP_7_TEST_TYPES = ("Email_Format", "Street_Addr_Pattern", "US_State", "Valid_Characters", "Match_Lead_Space_Ct",
                      "Match_Upper_Case_Ct", "Match_Non_Printing_Ct")
-#: Q4 port order step 8 (DESIGN-QUALITY-STEP-8-HASHES.md): the Table Comparison types that read a column's value hashes
+#: Q4 port order step 8 (DESIGN-QUALITY-STEP-8-HASHES-AND-FREQUENT-VALUES.md): the Table Comparison types that read a column's value hashes
 #: (`value_hashes.py`), which are taken only when the profile is asked for them. All CAT. Match_Frequent_Values,
 #: Match_Frequent_Patterns and Match_Distinct_Hash are QUERY types and are not ported here (the note says why).
 STEP_8_TEST_TYPES = ("Match_Hash_Text", "Match_Hash_Num", "Match_Hash_Date", "Match_Keyed_Hash_Text",

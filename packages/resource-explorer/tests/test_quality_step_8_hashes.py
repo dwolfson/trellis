@@ -1,4 +1,4 @@
-"""Q4 port order step 8 (docs/design-notes/DESIGN-QUALITY-STEP-8-HASHES.md): value hashes, off by default.
+"""Q4 port order step 8 (docs/design-notes/DESIGN-QUALITY-STEP-8-HASHES-AND-FREQUENT-VALUES.md): value hashes, off by default.
 
 Two tiers. The default tier runs everywhere and touches no database: the SQL builders parse as Postgres, the pins hold, the key
 inference ranks as upstream's SQL does, the profile takes hashes only when asked and says why when it could not. The
