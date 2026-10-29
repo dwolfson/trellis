@@ -68,11 +68,13 @@ def check_questions(manifests: dict[str, _TrellisManifest], known: set[str] | No
     return out
 
 
-def discover(known_purposes: list[str] | None = None, registry=None) -> dict[str, _TrellisManifest]:
+def discover(known_purposes: list[str] | None = None, registry=None, *, check: bool = True) -> dict[str, _TrellisManifest]:
     """name -> manifest for every entry point. An entry point may name a manifest, or a callable returning
     one manifest or a list of them. A broken entry point raises, naming it: a silent skip would be absence
     shown as 'nothing installed'. Declared purposes are checked against the list and warned about, never
-    refused (`check_purposes`)."""
+    refused (`check_purposes`). `check=False` skips both checks: for a caller that is itself what the checks read
+    (Resource Explorer's question catalogue, which merges these manifests and so cannot ask itself whether they
+    are known)."""
     found: dict[str, _TrellisManifest] = {}
     for ep in entry_points(group=GROUP):
         try:
@@ -86,8 +88,9 @@ def discover(known_purposes: list[str] | None = None, registry=None) -> dict[str
                 found[m.name] = m
         except Exception as exc:  # noqa: BLE001 - re-raised with the entry point named
             raise RuntimeError(f"entry point {GROUP}:{ep.name} ({ep.value}) failed to load: {exc}") from exc
-    check_purposes(found, known_purposes, registry)
-    check_questions(found)
+    if check:
+        check_purposes(found, known_purposes, registry)
+        check_questions(found)
     return found
 
 

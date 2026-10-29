@@ -2833,6 +2833,8 @@ database_analyses:
         unit: rows written per day
         as_of: toAsOf
         value_field: Writes Per Day
+        annotation:
+          type: ResourceMeasureAnnotation
       absence:
         not_measured: 'Not measured: one table activity snapshot is stored, or the table is missing from
           one; a rate needs two, and a counter reset between them gives no rate.'
@@ -2902,10 +2904,14 @@ database_analyses:
         unit: rows changed since the previous survey
         as_of: latestSurvey
         value_field: rowsChanged
+        annotation:
+          type: ResourceMeasureAnnotation
       - name: writes_since_statistics_reset
         unit: rows inserted, updated or deleted since the statistics reset
         as_of: asOf
         value_field: writesSinceStatisticsReset
+        annotation:
+          type: ResourceMeasureAnnotation
       absence:
         not_measured: 'Not measured: fewer than two row-count snapshots are stored, or the table or its
           count is missing from one; a change needs two — never shown as zero.'
@@ -2980,6 +2986,8 @@ database_analyses:
         unit: tables referencing this one by foreign key
         as_of: asOf
         value_field: Foreign Keys In
+        annotation:
+          type: ResourceMeasureAnnotation
       - name: hub_table_proposal
         unit: tables referencing the proposed hub
         as_of: asOf
@@ -3055,10 +3063,14 @@ database_analyses:
         unit: days since the last ANALYZE
         as_of: asOf
         value_field: Days Since Analyze
+        annotation:
+          type: ResourceMeasureAnnotation
       - name: statistics_freshness_summary
         unit: tables with stale statistics
         as_of: asOf
         value_field: Stale
+        annotation:
+          type: ResourceMeasureAnnotation
       absence:
         not_measured: 'Not measured: no table statistics are stored for this database, or this table''s
           were not read — never shown as fresh.'

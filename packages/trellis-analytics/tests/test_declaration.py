@@ -132,17 +132,67 @@ def test_every_measure_the_step_reports_is_declared_and_no_other():
         StepManifest(**BASE, declaration=minimum(measures=[MEASURE, {**MEASURE, "name": "x"}]))
 
 
-def test_a_measure_writes_as_what_the_step_publishes():
+def test_a_measures_type_is_one_fact_not_two_declarations():
+    """F10 (2026-10-29): the manifest's type and the measure's `annotation` derive from one another."""
     two = [MEASURE, {**MEASURE, "name": "p"}]
     kw = dict(measures=["s", "p"], measure_annotation_types={"p": "ClassificationAnnotation"})
-    # left generic while the step publishes a native type: refused, since the publish table would say "generic"
-    with pytest.raises(ValueError, match="publishes it as ClassificationAnnotation, so declare that type"):
-        StepManifest(**BASE, **kw, declaration=minimum(measures=two))
-    with pytest.raises(ValueError, match="writes as DataClassAnnotation; the step publishes it as"):
-        StepManifest(**BASE, **kw, declaration=minimum(measures=[
-            MEASURE, {**MEASURE, "name": "p", "annotation": {"type": "DataClassAnnotation"}}]))
+    # the manifest names the type, the measure does not: the measure's annotation is filled from the manifest
+    m = StepManifest(**BASE, **kw, declaration=minimum(measures=two))
+    assert {x.name: x.annotation.type for x in m.declaration.measures if x.annotation} == {"p": "ClassificationAnnotation"}
+    # the measure names the type, the manifest does not: the manifest follows the measure
+    m = StepManifest(**BASE, measures=["s", "p"], declaration=minimum(measures=[
+        MEASURE, {**MEASURE, "name": "p", "annotation": {"type": "ClassificationAnnotation"}}]))
+    assert m.annotation_type_for("p") == "ClassificationAnnotation" and m.annotation_type_for("s") == "ResourceMeasureAnnotation"
+    # the primary measure's type moves only the primary: the other measure keeps what it inherited
+    m = StepManifest(**BASE, measures=["s", "p"], declaration=minimum(measures=[
+        {**MEASURE, "annotation": {"type": "ResourceProfileAnnotation"}}, {**MEASURE, "name": "p"}]))
+    assert m.annotation_type == "ResourceProfileAnnotation" and m.annotation_type_for("p") == "ResourceMeasureAnnotation"
+    # both written and agreeing: fine
     StepManifest(**BASE, **kw, declaration=minimum(measures=[
         MEASURE, {**MEASURE, "name": "p", "annotation": {"type": "ClassificationAnnotation"}}]))
+
+
+def test_a_contradiction_between_the_two_names_both_fields():
+    kw = dict(measures=["s", "p"], measure_annotation_types={"p": "ClassificationAnnotation"})
+    with pytest.raises(ValueError) as exc:
+        StepManifest(**BASE, **kw, declaration=minimum(measures=[
+            MEASURE, {**MEASURE, "name": "p", "annotation": {"type": "DataClassAnnotation"}}]))
+    msg = str(exc.value)
+    assert "declaration.measures[p].annotation.type" in msg and "measure_annotation_types['p']" in msg
+    with pytest.raises(ValueError, match=r"manifest's annotation_type"):
+        StepManifest(**BASE, annotation_type="ResourceMeasureAnnotation", declaration=minimum(measures=[
+            {**MEASURE, "annotation": {"type": "ResourceProfileAnnotation"}}]))
+
+
+def test_a_step_that_names_its_default_type_reads_as_that_type_not_generic():
+    """F11's cause: a library step that wrote annotation_type and no measure annotation showed 'generic'."""
+    m = StepManifest(**BASE, annotation_type="ResourceMeasureAnnotation", declaration=minimum())
+    assert m.declaration.measures[0].annotation.type == "ResourceMeasureAnnotation"
+    assert StepManifest(**BASE, declaration=minimum()).declaration.measures[0].annotation is None
+
+
+# ── questions a step brings (owner, 2026-10-29: a namespaced id in the manifest) ────────────────────────────
+
+def test_a_step_may_declare_a_new_question_under_its_own_prefix():
+    m = StepManifest(**BASE, question_defs=[{"id": "s:Q1", "question": "  Which tables\n churn?  "}])
+    assert m.question_defs[0].question == "Which tables churn?"
+    assert m.questions == ["Q-0001", "s:Q1"]            # the one list of what the step answers
+
+
+def test_a_step_cannot_take_an_id_outside_its_prefix_or_declare_one_twice():
+    with pytest.raises(ValueError, match="under the step's own prefix"):
+        StepManifest(**BASE, question_defs=[{"id": "Q-0200", "question": "x?"}])
+    with pytest.raises(ValueError, match="under the step's own prefix"):
+        StepManifest(**BASE, question_defs=[{"id": "other:Q1", "question": "x?"}])
+    with pytest.raises(ValueError, match="declared twice"):
+        StepManifest(**BASE, question_defs=[{"id": "s:Q1", "question": "a?"}, {"id": "s:Q1", "question": "b?"}])
+
+
+def test_a_declared_question_is_not_warned_about_as_unknown():
+    from trellis_analytics.manifest import question_warnings
+
+    m = StepManifest(**BASE, question_defs=[{"id": "s:Q1", "question": "x?"}])
+    assert question_warnings(m, {"Q-0001"}) == []
 
 
 def test_a_manifest_without_a_declaration_still_loads():

@@ -37,24 +37,47 @@ The entries already on main between the GENERATED markers are **kept**, and the 
 So regeneration is now **optional**: run it when you want a package-less environment to know the step exists and say why
 it cannot run. Nothing breaks if you do not.
 
-## 3. Open question: a question a step declares
+## 3. Decision (project owner, 2026-10-29): a step's new questions carry a namespaced id
 
-A manifest declares `questions=["Q-0041"]`, by id. That already works for a question the catalogue **holds**: the merged
-entry's `provided_by.questions` becomes the declaration's `answers`, and Chat routes by them.
+**Decision (project owner, 2026-10-29):** "Namespaced id in manifest." A step's manifest may carry new questions, each
+with its text and an id under the step's own prefix (for example `fs_permissions:Q1`). Resource Explorer merges them at
+read time, as it merges the analysis entry, with no central allocation.
 
-It does **not** make a **new** question available. A question row needs text, a stage, perspectives, purposes, levels and
-a rationale, and an id from the append-only sequence (`Q-0107`, `Q-0108` were hand-written configdata rows). A manifest
-carries the id only. Merging "a question the step declares" with no configdata row therefore needs a decision this slice
-does not make:
+This closes the open question this note first recorded (who allocates ids; what a manifest carries; where the merged row
+lives; retirement). As built:
 
-- **Who allocates the id?** The catalogue's ids are assigned once and never reused (`reserved_question_ids`); two
-  packages declaring `Q-0200` would collide. Options: a package-qualified id (`pkg:Q-1`), or an id RE hands out when the
-  package is first seen and records.
-- **What does a manifest carry?** At least `question` text and `stage`; perspectives and purposes are suggestive
-  elsewhere (warn, never reject), so they could default.
-- **Where does the merged row live?** In the same read-time merge as the analyses (`question_catalog_reader._load`), with
-  a marker saying the row came from a package and must not be edited in configdata.
-- **Retirement.** The catalogue is append-only: a question must outlive an uninstalled package, which argues for RE
-  persisting the row once seen (a registry table: DDL, so the coordinator's decision).
+- **Who allocates.** The step does, inside its own prefix `<step name>:`. A manifest whose question id lacks that prefix,
+  or repeats one, does not load, with a sentence saying so. The central `Q-0001` sequence and `reserved_question_ids` are
+  never touched, so two packages cannot collide with each other or with the catalogue.
+- **What a manifest carries.** `question_defs`: a list of `{id, question, stage, perspectives, purposes, levels,
+  rationale}`; only `id` and `question` are required. Empty `stage` is the step's stage; empty perspectives and purposes
+  are the manifest's. The ids are added to the manifest's `questions` when left out of it, so `questions` stays the one
+  list of what the step answers (and so the declaration's `answers`).
+- **Where the row lives.** `question_catalog_reader._load` merges them into the `<resource_type>_questions` sections of
+  every kind the step measures (`_merge_step_questions`), `answering.kind: analysis` with the step as its analysis. No
+  configdata row. A refresh (`survey_step_host.refresh`) re-reads them.
+- **Retirement.** The row exists while the package is installed. Persisting it past an uninstall would be a registry table
+  (DDL) and is **not** built: an old stored answer still names the question by its id and text, which it stores itself.
+  If the owner wants questions to outlive their package, that is a separate decision with DDL.
+- **Unknown-id warnings.** A step's own `question_defs` ids are not warned about as "not an id in the question catalog".
+  The discovery check is skipped when the question catalogue itself discovers the manifests (`discover(check=False)`),
+  which would otherwise ask it to load itself.
 
-Until the project owner decides, a new question still needs a configdata row, and the step's manifest then names its id.
+## 4. One type declaration (F10, F11; 2026-10-29)
+
+A measure's Egeria type was declared twice: in the manifest (`annotation_type`, or `measure_annotation_types` for a
+measure other than the step's own) and in the measure's `declaration.measures[].annotation`. A difference raised a
+`ValueError` at load, so changing one field made the step vanish from the entry point (F10). And the publish table read
+only the second, so a step that wrote only the first showed `generic measure · no native type declared` (F11).
+
+Now one derives from the other (`StepManifest._one_type_declaration`):
+
+- the manifest names a type for the measure and the measure declares none: the measure's `annotation` is filled from the
+  manifest. A library step's measure then reads as that native type, including a default `ResourceMeasureAnnotation` the
+  author wrote out;
+- the measure declares a type and the manifest names none: the manifest follows the measure (the step's other measures
+  keep what they inherited);
+- both are written and differ: the error names both fields, since no default settles a contradiction.
+
+The committed fallback entries in `analysis_catalog.yaml` were regenerated: the DB library steps' measures now carry
+`annotation: ResourceMeasureAnnotation`.

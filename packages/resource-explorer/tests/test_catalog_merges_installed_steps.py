@@ -16,7 +16,8 @@ from resource_explorer.surveyors import survey_step_host
 NAME = "fake_zz_step"
 
 
-def _install_fake(tmp_path, monkeypatch, resource_type="database", version="0.3.0", questions=("Q-0041",)):
+def _install_fake(tmp_path, monkeypatch, resource_type="database", version="0.3.0", questions=("Q-0041",),
+                  question_defs=()):
     site = tmp_path / "site"
     pkg = site / NAME
     pkg.mkdir(parents=True, exist_ok=True)
@@ -26,6 +27,7 @@ def _install_fake(tmp_path, monkeypatch, resource_type="database", version="0.3.
         "    description='A step no committed catalog names.', returns='one measure', source='ods',\n"
         f"    version={version!r}, resource_types=[{resource_type!r}], annotation_type='ResourceMeasureAnnotation',\n"
         f"    credential_tier='none', inputs=['ods'], measures=['fake_zz_step'], stage='analysis', questions={list(questions)!r},\n"
+        f"    question_defs={list(question_defs)!r},\n"
         "    request_type='re-fake-zz')\n"
         "def run(inputs):\n    return []\n")
     d = site / f"trellis_step_fake_zz-{version}.dist-info"
@@ -107,3 +109,42 @@ def test_an_uninstalled_step_leaves_the_results_map_too(tmp_path, monkeypatch):
     survey_step_host.refresh("database")
     assert set(db.DATABASE_ANALYSIS_RESULTS_MAP) == before
     assert NAME not in db.DATABASE_ANALYSIS_RE_STEP_MAP and NAME not in db.DATABASE_ANALYSIS_KINDS
+
+# ── a question the step brings (owner, 2026-10-29: a namespaced id in the manifest) ─────────────────────────────
+
+def test_a_question_a_step_declares_is_in_the_catalogue_with_no_configdata_row(tmp_path, monkeypatch):
+    from resource_explorer.surveyors import question_catalog_reader as qr
+
+    assert qr.find_question_by_id(f"{NAME}:Q1") is None
+    _install_fake(tmp_path, monkeypatch, question_defs=[{"id": f"{NAME}:Q1", "question": "Which zz is oldest?",
+                                                        "rationale": "zz counts only what the walk kept."}])
+    found = qr.find_question_by_id(f"{NAME}:Q1", "database")
+    assert found["question"] == "Which zz is oldest?" and found["stage"] == "Analysis"
+    assert found["answering"]["analysis_ids"] == [NAME] and found["rationale"] == "zz counts only what the walk kept."
+    assert f"{NAME}:Q1" in qr.all_question_ids()
+    assert qr.find_question_by_id(f"{NAME}:Q1", "filesystem") is None          # only the kinds the step measures
+    entry = next(e for e in reader._load()["database"] if e.id == NAME)
+    assert f"{NAME}:Q1" in entry.provided_by["questions"]                       # and the step answers it
+    assert entry.declaration is None or f"{NAME}:Q1" in entry.declaration.answers
+
+
+def test_the_question_leaves_with_the_package(tmp_path, monkeypatch):
+    from resource_explorer.surveyors import question_catalog_reader as qr
+
+    _install_fake(tmp_path, monkeypatch, question_defs=[{"id": f"{NAME}:Q1", "question": "Which zz is oldest?"}])
+    assert qr.find_question_by_id(f"{NAME}:Q1")
+    monkeypatch.undo()
+    sys.modules.pop(NAME, None)
+    survey_step_host.refresh("database")
+    assert qr.find_question_by_id(f"{NAME}:Q1") is None
+
+
+# ── F11: a library step's measure reads as the manifest's type, not "generic" ────────────────────────────────
+
+def test_a_library_db_step_writes_as_its_manifests_type():
+    from resource_explorer import publish_table as pt
+
+    entry = next(e for e in reader._load()["database"] if e.id == "change_rates")
+    w = pt.writes_as(entry.declaration.measures[0], "measured")
+    assert w["route"] == "native" and w["type"] == "ResourceMeasureAnnotation" and w["writable"]
+    assert w["words"] != pt.GENERIC_WORDS

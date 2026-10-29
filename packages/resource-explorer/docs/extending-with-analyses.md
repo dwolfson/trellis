@@ -141,9 +141,10 @@ ignored:** every declaration model forbids extra keys.
 | `resource_types` | `["database"]`. RE accepts nothing else yet |
 | `inputs` | a subset of `ods`, `source_report`, `resource`, `connection`. Default `["ods"]` |
 | `credential_tier` | `"none"` (the default) or `"read_only"`. Anything higher is refused (owner ruling 2026-10-07) |
-| `annotation_type` | the Egeria type the step writes. Default `ResourceMeasureAnnotation` |
+| `annotation_type` | the Egeria type the step writes. Default `ResourceMeasureAnnotation`. A measure's `annotation` in the declaration is the same fact: write it in one place and the other follows; write both and they must agree, or the error names both fields |
 | `measures` | extra measures beyond the step's own. If you list any, include the step's own name too |
 | `measure_annotation_types` | per-measure Egeria type, where it differs from `annotation_type` |
+| `question_defs` | new questions the step brings, each `{id, question}` with an id under the step's own name (`my_step:Q1`); their ids join `questions` |
 | `parameters` | tunable values the code reads as `inputs.parameters` |
 | `display_name`, `description`, `returns` | the card's name and text. Say in the description what "not measured" means for this step |
 | `stage` | RE's stage for the card, default `analysis` |
@@ -268,8 +269,10 @@ It checks the committed fallback block against the generator, and each entry aga
 fallback, not the card: a stale fallback no longer changes what an installed step shows.
 
 **A question your step declares.** Name a question the catalogue already holds by its id in `questions`, and Chat
-routes by it with no configdata row. A **new** question still needs its row in the question catalogue: a manifest carries
-only the id, and who may allocate ids and carry question text is an open design question (§3 of the design note above).
+routes by it with no configdata row. A **new** question goes in the manifest's `question_defs`, each with its text and an id under
+your step's own prefix (`my_step:Q1`): `question_defs=[QuestionDeclaration(id="my_step:Q1", question="…")]`. RE merges it into
+its question catalogue while the package is installed (owner, 2026-10-29), with no central id and no configdata row; the id
+is added to your `questions` for you. An id outside your prefix, or repeated, makes the manifest fail to load, with that sentence.
 
 ---
 
@@ -282,7 +285,9 @@ Ways to check that RE sees the step. RE has no admin page or CLI verb that lists
 - If the engine host runs, its start-up log names every installed step per host, with a missing list for each:
   `library steps · Egeria host: change_rates, hub_tables, … (none missing) · Files host: fs_activity, fs_permissions, … (none missing)`.
   Database steps are the Egeria host's; file-system steps run under the Files host. A step the engine host
-  cannot publish logs `not offered to Egeria: <why>` as before.
+  cannot publish logs `not offered to Egeria: <why>`, listing everything the step emits and which of those types block
+  the offer. The types we want Egeria to support are tracked in
+  [`EGERIA-ANNOTATION-TYPES-WANTED.md`](design-notes/EGERIA-ANNOTATION-TYPES-WANTED.md).
 - An installed step with no catalogue entry (its manifest was refused, for instance a built-in's id) logs a warning.
   It can run from a Survey Definition, but has no card.
 - Once a survey has run, the step's declared measures appear as rows in Curate's publish table (§5).
