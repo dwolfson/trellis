@@ -16,6 +16,7 @@
     shows must be checked;
   - **(not yet confirmed)**: from the user guide, which says it could not open that screen either.
 - Section 8 lists the owner's decisions: the rulings given so far and the questions still open.
+- Section 9 plans the video series made from the same material.
 
 **This is the Core tutorial.** It is one of three (owner ruling, 2026-10-29):
 
@@ -818,7 +819,7 @@ DEFINITIONS" is explained as "the surveys you can run").
 
 ## 6. Screenshots planned
 
-None taken yet. Every screenshot is taken on the Egeria Quickstart, signed in as a Quickstart user. Existing images
+None taken yet. Every screenshot is taken on the Egeria Quickstart, signed in as a Quickstart user, at 1920 × 1080, so the same image serves the written tutorial and the videos (section 9). Existing images
 from the merged walks are listed where one may be reused, after a check that the screen has not changed.
 
 | # | Part · step | Screen | Shows | Reuse |
@@ -935,3 +936,70 @@ in this outline; each is named where it bites.
 | D2c | The two extra repositories for the work list (part 11) | **Decided (project owner, 2026-10-29):** Marquez and Egeria, beside OpenLineage. |
 | D2b | Hosted demo or your own Egeria Workspaces | **Settled by the owner's facts (2026-10-29):** both work. The hosted demo is reset daily and is sometimes a little behind the latest code. Your own Workspaces needs Trellis installed and configured in a separate step, which the Getting Started tutorial covers. The tutorial offers both (section 1). |
 | D8 | Part 1: what Resource Explorer is for, and who it is for | **Reviewed (project owner, 2026-10-29):** the situation is one example of many; surveying catalogs only the entry point; questions decide what runs and the funnel is a guide, not the only path; questions, analyses and surveys can be changed (Advanced); RE explores the frontier of what Egeria does not know and what it does, guided by your needs, recording and sharing what you learn; chat is in part 1. Users: data scientists (including AI), data engineers, curators, security specialists, DevOps engineers, architects, developers. |
+
+---
+
+## 9. Video series
+
+**Decided (project owner, 2026-10-29):** the tutorial also becomes a video series, made the same way as the Egeria
+Workspaces video (youtube.com/watch?v=igIVACD4b_g): mostly still images, with an AI-generated voice made in Audiate.
+The written tutorial and the videos share one set of images and one source of narration, so they are made together,
+not one after the other.
+
+### Episodes
+
+About 10 episodes of 3 to 7 minutes. Each one opens with a title slide naming what you will be able to do, and ends
+with one slide pointing to the written part for "what can go wrong" and to the next episode.
+
+| # | Episode | Tutorial parts | Images (section 6) | Blog images | About |
+|---|---|---|---|---|---|
+| V1 | What Resource Explorer is for | 1 | S1 | funnel; Assessment question cards | 5 min |
+| V2 | Signing in and a tour of the screen | 2 | S2–S4 | — | 3 min |
+| V3 | Adding a database, a file system and a repository | 3 | S5–S11 | — | 6 min |
+| V4 | The stages: a funnel from cheap to costly | 4 | S12–S15 | funnel | 5 min |
+| V5 | Running surveys, down the funnel | 5, 6 | S16–S23 | — | 7 min |
+| V6 | Enrichment: what only you know | 7 | S24–S25 | — | 3 min |
+| V7 | Asking in chat, and checking the sources | 8 | S26–S27 | answer with sources; what would answer this; the question loop | 5 min |
+| V8 | Curate: deciding what goes to the catalog | 9 | S28–S32 | Curate decision table | 6 min |
+| V9 | Publishing, and checking it in Egeria Explorer | 10 | S33–S36 | commit summary; question in Egeria Explorer; Quickstart portal | 5 min |
+| V10 | Work lists and investigations | 11, 12 | S37–S43 | journal entry | 7 min |
+
+### Narration
+
+- **The written step is the source.** The prose writer writes each "Explain" line so it can be read aloud as it
+  stands. The script for an episode is its parts' steps and "Explain" lines, in order, adjusted for speech.
+- **Spoken English, short sentences.** One idea per sentence. No parentheses, no "e.g.", no symbols read aloud.
+- **Paraphrase long screen text; let the slide show it.** Say "the screen says nothing is recorded, and that this is a
+  real absence", not the whole quoted sentence. Short button names are said as they appear ("click Publish").
+- **Marks are named by meaning, never by shape.** Say "the mark for nothing found", not "the empty-set symbol".
+- **The section 5 rules apply in full.** No internal vocabulary, no ids, no first names except the Quickstart's
+  made-up people.
+- **"What can go wrong" stays in the written tutorial.** An episode mentions at most one thing, when the viewer is
+  very likely to meet it (for example being signed out after an hour, in V2).
+
+**Pronunciation, set once in Audiate and reused in every episode:** Egeria, Trellis, OpenLineage, Marquez, Coco
+Pharmaceuticals, `coco_pharma` (say "coco pharma"), `loading_bay` (say "loading bay"), Peter Profile, Erin
+Overview, PostgreSQL, GitHub, Quickstart. The prose writer adds any other name that the voice gets wrong.
+
+### Images, for both uses
+
+- **Capture once, at video size.** Take every screenshot with the browser at 1920 × 1080, so each fills a 16:9 frame.
+  The written tutorial uses the same images, scaled down. (The merged walks are 1382 px wide and cannot be reused in
+  the videos as they are.)
+- **Capture from a local Quickstart at a known version**, not the hosted demo, which is reset daily and can lag the
+  latest code. The first slide of each episode, and the written tutorial's front page, name that version.
+- **Callouts and zooms are separate layers**, added in the editor, not drawn into the image. The written tutorial uses
+  the labelled version; the video can reveal callouts one at a time as the narration reaches them.
+- **Before and after as two images.** Anything that changes on screen (a survey running and finishing, Include
+  chosen, Publish confirmed) is two stills, not a screen recording.
+- **Fix before filming where it can be done.** Open defects that would be filmed into every image: G9 ("not signed
+  in" in the header), G10 (slow panes), G13 (✓ beside an answer that checked nothing), G20 ("EXPERIMENTAL UI"). If
+  they are not fixed first, the narration must not draw attention to them, and the written tutorial explains them.
+
+### Open for the video series
+
+| # | Question | State |
+|---|---|---|
+| V-a | Who produces the episodes (script assembly, Audiate, editing) | Open. |
+| V-b | Where they are published, and whether the written tutorial links to each | Open. Suggested: the same YouTube channel as the Workspaces video, linked from the top of each written part. |
+| V-c | Whether the blog diagrams are redrawn for 16:9 | Open. Several carry words the tutorial avoids (section 6). |
