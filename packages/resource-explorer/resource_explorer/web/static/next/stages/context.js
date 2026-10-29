@@ -86,7 +86,7 @@ function questionFeedsLine(entry) {
  *  stamps on a supplied-but-unlabeled lens dict — there is no click path
  *  that supplies one. So this row reads the absence honestly (from
  *  `preliminary_fit`'s own last-read `lens_declared` flag — the one real
- *  stored signal that exists) and marks BOTH links "not built in /next",
+ *  stored signal that exists) and marks BOTH links "not built yet",
  *  the same dashed-underline convention every other deferred affordance in
  *  this codebase uses, rather than inventing a route to a feature that
  *  isn't there. See ENRICHMENT-E1-CONTEXT-TAB-IMPLEMENTED.md, "What I could
@@ -98,9 +98,9 @@ function lensRowHtml() {
   const invName = (state.investigations || []).find((i) => i.slug === state.investigation)?.display_name
     || state.investigation || 'this investigation';
   const declareLink = `<span class="cursor-not-allowed border-b border-dashed border-current text-ink-muted"
-    title="declare a lens on the investigation — not built in /next">declare it on the investigation ›</span>`;
+    title="declare a lens on the investigation — not built yet">declare it on the investigation ›</span>`;
   const tryLink = `<span class="cursor-not-allowed border-b border-dashed border-current text-ink-muted"
-    title="lens_source: ad_hoc exists server-side; no UI declares one yet — not built in /next">try one on this resource only</span>`;
+    title="lens_source: ad_hoc exists server-side; no UI declares one yet — not built yet">try one on this resource only</span>`;
   const body = declared
     ? `<span class="text-ink">a lens is declared for ${esc(invName)}</span>`
     : `<span class="text-ink">no lens declared for ${esc(invName)}</span> · ${declareLink}`;

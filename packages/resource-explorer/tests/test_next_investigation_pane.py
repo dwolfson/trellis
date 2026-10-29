@@ -59,7 +59,7 @@ class TestStageIsFrameNotAStage:
         app = _app_src()
         load_pane = app[app.index("async function loadPane()"):]
         inv_branch = load_pane.index("state.stage === 'investigation'")
-        old_branch = load_pane.index("!stageDef?.built")
+        old_branch = load_pane.index("!stageDef.built")
         assert inv_branch < old_branch
 
 

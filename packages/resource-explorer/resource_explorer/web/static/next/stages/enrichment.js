@@ -324,7 +324,7 @@ function ownerNoteHtml(field) {
         class="cursor-pointer bg-transparent p-0 text-accent-ink underline">stand as interim owner</button>`
     : '';
   return `<div class="text-provenance text-ink-muted"><span class="border-b border-dashed border-current">owner candidates
-    from contributor data · not built in /next</span>${offer}</div>`;
+    from contributor data · not built yet</span>${offer}</div>`;
 }
 
 /** A fact a survey already established, offered to confirm — not applied.
