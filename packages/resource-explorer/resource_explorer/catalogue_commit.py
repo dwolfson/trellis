@@ -734,6 +734,23 @@ def schema_state_of(registry, slug: str, schema: str, effective: str | None = No
     return _schema_state(by.get(("schema", schema, ""), []), ob, effective, None)
 
 
+def published_element_of(registry, slug: str) -> dict | None:
+    """The database element Egeria holds NOW, by the same rows and the same reset cut the Curate band reads:
+    `{"guid", "read_at"}`, or None when no publish/restore proof is live (never published, or only before a
+    reset). The header's "published" word reads this when the registry's cached GUID is empty, so the header
+    and the band cannot disagree about whether the element exists."""
+    proofs_all = [p for p in registry.list_catalogue_commit_proofs(slug)
+                  if p["node_kind"] in DATABASE_NODE_KINDS or p["proof"] == P_EGERIA_RESET]
+    reset = merge_recorded_reset(registry, _latest(proofs_all, (P_EGERIA_RESET,)),
+                                 [p for p in proofs_all if p["proof"] != P_EGERIA_RESET])
+    cutoff = _ts(reset["read_at"]) if reset else ""
+    live = [p for p in proofs_all if p["proof"] != P_EGERIA_RESET and (reset is None or _ts(p["read_at"]) >= cutoff)]
+    found = _latest(_by_node(live).get(("database", "", ""), []), (P_DATABASE, P_RESTORED))
+    if found is None or not found.get("element_guid"):
+        return None
+    return {"guid": found["element_guid"], "read_at": found["read_at"]}
+
+
 def derive_commit_state(registry, slug: str, view: dict, now: datetime | None = None) -> dict:
     """Every state word on the scope tree, header included, from persisted rows.
 
@@ -914,9 +931,8 @@ def _header(published, counts, conn_d, failed_read, view, anything: bool, zones_
         parts.append(f"{n_cat} schema{'s' if n_cat != 1 else ''} chosen" + (": " + ", ".join(bits) if bits else ""))
         n_att = counts.get("attached_waiting", 0) + counts.get("catalogued", 0)
         parts.append(f"{n_att} schema{'s' if n_att != 1 else ''} attached" if n_att else "no schemas attached")
-        if reset is not None:
-            # Derived from the rows, never assumed: the chosen schemas whose newest proof says Egeria holds them.
-            parts.append(f"{sum(counts.get(k, 0) for k in IN_EGERIA_STATES)} in Egeria")
+        # No "N in Egeria" sentence here: the read-back chips below are the one statement of it (the sentence
+        # disagreed with the chip's "not checked since", audit 2026-10-28).
     if blocked:
         parts.append(f"{len(blocked)} left out, {KEPT_NOT_SENT} · {n_gone} archived or deleted in Egeria")
     if conn_d and conn_d.get("last_refresh_time"):
