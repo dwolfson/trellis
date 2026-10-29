@@ -6,7 +6,7 @@ Three things a person can change without touching Resource Explorer's code: a qu
 
 ## 1. Questions: Admin › Configure › Question Catalog
 
-Open **⚙ Admin**. The panel reads "System configuration — not something a user does to curate a specific resource, so it lives here rather than under one of the eight intents." Its menus are **CONFIGURE**, **RECONCILE**, **OBSERVE** and **OPEN DATA**. Choose **❓ Question Catalog** under Configure.
+Open **⚙ Admin**. The panel reads "System configuration — not something a user does to curate a specific resource, so it lives here rather than under one of the eight intents." Its menus are **CONFIGURE**, **RECONCILE**, **OBSERVE** and **OPEN DATA**. The OPEN DATA menu arrived with OD1 on 2026-10-29 (#911). Choose **❓ Question Catalog** under Configure.
 
 ![The Admin panel on the Question Catalog. The heading "Question Catalog" with a "+ Add question" button. The text reads "Every question authored in docs/dr-egeria/resource_questions.csv — the source of truth for both Scouting's Questions checklist and the Question elements published to Egeria. Append-only (project owner decision, 2026-09-20): add a new question or retire an old one; a question's own text is never reworded in place, since past survey answers refer to it exactly as it was asked. Retired questions stay listed, dimmed, never hidden." A search box "Search question text…", STAGE chips and PERSPECTIVE (FILTER) chips, and "52 / 52 question(s)".](images/06-question-purpose-setting/06-admin-question-catalog.webp)
 

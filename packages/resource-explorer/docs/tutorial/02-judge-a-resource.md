@@ -24,11 +24,11 @@ Wait for a pane to finish before you read it. While it is still loading the coun
 
 ## 3. Analysis: the questions and the marks
 
-![The Analysis stage's Questions tab for docling. "16 of 20 answered · Analysis". The key reads "✓ answered 16 · ○ no reader yet 4". The first question is "Are there outstanding CVEs?" answered "not checked: 0 of 65 declared dependenc(ies) could be queried, so no CVE result exists", with the source line "cve_scan · run 27d ago".](images/02-judge/02-analysis-questions-docling.webp)
+![The Analysis stage's Questions tab for docling. "16 of 20 answered · Analysis". The key reads "✓ answered 16 · ◌ no reader yet 4". The first question is "Are there outstanding CVEs?" answered "not checked: 0 of 65 declared dependenc(ies) could be queried, so no CVE result exists", with the source line "cve_scan · run 27d ago".](images/02-judge/02-analysis-questions-docling.webp)
 
-*"16 of 20 answered · Analysis". The key reads "✓ answered 16 · ○ no reader yet 4".*
+*"16 of 20 answered · Analysis". The key reads "✓ answered 16 · ◌ no reader yet 4".*
 
-Read the marks together with the words beside them. The row "Are there outstanding CVEs?" carries ✓, and its answer says "not checked: 0 of 65 declared dependenc(ies) could be queried, so no CVE result exists". The words are the answer; the mark says the question was answered, and here the answer is that nothing could be checked. Do not read it as "no CVEs".
+Read the marks together with the words beside them. The row "Are there outstanding CVEs?" carries ✓, and its answer says "not checked: 0 of 65 declared dependenc(ies) could be queried, so no CVE result exists". The words are the answer; the mark says the question was answered, and here the answer is that nothing could be checked. Do not read it as "no CVEs". The mark on a not-checked answer is queued as a defect (status-words round 9, item 6).
 
 The mark table and the absence words are in [the guide, section 2](../user-guide.md#2-the-words-and-marks).
 

@@ -6,9 +6,9 @@ Open it from the **FS** list in the sidebar. A file system is registered with a 
 
 ## 1. The questions
 
-![The Scouting Questions tab for "Loading bay (exchange-quickstart)", loading_bay. Header: "surveyed 4d ago · published to Egeria". "0 of 5 answered · Scouting". The key reads "○ not run 2 · ⚠ needs you 2 · ○ no reader yet 1". The first question, "What is this resource, and what is it for?", carries "no reader yet" and says it is "Answerable from a field on the resource, but the catalog records which field only in prose, so it cannot be read automatically yet."](images/04-filesystem/04-loading-bay-questions.webp)
+![The Scouting Questions tab for "Loading bay (exchange-quickstart)", loading_bay. Header: "surveyed 4d ago · published to Egeria". "0 of 5 answered · Scouting". The key reads "○ not run 2 · ⚠ needs you 2 · ◌ no reader yet 1". The first question, "What is this resource, and what is it for?", carries "no reader yet" and says it is "Answerable from a field on the resource, but the catalog records which field only in prose, so it cannot be read automatically yet."](images/04-filesystem/04-loading-bay-questions.webp)
 
-*"0 of 5 answered · Scouting". The key reads "○ not run 2 · ⚠ needs you 2 · ○ no reader yet 1". The second question reads "Human-supplied: who owns this resource and who administers it are recorded in Enrichment; no survey reads either for a file system." with the button "Answer this →".*
+*"0 of 5 answered · Scouting". The key reads "○ not run 2 · ⚠ needs you 2 · ◌ no reader yet 1". The second question reads "Human-supplied: who owns this resource and who administers it are recorded in Enrichment; no survey reads either for a file system." with the button "Answer this →".*
 
 ## 2. Reach: who surveyed it, and what RE walked
 
