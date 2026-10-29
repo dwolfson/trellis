@@ -700,7 +700,7 @@ def _r_changed_since_survey(reg, p) -> tuple:
 #:   _r_maintainers  "Who maintains this repository?"
 #:                -> "Who owns this resource (accountable owner), and who administers it?"
 #:   _r_catalogued   "Has this repository already been catalogued in Egeria and when?"
-#:                -> "Has this resource already been catalogued in Egeria, and when?"
+#:                -> "Has this resource already been cataloged in Egeria, and when?"
 #:   _r_license      "Are there any restrictions for use?"
 #:                -> "Under what license or agreement may this resource be used?"
 #:
@@ -732,7 +732,7 @@ RESOURCE_STATE_SOURCES = {
         (_r_maintainers, "project_commits"),
     "How widely adopted and active is the community around this repository?":
         (_r_community, "community_support"),
-    "Has this resource already been catalogued in Egeria, and when?":
+    "Has this resource already been cataloged in Egeria, and when?":
         (_r_catalogued, "egeria_catalogue_state"),
     "Has this resource already been surveyed at any tier, and what did earlier signals reveal?":
         (_r_surveyed, "survey_history"),
@@ -1202,7 +1202,7 @@ _RESOURCE_STATE_HEADLINES.update(_DATABASE_RESOURCE_STATE_HEADLINES)
 #: field this catalog note claims), and not a fabricated reader either.
 DATABASE_RESOURCE_STATE_SOURCES = {
     "What is this resource, and what is it for?": (_db_r_description, "db_description"),
-    "Has this resource already been catalogued in Egeria, and when?":
+    "Has this resource already been cataloged in Egeria, and when?":
         (_db_r_catalogued, "db_catalogued"),
     "Is there any existing use within our organization?":
         (_db_r_existing_use, "db_existing_use"),

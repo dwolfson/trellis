@@ -301,7 +301,7 @@ ___
 User Questions
 
 ### Display Name
-Has this resource already been catalogued in Egeria, and when?
+Has this resource already been cataloged in Egeria, and when?
 
 ### Description
 "Known inventory" check — is there already a catalog asset for this repo, independent of whether it's registered in Resource Explorer's own local registry. Ties to the Scouting "shop for data" search work.
@@ -322,7 +322,7 @@ ___
 ## Classify Term as Question
 
 ### Term Name
-Has this resource already been catalogued in Egeria, and when?
+Has this resource already been cataloged in Egeria, and when?
 
 ___
 
@@ -332,7 +332,7 @@ ___
 Perspective::Governance
 
 ### Question Name
-Has this resource already been catalogued in Egeria, and when?
+Has this resource already been cataloged in Egeria, and when?
 
 ___
 
@@ -342,14 +342,14 @@ ___
 Perspective::Steward
 
 ### Question Name
-Has this resource already been catalogued in Egeria, and when?
+Has this resource already been cataloged in Egeria, and when?
 
 ___
 
 ## Link Element To Scope
 
 ### Target Element
-Has this resource already been catalogued in Egeria, and when?
+Has this resource already been cataloged in Egeria, and when?
 
 ### Scope Reference
 Discovery
