@@ -131,44 +131,59 @@ Explorer connected to it, a Quickstart user id and password, and the public Open
 **Before you start.** Nothing.
 
 **Content (no steps; two pages, one diagram).** Drawn from the blog series *Egeria Resource Explorer*, part 1,
-"Effective Exploration and the Survey Funnel" (pdr-associates.com, 2026-09-18). Use it for substance, written down to
-the tutorial's reader. To be reviewed with the owner (D8).
+"Effective Exploration and the Survey Funnel" (pdr-associates.com, 2026-09-18), with the owner's review of
+2026-10-29. Use it for substance, written down to the tutorial's reader.
 
-1. **The situation.** A department has eighty databases nobody has written down, a few hundred internal repositories,
-   and file shares that have grown for a decade. None of it is in a catalog. Someone is asked which of it matters for a
-   new project (an AI project, a migration, a report), and they have a week.
+1. **One situation, among many.** A department has eighty databases nobody has written down, a few hundred internal
+   repositories, and file shares that have grown for a decade. None of it is in a catalog. Someone is asked which of
+   it matters for a new project (an AI project, a migration, a report), and they have a week. *Say plainly that this is
+   one example:* others include checking a source the catalog already holds, judging an open-source project before
+   adopting it, or simply finding out what is on a file share.
 2. **Why a catalog alone does not solve it.** Catalogs are built for a purpose and then the organization moves on: new
    priorities, new platforms, acquisitions. Putting everything into the catalog "just in case" fills it with noise and
    stale entries, and people stop trusting it.
-3. **The core idea: looking is separate from cataloging.** You can survey a data source without putting it in the
-   catalog. You catalog only what proves worth keeping, when you need it.
+3. **The core idea: looking is separate from cataloging.** To survey a data source, Egeria records only its entry
+   point: the database server, the root folder of a file system, the repository's address. It does not have to keep
+   the details or the findings. So the catalog knows what has been looked at. If that is all it knows, that is itself
+   a sign that more was not useful at the time. You catalog the details only when they prove worth keeping.
 4. **What Resource Explorer does, in three things.**
-   - You can look at a candidate data source without putting it in your catalog first.
+   - You can look at a data source without cataloging its details first.
    - Every answer cites the measurement it came from, so you can check it rather than trust it.
    - What you decide, and why, is recorded, and goes into Egeria when you decide something is worth keeping.
-5. **The funnel, in one paragraph.** Start broad and cheap across many candidates; keep the slow, deep checks for the
-   few worth them. Part 4 explains it fully.
-6. **Many points of view.** The same data source matters differently to a security reviewer, an architect, a data
-   owner or someone building an AI application. Resource Explorer tags each question with the perspectives that care
-   about it (part 3d).
-7. **What Egeria is, and how the two fit.** Egeria is an open-source metadata catalog: the shared record. Resource
-   Explorer keeps its working results in its own store while you evaluate; that store is not a second catalog and can
-   be rebuilt by running the surveys again. Egeria holds what you publish. Resource Explorer reads from and writes to
-   Egeria always as you.
-8. **Who uses it**, each with one line on what they come for (the owner's list, 2026-10-29; the lines are the
-   writer's, to review):
-   - *data scientists, including AI builders:* which data can I rely on, and what is in it?
-   - *data engineers:* what is this source, how big, how is it built, what depends on it?
-   - *curators:* what is worth cataloging, and is it described well enough to be found and reused?
-   - *security specialists:* secrets, vulnerabilities, who can read what?
-   - *DevOps engineers:* is it maintained, deployed, changing?
-   - *architects:* its structure, its parts and how it fits with the rest;
-   - *developers:* the code repository's interfaces, dependencies and health.
-9. **Three promises the screen keeps**, one sentence each:
-   - nothing reaches Egeria until you press Publish;
-   - "nothing found" and "not looked at yet" are always shown differently;
-   - every answer can show where it came from.
-10. **The Quickstart reminder:** a demonstration company with made-up people, so change anything (section 1).
+5. **Your questions decide what runs; the funnel keeps it efficient.** You choose which surveys and analyses to run by
+   the questions you want answered. The funnel (part 4) orders them from cheap and broad to slow and deep, so you can
+   set most candidates aside early. It is a guide to working efficiently, not the only path: you may go straight to a
+   later stage's question when that is the one you need answered.
+6. **Many points of view.** The same data source matters differently to each of the people in item 8. On the screen,
+   each question is tagged with the *perspectives* that care about it, such as Security, Architecture or Data Owner,
+   and you can filter by them (part 3d). A perspective is a filter on the questions, not a job title; one person may
+   use several. The questions themselves are not fixed: questions, analyses and surveys can be added or removed (the
+   Advanced tutorial).
+7. **What Resource Explorer is for, and how it fits with Egeria.** Egeria is an open-source metadata catalog: the
+   shared record. Resource Explorer is a tool for people to explore the frontier of what Egeria does not yet know
+   about, and to update Egeria with the things of interest. It can also explore, as things change, what Egeria already
+   knows about. Either way it is guided by your needs and curiosity, it records what you learn, and it lets you store
+   and share that knowledge. While you explore, Resource Explorer keeps its working results in its own store; that
+   store is not a second catalog and can be rebuilt by running the surveys again. Egeria holds what you publish, and
+   Resource Explorer reads from and writes to Egeria always as you.
+8. **Who uses it**, each with the question they come with (the owner's list, 2026-10-29; the questions are the
+   writer's):
+   - *Data scientists, including AI builders:* Which data can I rely on, and what is in it?
+   - *Data engineers:* What is this source, how big is it, how is it built, and what depends on it?
+   - *Curators:* What is worth cataloging, and is it described well enough to be found and reused?
+   - *Security specialists:* Does it hold secrets or known vulnerabilities, and who can read what?
+   - *DevOps engineers:* Is it maintained, how is it deployed, and how fast is it changing?
+   - *Architects:* What is it made of, and how does it fit with the rest?
+   - *Developers:* What interfaces and dependencies does this code have, and is it healthy?
+9. **Ask in plain words.** Beside every stage is a chat panel. Ask a question nobody planned for, or a follow-up to an
+   answer, in your own words. The answer is built from what the surveys have stored, names the results it used, and,
+   when nothing stored can answer, says which survey would (part 8).
+10. **Three promises the screen keeps**, one sentence each:
+    - nothing reaches Egeria until you press Publish;
+    - "nothing found" and "not looked at yet" are always shown differently;
+    - every answer can show where it came from.
+11. **The Quickstart reminder:** this tutorial runs in a demonstration environment, the Egeria Quickstart, set up
+    around a fictitious company, Coco Pharmaceuticals, with made-up people. Change anything (section 1).
 
 **What can go wrong.** Nothing on screen. The risks are in the writing. Do not explain Egeria's architecture, the
 survey engines or where surveys run; one sentence and the glossary are enough. Do not use the blog's insider words
@@ -318,6 +333,8 @@ ones later, and inside each stage, questions and the surveys that answer them.
      seconds, every Discovery question then answered in under a second from what Scouting stored, and the first stage
      that read rows took about as long as Scouting.
    - *Screening out is not throwing away:* a data source set aside today can be looked at again later.
+   - *A guide, not a rule:* the funnel is the efficient order. You may run any stage's survey or analysis directly when
+     its question is the one you need answered (part 1, item 5).
    - *Around the funnel, not in it:* Investigation (why you are looking, part 12), Understanding (a view over what has
      been measured so far) and Automate (re-running on a schedule). The last two are for the Advanced tutorial.
 2. **Inside a stage.** Every stage has the same tabs: **Questions**, **Survey & analyses**, **By analysis**,
@@ -917,4 +934,4 @@ in this outline; each is named where it bites.
 | D7 | Work lists and investigations | **Decided (project owner, 2026-10-29):** work lists get their own part (11), and the relationship to investigations is described (part 12). |
 | D2c | The two extra repositories for the work list (part 11) | **Decided (project owner, 2026-10-29):** Marquez and Egeria, beside OpenLineage. |
 | D2b | Hosted demo or your own Egeria Workspaces | **Settled by the owner's facts (2026-10-29):** both work. The hosted demo is reset daily and is sometimes a little behind the latest code. Your own Workspaces needs Trellis installed and configured in a separate step, which the Getting Started tutorial covers. The tutorial offers both (section 1). |
-| D8 | Part 1: what Resource Explorer is for, and who it is for | Drafted from blog part 1. **Users decided (project owner, 2026-10-29):** data scientists (including AI), data engineers, curators, security specialists, DevOps engineers, architects, developers. Open: the owner's review of the one-line "what they come for" per role (part 1, item 8). |
+| D8 | Part 1: what Resource Explorer is for, and who it is for | **Reviewed (project owner, 2026-10-29):** the situation is one example of many; surveying catalogs only the entry point; questions decide what runs and the funnel is a guide, not the only path; questions, analyses and surveys can be changed (Advanced); RE explores the frontier of what Egeria does not know and what it does, guided by your needs, recording and sharing what you learn; chat is in part 1. Users: data scientists (including AI), data engineers, curators, security specialists, DevOps engineers, architects, developers. |
