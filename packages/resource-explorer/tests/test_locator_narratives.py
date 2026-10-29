@@ -30,7 +30,8 @@ class Index:
         self.searched.append(collections[0])
         if collections[0] in self.down:
             raise ConnectionError("down")
-        return self.by.get(collections[0], [])[:top_k]
+        self.floors = getattr(self, "floors", []) + [min_score]
+        return [h for h in self.by.get(collections[0], []) if min_score is None or h.score >= min_score][:top_k]
 
 
 def _hit(score, path="README.md", section="Intro", stated=None, run="w1", text="about"):
@@ -123,3 +124,26 @@ def test_the_route(registry, monkeypatch):
     assert client.get("/api/filesystems/by-passages?q=%20", headers=headers).status_code == 422
     r = client.get("/api/filesystems/by-passages?q=regions", headers=headers)
     assert r.status_code == 200 and r.json()["state"] == "none_pressed"
+
+
+def test_a_run_row_that_cannot_be_read_is_unknown_not_not_read_yet(registry, monkeypatch):
+    _press(registry, "alpha")
+    real = registry.query_step_runs
+
+    def flaky(**k):
+        if k.get("slug") == "beta":
+            raise RuntimeError("registry hiccup")
+        return real(**k)
+    monkeypatch.setattr(registry, "query_step_runs", flaky)
+    out = nc.locate(registry, "q", store_factory=lambda: Index({"fs_alpha_narratives": [_hit(0.7)]}))
+    assert out["unknown"] == ["beta"] and "beta" not in out["not_read"]
+    assert "whether its narratives were pressed could not be read" in out["words"]
+    assert "1 file system whether" in out["unknown_words"]
+
+
+def test_a_hit_below_the_calibrated_threshold_is_not_a_match(registry):
+    _press(registry, "alpha")
+    idx = Index({"fs_alpha_narratives": [_hit(0.01)]})
+    out = nc.locate(registry, "q", store_factory=lambda: idx)
+    assert idx.floors == [nc.min_score()] and nc.min_score() > 0.01
+    assert out["state"] == "no_match" and out["matches"] == []

@@ -42,7 +42,8 @@ class FakeIndex:
 
     def search(self, query, collections, top_k=None, min_score=None):
         self.searched.append((query, list(collections), top_k))
-        return self.hits[:top_k]
+        self.floor = min_score
+        return [h for h in self.hits if min_score is None or h.score >= min_score][:top_k]
 
 
 def _hit(path="survey/README.md", section="Variables", text="age: years", **extra):
@@ -125,3 +126,10 @@ def test_the_budget_is_respected():
 def test_a_repo_compile_has_no_narrative_section():
     c = compile_context(_registry(True), "egeria", "q", resource_type="repo", budget=4000)
     assert "narratives" not in c.manifest
+
+
+def test_a_weak_nearest_neighbour_is_no_match_in_chat():
+    index = FakeIndex([SearchResult(id="9", score=0.01, text="unrelated", metadata={"file_path": "x.md"})])
+    c = _compile(_registry(True), index)
+    assert index.floor == narrative_context.min_score()
+    assert c.manifest["narratives"]["state"] == "no_match" and "unrelated" not in c.text
