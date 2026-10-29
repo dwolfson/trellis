@@ -1001,5 +1001,5 @@ Overview, PostgreSQL, GitHub, Quickstart. The prose writer adds any other name t
 | # | Question | State |
 |---|---|---|
 | V-a | Who produces the episodes (script assembly, Audiate, editing) | Open. |
-| V-b | Where they are published, and whether the written tutorial links to each | Open. Suggested: the same YouTube channel as the Workspaces video, linked from the top of each written part. |
-| V-c | Whether the blog diagrams are redrawn for 16:9 | Open. Several carry words the tutorial avoids (section 6). |
+| V-b | Where they are published | **Decided (project owner, 2026-10-29):** YouTube. Each written part links to its episode. |
+| V-c | Whether the blog diagrams are redrawn for 16:9 | Open. Several carry words the tutorial avoids (section 6). Editable sources exist for some, outside the repo, in the trellis checkout's `Claude outputs/` folder and its root: `anatomy-of-a-question.svg`, `part4-fig3-question-loop.html`, `part4-fig1-chat-turn.html`, `part4-fig4-compile-budget.html`, and `resource-explorer-survey-funnel.pptx` (probably the funnel). |
