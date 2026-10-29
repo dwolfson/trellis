@@ -66,7 +66,7 @@ class TestAutomateIsWiredIn:
         # RULING-NAV-GROUPING.md: the frame check now reads `stageDef.class`
         # (declared once on STAGES) rather than a separate `stageDef.frame`
         # flag -- see NAV-GROUPING-IMPLEMENTED.md.
-        j = app.index("if (stageDef?.class === 'frame' || !stageDef?.built) {")
+        j = app.index("if (stageDef.class === 'frame' || !stageDef.built) {")
         assert i < j
 
 

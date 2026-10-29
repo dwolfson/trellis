@@ -560,7 +560,7 @@ def _view(reg, schemas=("s1",)):
                         for n in schemas]}
 
 
-def test_status_reads_published_earlier_and_counts_zero_in_egeria_after_the_marker(env):
+def test_status_reads_published_earlier_after_the_marker_without_an_n_in_egeria_sentence(env):
     reg = env["reg"]
     before = cc.derive_commit_state(reg, "db1", _view(reg))
     assert before["schemas"]["s1"]["state"] == "catalogued" and "in Egeria" in before["header"]["text"]
@@ -572,7 +572,7 @@ def test_status_reads_published_earlier_and_counts_zero_in_egeria_after_the_mark
     assert "Egeria reset 2026-10-08 18:30 UTC · OLD → NEW" in st["second"]
     assert after["tables"]["s1.t"]["words"].endswith("not in Egeria now")
     text = after["header"]["text"]
-    assert "0 in Egeria" in text and "published before the 2026-10-08 reset · not in Egeria now" in text
+    assert "0 in Egeria" not in text and "published before the 2026-10-08 reset · not in Egeria now" in text
     # the proof rows are still there, unedited
     assert len(reg.list_catalogue_commit_proofs("db1")) == 3
 
@@ -584,7 +584,7 @@ def test_a_proof_after_the_reset_time_wins_over_the_marker(env):
                                       element_guid="new", detail={"tables": ["t"]}, read_at="2026-10-08T20:00:00")
     after = cc.derive_commit_state(reg, "db1", _view(reg))
     assert after["schemas"]["s1"]["state"] == "catalogued"
-    assert "1 in Egeria" in after["header"]["text"]
+    assert "1 in Egeria" not in after["header"]["text"]
 
 
 def test_a_resource_without_a_marker_derives_as_before(env):
