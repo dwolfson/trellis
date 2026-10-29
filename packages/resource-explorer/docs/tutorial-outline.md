@@ -878,7 +878,7 @@ carry words the tutorial avoids, so each needs a check, and some a redrawn label
 
 | Use for | Blog image | Note |
 |---|---|---|
-| S1 (part 1) and S12 (part 4), the funnel | part 1, `resource-explorer-funnel-v5.png` | The best single picture of the tool. Labels "Curate and graduate" and "outbox" need plain words. |
+| S1 (part 1) and S12 (part 4), the funnel | part 1, `resource-explorer-funnel-v5.png` | **Redrawn for the tutorial, 2026-10-29:** [`tutorial-media/funnel.svg`](tutorial-media/funnel.svg), rendered at 1920 × 1080 as `funnel.png`. Same palette; plain words (no "graduate" or "outbox"); stages described for every kind of data source; chat added; the funnel shown as a guide, not a rule. For the owner's review. |
 | Part 1, the screen in use | part 1, `Portal-6.1-overview_2.png` (Assessment question cards) | Shows questions tagged by perspective, each answer naming its analysis. |
 | Part 4, what a question is | part 2, `anatomy-of-a-question.png` | Optional; may be Advanced material. |
 | Part 9, Include / Leave out | part 3, `curate-decision-table-v2.png` | A database's schemas with a decision each. Can replace S29 if the screen still matches. |
