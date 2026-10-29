@@ -148,7 +148,7 @@ In Curate, a choice is **Include** or **Leave out** and is saved in RE the momen
 
 ### Defects seen on 2026-10-28
 
-Defects still on the screen today, none of them intended behavior, all queued in the pending status-words PR: a database header reads "never surveyed · not published to Egeria" while the Curate band says Egeria holds it; the Curate band gives two counts for one fact (see "The chips on Curate"); the connection-details control reads "not signed in" while you are signed in; Discovery on a database reads "5 of 19 answered · 13 still loading" for many seconds without saying what it waits for (Enrichment and Analysis can do the same); an unknown stage name in the address (for example `?stage=admin`) leaves the main panel blank; and the browser tab's title carries an older route's name. (The unknown-stage blank was seen by the audit and not re-opened on 2026-10-28.)
+Seven defects are still on the screen today, none of them intended behavior, all queued in the pending status-words PR: a database header reads "never surveyed · not published to Egeria" while the Curate band says Egeria holds it; the Curate band gives two counts for one fact (see "The chips on Curate"); the connection-details control reads "not signed in" while you are signed in; Discovery on a database reads "5 of 19 answered · 13 still loading" for many seconds without saying what it waits for (Enrichment and Analysis can do the same); an unknown stage name in the address (for example `?stage=admin`) leaves the main panel blank; the browser tab's title carries an older route's name; and the sign-in panel offers **Continue without signing in** although anonymous reads are not allowed, and the button does nothing (intended behavior: the panel offers only Sign in). (The unknown-stage blank was seen by the audit and not re-opened on 2026-10-28.)
 
 **Not built yet in this section:** nothing in the vocabulary; see section 10.
 
@@ -614,7 +614,7 @@ Each item is a design, not a screen. The date is when this list was last checked
 |---|---|---|
 | Renderers for seven result kinds (the screen says "planned, not built yet") | `DESIGN-DECLARED-EXTENSIBILITY-RENDERING-CHAT-CONFIDENCE.md` | 2026-10-28 |
 | Dashboards inside RE | `DESIGN-LOCAL-DASHBOARDS-DECLARED-ANALYTICS.md` (#903) | 2026-10-28 |
-| Open data | `DESIGN-OPEN-DATA-RESOURCE-KIND-BRAINSTORM.md` (#904); OD1 in build | 2026-10-28 |
+| Open data | `DESIGN-OPEN-DATA-SEARCH-AND-SURVEY.md` (#904), with `DESIGN-OPEN-DATA-RESOURCE-KIND-BRAINSTORM.md`; OD1 in build | 2026-10-28 |
 | Remote reach for file systems | `DESIGN-FILES-REMOTE-REACH.md` | 2026-10-28 |
 | An Artifacts tab on Understanding | `DESIGN-ARTIFACTS-VIEW-AND-DOC-LINKS.md` | 2026-10-28 |
 | The winnowing bench (winnowing columns on a work list, #843) | `DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-KINDS.md` | 2026-10-28 |

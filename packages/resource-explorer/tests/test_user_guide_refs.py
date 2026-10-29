@@ -24,7 +24,7 @@ CATALOG = PACKAGE_ROOT / "resource_explorer" / "configdata" / "analysis_catalog.
 
 # Backticked snake_case words in the guide that are not analysis ids.
 NOT_ANALYSES = {
-    # library steps that run through the Files host (not catalog entries)
+    # the four file-system steps: generated catalog entries, so allowed either way
     "fs_change_rates", "fs_duplicates", "fs_activity", "fs_permissions",
     # database question keys on the Discovery stage
     "db_catalogued", "db_existing_use", "db_feedback", "db_surveyed", "db_disposition",
