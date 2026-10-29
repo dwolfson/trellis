@@ -747,7 +747,7 @@ def filesystem_library_step_key(analysis_id: str) -> str:
 
 def run_filesystem_analysis(slug: str, analysis_id: str, *, registry=None) -> DatabaseAnalysisRunResult:
     """Run ONE file system analysis that is an Analytic Library step (Files build step 6: fs_change_rates,
-    fs_duplicates, fs_activity, fs_permissions): zero-fetch derivations over the walk's kept per-file rows, so no
+    fs_duplicates, fs_activity, fs_permissions; step 7's fs_layout_signals): zero-fetch derivations over the walk's kept per-file rows, so no
     file is opened and no credential is read. Through the same executor a survey uses (`_run_library_step`): cost
     observed, `step_runs` row written, the result in `step_annotations`; stored, not published. Never raises for an
     analysis-level failure."""

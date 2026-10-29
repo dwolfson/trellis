@@ -416,6 +416,8 @@ class EgeriaFileSystemSurveyor:
         fs_entity: FileSystemEntity,
         survey_data: dict,
         registry: ProjectRegistry | None = None,
+        *,
+        declared_measures: dict | None = None,
     ) -> dict:
         """Guarded front door — see _publish_step_annotations for what this does.
 
@@ -430,16 +432,34 @@ class EgeriaFileSystemSurveyor:
         with guard_linkage(registry, "filesystem", fs_entity.slug,
                            fs_entity.display_name or fs_entity.slug,
                            fs_entity.egeria_asset_guid or ""):
-            return self._publish_step_annotations(fs_entity, survey_data, registry)
+            return self._publish_step_annotations(fs_entity, survey_data, registry,
+                                                  declared_measures=declared_measures)
 
     def _publish_step_annotations(
         self,
         fs_entity: FileSystemEntity,
         survey_data: dict,
         registry: ProjectRegistry | None = None,
+        *,
+        declared_measures: dict | None = None,
     ) -> dict:
         """Publish RE-computed annotations to Egeria WITHOUT cataloging the filesystem
         root or any data files as a side effect.
+
+        This is Resource Explorer's own file-system survey report (the project owner's ruling, 2026-10-28: a file
+        system's chosen measures publish through it, not the root-folder publish). After the report's own annotations,
+        so their indices and published names never move, it carries:
+
+        * the derived steps' stored results for THIS walk (Files build steps 6 and 7: fs_change_rates, fs_duplicates,
+          fs_activity, fs_permissions, fs_layout_signals; `walk_derived.report_annotations`), counts only. A result
+          derived from another walk, or not measured, is not sent and is said in `derived.not_sent`;
+        * then `declared_measures`, when a caller passes one: the publish table's chosen measures in
+          `publish_table.annotations_for`'s shape (`{state, rows, annotations}`, index-aligned). Only the press that
+          records proofs passes it; by default nothing is appended.
+
+        The report is then read back by name (`_read_back_guids`): `read_back_guids` ({index: GUID}) is every
+        annotation of this publish the read found, None when the report could not be read; `derived.sent` and
+        `declared_measures.sent` each carry their annotation's qualifiedName and that GUID, or "" with why.
 
         Narrower counterpart to catalog_and_survey: that method also auto-catalogs
         the filesystem root folder and every data file it finds as new Egeria
@@ -555,6 +575,21 @@ class EgeriaFileSystemSurveyor:
                 )
             )
 
+        # After the report's own annotations (their indices, and so their published names, do not move): the derived
+        # steps' results for this walk, then the caller's declared measures.
+        walk_run = (survey_data.get("walk_extensions") or {}).get("run_id") or survey_data.get("surveyed_at") or ""
+        derived: dict = {"state": "not_read", "reason": "no registry", "annotations": [], "sent": [], "not_sent": []}
+        if registry is not None:
+            from resource_explorer.surveyors.filesystem.walk_derived import report_annotations
+
+            derived = report_annotations(registry, fs_entity.slug, walk_run)
+        derived_start = len(annotations)
+        annotations.extend(derived["annotations"])
+        declared = declared_measures if declared_measures is not None else {"state": "not_asked", "rows": [],
+                                                                            "annotations": []}
+        declared_start = len(annotations)
+        annotations.extend(declared.get("annotations") or [])
+
         surveyed_at = survey_data.get("surveyed_at") or datetime.utcnow().isoformat()
         qualified_name = f"SurveyReport::FileSystem::{fs_entity.slug}::{surveyed_at}"
         body = {
@@ -588,9 +623,19 @@ class EgeriaFileSystemSurveyor:
         # "Published" is what landed, read back: the SurveyReport must read back from Egeria by its GUID, and the count is
         # the GUIDs Egeria returned (`annotations_in_egeria`), not the number RE built.
         read_back = self._read_back_by_guid(report_guid, expect_type="SurveyReport")
+        guids = self._read_back_guids(report_guid, annotations, fs_entity.slug, surveyed_at)
         proof = {"report_guid": report_guid, "annotation_count": len(annotations), "annotations_in_egeria": landed,
                  "report_read_back": bool(read_back.get("matched")),
-                 "read_back_why": read_back.get("why", ""), "at": datetime.utcnow().isoformat()}
+                 "read_back_why": read_back.get("why", ""), "at": datetime.utcnow().isoformat(),
+                 "read_back_guids": guids,
+                 "derived": {"state": derived["state"], **({"reason": derived["reason"]} if derived.get("reason") else {}),
+                             "sent": self._with_guids(derived["sent"], derived["annotations"], derived_start, guids,
+                                                      fs_entity.slug, surveyed_at),
+                             "not_sent": derived["not_sent"]},
+                 "declared_measures": {"state": declared.get("state", ""),
+                                       **({"reason": declared["reason"]} if declared.get("reason") else {}),
+                                       "sent": self._with_guids(declared.get("rows") or [], declared.get("annotations") or [],
+                                                                declared_start, guids, fs_entity.slug, surveyed_at)}}
 
         if registry:
             registry.add_filesystem_survey(
@@ -602,6 +647,48 @@ class EgeriaFileSystemSurveyor:
             )
 
         return {"filesystem_guid": fs_guid, **proof}
+
+    def _report_annotations(self, report_guid: str) -> list[dict] | None:
+        """Every annotation under the report (`egeria_survey_reader.reported_annotations`), paged to its end, or None
+        when the read could not be made to the end (unknown, never zero)."""
+        from resource_explorer.surveyors.egeria_survey_reader import reported_annotations
+
+        try:
+            return reported_annotations(self._metadata_expert_client(), report_guid)
+        except Exception as exc:  # noqa: BLE001 -- unknown, said as unknown
+            log.warning("could not read every annotation under report %s: %s", report_guid, exc)
+            return None
+
+    def _read_back_guids(self, report_guid: str, annotations: list, fs_slug: str, surveyed_at: str) -> dict | None:
+        """{index: GUID} for every annotation of this publish a READ of the report found by its published name
+        (`annotation_qualified_name`, the name `_create_annotations` gave it); None when the report could not be read.
+        Never the GUIDs the creates returned: a create that answered has not proved the element is there."""
+        from resource_explorer.surveyors.survey_report import annotation_qualified_name
+
+        every = self._report_annotations(report_guid) if report_guid else None
+        if every is None:
+            return None
+        by_name = {a.get("qualified_name"): a.get("guid") or "" for a in every}
+        prefix = f"Annotation::FileSystem::{fs_slug}::{surveyed_at}"
+        return {i: by_name[n] for i, a in enumerate(annotations)
+                if (n := annotation_qualified_name(prefix, i, a)) in by_name}
+
+    @staticmethod
+    def _with_guids(rows: list[dict], annotations: list, start: int, guids: dict | None, fs_slug: str,
+                    surveyed_at: str) -> list[dict]:
+        """Each appended row with its annotation's qualifiedName and the GUID the report read found ("" with why)."""
+        from resource_explorer.surveyors.survey_report import annotation_qualified_name
+
+        prefix = f"Annotation::FileSystem::{fs_slug}::{surveyed_at}"
+        out = []
+        for i, (row, ann) in enumerate(zip(rows, annotations)):
+            idx = start + i
+            guid = (guids or {}).get(idx, "")
+            out.append({**{k: v for k, v in row.items() if isinstance(v, (str, int, float, bool)) or v is None},
+                        "qualified_name": annotation_qualified_name(prefix, idx, ann), "guid": guid,
+                        "why": "" if guid else ("the report could not be read back" if guids is None
+                                                else "not found on the report when it was read back")})
+        return out
 
     def publish_file_profiles(self, fs_entity: FileSystemEntity, run_id: str, specs: list[dict],
                               registry: ProjectRegistry | None = None) -> dict:

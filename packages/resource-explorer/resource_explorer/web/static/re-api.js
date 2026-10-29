@@ -253,9 +253,13 @@ export const readFileProfilesFromEgeria = (slug) =>
 export const publishFileProfiles = (slug) =>
   post(`/api/filesystems/${encodeURIComponent(slug)}/file-profiles/publish`);
 /** Files build step 6: run ONE Analytic Library step over the walk's kept rows (fs_change_rates, fs_duplicates,
- *  fs_activity, fs_permissions). Queued: answers `{ status: 'started', activity_id, run_id }`; poll the activity. */
+ *  fs_activity, fs_permissions, fs_layout_signals). Queued: answers `{ status: 'started', activity_id, run_id }`; poll the activity. */
 export const runFilesystemAnalysis = (slug, analysisId) =>
   post(`/api/filesystems/${encodeURIComponent(slug)}/analyses/${encodeURIComponent(analysisId)}/run`);
+/** Files build step 7: read the narrative files the newest walk found, in full, into RE's search index (F11's long form). */
+export const runNarrativeDocs = (slug) => post(`/api/filesystems/${encodeURIComponent(slug)}/narrative-docs`);
+/** Files build step 8: data_class_match over the file profiles (F7). Every match a proposal; nothing published. */
+export const runClassMatch = (slug) => post(`/api/filesystems/${encodeURIComponent(slug)}/class-match`);
 
 /* ── Catalogue scope (Curate, database: what gets catalogued) ────────────
  * web/routes/catalogue_scope.py. A declared, signed, dated choice stored in

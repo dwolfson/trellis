@@ -7058,7 +7058,7 @@ User Questions
 Does this file system contain a recognisable structure: a project, a dataset layout, an archive, backups?
 
 ### Description
-fs_layout_signals reads README and manifest files, schema files, dated folders and backup patterns; it also supplies the backup evidence Q-0066 asks for.
+fs_layout_signals matches the names on the walk's kept rows (project manifests and .git directories, dated and partition folders, dictionary and schema files, archive and backup names) without opening a file; it also supplies the backup evidence Q-0066 asks for. With no walk it reports 'not measured', never 'nothing recognised'.
 
 ### Summary
 A recognisable layout tells what the file system is for and how to read it before any file is opened.

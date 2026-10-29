@@ -3922,13 +3922,17 @@ filesystem_questions:
     kind: partial
     analysis_ids: []
     checks: []
-    note: 'PARTIAL: data_class_match matches columns against Egeria data classes and is built for databases;
-      over file systems it waits on the profile column rows kept per run (GAP: file_profiles, Files brief
-      §3, slice 2), plus filename rules'
+    note: 'PARTIAL: data_class_match over the file profiles is built (Files build step 8, the folder survey
+      card''s press): the columns of the newest profile run against Egeria''s data classes, with values
+      from the head of each file Resource Explorer profiled, plus filename rules, proposals only; files
+      Egeria''s CSV Survey Service profiled are not sampled yet, and it is not a catalogued file-system
+      analysis'
   answering_mechanism: Value Profiling
   rationale: data_class_match reuses the database analysis over the columns file_profiles stores, plus
     filename rules, and proposes new data classes only as drafts for a person to accept.
-  catalog_history: '2026-10-22: added: F7 of the Files brief (§2), owner pick 2026-10-20 (review §4).'
+  catalog_history: '2026-10-22: added: F7 of the Files brief (§2), owner pick 2026-10-20 (review §4).
+    | 2026-10-28: data_class_match over the file profiles built (Files build step 8); still PARTIAL until
+    Egeria-profiled files are sampled and the analysis is catalogued for file systems.'
   retired: false
 - id: Q-0104
   question: 'Does this file system contain a recognisable structure: a project, a dataset layout, an archive,
@@ -3944,14 +3948,19 @@ filesystem_questions:
   levels:
   - container
   answering:
-    kind: gap
-    analysis_ids: []
+    kind: analysis
+    analysis_ids:
+    - fs_layout_signals
     checks: []
-    note: 'GAP: fs_layout_signals (Files brief §3, slice 4)'
+    note: fs_layout_signals
   answering_mechanism: Code Analysis
-  rationale: fs_layout_signals reads README and manifest files, schema files, dated folders and backup
-    patterns; it also supplies the backup evidence Q-0066 asks for.
-  catalog_history: '2026-10-22: added: F10 of the Files brief (§2), owner pick 2026-10-20 (review §4).'
+  rationale: fs_layout_signals matches the names on the walk's kept rows (project manifests and .git directories,
+    dated and partition folders, dictionary and schema files, archive and backup names) without opening
+    a file; it also supplies the backup evidence Q-0066 asks for. With no walk it reports 'not measured',
+    never 'nothing recognised'.
+  catalog_history: '2026-10-22: added: F10 of the Files brief (§2), owner pick 2026-10-20 (review §4).
+    | 2026-10-28: answered by fs_layout_signals, an Analytic Library step over the walk''s kept per-file
+    rows (Files build step 7); was GAP.'
   retired: false
 - id: Q-0105
   question: What do the narrative files inside it (README, INDEX, ABOUT, NOTES, a data dictionary, a codebook,

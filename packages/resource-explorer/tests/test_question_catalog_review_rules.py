@@ -376,13 +376,14 @@ class TestTheCommittedCsvGeneratesTheNumbersInThePrBody:
     def test_the_gap_rows_for_unbuilt_file_analyses_parse_as_gaps(self, generated):
         _, out, _ = generated
         fs = {e["id"]: e for e in out["filesystem_questions"]}
-        for qid, name in (("Q-0101", "file_profiles"),
-                          ("Q-0104", "fs_layout_signals"), ("Q-0105", "folder_narratives")):
+        for qid, name in (("Q-0101", "file_profiles"), ("Q-0105", "folder_narratives")):
             assert fs[qid]["answering"]["kind"] == "gap", qid
             assert name in fs[qid]["answering"]["note"], qid
-        # built in Files build step 6 (2026-10-28): no longer a gap
+        # built in Files build steps 6 and 7 (2026-10-28): no longer gaps
         assert fs["Q-0102"]["answering"]["kind"] == "analysis"
         assert fs["Q-0102"]["answering"]["analysis_ids"] == ["fs_change_rates"]
+        assert fs["Q-0104"]["answering"]["kind"] == "analysis"
+        assert fs["Q-0104"]["answering"]["analysis_ids"] == ["fs_layout_signals"]
 
     def test_the_merge_targets_name_what_they_absorbed(self, generated):
         rows, _, _ = generated

@@ -16,7 +16,7 @@ import yaml
 
 from resource_explorer.registry import FileSystemEntity, ProjectRegistry
 
-FS_STEPS = ("fs_activity", "fs_change_rates", "fs_duplicates", "fs_permissions")
+FS_STEPS = ("fs_activity", "fs_change_rates", "fs_duplicates", "fs_layout_signals", "fs_permissions")
 PKG = Path(__file__).resolve().parents[1]
 
 
@@ -27,7 +27,7 @@ def registry(tmp_path):
 
 @pytest.fixture
 def fs_installed(tmp_path, monkeypatch):
-    """The four file system steps installed (dist-info + source on the path) and attached; put back afterwards."""
+    """The file system steps (step 6's four and step 7's fs_layout_signals) installed (dist-info + source on the path) and attached; put back afterwards."""
     from tests.library_step_install import _entries
 
     from resource_explorer.surveyors import survey_step_host
@@ -112,7 +112,8 @@ def test_the_four_steps_attach_to_file_systems_beside_filesystem_inventory(fs_in
     assert set(FS_STEPS) <= set(fsa._ADAPTER.re_analysis_steps) and "filesystem_inventory" in fsa._ADAPTER.re_analysis_steps
     assert {k for k in fsa.FILESYSTEM_ANALYSIS_STEP_MAP if k.startswith("fs_")} == set(FS_STEPS)
     assert survey_step_host.attached_user_steps("filesystem") == frozenset(FS_STEPS)
-    for read in ("filesystem_walk_runs", "filesystem_walk_files", "filesystem_hash_matches"):
+    for read in ("filesystem_walk_runs", "filesystem_walk_files", "filesystem_hash_matches",
+                 "filesystem_walk_not_walked"):
         assert read in survey_step_host.STEP_ODS_METHODS
 
 

@@ -653,7 +653,8 @@ def _publish_walk(registry, fs, sd: dict, slug: str, *, check_reach: bool = True
         from resource_explorer.folder_survey_view import _publish_words
 
         out.update(report_guid=published.get("report_guid", ""), annotation_count=published.get("annotation_count"),
-                   annotations_in_egeria=published.get("annotations_in_egeria"), **_publish_words(published))
+                   annotations_in_egeria=published.get("annotations_in_egeria"), derived=published.get("derived"),
+                   **_publish_words(published))
     except NothingToPublish as exc:
         out["publish_refused"] = str(exc)
     except PermissionError:
@@ -759,7 +760,7 @@ def publish_filesystem_folder_survey(slug: str) -> dict:
 @router.post("/{slug}/analyses/{analysis_id}/run")
 def run_filesystem_analysis(slug: str, analysis_id: str) -> dict:
     """Run ONE file system analysis that is an Analytic Library step (fs_change_rates, fs_duplicates, fs_activity,
-    fs_permissions): validated here (an unknown id, or a step whose package is not installed, is a 400 naming why),
+    fs_permissions, fs_layout_signals): validated here (an unknown id, or a step whose package is not installed, is a 400 naming why),
     then queued, as every step is (a step never runs in the web process). Zero-fetch: the step reads the walk's kept
     rows, opens no file and takes no credential. The answer is `{status: "started", activity_id, run_id}`; the result
     is stored, not published. The folder survey, the walk extensions and file_profiles keep their own presses."""
@@ -804,6 +805,76 @@ def get_filesystem_derived(slug: str) -> dict:
     fork = file_reach.fork_for(registry, fs)
     return {"slug": slug, "price": walk_derived.price(registry, slug, egeria_leads=fork.surveyor == file_reach.SURVEYOR_EGERIA),
             **walk_derived.derived_view(registry, slug)}
+
+
+# ── Files build step 7: the narrative files read in full, chunked by section into RE's search index (F11's long form) ─
+
+@router.get("/{slug}/narrative-docs")
+def get_filesystem_narrative_docs(slug: str) -> dict:
+    """The price (the narrative files the newest walk found, their bytes) and the newest run. Registry-only."""
+    from resource_explorer.surveyors.filesystem import narrative_docs
+
+    registry = ProjectRegistry()
+    if not registry.filesystem_exists(slug):
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    return narrative_docs.view(registry, slug)
+
+
+@router.post("/{slug}/narrative-docs")
+def run_filesystem_narrative_docs(slug: str) -> dict:
+    """The press (consent is this press; the card showed the price before it): read the narrative files the newest walk
+    found, whole and size-capped, chunk them by section and replace this file system's collection in Resource Explorer's
+    search index. Opens no other file, writes nothing into the path, publishes nothing to Egeria. 409 when no walk has
+    found narrative files, while a run for this file system is in flight, or when the mount cannot be reached."""
+    from resource_explorer.surveyors.filesystem import narrative_docs
+    from resource_explorer.web.routes.curate import require_resource_write
+
+    registry = ProjectRegistry()
+    fs = registry.get_filesystem(slug)
+    if not fs:
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    require_resource_write(registry, "filesystem", slug, "start_action")
+    try:
+        summary = narrative_docs.run_narrative_docs(fs, registry)
+    except (narrative_docs.NothingToRead, narrative_docs.AlreadyRunning, narrative_docs.NotReachable) as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {**summary, "view": narrative_docs.view(registry, slug)}
+
+
+# ── Files build step 8: data_class_match over the file profiles (F7), proposals only ─────────────────────────────────
+
+@router.get("/{slug}/class-match")
+def get_filesystem_class_match(slug: str) -> dict:
+    """The price (the newest profile run's columns and files) and the newest run. Registry-only."""
+    from resource_explorer.surveyors.filesystem import file_class_match
+
+    registry = ProjectRegistry()
+    if not registry.filesystem_exists(slug):
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    return file_class_match.view(registry, slug)
+
+
+@router.post("/{slug}/class-match")
+def run_filesystem_class_match(slug: str) -> dict:
+    """The press (consent is this press; the card showed what it reads before it): match every column of the newest
+    profile run against the data classes Egeria holds (read as the signed-in person, read-only), with values from the
+    head of each file Resource Explorer profiled, and the file names against the personal-data words. Every match is a
+    proposal; nothing is published or created in Egeria, nothing is written into the path. 409 when nothing is
+    profiled, while a run for this file system is in flight, or when the mount cannot be reached."""
+    from resource_explorer.surveyors.filesystem import file_class_match
+    from resource_explorer.web.routes.curate import require_resource_write
+
+    registry = ProjectRegistry()
+    fs = registry.get_filesystem(slug)
+    if not fs:
+        raise HTTPException(status_code=404, detail=f"FileSystem '{slug}' not found.")
+    require_resource_write(registry, "filesystem", slug, "start_action")
+    try:
+        summary = file_class_match.run_file_class_match(fs, registry)
+    except (file_class_match.NothingToMatch, file_class_match.AlreadyRunning, file_class_match.NotReachable) as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {"columns": summary["columns"], "established": summary["established"],
+            "view": file_class_match.view(registry, slug)}
 
 
 # ── Files build step 5: file_profiles (column profiles of the walk's data files, priced before the run) ──────────────

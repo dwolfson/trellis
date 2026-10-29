@@ -12,15 +12,19 @@
  *   - the price line BEFORE the press (Files F12): the last walk's files, bytes and time on this machine, capped or not,
  *     what was not walked and where the bulk sits; "not priced" until a walk has measured the tree;
  *   - "Derived from the walk" (Files build step 6): the Analytic Library steps over the kept per-file rows, each with its
- *     stored state and its own words; "not run yet" until one has run, "not installed" naming the package.
+ *     stored state and its own words; "not run yet" until one has run, "not installed" naming the package;
+ *   - "Narrative files, read in full" (Files build step 7, F11's long form): the price before the press (the files the
+ *     walk found, their bytes), then the run's counts; every passage is a proposal stated by its file;
+ *   - "Personal or sensitive data" (Files build step 8, F7): data_class_match over the file profiles, what the press reads
+ *     before it, then the run's counts and the proposals by file and column, with the names that suggest personal data.
  *
  * Every status here comes from a stored row the server read (the probe row, the run row, the walk's own limits), never
  * from which button was pressed. A number the survey did not carry is "–", never 0.
  */
 import { esc } from '/static/next/app.js';
 import { getFolderSurvey, runFolderSurvey, publishFolderSurvey, checkFilesystemReach, runWalkExtensions, publishWalkExtensions,
-  runFileProfiles, readFileProfilesFromEgeria, publishFileProfiles, runFilesystemAnalysis, pollActivity, activityFailure,
-  failureText } from '/static/re-api.js';
+  runFileProfiles, readFileProfilesFromEgeria, publishFileProfiles, runFilesystemAnalysis, runNarrativeDocs, runClassMatch,
+  pollActivity, activityFailure, failureText } from '/static/re-api.js';
 import { enhanceTable } from '/static/next/colresize.js';
 import { fmtBytes } from '/static/next/stages/native-report.js';
 
@@ -91,7 +95,23 @@ export const FOLDER_SURVEY_WORDS = {
   notRun: 'not run yet',
   derivedAt: (date) => `derived${date ? ` · ${date}` : ''}`,
   notPriced: 'not priced',
-  derivedKept: 'kept here · not published to Egeria',
+  derivedKept: "kept here · sent to Egeria in the walk's own survey report when that walk is published",
+  derivedPublished: (guid) => `in Egeria · report ${String(guid || '').slice(0, 8)}`,
+  // Files build step 7: the narrative files read in full (F11's long form).
+  narrativeHeading: 'Narrative files, read in full',
+  narrativePress: 'Read narrative files',
+  narrativeReading: 'Reading…',
+  narrativeNotRead: 'not read yet',
+  narrativeReadAt: (date) => `read${date ? ` · ${date}` : ''}`,
+  narrativeStale: 'a newer walk found these files · read them again to bring the index up to date',
+  // Files build step 8: data_class_match over the file profiles (F7).
+  classHeading: 'Personal or sensitive data',
+  classPress: 'Match data classes',
+  classMatching: 'Matching…',
+  classNotRun: 'not matched yet',
+  classAt: (date) => `matched${date ? ` · ${date}` : ''}`,
+  classStale: 'newer profiles exist · match again to bring this up to date',
+  classNames: (n) => `${num(n)} file${n === 1 ? '' : 's'} whose name suggests personal data · on the name only`,
 };
 
 const dash = '–';
@@ -362,7 +382,7 @@ export function derivedHtml(derived) {
     const results = (s.results || []).map((r) => {
       const absent = r.state === 'not_established' || r.state === 'not_applicable';
       return `<div data-fs-result="${esc(r.measure)}" data-fs-result-state="${esc(r.state || 'no_envelope')}" class="ml-s3">
-        <span class="font-glyph" aria-hidden="true">${STEP_GLYPH[r.state] || '?'}</span> ${esc(r.state_words || '')} · ${esc(r.summary)}
+        <span class="font-glyph" aria-hidden="true">${STEP_GLYPH[r.state] || '?'}</span> ${esc(r.state_words || '')} · ${esc(r.summary)}${r.published ? ` <span data-fs-result-published class="text-ink-muted">· ${esc(W.derivedPublished(r.published.report_guid))}</span>` : ''}
         ${absent && r.reason ? `<div class="ml-s3 text-ink-muted">${esc(r.reason)}</div>` : ''}</div>`;
     }).join('');
     return `<li data-fs-step="${esc(s.step)}" data-fs-step-state="run" class="text-provenance">${head} · <span class="text-ink-muted">${esc(W.derivedAt(day(s.run)))}</span>${results}</li>`;
@@ -374,8 +394,58 @@ export function derivedHtml(derived) {
   </div>`;
 }
 
+/** Files build step 7: the narrative files read in full. The price BEFORE the press, then the stored run's own words. */
+export function narrativeDocsHtml(nd) {
+  const W = FOLDER_SURVEY_WORDS;
+  if (!nd) return '';
+  if (nd.error) return `<div data-fs-narr data-fs-narr-state="error" class="mt-s3 text-provenance text-state-warn">${esc(nd.error)}</div>`;
+  const price = nd.price || {};
+  const head = `<div class="text-caps uppercase tracking-caps text-ink-muted">${esc(W.narrativeHeading)}</div>
+    <div data-fs-narr-price data-fs-narr-priced="${price.priced ? 'yes' : 'no'}" class="text-caveat text-ink">${esc(price.words || W.notPriced)}</div>`;
+  const run = nd.run;
+  if (!run) return `<div data-fs-narr data-fs-narr-state="none" class="mt-s3">${head}<div class="text-provenance text-ink-muted">${esc(W.narrativeNotRead)}</div></div>`;
+  return `<div data-fs-narr data-fs-narr-state="read" class="mt-s3">${head}
+    <div data-fs-narr-run class="text-caveat text-ink">${esc(W.narrativeReadAt(day(run.ran_at)))} · <span data-fs-narr-words>${esc(run.words || '')}</span></div>
+    ${run.stale ? `<div data-fs-narr-stale class="text-provenance text-state-warn"><span class="font-glyph" aria-hidden="true">⚠</span> ${esc(W.narrativeStale)}</div>` : ''}
+    <div class="text-provenance text-ink-muted">${esc(run.stated || '')}</div>
+    <div class="text-provenance text-ink-muted">${esc(nd.kept || '')}</div>
+  </div>`;
+}
+
+const VERDICT_WORDS = { matched: 'matches', partial_match: 'partly matches', unmatched_patterned: 'a pattern no class has · proposal',
+  no_match: 'no class matched', inconclusive: 'inconclusive', not_sampled: 'not sampled', no_candidates: 'not compared',
+  not_applicable: 'not applicable' };
+
+/** Files build step 8: the data-class match over the file profiles. What the press reads BEFORE it, then the stored run's
+ *  words, the proposals worth a person's look (privacy-relevant, established, or a pattern no class has), and the names. */
+export function classMatchHtml(cm) {
+  const W = FOLDER_SURVEY_WORDS;
+  if (!cm) return '';
+  if (cm.error) return `<div data-fs-class data-fs-class-state="error" class="mt-s3 text-provenance text-state-warn">${esc(cm.error)}</div>`;
+  const price = cm.price || {};
+  const head = `<div class="text-caps uppercase tracking-caps text-ink-muted">${esc(W.classHeading)}</div>
+    <div data-fs-class-price data-fs-class-priced="${price.priced ? 'yes' : 'no'}" class="text-caveat text-ink">${esc(price.words || W.notPriced)}</div>`;
+  const run = cm.run;
+  if (!run) return `<div data-fs-class data-fs-class-state="none" class="mt-s3">${head}<div class="text-provenance text-ink-muted">${esc(W.classNotRun)}</div></div>`;
+  const shown = (run.matches || []).filter((m) => m.established || m.verdict === 'unmatched_patterned');
+  const rows = shown.map((m) => [m.file_path, m.header_suspect ? '(header looks like data)' : m.column,
+    VERDICT_WORDS[m.verdict] || m.verdict, m.matched_display_name || (m.detected_patterns || []).join(', ') || dash,
+    m.privacy_relevant ? 'yes' : '', m.statement]);
+  const names = (run.name_signals || []).map((n) => [n.file_path, (n.words || []).join(', ')]);
+  const notOpened = (run.file_outcomes || {}).egeria_profiled;
+  return `<div data-fs-class data-fs-class-state="matched" class="mt-s3">${head}
+    <div data-fs-class-run class="text-caveat text-ink">${esc(W.classAt(day(run.ran_at)))} · <span data-fs-class-words>${esc(run.words || '')}</span></div>
+    ${run.stale ? `<div data-fs-class-stale class="text-provenance text-state-warn"><span class="font-glyph" aria-hidden="true">⚠</span> ${esc(W.classStale)}</div>` : ''}
+    ${notOpened ? `<div data-fs-class-egeria class="text-provenance text-ink-muted">${esc(`${num(notOpened)} file${notOpened === 1 ? '' : 's'} profiled by Egeria · not opened here, so not sampled`)}</div>` : ''}
+    <div class="text-provenance text-ink-muted">${esc(run.rule || '')}</div>
+    ${rows.length ? measureTableHtml('class-match', 'Proposals', ['File', 'Column', 'Verdict', 'Class or pattern', 'Privacy', 'Statement'], rows) : ''}
+    ${names.length ? `<div data-fs-class-names class="text-provenance text-ink">${esc(W.classNames(run.name_signal_files))}</div>
+      ${measureTableHtml('class-names', 'Names', ['File', 'Words'], names)}` : ''}
+  </div>`;
+}
+
 /** The whole card. `busy` is 'survey' | 'check' | 'publish' | 'measure' | 'publish-measures' | 'profile' | 'read-egeria' |
- *  'publish-profiles' | 'derive' | ''. */
+ *  'publish-profiles' | 'derive' | 'read-narratives' | 'match-classes' | ''. */
 export function folderSurveyCardHtml(view, { busy = '', error = '' } = {}) {
   const W = FOLDER_SURVEY_WORDS;
   const reach = (view && view.reach) || {};
@@ -403,12 +473,16 @@ export function folderSurveyCardHtml(view, { busy = '', error = '' } = {}) {
       ${fpRun && fpRun.counts && fpRun.counts.submitted ? btn('read-egeria', busy === 'read-egeria' ? W.reading : W.readEgeria, !busy) : ''}
       ${fpRun && !(fpRun.publish && fpRun.publish.complete) && fpRun.counts && fpRun.counts.by_re ? btn('publish-profiles', busy === 'publish-profiles' ? W.publishing : W.publishProfiles, !busy) : ''}
       ${derivable(view).length ? btn('derive', busy === 'derive' ? W.deriving : W.derivePress, !busy) : ''}
+      ${view && view.narrative_docs && view.narrative_docs.price && view.narrative_docs.price.files ? btn('read-narratives', busy === 'read-narratives' ? W.narrativeReading : W.narrativePress, !busy) : ''}
+      ${view && view.class_match && view.class_match.price && view.class_match.price.columns ? btn('match-classes', busy === 'match-classes' ? W.classMatching : W.classPress, !busy) : ''}
     </div>
     ${priceLineHtml(view && view.price)}
     ${error ? `<div data-fs-error class="mt-[2px] text-provenance text-state-warn">${esc(error)}</div>` : ''}
     ${folderResultsHtml(view)}
     ${walkMeasuresHtml(view && view.extensions)}
+    ${narrativeDocsHtml(view && view.narrative_docs)}
     ${fileProfilesHtml(view && view.file_profiles)}
+    ${classMatchHtml(view && view.class_match)}
     ${derivedHtml(view && view.derived)}
   </div>`;
 }
@@ -448,6 +522,8 @@ export async function mountFolderSurvey(host, slug, { onChange = () => {} } = {}
       else if (act === 'profile') await runFileProfiles(slug);
       else if (act === 'read-egeria') await readFileProfilesFromEgeria(slug);
       else if (act === 'publish-profiles') await publishFileProfiles(slug);
+      else if (act === 'read-narratives') await runNarrativeDocs(slug);
+      else if (act === 'match-classes') await runClassMatch(slug);
       else if (act === 'derive') {
         // Each step is queued and polled to its end; a failed one is said with its own reason, the others still run.
         const failed = [];
