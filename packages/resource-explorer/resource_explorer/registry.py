@@ -5099,6 +5099,7 @@ class ProjectRegistry:
         self._migrate_profile_proof_columns()
         self._migrate_value_profile_columns()
         self._migrate_walk_file_columns()
+        self._migrate_open_data_tables()
 
     #: Artifacts slice 1 (DESIGN-ARTIFACTS-VIEW-AND-DOC-LINKS.md §3; owner's go 2026-10-15; DDL record
     #: docs/ddl-artifact-columns.md). file_role: core | test | generated | vendored | docs from
@@ -5173,6 +5174,15 @@ class ProjectRegistry:
         for table, column in self.WALK_FILE_COLUMNS:
             with self._conn() as conn:
                 self._add_nullable_text_column(conn, table, column, self._get_table_columns(conn, table))
+
+    def _migrate_open_data_tables(self) -> None:
+        """Open data OD1 (docs/ddl-open-data-od1.md): three new tables, each `CREATE TABLE IF NOT EXISTS` in its own
+        short transaction. Nothing existing is altered, so no lock on a table another process is using is taken."""
+        from resource_explorer.open_data.schema import STATEMENTS
+
+        for statement in STATEMENTS:
+            with self._conn() as conn:
+                conn.execute(statement)
 
     # ── the run queue ─────────────────────────────────────────────────────────
     #
