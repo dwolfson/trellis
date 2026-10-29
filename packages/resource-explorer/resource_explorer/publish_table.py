@@ -155,7 +155,9 @@ def run_fields(fact: dict) -> dict:
     """The run beside the payload: what the reader carried under `_run` (a zero-fetch derivation's `read_snapshot`
     and compute time, `survey_definition_adapter._db_derived_field_reader`), else the fact layer's own run time."""
     carried = dict(((fact.get("value") or {}).get("_run")) or {})
-    if not carried.get("surveyed_at") and fact.get("last_run_at"):
+    # A derivation (it carries `read_snapshot`) has no measurement time of its own: its recompute clock is
+    # `computed_at`, and the fact's run time is not a stand-in (F18).
+    if "read_snapshot" not in carried and not carried.get("surveyed_at") and fact.get("last_run_at"):
         carried["surveyed_at"] = fact["last_run_at"]
     return carried
 
@@ -341,7 +343,10 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
                 as_of = resolve(source, m.as_of, run) if known else _MISSING
                 as_of = "" if as_of is _MISSING else str(as_of)
                 # F15: two dates, both named: when the statistic is as of, and when RE measured it.
-                measured_at = (record or {}).get("measured_at") or run.get("surveyed_at") or ""
+                # A derived row's second date is the snapshot it was derived from, never the recompute clock (F18).
+                measured_at = ((record or {}).get("measured_at")
+                               or (run.get("read_snapshot") if "read_snapshot" in run else run.get("surveyed_at"))
+                               or "")
                 w = writes_as(m, conf["form"])
                 row = {"analysis_id": entry.id, "analysis": entry.name, "measure": m.name, "locator": loc,
                        "unit": m.unit, "value_field": m.value_field, "as_of_field": m.as_of,

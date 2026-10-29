@@ -1395,9 +1395,10 @@ def _db_derived_field_reader(field: str):
             _attach_coverage_status(field, data, result.get("table_coverage"))
             # The run beside the payload (declared extensibility slice 1): the derivation's own time is when it was
             # recomputed, which is every read, so the as-of a person needs is `read_snapshot`, the newest stored row
-            # it read. The declarations name `run.read_snapshot`; without this the reader dropped it here.
+            # it read. The declarations name `run.read_snapshot`; without this the reader dropped it here. The recompute clock
+            # is carried as `computed_at`, never `surveyed_at`: it must not read as a measurement time (F18).
             data["_run"] = {"read_snapshot": result.get("read_snapshot") or "",
-                            "surveyed_at": result.get("surveyed_at") or ""}
+                            "computed_at": result.get("surveyed_at") or ""}
         return data
 
     return _read
