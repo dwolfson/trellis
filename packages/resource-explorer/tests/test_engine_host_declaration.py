@@ -272,9 +272,10 @@ def test_a_manifest_change_changes_the_generated_library_declaration(library_ins
 
     def changed(entity_type):
         found = dict(real(entity_type))
-        m = found["database_staleness"]
-        found["database_staleness"] = m.model_copy(update={"request_type": "re-staleness-v2",
-                                                          "description": "Something else entirely."})
+        if "database_staleness" in found:    # the catalogue reads every resource type through this
+            m = found["database_staleness"]
+            found["database_staleness"] = m.model_copy(update={"request_type": "re-staleness-v2",
+                                                              "description": "Something else entirely."})
         return found
 
     monkeypatch.setattr(survey_step_host, "discover_steps", changed)

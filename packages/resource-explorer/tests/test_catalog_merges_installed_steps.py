@@ -92,3 +92,18 @@ def test_manifest_replaces_the_committed_generated_entry_in_place(tmp_path, monk
     _install_fake(tmp_path, monkeypatch)
     after = reader._load()["database"]
     assert [e.id for e in after][: len(before)] == [e.id for e in before]
+
+
+def test_an_uninstalled_step_leaves_the_results_map_too(tmp_path, monkeypatch):
+    """The gate's failure (b186): a step that was installed for one test left its results reader behind, so the
+    map's size depended on test order."""
+    from resource_explorer.surveyors.database import survey_definition_adapter as db
+
+    before = set(db.DATABASE_ANALYSIS_RESULTS_MAP)
+    _install_fake(tmp_path, monkeypatch)
+    assert NAME in db.DATABASE_ANALYSIS_RESULTS_MAP
+    monkeypatch.undo()
+    sys.modules.pop(NAME, None)
+    survey_step_host.refresh("database")
+    assert set(db.DATABASE_ANALYSIS_RESULTS_MAP) == before
+    assert NAME not in db.DATABASE_ANALYSIS_RE_STEP_MAP and NAME not in db.DATABASE_ANALYSIS_KINDS
