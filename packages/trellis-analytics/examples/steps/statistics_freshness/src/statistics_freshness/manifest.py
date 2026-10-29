@@ -38,8 +38,9 @@ MANIFEST = StepManifest(
         result_kind="list",
         measures=[MeasureDeclaration(name="statistics_freshness", unit="days since the last ANALYZE", as_of="asOf",
                                      value_field="Days Since Analyze"),
+                  # One value for the whole database, in a step whose rows are per table: its own scope.
                   MeasureDeclaration(name="statistics_freshness_summary", unit="tables with stale statistics",
-                                     as_of="asOf", value_field="Stale")],
+                                     as_of="asOf", value_field="Stale", scope="resource")],
         absence=AbsenceSentences(
             not_measured=("Not measured: no table statistics are stored for this database, or this table's were "
                           "not read — never shown as fresh."),

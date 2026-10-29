@@ -230,3 +230,28 @@ test("a file system's table names its own press, offers no Contents button, and 
   assert.ok(absent.includes('not measured this run'));
   assert.ok(/data-publish-choice="publish"[^>]*disabled/.test(absent), 'no Publish on a measure that was not established');
 });
+
+test("the question row never says 'the figures above' for an analysis whose figures are not above (F3)", async () => {
+  await open({ table: TABLE() });
+  const { readEnvelope } = await import('/static/next/envelope.js');
+  const esc = (s) => String(s);
+  const fact = (id, over = {}) => ({ analysis_id: id, state: 'measured', is_known: true, value: { Owners: 3, Groups: 2 }, last_run_at: '2026-10-29T10:00:00', ...over });
+  // fs_permissions is not the lead: the lead has a headline, so fs_permissions' figures are not on the row
+  const lines = readEnvelope({ analysis_ids: ['fs_lead', 'fs_permissions'] },
+    { facts: [fact('fs_permissions'), fact('fs_lead', { headline: 'Three owners.' })], answerable: true }, esc, esc);
+  assert.ok(!/figures above/.test(lines.caveat), lines.caveat);
+  assert.match(lines.caveat, /fs_permissions has no written summary and is not shown here — see Survey & analyses/);
+  // alone, its raw measures ARE the answer line, and the caveat may say so
+  const alone = readEnvelope({}, { facts: [fact('fs_permissions')], answerable: true }, esc, esc);
+  assert.match(alone.caveat, /fs_permissions has no written summary — the figures above are the raw measures/);
+});
+
+test("a row names both dates: when the statistic is as of, and when it was measured (F15)", async () => {
+  await open({ table: TABLE() });
+  const { rowHtml } = await import('/static/next/stages/publish-table.js');
+  const html = rowHtml(row({ as_of: '2026-10-25T01:36:00', measured_at: '2026-10-29T10:00:00' }), true);
+  assert.match(html, /2026-10-25 01:36/);
+  assert.match(html, /data-as-of-label>as of</);
+  assert.match(html, /data-measured-at>measured 2026-10-29 10:00</);
+  assert.ok(!/data-measured-at/.test(rowHtml(row({ measured_at: '' }), true)));
+});

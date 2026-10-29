@@ -182,6 +182,7 @@ needs four non-blank fields:
 | `unit` | in words, plural where it counts: `"tables"`, `"rows per day"`, `"days"` |
 | `as_of` | the result field that says when it was measured. A dotted path reaches into a nested value; `run.surveyed_at` names a field of the producing run |
 | `value_field` | the result field holding the value. A trailing `[]` means "the number of items in this list" |
+| `scope` | optional: `resource`, `container`, `member` or `field`. Absent means the declaration's scope. Use it for a summary in a member-scoped step (a step whose rows are per table and which also writes one value for the whole database): mark the summary `scope="resource"`, and the publish table reads it from its own record and offers Publish, while the per-table measure stays "one value per member" |
 | `annotation` | optional. `AnnotationDeclaration(type=..., properties={result_field: egeria_property})` names the Egeria type this measure writes as. Leave it out and the publish table says `generic measure · no native type declared` |
 
 A measure published as anything other than `ResourceMeasureAnnotation` must declare its
@@ -298,7 +299,7 @@ Ways to check that RE sees the step. RE has no admin page or CLI verb that lists
 
 On a database's **Curate → Describe and publish** tab, the table headed **Publish · declared
 measures** lists every declared measure with a value. Its columns are Analysis, Measure, Value,
-As of, Confidence, Scope, Writes as, Choice and State.
+As of, Confidence, Scope, Writes as, Choice and State. The As of column names both dates: the date the statistic is **as of**, and, under it, when Resource Explorer **measured** it.
 
 - **Each row has two buttons: Publish | Keep in RE.** Nothing publishes by default. A row nobody has
   chosen reads `not chosen · stays in RE`.
@@ -324,7 +325,7 @@ As of, Confidence, Scope, Writes as, Choice and State.
 
 - **No number written twice.** A measure already in Egeria shows
   `already in Egeria via Resource Explorer's survey report (the commit on Contents)`,
-  `already in Egeria via the engine host · report <time>`, or
+  `already in Egeria via the engine host · report <time> · engine action run <id>` (the id is the engine host's own run record, the one this check reads), or
   `already in Egeria via Egeria's own survey report`. Publish is disabled, and Keep in RE is still
   offered. This covers a library step the engine host has already run and published.
 - **SchemaAnalysisAnnotation is written natively.** `schemaName` and `schemaType` are set when the

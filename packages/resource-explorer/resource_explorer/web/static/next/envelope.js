@@ -351,9 +351,18 @@ export function readEnvelope(entry, env, esc, tnum) {
   if (known.length && unrun.length) {
     lines.caveat = `${lines.caveat} ${unrun.join(', ')} ${unrun.length === 1 ? 'has' : 'have'} not run, so this answer is partial.`.trim();
   }
-  if (lines.unwritten.length) {
-    lines.caveat = `${lines.caveat} ${lines.unwritten.join(', ')} ${
-      lines.unwritten.length === 1 ? 'has' : 'have'} no written summary — the figures above are the raw measures.`.trim();
+  // "The figures above" is true only of the analysis whose sentence IS the answer line: a library step that is not the
+  // lead (its sentence is not shown) has no figures above, and saying so was the F3 defect (2026-10-29). The others say
+  // where their figures are instead.
+  const shownUnwritten = lines.unwritten.filter((id) => id === primaryId);
+  const hiddenUnwritten = lines.unwritten.filter((id) => id !== primaryId);
+  if (shownUnwritten.length) {
+    lines.caveat = `${lines.caveat} ${shownUnwritten[0]} has no written summary — the figures above are the raw measures.`.trim();
+  }
+  if (hiddenUnwritten.length) {
+    lines.caveat = `${lines.caveat} ${hiddenUnwritten.join(', ')} ${
+      hiddenUnwritten.length === 1 ? 'has' : 'have'} no written summary and ${
+      hiddenUnwritten.length === 1 ? 'is' : 'are'} not shown here — see Survey & analyses.`.trim();
   }
 
   lines.runTimeUnrecorded = known.length > 0 && !lines.lastRun && !lines.asOf;

@@ -469,6 +469,12 @@ def _first_sentence(text: str) -> str:
     return text[: idx + 1]
 
 
+def _fs_library_step(analysis_id: str) -> str:
+    from resource_explorer.workflows.analysis import filesystem_library_step_key
+
+    return filesystem_library_step_key(analysis_id)
+
+
 def runnable_and_reason(analysis_id: str, entity_type: str = "repo") -> tuple[bool, str]:
     """Whether this entity type's run route would accept this id, and the
     reason when it would not — the SAME check and the SAME text
@@ -502,6 +508,15 @@ def runnable_and_reason(analysis_id: str, entity_type: str = "repo") -> tuple[bo
         if runnable and (missing := database_library_step_missing_reason(analysis_id)):
             # A library step whose package is absent here: the card says so before the press, never after it.
             return False, missing
+    elif entity_type == "filesystem" and (step := _fs_library_step(analysis_id)):
+        # One predicate with the run route (filesystems.py: `filesystem_library_step_key`, then the package check): a
+        # library step is not in the survey-step map the lines below read, which is why its Re-run was disabled
+        # with "no mapped survey step(s)" while the route would have run it (F12, 2026-10-29).
+        from resource_explorer.surveyors.survey_step_host import library_step_missing_reason
+
+        if missing := library_step_missing_reason(step, "filesystem"):
+            return False, missing
+        runnable = True
     else:
         from resource_explorer.workflows.analysis import resolve_analysis_plan
 

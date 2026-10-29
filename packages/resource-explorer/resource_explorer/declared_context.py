@@ -126,8 +126,10 @@ def measure_records(registry, entity_type: str, slug: str, step: str, dec, analy
     under `<step>:<measure>` (`measure_step_key`), so the step's fact holds its own measure only; each measure is read
     here from its own key, as `walk_derived.derived_view` reads it. Each record is {"value": {"scope", **the
     annotation's resourceProperties}, "state", "reason", "run"}; a measure with nothing stored has no record. Empty
-    when there is no step, or the declaration is member- or field-scoped (its rows are members, not measures)."""
-    if not step or (dec.scope or "resource") != "resource":
+    when there is no step. A measure is read here only when its own scope is the resource (`Declaration.scope_of`): a
+    member- or field-scoped measure's rows are members, not measures, but a resource-scoped summary beside them is
+    read from its own key all the same."""
+    if not step:
         return {}
     from resource_explorer.surveyors.annotation_readers import _envelope_state
     from resource_explorer.surveyors.survey_step_host import measure_step_key
@@ -137,6 +139,8 @@ def measure_records(registry, entity_type: str, slug: str, step: str, dec, analy
     primary = next((n for n in (step, analysis_id) if n in names), names[0] if names else "")
     out: dict = {}
     for name in names:
+        if (dec.scope_of(dec.measure(name)) or "resource") != "resource":
+            continue
         key = step if name == primary else measure_step_key(step, name)
         run, rows = registry.query_step_annotations(entity_type, slug, key)
         if not rows:
@@ -145,7 +149,7 @@ def measure_records(registry, entity_type: str, slug: str, step: str, dec, analy
         detail = a.get("detail") or {}
         state, _words, reason = _envelope_state(detail)
         out[name] = {"value": {"scope": a.get("scope") or "", **(detail.get("resourceProperties") or {})},
-                     "state": state, "reason": reason, "run": run}
+                     "state": state, "reason": reason, "run": run, "measured_at": a.get("measured_at") or ""}
     return out
 
 
@@ -263,9 +267,9 @@ def _measure_lines(dec, value: dict, run: dict, records: dict | None = None) -> 
         if v is _MISSING and record and record["state"] in _STATE_WORDS and record["state"] != "measured":
             reason = f": {record['reason']}" if record["reason"] else ""
             lines.append(f"- {m.name}: {_STATE_WORDS[record['state']]}{reason}{when}")
-        elif v is _MISSING and dec.scope in ("member", "field") and dec.extents:
+        elif v is _MISSING and dec.scope_of(m) in ("member", "field") and dec.extents:
             # A member-scoped measure has one value per member, not one for the resource: its values are the rows.
-            lines.append(f"- {m.name}: one value per {dec.scope}, in {m.unit}, in the rows below")
+            lines.append(f"- {m.name}: one value per {dec.scope_of(m)}, in {m.unit}, in the rows below")
         elif v is _MISSING:
             lines.append(f"- {m.name}: not in the stored result{when}")
         else:

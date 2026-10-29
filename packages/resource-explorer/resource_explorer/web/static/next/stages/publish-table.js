@@ -95,7 +95,8 @@ export function rowHtml(r, signedIn, entityType = 'database') {
     <td class="py-[4px] pr-s2 text-left">${esc(r.analysis)}</td>
     <td class="py-[4px] pr-s2 text-left">${esc(r.measure)} <span class="text-provenance text-ink-muted">· ${esc(r.unit)}</span></td>
     <td class="py-[4px] pr-s2 text-left">${valueHtml(r)}</td>
-    <td class="py-[4px] pr-s2 text-left tnum">${r.as_of ? esc(when(r.as_of)) : '<span class="text-ink-muted">no as-of</span>'}</td>
+    <td class="py-[4px] pr-s2 text-left tnum">${r.as_of ? `${esc(when(r.as_of))}<span class="block text-provenance text-ink-muted" data-as-of-label>as of</span>` : '<span class="text-ink-muted">no as-of</span>'}${
+      r.measured_at ? `<span class="block text-provenance text-ink-muted" data-measured-at>measured ${esc(when(r.measured_at))}</span>` : ''}</td>
     <td class="py-[4px] pr-s2 text-left">${esc((r.confidence && r.confidence.words) || '')}</td>
     <td class="py-[4px] pr-s2 text-left">${esc(r.scope || '—')}</td>
     <td class="py-[4px] pr-s2 text-left">${writesAsHtml(r)}</td>

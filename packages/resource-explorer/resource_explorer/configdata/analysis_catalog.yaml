@@ -3071,6 +3071,7 @@ database_analyses:
         value_field: Stale
         annotation:
           type: ResourceMeasureAnnotation
+        scope: resource
       absence:
         not_measured: 'Not measured: no table statistics are stored for this database, or this table''s
           were not read — never shown as fresh.'
