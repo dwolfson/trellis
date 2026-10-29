@@ -421,3 +421,14 @@ def test_the_shared_reader_says_which_measure_each_row_is():
          "detail": {"additionalProperties": {"resultState": "measured", "measure": "fs_access_activity"}}}])
     _, rows = ar.read_resource_measure_rows(registry, "filesystem", "share-a", "fs_activity")
     assert [r["measure"] for r in rows] == ["", "fs_access_activity"]
+
+
+def test_a_nothing_found_measure_quotes_the_steps_sentence_never_a_zero():
+    dec = dc.declarations("filesystem")["fs_permissions"]
+    name = "world_readable_sensitive"
+    record = {"value": {"World Readable Secret Named Files": 0, "asOf": "2026-10-29"}, "state": "nothing_found",
+              "reason": "", "run": {}, "summary": "World Readable Secret Named Files: (none)"}
+    lines = dc._measure_lines(dec, {}, {}, {name: record})
+    line = next(x for x in lines if x.startswith(f"- {name}:"))
+    assert "World Readable Secret Named Files: (none)" in line
+    assert ": 0 " not in line
