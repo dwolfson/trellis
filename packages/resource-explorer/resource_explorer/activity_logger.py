@@ -1,6 +1,7 @@
 """Convenience helpers for writing activity log entries."""
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -204,8 +205,10 @@ def _declared_stage(entity_type: str, analysis_id: str) -> str:
         for a in get_analyses(entity_type, include_egeria_live=False):
             if a.get("id") == analysis_id and a.get("intent"):
                 return a["intent"]
-    except Exception:  # noqa: BLE001 — the row is still written, with the old default
-        pass
+    except (ImportError, OSError, ValueError, KeyError) as exc:
+        # The catalog could not be read: the row is still written, but the lapse is said, not swallowed.
+        logging.getLogger(__name__).warning(
+            "analysis catalog unreadable for %s/%s (%s); the row says 'assessment'", entity_type, analysis_id, exc)
     return "assessment"
 
 
