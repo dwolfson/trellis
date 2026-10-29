@@ -297,6 +297,10 @@ imported on its own, and steps 4–5 have already built the comparison base.
 
 ## 9. Questions for the owner
 
+**Decision (project owner, 2026-10-29):** all nine recommendations below are accepted as written. Question 7's
+sample-contract import is approved as the plan; the import itself is an Egeria write made in its slice, after a
+peer round, not now.
+
 Each question has a recommendation, and the build can proceed on the recommendations unless the owner says
 otherwise.
 
