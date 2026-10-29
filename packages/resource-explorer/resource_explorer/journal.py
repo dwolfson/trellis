@@ -222,6 +222,40 @@ def last_turn_exchange(exchanges: list[dict]) -> dict | None:
     return None
 
 
+def _as_ofs_of(compile_row: dict | None) -> dict[str, str]:
+    """{section: the as-of the compile declared for it}, never guessed. A declared section's as-of is in
+    `manifest.declared`; a packed section's pointer may carry one. A section with none is left out, not filled in."""
+    manifest = (compile_row or {}).get("manifest") or {}
+    out: dict[str, str] = {}
+    for p in manifest.get("packed") or []:
+        if isinstance(p, dict) and p.get("key") and (p.get("pointer") or {}).get("as_of"):
+            out[p["key"]] = str(p["pointer"]["as_of"])
+    for key, seen in (manifest.get("declared") or {}).items():
+        if isinstance(seen, dict) and seen.get("as_of"):
+            out[key] = str(seen["as_of"])
+    return out
+
+
+def _rows_of(compile_row: dict | None) -> dict[str, list[str]]:
+    """{section: the stored row ids its text was built from}, as the compile recorded them (`manifest.rows_seen`)."""
+    seen = ((compile_row or {}).get("manifest") or {}).get("rows_seen") or {}
+    out: dict[str, list[str]] = {}
+    for key, kinds in seen.items():
+        ids = [i for v in (kinds or {}).values() for i in (v if isinstance(v, list) else (v or {}).get("FULL") or [])]
+        if ids:
+            out[key] = [str(i) for i in ids]
+    return out
+
+
+def _as_of_words(as_ofs: dict[str, str]) -> str:
+    """One as-of when every section agrees, else each section's own (never one picked for them)."""
+    if not as_ofs:
+        return "not recorded"
+    if len(set(as_ofs.values())) == 1:
+        return next(iter(as_ofs.values()))
+    return "differs by section: " + "; ".join(f"{k} {v}" for k, v in as_ofs.items())
+
+
 def _evidence_of(compile_row: dict | None) -> tuple[list[str], str | None, str]:
     """(evidence keys, as-of, confidence words) read from a stored compile, never guessed. A turn with no compile
     says so in the confidence words; an as-of nobody recorded is None, which the body renders as "not recorded"."""
@@ -235,8 +269,7 @@ def _evidence_of(compile_row: dict | None) -> tuple[list[str], str | None, str]:
         key = p.get("key") and (f"{p['key']} ({p['resource_slug']})" if p.get("resource_slug") else p["key"])
         if key and key not in keys:
             keys.append(key)
-    as_ofs = [(p.get("pointer") or {}).get("as_of") for p in packed]
-    as_of = max((a for a in as_ofs if a), default=None)
+    as_of = max(_as_ofs_of(compile_row).values(), default=None)
     gaps = [g.get("key") for g in (manifest.get("gaps") or []) if isinstance(g, dict) and g.get("key")]
     if (manifest.get("coverage") or {}).get("kind") == "none":
         confidence = "no stored analysis answers this question"
@@ -295,6 +328,7 @@ def derive_turn_entry(registry, *, question: str, answer: str, compile_id: str |
             row = None
     keys, as_of, confidence = _evidence_of(row)
     passages = _passages_of(row)
+    as_ofs, rows = _as_ofs_of(row), _rows_of(row)
     if compile_id and row is None:
         confidence = f"compile {compile_id[:8]} is not on file, so confidence is not established"
     scope = f"investigation {investigation}" + (f" - resource {resource_slug}" if resource_slug else "")
@@ -308,15 +342,16 @@ def derive_turn_entry(registry, *, question: str, answer: str, compile_id: str |
         (answer or "").strip(),
         "",
         f"- Scope: {scope}",
-        f"- As of: {as_of or 'not recorded'}",
+        f"- As of: {_as_of_words(as_ofs)}",
         f"- Confidence: {confidence}",
         f"- Evidence: {', '.join(keys) if keys else 'none recorded'}",
         f"- Compile: {compile_id[:8] if compile_id else 'none recorded'}",
         *([f"- Passages: {'; '.join(passages)}"] if passages else []),
+        *([f"- Rows: {'; '.join(f'{k}: ' + ', '.join(v) for k, v in rows.items())}"] if rows else []),
     ])
     turn = {"question": (question or "").strip(), "answer": (answer or "").strip(),
-            "resource_slug": resource_slug or None, "evidence": keys, "as_of": as_of, "confidence": confidence,
-            "scope": scope, "compile_id": compile_id, "passages": passages, "turn_key": turn_key(question, answer)}
+            "resource_slug": resource_slug or None, "evidence": keys, "as_of": as_of, "as_ofs": as_ofs,
+            "rows_seen": rows, "confidence": confidence, "scope": scope, "compile_id": compile_id, "passages": passages, "turn_key": turn_key(question, answer)}
     return {"body": body, "turn": turn}
 
 

@@ -150,7 +150,9 @@ def measure_records(registry, entity_type: str, slug: str, step: str, dec, analy
         state, _words, reason = _envelope_state(detail)
         out[name] = {"value": {"scope": a.get("scope") or "", **(detail.get("resourceProperties") or {})},
                      "state": state, "reason": reason, "run": run, "measured_at": a.get("measured_at") or "",
-                     "summary": a.get("summary") or ""}
+                     "summary": a.get("summary") or "",
+                     # Which stored row this is: the key a stored answer names it by (no integer id is selected).
+                     "row_id": f"step_annotations:{entity_type}/{slug}/{key}/{run}/{a.get('scope') or ''}"}
     return out
 
 

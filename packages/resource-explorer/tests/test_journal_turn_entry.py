@@ -100,7 +100,7 @@ class TestDerivation:
         assert d["body"] == "\n".join([
             "Per chat", "", f"Question: {QUESTION}", "", "Answer:", "", ANSWER, "",
             "- Scope: investigation study - resource docling_core",
-            "- As of: 2026-10-20T08:00:00+00:00",
+            "- As of: differs by section: contributor_stats 2026-10-20T08:00:00+00:00; commit_activity 2026-10-18T08:00:00+00:00",
             "- Confidence: answered from 2 stored results; 1 not measured (bus_factor)",
             "- Evidence: contributor_stats, commit_activity",
             "- Compile: abcdef12",
