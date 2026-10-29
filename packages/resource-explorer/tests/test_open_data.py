@@ -321,6 +321,38 @@ def test_the_egeria_lookup_remembers_a_failed_connect_and_does_not_retry_per_row
     assert len(attempts) == 1
 
 
+def test_the_default_connect_path_imports_and_calls_the_real_metadata_expert_connector(monkeypatch):
+    """No `connect=` injected: the lookup must import SurveyDefinitionReader from where it lives and call
+    `_connect_metadata_expert`. A wrong import path made every row read "could not check" in production."""
+    from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReader
+
+    calls = []
+    expert = object()
+    monkeypatch.setattr(SurveyDefinitionReader, "_connect_metadata_expert", lambda self: calls.append(1) or expert)
+    import resource_explorer.egeria_lookup as lookup_mod
+    seen = []
+    monkeypatch.setattr(lookup_mod, "guid_by_qualified_name", lambda e, qn: seen.append((e, qn)) or "guid-1")
+
+    lookup = match_mod.EgeriaIdentifierLookup()
+    assert lookup("10.1/x") == "guid-1" and lookup("10.1/y") == "guid-1"
+    assert calls == [1]                                              # connected once, through the real class
+    assert seen[0] == (expert, "ExternalIdentifier::10.1/x")
+    assert lookup._failure is None                                   # no ImportError recorded as a connect failure
+
+
+def test_with_no_one_signed_in_the_row_says_why_it_could_not_check(store):
+    """Outside a signed-in request there is no caller identity; the row says so, in the product's own sentence."""
+    from resource_explorer.egeria_clients import NO_CALLER_SENTENCE
+
+    portal = _register_demo(store)
+    got = service.import_datasets(store, _chosen(portal["slug"], "annakarenina"), work_list_name="x",
+                                  transport=FakeTransport(), egeria_lookup=match_mod.EgeriaIdentifierLookup())
+    check = got["rows"][0]["check"]
+    assert check["status"] == "could_not_check"
+    assert "NoCallerIdentity" in check["detail"] and NO_CALLER_SENTENCE[:30] in check["detail"]
+    assert "ImportError" not in check["detail"] and "ModuleNotFoundError" not in check["detail"]
+
+
 def test_two_rows_with_one_doi_import_as_one_dataset_with_two_portals(store):
     a = _register_demo(store, "demo.ckan.org", "Portal A")
     b = _register_demo(store, "mirror.example.org", "Portal B")

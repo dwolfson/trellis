@@ -47,7 +47,7 @@ class EgeriaIdentifierLookup:
                 if self._connect is not None:
                     self._expert = self._connect()
                 else:
-                    from resource_explorer.surveyors.egeria_survey_reader import SurveyDefinitionReader
+                    from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReader
 
                     self._expert = SurveyDefinitionReader()._connect_metadata_expert()
             except Exception as exc:
