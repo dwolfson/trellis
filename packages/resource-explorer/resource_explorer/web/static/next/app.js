@@ -8988,7 +8988,7 @@ async function loadPane() {
   el.innerHTML = `${subTabsHtml()}
     <div id="resource-header">${resourceHeaderHtml(slug)}</div>
     <div class="mt-s3 flex flex-wrap items-baseline gap-s3 text-provenance">
-      <span id="answered-count" class="tnum text-caveat text-ink-muted">reading the questions for ${esc(slug || 'this resource')} · none back yet</span>
+      <span id="answered-count" class="tnum text-caveat text-ink-muted">reading which ${esc(stageLabel())} questions apply to ${esc(slug || 'this resource')} and what is stored for each · none back yet</span>
     </div>
     <div id="state-legend" class="mt-s2 flex flex-wrap items-baseline gap-s3 text-caveat"></div>
     <div class="my-s3 h-px bg-rule"></div>

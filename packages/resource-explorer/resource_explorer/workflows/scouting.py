@@ -237,7 +237,20 @@ def build_question_checklist(
     parametrized over entity_type so `projects.py`, `databases.py` and
     `filesystems.py` can each expose it as a thin wrapper — same shape as
     `build_analysis_last_activity`/`build_survey_results` above it.
+
+    A database checklist runs inside one `db_derived.one_read()`: each question's has_data check reads the same
+    recomputed `run_db_derived`, which used to be recomputed per question (nine times, 16.7s of a 23.9s Discovery
+    load on `laz_local_adventureworks`, 2026-10-29; 1.9s once).
     """
+    if entity_type == "database":
+        from resource_explorer.surveyors.database.db_derived import one_read
+
+        with one_read():
+            return _build_question_checklist(registry, entity_type, slug, phase, perspectives, purposes)
+    return _build_question_checklist(registry, entity_type, slug, phase, perspectives, purposes)
+
+
+def _build_question_checklist(registry, entity_type, slug, phase, perspectives, purposes) -> dict:
     from resource_explorer.surveyors.question_catalog_reader import get_questions
 
     entries = get_questions(entity_type, phase=phase, perspectives=perspectives or None, purposes=purposes or None)

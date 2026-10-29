@@ -39,9 +39,12 @@ of an inferred finding is computed from how much signal was actually available
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import logging
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -388,6 +391,40 @@ def _resolve_table_surveyed_at(
         )
         return None, []
     return at, rows
+
+
+#: One read's memo: `run_db_derived` results and peers' stored inputs, for as long as one read lasts (G10,
+#: 2026-10-29). Measured on `laz_local_adventureworks`: one Discovery question took up to 27s because every
+#: analysis id behind it re-ran `run_db_derived` twice (its reader and its headline), and each run loaded all
+#: 21 registered databases' stored rows twice over (`fingerprint_database`, then `fingerprint_by_container`),
+#: about 3,500 registry round trips per question, all the same snapshot. Request-scoped on purpose: stored rows
+#: can be rewritten in place (`write_detail_rows` deletes and re-inserts a `surveyed_at`; an unregister deletes),
+#: so nothing outlives the read that opened it, and a later read always sees what is stored then.
+_READ_MEMO: ContextVar[dict | None] = ContextVar("db_derived_read_memo", default=None)
+
+
+@contextmanager
+def one_read():
+    """Share `run_db_derived` results and peer inputs until this block ends. Nested blocks join the outer one."""
+    if _READ_MEMO.get() is not None:
+        yield
+        return
+    token = _READ_MEMO.set({})
+    try:
+        yield
+    finally:
+        _READ_MEMO.reset(token)
+
+
+def _peer_inputs(registry, peer_slug: str) -> DerivedInputs:
+    """A peer's current stored inputs, loaded once per read. Callers only read them (signatures)."""
+    memo = _READ_MEMO.get()
+    if memo is None:
+        return load_inputs(registry, peer_slug)
+    key = ("peer", id(registry), peer_slug)
+    if key not in memo:
+        memo[key] = load_inputs(registry, peer_slug)
+    return memo[key]
 
 
 def load_inputs(
@@ -2149,7 +2186,7 @@ def fingerprint_database(registry, inputs: DerivedInputs) -> dict:
         )
         if not peer_slug or peer_slug == inputs.slug:
             continue
-        peer_inputs = load_inputs(registry, peer_slug)
+        peer_inputs = _peer_inputs(registry, peer_slug)
         peer_tables, peer_columns = _signature(peer_inputs.columns, peer_inputs.tables)
         if not peer_columns and not peer_tables:
             skipped.append(peer_slug)
@@ -4371,8 +4408,8 @@ def fingerprint_by_container(registry, inputs: DerivedInputs, containment) -> di
     Zero-fetch, like everything else here: peers' signatures come from their
     own stored rows. It walks the peer list a second time (after
     `fingerprint_database`) rather than threading container state through that
-    function, which is a real cost in registry reads and no fetch at all —
-    worth it to leave the whole-database check exactly as it was.
+    function; the peers' stored inputs come from `_peer_inputs`, so within one
+    run (and one read) the second walk costs no further registry reads.
     """
     containers = _containers(inputs, containment)
     signatures: dict[str, tuple[set[str], set[str]]] = {}
@@ -4438,7 +4475,7 @@ def fingerprint_by_container(registry, inputs: DerivedInputs, containment) -> di
             # at this grain" is not "no match".
             undeclared_peers.append(peer_slug)
             continue
-        peer_inputs = load_inputs(registry, peer_slug)
+        peer_inputs = _peer_inputs(registry, peer_slug)
         peer_containers = _containers(peer_inputs, peer_containment)
         if not peer_containers:
             continue
@@ -5194,7 +5231,22 @@ def run_db_derived(
     resource could satisfy. That is the designed degraded mode, not a stub:
     §16.6 puts `preliminary_fit` in Phase 1 explicitly *"before [the DataLens]
     exists, as a comparison across resources"*.
+
+    Inside `one_read()` a repeat call with the same arguments returns a copy of
+    the first result (callers mutate what they get back); see `_READ_MEMO`.
     """
+    with one_read():
+        memo = _READ_MEMO.get()
+        key = ("run", id(registry), slug, surveyed_at, source)
+        if lens is None and key in memo:
+            return copy.deepcopy(memo[key])
+        result = _run_db_derived_once(registry, slug, surveyed_at=surveyed_at, source=source, lens=lens)
+        if lens is None:
+            memo[key] = copy.deepcopy(result)
+        return result
+
+
+def _run_db_derived_once(registry, slug: str, *, surveyed_at, source, lens) -> dict:
     inputs = load_inputs(registry, slug, surveyed_at, source)
 
     fingerprint = fingerprint_database(registry, inputs)
