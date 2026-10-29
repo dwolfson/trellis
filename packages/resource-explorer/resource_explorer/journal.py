@@ -255,6 +255,23 @@ def _evidence_of(compile_row: dict | None) -> tuple[list[str], str | None, str]:
     return keys, as_of, confidence
 
 
+def _passages_of(compile_row: dict | None) -> list[str]:
+    """The ids (walk run | path | section) of the narrative passages a stored compile packed, never guessed: an entry
+    that names no passage adds nothing. Two README.md files differ here by path, which `Evidence` keys alone cannot say."""
+    packed = [p for p in ((compile_row or {}).get("manifest") or {}).get("packed") or [] if isinstance(p, dict)]
+    out: list[str] = []
+    for p in packed:
+        ptr = p.get("pointer") if isinstance(p.get("pointer"), dict) else {}
+        pid = p.get("passage_id") or ptr.get("passage_id")
+        walk_run, path = p.get("walk_run") or ptr.get("walk_run"), p.get("file_path") or ptr.get("file_path")
+        if not pid and walk_run and path:
+            from resource_explorer.surveyors.filesystem.narrative_docs import passage_id
+            pid = passage_id(walk_run, path, p.get("section") or ptr.get("section") or "")
+        if pid and pid not in out:
+            out.append(pid)
+    return out
+
+
 def turn_key(question: str, answer: str) -> str:
     """The dedupe identity of a turn: the same question and answer always give the same key. (Not the compile id
     alone: a compile id hashes the compile's inputs, so two different questions can share one.)"""
@@ -273,6 +290,7 @@ def derive_turn_entry(registry, *, question: str, answer: str, compile_id: str |
         except Exception:
             row = None
     keys, as_of, confidence = _evidence_of(row)
+    passages = _passages_of(row)
     if compile_id and row is None:
         confidence = f"compile {compile_id[:8]} is not on file, so confidence is not established"
     scope = f"investigation {investigation}" + (f" - resource {resource_slug}" if resource_slug else "")
@@ -290,10 +308,11 @@ def derive_turn_entry(registry, *, question: str, answer: str, compile_id: str |
         f"- Confidence: {confidence}",
         f"- Evidence: {', '.join(keys) if keys else 'none recorded'}",
         f"- Compile: {compile_id[:8] if compile_id else 'none recorded'}",
+        *([f"- Passages: {'; '.join(passages)}"] if passages else []),
     ])
     turn = {"question": (question or "").strip(), "answer": (answer or "").strip(),
             "resource_slug": resource_slug or None, "evidence": keys, "as_of": as_of, "confidence": confidence,
-            "scope": scope, "compile_id": compile_id, "turn_key": turn_key(question, answer)}
+            "scope": scope, "compile_id": compile_id, "passages": passages, "turn_key": turn_key(question, answer)}
     return {"body": body, "turn": turn}
 
 

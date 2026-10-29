@@ -142,7 +142,7 @@ def test_the_run_reads_the_walks_narratives_and_stores_proposals_by_section(regi
     assert {m["file_path"] for _, m in rows} == {"survey/README.md", "codebook.txt"}
     assert {m["section"] for _, m in rows if m["file_path"] == "survey/README.md"} == {"Household survey", "Variables"}
     assert {m["section"] for _, m in rows if m["file_path"] == "codebook.txt"} == {"Codebook", "Regions"}
-    assert all(m["status"] == "proposal" and m["stated_by"] in ("README.md", "codebook.txt") for _, m in rows)
+    assert all(m["status"] == "proposal" and m["stated_by"] == f'{m["file_path"]} § {m["section"]}' for _, m in rows)
     assert all(m["resource_type"] == "filesystem" and m["walk_run"] == out["walk_run"] for _, m in rows)
     # the heading leads each passage, so a search for it finds the section
     assert any(t.startswith("Variables\n") and "income" in t for t, _ in rows)
@@ -273,3 +273,27 @@ def test_the_routes_price_refuse_and_run(api, registry, tmp_path, monkeypatch, s
     from resource_explorer.folder_survey_view import folder_survey_view
 
     assert folder_survey_view(registry, "tree")["narrative_docs"]["run"]["collection"] == "fs_tree_narratives"
+
+
+def test_stated_by_is_the_path_under_the_root_and_the_section_never_the_bare_name():
+    assert nd.stated_by_of("docs/ingest/README.md", "Inputs") == "docs/ingest/README.md § Inputs"
+    assert nd.stated_by_of("bitol/README.md") == "bitol/README.md"
+    assert nd.stated_by_of("bitol/README.md") != nd.stated_by_of("secrets/README.md")
+    assert nd.passage_id("run1", "a/README.md", "Inputs") == "run1|a/README.md|Inputs"
+    meta = [m for _, m in nd.chunks_for("# T\n\nbody words here\n", rel_path="bitol/README.md", modified_at="", slug="s", run="r1")]
+    assert meta and all(m["stated_by"].startswith("bitol/README.md") for m in meta)
+
+
+def test_a_chat_journal_entry_stores_the_passage_id_of_a_cited_passage():
+    from resource_explorer import journal
+
+    class Reg:
+        def get_compile(self, cid):
+            return {"manifest": {"packed": [{"key": "narratives", "walk_run": "r1", "file_path": "a/README.md",
+                                             "section": "Inputs"}], "coverage": {"kind": "some"}}}
+
+    e = journal.derive_turn_entry(Reg(), question="q", answer="a", compile_id="c" * 16, investigation="i", resource_slug="s")
+    assert e["turn"]["passages"] == ["r1|a/README.md|Inputs"]
+    assert "Passages: r1|a/README.md|Inputs" in e["body"]
+    none = journal.derive_turn_entry(Reg(), question="q", answer="a", compile_id=None, investigation="i", resource_slug=None)
+    assert none["turn"]["passages"] == [] and "Passages" not in none["body"]

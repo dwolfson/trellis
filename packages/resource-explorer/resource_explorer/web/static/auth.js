@@ -67,6 +67,9 @@ const Auth = (() => {
   // and being wrong means starting the app into a page where every panel is a
   // failed fetch, which is the broken page this exists to prevent.
   let loginRequired = true;
+  // Also assumed off until the server says otherwise: "Continue without signing in" is only honest where
+  // reading without signing in works.
+  let anonymousRead = false;
 
   async function loadPolicy() {
     try {
@@ -74,6 +77,7 @@ const Auth = (() => {
       if (!r.ok) return;
       const data = await r.json();
       loginRequired = data.login_required !== false;
+      anonymousRead = data.anonymous_read === true;
     } catch {
       // Server unreachable — keep the safe default.
     }
@@ -304,6 +308,9 @@ const Auth = (() => {
     }
 
     await prefillLoginDefaults();
+    // With anonymous read off the button could only do nothing (hideLogin refuses), so it is not offered.
+    const dismiss = document.getElementById('login-dismiss-btn');
+    if (dismiss) dismiss.style.display = anonymousRead ? '' : 'none';
     if (loginRequired) {
       appStartDeferred = true;
       showLogin('Sign in with your Egeria user id to continue.');

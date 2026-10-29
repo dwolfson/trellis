@@ -136,7 +136,7 @@ class TestFrameCheckIsDerivedFromClass:
         app = _app()
         assert "stageDef?.frame" not in app
         assert "stageDef.frame" not in app
-        assert "stageDef?.class === 'frame'" in app
+        assert "stageDef.class === 'frame'" in app
 
 
 class TestInvestigationHeaderScopeVisibility:

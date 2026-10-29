@@ -143,7 +143,7 @@ def test_a_pre_reset_proof_never_reads_catalogued(reg):
     s1 = st["schemas"]["s1"]
     assert s1["state"] == "reset" and s1["words"] == WORDS
     assert st["tables"]["s1.t"]["words"] == f"as its schema: {WORDS}"
-    assert WORDS in st["header"]["text"] and "0 in Egeria" in st["header"]["text"]
+    assert WORDS in st["header"]["text"] and "0 in Egeria" not in st["header"]["text"]
     assert st["database"] is None
     assert "✓" not in cc.read_back_words(st["read_back"])
 

@@ -680,7 +680,7 @@ class TestDatabaseResourceStateSources:
         ))
         self._db(reg, "db_cat_no")
         resolver, subject = DATABASE_RESOURCE_STATE_SOURCES[
-            "Has this resource already been catalogued in Egeria, and when?"]
+            "Has this resource already been cataloged in Egeria, and when?"]
         fl = FactLayer(registry=reg, resource_type="database")
 
         yes = fl._resource_state_fact("db_cat_yes", resolver, subject)

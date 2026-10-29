@@ -816,6 +816,17 @@ const tone = (st, ground = 'paper') =>
  * Chrome
  * ════════════════════════════════════════════════════════════════════════ */
 
+/** Who is signed in, as /api/auth/me confirmed ('' until it names someone). */
+function signedInUser() {
+  return (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
+}
+
+/** The header word when /api/auth/me has not named anyone: "not signed in" only when it said so; "checking sign-in…"
+ *  while it has not answered (state.me is null), never a confident "not signed in" about something not yet asked. */
+function unconfirmedWord() {
+  return state.me && state.me.authenticated === false ? 'not signed in' : 'checking sign-in…';
+}
+
 export function renderTopBar() {
   // The name is the resource's menu button (REPLY-DESIGNER-RESOURCE-CONTROLS-
   // PLACEMENT.md §1). `data-slug` carries the bare slug for feedback.js, which
@@ -860,7 +871,7 @@ export function renderTopBar() {
     scopeEl.title = inv?.egeria_project_qualified_name || '';
   }
   $('whoami').textContent =
-    (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || 'not signed in';
+    (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || unconfirmedWord();
   $('activity-count').textContent =
     state.counts.activity === null ? '–' : state.counts.activity;
   wireActivityButton();
@@ -875,7 +886,7 @@ function wireWhoamiButton() {
   const btn = $('whoami');
   if (!btn) return;
   whoamiButtonWired = true;
-  btn.addEventListener('click', () => openConnectionPopover(document, btn, { me: state.me }));
+  btn.addEventListener('click', () => openConnectionPopover(document, btn, { me: { user_id: signedInUser() } }));
 }
 
 /** Activity is a persistent header surface, not a STAGES entry (see
@@ -2262,7 +2273,7 @@ export function renderSidebar() {
     </div>
 
     <div class="mb-[3px] text-caps uppercase tracking-caps text-chrome-muted"
-      title="The current UI counts these over the investigation's working set instead; /next counts every registered repo, so the two do not match">
+      title="The current UI counts these over the investigation's working set instead; this page counts every registered repo, so the two do not match">
       Disposition · ${state.resourceType === 'repo' ? 'all registered repos' : state.resourceType === 'db' ? 'databases' : 'filesystems'}
     </div>
     <div class="mb-s2 flex flex-wrap gap-[5px] text-caps">
@@ -4697,7 +4708,7 @@ function scopeActHtml(scopeAct, attr, cls) {
 }
 
 function recordActsHtml(r, n, scopeAct = { invName: '', inScope: false }) {
-  const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
+  const me = signedInUser();
   return `<div data-record-acts class="mt-s2 text-caveat">
     <div class="text-ink"><span data-record-scope>The whole report · <span class="tnum">${n}</span> row${n === 1 ? '' : 's'}</span>
       <span class="text-ink-muted">· as recorded ${esc(String(r.requested_at).slice(0, 10))}${r.out_of_date ? ' · its evidence has since moved — what these create will say so' : ''}</span></div>
@@ -4818,7 +4829,7 @@ export function renderJournalWrite(slug, entityType) {
   requireKind('renderJournalWrite', entityType);
   const host = $('journal-write');
   if (!host) return;
-  const who = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
+  const who = signedInUser();
   // An AUDIENCE is the whole Egeria vocabulary, not the filter row's
   // subset: someone is a Data Owner whether or not any analysis is tagged
   // with it today. (The two are the same twelve at the moment; the point
@@ -7307,7 +7318,7 @@ export function wireSelection(out, { slug, analysisId, metric, data }) {
     const f = facetLabel();
     return `${project?.display_name || slug} — ${n} ${n === 1 ? singular(what) : what}${f ? `, ${f}` : ''}`;
   }
-  const me = (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
+  const me = signedInUser();
   const what = (metric || data.metric || 'members').replace(/_/g, ' ');
   async function save(members, facet, name, status) {
     status.textContent = '…';
@@ -8654,8 +8665,11 @@ export function renderLegend() {
     </span>`);
 
   if (pending) {
-    items.push(`<span class="text-ink-muted">
-      <span class="tnum">${pending}</span> still loading</span>`);
+    // What it waits for and how many are back: a bare "loading" gives no reason for the wait.
+    const total = state.questions.length;
+    items.push(`<span class="text-ink-muted" data-legend-pending>
+      <span class="tnum">${pending}</span> of <span class="tnum">${total}</span> questions still being read ·
+      <span class="tnum">${total - pending}</span> back</span>`);
   }
 
   // The ordering legend sits beside the state key, not inside it: the key
@@ -8919,12 +8933,22 @@ async function loadPane() {
   // reached) — kept as the fallback for a FUTURE frame-class stage added
   // without its own dedicated branch, same defensive shape as `!built`
   // covering a stage nobody has written a renderer for yet.
-  if (stageDef?.class === 'frame' || !stageDef?.built) {
+  // A stage id nobody defined (?stage=admin, a stale link): say so and name the stages that exist, rather than
+  // throwing on `.label` and leaving the panel blank.
+  if (!stageDef) {
     el.innerHTML = paneMessage(
-      `${stageDef.label} · not in /next`,
+      `no stage named ${state.stage}`,
+      `The stages are ${STAGES.map((s) => s.id).join(', ')}.`);
+    bindSubTabs();
+    renderPerspectiveRow();
+    return;
+  }
+  if (stageDef.class === 'frame' || !stageDef.built) {
+    el.innerHTML = paneMessage(
+      `${stageDef.label} · not built yet`,
       stageDef.class === 'frame'
         ? 'This is a frame, not a built pane, and has no dedicated renderer of '
-          + 'its own in /next yet.'
+          + 'its own yet.'
         : 'This stage has no rows in the analysis catalog or the activity log, so '
           + 'there is nothing for a questions pane to show. It is marked here '
           + 'rather than hidden, which is the point.');
@@ -8960,7 +8984,7 @@ async function loadPane() {
   el.innerHTML = `${subTabsHtml()}
     <div id="resource-header">${resourceHeaderHtml(slug)}</div>
     <div class="mt-s3 flex flex-wrap items-baseline gap-s3 text-provenance">
-      <span id="answered-count" class="tnum text-caveat text-ink-muted">loading…</span>
+      <span id="answered-count" class="tnum text-caveat text-ink-muted">reading the questions for ${esc(slug || 'this resource')} · none back yet</span>
     </div>
     <div id="state-legend" class="mt-s2 flex flex-wrap items-baseline gap-s3 text-caveat"></div>
     <div class="my-s3 h-px bg-rule"></div>
@@ -9722,7 +9746,7 @@ function updateAnsweredCount() {
   }).length;
   const pending = total - settled.length;
   el.innerHTML = `<span class="tnum">${answered}</span> of <span class="tnum">${total}</span> answered`
-    + (pending ? ` · <span class="tnum">${pending}</span> still loading` : '')
+    + (pending ? ` · still reading <span class="tnum">${pending}</span> · <span class="tnum">${settled.length}</span> back` : '')
     + ` · ${stageLabel()}`;
 }
 
@@ -10277,7 +10301,7 @@ async function rerun(entry, i, { background = false, skipPlanCheck = false, forc
     const msg = err.name === 'PollTimeout'
       // Stopped watching is NOT failed. Saying "failed" here would report a
       // fact about this browser as a fact about the run.
-      ? `Still running after five minutes — /next stopped watching. The run itself has not failed; check Activity in the current UI.`
+      ? `Still running after five minutes — the page stopped watching. The run itself has not failed; check Activity in the current UI.`
       : `The run could not be started: ${err.message}`;
     state.answers.set(entry.question, { __error: msg });
     replaceRow(entry, i, state.answers.get(entry.question));

@@ -225,6 +225,16 @@ def _to_summary(db) -> DatabaseSummary:
     publish_status = describe_publish_status(
         registry, "database", db.slug, getattr(db, "egeria_asset_guid", "") or "")
 
+    # The registry's cached GUID can be empty while Egeria holds the element (a reset cleared it and the
+    # re-catalogue recorded the element as a proof row, not here). The Curate band reads the proof rows; the
+    # header must read the same source, or it says "not published" over a band that says published.
+    is_published = publish_status["is_published"]
+    if not is_published and not publish_status["note"] and not (getattr(db, "egeria_asset_guid", "") or ""):
+        from resource_explorer.catalogue_commit import published_element_of
+        is_published = published_element_of(registry, db.slug) is not None
+    # Likewise "never surveyed": the newest valid survey row is the evidence, the cached stamp only a copy of it.
+    last_surveyed = db.last_surveyed_at or (str(latest.get("surveyed_at") or "") if latest else "")
+
     return DatabaseSummary(
         slug=db.slug,
         display_name=db.display_name,
@@ -234,7 +244,7 @@ def _to_summary(db) -> DatabaseSummary:
         database_name=db.database_name,
         description=db.description,
         status=db.status.value,
-        last_surveyed_at=db.last_surveyed_at or "",
+        last_surveyed_at=last_surveyed,
         schema_count=latest.get("schema_count") if latest else None,
         table_count=latest.get("table_count") if latest else None,
         column_count=latest.get("column_count") if latest else None,
@@ -254,7 +264,7 @@ def _to_summary(db) -> DatabaseSummary:
         working_set_hidden=registry.is_working_set_hidden("database", db.slug),
         credential_capability=credential_capability,
         credential_capability_at=credential_capability_at,
-        is_published=publish_status["is_published"],
+        is_published=is_published,
         egeria_publish_note=publish_status["note"],
     )
 

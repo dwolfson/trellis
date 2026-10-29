@@ -192,7 +192,7 @@ repo_questions:
   catalog_history: ''
   retired: false
 - id: Q-0005
-  question: Has this resource already been catalogued in Egeria, and when?
+  question: Has this resource already been cataloged in Egeria, and when?
   stage: Discovery
   perspectives:
   - Governance
@@ -1549,7 +1549,7 @@ database_questions:
     section 1; the CSV row is the repository''s answer and was being shown unchanged here.'
   retired: false
 - id: Q-0005
-  question: Has this resource already been catalogued in Egeria, and when?
+  question: Has this resource already been cataloged in Egeria, and when?
   stage: Discovery
   perspectives:
   - Governance
@@ -3092,7 +3092,7 @@ filesystem_questions:
     section 1; the CSV row is the repository''s answer and was being shown unchanged here.'
   retired: false
 - id: Q-0005
-  question: Has this resource already been catalogued in Egeria, and when?
+  question: Has this resource already been cataloged in Egeria, and when?
   stage: Discovery
   perspectives:
   - Governance

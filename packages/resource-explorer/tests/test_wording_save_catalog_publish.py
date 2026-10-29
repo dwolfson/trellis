@@ -64,7 +64,7 @@ def _docstring_ids(tree):
 PY_ALLOW = (
     "ADD COLUMN kind TEXT NOT NULL DEFAULT 'catalogue'",
     "TEXT NOT NULL DEFAULT 'catalogue'",  # the same stored default, as registry._init_schema's column list spells it
-    "Has this resource already been catalogued in Egeria, and when?",
+    "Has this resource already been cataloged in Egeria, and when?",
 )
 
 
@@ -295,7 +295,7 @@ def test_the_group_changes_sql_survives_the_postgres_translator_untouched_by_its
 
 #: Prose literals in tests that may keep the UK spelling, each for a stated reason.
 TEST_UK_ALLOW = (
-    "Has this resource already been catalogued in Egeria, and when?",   # the question catalog's stored KEY (a stored-answer key)
+    "Has this resource already been cataloged in Egeria, and when?",   # the question catalog's stored KEY (a stored-answer key)
     "- catalogued: true",   # test_fact_answer_rendering: a JS fixture KEY (`{catalogued: true}`) echoed by a formatter, not wording
 )
 

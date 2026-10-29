@@ -13,7 +13,8 @@ takes the SAME files, the ones that walk recorded in `survey_data["folder_narrat
 * split into sections on its own headings (Markdown `#` and underlined titles, reStructuredText underlined titles), each
   section cut into overlapping word windows (`DocParser`'s sizes), and stored with the file's path, its folder, the
   section's heading, the file's modified time and the walk run as its evidence, and `status: proposal`,
-  `stated_by: <file name>`: nothing a file says becomes a fact here (the two-channel rule; a person confirms on Curate);
+  `stated_by: <path under the root> § <section>` (never the bare file name: three README.md files must not cite
+  alike): nothing a file says becomes a fact here (the two-channel rule; a person confirms on Curate);
 * the collection is one per file system, `fs_<slug>_narratives`, replaced whole on each run, so a file removed since the
   last run leaves nothing behind.
 
@@ -163,6 +164,20 @@ def split_sections(text: str, file_name: str = "") -> list[tuple[str, str]]:
     return [(h, b) for h, b in out if b or h]
 
 
+PASSAGE_SEP = " § "
+
+
+def stated_by_of(rel_path: str, section: str = "") -> str:
+    """How a passage cites its source: the path relative to the file system's root, then ` § ` and the section
+    heading (no heading, no suffix). The bare file name is only a display short form (`PurePosixPath(...).name`)."""
+    return f"{rel_path}{PASSAGE_SEP}{section}" if section else rel_path
+
+
+def passage_id(walk_run: str, rel_path: str, section: str = "") -> str:
+    """The id of one cited passage: the walk run that found the file, its path under the root, its section."""
+    return f"{walk_run}|{rel_path}|{section}"
+
+
 def chunks_for(text: str, *, rel_path: str, modified_at: str, slug: str, run: str,
                parser=None) -> list[tuple[str, dict]]:
     """[(text, metadata)] for one file: each section cut into word windows, each window's text led by its heading."""
@@ -178,7 +193,7 @@ def chunks_for(text: str, *, rel_path: str, modified_at: str, slug: str, run: st
             out.append((f"{heading}\n{window}" if heading else window, {
                 "file_path": rel_path, "folder": "" if folder == "." else folder, "section": heading,
                 "section_index": s_index, "chunk_index": c_index, "modified_at": modified_at or "",
-                "stated_by": name, "status": "proposal", "source": "narrative_file", "type": "narrative",
+                "stated_by": stated_by_of(rel_path, heading), "status": "proposal", "source": "narrative_file", "type": "narrative",
                 "resource_type": "filesystem", "project_slug": slug, "walk_run": run,
             }))
     return out
