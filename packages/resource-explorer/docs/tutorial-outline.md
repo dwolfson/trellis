@@ -13,8 +13,14 @@
   - **(code)**: read in the app's source on 2026-10-29, not seen on a screen. This writer's browser was not signed in.
     The prose writer must check these on the screen;
   - **(not yet confirmed)**: from the user guide, which says it could not open that screen either.
-- Decisions the owner needs to make before prose starts are marked **Owner decision needed**. There are six. Section
-  8 lists them together.
+- Decisions the owner needs to make before prose starts are marked **Owner decision needed**. Section 8 lists them
+  with the rulings given so far.
+
+**This is the Core tutorial.** It is one of three (owner ruling, 2026-10-29):
+
+- **Getting Started:** install and configure Trellis and Resource Explorer. Not written yet.
+- **Core (this one):** use Resource Explorer on your own data sources, from sign-in to publishing.
+- **Advanced:** Automate, adding your own analyses and other extensions, Admin, and more. Not written yet.
 
 ---
 
@@ -35,14 +41,15 @@ used Resource Explorer or Egeria.
 7. Ask a question in plain words, and check which stored results the answer came from.
 8. Decide what to send to the Egeria catalog, send it, and check that it arrived.
 9. Compare several data sources side by side in a work list.
-10. Know which settings an administrator controls, and where to go next.
+10. Know where to go next.
 
-**How long it takes.** About three hours in total, in parts of 10 to 25 minutes. Each part ends at a natural place to
+**How long it takes.** About two and a half hours in total, in parts of 10 to 25 minutes. Each part ends at a natural place to
 stop. A sign-in lasts about an hour, so the reader will be asked to sign in again at least once. Part 2 says so before
 it happens.
 
-**What the tutorial does not cover.** Adding your own analyses, questions or survey definitions; the command line;
-running or installing Resource Explorer or Egeria. "Where to go next" (part 13) points to each.
+**What the tutorial does not cover.** Installing and configuring Trellis, Resource Explorer or Egeria (the Getting
+Started tutorial). Automate, adding your own analyses, questions or survey definitions, and Admin (the Advanced
+tutorial). The command line. "Where to go next" (part 13) points to each.
 
 ---
 
@@ -62,7 +69,7 @@ running or installing Resource Explorer or Egeria. "Where to go next" (part 13) 
 | 10 | Curate: decide what goes to the catalog | yes | yes | a surveyed data source | yes, in Resource Explorer only |
 | 11 | Publish to Egeria and check that it arrived | yes, and writable | yes | a curated data source | **yes, in Egeria** |
 | 12 | Work lists: compare several data sources | yes | yes | three or more data sources of one kind | yes, in Resource Explorer only |
-| 13 | Settings an administrator controls, and where to go next | yes | yes; some pages need an admin | no | no |
+| 13 | Where to go next | no | no | no | no |
 
 **Why this order.**
 
@@ -73,8 +80,9 @@ running or installing Resource Explorer or Egeria. "Where to go next" (part 13) 
   of being sorted afterwards.
 - **One data source end to end, the others briefly (4 to 11).** The reader follows one database through every stage.
   A database is the kind of source this reader knows best. Repositories and file systems are added in part 4 and get
-  a short "how this differs" note in later parts. **Owner decision needed (D1):** the main example. This outline
-  proposes a database; the user guide was written repository-first.
+  a short "how this differs" note in later parts. **Decided (D1):** a database is the main example. The reader is told
+  early that each kind of data source has its own Curate page, but the structure is the same, and part 10 shows all
+  three.
 - **The map of stages before the stages (5 before 6 to 10).** The six stages are the spine of the screen. The reader
   sees the whole strip once, with one sentence per stage, before going into any of them.
 - **Read before you change (6 to 8 before 10 and 11).** The reader learns what was measured before deciding what to
@@ -85,13 +93,14 @@ running or installing Resource Explorer or Egeria. "Where to go next" (part 13) 
   the reader presses Publish (seen). Keeping these as two parts makes that rule hard to miss.
 - **Work lists late (12).** A work list compares several data sources against one stage's questions. It needs both
   several data sources and an understanding of a stage.
-- **Admin last (13).** Most of what is under Admin is configuration a reader meets, not something they do. It sits
-  beside "where next".
+- **Where next last (13).** It points to the Getting Started and Advanced tutorials and the guides. The brief asked
+  for "admin settings a user meets"; the owner moved Admin to the Advanced tutorial (D5).
 
 **The setup the tutorial assumes.** A running Egeria with the Coco Pharmaceuticals sample, a Resource Explorer
 connected to it, an Egeria user id and password for the reader, one PostgreSQL database the reader can reach with a
-read-only account, one folder Egeria can read, and one public GitHub repository. **Owner decision needed (D2):** which
-named sample the tutorial uses, so every reader sees the same screens (see gap G1).
+read-only account, one folder Egeria can read, and one public GitHub repository. **Decided (D2):** the tutorial names
+one sample setup, so every reader sees the same screens (gap G1). The Getting Started tutorial sets it up. Which
+database, folder and repository it uses is still to be chosen.
 
 ---
 
@@ -189,9 +198,10 @@ id and password.
      to you; Experiment also asks for a hypothesis. Do not choose a private kind for this tutorial: a private
      investigation cannot publish a database or a file system yet (seen, user guide).
 6. For **Where it lives**, choose **Ad-hoc** ("Stays local. Nothing is written to Egeria") (code).
-   - *Explain:* the other choice, "Create in Egeria", is the default and creates a project in Egeria at once. For
-     learning, keep it local; you can promote it later. **Owner decision needed (D3):** whether the tutorial teaches
-     Ad-hoc or the default (see gap G3).
+   - *Explain:* Ad-hoc is the simplest place to start. The investigation stays in Resource Explorer, and you can
+     promote it to Egeria later. The other choice, "Create in Egeria", is the default; it creates a project in Egeria
+     at once so others can share it. The dialog's default is "Create in Egeria", so the reader must change it
+     (gap G3). **Decided (D3).**
 7. Click **Create**.
    - *You see:* the new investigation's page, with **Make current**, Edit, Reclassify…, Suspend and Close, and a "Next
      steps" box (seen on another investigation).
@@ -376,9 +386,7 @@ can read the folder ("✓ Egeria can read <path>"), counts, the deepest folders 
 4. On that row, point at **run** and explain what it would do. The reader may press it on their own database.
 5. Find a row marked ◌ and read it.
    - *Explain:* ◌ means there is no way to answer it automatically yet. It is not a failure.
-6. Click **🔔 notify me** on one row and explain: it watches the answer and tells you when it changes, but only if the
-   analysis runs on a schedule (part 13, Automate). **Owner decision needed (D5):** keep this here, or leave Automate
-   out of the tutorial.
+   - "🔔 notify me" on a row is left to the Advanced tutorial (D5).
 
 **What can go wrong.** Slow panes (gap G10). A database Discovery tab took 9 to 15 seconds in the audit.
 
@@ -471,6 +479,15 @@ rating and notes.
    - *Explain:* your rating and notes are published under your name, publicly. Each person has one rating per data
      source.
 
+7. Open the Curate page of your repository, then of your file system, and compare them with the database's (D1).
+   - *Explain:* every kind has the same shape: what is chosen for publishing, how to find it (tags and group), what
+     people say (ratings and notes), and one Publish band at the foot. What differs is what you choose from.
+   - *Repository:* three tabs, "Describe and publish", "Contents" (files and folders, Include or Leave out) and
+     "Structure" (its components and dependencies) (seen, user guide).
+   - *Database:* schemas and tables to include, the three chips, glossary terms, quality checks (seen). The exact tab
+     layout must be read on the screen (gap G14).
+   - *File system:* tags, group, ratings and notes, and a Publish that "attaches the root folder only" (seen).
+
 **What can go wrong.**
 
 - "not permitted · <reason>": Egeria's security does not let you change this element (seen, user guide).
@@ -547,36 +564,24 @@ your investigation.
 
 ---
 
-### Part 13 — Settings an administrator controls, and where to go next
+### Part 13 — Where to go next
 
-**Goal.** Know which settings shape what you see, who changes them, and where to read further.
+**Goal.** Know what to read or do after this tutorial.
 
-**Before you start.** Nothing. Some pages need an administrator.
+**Before you start.** Nothing.
 
-**Steps.**
+**Content (no steps).**
 
-1. Click **Admin** in the header.
-   - *You see:* "System configuration — not something a user does to curate a specific resource, so it lives here
-     rather than under one of the eight intents." and menus **CONFIGURE**, **RECONCILE**, **OBSERVE**, **OPEN DATA**
-     (seen). "Intents" appears nowhere else on screen (gap G19).
-2. Open **Groups**: the groups data sources belong to. Deleting a group never deletes what is in it (seen).
-3. Open **Question Catalog**: every question the stages ask. Add-only; old questions stay, dimmed (seen).
-4. Open **Value profile settings**: the limits a database survey works within, marked "read-only" (seen). Explain:
-   an administrator changes these on the server, not here.
-5. Point at, without opening: **Repository discovery sources** (saved searches for repositories), **Publish Queue**,
-   **Logs**.
-6. Click **Automate** in the strip and read **⏱ Schedules** and **🔔 Subscriptions**. Explain: "● active — but never
-   fires (no schedule)" means the watch exists but nothing re-runs the analysis (seen). (Depends on D5.)
-
-**Where to go next.**
-
+- **The Advanced tutorial** (not written yet): Automate (schedules and "notify me"), adding your own analyses,
+  questions, purposes and survey definitions, Admin and the settings it holds, and other topics still to be listed.
+- **The Getting Started tutorial** (not written yet): installing and configuring Trellis and Resource Explorer, and
+  setting up the sample this tutorial uses.
 - The [user guide](user-guide.md) for every screen in detail.
-- The [admin guide](admin-guide.md) for setting up and running Resource Explorer.
-- [Adding your own analysis](extending-with-analyses.md), and adding questions and purposes (user guide, section 7).
+- The [admin guide](admin-guide.md) for running Resource Explorer.
 - The command line (user guide, section 9).
 - Egeria's own documentation for the catalog itself.
 
-**What can go wrong.** A page under Admin that needs administrator rights. (Exact words: not yet confirmed.)
+The Admin and Automate steps that were drafted here move to the Advanced tutorial's outline (D5).
 
 ---
 
@@ -628,8 +633,8 @@ Plain definitions, one or two sentences each. The tutorial links each term to th
 **Terms the tutorial avoids altogether** (they stay in the user guide): Folio (say "group"), zone, governance zone,
 intent (say "stage"), annotation type names (QualityAnnotation, DataClassMatch and others), GUID, Egeria Project (say
 "Egeria" or "shared"), valid-value list, data class, reference data, blueprint, component partition, confidence,
-Architecture Recovery, Understanding and Automate beyond one line each (unless D5 keeps Automate), library, routine,
-step, Prefect, compile, extent, canonical mount.
+Architecture Recovery, Understanding and Automate beyond one line each (both are for the Advanced tutorial), library,
+routine, step, Prefect, compile, extent, canonical mount.
 
 ---
 
@@ -716,14 +721,14 @@ has not changed. Every screenshot is taken signed in as a tutorial user, not a d
 | S29 | 10 · 2 | Contents, the chips | Three chips | new on the reader's database (`03-curate-database-chips.webp` is another database) |
 | S30 | 10 · 3 | Include / Leave out | One of each | new |
 | S31 | 10 · 4–6 | Findable and What people say | Tag, group, rating, "saved · will publish" | new |
+| S31a | 10 · 7 | Repository Curate page | Its three tabs, labelled with the shared parts | new |
+| S31b | 10 · 7 | File-system Curate page | Tags, group, "attaches the root folder only" | `05-curate-file-system.webp` if unchanged |
 | S32 | 11 · 2 | Publish band before | "next publish" and **Publish** | new |
 | S33 | 11 · 4 | Publish band after | "✓ in Egeria · … · confirmed" | new |
 | S34 | 11 · 5 | Egeria reports | Report rows | `03-curate-publish-to-egeria.webp` if unchanged |
 | S35 | 11 · 7 | Egeria Portal | The data source with the tag and survey report | new (depends on G17) |
 | S36 | 12 · 2 | Select several | Three ticked, save as work list… | new |
 | S37 | 12 · 4 | A work list | Rows × questions | new |
-| S38 | 13 · 1 | Admin | The menus | new |
-| S39 | 13 · 6 | Automate, Subscriptions | One row (depends on D5) | new |
 
 ---
 
@@ -752,7 +757,7 @@ in this outline; each is named where it bites.
 | G16 | Internal words on screen: "ran via Prefect"; "compile" in the chat rail ("a compile reads one resource's stored results"); chat source lines list raw analysis ids ("fs_permissions, fs_activity"). | 6, 9 | Plain words, or analysis display names. |
 | G17 | No single named place in Egeria for the reader to check that a publish arrived. | 11 | Name it (the Egeria Portal page, or a "Show in Egeria" link that opens Egeria itself). |
 | G18 | Publish-band words a new user cannot read: "kept survey", "◐ behind · 76 annotations", "◐ stale 9 of 12 steps are stale", "◐ partly committed · 4 queued". | 11 | Plain sentences, or a hover that explains each. |
-| G19 | The Admin dialog says "the eight intents"; the word appears nowhere else on screen. | 13 | Say "the stages". |
+| G19 | The Admin dialog says "the eight intents"; the word appears nowhere else on screen. | Advanced tutorial | Say "the stages". |
 | G20 | The sign-in panel says "EXPERIMENTAL UI". A new reader may doubt they are in the right place. | 2 | Remove, or explain. |
 | G21 | This writer's browser was not signed in, so the register dialogs, the new-investigation dialog and the chat rail are outlined from the source code (marked "code"). | 3, 4, 9 | The prose writer reads each on the screen, signed in. |
 | G22 | Steps whose exact screen words nobody has recorded: a wrong password, Egeria down at sign-in, an empty investigation name, an admin page refused, "promote" on a work list, the Assessment tab on a database, a step that asks before running a prerequisite. | 2, 3, 6, 7, 12, 13 | Read on the screen during the prose phase; some need a deliberate error to see. |
@@ -761,11 +766,11 @@ in this outline; each is named where it bites.
 
 ## 8. Decisions for the owner
 
-| # | Decision | This outline proposes |
+| # | Decision | State |
 |---|---|---|
-| D1 | The main example data source | A PostgreSQL database, followed end to end; a repository and a file system added in part 4 with short notes after. |
-| D2 | The named sample setup | The Coco Pharmaceuticals Egeria sample plus one database, one folder and one public repository, all named in the tutorial. |
-| D3 | Ad-hoc or "Create in Egeria" for the tutorial's investigation | Ad-hoc, so nothing reaches Egeria before part 11. |
-| D4 | The first survey button for a never-surveyed database | To be named by whoever knows the intended path; the tutorial will state it as the one first action. |
-| D5 | Automate in the tutorial | One short step in part 13 only; "notify me" mentioned in part 7. |
-| D6 | Publishing during screenshots | A throwaway database, published once, with the owner's permission. |
+| D1 | The main example data source | **Decided (project owner, 2026-10-29):** a database. Set the expectation that each kind's Curate page differs but the structure is the same, and show all three Curate pages (part 10, step 7). |
+| D2 | The named sample setup | **Decided (project owner, 2026-10-29):** yes, one named sample. The Getting Started tutorial sets it up. Which database, folder and repository: still to choose. |
+| D3 | Ad-hoc or "Create in Egeria" for the tutorial's investigation | **Decided (project owner, 2026-10-29):** Ad-hoc, described as the simplest starting point. |
+| D4 | The first survey button for a database that has never been surveyed | Open. Find is the first action for bringing a data source in (part 4). D4 is the action after that, which starts its first survey. |
+| D5 | Automate in the tutorial | **Decided (project owner, 2026-10-29):** no. Automate, extensibility and Admin go to an Advanced tutorial. Installing and configuring goes to a Getting Started tutorial. This is the Core tutorial. |
+| D6 | Publishing during screenshots | Open, under discussion. |
