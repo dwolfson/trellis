@@ -1,4 +1,4 @@
-# Vendored catalogue: DataKitchen DataOps TestGen test types (Postgres, slice 1, Q6, B1a and profile 1b)
+# Vendored catalogue: DataKitchen DataOps TestGen test types (Postgres, slice 1, Q6, B1a, profile 1b, Dupe_Rows and the schema-drift checks)
 
 Data only. No TestGen code is vendored and TestGen is never run: Resource Explorer reads these files
 and executes the checks with its own steps (`surveyors/database/quality/`). The engine and analysis names
@@ -18,6 +18,9 @@ so the upstream product name appears only here, in `NOTICE` and in the developer
   from the same clone and commit, `testgen/` again identical to `3606859c`.
   2026-10-28 (profile 1b: thirteen whole-table measures, the twelve B1b types that read them, and the `logical_type`
   and `is_decimal` CASEs), from the same clone and commit, `testgen/` again identical to `3606859c`.
+  2026-10-29 (Q4 steps 4 and 5: Dupe_Rows, Match_Column_Ct, Match_Column_Type, Schema_Conformance and Schema_Drift,
+  and the three generation templates they use), from the same clone and commit, `testgen/` again identical to
+  `3606859c` (`git diff --stat 3606859c HEAD -- testgen/` is empty).
 - **License:** Apache-2.0 (`LICENSE`, verbatim). `NOTICE` is DataKitchen's, verbatim.
 
 ## Files
@@ -51,7 +54,15 @@ so the upstream product name appears only here, in `NOTICE` and in the developer
 | `test_types/Match_True_Ct.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_True_Ct.yaml` | unchanged (profile 1b) |
 | `test_types/Match_Distinct_Date_Ct.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Distinct_Date_Ct.yaml` | unchanged (profile 1b) |
 | `test_types/Daily_Record_Ct.yaml` | `testgen/template/dbsetup_test_types/test_types_Daily_Record_Ct.yaml` | unchanged (profile 1b) |
+| `test_types/Dupe_Rows.yaml` | `testgen/template/dbsetup_test_types/test_types_Dupe_Rows.yaml` | unchanged (steps 4 and 5): a QUERY type; its Postgres `test_templates` entry supplies the grouping subselect RE runs |
+| `test_types/Match_Column_Ct.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Column_Ct.yaml` | unchanged (steps 4 and 5): a METADATA type, Table Comparison set |
+| `test_types/Match_Column_Type.yaml` | `testgen/template/dbsetup_test_types/test_types_Match_Column_Type.yaml` | unchanged (steps 4 and 5): a METADATA type, Table Comparison set |
+| `test_types/Schema_Conformance.yaml` | `testgen/template/dbsetup_test_types/test_types_Schema_Conformance.yaml` | unchanged (steps 4 and 5): a METADATA type with no selection rule: vendored, never proposed, never concludes |
+| `test_types/Schema_Drift.yaml` | `testgen/template/dbsetup_test_types/test_types_Schema_Drift.yaml` | unchanged (steps 4 and 5): a METADATA type, Monitor set |
 | `gen_query_tests/gen_Match_Row_Ct.sql` | `testgen/template/gen_query_tests/gen_Match_Row_Ct.sql` | unchanged (B1a): Match_Row_Ct's selection is this template, not a fragment; its port is pinned to the file's hash |
+| `gen_query_tests/gen_Dupe_Rows.sql` | `testgen/template/gen_query_tests/gen_Dupe_Rows.sql` | unchanged (steps 4 and 5): Dupe_Rows' selection is this template; its port is pinned to the file's hash |
+| `gen_query_tests/gen_Match_Column_Ct.sql` | `testgen/template/gen_query_tests/gen_Match_Column_Ct.sql` | unchanged (steps 4 and 5): same |
+| `gen_query_tests/gen_Schema_Drift.sql` | `testgen/template/gen_query_tests/gen_Schema_Drift.sql` | unchanged (steps 4 and 5): same |
 | `postgresql/profile_measures.sql` | `testgen/template/flavors/postgresql/profiling/project_profiling_query.sql` | subset: the measure lines for `record_ct`, `value_ct`, `distinct_value_ct`, `null_value_ct`, `zero_length_ct`, `filled_value_ct`, `min_date`, `max_date`, `future_date_ct`, (Q6) `before_20yr_date_ct` and (profile 1b) `min_length`, `max_length`, `avg_length`, `before_5yr_date_ct`, `date_days_present`, `zero_value_ct`, `min_value`, `max_value`, `avg_value`, `stdev_value`, `fractional_sum`, `sum_value` and `boolean_true_ct`, each verbatim, under upstream's `TG-IF` flag names; a header comment added |
 | `postgresql/numeric_chars.sql` | `testgen/template/flavors/postgresql/data_chars/get_schema_ddf.sql` | subset (profile 1b): the `logical_type` CASE (upstream lines 28-49) and the `is_decimal` CASE (67-71), verbatim, each headed by its line range; a header comment added |
 | `postgresql/templated_functions.yaml` | `testgen/template/flavors/postgresql/profiling/templated_functions.yaml` | subset (Q6): `DATEDIFF_DAY` and `DATEDIFF_MONTH`, verbatim; a header comment added |
@@ -67,6 +78,11 @@ a measure the value profile already takes, proposed only for a table a person op
 and date-days measures and the eleven Table Comparison types that read them, plus Daily_Record_Ct (Standard set);
 Match_Epoch_Sum is not vendored, because upstream takes `epoch_sum` only for a hashed column
 (`docs/design-notes/DESIGN-QUALITY-PROFILE-1B.md`).
+
+Steps 4 and 5 add Dupe_Rows (`docs/design-notes/DESIGN-QUALITY-STEPS-4-5-DUPE-ROWS-AND-DRIFT.md`) and the four
+schema-drift checks. Their upstream `run_type` is QUERY or METADATA, so they carry no `cat_test_conditions` entry: what
+runs is RE's own (`quality/dupe_rows.py`, `quality/schema_drift.py`), and `scripts/sync_quality_catalog.py --check`
+compares their `run_type` and Postgres `test_templates` entry instead.
 
 ## How the catalogue is used
 
