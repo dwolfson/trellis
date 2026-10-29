@@ -88,9 +88,12 @@ STEP_7_TEST_TYPES = ("Email_Format", "Street_Addr_Pattern", "US_State", "Valid_C
 #: Match_Frequent_Patterns and Match_Distinct_Hash are QUERY types and are not ported here (the note says why).
 STEP_8_TEST_TYPES = ("Match_Hash_Text", "Match_Hash_Num", "Match_Hash_Date", "Match_Keyed_Hash_Text",
                      "Match_Keyed_Hash_Num", "Match_Keyed_Hash_Date", "Match_Epoch_Sum")
+#: Port step 8b: the three Table Comparison QUERY types that compare a column's baseline text (`query_types.py`).
+STEP_8B_TEST_TYPES = ("Match_Frequent_Values", "Match_Frequent_Patterns", "Match_Distinct_Hash")
 #: Every test type RE has ported, in the order proposals are considered.
 PORTED_TEST_TYPES = (SLICE_1_TEST_TYPES + Q6_TEST_TYPES + B1A_TEST_TYPES + B1B_TEST_TYPES + STEP_4_TEST_TYPES
-                     + STEP_5_TEST_TYPES + STEP_6_TEST_TYPES + STEP_7_TEST_TYPES + STEP_8_TEST_TYPES)
+                     + STEP_5_TEST_TYPES + STEP_6_TEST_TYPES + STEP_7_TEST_TYPES + STEP_8_TEST_TYPES
+                     + STEP_8B_TEST_TYPES)
 
 #: TestGen's `run_type` values: CAT is an aggregate in the per-table SELECT, QUERY is a statement of its own, METADATA
 #: reads TestGen's own metadata tables (RE: its stored surveys).
@@ -601,6 +604,49 @@ def _hash_rule(row: dict, general_type: str, measure: str) -> bool | None:
     return row.get(measure) is not None
 
 
+def _text_measure_present(row: dict, measure: str, *, frequency: bool) -> bool | None:
+    """`<measure> IS NOT NULL` for a text-shape or frequency measure (port step 8b), three-valued. NULL upstream means the
+    column has no such measure; here that is a "no" only once the column was read: an unread one (profiled before the
+    analysis existed, or its read did not finish) is `not_established`. A column that is not text, or that is not
+    eligible for the frequency analysis (2 to 70 distinct values of at most 70 characters), has none: a "no"."""
+    if (row.get("state") or "measured") != "measured":
+        return None
+    if row.get("general_type") != "A" or row.get("value_ct") == 0:
+        return False
+    if frequency:
+        from resource_explorer.surveyors.database.quality import frequent_values
+
+        if not frequent_values.eligible(row):
+            return False if row.get("distinct_value_ct") is not None and row.get("max_length") is not None else None
+        state = row.get("frequency_state")
+        if state != frequent_values.READ:
+            return None
+    elif _text_shape_read(row) is None:
+        return None
+    value = row.get(measure)
+    return bool(value) if not isinstance(value, dict) else bool(value.get("values"))
+
+
+def _frequent_values_rule(row: dict) -> bool | None:
+    """general_type = 'A' AND frequent_values IS NOT NULL AND LENGTH(<the baseline text>) <= 1000 AND sample_ratio IS NULL."""
+    present = _text_measure_present(row, "frequent_values", frequency=True)
+    from resource_explorer.surveyors.database.quality import frequent_values
+
+    text = frequent_values.baseline_text(row.get("frequent_values"))
+    return _and(_cmp(row.get("general_type"), "=", "A"), present, None if present is None else (
+        len(text) <= 1000 if text is not None else False), row.get("sample_ratio") is None)
+
+
+def _frequent_patterns_rule(row: dict) -> bool | None:
+    return _and(_cmp(row.get("general_type"), "=", "A"),
+                _text_measure_present(row, "frequent_patterns", frequency=False), row.get("sample_ratio") is None)
+
+
+def _distinct_hash_rule(row: dict) -> bool | None:
+    return _and(_cmp(row.get("general_type"), "=", "A"),
+                _text_measure_present(row, "distinct_value_hash", frequency=True), row.get("sample_ratio") is None)
+
+
 def _text_baseline(row: dict) -> bool | None:
     """`general_type = 'A' AND value_ct > 0 AND sample_ratio IS NULL`, and the text shape was read: a sampled estimate is
     never an accepted baseline (upstream's rule), and an unread one is not_established."""
@@ -1097,6 +1143,15 @@ PREDICATES: dict[str, Predicate] = {
                                       ("general_type", "hash_state"), lambda p: _hash_rule(p, "N", "keyed_hash")),
     "Match_Keyed_Hash_Date": Predicate("ffb309d799216e3ef26f2e4841f148407d71236df998df7e3cfa239c6eb1ab35",
                                        ("general_type", "hash_state"), lambda p: _hash_rule(p, "D", "keyed_hash")),
+    # general_type = 'A' AND frequent_values IS NOT NULL AND LENGTH(<baseline text>) <= 1000 AND sample_ratio IS NULL
+    "Match_Frequent_Values": Predicate("20e556e1a55314f9ae3e31312f60063b8f39aa067803f59029576ba708a3062b",
+                                       ("general_type", "frequency_state", "sample_ratio"), _frequent_values_rule),
+    # general_type = 'A' AND frequent_patterns IS NOT NULL AND sample_ratio IS NULL
+    "Match_Frequent_Patterns": Predicate("330cc4d10e72c6af8358963f4915ef64a95af0b9c05894c2e749751fa96f9abc",
+                                         ("general_type", "sample_value_ct", "sample_ratio"), _frequent_patterns_rule),
+    # general_type = 'A' AND distinct_value_hash IS NOT NULL AND sample_ratio IS NULL
+    "Match_Distinct_Hash": Predicate("ca914aba2841b2930cf62e7cad7cb1e000568171e847a8b9306961df7b269c21",
+                                     ("general_type", "frequency_state", "sample_ratio"), _distinct_hash_rule),
     # general_type = 'D' AND epoch_sum IS NOT NULL
     "Match_Epoch_Sum": Predicate("4bb0f8c3059d06b0201a1fcd4d6a6871b2ed9c2e8b58bf0a0978a226056d3519",
                                  ("general_type", "hash_state"), lambda p: _hash_rule(p, "D", "epoch_sum")),
@@ -1282,6 +1337,23 @@ def _round_half_up(text):
     return int(Decimal(str(text)).quantize(Decimal(1), rounding=ROUND_HALF_UP))
 
 
+def _stored_patterns(stored):
+    if isinstance(stored, str):
+        import json
+
+        try:
+            return json.loads(stored)
+        except ValueError:
+            return None
+    return stored
+
+
+def _frequent_baseline(frequent):
+    from resource_explorer.surveyors.database.quality import frequent_values
+
+    return frequent_values.baseline_text(frequent)
+
+
 def _needs(test_type: str, measure: str):
     when = ("port step 8" if measure == "frequent_values"
             else "profiled since port step 7, but this default is not ported over it yet")
@@ -1326,6 +1398,15 @@ DEFAULT_PORTS: dict[str, tuple[str, str | tuple[str, ...], Callable[[dict], Any]
                       ("baseline_value", "threshold_value"), lambda profile: _needs("Pattern_Match", "frequent_patterns")),
     "Valid_Month": ("860b9139ef54da1331d851ac3a93e5ed0db594aeefeddc7910faec57cb62ab2f",
                     ("threshold_value", "baseline_value"), lambda profile: _needs("Valid_Month", "min_text")),
+    # (SELECT STRING_AGG((entry ->> 'value') || ' (' || (entry ->> 'ct') || ')', ', ' ORDER BY rank) FROM ...frequent_values...)
+    "Match_Frequent_Values": ("c28227a0555c78d0befe0649b8dca4aae7a8ca67e854bf549c41a585660f6777", "baseline_value",
+                              lambda profile: _frequent_baseline(profile.get("frequent_values"))),
+    # the same over frequent_patterns
+    "Match_Frequent_Patterns": ("b01655e0980182f29779acefa36f3909ab8a4108517020f4b6bccef3bef14b13", "baseline_value",
+                                lambda profile: _frequent_baseline(_stored_patterns(profile.get("frequent_patterns")))),
+    # distinct_value_hash
+    "Match_Distinct_Hash": ("c70dff059bc0da3dba9c30c3f43ac9254916af21daa5841dd37060c5fc5f5f9a", "baseline_value",
+                            lambda profile: profile.get("distinct_value_hash")),
     # CAST(ROUND(COALESCE(avg_length, 0) * (value_ct - COALESCE(zero_length_ct, 0))) AS BIGINT)
     "Match_Total_Length": ("764c27fe862246b3e311ea6030ec1212802f99d752fd4f04b2575c469207bd6a", "baseline_sum",
                            _total_length_default),

@@ -206,6 +206,19 @@ def run_propose(registry, slug: str, *, row_ct_pct_threshold: float, surveyed_at
             "reason": "no value profile stored: run the value profile first; nothing was proposed",
         }}
     profile_surveyed_at = profile[0]["surveyed_at"]
+    # The most frequent values of the batch's eligible text columns (port step 8b), from the child table of the same
+    # batch, as TestGen's `frequent_values` JSON ({"values": [{"value", "ct"}], "other": {...}}).
+    frequent: dict[tuple, dict] = {}
+    for fv in registry.query_detail_rows("database_value_profile_frequent_values", slug):
+        if fv["surveyed_at"] != profile_surveyed_at:
+            continue
+        entry = frequent.setdefault((fv["schema_name"], fv["table_name"], fv["column_name"]), {"values": []})
+        if fv.get("value") is None:
+            entry["other"] = {"distinct_ct": fv.get("other_distinct_ct"), "ct": fv.get("value_ct")}
+        else:
+            entry["values"].append({"value": fv["value"], "ct": fv["value_ct"]})
+    profile = [{**r, "frequent_values": frequent.get((r["schema_name"], r["table_name"], r["column_name"]))}
+               for r in profile]
     catalogue = load_catalogue()
     verdicts = registry.get_quality_verdicts(slug)
     batches = _Batches(registry, slug)

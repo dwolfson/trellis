@@ -100,9 +100,11 @@ def test_text_booleans(lo, hi, dv, label):
 
 
 def test_a_flag_is_a_few_short_alphabetic_values():
-    row = _text("status", distinct_value_ct=4, min_length=2, max_length=6, frequent_patterns=_pat("AAAA", "AAA"))
-    # the Code/Category/ID statement runs first and reads datatype_suggestion, so it may have labelled it: not settled
-    assert "Flag" in _one(row).possible
+    # a CHAR column of 400 rows: TestGen's datatype_suggestion is char(n), not a VARCHAR, so the Code/Category statement
+    # does not fire and the Flag statement is next
+    row = _text("status", catalog_type="character(6)", record_ct=400, value_ct=400, distinct_value_ct=4, min_length=2,
+                max_length=6, frequent_patterns=_pat("AAAA", "AAA"))
+    assert _one(row).label == "Flag"
 
 
 def test_a_city_next_to_a_state_is_a_city_by_position_only_when_the_neighbours_say_so():
@@ -115,9 +117,9 @@ def test_a_city_next_to_a_state_is_a_city_by_position_only_when_the_neighbours_s
     assert "City" not in lone[("s", "t", "city_x")].possible                  # no State beside it: the rule cannot fire
 
 
-def test_a_plain_text_column_is_still_not_inferred_and_says_why():
-    plain = _one(_text("remarks", avg_embedded_spaces=4.0, avg_length=60.0, max_length=200))
-    assert plain.label is None and "datatype_suggestion" in plain.why and "a text column" in plain.why
+def test_a_plain_free_text_column_is_a_description():
+    plain = _one(_text("remarks", avg_embedded_spaces=4.0, avg_length=60.0, max_length=200, min_length=5))
+    assert plain.label == "Description"
 
 
 def test_a_column_whose_shape_was_never_read_is_unknown_not_a_no_and_says_so():
@@ -154,3 +156,69 @@ def test_the_profile_stores_the_label_a_text_columns_shape_settles(registry, ent
     later = [r for r in registry.query_detail_rows("database_value_profiles", "coco_ods")
              if r["surveyed_at"] == "2026-10-20T12:00:00+00:00" and r["column_name"] == "note"]
     assert later and later[0]["functional_data_type"] is None
+
+
+# ── step 8b: the Code / Category / ID / Attribute / Description statement, now that datatype_suggestion is evaluable ──────
+
+def _fv(**kw):
+    """A text column eligible for the frequency analysis whose analysis was read."""
+    return _text("kind", frequency_state="read", frequent_values={"values": [{"value": "a", "ct": 5}]}, **kw)
+
+
+@pytest.mark.parametrize("kw,label", [
+    # few values, short, no spaces: a code
+    (dict(distinct_value_ct=6, max_length=4, min_length=1, avg_length=2.0, avg_embedded_spaces=0.0, frequent_patterns=_pat("AA")),
+     "Code"),
+    # few values, long or with spaces: a category
+    (dict(distinct_value_ct=6, max_length=20, min_length=5, avg_length=12.0, avg_embedded_spaces=2.0,
+          frequent_patterns=_pat("Aaaaa Aaaaa")), "Category"),
+    # letters and digits both in the patterns make it a code whatever its spaces
+    (dict(distinct_value_ct=6, max_length=20, min_length=5, avg_length=12.0, avg_embedded_spaces=2.0,
+          frequent_patterns=_pat("AAA NNN")), "Code"),
+])
+def test_a_few_values_are_a_code_or_a_category(kw, label):
+    assert _one(_fv(**kw)).label == label
+
+
+def test_many_values_are_an_id_an_attribute_or_a_description():
+    ident = _text("ref", includes_digit_ct=900, distinct_value_ct=950, max_length=12, min_length=12, avg_length=12.0)
+    assert _one(ident).label in ("ID", "ID-Secondary")
+    attr = _text("label", distinct_value_ct=600, max_length=25, min_length=3, avg_length=12.0, avg_embedded_spaces=1.0,
+                 max_text="two words here")
+    assert _one(attr).label == "Attribute"
+    desc = _text("remarks", distinct_value_ct=600, max_length=200, min_length=3, avg_length=60.0, avg_embedded_spaces=8.0,
+                 max_text="a long line of free text with many words in it")
+    assert _one(desc).label == "Description"
+
+
+def test_a_measurement_in_text_is_named_by_its_suffix_and_made_of_numbers():
+    row = _text("order_total", numeric_ct=1000, value_ct=1000, distinct_value_ct=500, includes_digit_ct=1000,
+                max_length=6, min_length=1, avg_length=3.0)
+    assert _one(row).label == "Measurement Text"
+
+
+def test_a_numeric_text_column_over_500_rows_is_suggested_a_number_not_a_varchar_so_the_statement_does_not_fire():
+    # all numbers and a decimal point among its frequent values: datatype_suggestion is DECIMAL
+    row = _text("amount", numeric_ct=900, value_ct=900, zero_length_ct=0, record_ct=1000, distinct_value_ct=40, max_length=7,
+                min_length=1, avg_length=4.0, frequency_state="read",
+                frequent_values={"values": [{"value": "1.50", "ct": 9}]})
+    assert _one(row).label != "Code"
+
+
+def test_a_column_eligible_for_the_frequency_analysis_but_not_in_the_row_says_what_it_lacks():
+    row = _text("amount", numeric_ct=900, value_ct=900, zero_length_ct=0, record_ct=1000, distinct_value_ct=40, max_length=7,
+                min_length=1, avg_length=4.0)
+    got = _one(row)
+    assert got.label is None and "frequent_values" in got.needed
+
+
+def test_a_char_column_is_never_a_varchar_so_it_keeps_its_earlier_label_or_none():
+    row = _text("kind", catalog_type="character(4)", record_ct=300, value_ct=300, distinct_value_ct=6, max_length=4,
+                min_length=1, avg_length=2.0, avg_embedded_spaces=0.0, frequent_patterns=_pat("AA"))
+    assert _one(row).label != "Code"
+
+
+def test_a_code_that_is_always_a_percentage_is_a_measurement_pct():
+    row = _fv(distinct_value_ct=3, max_length=4, min_length=2, avg_length=3.0, avg_embedded_spaces=0.0, min_text="5",
+              max_text="95", includes_digit_ct=1000, distinct_pattern_ct=2, frequent_patterns=_pat("NN%", "N%"))
+    assert _one(row).label == "Measurement Pct"

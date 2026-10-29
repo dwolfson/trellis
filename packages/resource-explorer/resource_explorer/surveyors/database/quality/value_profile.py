@@ -55,6 +55,7 @@ from resource_explorer.surveyors.database.quality.general_type import (
 log = logging.getLogger(__name__)
 
 PROFILE_TABLE = "database_value_profiles"
+FREQUENT_VALUES_TABLE = "database_value_profile_frequent_values"
 ANALYSIS_STEP = "postgres_value_profile"
 PROFILE_MEASURES_SQL = POSTGRES_DIR / "profile_measures.sql"
 
@@ -68,7 +69,8 @@ COLUMN_MEASURES = ("value_ct", "distinct_value_ct", "null_value_ct", "zero_lengt
     + ("distinct_std_value_ct", "min_text", "max_text")
 #: Step 8's value hashes (value_hashes.py), exact decimal text. `hash_state` says whether they were asked for and read:
 #: NULL (off, or a row from before step 8), "taken", "not_measured".
-HASH_MEASURES = ("multiset_hash", "epoch_sum", "keyed_hash", "key_column_name", "hash_state")
+HASH_MEASURES = ("multiset_hash", "epoch_sum", "keyed_hash", "key_column_name", "hash_state", "distinct_value_hash",
+                 "frequency_state")
 #: Step 7's sampled text-shape measures (text_shape.py): a text column's, one sampled statement per column.
 TEXT_SHAPE_MEASURES = ("sample_value_ct", "sample_pattern_value_ct", "lead_space_ct", "quoted_value_ct",
                        "includes_digit_ct", "upper_case_ct", "lower_case_ct", "non_alpha_ct", "non_printing_ct",
@@ -283,6 +285,9 @@ class ProfileBounds:
     #: A table's value hashes (value_hashes.py; step 8), off by default: the column statements and the keyed statement share
     #: this budget. Not part of `table_budget_seconds`.
     hash_budget_seconds: float = 300.0
+    #: A table's eligible text columns' frequency analysis (frequent_values.py; step 8b), one statement per column in this one
+    #: budget. Not part of `table_budget_seconds`.
+    frequency_budget_seconds: float = 300.0
 
 
 def incomplete_reason(budget_seconds: float) -> str:
@@ -430,6 +435,45 @@ def _take_text_shape(conn, schema: str, table: str, table_rows: list[dict], boun
                      "columns": [c for c, _ in reasons]})
 
 
+def _take_frequent_values(conn, schema: str, table: str, table_rows: list[dict], catalog_types: dict,
+                          bounds: ProfileBounds, clock, gaps: list[dict], child_rows: list[dict]) -> None:
+    """Step 8b: the most frequent values of the table's eligible text columns (2 to 70 distinct values of at most 70
+    characters), one statement each inside the table's frequency budget. A column that could not be read keeps
+    `frequency_state` "not_measured" and no child row; one that was read is "read" (no child row then means only blank
+    values). A column read on a sample carries the table's `sample_ratio`."""
+    from resource_explorer.surveyors.database.quality import frequent_values
+
+    wanted = [r for r in table_rows if frequent_values.eligible(r)]
+    if not wanted:
+        return
+    record_ct = wanted[0].get("record_ct")
+    found, reasons = frequent_values.measure_table(
+        conn, schema, table, [(r["column_name"], catalog_types.get((schema, table, r["column_name"])), r.get("value_ct"))
+                              for r in wanted], record_ct, bounds, clock)
+    for row in wanted:
+        hit = found.get(row["column_name"])
+        if hit is None:
+            row["frequency_state"] = frequent_values.NOT_MEASURED
+            continue
+        frequent, sampling = hit
+        row["frequency_state"] = frequent_values.READ
+        if sampling and row.get("sample_ratio") is None:
+            row["sample_ratio"] = sampling.sample_ratio
+        if frequent is None:
+            continue
+        row["distinct_value_hash"] = frequent.distinct_value_hash
+        for rank, (value, ct) in enumerate(frequent.values, start=1):
+            child_rows.append({"schema_name": schema, "table_name": table, "column_name": row["column_name"],
+                               "value_rank": rank, "value": value, "value_ct": ct, "other_distinct_ct": None})
+        if frequent.other:
+            child_rows.append({"schema_name": schema, "table_name": table, "column_name": row["column_name"],
+                               "value_rank": len(frequent.values) + 1, "value": None, "value_ct": frequent.other[1],
+                               "other_distinct_ct": frequent.other[0]})
+    if reasons:
+        gaps.append({"schema_name": schema, "table_name": table, "reason": reasons[0][1],
+                     "columns": [c for c, _ in reasons]})
+
+
 def _take_hashes(conn, schema: str, table: str, table_rows: list[dict], catalog_types: dict, bounds: ProfileBounds, clock,
                  gaps: list[dict]) -> None:
     """Step 8 (only when asked): each measured text, number or date column's multiset hash, and a date column's epoch sum,
@@ -484,6 +528,8 @@ def _take_keyed_hashes(connect, rows: list[dict], catalog_types: dict, positions
             found, reason = value_hashes.measure_keyed(conn, schema, table, key, columns, bounds, clock)
             for row in targets:
                 row["keyed_hash"] = found.get(row["column_name"])
+                if row["column_name"] not in found:
+                    row["hash_state"] = "keyed_not_measured"      # its multiset hash was read; its keyed hash was not
             if reason:
                 gaps.append({"schema_name": schema, "table_name": table, "reason": reason,
                              "columns": [r["column_name"] for r in targets if r["column_name"] not in found]})
@@ -527,6 +573,8 @@ def run_value_profile(
     percentile_gaps: list[dict] = []
     text_shape_gaps: list[dict] = []
     hash_gaps: list[dict] = []
+    frequency_gaps: list[dict] = []
+    frequent_rows: list[dict] = []
     catalog_types = {(c["schema_name"], c["table_name"], c["column_name"]): c.get("base_type") or c.get("data_type")
                      for c in columns}
     with connect() as conn:
@@ -599,6 +647,8 @@ def run_value_profile(
             rows.extend(table_rows)
             _take_percentiles(conn, schema, table, table_rows, bounds, clock, percentile_gaps)
             _take_text_shape(conn, schema, table, table_rows, bounds, clock, text_shape_gaps)
+            _take_frequent_values(conn, schema, table, table_rows, catalog_types, bounds, clock, frequency_gaps,
+                                  frequent_rows)
             if hashes:
                 _take_hashes(conn, schema, table, table_rows, catalog_types, bounds, clock, hash_gaps)
             if failures:
@@ -615,6 +665,7 @@ def run_value_profile(
     if hashes:
         _take_keyed_hashes(connect, rows, catalog_types, positions, bounds, clock, hash_gaps)
     registry.write_detail_rows(PROFILE_TABLE, slug, surveyed_at, rows=rows)
+    registry.write_detail_rows(FREQUENT_VALUES_TABLE, slug, surveyed_at, rows=frequent_rows)
     states: dict[str, int] = {}
     for row in rows:
         states[row["state"]] = states.get(row["state"], 0) + 1
@@ -631,6 +682,7 @@ def run_value_profile(
             # "off" (the default): no hash was asked for. "on": hashes_not_measured says what could not be read.
             "hashes": "on" if hashes else "off",
             "hashes_not_measured": hash_gaps,
+            "frequent_values_not_measured": frequency_gaps,
             "ran_as": ran_as,
             "bounds": {"table_budget_seconds": bounds.table_budget_seconds},
             # Whether the catalog read profile 1b's decimal and exact-sum measures depend on succeeded. "not_read":

@@ -1,4 +1,4 @@
-# Vendored catalogue: DataKitchen DataOps TestGen test types (Postgres, slice 1, Q6, B1a, profile 1b, Dupe_Rows, the schema-drift checks, step 6 and step 7)
+# Vendored catalogue: DataKitchen DataOps TestGen test types (Postgres, slice 1, Q6, B1a, profile 1b, Dupe_Rows, the schema-drift checks, steps 6, 7 and 8)
 
 Data only. No TestGen code is vendored and TestGen is never run: Resource Explorer reads these files
 and executes the checks with its own steps (`surveyors/database/quality/`). The engine and analysis names
@@ -22,6 +22,8 @@ so the upstream product name appears only here, in `NOTICE` and in the developer
   and the three generation templates they use), from the same clone and commit, `testgen/` again identical to
   `3606859c` (`git diff --stat 3606859c HEAD -- testgen/` is empty).
   2026-10-29 (Q4 step 7: the sampled text-shape measures and the seven types that read them), from the same clone and
+  commit, `testgen/` again identical to `3606859c`.
+  2026-10-29 (Q4 step 8: the value-hash and frequent-value types and the frequency analysis), from the same clone and
   commit, `testgen/` again identical to `3606859c`.
 - **License:** Apache-2.0 (`LICENSE`, verbatim). `NOTICE` is DataKitchen's, verbatim.
 
@@ -74,6 +76,9 @@ so the upstream product name appears only here, in `NOTICE` and in the developer
 | `test_types/{Alpha_Trunc,Avg_Shift,Dec_Trunc,Distinct_Date_Ct,Distinct_Value_Ct,Incr_Avg_Shift,LOV_Match,Min_Val,Monthly_Rec_Ct,Outlier_Pct_Above,Outlier_Pct_Below,Pattern_Match,Unique_Pct,Valid_Month,Valid_US_Zip,Valid_US_Zip3,Variability_Decrease,Variability_Increase,Weekly_Rec_Ct}.yaml` | `testgen/template/dbsetup_test_types/test_types_<Name>.yaml` | unchanged (step 6) |
 | `test_types/{Email_Format,Street_Addr_Pattern,US_State,Valid_Characters,Match_Lead_Space_Ct,Match_Upper_Case_Ct,Match_Non_Printing_Ct}.yaml` | `testgen/template/dbsetup_test_types/test_types_<Name>.yaml` | unchanged (step 7) |
 | `postgresql/text_shape.sql` | `testgen/template/flavors/postgresql/profiling/project_profiling_query.sql` | subset (step 7): four blocks, each verbatim under an `-- upstream lines A-B` header: the sampled and unsampled `sampleable_rows`/`pattern_rows` CTEs (lines 26-33, 36-43), `sampleable_measures` (46-100) and the pattern CTEs (101-142). Assembled into one statement per text column (`quality/text_shape.py`); pinned block by block by SHA-256 |
+| `test_types/{Match_Hash_Text,Match_Hash_Num,Match_Hash_Date,Match_Keyed_Hash_Text,Match_Keyed_Hash_Num,Match_Keyed_Hash_Date,Match_Epoch_Sum}.yaml` | `testgen/template/dbsetup_test_types/test_types_<Name>.yaml` | unchanged (step 8): CAT, Table Comparison; their measure is `SUM({MULTISET_HASH_TERM})`, `SUM({KEYED_HASH_TERM})` or `SUM({EPOCH_SUM_TERM})`, which RE builds in `quality/value_hashes.py` |
+| `test_types/{Match_Frequent_Values,Match_Frequent_Patterns,Match_Distinct_Hash}.yaml` | `testgen/template/dbsetup_test_types/test_types_<Name>.yaml` | unchanged (step 8): QUERY, Table Comparison; the Postgres `test_templates` entry is what `quality/query_types.py` runs |
+| `postgresql/project_secondary_profiling_query.sql` | `testgen/template/flavors/postgresql/profiling/project_secondary_profiling_query.sql` | unchanged (step 8): the frequency analysis of a text column; byte-identical, pinned by SHA-256 (`quality/frequent_values.py`) |
 | `postgresql/percentiles.sql` | `testgen/template/flavors/postgresql/profiling/project_profiling_query.sql` | subset (step 6): the three PERCENTILE_CONT lines of the `is_N_exact_pctile` block (upstream lines 242-244), verbatim; a header comment added. Run as a statement of their own per table (`quality/percentiles.py`) |
 | `postgresql/general_type.sql` | `testgen/template/flavors/postgresql/data_chars/get_schema_ddf.sql` | subset: the `general_type` CASE, verbatim; a header comment added |
 | `LICENSE`, `NOTICE` | `LICENSE`, `NOTICE` | unchanged |
@@ -101,6 +106,12 @@ Step 7 adds the sampled text-shape measures and seven types that read them: the 
 selection reads `std_pattern_match`, a text column's average length and spaces, or its general type
 (Email_Format, Street_Addr_Pattern, US_State, Valid_Characters), and the three Table Comparison types of B1c
 (`docs/design-notes/DESIGN-QUALITY-STEP-7-SAMPLED-TEXT-SHAPE.md`).
+
+Step 8 adds the value hashes (written in RE's own `quality/value_hashes.py` from TestGen's `value_hash.py` reference and its
+flavor services, which are Python code, not data: the four source files and `infer_key_columns.sql` are pinned by SHA-256 in
+`value_hashes.UPSTREAM_SHA256` and compared with the clone by `scripts/sync_quality_catalog.py`), the seven CAT hash types,
+the frequency analysis and the three QUERY types that compare a column's baseline text
+(`docs/design-notes/DESIGN-QUALITY-STEP-8-HASHES-AND-FREQUENT-VALUES.md`).
 
 ## How the catalogue is used
 

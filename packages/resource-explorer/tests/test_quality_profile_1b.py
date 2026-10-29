@@ -473,7 +473,8 @@ _STEP_7_COLUMNS = {"distinct_std_value_ct", "min_text", "max_text", "sample_valu
                    "non_alpha_ct", "non_printing_ct", "numeric_ct", "date_ct", "embedded_space_ct",
                    "avg_embedded_spaces", "std_pattern_match", "distinct_pattern_ct", "frequent_patterns"}
 #: ... and not step 8's (value hashes: docs/ddl-value-profile-step8.md, tests/test_quality_step_8_hashes.py).
-_STEP_8_COLUMNS = {"multiset_hash", "epoch_sum", "keyed_hash", "key_column_name", "hash_state"}
+_STEP_8_COLUMNS = {"multiset_hash", "epoch_sum", "keyed_hash", "key_column_name", "hash_state", "distinct_value_hash",
+                   "frequency_state"}
 NEW_COLUMNS = {(t, c): sql_type for t, c, sql_type in ProjectRegistry.VALUE_PROFILE_COLUMNS
                if (t, c) != ("database_value_profiles", "before_20yr_date_ct")
                and c not in _STEP_6_COLUMNS | _STEP_7_COLUMNS | _STEP_8_COLUMNS}

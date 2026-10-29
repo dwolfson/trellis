@@ -53,7 +53,7 @@ from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from resource_explorer.surveyors.database.quality import dupe_rows, schema_drift
+from resource_explorer.surveyors.database.quality import dupe_rows, query_types, schema_drift
 from resource_explorer.surveyors.database.quality.catalogue import (
     CONDITION_AGGREGATES,
     MUST_BE,
@@ -206,6 +206,7 @@ def run_quality_checks(
     results: list[dict] = []
     runnable: dict[tuple[str, str], list[dict]] = {}
     dupe_runnable: dict[tuple[str, str], list[dict]] = {}
+    query_runnable: dict[tuple[str, str], list[dict]] = {}
     drift_checks: list[tuple[dict, object, dict]] = []
 
     for key, verdict in sorted(accepted.items()):
@@ -242,6 +243,20 @@ def run_quality_checks(
             continue
         if (schema, table) not in table_set:
             row["reason"] = "table no longer in inventory"
+            continue
+        if test_type.run_type == RUN_QUERY and type_name in query_types.TYPES:
+            severity = params.get("severity")
+            if severity not in FAIL_STATUS:
+                row["reason"] = f"severity must be one of {sorted(FAIL_STATUS)}, got {severity!r}"
+                continue
+            if (schema, table, column) not in column_set:
+                row["reason"] = "column no longer in inventory"
+                continue
+            baseline = params.get("baseline_value")
+            row.update(severity=severity, comparison_operator=MUST_BE["<>"])
+            query_runnable.setdefault((schema, table), []).append(
+                {"row": row, "type": test_type, "column": column, "db_type": catalog_types.get((schema, table, column)),
+                 "baseline": baseline if isinstance(baseline, str) else None, "fail_status": FAIL_STATUS[severity]})
             continue
         if test_type.run_type == RUN_QUERY:
             severity = params.get("severity")
@@ -301,7 +316,7 @@ def run_quality_checks(
         for row, test_type, params in drift_checks:
             schema_drift.evaluate(drift, row, test_type, params, FAIL_STATUS)
 
-    if runnable or dupe_runnable:
+    if runnable or dupe_runnable or query_runnable:
         with connect() as conn:
             facts = read_table_facts(conn)
             for (schema, table), checks in sorted(runnable.items()):
@@ -312,6 +327,14 @@ def run_quality_checks(
                         check["row"].update(status=_REFUSED_STATUS[refused[0]], reason=refused[1])
                     continue
                 _run_table(conn, schema, table, checks, bounds)
+            for (schema, table), checks in sorted(query_runnable.items()):
+                refused = refusal(tables.get((schema, table)) or {}, (facts or {}).get((schema, table)),
+                                  facts is not None)
+                for check in checks:
+                    if refused:
+                        check["row"].update(status=_REFUSED_STATUS[refused[0]], reason=refused[1])
+                    else:
+                        query_types.run_table(conn, schema, table, check, bounds, clock, run_date=run_date)
             for (schema, table), checks in sorted(dupe_runnable.items()):
                 refused = refusal(tables.get((schema, table)) or {}, (facts or {}).get((schema, table)),
                                   facts is not None)

@@ -28,7 +28,8 @@ def test_the_ported_test_types_are_vendored_with_licence_and_provenance():
     assert set(cat.load_catalogue()) == (set(cat.SLICE_1_TEST_TYPES) | set(cat.Q6_TEST_TYPES) | set(cat.B1A_TEST_TYPES)
                                          | set(cat.B1B_TEST_TYPES) | set(cat.STEP_4_TEST_TYPES)
                                          | set(cat.STEP_5_TEST_TYPES) | set(cat.STEP_6_TEST_TYPES)
-                                         | set(cat.STEP_7_TEST_TYPES) | set(cat.STEP_8_TEST_TYPES))
+                                         | set(cat.STEP_7_TEST_TYPES) | set(cat.STEP_8_TEST_TYPES)
+                                         | set(cat.STEP_8B_TEST_TYPES))
     assert set(cat.Q6_TEST_TYPES) == {"Recency", "Future_Date_1Y"}
     for name in ("LICENSE", "NOTICE", "PROVENANCE.md"):
         assert (cat.CATALOGUE_DIR / name).is_file(), name
@@ -269,7 +270,20 @@ def _fake_upstream(root: Path) -> Path:
     (flavor / "data_chars/get_schema_ddf.sql").write_text(
         (cat.POSTGRES_DIR / "general_type.sql").read_text() + (cat.POSTGRES_DIR / "numeric_chars.sql").read_text())
     shutil.copy(cat.POSTGRES_DIR / "templated_functions.yaml", flavor / "profiling/templated_functions.yaml")
-    (root / "testgen/template/profiling").mkdir()
+    # step 8: the secondary profiling query (unchanged upstream) and the sources the hash SQL was written from; the fake carries
+    # byte-identical copies of the clone's, since the vendored hashes pin the real files
+    shutil.copy(cat.POSTGRES_DIR / "project_secondary_profiling_query.sql", flavor / "profiling/project_secondary_profiling_query.sql")
+    from resource_explorer.surveyors.database.quality import value_hashes
+
+    real = Path("~/localGit/egeria-v6/dataops-testgen").expanduser()
+    for rel in value_hashes.UPSTREAM_SHA256:
+        target = root / "testgen" / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if (real / "testgen" / rel).exists():
+            shutil.copy(real / "testgen" / rel, target)
+        else:
+            pytest.skip("the TestGen clone is not available for the step 8 source pins")
+    (root / "testgen/template/profiling").mkdir(exist_ok=True)
     # step 6 vendors the whole file, which the fake upstream carries as it is; Q6's subset is checked against it
     shutil.copy(cat.CATALOGUE_DIR / "profiling/functional_datatype.sql",
                 root / "testgen/template/profiling/functional_datatype.sql")

@@ -413,10 +413,11 @@ def test_a_hash_type_cannot_be_rendered_without_the_columns_type_or_the_key():
     assert sql.startswith("SUM(CASE WHEN") and "EXTRACT(EPOCH" in sql
 
 
-STEP_8_COLUMNS = ("multiset_hash", "epoch_sum", "keyed_hash", "key_column_name", "hash_state")
+STEP_8_COLUMNS = ("multiset_hash", "epoch_sum", "keyed_hash", "key_column_name", "hash_state", "distinct_value_hash",
+                  "frequency_state")
 
 
-def test_the_step_8_ddl_is_five_nullable_columns_and_the_record_names_each():
+def test_the_step_8_ddl_is_seven_nullable_columns_and_the_record_names_each():
     from pathlib import Path
 
     from resource_explorer.registry import ProjectRegistry
@@ -424,3 +425,15 @@ def test_the_step_8_ddl_is_five_nullable_columns_and_the_record_names_each():
     assert {c for t, c, _ in ProjectRegistry.VALUE_PROFILE_COLUMNS if c in STEP_8_COLUMNS} == set(STEP_8_COLUMNS)
     record = (Path(__file__).resolve().parents[1] / "docs" / "ddl-value-profile-step8.md").read_text(encoding="utf-8")
     assert all(f"`{c}`" in record for c in STEP_8_COLUMNS) and "lock_timeout" in record and "IF NOT EXISTS" in record
+    assert "database_value_profile_frequent_values" in record
+
+
+def test_a_keyed_hash_that_could_not_be_read_leaves_the_column_not_established_for_the_keyed_types(registry, entity):
+    conn = _hash_conn(hashes=HASHES, keyed_fail=PgError("canceling statement due to statement timeout", "57014"))
+    out, _ = _profile_with_hashes(registry, entity, conn)
+    note = _rows(registry, "database_value_profiles")["sales", "orders", "note"]
+    assert note["multiset_hash"] == "7" and note["keyed_hash"] is None and note["hash_state"] == "keyed_not_measured"
+    assert out["value_profile"]["hashes_not_measured"] and "keyed hashes not measured" in out["value_profile"]["hashes_not_measured"][0]["reason"]
+    row = {**note, "general_type": "A"}
+    assert cat.PREDICATES["Match_Keyed_Hash_Text"].rule(row) is None          # not established, never a silent no
+    assert cat.PREDICATES["Match_Hash_Text"].rule(row) is True                # the multiset hash is fine

@@ -37,6 +37,7 @@ from pathlib import Path
 
 from resource_explorer.surveyors.database.quality.catalogue import (
     _and,
+    _not,
     _cmp,
     _profiled_by_1b,
     _sql_or,
@@ -65,7 +66,7 @@ VENDORED_SQL_SHA256 = {
 #: Measures upstream takes that RE does not (yet). Each is read by some statement; on a TEXT column it is unknown, on
 #: any other column it is NULL by construction upstream. The reason a type was not inferred names the ones it needed.
 NOT_TAKEN = {
-    "datatype_suggestion": "needs frequent_values (port step 8b) and TestGen's catalog column_type text",
+    "frequent_values": "its frequency analysis is not in the row (profiled before step 8b, or its read did not finish)",
     "percentile_25/50/75": "the percentile statement did not run or ran out of its budget", "date_weeks_present": "not planned",
     "date_months_present": "not planned",
 }
@@ -587,14 +588,10 @@ def _stage_a(c: _Col, now: datetime, by_pos: dict | None = None) -> tuple[set, s
     b_arms = [(_sql_or(gt == "B", _and(two, _sql_or(text2, bool01))), "Boolean"),
               (_sql_or(gt == "B", _and(one, _sql_or(text1, bool01))), "Boolean")]
     step("Boolean", True, case_set(b_arms, KEEP))
-    # 412-448: Code / Category / ID / Attribute / Description / Measurement Text, character columns only
+    # 412-448: Code / Category / ID / Attribute / Description / Measurement Text, character columns whose datatype_suggestion
+    # is a VARCHAR (upstream runs datatype_suggestions.sql before this file, with the label still NULL: a first pass)
     if gt == "A":
-        c.missed.add("datatype_suggestion")      # the statement's WHERE reads it; see NOT_TAKEN
-        measure_name = any(rx.search(name.lower()) for rx in _MEASURE_TEXT_NAME)
-        text_results = {"ID", "Code", "Attribute", "Description", "Category", KEEP}
-        if measure_name:
-            text_results.add("Measurement Text")
-        step("Code/Category/ID/Attribute/Description", None, text_results)
+        step("Code/Category/ID/Attribute/Description", _suggestion_is_varchar(c), _code_category_results(c))
     # 456-467: Flag
     if gt == "A":
         # the column's catalog type is not numeric for a text column, so `lower(column_type) NOT ILIKE '%numeric%'` is true and
@@ -701,6 +698,148 @@ def _relabel(s: set, from_labels: set, where, to_label: str) -> set:
     return out
 
 
+def _nth_pattern(stored, n: int) -> str | None:
+    """`fn_frequent_value(frequent_patterns, n)`: the n-th (1-based) most frequent stored pattern, or None."""
+    import json
+
+    if isinstance(stored, str):
+        try:
+            stored = json.loads(stored)
+        except ValueError:
+            return None
+    values = (stored or {}).get("values") if isinstance(stored, dict) else None
+    return (values[n - 1].get("value") if values and len(values) >= n else None)
+
+
+def _frequent_like(c: _Col, needle: str) -> bool | None:
+    """`fn_frequent_like(frequent_values, '%<needle>%')`: some stored frequent value contains it. A column eligible for the
+    frequency analysis (2-70 distinct values of at most 70 characters) whose analysis is not in the row is unknown; any
+    other column has no frequent values upstream either (false)."""
+    state = _frequency_state(c)
+    if state is None:
+        return None
+    entries = ((c.get("frequent_values") or {}).get("values") or ()) if state else ()
+    return any(needle in str(e.get("value") or "") for e in entries)
+
+
+def _frequent_not_null(c: _Col) -> bool | None:
+    state = _frequency_state(c)
+    return None if state is None else bool(state and (c.get("frequent_values") or {}).get("values"))
+
+
+def _frequency_state(c: _Col):
+    """True: the analysis was read; False: the column is not eligible for it (no frequent values, a real absence); None: it
+    is eligible but not in the row (profiled before step 8b, or its read did not finish)."""
+    from resource_explorer.surveyors.database.quality import frequent_values
+
+    row = {**c.p, "state": c.p.get("state") or "measured"}
+    if not frequent_values.eligible(row):
+        return False if c.get("distinct_value_ct") is not None and c.get("max_length") is not None else None
+    if c.get("frequency_state") == frequent_values.READ:
+        return True
+    c.missed.add("frequent_values")
+    return None
+
+
+def _suggestion_is_varchar(c: _Col) -> bool | None:
+    """Whether `LOWER(datatype_suggestion) SIMILAR TO '(%varchar%)'` holds for a text column, from the first pass of
+    `datatype_suggestions.sql` (the label is still NULL then, so its State / Boolean / Measurement Pct arms cannot fire).
+    TestGen's `column_type` for a Postgres text column is `varchar(n)` (`text` and an unsized `character varying` are
+    `varchar(65535)`) or `char(n)`; a table of 500 rows or fewer, or a name ending in "id", keeps it unchanged; above that the
+    arms below suggest DECIMAL, INTEGER, BIGINT, TIMESTAMP(Z) or DATE for text that is all numbers or dates (they read the
+    frequent values), else a VARCHAR. None when the answer depends on a frequent value the profile does not hold."""
+    declared = (c.get("catalog_type") or "").lower().strip()
+    if not declared:
+        return None
+    base_varchar = declared == "text" or "varchar" in declared or "varying" in declared
+    gate = _and(_cmp(c.get("record_ct"), ">", 500), re.search("id$", c.name, re.IGNORECASE) is None)
+    if gate is False:
+        return base_varchar
+    out: set[bool] = set() if gate is True else {base_varchar}
+    vc, zl, ml = c.get("value_ct"), c.get("zero_length_ct"), c.get("max_length")
+    numeric_all = _and(_cmp(c.get("numeric_ct"), ">", 0), None if None in (vc, c.get("numeric_ct"), zl) else
+                       vc == c.get("numeric_ct") + zl) if c.ts != "unread" else None
+    date_all = _and(_cmp(c.get("date_ct"), ">", 0), None if None in (vc, c.get("date_ct"), zl) else
+                    vc == c.get("date_ct") + zl) if c.ts != "unread" else None
+    if c.ts == "unread":
+        c.missed.add("sample_value_ct")
+    dot = _frequent_like(c, ".")
+    fv_present = _frequent_not_null(c)
+    arms = [
+        (_and(re.search("zip", c.name, re.IGNORECASE) is not None, _cmp(ml, "<=", 10)), True),
+        (_and(numeric_all, dot), False),
+        (_and(numeric_all, _cmp(ml, "<=", 6), fv_present, _not(dot)), False),
+        (_and(numeric_all, _cmp(ml, ">", 6), fv_present, _not(dot)), False),
+        (_and(date_all, _frequent_like(c, "+")), False),
+        (_and(date_all, _frequent_like(c, ":")), False),
+        (date_all, False),
+        (_cmp(ml, "<=", 5), True),
+        (None if ml is None else True, True),
+    ]
+    decided = False
+    for cond, is_varchar in arms:
+        if cond is True:
+            out.add(is_varchar)
+            decided = True
+            break
+        if cond is None:
+            out.add(is_varchar)
+    if not decided:
+        out.add(base_varchar)
+    return True if out == {True} else False if out == {False} else None
+
+
+def _code_category_results(c: _Col) -> set:
+    """The values of the CASE at upstream 412-448 (a column whose label is still NULL): Measurement Text, then ID or Code by
+    shape, then Attribute or Description by length and words, then Code or Category; `KEEP` where no arm fires."""
+    name_ok = any(rx.search(c.name.lower()) for rx in _MEASURE_TEXT_NAME)
+    arm1 = _and(name_ok, c.tcond(lambda nc, vc_: nc == vc_ and vc_ > 1, "numeric_ct", "value_ct"))
+    vc, rc, dv = c.get("value_ct"), c.get("record_ct"), c.get("distinct_value_ct")
+    populated = None if not rc or vc is None else vc / rc > 0.8
+    unique = None if not vc or dv is None else dv / vc > 0.95
+    short_unspaced = _and(c.tcond(lambda ml, es: ml <= 20 and es < 0.1, "max_length", "avg_embedded_spaces"), populated, unique)
+    consistent = c.tcond(lambda es, ml, al, mn: es < 0.1 and (round(ml - al) <= 1 or round(al - mn) <= 1),
+                         "avg_embedded_spaces", "max_length", "avg_length", "min_length")
+    arm2 = _and(c.tcond(lambda dg: dg > 0, "includes_digit_ct"), _sql_or(short_unspaced, consistent))
+    inner2 = case_set([(_cmp(dv, ">", 200), "ID"),
+                       (_and(_cmp(dv, "<=", 200), c.tcond(lambda es: es < 1, "avg_embedded_spaces")), "Code")], KEEP)
+    varies = c.tcond(lambda ml, al, mn: ml - round(al) > 1 and round(al) - mn > 1, "max_length", "avg_length", "min_length")
+    attribute = c.tcond(lambda es, ml, mt: 0 <= es <= 3 and ml <= 30 and mt.count(" ") < 5,
+                        "avg_embedded_spaces", "max_length", "max_text")
+    inner3 = case_set([(varies, "__varies__")], KEEP)
+    if "__varies__" in inner3:
+        inner3.discard("__varies__")
+        inner3 |= case_set([(attribute, "Attribute")], "Description")
+    short = c.tcond(lambda es, ml: es < 1 and ml < 15, "avg_embedded_spaces", "max_length")
+    code_by_pattern = _and(_pattern_like(c, "A"), _pattern_like(c, "N"))
+    inner4 = case_set([(_sql_or(short, code_by_pattern), "Code")], "Category")
+    out: set = set()
+    for cond, results in ((arm1, {"Measurement Text"}), (arm2, inner2), (_cmp(dv, ">", 200), inner3),
+                          (_between(dv, 2, 200), inner4)):
+        if cond is True:
+            return out | results
+        if cond is None:
+            out |= results
+    return out | {KEEP}
+
+
+def _pattern_like(c: _Col, letter: str) -> bool | None:
+    """`fn_frequent_like(frequent_patterns, '%<letter>%')`: some stored pattern contains it (NULL patterns: false)."""
+    if c.ts == "unread":
+        c.missed.add("sample_value_ct")
+        return None
+    import json
+
+    stored = c.get("frequent_patterns")
+    if isinstance(stored, str):
+        try:
+            stored = json.loads(stored)
+        except ValueError:
+            return False
+    values = (stored or {}).get("values") if isinstance(stored, dict) else None
+    return any(letter in (v.get("value") or "") for v in values or ())
+
+
 def _tail(c: _Col) -> set:
     """The last CASE (472-514), for a column nothing has labelled yet: Sequence, an ID/Attribute by name, a Spike, a
     discrete or continuous Measurement, else 'UNKNOWN'."""
@@ -739,6 +878,24 @@ def _tail(c: _Col) -> set:
     return out
 
 
+def _measurement_pct_code(c: _Col) -> bool | None:
+    """Upstream 583-602's second statement: a 'Code' column of at most three patterns, every value with a digit, between
+    '0' and '99', whose top patterns are all of the form N, NN or NNN with an optional decimal and a percent sign."""
+    rx = re.compile(r"^N{1,3}(\.N+)?%$")
+    dp = c.get("distinct_pattern_ct")
+
+    def pattern_ok(n: int):
+        top = _nth_pattern(c.get("frequent_patterns"), n)
+        return (top is not None and rx.search(top.strip()) is not None) or (dp is not None and dp < n)
+
+    head = c.tcond(lambda dpc, vc_, dg, mn, mx, t: 1 <= dpc <= 3 and vc_ == dg and mn >= "0" and mx <= "99"
+                   and rx.search(t.strip()) is not None, "distinct_pattern_ct", "value_ct", "includes_digit_ct",
+                   "min_text", "max_text", "_top1")
+    if head is not True:
+        return head
+    return pattern_ok(2) and pattern_ok(3)
+
+
 def _stage_b(s: set, c: _Col, foreign_key: bool | None) -> set:
     """ID-FK (569-579) then Measurement Pct (583-602). `foreign_key`: another table has a column of this name that is a
     unique ID (True), might (None), or does not (False)."""
@@ -765,7 +922,11 @@ def _stage_b(s: set, c: _Col, foreign_key: bool | None) -> set:
             out.add(v)
     s = out
     if "Code" in s and c.text:
-        s = s | {"Measurement Pct"}
+        pct_text = _measurement_pct_code(c)
+        if pct_text is True:
+            s = {("Measurement Pct" if v == "Code" else v) for v in s}
+        elif pct_text is None:
+            s = s | {"Measurement Pct"}
     return s
 
 
