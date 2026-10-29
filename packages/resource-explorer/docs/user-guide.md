@@ -260,7 +260,7 @@ Nothing is drawn before the homepage step has run: "not measured" is not "no doc
 ### Discovery
 *Goal: find what a resource is, from what its surveys revealed*
 
-Discovery is a stage with its own questions. For a database the Questions tab reads "5 of 19 answered · 13 still loading · Discovery" and lists 19 questions (the ids on the rows include `db_catalogued`, `db_existing_use` and `db_feedback`), answered on the page: "Has this resource already been catalogued in Egeria, and when?", "Is there any existing use within our organization?", "Any known feedback?". An empty answer says so: "Nothing is recorded for this — a real absence, not an unrun analysis." Chat is a rail on every stage, not a Discovery panel; see "Asking in the chat rail" below. Intended behavior: a pane that is loading says what it is waiting for and how many rows are back; today it shows "loading…" for many seconds, fixed in the pending status-words PR.
+Discovery is a stage with its own questions. For a database the Questions tab reads "5 of 19 answered · 13 still loading · Discovery" and lists 19 questions (the ids on the rows include `db_catalogued`, `db_existing_use` and `db_feedback`), answered on the page: "Has this resource already been cataloged in Egeria, and when?", "Is there any existing use within our organization?", "Any known feedback?". An empty answer says so: "Nothing is recorded for this — a real absence, not an unrun analysis." Chat is a rail on every stage, not a Discovery panel; see "Asking in the chat rail" below. Intended behavior: a pane that is loading says what it is waiting for and how many rows are back; today it shows "loading…" for many seconds, fixed in the pending status-words PR.
 
 ### Assessment
 *Goal: deep analysis of a specific resource*
