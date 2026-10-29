@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from resource_explorer.web.routes import work_lists as work_lists_routes
 from resource_explorer.web.routes import quality_batch as quality_batch_routes
 from resource_explorer.web.routes import publish_table as publish_table_routes
-from resource_explorer.web.routes import api_reference as api_reference_routes, analytics as analytics_routes, activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, catalogue_scope, quality_checks, curate, databases, first_index as first_index_routes, db_servers as db_servers_routes, diagrams, discovery, doc_sources, egeria, feedback, investigations, journal, logs as logs_routes, prefect_status, prerequisites as prerequisite_routes, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions, native_surveys
+from resource_explorer.web.routes import api_reference as api_reference_routes, analytics as analytics_routes, activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, catalogue_scope, quality_checks, curate, databases, first_index as first_index_routes, db_servers as db_servers_routes, diagrams, discovery, doc_sources, egeria, feedback, investigations, journal, logs as logs_routes, prefect_status, prerequisites as prerequisite_routes, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions, native_surveys, open_data as open_data_routes
 from resource_explorer.web.routes import table_preview as table_preview_routes
 
 
@@ -370,6 +370,7 @@ app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
 app.include_router(databases.router, prefix="/api/databases", tags=["databases"])
 app.include_router(table_preview_routes.router, prefix="/api/databases", tags=["table-preview"])
 app.include_router(filesystems.router, prefix="/api/filesystems", tags=["filesystems"])
+app.include_router(open_data_routes.router, prefix="/api/open-data", tags=["open-data"])
 app.include_router(stats.router, prefix="/api/stats", tags=["stats"])
 app.include_router(aliases.router, prefix="/api/aliases", tags=["aliases"])
 app.include_router(egeria.router, prefix="/api/egeria", tags=["egeria"])
