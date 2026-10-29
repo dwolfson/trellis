@@ -119,9 +119,9 @@ test('the lens row: no lens declared, both links marked deferred, not built', as
   assert.match(html, /no lens declared for GDPR Sweep/);
   assert.match(html, /declare it on the investigation ›/);
   assert.match(html, /try one on this resource only/);
-  // Both are marked "not built in /next", the same convention every other
+  // Both are marked "not built yet", the same convention every other
   // deferred affordance in this codebase uses -- not a real click target.
-  const notBuiltCount = (html.match(/not built in \/next/g) || []).length;
+  const notBuiltCount = (html.match(/not built yet/g) || []).length;
   assert.ok(notBuiltCount >= 2, `expected both lens links marked deferred; html: ${html}`);
   assert.match(html, /feeds → preliminary_fit/);
 });

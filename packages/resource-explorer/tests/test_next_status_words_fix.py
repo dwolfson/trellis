@@ -14,16 +14,13 @@ def _app():
 
 
 class TestSignedInWord:
-    def test_header_and_popover_read_the_one_helper(self):
+    def test_header_word_comes_from_the_confirmed_answer_only(self):
         app = _app()
-        assert "signedInUser() || 'not signed in'" in app
-        assert "openConnectionPopover(document, btn, { me: { user_id: signedInUser() } })" in app
-
-    def test_helper_falls_back_to_the_session_token(self):
-        app = _app()
-        body = app[app.index("function signedInUser()"):]
+        assert "|| unconfirmedWord();" in app and "openConnectionPopover(document, btn, { me: { user_id: signedInUser() } })" in app
+        body = app[app.index("function unconfirmedWord()"):]
         body = body[:body.index("\n}\n")]
-        assert "Auth.isAuthenticated()" in body and "Auth.getUser()" in body
+        assert "authenticated === false ? 'not signed in' : 'checking sign-in…'" in body
+        assert "Auth." not in app[app.index("function signedInUser()"):app.index("function unconfirmedWord()")] + body
 
 
 class TestUnknownStage:

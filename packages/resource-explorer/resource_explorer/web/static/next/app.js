@@ -816,16 +816,15 @@ const tone = (st, ground = 'paper') =>
  * Chrome
  * ════════════════════════════════════════════════════════════════════════ */
 
-/** Who is signed in: the answer of /api/auth/me when it came back and named someone, else the live session token's
- *  own claims. A slow or failed /api/auth/me read must not turn a signed-in person into "not signed in". */
+/** Who is signed in, as /api/auth/me confirmed ('' until it names someone). */
 function signedInUser() {
-  const fromMe = state.me && (state.me.user_id || state.me.username || state.me.egeria_user);
-  if (fromMe) return fromMe;
-  if (typeof Auth !== 'undefined' && Auth.isAuthenticated()) {
-    const c = Auth.getUser() || {};
-    return c.user_id || c.sub || '';
-  }
-  return '';
+  return (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || '';
+}
+
+/** The header word when /api/auth/me has not named anyone: "not signed in" only when it said so; "checking sign-in…"
+ *  while it has not answered (state.me is null), never a confident "not signed in" about something not yet asked. */
+function unconfirmedWord() {
+  return state.me && state.me.authenticated === false ? 'not signed in' : 'checking sign-in…';
 }
 
 export function renderTopBar() {
@@ -872,7 +871,7 @@ export function renderTopBar() {
     scopeEl.title = inv?.egeria_project_qualified_name || '';
   }
   $('whoami').textContent =
-    signedInUser() || 'not signed in';
+    (state.me && (state.me.user_id || state.me.username || state.me.egeria_user)) || unconfirmedWord();
   $('activity-count').textContent =
     state.counts.activity === null ? '–' : state.counts.activity;
   wireActivityButton();
