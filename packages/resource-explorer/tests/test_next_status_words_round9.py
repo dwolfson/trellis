@@ -42,3 +42,51 @@ def test_the_finished_row_carries_executor_and_duration(fs_activity_ran):
     detail = json.loads(registry.get_activity(aid)["detail"])
     assert detail["executor"] in ("local", "prefect")
     assert isinstance(detail["duration_s"], float)
+
+
+class _Registry:
+    def __init__(self, row):
+        self.row = row
+
+    def get_compile(self, _id):
+        return self.row
+
+
+def _entry(manifest):
+    from resource_explorer.journal import derive_turn_entry
+
+    return derive_turn_entry(_Registry({"manifest": manifest}), question="q", answer="a", compile_id="c" * 32,
+                             investigation="inv", resource_slug="r")
+
+
+def test_the_journal_carries_the_compiles_declared_as_ofs_and_says_when_they_differ():
+    manifest = {"packed": [{"key": "fs_activity"}, {"key": "fs_permissions"}],
+                "declared": {"fs_activity": {"as_of": "2026-10-28T10:00"}, "fs_permissions": {"as_of": "2026-10-29T09:00"}}}
+    out = _entry(manifest)
+    assert out["turn"]["as_ofs"] == {"fs_activity": "2026-10-28T10:00", "fs_permissions": "2026-10-29T09:00"}
+    assert "As of: differs by section: fs_activity 2026-10-28T10:00; fs_permissions 2026-10-29T09:00" in out["body"]
+    assert "not recorded" not in out["body"].split("- As of:")[1].split("\n")[0]
+
+
+def test_one_agreed_as_of_is_said_once_and_none_is_still_not_recorded():
+    same = _entry({"packed": [{"key": "a"}], "declared": {"a": {"as_of": "2026-10-28"}}})
+    assert "- As of: 2026-10-28\n" in same["body"]
+    assert "- As of: not recorded\n" in _entry({"packed": [{"key": "a"}]})["body"]
+
+
+def test_the_journal_keeps_the_row_ids_each_section_was_built_from():
+    out = _entry({"packed": [{"key": "fs_activity"}],
+                  "rows_seen": {"fs_activity": {"step_annotations": ["step_annotations:filesystem/t/fs_activity/r1/"]}}})
+    assert out["turn"]["rows_seen"] == {"fs_activity": ["step_annotations:filesystem/t/fs_activity/r1/"]}
+    assert "- Rows: fs_activity: step_annotations:filesystem/t/fs_activity/r1/" in out["body"]
+
+
+def test_a_measure_record_names_its_stored_row(fs_activity_ran):
+    from resource_explorer import declared_context as dc
+    from resource_explorer.workflows.analysis import run_filesystem_analysis
+
+    registry = fs_activity_ran
+    assert run_filesystem_analysis("tree", "fs_activity", registry=registry).status == "ok"
+    dec = dc.declarations("filesystem")["fs_activity"]
+    records = dc.measure_records(registry, "filesystem", "tree", "fs_activity", dec, "fs_activity")
+    assert records and all(r["row_id"].startswith("step_annotations:filesystem/tree/fs_activity") for r in records.values())
