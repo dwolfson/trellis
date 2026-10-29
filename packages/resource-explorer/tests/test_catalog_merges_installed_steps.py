@@ -6,6 +6,8 @@ committed catalog has never heard of, and shows it appears in the catalog, with 
 """
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from resource_explorer.surveyors import analysis_catalog_reader as reader
@@ -36,8 +38,10 @@ def _install_fake(tmp_path, monkeypatch, resource_type="database", version="0.3.
 
 
 @pytest.fixture(autouse=True)
-def _put_back():
+def _put_back(monkeypatch):
     yield
+    monkeypatch.undo()          # the path entry goes first, then the re-attach sees the step gone
+    sys.modules.pop(NAME, None)
     survey_step_host.refresh("database")
     survey_step_host.refresh("filesystem")
 
