@@ -61,6 +61,7 @@ def _installing(tmp_path, monkeypatch, names):
     for entry in reversed(_entries(tmp_path, names)):
         monkeypatch.syspath_prepend(entry)
     survey_step_host.refresh("database")
+    survey_step_host.refresh("filesystem")
 
 
 def _put_back(monkeypatch):
@@ -68,6 +69,7 @@ def _put_back(monkeypatch):
 
     monkeypatch.undo()
     survey_step_host.refresh("database")
+    survey_step_host.refresh("filesystem")
 
 
 @pytest.fixture

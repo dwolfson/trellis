@@ -13,12 +13,16 @@ from tests.library_step_install import library_installed, staleness_installed  #
 from tests.test_engine_host_e4 import DB_GUID, _sweep, egeria, reg  # noqa: F401 - fixtures and helpers reused
 
 ALL = "change_rates, database_staleness, hub_tables, statistics_freshness"
+FS_ALL = "fs_activity, fs_change_rates, fs_duplicates, fs_layout_signals, fs_permissions"
+FILES_NONE = f"Files host: none installed (5 missing: {FS_ALL})"
+FILES_ALL = f"Files host: {FS_ALL} (none missing)"
 
 
 def test_none_installed_the_line_names_every_missing_step():
     from resource_explorer import engine_host
 
-    assert engine_host.library_steps_line() == f"library steps: 0 installed, 4 missing: {ALL}"
+    assert engine_host.library_steps_line() == (
+        f"library steps \u00b7 Egeria host: none installed (4 missing: {ALL}) \u00b7 {FILES_NONE}")
     assert set(engine_host.missing_library_steps()) == {
         "re-change-rates", "re-database-staleness", "re-hub-tables", "re-statistics-freshness"}
 
@@ -27,13 +31,15 @@ def test_some_installed_the_line_names_only_the_missing_ones(staleness_installed
     from resource_explorer import engine_host
 
     assert engine_host.library_steps_line() == (
-        "library steps: 1 installed, 3 missing: change_rates, hub_tables, statistics_freshness")
+        "library steps \u00b7 Egeria host: database_staleness (3 missing: change_rates, hub_tables, "
+        f"statistics_freshness) \u00b7 {FILES_NONE}")
 
 
 def test_all_installed_says_none_missing(library_installed):
     from resource_explorer import engine_host
 
-    assert engine_host.library_steps_line() == "library steps: 4 installed, none missing"
+    assert engine_host.library_steps_line() == (
+        f"library steps \u00b7 Egeria host: {ALL} (none missing) \u00b7 {FILES_ALL}")
     assert engine_host.missing_library_steps() == {}
 
 
@@ -45,9 +51,9 @@ def test_start_logs_the_one_line(caplog, monkeypatch):
     with caplog.at_level("INFO", logger="resource_explorer.engine_host"):
         loop.start()
         loop.stop()
-    lines = [r for r in caplog.records if "library steps:" in r.getMessage()]
+    lines = [r for r in caplog.records if "library steps" in r.getMessage()]
     assert len(lines) == 1 and lines[0].levelname == "INFO"
-    assert f"library steps: 0 installed, 4 missing: {ALL}" in lines[0].getMessage()
+    assert f"Egeria host: none installed (4 missing: {ALL})" in lines[0].getMessage()
 
 
 def test_a_missing_steps_action_is_left_approved_and_unclaimed_and_said_once(staleness_installed, reg, egeria,

@@ -212,3 +212,21 @@ test("a zero-fetch fact's as-of reaches the answer line: its read snapshot, neve
   assert.equal(ran.asOf, '');
   assert.equal(ran.lastRun, '2026-10-21T09:00:00');
 });
+
+test("a file system's table names its own press, offers no Contents button, and titles Publish by the folder survey", async () => {
+  await open({ table: TABLE() });                       // sets the page up; the module reads state from it
+  const { publishTableHtml } = await import('/static/next/stages/publish-table.js');
+  const fsTable = { ...TABLE(), entity_type: 'filesystem', slug: 'loading_bay', chosen: 1,
+    press: "chosen measures go inside Resource Explorer's own file-system survey report: the folder survey's Publish sends them, each read back by name",
+    rows: [row({ analysis_id: 'fs_permissions', analysis: 'File permissions', measure: 'fs_permissions', locator: 'fs_permissions/fs_permissions' }),
+      row({ analysis_id: 'fs_activity', analysis: 'File activity', measure: 'fs_access_activity', locator: 'fs_activity/fs_access_activity',
+        value: null, value_words: '—', as_of: '', absence: 'not_measured', absence_words: 'Not measured: access times were not recorded on this walk.',
+        publishable: false, why_not: 'not measured this run · Not measured: access times were not recorded on this walk.' })] };
+  const html = publishTableHtml(fsTable, true, 'filesystem');
+  assert.ok(html.includes('file-system survey report'));
+  assert.ok(!html.includes('data-publish-table-goto'), 'a file system has no Contents tab');
+  assert.match(html, /Publish fs_permissions with the folder survey(&#39;|&#039;|&apos;|')s Publish/);
+  const absent = html.slice(html.indexOf('fs_activity/fs_access_activity'));
+  assert.ok(absent.includes('not measured this run'));
+  assert.ok(/data-publish-choice="publish"[^>]*disabled/.test(absent), 'no Publish on a measure that was not established');
+});

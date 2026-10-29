@@ -272,8 +272,9 @@ def test_the_declared_nothing_guard_is_the_one_used(staleness_installed, reg, eg
 
     def declares_completed(entity_type):
         found = dict(real(entity_type))
-        m = found["database_staleness"]
-        found["database_staleness"] = m.model_copy(update={"nothing_to_derive_guard": "survey-completed"})
+        if "database_staleness" in found:   # the catalog reads every resource type through this
+            m = found["database_staleness"]
+            found["database_staleness"] = m.model_copy(update={"nothing_to_derive_guard": "survey-completed"})
         return found
 
     monkeypatch.setattr(survey_step_host, "discover_steps", declares_completed)

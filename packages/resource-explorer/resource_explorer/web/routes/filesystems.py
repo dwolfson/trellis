@@ -660,7 +660,13 @@ def _publish_walk(registry, fs, sd: dict, slug: str, *, check_reach: bool = True
             raise NothingToPublish(f"not published · {refusal}")
         surveyor = EgeriaFileSystemSurveyor(
             platform_url=fs.egeria_url or None, view_server=fs.egeria_server or None, identity=Caller())
-        published = surveyor.publish_step_annotations(fs, sd, registry)
+        # The measures chosen Publish on Curate's table ride inside this report (the owner's ruling, 2026-10-28), each
+        # read back by name; a table that could not be read sends nothing and says so (`state: not_read`).
+        from resource_explorer import publish_table
+
+        declared = publish_table.annotations_for(registry, slug, "filesystem")
+        published = surveyor.publish_step_annotations(fs, sd, registry, declared_measures=declared)
+        out["declared_measures"] = _record_declared_proofs(registry, slug, published, _publisher())
         from resource_explorer.folder_survey_view import _publish_words
 
         out.update(report_guid=published.get("report_guid", ""), annotation_count=published.get("annotation_count"),
@@ -678,6 +684,36 @@ def _publish_walk(registry, fs, sd: dict, slug: str, *, check_reach: bool = True
             raise refused from exc
         log.exception("Publishing the folder survey failed for %s", slug)
         out["publish_error"] = str(exc)
+    return out
+
+
+def _publisher() -> str:
+    """Who is publishing, for the proof rows: the signed-in person the Egeria call was made as."""
+    from resource_explorer.run_queue import requested_by
+
+    return requested_by() or ""
+
+
+def _record_declared_proofs(registry, slug: str, published: dict, author: str) -> dict:
+    """One proof row per chosen measure, from the report's read (`publish_table.record_proofs`), never from the send.
+    Returns the words for the answer; a proof that could not be written is said, the publish having happened."""
+    from resource_explorer import publish_table
+
+    declared = published.get("declared_measures") or {}
+    sent = declared.get("sent") or []
+    out: dict = {"state": declared.get("state", ""), "sent": len(sent)}
+    if declared.get("state") == "not_read":
+        out["words"] = "declared measures not sent · the publish table could not be read"
+    if not (sent or declared.get("not_built")):
+        return out
+    try:
+        counts = publish_table.record_proofs(registry, slug, sent, report_guid=published.get("report_guid", ""),
+                                             recorded_by=author, entity_type="filesystem")
+    except Exception as exc:  # noqa: BLE001 -- the report is in Egeria; the missing proof is said, not hidden
+        log.exception("recording the declared-measure proofs of %s failed", slug)
+        out["words"] = f"{len(sent)} declared measures sent · their read-back could not be recorded: {exc}"
+        return out
+    out.update(read_back=counts["read_back"], words=publish_table.step_words(counts, declared.get("not_built")))
     return out
 
 

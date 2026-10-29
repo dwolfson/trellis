@@ -192,13 +192,30 @@ def test_a_choice_for_a_measure_no_declaration_names_is_refused(registry, declar
                        choice="maybe", author="ann")
 
 
-def test_a_file_system_shows_its_rows_but_cannot_publish_from_this_table_yet(tmp_path, declared):
+def test_a_file_system_publishes_through_its_own_survey_report(tmp_path, declared):
+    """The wait is lifted (2026-10-29): a file system's rows publish like a database's, and say where they go."""
     reg = ProjectRegistry(db_path=str(tmp_path / "fs.db"))
     table = pt.build_rows(reg, "filesystem", "share")
-    assert table["press"] == pt.NOT_FOR_KIND_WORDS
-    assert all(not r["publishable"] and r["why_not"] == pt.NOT_FOR_KIND_WORDS for r in table["rows"])
-    # The owner's answer 3: they wait for a file-system survey report of RE's own, and the words say so.
-    assert "wait for a survey report of Resource Explorer's own for file systems" in pt.NOT_FOR_KIND_WORDS
+    assert table["press"] == pt.FS_PRESS_WORDS and "file-system survey report" in pt.FS_PRESS_WORDS
+    assert table["rows"] and all(r["why_not"] != pt.NOT_FOR_KIND_WORDS for r in table["rows"])
+    assert any(r["publishable"] for r in table["rows"])
+
+
+def test_a_file_systems_proof_rows_are_its_own_and_read_back_as_published(tmp_path, declared):
+    reg = ProjectRegistry(db_path=str(tmp_path / "fs.db"))
+    row = next(r for r in pt.build_rows(reg, "filesystem", "share")["rows"] if r["publishable"])
+    pt.save_choice(reg, "filesystem", "share", analysis_id=row["analysis_id"], measure=row["measure"],
+                   choice=pt.PUBLISH, author="ann")
+    sent = pt.annotations_for(reg, "share", "filesystem")
+    assert sent["state"] == "sent" and len(sent["annotations"]) == 1
+    pt.record_proofs(reg, "share", [{"analysis_id": row["analysis_id"], "measure": row["measure"],
+                                     "value": row["value"], "as_of": row["as_of"], "guid": "g-1",
+                                     "type": row["writes_as"]["type"], "route": row["writes_as"]["route"]}],
+                     report_guid="rep-1", recorded_by="ann", entity_type="filesystem")
+    again = next(r for r in pt.build_rows(reg, "filesystem", "share")["rows"] if r["locator"] == row["locator"])
+    assert again["published"]["state"] == "published" and "published · read back" in again["published"]["words"]
+    # a database of the same slug does not see the file system's proof
+    assert pt.published_states(reg, "share", "database") == {}
 
 
 # ── the press: published, read back, and the native type ───────────────────────────────────────────────────────
@@ -633,7 +650,7 @@ def test_a_library_step_value_at_the_top_of_the_record_still_resolves(registry, 
 def test_a_resource_scoped_library_step_reads_each_measure_from_where_the_host_stored_it(tmp_path, monkeypatch):
     """fs_activity run by RE's own host on a walked tree, read by the table through the real fact layer: each measure
     is read from its own stored key, so fs_access_activity shows its value, or its state with the step's reason,
-    never "ran and found nothing". A file system still cannot publish (owner answer 3)."""
+    never "ran and found nothing". A measure it could not establish offers no Publish."""
     from resource_explorer.surveyors import survey_step_host
     from resource_explorer.surveyors.analysis_catalog_reader import _load
     from resource_explorer.surveyors.filesystem.walk_derived import derived_view
@@ -663,4 +680,6 @@ def test_a_resource_scoped_library_step_reads_each_measure_from_where_the_host_s
     else:
         assert access["value"] is None and access["absence"] != "measured_nothing"
         assert access["absence_words"].endswith(f" · {held['reason']}")
-    assert not access["publishable"] and access["why_not"] == pt.NOT_FOR_KIND_WORDS
+    if access["value"] is None:
+        # find-absence-as-answer: not established is "not measured this run", never a zero, and offers no Publish
+        assert not access["publishable"] and access["why_not"].startswith(pt.NOT_MEASURED_WORDS)

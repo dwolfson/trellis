@@ -91,6 +91,8 @@ _BUILTIN: dict[str, frozenset[str]] = {}
 
 #: Per resource type: the user steps the last attach() attached, so the next one can remove those it no longer has.
 _ATTACHED: dict[str, set[str]] = {}
+#: The analysis ids `attach` put into the results/step/kinds maps, per resource type (so a later attach can take them out).
+_ATTACHED_IDS: dict[str, set[str]] = {}
 #: {entity type: {step key: provided_by}} for catalogued steps whose package is NOT installed (they attach as
 #: `NotInstalledStep`). Set by `attach`, so the engine host and the cards ask one place.
 _MISSING: dict[str, dict[str, dict]] = {}
@@ -612,6 +614,13 @@ def missing_library_steps(entity_type: str = "database") -> dict[str, dict]:
     return {k: dict(v) for k, v in _MISSING.get(entity_type, {}).items()}
 
 
+def installed_library_steps(entity_type: str = "database") -> list[str]:
+    """Sorted step keys of the Analytic Library steps installed here that target `entity_type`: every step `attach()`
+    attached except the catalogued ones whose package is absent (`missing_library_steps`)."""
+    missing = missing_library_steps(entity_type)
+    return sorted(k for k in _ATTACHED.get(entity_type, set()) if k not in missing)
+
+
 def library_step_missing_reason(step_key: str, entity_type: str = "database") -> str:
     """The `not_installed_sentence` when `step_key` is a catalogued library step whose package is absent, else ""."""
     provided_by = missing_library_steps(entity_type).get(step_key)
@@ -695,6 +704,7 @@ def attach(entity_type: str, adapter, step_registry: dict, step_map: dict, resul
     found = discover_steps(entity_type)
     origins = {}
     attached: list[str] = []
+    analysis_ids: set[str] = set()
     missing: dict[str, dict] = {}
     for entry in _load().get(entity_type, []):
         if not entry.provided_by:
@@ -720,6 +730,7 @@ def attach(entity_type: str, adapter, step_registry: dict, step_map: dict, resul
         reader = annotation_readers.results_reader(entity_type, step_key, annotation_type)
         headline = annotation_readers.headline_reader(entity_type, step_key, annotation_type)
         step_map[entry.id] = [step_key]
+        analysis_ids.add(entry.id)
         results_map[entry.id] = (reader, None)
         headline_map[entry.id] = headline
         kinds[entry.id] = AnalysisKind(entry.id, [step_key], results=AnalysisKindResults(
@@ -733,7 +744,8 @@ def attach(entity_type: str, adapter, step_registry: dict, step_map: dict, resul
                       "Resource Explorer's own step)", name)
             continue
         log.warning("installed step '%s' has no analysis catalog entry; it can run from a Survey Definition but "
-                    "shows no card: run scripts/generate_external_step_entries.py", name)
+                    "shows no card: the catalog merges installed manifests when it is read, so this means the "
+                    "entry was refused or the catalog was read before the package was installed", name)
         adapter.re_analysis_steps[name] = SurveyStepHost(manifest, entity_type)
         adapter.re_analysis_step_info[name] = {"description": manifest.description,
                                                "annotation_types": [manifest.annotation_type]}
@@ -746,6 +758,12 @@ def attach(entity_type: str, adapter, step_registry: dict, step_map: dict, resul
         adapter.re_analysis_steps.pop(gone, None)
         adapter.re_analysis_step_info.pop(gone, None)
         step_registry.pop(gone, None)
+    # Its analyses leave the maps too, so a catalog entry that is gone (a package uninstalled, a test's fake) does not
+    # keep a results reader behind.
+    for gone_id in _ATTACHED_IDS.get(entity_type, set()) - analysis_ids:
+        for mapping in (step_map, results_map, headline_map, kinds):
+            mapping.pop(gone_id, None)
+    _ATTACHED_IDS[entity_type] = analysis_ids
     _ATTACHED[entity_type] = set(attached)
     _MISSING[entity_type] = missing
     _LIBRARY[entity_type], _REFUSED[entity_type] = _admit(entity_type, found, origins)

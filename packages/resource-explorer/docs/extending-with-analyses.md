@@ -241,70 +241,37 @@ RE's own entries, and a library step with code has no use for it.
 
 ---
 
-## 3. The catalogue entry, and the test that keeps it honest
+## 3. The catalogue entry: merged for you, no commit in RE
 
-RE shows an analysis card only for an analysis in its catalogue,
-`resource_explorer/configdata/analysis_catalog.yaml`. For library steps that entry is
-**generated from the manifest**. Never write it by hand. Run the generator from the repo root, with
-your package on the path:
+RE shows an analysis card only for an analysis in its catalogue. For library steps **you do not write or commit that
+entry any more.** When RE reads `analysis_catalog.yaml` it also reads every installed `trellis.analytics` manifest and
+merges it in, so installing the package is enough: the card, the run, the declaration, Chat's compile and the publish
+table all see the step after RE restarts. The reasoning is in
+[`DESIGN-STEP-MANIFESTS-MERGED-AT-READ-TIME.md`](design-notes/DESIGN-STEP-MANIFESTS-MERGED-AT-READ-TIME.md).
+
+**The committed entries are a fallback, and regenerating them is optional.** The block between
+`# BEGIN GENERATED user steps (database)` and `# END GENERATED user steps (database)` still holds the four example
+steps, so an environment that lacks their packages still lists them and says "step not installed here: ... comes from
+package P". When a package is installed its manifest replaces the committed entry, so the two cannot disagree in what
+RE shows. To refresh the fallback for a step you want package-less environments to know about:
 
 ```bash
 uv run --with-editable path/to/my_step python packages/resource-explorer/scripts/generate_external_step_entries.py
 ```
 
-The generator writes only the block between `# BEGIN GENERATED user steps (database)` and
-`# END GENERATED user steps (database)` at the end of `database_analyses:`. It copies the card fields,
-a `provided_by` block (package, version, entry point, questions) and the declaration. `--check`
-writes nothing and exits 1 if the block is stale. Neither generator talks to Egeria.
-
-`--with-editable` puts only the packages you name on the path. **Name every library step package**,
-one `--with-editable` each, or the block is regenerated without the ones you left out. The
-committed block holds the four example steps.
+Name every library step package, one `--with-editable` each, or the block is regenerated without the ones you left out.
+`--check` writes nothing and exits 1 if the block is stale. Neither generator talks to Egeria.
 
 **The staleness test** is
 `packages/trellis-analytics/tests/test_database_staleness_step.py::test_the_catalog_entries_in_analysis_catalog_yaml_are_the_generated_ones`.
-It installs the example steps as pip would, and checks three things:
+It checks the committed fallback block against the generator, and each entry against its manifest. It guards the
+fallback, not the card: a stale fallback no longer changes what an installed step shows.
 
-- the committed block equals the generator's output ("analysis_catalog.yaml is stale: run the generator");
-- each entry's card fields and declaration equal its manifest's;
-- each description says what "not measured" means.
-
-If it fails, re-run the generator with every package named, read the `git diff` on
-`analysis_catalog.yaml`, and commit it. The test expects exactly the four example steps, so adding a
-fifth example under `examples/steps/` means extending that test's set and its fixture.
-
-For Egeria to start the step, a second generator writes the engine-host declaration:
-
-```bash
-uv run --with-editable path/to/my_step python packages/resource-explorer/scripts/generate_engine_host_declaration.py
-```
-
-It writes `docs/dr-egeria/engine-host/library/<step>.md` and its `.pyegeria-steps.json`.
-`tests/test_engine_host_declaration.py` holds those files to the generator. Running the document in
-Egeria is a separate, deliberate act by the project owner:
-`resource-explorer dr-egeria run engine-host/library/<step>.md`. The engine host offers a step to
-Egeria only if it needs no `connection` and writes only `ResourceMeasureAnnotation` or
-`ClassificationAnnotation`. A step outside those limits still runs inside RE.
+**A question your step declares.** Name a question the catalogue already holds by its id in `questions`, and Chat
+routes by it with no configdata row. A **new** question still needs its row in the question catalogue: a manifest carries
+only the id, and who may allocate ids and carry question text is an open design question (§3 of the design note above).
 
 ---
-
-## 4. Install it, and check RE sees it
-
-**Install the package into the environment RE runs from**, and into the Prefect worker's environment
-if a worker runs steps. RE says exactly that when a catalogued step is missing:
-
-> step not installed here: '<key>' comes from package <pkg> <ver>; install it into this environment
-> (and the Prefect worker's, when one runs steps): installing it is registering it
-
-**In this repo's shared checkout, take care how you install.** All sessions share one `.venv`, and the
-only sanctioned sync is `uv sync --all-packages --extra dev`, never a bare `uv sync` (see the
-repo-wide `CLAUDE.md`). The example steps are not workspace members, so that sync does not install
-them. The route this repo documents is the per-command `uv run --with-editable <path>` shown above.
-No persistent install route for the shared venv is documented yet. One open question: a package
-installed with `uv pip install -e` may be removed by the next sync. Ask before choosing one.
-
-**Restart RE after installing.** Steps are discovered when RE's database adapter loads, once per
-process.
 
 Ways to check that RE sees the step. RE has no admin page or CLI verb that lists library steps yet.
 
@@ -312,10 +279,12 @@ Ways to check that RE sees the step. RE has no admin page or CLI verb that lists
   every installed manifest. A broken entry point raises here, naming itself.
 - Your step's card appears on a database, under the stage its manifest names. A card that fails with
   "step not installed here" means the catalogue has the entry but this environment lacks the package.
-- If the engine host runs, its start-up log says `library steps: N installed, none missing`, or names
-  the missing ones.
-- An installed step with no catalogue entry logs a warning telling you to run the generator. It can
-  run, but has no card.
+- If the engine host runs, its start-up log names every installed step per host, with a missing list for each:
+  `library steps · Egeria host: change_rates, hub_tables, … (none missing) · Files host: fs_activity, fs_permissions, … (none missing)`.
+  Database steps are the Egeria host's; file-system steps run under the Files host. A step the engine host
+  cannot publish logs `not offered to Egeria: <why>` as before.
+- An installed step with no catalogue entry (its manifest was refused, for instance a built-in's id) logs a warning.
+  It can run from a Survey Definition, but has no card.
 - Once a survey has run, the step's declared measures appear as rows in Curate's publish table (§5).
 
 ---
@@ -358,8 +327,24 @@ As of, Confidence, Scope, Writes as, Choice and State.
   `jsonProperties`. `ResourcePhysicalStatusAnnotation` stays for a later slice.
 - **Choice lifetime is spelled out on the row**: `will publish · <who> · <when> · sent by every commit
   until Keep in RE`, and `changed since published · … · the next commit sends the new value`.
-- **File systems** say why they have no rows: their measures wait for a survey report of RE's own
-  for file systems.
+- **File systems** now publish too (2026-10-29), as described next.
+
+**File systems publish their chosen measures (2026-10-29).** The owner ruled on 2026-10-28 that a file system's
+measures wait for a survey report of RE's own for file systems; the Files steps built it (#905), and the wait is lifted.
+
+- **The table is on the file system's Curate page**, with the same columns and the same Publish | Keep in RE choice per
+  row (sign in to choose). It names its press: *chosen measures go inside Resource Explorer's own file-system survey
+  report: the folder survey's Publish sends them, each read back by name.* The root-folder Publish still attaches the
+  root folder only.
+- **The press is the folder survey's Publish** (and the walk-extensions Publish). The chosen measures ride in the same
+  SurveyReport as the walk's annotations and the derived steps' results, after them, so no earlier annotation's name
+  moves.
+- **Same words as a database.** *Writes as* is the declared type or the generic measure; the report is then read back by
+  name, one proof row is left per measure, and the row says `published · read back <time>`, or `sent · not read back
+  <time>` when the read did not show it. The word comes from the proof row, never from the press.
+- **A measure the step could not establish** (for example `fs_activity`'s access times where the mount records none) is
+  listed as `not measured this run`, with the step's own reason, and offers Keep in RE only. A secondary measure is read
+  from its own stored key, so it shows its own state, never its sibling's.
 
 ---
 
@@ -576,8 +561,9 @@ cd packages/trellis-analytics && uv run pytest tests/test_database_staleness_ste
 3. Declare in full: units, as-ofs, value fields, four absence sentences, confidence with a written
    method, extents, scope, and `questions` by id.
 4. Test the four states against a scratch registry, never the shared one.
-5. Run `generate_external_step_entries.py` with every library package named, and commit the
-   catalogue diff. Run the engine-host generator too if Egeria should start the step.
+5. Nothing to commit in RE for the card: installed manifests merge into the catalogue. Optionally run
+   `generate_external_step_entries.py` to refresh the fallback entry, and the engine-host generator if Egeria
+   should start the step.
 6. Install the package where RE and any Prefect worker run, then restart RE.
 7. Check that the card appears, run it on a database, and look at the publish table.
 

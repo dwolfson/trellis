@@ -28,8 +28,9 @@ exactly as native leaves it:
 * its `requestType` is one RE declares (`supported_request_types()`, the same function the declaration
   generator uses): a built-in step's (`ENGINE_HOST_STEPS`), or an installed Analytic Library step's, read from its
   manifest through `survey_step_host.library_steps()` (step 3). An unknown type is left unclaimed and logged once.
-  So is a library step's whose package is not installed here: the start-up line "library steps: N installed, M
-  missing: <names>" names it, and its actions are skipped as `library_step_not_installed` (§3.3; Q-M7 is still open);
+  So is a library step's whose package is not installed here: the start-up line, which names every installed step
+  per host ("library steps · Egeria host: <installed> (M missing: <names>) · Files host: ..."), names it, and its
+  actions are skipped as `library_step_not_installed` (§3.3; Q-M7 is still open);
 * none of its targets is a database with a private owner (`registry.private_owner_for_entity`). The engine
   host is unattended, so it is a daemon; private work never runs as the service account (owner, Q-O3). The
   owner runs such work attended from RE. Claiming and then refusing would write a FAILED action into a
@@ -361,13 +362,27 @@ def missing_library_steps() -> dict[str, str]:
     return {request_type_for_step(key): key for key in _missing(ENTITY_TYPE)}
 
 
+#: The hosts a library step runs under, by the resource type it targets: Egeria dispatches database steps through
+#: this engine host; file-system steps run under RE's own Files host (their annotations are not ones the engine host
+#: publishes, which is what the "not offered to Egeria" warnings say).
+LIBRARY_HOSTS = (("Egeria host", "database"), ("Files host", "filesystem"))
+
+
 def library_steps_line() -> str:
-    """The one start-up line: how many library steps are installed (offered to Egeria) and which are missing."""
-    installed = len(library_steps())
-    missing = sorted(missing_library_steps().values())
-    if not missing:
-        return f"library steps: {installed} installed, none missing"
-    return f"library steps: {installed} installed, {len(missing)} missing: {', '.join(missing)}"
+    """The one start-up line: every installed library step, named, per host, with the catalogued steps whose package
+    is missing there. Example: `library steps · Egeria host: change_rates, hub_tables (none missing) · Files host:
+    fs_activity (1 missing: fs_duplicates)`. A host with no step says so rather than leaving a gap."""
+    from resource_explorer.surveyors.survey_step_host import installed_library_steps
+    from resource_explorer.surveyors.survey_step_host import missing_library_steps as _missing
+
+    parts = []
+    for host, entity_type in LIBRARY_HOSTS:
+        installed = installed_library_steps(entity_type)
+        missing = sorted(_missing(entity_type))
+        names = ", ".join(installed) if installed else "none installed"
+        gone = f"{len(missing)} missing: {', '.join(missing)}" if missing else "none missing"
+        parts.append(f"{host}: {names} ({gone})")
+    return "library steps \u00b7 " + " \u00b7 ".join(parts)
 
 
 def supported_request_types() -> dict[str, str]:

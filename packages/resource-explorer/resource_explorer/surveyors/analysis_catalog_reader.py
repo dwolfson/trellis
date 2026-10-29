@@ -298,6 +298,46 @@ def _entry_from_yaml(raw: dict) -> AnalysisCatalogEntry:
     )
 
 
+def installed_step_entries(entity_type: str) -> list[dict]:
+    """The catalog entries (raw, the YAML's vocabulary) of every Analytic Library step installed here that measures
+    `entity_type`, built from its manifest at read time -- the same `catalog_entry` the generator writes, so the two
+    cannot differ in shape. [] when no step is installed, or the library is not (a broken entry point is logged and
+    recorded by `survey_step_host.discover_steps`, which this reads through)."""
+    from trellis_analytics.discovery import origin
+
+    from resource_explorer.surveyors.survey_step_host import catalog_entry, discover_steps
+
+    out = []
+    for name, manifest in sorted(discover_steps(entity_type).items()):
+        try:
+            where = origin(name)
+        except LookupError as exc:
+            log.warning("installed step '%s' not merged into the analysis catalog: %s", name, exc)
+            continue
+        out.append(catalog_entry(manifest, where))
+    return out
+
+
+def _merge_installed(entity_type: str, entries: list[AnalysisCatalogEntry]) -> list[AnalysisCatalogEntry]:
+    """The YAML's entries with the installed steps' manifests merged in. An installed step's manifest REPLACES its
+    committed generated entry in place (the manifest is the source; the committed entry is only the fallback that
+    keeps a step whose package is absent listed, with its "not installed here" reason) and a step with no committed
+    entry is appended. A manifest that takes a built-in analysis's id is refused, as `attach` refuses it."""
+    merged = list(entries)
+    index = {e.id: i for i, e in enumerate(merged)}
+    for raw in installed_step_entries(entity_type):
+        entry = _entry_from_yaml(raw)
+        i = index.get(entry.id)
+        if i is None:
+            index[entry.id] = len(merged)
+            merged.append(entry)
+        elif merged[i].provided_by:
+            merged[i] = entry
+        else:
+            log.error("installed step '%s' has a built-in analysis's id; not merged into the catalog", entry.id)
+    return merged
+
+
 @functools.lru_cache(maxsize=1)
 def _load(config_path: Path = _DEFAULT_CONFIG_PATH) -> dict[str, list[AnalysisCatalogEntry]]:
     if not config_path.exists():
@@ -305,11 +345,16 @@ def _load(config_path: Path = _DEFAULT_CONFIG_PATH) -> dict[str, list[AnalysisCa
     with open(config_path) as f:
         raw = yaml.safe_load(f) or {}
 
-    return {
+    loaded = {
         "repo": [_entry_from_yaml(e) for e in raw.get("repo_analyses") or []],
         "database": [_entry_from_yaml(e) for e in raw.get("database_analyses") or []],
         "filesystem": [_entry_from_yaml(e) for e in raw.get("filesystem_analyses") or []],
     }
+    if config_path == _DEFAULT_CONFIG_PATH:
+        # Installed steps join the catalog when it is read: adding a step needs no commit here (F1, 2026-10-29).
+        for entity_type in ("database", "filesystem"):
+            loaded[entity_type] = _merge_installed(entity_type, loaded[entity_type])
+    return loaded
 
 
 def declaration_refusals() -> list[str]:

@@ -578,7 +578,7 @@ export async function renderCurate(slug) {
   const tabbed = entityType === 'repo';
   const tabbedDb = entityType === 'database' && stageTabsOn('curate', state.resourceType);
   setCommitPanelGate(null);                            // the default (always); a database's tabs set their own below
-  frame.innerHTML = tabbed ? tabbedFrameHtml(activeCurateTab()) : tabbedDb ? tabbedDbFrameHtml(activeCurateTab()) : bandFrameHtml();
+  frame.innerHTML = tabbed ? tabbedFrameHtml(activeCurateTab()) : tabbedDb ? tabbedDbFrameHtml(activeCurateTab()) : bandFrameHtml(entityType === 'filesystem');
   const host = tabbed || tabbedDb ? frame : frame.querySelector('[data-curate-band="kind"]');
   const band = (name) => frame.querySelector(`[data-curate-band="${name}"]`);
   let publishRepo = null;
@@ -590,7 +590,7 @@ export async function renderCurate(slug) {
     // first (no Egeria contact) and is independent of the repository plan below, which can take long.
     tabbed ? publishRepo.ready : tabbedDb ? renderPublishDb({ describe: band('publish'), contents: band('publish-items') }, slug) : renderPublishBand(band('publish'), slug, entityType),
     // The declared measures' publish table: RE's own rows only, never Egeria.
-    tabbedDb ? renderPublishTable(band('measures'), slug, 'database') : Promise.resolve(),
+    tabbedDb || entityType === 'filesystem' ? renderPublishTable(band('measures'), slug, entityType) : Promise.resolve(),
   ].map((p) => p.catch((err) => {
     // A band that fails says so in its own slot; it never takes the pane down.
     const slot = band('people');
@@ -608,7 +608,7 @@ export async function renderCurate(slug) {
     if (f && f.isConnected) renderFindableBand(f, slug, entityType).catch(() => {});
     if (p && p.isConnected) renderPeopleBand(p, slug, entityType).catch(() => {});
     const m = band('measures');
-    if (m && m.isConnected) renderPublishTable(m, slug, 'database').catch(() => {});
+    if (m && m.isConnected) renderPublishTable(m, slug, entityType).catch(() => {});
   };
   document.addEventListener('re:published', state.curateOnPublished);
   /** A database's tabs: the scope tree and commit panel on Contents, the placeholders and rules on Structure. The

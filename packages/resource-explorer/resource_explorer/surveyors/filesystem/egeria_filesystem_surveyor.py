@@ -634,7 +634,12 @@ class EgeriaFileSystemSurveyor:
                              "not_sent": derived["not_sent"]},
                  "declared_measures": {"state": declared.get("state", ""),
                                        **({"reason": declared["reason"]} if declared.get("reason") else {}),
-                                       "sent": self._with_guids(declared.get("rows") or [], declared.get("annotations") or [],
+                                       **({"not_built": declared["not_built"]} if declared.get("not_built") else {}),
+                                       # the route and type the row writes as: the proof row keeps them
+                                       "sent": self._with_guids([{**r, "route": (r.get("writes_as") or {}).get("route", ""),
+                                                                  "type": (r.get("writes_as") or {}).get("type", "")}
+                                                                 for r in declared.get("rows") or []],
+                                                                declared.get("annotations") or [],
                                                                 declared_start, guids, fs_entity.slug, surveyed_at)}}
 
         if registry:

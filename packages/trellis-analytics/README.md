@@ -135,7 +135,9 @@ What the wrapper guarantees, so the code does not have to:
 A complete example, installable on its own, is `examples/steps/database_staleness/`. It registers itself
 through the same `trellis.analytics` entry point.
 
-To tell RE and Egeria about an installed step, run the two generators from the repo root. The first writes the
+RE merges an installed step's manifest into its analysis catalog when it reads it, so a step needs no commit in RE to
+show a card. To tell Egeria about it, and optionally to refresh the committed fallback entry that keeps a package-less
+environment aware of the step, run the two generators from the repo root. The first writes the
 catalog entry into `analysis_catalog.yaml` (between its GENERATED markers); the second writes the step's Egeria
 declaration into `packages/resource-explorer/docs/dr-egeria/engine-host/library/<step>.md` (see below). Neither
 talks to Egeria; running the declaration is a separate, deliberate step.
