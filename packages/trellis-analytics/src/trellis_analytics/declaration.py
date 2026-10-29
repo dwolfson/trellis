@@ -88,6 +88,16 @@ class MeasureDeclaration(_Strict):
     #: This measure's own confidence, where it differs from the declaration's (project owner, 2026-10-28: confidence
     #: is per measure). Absent means the declaration's confidence is this measure's.
     confidence: "ConfidenceDeclaration | None" = None
+    #: The level THIS measure is about, where it differs from the declaration's (a member-scoped step whose summary
+    #: is one value for the whole resource). Absent means the declaration's scope is this measure's.
+    scope: Literal["resource", "container", "member", "field"] | None = None
+
+    @field_validator("scope", mode="before")
+    @classmethod
+    def _scope(cls, v):
+        if v is not None and v not in SCOPES:
+            raise ValueError(f"scope '{v}' is not one of the levels ({', '.join(SCOPES)})")
+        return v
 
     @model_validator(mode="after")
     def _filled(self) -> "MeasureDeclaration":
@@ -322,6 +332,10 @@ class Declaration(_Strict):
     def confidence_of(self, measure: MeasureDeclaration) -> ConfidenceDeclaration | None:
         """A measure's confidence: its own, else the declaration's."""
         return measure.confidence or self.confidence
+
+    def scope_of(self, measure: MeasureDeclaration) -> str | None:
+        """A measure's scope: its own, else the declaration's (None when neither is declared)."""
+        return measure.scope or self.scope
 
     def measure(self, name: str) -> MeasureDeclaration | None:
         return next((m for m in self.measures if m.name == name), None)

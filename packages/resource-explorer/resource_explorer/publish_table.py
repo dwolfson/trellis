@@ -268,7 +268,8 @@ def engine_host_reports(registry, slug: str) -> dict[str, dict]:
         key = t.get("step_key") or ""
         if (t.get("slug") == slug and key and key not in out and o.get("guard") == _ENGINE_COMPLETED
                 and o.get("report_guid")):
-            out[key] = {"report_guid": o["report_guid"], "at": o.get("decided_at") or r.get("finished_at") or ""}
+            out[key] = {"report_guid": o["report_guid"], "at": o.get("decided_at") or r.get("finished_at") or "",
+                        "run_id": str(r.get("id") or "")}
     return out
 
 
@@ -285,8 +286,11 @@ def published_elsewhere(entry, measure: str, engine_reports: dict[str, dict]) ->
     ran = engine_reports.get(step)
     if ran:
         when = str(ran.get("at") or "")[:16].replace("T", " ")
-        return {"route": "engine_host", "words": f"already in Egeria via the engine host · report {when}".rstrip(),
-                "report_guid": ran["report_guid"], "at": ran.get("at", "")}
+        # F16 (2026-10-29): the record this reads is the engine host's own run row (`runs`, kind `engine_action`, whose
+        # outcome holds the report it published), not a step run; the words name it so it can be found.
+        which = f" · engine action run {ran['run_id']}" if ran.get("run_id") else ""
+        return {"route": "engine_host", "words": f"already in Egeria via the engine host · report {when}{which}".rstrip(),
+                "report_guid": ran["report_guid"], "at": ran.get("at", ""), "run_id": ran.get("run_id", "")}
     return None
 
 
@@ -322,21 +326,28 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
             provided = getattr(entry, "provided_by", None) or {}
             step = (provided.get("step") or entry.id) if provided else ""
             records = measure_records(registry, entity_type, slug, step, dec, entry.id)
-            known = fact.get("state") in _KNOWN and dec.built
-            per_member = dec.scope in ("member", "field") and bool(dec.extents)
+            step_known = fact.get("state") in _KNOWN and dec.built
             for m in dec.measures:
                 loc = locator(entry.id, m.name)
                 conf = confidence_words(dec.confidence_of(m))
                 record = records.get(m.name)
+                # A measure is read where ITS scope says (`Declaration.scope_of`): a resource-scoped summary of a
+                # member-scoped step has its own record, whatever the step's rows say.
+                scope = dec.scope_of(m) or ""
+                per_member = scope in ("member", "field") and bool(dec.extents)
+                known = (step_known or (bool(record) and dec.built))
                 source = record["value"] if record else value
                 v = resolve(source, m.value_field, run) if known else _MISSING
                 as_of = resolve(source, m.as_of, run) if known else _MISSING
                 as_of = "" if as_of is _MISSING else str(as_of)
+                # F15: two dates, both named: when the statistic is as of, and when RE measured it.
+                measured_at = (record or {}).get("measured_at") or run.get("surveyed_at") or ""
                 w = writes_as(m, conf["form"])
                 row = {"analysis_id": entry.id, "analysis": entry.name, "measure": m.name, "locator": loc,
                        "unit": m.unit, "value_field": m.value_field, "as_of_field": m.as_of,
                        "state": fact.get("state", ""), "as_of": as_of, "confidence": conf,
-                       "scope": dec.scope or "", "writes_as": w, "result_kind": dec.result_kind}
+                       "scope": scope, "writes_as": w, "result_kind": dec.result_kind,
+                       "measured_at": str(measured_at) if known else ""}
                 if not dec.built:
                     # Planned, not built: said first, whatever the fact layer holds (project owner, 2026-10-28).
                     row.update(value=None, value_words="—", absence=NOT_BUILT,
@@ -351,7 +362,7 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
                     # One value per member, not one for the resource: it ran, and its values are its rows.
                     names = ", ".join(e.name for e in dec.extents)
                     row.update(value=None, value_words="—", absence=PER_MEMBER,
-                               absence_words=f"one value per {dec.scope}, not one for the resource · see {names}")
+                               absence_words=f"one value per {scope}, not one for the resource · see {names}")
                 elif v is _MISSING:
                     absence = _ABSENCE_OF.get(fact.get("state", ""), "not_measured") if not known else "measured_nothing"
                     row.update(value=None, value_words="—", absence=absence,

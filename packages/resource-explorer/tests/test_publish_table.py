@@ -392,8 +392,10 @@ def test_answer1_a_step_the_engine_host_ran_and_published_is_already_in_egeria(r
     assert all(r["elsewhere"] is None for r in _rows(registry).values())
     _engine_run(registry)
     row = _rows(registry)["rows_sampled"]
+    run_id = str(registry.list_runs(kind="engine_action")[0]["id"])      # the record the words name (F16)
     assert row["elsewhere"] == {"route": "engine_host", "words": "already in Egeria via the engine host · report "
-                                "2026-10-26 07:15", "report_guid": "report-9", "at": "2026-10-26T07:15:00"}
+                                f"2026-10-26 07:15 · engine action run {run_id}", "report_guid": "report-9",
+                                "at": "2026-10-26T07:15:00", "run_id": run_id}
     assert not row["publishable"]
 
 
@@ -683,3 +685,72 @@ def test_a_resource_scoped_library_step_reads_each_measure_from_where_the_host_s
     if access["value"] is None:
         # find-absence-as-answer: not established is "not measured this run", never a zero, and offers no Publish
         assert not access["publishable"] and access["why_not"].startswith(pt.NOT_MEASURED_WORDS)
+
+
+# ── F14 (2026-10-29): a measure is read where ITS scope says ─────────────────────────────────────────────────
+
+def _member_step_with_summary():
+    """A member-scoped step (one row per table) with one resource-scoped summary measure, as statistics_freshness."""
+    from trellis_analytics.manifest import StepManifest
+
+    absence = dict(ABSENCE)
+    per = {"name": "per_table", "unit": "days", "as_of": "asOf", "value_field": "Days"}
+    summary = {"name": "per_table_summary", "unit": "tables with stale statistics", "as_of": "asOf",
+               "value_field": "Stale", "scope": "resource"}
+    return StepManifest(
+        name="per_table", function="a.b", source="ods", version="1", resource_types=["database"],
+        annotation_type="ResourceMeasureAnnotation", measures=["per_table", "per_table_summary"],
+        declaration=Declaration.model_validate({
+            "result_kind": "list", "measures": [per, summary], "absence": absence,
+            "extents": [{"name": "tables", "fields": ["scope", "Days"], "rows": 5, "order": "oldest first",
+                         "truncation": "{shown} of {total} tables shown", "token_cost": 50,
+                         "citation": "{analysis} · {scope} · as of {as_of}"}],
+            "confidence": {"form": "measured"}, "scope": "member"}))
+
+
+def test_a_resource_scoped_summary_of_a_member_scoped_step_is_read_by_its_own_key(registry, declared):
+    from resource_explorer.surveyors.survey_step_host import measure_step_key
+
+    m = _member_step_with_summary()
+    declared["entries"] = [_entry(m.declaration, id_="per_table", name="Per Table",
+                                  provided_by={"step": "per_table", "package": "trellis-step-x"})]
+    declared["facts"] = {"per_table": Fact(analysis_id="per_table", state="measured", last_run_at="2026-10-29T10:00:00",
+                                          value={"measurement_rows": [{"name": "public.t", "properties": {"Days": 3}}]})}
+    registry.record_step_annotations(
+        "database", SLUG, measure_step_key("per_table", "per_table_summary"), run="2026-10-29T10:00:00.1",
+        measured_at="2026-10-29T10:00:00", annotations=[{
+            "annotation_type": "ResourceMeasureAnnotation", "scope": "", "summary": "of 4 tables: 4 never analysed",
+            "resourceProperties": {"Stale": 0, "asOf": "2026-10-25T01:36:00"},
+            "additionalProperties": {"resultState": "measured"}}])
+    rows = _rows(registry)
+    summary, per = rows["per_table_summary"], rows["per_table"]
+    # the summary: its value, its own as-of beside the date RE measured it, its scope, the manifest's type, Publish on
+    assert summary["value"] == 0 and summary["as_of"] == "2026-10-25T01:36:00"
+    assert summary["measured_at"] == "2026-10-29T10:00:00"
+    assert summary["scope"] == "resource" and summary["writes_as"]["type"] == "ResourceMeasureAnnotation"
+    assert summary["writes_as"]["route"] == "native" and summary["publishable"] and summary["why_not"] == ""
+    # the per-table measure stays per member, with its sentence
+    assert per["scope"] == "member" and per["value"] is None and per["absence"] == pt.PER_MEMBER
+    assert not per["publishable"] and "one value per member" in per["why_not"]
+
+
+def test_a_measure_with_no_scope_of_its_own_inherits_the_declarations():
+    m = _member_step_with_summary()
+    assert [m.declaration.scope_of(x) for x in m.declaration.measures] == ["member", "resource"]
+    assert Declaration.model_validate({**m.declaration.model_dump(), "scope": "resource"}).scope_of(
+        m.declaration.measures[0]) == "resource"
+
+
+def test_a_measure_scope_outside_the_levels_is_refused():
+    with pytest.raises(ValueError, match="scope 'galaxy' is not one of the levels"):
+        Declaration.model_validate({**_member_step_with_summary().declaration.model_dump(mode="json"),
+                                    "measures": [{"name": "x", "unit": "u", "as_of": "a", "value_field": "v",
+                                                  "scope": "galaxy"}]})
+
+
+def test_the_shipped_statistics_freshness_summary_is_resource_scoped():
+    from resource_explorer.surveyors.analysis_catalog_reader import _load
+
+    dec = next(e for e in _load()["database"] if e.id == "statistics_freshness").declaration
+    assert [dec.scope_of(m) for m in dec.measures] == ["member", "resource"]
+    assert dec.measures[1].annotation.type == "ResourceMeasureAnnotation"       # F11 with it: native, not generic

@@ -323,6 +323,9 @@ _ADAPTER = ResourceTypeAdapter(
     # database's.
     analysis_results_map=lambda: FILESYSTEM_ANALYSIS_RESULTS_MAP,
     analysis_headline_map=lambda: FILESYSTEM_ANALYSIS_HEADLINE_MAP,
+    # The installed library steps' kinds (`survey_step_host.attach` fills it), so the measurements route answers for
+    # them instead of "Unknown analysis" (F3, 2026-10-29). `state_sources` and `analysis_source_steps` stay undeclared.
+    analysis_kinds=lambda: FILESYSTEM_ANALYSIS_KINDS,
 )
 
 register_adapter(_ADAPTER)
