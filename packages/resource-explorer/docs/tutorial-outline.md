@@ -183,7 +183,10 @@ Explorer connected to it, a Quickstart user id and password, and the public Open
     - nothing reaches Egeria until you press Publish;
     - "nothing found" and "not looked at yet" are always shown differently;
     - every answer can show where it came from.
-11. **The Quickstart reminder:** this tutorial runs in a demonstration environment, the Egeria Quickstart, set up
+11. **Still experimental, and growing.** Resource Explorer is experimental. It is evolving with what its users ask
+    for and are interested in, so screens and surveys change from release to release, and some things are marked as
+    not built yet. Feedback shapes what comes next: say how to give it (the Feedback button on every screen).
+12. **The Quickstart reminder:** this tutorial runs in a demonstration environment, the Egeria Quickstart, set up
     around a fictitious company, Coco Pharmaceuticals, with made-up people. Change anything (section 1).
 
 **What can go wrong.** Nothing on screen. The risks are in the writing. Do not explain Egeria's architecture, the
@@ -204,6 +207,8 @@ tutorial names one).
 1. Open the address in a browser.
    - *You see:* a panel headed "Resource Explorer" and "EXPERIMENTAL UI", with "Sign in with your Egeria user id to
      continue.", an "Egeria user id" box, a "Password" box and a "Sign in" button (seen).
+   - *Explain "EXPERIMENTAL UI":* it means what it says. Resource Explorer is still experimental and evolving with
+     user feedback (part 1, item 11).
 2. Type the user id and password, then click **Sign in**.
    - *You see:* the main screen. Your user id and **Sign out** are at the top right (seen).
    - *Explain:* there is no separate Resource Explorer account. Egeria checks your password once and Resource Explorer
@@ -795,7 +800,7 @@ DEFINITIONS" is explained as "the surveys you can run").
 
 | Screen word | Where | Say |
 |---|---|---|
-| "EXPERIMENTAL UI" | sign-in panel | Leave unmentioned, or one line: the label on this version of the screen. (Gap G20.) |
+| "EXPERIMENTAL UI" | sign-in panel | Accurate: Resource Explorer is still experimental and evolving with user feedback (owner, 2026-10-29). Say so once, in part 2. |
 | "Slug *" | register forms | The short name with no spaces used in addresses. |
 | "resource" | everywhere | Means a data source. |
 | "SURVEY DEFINITIONS" | Survey & analyses | The surveys you can run for this stage. |
@@ -913,7 +918,7 @@ in this outline; each is named where it bites.
 | G17 | No single named place in Egeria for the reader to check that a publish arrived. | 10 | **Settled (owner, 2026-10-29):** Egeria Explorer. Still worth having: a link from Resource Explorer's "Show in Egeria" that opens Egeria Explorer on the element. |
 | G18 | Publish-band words a new user cannot read: "kept survey", "◐ behind · 76 annotations", "◐ stale 9 of 12 steps are stale", "◐ partly committed · 4 queued". | 10 | Plain sentences, or a hover that explains each. |
 | G19 | The Admin dialog says "the eight intents"; the word appears nowhere else on screen. | Advanced tutorial | Say "the stages". |
-| G20 | The sign-in panel says "EXPERIMENTAL UI". A new reader may doubt they are in the right place. | 2 | Remove, or explain. |
+| G20 | The sign-in panel says "EXPERIMENTAL UI". | 2 | **Not a defect (project owner, 2026-10-29):** RE is positioned as still experimental, evolving with user feedback. The tutorial explains the label; nothing to fix. |
 | G21 | This writer's browser was not signed in, so the register dialogs, the new-investigation dialog and the chat rail are outlined from the source code (marked "code"). | 3, 8, 12 | The prose writer reads each on the screen, signed in. |
 | G22 | Steps whose exact screen words nobody has recorded: a wrong password, Egeria down at sign-in, an empty investigation name, "promote" on a work list, the Assessment tab on a database, a step that asks before running a prerequisite. | 2, 5, 6, 11, 12 | Read on the screen during the prose phase; some need a deliberate error to see. |
 | G23 | The overview surveys are uneven across kinds (definitions, 2026-10-29). A database has no Discovery survey. A database's Assessment survey has one step. File-system stage surveys are not yet identified. Names are inconsistent: "Scouting Survey" and "Repo Scouting Scan" are both repository Scouting surveys; "Database Scouting Scan" is the database's overview; "Assessment Survey" and "Analysis Survey" carry no kind in their names, while "Repo Discovery Survey" does. A reader cannot tell from a name which survey is the overview. | 4, 5, 6 | One naming rule (for example "<Kind> <Stage> Survey" for every overview), and the missing overviews either built or explained. |
@@ -993,13 +998,13 @@ Overview, PostgreSQL, GitHub, Quickstart. The prose writer adds any other name t
 - **Before and after as two images.** Anything that changes on screen (a survey running and finishing, Include
   chosen, Publish confirmed) is two stills, not a screen recording.
 - **Fix before filming where it can be done.** Open defects that would be filmed into every image: G9 ("not signed
-  in" in the header), G10 (slow panes), G13 (✓ beside an answer that checked nothing), G20 ("EXPERIMENTAL UI"). If
+  in" in the header), G10 (slow panes), G13 (✓ beside an answer that checked nothing). If
   they are not fixed first, the narration must not draw attention to them, and the written tutorial explains them.
 
 ### Open for the video series
 
 | # | Question | State |
 |---|---|---|
-| V-a | Who produces the episodes (script assembly, Audiate, editing) | Open. |
+| V-a | Who produces the episodes (script assembly, Audiate, editing) | **Decided (project owner, 2026-10-29):** a Claude session prepares a kit per episode (an Audiate-ready script with slide markers, the pronunciation list, the ordered slide list with callouts, the YouTube title, description and chapters, and a caption file to check); the owner voices it in Audiate and edits in Camtasia. |
 | V-b | Where they are published | **Decided (project owner, 2026-10-29):** YouTube. Each written part links to its episode. |
 | V-c | Whether the blog diagrams are redrawn for 16:9 | Open. Several carry words the tutorial avoids (section 6). Editable sources exist for some, outside the repo, in the trellis checkout's `Claude outputs/` folder and its root: `anatomy-of-a-question.svg`, `part4-fig3-question-loop.html`, `part4-fig1-chat-turn.html`, `part4-fig4-compile-budget.html`, and `resource-explorer-survey-funnel.pptx` (probably the funnel). |
