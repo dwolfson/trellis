@@ -151,12 +151,13 @@ confirm" when this note was written. The narratives press is covered in §4.
    (never pressed), "read, and no passage matched" (no hit), "index could not be reached" (a failure, never an absence).
    Rows from an old press are cited as they hold stated_by, with the metadata's `file_path` added.
 
-   **Resource Locator: not built; open question.** The repository has no Locator code, only design mentions
-   (`PLAN-OPEN-FRONTS-2026-10-14.md`). Finding a file system *by its passages* means searching every file system's
-   collection and ranking file systems, not passages, which is a design choice the owner has not made: rank by best
-   passage or by count of matching passages? search only pressed file systems (and say how many were never read, so an
-   unpressed one is not read as a non-match)? Whatever the answer, it should reuse `narrative_context.citation` and
-   `passage_of` so the citation and proposal label stay the same.
+   **Resource Locator: built (`narrative_context.locate`, `GET /api/filesystems/by-passages?q=`).**
+   **Decision (project owner, 2026-10-29):** "rank by best passage, search only pressed file systems."
+   A file system is searched only if it has a `narrative_docs` step run; each is ranked by its single best-scoring
+   passage, shown with the chat citation ("stated by <path> § <section>") and the proposal label. The file systems
+   never pressed are counted and named ("N file systems not read yet, not searched"), so an unread one is never taken
+   for a non-match; a pressed one whose index cannot be searched is listed as unavailable (a failure, not an absence),
+   the same three wordings as chat. No UI tab yet: the route and function are the reader half; a screen can call them.
 2. Q-0105 (F11) stays GAP and Q-0101 (F3) stays GAP in the CSV, although `folder_narratives`, `narrative_docs` and
    `file_profiles` are built. None of them has a catalog entry for the question catalog to name.
 3. For files Egeria profiled, read the value counts from Egeria's CSV report, so their columns can be matched too.

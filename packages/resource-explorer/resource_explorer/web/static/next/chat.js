@@ -170,10 +170,11 @@ export function sourceLine(body) {
     const lists = listSentences(body);
     const noListsAvailable = lists.length > 0 && !lists.some((l) => l.members);
     const suffix = noListsAvailable ? ' · no evidence lists were available for this question' : '';
-    if (!packed) return `Compiled evidence is on file · its sources are not listed${suffix}`;
+    const narr = narrativesClause(manifest);
+    if (!packed) return `Compiled evidence is on file · its sources are not listed${suffix}${narr}`;
     return (keys.length
       ? `From ${keys.length} stored result${keys.length === 1 ? '' : 's'} · ${keys.join(', ')}`
-      : 'Compiled evidence was empty · answered from retrieval') + suffix;
+      : 'Compiled evidence was empty · answered from retrieval') + suffix + narr;
   }
   // Answered from stored rows with no compile behind them: said as what it was read from, never "not reported".
   const from = body.answered_from;
@@ -187,6 +188,36 @@ export function sourceLine(body) {
  *  can be packed once per resource). */
 function packedLabel(p) {
   return p && p.key ? (p.resource_slug ? `${p.key} (${p.resource_slug})` : p.key) : '';
+}
+
+/** The file-system narrative sections a compile reports (`manifest.narratives`; a multi-resource compile keeps one per
+ *  resource under `per_resource`). Each: {slug, state, packed, passages}. */
+export function narrativeSections(manifest) {
+  if (!manifest || typeof manifest !== 'object') return [];
+  const one = (n, slug) => (n && typeof n === 'object' && n.state
+    ? [{ slug: slug || '', state: n.state, packed: !!n.packed, passages: Array.isArray(n.passages) ? n.passages : [] }] : []);
+  if (manifest.narratives) return one(manifest.narratives, '');
+  const per = manifest.per_resource && typeof manifest.per_resource === 'object' ? manifest.per_resource : {};
+  return Object.entries(per).flatMap(([slug, m]) => one(m && m.narratives, slug));
+}
+
+/** One narrative section in words: what the answer could cite, or why it could not. Never "no narratives". */
+export function narrativeWords(n) {
+  const k = n.passages.length;
+  const of = n.slug ? ` of ${n.slug}` : '';
+  if (n.state === 'found') {
+    return n.packed
+      ? `${k} narrative passage${k === 1 ? '' : 's'}${of} it could cite, each a proposal`
+      : `${k} narrative passage${k === 1 ? '' : 's'}${of} matched but ${k === 1 ? 'was' : 'were'} left out to fit the budget, so the answer cannot cite ${k === 1 ? 'it' : 'them'}`;
+  }
+  if (n.state === 'not_read') return `narrative files${of} not read yet`;
+  if (n.state === 'no_match') return `narrative files${of} read, no passage matched this question`;
+  return `narrative files${of} could not be searched (index unreachable)`;
+}
+
+/** The source line's clause for the narratives: one phrase per file system, '' when the compile had none. */
+export function narrativesClause(manifest) {
+  return narrativeSections(manifest).map((n) => ` · ${narrativeWords(n)}`).join('');
 }
 
 /** Mermaid source fenced inside an answer, if there is any.
@@ -776,6 +807,17 @@ function gapsHeadCue(gaps) {
       'Analyses that would answer this and have no stored result; each row says why.', 'chrome');
 }
 
+/** The compile panel's narratives block: each passage the answer could cite, with its citation and "proposal"; a
+ *  section that was dropped, not read, unmatched or unreachable says which, in words. */
+export function narrativesHtml(manifest) {
+  return narrativeSections(manifest).map((n) => {
+    const rows = n.passages.map((p) => `<li data-narrative-passage="${esc(p.passage_id || '')}"><span>${esc(p.citation || p.stated_by || p.file_path || '')}</span>
+      <span class="text-chrome-muted"> · </span><span data-narrative-label>proposal</span></li>`).join('');
+    return `<div data-compile-narratives data-narrative-state="${esc(n.state)}${n.state === 'found' && !n.packed ? '-dropped' : ''}" class="mb-s2 text-chip">
+      <div>${esc(narrativeWords(n))}</div>${rows ? `<ul class="mt-s1 list-disc pl-s3">${rows}</ul>` : ''}</div>`;
+  }).join('');
+}
+
 function evidenceStateHtml() {
   const { compiled, gapRuns } = compileView;
   const m = compiled.manifest && typeof compiled.manifest === 'object' ? compiled.manifest : {};
@@ -802,7 +844,7 @@ function evidenceStateHtml() {
   const ranLine = nowStored.length
     ? `<div data-compile-ran class="mb-s2 text-chip">${nowStored.map((k) => `${cue('measured', 'ran', '', 'chrome')} <span class="font-mono">${esc(k)}</span> <span class="text-chrome-muted">now has a stored result</span>`).join(' · ')}</div>`
     : '';
-  return storedLine + gapBlock + ranLine;
+  return storedLine + narrativesHtml(m) + gapBlock + ranLine;
 }
 
 /** One manifest entry as a row. A plain value prints as is; a list prints its length; an OBJECT (`lists`,
@@ -830,7 +872,7 @@ function drawCompile() {
   const { turn, compiled, rechecked } = compileView;
   const forWhat = turn.slug || '—';
   const manifest = compiled.manifest && typeof compiled.manifest === 'object' ? compiled.manifest : {};
-  const manifestRows = Object.entries(manifest).filter(([k, v]) => k !== 'gaps' && k !== 'packed' && (
+  const manifestRows = Object.entries(manifest).filter(([k, v]) => k !== 'gaps' && k !== 'packed' && k !== 'narratives' && (
     Array.isArray(v) ? v.length : v != null && v !== ''));
   const manifestHtml = manifestRows.length
     ? manifestRows.map(([k, v]) => manifestRowHtml(k, v)).join('')

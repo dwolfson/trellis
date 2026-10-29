@@ -132,6 +132,7 @@ import { openFindReposDialog } from '/static/next/discovery-import.js';
 // (fs-register.js, Files step 1: the classic modal minus its Egeria fields).
 import { openFindDbServersDialog } from '/static/next/db-server-discovery.js';
 import { openRegisterFileSystemDialog } from '/static/next/fs-register.js';
+import { openFindByPassagesDialog } from '/static/next/fs-passage-finder.js';
 import { mountFolderSurvey } from '/static/next/fs-survey.js';
 // Chat (PLAN-FINISH-REPOS.md item 9) — chrome-level, like worklist.js/rfa.js:
 // the "Ask" rail and the pane it promotes an answer into, beside whichever
@@ -2248,6 +2249,8 @@ export function renderSidebar() {
     <div data-sidebar-top-row class="mb-s2 flex min-w-0 flex-wrap items-center gap-[5px] text-chip">
       ${types.map((t) => `<button data-type="${t.id}" class="${chip(state.resourceType === t.id).replace('rounded-pill', 'rounded-sm')}">${t.label}</button>`).join('')}
       ${findButtonHtml(true)}
+      ${state.resourceType === 'filesystem' ? `<button data-act="find-by-passages" title="Find a file system by what its narrative files say"
+        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-accent-on-dark">🔎 Find by passages</button>` : ''}
       <button data-act="mark-key" title="What the marks in this list mean"
         aria-label="What the marks in this list mean"
         class="cursor-pointer bg-transparent text-chrome-muted hover:text-chrome-ink"
@@ -2714,6 +2717,7 @@ function bindSidebar() {
       if (state.resourceType === 'db') { openFindDbServersDialog(); return; }
       if (state.resourceType === 'filesystem') { openRegisterFileSystemDialog(); return; }
     },
+    'find-by-passages': () => openFindByPassagesDialog(),
     'show-hidden': () => { state.showHidden = !state.showHidden; rerender(); },
     'select-mode': () => {
       state.selectMode = !state.selectMode;
