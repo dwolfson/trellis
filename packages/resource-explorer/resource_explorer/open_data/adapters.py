@@ -114,7 +114,7 @@ def _entry_points():
 def discover_adapters() -> dict[str, type[Adapter]]:
     """name -> adapter class: the built-ins, then every installed entry point (which wins on a name clash).
     An entry point that fails to load, or whose manifest is refused, is skipped: one bad package must not take the
-    others down. It is not silent: the failure is kept in `adapter_load_failures()` (listed on the Admin screen) and
+    others down. It is not silent: the failure is kept in `adapter_load_failures()` (listed by GET /api/open-data/adapters) and
     logged."""
     found: dict[str, type[Adapter]] = {}
     LOAD_FAILURES.clear()
