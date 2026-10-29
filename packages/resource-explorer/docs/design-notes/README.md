@@ -59,6 +59,7 @@ Quality and TestGen (the user guide is [`../testgen-integration-guide.md`](../te
 - [DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md](DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md): value profile and quality checks for databases
 - ⚑ [DESIGN-QUALITY-Q4-PORT-PLAN-AND-CALIBRATION.md](DESIGN-QUALITY-Q4-PORT-PLAN-AND-CALIBRATION.md): the port plan on the TestGen inventory. The profile-1b branch edits it
 - ⚑ [DESIGN-QUALITY-Q5-DATA-QUALITY-RULE.md](DESIGN-QUALITY-Q5-DATA-QUALITY-RULE.md): accepted checks as Egeria `DataQualityRule`s. Branch `claude/re-quality-q5-dqrule-publish`
+- [DESIGN-QUALITY-Q5-ANCHORING-AND-DATA-CONTRACTS.md](DESIGN-QUALITY-Q5-ANCHORING-AND-DATA-CONTRACTS.md): where a published rule is anchored, and reading and testing against Egeria's data contracts. Design only, owner questions open
 - ⚑ `DESIGN-QUALITY-Q3-BATCH-AND-SCHEDULE.md`: batch and schedule over a work list. Only on branch `claude/re-quality-q3-batch-schedule` so far
 - ⚑ `DESIGN-QUALITY-PROFILE-1B.md`: profile 1b. Only on branch `claude/re-quality-profile-1b-on-q5` so far
 - [INTEGRATION-TESTGEN-RE-EGERIA.md](INTEGRATION-TESTGEN-RE-EGERIA.md) and [INVENTORY-TESTGEN-TEST-TYPES-MAPPED.md](INVENTORY-TESTGEN-TEST-TYPES-MAPPED.md): reference for the above

@@ -310,7 +310,7 @@ evidence that the create works (R2).
 
 ## 13. Open: rules anchored to data contracts (owner's follow-on, 2026-10-28)
 
-Not built, and not planned in a slice yet. The owner's follow-on (quoted in §11): rules tied to a data contract are
+Designed in `DESIGN-QUALITY-Q5-ANCHORING-AND-DATA-CONTRACTS.md` (2026-10-29), which supersedes this section. The owner's follow-on (quoted in §11): rules tied to a data contract are
 anchored to the contract, and RE might **pull in the data contracts Egeria already knows about, or create new
 ones, and test against those**. That would make a contract's quality rules a source of accepted checks beside RE's
 own proposals. What it needs first:
