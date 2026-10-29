@@ -108,3 +108,73 @@ def build(registry, slug: str, question: str, *,
     if not passages:
         return {r: NO_MATCH for r in Rung}, {"state": "no_match", "passages": [], "collection": collection}
     return _rungs(passages), {"state": "found", "passages": passages, "collection": collection}
+
+
+# ── The Resource Locator: find a file system by what its narrative files say (owner, 2026-10-29) ────────────────────
+
+LOCATOR_LIMIT = 10
+
+
+def _not_read_words(n: int) -> str:
+    return f"{n} file system{'' if n == 1 else 's'} not read yet, not searched" if n else ""
+
+
+def locate(registry, question: str, *, store_factory: Callable[[], object] | None = None,
+           limit: int = LOCATOR_LIMIT) -> dict:
+    """File systems ranked by their best-scoring narrative passage for `question`.
+
+    Only file systems whose narratives were pressed (a `narrative_docs` step run) are searched; the rest are counted and
+    named, so an unread file system is never taken for a non-match. A pressed file system whose index cannot be searched
+    is listed under `unavailable`, a failure and not an absence. Each match carries the same citation and proposal label
+    as chat. `state`: found | no_match | none_pressed | unavailable (nothing could be searched)."""
+    from resource_explorer.surveyors.filesystem import narrative_docs as nd
+
+    pressed: list = []
+    not_read: list[str] = []
+    for fs in registry.list_filesystems():
+        try:
+            ran = bool(registry.query_step_runs(slug=fs.slug, step_key=nd.STEP_KEY, entity_type="filesystem", limit=1))
+        except Exception:
+            log.warning("narrative run of %s could not be read", fs.slug, exc_info=True)
+            ran = False
+        (pressed if ran else not_read).append(fs)
+    base = {"question": question, "not_read": [f.slug for f in not_read], "not_read_words": _not_read_words(len(not_read)),
+            "searched": [], "unavailable": [], "matches": []}
+    if not pressed:
+        return {**base, "state": "none_pressed", "words": (_not_read_words(len(not_read)) or "no file systems") +
+                ". Nothing has been pressed, so this says nothing about what any file says."}
+    matches: list[dict] = []
+    try:
+        store = (store_factory or nd.default_store)()
+    except Exception:
+        log.warning("narrative index unreachable for the locator", exc_info=True)
+        return {**base, "unavailable": [f.slug for f in pressed], "state": "unavailable", "words": UNAVAILABLE}
+    for fs in pressed:
+        try:
+            collection = nd.collection_for(store, fs.slug)
+            if not store.collection_exists(collection):
+                base["unavailable"].append(fs.slug)
+                continue
+            hits = store.search(question, [collection], top_k=1)
+        except Exception:
+            log.warning("narrative search of %s failed", fs.slug, exc_info=True)
+            base["unavailable"].append(fs.slug)
+            continue
+        base["searched"].append(fs.slug)
+        if hits:
+            p = passage_of(hits[0])
+            matches.append({"slug": fs.slug, "display_name": getattr(fs, "display_name", "") or fs.slug,
+                            "score": p["score"], "citation": p["citation"], "status": PROPOSAL, "label": LABEL,
+                            "passage_id": p["passage_id"], "text": _clip(p["text"], FULL_CLIP)})
+    matches.sort(key=lambda m: (-m["score"], m["slug"]))
+    base["matches"] = matches[:limit]
+    if not base["searched"]:
+        return {**base, "state": "unavailable", "words": UNAVAILABLE}
+    state = "found" if matches else "no_match"
+    words = (f"{len(matches)} of {len(base['searched'])} searched file system{'' if len(base['searched']) == 1 else 's'} "
+             "matched, ranked by best passage" if matches else
+             "read, and no passage matched this question. The files may still say it in other words")
+    extra = [w for w in (base["not_read_words"],
+                         f"{len(base['unavailable'])} could not be searched (index unreachable)" if base["unavailable"] else "")
+             if w]
+    return {**base, "state": state, "words": " · ".join([words, *extra])}

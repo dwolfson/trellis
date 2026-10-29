@@ -119,6 +119,17 @@ class EgeriaAnnotationItem(BaseModel):
     content_status: str = ""
 
 
+@router.get("/by-passages")
+def find_filesystems_by_passages(q: str) -> dict:
+    """The Resource Locator's passage search: file systems whose pressed narrative files say something about `q`, ranked
+    by best passage, each cited and labelled a proposal. File systems never pressed are counted, not searched."""
+    from resource_explorer.narrative_context import locate
+
+    if not q.strip():
+        raise HTTPException(status_code=422, detail="q is empty.")
+    return locate(ProjectRegistry(), q.strip())
+
+
 @router.get("/", response_model=list[FileSystemSummary])
 def list_filesystems():
     """List all registered filesystems."""
