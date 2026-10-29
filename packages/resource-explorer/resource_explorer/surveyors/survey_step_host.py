@@ -740,7 +740,8 @@ def attach(entity_type: str, adapter, step_registry: dict, step_map: dict, resul
                       "Resource Explorer's own step)", name)
             continue
         log.warning("installed step '%s' has no analysis catalog entry; it can run from a Survey Definition but "
-                    "shows no card: run scripts/generate_external_step_entries.py", name)
+                    "shows no card: the catalog merges installed manifests when it is read, so this means the "
+                    "entry was refused or the catalog was read before the package was installed", name)
         adapter.re_analysis_steps[name] = SurveyStepHost(manifest, entity_type)
         adapter.re_analysis_step_info[name] = {"description": manifest.description,
                                                "annotation_types": [manifest.annotation_type]}
