@@ -27,7 +27,7 @@ NOT_ANALYSES = {
     # library steps that run through the Files host (not catalog entries)
     "fs_change_rates", "fs_duplicates", "fs_activity", "fs_permissions",
     # database question keys on the Discovery stage
-    "db_cataloged", "db_existing_use", "db_feedback", "db_surveyed", "db_disposition",
+    "db_catalogued", "db_existing_use", "db_feedback", "db_surveyed", "db_disposition",
     # survey step names quoted from the screen
     "postgres_schema_and_stats", "postgres_column_profile",
     # annotation verdicts and properties

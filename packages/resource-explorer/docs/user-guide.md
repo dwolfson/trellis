@@ -6,7 +6,7 @@
 
 Resource Explorer (RE) discovers, surveys, and catalogs information resources using Egeria as the metadata catalog. This guide is organized by what you are trying to do. Each section opens with the words the screen uses and ends with what is not built yet, with a date.
 
-**How far to trust the screen words.** A sentence marked "(not re-verified on <date>)" is one the writer could not open on the running app that day. On 2026-10-28 the app on port 8813 asked for sign-in while this guide was written, so the writer could not open any screen that day: the screen words quoted below are those the audit of the same day read while signed in (`design-notes/AUDIT-USER-GUIDE-2026-10-28.md`), and every section that quotes them ends with the line "(screen words not re-verified on 2026-10-28)".
+**How far to trust the screen words.** The words in quotation marks and bold below were read on the running app (port 8813, signed in) on 2026-10-28, on a repository (docling), a file system (loading_bay) and databases. A sentence marked "(not re-verified on 2026-10-28)" is one the writer could not open that day, with the reason beside it. Where the screen still shows a defect, this guide describes the intended behavior and says the pending status-words change fixes it; it does not present the defect as a feature.
 
 1. [Start here](#1-start-here)
 2. [The words and marks](#2-the-words-and-marks)
@@ -29,7 +29,7 @@ Resource Explorer (RE) discovers, surveys, and catalogs information resources us
 uv run resource-explorer web     # → http://localhost:8810
 ```
 
-The app is served at `/`. The browser tab's title still carries the name of an older route; that is a known defect, and the address is `/`.
+The app is served at `/`. The browser tab's title still carries the name of an older route; that is a defect, fixed in the pending status-words PR, and the address is `/`.
 
 ### Signing in
 
@@ -39,15 +39,15 @@ Your password is used once, to get an Egeria token, and is never stored. From th
 
 **Sessions last about an hour**, because that is how long Egeria's tokens last, and they all end when the Egeria platform restarts. When yours lapses the sign-in panel reappears; sign in again and carry on. Opening Resource Explorer from inside the Egeria Portal skips this entirely: the Portal hands over the token it already holds.
 
-The header shows who you are signed in as, and **Sign out** ends the session. One known defect: with no investigation selected, the header's connection-details control can read "not signed in" even though you are signed in; with an investigation selected it reads your user id. It is on the defects queue, and the sign-in itself is not affected.
+The header shows who you are signed in as (your user id), and **Sign out** ends the session. Intended behavior: the header always reads your user id while you are signed in. Today, with no investigation selected, the header's connection-details control can read "not signed in" even though you are signed in; that is a defect, fixed in the pending status-words PR, and the sign-in itself is not affected.
 
 ### The screen
 
 - **Stage strip** along the top. It reads **Investigation · 1 Scouting · 2 Discovery · 3 Assessment · 4 Analysis · 5 Enrichment · 6 Curate · Understanding · Automate · ▦ Work lists**. The run goes left to right through the six numbered stages. **Investigation** (the frame) sits before them, and **Understanding** and **Automate** are cross-cutting.
-- **Left sidebar**: resources grouped by kind (repositories, databases, file systems), then the current investigation with **Scope · N** and **Work lists for <name> · N**, then **Other work lists · N**. A **PERSPECTIVE · 0 OF 12** filter narrows the list by who is asking.
+- **Left sidebar**: three kinds of resource, **Repos**, **DBs** and **FS**, each with a filter box; the **INVESTIGATION** picker; then **SCOPE · N**, **WORK LISTS FOR <NAME> · N** and **OTHER WORK LISTS · N**. A **PERSPECTIVE · 0 OF 12** row of chips (Admin, App/AI Builder, Architecture, Community, Consumer, Data Expert, Data Owner, Financial, Governance, Privacy, Security, Steward) narrows the list by who is asking. Repos can be filtered **In scope / All / New / Surveyed / Published**, and by **DISPOSITION**.
 - **Main panel**: the selected stage for the selected resource. A stage opens sub-tabs: **Questions · Survey & analyses · By analysis · Disposition**.
-- **Header**: who you are signed in as, **📋 Activity** and **⚙ Admin**. The **RFAs** drawer is in the strip (**RFAs 57** is an example count).
-- **Chat rail**: on every stage. It reads "ASK · scoped to <resource> · what would answer this?"
+- **Header**: **Look: Paper ▾**, text-size controls, **Activity** (with its count), **Admin**, the investigation and who you are signed in as. The **RFAs** drawer is in the strip (**RFAs 57** is an example count).
+- **Chat rail**: on every stage. It reads "ASK · scoped to <resource>" with a box, an **Ask** button, "what would answer this?" and "⌘/Ctrl + Enter"
 
 ### The three jobs
 
@@ -77,7 +77,7 @@ Every status word comes from rows RE stored, not from the fact that a button was
 
 ### The Activity log
 
-The **📋 Activity** link in the header opens the persistent activity log. Every operation writes an entry (scout, survey, catalog, publish, rfa, refresh), and each entry shows its status, a summary, and expandable annotation details. (entry kinds not re-verified on 2026-10-28)
+The **Activity** link in the header opens the persistent activity log: "Every scouting, survey, publish and RFA operation this instance has recorded, read from the same log the current UI's Activity tab shows." It lists the most recent 300 entries, latest first, with a filter box and **all / ok / error / running** buttons. Each entry has a kind (for example "bootstrap", "Survey", "Analysis run"), the resource, a status (✓ ok), a summary and a **detail** link.
 
 ### Tips
 
@@ -87,7 +87,6 @@ The **📋 Activity** link in the header opens the persistent activity log. Ever
 
 **Not built yet in this section:** nothing; see section 10 for the whole list.
 
-(screen words not re-verified on 2026-10-28)
 
 ---
 
@@ -113,11 +112,11 @@ RE shows a state as a **mark plus a short word** on the thing itself. Hover (or 
 
 ### The chips on Curate
 
-A database's Curate page, under "What gets published", shows three chips. A chip reads either ✓ or ◌ with the cue **not checked since <time>**. For example a chip can read "cataloged by Egeria 0 schemas ◌ not checked since 00:54". A chip is a statement about the last time RE read Egeria, not about Egeria now.
+A database's Curate page, under "What gets published", shows three chips: **published by RE 2 ✓**, **attached 4 schemas ✓** and **cataloged by Egeria 0 schemas ◌ not checked since 00:54** (the counts are an example). A chip reads either ✓ or ◌ with the cue **not checked since <time>**. A chip is a statement about the last time RE read Egeria, not about Egeria now. The band also carries a sentence that repeats two of these facts ("4 schemas attached · 4 in Egeria"); intended behavior is one count per fact, shown by the chips. Today the sentence and the chip can disagree, a defect fixed in the pending status-words PR.
 
 ### The absence words
 
-An empty box could mean four different things, and RE keeps them apart:
+An empty box could mean different things, and RE keeps them apart. The absence words come from the audit's list and from what the screens say (for example, a Discovery row reads "Nothing is recorded for this — a real absence, not an unrun analysis."; the Duplicate Files row reads "not run yet"; File Activity reads "◌ not established · not measured"; File Permissions reads "○ nothing found"). (the table's right column is the writer's wording, not a screen quote; not re-verified on 2026-10-28)
 
 | The screen says | It means |
 |---|---|
@@ -140,8 +139,8 @@ A proposal, such as a component in Architecture Recovery, carries a **confidence
 
 ### Where it lives: "local · not published" and "published as <you>"
 
-- **local · not published**: RE holds it and Egeria does not. A choice you made and an unpublished survey read this way.
-- **published as <you>**: Egeria has it, written under your user id. Someone else's rating or note reads "<person>'s · waiting for them".
+- **local · not published**: RE holds it and Egeria does not. The file-system walk measures read "kept here · not published to Egeria", and a repository's tags read "□ saved · will publish". (the exact words "local · not published" were not seen on a screen on 2026-10-28, not re-verified)
+- **published as <you>**: Egeria has it, written under your user id: notes read "as peterprofile" for a signed-in user of that name. Someone else's rating or note reads "<person>'s · waiting for them". (the words "published as" were not seen on a screen on 2026-10-28, not re-verified)
 
 ### Decisions in Curate
 
@@ -149,11 +148,10 @@ In Curate, a choice is **Include** or **Leave out** and is saved in RE the momen
 
 ### Defects seen on 2026-10-28
 
-Six things on the screen are wrong today, and are not intended behavior: a database header can read "never surveyed · not published to Egeria" while the Curate band says it is published; the same band can give two counts for one fact (schemas attached, schemas cataloged); the connection-details control reads "not signed in" while you are signed in; some panes (Discovery, Enrichment, Analysis) stay on "loading…" for several seconds without saying what they wait for; an unknown stage name in the address (for example `?stage=admin`) leaves the main panel blank; and the browser tab's title still carries an older route's name. They are queued for fixing, not documented as design.
+Defects still on the screen today, none of them intended behavior, all queued in the pending status-words PR: a database header reads "never surveyed · not published to Egeria" while the Curate band says Egeria holds it; the Curate band gives two counts for one fact (see "The chips on Curate"); the connection-details control reads "not signed in" while you are signed in; Discovery on a database reads "5 of 19 answered · 13 still loading" for many seconds without saying what it waits for (Enrichment and Analysis can do the same); an unknown stage name in the address (for example `?stage=admin`) leaves the main panel blank; and the browser tab's title carries an older route's name. (The unknown-stage blank was seen by the audit and not re-opened on 2026-10-28.)
 
 **Not built yet in this section:** nothing in the vocabulary; see section 10.
 
-(screen words not re-verified on 2026-10-28)
 
 ---
 
@@ -163,7 +161,7 @@ Six things on the screen are wrong today, and are not intended behavior: a datab
 
 An **investigation** says *why* you are looking at a set of resources. It has a name, a description, a kind (for example Personal, Experiment, Task, Campaign or Study) and one or more **purposes**. Its **scope** is the set of resources it covers, and the scope can mix repositories, databases and file systems.
 
-The **Investigation** stage, at the left of the stage strip, is where you start one and see its scope. It lists purposes, status, scope count, and where each investigation lives: **☁ Egeria**, **🏠 local**, or **unbound by reset**. "Unbound by reset" is the word shown for an investigation that was bound to Egeria before the 2026-10-23 reset and is not bound now.
+The **Investigation** stage, at the left of the stage strip, is where you start one and see its scope. The screen reads: "An investigation is the frame a body of work runs inside — why it exists, not what kind of work it is. Resources can belong to several at once; closing one keeps its findings queryable, it just drops out of the default scope." Its table has the columns INVESTIGATION, PURPOSES, STATUS, SCOPE and EGERIA, with **Show closed** and **+ New investigation**. The current investigation is marked ★. The EGERIA column reads **☁ Egeria** (bound to a Project), **🏠 local** (RE only) or **unbound by reset**; the last one's tooltip reads "unbound by reset · rebind to recreate". The word dates from the 2026-10-23 reset.
 
 Once an investigation is *current*, the sidebar shows **Scope · N** and **Work lists for <name> · N** under it, and a resource that is in the scope says so ("already in <name>'s scope"); otherwise the act reads "add to <name>".
 
@@ -211,7 +209,6 @@ With an investigation chosen, an answer's footer has **add to investigation jour
 
 **Not built yet in this section:** the winnowing columns on a work list, and mixed-kind lists; see section 10.
 
-(screen words not re-verified on 2026-10-28)
 
 ---
 
@@ -227,12 +224,12 @@ Resource Explorer organizes its checks as a **question catalog**. Each question 
 - Answers you give in Enrichment are saved with the id of the question they answer.
 - Administrators browse the catalog under **Admin → Question Catalog**. The source is `docs/dr-egeria/resource_questions.csv`, explained in [`dr-egeria/resource_questions_guide.md`](dr-egeria/resource_questions_guide.md).
 
-A stage opens sub-tabs: **Questions** (each question has its own **run**), **Survey & analyses** (the definition's **Survey** press), **By analysis** and **Disposition**.
+A stage opens sub-tabs: **Questions**, **Survey & analyses**, **By analysis** and **Disposition**. The Questions tab opens with a count ("6 of 6 answered · Scouting"), a key (**✓ answered**, **✓ answered automatically**, **∅ nothing found**, **○ not run**, "still loading") and "ordered by purpose · Explore, Learn · 4 of 6 lead, the rest follow in catalog order". Each question row shows the resource kinds' perspectives as chips, **why is this here**, the answer in one line, a source line (for example "project_commits · run time not recorded · evidence · copy as evidence"), and **ask in chat ›**, **evidence**, **re-run** (when it has an answer), **the numbers behind this ›**, **🔔 notify me** and "Was this right?". A group headed "NOT AMONG THIS INVESTIGATION'S PURPOSES" holds the questions that do not serve the current investigation.
 
 ### Scouting
 *Goal: broad inventory across many resources, fast*
 
-Scouting is the Questions tab of stage 1 for a repository, plus the **Survey & analyses** tab, where a definition's **Survey** press runs the scouting analyses:
+Scouting is the Questions tab of stage 1 for a repository, plus the **Survey & analyses** tab. That tab reads **ANALYSES RUN ● 37 of 38**, **NEED YOU**, **LAST SURVEY**, then **SURVEY DEFINITIONS · GIT REPOSITORY** with "Scope: scouting": the Coarse Profile Survey, the Repo Scouting Scan and the Scouting Survey, each with **Re-run…**, what it produces and "ran via Prefect"; below them **ANALYSES · 38**, each with **Run →** or **Re-run →**. The Scouting Survey runs:
 
 - Language and file classification
 - Repository health metrics
@@ -240,7 +237,7 @@ Scouting is the Questions tab of stage 1 for a repository, plus the **Survey & a
 
 Results appear in the Activity log.
 
-**The header tiles.** A repository's header shows the numbers a first look needs: **WEBSITE**, **LANGUAGE** ("python measured" when the language was measured), **STARS**, **SECURITY** (reads "? not read" until the security step has run), **DEPLOYMENTS**, and **SCOUTING SIGNAL**. A tile that has not been read says so: SECURITY reads "? not read", not zero.
+**The header tiles.** A repository's header shows the numbers a first look needs: **WEBSITE**, **LANGUAGE** ("python measured" when the language was measured), **STARS**, **FORKS**, **CONTRIBUTORS**, **LAST PUSHED**, **SIZE**, **SECURITY** (reads "? not read" until the security step has run), **DEPLOYMENTS**, and **SCOUTING SIGNAL** ("156,999 lines of code across 652 source files, 1,896 files in total · Health 99/100", as an example). The header line also reads, for example, "surveyed 10h ago · published to Egeria 10h ago · ○ not yet indexed index it ›". A tile that has not been read says so: SECURITY reads "? not read", not zero.
 
 **Importing many repositories.** Use **＋ Find repos** ("Find and import candidate repos") at the bottom of the repositories sidebar. It has two ways in: a **search** (keywords, stars, language, license, organization, topic) and **From a list** (a CSV with an `address` column, or one GitHub URL per line; an organization URL expands to its repositories). Either one only fills a review table. **Nothing is registered until you tick rows and press Import Selected.**
 
@@ -263,12 +260,12 @@ Nothing is drawn before the homepage step has run: "not measured" is not "no doc
 ### Discovery
 *Goal: find what a resource is, from what its surveys revealed*
 
-Discovery is a stage with its own questions. For a database there are 19 of them (for example db_cataloged, db_existing_use, db_feedback, db_surveyed, db_disposition, reach and db_classification), answered on the page. Chat is a rail on every stage, not a Discovery panel; see "Asking in the chat rail" below. The pane can take several seconds to fill on a large database, while its rows read "loading…" (a known slowness).
+Discovery is a stage with its own questions. For a database the Questions tab reads "5 of 19 answered · 13 still loading · Discovery" and lists 19 questions (the ids on the rows include `db_catalogued`, `db_existing_use` and `db_feedback`), answered on the page: "Has this resource already been catalogued in Egeria, and when?", "Is there any existing use within our organization?", "Any known feedback?". An empty answer says so: "Nothing is recorded for this — a real absence, not an unrun analysis." Chat is a rail on every stage, not a Discovery panel; see "Asking in the chat rail" below. Intended behavior: a pane that is loading says what it is waiting for and how many rows are back; today it shows "loading…" for many seconds, fixed in the pending status-words PR.
 
 ### Assessment
 *Goal: deep analysis of a specific resource*
 
-Assessment is a Questions tab like the others: open the Assessment stage and run a question's analysis from its row. The analyses include:
+Assessment is a Questions tab like the others. (The Assessment tab itself was not opened on 2026-10-28; this paragraph and the analysis list below are from the audit and the catalog, not re-verified.) The analyses include:
 
 - `dependency_analysis`, the full dependency graph with version pins
 - `security_scan`, secrets, vulnerable patterns, exposed credentials
@@ -280,7 +277,7 @@ Assessment is a Questions tab like the others: open the Assessment stage and run
 ### Analysis
 *Goal: structural and quantitative analysis of a specific resource, fast, not scored*
 
-Analysis questions do not evaluate the resource against criteria; they extract and report structure. You reach them from the Analysis stage's Questions tab and from **Curate › Structure**. This is where **Architecture Recovery** lives (`architecture_recovery`). The Analysis tab can read "0 of 20 answered · 20 still loading" for a few seconds on a first open.
+Analysis questions do not evaluate the resource against criteria; they extract and report structure. You reach them from the Analysis stage's Questions tab and from **Curate › Structure**. This is where **Architecture Recovery** lives (`architecture_recovery`). (The Analysis stage was not opened on 2026-10-28; not re-verified. The audit saw "0 of 20 answered · 20 still loading" on first open, a slow-pane defect fixed in the pending status-words PR.)
 
 #### Architecture Recovery
 
@@ -303,31 +300,31 @@ Architecture Recovery reads a repository and proposes a **candidate component pa
 ### Enrichment
 *Goal: provide human context; answer open RFAs*
 
-The **RFAs** drawer in the strip (for example "RFAs 57") lists open RequestForAction items. They are generated automatically when a survey creates a `RequestForAction` Egeria annotation, or when the Context tab has blank critical fields. Answers are saved in RE, and **RFA answers do sync to Egeria**.
+The stage's **Survey & analyses** tab reads "No analysis runs at the Enrichment stage from a survey read." What a person supplies lives on the **Context** tab, which reads: "Everything a person has supplied about this resource — each row signed and dated, and each saying what it feeds. Nothing here is written to the Egeria until you publish it (Curate)." Its groups and fields:
 
-The **Context** tab lets you fill in resource context proactively. Its fields are **Environment, Owner, Steward, Sensitivity, Intended use, Actual use, License, Location, Backup status, Retention, Criticality and Notes**, plus rows for documentation sources (user manual, API reference, data dictionary and others). The tab can read "Reading what's been supplied…" for several seconds before it fills.
+- **What we judge** ("0 of 7 set · perishable"): Sensitivity (public, internal, confidential, restricted), Criticality (low, important, critical), Intended use (Assess, Certify, Deploy, Explore, Find, Integrate, Learn, Maintain, Select, Share), Actual use, Owner, Steward, Notes.
+- **What you're looking for**: "no lens declared for <investigation> · declare it on the investigation ›".
+- **What we record** ("durable"): License (with "proposed: MIT License · proposed by license_classification" and **accept**), Environment (prod, dev, test, research, archive), Retention, Location, Backup status (yes, no, partial, unknown).
+- **What only you can answer**: the catalog's own questions for a person, each with **Answer this →**.
+- **Where it's documented**: documentation sources (data dictionary, design notes, runbook, wiki, installation guide, user manual, api reference, release notes, other) with **Save and probe**, and an **API reference** block.
+
+Each field says what it feeds, for example "feeds → Curate (publish record)" or "feeds → kept in Resource Explorer · no publish step reads it yet".
+
+The **RFAs** drawer in the strip (for example "RFAs 57") lists open RequestForAction items ("OPEN RFAS"), with the filters **this resource only**, **show completed** and **show suppressed (0)**.
 
 #### The RFA drawer
 
-Open **RFAs** in the strip. It lists open items, grouped by resource, with a count showing how many are open. Each item has response actions and a free-text answer field:
-
-- **⏸ Defer**: pick a date to revisit it later. It drops out of the default (open-only) view until then.
-- **👤 Reassign**: hand it to someone else by name or email.
-- **✓ Complete**: mark it resolved, optionally with a note.
-- **↺ Reopen**: bring a deferred, reassigned or completed item back to open.
-- **✏ Record answer**: a free-text box for the actual answer, independent of its response-action status.
-
-Check **Show resolved** to see deferred, reassigned and completed items alongside the open ones. (The five response actions were not re-verified on 2026-10-28; the sync of answers to Egeria is the audit's reading of the code, also not re-verified on that date.)
+Open **RFAs** in the strip. Each open item shows its resource, what it asks, **Open**, and the actions **Defer**, **Reassign**, **Complete**, **Dismiss…** and **Add note**. Tick **show completed** to see finished items beside the open ones, and untick **this resource only** to see every resource's. (Whether an RFA answer reaches Egeria was not re-verified on 2026-10-28; the old guide's "Egeria write-back is coming" is gone, and the audit read the code as saying the answers do sync.)
 
 ### Understanding
 *Goal: see a resource over time*
 
-Understanding has three tabs: **At a glance** (tiles, and **Since the last run**, which reports what changed between the last two surveys: file counts for a repository; schema, table and column differences for a database), **Contents**, and **Over time**. There is no Artifacts tab yet.
+Understanding has three tabs: **At a glance**, **Contents** and **Over time**. At a glance opens with **Since the last run** ("Since the run of 2026-10-07: 1,896 files, 53 more · 8 file types changed.") and tiles such as FILES and SURVEYED. (Contents and Over time were not opened on 2026-10-28; not re-verified.) There is no Artifacts tab yet.
 
 ### Automate
 *Goal: make a run repeat, and be told when its answer changes*
 
-Automate has three tabs: **🔔 Subscriptions**, **⏱ Schedules** and **First indexing**. You create a subscription from **🔔 notify me** on a question row. A row can read "● active — but never fires (no schedule)": the subscription exists and nothing will ever re-run the analysis, because no schedule is set. Add one under **⏱ Schedules**. When a scheduled re-run produces a materially different result, an RFA shows up in the drawer.
+Automate has three tabs: **🔔 Subscriptions**, **⏱ Schedules** and **First indexing**. The Subscriptions tab reads: "A subscription watches an analysis for change on its scheduled runs (see ⏱ Schedules -- one with no active schedule for its analysis never fires) and delivers via the RFA drawer when something changes. Create one from the "🔔 notify me" action on a question row in Assessment or Analysis." Its table has WATCHING, RESOURCE, ANALYSIS, STATUS, LAST CHECKED and NOTIFICATIONS, with **Deactivate** or **Activate**. A row can read "● active — but never fires (no schedule)" with "never — no schedule to run off": the subscription exists and nothing will ever re-run the analysis, because no schedule is set. (The Schedules and First indexing tabs were not opened on 2026-10-28; not re-verified.)
 
 ### Curate
 *Goal: decide what is published to Egeria, and make a resource easier to find and more trustworthy to reuse*
@@ -336,7 +333,7 @@ See section 5 for the page of each kind. Deciding and sending are separate. Ever
 
 **A repository** has **three tabs**, split by job, and opens on the first: **Describe and publish**, **Contents** (with its count line, for example "∅ 0 chosen · ◌ 22 undecided") and **Structure**.
 
-1. **Describe and publish**: **FINDABLE** (tags, group), **WHAT PEOPLE SAY** (ratings and notes, with "suggest to"), and **PUBLISH TO EGERIA**. The one **Publish** button lives at the bottom.
+1. **Describe and publish**: **WHAT WE KNOW** ("from Context · read-only", with **edit on Context ›**), **FINDABLE** ("tags are public in Egeria · the group is a Folio · sent with Publish"), **WHAT PEOPLE SAY** (**RATINGS** and **NOTES**, with "suggest to"), and **PUBLISH TO EGERIA**. The one publish button lives at the bottom and reads **Publish**, or **Publish again** once the resource is in Egeria.
 2. **Contents**: choose what is published. You pick files and folders by name; each row has an **Include | Leave out** choice, saved in RE as soon as you press it. Nothing is taken wholesale.
 3. **Structure**: what the resource is made of and how it relates: components, blueprints, dependencies and the rules. Accepting or rejecting a proposal here is a decision; it writes nothing to Egeria on its own.
 
@@ -347,7 +344,7 @@ See section 5 for the page of each kind. Deciding and sending are separate. Ever
 3. documentation sources not yet in Egeria (as ExternalReferences on the asset);
 4. **your own** rating and notes, written in Egeria **as you**. Never anyone else's: another person's rating and notes wait for their own Publish.
 
-The band has three lines. Line 1 is one state: **✓ in Egeria · published 10-11 · confirmed** when Egeria's read-back after the publish shows the same report with the same number of annotations; **published 10-11 · not yet confirmed** when there is no read-back yet; **◐ published 10-11 · Egeria shows N** when the read-back differs. **Show in Egeria ▸** opens the report rows Egeria holds (GUID, annotations, Ask about this). Line 2, **next publish**, names the kept survey (and how much of it is stale) and lists what the press will send. Line 3 holds **Publish** and **Re-survey now**. A press shows **◔ publishing…** at once; if anything fails, a pop-up says what and why (with **Retry** where a retry can help), and the failed item keeps its "not sent" mark after the pop-up closes. The steps of the press are behind **details ▸**.
+The band has three lines. Line 1 is one state: **✓ in Egeria · published 10-25 · confirmed**, followed on the screen read here by "◐ behind · 76 annotations · read back 19:47" (Egeria holds a report that is behind the kept survey). The other states, **published 10-11 · not yet confirmed** (no read-back yet) and **◐ published 10-11 · Egeria shows N** (the read-back differs), are the older guide's wording and were not seen on 2026-10-28; not re-verified. **Show in Egeria ▸** opens the report rows Egeria holds (GUID, annotations, Ask about this). Line 2, **next publish**, names the kept survey ("kept survey · 2026-10-28 · 10h ago · 74 annotations · 12 steps ran", "◐ stale 9 of 12 steps are stale (older than their refresh rule)") and lists what the press will send. Line 3 holds the publish button and **Re-survey now →** ("publishes the kept survey, tags, group and your feedback"). A press shows **◔ publishing…** at once; if anything fails, a pop-up says what and why (with **Retry** where a retry can help), and the failed item keeps its "not sent" mark after the pop-up closes. The steps of the press are behind **details ▸**.
 
 **Ratings and notes go to Egeria, public, under your name.** **Decision (project owner, 2026-10-11):** "It goes under the user who is logged in and entering the ratings etc. It is also possible for another user to login and evaluate the same resource and put in different feedback." / "Ratings and notes should be public too."
 
@@ -375,11 +372,10 @@ If the account for a database can only see part of it, the choice reads **Run it
 
 ### Asking in the chat rail
 
-The rail reads "ASK · scoped to <resource> · what would answer this?" The scope shown on the rail replaces the old slug prefix: you do not type the resource's name to scope a question. Since #899 the answer is compiled from the declared extents of the analyses, by question id, so an answer cites the rows of the analysis that produced it.
+The rail reads "ASK · scoped to <resource>", with an **Ask** button and "what would answer this?". The scope shown on the rail replaces the old slug prefix: you do not type the resource's name to scope a question. Since #899 the answer is compiled from the declared extents of the analyses, by question id, so an answer cites the rows of the analysis that produced it. (Not re-verified on 2026-10-28: it needs a question asked, which was not done.)
 
 **Not built yet in this section:** an Artifacts tab on Understanding, and renderers for seven result kinds; see section 10.
 
-(screen words not re-verified on 2026-10-28)
 
 ---
 
@@ -395,33 +391,34 @@ Everything in sections 3 and 4 was written for a repository first: **＋ Find re
 
 **What to supply when you register a database.** A read-only account that can see the catalog and statistics. Table data access is not needed yet: Scouting and Discovery work from the catalog alone (structure, keys, comments, row estimates, activity), and Resource Explorer asks for a broader account only when a specific survey needs to read rows, telling you which one and why. Passwords are encrypted at rest and never shown back.
 
-**The credential banner.** After registration Resource Explorer probes what the account can see and shows it persistently on the database, for example *"Connected as egeria_user — sees 6 of 8 schemas; can read 3 of 26 tables; no write access."* Every answer on that database then says whether it was measured completely or **measured within what this account can see**. A count of "3 tables" from an account that can read 3 of 26 is reported as "3 of 26", never as "3". (The banner itself was not on the header of the database opened in the 2026-10-28 audit; it is not re-verified on 2026-10-28.)
+**The credential banner.** After registration Resource Explorer probes what the account can see and shows it persistently on the database, for example *"Connected as egeria_user — sees 6 of 8 schemas; can read 3 of 26 tables; no write access."* Every answer on that database then says whether it was measured completely or **measured within what this account can see**. A count of "3 tables" from an account that can read 3 of 26 is reported as "3 of 26", never as "3". (The banner was not on the header of the databases opened on 2026-10-28, which read "never surveyed · not published to Egeria"; not re-verified on 2026-10-28.)
 
 **When a survey needs more.** A survey that must read rows (column profiling, data-class matching, coverage checks) is not run silently with an account that cannot. Its row says what it needs and offers three choices: run only the parts the current account can answer, pick a broader account already registered for this database, or send a request to the database owner naming the exact grant. Retry appears only when retrying could change the answer.
 
 **Estimates versus actuals.** Numbers taken from the database's own statistics are estimates as of the last time the database refreshed them, and are labeled with that date and how many rows have changed since. Exact counts come from the later, heavier surveys. See [`docs/security-model.md`](security-model.md) for the full model, including how Egeria's own surveys and Resource Explorer's local surveys choose which account to use.
 
-**Curate for a database is one page**, not three tabs: **FINDABLE**; **What gets published**, with its three chips (see "The chips on Curate", section 2); **Your scope**, with **Depth**; and the **Include / Leave out** table of schemas and tables. The **publish table** of declared measures (#886) is on the same page: one row per measure an analysis declared, with a "writes as" column naming the Egeria annotation it will become. A database page also shows **By analysis**, which carries **curation coverage** (see "The Analytic Library", section 7). The quality-checks section was not reached on 2026-10-28 and is not re-verified on that date.
+**Curate for a database is one page**, not three tabs. In order it reads: **FINDABLE** (RE group, tags); **What gets published** ("Database element c990f349 in Egeria · published 10-24 00:45 · zones: none · everyone visible · 4 schemas chosen …", then its three chips, see "The chips on Curate", section 2, and "▸ Your scope: 4 of 30 schemas known to RE · declared by erinoverview 10-05"); **Glossary terms on tables and columns**; **Data-class rules Egeria applies**; **Logical schema match**; **Quality checks** (for example "1161 proposed · 3 accepted · 311 not established · 227 tables", with Test type, Dimension and State filters and a row per table); **Dependencies**; **PUBLISH TO EGERIA**; and **WHAT PEOPLE SAY**. The **Depth** choice, the **Include / Leave out** table and the publish table of declared measures (#886, with a "writes as" column) were not opened on 2026-10-28 (not re-verified). The database's **By analysis** tab carries **curation coverage** (see "The Analytic Library", section 7).
 
-**Data quality checks.** A PostgreSQL database can be profiled and checked for quality with the **DatabaseQualitySurvey**. You review the proposed checks under **Curate → Structure → Quality checks** (Accept | Reject, and **Watch for drift** per table), and the results reach Egeria as QualityAnnotations. The checks are DataOps TestGen's test types, which Resource Explorer runs itself. The whole path, including what is still arriving, is in [testgen-integration-guide.md](testgen-integration-guide.md).
+**Data quality checks.** A PostgreSQL database can be profiled and checked for quality with the **DatabaseQualitySurvey**. You review the proposed checks in the **Quality checks** section of the database's Curate page (Accept | Reject, and **Watch for drift** per table; the Accept and Reject controls and Watch for drift were not opened on 2026-10-28, not re-verified), and the results reach Egeria as QualityAnnotations. The checks are DataOps TestGen's test types, which Resource Explorer runs itself. The whole path, including what is still arriving, is in [testgen-integration-guide.md](testgen-integration-guide.md).
 
 ### File systems
 
-A file system is registered with a **host** and a **container path** (remote mechanisms are not built, see section 10). The file system's **Survey & analyses** tab reads:
+A file system is registered with a **host** and a **container path** (remote mechanisms are not built, see section 10). Its **Survey & analyses** tab, read on the file system `loading_bay`, shows these sections in order:
 
-- **FOLDER SURVEY**, with the **reach line**, for example "✓ Egeria can read /deployments/loading-bay · led by Egeria's Folder Survey". 
-- Presses: **Survey / Measure** beside **Egeria's survey**, **Publish these measures**, **Profile data files** and **Derive**.
-- The **Egeria file-name CSV** disclosure.
-- Counts and **FILE TYPES**.
-- **WALK MEASURES**: "walked to the end of every folder", "per-file rows kept · 134 files" (the file count belongs to the example), world-readable counts, modes, and hashes (with the 10 MB limit).
+- **FOLDER SURVEY**, with the reach line: "✓ Egeria can read /deployments/loading-bay · verified 2026-10-25 · led by Egeria's Folder Survey", and **Check again**. The presses are **Survey**, **Measure beside Egeria's survey**, **Publish these measures to Egeria**, **Profile data files**, **Derive**, **Read narrative files** and **Match data classes**. The price line reads "Egeria's Folder Survey leads here: its run time is Egeria's and is not priced by Resource Explorer; Resource Explorer's last walk beside it saw 134 files". It also says "Egeria writes a file-name CSV inside its container on every Egeria-led survey; Resource Explorer never reads, stores or shows it."
+- Counts (Files, Folders, Total size, File types, Unclassified, Last modified, Inaccessible), **FILE TYPES** and **FILE EXTENSIONS**.
+- **WALK MEASURES**: "walked to the end of every folder it entered", "per-file rows kept · 134 files", "kept here · not published to Egeria", then Deepest level, Folders with files, Owners, Groups, World-readable, Modes, "Not walked" and "133 files hashed (SHA-256) · files over 10.0 MB are not hashed".
 - **HEAVIEST FOLDERS** and **BY DEPTH**.
-- **FOLDERS THAT DESCRIBE THEMSELVES**: narratives found in a folder are shown as proposals; "confirm it on Curate".
+- **FOLDERS THAT DESCRIBE THEMSELVES**: each folder with the file that describes it and its first words, marked "a proposal · confirm it on Curate".
+- **NARRATIVE FILES, READ IN FULL**: "each passage is stated by its file · a proposal, never a fact, until a person confirms it", "kept in Resource Explorer's search index · not published to Egeria".
+- **DATA-FILE PROFILES** and a **FILES** table (State, Source, Columns), then **PERSONAL OR SENSITIVE DATA** ("not matched yet").
+- **DERIVED FROM THE WALK**: **File Activity**, **File System Change**, **Duplicate Files**, **File System Layout Signals** and **File Permissions**, each marked "derived" with a date and its result ("● measured · …", "○ nothing found · …", "◌ not established · not measured · …") or "not run yet". The library step ids behind them, `fs_activity`, `fs_change_rates`, `fs_duplicates` and `fs_permissions`, are the audit's; the screen shows the names. They run through RE's Files host. Four database steps are Egeria-dispatched; the start-up line counts only those four (ruled 2026-10-28).
+- **EGERIA'S OWN SURVEYS**: **Survey Folder** and **Catalog and Survey**, each with what Egeria says about it and **Run again in Egeria →**.
 
-Four steps, `fs_change_rates`, `fs_duplicates`, `fs_activity` and `fs_permissions`, run through RE's Files host and appear under **Derive**. Four database steps are Egeria-dispatched; the start-up line counts only those four (ruled 2026-10-28). A file system's root folder is published from Curate by its own Publish. (This subsection quotes the audit's reading of the screen; not re-verified on 2026-10-28.)
+How a file system's root folder is published from Curate was not opened on 2026-10-28 (not re-verified).
 
 **Not built yet in this section:** remote reach for file systems; see section 10.
 
-(screen words not re-verified on 2026-10-28)
 
 ---
 
@@ -447,7 +444,7 @@ Three things to know:
 
 ### After a press
 
-The page shows a short cue (**publishing…**) and then what Egeria reports back (**✓ in Egeria · published 10-11 · confirmed**, or a plain statement of what failed). A word on screen comes from what was read back from Egeria, never from the fact that you pressed a button. The three chips on a database page say the same in three places (see section 2): what Egeria holds, and **not checked since <time>** when RE has not asked lately. The identity is shown: **published as <you>**.
+The page shows a short cue (**publishing…**) and then what Egeria reports back (**✓ in Egeria · published 10-11 · confirmed**, or a plain statement of what failed). A word on screen comes from what was read back from Egeria, never from the fact that you pressed a button. The three chips on a database page say the same in three places (see section 2): what Egeria holds, and **not checked since <time>** when RE has not asked lately. The identity is shown on your notes ("as <your user id>").
 
 ### What a database's survey report carries
 
@@ -481,7 +478,7 @@ What to expect from the column-profiling annotations:
 
 ### A re-run re-links, it does not duplicate
 
-Since the profile reshape (#847, #859), a re-run re-links unchanged annotations and creates only the changed ones. The card line reads "N measures published · M changed since <time> · K re-used". (The card line is the audit's reading; not re-verified on 2026-10-28.)
+Since the profile reshape (#847, #859), a re-run re-links unchanged annotations and creates only the changed ones. The audit's card line reads "N measures published · M changed since <time> · K re-used"; the Curate band on a repository reads "reused the report already in Egeria" after a press. (The measures card line was not seen on 2026-10-28; not re-verified.)
 
 ### Scores in Egeria
 
@@ -492,7 +489,6 @@ Repository health, the FOSS scorecard and the SQL view complexity rating are pub
 
 **Not built yet in this section:** nothing; see section 10.
 
-(screen words not re-verified on 2026-10-28)
 
 ---
 
@@ -552,21 +548,22 @@ Where you meet it:
 
 **Not built yet in this section:** remote reach, Dashboards in RE, and the open-data portal; see section 10.
 
-(screen words not re-verified on 2026-10-28)
 
 ---
 
 ## 8. Admin
 
-Reachable from **⚙ Admin** in the header. This is system and catalog configuration, not something you do to curate one resource. It has these groups:
+Opened from **Admin** in the header. The dialog reads: "System configuration — not something a user does to curate a specific resource, so it lives here rather than under one of the eight intents." It has three pickers:
 
-- **Configure**: Value profile settings, **Annotation Types** (the registry of metadata annotation schemas: what each one means, its properties, and its mapping to Egeria's own property classes), **Question Catalog**, **API fetch addresses**, **Egeria mounts**, and **Groups** (group related repositories, databases and file systems; assigning one resource to a group is done from that resource's own record; each group with members is a Folio in Egeria, see Curate; deleting a group removes each member from the Folio at that member's next Publish, and the Folio itself stays, the owner deletes it by hand).
-- **Observe**: **Logs**, **Publish Queue** and **Feedback**.
-- **Reconcile**: **Egeria Alignment**, **Egeria Links** and **Repair**.
-- **Prefect**.
-- **Repository discovery sources**: named, reusable "where do we scout" configurations, picked from Scouting's Discover sub-tab instead of re-typing a search. A **search**-type source holds the same filters the ad-hoc form uses; a **list**-type source holds a pasted set of GitHub URLs. Delete a source here; there is no edit-in-place yet, so delete and recreate.
+- **CONFIGURE**: **Annotation Types** (the registry of metadata annotation schemas and their mapping to Egeria's property classes, with **+ Register annotation type**), **Groups**, **Repository discovery sources**, **Question Catalog**, **API fetch addresses**, **Value profile settings** and **Egeria's mounts**.
+- **RECONCILE**: **Egeria Alignment**, **Egeria Links**, **Publish Queue** and **Repair**.
+- **OBSERVE**: **Prefect**, **Feedback** and **Logs**.
 
-(This section follows the audit's list of the Admin groups; the pages were not re-verified on 2026-10-28.)
+**Groups** is headed "Resource Groups": "Group repos, databases and filesystems that belong together (e.g. one product's resources). Deleting a group never deletes what's in it — members return to Ungrouped." It has **+ NEW GROUP**, **SUGGESTED GROUPINGS** ("Nothing is grouped automatically; review and apply.") and **ASSIGN A RESOURCE TO A GROUP**. Each group with members is a Folio in Egeria (see Curate); deleting a group removes each member from the Folio at that member's next Publish, and the Folio itself stays in Egeria for the owner to delete by hand.
+
+**Repository discovery sources**: "a saved GitHub search, or a curated list of repos (for foundations that spread projects across many orgs, like Eclipse, or your own enterprise repos). Running a source only shows candidates for review here — it does not register anything until you pick which ones and confirm." Each source has **▶ Run**, **🔄 Refresh** (list sources) and **🗑 Delete**; **+ ADD A SOURCE** offers Search & save, Manual list and Quick add.
+
+(Annotation Types, Groups and Repository discovery sources were opened on 2026-10-28. Question Catalog, API fetch addresses, Value profile settings, Egeria's mounts, Egeria Alignment, Egeria Links, Publish Queue, Repair, Prefect, Feedback and Logs were not opened; not re-verified.)
 
 The old Schedules monitoring page is replaced by **⏱ Schedules** under Automate.
 
