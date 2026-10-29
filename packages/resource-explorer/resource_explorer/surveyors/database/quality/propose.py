@@ -35,7 +35,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from resource_explorer.surveyors.database.quality import dupe_rows, schema_drift, table_comparison
+from resource_explorer.surveyors.database.quality import (
+    dupe_rows,
+    functional_infer,
+    schema_drift,
+    table_comparison,
+)
 from resource_explorer.surveyors.database.quality.catalogue import (
     PREDICATES,
     RUN_METADATA,
@@ -70,6 +75,15 @@ def _not_established_reason(test_type: str, profile: dict) -> str:
         why = profile.get("reason") or "no reason recorded"
         return f"not profiled ({state}: {why}), so its selection rule could not be evaluated"
     missing = not_established_inputs(test_type, profile)
+    # The functional-type inputs say why in their own words ("type not inferred · ..."), not as a bare NULL.
+    words = [profile.get("fdt_why") or "type not inferred" if m == "functional_data_type"
+             else profile.get("ftt_why") or "table type not inferred" if m == "functional_table_type" else m
+             for m in missing]
+    if len(words) != len(missing) or words != missing:
+        plain = [w for w, m in zip(words, missing, strict=True) if w == m]
+        said = [w for w, m in zip(words, missing, strict=True) if w != m]
+        parts = ([f"reads {', '.join(plain)}, which the profile did not measure"] if plain else []) + said
+        return "its selection rule " + "; ".join(parts) if plain else "; ".join(said)
     if profile.get("record_ct") == 0:
         return f"the table was empty when profiled, so {', '.join(missing) or 'an input'} is undefined"
     if profile.get("value_ct") == 0 and missing and set(missing) <= {"min_date", "max_date"}:
@@ -191,6 +205,23 @@ def run_propose(registry, slug: str, *, row_ct_pct_threshold: float, surveyed_at
         gtype = profiled_types.get((*key_, c["column_name"])) or general_type(c.get("base_type") or c.get("data_type"))
         table_columns.setdefault(key_, []).append((c["column_name"], gtype))
 
+    # The functional-type inference over the stored measures, for the labels a column could be (functional_infer.effective)
+    # and the table periods; a stored label is used as it is.
+    catalog_types = {(c["schema_name"], c["table_name"], c["column_name"]): c.get("base_type") or c.get("data_type")
+                     for c in registry.query_detail_rows("database_columns", slug)}
+    inferred = functional_infer.infer_batch(functional_infer._inference_rows(profile, catalog_types, None))
+    record_series = registry.value_profile_record_counts(slug)
+
+    def with_inference(prow: dict) -> dict:
+        possible, why = functional_infer.effective(prow, inferred.get(
+            (prow["schema_name"], prow["table_name"], prow["column_name"])))
+        extra = {"fdt_possible": possible, "fdt_why": why, "ftt_why": ""}
+        if prow.get("functional_table_type") is None:
+            period, period_why = functional_infer.table_period(record_series.get((prow["schema_name"], prow["table_name"]), []))
+            extra["ftt_why"] = ("table type not inferred · " + (period_why or "profiled before table types were stored: "
+                                "run the value profile again" if period else period_why))
+        return {**prow, **extra}
+
     rows: list[dict] = []
     not_applicable_ct = 0
     not_opted_in_ct = 0
@@ -207,6 +238,7 @@ def run_propose(registry, slug: str, *, row_ct_pct_threshold: float, surveyed_at
             # A view or foreign table: the profile does not apply, so neither does any check on it.
             not_applicable_ct += 1
             return
+        prow = with_inference(prow)
         selected = PREDICATES[test_type.test_type].evaluate({**prow, "as_of_date": surveyed_at})
         params: dict = {}
         state, reason = "proposed", ""

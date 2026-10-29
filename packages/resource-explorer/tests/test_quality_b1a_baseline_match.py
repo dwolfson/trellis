@@ -187,7 +187,7 @@ def test_nothing_is_proposed_for_a_table_nobody_opted_in(registry, entity):
     out = _propose(registry)["quality_proposals"]
     assert not any(r["test_type"] in B1A for r in registry.query_detail_rows("database_quality_proposals", SLUG))
     assert out["not_opted_in_ct"] > 0 and out["tables_opted_in"] == 0
-    assert out["proposed_ct"] == 12         # slice 1's set, plus Dupe_Rows and Schema_Drift on the two profiled tables
+    assert out["proposed_ct"] == 14         # slice 1's set, Dupe_Rows and Schema_Drift on the two profiled tables, Unique_Pct on two columns
 
 
 def test_an_opt_in_is_append_only_latest_wins_and_refused_for_a_table_not_in_the_inventory(registry):

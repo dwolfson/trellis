@@ -120,7 +120,7 @@ def rule_properties(check_key: str, test_type: TestType, params: dict, *, verdic
     for key, name in (("baseline_ct", "baselineCt"), ("baseline_value_ct", "baselineValueCt"),
                       ("baseline_value", "baselineValue"), ("baseline_unique_ct", "baselineUniqueCt"),
                       ("baseline_sum", "baselineSum"), ("baseline_sd", "baselineSd"),
-                      ("upper_tolerance", "upperTolerance")):
+                      ("upper_tolerance", "upperTolerance"), ("baseline_avg", "baselineAvg")):
         if params.get(key) not in (None, ""):
             extra[name] = str(params[key])
     props = {

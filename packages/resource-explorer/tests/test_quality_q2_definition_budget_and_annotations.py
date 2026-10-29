@@ -680,8 +680,9 @@ def test_a_chunk_that_takes_100_seconds_inside_the_budget_is_measured(registry, 
     _wide_profile(registry, entity, conn, clock, bounds)
     wide = [r for r in registry.query_detail_rows("database_value_profiles", SLUG) if r["table_name"] == "wide"]
     assert len(wide) == COLUMNS_PER_QUERY and {r["state"] for r in wide} == {"measured"}
-    assert wide[0]["record_ct"] == 1000 and clock.now == 100
-    assert conn.timeouts[-1] == 300                   # the chunk was given the whole budget, not 60 s
+    # the chunk took 100 s (the clock then also moves for the exact percentiles, step 6, a statement of their own)
+    assert wide[0]["record_ct"] == 1000 and clock.now >= 100
+    assert conn.timeouts[0] == 300                    # the chunk was given the whole budget, not 60 s
 
 
 def test_a_privilege_error_after_the_budget_is_spent_is_still_not_permitted_not_incomplete(registry, entity):

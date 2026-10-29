@@ -67,6 +67,10 @@ so the upstream product name appears only here, in `NOTICE` and in the developer
 | `postgresql/numeric_chars.sql` | `testgen/template/flavors/postgresql/data_chars/get_schema_ddf.sql` | subset (profile 1b): the `logical_type` CASE (upstream lines 28-49) and the `is_decimal` CASE (67-71), verbatim, each headed by its line range; a header comment added |
 | `postgresql/templated_functions.yaml` | `testgen/template/flavors/postgresql/profiling/templated_functions.yaml` | subset (Q6): `DATEDIFF_DAY` and `DATEDIFF_MONTH`, verbatim; a header comment added |
 | `profiling/functional_datatype_date.sql` | `testgen/template/profiling/functional_datatype.sql` | subset (Q6): the eight statements that can label a date column (upstream lines 18-25, 28-36, 39-43, 45-49, 72-116, 136-142, 228-262, 356-366), verbatim and in upstream order, each headed by its line range; a header comment added |
+| `profiling/functional_datatype.sql` | `testgen/template/profiling/functional_datatype.sql` | unchanged (step 6): the whole 629-line file, which `quality/functional_infer.py` ports in upstream order; pinned by SHA-256 |
+| `profiling/functional_tabletype_stage.sql` | `testgen/template/profiling/functional_tabletype_stage.sql` | unchanged (step 6): the table period (cumulative or window) and table type; ported in `functional_infer.table_period` and `table_kind`; pinned by SHA-256 |
+| `test_types/{Alpha_Trunc,Avg_Shift,Dec_Trunc,Distinct_Date_Ct,Distinct_Value_Ct,Incr_Avg_Shift,LOV_Match,Min_Val,Monthly_Rec_Ct,Outlier_Pct_Above,Outlier_Pct_Below,Pattern_Match,Unique_Pct,Valid_Month,Valid_US_Zip,Valid_US_Zip3,Variability_Decrease,Variability_Increase,Weekly_Rec_Ct}.yaml` | `testgen/template/dbsetup_test_types/test_types_<Name>.yaml` | unchanged (step 6) |
+| `postgresql/percentiles.sql` | `testgen/template/flavors/postgresql/profiling/project_profiling_query.sql` | subset (step 6): the three PERCENTILE_CONT lines of the `is_N_exact_pctile` block (upstream lines 242-244), verbatim; a header comment added. Run as a statement of their own per table (`quality/percentiles.py`) |
 | `postgresql/general_type.sql` | `testgen/template/flavors/postgresql/data_chars/get_schema_ddf.sql` | subset: the `general_type` CASE, verbatim; a header comment added |
 | `LICENSE`, `NOTICE` | `LICENSE`, `NOTICE` | unchanged |
 
@@ -83,6 +87,11 @@ Steps 4 and 5 add Dupe_Rows (`docs/design-notes/DESIGN-QUALITY-STEPS-4-5-DUPE-RO
 schema-drift checks. Their upstream `run_type` is QUERY or METADATA, so they carry no `cat_test_conditions` entry: what
 runs is RE's own (`quality/dupe_rows.py`, `quality/schema_drift.py`), and `scripts/sync_quality_catalog.py --check`
 compares their `run_type` and Postgres `test_templates` entry instead.
+
+Step 6 adds the nineteen types of family C (`docs/design-notes/DESIGN-QUALITY-STEP-6-FUNCTIONAL-TYPE-INFERENCE.md`)
+and the whole functional-type inference. Distinct_Value_Ct also names `gen_Distinct_Value_Ct.sql` (upstream
+`gen_funny_cat_tests/`, the constants-that-change generator); it is not vendored, because RE selects by the type's
+`selection_criteria` and the generator is a different upstream mechanism.
 
 ## How the catalogue is used
 

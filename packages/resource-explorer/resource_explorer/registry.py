@@ -1156,6 +1156,11 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         fractional_sum    TEXT DEFAULT NULL,
         sum_value         TEXT DEFAULT NULL,
         boolean_true_ct   BIGINT DEFAULT NULL,
+        functional_data_type  TEXT DEFAULT NULL,
+        functional_table_type TEXT DEFAULT NULL,
+        percentile_25     DOUBLE PRECISION DEFAULT NULL,
+        percentile_50     DOUBLE PRECISION DEFAULT NULL,
+        percentile_75     DOUBLE PRECISION DEFAULT NULL,
         sample_ratio      REAL DEFAULT NULL,
         ran_as            TEXT DEFAULT '',
         state             TEXT NOT NULL DEFAULT 'measured',
@@ -5153,6 +5158,16 @@ class ProjectRegistry:
         ("database_value_profiles", "fractional_sum", "TEXT"),
         ("database_value_profiles", "sum_value", "TEXT"),
         ("database_value_profiles", "boolean_true_ct", "BIGINT"),
+        # Q4 port order step 6 (DESIGN-QUALITY-STEP-6-FUNCTIONAL-TYPE-INFERENCE.md; DDL record
+        # docs/ddl-value-profile-step6.md): the inference's two results. NULL = not inferred (a row profiled before the
+        # columns existed, or a column whose type the stored measures cannot settle): "type not inferred", never a
+        # default type.
+        ("database_value_profiles", "functional_data_type", "TEXT"),
+        ("database_value_profiles", "functional_table_type", "TEXT"),
+        # The exact percentiles Measurement Spike reads (percentiles.py); NULL = not measured, never 0.
+        ("database_value_profiles", "percentile_25", "DOUBLE PRECISION"),
+        ("database_value_profiles", "percentile_50", "DOUBLE PRECISION"),
+        ("database_value_profiles", "percentile_75", "DOUBLE PRECISION"),
         ("database_quality_results", "measure_text", "TEXT"),
     )
 
@@ -6348,6 +6363,24 @@ class ProjectRegistry:
                 tuple(params),
             ).fetchall()
         return [dict(r)["surveyed_at"] for r in rows]
+
+    def value_profile_record_counts(self, slug: str) -> dict[tuple[str, str], list[int | None]]:
+        """Each table's `record_ct` over every stored value-profile batch, oldest first: the series the table-type
+        inference reads (cumulative or window). One aggregate query; a batch that did not measure the table has no
+        record count and reads None, never 0."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT surveyed_at, schema_name, table_name, MAX(record_ct) AS record_ct "
+                "FROM database_value_profiles WHERE database_slug = ? "
+                "GROUP BY surveyed_at, schema_name, table_name ORDER BY surveyed_at",
+                (slug,),
+            ).fetchall()
+        series: dict[tuple[str, str], list[int | None]] = {}
+        for r in rows:
+            r = dict(r)
+            series.setdefault((r["schema_name"], r["table_name"]), []).append(r["record_ct"])
+        return series
 
     def get_resource_sampling(self, entity_type: str, slug: str) -> dict:
         """The per-resource sampling overrides for one resource ({} when none are set)."""

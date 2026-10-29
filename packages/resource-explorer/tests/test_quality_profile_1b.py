@@ -463,8 +463,11 @@ def test_drift_names_the_new_baseline_keys(registry, entity):
 
 # ── the migration ───────────────────────────────────────────────────────────────────────────────────────────────
 
+#: Profile 1b's own columns: not Q6's before_20yr_date_ct, and not step 6's (the inference and the percentiles, which have
+#: their own record, docs/ddl-value-profile-step6.md, and test, tests/test_quality_step_6_functional_type.py).
+_STEP_6_COLUMNS = {"functional_data_type", "functional_table_type", "percentile_25", "percentile_50", "percentile_75"}
 NEW_COLUMNS = {(t, c): sql_type for t, c, sql_type in ProjectRegistry.VALUE_PROFILE_COLUMNS
-               if (t, c) != ("database_value_profiles", "before_20yr_date_ct")}
+               if (t, c) != ("database_value_profiles", "before_20yr_date_ct") and c not in _STEP_6_COLUMNS}
 
 
 def _decls(reg, table):
