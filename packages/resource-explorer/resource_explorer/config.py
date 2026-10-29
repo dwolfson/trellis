@@ -718,6 +718,10 @@ class ValueProfileSettings(BaseSettings):
     statement_timeout_seconds: int = Field(default=60, alias="VALUE_PROFILE_STATEMENT_TIMEOUT_SECONDS")
     table_budget_seconds: int = Field(default=300, alias="VALUE_PROFILE_TABLE_BUDGET_SECONDS")
     live_write_table_share: float = Field(default=0.25, ge=0, le=1, alias="VALUE_PROFILE_LIVE_WRITE_TABLE_SHARE")
+    #: Port step 8 (DESIGN-QUALITY-STEP-8-HASHES.md): take each column's value hashes and the date epoch sum, and infer a key
+    #: per table for the keyed hash. Off by default, as TestGen's table comparison is; whole-table reads, each under
+    #: `hash_budget_seconds` (5 minutes) of its own.
+    value_hashes: bool = Field(default=False, alias="VALUE_PROFILE_HASHES")
 
     model_config = _ENV_FILE_CONFIG
 

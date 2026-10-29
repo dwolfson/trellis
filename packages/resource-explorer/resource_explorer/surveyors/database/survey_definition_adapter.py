@@ -275,12 +275,14 @@ def _run_postgres_value_profile(
     """postgres_value_profile (DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md §4): measured per-column counts and
     date bounds over whole tables, stored in `database_value_profiles`. No sampling; a table over the row ceiling
     or the statement timeout is `not_measured`, never a zero."""
+    from resource_explorer.config import get_config
     from resource_explorer.surveyors.database.connection import database_connection
     from resource_explorer.surveyors.database.quality.value_profile import run_value_profile
 
     return run_value_profile(
         db_entity, registry, lambda: database_connection(db_entity, {"user": db_user, "password": db_pwd}),
         bounds=_quality_bounds(), surveyed_at=scan_surveyed_at or None, ran_as=db_user,
+        hashes=get_config().value_profile.value_hashes,
     )
 
 

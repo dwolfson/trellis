@@ -336,8 +336,12 @@ def test_every_assembled_statement_parses_as_postgres():
                  else 1.5 if name == "Min_Val" else "2020-01-01")
         if name in ("LOV_Match", "Pattern_Match", "Valid_Month"):
             continue  # their baselines are text lists and regexes, not built until profile slice 2 gives them an input
+        from resource_explorer.surveyors.database.quality.value_hashes import HashColumn
+
+        kind = {"Text": "A", "Num": "N", "Date": "D"}.get(name.rsplit("_", 1)[-1], "D" if name == "Match_Epoch_Sum" else "A")
         measures.append(cat.render_measure(test_type, "" if test_type.is_table_check else "col", p,
-                                           "2026-10-20 12:00:00"))
+                                           "2026-10-20 12:00:00", hash_column=HashColumn("col", kind, "text"),
+                                           key_column=HashColumn("id", "N", "integer")))
     sqlglot.parse_one(_select("sales", "orders", measures), read="postgres")
     from resource_explorer.surveyors.database.quality.dupe_rows import build_statement
 

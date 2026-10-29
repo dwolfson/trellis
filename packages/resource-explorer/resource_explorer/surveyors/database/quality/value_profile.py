@@ -66,6 +66,9 @@ PROFILE_1B_MEASURES = ("before_5yr_date_ct", "date_days_present", "min_length", 
 COLUMN_MEASURES = ("value_ct", "distinct_value_ct", "null_value_ct", "zero_length_ct", "filled_value_ct",
                    "min_date", "max_date", "future_date_ct", "before_20yr_date_ct") + PROFILE_1B_MEASURES \
     + ("distinct_std_value_ct", "min_text", "max_text")
+#: Step 8's value hashes (value_hashes.py), exact decimal text. `hash_state` says whether they were asked for and read:
+#: NULL (off, or a row from before step 8), "taken", "not_measured".
+HASH_MEASURES = ("multiset_hash", "epoch_sum", "keyed_hash", "key_column_name", "hash_state")
 #: Step 7's sampled text-shape measures (text_shape.py): a text column's, one sampled statement per column.
 TEXT_SHAPE_MEASURES = ("sample_value_ct", "sample_pattern_value_ct", "lead_space_ct", "quoted_value_ct",
                        "includes_digit_ct", "upper_case_ct", "lower_case_ct", "non_alpha_ct", "non_printing_ct",
@@ -277,6 +280,9 @@ class ProfileBounds:
     #: A table's text columns' sampled text-shape reads, one statement per column inside this one budget
     #: (text_shape.py; step 7). Not part of `table_budget_seconds`: running out leaves every other measure in place.
     text_shape_budget_seconds: float = 300.0
+    #: A table's value hashes (value_hashes.py; step 8), off by default: the column statements and the keyed statement share
+    #: this budget. Not part of `table_budget_seconds`.
+    hash_budget_seconds: float = 300.0
 
 
 def incomplete_reason(budget_seconds: float) -> str:
@@ -291,6 +297,7 @@ def _empty_row(schema: str, table: str, column: str, gtype: str, state: str, rea
     row.update(functional_data_type=None, functional_table_type=None, percentile_25=None, percentile_50=None,
                percentile_75=None)
     row.update({m: None for m in TEXT_SHAPE_MEASURES})
+    row.update({m: None for m in HASH_MEASURES})
     return row
 
 
@@ -423,10 +430,69 @@ def _take_text_shape(conn, schema: str, table: str, table_rows: list[dict], boun
                      "columns": [c for c, _ in reasons]})
 
 
+def _take_hashes(conn, schema: str, table: str, table_rows: list[dict], catalog_types: dict, bounds: ProfileBounds, clock,
+                 gaps: list[dict]) -> None:
+    """Step 8 (only when asked): each measured text, number or date column's multiset hash, and a date column's epoch sum,
+    in statements of their own inside the table's hash budget. A column that could not be read keeps NULL and
+    `hash_state` "not_measured", the reason in the run summary; one that was read is "taken" (a NULL hash after that means
+    no value was hashable, which is a value)."""
+    from resource_explorer.surveyors.database.quality import value_hashes
+
+    wanted = [r for r in table_rows if r["state"] == "measured" and r["general_type"] in value_hashes.HASHED_GENERAL_TYPES
+              and r.get("value_ct")]
+    if not wanted:
+        return
+    columns = [value_hashes.HashColumn(r["column_name"], r["general_type"],
+                                       catalog_types.get((schema, table, r["column_name"])) or "") for r in wanted]
+    found, reason = value_hashes.measure_table(conn, schema, table, columns, bounds, clock)
+    for row in wanted:
+        hit = found.get(row["column_name"])
+        if hit is not None:
+            row.update(multiset_hash=hit.get("multiset_hash"), epoch_sum=hit.get("epoch_sum"), hash_state="taken")
+        else:
+            row["hash_state"] = "not_measured"
+    if reason:
+        gaps.append({"schema_name": schema, "table_name": table, "reason": reason,
+                     "columns": [r["column_name"] for r in wanted if r["column_name"] not in found]})
+
+
+def _take_keyed_hashes(connect, rows: list[dict], catalog_types: dict, positions: dict, bounds: ProfileBounds, clock,
+                       gaps: list[dict]) -> None:
+    """Step 8: infer each table's key from the rows just measured, then take every other hashed column's keyed hash."""
+    from resource_explorer.surveyors.database.quality import value_hashes
+
+    keys = value_hashes.infer_key_columns(rows, catalog_types, positions)
+    if not keys:
+        return
+    by_table: dict[tuple[str, str], list[dict]] = {}
+    for row in rows:
+        by_table.setdefault((row["schema_name"], row["table_name"]), []).append(row)
+    with connect() as conn:
+        for (schema, table), key_name in sorted(keys.items()):
+            table_rows = by_table[(schema, table)]
+            key_row = next(r for r in table_rows if r["column_name"] == key_name)
+            key = value_hashes.HashColumn(key_name, key_row["general_type"],
+                                          catalog_types.get((schema, table, key_name)) or "")
+            targets = [r for r in table_rows if r.get("hash_state") == "taken" and r["column_name"] != key_name]
+            for row in table_rows:
+                if row.get("hash_state") == "taken":
+                    row["key_column_name"] = key_name
+            if not targets:
+                continue
+            columns = [value_hashes.HashColumn(r["column_name"], r["general_type"],
+                                               catalog_types.get((schema, table, r["column_name"])) or "") for r in targets]
+            found, reason = value_hashes.measure_keyed(conn, schema, table, key, columns, bounds, clock)
+            for row in targets:
+                row["keyed_hash"] = found.get(row["column_name"])
+            if reason:
+                gaps.append({"schema_name": schema, "table_name": table, "reason": reason,
+                             "columns": [r["column_name"] for r in targets if r["column_name"] not in found]})
+
+
 def run_value_profile(
     db_entity, registry, connect: Callable[[], AbstractContextManager], *,
     bounds: ProfileBounds, surveyed_at: str | None = None, ran_as: str = "",
-    clock: Callable[[], float] = time.monotonic,
+    clock: Callable[[], float] = time.monotonic, hashes: bool = False,
 ) -> dict:
     """Profile every table the stored inventory names; store and return the batch.
 
@@ -460,6 +526,9 @@ def run_value_profile(
     numeric: dict | None = {}
     percentile_gaps: list[dict] = []
     text_shape_gaps: list[dict] = []
+    hash_gaps: list[dict] = []
+    catalog_types = {(c["schema_name"], c["table_name"], c["column_name"]): c.get("base_type") or c.get("data_type")
+                     for c in columns}
     with connect() as conn:
         facts = read_table_facts(conn)
         if has_numbers:
@@ -530,6 +599,8 @@ def run_value_profile(
             rows.extend(table_rows)
             _take_percentiles(conn, schema, table, table_rows, bounds, clock, percentile_gaps)
             _take_text_shape(conn, schema, table, table_rows, bounds, clock, text_shape_gaps)
+            if hashes:
+                _take_hashes(conn, schema, table, table_rows, catalog_types, bounds, clock, hash_gaps)
             if failures:
                 state, reason = failures[0]
                 table_outcomes.append(_table_outcome(schema, table, state, reason))
@@ -538,11 +609,11 @@ def run_value_profile(
     # zero-fetch; a column it cannot settle stays NULL, and so does a table whose record count has one measured run.
     from resource_explorer.surveyors.database.quality import functional_infer
 
-    catalog_types = {(c["schema_name"], c["table_name"], c["column_name"]): c.get("base_type") or c.get("data_type")
-                     for c in columns}
     positions = {(c["schema_name"], c["table_name"], c["column_name"]): c.get("ordinal_position") or 0 for c in columns}
     functional_infer.label_rows(rows, catalog_types=catalog_types, scales=numeric,
                                 history=registry.value_profile_record_counts(slug), positions=positions)
+    if hashes:
+        _take_keyed_hashes(connect, rows, catalog_types, positions, bounds, clock, hash_gaps)
     registry.write_detail_rows(PROFILE_TABLE, slug, surveyed_at, rows=rows)
     states: dict[str, int] = {}
     for row in rows:
@@ -557,6 +628,9 @@ def run_value_profile(
             "tables_not_profiled": table_outcomes,
             "percentiles_not_measured": percentile_gaps,
             "text_shape_not_measured": text_shape_gaps,
+            # "off" (the default): no hash was asked for. "on": hashes_not_measured says what could not be read.
+            "hashes": "on" if hashes else "off",
+            "hashes_not_measured": hash_gaps,
             "ran_as": ran_as,
             "bounds": {"table_budget_seconds": bounds.table_budget_seconds},
             # Whether the catalog read profile 1b's decimal and exact-sum measures depend on succeeded. "not_read":
