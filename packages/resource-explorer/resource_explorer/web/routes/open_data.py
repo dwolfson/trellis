@@ -288,6 +288,30 @@ def scout(slug: str, request: Request) -> dict:
         raise _http(exc) from exc
 
 
+@router.get("/work-lists/{slug}/profile")
+def profile_view(slug: str) -> dict:
+    """The price line of a profile run and the newest stored profile of each dataset (None = never run)."""
+    from resource_explorer.open_data import profile
+
+    if not _store().datasets_in_work_list(slug):
+        raise HTTPException(status_code=404, detail=f"No open data in work list '{slug}'.")
+    return profile.view(_store(), slug)
+
+
+@router.post("/work-lists/{slug}/profile")
+def profile_run(slug: str, request: Request) -> dict:
+    """ExternalDataProfile: download and profile the shortlist's distributions, each capped (the price is shown first)."""
+    from resource_explorer.open_data import profile
+
+    _signed_in_user(request)
+    try:
+        return profile.profile_work_list(_store(), slug, transport=_transport())
+    except profile.NothingToProfile as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except profile.AlreadyRunning as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.post("/work-lists/{slug}/fit")
 def fit(slug: str, req: FitRequest, request: Request) -> dict:
     """The fit row and winnow over the stored columns. No outbound call."""

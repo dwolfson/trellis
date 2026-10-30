@@ -232,6 +232,8 @@ export const registerPortalDirectory = (body) => post(od('/directories'), body);
 export const openDataDirectoryPrice = (slug, pages) => get(od(`/directories/${encodeURIComponent(slug)}/price?pages=${pages}`));
 export const openDataScoutPrice = (wl) => get(od(`/work-lists/${encodeURIComponent(wl)}/scout-price`));
 export const scoutOpenData = (wl) => post(od(`/work-lists/${encodeURIComponent(wl)}/scout`), {});
+export const openDataProfileView = (wl) => get(od(`/work-lists/${encodeURIComponent(wl)}/profile`));
+export const profileOpenData = (wl) => post(od(`/work-lists/${encodeURIComponent(wl)}/profile`), {});
 export const fitOpenData = (wl, request, investigation = '') => post(od(`/work-lists/${encodeURIComponent(wl)}/fit`), { request, investigation });
 export const putDataRequest = (inv, body) => put(od(`/investigations/${encodeURIComponent(inv)}/data-request`), body);
 export const getDataRequest = (inv) => get(od(`/investigations/${encodeURIComponent(inv)}/data-request`));

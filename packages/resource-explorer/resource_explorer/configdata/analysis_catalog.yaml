@@ -3797,3 +3797,49 @@ open_data_analyses:
         truncation: '{shown} of {total} datasets shown, those not scouted first'
         token_cost: 600
         citation: '{analysis} · {scope} · as of {as_of}'
+
+  - id: external_data_profile
+    name: "External Data Profile"
+    description: "Downloads the first three tabular distributions of each dataset on a work list of open data (each capped; a larger file is not read), profiles them with the same code as a file system's data-file profile, matches the sampled columns against the data classes Egeria holds, reads documentation distributions (data dictionary, codebook, citation, license, methodology) as evidence stated by that file, collects where the dataset came from, and fingerprints its columns against open data already profiled. A distribution over the cap is reported as not profiled, never as empty; a number carries its sample ratio and when it was retrieved."
+    resource_types: ["open_data"]
+    intent: analysis
+    perspectives: ["all", "Steward"]
+    annotation_types: []
+    source: local
+    run_time: minutes
+    availability: inline
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    answers_questions: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+    declaration:
+      result_kind: table
+      table:
+        columns: [title, outcome, words]
+        key_fields: [title]
+      result_kind_note: "One row per dataset with its outcome and, per distribution, whether it was profiled; none of the other kinds fits a per-distribution outcome list."
+      measures:
+      - name: distributions_profiled
+        unit: distributions
+        as_of: ran_at
+        value_field: profiled
+      - name: datasets_not_profiled
+        unit: datasets
+        as_of: ran_at
+        value_field: not_profiled
+      absence:
+        not_measured: 'Not profiled: the file was not downloaded or could not be read, and the row says why.'
+        not_permitted: 'Not permitted: the source refused the download.'
+        not_applicable: 'Not applicable: the distribution is not in a format profiled here.'
+        measured_nothing: 'Profiled: the file was read and holds no rows.'
+      extents:
+      - name: rows
+        fields: [title, outcome, words]
+        rows: 25
+        order: datasets that could not be profiled first
+        truncation: '{shown} of {total} datasets shown, those not profiled first'
+        token_cost: 600
+        citation: '{analysis} · {scope} · as of {as_of}'
