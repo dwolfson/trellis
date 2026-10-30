@@ -66,6 +66,11 @@ from resource_explorer.surveyors.survey_report import (
     SchemaAnalysisAnnotation,
 )
 
+
+def _n(count: int, noun: str, many: str = "") -> str:
+    """'1 table' / '68 tables' / '1,236 columns': the plural by the number, never "table(s)"."""
+    return f"{count:,} {noun if count == 1 else (many or noun + 's')}"
+
 log = logging.getLogger(__name__)
 
 #: The `re_analysis_step` key, and the `analysis_step` stamped on every
@@ -1583,7 +1588,7 @@ def derive_statistics_freshness(inputs: DerivedInputs) -> dict:
         "settings_source": FRESHNESS_SETTINGS_SOURCE,
         "provenance": provenance,
         "explanation": (
-            f"Of {len(tables)} table(s): " + ", ".join(parts) + ". "
+            f"Of {_n(len(tables), 'table')}: " + ", ".join(parts) + ". "
             "'Never analyzed' is Postgres's own NULL, a finding; 'not read' "
             "means no statistics were read for the table and says nothing "
             "about it. Settings: " + FRESHNESS_SETTINGS_SOURCE + "."
@@ -2425,9 +2430,11 @@ def check_conventions(inputs: DerivedInputs) -> dict:
         "items": offenders + column_offenders,
         "label": "gap" if (offenders or column_offenders) else "pass",
         "explanation": (
-            f"{len(offenders)} table name(s) and {len(column_offenders)} "
-            f"column name(s) are not lower snake_case, so they must be "
-            f"double-quoted in every statement that touches them."
+            f"{_n(len(offenders), 'table name')} and {_n(len(column_offenders), 'column name')} "
+            f"{'is' if len(offenders) + len(column_offenders) == 1 else 'are'} not lower snake_case, so "
+            f"{'it' if len(offenders) + len(column_offenders) == 1 else 'they'} must be "
+            f"double-quoted in every statement that touches "
+            f"{'it' if len(offenders) + len(column_offenders) == 1 else 'them'}."
             if (offenders or column_offenders) else
             f"All {len(tables)} table names and {len(all_columns)} column "
             f"names are lower snake_case."
@@ -2659,7 +2666,7 @@ def derive_change_rates(registry, inputs: DerivedInputs) -> dict:
             "index_bytes_delta": index_delta,
             "row_count_delta": row_delta,
             "explanation": (
-                f"Measured over {interval_days:.2f} day(s): "
+                f"Measured over {interval_days:.1f} days: "
                 if interval_days is not None else "Measured: "
             ) + (
                 "no inserts, updates or deletes at all between the two "
@@ -2702,7 +2709,7 @@ def derive_change_rates(registry, inputs: DerivedInputs) -> dict:
             "tables_added": added,
             "tables_removed": removed,
             "explanation": (
-                f"{len(added)} table(s) added and {len(removed)} removed "
+                f"{_n(len(added), 'table')} added and {len(removed)} removed "
                 f"between the two snapshots."
                 if churn_state == STATE_MEASURED else
                 "One of the two snapshots carries no table rows, so schema "
@@ -2711,8 +2718,8 @@ def derive_change_rates(registry, inputs: DerivedInputs) -> dict:
         },
         "explanation": (
             f"Differenced {new_at} against {old_at}"
-            + (f" ({interval_days:.2f} days apart)" if interval_days is not None else "")
-            + f": {len(active)} table(s) changed, {len(measured) - len(active)} "
+            + (f" ({interval_days:.1f} days apart)" if interval_days is not None else "")
+            + f": {_n(len(active), 'table')} changed, {len(measured) - len(active)} "
               f"genuinely idle, {len(per_table) - len(measured)} without a "
               f"usable rate"
             + (f" ({len(reset)} of those because the counters were reset)"

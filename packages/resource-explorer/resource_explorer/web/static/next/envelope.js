@@ -96,6 +96,12 @@ export function scalarMeasures(value, max = 6) {
     if (v === null || v === undefined || v === '') continue;
     if (typeof v === 'object') continue;
     if (k === 'verdict') continue;   // already used as the verdict word
+    // A number of days reads as days, to one place: "interval 7.3 days", not "interval days 7.2976" (QS-4).
+    if (typeof v === 'number' && /_days$/.test(k)) {
+      pairs.push(`${k.replace(/_days$/, '').replace(/_/g, ' ')} ${Math.round(v * 10) / 10} days`);
+      if (pairs.length >= max) break;
+      continue;
+    }
     // A stored time reads in the house format, never raw ISO with microseconds (quality-screens read, item 8).
     const shown = typeof v === 'boolean' ? (v ? 'yes' : 'no') : (houseTime(v) || String(v));
     if (shown.length > 60) continue;

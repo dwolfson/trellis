@@ -1348,8 +1348,8 @@ def _quality_checks_results(registry, slug: str) -> dict:
 
 
 def _n(count: int, noun: str) -> str:
-    """'1 check' / '2 checks': the plural by the number, never "check(s)"."""
-    return f"{count} {noun}{'' if count == 1 else 's'}"
+    """'1 check' / '1,383 checks': the plural by the number, never "check(s)"."""
+    return f"{count:,} {noun}{'' if count == 1 else 's'}"
 
 
 #: The two questions quality_checks backs ask different things of it (question_catalog.yaml): Q-0096 which checks the
@@ -2502,17 +2502,17 @@ def _schema_inventory_container_headline(registry, slug: str) -> dict | None:
         name, count = row["schema"], row["table_count"]
         if row["classification"] == "data":
             est = " (est.)" if row["is_estimate"] else ""
-            parts.append(f"{name} {count} table(s) · {row['row_total']:,} row(s){est}")
+            parts.append(f"{name} {_n(count, 'table')} · {_n(row['row_total'], 'row')}{est}")
         elif row["classification"] == "no_tables":
             parts.append(f"{name} — no tables")
         elif row["classification"] == "not_measured":
-            parts.append(f"{name} {count} table(s) — rows not measured")
+            parts.append(f"{name} {_n(count, 'table')} — rows not measured")
         elif row["classification"] == "empty":
-            parts.append(f"{name} {count} table(s) · 0 row(s) — empty")
+            parts.append(f"{name} {_n(count, 'table')} · 0 rows — empty")
         elif row["classification"] == "staging":
-            parts.append(f"{name} {count} table(s) — staging (by name)")
+            parts.append(f"{name} {_n(count, 'table')} — staging (by name)")
         elif row["classification"] == "views_only":
-            parts.append(f"{name} {count} view(s) · no base tables")
+            parts.append(f"{name} {_n(count, 'view')} · no base tables")
         else:
             # Owner's gate, 2026-09-27: a structure-only/no-access schema
             # can still carry a real (catalog-estimated) row total — the
@@ -2525,14 +2525,14 @@ def _schema_inventory_container_headline(registry, slug: str) -> dict | None:
             row_note = ""
             if row["row_total"] is not None:
                 est = " (est.)" if row["is_estimate"] else ""
-                row_note = f" · ~{row['row_total']:,} row(s){est}"
+                row_note = f" · ~{_n(row['row_total'], 'row')}{est}"
             parts.append(
-                f"{name} {count} table(s){row_note} — {_SHORTFALL_LABELS[row['classification']]}"
+                f"{name} {_n(count, 'table')}{row_note} — {_SHORTFALL_LABELS[row['classification']]}"
             )
 
     label = "; ".join(parts)
     if system_count:
-        tail = f"{system_count} system schema(s) folded"
+        tail = f"{_n(system_count, 'system schema')} folded"
         label = f"{label} · {tail}" if label else tail.capitalize()
     return {"label": label, "status": "info"}
 
@@ -2730,13 +2730,13 @@ def _db_external_dependencies_headline(registry, slug: str) -> dict | None:
     if value.get("_errors"):
         return _collection_failed_headline(value["_errors"])
     counts = [
-        (len(value.get("extensions") or []), "extension(s)"),
-        (len(value.get("foreign_servers") or []), "foreign server(s)"),
-        (len(value.get("foreign_tables") or []), "foreign table(s)"),
-        (len(value.get("publications") or []), "publication(s)"),
-        (len(value.get("subscriptions") or []), "subscription(s)"),
+        (len(value.get("extensions") or []), "extension"),
+        (len(value.get("foreign_servers") or []), "foreign server"),
+        (len(value.get("foreign_tables") or []), "foreign table"),
+        (len(value.get("publications") or []), "publication"),
+        (len(value.get("subscriptions") or []), "subscription"),
     ]
-    present = [f"{n} {label}" for n, label in counts if n]
+    present = [_n(n, noun) for n, noun in counts if n]
     label = (
         ", ".join(present) + "." if present
         else "No extensions, foreign servers/tables, or replication publications/subscriptions."

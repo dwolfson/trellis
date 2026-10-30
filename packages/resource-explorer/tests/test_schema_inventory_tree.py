@@ -205,7 +205,7 @@ class TestEmptyIsThreeDistinctStates:
         ])
         headline = _schema_inventory_container_headline(registry, "db")
         assert "rows not measured" in headline["label"]
-        assert "0 row(s) — empty" in headline["label"]
+        assert "0 rows — empty" in headline["label"]
 
     def test_measurements_note_uses_three_distinct_phrases(self, registry):
         from resource_explorer.surveyors.database.survey_definition_adapter import (
