@@ -755,7 +755,17 @@ def test_the_readers_are_empty_when_nothing_ran_and_count_by_status_after(regist
 
     _profile(registry, entity)
     _propose(registry)
-    assert "check(s) proposed, none accepted" in DATABASE_ANALYSIS_HEADLINE_MAP["quality_checks"](registry, SLUG)["label"]
+    head = DATABASE_ANALYSIS_HEADLINE_MAP["quality_checks"](registry, SLUG)
+    rows = _by_key(registry, "database_quality_proposals").values()
+    proposed = sum(1 for r in rows if r["state"] == "proposed")
+    unevaluated = sum(1 for r in rows if r["state"] == "not_established")
+    assert proposed > 1 and unevaluated, (proposed, unevaluated)
+    # Q-0096's answer: the proposals; the ones that could not be evaluated are MORE, not a share; plural by number.
+    proposals = f"{proposed} checks proposed, none accepted yet; {unevaluated} more could not be evaluated."
+    assert head["label"] == proposals and head["by_question"]["Q-0096"] == proposals
+    # Q-0097's answer: nothing has run, said as such -- never the proposal count.
+    assert head["by_question"]["Q-0097"] == "No check has run: none accepted yet."
+    assert "(s)" not in head["label"]
     profile = profile_reader(registry, SLUG)
     assert profile["measured_count"] == 5 and profile["state_counts"]["not_measured"] == 2
     assert "5 of " in DATABASE_ANALYSIS_HEADLINE_MAP["value_profile"](registry, SLUG)["label"]
@@ -763,9 +773,15 @@ def test_the_readers_are_empty_when_nothing_ran_and_count_by_status_after(regist
     _accept(registry, "sales.orders.order_id::Unique", "Unique")
     _accept(registry, "sales.orders.placed::Required", "Required")
     _accept(registry, "sales.big.id::Required", "Required")
+    # Accepted but not yet run: the run question says so, counting every accepted check the run would run; the
+    # proposals question counts the accepted ones among this batch's proposals (sales.big.id::Required is not one).
+    accepted = DATABASE_ANALYSIS_HEADLINE_MAP["quality_checks"](registry, SLUG)["by_question"]
+    assert accepted["Q-0097"] == "No check has run: 3 accepted, not run yet."
+    assert ", 2 accepted;" in accepted["Q-0096"], accepted["Q-0096"]
     _run(registry, entity, {("sales", "orders"): {"record_ct": 1000, "measure": _orders_measure}})
     headline = DATABASE_ANALYSIS_HEADLINE_MAP["quality_checks"](registry, SLUG)
-    assert headline == {"label": "1 pass · 1 fail · 1 not evaluated.", "status": "warning"}
+    assert headline["label"] == "1 pass · 1 fail · 1 not evaluated." and headline["status"] == "warning"
+    assert headline["by_question"]["Q-0097"] == headline["label"]
 
 
 def test_the_three_steps_are_registered():
@@ -872,3 +888,27 @@ def test_a_per_card_quality_checks_run_stops_when_propose_cannot_run(registry):
     result = run_database_analysis(SLUG, "quality_checks", registry=registry)
     assert result.status == "error" and "propose_quality_checks" in result.error
     assert registry.query_detail_rows("database_quality_results", SLUG) == []
+
+
+def test_the_two_quality_questions_each_get_their_own_answer(registry, monkeypatch):
+    """Q-0096 and Q-0097 are both answered by quality_checks; each row shows its own sentence from the reader's
+    `by_question`, and neither leaks into the other (the fact is shared, so it is copied, not changed)."""
+    from resource_explorer.facts import MEASURED, Fact, FactLayer
+
+    shared = Fact(analysis_id="quality_checks", state=MEASURED, value={"proposals": [1]}, last_run_at="2026-10-30T11:12:00",
+                  headline="1383 checks proposed, none accepted yet; 433 more could not be evaluated.",
+                  headline_by_question={"Q-0096": "1383 checks proposed, none accepted yet; 433 more could not be evaluated.",
+                                        "Q-0097": "No check has run: none accepted yet."})
+    fl = FactLayer(registry, resource_type="database")
+    monkeypatch.setattr(fl, "facts", lambda slug, ids, level="resource": [shared])
+    monkeypatch.setattr(fl, "_check_level", lambda env, question: None)
+
+    def ask(qid, text):
+        q = {"id": qid, "question": text, "answering": {"kind": "analysis", "analysis_ids": ["quality_checks"]}}
+        return fl.answer(SLUG, q).facts[0].headline
+
+    assert ask("Q-0097", "Which data-quality checks hold on this database's tables, and which fail?") == \
+        "No check has run: none accepted yet."
+    assert ask("Q-0096", "Which data-quality checks should this database have?").startswith("1383 checks proposed")
+    assert shared.headline.startswith("1383 checks proposed")
+    assert "headline_by_question" not in shared.as_dict()

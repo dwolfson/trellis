@@ -1018,7 +1018,7 @@ database_analyses:
         annotation:
           type: ResourceMeasureAnnotation
       absence:
-        not_measured: 'Not measured: no row count is recorded — a table nobody has analysed or written to since a restore
+        not_measured: 'Not measured: no row count is recorded — a table nobody has analyzed or written to since a restore
           reads as unknown, never as empty.'
         not_permitted: 'Not permitted: the credential that surveyed this database could not read pg_stat_user_tables
           for these tables, so it is not measured.'
@@ -1599,7 +1599,7 @@ database_analyses:
           type: ResourceMeasureAnnotation
       absence:
         not_measured: 'Not measured: no table statistics are stored for this database — not a finding that its statistics
-          are current, nor that nothing was ever analysed.'
+          are current, nor that nothing was ever analyzed.'
         not_permitted: 'Not permitted: the credential that surveyed this database could not read pg_stat_user_tables,
           so it is not measured.'
         not_applicable: 'Not applicable: this analysis reads a database''s own tables, and this resource holds none
@@ -1609,7 +1609,7 @@ database_analyses:
       - name: needs_attention
         fields: [schema, table, status, days_since_analyze, changes_since_analyze, threshold]
         rows: 20
-        order: stale first, then never analysed, then not read; most rows changed first
+        order: stale first, then never analyzed, then not read; most rows changed first
         truncation: '{shown} of {total} tables needing attention shown, stale first'
         token_cost: 1000
         citation: '{analysis} · {scope} · as of {as_of}'
@@ -3023,7 +3023,7 @@ database_analyses:
   - id: statistics_freshness
     name: Table Statistics Freshness
     description: 'How old each table''s planner statistics are: the age of the last ANALYZE and VACUUM,
-      tables never analysed, and tables changed past autovacuum''s analyse trigger, as of the newest table
+      tables never analyzed, and tables changed past autovacuum''s analyze trigger, as of the newest table
       activity snapshot Resource Explorer stored. Opens no connection to the database. A table whose statistics
       were not read, or a database with none stored, is shown as "not measured", never as fresh.'
     resource_types:
@@ -3066,7 +3066,7 @@ database_analyses:
         annotation:
           type: ResourceMeasureAnnotation
       - name: statistics_freshness_summary
-        unit: tables never analysed or stale
+        unit: tables never analyzed or stale
         as_of: asOf
         value_field: Needs Attention
         annotation:
@@ -3078,7 +3078,7 @@ database_analyses:
         not_permitted: 'Not permitted: the survey that stored the table activity could not read this table''s
           statistics from pg_stat_user_tables.'
         not_applicable: 'Not applicable: a view has no planner statistics of its own.'
-        measured_nothing: 'Measured: no table whose statistics were read is stale or has never been analysed
+        measured_nothing: 'Measured: no table whose statistics were read is stale or has never been analyzed
           (a table not read, or with changes since not read, is counted separately).'
       extents:
       - name: tables_by_staleness
@@ -3089,7 +3089,7 @@ database_analyses:
         - Number Of Rows Changed Since Analyze
         - Analyze Threshold
         rows: 20
-        order: stale first, then never analysed, then oldest ANALYZE first
+        order: stale first, then never analyzed, then oldest ANALYZE first
         truncation: '{shown} of {total} tables shown, stale first'
         token_cost: 840
         citation: '{analysis} · {scope} · as of {as_of}'

@@ -103,7 +103,11 @@ def _step_sentence(row: dict) -> str:
 
 
 def _declared_summary(registry, entity_type: str, slug: str, step: str) -> dict | None:
-    """The step's resource-scoped measure record (its one-per-database summary), when it declares one and it ran."""
+    """The step's resource-scoped measure record (its one-per-database summary), when it declares one and it ran.
+
+    A step declaring several takes the FIRST in the manifest's declaration order that ran and has a summary
+    (`measure_records` walks `dec.measures` in order), so the headline is stable across reads and the author picks it
+    by ordering the declaration. The others are not dropped: `declared_measure_rows` gives each its own drill-down row."""
     from resource_explorer.surveyors.analysis_catalog_reader import _load
     from resource_explorer import declared_context
 

@@ -3,7 +3,7 @@
  *
  * Three rules from the design:
  *  - the price is shown before anything is queued, one row per database, and every figure says what it is: a time
- *    is "measured over N run(s)" or "not measured yet", a size is bytes or "size unknown · never analysed", never 0;
+ *    is "measured over N run(s)" or "not measured yet", a size is bytes or "size unknown · never analyzed", never 0;
  *  - a member that will not run (no credential, not permitted) says so on its own row, by name; nothing is dropped;
  *  - the schedule skips a database whose inventory did not change since its last quality run, and the panel says so
  *    before the person schedules it. A press does not skip: each row only shows whether it changed.

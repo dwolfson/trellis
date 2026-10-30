@@ -1340,23 +1340,60 @@ def _quality_checks_results(registry, slug: str) -> dict:
     }
 
 
+def _n(count: int, noun: str) -> str:
+    """'1 check' / '2 checks': the plural by the number, never "check(s)"."""
+    return f"{count} {noun}{'' if count == 1 else 's'}"
+
+
+#: The two questions quality_checks backs ask different things of it (question_catalog.yaml): Q-0096 which checks the
+#: database should have (the proposals), Q-0097 which hold and which fail (the run). Each gets its own sentence.
+_QUALITY_PROPOSALS_QUESTION, _QUALITY_RESULTS_QUESTION = "Q-0096", "Q-0097"
+
+
 def _quality_checks_headline(registry, slug: str) -> dict | None:
-    """'41 pass · 2 fail · 1 warning · 3 not evaluated' (design §10), or the proposals waiting when nothing ran."""
+    """'41 pass · 2 fail · 1 warning · 3 not evaluated' (design §10), or the proposals waiting when nothing ran.
+
+    `by_question` gives each of quality_checks' two questions its own answer: the proposals for "which should it
+    have", the run for "which hold and which fail". A run that has not happened says so ("No check has run: none
+    accepted yet"), never the proposal count in its place. Checks that could not be evaluated are BESIDE the proposed
+    ones, not among them, so they are said as "more"."""
     value = _quality_checks_results(registry, slug)
     if not value:
         return None
+    proposals: str | None = None
+    verdicts = registry.get_quality_verdicts(slug) or {}
+    # What run_quality_checks would run: every accepted verdict, in this batch's proposals or not (run_checks.py).
+    to_run = sum(1 for v in verdicts.values() if v.get("verdict") == "accepted")
+    if value["proposals"]:
+        decided = {"accepted": 0, "rejected": 0, "retired": 0}
+        for p in value["proposals"]:
+            if p.get("state") == "not_established":
+                continue
+            word = (verdicts.get(p.get("check_key")) or {}).get("verdict")
+            if word in decided:
+                decided[word] += 1
+        not_established = value["proposal_state_counts"].get("not_established", 0)
+        decidable = len(value["proposals"]) - not_established
+        said = [f"{decided['accepted']} accepted" if decided["accepted"] else "none accepted yet"]
+        said += [f"{decided[w]} {w}" for w in ("rejected", "retired") if decided[w]]
+        proposals = (f"{_n(decidable, 'check')} proposed, {', '.join(said)}"
+                     + (f"; {not_established} more could not be evaluated" if not_established else "") + ".")
+
     statuses = value["status_counts"]
     if statuses:
         concluded = [f"{statuses[s]} {s}" for s in ("pass", "fail", "warning", "logged") if statuses.get(s)]
         unevaluated = sum(n for s, n in statuses.items() if s not in ("pass", "fail", "warning", "logged"))
         if unevaluated:
             concluded.append(f"{unevaluated} not evaluated")
+        results = " · ".join(concluded) + "."
         status = "warning" if statuses.get("fail") or statuses.get("warning") else "info"
-        return {"label": " · ".join(concluded) + ".", "status": status}
-    proposed = value["proposal_state_counts"].get("proposed", 0)
-    not_established = value["proposal_state_counts"].get("not_established", 0)
-    tail = f" ({not_established} could not be evaluated)" if not_established else ""
-    return {"label": f"{proposed} check(s) proposed, none accepted and run yet{tail}.", "status": "info"}
+    else:
+        results = "No check has run: " + (f"{to_run} accepted, not run yet." if to_run else "none accepted yet.")
+        status = "info"
+    by_question = {_QUALITY_RESULTS_QUESTION: results}
+    if proposals:
+        by_question[_QUALITY_PROPOSALS_QUESTION] = proposals
+    return {"label": results if statuses else (proposals or results), "status": status, "by_question": by_question}
 
 
 def _db_derived_field_reader(field: str):

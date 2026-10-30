@@ -181,7 +181,7 @@ Database Analysis Survey — Statistics Freshness
 GovActionProcessStep::DatabaseAnalysisSurvey::statistics_freshness
 
 ### Description
-How old each table's planner statistics are: the age of the last ANALYZE and VACUUM, tables never analysed, and tables changed past autovacuum's analyse trigger, as of the newest table activity snapshot Resource Explorer stored. Opens no connection to the database. A table whose statistics were not read, or a database with none stored, is shown as "not measured", never as fresh.
+How old each table's planner statistics are: the age of the last ANALYZE and VACUUM, tables never analyzed, and tables changed past autovacuum's analyze trigger, as of the newest table activity snapshot Resource Explorer stored. Opens no connection to the database. A table whose statistics were not read, or a database with none stored, is shown as "not measured", never as fresh.
 
 ### Produced Guards
 survey-completed, survey-invalid, survey-failed, Any

@@ -37,6 +37,7 @@ agreed" and "the detector was sure" are different claims.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import functools
 import logging
 from dataclasses import dataclass, field
@@ -104,6 +105,10 @@ class Fact:
     #: know what the fields mean, which is the reason it is allowed to be
     #: prose at all.
     headline: str = ""
+    #: The headline for a particular question, by question id, when one analysis backs two questions that ask
+    #: different things of it (quality_checks: "which checks should it have?" and "which hold and which fail?").
+    #: `FactLayer.answer` puts the question's own sentence into `headline`; not serialized.
+    headline_by_question: dict = field(default_factory=dict)
     #: True when this informs a judgement rather than making one. Whether a
     #: resource REPLACES something you already have is a decision about intent;
     #: no query settles it, so the related-resources fact is offered as
@@ -254,6 +259,21 @@ class Envelope:
             # key nothing else uses.
             "query_hash": _query_hash(self.question),
         }
+
+
+#: The engine-neutral levels (design §18.3) in each resource type's own words, for sentences a person reads. A type or
+#: level not named here falls back to plain words rather than to the level's identifier.
+_LEVEL_WORDS = {
+    "database": {"resource": "database", "container": "schema", "member": "table", "field": "column"},
+    "filesystem": {"resource": "file system", "container": "directory", "member": "file", "field": "field"},
+    "repo": {"resource": "repository", "container": "directory", "member": "file", "field": "symbol"},
+}
+
+
+def _level_words(resource_type: str, level: str) -> tuple[str, str]:
+    """(the whole resource, one of its parts at `level`), in words: ("database", "table") for a member."""
+    words = _LEVEL_WORDS.get(resource_type, {})
+    return words.get("resource", "resource"), words.get(level, "part")
 
 
 @functools.lru_cache(maxsize=8)
@@ -1381,9 +1401,10 @@ class FactLayer:
                 # is already true here) when no `_status` override exists, so
                 # this is a strict widening, not a behavior change, for every
                 # other live-read analysis that has never set one.
+                head = self._headline_head(analysis_id, slug, level)
                 return Fact(
                     analysis_id=analysis_id, state=self._state_for(value, run), value=value,
-                    headline=self._headline_for(analysis_id, slug, level),
+                    headline=str(head.get("label") or ""), headline_by_question=head.get("by_question") or {},
                     provenance=self._provenance_for(value), can_run=can_run,
                     note="Read live from data refreshed at ingestion, not from a "
                          "recorded survey run — current regardless of when a survey "
@@ -1427,15 +1448,20 @@ class FactLayer:
             )
 
         state = self._state_for(value, run)
+        head = self._headline_head(analysis_id, slug, level)
         return Fact(
             analysis_id=analysis_id, state=state, value=value,
-            headline=self._headline_for(analysis_id, slug, level),
+            headline=str(head.get("label") or ""), headline_by_question=head.get("by_question") or {},
             provenance=self._provenance_for(value),
             last_run_at=run.get("last_run_at", ""), can_run=can_run,
             note=self._note_for(state, value, run),
         )
 
     def _headline_for(self, analysis_id: str, slug: str, level: str = "resource") -> str:
+        """The analysis's own summary sentence, or "": `_headline_head`'s label."""
+        return str(self._headline_head(analysis_id, slug, level).get("label") or "")
+
+    def _headline_head(self, analysis_id: str, slug: str, level: str = "resource") -> dict:
         """The analysis's own summary sentence, or "" — level-aware (slice
         21a). Before this, the SAME resource-level sentence answered every
         question an analysis backs regardless of the question's own
@@ -1469,19 +1495,19 @@ class FactLayer:
                 except Exception as exc:
                     log.debug("container headline read failed for %s/%s/%s: %s",
                               slug, analysis_id, level, exc)
-                    return ""
-                return str(head.get("label") or "")
+                    return {}
+                return head
 
         kind = (self._map("analysis_kinds") or {}).get(analysis_id)
         reader = getattr(getattr(kind, "results", None), "headline_reader", None)
         if reader is None:
-            return ""
+            return {}
         try:
             head = reader(self._registry, slug) or {}
         except Exception as exc:
             log.debug("headline read failed for %s/%s: %s", slug, analysis_id, exc)
-            return ""
-        return str(head.get("label") or "")
+            return {}
+        return head
 
     def _level_specific_headline_exists(self, analysis_id: str, level: str) -> bool:
         """Would `_headline_for(analysis_id, ..., level)` return a GENUINE
@@ -1700,7 +1726,7 @@ class FactLayer:
                 "nothing to read."
             )
             return env
-        env.facts = self.facts(slug, ids, self._primary_level(question))
+        env.facts = [self._for_question(f, question.get("id", "")) for f in self.facts(slug, ids, self._primary_level(question))]
         if not env.answerable:
             env.blocked_reason = (
                 "Nothing has been measured for this yet."
@@ -1709,6 +1735,13 @@ class FactLayer:
         else:
             self._check_level(env, question)
         return env
+
+    @staticmethod
+    def _for_question(fact: Fact, question_id: str) -> Fact:
+        """The fact with this question's own headline, when its reader wrote one for it (a copy: the fact itself
+        answers other questions too)."""
+        own = (fact.headline_by_question or {}).get(question_id)
+        return dataclasses.replace(fact, headline=own) if own else fact
 
     #: Levels named below "resource" (design §18.3's engine-neutral
     #: vocabulary: database=resource, schema=container, table=member,
@@ -1893,13 +1926,11 @@ class FactLayer:
                 + f", but no reader shows them yet."
             )
         else:
-            env.level_note = (
-                "Answered only as a whole-resource rollup — this question is "
-                f"asked at {'/'.join(sub_levels)} level and "
-                + (f"{known_ids[0]} names no {sub_levels[0]}."
-                   if len(known_ids) == 1
-                   else f"none of {', '.join(known_ids)} name one.")
-            )
+            # Shown on the person's row: the resource and level in that person's words, not "rollup", "member/field
+            # level" or analysis ids (quality-screens read, item 6, 2026-10-30). Which analyses stand behind the row
+            # is on the row already.
+            whole, per = _level_words(self.resource_type, sub_levels[0])
+            env.level_note = f"Answered for the {whole} as a whole, not {per} by {per}."
 
     # ── internals ───────────────────────────────────────────────────────────
     def _resource_state_fact(self, slug: str, resolver, subject: str) -> Fact:

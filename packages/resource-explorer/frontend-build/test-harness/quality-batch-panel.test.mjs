@@ -30,7 +30,7 @@ const PRICE = {
     row('coco_pharma', { display_name: 'Coco Pharma' }),
     row('adventureworks', {
       display_name: 'AdventureWorks',
-      size: { bytes: 4194304, unknown_tables: 1, words: '4.0 MB · 1 table(s) size unknown · never analysed' },
+      size: { bytes: 4194304, unknown_tables: 1, words: '4.0 MB · 1 table(s) size unknown · never analyzed' },
       time: { seconds: 90, basis: 'measured', runs: 1, words: 'about 1m 30s · measured over 1 run(s)' },
       change: { unchanged: true, words: 'unchanged since its last quality run on 2026-10-20 10:00Z' },
     }),
@@ -77,7 +77,7 @@ test('two priced rows are shown before anything is queued, each figure saying wh
   const rows = slot.querySelectorAll('[data-price-rows] tbody tr');
   assert.equal(rows.length, 2);
   const works = slot.querySelector('tr[data-slug="adventureworks"]');
-  assert.equal(text(works.querySelector('[data-size]')), '4.0 MB · 1 table(s) size unknown · never analysed');
+  assert.equal(text(works.querySelector('[data-size]')), '4.0 MB · 1 table(s) size unknown · never analyzed');
   assert.equal(works.querySelector('[data-time]').dataset.basis, 'measured');
   assert.equal(works.querySelector('[data-change]').dataset.unchanged, 'true');
   const pharma = slot.querySelector('tr[data-slug="coco_pharma"]');

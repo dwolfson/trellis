@@ -1,6 +1,6 @@
 """F17: the example step's database summary must not read as all current when no table was ever analysed.
 
-The headline measure counts the tables that need attention (never analysed + stale); "Stale" alone was 0 for a
+The headline measure counts the tables that need attention (never analyzed + stale); "Stale" alone was 0 for a
 database whose 4 tables had never been analysed.
 """
 from __future__ import annotations
@@ -30,12 +30,12 @@ def test_four_never_analysed_tables_are_four_needing_attention_not_zero_stale():
     out = step._summary("db", results, snap["surveyed_at"])
     assert out["value"]["Stale"] == 0 and out["value"]["Never Analyzed"] == 4
     assert out["value"]["Needs Attention"] == 4
-    assert out["summary"].startswith("of 4 tables: 4 need attention, 4 never analysed, 0 stale")
+    assert out["summary"].startswith("of 4 tables: 4 need attention, 4 never analyzed, 0 stale")
 
 
 def test_the_declared_summary_measure_reads_the_needs_attention_count():
     from statistics_freshness.manifest import MANIFEST
 
     m = next(x for x in MANIFEST.declaration.measures if x.name == "statistics_freshness_summary")
-    assert m.value_field == "Needs Attention" and "never analysed" in m.unit
+    assert m.value_field == "Needs Attention" and "never analyzed" in m.unit
     assert "Needs Attention" in next(e for e in MANIFEST.declaration.extents if e.name == "summary").fields

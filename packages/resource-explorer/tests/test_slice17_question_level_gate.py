@@ -102,8 +102,9 @@ class TestWholeResourceRollupBelowResourceLevel:
         fl._check_level(env, {"levels": ["container", "member"]})
         assert env.answerable is True  # something real WAS measured
         assert env.level_mismatch is True
-        assert "subject_signals" in env.level_note
-        assert "rollup" in env.level_note
+        # Person words: the level named as the resource's own part, no "rollup" and no analysis id (item 6).
+        assert env.level_note == "Answered for the database as a whole, not schema by schema."
+        assert "rollup" not in env.level_note and "subject_signals" not in env.level_note
 
     def test_member_level_question_with_only_a_rollup_withholds_the_tick(self, monkeypatch):
         # coverage_signals's own real levels (question_catalog.yaml): ["member"].
@@ -113,6 +114,7 @@ class TestWholeResourceRollupBelowResourceLevel:
         env = _measured_envelope(["coverage_signals"])
         fl._check_level(env, {"levels": ["member"]})
         assert env.level_mismatch is True
+        assert env.level_note == "Answered for the database as a whole, not table by table."
 
     def test_the_real_preliminary_fit_row_names_all_four_contributing_ids(self, monkeypatch):
         # preliminary_fit's real question row names four analysis_ids, all
@@ -128,8 +130,9 @@ class TestWholeResourceRollupBelowResourceLevel:
         )
         fl._check_level(env, {"levels": ["container"]})
         assert env.level_mismatch is True
+        assert "as a whole" in env.level_note
         for aid in ("grain_determination", "subject_signals", "coverage_signals", "preliminary_fit"):
-            assert aid in env.level_note
+            assert aid not in env.level_note
 
 
 class TestNotGatedWhenItShouldNotBe:

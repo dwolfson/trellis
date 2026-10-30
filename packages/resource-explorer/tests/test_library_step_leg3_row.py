@@ -20,13 +20,13 @@ def _db(tmp_path):
 def _store_freshness(reg):
     reg.record_step_annotations("database", "coco", "statistics_freshness", run="r1", measured_at="2026-10-29T10:00:00",
                                 annotations=[{"annotation_type": "ResourceMeasureAnnotation", "scope": "public.t",
-                                              "summary": "never analysed; never vacuumed (as of 2026-10-26T01:00:00)",
+                                              "summary": "never analyzed; never vacuumed (as of 2026-10-26T01:00:00)",
                                               "resourceProperties": {"Days Since Analyze": None, "asOf": "2026-10-26T01:00:00"},
                                               "additionalProperties": {"resultState": "measured"}}])
     reg.record_step_annotations("database", "coco", "statistics_freshness:statistics_freshness_summary", run="r1",
                                 measured_at="2026-10-29T10:00:00",
                                 annotations=[{"annotation_type": "ResourceMeasureAnnotation", "scope": "coco",
-                                              "summary": "of 1 tables: 1 need attention, 1 never analysed, 0 stale, 0 current (as of 2026-10-26T01:00:00)",
+                                              "summary": "of 1 tables: 1 need attention, 1 never analyzed, 0 stale, 0 current (as of 2026-10-26T01:00:00)",
                                               "resourceProperties": {"Needs Attention": 1, "asOf": "2026-10-26T01:00:00"},
                                               "additionalProperties": {"resultState": "measured"}}])
 

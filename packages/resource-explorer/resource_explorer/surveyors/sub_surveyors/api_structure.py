@@ -116,7 +116,7 @@ class ApiStructureSurveyor(BaseSurveyor):
     def _nothing_analysed(self, outcome: StepOutcome, unscoped: int) -> Annotation:
         """Say which kind of nothing this was, rather than returning none."""
         if outcome.outcome == UNVERIFIED:
-            summary = "API structure not analysed — no code symbols extracted"
+            summary = "API structure not analyzed — no code symbols extracted"
             explanation = (
                 "project_code_symbols holds no rows for this repo. Symbols are "
                 "written by repo_symbol_extraction (and by full RAG ingestion); "

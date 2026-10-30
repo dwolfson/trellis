@@ -85,7 +85,7 @@ class DependencySurveyor(BaseSurveyor):
             explanation = (
                 "project_dependencies is written only by the ingestion pipeline, "
                 "never by a survey step. A repo that ships a manifest and records no "
-                "dependencies has not been analysed — this is not a finding that it "
+                "dependencies has not been analyzed — this is not a finding that it "
                 "has none. Run a full ingestion/refresh for this repo."
             )
         elif outcome.known_positive:
