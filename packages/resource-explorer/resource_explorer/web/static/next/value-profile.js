@@ -18,14 +18,14 @@ import { stateEntry } from '/static/next/glyphs.js';
 export const VP_COLS = {
   id: 'db-value-profile', chrome: 70,
   columns: [
-    { key: 'column', label: 'Column', def: 170, min: 90, align: 'left', breakLong: true },
+    { key: 'column', label: 'Column', def: 190, min: 90, align: 'left', breakLong: true },
     { key: 'type', label: 'Type', def: 70, min: 60 },
-    { key: 'filled', label: 'Filled', def: 150, min: 100 },
-    { key: 'distinct', label: 'Distinct', def: 120, min: 80 },
-    { key: 'range', label: 'Range', def: 200, min: 110, breakLong: true },
-    { key: 'common', label: 'Most common', def: 260, min: 120, align: 'left', breakLong: true },
-    { key: 'flags', label: 'Flags', def: 130, min: 80, breakLong: true },
-    { key: 'checks', label: 'Checks', def: 170, min: 90, breakLong: true },
+    { key: 'filled', label: 'Filled', def: 140, min: 100 },
+    { key: 'distinct', label: 'Distinct', def: 110, min: 80 },
+    { key: 'range', label: 'Range', def: 230, min: 110, breakLong: true },
+    { key: 'common', label: 'Most common', def: 240, min: 120, align: 'left', breakLong: true },
+    { key: 'flags', label: 'Flags', def: 110, min: 80, breakLong: true },
+    { key: 'checks', label: 'Checks', def: 220, min: 90, breakLong: true },
   ],
 };
 
