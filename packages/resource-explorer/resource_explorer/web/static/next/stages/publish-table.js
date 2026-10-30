@@ -89,6 +89,17 @@ function stateHtml(r) {
   return `<span data-published="${esc(p.state)}">${cue(PUBLISHED_CUE[p.state] || 'unrun', p.words, p.why || '')}</span>`;
 }
 
+/** The second date. A stored record was measured at a time; a derivation is recomputed on every read, so it says what
+ *  it was derived from, never a measurement time of its own. */
+function measuredHtml(r) {
+  if (r.derived) {
+    const words = r.measured_at ? `derived on read from the survey of ${esc(when(r.measured_at))}`
+      : 'derived on read; the survey it read is not recorded';
+    return `<span class="block text-provenance text-ink-muted" data-derived-from>${words}</span>`;
+  }
+  return r.measured_at ? `<span class="block text-provenance text-ink-muted" data-measured-at>measured ${esc(when(r.measured_at))}</span>` : '';
+}
+
 /** One row; the reason a row cannot publish sits under it, in words. */
 export function rowHtml(r, signedIn, entityType = 'database') {
   return `<tr class="border-b border-rule align-top" data-publish-row="${esc(r.locator)}">
@@ -96,7 +107,7 @@ export function rowHtml(r, signedIn, entityType = 'database') {
     <td class="py-[4px] pr-s2 text-left">${esc(r.measure)} <span class="text-provenance text-ink-muted">· ${esc(r.unit)}</span></td>
     <td class="py-[4px] pr-s2 text-left">${valueHtml(r)}</td>
     <td class="py-[4px] pr-s2 text-left tnum">${r.as_of ? `${esc(when(r.as_of))}<span class="block text-provenance text-ink-muted" data-as-of-label>as of</span>` : '<span class="text-ink-muted">no as-of</span>'}${
-      r.measured_at ? `<span class="block text-provenance text-ink-muted" data-measured-at>measured ${esc(when(r.measured_at))}</span>` : ''}</td>
+      measuredHtml(r)}</td>
     <td class="py-[4px] pr-s2 text-left">${esc((r.confidence && r.confidence.words) || '')}</td>
     <td class="py-[4px] pr-s2 text-left">${esc(r.scope || '—')}</td>
     <td class="py-[4px] pr-s2 text-left">${writesAsHtml(r)}</td>
