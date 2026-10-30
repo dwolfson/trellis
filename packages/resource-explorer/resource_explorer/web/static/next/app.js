@@ -8606,6 +8606,9 @@ function headlineHtml(a) {
   </div>`;
 }
 
+/** A stored ISO time, as the API returns one. */
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+
 /** A stored value rendered as what it IS, not as the number that stores it.
  *
  *  `was 21438268 8d ago` on ~40 sub_resource_survey rows was the defect: that
@@ -8626,9 +8629,12 @@ function headlineHtml(a) {
  *  magnitude — is exactly how a byte count becomes a "score" somewhere. With
  *  no name, only the grouping rule can apply: a bare 21,438,268 is still
  *  better than 21438268, and grouping is never wrong the way a unit can be. */
-function fmtScalar(v, name = '') {
+export function fmtScalar(v, name = '') {
   if (typeof v === 'boolean') return v ? 'yes' : 'no';
   if (v == null || v === '') return '';
+  // A stored time ("2026-10-30T11:12:58.965452") reads in the house format, "2026-10-30 11:12", the one Curate's
+  // summary line uses for the same instant: no T, no seconds, no microseconds.
+  if (typeof v === 'string' && ISO_TIME.test(v)) return v.slice(0, 16).replace('T', ' ');
   const n = Number(v);
   if (!Number.isFinite(n)) return String(v);
   if (/bytes$/i.test(name)) return fmtBytes(n);
