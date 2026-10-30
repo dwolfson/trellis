@@ -132,6 +132,7 @@ import { openFindReposDialog } from '/static/next/discovery-import.js';
 // (fs-register.js, Files step 1: the classic modal minus its Egeria fields).
 import { openFindDbServersDialog } from '/static/next/db-server-discovery.js';
 import { openRegisterFileSystemDialog } from '/static/next/fs-register.js';
+import { openDataRowsHtml, renderOpenDataPane, fetchOpenData, openFindOpenDataDialog } from '/static/next/open-data-kind.js';
 import { openFindByPassagesDialog } from '/static/next/fs-passage-finder.js';
 import { mountFolderSurvey } from '/static/next/fs-survey.js';
 // Chat (PLAN-FINISH-REPOS.md item 9) — chrome-level, like worklist.js/rfa.js:
@@ -229,7 +230,7 @@ import { isFreshnessSkip, offerRunAnyway, UP_TO_DATE_WORD } from '/static/next/r
  * ════════════════════════════════════════════════════════════════════════ */
 
 export const state = {
-  resourceType: 'repo',        // repo | db | filesystem
+  resourceType: 'repo',        // repo | db | filesystem | open_data
   // The last survey launch's note ({slug, html}). Derived data, not a DOM append:
   // loadSurveyPane() replaces #survey-note wholesale, so the note is drawn from here.
   launchNote: null,
@@ -244,6 +245,8 @@ export const state = {
   databasesLoaded: false,
   filesystems: [],
   filesystemsLoaded: false,
+  openData: [],               // the imported datasets (the open_data kind); lazy like databases
+  openDataLoaded: false,
   groups: [],
   selectedSlug: null,
   overview: null,              // the selected repo's scouting-overview, or null
@@ -504,6 +507,7 @@ export function apiEntityType(resourceType) {
 function currentResourceRows() {
   return state.resourceType === 'db' ? state.databases
     : state.resourceType === 'filesystem' ? state.filesystems
+    : state.resourceType === 'open_data' ? state.openData
     : state.projects;
 }
 
@@ -522,6 +526,10 @@ export async function ensureResourceListLoaded(type) {
     try { state.filesystems = (await listFilesystems()) || []; }
     catch { state.filesystems = []; }
     state.filesystemsLoaded = true;
+  } else if (type === 'open_data' && !state.openDataLoaded) {
+    try { state.openData = await fetchOpenData(); }
+    catch { state.openData = []; }
+    state.openDataLoaded = true;
   }
 }
 
@@ -2074,6 +2082,7 @@ const FIND_TITLE = {
   repo: 'Find and import candidate repos',
   db: 'Find databases',
   filesystem: 'Add a file system',
+  open_data: 'Search a data portal for datasets and import chosen rows into a work list',
 };
 
 /** The Find action's visible words, by the kind shown (REPLY-DESIGNER-
@@ -2085,6 +2094,7 @@ const FIND_LABEL = {
   repo: '＋ Find repos',
   db: '＋ Find databases',
   filesystem: '＋ Add a file system',
+  open_data: '＋ Find open data',
 };
 function findButtonHtml(inRow = false) {
   const title = FIND_TITLE[state.resourceType] || FIND_TITLE.repo;
@@ -2190,6 +2200,7 @@ export function renderSidebar() {
     { id: 'repo', label: 'Repos' },
     { id: 'db', label: 'DBs' },
     { id: 'filesystem', label: 'FS' },
+    { id: 'open_data', label: 'Open data' },
   ];
 
   const chip = (active, extra = '') =>
@@ -2203,6 +2214,21 @@ export function renderSidebar() {
   // current -- `DatabaseSummary`/`FileSystemSummary` carry `disposition` the
   // same way `ProjectSummary` does (Backlog.md, "Disposition is NOT fixed
   // here", 2026-09-22), so this is no longer repo-only.
+  const chipsHtml = types.map((t) => `<button data-type="${t.id}" class="${chip(state.resourceType === t.id).replace('rounded-pill', 'rounded-sm')}">${t.label}</button>`).join('');
+  if (state.resourceType === 'open_data') {
+    // Datasets have no groups, dispositions or scope chips: the kind's own list, the investigation bar and the
+    // work lists (the shortlist). The same selection handler opens a row.
+    el.innerHTML = `
+    <div data-sidebar-top-row class="mb-s2 flex min-w-0 flex-wrap items-center gap-[5px] text-chip">
+      ${chipsHtml}
+      ${findButtonHtml(true)}
+    </div>
+    ${investigationBarHtml()}
+    ${workListsSidebarHtml()}
+    <div data-open-data-list class="mt-s2">${openDataRowsHtml(state.openData, state.openDataLoaded, state.selectedSlug)}</div>`;
+    bindSidebar();
+    return;
+  }
   const counts = {};
   for (const p of currentResourceRows()) {
     if (!state.showHidden && p.working_set_hidden) continue;
@@ -2252,7 +2278,7 @@ export function renderSidebar() {
 
   el.innerHTML = `
     <div data-sidebar-top-row class="mb-s2 flex min-w-0 flex-wrap items-center gap-[5px] text-chip">
-      ${types.map((t) => `<button data-type="${t.id}" class="${chip(state.resourceType === t.id).replace('rounded-pill', 'rounded-sm')}">${t.label}</button>`).join('')}
+      ${chipsHtml}
       ${findButtonHtml(true)}
       ${state.resourceType === 'filesystem' ? `<button data-act="find-by-passages" title="Find a file system by what its narrative files say"
         class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-accent-on-dark">🔎 Find by passages</button>` : ''}
@@ -2722,6 +2748,7 @@ function bindSidebar() {
       if (state.resourceType === 'repo') { openFindReposDialog(); return; }
       if (state.resourceType === 'db') { openFindDbServersDialog(); return; }
       if (state.resourceType === 'filesystem') { openRegisterFileSystemDialog(); return; }
+      if (state.resourceType === 'open_data') { openFindOpenDataDialog({ investigation: state.investigation }); return; }
     },
     'find-by-passages': () => openFindByPassagesDialog(),
     'show-hidden': () => { state.showHidden = !state.showHidden; rerender(); },
@@ -3352,7 +3379,7 @@ export async function resolveUrlKind() {
 
 /** Read the URL into state. Returns true if it named a resource. */
 /** The kinds `?type=` may name. */
-const RESOURCE_KINDS = ['repo', 'db', 'filesystem'];
+const RESOURCE_KINDS = ['repo', 'db', 'filesystem', 'open_data'];
 
 export function readUrl() {
   const p = new URLSearchParams(location.search);
@@ -8735,7 +8762,7 @@ export function renderKindChooser() {
     host.id = 'kind-chooser';
     content.parentNode.insertBefore(host, content);
   }
-  const label = { repo: 'repository', db: 'database', filesystem: 'file system' };
+  const label = { repo: 'repository', db: 'database', filesystem: 'file system', open_data: 'dataset' };
   host.removeAttribute('data-unknown-type');
   host.setAttribute('data-kind-chooser', '');
   host.className = 'mb-s2 text-chip text-ink-muted';
@@ -8773,6 +8800,12 @@ async function loadPane() {
   if (state.unknownResource && state.unknownResource === state.selectedSlug) {
     el.innerHTML = unknownResourcePaneHtml();
     bindSubTabs();
+    return;
+  }
+
+  // The open_data kind: a dataset's page. No stage strip, no checklist: nothing is asked of a dataset yet.
+  if (state.resourceType === 'open_data' && !state.workListSlug && !state.workListIndex) {
+    await renderOpenDataPane(el, state.selectedSlug, state.openData);
     return;
   }
 
@@ -10766,6 +10799,14 @@ function countOf(settled, limit, key) {
   if (!Array.isArray(rows)) return null;
   return rows.length >= limit ? `${limit}+` : rows.length;
 }
+
+// An import from the Find dialog made datasets and a work list: re-read both so the sidebar shows them (the
+// shortlist is the work list). The import itself already said what it did in the dialog.
+document.addEventListener('re:open-data-imported', async () => {
+  try { state.openData = await fetchOpenData(); state.openDataLoaded = true; } catch { /* the list keeps what it had */ }
+  try { state.workLists = await listWorkLists(); } catch { /* keep */ }
+  if (state.resourceType === 'open_data') renderSidebar();
+});
 
 async function start() {
   // One banner for a dead session; the header stops saying "signed in" (session-banner.js).

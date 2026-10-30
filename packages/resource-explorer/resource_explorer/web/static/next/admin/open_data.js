@@ -216,6 +216,7 @@ function drawCandidates(pane, out, slug, res, terms, requestName, investigation,
     try {
       const r = await importOpenData(slug, { rows: chosen, work_list_name: form.work_list_name.value, terms, investigation });
       result.innerHTML = importResultHtml(r);
+      document.dispatchEvent(new CustomEvent('re:open-data-imported', { detail: { work_list: r.work_list } }));
       watchTables(result);
     } catch (e) { result.innerHTML = `<p class="text-state-warn">${errText(e)}</p>`; }
   });

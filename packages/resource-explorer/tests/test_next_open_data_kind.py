@@ -1,0 +1,39 @@
+"""Open data as the fourth sidebar kind (OD2 brief Part B3): source-text contracts, no browser (same pattern as
+test_next_sidebar_list_db_fs.py)."""
+from __future__ import annotations
+
+from pathlib import Path
+
+NEXT = Path(__file__).resolve().parents[1] / "resource_explorer" / "web" / "static" / "next"
+APP = (NEXT / "app.js").read_text(encoding="utf-8")
+KIND = (NEXT / "open-data-kind.js").read_text(encoding="utf-8")
+
+
+def test_the_kind_is_a_chip_a_url_value_and_a_lazy_list():
+    assert "{ id: 'open_data', label: 'Open data' }" in APP
+    assert "const RESOURCE_KINDS = ['repo', 'db', 'filesystem', 'open_data'];" in APP
+    assert "type === 'open_data' && !state.openDataLoaded" in APP
+    assert "state.resourceType === 'open_data' ? state.openData" in APP
+
+
+def test_find_runs_the_portal_search():
+    assert "open_data: '＋ Find open data'" in APP
+    assert "if (state.resourceType === 'open_data') { openFindOpenDataDialog(" in APP
+    assert "openPortalPane(body, pick.value" in KIND                       # the same pane Admin used
+    assert "listOpenDataPortals" in KIND and "adapter_available" in KIND   # only portals that can be searched
+
+
+def test_the_list_opens_a_dataset_through_the_sidebars_own_selection_handler():
+    assert 'data-slug="${esc(d.slug)}"' in KIND
+    branch = APP[APP.index("if (state.resourceType === 'open_data') {\n    // Datasets have no groups"):]
+    assert branch.index("investigationBarHtml()") < branch.index("workListsSidebarHtml()") < branch.index("openDataRowsHtml(")
+    assert "await renderOpenDataPane(el, state.selectedSlug, state.openData);" in APP
+
+
+def test_empty_states_are_sentences():
+    assert "Nothing imported yet. Use ＋ Find open data to search a data portal." in KIND
+    assert "Registering a portal is done in Admin › Open data." in KIND
+
+
+def test_an_import_refreshes_the_list_and_the_work_lists():
+    assert "re:open-data-imported" in APP and "re:open-data-imported" in (NEXT / "admin" / "open_data.js").read_text(encoding="utf-8")
