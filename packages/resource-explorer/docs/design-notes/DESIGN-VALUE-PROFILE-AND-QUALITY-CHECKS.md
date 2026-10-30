@@ -111,7 +111,7 @@ Row_Ct_Pct is the one check RE proposes on its own initiative. Its proposals car
   the `description` of the published `DataQualityRule`. The wording is decided from what is on the
   proposal (`origin`, `catalogue_ref`), in `resource_explorer/quality_words.py`:
   - a vendored check whose statement pin matches the vendored catalogue's: "Implements TestGen
-    test type <id> (catalogue commit <sha>)";
+    test type <id> (catalog commit <sha>)";
   - a check RE proposes itself (`origin=re`), or a vendored one whose pin no longer matches:
     "Inspired by TestGen's test type <id>; <what Resource Explorer does differently>";
   - an imported TestGen-only check, a type with no TestGen id, or a pin that cannot be read: no

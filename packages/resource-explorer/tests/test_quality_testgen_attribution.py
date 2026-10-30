@@ -1,6 +1,6 @@
 """Where a check comes from, said only in detailed descriptions (owner, 2026-10-30), and the publish state from the counts.
 
-- "Implements TestGen test type <id> (catalogue commit <sha>)" only for a vendored check whose statement pin matches;
+- "Implements TestGen test type <id> (catalog commit <sha>)" only for a vendored check whose statement pin matches;
 - "Inspired by TestGen's test type <id>; ..." for a check RE proposes itself or whose pin no longer matches;
 - nothing for an imported check, an unknown type or an unreadable pin (never a guess);
 - the rule's `description` carries it, its name, summary and the row's headline words do not;
@@ -30,7 +30,7 @@ CATALOGUE = load_catalogue()
 def test_a_vendored_check_with_a_matching_pin_implements_a_testgen_type():
     unique = CATALOGUE["Unique"]
     said = attribution_of(unique, "vendored", catalogue_ref(unique))
-    assert said == f"Implements TestGen test type {unique.id} (catalogue commit 3606859c)"
+    assert said == f"Implements TestGen test type {unique.id} (catalog commit 3606859c)"
 
 
 def test_a_check_re_proposes_itself_is_inspired_by_and_says_what_it_does_differently():
@@ -71,7 +71,7 @@ def test_the_rule_description_carries_it_and_the_name_and_summary_do_not():
     unique = CATALOGUE["Unique"]
     props = er.rule_properties(UNIQUE, unique, {"threshold_value": 0, "severity": "error"},
                                proposal={"origin": "vendored", "catalogue_ref": catalogue_ref(unique)})
-    assert props["description"].endswith(f"Implements TestGen test type {unique.id} (catalogue commit 3606859c)")
+    assert props["description"].endswith(f"Implements TestGen test type {unique.id} (catalog commit 3606859c)")
     assert (unique.usage_notes or unique.description) in props["description"]
     for field in ("displayName", "summary", "qualifiedName", "method"):
         assert "TestGen" not in props.get(field, ""), field

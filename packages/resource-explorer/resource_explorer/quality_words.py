@@ -162,6 +162,6 @@ def attribution_of(entry, origin: str, ref: str) -> str:
     if not found:
         return ""
     if ref == catalogue_ref(entry):
-        return f"Implements TestGen test type {entry.id} (catalogue commit {found.group('commit')[:8]})"
-    return (f"Inspired by {ident}; this proposal's statement pin (catalogue commit {found.group('commit')[:8]}) no longer "
-            "matches the vendored catalogue, so it is not described as TestGen's implementation")
+        return f"Implements TestGen test type {entry.id} (catalog commit {found.group('commit')[:8]})"
+    return (f"Inspired by {ident}; this proposal's statement pin (catalog commit {found.group('commit')[:8]}) no longer "
+            "matches the vendored catalog, so it is not described as TestGen's implementation")
