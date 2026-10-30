@@ -195,7 +195,11 @@ function kindOf(wl) {
 }
 
 const KIND_NAMES = { repo: ['repo', 'repos'], database: ['database', 'databases'],
-                     filesystem: ['file system', 'file systems'] };
+                     filesystem: ['file system', 'file systems'], open_data: ['dataset', 'datasets'] };
+
+/** Kinds with no stage questions in the catalog yet. The bench says so in a sentence; it never asks the
+ *  question catalog for a member that is not a repository (the read failed with "Project '<slug>' not found"). */
+const KINDS_WITHOUT_QUESTIONS = new Set(['open_data']);
 
 /** A kind, in words, for a count ("9 databases"). An unknown kind, or a list
  *  of more than one, says "resources" rather than guessing one. */
@@ -991,7 +995,8 @@ function renderActions(ctx) {
     <span class="text-ink-muted">${
       failed ? `<span class="text-state-warn">the analysis catalog could not be read: ${esc(failed)}</span>`
       : !loaded ? 'reading the catalog…'
-      : !runnable ? `<span class="text-accent-ink">No analyses are listed for the ${esc(ctx.stage)} stage, so there is nothing to run here — by design for Enrichment, which is served by its Context tab</span>`
+      : !runnable ? `<span class="text-accent-ink">No analyses are listed for the ${esc(ctx.stage)} stage, so there is nothing to run here${
+        ctx.stage === 'enrichment' ? ' — by design for Enrichment, which is served by its Context tab' : ''}</span>`
       : n ? `${n} selected` : 'all rows'}</span>`;
   host.innerHTML = `${runPart}
     <span class="ml-auto flex flex-wrap items-baseline gap-s3">
@@ -1069,14 +1074,18 @@ async function loadGrid(ctx) {
     const groups = viewKind() ? new Map([[viewKind(), viewMembers()]]) : byKind(wl.members);
     const perKind = new Map();
     for (const [k, ms] of groups) {
+      if (KINDS_WITHOUT_QUESTIONS.has(k)) { perKind.set(k, []); continue; }
       const checklist = await getQuestions(ms[0].entity_slug, { phase: ctx.stage, perspectives: held, entityType: k });
       perKind.set(k, checklist.questions || []);
     }
     grid.questions = perKind.size === 1 ? [...perKind.values()][0] : sharedColumns(perKind);
-    grid.columnsNote = perKind.size === 1 ? '' : `${grid.questions.length} question(s) every kind here shares; ${
+    const unasked = [...perKind.keys()].filter((k) => KINDS_WITHOUT_QUESTIONS.has(k));
+    grid.columnsNote = unasked.length === perKind.size
+      ? `No questions are asked of ${kindWords(unasked[0], 2)} at this stage yet, so there are no question columns.`
+      : perKind.size === 1 ? '' : `${grid.questions.length} question(s) every kind here shares; ${
       [...perKind].map(([k, qs]) => `${qs.length} for ${kindWords(k, 2)}`).join(', ')}`;
     grid.heldPerspectives = held;
-    if (held.length && perKind.size === 1) {
+    if (held.length && perKind.size === 1 && !unasked.length) {
       // The residue, said out loud: a filtered grid that does not say what it
       // hid is a grid you cannot trust to be complete.
       try {
