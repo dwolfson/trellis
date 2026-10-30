@@ -157,7 +157,7 @@ def _publish_rules(registry, slug: str, author: str) -> dict:
     registry.write_activity(ActivityEntry(
         id=str(uuid.uuid4()), ts=datetime.now(UTC).isoformat(),
         operation="quality_rules_published", intent="curate", entity_type="database", entity_slug=slug,
-        summary=f"{result['line']} (by {author})",
+        summary=f"{result.get('state_words') or result['line']} · {result['line']} (by {author})",
         annotations=[{"counts": result.get("counts", {}), "state": result.get("state", "")}],
     ))
     return result

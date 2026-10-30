@@ -388,3 +388,12 @@ test('QS-3: a not-established row carries no type-inference tail ("undetermined"
   assert.doesNotMatch(text(g), /undetermined|statements unresolved/);
   assert.match(r.getAttribute('title'), /statements unresolved/, 'the stored sentence stays behind the title');
 });
+
+test('where a check comes from is said in the detailed title only, never in the visible words', async () => {
+  const t = await setUp([check({ test_type: 'Unique', test_name: 'Percent Unique', test_description: 'Tests for duplicates.',
+    attribution: 'Implements TestGen test type 1034 (catalogue commit 3606859c)' })]);
+  const g = await open(t, 'sales.orders');
+  const row = g.querySelector('[data-qc-row]');
+  assert.doesNotMatch(text(row), /TestGen/, 'no visible word says it');
+  assert.match(row.querySelector('[title*="Implements TestGen"]').getAttribute('title'), /Tests for duplicates\..*Implements TestGen test type 1034/);
+});

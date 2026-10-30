@@ -128,7 +128,7 @@ def rule_properties(check_key: str, test_type: TestType, params: dict, *, verdic
         "typeName": TYPE_NAME,
         "displayName": f"{test_type.name_short}: {path}",
         "summary": test_type.description or "",
-        "description": test_type.usage_notes or test_type.description or "",
+        "description": _described(test_type, proposal),
         "scope": path,
         "qualityDimension": egeria_dimension(test_type.dimension),
         "checkType": "library" if metric else "custom",
@@ -143,6 +143,16 @@ def rule_properties(check_key: str, test_type: TestType, params: dict, *, verdic
         "additionalProperties": {k: v for k, v in extra.items() if v not in (None, "")},
     }
     return {k: v for k, v in props.items() if v not in (None, "")}
+
+
+def _described(test_type: TestType, proposal: dict | None) -> str:
+    """The rule's `description`: TestGen's usage notes (or description), then, as its own paragraph, where the check
+    comes from. The name, summary and every headline stay as they are (owner, 2026-10-30)."""
+    from resource_explorer.quality_words import attribution_of
+
+    base = test_type.usage_notes or test_type.description or ""
+    said = attribution_of(test_type, (proposal or {}).get("origin") or "", (proposal or {}).get("catalogue_ref") or "")
+    return f"{base}\n\n{said}" if base and said else (said or base)
 
 
 def compared(props: dict) -> dict:
@@ -575,6 +585,42 @@ def summarize(rows: list[dict]) -> dict:
     return {"counts": counts, "line": line + ("; " + "; ".join(trouble) if trouble else "")}
 
 
+#: The outcomes that are neither a rule live in Egeria nor waiting for its schema: a publish that went wrong.
+_TROUBLE = (MISSING_IN_EGERIA, UNVERIFIED, REFUSED, DUPLICATE, NAME_TAKEN, UNREADABLE)
+
+
+def publish_state(counts: dict[str, int]) -> dict:
+    """The state of a publish, from the counts and nothing else (the Architect's rule, 2026-10-30): a press that wrote
+    nothing must not read "published". `waiting` is the checks whose schema is not in Egeria yet (Contents), `live` the
+    rules of RE's that are in Egeria (created, adopted, updated, reactivated, unchanged, or edited there).
+
+    - state `published`: some are live and nothing waits ("published");
+    - `nothing_published`: nothing is live and some wait ("nothing published · N waiting for Contents");
+    - `partly_published`: some are live and some wait ("N published · M waiting");
+    - `nothing_to_publish`: no check had anything to do;
+    - `retired`: only retirements happened.
+    Checks that went wrong (refused, unverified, unreadable, ...) are added to the words, never hidden."""
+    live = sum(counts.get(k, 0) for k in PUBLISHED_OUTCOMES)
+    waiting = counts.get(NOT_IN_EGERIA, 0)
+    trouble = sum(counts.get(k, 0) for k in _TROUBLE)
+    retired = counts.get(RETIRED, 0)
+    if live and not waiting:
+        state, words = "published", "published"
+    elif live:
+        state, words = "partly_published", f"{live} published · {waiting} waiting"
+    elif waiting:
+        state, words = "nothing_published", f"nothing published · {waiting} waiting for Contents"
+    elif retired:
+        state, words = "retired", f"{retired} retired"
+    elif trouble:
+        state, words = "nothing_published", "nothing published"
+    else:
+        state, words = "nothing_to_publish", "nothing to publish"
+    if trouble:
+        words += f" · {trouble} could not be published"
+    return {"state": state, "state_words": words}
+
+
 def publish_database_rules(registry, db_entity, gateway: RuleGateway, *, recorded_by: str) -> dict:
     """Publish, for one database: every accepted check to a DataQualityRule, every rejected or retired one that was
     published to DEPRECATED. Writes one proof row per check acted on (`database_quality_rule_proofs`) and returns
@@ -629,7 +675,8 @@ def publish_database_rules(registry, db_entity, gateway: RuleGateway, *, recorde
     rows = publish_rules(actions, gateway, slug=slug, asset_guid=asset_guid, asset_qualified_name=asset_qn,
                          recorded_by=recorded_by)
     registry.record_quality_rule_proofs(rows)
-    return {"state": "published", **summarize(rows), "rows": rows}
+    summary = summarize(rows)
+    return {**publish_state(summary["counts"]), **summary, "rows": rows}
 
 
 def read_rules_for_run(registry, slug: str, gateway_factory=egeria_gateway) -> dict | None:
