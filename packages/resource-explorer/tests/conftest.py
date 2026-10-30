@@ -20,34 +20,17 @@ import sys
 
 import pytest
 
-# CI under pytest-xdist: one registry schema per worker. CI deliberately points
-# REGISTRY/FEEDBACK/METRICS_DATABASE_URL at its throwaway service container's
-# `resource_explorer` schema (see isolate_url_settings), so serially the whole
-# run shares that one schema. With several workers it would be shared by
-# concurrent tests too — a race serial CI never had. Each worker gets its own
-# schema instead (`_init_schema` creates it), so every worker sees what a serial
-# run over its share of the tests would. Outside CI these URLs are replaced per
-# test by temp SQLite files anyway, so this does nothing there. Done before the
-# imports below, because importing the app may build the first registry. The
-# schema is created here, as the workflow's own step creates `resource_explorer`:
-# the feedback and metrics stores do not create one themselves.
-_XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER", "")
-if _XDIST_WORKER and os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
-    _worker_schema = f"resource_explorer_xdist_{_XDIST_WORKER}"
-    for _name in ("REGISTRY_DATABASE_URL", "FEEDBACK_DATABASE_URL", "METRICS_DATABASE_URL"):
-        _url = os.environ.get(_name, "")
-        if _url.endswith("search_path%3Dresource_explorer"):
-            os.environ[_name] = f"{_url[:-len('resource_explorer')]}{_worker_schema}"
-            try:
-                import psycopg2
+# Under pytest-xdist each worker gets its own registry schema,
+# resource_explorer_xdist_<controller pid>_<worker>, wherever the URL settings
+# point at `resource_explorer` (CI's service container), so concurrent workers
+# and concurrent runs never share one. Created here and dropped at the worker's
+# session teardown (fixture `xdist_worker_registry_schema`), only where tests
+# really use it; see tests/xdist_registry_schema.py. Done before the imports
+# below, because importing the app may build the first registry.
+from tests import xdist_registry_schema  # noqa: E402
 
-                _conn = psycopg2.connect(_url.split("?", 1)[0], connect_timeout=5)
-                _conn.autocommit = True
-                with _conn.cursor() as _cur:
-                    _cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{_worker_schema}"')
-                _conn.close()
-            except Exception:  # noqa: BLE001 - unreachable is RE_REQUIRE_POSTGRES's to report
-                pass
+_XDIST_SCHEMA = xdist_registry_schema.apply(
+    os.environ, os.environ.get("PYTEST_XDIST_WORKER", ""), xdist_registry_schema.run_id())
 
 # Fail-closed guard against tests reaching the SHARED registry (incident
 # 2026-10-02; see tests/shared_registry_guard.py and
@@ -553,6 +536,13 @@ os.environ.setdefault("RE_JWT_SECRET", "resource-explorer-test-secret")
 # Importing here makes every route module bind the real function; a test that
 # wants a different caller patches it with monkeypatch, which is undone at teardown.
 import resource_explorer.web.app  # noqa: E402,F401
+
+
+@pytest.fixture(scope="session", autouse=True)
+def xdist_worker_registry_schema():
+    """Drop this worker's registry schema at session teardown (see the top of this file)."""
+    yield _XDIST_SCHEMA
+    xdist_registry_schema.teardown(_XDIST_SCHEMA)
 
 
 @pytest.fixture(scope="session", autouse=True)
