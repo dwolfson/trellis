@@ -27,6 +27,11 @@ ABSENCE = {"not_measured": "Example step x has not run on this database.",
            "measured_nothing": "Example step x ran and found no buckets."}
 
 
+KIND_BLOCKS = {"distribution": {"categories": {"exclusive": True}},
+               "proposal": {"proposal": {"candidate_field": "bucket", "decided_by": "curator"}},
+               "list": {"listing": {"item_fields": ["bucket", "count"], "order": "by count", "key_field": "bucket"}}}
+
+
 def _declaration(annotation: dict | None = None, kind: str = "distribution") -> Declaration:
     second = {"name": "rows_sampled", "unit": "rows", "as_of": "asOf", "value_field": "rows_sampled"}
     if annotation:
@@ -39,7 +44,8 @@ def _declaration(annotation: dict | None = None, kind: str = "distribution") -> 
                      "truncation": "{shown} of {total} buckets shown", "token_cost": 120,
                      "citation": "{analysis} · {scope} · as of {as_of}"}],
         "confidence": {"form": "estimated", "basis": "sample_ratio", "method": "one row in ten, sampled"},
-        "answers": ["q-example-x"], "scope": "resource"})
+        "answers": ["q-example-x"], "scope": "resource",
+        **KIND_BLOCKS.get(kind, {})})
 
 
 def _entry(declaration, id_="example_step_x", name="Example Step X", source="local", provided_by=None):
@@ -719,6 +725,7 @@ def _member_step_with_summary():
             "extents": [{"name": "tables", "fields": ["scope", "Days"], "rows": 5, "order": "oldest first",
                          "truncation": "{shown} of {total} tables shown", "token_cost": 50,
                          "citation": "{analysis} · {scope} · as of {as_of}"}],
+            "listing": {"item_fields": ["scope", "Days"], "order": "oldest first", "key_field": "scope"},
             "confidence": {"form": "measured"}, "scope": "member"}))
 
 

@@ -207,6 +207,37 @@ def _scalar(v) -> bool:
     return isinstance(v, (int, float, str, bool)) and not (isinstance(v, str) and not v.strip())
 
 
+#: The words a lower bound publishes with, and the annotation property that says it (the declared `capped_field` was true).
+CAPPED_WORDS = "at least"
+CAPPED_PROPERTY = "capped"
+
+
+def kind_route(dec) -> dict | None:
+    """Where a finding or a proposal goes in Egeria, from its declared block (brief 2026-10-30, Part B), or None for any
+    other kind. A finding that declares an `action_field` is a RequestForActionAnnotation; a proposal is a
+    ClassificationAnnotation in DRAFT, per the 2026-10-15 rule, and never a fact: only Curate's verdict makes it one.
+    A route says where the result would go; RE writes it through the step's own annotation, not from this table."""
+    if dec.finding and dec.finding.action_field:
+        return {"type": "RequestForActionAnnotation", "status": "", "words": "a Request For Action",
+                "action_field": dec.finding.action_field}
+    if dec.proposal:
+        return {"type": "ClassificationAnnotation", "status": "DRAFT",
+                "words": "a ClassificationAnnotation in DRAFT, never a fact until Curate confirms it",
+                "decided_by": dec.proposal.decided_by}
+    return None
+
+
+def _is_capped(measure, source: dict, run: dict) -> bool:
+    """Does the result say this measure's value is a lower bound (its declared `capped_field` is true)?"""
+    field = getattr(measure, "capped_field", "")
+    if not field:
+        return False
+    got = resolve(source, field, run)
+    if isinstance(got, str):
+        return got.strip().lower() in ("true", "yes", "1")
+    return got is not _MISSING and bool(got)
+
+
 def _value_words(v, unit: str) -> str:
     if isinstance(v, bool):
         return f"{'yes' if v else 'no'}"
@@ -348,7 +379,7 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
                                or (run.get("read_snapshot") if "read_snapshot" in run else run.get("surveyed_at"))
                                or "")
                 w = writes_as(m, conf["form"])
-                row = {"analysis_id": entry.id, "analysis": entry.name, "measure": m.name, "locator": loc,
+                row = {"capped": False, "kind_route": kind_route(dec), "analysis_id": entry.id, "analysis": entry.name, "measure": m.name, "locator": loc,
                        "unit": m.unit, "value_field": m.value_field, "as_of_field": m.as_of,
                        "state": fact.get("state", ""), "as_of": as_of, "confidence": conf,
                        "scope": scope, "writes_as": w, "result_kind": dec.result_kind,
@@ -376,6 +407,9 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
                                absence_words=dec.absence.sentence(absence))
                 else:
                     row.update(value=v, value_words=_value_words(v, m.unit) if _scalar(v) else f"a {type(v).__name__}")
+                    if _is_capped(m, source, run):
+                        # A lower bound publishes as one: the words and the flag travel with the number.
+                        row.update(capped=True, value_words=f"{CAPPED_WORDS} {row['value_words']}")
                 elsewhere = published_elsewhere(entry, m.name, engine_reports)
                 row["elsewhere"] = elsewhere
                 why = ""
@@ -475,6 +509,8 @@ def annotation_for(row: dict):
     if w["route"] == "generic":
         extra["declaredRouteWords"] = GENERIC_WORDS
     extra = {k: str(v) for k, v in extra.items() if v not in (None, "")}
+    if row.get("capped"):
+        extra[CAPPED_PROPERTY] = "true"
     common = {
         "summary": f"{row['analysis']} · {row['measure']}: {row['value_words']} · as of {row['as_of']}",
         "analysis_step": row["analysis_id"], "annotation_type_name": row["measure"].replace("_", " ").title(),

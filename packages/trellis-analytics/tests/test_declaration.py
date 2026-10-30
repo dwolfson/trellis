@@ -268,3 +268,107 @@ def test_sort_keys_derive_the_order_words():
 ])
 def test_sort_refusals_name_what_was_refused(over, words):
     assert words in refused(minimum(extents=[{**EXTENT, **over}]))
+
+
+# ── capped, basis and categories (brief 2026-10-30, Part A) ────────────────────────────────────────────────────────
+
+def _measure(**over):
+    return {**MEASURE, **over}
+
+
+def test_a_basis_without_words_is_refused_and_the_refusal_names_the_measure():
+    said = refused(minimum(measures=[_measure(basis={"denominator_field": "column_count", "denominator_label": " "})]))
+    assert "declares no words for the whole" in said
+
+
+def test_a_basis_on_a_fraction_is_refused_because_the_denominator_is_in_the_unit():
+    said = refused(minimum(measures=[_measure(unit="fraction of rows (0-1)",
+                                              basis={"denominator_field": "n", "denominator_label": "rows"})]))
+    assert "measure 's'" in said and "the denominator is in the unit" in said
+
+
+def test_a_basis_on_a_count_and_a_capped_field_are_accepted_and_read_back():
+    d = Declaration.model_validate(minimum(measures=[_measure(
+        unit="columns", basis={"denominator_field": "column_count", "denominator_label": "columns"},
+        capped_field="paging.capped")]))
+    assert d.measures[0].basis.denominator_label == "columns" and d.measures[0].capped_field == "paging.capped"
+
+
+def test_overlapping_categories_with_a_stated_total_are_refused():
+    said = refused(minimum(result_kind="graph", categories={"exclusive": False, "sums_to": "total"}))
+    assert "overlapping categories cannot sum to a total" in said
+
+
+def test_a_graph_or_distribution_without_categories_is_refused_with_the_sentence_naming_what_to_add():
+    for kind in ("graph", "distribution"):
+        said = refused(minimum(result_kind=kind))
+        assert f"result_kind '{kind}' declares no categories: add categories with exclusive" in said
+
+
+def test_categories_on_another_kind_are_refused():
+    assert "categories belong to graph and distribution" in refused(minimum(categories={"exclusive": True}))
+
+
+# ── declared words for the non-numeric kinds (Part B) ──────────────────────────────────────────────────────────────
+
+FINDING = {"what_field": "summary", "where_field": "scope"}
+
+
+def test_a_finding_kind_without_what_field_is_refused_with_the_sentence():
+    assert "declares no finding block: say what_field" in refused(
+        minimum(result_kind="finding", measures=[]))
+    assert "a finding declares no what_field" in refused(
+        minimum(result_kind="finding", measures=[], finding={"what_field": " ", "where_field": "scope"}))
+
+
+def test_the_four_non_numeric_kinds_need_no_measures_and_the_numeric_ones_still_do():
+    blocks = {"finding": ("finding", FINDING),
+              "proposal": ("proposal", {"candidate_field": "c", "decided_by": "curator"}),
+              "list": ("listing", {"item_fields": ["a"], "order": "largest first", "key_field": "a"}),
+              "table": ("table", {"columns": ["a", "b"], "key_fields": ["a"]})}
+    for kind, (attr, block) in blocks.items():
+        extra = {"result_kind_note": "none fits"} if kind == "table" else {}
+        assert Declaration.model_validate(minimum(result_kind=kind, measures=[], **{attr: block}, **extra))
+    assert "declares no measures" in refused(minimum(measures=[]))
+
+
+def test_a_block_on_a_kind_it_does_not_belong_to_is_refused():
+    assert "declares a finding block and result_kind 'measure'" in refused(minimum(finding=FINDING))
+
+
+def test_a_finding_with_a_severity_field_lists_its_severities():
+    assert "list the words it may hold" in refused(minimum(
+        result_kind="finding", finding={**FINDING, "severity_field": "sev"}))
+
+
+def test_a_proposal_starts_as_proposed():
+    assert "first decision state is not 'proposed'" in refused(minimum(
+        result_kind="proposal", proposal={"candidate_field": "c", "decided_by": "curator",
+                                          "decision_states": ["accepted"]}))
+
+
+def _load_step(name):
+    mp = pytest.MonkeyPatch()
+    mp.syspath_prepend(str(STEPS / name / "src"))
+    for mod in [k for k in sys.modules if k == name or k.startswith(name + ".")]:
+        mp.delitem(sys.modules, mod)
+    try:
+        return importlib.import_module(f"{name}.manifest").MANIFEST
+    finally:
+        mp.undo()
+
+
+def test_automatic_is_refused_for_a_proposal_whatever_the_annotation_type():
+    hub = _load_step("hub_tables")
+    for atype in ("ClassificationAnnotation", "ResourceMeasureAnnotation"):
+        body = hub.model_dump()
+        body["declaration"]["proposal"]["decided_by"] = "automatic"
+        if atype != "ClassificationAnnotation":
+            body["annotation_type"] = atype
+            body["measure_annotation_types"] = {}
+            body["declaration"]["measures"][1]["annotation"] = None
+        with pytest.raises(ValidationError) as exc:
+            StepManifest.model_validate(body)
+        assert "proposals are decided by a person in Curate (ruling 2026-10-15); no automatic path exists" in refusal(exc.value)
+    body = hub.model_dump()
+    assert body["declaration"]["proposal"]["decided_by"] == "curator" and StepManifest.model_validate(body)

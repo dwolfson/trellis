@@ -395,6 +395,8 @@ export function readEnvelope(entry, env, esc, tnum) {
       // A fact's note is already in the row's caveat, attributed to it, so the step line gives the state in words
       // and does not say the note a second time (Q-0073: "surveyed by runs that predate per-step recording", twice).
       : (f.state === NEVER_RUN ? 'not yet run' : ((f.state || '').replace(/_/g, ' ') || 'state not recorded')),
+    // A lower bound says so in a title (declared capped_field): the sentence already carries the "at least" words.
+    capped: !!f.headline_capped,
     known: !!f.is_known, neverRun: f.state === NEVER_RUN, lastRun: f.last_run_at || '', runnable: f.runnable, runnableReason: f.runnable_reason || '',
   }));
   // The row's own "the numbers behind this" opens the question's FIRST analysis. When another of RE's own analyses has

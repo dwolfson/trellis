@@ -12,6 +12,8 @@
  *   absence_sentence what an empty graph (or no edges) does and does not mean, from the declaration
  *   group?           { id, title } the heading for this graph
  *   edge_word?       the verb read between two names in the list form ("depends on")
+ *   categories?      { exclusive, total, items: [{ label, count }] }, built by `categoriesSpec` from the declaration. Overlapping
+ *                    categories are never stacked and say so; a stated total is read from its field, never summed here.
  *
  * RULES (owner): a long label is cut with an ellipsis and its hover has all of it; a label never overruns its
  * box; counts are labelled; "nothing declared" is never drawn as a result; every string is escaped.
@@ -116,6 +118,51 @@ function edgeSvg(e, pos, mid) {
   </g>`;
 }
 
+
+/** The words a legend says when the categories overlap (the same as the Chat compile's, declared_words.OVERLAP_NOTE). */
+export const OVERLAP_NOTE = 'categories overlap';
+
+const readPath = (obj, path) => {
+  if (obj == null || !path) return undefined;
+  if (Object.prototype.hasOwnProperty.call(obj, path)) return obj[path];
+  let got = obj;
+  for (const part of String(path).split('.')) {
+    if (got == null || typeof got !== 'object' || !(part in got)) return undefined;
+    got = got[part];
+  }
+  return got;
+};
+
+/** A declaration's `categories` and one result into what `categoriesHtml` draws. The total is the result's `sums_to`
+ *  field as stated (null when none is declared or the result does not hold it): this function adds nothing up. */
+export function categoriesSpec(declaration, result, items) {
+  const c = declaration && declaration.categories;
+  if (!c) return null;
+  const stated = c.sums_to ? readPath(result, c.sums_to) : undefined;
+  const n = stated == null || stated === '' ? NaN : Number(String(stated).replace(/,/g, ''));
+  return { exclusive: !!c.exclusive, total: Number.isFinite(n) ? n : null, items: items || [] };
+}
+
+/** The category legend, and a stacked bar only for exclusive categories. Bars are scaled to the stated total when there
+ *  is one (a remainder the categories do not explain stays blank, and the total shown is the stated one); with no stated
+ *  total no total is shown. Overlapping categories get the note and no bar: a stack would count an item twice. */
+export function categoriesHtml(cats) {
+  if (!cats) return '';
+  const items = (cats.items || []).filter((i) => i && Number.isFinite(Number(i.count)));
+  const fmt = (n) => Number(n).toLocaleString('en-US');
+  const legend = items.map((i) => `<li data-category class="inline-block mr-s2"><span class="tnum">${fmt(i.count)}</span> ${esc(i.label)}</li>`).join('');
+  let body = '';
+  if (!cats.exclusive) {
+    body = `<div data-categories-note class="text-provenance text-ink-muted">${esc(OVERLAP_NOTE)}: an item can be in more than one, so they are not stacked or added up.</div>`;
+  } else if (items.length) {
+    const basis = cats.total != null ? cats.total : items.reduce((a, i) => a + Number(i.count), 0);
+    const segs = items.map((i, k) => `<div data-stack-segment="${esc(i.label)}" style="width:${basis > 0 ? (100 * Number(i.count) / basis).toFixed(2) : 0}%;height:10px;background:currentColor;opacity:${k % 2 ? 0.35 : 0.65}" title="${esc(i.label)}: ${fmt(i.count)}"></div>`).join('');
+    body = `<div data-categories-stack class="mt-s1 rounded-sm border border-rule text-ink" style="display:flex;width:100%;overflow:hidden" role="img" aria-label="${items.length} categories">${segs}</div>`
+      + (cats.total != null ? `<div data-categories-total class="text-provenance text-ink-muted">total <span class="tnum">${fmt(cats.total)}</span> (stated by the result)</div>` : '');
+  }
+  return `<div data-graph-categories="${cats.exclusive ? 'exclusive' : 'overlapping'}" class="mt-s1"><ul class="m-0 list-none p-0 text-provenance text-ink-muted">${legend}</ul>${body}</div>`;
+}
+
 let uid = 0;
 
 /** One graph, as HTML: heading, the figure, the counts, the caption, the as-of, the absence sentence. */
@@ -147,6 +194,7 @@ export function graphHtml(spec) {
     ${g ? `<div data-graph-title class="break-words text-caveat text-ink" title="${esc(g.title)}">${esc(g.title)}</div>` : ''}
     <div class="text-provenance text-ink-muted">${counts} · ${asOf}</div>
     ${figure}
+    ${categoriesHtml(s.categories)}
     ${s.caption ? `<div data-graph-caption class="mt-s1 text-provenance text-ink-muted">${esc(s.caption)}</div>` : ''}
     ${s.absence_sentence ? `<div data-graph-absence class="text-provenance text-ink-muted">${esc(s.absence_sentence)}</div>` : ''}
   </div>`;

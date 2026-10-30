@@ -42,6 +42,22 @@ SCOPES = ("resource", "container", "member", "field")
 #: The words an extent's truncation sentence must carry for the compiler to fill: "{shown} of {total} ... shown".
 TRUNCATION_PLACEHOLDERS = ("{shown}", "{total}")
 
+#: The kinds whose result is its measures: they declare at least one. The other four kinds (finding, proposal, list,
+#: table) are told by the block each declares, and a count of what they hold is welcome but not required.
+MEASURED_KINDS = ("measure", "series", "distribution", "graph")
+
+#: The kinds that declare how their categories add up (`CategoriesDeclaration`).
+CATEGORY_KINDS = ("graph", "distribution")
+
+#: Why a proposal is never decided automatically (owner's rule, 2026-10-15): a proposal becomes a fact only through a
+#: person's decision in Curate. `decided_by` keeps "automatic" in its vocabulary so a later ruling can admit it without a
+#: model change; until then every annotation type refuses it.
+AUTOMATIC_REFUSAL = ("proposals are decided by a person in Curate (ruling 2026-10-15); no automatic path exists, so "
+                     "declare decided_by 'curator'")
+
+#: The words a lower bound travels with wherever a figure would be derived from it.
+LOWER_BOUND_WORDS = "not derived: the count is a lower bound"
+
 #: The fields a full declaration adds to the minimum, in the order `missing()` names them.
 FULL_FIELDS = ("extents", "confidence", "answers", "scope")
 
@@ -71,6 +87,30 @@ class AnnotationDeclaration(_Strict):
         return _words(v)
 
 
+class BasisDeclaration(_Strict):
+    """The whole a counted measure is a part of: "456 of 1,236 columns" is derived from the measure's value and this
+    denominator, so no reader writes the "of" in prose. Legal only on a count; a fraction's whole is in its unit."""
+    #: The result field holding the whole ("column_count"); a dotted path or a trailing `[]`, as `value_field`.
+    denominator_field: str
+    #: The whole in words, plural: "columns", "tables in the schema", "rows read".
+    denominator_label: str
+
+    @model_validator(mode="after")
+    def _filled(self) -> "BasisDeclaration":
+        if not _words(self.denominator_field):
+            raise ValueError("a basis names no denominator_field: say which result field holds the whole")
+        if not _words(self.denominator_label):
+            raise ValueError("a basis declares no words for the whole (denominator_label): say what is counted, "
+                             "plural, such as 'columns'")
+        return self
+
+
+def is_fraction(unit: str) -> bool:
+    """Does this unit say a fraction, ratio or percentage, rather than a count of things? (Its whole is in its words.)"""
+    u = " ".join(str(unit or "").lower().split())
+    return u.startswith(("fraction", "ratio", "percent", "share", "proportion")) or "(0-1)" in u or "%" in u
+
+
 class MeasureDeclaration(_Strict):
     """One number the analysis reports. A number never travels without its unit and its as-of (§1)."""
     name: str
@@ -91,6 +131,12 @@ class MeasureDeclaration(_Strict):
     #: The level THIS measure is about, where it differs from the declaration's (a member-scoped step whose summary
     #: is one value for the whole resource). Absent means the declaration's scope is this measure's.
     scope: Literal["resource", "container", "member", "field"] | None = None
+    #: The whole this count is a part of; absent for a count with no stated whole.
+    basis: BasisDeclaration | None = None
+    #: The result field that is true when the value is a lower bound ("capped", "paging.capped", "run.truncated").
+    #: Declared on the measure, not the declaration, because one step may cap one measure (a paged list) and not
+    #: another (a COUNT(*)). A capped value reads "at least N <unit>" and every figure derived from it is withheld.
+    capped_field: str = ""
 
     @field_validator("scope", mode="before")
     @classmethod
@@ -98,6 +144,13 @@ class MeasureDeclaration(_Strict):
         if v is not None and v not in SCOPES:
             raise ValueError(f"scope '{v}' is not one of the levels ({', '.join(SCOPES)})")
         return v
+
+    @model_validator(mode="after")
+    def _basis_is_on_a_count(self) -> "MeasureDeclaration":
+        if self.basis is not None and is_fraction(self.unit):
+            raise ValueError(f"measure '{self.name}' declares a basis on a fraction ('{self.unit}'): the "
+                             "denominator is in the unit, so a basis belongs on a count only")
+        return self
 
     @model_validator(mode="after")
     def _filled(self) -> "MeasureDeclaration":
@@ -256,12 +309,123 @@ class ConfidenceDeclaration(_Strict):
         return self
 
 
+class CategoriesDeclaration(_Strict):
+    """How a graph's or distribution's categories relate (the #603 lesson: categories that overlap must not be
+    stacked or summed, and a stated total is read, never added up on the client)."""
+    #: True: one item falls in exactly one category. False: an item may fall in several, so a renderer must not stack
+    #: or sum the categories and the headline may not say "of N".
+    exclusive: bool
+    #: The result field holding the stated total the categories add up to; "" for no stated total.
+    sums_to: str = ""
+
+    @model_validator(mode="after")
+    def _sums(self) -> "CategoriesDeclaration":
+        if _words(self.sums_to) and not self.exclusive:
+            raise ValueError("categories declare a total (sums_to) and are not exclusive: overlapping categories "
+                             "cannot sum to a total, so leave sums_to out or declare them exclusive")
+        return self
+
+
+class FindingDeclaration(_Strict):
+    """A finding: a sentence a person reads, about a place, with a severity and perhaps an action."""
+    #: The field holding the sentence a person reads ("summary").
+    what_field: str
+    #: The field naming the place (scope, column, path); "" for a finding about the resource as a whole.
+    where_field: str = ""
+    severity_field: str = ""
+    #: The closed vocabulary `severity_field` may hold, in words, lowest to highest.
+    severities: list[str] = Field(default_factory=list)
+    #: The field saying what to do, when the finding proposes an action (published as a RequestForAction).
+    action_field: str = ""
+
+    @model_validator(mode="after")
+    def _shape(self) -> "FindingDeclaration":
+        if not _words(self.what_field):
+            raise ValueError("a finding declares no what_field: name the result field holding the sentence a "
+                             "person reads")
+        if _words(self.severity_field) and not [s for s in self.severities if _words(s)]:
+            raise ValueError("a finding declares a severity_field and no severities: list the words it may hold, "
+                             "lowest to highest")
+        if [s for s in self.severities if _words(s)] and not _words(self.severity_field):
+            raise ValueError("a finding declares severities and no severity_field: name the field that holds them")
+        return self
+
+
+class ProposalDeclaration(_Strict):
+    """A proposal: a candidate value someone decides on. A proposal is never a fact until it is decided."""
+    #: The field holding the proposed value(s).
+    candidate_field: str
+    #: Who turns it into a fact (owner rule: facts only through Curate).
+    decided_by: Literal["curator", "automatic"]
+    decision_states: list[str] = Field(default_factory=lambda: ["proposed", "accepted", "rejected"])
+    #: The field of each candidate row holding its decision state, when rows carry one; "" means every candidate
+    #: is still a proposal.
+    state_field: str = ""
+
+    @model_validator(mode="after")
+    def _shape(self) -> "ProposalDeclaration":
+        if not _words(self.candidate_field):
+            raise ValueError("a proposal declares no candidate_field: name the result field holding what is proposed")
+        states = [_words(s) for s in self.decision_states]
+        if not states or any(not s for s in states):
+            raise ValueError("a proposal declares no decision_states, or an empty one: say the states a decision "
+                             "moves through, starting with 'proposed'")
+        if states[0] != "proposed":
+            raise ValueError("a proposal's first decision state is not 'proposed': a candidate starts as a proposal")
+        return self
+
+
+class ListDeclaration(_Strict):
+    """A list: items in an order, each told apart by a key."""
+    #: The fields a row shows, in order.
+    item_fields: list[str]
+    #: In words: "largest first".
+    order: str
+    #: What makes an item one item.
+    key_field: str
+    #: What the items are, plural, in words ("tables needing attention"), where the key field's name reads badly as
+    #: one; empty means the key field's name, spaced.
+    item_label: str = ""
+
+    @model_validator(mode="after")
+    def _shape(self) -> "ListDeclaration":
+        if not [f for f in self.item_fields if _words(f)]:
+            raise ValueError("a list declares no item_fields: name the fields a row shows, in order")
+        if not _words(self.order):
+            raise ValueError("a list declares no order: say it in words, such as 'largest first'")
+        if not _words(self.key_field):
+            raise ValueError("a list declares no key_field: name what makes an item one item")
+        return self
+
+
+class TableDeclaration(_Strict):
+    """A table: columns, and the columns that make a row one row."""
+    columns: list[str]
+    #: The columns that make a row one row; empty for a table of one row (the resource as a whole).
+    key_fields: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _shape(self) -> "TableDeclaration":
+        if not [c for c in self.columns if _words(c)]:
+            raise ValueError("a table declares no columns")
+        missing = [k for k in self.key_fields if k not in self.columns]
+        if missing:
+            raise ValueError(f"a table's key_fields {', '.join(missing)} are not among its columns")
+        return self
+
+
+#: Each non-numeric kind -> the Declaration field that holds its block.
+KIND_BLOCKS = {"finding": "finding", "proposal": "proposal", "list": "listing", "table": "table"}
+
+
 class Declaration(_Strict):
     """What an analysis declares about its results (§1). `result_kind`, `measures` and `absence` are the minimum."""
     result_kind: str
     #: Required when the kind is `table` (§1: "none fits -> table and say so"): why none of the other seven fits.
     result_kind_note: str = ""
-    measures: list[MeasureDeclaration]
+    #: Required for the numeric kinds; optional for finding, proposal, list and table, which are told by their block
+    #: ("4 findings" is a count that is still welcome).
+    measures: list[MeasureDeclaration] = Field(default_factory=list)
     absence: AbsenceSentences
     extents: list[ExtentDeclaration] = Field(default_factory=list)
     confidence: ConfidenceDeclaration | None = None
@@ -273,6 +437,14 @@ class Declaration(_Strict):
     #: declare them, marked not built, so they read as "planned, not measured" rather than as nothing).
     built: bool = True
     scope: Literal["resource", "container", "member", "field"] | None = None
+    #: Required when `result_kind` is graph or distribution.
+    categories: CategoriesDeclaration | None = None
+    #: One block per non-numeric kind, required when `result_kind` is that kind and refused on any other.
+    finding: FindingDeclaration | None = None
+    proposal: ProposalDeclaration | None = None
+    #: The `list` kind's block (named so it does not shadow the builtin inside this class).
+    listing: ListDeclaration | None = None
+    table: TableDeclaration | None = None
 
     @field_validator("result_kind")
     @classmethod
@@ -295,8 +467,10 @@ class Declaration(_Strict):
         if self.result_kind == "table" and not _words(self.result_kind_note):
             raise ValueError("result_kind 'table' declares no result_kind_note: say why none of the other kinds "
                              "fits")
-        if not self.measures:
-            raise ValueError("declares no measures: every analysis reports at least one, with its unit and as-of")
+        if not self.measures and self.result_kind in MEASURED_KINDS:
+            raise ValueError(f"declares no measures: a '{self.result_kind}' reports at least one, with its unit and "
+                             "as-of")
+        self._kind_blocks()
         names = [m.name for m in self.measures]
         twice = sorted({n for n in names if names.count(n) > 1})
         if twice:
@@ -328,6 +502,27 @@ class Declaration(_Strict):
                 raise ValueError(f"confidence form '{self.confidence.form}' is not the weakest of its measures' "
                                  f"('{weakest}'): the declaration's confidence is its weakest link")
         return self
+
+    def _kind_blocks(self) -> None:
+        """The block each kind declares: required for its own kind, refused on another, so a declaration says what its
+        kind means in words and carries nothing it does not use. Categories likewise for graph and distribution."""
+        for kind, attr in KIND_BLOCKS.items():
+            block = getattr(self, attr)
+            if self.result_kind == kind and block is None:
+                need = {"finding": "what_field (and where_field, if it is about a place)", "proposal": "candidate_field and decided_by",
+                        "list": "item_fields, order and key_field", "table": "columns and key_fields"}[kind]
+                raise ValueError(f"result_kind '{kind}' declares no {attr} block: say {need} so the headline, the "
+                                 "publish table and Chat read it from the declaration")
+            if self.result_kind != kind and block is not None:
+                raise ValueError(f"declares a {attr} block and result_kind '{self.result_kind}': the block belongs "
+                                 f"to result_kind '{kind}'")
+        if self.result_kind in CATEGORY_KINDS and self.categories is None:
+            raise ValueError(f"result_kind '{self.result_kind}' declares no categories: add categories with "
+                             "exclusive true (one item in exactly one category) or false (an item may be in several), "
+                             "and sums_to naming the result field that holds the stated total, if there is one")
+        if self.result_kind not in CATEGORY_KINDS and self.categories is not None:
+            raise ValueError(f"declares categories and result_kind '{self.result_kind}': categories belong to "
+                             f"{' and '.join(CATEGORY_KINDS)}")
 
     def confidence_of(self, measure: MeasureDeclaration) -> ConfidenceDeclaration | None:
         """A measure's confidence: its own, else the declaration's."""

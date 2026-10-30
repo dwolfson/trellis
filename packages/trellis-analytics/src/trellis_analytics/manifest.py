@@ -25,7 +25,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pyegeria.view.analytic_registry import AnalyticFunctionSpec
 
-from trellis_analytics.declaration import AnnotationDeclaration, Declaration
+from trellis_analytics.declaration import AUTOMATIC_REFUSAL, AnnotationDeclaration, Declaration
 
 Source = Literal["ods", "egeria", "resource"]
 
@@ -306,6 +306,8 @@ class StepManifest(_TrellisManifest):
             raise ValueError(f"declaration declares measure {', '.join(unknown)}, which the step does not report "
                              f"({', '.join(names)})")
         self._one_type_declaration(d)
+        if d.proposal is not None and d.proposal.decided_by == "automatic":
+            raise ValueError(f"declaration.proposal decides 'automatic': {AUTOMATIC_REFUSAL}")
         if d.answers is None:
             d.answers = list(self.questions)
         elif sorted(d.answers) != sorted(self.questions):

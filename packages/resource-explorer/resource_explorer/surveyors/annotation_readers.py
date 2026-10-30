@@ -102,6 +102,27 @@ def _step_sentence(row: dict) -> str:
     return f"{out} · {reason}" if reason and row.get("state") in ("not_established", "not_applicable") else out
 
 
+def _declared_words(dec, name: str, rec: dict) -> dict:
+    """A measure record with its sentence derived from the declaration where the measure declares a basis or a cap: "456 of
+    1,236 columns", "at least 500 rows", from the stored fields, never from the step's own prose (brief 2026-10-30). A
+    record that is not a measured value keeps the step's sentence (an absence is its own words, never a number), as does a
+    measure declaring neither. `capped` says the sentence is a lower bound."""
+    from resource_explorer import declared_words
+
+    m = dec.measure(name)
+    out = {**rec, "capped": False}
+    if m is None or not (m.basis or m.capped_field) or rec.get("state") != "measured":
+        return out
+    allow = declared_words.allows_of(dec)
+    words = declared_words.measure_words(m, rec.get("value") or {}, {}, allow_of=allow)
+    # Derived only where it adds what was declared: the whole is in the result, or the value is a lower bound. A basis whose
+    # denominator the result does not hold leaves the step's own sentence, which says more than a bare count would.
+    if words and (words["denominator"] is not None or words["capped"]):
+        out.update(summary=declared_words.measure_sentence(m, rec.get("value") or {}, {}, allow_of=allow)[0],
+                   capped=words["capped"])
+    return out
+
+
 def _declared_summary(registry, entity_type: str, slug: str, step: str) -> dict | None:
     """The step's resource-scoped measure record (its one-per-database summary), when it declares one and it ran.
 
@@ -115,9 +136,10 @@ def _declared_summary(registry, entity_type: str, slug: str, step: str) -> dict 
         provided = getattr(entry, "provided_by", None) or {}
         if (provided.get("step") or entry.id) != step or not getattr(entry, "declaration", None):
             continue
-        for rec in declared_context.measure_records(registry, entity_type, slug, step, entry.declaration, entry.id).values():
+        dec = entry.declaration
+        for name, rec in declared_context.measure_records(registry, entity_type, slug, step, dec, entry.id).items():
             if rec.get("summary"):
-                return {**rec, "state_words": STATE_WORDS.get(rec.get("state") or "", NO_ENVELOPE)}
+                return {**_declared_words(dec, name, rec), "state_words": STATE_WORDS.get(rec.get("state") or "", NO_ENVELOPE)}
     return None
 
 
@@ -141,13 +163,31 @@ def declared_measure_rows(registry, entity_type: str, slug: str, step: str) -> l
         for name, rec in declared_context.measure_records(registry, entity_type, slug, step, entry.declaration, entry.id).items():
             if name == primary:
                 continue          # the results reader already returned the step's own measure
+            rec = _declared_words(entry.declaration, name, rec)
             state = rec.get("state") or ""
             words = STATE_WORDS.get(state, NO_ENVELOPE)
             out.append({"name": name, "value": rec.get("summary") or rec.get("reason") or words, "opens": None, "note": "",
                         "state": state, "state_words": words, "reason": rec.get("reason") or "",
-                        "properties": rec.get("value") or {}, "measure": name, "annotation_type": "", "run": rec.get("run")})
+                        "properties": rec.get("value") or {}, "measure": name, "annotation_type": "", "run": rec.get("run"),
+                        "capped": rec["capped"]})
         return out
     return []
+
+
+def _kind_sentence(entity_type: str, step: str, rows: list[dict]) -> str:
+    """The headline a finding, proposal, list or table declares for itself ("4 findings · high: ...", "12 proposed · 3
+    accepted", "37 tables, largest first", "20 rows × 5 columns"), or "" where the step declares none or its rows do not
+    carry the declared key field (then the step's own sentence stands: an unreadable kind is not "0")."""
+    from resource_explorer import declared_context, declared_words
+    from resource_explorer.surveyors.analysis_catalog_reader import _load
+
+    for entry in _load().get(entity_type, []):
+        provided = getattr(entry, "provided_by", None) or {}
+        if (provided.get("step") or entry.id) != step or not getattr(entry, "declaration", None):
+            continue
+        value = declared_context.library_rows({"measurement_rows": rows})
+        return declared_words.kind_headline(entry.declaration, value)
+    return ""
 
 
 def headline_reader(entity_type: str, analysis_step: str, annotation_type: str) -> Callable:
@@ -163,7 +203,10 @@ def headline_reader(entity_type: str, analysis_step: str, annotation_type: str) 
         rows = value["measurement_rows"]
         summary = _declared_summary(registry, entity_type, slug, analysis_step)
         if summary:
-            return {"label": _step_sentence(summary), "status": "info"}
+            return {"label": _step_sentence(summary), "status": "info", "capped": bool(summary.get("capped"))}
+        kind = _kind_sentence(entity_type, analysis_step, rows)
+        if kind:
+            return {"label": kind, "status": "info"}
         if len(rows) == 1:
             return {"label": _step_sentence(rows[0]), "status": "info"}
         counts = value["state_counts"]

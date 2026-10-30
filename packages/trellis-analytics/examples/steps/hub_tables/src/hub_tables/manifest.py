@@ -1,6 +1,7 @@
 """The step's manifest: the wrapper's declaration. Its version is the package's."""
 from trellis_analytics.declaration import (AbsenceSentences, AnnotationDeclaration, ConfidenceDeclaration, Declaration,
-                                           ExtentDeclaration, MeasureDeclaration)
+                                           ExtentDeclaration, MeasureDeclaration,
+                                           ProposalDeclaration)
 from trellis_analytics.manifest import StepManifest
 
 from hub_tables import __version__
@@ -43,9 +44,11 @@ MANIFEST = StepManifest(
     declaration=Declaration(
         result_kind="proposal",
         measures=[MeasureDeclaration(name="hub_tables", unit="tables referencing this one by foreign key",
-                                     as_of="asOf", value_field="Foreign Keys In"),
+                                     as_of="asOf", value_field="Foreign Keys In",
+                                     capped_field="Referenced By Is Lower Bound"),
                   MeasureDeclaration(name="hub_table_proposal", unit="tables referencing the proposed hub",
                                      as_of="asOf", value_field="Foreign Keys In",
+                                     capped_field="Referenced By Is Lower Bound",
                                      annotation=AnnotationDeclaration(type="ClassificationAnnotation"))],
         absence=AbsenceSentences(
             not_measured=("Not measured: no foreign keys are stored for this database, so hubs cannot be derived "
@@ -63,6 +66,8 @@ MANIFEST = StepManifest(
         # A degree is counted from the stored keys; where keys were partly captured it is reported as a lower bound,
         # in the result's own words ("basis"), not as a score.
         confidence=ConfidenceDeclaration(form="measured"),
+        # The hub proposal is a candidate classification a curator accepts or rejects; never a fact on its own.
+        proposal=ProposalDeclaration(candidate_field="candidate_classifications", decided_by="curator"),
         scope="member",
     ),
 )

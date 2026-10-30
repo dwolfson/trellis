@@ -1,6 +1,6 @@
 """The step's manifest: the wrapper's declaration. Its version is the package's."""
-from trellis_analytics.declaration import (AbsenceSentences, ConfidenceDeclaration, Declaration,
-                                           ExtentDeclaration, MeasureDeclaration)
+from trellis_analytics.declaration import (AbsenceSentences, BasisDeclaration, ConfidenceDeclaration, Declaration,
+                                           ExtentDeclaration, ListDeclaration, MeasureDeclaration)
 from trellis_analytics.manifest import StepManifest
 
 from statistics_freshness import __version__
@@ -40,7 +40,8 @@ MANIFEST = StepManifest(
                                      value_field="Days Since Analyze"),
                   # One value for the whole database, in a step whose rows are per table: its own scope.
                   MeasureDeclaration(name="statistics_freshness_summary", unit="tables never analyzed or stale",
-                                     as_of="asOf", value_field="Needs Attention", scope="resource")],
+                                     as_of="asOf", value_field="Needs Attention", scope="resource",
+                                     basis=BasisDeclaration(denominator_field="Tables", denominator_label="tables"))],
         absence=AbsenceSentences(
             not_measured=("Not measured: no table statistics are stored for this database, or this table's were "
                           "not read — never shown as fresh."),
@@ -60,6 +61,9 @@ MANIFEST = StepManifest(
             rows=1, order="the database as a whole", truncation="{shown} of {total} summaries shown",
             token_cost=88, citation="{analysis} · {scope} · as of {as_of}")],
         confidence=ConfidenceDeclaration(form="measured"),
+        listing=ListDeclaration(item_fields=["scope", "Statistics Status", "Days Since Analyze"],
+                                order="stale first, then never analyzed, then oldest ANALYZE first", key_field="scope",
+                                item_label="tables"),
         scope="member",
     ),
 )

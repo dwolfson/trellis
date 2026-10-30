@@ -26,6 +26,7 @@ import logging
 from trellis_analytics.declaration import CONFIDENCE_STRENGTH
 from trellis_artifact_tree.model import Rung
 
+from resource_explorer import declared_words
 from resource_explorer.publish_table import (
     _ABSENCE_OF,
     _MISSING,
@@ -279,7 +280,11 @@ def _measure_lines(dec, value: dict, run: dict, records: dict | None = None) -> 
         elif v is _MISSING:
             lines.append(f"- {m.name}: not in the stored result{when}")
         else:
-            lines.append(f"- {m.name}: {_cell(v)} {m.unit}{when}{own}")
+            # A measure that declares a basis or a cap says it in the declared words: "456 of 1,236 columns", "at least
+            # 500 rows · not derived: the count is a lower bound" (declared_words), never a bare number.
+            said = (declared_words.measure_sentence(m, source, run, allow_of=declared_words.allows_of(dec))[0]
+                    if (m.basis or m.capped_field) else "")
+            lines.append(f"- {m.name}: {said or f'{_cell(v)} {m.unit}'}{when}{own}")
     return lines
 
 
@@ -367,6 +372,12 @@ def section_rungs(analysis_id: str, dec, fact: dict, records: dict | None = None
     seen["as_of"] = as_of
     measures = _measure_lines(dec, value, run, records)
     lead = [head] + measures + ([dec.absence.sentence("measured_nothing")] if state == "nothing_found" else [])
+    cats = declared_words.categories_line(dec, value, run)
+    if cats:
+        lead.append(cats)
+    kind_line = declared_words.kind_headline(dec, value, run) if state in KNOWN_STATES else ""
+    if kind_line:
+        lead.append(f"headline: {kind_line}")
     if conf:
         lead.append(conf)
 

@@ -1,6 +1,7 @@
 """The step's manifest: the wrapper's declaration. Its version is the package's."""
 from trellis_analytics.declaration import (AbsenceSentences, ConfidenceDeclaration, Declaration, ExtentDeclaration,
-                                           MeasureDeclaration)
+                                           MeasureDeclaration,
+                                           CategoriesDeclaration)
 from trellis_analytics.manifest import StepManifest
 
 from database_staleness import __version__
@@ -60,6 +61,7 @@ MANIFEST = StepManifest(
         confidence=ConfidenceDeclaration(
             form="estimated",
             method="the change between two of PostgreSQL's row-count estimates, not a count of the rows"),
+        categories=CategoriesDeclaration(exclusive=True),
         scope="member",
     ),
 )
