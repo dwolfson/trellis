@@ -37,3 +37,11 @@ def test_empty_states_are_sentences():
 
 def test_an_import_refreshes_the_list_and_the_work_lists():
     assert "re:open-data-imported" in APP and "re:open-data-imported" in (NEXT / "admin" / "open_data.js").read_text(encoding="utf-8")
+
+
+def test_the_shortlist_panel_prices_before_the_press_and_keeps_dropped_rows_listed():
+    sl = (NEXT / "open-data-shortlist.js").read_text(encoding="utf-8")
+    assert "openDataScoutPrice(workList)" in sl and sl.index("openDataScoutPrice(workList)") < sl.index("scoutOpenData(workList)")
+    assert "res.rows.map(" in sl and "dropped" in sl                       # dropped rows are rows with a verdict, not removed
+    assert "not stated" in sl and "could not be checked" in sl
+    assert "mountShortlist(el.querySelector('[data-od-shortlist]')" in KIND
