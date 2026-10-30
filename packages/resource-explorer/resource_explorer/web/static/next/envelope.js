@@ -397,6 +397,8 @@ export function readEnvelope(entry, env, esc, tnum) {
       : (f.state === NEVER_RUN ? 'not yet run' : ((f.state || '').replace(/_/g, ' ') || 'state not recorded')),
     // A lower bound says so in a title (declared capped_field): the sentence already carries the "at least" words.
     capped: !!f.headline_capped,
+    // How the declared categories relate, said once beside the sentence (declared_words.categories_legend).
+    categories: f.headline_categories || '',
     known: !!f.is_known, neverRun: f.state === NEVER_RUN, lastRun: f.last_run_at || '', runnable: f.runnable, runnableReason: f.runnable_reason || '',
   }));
   // The row's own "the numbers behind this" opens the question's FIRST analysis. When another of RE's own analyses has

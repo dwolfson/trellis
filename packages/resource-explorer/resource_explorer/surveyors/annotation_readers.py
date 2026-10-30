@@ -24,6 +24,13 @@ STATE_WORDS = {
 NO_ENVELOPE = "no envelope"
 
 
+def _us(text):
+    """Stored step prose in US spelling (a run before 2026-10-30 wrote "analysed"); see `declared_words.us_spelling`."""
+    from resource_explorer.declared_words import us_spelling
+
+    return us_spelling(text)
+
+
 def _envelope_state(detail: dict) -> tuple[str, str, str]:
     """(state, words, reason) from the stored envelope alone."""
     props = (detail or {}).get("additionalProperties") or {}
@@ -44,7 +51,7 @@ def read_resource_measure_rows(registry, entity_type: str, slug: str, analysis_s
             "name": a.get("scope") or detail.get("scope") or "",
             # The step's own sentence for what it measured; empty when it did not measure (the reason is
             # shown beside the state words instead, once).
-            "value": a.get("summary") or "",
+            "value": _us(a.get("summary") or ""),
             "opens": None,
             "note": "",
             "state": state,
@@ -96,9 +103,9 @@ def results_reader(entity_type: str, analysis_step: str, annotation_type: str) -
 def _step_sentence(row: dict) -> str:
     """The step's own sentence for one stored result, the way the Survey tab's "Derived from the walk" reads it: the state
     words, then what the step said, and its reason when it could not measure (never a count of results)."""
-    said = row.get("summary") or row.get("value") or ""
+    said = _us(row.get("summary") or row.get("value") or "")
     out = f"{row.get('state_words') or NO_ENVELOPE} · {said}".rstrip(" ·") if said else str(row.get("state_words") or NO_ENVELOPE)
-    reason = row.get("reason")
+    reason = _us(row.get("reason"))
     return f"{out} · {reason}" if reason and row.get("state") in ("not_established", "not_applicable") else out
 
 
@@ -166,12 +173,25 @@ def declared_measure_rows(registry, entity_type: str, slug: str, step: str) -> l
             rec = _declared_words(entry.declaration, name, rec)
             state = rec.get("state") or ""
             words = STATE_WORDS.get(state, NO_ENVELOPE)
-            out.append({"name": name, "value": rec.get("summary") or rec.get("reason") or words, "opens": None, "note": "",
+            out.append({"name": name, "value": _us(rec.get("summary") or rec.get("reason") or words), "opens": None, "note": "",
                         "state": state, "state_words": words, "reason": rec.get("reason") or "",
                         "properties": rec.get("value") or {}, "measure": name, "annotation_type": "", "run": rec.get("run"),
                         "capped": rec["capped"]})
         return out
     return []
+
+
+def _categories_legend(entity_type: str, step: str, summary: dict | None) -> str:
+    """The legend a step line shows for the categories its declaration declares ("each item is in one category", "categories
+    overlap · not stacked or added up"), or ""."""
+    from resource_explorer import declared_words
+    from resource_explorer.surveyors.analysis_catalog_reader import _load
+
+    for entry in _load().get(entity_type, []):
+        provided = getattr(entry, "provided_by", None) or {}
+        if (provided.get("step") or entry.id) == step and getattr(entry, "declaration", None):
+            return declared_words.categories_legend(entry.declaration, (summary or {}).get("value") or {})
+    return ""
 
 
 def _kind_sentence(entity_type: str, step: str, rows: list[dict]) -> str:
@@ -202,16 +222,18 @@ def headline_reader(entity_type: str, analysis_step: str, annotation_type: str) 
             return None
         rows = value["measurement_rows"]
         summary = _declared_summary(registry, entity_type, slug, analysis_step)
+        legend = _categories_legend(entity_type, analysis_step, summary)
         if summary:
-            return {"label": _step_sentence(summary), "status": "info", "capped": bool(summary.get("capped"))}
+            return {"label": _step_sentence(summary), "status": "info", "capped": bool(summary.get("capped")),
+                    "categories": legend}
         kind = _kind_sentence(entity_type, analysis_step, rows)
         if kind:
-            return {"label": kind, "status": "info"}
+            return {"label": kind, "status": "info", "categories": legend}
         if len(rows) == 1:
-            return {"label": _step_sentence(rows[0]), "status": "info"}
+            return {"label": _step_sentence(rows[0]), "status": "info", "categories": legend}
         counts = value["state_counts"]
         order = [*STATE_WORDS.values(), NO_ENVELOPE]
         parts = [f"{counts[w]} {w}" for w in order if counts.get(w)]
         n = len(rows)
-        return {"label": f"{n} results: " + " · ".join(parts), "status": "info"}
+        return {"label": f"{n} results: " + " · ".join(parts), "status": "info", "categories": legend}
     return headline
