@@ -27,6 +27,7 @@ def declaration(**over) -> Declaration:
     body = {"result_kind": "list", "absence": ABSENCE, "scope": "resource", "answers": [],
             "measures": [{"name": "table_count", "unit": "tables", "as_of": "run.read_snapshot",
                           "value_field": "tables[]"}],
+            "listing": {"item_fields": ["table", "rows"], "order": "by rows, most first", "key_field": "table"},
             "extents": [EXTENT], "confidence": {"form": "measured"}, **over}
     return Declaration.model_validate(body)
 

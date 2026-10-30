@@ -1,6 +1,7 @@
 """The step's manifest: the wrapper's declaration. Its version is the package's."""
 from trellis_analytics.declaration import (AbsenceSentences, AnnotationDeclaration, ConfidenceDeclaration,
-                                           Declaration, ExtentDeclaration, MeasureDeclaration)
+                                           Declaration, ExtentDeclaration, MeasureDeclaration,
+                                           CategoriesDeclaration)
 from trellis_analytics.manifest import StepManifest
 
 from fs_activity import __version__
@@ -57,6 +58,8 @@ MANIFEST = StepManifest(
             citation="{analysis} · {scope} · as of {as_of}")],
         # Times read from the walk's stat and aged exactly; a mount that does not record reads is said, not guessed.
         confidence=ConfidenceDeclaration(form="measured"),
+        # A file is hot, warm or cold, never two of them.
+        categories=CategoriesDeclaration(exclusive=True),
         scope="resource",
     ),
 )

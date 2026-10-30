@@ -933,6 +933,11 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: list
+      listing:
+        item_fields: [schema_name, table_name, table_type, column_count, row_count]
+        order: 'by schema, then table'
+        key_field: table_name
+        item_label: tables, views and foreign tables
       measures:
       - name: relations
         unit: tables, views and foreign tables
@@ -997,6 +1002,8 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: distribution
+      categories:
+        exclusive: true
       measures:
       - name: total_rows
         unit: rows
@@ -1056,6 +1063,9 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: finding
+      finding:
+        what_field: privilege_type
+        where_field: table_name
       measures:
       - name: roles
         unit: roles
@@ -1238,6 +1248,8 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: table
+      table:
+        columns: [replication, wal_archiving, backup_tool_signals, clustering]
       result_kind_note: 'Four unrelated status sections (replication, WAL archiving, backup tools, clustering), each
         a few facts with no common measure: no list of like items, no single number.'
       measures:
@@ -1290,6 +1302,11 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: list
+      listing:
+        item_fields: [kind, extname, extversion, srvname, fdwname, schema_name, table_name, pubname, subname]
+        order: 'by kind, then name'
+        key_field: kind
+        item_label: external dependencies
       measures:
       - name: extensions
         unit: extensions
@@ -1375,6 +1392,9 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: proposal
+      proposal:
+        candidate_field: kind
+        decided_by: curator
       measures:
       - name: kind_confidence
         unit: confidence points (0-95, a rule score)
@@ -1436,6 +1456,8 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: graph
+      categories:
+        exclusive: true
       measures:
       - name: foreign_key_edges
         unit: foreign-key edges
@@ -1515,6 +1537,11 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: list
+      listing:
+        item_fields: [table, score, fk_in_degree, row_count]
+        order: 'highest score first'
+        key_field: table
+        item_label: starting tables
       measures:
       - name: ranked_tables
         unit: tables
@@ -1572,6 +1599,11 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: list
+      listing:
+        item_fields: [schema, table, status, days_since_analyze]
+        order: 'stale first, then never analyzed, then not read'
+        key_field: table
+        item_label: tables needing attention
       measures:
       - name: stale_tables
         unit: tables
@@ -1644,6 +1676,9 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: proposal
+      proposal:
+        candidate_field: grain_statement
+        decided_by: curator
       measures:
       - name: determined_grains
         unit: tables
@@ -1705,6 +1740,11 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: list
+      listing:
+        item_fields: [slug, verdict, column_jaccard]
+        order: 'most similar first'
+        key_field: slug
+        item_label: comparable databases
       measures:
       - name: best_similarity
         unit: Jaccard similarity of columns (0-1)
@@ -1762,23 +1802,35 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: finding
+      finding:
+        what_field: explanation
+        where_field: item
       measures:
       - name: tables_without_primary_key
         unit: tables
         as_of: run.read_snapshot
         value_field: checks.tables_without_primary_key.count
+        basis:
+          denominator_field: checks.tables_without_primary_key.total
+          denominator_label: tables
         annotation:
           type: ResourceMeasureAnnotation
       - name: tables_without_foreign_key
         unit: tables
         as_of: run.read_snapshot
         value_field: checks.tables_without_foreign_key.count
+        basis:
+          denominator_field: checks.tables_without_foreign_key.total
+          denominator_label: tables
         annotation:
           type: ResourceMeasureAnnotation
       - name: tables_without_comment
         unit: tables
         as_of: run.read_snapshot
         value_field: checks.tables_without_comment.count
+        basis:
+          denominator_field: checks.tables_without_comment.total
+          denominator_label: tables
         annotation:
           type: ResourceMeasureAnnotation
       - name: column_comment_coverage
@@ -1845,11 +1897,17 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: proposal
+      proposal:
+        candidate_field: matched_display_name
+        decided_by: curator
       measures:
       - name: established_columns
         unit: columns
         as_of: surveyed_at
         value_field: established_count
+        basis:
+          denominator_field: column_count
+          denominator_label: columns
         annotation:
           type: DataClassAnnotation
       - name: columns_examined
@@ -1902,6 +1960,9 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: table
+      table:
+        columns: [column_path, record_ct, distinct_value_ct, null_value_ct, zero_length_ct, min_date, max_date]
+        key_fields: [column_path]
       result_kind_note: 'A dozen different counts per column (records, values, distinct, nulls, empties, dates): not
         one measure across items, so not a distribution; a grid of measures.'
       measures:
@@ -1909,6 +1970,9 @@ database_analyses:
         unit: columns
         as_of: surveyed_at
         value_field: measured_count
+        basis:
+          denominator_field: column_count
+          denominator_label: columns
         annotation:
           type: ResourceProfileAnnotation
       - name: columns
@@ -1955,6 +2019,10 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: proposal
+      proposal:
+        candidate_field: check_key
+        decided_by: curator
+        state_field: state
       measures:
       - name: checks_failed
         unit: checks
@@ -2025,6 +2093,11 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: list
+      listing:
+        item_fields: [qualified_name, change, per_day]
+        order: 'most rows written per day first'
+        key_field: qualified_name
+        item_label: tables
       measures:
       - name: tables_active
         unit: tables
@@ -2096,6 +2169,11 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: list
+      listing:
+        item_fields: [change, qualified_name, old_type, new_type]
+        order: 'added, then dropped, then retyped'
+        key_field: qualified_name
+        item_label: column changes
       measures:
       - name: columns_added
         unit: columns
@@ -2161,6 +2239,11 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: list
+      listing:
+        item_fields: [change, grant]
+        order: 'PUBLIC grants first'
+        key_field: grant
+        item_label: grant changes
       measures:
       - name: grants_added
         unit: grants
@@ -2242,6 +2325,9 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: proposal
+      proposal:
+        candidate_field: term
+        decided_by: curator
       measures:
       - name: subject_terms
         unit: candidate terms
@@ -2398,6 +2484,8 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: finding
+      finding:
+        what_field: verdict
       measures:
       - name: fit_confidence
         unit: confidence points (0-100, a rule score)
@@ -2517,6 +2605,9 @@ database_analyses:
     declaration:
       built: false
       result_kind: finding
+      finding:
+        what_field: passage
+        where_field: source
       measures:
       - name: evidence_found
         unit: passages of evidence
@@ -2567,6 +2658,9 @@ database_analyses:
     declaration:
       built: false
       result_kind: proposal
+      proposal:
+        candidate_field: term
+        decided_by: curator
       measures:
       - name: terms_suggested
         unit: glossary terms
@@ -2612,11 +2706,17 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: proposal
+      proposal:
+        candidate_field: matched_display_name
+        decided_by: curator
       measures:
       - name: established_columns
         unit: columns
         as_of: surveyed_at
         value_field: established_count
+        basis:
+          denominator_field: column_count
+          denominator_label: columns
         annotation:
           type: RelationshipAnnotation
       - name: columns_examined
@@ -2669,6 +2769,11 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: list
+      listing:
+        item_fields: [column, family, label]
+        order: 'structured first, then by name'
+        key_field: column
+        item_label: columns
       measures:
       - name: nested_columns
         unit: columns
@@ -2713,6 +2818,8 @@ database_analyses:
       native_process_ref: null
     declaration:
       result_kind: graph
+      categories:
+        exclusive: false
       measures:
       - name: views
         unit: views
@@ -2762,6 +2869,8 @@ database_analyses:
       native_process_ref: ["database", "PostgreSQL Relational Database"]
     declaration:
       result_kind: table
+      table:
+        columns: [status]
       result_kind_note: 'A trigger for Egeria''s native survey: its results arrive later as Egeria''s own annotations,
         materialised into the detail tables, not as one shape of its own.'
       measures:
@@ -2862,6 +2971,8 @@ database_analyses:
       answers:
       - Q-0086
       scope: member
+      categories:
+        exclusive: true
   - id: database_staleness
     name: Database Staleness
     description: 'Rows changed per table since the last survey: compares the latest two row-count snapshots
@@ -2940,6 +3051,8 @@ database_analyses:
       answers:
       - Q-0041
       scope: member
+      categories:
+        exclusive: true
   - id: hub_tables
     name: Hub Tables
     description: Foreign-key degree in and out per table, from the keys Resource Explorer stored, and the
@@ -2988,12 +3101,14 @@ database_analyses:
         value_field: Foreign Keys In
         annotation:
           type: ResourceMeasureAnnotation
+        capped_field: Referenced By Is Lower Bound
       - name: hub_table_proposal
         unit: tables referencing the proposed hub
         as_of: asOf
         value_field: Foreign Keys In
         annotation:
           type: ClassificationAnnotation
+        capped_field: Referenced By Is Lower Bound
       absence:
         not_measured: 'Not measured: no foreign keys are stored for this database, so hubs cannot be derived
           — not a finding that it has no hubs.'
@@ -3020,6 +3135,9 @@ database_analyses:
       - Q-0072
       - Q-0068
       scope: member
+      proposal:
+        candidate_field: candidate_classifications
+        decided_by: curator
   - id: statistics_freshness
     name: Table Statistics Freshness
     description: 'How old each table''s planner statistics are: the age of the last ANALYZE and VACUUM,
@@ -3072,6 +3190,9 @@ database_analyses:
         annotation:
           type: ResourceMeasureAnnotation
         scope: resource
+        basis:
+          denominator_field: Tables
+          denominator_label: tables
       absence:
         not_measured: 'Not measured: no table statistics are stored for this database, or this table''s
           were not read — never shown as fresh.'
@@ -3113,6 +3234,14 @@ database_analyses:
       - Q-0073
       - Q-0062
       scope: member
+      listing:
+        item_fields:
+        - scope
+        - Statistics Status
+        - Days Since Analyze
+        order: stale first, then never analyzed, then oldest ANALYZE first
+        key_field: scope
+        item_label: tables
   # END GENERATED user steps (database)
 
 filesystem_analyses:
@@ -3304,6 +3433,8 @@ filesystem_analyses:
       answers:
       - Q-0107
       scope: resource
+      categories:
+        exclusive: true
   - id: fs_change_rates
     name: File System Change
     description: Files added, removed and modified, and the growth in bytes, between the latest two walks
@@ -3640,6 +3771,9 @@ open_data_analyses:
       native_process_ref: null
     declaration:
       result_kind: table
+      table:
+        columns: [title, outcome, words]
+        key_fields: [title]
       result_kind_note: "One row per dataset of the work list with its outcome (scouted, or could not be scouted and why); none of the other kinds fits a per-dataset outcome list."
       measures:
       - name: datasets_scouted
