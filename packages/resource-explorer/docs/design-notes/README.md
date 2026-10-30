@@ -16,7 +16,7 @@ For the user-facing guides, see [`../README.md`](../README.md).
 | where | what | count (2026-10-30) |
 |---|---|---:|
 | [`implemented/`](implemented/) | finished-work records (`*-IMPLEMENTED.md`), plus shipped notes that an `*-IMPLEMENTED` note cites | 174 |
-| [`evidence/`](evidence/) | audits, probes, measurements and their data files | 60 |
+| [`evidence/`](evidence/) | audits, probes, measurements and their data files | 62 |
 | [`exchange/`](exchange/) | answered asks, replies, reviews, specs and briefs, moved out of the root 2026-10-15 | 59 |
 | [`rulings/`](rulings/) | rulings that later notes build on | 3 |
 | [`wireframes/`](wireframes/), [`screenshots/`](screenshots/) | the designer's exports | |
@@ -100,9 +100,9 @@ Engine host, Curate and the /next UI:
 - [PLAN-CARDS-AND-TILES.md](PLAN-CARDS-AND-TILES.md): cards and tiles across /next. C1 is built (PR #782)
 - [PLAN-ANALYSIS-GAPS-REPOS-AND-DATABASES.md](PLAN-ANALYSIS-GAPS-REPOS-AND-DATABASES.md): closing the repository and database analysis gaps
 
-## Added since 2026-10-28 and not built yet
+## Added since 2026-10-28: designs, reviews and evidence
 
-These are designs and reviews from 2026-10-29 and 2026-10-30:
+These are designs, reviews and evidence from 2026-10-29 and 2026-10-30. Most are not built yet:
 
 - [DESIGN-ANALYTIC-LIFECYCLE-2026-10-30.md](DESIGN-ANALYTIC-LIFECYCLE-2026-10-30.md): where steps and routines live and how they are installed, versioned and retired. Design only; the decisions are in its section 7
 - [REVIEW-EXTENSIBILITY-VS-WORKSPACES-603-2026-10-30.md](REVIEW-EXTENSIBILITY-VS-WORKSPACES-603-2026-10-30.md): the review of the egeria-workspaces extensibility proposal (#603) against RE's own designs
@@ -110,6 +110,11 @@ These are designs and reviews from 2026-10-29 and 2026-10-30:
 - [DESIGN-LOCAL-DASHBOARDS-DECLARED-ANALYTICS.md](DESIGN-LOCAL-DASHBOARDS-DECLARED-ANALYTICS.md): local dashboards from declared analytics and report specs
 - [DESIGN-TESTGEN-DEPLOYMENT-AS-DATA-CHANNEL-2026-10-30.md](DESIGN-TESTGEN-DEPLOYMENT-AS-DATA-CHANNEL-2026-10-30.md): reading an existing TestGen installation's profiles and results. **Deferred to the backlog by the project owner, 2026-10-30**, with its slices TG1 to TG3 (see `Backlog.md`)
 - [AUDIT-USER-GUIDE-2026-10-28.md](AUDIT-USER-GUIDE-2026-10-28.md): the user guide read against the running Explorer. A record, not a plan
+- [DESIGN-RESOURCE-COMPARISON-QUESTIONS-2026-10-30.md](DESIGN-RESOURCE-COMPARISON-QUESTIONS-2026-10-30.md): comparison questions for Chat: is database 1 the same as database 2, a subset or a superset
+- [DESIGN-ADOPT-BY-ENDPOINT-D1-2026-10-30.md](DESIGN-ADOPT-BY-ENDPOINT-D1-2026-10-30.md): D1, adopting an existing database element in Egeria by its endpoint, and reading Egeria's duplicate links
+- [DESIGN-ANALYTIC-LIBRARY-SPLIT-2026-10-30.md](DESIGN-ANALYTIC-LIBRARY-SPLIT-2026-10-30.md): what would move if the Analytic Library were split out of trellis, and how versions and loading would work
+- [REVIEW-FILES-STATE-2026-10-30.md](REVIEW-FILES-STATE-2026-10-30.md): a read-only review of Files in the running Explorer
+- Calibration reports, in [`evidence/`](evidence/): [adventureworks, 2026-10-29](evidence/calibration-adventureworks-2026-10-29.md) and [coco_pharma, 2026-10-30](evidence/calibration-coco_pharma-2026-10-30.md): RE's quality results compared with TestGen's on the same data
 
 ## Proposals: designed, not built
 

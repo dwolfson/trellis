@@ -66,6 +66,8 @@ The full list of 89, and what each one needs, is in `INVENTORY-TESTGEN-TEST-TYPE
 
 It was checked. In October 2026 the RE and TestGen results were compared on the same two databases, restored from a dump so nothing changed during the run. TestGen's own release 5.134.0 was used.
 
+The two reports are kept in the repo: [calibration-adventureworks-2026-10-29.md](design-notes/evidence/calibration-adventureworks-2026-10-29.md) and [calibration-coco_pharma-2026-10-30.md](design-notes/evidence/calibration-coco_pharma-2026-10-30.md).
+
 - **adventureworks:** 1,150 checks proposed by both. The profile numbers agree on every count. Of 1,150 results compared, 1,145 agree and 5 disagree. All 5 are duplicate-row checks on tables with an XML column. TestGen reports an error. RE leaves the XML column out of the comparison, says so, and passes.
 - **coco_pharma:** 2,184 checks proposed by both. Of the results compared, all 2,184 agree and none disagree.
 - **Where RE does not decide:** a check that needs a measure RE does not take yet says "not established" and names what is missing. It never reads as a pass. This affects pattern matches, list-of-values checks and month or week gaps.
