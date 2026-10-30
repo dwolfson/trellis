@@ -36,7 +36,7 @@ A check's **detailed description** says where its idea came from. The short name
 - **"Implements TestGen test type <id>"** means RE runs TestGen's own definition, unchanged.
 - **"Inspired by TestGen's test type <id>"** means RE proposed the check itself, or the definition has changed since it was copied.
 
-The same words go into the description of the data quality rule in Egeria. RE's own words never say "catalogue": the spelling is **catalog**.
+The same words go into the description of the data quality rule in Egeria.
 
 ### How much of TestGen is ported
 

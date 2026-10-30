@@ -160,7 +160,7 @@ ignored:** every declaration model forbids extra keys.
 | `display_name`, `description`, `returns` | the card's name and text. Say in the description what "not measured" means for this step |
 | `stage` | RE's stage for the card, default `analysis` |
 | `perspectives`, `purposes`, `family`, `tags` | how the card is filtered and grouped |
-| `questions` | question **ids** from RE's question catalogue (`Q-0041`), never their wording. An unknown id warns and is kept |
+| `questions` | question **ids** from RE's question catalog (`Q-0041`), never their wording. An unknown id warns and is kept |
 | `request_type` | the engine-host request type. Default `re-<name>`. It may not take a built-in step's |
 | `nothing_to_derive_guard` | what an Egeria run completes with when there is nothing to derive. Use `survey-completed` when an honest absence is a complete answer |
 | `declaration` | see below. A manifest without one still loads and runs, but gets no publish table and no Chat |
@@ -251,9 +251,9 @@ RE's own entries, and a library step with code has no use for it.
 
 ---
 
-## 3. The catalogue entry: merged for you, no commit in RE
+## 3. The catalog entry: merged for you, no commit in RE
 
-RE shows an analysis card only for an analysis in its catalogue. For library steps **you do not write or commit that
+RE shows an analysis card only for an analysis in its catalog. For library steps **you do not write or commit that
 entry any more.** When RE reads `analysis_catalog.yaml` it also reads every installed `trellis.analytics` manifest and
 merges it in, so installing the package is enough: the card, the run, the declaration, Chat's compile and the publish
 table all see the step after RE restarts. The reasoning is in
@@ -277,14 +277,14 @@ Name every library step package, one `--with-editable` each, or the block is reg
 It checks the committed fallback block against the generator, and each entry against its manifest. It guards the
 fallback, not the card: a stale fallback no longer changes what an installed step shows.
 
-**A question your step declares.** Name a question the catalogue already holds by its id in `questions`, and Chat
+**A question your step declares.** Name a question the catalog already holds by its id in `questions`, and Chat
 routes by it with no configdata row. A **new** question goes in the manifest's `question_defs`, each with its text and an id under
 your step's own prefix (`my_step:Q1`): `question_defs=[QuestionDeclaration(id="my_step:Q1", question="…")]`. RE merges it into
-its question catalogue while the package is installed (owner, 2026-10-29), with no central id and no configdata row; the id
+its question catalog while the package is installed (owner, 2026-10-29), with no central id and no configdata row; the id
 is added to your `questions` for you. An id outside your prefix, or repeated, makes the manifest fail to load, with that sentence.
 
 **On the Questions tab.** Every question your manifest names (`questions`, or `question_defs`) lists your step among the
-analyses that answer it, after RE's own, in catalogue order: a question RE's analysis and your step both answer shows both.
+analyses that answer it, after RE's own, in catalog order: a question RE's analysis and your step both answer shows both.
 The row's line for your step is your step's own sentence, the same `state · summary` the Survey tab shows for the same
 stored rows (a step with one result says it; one with a resource-scoped summary measure says that; only several plain
 results are counted). "The numbers behind this" lists each stored result, and each further declared measure on its own row
@@ -297,14 +297,14 @@ Ways to check that RE sees the step. RE has no admin page or CLI verb that lists
 - `python -c "from trellis_analytics.discovery import discover; print(sorted(discover()))"` lists
   every installed manifest. A broken entry point raises here, naming itself.
 - Your step's card appears on a database, under the stage its manifest names. A card that fails with
-  "step not installed here" means the catalogue has the entry but this environment lacks the package.
+  "step not installed here" means the catalog has the entry but this environment lacks the package.
 - If the engine host runs, its start-up log names every installed step per host, with a missing list for each:
   `library steps · Egeria host: change_rates, hub_tables, … (none missing) · Files host: fs_activity, fs_permissions, … (none missing)`.
   Database steps are the Egeria host's; file-system steps run under the Files host. A step the engine host
   cannot publish logs `not offered to Egeria: <why>`, listing everything the step emits and which of those types block
   the offer. The types we want Egeria to support are tracked in
   [`EGERIA-ANNOTATION-TYPES-WANTED.md`](design-notes/EGERIA-ANNOTATION-TYPES-WANTED.md).
-- An installed step with no catalogue entry (its manifest was refused, for instance a built-in's id) logs a warning.
+- An installed step with no catalog entry (its manifest was refused, for instance a built-in's id) logs a warning.
   It can run from a Survey Definition, but has no card.
 - Once a survey has run, the step's declared measures appear as rows in Curate's publish table (§5).
 
@@ -428,7 +428,7 @@ written confidence method, one extent and a question named by id.
 3. Declare in full: units, as-ofs, value fields, four absence sentences, confidence with a written
    method, extents, scope, and `questions` by id.
 4. Test the four states against a scratch registry, never the shared one.
-5. Nothing to commit in RE for the card: installed manifests merge into the catalogue. Optionally run
+5. Nothing to commit in RE for the card: installed manifests merge into the catalog. Optionally run
    `generate_external_step_entries.py` to refresh the fallback entry, and the engine-host generator if Egeria
    should start the step.
 6. Install the package where RE and any Prefect worker run, then restart RE.

@@ -1,6 +1,6 @@
 # Design notes: an index by status
 
-**Status:** index, hand-maintained. Last checked against `origin/main` on 2026-10-28.
+**Status:** index, hand-maintained. Last checked against `origin/main` at `aacdfaff` on 2026-10-30.
 
 This folder holds Resource Explorer's design record: proposals, the notes written as work was built,
 the evidence behind decisions, and the exchange with the designer. This index groups the notes in
@@ -13,10 +13,10 @@ For the user-facing guides, see [`../README.md`](../README.md).
 
 ## How the folder is laid out
 
-| where | what | count (2026-10-28) |
+| where | what | count (2026-10-30) |
 |---|---|---:|
 | [`implemented/`](implemented/) | finished-work records (`*-IMPLEMENTED.md`), plus shipped notes that an `*-IMPLEMENTED` note cites | 174 |
-| [`evidence/`](evidence/) | audits, probes, measurements and their data files | 52 |
+| [`evidence/`](evidence/) | audits, probes, measurements and their data files | 60 |
 | [`exchange/`](exchange/) | answered asks, replies, reviews, specs and briefs, moved out of the root 2026-10-15 | 59 |
 | [`rulings/`](rulings/) | rulings that later notes build on | 3 |
 | [`wireframes/`](wireframes/), [`screenshots/`](screenshots/) | the designer's exports | |
@@ -37,8 +37,38 @@ The conventions come from `DESIGN-NOTES-MOVE-IMPLEMENTED.md`:
 
 Each of these notes stays in the root because it has no `*-IMPLEMENTED` twin.
 
+Quality and TestGen (the user guide is [`../testgen-integration-guide.md`](../testgen-integration-guide.md)):
+
 - [DESIGN-QUALITY-B1A-BASELINE-MATCH.md](DESIGN-QUALITY-B1A-BASELINE-MATCH.md): baseline match on the measures RE profiles, opt-in per table, and the TestGen-only import (PR #887)
 - [DESIGN-QUALITY-Q6-RECENCY.md](DESIGN-QUALITY-Q6-RECENCY.md): Recency, the date branch of the functional-type inference, and Future_Date_1Y (PR #880)
+- [DESIGN-QUALITY-Q5-DATA-QUALITY-RULE.md](DESIGN-QUALITY-Q5-DATA-QUALITY-RULE.md): accepted checks published as Egeria `DataQualityRule`s (PR #892), with the Publish control on Curate (PR #938)
+- [DESIGN-QUALITY-Q3-BATCH-AND-SCHEDULE.md](DESIGN-QUALITY-Q3-BATCH-AND-SCHEDULE.md): the quality survey across a work list, priced first, and on a schedule (PR #894)
+- [DESIGN-QUALITY-PROFILE-1B.md](DESIGN-QUALITY-PROFILE-1B.md): profile 1b, the numeric, length, boolean and date-day measures, and the baseline checks that use them (PR #893)
+- [DESIGN-QUALITY-STEPS-4-5-DUPE-ROWS-AND-DRIFT.md](DESIGN-QUALITY-STEPS-4-5-DUPE-ROWS-AND-DRIFT.md): duplicate rows and the schema-drift checks (PR #910)
+- [DESIGN-QUALITY-STEP-6-FUNCTIONAL-TYPE-INFERENCE.md](DESIGN-QUALITY-STEP-6-FUNCTIONAL-TYPE-INFERENCE.md): the rest of the column-type inference and the 19 checks that read it (PR #918)
+- [DESIGN-QUALITY-STEP-7-SAMPLED-TEXT-SHAPE.md](DESIGN-QUALITY-STEP-7-SAMPLED-TEXT-SHAPE.md): sampled text shape and the checks that read it
+- [DESIGN-QUALITY-STEP-7B-TEXT-INFERENCE.md](DESIGN-QUALITY-STEP-7B-TEXT-INFERENCE.md): the text branches of the column-type inference
+- [DESIGN-QUALITY-STEP-8-HASHES-AND-FREQUENT-VALUES.md](DESIGN-QUALITY-STEP-8-HASHES-AND-FREQUENT-VALUES.md): value hashes (off by default), frequent values, and the three query checks (PR #923)
+- [DESIGN-VALUE-PROFILE-SCREEN-2026-10-30.md](DESIGN-VALUE-PROFILE-SCREEN-2026-10-30.md): the Value profile tab (PRs #930 and #931)
+- [DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md](DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md): the first slice and decisions D1 to D6, with the 2026-10-30 addendum
+- [DESIGN-QUALITY-AT-SCALE-AND-TESTGEN.md](DESIGN-QUALITY-AT-SCALE-AND-TESTGEN.md): the quality slice plan. Q2 to Q6 and B1a are merged
+- [DESIGN-QUALITY-Q4-PORT-PLAN-AND-CALIBRATION.md](DESIGN-QUALITY-Q4-PORT-PLAN-AND-CALIBRATION.md): the port plan on the TestGen inventory. 68 of 89 types are ported; the monitors are not
+
+Declared extensibility (the reference is [`../extending-with-analyses.md`](../extending-with-analyses.md); the how-to is the [tutorial](../../../trellis-analytics/docs/TUTORIAL-ADD-AN-ANALYTIC-STEP-2026-10-30.md)):
+
+- [DESIGN-DECLARED-EXTENSIBILITY-RENDERING-CHAT-CONFIDENCE.md](DESIGN-DECLARED-EXTENSIBILITY-RENDERING-CHAT-CONFIDENCE.md): one declaration, three consumers. The parent design
+- [DECLARED-EXTENSIBILITY-SLICE1-PR1-GAPS.md](DECLARED-EXTENSIBILITY-SLICE1-PR1-GAPS.md): slice 1, the declaration (PR #885)
+- [DECLARED-EXTENSIBILITY-SLICE1-PR2-PUBLISH-TABLE.md](DECLARED-EXTENSIBILITY-SLICE1-PR2-PUBLISH-TABLE.md): slice 1, the Curate publish table (PR #886)
+- [DECLARED-EXTENSIBILITY-SLICE2-CHAT-COMPILE.md](DECLARED-EXTENSIBILITY-SLICE2-CHAT-COMPILE.md): slice 2, Chat reads the declaration (PR #899)
+- [DESIGN-STEP-MANIFESTS-MERGED-AT-READ-TIME.md](DESIGN-STEP-MANIFESTS-MERGED-AT-READ-TIME.md): installed step manifests merge into the analysis catalog when it is read
+
+Files and work lists:
+
+- [BRIEF-FILES-QUESTIONS-AND-ANALYSES-TO-RETIRE-CLASSIC.md](BRIEF-FILES-QUESTIONS-AND-ANALYSES-TO-RETIRE-CLASSIC.md), with the build notes [FILES-STEP-6-DERIVED-STEPS-BUILD-NOTE.md](FILES-STEP-6-DERIVED-STEPS-BUILD-NOTE.md) and [FILES-STEPS-7-8-BUILD-NOTE.md](FILES-STEPS-7-8-BUILD-NOTE.md): the Files analyses and RE's own file-system survey report (PRs #905 and after)
+- [DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-KINDS.md](DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-KINDS.md): work lists as a winnowing bench. The first slices are built; the set-steps section arrived in PR #944
+
+Engine host, Curate and the /next UI:
+
 - [DESIGN-PUBLISHING-COLUMN-VERDICTS.md](DESIGN-PUBLISHING-COLUMN-VERDICTS.md): Curate's Publish sends the stored per-column verdicts
 - [DESIGN-ENGINE-HOST-GOVERNANCE-ENGINE-API.md](DESIGN-ENGINE-HOST-GOVERNANCE-ENGINE-API.md): engine host on the Governance Engine view service (the designer's words, Q4, are still open)
 - [DESIGN-COORDINATED-RUN-CREDENTIAL.md](DESIGN-COORDINATED-RUN-CREDENTIAL.md): one-run credential for Egeria-coordinated runs (the designer's words, Q3, are still placeholders)
@@ -48,42 +78,17 @@ Each of these notes stays in the root because it has no `*-IMPLEMENTED` twin.
 - [PLAN-PREFECT-OR-ALTERNATIVE.md](PLAN-PREFECT-OR-ALTERNATIVE.md): the orchestration decision. The per-run engine choice is recorded in `ENGINE-CHOICE-IMPLEMENTED.md`
 - [DESIGN-INTERFACE-SURFACE-IMPLEMENTED-RUNG.md](DESIGN-INTERFACE-SURFACE-IMPLEMENTED-RUNG.md): the interface ladder's missing rung. Its status line says "design only", and code cites it. It stays in the root by an owner decision recorded in `DESIGN-NOTES-MOVE-IMPLEMENTED.md`
 
-## In progress: built in part, or on a branch in today's gate
+## In progress: built in part, or waiting on a decision
 
-**Do not edit the notes marked ⚑.** Open branches change them on 2026-10-28, so an edit here would
-conflict with those branches.
-
-Quality and TestGen (the user guide is [`../testgen-integration-guide.md`](../testgen-integration-guide.md)):
-
-- [DESIGN-QUALITY-AT-SCALE-AND-TESTGEN.md](DESIGN-QUALITY-AT-SCALE-AND-TESTGEN.md): the quality slice plan. Q2 (#816), the accept flow (#822), Q6 (#880) and B1a (#887) are merged
-- [DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md](DESIGN-VALUE-PROFILE-AND-QUALITY-CHECKS.md): value profile and quality checks for databases
-- ⚑ [DESIGN-QUALITY-Q4-PORT-PLAN-AND-CALIBRATION.md](DESIGN-QUALITY-Q4-PORT-PLAN-AND-CALIBRATION.md): the port plan on the TestGen inventory. The profile-1b branch edits it
-- ⚑ [DESIGN-QUALITY-Q5-DATA-QUALITY-RULE.md](DESIGN-QUALITY-Q5-DATA-QUALITY-RULE.md): accepted checks as Egeria `DataQualityRule`s. Branch `claude/re-quality-q5-dqrule-publish`
-- [DESIGN-QUALITY-Q5-ANCHORING-AND-DATA-CONTRACTS.md](DESIGN-QUALITY-Q5-ANCHORING-AND-DATA-CONTRACTS.md): where a published rule is anchored, and reading and testing against Egeria's data contracts. Design only, owner questions open
-- ⚑ `DESIGN-QUALITY-Q3-BATCH-AND-SCHEDULE.md`: batch and schedule over a work list. Only on branch `claude/re-quality-q3-batch-schedule` so far
-- ⚑ `DESIGN-QUALITY-PROFILE-1B.md`: profile 1b. Only on branch `claude/re-quality-profile-1b-on-q5` so far
-- [INTEGRATION-TESTGEN-RE-EGERIA.md](INTEGRATION-TESTGEN-RE-EGERIA.md) and [INVENTORY-TESTGEN-TEST-TYPES-MAPPED.md](INVENTORY-TESTGEN-TEST-TYPES-MAPPED.md): reference for the above
+- [DESIGN-QUALITY-Q5-ANCHORING-AND-DATA-CONTRACTS.md](DESIGN-QUALITY-Q5-ANCHORING-AND-DATA-CONTRACTS.md): where a published rule is anchored, and reading and testing against Egeria's data contracts. The owner accepted its recommendations. The Egeria-side build is not done
+- [DESIGN-QUALITY-B1D-MONITORS.md](DESIGN-QUALITY-B1D-MONITORS.md): trend monitors (volume and freshness) as simple stated rules. Design accepted, not built
+- [INTEGRATION-TESTGEN-RE-EGERIA.md](INTEGRATION-TESTGEN-RE-EGERIA.md) and [INVENTORY-TESTGEN-TEST-TYPES-MAPPED.md](INVENTORY-TESTGEN-TEST-TYPES-MAPPED.md): reference for the quality notes above. The inventory still says "Validity maps to Conformity"; the owner's later ruling is Accuracy (see the Q5 note)
 - [SPEC-PYEGERIA-DATA-QUALITY-RULE.md](SPEC-PYEGERIA-DATA-QUALITY-RULE.md): the pyegeria convenience API that Q5 would use. Not implemented
-
-Declared extensibility (the user guide is [`../extending-with-analyses.md`](../extending-with-analyses.md)):
-
-- [DESIGN-DECLARED-EXTENSIBILITY-RENDERING-CHAT-CONFIDENCE.md](DESIGN-DECLARED-EXTENSIBILITY-RENDERING-CHAT-CONFIDENCE.md): one declaration, three consumers. The parent design
-- ⚑ [DECLARED-EXTENSIBILITY-SLICE1-PR1-GAPS.md](DECLARED-EXTENSIBILITY-SLICE1-PR1-GAPS.md): slice 1, the declaration (PR #885). Branch `claude/re-ext-slice2-chat-compile` edits it
-- ⚑ [DECLARED-EXTENSIBILITY-SLICE1-PR2-PUBLISH-TABLE.md](DECLARED-EXTENSIBILITY-SLICE1-PR2-PUBLISH-TABLE.md): slice 1, the Curate publish table (PR #886). Branch `claude/re-ext-publish-table-answers` edits it
 - [EGERIA-ANNOTATION-TYPES-WANTED.md](EGERIA-ANNOTATION-TYPES-WANTED.md): annotation types library steps emit that the engine host cannot publish, and what we ask of Egeria
-- [DESIGN-STEP-MANIFESTS-MERGED-AT-READ-TIME.md](DESIGN-STEP-MANIFESTS-MERGED-AT-READ-TIME.md): installed step manifests merge into the analysis catalog when it is read (F1); the committed entries stay as the fallback; a step-declared new question is an open question. On branch `claude/re-ext-followups-928989`
-- ⚑ `DECLARED-EXTENSIBILITY-SLICE2-CHAT-COMPILE.md`: slice 2, chat. Only on branch `claude/re-ext-slice2-chat-compile` so far
-- [DESIGN-ANALYTIC-EXTENSIBILITY-WORKING-ASSUMPTIONS.md](DESIGN-ANALYTIC-EXTENSIBILITY-WORKING-ASSUMPTIONS.md): the 2026-10-02 brainstorm that started it
+- [DESIGN-ANALYTIC-EXTENSIBILITY-WORKING-ASSUMPTIONS.md](DESIGN-ANALYTIC-EXTENSIBILITY-WORKING-ASSUMPTIONS.md): the 2026-10-02 brainstorm that started it. Several of its rules are answered by the lifecycle note below
 - [SLICE-ANALYTIC-LIBRARY-STEPS-NEXT-FIVE.md](SLICE-ANALYTIC-LIBRARY-STEPS-NEXT-FIVE.md): the next Analytic Library steps Egeria can dispatch
-
-Work lists and files:
-
-- ⚑ [DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-KINDS.md](DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-KINDS.md): work lists as a winnowing bench, and lists of mixed kinds
-- ⚑ [BRIEF-FILES-QUESTIONS-AND-ANALYSES-TO-RETIRE-CLASSIC.md](BRIEF-FILES-QUESTIONS-AND-ANALYSES-TO-RETIRE-CLASSIC.md): the Files questions and analyses that let Classic retire. Branch `claude/re-files-steps-6-8`
+- [DESIGN-OPEN-DATA-SEARCH-AND-SURVEY.md](DESIGN-OPEN-DATA-SEARCH-AND-SURVEY.md): the open-data search and survey process. OD1 is built (PR #911); the later parts are partly built
 - [DESIGN-FILES-REMOTE-REACH.md](DESIGN-FILES-REMOTE-REACH.md): file systems RE reaches that Egeria cannot
-
-Engine host, Curate and the /next UI:
-
 - [DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE.md](DESIGN-RE-ENGINE-HOST-BY-EQUIVALENCE.md): RE as an engine host. Steps 3 and 4 and case 3 are built
 - [DESIGN-ARTIFACTS-VIEW-AND-DOC-LINKS.md](DESIGN-ARTIFACTS-VIEW-AND-DOC-LINKS.md): the Artifacts view. Slice 1's columns are merged (PR #700)
 - [DESIGN-CURATE-BY-ANALYSIS.md](DESIGN-CURATE-BY-ANALYSIS.md): Curate's "By analysis". Curation coverage is built (PR #628)
@@ -94,6 +99,17 @@ Engine host, Curate and the /next UI:
 - [PLAN-FINISH-REPOS.md](PLAN-FINISH-REPOS.md): finish `/next` for repositories. Most items have `*-IMPLEMENTED` records
 - [PLAN-CARDS-AND-TILES.md](PLAN-CARDS-AND-TILES.md): cards and tiles across /next. C1 is built (PR #782)
 - [PLAN-ANALYSIS-GAPS-REPOS-AND-DATABASES.md](PLAN-ANALYSIS-GAPS-REPOS-AND-DATABASES.md): closing the repository and database analysis gaps
+
+## Added since 2026-10-28 and not built yet
+
+These are designs and reviews from 2026-10-29 and 2026-10-30:
+
+- [DESIGN-ANALYTIC-LIFECYCLE-2026-10-30.md](DESIGN-ANALYTIC-LIFECYCLE-2026-10-30.md): where steps and routines live and how they are installed, versioned and retired. Design only; the decisions are in its section 7
+- [REVIEW-EXTENSIBILITY-VS-WORKSPACES-603-2026-10-30.md](REVIEW-EXTENSIBILITY-VS-WORKSPACES-603-2026-10-30.md): the review of the egeria-workspaces extensibility proposal (#603) against RE's own designs
+- [EVAL-PORTAL-EXTENSIBILITY-VS-RE-2026-10-30.md](EVAL-PORTAL-EXTENSIBILITY-VS-RE-2026-10-30.md): the Portal's extension model against RE's, and how to keep them in step
+- [DESIGN-LOCAL-DASHBOARDS-DECLARED-ANALYTICS.md](DESIGN-LOCAL-DASHBOARDS-DECLARED-ANALYTICS.md): local dashboards from declared analytics and report specs
+- [DESIGN-TESTGEN-DEPLOYMENT-AS-DATA-CHANNEL-2026-10-30.md](DESIGN-TESTGEN-DEPLOYMENT-AS-DATA-CHANNEL-2026-10-30.md): reading an existing TestGen installation's profiles and results. **Deferred to the backlog by the project owner, 2026-10-30**, with its slices TG1 to TG3 (see `Backlog.md`)
+- [AUDIT-USER-GUIDE-2026-10-28.md](AUDIT-USER-GUIDE-2026-10-28.md): the user guide read against the running Explorer. A record, not a plan
 
 ## Proposals: designed, not built
 
