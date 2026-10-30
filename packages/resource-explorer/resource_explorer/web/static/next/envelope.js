@@ -388,7 +388,7 @@ export function readEnvelope(entry, env, esc, tnum) {
       ? (f.headline || (f.state || '').replace(/_/g, ' '))
       // A fact's note is already in the row's caveat, attributed to it, so the step line gives the state in words
       // and does not say the note a second time (Q-0073: "surveyed by runs that predate per-step recording", twice).
-      : (f.state === NEVER_RUN ? 'not run yet' : ((f.state || '').replace(/_/g, ' ') || 'state not recorded')),
+      : (f.state === NEVER_RUN ? 'not yet run' : ((f.state || '').replace(/_/g, ' ') || 'state not recorded')),
     known: !!f.is_known, neverRun: f.state === NEVER_RUN, lastRun: f.last_run_at || '', runnable: f.runnable, runnableReason: f.runnable_reason || '',
   }));
   // The row's own "the numbers behind this" opens the question's FIRST analysis. When another of RE's own analyses has
@@ -403,6 +403,8 @@ export function readEnvelope(entry, env, esc, tnum) {
   lines.rerun = first ? { runnable: first.runnable, reason: first.runnable_reason || '' } : { runnable: undefined, reason: '' };
 
   lines.runTimeUnrecorded = known.length > 0 && !lines.lastRun && !lines.asOf;
+  // Nothing behind this row has run: the row says "not yet run" once, and its step lines do not say it again (F23).
+  lines.allNeverRun = facts.length > 0 && facts.every((f) => f.state === NEVER_RUN);
   lines.mermaid = factMermaid(env);
 
   return lines;

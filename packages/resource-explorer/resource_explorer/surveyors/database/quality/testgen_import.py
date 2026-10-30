@@ -99,7 +99,7 @@ def _general_types(group: dict) -> dict[tuple[str, str, str], str]:
 def _reason(group: dict, definition: dict, export: dict) -> str:
     definition_id = definition.get("id") or definition.get("test_definition_id")
     return (f"imported from TestGen: test definition {definition_id or '(id not in the export)'} in suite "
-            f"{group.get('test_suite') or '(unnamed)'}, test run {group.get('test_run_id') or '(never run)'}, "
+            f"{group.get('test_suite') or '(unnamed)'}, test run {group.get('test_run_id') or '(not yet run)'}, "
             f"profile run {group.get('profile_run_id') or '(none)'}; exported {export.get('exported_at') or '?'} "
             f"from TestGen {export.get('testgen_version') or '(version not recorded)'}")
 

@@ -79,7 +79,7 @@ test('never run says "not run yet"; not installed names the package; neither sho
     STEP('fs_activity', { installed: false, missing_reason: "step not installed here: 'fs_activity' comes from package trellis-step-fs-activity 0.1.0" })] }));
   const dup = host.querySelector('[data-fs-step="fs_duplicates"]');
   assert.equal(dup.dataset.fsStepState, 'not_run');
-  assert.match(text(dup), /not run yet/);
+  assert.match(text(dup), /not yet run/);
   const act = host.querySelector('[data-fs-step="fs_activity"]');
   assert.equal(act.dataset.fsStepState, 'not_installed');
   assert.match(text(act), /trellis-step-fs-activity/);

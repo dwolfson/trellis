@@ -536,7 +536,7 @@ def test_routes_register_search_import_and_show_the_page(client):
     assert imp.status_code == 200 and imp.json()["imported"] == 1
     ds = client.get("/api/open-data/datasets").json()
     page = client.get(f"/api/open-data/datasets/{ds[0]['slug']}").json()
-    assert page["survey"] == "Nothing has been measured for this yet · never run" and page["stated_by"] == [slug]
+    assert page["survey"] == "Not yet run" and page["stated_by"] == [slug]
     assert page["retrieved_at"] and page["record"]["name"] == "annakarenina" and page["datacite"]["publisher"] == "Zenodo"
 
 
@@ -573,7 +573,7 @@ def test_anonymous_registration_is_401(reg, monkeypatch):
 
 def test_the_screens_say_the_absence_words_and_offer_no_run_on_a_dataset_page():
     js = (Path(__file__).resolve().parents[1] / "resource_explorer/web/static/next/admin/open_data.js").read_text()
-    assert "not reported by this source" in js and "Nothing has been measured for this yet · never run" in js
+    assert "not reported by this source" in js and "Not yet run" in js
     page = js[js.index("export function datasetPageHtml"):]
     assert "<button" not in page                            # the resource page offers no Run
     assert js.count("watchTables(") >= 6                    # colresize on every table

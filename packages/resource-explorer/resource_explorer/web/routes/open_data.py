@@ -258,7 +258,7 @@ def get_dataset(slug: str) -> dict:
     if not d:
         raise HTTPException(status_code=404, detail=f"No open data '{slug}'.")
     d["stated_by"] = d["portals"]
-    d["survey"] = "Nothing has been measured for this yet · never run"
+    d["survey"] = "Not yet run"
     return d
 
 

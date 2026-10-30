@@ -23,7 +23,7 @@ def test_w11_the_enrichment_sentence_is_only_said_at_enrichment():
 
 
 def test_w1_w2_one_never_run_line_and_no_design_codes():
-    assert "Nothing has been measured for this yet · never run" in OD
+    assert "Not yet run" in OD
     assert "scout arrives with OD2" not in OD
     assert "(O1)" not in OD and "(O13)" not in OD
 

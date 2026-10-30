@@ -1256,12 +1256,12 @@ def test_coverage_sweep(db):
         assert "`license_classification` across 3 of 3 repo" in out
         assert "has a result (1): repo_a" in out
         assert "ran, found nothing (1): repo_b" in out
-        assert "never run (1): repo_c" in out
+        assert "not yet run (1): repo_c" in out
         assert "not passes" in out and "shop_db" not in out
 
         # Gaps only: resources with a result are counted, not listed.
         gaps = coverage_sweep_raw("license_classification", only_gaps=True)
-        assert "has a result: 1" in gaps and "repo_a" not in gaps and "never run (1): repo_c" in gaps
+        assert "has a result: 1" in gaps and "repo_a" not in gaps and "not yet run (1): repo_c" in gaps
 
         # Database-only analysis reaches the database, not the repos.
         assert "across 1 of 1 database" in coverage_sweep_raw("schema_inventory")

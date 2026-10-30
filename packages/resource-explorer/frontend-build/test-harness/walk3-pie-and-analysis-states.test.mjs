@@ -44,11 +44,11 @@ const CASES = [
   ['not_requested', "not in the last survey · its step wasn't requested"],
   ['ran_no_rows', 'ran in the last survey · produced no rows'],
   ['predates_storage', 'the last survey predates stored results for this analysis'],
-  ['never_surveyed', 'not run yet'],
+  ['never_surveyed', 'not yet run'],
   ['no_results_view', 'runs as a step · no results view yet'],
 ];
 
-test('each result state shows one line, and "Not run yet." belongs to never_surveyed alone', async () => {
+test('each result state shows one line, and "Not yet run." belongs to never_surveyed alone', async () => {
   makeDomEnvironment();
   const app = await loadAppModule();
   for (const [state, words] of CASES) {
@@ -56,19 +56,19 @@ test('each result state shows one line, and "Not run yet." belongs to never_surv
     assert.equal(app.boardStateWords(board), words);
     const html = app.byAnalysisCardHtml('s', 'x', 'X', '', { status: 'done', board }, new Set(), true);
     assert.ok(text(html).includes(words), state);
-    const said = /not run yet/i.test(text(html));
-    assert.equal(said, state === 'never_surveyed', `${state}: "not run yet" only for never_surveyed`);
+    const said = /not yet run/i.test(text(html));
+    assert.equal(said, state === 'never_surveyed', `${state}: "not yet run" only for never_surveyed`);
     assert.ok(!/no result for this step/.test(html));
   }
 });
 
-test('the screenshot contradiction: a surveyed resource never reads "Not run yet." in body or header', async () => {
+test('the screenshot contradiction: a surveyed resource never reads "Not yet run." in body or header', async () => {
   makeDomEnvironment();
   const app = await loadAppModule();
   // a server that sent no result_state at all: falls back to what the board's own fields prove
   const board = { id: 'data_class_match', has_results: false, analyses: [], last_surveyed_at: '2026-10-18T10:00:00Z' };
   const html = app.byAnalysisCardHtml('s', 'data_class_match', 'Data Class Match', '', { status: 'done', board }, new Set(), true);
-  assert.ok(!/not run yet/i.test(text(html)));
+  assert.ok(!/not yet run/i.test(text(html)));
   assert.match(app.boardRunWords(board), /^last survey /);
 });
 

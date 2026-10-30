@@ -293,7 +293,7 @@ function savedHtml() {
     const noCred = !s.db_user;
     const lastRun = s.last_run_at
       ? `run ${esc(stamp(s.last_run_at))} · ${s.last_run_candidate_count} found`
-      : 'never run';
+      : 'not yet run';
     return `<div class="mb-s2 rounded-sm border border-rule p-s2" data-source="${esc(s.slug)}">
       <div class="flex items-start justify-between gap-s2">
         <div class="min-w-0">

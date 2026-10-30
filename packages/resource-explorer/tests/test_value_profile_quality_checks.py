@@ -776,7 +776,7 @@ def test_the_readers_are_empty_when_nothing_ran_and_count_by_status_after(regist
     # Accepted but not yet run: the run question says so, counting every accepted check the run would run; the
     # proposals question counts the accepted ones among this batch's proposals (sales.big.id::Required is not one).
     accepted = DATABASE_ANALYSIS_HEADLINE_MAP["quality_checks"](registry, SLUG)["by_question"]
-    assert accepted["Q-0097"] == "No check has run: 3 accepted, not run yet."
+    assert accepted["Q-0097"] == "No check has run: 3 accepted, not yet run."
     assert ", 2 accepted;" in accepted["Q-0096"], accepted["Q-0096"]
     _run(registry, entity, {("sales", "orders"): {"record_ct": 1000, "measure": _orders_measure}})
     headline = DATABASE_ANALYSIS_HEADLINE_MAP["quality_checks"](registry, SLUG)
