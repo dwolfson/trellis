@@ -1059,7 +1059,9 @@ def read_back_words(chips: dict) -> str:
     glyph = {"read_back": " ✓", "pending": " ◌", "none": ""}
     if not chips.get("chips"):
         return "nothing read back from Egeria"
-    return " · ".join(f"{c['word']} {c['count']}{(' ' + c['unit']) if c.get('unit') else ''}{glyph[c['cue']]}"
+    # F37: a count not checked lately is not a count: no number, one cue.
+    return " · ".join(f"{c['word']} ◌ not checked since {_stamp(c['not_checked_since'])}" if c.get("not_checked_since")
+                      else f"{c['word']} {c['count']}{(' ' + c['unit']) if c.get('unit') else ''}{glyph[c['cue']]}"
                       for c in chips["chips"])
 
 
@@ -1485,14 +1487,20 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
     # Curate's publish table: the measures chosen Publish on Describe ride in that report (the SAME function the press
     # uses, `publish_table.chosen_rows`, so the count here is what goes out). None chosen: no line.
     declared_n = None
+    lap("manifest")
     try:
         from resource_explorer.publish_table import chosen_rows
+        from resource_explorer.surveyors.database.db_derived import one_read
 
-        declared_n = len(chosen_rows(registry, "database", slug))
+        # F38: one read of the table recomputes the database's derivations once, not once per derived measure
+        # (17 times on coco_pharma, 36-48 s of a 37-50 s preview, 2026-10-30).
+        with one_read():
+            declared_n = len(chosen_rows(registry, "database", slug))
     except Exception as exc:  # noqa: BLE001 -- unread, said as unread, never as "none chosen"
         log.warning("commit preview: the publish table of %s could not be read: %s", slug, exc)
         lines.append({"id": "declared_measures", "mechanism": 0,
                       "text": "the declared measures you chose could not be read; the press will try again"})
+    lap("declared_measures")
     if declared_n:
         word = "measure" if declared_n == 1 else "measures"
         lines.append({"id": "declared_measures", "mechanism": 0, "count": declared_n, "text": (

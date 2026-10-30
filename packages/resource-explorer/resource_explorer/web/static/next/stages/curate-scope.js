@@ -179,7 +179,8 @@ export function commitHeaderText(view) {
 
 /** The read-back counts under the catalogue section: three chips in a fixed order ("published by RE N",
  *  "attached N schemas", "cataloged by Egeria N schemas", the unit from the server, singular for 1), each with its state cue (✓ read back, ◌ the cataloguer has not built
- *  the tree yet) and, on a pending count whose newest read-back row is over 120 s old, "not checked since <time>".
+ *  the tree yet). A pending count whose newest read-back row is over 120 s old shows no number, only "◌ not checked
+ *  since <time>" (the date too when it was not today).
  *  `rb` is `view.commit.read_back`, the server's derivation from proof rows; '' when there is none. Each chip's hover
  *  says what it counts and when it was read. */
 export function readBackChipsHtml(rb) {
@@ -190,10 +191,17 @@ export function readBackChipsHtml(rb) {
   const cueHtml = (c) => (c.cue === 'read_back'
     ? ' <span class="font-glyph text-state-ok" aria-hidden="true">✓</span>'
     : c.cue === 'pending' ? ' <span class="font-glyph text-ink-muted" aria-hidden="true">◌</span>' : '');
-  const stale = (c) => (c.not_checked_since
-    ? ` <span data-read-back-not-checked class="text-state-warn" title="${esc(`RE last read this from Egeria at ${c.not_checked_since} UTC`)}"><span class="font-glyph" aria-hidden="true">◌</span> not checked since ${esc(hm(c.not_checked_since) || c.not_checked_since)}</span>`
-    : '');
-  const one = (c) => `<span data-read-back-chip="${esc(c.key)}" data-cue="${esc(c.cue)}" title="${esc(c.hover || '')}" class="rounded-sm border border-rule px-1 text-provenance text-ink">${esc(c.word)} <span class="tnum">${esc(String(c.count ?? 0))}</span>${c.unit ? ` ${esc(c.unit)}` : ''}${cueHtml(c)}${stale(c)}</span>`;
+  // F37: a count RE has not checked lately is not a count. The chip names no number and draws one cue, its own
+  // "◌ not checked since", with the date when that read was not today.
+  const since = (iso) => {
+    const day = String(iso).slice(0, 10);
+    const today = new Date().toISOString().slice(0, 10);
+    return `${day && day !== today ? `${md(iso)} ` : ''}${hm(iso) || iso}`;
+  };
+  const stale = (c) => ` <span data-read-back-not-checked class="text-state-warn" title="${esc(`RE last read this from Egeria at ${c.not_checked_since} UTC`)}"><span class="font-glyph" aria-hidden="true">◌</span> not checked since ${esc(since(c.not_checked_since))}</span>`;
+  const count = (c) => (c.not_checked_since ? stale(c)
+    : ` <span class="tnum">${esc(String(c.count ?? 0))}</span>${c.unit ? ` ${esc(c.unit)}` : ''}${cueHtml(c)}`);
+  const one = (c) => `<span data-read-back-chip="${esc(c.key)}" data-cue="${esc(c.cue)}" title="${esc(c.hover || '')}" class="rounded-sm border border-rule px-1 text-provenance text-ink">${esc(c.word)}${count(c)}</span>`;
   // Chips are separated by whitespace, never " · " (fix round 1): the gap draws the space, the text keeps one.
   return `<div data-read-back-chips class="mb-s1 flex flex-wrap items-center gap-s1">${chips.map(one).join(' ')}</div>`;
 }
