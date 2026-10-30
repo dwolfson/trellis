@@ -130,3 +130,16 @@ registration can live in the existing credentials store under a new kind. Anomal
 - **TG4** anomalies, if §6.1 says so.
 Each slice: no TestGen write (asserted by the role), US spelling, status words from proof rows, attribution words per
 the 2026-10-30 ruling ("implements / inspired by TestGen" in detailed descriptions only).
+
+## 9. Owner rulings on §6 (architect chat, 2026-10-30)
+
+Owner's words: "skip anomalies for now, per person credential, latest run".
+
+| § | Ruling | Effect on the note |
+|---|---|---|
+| 6.1 anomalies | **skip for now** | `testgen_anomaly_read` and slice TG4 are deferred; `profile_anomaly_results` is not read; no findings table |
+| 6.2 which run | **latest run** | `testgen_profile_read` and `testgen_results_read` take the latest `profiling_runs` / `test_runs` per table group; history is not read; the change-rate idea waits for a later ruling |
+| 6.3 credential | **per person** | the TestGen metadata-database credential is the signed-in person's own, stored per person as table preview and value profile do; no Admin service credential |
+| 6.4 scale | (no ruling needed) | stays: one resource at a time from Scouting, paged by table group |
+
+Slices are therefore TG1 (Admin registration + match), TG2 (profile read + Value profile source), TG3 (results read + Q-0097 words). No DDL.
