@@ -427,7 +427,7 @@ test('Publish: the before line says what a press would do, a press runs once, th
   assert.equal(t.api.calls.publishes, 1, 'one press runs once');
   assert.equal(t.api.calls.rulesReads, 2, 'the preview is read again after the write');
   assert.match(text(t.slot.querySelector('[data-qc-publish-after]')), /^\S+ published$/, 'a glyph, then the state words');
-  assert.match(text(t.slot.querySelector('[data-qc-publish-line]')), /3 unchanged/);
+  assert.match(text(t.slot.querySelector('[data-qc-publish-line]')), /3 data quality rules already in Egeria/);
   const cues = [...g.querySelectorAll('[data-qc-rule]')].map((e) => text(e));
   assert.ok(cues.some((c) => /Egeria data quality rule · published · created in Egeria/.test(c)));
   assert.ok(cues.some((c) => /Egeria data quality rule · published · unchanged/.test(c)));
@@ -465,25 +465,67 @@ test('Publish: a refused check shows Egeria\'s own sentence on its row', async (
   assert.match(text(g.querySelector('[data-qc-rule="refused"]')), /refused by Egeria · the type DataQualityRule is not known here/);
 });
 
-test('Publish: disabled, with a sentence, when nobody is signed in, nothing is accepted, or the database is not in Egeria', async () => {
+test('Publish: disabled, with a sentence, only when nobody is signed in or a press is running', async () => {
   const noOne = await setUp(ROWS(), { me: '', rules: () => rulesPayload(), publish: async () => ({}) });
   assert.equal(btn(noOne).disabled, true);
   assert.match(text(noOne.slot.querySelector('[data-qc-publish-why]')), /sign in to publish/);
-  const nothing = await setUp(ROWS(), { rules: () => rulesPayload({ preview: preview({ accepted: 0, to_publish: 0, unchanged: 0, words: 'nothing is accepted yet' }) }),
-    publish: async () => ({}) });
-  assert.equal(btn(nothing).disabled, true);
-  assert.match(text(nothing.slot.querySelector('[data-qc-publish-why]')), /nothing is accepted yet: accept a check first/);
-  const notIn = await setUp(ROWS(), { rules: () => rulesPayload({ in_egeria: false }), publish: async () => ({}) });
-  assert.match(text(notIn.slot.querySelector('[data-qc-publish-why]')), /not in Egeria yet: commit it first/);
   clickEl(noOne, btn(noOne));
   assert.equal(noOne.api.calls.publishes, undefined, 'a disabled press does nothing');
 });
 
-test('Publish: a rules read that fails is said, never shown as "nothing to publish"; the button stays off', async () => {
+test('Publish (F27): a press POSTs even when the preview says nothing would change, nothing is accepted, or the database has no asset', async () => {
+  for (const over of [
+    { preview: preview({ accepted: 2, to_publish: 0, unchanged: 2, words: '2 unchanged' }) },
+    { preview: preview({ accepted: 0, to_publish: 0, unchanged: 0, words: 'nothing is accepted yet' }) },
+    { in_egeria: false },
+  ]) {
+    const t = await setUp(ROWS(), { rules: () => rulesPayload(over), publish: async () => ({ state: 'published', state_words: 'published', line: 'x' }) });
+    assert.equal(btn(t).disabled, false, JSON.stringify(over));
+    clickEl(t, btn(t));
+    await tick(30);
+    assert.equal(t.api.calls.publishes, 1, `one POST for ${JSON.stringify(over)}`);
+  }
+});
+
+test('Publish (W17): "2 unchanged" is said as what it means', async () => {
+  const t = await setUp(ROWS(), { rules: () => rulesPayload({ preview: preview({ accepted: 2, to_publish: 0, unchanged: 2, words: '2 unchanged' }) }),
+    publish: async () => ({}) });
+  assert.equal(text(t.slot.querySelector('[data-qc-publish-line]')), '2 data quality rules already in Egeria · a press changes nothing');
+});
+
+test('Publish (F25): "publishing…" at once, then the state, counts and read-back time from the response; on reload "last published" from /rules', async () => {
+  let release;
+  const t = await setUp(ROWS(), {
+    rules: () => rulesPayload({ last_published: { at: '2026-10-30T12:50:00+00:00', by: 'erinoverview' } }),
+    publish: () => new Promise((res) => { release = () => res({ state: 'published', state_words: 'published', line: 'x', counts: { unchanged: 2 },
+      read_at: '2026-10-30T12:51:15+00:00' }); }),
+  });
+  assert.match(text(t.slot.querySelector('[data-qc-publish-last]')), /^last published 2026-10-30 12:50 by erinoverview · read back$/);
+  clickEl(t, btn(t));
+  assert.match(text(t.slot.querySelector('[data-qc-publish-after]')), /publishing…/);
+  release();
+  await tick(30);
+  assert.match(text(t.slot.querySelector('[data-qc-publish-after]')), /published · 2 unchanged · read back 2026-10-30 12:51$/);
+});
+
+test('Quality table (F26): the grid carries data-rc-id and a resize handle per column, and a drag changes a width', async () => {
+  const t = await setUp(ROWS(), {});
+  const g = await open(t, 'sales.orders');
+  const host = g.querySelector('[data-grid-host]');
+  assert.equal(host.getAttribute('data-rc-id'), 'db-quality-checks');
+  assert.equal(host.querySelectorAll('[data-rc-handle]').length, 6);
+  const h = host.querySelector('[data-rc-handle="params"]');
+  const win = t.document.defaultView;
+  const ev = (type, x) => new win.MouseEvent(type, { bubbles: true, clientX: x });
+  h.dispatchEvent(ev('pointerdown', 100)); win.document.dispatchEvent(ev('pointermove', 160)); win.document.dispatchEvent(ev('pointerup', 160));
+  assert.notEqual(host.style.getPropertyValue('--rc-params'), '', 'the dragged column took a width');
+});
+
+test('Publish: a rules read that fails is said, never shown as "nothing to publish"; the line says so', async () => {
   const t = await setUp(ROWS(), { rules: () => { throw new Error('registry down'); }, publish: async () => ({}) });
   assert.match(text(t.slot.querySelector('[data-qc-publish-line]')), /could not read what a publish would do: registry down/);
   assert.doesNotMatch(text(t.slot.querySelector('[data-qc-publish]')), /nothing to publish/);
-  assert.equal(btn(t).disabled, true);
+  assert.equal(btn(t).disabled, false, 'a press does not depend on the preview read');
 });
 
 test('Publish: a failed press says so on the band and publishes nothing it cannot read back', async () => {

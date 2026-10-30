@@ -114,7 +114,7 @@ export function renderQualityBlock(slot, slug) {
   if (!slot) return null;
   return mountQualityChecks(slot, slug, { api: { getProposals: getQualityProposals, postVerdict: postQualityVerdict,
     postTableComparison: postQualityTableComparison, getRules: getQualityRules, postPublish: postQualityPublish },
-  me: whoAmI(), openContents: () => openCurate({ tab: 'curate_contents' }) });
+  me: whoAmI, openContents: () => openCurate({ tab: 'curate_contents' }) });
 }
 
 export function databaseWorkHtml() {
