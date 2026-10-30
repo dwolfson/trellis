@@ -200,6 +200,16 @@ def _split_perspectives(raw) -> list:
     return seen
 
 
+@dataclass
+class ProcessLookup:
+    """What `SurveyDefinitionReader.lookup_process` found: the GUID (None when it did not resolve), the names tried, and
+    the calls that raised. `guid is None and errors` means "could not look up", not "no such definition"."""
+
+    guid: str | None
+    tried: list[str]
+    errors: list[str]
+
+
 class SurveyDefinitionReaderError(RuntimeError):
     """Raised when a Survey Definition can't be read, or is missing required data."""
 
@@ -1106,39 +1116,84 @@ class SurveyDefinitionReader:
         _candidates_cache[cache_key] = (now, candidates)
         return candidates
 
-    def find_process_guid_by_name(self, name_or_qualified_name: str) -> str | None:
-        """Resolve an explicit Survey Definition reference (name or qualifiedName) to a GUID."""
-        self.connect()
-        try:
-            results = self._governance_officer.get_governance_definitions_by_name(
-                name=name_or_qualified_name, output_format="JSON"
-            )
-            if isinstance(results, str):
-                import json as _json
-                results = _json.loads(results)
-            if isinstance(results, list):
-                for el in results:
-                    header = el.get("elementHeader", {})
-                    if header.get("type", {}).get("typeName") == "GovernanceActionProcess":
-                        return header.get("guid")
-        except Exception as exc:
-            log.debug("get_governance_definitions_by_name failed: %s", exc)
+    def lookup_process(self, name_or_qualified_name: str) -> ProcessLookup:
+        """Resolve a Survey Definition reference to a GUID, and say what happened when it does not resolve.
 
-        try:
-            results = self._governance_officer.find_governance_definitions(
-                search_string=name_or_qualified_name,
-                starts_with=True,
-                output_format="JSON",
-            )
-            if isinstance(results, str):
-                import json as _json
-                results = _json.loads(results)
-            if isinstance(results, list) and results:
-                header = results[0].get("elementHeader", {})
+        Egeria's name lookups match the qualifiedName (`GovActionProcess::<name>`) and answer "No elements found" for the
+        bare name a schedule or a work list carries (verified live 2026-10-30: `DatabaseQualitySurvey` fails,
+        `GovActionProcess::DatabaseQualitySurvey` resolves, on both calls). So a reference without `::` is tried as
+        given, then with the prefix, then as its display name (`Database Quality Survey`).
+
+        A call that raised is recorded in `errors`, never only logged: "could not look up" is a different answer from
+        "no such definition", and the caller words them apart."""
+        self.connect()
+        tried: list[str] = []
+        errors: list[str] = []
+        for candidate in self._process_name_candidates(name_or_qualified_name):
+            tried.append(candidate)
+            for call in (self._process_guid_by_exact_name, self._process_guid_by_search):
+                try:
+                    guid = call(candidate)
+                except Exception as exc:  # noqa: BLE001 - recorded below and reported to the caller, not swallowed
+                    errors.append(f"{call.__name__.removeprefix('_process_guid_by_')} {candidate!r}: {exc}")
+                    continue
+                if guid:
+                    return ProcessLookup(guid, tried, errors)
+        return ProcessLookup(None, tried, errors)
+
+    def find_process_guid_by_name(self, name_or_qualified_name: str) -> str | None:
+        """Resolve an explicit Survey Definition reference (name or qualifiedName) to a GUID. None when it does not
+        resolve; `last_lookup_errors` then holds any call that raised, so a caller can tell "could not look up" from
+        "not found" (`lookup_process` returns both together)."""
+        found = self.lookup_process(name_or_qualified_name)
+        self.last_lookup_errors = found.errors
+        return found.guid
+
+    @staticmethod
+    def _process_name_candidates(reference: str) -> list[str]:
+        if "::" in reference:
+            return [reference]
+        import re as _re
+
+        spaced = _re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", reference)
+        out = [reference, f"GovActionProcess::{reference}"]
+        if spaced != reference:
+            out.append(spaced)
+        return out
+
+    @staticmethod
+    def _as_elements(results) -> list:
+        if isinstance(results, str):
+            import json as _json
+
+            # pyegeria answers an empty result with this sentence, not an empty list: it is "not found", the one answer
+            # that is not an error. Any other text that is not JSON raises and is recorded by the caller.
+            if results.strip().startswith("No elements found"):
+                return []
+            results = _json.loads(results)
+        return results if isinstance(results, list) else []
+
+    def _process_guid_by_exact_name(self, name: str) -> str | None:
+        results = self._governance_officer.get_governance_definitions_by_name(name=name, output_format="JSON")
+        for el in self._as_elements(results):
+            header = el.get("elementHeader", {})
+            if header.get("type", {}).get("typeName") == "GovernanceActionProcess":
                 return header.get("guid")
-        except Exception as exc:
-            log.debug("find_governance_definitions failed: %s", exc)
         return None
+
+    def _process_guid_by_search(self, name: str) -> str | None:
+        results = self._governance_officer.find_governance_definitions(
+            search_string=name, starts_with=True, output_format="JSON")
+        elements = self._as_elements(results)
+        typed = [el for el in elements
+                 if el.get("elementHeader", {}).get("type", {}).get("typeName") == "GovernanceActionProcess"]
+        for el in typed:
+            props = el.get("properties") or {}
+            if name in (props.get("qualifiedName"), props.get("displayName")):
+                return el.get("elementHeader", {}).get("guid")
+        # Before this, the first hit of any type was taken. A starts-with search for one definition can also return its
+        # neighbours, so only a process element is accepted, and only when no exact match was found above.
+        return typed[0].get("elementHeader", {}).get("guid") if typed else None
 
     # ── fetch + parse the step graph ────────────────────────────────────────────
 
