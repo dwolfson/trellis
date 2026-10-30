@@ -3797,3 +3797,49 @@ open_data_analyses:
         truncation: '{shown} of {total} datasets shown, those not scouted first'
         token_cost: 600
         citation: '{analysis} · {scope} · as of {as_of}'
+
+  - id: external_data_refresh
+    name: "External Data Refresh"
+    description: "Looks at each dataset of a work list of open data on its portal again (the dataset and its distributions, two calls each, priced first) and says what changed on their side since the last look: the title, publisher, license, formats, size and modified date, and distributions added, removed or changed. The first look has no earlier list of distributions and says so rather than saying nothing changed. A portal that does not answer leaves the earlier look and the stored values in place."
+    resource_types: ["open_data"]
+    intent: scouting
+    perspectives: ["all", "Steward"]
+    annotation_types: []
+    source: local
+    run_time: minutes
+    availability: inline
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    answers_questions: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+    declaration:
+      result_kind: table
+      table:
+        columns: [title, outcome, words]
+        key_fields: [title]
+      result_kind_note: "One row per dataset with what changed on their side; none of the other kinds fits a per-dataset change list."
+      measures:
+      - name: datasets_changed
+        unit: datasets
+        as_of: looked_at
+        value_field: changed
+      - name: datasets_unchanged
+        unit: datasets
+        as_of: looked_at
+        value_field: unchanged
+      absence:
+        not_measured: 'Not refreshed: the portal did not answer, so the dataset keeps the values and the earlier look it had.'
+        not_permitted: 'Not permitted: the portal refused the read.'
+        not_applicable: 'Not applicable: the dataset is not on a portal RE can read yet.'
+        measured_nothing: 'No change on their side since the last look.'
+      extents:
+      - name: rows
+        fields: [title, outcome, words]
+        rows: 25
+        order: datasets that changed first
+        truncation: '{shown} of {total} datasets shown, those that changed first'
+        token_cost: 600
+        citation: '{analysis} · {scope} · as of {as_of}'

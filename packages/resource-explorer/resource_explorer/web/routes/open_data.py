@@ -288,6 +288,61 @@ def scout(slug: str, request: Request) -> dict:
         raise _http(exc) from exc
 
 
+@router.get("/work-lists/{slug}/refresh-price")
+def refresh_price(slug: str) -> dict:
+    """The price line of an ExternalDataRefresh, before the press."""
+    from resource_explorer.open_data import refresh
+
+    n = len(_store().datasets_in_work_list(slug))
+    if not n:
+        raise HTTPException(status_code=404, detail=f"No open data in work list '{slug}'.")
+    return refresh.refresh_price(n)
+
+
+@router.post("/work-lists/{slug}/refresh")
+def refresh_run(slug: str, request: Request) -> dict:
+    """ExternalDataRefresh: look at each dataset on its portal again and say what changed on their side."""
+    from resource_explorer.open_data import refresh
+
+    _signed_in_user(request)
+    try:
+        return refresh.refresh_work_list(_store(), slug, transport=_transport())
+    except service.OpenDataError as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/datasets/{slug}/publish")
+def publish_state(slug: str) -> dict:
+    """The newest publish proof of one dataset (None = never published) and the price line."""
+    from resource_explorer.open_data import publish
+
+    if not _store().get_dataset(slug):
+        raise HTTPException(status_code=404, detail=f"No open data '{slug}'.")
+    return {"price": publish.publish_price(1), "proof": publish.latest_proof(_store().registry, slug),
+            "words": "" if publish.latest_proof(_store().registry, slug) else "Not published to Egeria yet"}
+
+
+@router.post("/datasets/{slug}/publish")
+def publish_run(slug: str, request: Request) -> dict:
+    """Publish one dataset to Egeria as the signed-in person, then read it back by GUID."""
+    from resource_explorer.open_data import publish
+
+    _signed_in_user(request)
+    ds = _store().get_dataset(slug)
+    if not ds:
+        raise HTTPException(status_code=404, detail=f"No open data '{slug}'.")
+    try:
+        return publish.publish_dataset(_store(), ds, _egeria_port())
+    except publish.PublishRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _egeria_port():
+    from resource_explorer.open_data import publish
+
+    return publish.PyegeriaPort()
+
+
 @router.post("/work-lists/{slug}/fit")
 def fit(slug: str, req: FitRequest, request: Request) -> dict:
     """The fit row and winnow over the stored columns. No outbound call."""

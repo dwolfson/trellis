@@ -59,3 +59,10 @@ def test_the_data_request_band_is_on_the_investigation_and_says_when_it_cannot_s
     assert "openFindOpenDataDialog({ investigation: slug })" in band        # a search from the band carries the request
     sl = (NEXT / "open-data-shortlist.js").read_text(encoding="utf-8")
     assert "appState.investigation" in sl
+
+
+def test_publish_and_look_again_price_first_and_say_each_step():
+    pb = (NEXT / "open-data-publish.js").read_text(encoding="utf-8")
+    assert pb.index("openDataRefreshPrice(workList)") < pb.index("refreshOpenData(workList)")
+    assert "st.price.line" in pb and "data-od-publish-step" in pb and "read back by GUID" in pb
+    assert "mountPublish(" in KIND and "mountRefresh(" in (NEXT / "open-data-shortlist.js").read_text(encoding="utf-8")
