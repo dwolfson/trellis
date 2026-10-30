@@ -191,13 +191,10 @@ export function headerRowOf(table) {
 
 const cellWidth = (c) => Math.round((c.getBoundingClientRect && c.getBoundingClientRect().width) || c.offsetWidth || 0);
 
-export function enhanceTable(table) {
-  const row = headerRowOf(table);
-  if (!row) return false;
-  const win = table.ownerDocument.defaultView;
-  const cells = [...row.cells];
-  const id = table.dataset.rcId || cells.map((c) => c.textContent.trim()).join('|');
-  table.setAttribute('data-rc-auto', '');
+/** The shared body of both default enhancers: handles on `cells` (the header cells), widths kept per column index.
+ *  `target` says how a column is sized: `setWidth(i, px)` for one column and `setTotal(px)` for the whole. */
+function makeResizable({ owner, cells, id, scrollHost, freezeLayout, setWidth, setTotal }) {
+  const win = owner.ownerDocument.defaultView;
   let widths = {};
   try { widths = JSON.parse(win.localStorage.getItem(AUTO_STORE(id)) || '{}') || {}; } catch (_e) { widths = {}; }
   let base = null;                                  // the drawn widths, taken at the first change
@@ -210,15 +207,14 @@ export function enhanceTable(table) {
   const freeze = () => {
     if (base) return;
     base = cells.map((c) => Math.max(AUTO_MIN, cellWidth(c) || 120));
-    table.setAttribute('data-rc-fixed', '');
-    table.style.tableLayout = 'fixed';
-    if (table.parentElement) table.parentElement.style.overflowX = 'auto';
+    owner.setAttribute('data-rc-fixed', '');
+    freezeLayout();
+    if (scrollHost) scrollHost.style.overflowX = 'auto';
   };
   const paint = () => {
     freeze();
-    cells.forEach((c, i) => { c.style.width = `${widths[i] ?? base[i]}px`; });
-    table.style.width = `${cells.reduce((a, c, i) => a + (widths[i] ?? base[i]), 0)}px`;
-    table.style.maxWidth = 'none';
+    cells.forEach((c, i) => setWidth(i, widths[i] ?? base[i]));
+    setTotal(cells.reduce((a, c, i) => a + (widths[i] ?? base[i]), 0));
     cells.forEach((c, i) => {
       const h = c.querySelector('[data-rc-handle]');
       if (h) h.setAttribute('aria-valuenow', String(widths[i] ?? base[i]));
@@ -246,7 +242,7 @@ export function enhanceTable(table) {
       e.preventDefault();
       const start = { x: e.clientX, w: widthOf(i) };
       h.setAttribute('data-rc-active', '');
-      const doc = table.ownerDocument;
+      const doc = owner.ownerDocument;
       const move = (m) => set(i, start.w + (m.clientX - start.x));
       const up = () => {
         doc.removeEventListener('pointermove', move);
@@ -275,14 +271,76 @@ export function enhanceTable(table) {
     });
   });
   if (Object.keys(widths).length) paint();
+}
+
+export function enhanceTable(table) {
+  const row = headerRowOf(table);
+  if (!row) return false;
+  const cells = [...row.cells];
+  const id = table.dataset.rcId || cells.map((c) => c.textContent.trim()).join('|');
+  table.setAttribute('data-rc-auto', '');
+  makeResizable({
+    owner: table, cells, id, scrollHost: table.parentElement,
+    freezeLayout: () => { table.style.tableLayout = 'fixed'; },
+    setWidth: (i, w) => { cells[i].style.width = `${w}px`; },
+    setTotal: (w) => { table.style.width = `${w}px`; table.style.maxWidth = 'none'; },
+  });
   return true;
 }
 
-/** Make every data table under `root` resizable. Idempotent. Returns how many it enhanced this time. */
+/* ── div grids (`role="table"` drawn with flex rows) ───────────────────────────────────────────────
+ * A grid is the same thing as a table to a person: a header row of `role="columnheader"` cells over rows of cells.
+ * Two ways in, neither needing the screen to remember anything:
+ *  - a grid drawn by report-tables.js `gridHtml` registers its column spec here and carries `data-rc-spec="<id>"`;
+ *    `attachRegistered` wires the spec-driven resize (attachColumnResize) on it as it appears, so a redraw that
+ *    forgot to call attachGrids still resizes (this is the late-render gap: quality checks, drill-downs);
+ *  - any other `role="table"` with a header row of two or more columnheaders gets the default resize: every row's
+ *    cells follow the header's widths. */
+const SPECS = new Map();
+export function registerSpec(spec) { SPECS.set(spec.id, spec); }
+
+export function attachRegistered(root) {
+  let n = 0;
+  root.querySelectorAll('[data-rc-spec]').forEach((h) => {
+    const spec = SPECS.get(h.getAttribute('data-rc-spec'));
+    if (spec && !attached.has(h)) { attachColumnResize(h, spec); n += 1; }
+  });
+  return n;
+}
+
+const rowsOfGrid = (grid) => [...grid.querySelectorAll('[role="row"]')];
+export function gridHeaderOf(grid) {
+  if (!grid || grid.hasAttribute('data-rc-auto') || grid.closest('[data-no-resize]') || grid.querySelector('[data-rc-handle]')) return null;
+  const row = rowsOfGrid(grid).find((r) => r.querySelector('[role="columnheader"]'));
+  const cells = row ? [...row.children].filter((c) => c.getAttribute('role') === 'columnheader') : [];
+  return cells.length >= 2 ? { row, cells } : null;
+}
+
+export function enhanceGrid(grid) {
+  const found = gridHeaderOf(grid);
+  if (!found) return false;
+  const { cells } = found;
+  const id = grid.dataset.rcId || (grid.getAttribute('aria-label') || '') + '|' + cells.map((c) => c.textContent.trim()).join('|');
+  grid.setAttribute('data-rc-auto', '');
+  const colCells = (i) => rowsOfGrid(grid).map((r) => r.children[i]).filter(Boolean);
+  makeResizable({
+    owner: grid, cells, id, scrollHost: grid,
+    freezeLayout: () => {},
+    setWidth: (i, w) => colCells(i).forEach((c) => {
+      c.style.width = `${w}px`; c.style.flex = '0 0 auto'; c.style.minWidth = '0'; c.style.maxWidth = 'none';
+    }),
+    setTotal: (w) => rowsOfGrid(grid).forEach((r) => { r.style.width = `${w}px`; r.style.minWidth = `${w}px`; }),
+  });
+  return true;
+}
+
+/** Make every data table (a `<table>` or a `role="table"` grid) under `root` resizable. Idempotent. Returns how many it enhanced this time. */
 export function enhanceTables(root) {
   let n = 0;
   if (!root || !root.querySelectorAll) return n;
   root.querySelectorAll('table').forEach((t) => { if (enhanceTable(t)) n += 1; });
+  n += attachRegistered(root);
+  root.querySelectorAll('[role="table"]').forEach((g) => { if (enhanceGrid(g)) n += 1; });
   return n;
 }
 

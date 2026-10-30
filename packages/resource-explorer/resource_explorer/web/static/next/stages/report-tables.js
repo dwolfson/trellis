@@ -6,7 +6,7 @@
  *  - when the columns outgrow the page the table scrolls inside its own box, never the page.
  *
  * Imports colresize.js only, so a plain page or a node test can load it. */
-import { cellStyle, handleHtml, innerStyle, headCellStyle, attachColumnResize } from '/static/next/colresize.js';
+import { cellStyle, handleHtml, innerStyle, headCellStyle, attachColumnResize, registerSpec } from '/static/next/colresize.js';
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -52,10 +52,11 @@ export const VIEWS_COLS = {
 /** A table as a grid of cells. `rows` are `{ cells: {colKey: html}, attrs, tone, after }`;
  *  `after` is full-width html under the row (a disclosure), `tone` is '' or 'lowered'. */
 export function gridHtml(spec, label, rows, attrs = '') {
+  registerSpec(spec);   // colresize's watcher wires the resize on this grid whenever and wherever it is drawn
   const head = spec.columns.map((c) => `<div role="columnheader" class="shrink-0" style="${cellStyle(spec, c.key)};${headCellStyle(spec, c.key)}" title="${esc(c.label)}">${esc(c.label)}${handleHtml(spec, c.key, c.label)}</div>`).join('');
   const body = rows.map((r) => `<div data-grid-row ${r.attrs || ''} class="border-t border-rule py-[3px] ${r.tone === 'lowered' ? 'opacity-60' : ''}">
     <div role="row" class="flex items-start gap-s2 text-ink">${spec.columns.map((c) => `<div role="cell" class="${c.key === spec.columns[0].key ? '' : 'tnum'}" style="${cellStyle(spec, c.key)}">${r.cells[c.key] ?? ''}</div>`).join('')}</div>${r.after || ''}</div>`).join('');
-  return `<div data-grid-host class="min-w-0 max-w-full overflow-x-auto" ${attrs}><div role="table" aria-label="${esc(label)}" class="text-caveat" style="${innerStyle(spec)}">
+  return `<div data-grid-host data-rc-id="${esc(spec.id)}" data-rc-spec="${esc(spec.id)}" class="min-w-0 max-w-full overflow-x-auto" ${attrs}><div role="table" aria-label="${esc(label)}" class="text-caveat" style="${innerStyle(spec)}">
     <div role="row" class="flex items-start gap-s2 text-provenance text-ink-muted">${head}</div>${body}</div></div>`;
 }
 
