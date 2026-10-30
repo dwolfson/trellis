@@ -59,3 +59,18 @@ def test_the_data_request_band_is_on_the_investigation_and_says_when_it_cannot_s
     assert "openFindOpenDataDialog({ investigation: slug })" in band        # a search from the band carries the request
     sl = (NEXT / "open-data-shortlist.js").read_text(encoding="utf-8")
     assert "appState.investigation" in sl
+
+
+def test_the_profile_section_prices_first_and_says_what_was_not_profiled():
+    pf = (NEXT / "open-data-profile.js").read_text(encoding="utf-8")
+    assert pf.index("openDataProfileView(workList)") < pf.index("profileOpenData(workList)")
+    assert "v.price.line" in pf and "data-od-dist=\"not-profiled\"" in pf
+    assert "never run" in (NEXT / "open-data-profile.js").read_text(encoding="utf-8") or "ds.words" in pf   # the server's words
+    assert "stated by" in pf and "mountProfile(" in (NEXT / "open-data-shortlist.js").read_text(encoding="utf-8")
+
+
+def test_publish_and_look_again_price_first_and_say_each_step():
+    pb = (NEXT / "open-data-publish.js").read_text(encoding="utf-8")
+    assert pb.index("openDataRefreshPrice(workList)") < pb.index("refreshOpenData(workList)")
+    assert "st.price.line" in pb and "data-od-publish-step" in pb and "read back by GUID" in pb
+    assert "mountPublish(" in KIND and "mountRefresh(" in (NEXT / "open-data-shortlist.js").read_text(encoding="utf-8")

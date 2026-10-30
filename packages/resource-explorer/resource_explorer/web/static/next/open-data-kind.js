@@ -14,6 +14,7 @@ import { esc } from '/static/next/app.js';
 import { datasetPageHtml, openPortalPane, show } from '/static/next/admin/open_data.js';
 import { watchTables } from '/static/next/colresize.js';
 import { mountShortlist } from '/static/next/open-data-shortlist.js';
+import { mountPublish } from '/static/next/open-data-publish.js';
 
 export const NO_DATASETS_WORDS = 'Nothing imported yet. Use ＋ Find open data to search a data portal.';
 export const NO_PORTALS_WORDS = 'No data portals are registered yet. Registering a portal is done in Admin › Open data.';
@@ -40,8 +41,9 @@ export async function renderOpenDataPane(el, slug, rows) {
   el.innerHTML = '<p class="text-answer text-ink-muted">Reading the dataset…</p>';
   try {
     const dataset = await getOpenData(slug);
-    el.innerHTML = `${datasetPageHtml(dataset)}<div data-od-shortlist></div>`;
+    el.innerHTML = `${datasetPageHtml(dataset)}<div data-od-publish></div><div data-od-shortlist></div>`;
     watchTables(el);
+    mountPublish(el.querySelector('[data-od-publish]'), slug);
     if (dataset.work_list_slug) await mountShortlist(el.querySelector('[data-od-shortlist]'), dataset.work_list_slug);
   } catch (e) {
     el.innerHTML = `<p class="max-w-[70ch] text-answer text-state-warn">The dataset could not be read: ${esc((e && (e.detail || e.message)) || String(e))}</p>`;

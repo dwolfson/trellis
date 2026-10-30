@@ -20,6 +20,8 @@ class Transport(Protocol):
 
     def get_text(self, url: str, params: dict | None = None, headers: dict | None = None) -> str: ...
 
+    def get_bytes(self, url: str, max_bytes: int, headers: dict | None = None) -> tuple[bytes, int | None, bool]: ...
+
 
 class HttpTransport:
     """GET JSON over httpx. Read-only; a non-2xx answer or non-JSON body raises `TransportError`."""
@@ -51,3 +53,25 @@ class HttpTransport:
         if resp.status_code >= 400:
             raise TransportError(f"{url}: HTTP {resp.status_code}")
         return resp.text
+
+    def get_bytes(self, url: str, max_bytes: int, headers: dict | None = None) -> tuple[bytes, int | None, bool]:
+        """GET a body, reading at most `max_bytes`. Returns (bytes read, the size the source states or None,
+        truncated). `truncated` is True when the body was longer than `max_bytes`: the rest was not read, and the
+        caller must not treat the bytes as the whole file."""
+        import httpx
+
+        sent = {"User-Agent": USER_AGENT, "Accept": "*/*", **(headers or {})}
+        try:
+            with httpx.stream("GET", url, headers=sent, timeout=TIMEOUT_SECONDS, follow_redirects=True) as resp:
+                if resp.status_code >= 400:
+                    raise TransportError(f"{url}: HTTP {resp.status_code}")
+                stated = resp.headers.get("content-length")
+                size = int(stated) if stated and stated.isdigit() else None
+                buf = bytearray()
+                for chunk in resp.iter_bytes():
+                    buf.extend(chunk)
+                    if len(buf) > max_bytes:
+                        return bytes(buf[:max_bytes]), size, True
+                return bytes(buf), size if size is not None else len(buf), False
+        except httpx.HTTPError as exc:
+            raise TransportError(f"{url}: {exc}") from exc
