@@ -23,6 +23,7 @@
  * way classic's nav-level Investigations tab and its per-repo "add to
  * investigation" toggle always have.
  */
+import { mountDataRequestBand } from '/static/next/data-request.js';
 import { ago, readBackAt } from '/static/next/format.js';
 
 /** A sentence on the element it is about (the owner's rule: state on the element, not a pop-up): a small
@@ -424,6 +425,9 @@ async function renderDetail(slug) {
       : `<p class="mb-s3 text-caveat text-ink-muted">${nextSteps.complete ? 'Nothing outstanding.' : 'No next steps offered.'}</p>`}
 
     <div class="my-s3 h-px bg-rule"></div>
+    <div id="inv-data-request" data-dr-band></div>
+
+    <div class="my-s3 h-px bg-rule"></div>
     <div class="mb-s2 flex items-center gap-s2">
       <h4 class="m-0 font-heading text-subtab font-normal text-ink">Egeria</h4>
     </div>
@@ -448,6 +452,7 @@ async function renderDetail(slug) {
     <div id="inv-journal"><p class="text-caveat text-ink-muted">Loading the journal…</p></div>`;
 
   bindDetail(inv, members);
+  mountDataRequestBand(document.getElementById('inv-data-request'), inv.slug);
   loadJournal(inv, stale);
 }
 

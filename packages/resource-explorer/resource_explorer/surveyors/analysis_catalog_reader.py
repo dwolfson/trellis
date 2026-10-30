@@ -341,7 +341,7 @@ def _merge_installed(entity_type: str, entries: list[AnalysisCatalogEntry]) -> l
 @functools.lru_cache(maxsize=1)
 def _load(config_path: Path = _DEFAULT_CONFIG_PATH) -> dict[str, list[AnalysisCatalogEntry]]:
     if not config_path.exists():
-        return {"repo": [], "database": [], "filesystem": []}
+        return {"repo": [], "database": [], "filesystem": [], "open_data": []}
     with open(config_path) as f:
         raw = yaml.safe_load(f) or {}
 
@@ -349,6 +349,7 @@ def _load(config_path: Path = _DEFAULT_CONFIG_PATH) -> dict[str, list[AnalysisCa
         "repo": [_entry_from_yaml(e) for e in raw.get("repo_analyses") or []],
         "database": [_entry_from_yaml(e) for e in raw.get("database_analyses") or []],
         "filesystem": [_entry_from_yaml(e) for e in raw.get("filesystem_analyses") or []],
+        "open_data": [_entry_from_yaml(e) for e in raw.get("open_data_analyses") or []],
     }
     if config_path == _DEFAULT_CONFIG_PATH:
         # Installed steps join the catalog when it is read: adding a step needs no commit here (F1, 2026-10-29).

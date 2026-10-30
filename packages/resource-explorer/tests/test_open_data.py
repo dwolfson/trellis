@@ -72,6 +72,12 @@ class FakeTransport:
             return self.directory
         raise AssertionError(f"unexpected outbound call: {url}")
 
+    def get_text(self, url, params=None, headers=None):
+        self.calls.append(url)
+        if urlparse(url).hostname == "www.re3data.org":
+            return (FIX / "re3data_repositories.xml").read_text()
+        raise AssertionError(f"unexpected outbound call: {url}")
+
 
 NO_EGERIA = lambda identifier: None          # noqa: E731 - Egeria answered: not held
 
@@ -96,6 +102,7 @@ def _register_demo(store, host="demo.ckan.org", name="CKAN demo"):
 def test_the_fake_transport_binds_the_real_signature():
     shape = lambda f: [(p.name, p.kind, p.default) for p in inspect.signature(f).parameters.values()]   # noqa: E731
     assert shape(FakeTransport.get_json) == shape(HttpTransport.get_json)
+    assert shape(FakeTransport.get_text) == shape(HttpTransport.get_text)
     # every adapter and the resolver calls the transport only as get_json(url, params=, headers=)
     assert shape(HttpTransport.get_json)[1:] == [("url", inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect._empty),
                                                  ("params", inspect.Parameter.POSITIONAL_OR_KEYWORD, None),
@@ -529,7 +536,7 @@ def test_routes_register_search_import_and_show_the_page(client):
     assert imp.status_code == 200 and imp.json()["imported"] == 1
     ds = client.get("/api/open-data/datasets").json()
     page = client.get(f"/api/open-data/datasets/{ds[0]['slug']}").json()
-    assert page["survey"] == "no survey yet · scout arrives with OD2" and page["stated_by"] == [slug]
+    assert page["survey"] == "Nothing has been measured for this yet · never run" and page["stated_by"] == [slug]
     assert page["retrieved_at"] and page["record"]["name"] == "annakarenina" and page["datacite"]["publisher"] == "Zenodo"
 
 
@@ -566,10 +573,17 @@ def test_anonymous_registration_is_401(reg, monkeypatch):
 
 def test_the_screens_say_the_absence_words_and_offer_no_run_on_a_dataset_page():
     js = (Path(__file__).resolve().parents[1] / "resource_explorer/web/static/next/admin/open_data.js").read_text()
-    assert "not reported by this source" in js and "no survey yet · scout arrives with OD2" in js
+    assert "not reported by this source" in js and "Nothing has been measured for this yet · never run" in js
     page = js[js.index("export function datasetPageHtml"):]
     assert "<button" not in page                            # the resource page offers no Run
     assert js.count("watchTables(") >= 6                    # colresize on every table
     admin = (Path(__file__).resolve().parents[1] / "resource_explorer/web/static/next/admin/index.js").read_text()
     for tab in ("admin-od-portals", "admin-od-directories", "admin-od-datasets"):
         assert f"id: '{tab}'" in admin
+
+
+def test_the_directory_price_route_is_the_run_price(client):
+    d = client.post("/api/open-data/directories", json={"display_name": "dataportals.org"}).json()
+    got = client.get(f"/api/open-data/directories/{d['slug']}/price?pages=8").json()
+    assert got["pages"] == 8 and got["calls"] == 8 and "8 pages" in got["line"]
+    assert client.get("/api/open-data/directories/nope/price").status_code == 404

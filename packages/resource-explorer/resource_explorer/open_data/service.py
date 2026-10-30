@@ -306,6 +306,20 @@ def _directory_row_state(store: OpenDataStore, row: dict) -> dict:
     return {**row, "already_registered": bool(held), "adapter": cls.manifest.name if cls else "", "status": status}
 
 
+def directory_price(store: OpenDataStore, directory_slug: str, pages: int) -> dict:
+    """The price line of a directory run, from the adapter's manifest (the same `price` the run uses)."""
+    d = store.get_directory(directory_slug)
+    if not d:
+        raise NotFound(f"No directory '{directory_slug}'.")
+    cls = adapter_for_api_kind(d["api_kind"], "directory")
+    if cls is None:
+        raise OpenDataError(f"No directory adapter for {d['api_kind']} yet.")
+    if not 1 <= pages <= MAX_SEARCH_PAGES:
+        raise OpenDataError(f"A directory run is 1 to {MAX_SEARCH_PAGES} pages.")
+    priced = price(cls.manifest, pages)
+    return {"pages": pages, "calls": priced.calls, "line": priced.line}
+
+
 def run_directory(store: OpenDataStore, directory_slug: str, *, pages: int = 1, terms: str = "", transport) -> dict:
     d = store.get_directory(directory_slug)
     if not d:
@@ -395,3 +409,69 @@ def terms_from_lens(lens: dict | None, fallback: str = "") -> dict:
 
 def default_work_list_name(investigation_request: str, terms: str) -> str:
     return (investigation_request or terms or "open data").strip()[:80]
+
+
+# ── ExternalDataScout (OD2): re-read every dataset of a work list, one call each ──────────────────────────────
+
+def scout_price(n: int) -> dict:
+    """The scout's price line, before the press: N datasets, one `describe` call each."""
+    return {"datasets": n, "calls": n, "line": f"{n} dataset{'s' if n != 1 else ''} × 1 call = {n} call{'s' if n != 1 else ''}"}
+
+
+def scout_work_list(store: OpenDataStore, work_list_slug: str, *, transport) -> dict:
+    """Re-read each dataset in the work list from its portal and refresh its stored columns (licence and flags,
+    publisher, modified, formats, size, the publisher's record with its stated coverage). API only. A dataset whose
+    portal did not answer is reported `could_not_scout` with the reason and keeps what it had: a failed read never
+    blanks a column."""
+    datasets = store.datasets_in_work_list(work_list_slug)
+    if not datasets:
+        raise NotFound(f"No open data in work list '{work_list_slug}'.")
+    out = []
+    for d in datasets:
+        dataset_id = (d["record"] or {}).get("name") or (d["record"] or {}).get("id") or d["identifier"].split(":", 1)[-1]
+        outcome = {"slug": d["slug"], "title": d["title"], "outcome": "could_not_scout", "words": ""}
+        for portal_slug in d["portals"]:
+            portal = store.get_portal(portal_slug)
+            if not portal:
+                outcome["words"] = f"portal '{portal_slug}' is no longer registered"
+                continue
+            try:
+                row = portal_adapter(portal, transport).describe(dataset_id)
+            except Exception as exc:
+                outcome["words"] = f"could not read from {portal['display_name']}: {exc}"[:240]
+                continue
+            changed = row["modified"] != d["modified"]
+            store.update_scouted(d["slug"], row, now())
+            outcome.update(outcome="scouted", words="scouted" + (" · changed on their side since the last look" if changed else " · no change on their side"),
+                           changed=changed)
+            break
+        out.append(outcome)
+    return {"work_list": work_list_slug, "price": scout_price(len(datasets)), "rows": out,
+            "scouted": sum(1 for o in out if o["outcome"] == "scouted"),
+            "could_not_scout": sum(1 for o in out if o["outcome"] != "scouted")}
+
+
+def _states_nothing(request: dict | None) -> bool:
+    return not any(v for k, v in (request or {}).items() if k != "licence") and not (request or {}).get("licence")
+
+
+def fit_work_list(store: OpenDataStore, work_list_slug: str, request: dict | None, investigation: str = "") -> dict:
+    """The fit row and winnow over the STORED columns (no network), with the Q-0011 overlap on each row. A request
+    that states nothing, sent with an investigation, is that investigation's stored data request (when it has one)."""
+    from resource_explorer.open_data import fit
+
+    source = "the request as sent"
+    if investigation and _states_nothing(request):
+        stored = store.get_data_request(investigation)
+        request, source = (stored, f"the data request on {investigation}") if stored else (request, "no data request stated")
+
+    datasets = store.datasets_in_work_list(work_list_slug)
+    if not datasets:
+        raise NotFound(f"No open data in work list '{work_list_slug}'.")
+    held = store.list_datasets()
+    result = fit.winnow(datasets, fit.DataRequest.from_dict(request))
+    by_slug = {d["slug"]: d for d in datasets}
+    for r in result["rows"]:
+        r["overlap"] = fit.overlap(by_slug[r["slug"]], held)
+        r["retrieved_at"] = by_slug[r["slug"]]["retrieved_at"]
+    return {"work_list": work_list_slug, "request_source": source, **result}

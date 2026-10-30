@@ -86,7 +86,7 @@ const GROUPS = [
     { id: 'admin-feedback', label: '💬 Feedback', render: renderFeedback },
     { id: 'admin-logs', label: '📜 Logs', render: renderLogs },
   ]},
-  { name: 'Open data', tabs: [
+  { name: 'Open data', visible: true, tabs: [
     { id: 'admin-od-portals', label: '🌐 Data portals', render: renderDataPortals },
     { id: 'admin-od-directories', label: '📚 Portal directories', render: renderPortalDirectories },
     { id: 'admin-od-datasets', label: '🗂 Open data', render: renderOpenData },
@@ -124,10 +124,25 @@ function groupSelectHtml(group) {
   </label>`;
 }
 
+/** A group marked `visible` lists its screens as buttons, so none hides behind a pick. */
+function groupButtonsHtml(group) {
+  return `<span class="flex items-center gap-[6px]">
+    <span class="text-caps uppercase tracking-caps ${group.tabs.some((t) => t.id === panel.tab) ? 'text-accent-ink' : 'text-ink-muted'}">${esc(group.name)}</span>
+    ${group.tabs.map((t) => `<button type="button" data-admin-tab="${esc(t.id)}"
+      class="cursor-pointer rounded-sm border px-2 py-[2px] text-caveat ${
+        t.id === panel.tab ? 'border-accent text-accent-ink' : 'border-rule-strong text-ink-muted hover:text-ink'}">${esc(t.label)}</button>`).join('')}
+  </span>`;
+}
+
 function renderSubnav() {
   const host = document.getElementById('admin-panel-subnav');
   if (!host) return;
-  host.innerHTML = GROUPS.map(groupSelectHtml).join('');
+  host.innerHTML = GROUPS.map((g) => (g.visible ? groupButtonsHtml(g) : groupSelectHtml(g))).join('');
+  host.querySelectorAll('[data-admin-tab]').forEach((b) => b.addEventListener('click', () => {
+    panel.tab = b.dataset.adminTab;
+    renderSubnav();
+    renderBody();
+  }));
   host.querySelectorAll('[data-admin-group]').forEach((sel) => sel.addEventListener('change', () => {
     if (!sel.value) return;
     panel.tab = sel.value;

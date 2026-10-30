@@ -17,18 +17,18 @@
 import {
   listOpenDataPortals, registerOpenDataPortal, checkOpenDataPortal, openDataPrice, searchOpenData, importOpenData,
   openDataLensTerms, listPortalDirectories, registerPortalDirectory, runPortalDirectory, importDirectoryPortals,
-  listOpenData, getOpenData,
+  listOpenData, getOpenData, openDataDirectoryPrice,
 } from '/static/re-api.js';
 import { esc } from '/static/next/app.js';
-import { ago } from '/static/next/format.js';
+import { ago, localTime } from '/static/next/format.js';
 import { watchTables } from '/static/next/colresize.js';
 
 export const NOT_REPORTED = 'not_reported';
 export const NOT_REPORTED_WORDS = 'not reported by this source';
-export const NO_SURVEY_WORDS = 'no survey yet · scout arrives with OD2';
-const SURVEY_QUESTIONS = ['Licence and terms (O1)', 'Description (O2)', 'Update cadence (O3)', 'Coverage (O4)',
-  'Formats and access (O5)', 'Structure (O6)', 'Size and cost (O7)', 'Quality (O8)', 'Personal data (O9)',
-  'Provenance (O10)', 'Overlap with data held (O11)', 'Citations (O12)', 'Change since last look (O13)'];
+export const NO_SURVEY_WORDS = 'Nothing has been measured for this yet · never run';
+const SURVEY_QUESTIONS = ['License and terms', 'Description', 'Update cadence', 'Coverage', 'Formats and access',
+  'Structure', 'Size and cost', 'Quality', 'Personal data', 'Provenance', 'Overlap with data held', 'Citations',
+  'Change since last look'];
 
 /** A value as the screen shows it: the typed absence becomes the words; lists join; flags become cues. */
 export function show(v) {
@@ -44,6 +44,18 @@ export function flagsCue(l) {
   if (!l) return show(NOT_REPORTED);
   const f = (name, v) => `${name} ${v === NOT_REPORTED ? '?' : v ? '✓' : '✗'}`;
   return esc(`${f('attr', l.attribution)} · ${f('share-alike', l.share_alike)} · ${f('commercial', l.commercial)}`);
+}
+
+/** A modified stamp in the house format: a date alone when the portal gave only a date, else date and time to the
+ *  minute in the reader's zone. Never the raw ISO string with microseconds. */
+export function modifiedWords(v) {
+  if (v === NOT_REPORTED || v === undefined || v === null || v === '') return show(NOT_REPORTED);
+  const text = String(v);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    const d = new Date(`${text}T00:00:00`);
+    return esc(Number.isNaN(d.getTime()) ? text : d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' }));
+  }
+  return esc(localTime(text) || text);
 }
 
 export function bytes(n) {
@@ -85,8 +97,8 @@ export async function renderDataPortals(host) {
         <td class="py-s2 pr-s3 text-caveat align-top">${esc(p.api_kind)}${p.adapter_available ? '' : ' <span class="text-state-warn">· no adapter yet</span>'}</td>
         <td class="py-s2 pr-s3 text-caveat align-top font-mono text-provenance">${esc(p.base_url)}</td>
         <td class="py-s2 pr-s3 text-caveat align-top text-ink-muted">${esc(p.origin)}</td>
-        <td class="py-s2 pr-s3 text-caveat align-top tnum text-ink-muted">${p.cost && p.cost.calls_per_page ? `${p.cost.calls_per_page} call/page · ${p.cost.page_size} rows` : '–'}${p.has_key ? ' · key held' : ''}</td>
-        <td class="py-s2 pr-s3 text-caveat align-top text-ink-muted">${esc(ago(p.registered_at))} · ${esc(p.registered_by || 'not recorded')}</td>
+        <td class="py-s2 pr-s3 text-caveat align-top tnum text-ink-muted">${p.cost && p.cost.calls_per_page ? `${p.cost.calls_per_page} call/page · ${p.cost.page_size} rows` : 'cost not declared by the adapter'}${p.has_key ? ' · key held' : ''}</td>
+        <td class="py-s2 pr-s3 text-caveat align-top text-ink-muted">${esc(ago(p.registered_at))}${p.registered_by ? ` · ${esc(p.registered_by)}` : ' · the person who registered it was not recorded'}</td>
         <td class="py-s2 pr-s3 text-caveat align-top">${p.adapter_available ? `<button type="button" data-od-open="${esc(p.slug)}" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent">Search</button>` : '<span class="text-ink-muted">registered for later</span>'}</td>
       </tr>`).join('')}</tbody></table>` : '<p data-od-empty class="text-answer text-ink">No portals registered yet.</p>'}
     <div data-od-pane class="mt-s4"></div>`;
@@ -116,7 +128,7 @@ export async function openPortalPane(host, slug, { lens = null, investigation = 
       <label class="text-caveat text-ink-muted">Terms <input name="terms" value="${esc(suggested ? suggested.terms : '')}" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink" style="width:240px"></label>
       <label class="text-caveat text-ink-muted">Format <input name="format" placeholder="CSV" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink" style="width:80px"></label>
       <label class="text-caveat text-ink-muted">Modified after <input name="modified_after" type="date" value="${esc((suggested && suggested.filters.modified_after) || '')}" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink"></label>
-      <label class="text-caveat text-ink-muted">Licence needs
+      <label class="text-caveat text-ink-muted">License needs
         <select name="need_commercial" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink"><option value="">commercial: any</option><option value="1">commercial use needed</option></select>
         <select name="need_share_alike" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink"><option value="">share-alike: any</option><option value="0">no share-alike</option></select></label>
       <label class="text-caveat text-ink-muted">Pages <input name="pages" type="number" min="1" max="20" value="2" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink" style="width:56px"></label>
@@ -147,27 +159,38 @@ export async function openPortalPane(host, slug, { lens = null, investigation = 
     out.innerHTML = '<p class="text-ink-muted">Searching…</p>';
     try {
       const res = await searchOpenData(slug, { terms: f.terms, filters, pages: Number(f.pages) || 1 });
-      drawCandidates(pane, out, slug, res, f.terms, requestName, investigation);
+      drawCandidates(pane, out, slug, res, f.terms, requestName, investigation, licence);
     } catch (e) { out.innerHTML = `<p class="text-state-warn">${errText(e)}</p>`; }
   });
 }
 
-function drawCandidates(pane, out, slug, res, terms, requestName, investigation) {
+/** The empty state says WHY: the portal had none for these terms, or the license needs dropped them all. */
+export function noCandidatesWords(res, licence) {
+  const needs = [];
+  if (licence && licence.commercial) needs.push('commercial use needed');
+  if (licence && licence.share_alike === false) needs.push('no share-alike');
+  if (res.licence_dropped) {
+    return `No candidates: the portal returned ${res.licence_dropped} row${res.licence_dropped === 1 ? '' : 's'}, and the license needs (${needs.join(', ') || 'as set'}) dropped ${res.licence_dropped === 1 ? 'it' : 'all of them'}.`;
+  }
+  return 'No candidates: the portal has no datasets for these terms and filters.';
+}
+
+function drawCandidates(pane, out, slug, res, terms, requestName, investigation, licence = null) {
   const rows = res.rows;
   out.innerHTML = `
     <p class="mb-s2 text-provenance text-ink-muted tnum">${rows.length} row${rows.length === 1 ? '' : 's'} of ${show(res.total)} · ${res.calls_made} call${res.calls_made === 1 ? '' : 's'} made
-      ${res.licence_dropped ? ` · ${res.licence_dropped} dropped on licence` : ''}</p>
+      ${res.licence_dropped ? ` · ${res.licence_dropped} dropped on license` : ''}</p>
     ${rows.length ? `<table class="w-full text-left" data-rc-id="od-candidates">
       <thead><tr class="border-b border-rule text-caps uppercase tracking-caps text-ink-muted">
-        <th class="pb-s2 pr-s3 font-normal"></th><th class="pb-s2 pr-s3 font-normal">Title</th><th class="pb-s2 pr-s3 font-normal">Publisher</th><th class="pb-s2 pr-s3 font-normal">Licence</th>
+        <th class="pb-s2 pr-s3 font-normal"></th><th class="pb-s2 pr-s3 font-normal">Title</th><th class="pb-s2 pr-s3 font-normal">Publisher</th><th class="pb-s2 pr-s3 font-normal">License</th>
         <th class="pb-s2 pr-s3 font-normal">Flags</th><th class="pb-s2 pr-s3 font-normal">Modified</th><th class="pb-s2 pr-s3 font-normal">Formats</th><th class="pb-s2 pr-s3 font-normal">Size</th>
         <th class="pb-s2 pr-s3 font-normal">Identifier</th><th class="pb-s2 pr-s3 font-normal">Portal</th></tr></thead>
       <tbody>${rows.map((r, i) => `<tr class="border-b border-rule" data-od-row="${i}">
         <td class="py-s2 pr-s3 text-caveat align-top"><input type="checkbox" data-od-pick="${i}"></td>
         <td class="py-s2 pr-s3 text-caveat align-top">${show(r.title)}</td><td class="py-s2 pr-s3 text-caveat align-top">${show(r.publisher)}</td>
-        <td class="py-s2 pr-s3 text-caveat align-top">${show(r.licence_id)}${r.licence_check ? ` <span class="text-state-warn">· ${esc(r.licence_check)}</span>` : ''}</td>
-        <td class="py-s2 pr-s3 text-caveat align-top text-ink-muted">${flagsCue(r.licence)}</td>
-        <td class="py-s2 pr-s3 text-caveat align-top">${show(r.modified)}</td><td class="py-s2 pr-s3 text-caveat align-top">${show(r.formats)}</td><td class="py-s2 pr-s3 text-caveat align-top tnum">${bytes(r.size)}</td>
+        <td class="py-s2 pr-s3 text-caveat align-top">${show(r.licence_id)}</td>
+        <td class="py-s2 pr-s3 text-caveat align-top text-ink-muted">${r.licence_check ? `<span class="text-state-warn">${esc(r.licence_check)}</span>` : flagsCue(r.licence)}</td>
+        <td class="py-s2 pr-s3 text-caveat align-top">${modifiedWords(r.modified)}</td><td class="py-s2 pr-s3 text-caveat align-top">${show(r.formats)}</td><td class="py-s2 pr-s3 text-caveat align-top tnum">${bytes(r.size)}</td>
         <td class="py-s2 pr-s3 text-caveat align-top font-mono text-provenance">${show(r.identifier)}${r.doi === NOT_REPORTED ? ' <span class="text-ink-muted">· no DOI reported</span>' : ''}</td>
         <td class="py-s2 pr-s3 text-caveat align-top text-ink-muted">${esc(r.portal_name)}</td></tr>`).join('')}</tbody></table>
       <form data-od-import class="mt-s3 flex flex-wrap items-end gap-[6px]">
@@ -175,7 +198,7 @@ function drawCandidates(pane, out, slug, res, terms, requestName, investigation)
         <button type="submit" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent">Import chosen</button>
         <span data-od-import-price class="text-provenance text-ink-muted tnum">0 chosen · 0 calls</span>
         <span class="text-provenance text-ink-muted">at most 25 per import</span>
-      </form><div data-od-import-result class="mt-s3"></div>` : '<p class="text-answer text-ink">No candidates.</p>'}`;
+      </form><div data-od-import-result class="mt-s3"></div>` : `<p data-od-none class="text-answer text-ink">${esc(noCandidatesWords(res, licence))}</p>`}`;
   watchTables(out);
   const form = q(out, '[data-od-import]');
   if (!form) return;
@@ -193,6 +216,7 @@ function drawCandidates(pane, out, slug, res, terms, requestName, investigation)
     try {
       const r = await importOpenData(slug, { rows: chosen, work_list_name: form.work_list_name.value, terms, investigation });
       result.innerHTML = importResultHtml(r);
+      document.dispatchEvent(new CustomEvent('re:open-data-imported', { detail: { work_list: r.work_list } }));
       watchTables(result);
     } catch (e) { result.innerHTML = `<p class="text-state-warn">${errText(e)}</p>`; }
   });
@@ -222,7 +246,7 @@ export async function renderPortalDirectories(host) {
     </div>
     <form data-od-register class="mb-s3 hidden flex-wrap items-end gap-[6px]">
       <label class="text-caveat text-ink-muted">Name <input name="display_name" required class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink" value="dataportals.org"></label>
-      <label class="text-caveat text-ink-muted">API <select name="api_kind" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink"><option>dataportals.org</option></select></label>
+      <label class="text-caveat text-ink-muted">API <select name="api_kind" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink"><option>dataportals.org</option><option>re3data</option></select></label>
       <label class="text-caveat text-ink-muted">Listing URL <input name="base_url" placeholder="https://dataportals.org/api/data.json" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink" style="width:300px"></label>
       <button type="submit" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent">Register</button><span data-od-register-state class="text-provenance text-ink-muted"></span>
     </form>
@@ -249,13 +273,16 @@ async function runDirectoryPane(host, slug) {
   pane.innerHTML = `<form data-od-dirrun class="mb-s2 flex flex-wrap items-end gap-[6px]">
       <label class="text-caveat text-ink-muted">Filter <input name="terms" placeholder="name, country, API" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink"></label>
       <label class="text-caveat text-ink-muted">Pages <input name="pages" type="number" min="1" max="20" value="8" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink" style="width:56px"></label>
-      <button type="submit" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent">Run</button><span data-od-dirprice class="text-provenance text-ink-muted tnum">8 pages × 1 call = 8 calls (the listing is read once)</span></form>
+      <button type="submit" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent">Run</button><span data-od-dirprice class="text-provenance text-ink-muted tnum"></span></form>
     <div data-od-results></div>`;
   const form = q(pane, '[data-od-dirrun]');
-  form.pages.addEventListener('change', () => {
-    const n = Number(form.pages.value) || 1;
-    q(pane, '[data-od-dirprice]').textContent = `${n} page${n === 1 ? '' : 's'} × 1 call = ${n} call${n === 1 ? '' : 's'} (the listing is read once)`;
-  });
+  const refreshDirPrice = async () => {
+    const out = q(pane, '[data-od-dirprice]');
+    try { out.textContent = (await openDataDirectoryPrice(slug, Number(form.pages.value) || 1)).line; }
+    catch (e) { out.innerHTML = errText(e); }
+  };
+  form.pages.addEventListener('change', refreshDirPrice);
+  refreshDirPrice();
   form.addEventListener('submit', async (ev) => {
     ev.preventDefault();
     const out = q(pane, '[data-od-results]');
@@ -293,7 +320,7 @@ export async function renderOpenData(host) {
   const rows = await listOpenData();
   host.innerHTML = `<h3 class="m-0 mb-s2 font-heading text-name font-normal text-ink">🗂 Open data</h3>
     ${rows.length ? `<table class="w-full text-left" data-rc-id="od-datasets"><thead><tr class="border-b border-rule text-caps uppercase tracking-caps text-ink-muted">
-      <th class="pb-s2 pr-s3 font-normal">Title</th><th class="pb-s2 pr-s3 font-normal">Identifier</th><th class="pb-s2 pr-s3 font-normal">Publisher</th><th class="pb-s2 pr-s3 font-normal">Licence</th><th class="pb-s2 pr-s3 font-normal">Portals</th><th class="pb-s2 pr-s3 font-normal">Work list</th><th class="pb-s2 pr-s3 font-normal">Imported</th></tr></thead>
+      <th class="pb-s2 pr-s3 font-normal">Title</th><th class="pb-s2 pr-s3 font-normal">Identifier</th><th class="pb-s2 pr-s3 font-normal">Publisher</th><th class="pb-s2 pr-s3 font-normal">License</th><th class="pb-s2 pr-s3 font-normal">Portals</th><th class="pb-s2 pr-s3 font-normal">Work list</th><th class="pb-s2 pr-s3 font-normal">Imported</th></tr></thead>
       <tbody>${rows.map((d) => `<tr class="border-b border-rule"><td class="py-s2 pr-s3 text-caveat align-top"><a href="#" data-od-dataset="${esc(d.slug)}" class="text-accent-ink">${show(d.title)}</a></td>
         <td class="py-s2 pr-s3 text-caveat align-top font-mono text-provenance">${esc(d.identifier)}</td><td class="py-s2 pr-s3 text-caveat align-top">${show(d.publisher)}</td><td class="py-s2 pr-s3 text-caveat align-top">${show(d.licence_id)}</td>
         <td class="py-s2 pr-s3 text-caveat align-top text-ink-muted">${esc(d.portals.join(', '))}</td><td class="py-s2 pr-s3 text-caveat align-top font-mono text-provenance">${esc(d.work_list_slug)}</td>
@@ -309,23 +336,26 @@ export async function renderOpenData(host) {
 
 /** The dataset's page: normalised fields with who stated them and when, the survey absence word, the record verbatim. */
 export function datasetPageHtml(d) {
-  const stated = `stated by ${(d.stated_by || d.portals || []).join(', ')} · retrieved ${d.retrieved_at ? ago(d.retrieved_at) : 'not recorded'}`;
-  const field = (label, value) => `<tr class="border-b border-rule"><td class="py-s2 pr-s3 text-caveat align-top text-ink-muted">${esc(label)}</td><td class="py-s2 pr-s3 text-caveat align-top">${value}</td>
-      <td class="py-s2 pr-s3 text-caveat align-top text-provenance text-ink-muted">${esc(stated)}</td></tr>`;
+  const who = (d.stated_by || d.portals || []).join(', ');
+  const when = `retrieved ${d.retrieved_at ? ago(d.retrieved_at) : 'at a time that was not recorded'}`;
+  // An absence is not "stated by" anyone: the source says it gave no value.
+  const field = (label, value, absent = false) => `<tr class="border-b border-rule"><td class="py-s2 pr-s3 text-caveat align-top text-ink-muted">${esc(label)}</td><td class="py-s2 pr-s3 text-caveat align-top">${value}</td>
+      <td class="py-s2 pr-s3 text-caveat align-top text-provenance text-ink-muted">${esc(absent ? `${who} gave no value · ${when}` : `stated by ${who} · ${when}`)}</td></tr>`;
+  const gone = (v) => v === NOT_REPORTED || v === undefined || v === null;
   const dc = d.datacite;
   return `<div data-od-page>
     <h4 class="m-0 mb-s2 font-heading text-name font-normal text-ink">${show(d.title)}</h4>
-    <p class="mb-s2 text-provenance text-ink-muted">${esc(d.identifier_kind === 'doi' ? 'DOI' : 'portal id')} <span class="font-mono">${esc(d.identifier)}</span>
-      · imported ${esc(ago(d.imported_at))} by ${esc(d.imported_by || 'not recorded')} into <span class="font-mono">${esc(d.work_list_slug)}</span></p>
+    <p class="mb-s2 text-provenance text-ink-muted">${d.identifier_kind === 'doi' ? '' : 'no DOI reported · '}${esc(d.identifier_kind === 'doi' ? 'DOI' : 'portal id')} <span class="font-mono">${esc(d.identifier)}</span>
+      · imported ${esc(ago(d.imported_at))}${d.imported_by ? ` by ${esc(d.imported_by)}` : ' (the person who imported it was not recorded)'} into <span class="font-mono">${esc(d.work_list_slug)}</span></p>
     <table class="w-full text-left" data-rc-id="od-fields"><thead><tr class="border-b border-rule text-caps uppercase tracking-caps text-ink-muted">
       <th class="pb-s2 pr-s3 font-normal">Field</th><th class="pb-s2 pr-s3 font-normal">Value</th><th class="pb-s2 pr-s3 font-normal">Source</th></tr></thead><tbody>
-      ${field('Publisher', show(d.publisher))}${field('Licence', show(d.licence_id))}${field('Licence flags', flagsCue(d.licence))}
-      ${field('Modified', show(d.modified))}${field('Formats', show(d.formats))}${field('Size', bytes(d.size))}
+      ${field('Publisher', show(d.publisher), gone(d.publisher))}${field('License', show(d.licence_id), gone(d.licence_id))}${field('License flags', flagsCue(d.licence), !d.licence)}
+      ${field('Modified', modifiedWords(d.modified), gone(d.modified))}${field('Formats', show(d.formats), gone(d.formats))}${field('Size', bytes(d.size), gone(d.size))}
       ${dc ? `<tr class="border-b border-rule"><td class="py-s2 pr-s3 text-caveat align-top text-ink-muted">DataCite publisher</td><td class="py-s2 pr-s3 text-caveat align-top">${show(dc.publisher)}</td><td class="py-s2 pr-s3 text-caveat align-top text-provenance text-ink-muted">stated by DataCite</td></tr>
         <tr class="border-b border-rule"><td class="py-s2 pr-s3 text-caveat align-top text-ink-muted">Related identifiers</td><td class="py-s2 pr-s3 text-caveat align-top">${show((dc.related_identifiers === NOT_REPORTED ? NOT_REPORTED : dc.related_identifiers.map((r) => `${r.relation} ${r.identifier}`)))}</td><td class="py-s2 pr-s3 text-caveat align-top text-provenance text-ink-muted">stated by DataCite</td></tr>` : ''}
     </tbody></table>
     <h5 class="m-0 mb-s2 mt-s3 text-caps uppercase tracking-caps text-ink-muted">Questions</h5>
-    <ul data-od-survey class="m-0 list-none p-0">${SURVEY_QUESTIONS.map((x) => `<li class="text-caveat"><span class="text-ink">${esc(x)}</span> <span class="text-ink-muted">· ${NO_SURVEY_WORDS}</span></li>`).join('')}</ul>
+    <p data-od-survey class="m-0 text-caveat text-ink-muted">${NO_SURVEY_WORDS}. It will answer: ${esc(SURVEY_QUESTIONS.join(', '))}.</p>
     <details class="mt-s3"><summary class="cursor-pointer text-caveat text-ink">The publisher's record, verbatim</summary>
       <pre data-od-record class="mt-s2 overflow-auto whitespace-pre-wrap font-mono text-provenance text-ink" style="max-height:420px">${esc(JSON.stringify(d.record, null, 2))}</pre></details>
   </div>`;

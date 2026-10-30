@@ -192,16 +192,54 @@ def import_rows(slug: str, req: ImportRequest, request: Request) -> dict:
 
 @router.post("/lens-terms")
 def lens_terms(lens: dict, investigation: str = "") -> dict:
-    """Search terms from a data request's lens {subjects, period, places}; editable by the caller. No investigation
-    lens is stored on this build (`catalogue_scope.data_lens_for`), so the lens comes in the body."""
+    """Search terms from a data request's lens {subjects, period, places}; editable by the caller. A lens that states
+    nothing, sent with an investigation, is that investigation's stored data request (when it has one); otherwise the
+    investigation's name is the fallback and the answer says so."""
     fallback = ""
     if investigation:
+        stored = _store().get_data_request(investigation)
+        if stored and not any(lens.get(k) for k in ("subjects", "period", "places")):
+            lens = stored
         try:
             inv = ProjectRegistry().get_investigation(investigation)
             fallback = (inv.get("display_name", "") if isinstance(inv, dict) else getattr(inv, "display_name", "")) or ""
         except Exception:
             fallback = ""
-    return service.terms_from_lens(lens, fallback)
+    out = service.terms_from_lens(lens, fallback)
+    if out["source"] == "lens" and investigation and lens.get("updated_at"):
+        out["source"] = "data request"
+    return out
+
+
+class DataRequestBody(BaseModel):
+    subjects: list[str] = []
+    period: str = ""
+    places: list[str] = []
+    grain: str = ""
+    licence: dict = {}
+    formats: list[str] = []
+
+
+@router.get("/investigations/{slug}/data-request")
+def get_data_request(slug: str) -> dict:
+    """The investigation's data request. `stated` is false when none was saved (every old investigation) or the table
+    is not applied yet; `stored` says which: false = the table does not exist yet, so a save would be refused."""
+    store = _store()
+    request = store.get_data_request(slug)
+    return {"investigation": slug, "stated": request is not None, "stored": store.data_request_table_present(),
+            "request": request}
+
+
+@router.put("/investigations/{slug}/data-request")
+def put_data_request(slug: str, body: DataRequestBody, request: Request) -> dict:
+    who = _signed_in_user(request)
+    from resource_explorer.open_data.store import DataRequestTableMissing
+
+    try:
+        saved = _store().save_data_request(slug, body.model_dump(), who)
+    except DataRequestTableMissing as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"investigation": slug, "stated": True, "stored": True, "request": saved}
 
 
 # ── datasets ─────────────────────────────────────────────────────────────────
@@ -220,11 +258,45 @@ def get_dataset(slug: str) -> dict:
     if not d:
         raise HTTPException(status_code=404, detail=f"No open data '{slug}'.")
     d["stated_by"] = d["portals"]
-    d["survey"] = "no survey yet · scout arrives with OD2"
+    d["survey"] = "Nothing has been measured for this yet · never run"
     return d
 
 
 # ── directories ──────────────────────────────────────────────────────────────
+
+class FitRequest(BaseModel):
+    request: dict = {}
+    investigation: str = ""
+
+
+@router.get("/work-lists/{slug}/scout-price")
+def scout_price(slug: str) -> dict:
+    """The scout's price line for a work list of open data, before the press."""
+    n = len(_store().datasets_in_work_list(slug))
+    if not n:
+        raise HTTPException(status_code=404, detail=f"No open data in work list '{slug}'.")
+    return service.scout_price(n)
+
+
+@router.post("/work-lists/{slug}/scout")
+def scout(slug: str, request: Request) -> dict:
+    """ExternalDataScout: re-read every dataset of the work list from its portal (one call each)."""
+    _signed_in_user(request)
+    try:
+        return service.scout_work_list(_store(), slug, transport=_transport())
+    except service.OpenDataError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/work-lists/{slug}/fit")
+def fit(slug: str, req: FitRequest, request: Request) -> dict:
+    """The fit row and winnow over the stored columns. No outbound call."""
+    _signed_in_user(request)
+    try:
+        return service.fit_work_list(_store(), slug, req.request, req.investigation)
+    except service.OpenDataError as exc:
+        raise _http(exc) from exc
+
 
 @router.get("/directories")
 def list_directories() -> list[dict]:
@@ -237,7 +309,16 @@ def register_directory(reg: DirectoryRegistration, request: Request) -> dict:
     try:
         return service.register_directory(
             _store(), display_name=reg.display_name, api_kind=reg.api_kind,
-            base_url=reg.base_url or "https://dataportals.org/api/data.json", registered_by=who)
+            base_url=reg.base_url or ("https://www.re3data.org/api/v1/repositories" if reg.api_kind.lower() == "re3data" else "https://dataportals.org/api/data.json"), registered_by=who)
+    except service.OpenDataError as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/directories/{slug}/price")
+def directory_price(slug: str, pages: int = 8) -> dict:
+    """A directory run's price line, before the press (one source for every price line)."""
+    try:
+        return service.directory_price(_store(), slug, pages)
     except service.OpenDataError as exc:
         raise _http(exc) from exc
 
