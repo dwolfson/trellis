@@ -246,6 +246,17 @@ test("the question row never says 'the figures above' for an analysis whose figu
   assert.match(alone.caveat, /fs_permissions has no written summary — the figures above are the raw measures/);
 });
 
+test("a library step whose value is nested measures shows no figures, and the row says where they are (F3)", async () => {
+  await open({ table: TABLE() });
+  const { readEnvelope } = await import('/static/next/envelope.js');
+  const esc = (s) => String(s);
+  const nested = { analysis_id: 'fs_activity', state: 'measured', is_known: true, value: { bands: { hot: 3 } }, last_run_at: '2026-10-29T10:00:00' };
+  const lines = readEnvelope({ analysis_ids: ['fs_activity'] }, { facts: [nested], answerable: true }, esc, esc);
+  assert.equal(lines.answer, '');
+  assert.ok(!/figures above/.test(lines.caveat), lines.caveat);
+  assert.match(lines.caveat, /fs_activity has no written summary and is not shown here — see Survey & analyses/);
+});
+
 test("a row names both dates: when the statistic is as of, and when it was measured (F15)", async () => {
   await open({ table: TABLE() });
   const { rowHtml } = await import('/static/next/stages/publish-table.js');

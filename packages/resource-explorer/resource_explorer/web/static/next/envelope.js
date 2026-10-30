@@ -276,6 +276,10 @@ export function readEnvelope(entry, env, esc, tnum) {
         if (scalars) {
           sentence = tnum(esc(scalars));
           lines.unwritten.push(f.analysis_id);
+        } else {
+          // Known, but no sentence and no scalar to show (a library step's value is its measures, nested): the row
+          // shows nothing for it, and must say so rather than read as answered with the proof omitted (F3).
+          lines.unwritten.push(f.analysis_id);
         }
       }
     }
