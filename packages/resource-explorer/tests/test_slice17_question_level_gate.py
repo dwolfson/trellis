@@ -196,8 +196,10 @@ class TestCapableButUnrenderedStillGates:
         env = _measured_envelope(["schema_inventory"])  # no headline -- the live bug
         fl._check_level(env, {"levels": ["container"]})
         assert env.level_mismatch is True
-        assert "schema_inventory" in env.level_note
-        assert "no reader shows them yet" in env.level_note
+        assert env.level_note == ("Answered for the database as a whole: the figures for each schema are stored but "
+                                  "not shown here yet.")
+        assert "schema_inventory" not in env.level_note  # person words, no analysis id (W16)
+        assert "are stored but not shown here yet" in env.level_note
         assert "rollup" not in env.level_note  # this is NOT the "nothing to show" case
 
     def test_the_note_distinguishes_stored_but_unrendered_from_no_data_at_all(self, monkeypatch):
@@ -211,8 +213,8 @@ class TestCapableButUnrenderedStillGates:
         env = _measured_envelope(["schema_inventory", "db_activity_signals"])
         fl._check_level(env, {"levels": ["container"]})
         assert env.level_mismatch is True
-        assert "schema_inventory" in env.level_note
-        assert "no reader shows them yet" in env.level_note
+        assert "schema_inventory" not in env.level_note  # person words, no analysis id (W16)
+        assert "are stored but not shown here yet" in env.level_note
 
     def test_a_headline_on_one_capable_analysis_is_enough_even_with_others_unrendered(self, monkeypatch):
         fl = _fact_layer(monkeypatch, [
@@ -340,7 +342,7 @@ class TestRealCatalogAgreesWithTheSlice17bLiveBugReport:
         )
         fl._check_level(env, row)
         assert env.level_mismatch is True
-        assert "no reader shows them yet" in env.level_note
+        assert "are stored but not shown here yet" in env.level_note
 
     def test_how_big_is_this_database_still_passes_via_row_count_snapshots_headline(self, monkeypatch):
         """The gate's other half (item c): "How big is this database" must

@@ -25,7 +25,7 @@
 // and it goes when the experiment goes.
 import { listWorkLists, openWorkList, saveAsWorkList, openDialog, closeCellDetail, CELL }
   from '/static/next/worklist.js';
-import { ago, whenMs, verdictLineHtml, changedTimesHtml, savedLine, readBackAt, stepOutcome, statusToken, publishedEarlierSentence, PUBLISHED_EARLIER_WORD } from '/static/next/format.js';
+import { ago, whenMs, houseTime, verdictLineHtml, changedTimesHtml, savedLine, readBackAt, stepOutcome, statusToken, publishedEarlierSentence, PUBLISHED_EARLIER_WORD } from '/static/next/format.js';
 import { showMarkdown } from '/static/next/markdown.js';
 // The one glyph table (REPLY-DESIGNER-ROUND2-DATABASE-SCREENS.md §1). `GLYPH`
 // and `factGlyph` below are thin views over `GLYPH_STATES` -- this file
@@ -8703,9 +8703,6 @@ function headlineHtml(a) {
   </div>`;
 }
 
-/** A stored ISO time, as the API returns one. */
-const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
-
 /** A stored value rendered as what it IS, not as the number that stores it.
  *
  *  `was 21438268 8d ago` on ~40 sub_resource_survey rows was the defect: that
@@ -8731,7 +8728,7 @@ export function fmtScalar(v, name = '') {
   if (v == null || v === '') return '';
   // A stored time ("2026-10-30T11:12:58.965452") reads in the house format, "2026-10-30 11:12", the one Curate's
   // summary line uses for the same instant: no T, no seconds, no microseconds.
-  if (typeof v === 'string' && ISO_TIME.test(v)) return v.slice(0, 16).replace('T', ' ');
+  if (houseTime(v)) return houseTime(v);
   const n = Number(v);
   if (!Number.isFinite(n)) return String(v);
   if (/bytes$/i.test(name)) return fmtBytes(n);

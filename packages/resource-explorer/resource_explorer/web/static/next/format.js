@@ -19,6 +19,14 @@ export function whenMs(iso) {
   return Date.parse(zoned ? s : `${s}Z`);
 }
 
+/** A stored ISO time ("2026-10-30T11:12:58.965452") in the house format, "2026-10-30 11:12": no T, no seconds, no
+ *  microseconds, the format Curate's summary line uses. null for anything that is not an ISO date-time string, so a
+ *  caller can leave other values as they are. */
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+export function houseTime(v) {
+  return typeof v === 'string' && ISO_TIME.test(v) ? v.slice(0, 16).replace('T', ' ') : null;
+}
+
 /** A stamp as the READER's local time ("Oct 16, 10:42 AM"), never the UTC date the server stored. Empty when the
  *  stamp cannot be read. */
 export function localTime(iso) {

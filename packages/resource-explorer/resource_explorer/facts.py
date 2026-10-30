@@ -1927,13 +1927,11 @@ class FactLayer:
         ]
         env.level_mismatch = True
         if capable_ids:
-            env.level_note = (
-                f"Answered, but not at {'/'.join(sub_levels)} level — "
-                + (f"{capable_ids[0]} stores per-{sub_levels[0]} rows"
-                   if len(capable_ids) == 1
-                   else f"{', '.join(capable_ids)} store per-{sub_levels[0]} rows")
-                + f", but no reader shows them yet."
-            )
+            # Rows exist at that level but nothing shows them: in person words, as the rollup note below (W16,
+            # 2026-10-30), not "member level", "stores per-member rows" or analysis ids.
+            whole, per = _level_words(self.resource_type, sub_levels[0])
+            env.level_note = (f"Answered for the {whole} as a whole: the figures for each {per} are stored but not "
+                              "shown here yet.")
         else:
             # Shown on the person's row: the resource and level in that person's words, not "rollup", "member/field
             # level" or analysis ids (quality-screens read, item 6, 2026-10-30). Which analyses stand behind the row

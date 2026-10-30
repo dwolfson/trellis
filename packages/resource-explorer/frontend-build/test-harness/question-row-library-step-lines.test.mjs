@@ -108,3 +108,16 @@ test('F23: a step that ran with no recorded time says so, never "never run"', as
   assert.match(line, /run time not recorded/);
   assert.ok(!/never run|not run yet/.test(line), line);
 });
+
+test('Q-0073: a note shared by the lead and a step is said once, and the step line gives the state, not the note', async () => {
+  const app = await load();
+  const why = 'This resource was surveyed by runs that predate per-step recording, so whether this analysis was among them cannot be determined.';
+  const html = app.rowInner(entry, 0, env([
+    fact('db_statistics_freshness', { state: 'not_established', is_known: false, note: why, last_run_at: '' }),
+    fact('statistics_freshness', { library: true, state: 'not_established', is_known: false, note: why, last_run_at: '' })]));
+  const text = html.replace(/<[^>]*>/g, '');
+  assert.equal(text.split('predate per-step recording').length - 1, 1, text);
+  const line = /<div data-step-line="statistics_freshness"[\s\S]*?<\/div>/.exec(html)[0].replace(/<[^>]*>/g, '');
+  assert.match(line, /statistics_freshness · not established/);
+  assert.ok(!line.includes('predate'), line);
+});

@@ -15,7 +15,7 @@
  * problem — it lives in format.js, which nothing here or in app.js needs to
  * import back — so it is imported normally.
  */
-import { whenMs } from '/static/next/format.js';
+import { whenMs, houseTime } from '/static/next/format.js';
 
 /** Fact states, from surveyors/result_status.py. */
 export const MEASURED = 'measured';
@@ -96,7 +96,8 @@ export function scalarMeasures(value, max = 6) {
     if (v === null || v === undefined || v === '') continue;
     if (typeof v === 'object') continue;
     if (k === 'verdict') continue;   // already used as the verdict word
-    const shown = typeof v === 'boolean' ? (v ? 'yes' : 'no') : String(v);
+    // A stored time reads in the house format, never raw ISO with microseconds (quality-screens read, item 8).
+    const shown = typeof v === 'boolean' ? (v ? 'yes' : 'no') : (houseTime(v) || String(v));
     if (shown.length > 60) continue;
     pairs.push(`${k.replace(/_/g, ' ')} ${shown}`);
     if (pairs.length >= max) break;
@@ -337,10 +338,13 @@ export function readEnvelope(entry, env, esc, tnum) {
   // own prose, written as if it would be read alone -- attributed here,
   // not rewritten, since the sentence itself is correct and only its
   // referent was ambiguous.
-  const attribute = (f, text) => (facts.length > 1 ? `${f.analysis_id} — ${text}` : text);
   const caveats = [];
+  // Several facts with the same note (two analyses surveyed by the same pre-recording runs) say it once, naming them
+  // all, rather than once per analysis.
+  const byNote = new Map();
+  for (const f of facts) if (f.note) byNote.set(f.note, [...(byNote.get(f.note) || []), f.analysis_id]);
+  for (const [text, ids] of byNote) caveats.push(facts.length > 1 ? `${ids.join(', ')} — ${text}` : text);
   for (const f of facts) {
-    if (f.note) caveats.push(attribute(f, f.note));
     if (f.state === PARTIAL && !f.note) {
       caveats.push(`${f.analysis_id} covered only part of what it measures.`);
     }
@@ -382,7 +386,9 @@ export function readEnvelope(entry, env, esc, tnum) {
     id: f.analysis_id,
     sentence: f.is_known
       ? (f.headline || (f.state || '').replace(/_/g, ' '))
-      : (f.state === NEVER_RUN ? 'not run yet' : (f.note || (f.state || '').replace(/_/g, ' '))),
+      // A fact's note is already in the row's caveat, attributed to it, so the step line gives the state in words
+      // and does not say the note a second time (Q-0073: "surveyed by runs that predate per-step recording", twice).
+      : (f.state === NEVER_RUN ? 'not run yet' : ((f.state || '').replace(/_/g, ' ') || 'state not recorded')),
     known: !!f.is_known, neverRun: f.state === NEVER_RUN, lastRun: f.last_run_at || '', runnable: f.runnable, runnableReason: f.runnable_reason || '',
   }));
   // The row's own "the numbers behind this" opens the question's FIRST analysis. When another of RE's own analyses has

@@ -206,7 +206,7 @@ class TestSubResourceCheckStillAppliesOnTopOfRenderability:
         ))
         fl._check_level(env, {"levels": ["container"]})
         assert env.level_mismatch is True
-        assert "no reader shows them yet" in env.level_note
+        assert "are stored but not shown here yet" in env.level_note
 
 
 class TestRealCatalogHeadlinesNowExistForTheThreeOperationsAnalyses:
