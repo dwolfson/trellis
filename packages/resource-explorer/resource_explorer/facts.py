@@ -83,6 +83,13 @@ class Fact:
     #: Step keys that would establish or improve this fact. Present even when
     #: the state is `measured` — re-running is how a stale fact is refreshed.
     can_run: list = field(default_factory=list)
+    #: Whether the run route would accept this analysis, and the reason when it would not -- the Survey & analyses
+    #: list's own predicate (`stage_page.runnable_and_reason`), so a Re-run is offered here only where it is there.
+    #: None: not asked (a fact built outside the layer).
+    runnable: bool | None = None
+    runnable_reason: str = ""
+    #: An installed Analytic Library step's analysis (not one of RE's own): the Questions row gives it a line of its own.
+    library: bool = False
     #: Why the state is what it is, in words, when there is something to say.
     note: str = ""
     #: The analysis's OWN one-sentence summary, from its headline_reader.
@@ -150,6 +157,7 @@ class Fact:
             "headline": self.headline,
             "value": value, "provenance": self.provenance,
             "last_run_at": self.last_run_at, "as_of": self.as_of, "can_run": self.can_run,
+            "runnable": self.runnable, "runnable_reason": self.runnable_reason, "library": self.library,
             "note": self.note, "is_known": self.is_known,
             "evidence_only": self.evidence_only,
             "destination": destination, "destination_basis": destination_basis,
@@ -1298,7 +1306,15 @@ class FactLayer:
         # nothing longer-lived (see that module's docstring).
         from resource_explorer import read_memo
         with read_memo.scope():
-            return self._fact(slug, analysis_id, level)
+            fact = self._fact(slug, analysis_id, level)
+        if self._map("analysis_results_map") is None:
+            return fact    # a resource type with no maps has no run route to ask (its fact says so already)
+        from resource_explorer.surveyors.survey_step_host import attached_user_steps
+        from resource_explorer.workflows.stage_page import runnable_and_reason
+
+        fact.runnable, fact.runnable_reason = runnable_and_reason(analysis_id, self.resource_type)
+        fact.library = analysis_id in attached_user_steps(self.resource_type)
+        return fact
 
     def _fact(self, slug: str, analysis_id: str, level: str = "resource") -> Fact:
         results_map = self._map("analysis_results_map")

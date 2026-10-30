@@ -352,7 +352,9 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
                        "unit": m.unit, "value_field": m.value_field, "as_of_field": m.as_of,
                        "state": fact.get("state", ""), "as_of": as_of, "confidence": conf,
                        "scope": scope, "writes_as": w, "result_kind": dec.result_kind,
-                       "measured_at": str(measured_at) if known else ""}
+                       "measured_at": str(measured_at) if known else "",
+                       # A derivation is recomputed on read: its second date is the survey it read (F18/item 2).
+                       "derived": bool(known and not (record or {}).get("measured_at") and "read_snapshot" in run)}
                 if not dec.built:
                     # Planned, not built: said first, whatever the fact layer holds (project owner, 2026-10-28).
                     row.update(value=None, value_words="—", absence=NOT_BUILT,

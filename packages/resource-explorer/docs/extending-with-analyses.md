@@ -275,6 +275,13 @@ your step's own prefix (`my_step:Q1`): `question_defs=[QuestionDeclaration(id="m
 its question catalogue while the package is installed (owner, 2026-10-29), with no central id and no configdata row; the id
 is added to your `questions` for you. An id outside your prefix, or repeated, makes the manifest fail to load, with that sentence.
 
+**On the Questions tab.** Every question your manifest names (`questions`, or `question_defs`) lists your step among the
+analyses that answer it, after RE's own, in catalogue order: a question RE's analysis and your step both answer shows both.
+The row's line for your step is your step's own sentence, the same `state · summary` the Survey tab shows for the same
+stored rows (a step with one result says it; one with a resource-scoped summary measure says that; only several plain
+results are counted). "The numbers behind this" lists each stored result, and each further declared measure on its own row
+with its own state, so a measure that could not be measured reads "not established" and its reason, never a zero.
+
 ---
 
 Ways to check that RE sees the step. RE has no admin page or CLI verb that lists library steps yet.
@@ -296,6 +303,14 @@ Ways to check that RE sees the step. RE has no admin page or CLI verb that lists
 ---
 
 ## 5. What a curator sees: Curate's publish table
+
+> **Two reports after a database Contents commit.** A commit publishes RE's measures into RE's own survey report (the
+> step names it: *RE's measures are in report fb6d96f4*), and also starts an Egeria survey, whose engine action writes a
+> separate report that can read "0 annotations" until that survey finishes. RE says both on the survey step; it does not
+> change what is sent.
+>
+> **A derived row's dates.** A step RE derives on read (not a stored record) has no measurement time of its own: its row
+> says *derived on read from the survey of <date>* beside the *as of*, never a second identical date.
 
 On a database's **Curate → Describe and publish** tab, the table headed **Publish · declared
 measures** lists every declared measure with a value. Its columns are Analysis, Measure, Value,
@@ -554,7 +569,7 @@ cd packages/trellis-analytics && uv run pytest tests/test_database_staleness_ste
 
 | step | result kind | what it shows you |
 |---|---|---|
-| `statistics_freshness` | `list` | two measures, one a summary; confidence `measured` |
+| `statistics_freshness` | `list` | two measures, one a resource-scoped summary whose headline counts the tables that *need attention* (never analysed + stale), because a count of "stale" alone reads 0 for a database whose tables were never analysed and so reads as all current; confidence `measured` |
 | `hub_tables` | `proposal` | a measure published as `ClassificationAnnotation` (`measure_annotation_types`), `candidate_classifications`, and `parameters` (`hub_min_referencing: 3`). A proposal is judged on Structure, not on the publish table |
 | `change_rates` | `distribution` | rows written per day; one extent |
 

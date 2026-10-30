@@ -9728,7 +9728,10 @@ function provenanceLine(entry, i, lines, st) {
   }
   const canRun = (lines.canRun && lines.canRun.length) || (entry.analysis_ids || []).length;
   if (canRun && st !== 'running') {
-    actions.push(`<button data-rerun="${i}" class="cursor-pointer bg-transparent text-accent-ink underline">${
+    const gate = lines.rerun || {};
+    const blocked = gate.runnable === false;
+    actions.push(`<button data-rerun="${i}" ${blocked ? `disabled title="${esc(gate.reason)}" data-rerun-blocked` : ''}
+      class="${blocked ? 'cursor-not-allowed text-ink-muted' : 'cursor-pointer text-accent-ink'} bg-transparent underline">${
       st === 'unrun' ? 'run' : 're-run'}</button>`);
   }
 
@@ -9759,8 +9762,19 @@ function provenanceLine(entry, i, lines, st) {
   }
 
   if (!bits.length && !actions.length) return '';
+  // One line per library step the question names, beside the lead's (leg 3): its sentence, run time, numbers, re-run.
+  const stepRows = (lines.stepLines || []).map((s) => {
+    const rel = s.lastRun ? ago(s.lastRun) : '';
+    const blocked = s.runnable === false;
+    return `<div data-step-line="${esc(s.id)}" class="ml-[22px] mt-[5px] text-provenance text-ink-muted">${esc(s.id)} · ${tnum(esc(s.sentence))} · ${
+      s.lastRun ? `run ${rel ? `<span class="tnum">${esc(rel)}</span>` : esc(s.lastRun)}` : 'never run'}${
+      s.known ? ` · <button data-numbers-step="${i}" data-numbers-for="${esc(s.id)}" data-numbers-level="${esc(primaryQuestionLevel(entry))}"
+        class="cursor-pointer bg-transparent text-accent-ink underline">the numbers behind this ›</button>` : ''} · <button data-rerun-for="${esc(s.id)}" data-rerun-row="${i}" ${
+      blocked ? `disabled title="${esc(s.runnableReason)}"` : ''} class="${blocked ? 'cursor-not-allowed text-ink-muted' : 'cursor-pointer text-accent-ink'} bg-transparent underline">${
+      s.known ? 're-run' : 'run'}</button></div>`;
+  }).join('');
   return `<div class="ml-[22px] mt-[7px] text-provenance text-ink-muted">${
-    [bits.join(' · '), actions.join(' · ')].filter(Boolean).join(' · ')}</div>
+    [bits.join(' · '), actions.join(' · ')].filter(Boolean).join(' · ')}</div>${stepRows}
     <div id="qm-${i}" hidden></div>`;
 }
 
@@ -9818,6 +9832,10 @@ function bindRowActions(el, entry, i) {
     loadAnswer(entry, i, state.selectedSlug);
   });
   el.querySelector(`[data-rerun="${i}"]`)?.addEventListener('click', (ev) => openRunChoice(entry, i, ev.currentTarget));
+  el.querySelectorAll(`[data-rerun-row="${i}"]`).forEach((b) =>
+    b.addEventListener('click', (ev) => openRunChoice(entry, i, ev.currentTarget, b.dataset.rerunFor)));
+  el.querySelectorAll(`[data-numbers-step="${i}"]`).forEach((b) =>
+    b.addEventListener('click', () => toggleMeasurementsInPlace(i, b.dataset.numbersFor, b, b.dataset.numbersLevel)));
   el.querySelectorAll(`[data-ask-chat="${i}"]`).forEach((b) => b.addEventListener('click', () => askQuestionInChat(entry, i)));
   el.querySelector(`[data-why="${i}"]`)?.addEventListener('toggle', (ev) => {
     if (ev.currentTarget.open) state.whyOpen.add(entry.question); else state.whyOpen.delete(entry.question);
@@ -10195,8 +10213,8 @@ function priceLineHtml(cost, analysisId) {
     <span class="text-ink-muted">· median of <span class="tnum">${cost.runs}</span> run${cost.runs === 1 ? '' : 's'} · not yet split into run and publish</span>`;
 }
 
-async function openRunChoice(entry, i, anchor) {
-  const analysisId = (entry.analysis_ids || [])[0];
+async function openRunChoice(entry, i, anchor, only) {
+  const analysisId = only || (entry.analysis_ids || [])[0];
   if (!analysisId) return;
   document.querySelector('[data-run-choice]')?.remove();
   anchor.insertAdjacentHTML('afterend', `
@@ -10212,7 +10230,7 @@ async function openRunChoice(entry, i, anchor) {
   box.querySelector('[data-run-cancel]').addEventListener('click', () => box.remove());
   box.querySelectorAll('[data-run-mode]').forEach((b) => b.addEventListener('click', () => {
     box.remove();
-    rerun(entry, i, { background: b.dataset.runMode === 'background' });
+    rerun(entry, i, { background: b.dataset.runMode === 'background', only });
   }));
   let cost = null;
   try { cost = await getRunCost(analysisId); } catch { cost = null; }
@@ -10268,8 +10286,8 @@ async function checkPrerequisitePlan(entry, i, analysisId, { background }) {
   return false;
 }
 
-async function rerun(entry, i, { background = false, skipPlanCheck = false, force = false } = {}) {
-  const analysisId = (entry.analysis_ids || [])[0];
+async function rerun(entry, i, { background = false, skipPlanCheck = false, force = false, only = '' } = {}) {
+  const analysisId = only || (entry.analysis_ids || [])[0];
   if (!analysisId) return;
   const slug = state.selectedSlug;
 
@@ -10289,7 +10307,7 @@ async function rerun(entry, i, { background = false, skipPlanCheck = false, forc
         state.runsInFlight.delete(entry.question);
         replaceRow(entry, i, state.answers.get(entry.question));
         offerRunAnyway(queued, { slug, analysisId, onForce: () =>
-          rerun(entry, i, { background: true, skipPlanCheck: true, force: true }) });
+          rerun(entry, i, { background: true, skipPlanCheck: true, force: true, only }) });
         return;
       }
       state.runsInFlight.set(entry.question, { analysisId, label: `In background · ${analysisId} · reload to read the result` });
@@ -10308,7 +10326,7 @@ async function rerun(entry, i, { background = false, skipPlanCheck = false, forc
       state.runsInFlight.delete(entry.question);
       replaceRow(entry, i, state.answers.get(entry.question));
       offerRunAnyway(started, { slug, analysisId, onForce: () =>
-        rerun(entry, i, { skipPlanCheck: true, force: true }) });
+        rerun(entry, i, { skipPlanCheck: true, force: true, only }) });
       return;
     }
     const activityId = started.activity_id;

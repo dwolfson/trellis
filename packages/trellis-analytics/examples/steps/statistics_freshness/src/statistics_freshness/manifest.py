@@ -39,15 +39,16 @@ MANIFEST = StepManifest(
         measures=[MeasureDeclaration(name="statistics_freshness", unit="days since the last ANALYZE", as_of="asOf",
                                      value_field="Days Since Analyze"),
                   # One value for the whole database, in a step whose rows are per table: its own scope.
-                  MeasureDeclaration(name="statistics_freshness_summary", unit="tables with stale statistics",
-                                     as_of="asOf", value_field="Stale", scope="resource")],
+                  MeasureDeclaration(name="statistics_freshness_summary", unit="tables never analysed or stale",
+                                     as_of="asOf", value_field="Needs Attention", scope="resource")],
         absence=AbsenceSentences(
             not_measured=("Not measured: no table statistics are stored for this database, or this table's were "
                           "not read — never shown as fresh."),
             not_permitted=("Not permitted: the survey that stored the table activity could not read this table's "
                            "statistics from pg_stat_user_tables."),
             not_applicable="Not applicable: a view has no planner statistics of its own.",
-            measured_nothing="Measured: every table's statistics are current."),
+            measured_nothing=("Measured: no table whose statistics were read is stale or has never been analysed "
+                              "(a table not read, or with changes since not read, is counted separately).")),
         extents=[ExtentDeclaration(
             name="tables_by_staleness", fields=["scope", "Statistics Status", "Days Since Analyze",
                                                 "Number Of Rows Changed Since Analyze", "Analyze Threshold"],
@@ -55,7 +56,7 @@ MANIFEST = StepManifest(
             truncation="{shown} of {total} tables shown, stale first", token_cost=840,
             citation="{analysis} · {scope} · as of {as_of}"),
             ExtentDeclaration(
-            name="summary", fields=["Tables", "Never Analyzed", "Stale", "Current", "Not Read", "Oldest Analyze Days"],
+            name="summary", fields=["Tables", "Needs Attention", "Never Analyzed", "Stale", "Current", "Not Read", "Oldest Analyze Days"],
             rows=1, order="the database as a whole", truncation="{shown} of {total} summaries shown",
             token_cost=88, citation="{analysis} · {scope} · as of {as_of}")],
         confidence=ConfidenceDeclaration(form="measured"),

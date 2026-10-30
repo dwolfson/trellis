@@ -10,7 +10,7 @@ Per table, from the newest `database_table_activity` snapshot RE stored (`inputs
   ``current``, or ``analysed; changes since not read``.
 
 A table whose statistics were not read (no live-row count; a native survey's row) is ``not_established``, never
-"never analysed". One summary result for the database counts the statuses. Every result carries its as-of and the
+"never analysed". One summary result for the database counts the statuses, and leads with the tables that need attention (never analysed or stale). Every result carries its as-of and the
 caveat; every state carries a sentence.
 """
 from __future__ import annotations
@@ -111,13 +111,18 @@ def _summary(slug: str, results: list[dict], as_of: str) -> dict:
                 "summary": "not measured · no table statistics read"}
     counts = {s: sum(1 for r in read if r["value"]["Statistics Status"] == s) for s in STATUSES}
     unread = len(results) - len(read)
-    parts = [f"{counts[NEVER_ANALYZED]} never analysed", f"{counts[STALE]} stale", f"{counts[CURRENT]} current"]
+    needs = counts[NEVER_ANALYZED] + counts[STALE]
+    parts = [f"{needs} need attention", f"{counts[NEVER_ANALYZED]} never analysed", f"{counts[STALE]} stale",
+             f"{counts[CURRENT]} current"]
     if counts[CHANGES_NOT_READ]:
         parts.append(f"{counts[CHANGES_NOT_READ]} with changes since not read")
     if unread:
         parts.append(f"{unread} not read")
     ages = [r["value"]["Days Since Analyze"] for r in read if r["value"]["Days Since Analyze"] is not None]
-    value = {"Tables": len(results), "Never Analyzed": counts[NEVER_ANALYZED], "Stale": counts[STALE],
+    # The headline count is "needs attention" = never analysed + stale. "Stale" alone reads 0 for a database no table of
+    # which was ever analysed, which reads as all current (F17).
+    value = {"Tables": len(results), "Needs Attention": counts[NEVER_ANALYZED] + counts[STALE],
+             "Never Analyzed": counts[NEVER_ANALYZED], "Stale": counts[STALE],
              "Current": counts[CURRENT], "Changes Since Analyze Not Read": counts[CHANGES_NOT_READ],
              "Not Read": unread, "Oldest Analyze Days": max(ages) if ages else None, "asOf": as_of, "basis": CAVEAT}
     return {"scope": slug, "measure": SUMMARY, "state": "measured", "value": value,

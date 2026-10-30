@@ -212,6 +212,8 @@ export function readEnvelope(entry, env, esc, tnum) {
     // answer line above is raw measures. Named, because the fix is a
     // headline_reader on that analysis and nobody can act on "somewhere".
     unwritten: [],
+    stepLines: [],
+    rerun: { runnable: undefined, reason: '' },
     // True when at least one fact is known but no fact recorded WHEN it ran.
     // Missing timestamp is a gap in the record, NOT evidence that nothing
     // ran — printing "never run" here would report a fact about the row as
@@ -275,6 +277,10 @@ export function readEnvelope(entry, env, esc, tnum) {
         const scalars = scalarMeasures(f.value);
         if (scalars) {
           sentence = tnum(esc(scalars));
+          lines.unwritten.push(f.analysis_id);
+        } else {
+          // Known, but no sentence and no scalar to show (a library step's value is its measures, nested): the row
+          // shows nothing for it, and must say so rather than read as answered with the proof omitted (F3).
           lines.unwritten.push(f.analysis_id);
         }
       }
@@ -364,6 +370,19 @@ export function readEnvelope(entry, env, esc, tnum) {
       hiddenUnwritten.length === 1 ? 'has' : 'have'} no written summary and ${
       hiddenUnwritten.length === 1 ? 'is' : 'are'} not shown here — see Survey & analyses.`.trim();
   }
+
+  // One line per Analytic Library step the question names, beside RE's own (leg 3): the lead's line is the answer above,
+  // so only the others get one. Each carries its own run time and whether its Re-run would be accepted.
+  lines.stepLines = facts.filter((f) => f.library && f.analysis_id !== primaryId).map((f) => ({
+    id: f.analysis_id,
+    sentence: f.is_known
+      ? (f.headline || (f.state || '').replace(/_/g, ' '))
+      : (f.state === NEVER_RUN ? 'not run yet' : (f.note || (f.state || '').replace(/_/g, ' '))),
+    known: !!f.is_known, lastRun: f.last_run_at || '', runnable: f.runnable, runnableReason: f.runnable_reason || '',
+  }));
+  // The Re-run on the row runs the question's first analysis: its own gate, the one the Survey & analyses list uses.
+  const first = facts.find((f) => entry && entry.analysis_ids && f.analysis_id === entry.analysis_ids[0]);
+  lines.rerun = first ? { runnable: first.runnable, reason: first.runnable_reason || '' } : { runnable: undefined, reason: '' };
 
   lines.runTimeUnrecorded = known.length > 0 && !lines.lastRun && !lines.asOf;
   lines.mermaid = factMermaid(env);

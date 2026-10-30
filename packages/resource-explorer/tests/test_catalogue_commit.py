@@ -634,7 +634,9 @@ def test_the_manifest_lists_three_mechanisms_the_target_count_and_the_survey_sch
     assert "RE publishes" in mech[0] and "zone-a, zone-b" in mech[0] and "LAST write" in mech[0]
     assert "2 schema targets (2 to attach now)" in mech[1] and "never the database or the server" in mech[1]
     assert "next refresh, not now" in mech[1]
-    assert mech[2] == "Egeria's survey is limited to your chosen schemas: sales, archive"
+    assert mech[2].startswith("Egeria's survey is limited to your chosen schemas: sales, archive")
+    # its report is another report than RE's, and fills later (item 3: a "0 annotations" report is not RE's)
+    assert "separate from RE's survey report" in mech[2] and "fills when Egeria's survey finishes" in mech[2]
     assert m["schema_targets"] == 2 and m["survey_schemas"] == ["sales", "archive"]
     assert m["whole_schemas_line"] == "Egeria adds whole schemas · table choices are kept for when it can"
     assert p["button"] == "Publish · 2 schemas" and p["can_commit"]
@@ -1113,3 +1115,13 @@ def test_report_step_records_a_proof_per_declared_measure_from_the_read_back(wor
     assert proofs["buckets"]["proof"] == pt.P_MEASURE_NOT_READ_BACK
     # A measure proof is not a database node: the commit's own state word ignores it.
     assert all(p["schema_name"] == "example_step_x" for p in proofs.values())
+
+
+def test_the_survey_step_names_the_report_the_measures_went_into_and_says_its_own_is_separate():
+    """A commit's engine survey adds its own report ("0 annotations" until it finishes); RE's measures are in another."""
+    from resource_explorer.catalogue_commit import _submitted_words
+
+    words = _submitted_words("2026-10-29T10:00:00", ["sales"], [], "abcdef0123456789", "fb6d96f4aaaa")
+    assert "RE's measures are in report fb6d96f4" in words
+    assert "separate from RE's survey report" in words and "fills when Egeria's survey finishes" in words
+    assert "RE's measures are in report" not in _submitted_words("2026-10-29T10:00:00", ["sales"], [], "abcdef01")

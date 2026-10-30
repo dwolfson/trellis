@@ -165,6 +165,7 @@ def test_a_derived_rows_measured_date_is_its_read_snapshot_never_the_recompute_c
     declared["facts"]["example_step_x"].value = {**VALUE, "_run": {"read_snapshot": "2026-10-20T07:00:00",
                                                                    "computed_at": "2026-10-29T18:48:00"}}
     assert _rows(registry)["buckets"]["measured_at"] == "2026-10-20T07:00:00"
+    assert _rows(registry)["buckets"]["derived"] is True
     declared["facts"]["example_step_x"].value = {**VALUE, "_run": {"read_snapshot": "", "computed_at": "2026-10-29T18:48:00"}}
     assert _rows(registry)["buckets"]["measured_at"] == ""
 
