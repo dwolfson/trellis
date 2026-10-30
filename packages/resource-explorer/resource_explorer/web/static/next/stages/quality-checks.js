@@ -84,7 +84,8 @@ export function verdictSelectorHtml(row, { me = '', pending = false } = {}) {
  *  does not know is shown by its identifier: the absence of a name is not made up. */
 export function testCellHtml(row) {
   const name = row.test_name || row.test_type;
-  const title = [row.test_description, row.test_name ? row.test_type : ''].filter(Boolean).join(' · ');
+  // Where the check comes from is said here, in the detailed description, and nowhere else on the row.
+  const title = [row.test_description, row.test_name ? row.test_type : '', row.attribution].filter(Boolean).join(' · ');
   return `<span title="${esc(title || row.test_type)}">${esc(name)}</span>`;
 }
 
@@ -105,10 +106,11 @@ export function paramsHtml(row) {
   if (!items.length) return '<span class="text-ink-muted">none set</span>';
   // `title` says why, where the server gives one (a column Duplicate Rows leaves out, and why it cannot be compared).
   const tip = (i) => (i.title ? ` title="${esc(i.title)}"` : '');
+  // The separator keeps its dot on the line it ends (a no-break space before it), so a wrapped line never starts with " · " (QS-5).
   return items.map((i) => (i.list
     ? `<details data-qc-param-list class="inline"><summary class="cursor-pointer"${tip(i)}>${esc(i.summary)}</summary>`
       + `<span class="font-mono">${esc(i.list.join(', '))}</span></details>`
-    : `<span${tip(i)}>${esc(i.label)} <span class="text-ink">${esc(i.text)}</span></span>`)).join(' · ');
+    : `<span${tip(i)}>${esc(i.label)} <span class="text-ink">${esc(i.text)}</span></span>`)).join('\u00a0· ');
 }
 
 /** One check as a grid row. `ui` = { pending:Set, failed:Map, me }. */
