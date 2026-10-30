@@ -19,9 +19,14 @@ where their work stands on main: [design-notes/README.md](design-notes/README.md
 
 **Start here if you add your own analysis:** the [tutorial](../../trellis-analytics/docs/TUTORIAL-ADD-AN-ANALYTIC-STEP-2026-10-30.md), then the reference, [extending-with-analyses.md](extending-with-analyses.md).
 
-**Known limit of the generated buckets:** a status reading "not yet built" is filed under
-"Shipped", because the script tests for "built" first. Read each entry's status line, not
-only its heading.
+## Open — planned or on hold
+
+Live plans. The work is not done; the doc is the specification.
+
+- **[blueprint-materialization-plan.md](blueprint-materialization-plan.md)** — 2026-09-03  
+  planned, not yet built. Written 2026-09-03 (Opus-model plan pass), scoping
+- **[curate-evidence-based-decisions-plan.md](curate-evidence-based-decisions-plan.md)** — 2026-09-03  
+  design pass, not yet built. Companion to `docs/blueprint-materialization-plan.md` (the
 
 ## Design and framing
 
@@ -127,12 +132,8 @@ The work is done and these are NOT archive candidates: source comments point her
   implemented. Answered 2026-09-11 from the schema and live registry; the answer is applied in cod
 - **[automate-notification-manager-pyegeria-spec.md](automate-notification-manager-pyegeria-spec.md)** — 2026-08-13  
   specification only, not implemented. Written per explicit direction
-- **[blueprint-materialization-plan.md](blueprint-materialization-plan.md)** — 2026-09-03  
-  planned, not yet built. Written 2026-09-03 (Opus-model plan pass), scoping
 - **[cross-resource-chat-extensions-plan.md](cross-resource-chat-extensions-plan.md)** — 2026-10-20  
   In progress (Groups 1–3 implemented and verified; Group 4 chips and A2A `input_required` impleme
-- **[curate-evidence-based-decisions-plan.md](curate-evidence-based-decisions-plan.md)** — 2026-09-03  
-  design pass, not yet built. Companion to `docs/blueprint-materialization-plan.md` (the
 - **[curated-architecture-answers-design.md](curated-architecture-answers-design.md)** — 2026-10-14  
   implemented in part (code cites §6 items 1-4). Originally a design pass, not yet built. Opened 2
 - **[curation-lenses-design.md](curation-lenses-design.md)** — 2026-10-14  
