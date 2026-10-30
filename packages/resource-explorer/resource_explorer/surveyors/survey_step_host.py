@@ -445,9 +445,9 @@ class StepOds:
     stack): this narrows what a step is handed, it is not a sandbox."""
     __slots__ = STEP_ODS_METHODS
 
-    def __init__(self, requests):
+    def __init__(self, requests, allow_slug_lists: bool = False):
         for name in STEP_ODS_METHODS:
-            object.__setattr__(self, name, _remote(requests, name))
+            object.__setattr__(self, name, _remote(requests, name, allow_slug_lists))
 
     def __setattr__(self, name, value):
         raise AttributeError("a step's ODS reader is read-only")
@@ -466,17 +466,26 @@ def _slug_first(name: str) -> bool:
     return len(params) > 1 and params[1] == "slug"
 
 
-def _remote(requests, name):
+#: The most members one list-of-slugs read may name.
+MAX_SET_SLUGS = 500
+
+
+def _remote(requests, name, allow_slug_lists: bool = False):
     import queue
 
     from trellis_analytics.readers.ods import OdsReader, OdsUnreadable
 
-    slug_first = _slug_first(name)
+    slug_first = allow_slug_lists and _slug_first(name)
 
     def call(*args, **kwargs):
         if slug_first and args and isinstance(args[0], (list, tuple)):
-            # A set step's read for every member: one plain read per slug, answered as {slug: rows}. The reader thread
-            # still sees only strings and integers.
+            # A SET step's read for every member (the only shape that is not a plain value): a bounded list of plain slug
+            # strings, one plain read per slug, answered as {slug: rows}. The reader thread still sees only strings and
+            # integers. Any other list, and any list for a step about one resource, is a TypeError as before.
+            if len(args[0]) > MAX_SET_SLUGS:
+                raise TypeError(f"a set step's read takes at most {MAX_SET_SLUGS} slugs, not {len(args[0])}")
+            if not all(type(x) is str for x in args[0]):
+                raise TypeError("a set step's list of members is plain slug strings")
             return {_plain(slug): call(slug, *args[1:], **kwargs) for slug in args[0]}
         args = tuple(_plain(a) for a in args)
         kwargs = {str(k): _plain(v) for k, v in kwargs.items()}
@@ -514,7 +523,7 @@ class _Requests:
 
 
 @contextmanager
-def step_reader(database_url: str):
+def step_reader(database_url: str, *, allow_slug_lists: bool = False):
     """A step's read-only ODS (`StepOds`) for the duration of the block. The connection is opened and used only in
     the reader's own thread; the block's end stops the thread and closes it, and the reader refuses after that."""
     import queue
@@ -531,7 +540,7 @@ def step_reader(database_url: str):
             from trellis_analytics.readers.ods import OdsUnreadable
 
             raise OdsUnreadable(problem)
-        yield StepOds(requests)
+        yield StepOds(requests, allow_slug_lists)
     finally:
         requests.closed = True
         requests.put(None)
@@ -872,7 +881,7 @@ def run_set_step(manifest, registry, work_list_slug: str, members: list[tuple[st
         return sum(len(g) for g in groups.values())
 
     with contextlib.ExitStack() as stack:
-        ods = stack.enter_context(step_reader(registry.database_url))
+        ods = stack.enter_context(step_reader(registry.database_url, allow_slug_lists=True))
         host = HostContext(resource_type=SET_ENTITY, slug=work_list_slug, producing_run=run, ods=ods, store=store,
                            members=tuple(members), set_slug=work_list_slug)
         code = SurveyStep(manifest).code

@@ -398,3 +398,22 @@ def test_pg_the_new_reads_take_their_parameters_as_values_never_as_sql(pg_url):
         for text in INJECTIONS:
             assert _new_reads(ods, text) == ([], None), text
     assert _pg_count(admin, schema) == 1
+
+
+def test_a_list_of_slugs_is_refused_for_a_step_about_one_resource_and_allowed_only_on_a_set_steps_reader(sqlite_url):
+    with step_reader(sqlite_url) as ods:
+        with pytest.raises(TypeError):
+            ods.row_count_snapshots(["shop"])
+    with step_reader(sqlite_url, allow_slug_lists=True) as ods:
+        got = ods.row_count_snapshots(["shop"])
+        assert list(got) == ["shop"] and isinstance(got["shop"], list)
+        assert ods.row_count_snapshots("shop") == got["shop"]           # the plain call is unchanged
+        for bad in ([1], [b"shop"], [["shop"]], ["shop", None], [{"slug": "shop"}]):
+            with pytest.raises(TypeError):
+                ods.row_count_snapshots(bad)
+        with pytest.raises(TypeError, match="at most"):
+            ods.row_count_snapshots(["shop"] * 501)
+        with pytest.raises(TypeError):
+            ods.row_count_snapshots("shop", limit=[2])                  # a list is never allowed beyond the slug
+        with pytest.raises(TypeError):
+            ods.resource_scope_events(["database"], "shop")             # first parameter is not a slug: refused
