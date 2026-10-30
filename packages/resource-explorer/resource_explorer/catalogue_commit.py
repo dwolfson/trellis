@@ -1177,6 +1177,44 @@ def not_permitted_row(schema: str, reason: str) -> dict:
 NO_CREATE_STATES = ("catalogued", "attached_waiting", "restored")
 
 
+class PreviewReads:
+    """The gateway as one preview sees it: each Egeria READ made once, its answer kept for the rest of the build.
+
+    A preview writes nothing, so within one build an answer cannot go stale by our own hand, and the build reads the
+    same things more than once (a leave-out's walk is read for the access check and again for its form; each schema
+    element by name for the access check and again by the walk). Measured on the fake 2026-10-30: two catalogued
+    leave-outs and one attach read 58 times, 27 of them a repeat. A read that FAILED is not kept: the next asker reads
+    again and meets its own failure. Anything that is not a read goes straight to the gateway."""
+
+    _READS = ("read_element", "elements_under", "relationships", "schema_elements", "archived_siblings")
+
+    def __init__(self, gateway):
+        self._gateway = gateway
+        self._kept: dict[tuple, Any] = {}
+        #: Egeria reads actually made, by method (F31: the phase-timing line names them).
+        self.made: dict[str, int] = {}
+
+    def knows(self, qualified_name: str, element) -> None:
+        """An element by name, already read some other way in this build (the paged find of every schema element):
+        a later `read_element(qualified_name)` is answered from it. Only a FOUND element is kept: a name the find
+        did not return is still read by name, so a miss is never assumed."""
+        if element is not None:
+            self._kept.setdefault(("read_element", (qualified_name,), ()), element)
+
+    def __getattr__(self, name):
+        fn = getattr(self._gateway, name)
+        if name not in self._READS:
+            return fn
+
+        def once(*args, **kwargs):
+            key = (name, args, tuple(sorted(kwargs.items())))
+            if key not in self._kept:
+                self.made[name] = self.made.get(name, 0) + 1
+                self._kept[key] = fn(*args, **kwargs)
+            return self._kept[key]
+        return once
+
+
 def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | None, *,
                   db_entity=None, derived: dict | None = None, confirms: list[dict] | None = None) -> dict:
     """What pressing Catalogue would do, with the Egeria reads it needs.
@@ -1190,6 +1228,16 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
     press (`start_commit`) builds this same preview, so what the panel shows is what the commit does. An anonymous
     viewer is not checked part by part: no commit can start without a sign-in (`start_commit` refuses first)."""
     db_entity = db_entity or registry.get_database(slug, allow_unreadable=True)
+    if gateway is not None and not isinstance(gateway, PreviewReads):
+        gateway = PreviewReads(gateway)
+    phase: dict[str, float] = {}
+    mark = [time.perf_counter()]
+
+    def lap(name: str) -> None:
+        """F31: each phase's milliseconds, logged once at the end so the next read of the log measures it."""
+        now = time.perf_counter()
+        phase[name] = phase.get(name, 0.0) + (now - mark[0]) * 1000
+        mark[0] = now
     derived = derived or derive_commit_state(registry, slug, view)
     states = derived["schemas"]
     chosen, kept = _chosen_and_kept(view, states)
@@ -1206,7 +1254,9 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
     colliding = bool(wildcard_collisions(view, chosen + kept))
     # Every schema the press would attach is read, whatever its proof rows say: Egeria may have archived (and renamed)
     # it since. `reinclude_check` reads the live element first, so one that is there costs one read and asks nothing.
+    lap("derive")
     checks = reinclude_checks(gateway, db_entity, [] if colliding or gateway is None else chosen + kept, confirms)
+    lap("reinclude")
     for name in chosen + kept:
         st = states.get(name, {})
         if colliding or (gateway is None and st.get("state") in NO_CREATE_STATES):
@@ -1241,6 +1291,7 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
         elif db_check["state"] == "confirmed":
             reincluded[""] = reinclude_row("database", "", db_check)
 
+    lap("database")
     leave_out_names = [s["name"] for s in view["schemas"] if s.get("effective") == LEAVE_OUT]
     checked = _caller_signed_in()
     # Round 3: a name collision stops the commit before anything else (409), so no access read is made for it:
@@ -1284,6 +1335,7 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
         not_permitted += [{**r, "write": "attach"} for r in np_attach]
         leave_refused = {r["schema"]: r for r in np_leave}
 
+    lap("access")
     for name in leave_out_names:
         st = states.get(name, {})
         node = next(s for s in view["schemas"] if s["name"] == name)
@@ -1353,6 +1405,7 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
                                       for n in read["hangs_off"].get("lineage_to", [])))
         leave.append(row)
 
+    lap("leave_out_walk")
     blocked_names = {r["schema"] for r in leave if r.get("blocked")}
     collisions = wildcard_collisions(view, attach)
     if collisions:
@@ -1466,6 +1519,11 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
     if not something and not blockers:
         blockers.append("nothing to commit: choose at least one schema to publish")
     label = f"Publish · {len(attach)} schema{'s' if len(attach) != 1 else ''}"
+    lap("manifest")
+    made = gateway.made if isinstance(gateway, PreviewReads) else {}
+    log.info("preview_timing slug=%s attach=%d leave_out=%d total_ms=%.0f %s egeria_reads=%s", slug, len(attach),
+             len(leave_out_names), sum(phase.values()), " ".join(f"{k}_ms={v:.0f}" for k, v in phase.items()),
+             ",".join(f"{k}:{v}" for k, v in sorted(made.items())) or "none")
     if removes:
         label += f" · deletes {len(removes)} from Egeria"
     if archives:
@@ -1548,6 +1606,8 @@ def reinclude_checks(gateway: CatalogueGateway, db_entity, names: list[str], con
     for n in names:
         qn = schema_qn(db_entity, n)
         live = next((e for e in els if e.qualified_name == qn and not e.archived), None)
+        if isinstance(gateway, PreviewReads):
+            gateway.knows(qn, live)          # the access check and the walk read this schema by name next (F32)
         sibs = gw._newest_first([gw.ArchivedSibling(e.guid, e.qualified_name, *gw.archived_on_of(e.qualified_name, qn),
                                                     archived_at=e.archived_at, archived=e.archived)
                                  for e in els if e.qualified_name.startswith(qn + gw.ARCHIVED_ON)])
@@ -2149,14 +2209,18 @@ def read_back(registry, gateway: CatalogueGateway, slug: str, schemas: list[str]
     A failed read writes a `read_failed` row and changes no state, so "Egeria
     could not be read just now" never poses as a state of any schema."""
     e = _entity(registry, slug)
-    summary = {"catalogued": 0, "attached_waiting": 0, "read_failed": 0, "schemas": {}}
+    summary = {"catalogued": 0, "attached_waiting": 0, "read_failed": 0, "schemas": {}, "errors": []}
+    started = time.perf_counter()
+    # F29 (2026-10-30): this used to list EVERY target of the JDBC cataloguer first (73 on the coco box: 21.8 s, then
+    # a 30 s timeout twice), and the list was never used: each schema's own CatalogTarget is read from its own
+    # relationships below. Only the connector's status is read here.
     try:
-        targets = gateway.list_catalog_targets()
         status = gateway.connector_status()
     except GatewayError as exc:
         _proof(registry, slug, P_READ_FAILED, node_kind="database", curation_id=curation_id,
-               detail={"error": str(exc), "what": "the cataloguer's targets and connector"})
+               detail={"error": str(exc), "what": "the cataloguer's connector"})
         summary["read_failed"] += 1
+        summary["errors"].append(f"the cataloguer's connector: {exc}")
         return summary
     if status is not None:
         _proof(registry, slug, P_CONNECTOR, node_kind="database", curation_id=curation_id,
@@ -2171,6 +2235,7 @@ def read_back(registry, gateway: CatalogueGateway, slug: str, schemas: list[str]
             _proof(registry, slug, P_READ_FAILED, schema=schema, curation_id=curation_id,
                    detail={"error": str(exc)})
             summary["read_failed"] += 1
+            summary["errors"].append(f"{schema}: {exc}")
             continue
         if el is None or found is None:
             continue
@@ -2194,7 +2259,24 @@ def read_back(registry, gateway: CatalogueGateway, slug: str, schemas: list[str]
         # Refresh only (the route): a commit's own read-back step leaves its leave-out's rows as the apply left them.
         reread_archives(registry, gateway, slug, summary, by=by)
     _read_database_facts(registry, gateway, slug, curation_id, summary)
+    log.info("read_back_timing slug=%s schemas=%d total_ms=%.0f cataloged=%d attached_waiting=%d read_failed=%d",
+             slug, len(schemas), (time.perf_counter() - started) * 1000, summary["catalogued"],
+             summary["attached_waiting"], summary["read_failed"])
     return summary
+
+
+def read_back_line(summary: dict, chips_words: str) -> str:
+    """F28: what a read-back says on the button's status line. A read that failed says it could not read, with
+    Egeria's words, and that nothing changed: never the counts first, because "cataloged by Egeria 0" after a failed
+    read is a failure shown as a number. Counts lead only when something was read."""
+    n = summary.get("read_failed") or 0
+    errors = summary.get("errors") or []
+    if n and not (summary.get("catalogued") or summary.get("attached_waiting")):
+        first = errors[0] if errors else "no reason given"
+        more = f" · {n - 1} more read{'' if n - 1 == 1 else 's'} failed" if n > 1 else ""
+        return f"could not read Egeria · {first}{more} · nothing changed: the counts are from the last read that worked"
+    tail = f" · {n} read{'' if n == 1 else 's'} failed: {'; '.join(errors)}" if n else ""
+    return f"read back: {chips_words or 'nothing read back from Egeria'}{tail}"
 
 
 def reread_archives(registry, gateway: CatalogueGateway, slug: str, summary: dict, *, by: str = "") -> None:
