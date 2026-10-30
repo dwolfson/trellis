@@ -297,6 +297,14 @@ Ways to check that RE sees the step. RE has no admin page or CLI verb that lists
 
 ## 5. What a curator sees: Curate's publish table
 
+> **Two reports after a database Contents commit.** A commit publishes RE's measures into RE's own survey report (the
+> step names it: *RE's measures are in report fb6d96f4*), and also starts an Egeria survey, whose engine action writes a
+> separate report that can read "0 annotations" until that survey finishes. RE says both on the survey step; it does not
+> change what is sent.
+>
+> **A derived row's dates.** A step RE derives on read (not a stored record) has no measurement time of its own: its row
+> says *derived on read from the survey of <date>* beside the *as of*, never a second identical date.
+
 On a database's **Curate → Describe and publish** tab, the table headed **Publish · declared
 measures** lists every declared measure with a value. Its columns are Analysis, Measure, Value,
 As of, Confidence, Scope, Writes as, Choice and State. The As of column names both dates: the date the statistic is **as of**, and, under it, when Resource Explorer **measured** it.
@@ -554,7 +562,7 @@ cd packages/trellis-analytics && uv run pytest tests/test_database_staleness_ste
 
 | step | result kind | what it shows you |
 |---|---|---|
-| `statistics_freshness` | `list` | two measures, one a summary; confidence `measured` |
+| `statistics_freshness` | `list` | two measures, one a resource-scoped summary whose headline counts the tables that *need attention* (never analysed + stale), because a count of "stale" alone reads 0 for a database whose tables were never analysed and so reads as all current; confidence `measured` |
 | `hub_tables` | `proposal` | a measure published as `ClassificationAnnotation` (`measure_annotation_types`), `candidate_classifications`, and `parameters` (`hub_min_referencing: 3`). A proposal is judged on Structure, not on the publish table |
 | `change_rates` | `distribution` | rows written per day; one extent |
 

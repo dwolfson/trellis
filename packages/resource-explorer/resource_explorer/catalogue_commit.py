@@ -81,6 +81,9 @@ NEEDS_CONFIRMATION = gw.NEEDS_CONFIRMATION
 reinclude_words = gw.reinclude_words
 WHOLE_SCHEMAS_LINE = "Egeria adds whole schemas · table choices are kept for when it can"
 SURVEY_LINE = "Egeria's survey is limited to your chosen schemas"
+#: Each commit starts an Egeria survey (an engine action) whose own report is separate from RE's survey report, where RE's
+#: measures go. Said wherever the survey is named, so a "0 annotations" report at the top of Egeria's list is not read as RE's.
+ENGINE_REPORT_WORDS = "its own report is separate from RE's survey report, where RE's measures went, and fills when Egeria's survey finishes"
 LINGERING_LINE = ("Egeria's cataloguer still lists this schema until its connector restarts "
                   "· nothing is recreated")
 # The archive-cascade block (ISSUE-117) lives in catalogue_gateway (`issue_117_blocked(slug, scope=)`, `ISSUE_117_WORDS`).
@@ -1383,6 +1386,8 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
                   "never the database or the server. The elements arrive on the daemon's next refresh, not now.")},
         {"id": "survey_measures", "mechanism": 3,
          "text": (f"{SURVEY_LINE}: " + (", ".join(ok_names) if ok_names else "no schema chosen, so the survey is not started")
+                  + (f". The survey's report is separate from RE's survey report, where RE's measures go, and fills when "
+                     f"Egeria's survey finishes" if ok_names else "")
                   + (f". Not scopable, a comma in the name: {', '.join(comma_names)}" if comma_names else ""))},
     ]
     # What this commit will NOT do, named: "1 schema not committed: s_x · couldn't check what
@@ -2273,9 +2278,21 @@ def _read_database_facts(registry, gateway: CatalogueGateway, slug: str, curatio
 
 
 
-def _submitted_words(submitted_at: str, names: list[str], bad: list[str], guid: str) -> str:
+def _engine_report_words(re_report_guid: str = "") -> str:
+    """Which report holds RE's measures, and that the engine survey's own report is another one."""
+    return (f"RE's measures are in report {re_report_guid[:8]}; " if re_report_guid else "") + ENGINE_REPORT_WORDS
+
+
+def _re_report_guid(db_rows: list) -> str:
+    """The report RE's own measures were published into (newest report proof), or ""."""
+    row = _latest(db_rows, (P_REPORT,))
+    return str((row or {}).get("element_guid") or "")
+
+
+def _submitted_words(submitted_at: str, names: list[str], bad: list[str], guid: str, re_report: str = "") -> str:
     return (f"submitted · {_stamp(submitted_at)} · {SURVEY_LINE}: {', '.join(names)} · engine action {guid[:8]}"
-            + (f" · not scopable (comma): {', '.join(bad)}" if bad else ""))
+            + (f" · not scopable (comma): {', '.join(bad)}" if bad else "")
+            + f" · {_engine_report_words(re_report)}")
 
 
 def settle_survey(registry, gateway: CatalogueGateway, slug: str) -> str:
@@ -2302,6 +2319,7 @@ def settle_survey(registry, gateway: CatalogueGateway, slug: str) -> str:
     names = list(d.get("includeSchemaNames") or [])
     bad = list(d.get("not_scopable") or [])
     submitted_at = d.get("submitted_at") or started["read_at"]
+    re_rep = _re_report_guid(db_rows)
     out = gateway.survey_outcome(published["element_guid"], action, submitted_at)
     status = (out.action_status or "").upper()
     if status in FAILED_ACTION_STATUSES:
@@ -2319,7 +2337,9 @@ def settle_survey(registry, gateway: CatalogueGateway, slug: str) -> str:
         if cid:
             cur.settle_step(cid, "survey", "done",
                             f"done · report {out.report_guid[:8]} · {out.annotations} annotations · read back "
-                            f"{_stamp(_now())} · {SURVEY_LINE}: {', '.join(names)}")
+                            f"{_stamp(_now())} · {SURVEY_LINE}: {', '.join(names)} · "
+                            f"the engine survey's report, separate from RE's survey report"
+                            + (f" {re_rep[:8]}, where RE's measures went" if re_rep else ""))
         return "done"
     if status in RUNNING_ACTION_STATUSES or not status:
         # not over: "running in Egeria", with the annotations counted so far (never "done")
@@ -2327,12 +2347,12 @@ def settle_survey(registry, gateway: CatalogueGateway, slug: str) -> str:
         seen = f" · read back {_stamp(_now())}: running in Egeria · {out.action_status or 'status not stated yet'}{so_far}"
     elif status == "COMPLETED":
         seen = (f" · read back {_stamp(_now())}: the action COMPLETED but "
-                + (f"report {out.report_guid[:8]} holds 0 annotations" if out.report_guid else "no survey report was seen"))
+                + (f"the engine survey's report {out.report_guid[:8]} holds 0 annotations" if out.report_guid else "no survey report was seen"))
     else:
         seen = (f" · read back {_stamp(_now())}: status '{out.action_status}' · not one Resource Explorer knows"
                 + (f" · {out.annotations} annotations so far" if out.annotations is not None else ""))
     if cid:
-        cur.settle_step(cid, "survey", "submitted", _submitted_words(submitted_at, names, bad, action) + seen)
+        cur.settle_step(cid, "survey", "submitted", _submitted_words(submitted_at, names, bad, action, re_rep) + seen)
     return "submitted"
 
 
@@ -3082,6 +3102,7 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
 
     # 3 ── RE's own survey report and annotations (no native survey started here)
     measured = registry.latest_measured_database_survey(slug)
+    rep_guid = ""   # the report RE's measures went into, named on the survey step below
     if not db_guid:
         cur.set_step(curation_id, "survey_report", "skipped", "no database element")
     elif measured is None:
@@ -3154,7 +3175,7 @@ def execute_commit(registry, curation_id: str, *, gateway: CatalogueGateway | No
             _proof(registry, slug, P_SURVEY, node_kind="database", element_guid=guid, curation_id=curation_id,
                    detail={"includeSchemaNames": names, "not_scopable": bad, "process": process_qn,
                            "submitted_at": submitted_at, "engine_action": guid})
-            cur.set_step(curation_id, "survey", "submitted", _submitted_words(submitted_at, names, bad, guid))
+            cur.set_step(curation_id, "survey", "submitted", _submitted_words(submitted_at, names, bad, guid, rep_guid))
         except Exception as exc:
             registry.record_native_survey_submission("database", slug, "PostgreSQLSurvey::survey-postgres-database", _now(),
                                                      submit_error=f"{exc}"[:300], submitted_by=author)
