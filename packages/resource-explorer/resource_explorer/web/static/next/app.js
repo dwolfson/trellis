@@ -186,6 +186,8 @@ import {
   listDatabases,
   listFilesystems,
   getSchemaInventoryTree,
+  getValueProfile,
+  getValueProfileTable,
   listGroups,
   listInvestigationMembers,
   listInvestigations,
@@ -222,6 +224,7 @@ import { mountDependencyTable } from '/static/next/stages/dependencies.js';
 import { mountDeclaredTopology } from '/static/next/stages/declared-topology.js';
 import { openCredentialForm } from '/static/next/credential-change.js';
 import { mountTablePreview, setPreviewPick } from '/static/next/table-preview.js';
+import { mountValueProfile, setProfilePick, takeProfilePick } from '/static/next/value-profile.js';
 import { installSessionBanner } from '/static/next/session-banner.js';
 import { isFreshnessSkip, offerRunAnyway, UP_TO_DATE_WORD } from '/static/next/run-anyway.js';
 
@@ -264,6 +267,7 @@ export const state = {
   workingSetUnknown: false,
   stage: 'scouting',
   subTab: 'questions',
+  profileTable: '',            // the Value profile tab's open card, "schema.table" (`table=` in the URL)
   perspectives: [],            // the vocabulary, from the API — never hardcoded
   activePerspectives: new Set(),  // empty means all
   questions: [],              // the stage's questions AFTER perspective filtering
@@ -470,6 +474,9 @@ const SUB_TABS = [
   { id: 'schema_inventory', label: 'Schema Inventory', does: 'Schemas, tables and columns, with row/byte estimates, keys and comments', built: true, resourceTypes: ['db'] },
   // Table preview (REPLY-DESIGNER-TABLE-PREVIEW-2026-10-19 §1): database-only, beside Schema Inventory, gated the same
   // way. A preview is an act, not a view: the pane reads nothing from the database until a person presses.
+  // Value profile (DESIGN-VALUE-PROFILE-SCREEN-2026-10-30 §2): database-only, between the inventory and the preview,
+  // gated the same way. A reading of the data, like those two, not a stage's own content.
+  { id: 'value_profile', label: 'Value profile', does: 'What the latest value profile measured, per table and per column', built: true, resourceTypes: ['db'] },
   { id: 'table_preview', label: 'Table preview', does: "The first rows of one table, as you, masked by default", built: true, resourceTypes: ['db'] },
 ];
 
@@ -3336,6 +3343,7 @@ function writeUrl() {
   // A stage with leading tabs always writes `tab=`, so a shared link names the sender's tab, not "the default".
   const defaultSubTab = stageDefaultSubTab();
   if (state.subTab !== defaultSubTab || stageTabsOn(state.stage, state.resourceType)) p.set('tab', state.subTab);
+  if (state.subTab === 'value_profile' && state.profileTable) p.set('table', state.profileTable);
   if (state.workListSlug) p.set('worklist', state.workListSlug);
   if (state.activePerspectives.size) p.set('perspectives', [...state.activePerspectives].join(','));
   const url = `${location.pathname}${p.toString() ? `?${p}` : ''}`;
@@ -3410,6 +3418,7 @@ export function readUrl() {
     // this default did not reach.
     // A stage with leading tabs and no `tab=` opens on tab 1.
     else if (state.subTab === 'questions' || stageTabsOn(state.stage, state.resourceType)) state.subTab = stageDefaultSubTab();
+    state.profileTable = state.subTab === 'value_profile' ? (p.get('table') || '') : '';
     if (p.get('worklist')) state.workListSlug = p.get('worklist');
     const persp = p.get('perspectives');
     if (persp) state.activePerspectives = new Set(persp.split(',').filter(Boolean));
@@ -4316,6 +4325,49 @@ async function loadTablePreviewPane() {
   await mountTablePreview($('table-preview-host'), { slug, dbName: (db && (db.display_name || db.slug)) || slug });
 }
 
+/** Value profile (database-only). The tab is `value-profile.js`'s; this is its page frame. The open card is kept in
+ *  the URL (`table=schema.table`) so a shared link opens the same table; a door (Schema Inventory's "profile ›", a
+ *  "numbers behind this" row) leaves its table with setProfilePick. */
+async function loadValueProfilePane() {
+  const el = $('content');
+  if (state.resourceType !== 'db') {
+    state.subTab = stageDefaultSubTab(); writeUrl(); await loadPane();
+    return;
+  }
+  const slug = state.selectedSlug;
+  const picked = takeProfilePick();
+  if (picked) { state.profileTable = picked; writeUrl(); }
+  el.innerHTML = `${subTabsHtml()}
+    <div id="resource-header">${resourceHeaderHtml(slug)}</div>
+    <div class="my-s3 h-px bg-rule"></div>
+    <div id="value-profile-host"><div class="text-caveat text-ink-muted">Reading the value profile…</div></div>`;
+  bindSubTabs();
+  bindResourceHeader();
+  mountValueProfile($('value-profile-host'), slug, {
+    api: { getValueProfile, getValueProfileTable },
+    table: state.profileTable,
+    onTable: (key) => { if (slug === state.selectedSlug && state.subTab === 'value_profile') { state.profileTable = key; writeUrl(); } },
+    openChecks: () => { state.stage = 'curate'; state.subTab = 'curate_structure'; writeUrl(); renderIntentNav(); loadPane(); },
+  });
+}
+
+/** Open the Value profile tab on one table ("schema.table"): the doors' one way in. */
+export function openValueProfile(key) {
+  state.profileTable = key || '';
+  setProfilePick(key);
+  state.subTab = 'value_profile'; writeUrl(); loadPane();
+}
+
+/** Schema Inventory's "profile ›": opens the Value profile tab on that table. One delegated handler on the tree. */
+function bindProfileLinks(root) {
+  root.addEventListener('click', (e) => {
+    const b = e.target.closest?.('[data-profile-table]');
+    if (!b) return;
+    e.preventDefault(); e.stopPropagation();                 // the button sits in a <summary>: do not toggle it
+    openValueProfile(`${b.dataset.profileSchema}.${b.dataset.profileTable}`);
+  });
+}
+
 /** Schema Inventory's "preview rows ›": opens Table preview with that table picked. One delegated handler on the tree. */
 function bindPreviewRowsLinks(root) {
   root.addEventListener('click', (e) => {
@@ -4352,6 +4404,9 @@ async function loadSchemaInventoryPane() {
   bindResourceHeader();
 
   let tree;
+  // The value profile is read beside the tree for each table's "profile ›" door; a failed read draws no door at all
+  // (unknown is not "not profiled").
+  const profileRead = getValueProfile(slug).catch(() => null);
   try {
     tree = await getSchemaInventoryTree(slug);
   } catch (err) {
@@ -4360,13 +4415,25 @@ async function loadSchemaInventoryPane() {
     return;
   }
   if (slug !== state.selectedSlug) return;
-  $('schema-tree').innerHTML = schemaTreeHtml(tree.schemas || []);
+  const profile = await profileRead;
+  if (slug !== state.selectedSlug) return;
+  $('schema-tree').innerHTML = schemaTreeHtml(tree.schemas || [], profileDoorsFrom(profile));
   const srcLine = $('schema-tree-sources');
   if (srcLine) srcLine.textContent = inventoryHeaderText(tree.sources);
   const countsLine = el.querySelector('[data-schema-counts]');
   if (countsLine) countsLine.textContent = threeNumberLine(tree);
   bindSchemaTreeFilter();
   bindPreviewRowsLinks($('schema-tree'));
+  bindProfileLinks($('schema-tree'));
+}
+
+/** Each table's value-profile door from the Value profile summary: "schema.table" -> {openable, reason}. null when
+ *  the profile could not be read, so no door is drawn; an empty map when the database was never profiled, so every
+ *  table says "not profiled". */
+export function profileDoorsFrom(profile) {
+  if (!profile) return null;
+  return new Map((profile.tables || []).map((t) => [`${t.schema_name}.${t.table_name}`,
+    { openable: Boolean(t.openable), reason: t.reason || '' }]));
 }
 
 /** The filter input's own wiring: typing filters live, the × button
@@ -4419,7 +4486,7 @@ const _TABLE_KIND_LABELS = {
 // source text as a string (the pattern every other app.js-adjacent test
 // uses -- see tests/test_next_schema_inventory_filter.py's own docstring).
 // See NEXT-RENDER-HARNESS-IMPLEMENTED.md.
-export function schemaTreeHtml(schemas) {
+export function schemaTreeHtml(schemas, profileDoors = null) {
   if (!schemas.length) return `<div class="text-caveat text-ink-muted">No stored schema rows yet — run a survey first.</div>`;
   const parts = schemas.map((s) => {
     if (s.classification === 'system') {
@@ -4455,7 +4522,9 @@ export function schemaTreeHtml(schemas) {
         ${schemaSrc ? `<span data-tree-source class="text-provenance text-ink-muted"> · ${esc(schemaSrc)}</span>` : ''}
       </summary>
       ${s.reason ? `<div class="ml-s3 mt-[4px] text-provenance text-ink-muted">${esc(s.reason)}</div>` : ''}
-      <div class="ml-s3 mt-s2">${(s.tables || []).map((t) => tableHtml({ ...t, preview_schema: s.schema })).join('') || '<span class="text-caveat text-ink-muted">No tables.</span>'}</div>
+      <div class="ml-s3 mt-s2">${(s.tables || []).map((t) => tableHtml({ ...t, preview_schema: s.schema,
+        profile_door: profileDoors ? (profileDoors.get(`${s.schema}.${t.name}`) || { openable: false, reason: '' }) : null,
+      })).join('') || '<span class="text-caveat text-ink-muted">No tables.</span>'}</div>
     </details>`;
   });
   return parts.join('');
@@ -4485,6 +4554,9 @@ export function tableHtml(t) {
       <span class="text-provenance text-ink-muted"> — ${esc(rowStamp)} · ${esc(byteStamp)}${esc(indexStamp)} · ${t.column_count == null ? 'columns not measured' : `${t.column_count} column(s)`}</span>
       ${tableSrc ? `<span data-tree-source class="text-provenance text-ink-muted"> · ${esc(tableSrc)}</span>` : ''}
       ${schemaName ? `<button type="button" data-preview-rows="${esc(t.name)}" data-preview-schema="${esc(schemaName)}" class="ml-s2 cursor-pointer bg-transparent text-provenance text-accent-ink underline">preview rows ›</button>` : ''}
+      ${schemaName && t.profile_door ? (t.profile_door.openable
+        ? `<button type="button" data-profile-table="${esc(t.name)}" data-profile-schema="${esc(schemaName)}" class="ml-s2 cursor-pointer bg-transparent text-provenance text-accent-ink underline">profile ›</button>`
+        : `<span data-profile-none class="ml-s2 text-provenance text-ink-muted"${t.profile_door.reason ? ` title="${esc(t.profile_door.reason)}"` : ''}>not profiled</span>`) : ''}
     </summary>
     <table class="ml-s3 mt-[4px] w-full max-w-[110ch] border-collapse text-caveat">
       ${(t.columns || []).length ? `<thead><tr class="border-b border-rule text-provenance text-ink-muted">
@@ -8958,6 +9030,7 @@ async function loadPane() {
   syncRailToSelection();   // the reconcile may have moved the sub-tab
   if (state.subTab === 'schema_inventory') { await loadSchemaInventoryPane(); return; }
   if (state.subTab === 'table_preview') { await loadTablePreviewPane(); return; }
+  if (state.subTab === 'value_profile') { await loadValueProfilePane(); return; }
   // Curate's and Understanding's leading tabs (Brief S0): loader stubs until the slices put the sections in.
   if (isStageTabActive(state.subTab)) { await loadStageTabPane(); return; }
   // ENRICHMENT-E1-CONTEXT-TAB: Context is its own pane, not a Questions-
@@ -10178,10 +10251,16 @@ async function toggleMeasurementsInPlace(i, analysisId, btn, level) {
   slot.innerHTML = `
     <table class="ml-[22px] mt-s2 w-full max-w-[60ch] border-collapse text-caveat">
       ${rows.map((m) => `<tr class="border-b border-rule">
-        <td class="py-[4px] pr-s3 text-ink">${esc(String(m.name || '').replace(/_/g, ' '))}</td>
+        <td class="py-[4px] pr-s3 text-ink">${typeof m.opens === 'string'
+          // A row that opens a screen names a real thing (a table): its name is shown as stored, never respaced.
+          ? `<span class="font-mono">${esc(m.name)}</span>` : esc(String(m.name || '').replace(/_/g, ' '))}</td>
         <td class="tnum py-[4px] pr-s3 text-right text-ink">${m.value == null ? '<span class="text-ink-muted">not recorded</span>' : esc(fmtScalar(m.value, m.name))}</td>
         <td class="py-[4px] text-right text-provenance">${
-          m.opens
+          typeof m.opens === 'string'
+            // A container row that opens a tab (the value profile's tables): the note, then the link to that table.
+            ? `${m.note ? `<span class="text-ink-muted">${esc(m.note)} </span>` : ''}<a href="${esc(m.opens)}" data-numbers-tab="${esc(m.name)}"
+                 class="cursor-pointer text-accent-ink underline">open ›</a>`
+            : m.opens
             ? `<button data-numbers-open="${esc(m.opens.analysis_id || analysisId)}" data-numbers-metric="${esc(m.opens.metric || m.name)}"
                  data-numbers-title="${esc(String(m.name || '').replace(/_/g, ' '))}"
                  class="cursor-pointer bg-transparent text-accent-ink underline">the ${tnum(esc(String(m.value)))} ${esc(String(m.name || '').replace(/_/g, ' '))} ›</button>`
@@ -10193,7 +10272,14 @@ async function toggleMeasurementsInPlace(i, analysisId, btn, level) {
         }</td>
       </tr>`).join('')}
     </table>
-    ${data.footer ? `<div class="ml-[22px] mt-s1 text-provenance text-ink-muted">${esc(data.footer)}</div>` : ''}`;
+    ${data.footer ? `<div class="ml-[22px] mt-s1 text-provenance text-ink-muted">${esc(data.footer)}</div>` : ''}
+    ${analysisId === 'value_profile' && state.resourceType === 'db' ? `<div class="ml-[22px] mt-s1 text-provenance">
+      <a href="#" data-numbers-tab="" class="cursor-pointer text-accent-ink underline">open the value profile ›</a></div>` : ''}`;
+  // The value profile's rows and footer open the Value profile tab in place (the href is the shareable form).
+  slot.querySelectorAll('[data-numbers-tab]').forEach((a) => a.addEventListener('click', (e) => {
+    e.preventDefault();
+    openValueProfile(a.dataset.numbersTab);
+  }));
   slot.querySelectorAll('[data-numbers-open]').forEach((b) => b.addEventListener('click', () => openMembers({
     slug, analysisId: b.dataset.numbersOpen, metric: b.dataset.numbersMetric, title: b.dataset.numbersTitle,
   })));

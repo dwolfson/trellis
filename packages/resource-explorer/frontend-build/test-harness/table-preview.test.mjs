@@ -92,11 +92,12 @@ async function press(host, n = 20) {
   await tick(80);
 }
 
-test('Table preview is a database-only tab beside Schema Inventory, and not on a repo', async () => {
+test('Table preview is a database-only tab after Schema Inventory and Value profile, and not on a repo', async () => {
   const ctx = await setUp();
   const ids = () => ctx.app.visibleSubTabs().map((t) => t.id);
   assert.ok(ids().includes('table_preview'));
-  assert.equal(ids().indexOf('table_preview'), ids().indexOf('schema_inventory') + 1);
+  // Value profile sits between the two (DESIGN-VALUE-PROFILE-SCREEN-2026-10-30 §2).
+  assert.equal(ids().indexOf('table_preview'), ids().indexOf('schema_inventory') + 2);
   ctx.app.state.resourceType = 'repo';
   assert.ok(!ids().includes('table_preview'));
 });
