@@ -226,7 +226,14 @@ jobs:
         # requires_egeria (22 tests) still has no service here — an Egeria
         # platform is not something a job can stand up — so those stay skipped,
         # and their reasons are now printed by the run that already happened.
-        run: uv run pytest tests/ -q --no-header -rs --durations=25
+        #
+        # -n auto (pytest-xdist, 2026-10-29): one worker per runner CPU (4 on a
+        # public-repo ubuntu-latest). Serial, this step took 66-69 minutes and
+        # pushed the job past its timeout. Each worker gets its own registry
+        # schema in the service container (tests/conftest.py, _XDIST_WORKER), so
+        # concurrent tests never share one. -rs and --durations report across all
+        # workers as before.
+        run: uv run pytest tests/ -q --no-header -rs --durations=25 -n auto
 
       - name: Analytic Library tests (trellis-analytics)
         # Its routines read RE's registry through resolve_node_set, so its tests need resource_explorer installed;
