@@ -271,6 +271,13 @@ def _merge_step_questions(loaded: dict[str, list[QuestionCatalogEntry]]) -> None
                 section = loaded.setdefault(resource_type, [])
                 if all(e.id != row.id for e in section):
                     section.append(row)
+        # A question the manifest names (`questions`) is also answered by this step: it joins the question's answering
+        # set after RE's own analyses, in catalogue order, so the row shows both lines (leg 3, 2026-10-29).
+        named = {str(q).strip() for q in manifest.questions}
+        for resource_type in manifest.resource_types:
+            for e in loaded.get(resource_type, []):
+                if e.id in named and manifest.name not in e.answering.analysis_ids:
+                    e.answering.analysis_ids.append(manifest.name)
 
 
 #: The top-level YAML key listing the ids of rows the generator skipped (Status `retired <date>: ...` or

@@ -30,6 +30,11 @@ ACCESS_BASIS = ("each file's access time as the walk's stat read it before the w
                 "reads, are said rather than counted")
 
 
+def _n(count: int, noun: str) -> str:
+    """A count with its noun in number: "1 file", "2 files"."""
+    return f"{count:,} {noun}{'' if count == 1 else 's'}"
+
+
 def _parse(value) -> datetime | None:
     if not value:
         return None
@@ -89,7 +94,7 @@ def run(inputs) -> list[dict]:
     else:
         v = {**common, **_bands(mod, hot, cold), "Files Without A Modified Time": no_mtime, "basis": MODIFY_BASIS}
         out.append({"scope": slug, "state": "measured", "value": v,
-                    "summary": (f"{v['Hot Files']:,} files modified within {hot} days; {v['Cold Files']:,} not "
+                    "summary": (f"{_n(v['Hot Files'], 'file')} modified within {hot} days; {v['Cold Files']:,} not "
                                 f"modified for over {cold} days ({v['Cold Bytes']:,} bytes)"
                                 + (f"; {no_mtime:,} without a modified time" if no_mtime else ""))})
     out.append(_access(slug, walk, runs[1] if len(runs) > 1 else None, rows, age, hot, cold, common, inputs))
@@ -122,5 +127,5 @@ def _access(slug, walk, previous, rows, age, hot, cold, common, inputs) -> dict:
          "Access Possibly Resource Explorer's Own Read": len(ours), "basis": ACCESS_BASIS}
     caveat = (f"; {len(ours):,} last read possibly by Resource Explorer's previous walk, not counted" if ours else "")
     return {"scope": slug, "state": "measured", "measure": ACCESS, "value": v,
-            "summary": (f"{v['Hot Files']:,} files read within {hot} days; {v['Cold Files']:,} not read for over "
+            "summary": (f"{_n(v['Hot Files'], 'file')} read within {hot} days; {v['Cold Files']:,} not read for over "
                         f"{cold} days{caveat}")}

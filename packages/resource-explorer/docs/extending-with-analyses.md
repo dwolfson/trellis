@@ -275,6 +275,13 @@ your step's own prefix (`my_step:Q1`): `question_defs=[QuestionDeclaration(id="m
 its question catalogue while the package is installed (owner, 2026-10-29), with no central id and no configdata row; the id
 is added to your `questions` for you. An id outside your prefix, or repeated, makes the manifest fail to load, with that sentence.
 
+**On the Questions tab.** Every question your manifest names (`questions`, or `question_defs`) lists your step among the
+analyses that answer it, after RE's own, in catalogue order: a question RE's analysis and your step both answer shows both.
+The row's line for your step is your step's own sentence, the same `state · summary` the Survey tab shows for the same
+stored rows (a step with one result says it; one with a resource-scoped summary measure says that; only several plain
+results are counted). "The numbers behind this" lists each stored result, and each further declared measure on its own row
+with its own state, so a measure that could not be measured reads "not established" and its reason, never a zero.
+
 ---
 
 Ways to check that RE sees the step. RE has no admin page or CLI verb that lists library steps yet.

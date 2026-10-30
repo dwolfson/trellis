@@ -278,7 +278,7 @@ def build_measurements(
     if entity_type != "repo":
         return _build_measurements_via_results_reader(
             registry, slug, analysis_id, kinds_map, run_at, source,
-            adapter=adapter, level=level)
+            adapter=adapter, level=level, entity_type=entity_type)
 
     kinds = _METRICS_KINDS.get(analysis_id)
 
@@ -333,7 +333,7 @@ def build_measurements(
 
 def _build_measurements_via_results_reader(
     registry, slug: str, analysis_id: str, kinds_map: dict, run_at: str, source: str,
-    adapter=None, level: str = "resource",
+    adapter=None, level: str = "resource", entity_type: str = "",
 ) -> dict:
     """The non-repo counterpart of the `_METRICS_KINDS` branch above.
 
@@ -398,7 +398,15 @@ def _build_measurements_via_results_reader(
         # A generic annotation reader (`surveyors/annotation_readers.py`,
         # R7) returns rows already shaped, each carrying the state words its
         # envelope states; flattening would drop them.
-        measurements = raw["measurement_rows"]
+        measurements = list(raw["measurement_rows"])
+        # A library step's further declared measures are stored under their own keys; each is its own row with its own
+        # stated state, so one that could not be measured reads "not established" and its reason, not the whole row's
+        # state and not a number (F19).
+        step_keys = list(getattr(kinds_map.get(analysis_id), "step_keys", None) or [])
+        if entity_type and step_keys:
+            from resource_explorer.surveyors.annotation_readers import declared_measure_rows
+
+            measurements += declared_measure_rows(registry, entity_type, slug, step_keys[0])
     else:
         measurements = [
             {"name": name, "value": value, "opens": None, "note": ""}

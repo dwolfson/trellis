@@ -28,6 +28,11 @@ SENSITIVE_BASIS = ("world-readable (others may read) files whose names the walk 
 UNCLASSIFIED = ("hashing_off", "symlink", "not_attempted")
 
 
+def _n(count: int, noun: str) -> str:
+    """A count with its noun in number: "1 owner", "2 owners"."""
+    return f"{count:,} {noun}{'' if count == 1 else 's'}"
+
+
 def _absent(scope: str, reason: str, words: str, measure: str = "") -> dict:
     out = {"scope": scope, "state": "not_established", "reason": reason, "summary": f"not measured · {words}"}
     return {**out, "measure": measure} if measure else out
@@ -71,8 +76,8 @@ def run(inputs) -> list[dict]:
              "Commonest Modes": "; ".join(f"{m}: {n:,}" for m, n in modes.most_common(5)),
              "basis": BASIS}
     here = {"scope": slug, "state": "measured", "value": value,
-            "summary": (f"{value['Distinct Owners']:,} owners, {value['Distinct Groups']:,} groups; "
-                        f"{value['World Readable Files']:,} of {len(stat_rows):,} files world-readable, "
+            "summary": (f"{_n(value['Distinct Owners'], 'owner')}, {_n(value['Distinct Groups'], 'group')}; "
+                        f"{value['World Readable Files']:,} of {_n(len(stat_rows), 'file')} world-readable, "
                         f"{value['World Writable Files']:,} world-writable")}
     return [here, _sensitive(slug, walk, stat_rows, common)]
 
