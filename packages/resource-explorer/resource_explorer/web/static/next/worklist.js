@@ -50,6 +50,7 @@ import { ago, daysSince, verdictLineHtml, changedTimesHtml, readBackAt } from '/
 import { STATES as GLYPH_STATES } from '/static/next/glyphs.js';
 import { addActWording, addListToInvestigation, openStartFromList, START_LABEL } from '/static/next/worklist-actions.js';
 import { shortName } from '/static/next/investigation-picker.js';
+import { mountSetSteps } from '/static/next/worklist-set-steps.js';
 import { contextRecordedSpec, contextRecordedState } from '/static/next/context-recorded.js';
 import { cue } from '/static/next/stages/repo-manifest.js';
 import { inPagePrompt } from '/static/next/confirm-dialog.js';
@@ -885,6 +886,7 @@ export async function renderWorkListPane(ctx) {
     <div id="wl-linked" class="mt-s2 text-caveat text-ink"></div>
     <div id="wl-note" class="mt-s2 text-caveat text-ink"></div>
     <div id="wl-progress" class="mt-s2"></div>
+    <div id="wl-set-steps" class="mt-s3"></div>
     <div id="wl-shortlist" class="mt-s2 text-caveat text-ink"></div>
     <div id="wl-winnow" class="mt-s2 text-caveat text-ink"></div>
     <div class="my-s3 h-px bg-rule"></div>
@@ -905,6 +907,9 @@ export async function renderWorkListPane(ctx) {
   }));
   renderShortlistLine(ctx);
   renderWinnow(ctx);
+  // Steps that take the whole list as their subject, with their priced line (read-only until a person presses Run).
+  mountSetSteps(el.querySelector('#wl-set-steps'), { slug: wl.slug, signedIn: () => !!(ctx.host && ctx.host.signedIn && ctx.host.signedIn()),
+    stale: () => grid.workList !== wl });
   // Off the render path: the grid opens at once, and the shortlist re-cuts itself behind it if its answers moved.
   if (grid.workList.filter) maybeAutoReapply(ctx);
 
