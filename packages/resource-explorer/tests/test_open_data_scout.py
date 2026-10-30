@@ -177,3 +177,59 @@ def test_the_scout_is_declared_in_the_analysis_catalog_once():
     e = entries[0]
     assert e["resource_types"] == ["open_data"] and e["availability"] == "inline" and e["action"] == "survey"
     assert not [x for x in reader.get_analyses("repo", include_egeria_live=False) if x["id"] == "external_data_scout"]
+
+
+# ── B4: the data request on an investigation (table approved by the project owner, 2026-10-30) ─────────────────
+
+def _routes_client(reg, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from resource_explorer.open_data.store import OpenDataStore
+    from resource_explorer.web.routes import open_data as routes
+
+    monkeypatch.setattr(routes, "_store", lambda: OpenDataStore(reg))
+    monkeypatch.setattr(routes, "_transport", lambda: SaFake())
+    monkeypatch.setattr(routes, "_signed_in_user", lambda request: "tester")
+    app = FastAPI()
+    app.include_router(routes.router, prefix="/api/open-data")
+    return TestClient(app)
+
+
+def test_the_data_request_round_trips_and_an_old_investigation_reads_not_stated(reg, store, monkeypatch):
+    c = _routes_client(reg, monkeypatch)
+    none = c.get("/api/open-data/investigations/inv-old/data-request").json()
+    assert none == {"investigation": "inv-old", "stated": False, "stored": True, "request": None}
+    saved = c.put("/api/open-data/investigations/inv-1/data-request", json={
+        "subjects": ["flood", " rainfall "], "period": "2019-2023", "places": ["Texas"], "grain": "daily",
+        "licence": {"commercial": True, "share_alike": False}, "formats": ["csv"]}).json()
+    assert saved["request"]["subjects"] == ["flood", "rainfall"] and saved["request"]["formats"] == ["CSV"]
+    assert saved["request"]["licence"] == {"commercial": True, "share_alike": False} and saved["request"]["updated_by"] == "tester"
+    assert c.get("/api/open-data/investigations/inv-1/data-request").json()["stated"] is True
+    assert c.get("/api/open-data/investigations/inv-2/data-request").json()["stated"] is False     # per investigation
+
+
+def test_a_missing_table_is_no_data_request_stated_and_a_save_says_why(reg, store, monkeypatch):
+    with reg._conn() as conn:
+        conn.execute("DROP TABLE investigation_data_requests")
+    c = _routes_client(reg, monkeypatch)
+    got = c.get("/api/open-data/investigations/inv-1/data-request").json()
+    assert got["stated"] is False and got["stored"] is False and got["request"] is None
+    r = c.put("/api/open-data/investigations/inv-1/data-request", json={"period": "2020"})
+    assert r.status_code == 409 and "cannot be stored yet" in r.json()["detail"]
+    assert c.post("/api/open-data/lens-terms?investigation=inv-1", json={}).status_code == 200      # still answers
+
+
+def test_the_stored_request_feeds_lens_terms_and_the_winnow(reg, store, monkeypatch):
+    c = _routes_client(reg, monkeypatch)
+    c.put("/api/open-data/investigations/inv-1/data-request", json={
+        "subjects": ["flood"], "places": ["Texas"], "period": "2019-2023", "licence": {"share_alike": False}})
+    terms = c.post("/api/open-data/lens-terms?investigation=inv-1", json={}).json()
+    assert terms["terms"] == "flood Texas" and terms["filters"] == {"modified_after": "2019-01-01"} and terms["source"] == "data request"
+    portal = _register_demo(store)
+    wl = service.import_datasets(store, _chosen(portal["slug"], *NAMES), work_list_name="r", transport=SaFake(),
+                                 egeria_lookup=NO_EGERIA)["work_list"]
+    got = c.post(f"/api/open-data/work-lists/{wl}/fit", json={"request": {}, "investigation": "inv-1"}).json()
+    assert got["request_source"] == "the data request on inv-1" and got["dropped"] == 3          # two share-alike rows, and the one that states "Global" against Texas
+    plain = c.post(f"/api/open-data/work-lists/{wl}/fit", json={"request": {}, "investigation": "inv-none"}).json()
+    assert plain["request_source"] == "no data request stated" and plain["dropped"] == 0

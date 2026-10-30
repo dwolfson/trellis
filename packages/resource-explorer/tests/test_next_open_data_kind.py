@@ -45,3 +45,17 @@ def test_the_shortlist_panel_prices_before_the_press_and_keeps_dropped_rows_list
     assert "res.rows.map(" in sl and "dropped" in sl                       # dropped rows are rows with a verdict, not removed
     assert "not stated" in sl and "could not be checked" in sl
     assert "mountShortlist(el.querySelector('[data-od-shortlist]')" in KIND
+
+
+def test_the_data_request_band_is_on_the_investigation_and_says_when_it_cannot_store():
+    band = (NEXT / "data-request.js").read_text(encoding="utf-8")
+    inv = (NEXT / "stages" / "investigation.js").read_text(encoding="utf-8")
+    assert "mountDataRequestBand(document.getElementById('inv-data-request'), inv.slug)" in inv
+    assert "import { mountDataRequestBand } from '/static/next/data-request.js';" in inv
+    for dim in ("Subjects", "Period", "Places", "Grain", "License needs", "Formats"):
+        assert f"cell('{dim}'" in band
+    assert "not stated" in band and "No data request stated for this investigation." in band
+    assert "The data request cannot be stored yet" in band and "${got.stored ? '' : 'disabled'}" in band
+    assert "openFindOpenDataDialog({ investigation: slug })" in band        # a search from the band carries the request
+    sl = (NEXT / "open-data-shortlist.js").read_text(encoding="utf-8")
+    assert "appState.investigation" in sl

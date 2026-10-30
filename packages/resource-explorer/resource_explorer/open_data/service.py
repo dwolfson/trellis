@@ -451,9 +451,19 @@ def scout_work_list(store: OpenDataStore, work_list_slug: str, *, transport) -> 
             "could_not_scout": sum(1 for o in out if o["outcome"] != "scouted")}
 
 
-def fit_work_list(store: OpenDataStore, work_list_slug: str, request: dict | None) -> dict:
-    """The fit row and winnow over the STORED columns (no network), with the Q-0011 overlap on each row."""
+def _states_nothing(request: dict | None) -> bool:
+    return not any(v for k, v in (request or {}).items() if k != "licence") and not (request or {}).get("licence")
+
+
+def fit_work_list(store: OpenDataStore, work_list_slug: str, request: dict | None, investigation: str = "") -> dict:
+    """The fit row and winnow over the STORED columns (no network), with the Q-0011 overlap on each row. A request
+    that states nothing, sent with an investigation, is that investigation's stored data request (when it has one)."""
     from resource_explorer.open_data import fit
+
+    source = "the request as sent"
+    if investigation and _states_nothing(request):
+        stored = store.get_data_request(investigation)
+        request, source = (stored, f"the data request on {investigation}") if stored else (request, "no data request stated")
 
     datasets = store.datasets_in_work_list(work_list_slug)
     if not datasets:
@@ -464,4 +474,4 @@ def fit_work_list(store: OpenDataStore, work_list_slug: str, request: dict | Non
     for r in result["rows"]:
         r["overlap"] = fit.overlap(by_slug[r["slug"]], held)
         r["retrieved_at"] = by_slug[r["slug"]]["retrieved_at"]
-    return {"work_list": work_list_slug, **result}
+    return {"work_list": work_list_slug, "request_source": source, **result}

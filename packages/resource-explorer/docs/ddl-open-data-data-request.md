@@ -1,8 +1,10 @@
-# DDL record (PROPOSED): the data request on an investigation (OD2 brief Part B4)
+# DDL record (APPROVED): the data request on an investigation (OD2 brief Part B4)
 
-**Status:** PROPOSED. Not applied, not wired. Nothing in `re/od2-ui-defects` creates, reads or writes this table.
-It is applied only after the project owner approves this record and an owner-approved 8813 restart runs RE's schema
-init. Merging is not enough, and no code may rely on it before that.
+**Status:** APPROVED (owner, 2026-10-30). Not yet applied. **Decision (project owner, 2026-10-30):** "approve the table"
+(the new table, as recommended below, not the column alternative). It is applied by RE's schema init
+(`ProjectRegistry._migrate_open_data_tables`, statement in `open_data/schema.py`) at the NEXT owner-approved 8813
+restart after this branch merges; merging alone applies nothing. Until then the code treats a missing table as
+"no data request stated" and refuses a save with a sentence.
 Design: `design-notes/DESIGN-OPEN-DATA-SEARCH-AND-SURVEY.md` §1 (step 1, the data request) and §2; the Architect's
 walk of 2026-10-29, §2 row 1 and §4.2 (the "Data request" band).
 
@@ -77,8 +79,10 @@ ALTER TABLE investigations ADD COLUMN data_request_json TEXT;
 Nullable (NULL on every old row = not stated). One statement, but on a table every request path reads, and an
 `ALTER TABLE` takes a short exclusive lock on it. Recommendation: the new table.
 
-## What this branch does about it
+## What the code does about it
 
-Nothing. The Data request band (B4) is not built in `re/od2-ui-defects`: building the screen against a table that does
-not exist would either fail or fake a save. It is built after the owner approves this record, in the same slice that
-adds the table's statement to `ProjectRegistry._init_schema`.
+The statement is the fourth entry of `open_data/schema.py` `STATEMENTS`. `OpenDataStore.get_data_request` reads a
+missing table or a missing row as `None` ("no data request stated"); `save_data_request` on a missing table raises
+`DataRequestTableMissing` and the route answers 409 with "The data request cannot be stored yet: its table is applied
+at the next owner-approved restart." `GET /api/open-data/investigations/{slug}/data-request` reports `stored: false`
+while the table is absent. The band on the investigation page, `lens-terms` and the winnow read it.

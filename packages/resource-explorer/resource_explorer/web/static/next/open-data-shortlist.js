@@ -6,7 +6,7 @@
  *          rows are kept and said; a request that states no need on a dimension passes nobody on it.
  */
 import { openDataScoutPrice, scoutOpenData, fitOpenData } from '/static/re-api.js';
-import { esc } from '/static/next/app.js';
+import { esc, state as appState } from '/static/next/app.js';
 import { watchTables } from '/static/next/colresize.js';
 
 const errText = (e) => esc((e && (e.detail || e.message)) || String(e));
@@ -72,7 +72,7 @@ export async function mountShortlist(host, workList) {
     ev.preventDefault();
     const out = host.querySelector('[data-od-fit-result]');
     out.textContent = 'Winnowing…';
-    try { out.innerHTML = winnowHtml(await fitOpenData(workList, requestFromForm(form))); watchTables(out); }
+    try { out.innerHTML = winnowHtml(await fitOpenData(workList, requestFromForm(form), appState.investigation || '')); watchTables(out); }
     catch (e) { out.innerHTML = `<p class="text-state-warn">${errText(e)}</p>`; }
   });
 }

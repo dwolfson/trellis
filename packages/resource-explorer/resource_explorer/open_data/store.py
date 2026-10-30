@@ -152,6 +152,51 @@ class OpenDataStore:
                  _enc(flags["share_alike"]), _enc(flags["commercial"]), _enc(row["modified"]),
                  json.dumps(row["formats"]), _enc(row["size"]), json.dumps(row["record"]), retrieved_at, slug))
 
+    def get_data_request(self, investigation_slug: str):
+        """The stored request, or None for "no data request stated" (no row, or the table is not applied yet).
+        Raises nothing for a missing table: that is reported by `data_request_table_present`."""
+        try:
+            with self._conn() as conn:
+                row = conn.execute("SELECT * FROM investigation_data_requests WHERE investigation_slug = ?",
+                                   (investigation_slug,)).fetchone()
+        except Exception as exc:
+            if _is_missing_table(exc):
+                return None
+            raise
+        return request_to_dict(row) if row else None
+
+
+    def data_request_table_present(self) -> bool:
+        try:
+            with self._conn() as conn:
+                conn.execute("SELECT 1 FROM investigation_data_requests WHERE 1 = 0").fetchall()
+        except Exception as exc:
+            if _is_missing_table(exc):
+                return False
+            raise
+        return True
+
+
+    def save_data_request(self, investigation_slug: str, req: dict, updated_by: str) -> dict:
+        lic = req.get("licence") or {}
+        values = (json.dumps([str(x).strip() for x in req.get("subjects") or [] if str(x).strip()]), str(req.get("period") or "").strip(),
+                  json.dumps([str(x).strip() for x in req.get("places") or [] if str(x).strip()]), str(req.get("grain") or "").strip(),
+                  "1" if lic.get("commercial") is True else "", "0" if lic.get("share_alike") is False else "",
+                  json.dumps([str(x).strip().upper() for x in req.get("formats") or [] if str(x).strip()]), updated_by, now())
+        try:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM investigation_data_requests WHERE investigation_slug = ?", (investigation_slug,))
+                conn.execute(
+                    "INSERT INTO investigation_data_requests (investigation_slug, subjects_json, period, places_json, grain,"
+                    " need_commercial, need_share_alike, formats_json, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (investigation_slug, *values))
+        except Exception as exc:
+            if _is_missing_table(exc):
+                raise DataRequestTableMissing(
+                    "The data request cannot be stored yet: its table is applied at the next owner-approved restart.") from exc
+            raise
+        return self.get_data_request(investigation_slug)
+
     @staticmethod
     def _dataset(row) -> dict:
         d = dict(row)
@@ -164,3 +209,25 @@ class OpenDataStore:
                         "commercial": _dec_flag(d.pop("commercial"))}
         d["size"] = d.pop("size_bytes")
         return d
+
+
+# ── the data request on an investigation (B4; docs/ddl-open-data-data-request.md, approved 2026-10-30) ──────────────
+
+class DataRequestTableMissing(RuntimeError):
+    """`investigation_data_requests` does not exist yet (it is applied at an owner-approved restart)."""
+
+
+def _is_missing_table(exc: Exception) -> bool:
+    text = f"{type(exc).__name__} {exc}".lower()
+    return "no such table" in text or "undefinedtable" in text or ("relation" in text and "does not exist" in text)
+
+
+def request_to_dict(row) -> dict:
+    d = dict(row)
+    return {
+        "subjects": json.loads(d["subjects_json"] or "[]"), "period": d["period"], "places": json.loads(d["places_json"] or "[]"),
+        "grain": d["grain"],
+        "licence": {**({"commercial": True} if d["need_commercial"] == "1" else {}),
+                    **({"share_alike": False} if d["need_share_alike"] == "0" else {})},
+        "formats": json.loads(d["formats_json"] or "[]"), "updated_by": d["updated_by"], "updated_at": d["updated_at"],
+    }

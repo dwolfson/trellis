@@ -5,7 +5,7 @@ New tables only; no existing table is altered. Applied by `ProjectRegistry._migr
 """
 from __future__ import annotations
 
-OPEN_DATA_TABLES = ("open_data_portals", "open_data", "portal_directories")
+OPEN_DATA_TABLES = ("open_data_portals", "open_data", "portal_directories", "investigation_data_requests")
 
 STATEMENTS = (
     """CREATE TABLE IF NOT EXISTS open_data_portals (
@@ -51,5 +51,19 @@ STATEMENTS = (
         registered_by  TEXT NOT NULL DEFAULT '',
         registered_at  TEXT NOT NULL,
         last_run_at    TEXT NOT NULL DEFAULT ''
+    )""",
+    # Approved (project owner, 2026-10-30): docs/ddl-open-data-data-request.md. Applied at the next owner-approved
+    # 8813 restart after merge; until then code reads a missing table as "no data request stated".
+    """CREATE TABLE IF NOT EXISTS investigation_data_requests (
+        investigation_slug  TEXT PRIMARY KEY,
+        subjects_json       TEXT NOT NULL DEFAULT '[]',
+        period              TEXT NOT NULL DEFAULT '',
+        places_json         TEXT NOT NULL DEFAULT '[]',
+        grain               TEXT NOT NULL DEFAULT '',
+        need_commercial     TEXT NOT NULL DEFAULT '',
+        need_share_alike    TEXT NOT NULL DEFAULT '',
+        formats_json        TEXT NOT NULL DEFAULT '[]',
+        updated_by          TEXT NOT NULL DEFAULT '',
+        updated_at          TEXT NOT NULL
     )""",
 )
