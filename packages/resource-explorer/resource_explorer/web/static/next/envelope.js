@@ -338,10 +338,13 @@ export function readEnvelope(entry, env, esc, tnum) {
   // own prose, written as if it would be read alone -- attributed here,
   // not rewritten, since the sentence itself is correct and only its
   // referent was ambiguous.
-  const attribute = (f, text) => (facts.length > 1 ? `${f.analysis_id} — ${text}` : text);
   const caveats = [];
+  // Several facts with the same note (two analyses surveyed by the same pre-recording runs) say it once, naming them
+  // all, rather than once per analysis.
+  const byNote = new Map();
+  for (const f of facts) if (f.note) byNote.set(f.note, [...(byNote.get(f.note) || []), f.analysis_id]);
+  for (const [text, ids] of byNote) caveats.push(facts.length > 1 ? `${ids.join(', ')} — ${text}` : text);
   for (const f of facts) {
-    if (f.note) caveats.push(attribute(f, f.note));
     if (f.state === PARTIAL && !f.note) {
       caveats.push(`${f.analysis_id} covered only part of what it measures.`);
     }
@@ -383,7 +386,9 @@ export function readEnvelope(entry, env, esc, tnum) {
     id: f.analysis_id,
     sentence: f.is_known
       ? (f.headline || (f.state || '').replace(/_/g, ' '))
-      : (f.state === NEVER_RUN ? 'not run yet' : (f.note || (f.state || '').replace(/_/g, ' '))),
+      // A fact's note is already in the row's caveat, attributed to it, so the step line gives the state in words
+      // and does not say the note a second time (Q-0073: "surveyed by runs that predate per-step recording", twice).
+      : (f.state === NEVER_RUN ? 'not run yet' : ((f.state || '').replace(/_/g, ' ') || 'state not recorded')),
     known: !!f.is_known, neverRun: f.state === NEVER_RUN, lastRun: f.last_run_at || '', runnable: f.runnable, runnableReason: f.runnable_reason || '',
   }));
   // The row's own "the numbers behind this" opens the question's FIRST analysis. When another of RE's own analyses has
