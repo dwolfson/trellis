@@ -412,7 +412,7 @@ test('inherited and differing tables are drawn differently', async () => {
   const { document } = await setUp(v);
   document.querySelector('[data-scope-toggle="sales"]').click();
   const inherited = row(document, 'table:sales.orders').querySelector('[data-scope-state-word="inherited"]');
-  assert.match(flat(inherited), /^\(schema\) details include · from its schema$/);
+  assert.match(flat(inherited), /^include \(schema\) details include · from its schema$/);
   assert.ok(inherited.className.includes('text-ink-muted'), 'muted ink');
   const differs = row(document, 'table:sales.customers').querySelector('[data-scope-choice-cell]');
   assert.match(flat(differs), /leave out · set by dwolfson 10-04 · differs from its schema/);
@@ -682,7 +682,7 @@ test('catalog selected: one POST naming the ticked schemas, and the status is de
   assert.match(flat(document.querySelector('[data-scope-selected-count]')), /0 of 3 schemas/, 'the selection is spent');
 });
 
-test('leave out selected and clear choice send their own choice', async () => {
+test('leave out selected and back to undecided send their own choice', async () => {
   const { document, window, server } = await setUp(baseView());
   const tick = (n) => { const b = document.querySelector(`[data-scope-select="${n}"]`); b.checked = true; b.dispatchEvent(new window.Event('change', { bubbles: true })); };
   tick('sales');

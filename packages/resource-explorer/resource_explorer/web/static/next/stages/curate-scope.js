@@ -97,8 +97,43 @@ let resumeFor = null;
 let pageWatchStop = null;
 /** A finished commit is drawn in full for this long; after that it is one line with its steps behind a disclosure. */
 const RESUME_FULL_HOURS = 24;
+/** The commit preview READS Egeria and takes tens of seconds on a large database (C2, 2026-10-30: about 45 s on
+ *  coco_pharma, 110-120 s when six ran at once). So a page asks for it once at a time: a redraw that follows no new
+ *  choice reuses the read in flight or done; a redraw after a choice waits this long for the next click, then reads
+ *  once, after any read still running. `seq` counts what this page changed; a read answers for the `seq` it began at. */
+let previewDebounceMs = 1200;
+export function setPreviewDebounceMs(ms) { previewDebounceMs = ms; }
+let pv = { slug: '', seq: 0, run: null, next: null, settle: false };
+/** Something this page did may change what a commit would do: the next preview is read again. `settle` waits for the
+ *  clicks to stop first (a choice); a commit or a read-back is one event, read again at once. */
+function previewChanged(slug, settle = true) { if (pv.slug === slug) { pv.seq += 1; pv.settle = settle; } }
+function previewFor(slug) {
+  if (pv.slug !== slug) pv = { slug, seq: 0, run: null, next: null, settle: false };
+  const cur = pv;
+  if (cur.run && cur.run.seq === cur.seq) return cur.run.promise;
+  if (!cur.next) {
+    const nx = { fired: false, timer: null };
+    nx.promise = new Promise((resolve, reject) => { nx.resolve = resolve; nx.reject = reject; });
+    cur.next = nx;
+  }
+  const nx = cur.next;
+  const fire = async () => {
+    if (nx.fired) return;
+    if (cur.run && cur.run.pending) { try { await cur.run.promise; } catch { /* its own panel said so */ } }
+    if (nx.fired || pv !== cur) return;
+    nx.fired = true;
+    if (cur.next === nx) cur.next = null;
+    const run = { seq: cur.seq, pending: true, promise: getCatalogueCommitPreview(slug) };
+    cur.run = run;
+    run.promise.then(nx.resolve, nx.reject).finally(() => { run.pending = false; });
+  };
+  clearTimeout(nx.timer);
+  nx.timer = setTimeout(fire, cur.run && cur.settle ? previewDebounceMs : 0);
+  return nx.promise;
+}
+
 /** Forget which schemas were expanded or ticked (another database, or a fresh pane). */
-export function resetScopeUi() { commitUi = null; resumed = null; resumeFor = null; if (pageWatchStop) { pageWatchStop(); pageWatchStop = null; } savedNotes.clear(); pendingRows.clear(); flashRows.clear(); bulkBusy = false; openSchemas.clear(); selected.clear(); selectedTables.clear(); filterText = ''; openFor = ''; sectionOpen = null; commitUi = null; }
+export function resetScopeUi() { pv = { slug: '', seq: 0, run: null, next: null, settle: false }; commitUi = null; resumed = null; resumeFor = null; if (pageWatchStop) { pageWatchStop(); pageWatchStop = null; } savedNotes.clear(); pendingRows.clear(); flashRows.clear(); bulkBusy = false; openSchemas.clear(); selected.clear(); selectedTables.clear(); filterText = ''; openFor = ''; sectionOpen = null; commitUi = null; }
 
 /** Whether the commit panel may read Egeria now. The tabbed pane sets this to "Contents is showing"; the default
  *  (always) is the pane as it has always been. */
@@ -334,7 +369,9 @@ function choiceCellCore(node, me) {
     return `${sel}<div data-scope-state-word="chosen" class="text-provenance text-ink-muted">${who1}${differs}${moreHtml(`${words(ex.choice)} · set by ${by}${node.differs_from_schema ? ' · differs from its schema' : ''}`)}</div>`;
   }
   if (node.effective && node.effective_from === 'schema') {
-    return `${sel}<div data-scope-state-word="inherited" class="text-provenance text-ink-muted">(schema)${moreHtml(`${words(node.effective)} · from its schema`)}</div>`;
+    // The answer in words (C1, 2026-10-30): "(schema)" alone, with neither segment pressed, read as undecided, so a
+    // schema's tables were chosen again one by one after the schema itself was included.
+    return `${sel}<div data-scope-state-word="inherited" class="text-provenance text-ink-muted">${esc(words(node.effective))} (schema)${moreHtml(`${words(node.effective)} · from its schema`)}</div>`;
   }
   const tail = node.kind === 'schema' && node.undecided_words
     ? ` · <span data-scope-undecided-words>${esc(node.undecided_words)}</span>` : '';
@@ -591,7 +628,7 @@ export function bulkBarHtml(view, me) {
     <label class="inline-flex cursor-pointer items-baseline gap-[4px]"><input type="checkbox" data-scope-all-box ${nVis && nSelVis === nVis ? 'checked' : ''} ${dis}> select all shown</label>
     <button type="button" data-scope-clear-selection ${nSelVis ? '' : 'disabled'} class="${nSelVis ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">clear selection</button>
     <span data-scope-selected-count class="text-ink-muted">${selected.size} of ${n} schemas · ${selectedTables.size} of ${countTables(view)} tables selected</span>
-    ${bulk('catalogue', 'include selected')} · ${bulk('leave_out', 'leave out selected')} · ${bulk('clear', 'clear choice')}
+    ${bulk('catalogue', 'include selected')} · ${bulk('leave_out', 'leave out selected')} · ${bulk('clear', 'back to undecided')}
     <span class="text-ink-muted">|</span>
     <button type="button" data-scope-catalogue-all ${dis} class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0">include all ${n} schemas</button></div>`;
 }
@@ -885,13 +922,23 @@ function commitSummary(rec) {
 const stepSig = (rec) => (rec && rec.steps ? rec.steps.map((st) => `${st.name}=${st.state}`).join('|') : '');
 const surveyOpen = (rec) => !!(rec && (rec.steps || []).some((st) => st.name === 'survey' && st.state === 'submitted'));
 
+/** While the preview is read: the Publish control is there, off, saying why; the choices above are already saved. */
+export function commitCheckingHtml() {
+  const why = 'checking what a commit would do…';
+  return `<div data-scope-commit-loading class="flex flex-wrap items-start justify-between gap-s3">
+    <div class="min-w-0 flex-1 text-provenance text-ink-muted" data-scope-commit-checking>Checking what a commit would do: this reads Egeria and writes nothing. Your choices are saved already.</div>
+    <div class="flex shrink-0 flex-col items-end gap-s1" style="width:260px">
+      <button type="button" data-scope-commit-btn disabled aria-disabled="true" title="${esc(why)}" class="cursor-not-allowed rounded-sm border border-accent bg-accent px-s3 py-[6px] text-resource font-semibold text-chrome opacity-50">Publish</button>
+      <span data-scope-commit-why class="text-right text-caveat text-ink">${esc(why)}</span></div></div>`;
+}
+
 async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshScope = null, getView = () => null) {
   const host = el.querySelector('[data-scope-commit]');
   if (!host) return;
-  host.innerHTML = '<div data-scope-commit-loading class="text-provenance text-ink-muted">Reading what the commit would do (this reads Egeria and writes nothing)…</div>';
+  host.innerHTML = commitCheckingHtml() + (commitUi && commitUi.slug === slug ? commitStepsHtml(commitUi.rec) : '');
   let preview;
   try {
-    preview = await getCatalogueCommitPreview(slug);
+    preview = await previewFor(slug);
     if (!preview || !preview.manifest) throw new Error('the server answered with something that is not a commit preview');
   } catch (err) {
     if (stale(host, slug)) return;
@@ -1029,6 +1076,7 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshSco
       }
       return;
     }
+    previewChanged(slug, false);                            // the commit changes what the next one would do
     commitUi = { slug, id: out.curation.id, rec: out.curation, polling: true, sig: stepSig(out.curation) };
     setCommitLine(commitLineFromRecord('db', out.curation));   // the one line on the other tabs, from the record, at once
     trigger.textContent = label;
@@ -1046,7 +1094,8 @@ async function loadCommitPanel(el, slug, me, redraw, declared = true, refreshSco
     say('Reading Egeria…');
     let r;
     try { r = await postCatalogueReadBack(slug); } catch (err) { say(fail(err, 'the read'), true); offerSignIn(err); return; }
-    await redraw(`read back: ${r.chips_words || 'nothing read back from Egeria'}${r.read_failed ? ` · ${r.read_failed} read(s) failed` : ''}`);
+    // F28: the server words a failed read ("could not read Egeria · … · nothing changed"), never a count of 0.
+    await redraw(r.line || `read back: ${r.chips_words || 'nothing read back from Egeria'}${r.read_failed ? ` · ${r.read_failed} read${r.read_failed === 1 ? '' : 's'} failed` : ''}`);
   });
 }
 
@@ -1138,7 +1187,7 @@ function paintScope(el, slug, status, view) {
     const rbHost = el.querySelector('[data-read-back-host]');
     if (rbHost) rbHost.innerHTML = readBackChipsHtml((v.commit || {}).read_back);
   };
-  const startCommitPanel = () => loadCommitPanel(el, slug, me, (msg) => renderCatalogueScope(el, slug, msg),
+  const startCommitPanel = () => loadCommitPanel(el, slug, me, (msg) => { previewChanged(slug, false); return renderCatalogueScope(el, slug, msg); },
     !!(view.declared && view.declared.declared), refreshScope, () => view);
   const say = (msg, warn = false) => {
     const s = el.querySelector('[data-scope-status]');
@@ -1228,6 +1277,7 @@ function paintScope(el, slug, status, view) {
       }
       return;
     }
+    previewChanged(slug);                                   // the next preview reads again, once, after the clicks stop
     if (spent) { selected.clear(); selectedTables.clear(); }   // a finished bulk action spends the selection
     if (rowKey) {
       // the server has taken it: the cell shows the answer and says so NOW, in this same render,
@@ -1319,9 +1369,8 @@ function paintScope(el, slug, status, view) {
     const every = bar.querySelector('[data-scope-catalogue-all]');
     if (every) every.addEventListener('click', () => runBulk('catalogue', true));
   };
-  /** Bulk choice over the whole selection: the ticked schemas in one bulk write, then each ticked
-   *  table through the per-table node route (each signed and recorded by the server), then ONE
-   *  re-read; the sentence comes from that re-read. */
+  /** Bulk choice over the whole selection: the ticked schemas and tables in ONE bulk write (each node signed
+   *  and recorded by the server), then ONE re-read; the sentence comes from that re-read. */
   const runBulk = (choice, everySchema) => {
     const names = everySchema ? offered.slice() : [...selected].filter((n) => offered.includes(n));
     const tabs = everySchema ? [] : [...selectedTables].map((k) => { const [sn, tn] = k.split('\t'); return { schema: sn, table: tn }; })
@@ -1344,11 +1393,11 @@ function paintScope(el, slug, status, view) {
     const settle = () => { bulkBusy = false; keys.forEach((k) => pendingRows.delete(k)); };
     afterWrite(async () => {
       try {
-        if (names.length) await setCatalogueNodes(slug, names.map((n) => ({ schema: n })), choice, everySchema);
-        for (const t of tabs) {
-          if (choice) await setCatalogueNode(slug, t.schema, t.table, choice);
-          else await clearCatalogueNode(slug, t.schema, t.table);
-        }
+        // ONE request for every ticked schema and table (C1, 2026-10-30): one table at a time took 1.5-4 s each on
+        // coco_pharma, and a refusal part-way (a table with no choice to clear) stopped the loop with half of it
+        // written while the rows were painted back as if none was. The bulk route writes them together, and skips a
+        // clear on a row that has no choice rather than refusing.
+        await setCatalogueNodes(slug, [...names.map((n) => ({ schema: n })), ...tabs], choice, everySchema);
       } catch (err) {
         settle();
         keys.forEach((k) => { const node = nodeFor(k); const r = rowEl(k); if (node && r) paintRow(k, node); });
