@@ -15,6 +15,13 @@ three types is not worth it now."
 
 **Decision (project owner, 2026-10-29):** "we need the monitors planned too" (relayed by the coordinating session).
 
+**Decision (project owner, 2026-10-29):** "agree with the monitor recommendations". All eleven questions of §9 are
+accepted as recommended. They are no longer open; §9 records each as accepted.
+
+**Decision (project owner, 2026-10-29):** "yes, add those four to the note": how a person changes a monitor's settings
+later (a per-check editor, defaults in Admin, restarting the series, publishing a changed setting). That is §10, with its
+own slices in §7 and its own questions at the end of §10.
+
 ## 1. What TestGen has, from its source
 
 TestGen's **Monitor** generation set is three types. A fourth is its Table Comparison cousin and a fifth needs a person's
@@ -72,8 +79,10 @@ module (`monitor_rules.WORDS`, proposed) so a ruling is one edit.
   remedy is the one upstream reaches with freshness gating, done by a person: "this change is expected — restart the
   series" records `series_start` (a timestamp) in the verdict's `params_json`, and the window then holds only results at or
   after it. No DDL (the verdict already stores `params_json` as accepted). See question 6.
-- **Parameters** (all in `params_json`, editable like any threshold): `window` (20), `min_history` (8), `margin_pct` (10),
-  `series_start` (none), `subset_condition` (none).
+- **Parameters** (all in `params_json`): `window` (20), `min_history` (8), `margin_pct` (10), `series_start` (none),
+  `subset_condition` (none). **There is no editor for them yet**: today a check has only Accept | Reject, and Admin › Quality
+  settings is read-only environment configuration. §10 designs the editor, the admin defaults, the restart action and the
+  publish of a change.
 
 ### 2.2 Freshness_Trend: "the table is written to as often as it has been"
 
@@ -259,8 +268,13 @@ mutations between them, not one run. And the run needs one peer round and the ow
 | B1d-3 | the band on the screen; publish: Volume as a rule, the others as annotations | none | none | none |
 | B1d-4 | opt-in **fingerprint** mode for Freshness_Trend and Table_Freshness (the selection and expression ported from `gen_Freshness_Trend.sql`), under its own budget | the MD5 in `measure_text` (column exists) | none | one aggregate pass per table |
 | B1d-5 | calibration replay (§6): after the restart that applies steps 7 and 8, after the static-restore timing run, each through a peer round | none | none | owner-scheduled |
+| B1d-6 | **settings** (§10.1, §10.3, §10.4): the per-check editor on the check's detail panel; the shared pure evaluation function used at run time and at read time (re-evaluation without a run); "restart the series"; the changed-setting words. Needs B1d-1 (the rules exist) and, for Freshness, B1d-2 | none | none: new `accepted` verdict rows carry the settings | registry reads, no database read |
+| B1d-7 | **defaults in Admin** (§10.2): the monitor defaults in `app_settings`, the Admin › Quality settings editor, a new check copying the defaults at accept time | none | none (`app_settings` exists) | none |
+| B1d-8 | **publishing a changed setting** (§10.5): the compared fields of the rule grow by the window and minimum history; an update in place with read-back; the "changed here · publish to update" line for a monitor | none | none beyond Q5's proof table as it stands | one Egeria update per changed rule |
 
-**DDL for B1d: none.** The optional index is a record, not part of any slice unless the owner wants it.
+**DDL for B1d: none**, including the settings work: a changed setting is a new `accepted` verdict row (`params_json`,
+`decided_by`, `created_at`, `note`), the defaults are `app_settings` rows, and a published change is a Q5 proof row. The
+optional index is a record, not part of any slice unless the owner wants it.
 
 **Not claimed.** No timing or cost number. No statement that write activity equals "content changed". No equivalence of
 Volume's band with SARIMAX's. Any figure in §5's words is an example.
@@ -276,7 +290,10 @@ Volume's band with SARIMAX's. Any figure in §5's words is an example.
 6. **Freshness-gating of the volume series is replaced by a person's "restart the series"**, not by a second model.
 7. **A first look, or too little history, is `not_established`**, where TestGen's training mode is "result code -1".
 
-## 9. Questions for the project owner
+## 9. Questions for the project owner — all accepted as recommended (2026-10-29)
+
+**Decision (project owner, 2026-10-29):** "agree with the monitor recommendations". Each recommendation below stands as the
+ruling; the question text is kept so a later reader can see what was decided.
 
 1. **Volume's constants.** Window 20, minimum history 8, margin 10 % of the window median. *Recommendation:* as stated; they
    are parameters on the check, so a table can be tuned. The alternative is upstream's 30 minimum.
@@ -301,3 +318,140 @@ Volume's band with SARIMAX's. Any figure in §5's words is an example.
 11. **Order of the calibration and timing runs.** The restore, the timing run (step 6 note §11) and the calibration run
     (plan §6) can share one static restore; the monitors' replay needs a scripted series of runs on it.
     *Recommendation:* one restore, one scripted series, the timing run first.
+
+## 10. How a person changes a monitor's settings later
+
+**Where things are today** (read from the code, not assumed). A check has only Accept | Reject
+(`POST /api/quality-checks/{slug}/verdict`, `web/routes/quality_checks.py`). The accepted `params_json` is whatever the
+proposal held. Admin › Quality settings (`web/static/next/admin/quality_settings.js`, labelled "Value profile settings" in
+the tab strip today) is **read-only**: it shows `ValueProfileSettings` and `QualityChecksSettings` from the environment, and
+the one proposal default that exists, `row_ct_pct_default_threshold`, is an environment value. So §2's parameters have no
+editor. The four pieces below add one. None needs DDL.
+
+### 10.1 A per-check settings editor
+
+- **Where.** The check's detail panel, beside Accept | Reject. Volume: *window*, *minimum history*, *margin %*. Freshness:
+  *window*, *minimum gaps*, *upper percentile*, *lower percentile*, *floor multiplier*. Each field shows the current
+  value, the default it started from, and its allowed range (question 12). "Reset to defaults" is one action.
+- **Who, and when.** A signed-in curator, the same gate as accepting a check (question 13). Saving writes a **new
+  `accepted` verdict row** for the check: the new `params_json`, `decided_by` the signed-in person, `created_at` now, and a
+  `note` that RE writes ("window 20 → 30") plus the person's reason if they give one. `database_quality_verdicts` is
+  append-only and the latest row per check wins, so the history of every change, with who and when, is the verdict history
+  and needs nothing new.
+- **Reversible.** "Undo" is a new verdict row carrying the previous parameters. Nothing is deleted; the history shows both.
+- **The words name the change** for as long as it matters. A result judged under changed settings says so: "Compared with
+  the last 30 runs (window changed from 20 to 30 by *person* on *date*)." The sentence stays until a person resets, and
+  names only the settings that differ from the defaults.
+- **Saving re-evaluates, with no new run.** The judgment of a monitor is a pure function of its stored series and its
+  settings (§2). Both are in the registry, so the evaluation needs no database read. The design keeps the two facts apart:
+  - the **stored result** is what was measured and judged at the run, with the settings it used in its `params_json`;
+    nothing rewrites it (a rewrite would be `write_detail_rows`, which replaces every row of a run, and would erase the
+    record of what was true then);
+  - the **current judgment** of the check's newest measure is computed at read time by the same function the run uses
+    (`monitor_rules.evaluate(series, settings)`, one function for both, so they cannot drift), and is what the screen, the
+    chart's band and the next publish show. The screen labels it when it differs from the stored one: "Re-evaluated under
+    changed settings (*person*, *date*). At the run it was: passed."
+  - Question 14 asks whether to write a re-evaluated row instead; the recommendation is not to.
+- **When an edit leaves fewer runs than the minimum.** Raise the minimum to 12 with 9 usable results and the check becomes
+  `not_established`: "Not enough history: 9 of 12 runs (minimum changed from 8 to 12 by *person* on *date*). This is not a
+  finding that the row count is normal." It is never carried over as the earlier `passed`, and it is published as a
+  `not_established` annotation (§5.2). The editor says so **before** the save, with a preview of the newest result under
+  the new values. A window smaller than the minimum is refused outright (the minimum may not exceed the window), so
+  shrinking a window cannot produce this state by itself.
+- **A setting that Egeria owns.** If the rule was edited in Egeria, Q5's rule holds: Egeria's values are used from then on
+  (`rule_source = egeria`). The editor shows such a field as "set in Egeria by *who* on *when*" and does not offer to
+  overwrite it silently (§10.5, question 17).
+
+### 10.2 Defaults in Admin › Quality settings
+
+- **What is editable.** The defaults a **new** monitor starts with: Volume's window, minimum history and margin; Freshness's
+  window, minimum gaps, percentiles and multiplier. An admin edits them (`admin_auth.require_admin`, the gate the other
+  Admin panes use), in the same tab, which becomes an editor for these and stays read-only for the rest (statement
+  timeouts, budgets: environment).
+- **Where they live.** `app_settings` (`key`, `value`, `updated_at`; `registry.get_setting` and `set_setting`), which
+  exists. Two keys, `quality.monitor_defaults.volume` and `quality.monitor_defaults.freshness`, each a JSON value. The table
+  has no `updated_by`, so the writer and the previous value go **inside** the JSON (`set_by`, `set_at`, `previous`). **No
+  DDL.** A change applies from the next time a check is accepted, without a restart (the environment needs one).
+- **Relation to the environment: the environment is the starting value, not the override.** The order is
+  *admin-set value* > *environment* > *built-in default* (the constants in §2). Reason: if the environment overrode the
+  editor, the screen would say 25 while a deployment variable silently made it 20, which is exactly the kind of wrong
+  confident number this work exists to avoid. The pane shows the source of each default ("set by *person* on *date*",
+  "environment", "built-in") and offers "clear", which removes the `app_settings` row and falls back to the environment.
+- **New checks take the current defaults; existing ones keep theirs.** At accept time the defaults are **copied into the
+  check's `params_json`**, every key present, so a later change to a default reaches no existing check. A person who wants a
+  check on the new defaults uses "Reset to defaults" (10.1), which is a verdict row like any edit and shows who did it.
+  A proposal not yet accepted shows the defaults in force when it is read.
+- **Row_Ct_Pct.** It has the same shape (an environment value that starts a proposal). Moving it to the same mechanism is a
+  small, consistent change (question 15); nothing else about it changes.
+
+### 10.3 Restart the series
+
+As §2.1 proposes: "this change is expected — restart the series", an action on the check's detail panel. It writes a new
+`accepted` verdict whose `params_json` carries `series_start` (now), with the person and time in the verdict and an
+optional reason in `note`. The window then holds only results at or after it, for Volume results and for Freshness update
+events alike. Its words: "Compared with runs since *date*, when *person* marked the earlier change as expected." It is
+reversible (a verdict with `series_start` cleared brings the earlier results back into the window).
+
+**The cost is said before it is pressed:** after a restart the monitor is `not_established` ("Not enough history: 0 of 8
+runs") until it has its minimum again, which for a table surveyed daily is eight days with nothing monitored. The editor
+shows that sentence as the confirmation text. Question 18 asks whether the old level should instead seed the new window.
+
+### 10.4 What a changed setting does to the monitors already running
+
+Nothing is re-run. The next scheduled run judges under the current settings and records them in its result's
+`params_json`; results before the change keep the settings they were judged under. The chart's band is drawn per run from
+the settings each run used, with a mark where a setting changed, so a reader can see that a jump in the band is a change
+of rule and not a change of data.
+
+### 10.5 Publishing a changed setting
+
+- **An update in place, not a new version.** Q5 already publishes a changed rule as the outcome `updated`: same
+  `qualifiedName`, same rule GUID, an update of the existing `DataQualityRule` (`DESIGN-QUALITY-Q5-DATA-QUALITY-RULE.md`
+  §5, §6). A new element would orphan every `GovernedBy` link and every earlier `QualityAnnotation` that evaluated the old
+  rule, which is why Q5 says a rule is never deleted by RE. Egeria's own repository history of the element is Egeria's;
+  RE's record of the change is its proof row (below). RE does not invent a version number (question 16).
+- **What is in the rule.** Volume publishes `margin_pct` as `thresholdValues`, as §5.2 says; the window and the minimum
+  history are added to the published `additionalProperties` (the place Q5 already uses for a range's tolerance) and to
+  the `method`/`expression` sentence, so a person reading the rule in Egeria sees "the range of the last 30 runs, ± 10 %
+  of their median, from 8 runs". `series_start` is not part of the rule: it is the state of one series, and is carried on
+  the run's annotation. The compared fields of Q5's find-then-update grow by those two, so a change to either is detected
+  as "changed here".
+- **When.** The next Publish, with everything else, as Q5 already works: the Curate line for the check reads "in Egeria ·
+  changed here · publish to update" until then. Saving a setting writes nothing to Egeria.
+- **Read-back proves the new value.** After the update RE reads the rule by GUID and compares `comparisonOperator`,
+  `thresholdValues` (order preserved), `method`/`expression` and the added `additionalProperties` with what it sent. Only an
+  equal read-back records the outcome `updated`, with `re_proof_hash` of the new canonical fields and `detail_json` holding
+  the old and the new values and who changed them. A mismatch ends the check `unverified` with the server's sentence, the
+  previous proof row stays the last verified one, and the screen says so ("changed here · not yet confirmed in Egeria").
+  Nothing is called published without the read-back.
+- **If Egeria's rule changed meanwhile.** Before an update RE reads the rule; if its compared fields differ from RE's last
+  proof row, someone else changed it, and RE does not overwrite (Q5 §5, "Egeria wins over RE"). The new setting waits as
+  "changed here, Egeria's rule was edited by *who* on *when*", and a person chooses: keep Egeria's values, or press an
+  explicit overwrite that is itself a proof row. A changed setting is the case this guard exists for.
+- **Annotations stay honest.** An annotation published for a run carries the band and the settings **that run** used, so a
+  run judged before the change keeps its old band in Egeria after the rule is updated.
+- **Freshness and Table_Freshness.** They publish no rule (§5.2, question 7), so a changed Freshness setting is published
+  only as the settings on later annotations. If the owner later asks for a Freshness rule, this section applies to it
+  unchanged.
+
+### 10.6 New questions for the project owner
+
+12. **The allowed ranges** of each editable field. *Recommendation:* Volume: window 5 to 100, minimum history 3 up to the
+    window, margin 0 to 100 %. Freshness: window 10 to 200 gaps, minimum gaps 3 up to the window, upper percentile 50 to
+    100, lower percentile 0 to 50, floor multiplier 1.0 to 3.0. A value outside the range is refused with the range in
+    its words.
+13. **Who may edit.** A check's settings: whoever may accept a check (any signed-in curator), recorded by name and time. The
+    defaults: an admin only. *Recommendation:* as stated.
+14. **Re-evaluation.** Computed at read time from the stored measures and the current settings, the stored result never
+    rewritten (10.1); or a new re-evaluated result row at save. *Recommendation:* read time. A written row would sit
+    among the run's real results and can be mistaken for a run.
+15. **Admin defaults.** Environment as the starting value with the admin-set value above it (10.2), and Row_Ct_Pct moved
+    to the same mechanism. *Recommendation:* yes to both.
+16. **What the published rule carries**, and whether RE should set a version identifier on each update. *Recommendation:*
+    `margin_pct` as the threshold, window and minimum history in `additionalProperties` and the sentence, no version
+    number invented by RE; the proof row is the change record.
+17. **A setting changed here while the rule was edited in Egeria.** Egeria wins until a person presses an explicit
+    overwrite (10.5), as Q5 §5 recommends. *Recommendation:* confirm it applies to monitors too.
+18. **After "restart the series"**, the monitor is `not_established` until its minimum is reached again (10.3); or the old
+    level seeds the new window so it judges sooner. *Recommendation:* start empty and say so; seeding hides that the
+    old level is no longer the expected one.
