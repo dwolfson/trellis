@@ -17,7 +17,7 @@ export function fitCellHtml(c) {
 }
 
 export function winnowHtml(res) {
-  const verdictWords = { passes: 'passes', dropped: 'dropped', open: 'open: nothing rules it out' };
+  const verdictWords = { passes: 'passes', dropped: 'dropped', open: 'open: nothing stated drops it' };
   return `<p data-od-winnow-summary class="mb-s2 text-answer text-ink tnum">${res.rows.length} datasets · ${res.passes} pass · ${res.open} open · ${res.dropped} dropped — ${esc(res.summary)}${
     res.could_not_check ? ` · ${res.could_not_check} with a dimension that could not be checked` : ''}</p>
     <table class="w-full text-left" data-rc-id="od-winnow"><thead><tr class="border-b border-rule text-caps uppercase tracking-caps text-ink-muted">
