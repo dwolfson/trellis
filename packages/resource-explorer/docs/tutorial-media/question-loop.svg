@@ -32,7 +32,7 @@
   <!-- Heading -->
   <text x="80" y="82" class="sans rust caps" font-size="22">HOW THE QUESTIONS IMPROVE</text>
   <text x="80" y="140" class="serif ink" font-size="48">Chat finds the gaps; surveys close the ones that keep coming back</text>
-  <text x="80" y="188" class="sans muted" font-size="25">Every question asked in chat is kept. A gap can be closed on the spot, and a pattern becomes part of a survey.</text>
+  <text x="80" y="188" class="sans muted" font-size="25">A gap can be closed on the spot. A question that keeps coming back can become part of a survey.</text>
 
   <!-- Arrows (drawn first, under the boxes) -->
   <g fill="none" stroke-width="3">
@@ -87,9 +87,9 @@
   <rect x="1360" y="700" width="480" height="200" rx="14" fill="#ffffff" stroke="#3f4f6b" stroke-width="2.5"/>
   <text x="1390" y="752" class="sans slate head">Question log</text>
   <g class="sans slate body">
-    <text x="1390" y="800">Every question, with the analyses</text>
-    <text x="1390" y="830">that could answer it and the results</text>
-    <text x="1390" y="860">the answer used.</text>
+    <text x="1390" y="800">Questions asked in chat, and what</text>
+    <text x="1390" y="830">could have answered them.</text>
+    <text x="1390" y="868" class="muted" font-size="20" font-style="italic">Planned: not on screen yet.</text>
   </g>
 
   <!-- Long path label -->
