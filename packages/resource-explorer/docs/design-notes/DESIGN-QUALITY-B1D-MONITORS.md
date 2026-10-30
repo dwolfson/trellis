@@ -18,6 +18,9 @@ three types is not worth it now."
 **Decision (project owner, 2026-10-29):** "agree with the monitor recommendations". All eleven questions of §9 are
 accepted as recommended. They are no longer open; §9 records each as accepted.
 
+**Decision (project owner, 2026-10-29):** "agree with 12–18". The seven questions of §10.6, which the four additions
+raised, are accepted as recommended.
+
 **Decision (project owner, 2026-10-29):** "yes, add those four to the note": how a person changes a monitor's settings
 later (a per-check editor, defaults in Admin, restarting the series, publishing a changed setting). That is §10, with its
 own slices in §7 and its own questions at the end of §10.
@@ -292,6 +295,8 @@ Volume's band with SARIMAX's. Any figure in §5's words is an example.
 
 ## 9. Questions for the project owner — all accepted as recommended (2026-10-29)
 
+Questions 12 to 18 are in §10.6, accepted the same day.
+
 **Decision (project owner, 2026-10-29):** "agree with the monitor recommendations". Each recommendation below stands as the
 ruling; the question text is kept so a later reader can see what was decided.
 
@@ -434,7 +439,10 @@ of rule and not a change of data.
   only as the settings on later annotations. If the owner later asks for a Freshness rule, this section applies to it
   unchanged.
 
-### 10.6 New questions for the project owner
+### 10.6 New questions for the project owner — all accepted as recommended (2026-10-29)
+
+**Decision (project owner, 2026-10-29):** "agree with 12–18". Each recommendation below stands as the ruling; they are no
+longer open. §9 holds questions 1 to 11, accepted the same day.
 
 12. **The allowed ranges** of each editable field. *Recommendation:* Volume: window 5 to 100, minimum history 3 up to the
     window, margin 0 to 100 %. Freshness: window 10 to 200 gaps, minimum gaps 3 up to the window, upper percentile 50 to
