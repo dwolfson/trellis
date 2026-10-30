@@ -1289,8 +1289,12 @@ def _value_profile_results(registry, slug: str) -> dict:
         "state_counts": states,
         "ran_as": rows[0].get("ran_as", ""),
         "columns": [
+            # The three names as stored as well as the dotted path: a dot inside a name makes the path ambiguous, and
+            # the Value profile screen groups by table (value_profile_screen.py).
             {"column_path": f"{r['schema_name']}.{r['table_name']}.{r['column_name']}",
+             "schema_name": r["schema_name"], "table_name": r["table_name"], "column_name": r["column_name"],
              "state": r.get("state", ""), "reason": r.get("reason", ""),
+             "frequency_state": r.get("frequency_state"),
              **{m: r.get(m) for m in measures}}
             for r in rows
         ],
@@ -3223,12 +3227,22 @@ def _schema_inventory_container_measurements(registry, slug: str) -> list[dict] 
     return out
 
 
+def _value_profile_container_measurements(registry, slug: str) -> list[dict] | None:
+    from resource_explorer.value_profile_screen import container_rows
+
+    return container_rows(registry, slug)
+
+
 #: Slice 21a point 4 — the results-reader counterpart to
 #: DATABASE_ANALYSIS_CONTAINER_HEADLINE_MAP (see that map's own comment for
 #: why this is a separate map rather than a change to
 #: `analysis_results_map`'s value shape).
 DATABASE_ANALYSIS_CONTAINER_RESULTS_MAP: dict = {
     "schema_inventory": _schema_inventory_container_measurements,
+    # The value profile at a sub-resource level (Q-0079 asks at `field`): one row per TABLE, not-measured last, each
+    # opening that table on the Value profile tab (DESIGN-VALUE-PROFILE-SCREEN-2026-10-30 §5). Its 1,236 column rows
+    # live on the tab, not in the panel.
+    "value_profile": _value_profile_container_measurements,
 }
 
 #: RULING-DB-QUESTION-CATALOG-CONSISTENCY.md §0 declared `analysis_results_map`
