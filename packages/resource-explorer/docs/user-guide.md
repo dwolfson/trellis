@@ -505,7 +505,7 @@ You can add or change a lot **without touching Resource Explorer's code**. Each 
 | Settings | Admin › Configure (value-profile share, annotation types, API fetch addresses, Egeria mounts, groups) | the cards' words and thresholds |
 | A file-system reach | registration with host and container path (remote mechanisms: designed, not built) | the folder survey's reach line |
 | A dashboard | Dr.Egeria Report and Dashboard Sheet (designed for RE in #903; built in the Portal today) | the Portal's local dashboards; RE's Dashboards tab when built |
-| An open-data portal | designed (#904), OD1 in build | not yet |
+| An open-data portal | Admin › Open data (OD1); the walkthrough is [Find a new data source](walkthrough-find-a-new-data-source.md) | the Open data list and its shortlist |
 
 ### An analysis
 
@@ -533,7 +533,7 @@ You register a file system with a host and a container path. The folder survey's
 
 ### A dashboard, an open-data portal
 
-A dashboard is a Dr.Egeria Report and Dashboard Sheet. The design for showing them inside RE is #903; today they are built in the Portal. The open-data portal design is #904, with OD1 in build; there is nothing to use yet.
+A dashboard is a Dr.Egeria Report and Dashboard Sheet. The design for showing them inside RE is #903; today they are built in the Portal. Open data portals are built: register one in Admin, then follow [Find a new data source](walkthrough-find-a-new-data-source.md), which goes from a data request on an investigation through search, shortlist, scout, profile and publish.
 
 ### The Analytic Library
 
@@ -546,7 +546,7 @@ Where you meet it:
 - **Other steps** an administrator installs show up as extra analyses on the resource, tagged with the stage they belong to.
 - **From Egeria**, once the owner has declared a step to Resource Explorer's engine (for example `ResourceExplorerSurvey::re-database-staleness`), starting it on a database in Egeria runs the step in Resource Explorer. The results appear as a survey report in Egeria and in the database's Understanding list, beside *Resource Explorer: derived checks*.
 
-**Not built yet in this section:** remote reach, Dashboards in RE, and the open-data portal; see section 10.
+**Not built yet in this section:** remote reach and Dashboards in RE; see section 10.
 
 
 ---
@@ -614,7 +614,7 @@ Each item is a design, not a screen. The date is when this list was last checked
 |---|---|---|
 | Renderers for seven result kinds (the screen says "planned, not built yet") | `DESIGN-DECLARED-EXTENSIBILITY-RENDERING-CHAT-CONFIDENCE.md` | 2026-10-28 |
 | Dashboards inside RE | `DESIGN-LOCAL-DASHBOARDS-DECLARED-ANALYTICS.md` (#903) | 2026-10-28 |
-| Open data | `DESIGN-OPEN-DATA-SEARCH-AND-SURVEY.md` (#904), with `DESIGN-OPEN-DATA-RESOURCE-KIND-BRAINSTORM.md`; OD1 in build | 2026-10-28 |
+| Open data | `DESIGN-OPEN-DATA-SEARCH-AND-SURVEY.md` (#904), with `DESIGN-OPEN-DATA-RESOURCE-KIND-BRAINSTORM.md`; OD1 and OD2 built, OD3 (profile) and OD4 (publish, look again) on branches; the walkthrough is [Find a new data source](walkthrough-find-a-new-data-source.md) | 2026-10-28 |
 | Remote reach for file systems | `DESIGN-FILES-REMOTE-REACH.md` | 2026-10-28 |
 | An Artifacts tab on Understanding | `DESIGN-ARTIFACTS-VIEW-AND-DOC-LINKS.md` | 2026-10-28 |
 | The winnowing bench (winnowing columns on a work list, #843) | `DESIGN-WORK-LISTS-WINNOWING-AND-MIXED-KINDS.md` | 2026-10-28 |
