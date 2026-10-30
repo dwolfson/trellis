@@ -139,3 +139,44 @@ def test_a_publish_with_no_element_in_egeria_writes_nothing_and_does_not_say_pub
     out = _publish(registry, entity, gw)
     assert out["counts"] == {"not_in_egeria": 1} and gw.made("create") == []
     assert out["state"] == "nothing_published" and out["state_words"] == "nothing published · 1 waiting for Contents"
+
+
+# ── the Publish control's server side: what a press would do, and what it did ─────────────────────────────
+
+def test_the_preview_before_any_press_counts_what_is_accepted_and_does_not_guess_what_egeria_holds(registry, entity):
+    _accept(registry, UNIQUE, "Unique")
+    states = er.rule_states(registry, SLUG)
+    assert states["preview"]["accepted"] == 1 and states["preview"]["to_publish"] == 1
+    assert states["preview"]["waiting"] == 0, "waiting is known only from a press"
+    assert states["preview"]["words"] == "1 to publish"
+    assert states["in_egeria"] is False, "the fixture database has no Egeria asset yet"
+
+
+def test_after_a_press_that_found_no_element_the_preview_says_waiting_for_contents(registry, entity):
+    _accept(registry, UNIQUE, "Unique")
+    out = _publish(registry, entity, FakeGateway({}))
+    assert out["state_words"] == "nothing published · 1 waiting for Contents"
+    assert out["outcomes"][UNIQUE] == {"state": "not_in_egeria", "words": "not in Egeria · commit its schema in Contents"}
+    states = er.rule_states(registry, SLUG)
+    assert states["preview"]["words"] == "1 waiting for Contents (schema not committed)"
+    assert states["rules"][UNIQUE]["words"] == "not in Egeria · commit its schema in Contents"
+
+
+def test_a_published_rule_is_unchanged_in_the_preview_and_a_changed_accept_is_to_publish(registry, entity):
+    _accept(registry, UNIQUE, "Unique")
+    gw = _gateway(entity)
+    assert _publish(registry, entity, gw)["outcomes"][UNIQUE]["words"] == "published · created in Egeria"
+    assert er.rule_states(registry, SLUG)["preview"]["words"] == "1 unchanged"
+    assert _publish(registry, entity, gw)["outcomes"][UNIQUE]["words"] == "published · unchanged"
+
+
+def test_a_refusal_carries_egeria_s_own_sentence_in_the_row_words():
+    assert er.outcome_words(er.REFUSED, {"error": "the type is not known"}) == "refused by Egeria · the type is not known"
+    assert er.outcome_words(er.REFUSED, {}) == "refused by Egeria"
+    assert er.outcome_words(er.UNREADABLE, {"error": "Egeria could not be reached"}).endswith("Egeria could not be reached")
+
+
+def test_the_preview_says_nothing_accepted_and_does_not_say_nothing_to_publish_for_it(registry, entity):
+    assert er.preview_words({"accepted": 0, "to_publish": 0, "to_retire": 0, "waiting": 0, "unchanged": 0, "edited": 0,
+                             "retry": 0}) == "nothing is accepted yet"
+    assert er.rule_states(registry, SLUG)["preview"]["words"] == "nothing is accepted yet"

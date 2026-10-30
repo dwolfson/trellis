@@ -2365,6 +2365,10 @@ export const getQualityProposals = (slug, params = {}) => {
 };
 export const postQualityVerdict = (slug, checkKey, verdict, note = '') =>
   post(`/api/quality-checks/${encodeURIComponent(slug)}/verdict`, { check_key: checkKey, verdict, note });
+/** What a Publish would do (`preview`), each check's rule state, and whether the database is in Egeria. Reads RE's own rows. */
+export const getQualityRules = (slug) => get(`/api/quality-checks/${encodeURIComponent(slug)}/rules`);
+/** Publish the accepted checks as Egeria DataQualityRules, as the signed-in person; answers state, state_words and outcomes. */
+export const postQualityPublish = (slug) => post(`/api/quality-checks/${encodeURIComponent(slug)}/publish-rules`, {});
 /** Opt one table into (watch = true) or out of Table Comparison, the baseline-match checks; read back like a verdict. */
 export const postQualityTableComparison = (slug, schemaName, tableName, watch, note = '') =>
   post(`/api/quality-checks/${encodeURIComponent(slug)}/table-comparison`,

@@ -43,11 +43,11 @@ import {
   getCurateTagsDetail, getCurateAllTags, addCurateTag, removeCurateTag,
   getCurateEgeriaState, syncCurateEgeria, getCurateFeedbackState,
   getCurateFeedback, addCurateFeedback, getCurateNotes, deleteCurateNote,
-  assignGroup, listGroups, getDataClassRules, getQualityProposals, postQualityVerdict, postQualityTableComparison,
+  assignGroup, listGroups, getDataClassRules, getQualityProposals, postQualityVerdict, postQualityTableComparison, getQualityRules, postQualityPublish,
 } from '/static/re-api.js';
 import { mountQualityChecks } from '/static/next/stages/quality-checks.js';
 import {
-  state, esc, tnum, refreshGroupsAndSidebar,
+  state, esc, tnum, refreshGroupsAndSidebar, openCurate,
   renderJournalWrite, renderJournalEntries,
 } from '/static/next/app.js';
 
@@ -113,7 +113,8 @@ export function databaseStructureHtml() {
 export function renderQualityBlock(slot, slug) {
   if (!slot) return null;
   return mountQualityChecks(slot, slug, { api: { getProposals: getQualityProposals, postVerdict: postQualityVerdict,
-    postTableComparison: postQualityTableComparison }, me: whoAmI() });
+    postTableComparison: postQualityTableComparison, getRules: getQualityRules, postPublish: postQualityPublish },
+  me: whoAmI(), openContents: () => openCurate({ tab: 'curate_contents' }) });
 }
 
 export function databaseWorkHtml() {

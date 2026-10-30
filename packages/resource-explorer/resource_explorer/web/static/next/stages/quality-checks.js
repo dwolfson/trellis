@@ -9,6 +9,10 @@
  * Each table's card also carries its Table Comparison opt-in ("watch this table for drift": the baseline-match checks,
  * proposed at the next propose run), recorded and read back the same way.
  *
+ * Publish: one control for the database writes the accepted checks to Egeria as rules. Before the press it says what would
+ * happen (from RE's own rows, never guessed); a press runs once; after it the state words and each check's outcome come
+ * from what the server read back. A check whose schema Egeria does not hold says so and links to Contents.
+ *
  * The module draws into one slot and takes its API and the signed-in person as arguments, so it loads without the
  * rest of the app and a test can drive it with a stub. Tables use colresize (report-tables.js). */
 import { esc, gridHtml, attachGrids, stamp } from '/static/next/stages/report-tables.js';
@@ -113,6 +117,49 @@ export function paramsHtml(row) {
     : `<span${tip(i)}>${esc(i.label)} <span class="text-ink">${esc(i.text)}</span></span>`)).join('\u00a0· ');
 }
 
+/** The word under a row's decision cue for the rule: what the last press did to this check (`outcomes`), else what the
+ *  server says its rule state is (`rules`). Nothing for a check with neither. A check waiting for Contents links there. */
+export function ruleCueHtml(row, { outcomes = new Map(), rules = new Map(), canGoContents = false } = {}) {
+  const got = outcomes.get(row.check_key) || rules.get(row.check_key);
+  if (!got || !got.words) return '';
+  const bad = ['refused', 'unverified', 'unreadable', 'duplicate', 'name_taken', 'missing_in_egeria'].includes(got.state);
+  const link = got.state === 'not_in_egeria' && canGoContents
+    ? ' <button type="button" data-qc-act="contents" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">Contents ›</button>' : '';
+  return `<div data-qc-rule="${esc(got.state || '')}" class="text-provenance ${bad ? 'text-state-warn' : 'text-ink-muted'}" title="${esc(got.words)}">`
+    + `Egeria data quality rule · ${esc(got.words)}${link}</div>`;
+}
+
+/** Why the Publish button cannot be pressed now, or '' when it can. Pure; each sentence names what is missing. */
+export function publishDisabledReason(pub, me) {
+  if (pub.pending) return 'publishing… (a press runs once)';
+  if (!me) return 'sign in to publish · it needs a person to record';
+  if (pub.readError) return `what a publish would do could not be read, so it cannot be pressed (${pub.readError})`;
+  if (!pub.preview) return 'reading what a publish would do…';
+  if (!pub.inEgeria) return 'this database is not in Egeria yet: commit it first in Contents';
+  if (!pub.preview.accepted) return 'nothing is accepted yet: accept a check first';
+  return '';
+}
+
+/** The Publish band: the button, what a press would do (or the sentence for why it cannot be pressed), and after a press
+ *  the state words. `pub` = { preview, inEgeria, readError, pending, result, failure }. Pure. */
+export function publishBandHtml(pub, { me = '', canGoContents = false } = {}) {
+  const why = publishDisabledReason(pub, me);
+  const before = pub.readError ? `could not read what a publish would do: ${pub.readError}`
+    : pub.preview ? pub.preview.words : 'reading what a publish would do…';
+  const after = pub.failure ? cueHtml('failed', `not published · ${pub.failure}`, pub.failure)
+    : pub.result ? cueHtml(pub.result.state === 'published' || pub.result.state === 'retired' ? 'accepted' : 'not_established',
+      pub.result.state_words || 'no words returned', pub.result.line || '') : '';
+  const goto = canGoContents && pub.preview && pub.preview.waiting
+    ? ' <button type="button" data-qc-act="contents" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">Contents ›</button>' : '';
+  return `<div data-qc-publish class="mb-s1">
+    <div class="flex flex-wrap items-baseline gap-x-s2">
+      <button type="button" data-qc-act="publish" ${why ? `disabled title="${esc(why)}"` : ''}${pub.pending ? ' aria-busy="true"' : ''}
+        class="border border-rule-strong px-s1 text-provenance text-ink">Publish quality rules</button>
+      <span data-qc-publish-line class="text-provenance text-ink-muted">${esc(before)}${goto}</span></div>
+    ${why ? `<div data-qc-publish-why class="text-provenance text-ink-muted">${esc(why)}</div>` : ''}
+    ${after ? `<div data-qc-publish-after>${after}</div>` : ''}</div>`;
+}
+
 /** One check as a grid row. `ui` = { pending:Set, failed:Map, me }. */
 export function checkRow(row, ui) {
   const pending = ui.pending.has(row.check_key);
@@ -121,7 +168,8 @@ export function checkRow(row, ui) {
     attrs: `data-qc-row="${esc(row.check_key)}" data-qc-status="${esc(row.status)}"`,
     tone: row.status === 'rejected' ? 'lowered' : '',
     cells: {
-      decision: `${verdictSelectorHtml(row, { me: ui.me, pending })}${rowCueHtml(row, { pending, failure, me: ui.me })}`,
+      decision: `${verdictSelectorHtml(row, { me: ui.me, pending })}${rowCueHtml(row, { pending, failure, me: ui.me })}`
+        + ruleCueHtml(row, { outcomes: ui.outcomes, rules: ui.rules, canGoContents: ui.canGoContents }),
       column: row.column_name ? esc(row.column_name) : '<span class="text-ink-muted">whole table</span>',
       test: testCellHtml(row),
       dimension: dimensionCellHtml(row),
@@ -193,6 +241,7 @@ export function summaryHtml(d) {
   if (!d.has_proposals) return `<div data-qc-empty class="text-caveat text-ink-muted">${esc(NO_PROPOSALS_SENTENCE)}</div>`;
   const states = d.filters.states.map((s) => ({ value: s.value, label: s.value.replace('_', ' '), count: s.count }));
   return `${countsLineHtml(d)}
+    <div data-qc-publish-slot></div>
     <div class="mb-s1 flex flex-wrap items-baseline gap-x-s3 gap-y-[2px]">
       ${filterSelect('test_type', 'Test type', d.filters.test_types, d.applied.test_type)}
       ${filterSelect('dimension', 'Dimension', d.filters.dimensions, d.applied.dimension)}
@@ -204,7 +253,9 @@ export function summaryHtml(d) {
  *  me: string (the signed-in person, '' when nobody is) }. Returns { reload(), destroy() }. */
 export function mountQualityChecks(slot, slug, deps) {
   const doc = slot.ownerDocument;
-  const ui = { pending: new Set(), failed: new Map(), me: deps.me || '' };
+  const canGoContents = typeof deps.openContents === 'function';
+  const ui = { pending: new Set(), failed: new Map(), me: deps.me || '', outcomes: new Map(), rules: new Map(), canGoContents };
+  const pub = { preview: null, inEgeria: false, readError: '', pending: false, result: null, failure: '' };
   const filters = { test_type: '', dimension: '', state: '' };
   const open = new Set();                         // "schema.table" keys of groups the person has opened
   const rowsOf = new Map();                       // key -> rows as last read
@@ -267,6 +318,45 @@ export function mountQualityChecks(slot, slug, deps) {
     });
   }
 
+  const paintPublish = () => {
+    const host = slot.querySelector('[data-qc-publish-slot]');
+    if (host && deps.api.getRules && deps.api.postPublish) host.innerHTML = publishBandHtml(pub, { me: ui.me, canGoContents });
+  };
+  const repaintOpenRows = () => open.forEach((k) => { if (rowsOf.has(k)) paintRows(k); });
+
+  /** What a publish would do, from the server's own rows. A failed read is said, never shown as "nothing to publish". */
+  async function readRules() {
+    if (!deps.api.getRules) return;
+    try {
+      const d = await deps.api.getRules(slug);
+      ui.rules = new Map(Object.entries(d.rules || {}));
+      pub.preview = d.preview || null;
+      pub.inEgeria = !!d.in_egeria;
+      pub.readError = d.preview ? '' : 'the server sent no preview';
+    } catch (err) {
+      pub.readError = err.message || 'the read failed';
+    }
+    paintPublish();
+    repaintOpenRows();
+  }
+
+  async function pressPublish() {
+    if (pub.pending || publishDisabledReason(pub, ui.me)) return;
+    pub.pending = true;                         // set before anything is awaited: a second press does nothing
+    pub.failure = '';
+    paintPublish();
+    try {
+      const out = await deps.api.postPublish(slug);
+      pub.result = { state: out.state || '', state_words: out.state_words || '', line: out.line || '' };
+      ui.outcomes = new Map(Object.entries(out.outcomes || {}));
+    } catch (err) {
+      pub.result = null;
+      pub.failure = err.message || 'the publish failed';
+    }
+    pub.pending = false;
+    await readRules();                          // the preview is re-read after the write, never assumed
+  }
+
   async function reload({ keepRows = false } = {}) {
     const mine = ++token;
     if (!keepRows) rowsOf.clear();
@@ -286,6 +376,8 @@ export function mountQualityChecks(slot, slug, deps) {
       sel.addEventListener('change', () => { filters[sel.dataset.qcFilter] = sel.value; reload(); });
     });
     paintGroups();
+    paintPublish();
+    readRules();
     if (keepRows) open.forEach((k) => { if (rowsOf.has(k)) paintRows(k); });
   }
 
@@ -358,6 +450,10 @@ export function mountQualityChecks(slot, slug, deps) {
   const onClick = (ev) => {
     const watchBtn = ev.target.closest && ev.target.closest('[data-qc-act="watch"]');
     if (watchBtn && slot.contains(watchBtn) && !watchBtn.disabled) { pressWatch(watchBtn); return; }
+    const contents = ev.target.closest && ev.target.closest('[data-qc-act="contents"]');
+    if (contents && slot.contains(contents) && canGoContents) { deps.openContents(); return; }
+    const publish = ev.target.closest && ev.target.closest('[data-qc-act="publish"]');
+    if (publish && slot.contains(publish) && !publish.disabled) { pressPublish(); return; }
     const btn = ev.target.closest && ev.target.closest('[data-qc-act="verdict"]');
     if (btn && slot.contains(btn) && !btn.disabled) press(btn);
   };
