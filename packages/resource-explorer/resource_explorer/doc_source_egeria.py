@@ -229,7 +229,7 @@ def _find_ref_guid(clients, qualified_name: str) -> str:
     2026-09-28 (this slice's own gate check) that `AutomatedCuration.
     get_guid_for_name` (the call this used to make) can hang this exact way: `docs/process-model.md`
     §1.3's incident is `resolve_question_guid()` hung 15+s inside this
-    same pyegeria call -> nest_asyncio -> run_until_complete frame, fixed
+    same pyegeria call -> nest_asyncio -> run_until_complete frame (pyegeria before 6.2.16), fixed
     everywhere else in this package by routing through the shared bounded
     pool rather than calling pyegeria synchronously from the caller's own
     thread. This function had the identical unguarded call and reproduced

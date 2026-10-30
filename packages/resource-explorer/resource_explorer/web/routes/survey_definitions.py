@@ -412,10 +412,11 @@ async def list_candidates(
         #                                        fetches fine serially
         #   ThreadPool, reader-per-thread 1.25-1.56s over 3 trials, all correct
         #
-        # The shared-client speedup is not real: pyegeria's sync wrappers drive
-        # an event loop (nest_asyncio) per client, so concurrent calls on one
-        # client corrupt each other — intermittently, which is the worst way for
-        # this to fail. Giving each thread its own reader is correct but buys
+        # The shared-client speedup is not real: pyegeria's sync wrappers then
+        # drove an event loop (nest_asyncio) per client, so concurrent calls on one
+        # client corrupted each other — intermittently, which is the worst way for
+        # this to fail. (pyegeria 6.2.16, #513, keeps one loop and session per
+        # thread instead; this was not re-measured.) Giving each thread its own reader is correct but buys
         # nothing, because the per-reader connect/token handshake costs about
         # what the concurrency saves.
         #

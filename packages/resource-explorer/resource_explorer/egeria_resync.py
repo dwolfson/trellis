@@ -1389,11 +1389,6 @@ class EgeriaResync:
         except Exception as exc:
             return {"slug": slug, "ok": False, "error": f"survey failed: {exc}"}
 
-        # pyegeria's sync wrappers call asyncio.get_event_loop(); give this
-        # thread one, the same way the publish route does.
-        import asyncio as _aio
-        loop = _aio.new_event_loop()
-        _aio.set_event_loop(loop)
         from resource_explorer.private_publish import PrivateAwaitsOwner, record_waiting
         from resource_explorer.workflows.curate import WriteNotPermitted
 
@@ -1409,9 +1404,6 @@ class EgeriaResync:
             return {"slug": slug, "ok": False, "awaits_owner": str(exc)}
         except Exception as exc:
             return {"slug": slug, "ok": False, "error": f"publish failed: {exc}"}
-        finally:
-            loop.close()
-            _aio.set_event_loop(None)
         return {"slug": slug, "ok": True, "report_guid": guid,
                 "annotations": len(survey.annotations)}
 

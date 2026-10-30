@@ -13,7 +13,9 @@ and no single place to bound a call. ``docs/process-model.md`` §1.3 has
 the full inventory and the incident that motivated the change:
 ``resolve_question_guid()`` hanging 15+ seconds inside pyegeria's
 ``get_guid_for_name`` -> ``nest_asyncio`` -> ``run_until_complete`` frame
-on 2026-09-03/04.
+on 2026-09-03/04. (pyegeria applied nest_asyncio then; since 6.2.16, egeria-python
+#513, it does not, and its sync methods run on a per-thread loop through its own
+``run_sync``. The bound here is kept: it never depended on how pyegeria waits.)
 
 What replaces them: **one** pool per process, sized from config
 (``EXPLORER_SYNC_POOL_SIZE``, default 8), with the per-call timeout that
