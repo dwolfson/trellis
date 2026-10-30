@@ -138,5 +138,45 @@ def test_f31_the_preview_logs_its_phases_and_its_egeria_reads(world, fake, caplo
         cc.build_preview(world["registry"], "db", view(world), fake)
     line = [r.getMessage() for r in caplog.records if r.getMessage().startswith("preview_timing")][-1]
     for part in ("slug=db", "attach=1", "leave_out=1", "derive_ms=", "reinclude_ms=", "database_ms=", "access_ms=",
-                 "leave_out_walk_ms=", "manifest_ms=", "egeria_reads=", "relationships:"):
+                 "leave_out_walk_ms=", "manifest_ms=", "declared_measures_ms=", "egeria_reads=", "relationships:"):
         assert part in line, (part, line)
+
+
+def test_f37_a_not_checked_count_says_no_number():
+    from resource_explorer.catalogue_commit import read_back_words
+    chips = {"chips": [
+        {"key": "attached", "word": "attached", "count": 4, "unit": "schemas", "cue": "read_back", "not_checked_since": ""},
+        {"key": "catalogued", "word": "cataloged by Egeria", "count": 0, "unit": "schemas", "cue": "pending",
+         "not_checked_since": "2026-10-30T00:54:10"}]}
+    words = read_back_words(chips)
+    assert words == "attached 4 schemas ✓ · cataloged by Egeria ◌ not checked since 10-30 00:54"
+    assert words.count("◌") == 1 and "0" not in words.split("·")[1].split("since")[0]
+
+
+def test_f38_the_preview_reads_the_publish_table_inside_one_derived_read(world, fake, monkeypatch):
+    """The table's derived measures each recompute `run_db_derived` unless one read is open (17 recomputes, 36-48 s
+    of coco_pharma's preview, 2026-10-30): the preview opens it around the table it counts."""
+    from resource_explorer import publish_table
+    from resource_explorer.surveyors.database import db_derived
+    seen = []
+    monkeypatch.setattr(publish_table, "chosen_rows", lambda *a, **k: seen.append(db_derived._READ_MEMO.get()) or [])
+    cc.build_preview(world["registry"], "db", view(world), fake)
+    assert seen and seen[0] is not None
+
+
+def test_f38_the_publish_table_route_derives_once_and_logs_what_it_cost(monkeypatch, caplog):
+    from resource_explorer.surveyors.database import db_derived
+    from resource_explorer.web.routes import publish_table as pt_route
+    runs = []
+
+    def table(registry, entity_type, slug):        # stands in for build_rows: three derived measures read
+        for _ in range(3):
+            db_derived.run_db_derived(registry, slug)
+        return {"rows": []}
+
+    monkeypatch.setattr(db_derived, "_run_db_derived_once", lambda *a, **k: runs.append(1) or {"derived": {}})
+    with caplog.at_level("INFO", logger="resource_explorer.web.routes.publish_table"):
+        pt_route._one_read("read", "db", table, object(), "database", "db")
+    assert len(runs) == 1
+    line = [r.getMessage() for r in caplog.records if r.getMessage().startswith("publish_table_timing")][-1]
+    assert "what=read slug=db" in line and "total_ms=" in line and "derived_runs=1" in line

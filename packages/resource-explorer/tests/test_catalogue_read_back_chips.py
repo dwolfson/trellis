@@ -38,7 +38,7 @@ def _chips(d):
 
 
 def test_attached_not_catalogued_reads_pending_never_waiting(reg):
-    d = cc.derive_commit_state(reg, "aw", VIEW)
+    d = cc.derive_commit_state(reg, "aw", VIEW, NOW)
     assert [c["key"] for c in d["read_back"]["chips"]] == ["published", "attached", "catalogued"]
     c = _chips(d)
     assert (c["published"]["word"], c["published"]["count"], c["published"]["cue"]) == ("published by RE", 2, "read_back")
@@ -64,7 +64,7 @@ def test_counts_come_from_the_rows_the_tree_built_is_a_check(reg):
 def test_one_of_two_built_is_still_pending(reg):
     reg.append_catalogue_commit_proof("aw", proof=cc.P_ELEMENTS, schema_name="sales", element_guid="sales-guid",
                                       detail={"tables": ["orders"]}, read_at="2026-10-23T09:00:50")
-    d = cc.derive_commit_state(reg, "aw", VIEW)
+    d = cc.derive_commit_state(reg, "aw", VIEW, NOW)
     c = _chips(d)
     assert (c["catalogued"]["count"], c["catalogued"]["cue"]) == (1, "pending")
     assert c["catalogued"]["unit"] == "schema"                          # singular for 1
@@ -77,6 +77,9 @@ def test_a_stale_read_says_not_checked_since(reg):
     later = datetime(2026, 10, 23, 9, 5, 0, tzinfo=timezone.utc)
     stale = _chips(cc.read_back_chips_for(reg, "aw", ["sales", "hr"], now=later))["catalogued"]
     assert stale["cue"] == "pending" and stale["not_checked_since"] == "2026-10-23T09:00:30"
+    # F37: the step's words carry no number beside "not checked", and one cue.
+    words = cc.read_back_words(cc.read_back_chips_for(reg, "aw", ["sales", "hr"], now=later))
+    assert words.endswith("cataloged by Egeria ◌ not checked since 10-23 09:00") and words.count("◌") == 1
 
 
 def test_nothing_published_or_attached_has_no_counts(tmp_path):

@@ -4,6 +4,8 @@ choice per declared measure. Nothing here calls Egeria; the press is the databas
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -13,6 +15,24 @@ from resource_explorer.registry import ProjectRegistry
 from resource_explorer.web.routes.catalogue_scope import _authorize, _require_author
 
 router = APIRouter()
+log = logging.getLogger(__name__)
+
+
+def _one_read(what: str, slug: str, fn, *args, **kwargs):
+    """F38: run `fn` inside ONE db_derived read, so the database's derivations are recomputed once for the whole
+    table, not once per derived measure (17 times on coco_pharma: 24-52 s, the same for 4 tables or 266), and log
+    what it cost. Opened inside the worker thread: a context variable set outside `to_thread` is not the one read."""
+    from resource_explorer.surveyors.database import db_derived
+
+    t0 = time.perf_counter()
+    with db_derived.one_read():
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            memo = db_derived._READ_MEMO.get() or {}
+            log.info("publish_table_timing what=%s slug=%s total_ms=%.0f derived_runs=%d peer_reads=%d", what, slug,
+                     (time.perf_counter() - t0) * 1000, sum(1 for k in memo if k[0] == "run"),
+                     sum(1 for k in memo if k[0] == "peer"))
 
 
 class ChoiceBody(BaseModel):
@@ -37,7 +57,7 @@ def _registry_for(entity_type: str, slug: str) -> ProjectRegistry:
 @router.get("/{entity_type}/{slug}")
 async def read_table(entity_type: str, slug: str) -> dict:
     registry = _registry_for(entity_type, slug)
-    return await asyncio.to_thread(pt.build_rows, registry, entity_type, slug)
+    return await asyncio.to_thread(_one_read, "read", slug, pt.build_rows, registry, entity_type, slug)
 
 
 @router.put("/{entity_type}/{slug}/choice")
@@ -47,7 +67,8 @@ async def save_choice(entity_type: str, slug: str, body: ChoiceBody, request: Re
     if entity_type == "database":
         await _authorize(registry, slug)
     try:
-        return await asyncio.to_thread(pt.save_choice, registry, entity_type, slug, analysis_id=body.analysis_id,
-                                       measure=body.measure, choice=body.choice, author=author)
+        return await asyncio.to_thread(_one_read, "choice", slug, pt.save_choice, registry, entity_type, slug,
+                                       analysis_id=body.analysis_id, measure=body.measure, choice=body.choice,
+                                       author=author)
     except pt.ChoiceRefused as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

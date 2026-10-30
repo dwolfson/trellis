@@ -77,7 +77,12 @@ test('read-back chips: a stale pending count says "not checked since"', async ()
   const { readBackChipsHtml } = await load('/static/next/stages/curate-scope.js');
   const h = readBackChipsHtml(chips(2, 2, 0, 'pending', '2026-10-23T09:12:00'));
   assert.match(h, /data-read-back-not-checked/);
-  assert.match(strip(h), /cataloged by Egeria 0 schemas ◌ ◌ not checked since 09:12$/);
+  // F37: no number beside "not checked", one cue, and the date when the read was not today.
+  assert.match(strip(h), /cataloged by Egeria ◌ not checked since 10-23 09:12$/);
+  assert.equal((strip(h).match(/◌/g) || []).length, 1);
+  const now = new Date(Date.now() - 1000).toISOString().slice(0, 19);
+  const today = strip(readBackChipsHtml(chips(2, 2, 0, 'pending', now)));
+  assert.match(today, new RegExp(`cataloged by Egeria ◌ not checked since ${now.slice(11, 16)}$`));
 });
 
 test('read-back chips: nothing derived draws nothing; the scope section carries the row under its header', async () => {

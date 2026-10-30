@@ -1370,8 +1370,10 @@ class EgeriaDatabaseSurveyor:
             # Curate's publish table (declared extensibility slice 1): after the verdicts, so neither moves.
             if declared_measures and registry is not None:
                 from resource_explorer.publish_table import annotations_for
+                from resource_explorer.surveyors.database.db_derived import one_read
 
-                declared = annotations_for(registry, db_entity.slug)
+                with one_read():                 # F38: the derivations once per read, not once per measure
+                    declared = annotations_for(registry, db_entity.slug)
                 declared_start = len(annotations)
                 annotations.extend(declared["annotations"])
 
