@@ -45,8 +45,11 @@ test('a library step with no run says so on its own line and offers Run', async 
     fact('db_statistics_freshness', { headline: 'x.' }),
     fact('statistics_freshness', { library: true, state: 'never_run', is_known: false, last_run_at: '' })]));
   const line = /<div data-step-line="statistics_freshness"[\s\S]*?<\/div>/.exec(html)[0];
-  assert.match(line, /not run yet/);
-  assert.match(line, /never run/);
+  const said = line.replace(/<[^>]*>/g, '');
+  assert.match(said, /not run yet/);
+  // F23: the absence is said once -- not "not run yet · never run".
+  assert.ok(!/never run/.test(said), said);
+  assert.equal(said.match(/not run yet/g).length, 1, said);
   assert.ok(!line.includes('data-numbers-step'), 'nothing to show the numbers of');
 });
 
@@ -71,4 +74,37 @@ test("a library step line's Re-run is disabled with its own reason", async () =>
   const btn = /<button data-rerun-for="statistics_freshness"[^>]*>/.exec(html)[0];
   assert.match(btn, /disabled/);
   assert.ok(btn.includes('step not installed here'), btn);
+});
+
+test('F22: a library step that is the lead shows its headline as the answer, not the bare state word', async () => {
+  const app = await load();
+  const q = { question: 'How recently have files here changed?', id: 'Q-0107', kind: 'analysis', stage: 'Analysis',
+    analysis_ids: ['fs_activity'], note: 'fs_activity', answering_mechanism: 'Code Analysis' };
+  const html = app.rowInner(q, 0, env([fact('fs_activity', {
+    library: true, headline: 'measured · 3 files modified within 7 days; 12 within 30 days' })]));
+  const text = html.replace(/<[^>]*>/g, '');
+  assert.match(text, /measured · 3 files modified within 7 days; 12 within 30 days/);
+  const { readEnvelope } = await import('/static/next/envelope.js');
+  const lines = readEnvelope(q, env([fact('fs_activity', { library: true, headline: 'measured · 3 files modified within 7 days' })]),
+    (s) => s, (s) => s);
+  assert.notEqual(lines.answer.trim(), 'measured', 'never the bare state word');
+  assert.equal(lines.answer, 'measured · 3 files modified within 7 days');
+});
+
+test('F22: a non-library headline is still cut to its first sentence', async () => {
+  await load();
+  const { readEnvelope } = await import('/static/next/envelope.js');
+  const lines = readEnvelope(entry, env([fact('db_statistics_freshness', { headline: '3 of 4 stale · 1 schema' })]),
+    (s) => s, (s) => s);
+  assert.equal(lines.answer, '3 of 4 stale');
+});
+
+test('F23: a step that ran with no recorded time says so, never "never run"', async () => {
+  const app = await load();
+  const html = app.rowInner(entry, 0, env([
+    fact('db_statistics_freshness', { headline: 'x.' }),
+    fact('statistics_freshness', { library: true, headline: 'measured · 4 tables', last_run_at: '' })]));
+  const line = /<div data-step-line="statistics_freshness"[\s\S]*?<\/div>/.exec(html)[0].replace(/<[^>]*>/g, '');
+  assert.match(line, /run time not recorded/);
+  assert.ok(!/never run|not run yet/.test(line), line);
 });

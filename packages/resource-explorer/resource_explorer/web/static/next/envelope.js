@@ -259,7 +259,9 @@ export function readEnvelope(entry, env, esc, tnum) {
       // "we didn't look".
       sentence = tnum(esc(`${f.analysis_id} ran and found nothing.`));
     } else if (f.headline) {
-      sentence = answerHtml(firstSentence(f.headline), esc, tnum);
+      // A library step's headline is already one line, "<state> · <what it measured>": cutting it at the first " · "
+      // left the bare state word as the answer (F22). It shows whole, as its step line does.
+      sentence = answerHtml(f.library ? f.headline : firstSentence(f.headline), esc, tnum);
     } else {
       const p = prose(f);
       if (p) {
@@ -378,7 +380,7 @@ export function readEnvelope(entry, env, esc, tnum) {
     sentence: f.is_known
       ? (f.headline || (f.state || '').replace(/_/g, ' '))
       : (f.state === NEVER_RUN ? 'not run yet' : (f.note || (f.state || '').replace(/_/g, ' '))),
-    known: !!f.is_known, lastRun: f.last_run_at || '', runnable: f.runnable, runnableReason: f.runnable_reason || '',
+    known: !!f.is_known, neverRun: f.state === NEVER_RUN, lastRun: f.last_run_at || '', runnable: f.runnable, runnableReason: f.runnable_reason || '',
   }));
   // The Re-run on the row runs the question's first analysis: its own gate, the one the Survey & analyses list uses.
   const first = facts.find((f) => entry && entry.analysis_ids && f.analysis_id === entry.analysis_ids[0]);
