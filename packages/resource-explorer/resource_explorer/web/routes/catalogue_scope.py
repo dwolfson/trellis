@@ -102,10 +102,51 @@ def _gateway_or_none(entity):
         return None
 
 
+#: slug -> {"running": future | None, "queued": future | None}: at most one preview build per database at a time.
+_preview_flights: dict[str, dict] = {}
+_preview_tasks: set = set()
+
+
+async def coalesced(key: str, make):
+    """Run `make()` (a coroutine factory) so that, per key, at most ONE runs and at most one more waits.
+
+    A request that arrives while a build runs joins the build queued after it, never the running one: that build
+    started before this request, so it may not have seen the choice this request was sent after. Every request is
+    therefore answered by a build that STARTED after it arrived, and five clicks in a row cost two builds, not five.
+    (2026-10-30, coco_pharma: six previews of ~45 s each ran at once and each took 110-120 s.)"""
+    st = _preview_flights.setdefault(key, {"running": None, "queued": None})
+    if st["queued"] is not None:
+        return await asyncio.shield(st["queued"])
+    prev = st["running"]
+    fut = asyncio.get_running_loop().create_future()
+    if prev is None:
+        st["running"] = fut
+    else:
+        st["queued"] = fut
+
+    async def go():
+        if prev is not None:
+            await asyncio.wait([prev])
+            st["queued"], st["running"] = None, fut
+        try:
+            fut.set_result(await make())
+        except Exception as exc:  # noqa: BLE001 -- handed to every request waiting on this build
+            fut.set_exception(exc)
+        finally:
+            if st["running"] is fut:
+                st["running"] = None
+
+    task = asyncio.ensure_future(go())
+    _preview_tasks.add(task)
+    task.add_done_callback(_preview_tasks.discard)
+    return await asyncio.shield(fut)
+
+
 @router.get("/{slug}/commit-preview")
-async def read_commit_preview(slug: str) -> dict:
+async def read_commit_preview(slug: str, request: Request) -> dict:
     """What pressing Catalogue would do, with the Egeria READS it needs (what hangs
-    off each schema being left out). Writes nothing."""
+    off each schema being left out). Writes nothing. Requests for one database share builds (`coalesced`), per
+    caller: the build checks access as the person who asked, so one person's answer is never handed to another."""
     registry = _registry_for(slug)
     entity = registry.get_database(slug, allow_unreadable=True)
 
@@ -115,7 +156,9 @@ async def read_commit_preview(slug: str) -> dict:
         return commit.build_preview(registry, slug, view, _gateway_or_none(entity),
                                     db_entity=entity, derived=derived)
 
-    return await asyncio.to_thread(commit.run_with_loop, build)
+    user = get_current_user(request) or {}
+    caller = user.get("user_id") or user.get("sub") or user.get("username") or ""
+    return await coalesced(f"{slug}\t{caller}", lambda: asyncio.to_thread(commit.run_with_loop, build))
 
 
 class ReincludeConfirm(BaseModel):
@@ -222,6 +265,7 @@ async def post_read_back(slug: str, request: Request) -> dict:
         out = commit.read_back(registry, gateway, slug, schemas, by=author, reread=True)   # Refresh re-reads archives
         # The status line on the button: the same chips text the commit's read-back step shows (one derivation).
         out["chips_words"] = commit.read_back_words(commit.read_back_chips_for(registry, slug, schemas))
+        out["line"] = commit.read_back_line(out, out["chips_words"])     # F28: a failed read says so, never "0"
         return out
 
     return await _run(commit.run_with_loop, go)

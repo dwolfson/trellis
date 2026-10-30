@@ -323,7 +323,7 @@ def test_header_marker_is_state_derived_never_a_constant(world, fake):
 def test_read_failure_changes_no_state_and_says_when(world, fake):
     choose(world, "sales", "catalogue")
     press(world, fake, refresh=False)
-    fake.fail["list_catalog_targets"] = "503 Egeria unreachable"
+    fake.fail["connector_status"] = "503 Egeria unreachable"     # F29: the read-back no longer lists every target
     s = cc.read_back(world["registry"], fake, "db", ["sales"])
     assert s["read_failed"] == 1
     d = derived(world)

@@ -1,5 +1,5 @@
 /** One write on the scope pane costs ONE scope read and ONE commit-preview read (it used to cost
- *  two scope reads), and an exception while drawing the pane shows a visible banner instead of a
+ *  two scope reads; the preview is read once the clicks settle, C2), and an exception while drawing the pane shows a visible banner instead of a
  *  dead page. */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -9,10 +9,10 @@ const scopeReads = (server) => server.calls.filter((c) => c.method === 'GET' && 
 const previewReads = (server) => server.calls.filter((c) => c.method === 'GET' && c.url.endsWith('/commit-preview'));
 
 test('one choice write makes exactly one PUT, one scope GET and one commit-preview GET', async () => {
-  const { document, server } = await setUp(baseView());
+  const { document, server } = await setUp(baseView(), { beforeOpen: ({ mod }) => mod.setPreviewDebounceMs(50) });
   server.calls.length = 0;
   document.querySelector('[data-scope-row="schema:sales"] [data-scope-act="set"][data-scope-choice="catalogue"]').click();
-  await wait();
+  await wait(400);
   assert.equal(calls(server, 'PUT', '/node').length, 1);
   assert.equal(scopeReads(server).length, 1, 'the scope is read once after a write');
   assert.equal(previewReads(server).length, 1, 'and so is the commit preview');
@@ -20,14 +20,14 @@ test('one choice write makes exactly one PUT, one scope GET and one commit-previ
 });
 
 test('a bulk action over schemas and tables also re-reads once', async () => {
-  const { document, window, server } = await setUp(baseView());
+  const { document, window, server } = await setUp(baseView(), { beforeOpen: ({ mod }) => mod.setPreviewDebounceMs(50) });
   document.querySelector('[data-scope-toggle="sales"]').click();
   for (const sel of ['[data-scope-select="archive"]', '[data-scope-select-schema="sales"][data-scope-select-table="orders"]']) {
     const b = document.querySelector(sel); b.checked = true; b.dispatchEvent(new window.Event('change', { bubbles: true }));
   }
   server.calls.length = 0;
   document.querySelector('[data-scope-bulk-act="leave_out"]').click();
-  await wait();
+  await wait(400);
   assert.equal(scopeReads(server).length, 1);
   assert.equal(previewReads(server).length, 1);
 });

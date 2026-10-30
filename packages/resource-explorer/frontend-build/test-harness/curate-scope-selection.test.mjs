@@ -1,7 +1,7 @@
 /** The Curate scope tree: a name filter over schemas AND tables, a tick on every table row,
  *  select all / clear on the VISIBLE rows, and bulk actions that cover the whole selection
- *  (schemas through the bulk route, tables through the per-table node routes, each recorded
- *  and signed by the server like a single-row write). The server is a stateful fake. */
+ *  (schemas and tables in ONE request to the bulk route, each node recorded and signed by the
+ *  server like a single-row write). The server is a stateful fake. */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { baseView, setUp, scopeEl, row, calls, flat, wait } from './scope-test-kit.mjs';
@@ -82,7 +82,7 @@ test('select all and clear act on the VISIBLE rows only', async () => {
     'only the archive rows (visible) were cleared; sales stays selected');
 });
 
-test('catalogue selected writes the schemas through the bulk route and each table through the node route', async () => {
+test('catalogue selected writes the schemas and the tables in one bulk request', async () => {
   const { document, window, server } = await setUp(baseView());
   await typeFilter(document, window, 'orders');
   const all = document.querySelector('[data-scope-all-box]');
@@ -91,24 +91,26 @@ test('catalogue selected writes the schemas through the bulk route and each tabl
   server.calls.length = 0;
   document.querySelector('[data-scope-bulk-act="catalogue"]').click();
   await wait();
-  const [bulk] = calls(server, 'POST', '/nodes');
-  assert.deepEqual(bulk.body, { nodes: [{ schema_name: 'sales', table_name: '' }, { schema_name: 'archive', table_name: '' }], choice: 'catalogue', all_schemas: false });
-  assert.deepEqual(calls(server, 'PUT', '/node').map((c) => c.body), [
-    { schema_name: 'sales', table_name: 'orders', choice: 'catalogue' },
-    { schema_name: 'archive', table_name: 'orders', choice: 'catalogue' },
-  ]);
+  const bulks = calls(server, 'POST', '/nodes');
+  assert.equal(bulks.length, 1, 'one request for the whole selection');
+  assert.deepEqual(bulks[0].body, { nodes: [
+    { schema_name: 'sales', table_name: '' }, { schema_name: 'archive', table_name: '' },
+    { schema_name: 'sales', table_name: 'orders' }, { schema_name: 'archive', table_name: 'orders' },
+  ], choice: 'catalogue', all_schemas: false });
+  assert.equal(calls(server, 'PUT', '/node').length, 0, 'no table is written on its own');
   assert.match(flat(document.querySelector('[data-scope-status]')), /^2 schemas and 2 tables now set to include by me$/);
   assert.match(flat(document.querySelector('[data-scope-selected-count]')), /^0 of 3 schemas · 0 of 3 tables selected$/, 'a finished bulk action spends the selection');
 });
 
-test('clear choice on selected tables posts the per-table clear route', async () => {
+test('back to undecided on selected tables is one bulk request with an empty choice', async () => {
   const { document, window, server } = await setUp(baseView());
   document.querySelector('[data-scope-toggle="sales"]').click();
   tick(document, window, '[data-scope-select-schema="sales"][data-scope-select-table="customers"]');
   document.querySelector('[data-scope-bulk-act="clear"]').click();
   await wait();
-  assert.deepEqual(calls(server, 'POST', '/node/clear').map((c) => c.body), [{ schema_name: 'sales', table_name: 'customers' }]);
-  assert.equal(calls(server, 'POST', '/nodes').length, 0, 'no schemas selected: no bulk schema call');
+  assert.deepEqual(calls(server, 'POST', '/nodes').map((c) => c.body),
+    [{ nodes: [{ schema_name: 'sales', table_name: 'customers' }], choice: '', all_schemas: false }]);
+  assert.equal(calls(server, 'POST', '/node/clear').length, 0, 'no per-row clear: a row with no choice is skipped, not refused');
 });
 
 test('the selection survives the re-render that follows a single-row write', async () => {
