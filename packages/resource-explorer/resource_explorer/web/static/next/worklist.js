@@ -1967,7 +1967,7 @@ const STATE_WORD = {
   nothing_found: 'nothing found',
   partial: 'partial',
   not_established: 'ran, could not establish a result',
-  never_run: 'never run',
+  never_run: 'not yet run',
 };
 
 export function closeCellDetail() {
@@ -2209,7 +2209,7 @@ function openRefreshPlan(ctx) {
       <p class="mt-s2">
         <label><input type="checkbox" id="wl-incl-never"> also run the
         <span class="tnum">${neverCount}</span> that ${
-          neverCount === 1 ? 'has' : 'have'} never run</label>
+          neverCount === 1 ? 'has' : 'have'} not yet run</label>
         — a first run, not a refresh, and it can cost far more.</p>
       <ul class="ml-s3 mt-[4px] list-disc" id="wl-never-list" hidden>${listing(plan.never)}</ul>`
       : ''}

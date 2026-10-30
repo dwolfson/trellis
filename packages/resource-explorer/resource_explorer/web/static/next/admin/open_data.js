@@ -25,7 +25,7 @@ import { watchTables } from '/static/next/colresize.js';
 
 export const NOT_REPORTED = 'not_reported';
 export const NOT_REPORTED_WORDS = 'not reported by this source';
-export const NO_SURVEY_WORDS = 'Nothing has been measured for this yet · never run';
+export const NO_SURVEY_WORDS = 'Not yet run';
 const SURVEY_QUESTIONS = ['License and terms', 'Description', 'Update cadence', 'Coverage', 'Formats and access',
   'Structure', 'Size and cost', 'Quality', 'Personal data', 'Provenance', 'Overlap with data held', 'Citations',
   'Change since last look'];
@@ -253,7 +253,7 @@ export async function renderPortalDirectories(host) {
     ${dirs.length ? `<table class="w-full text-left" data-rc-id="od-directories"><thead><tr class="border-b border-rule text-caps uppercase tracking-caps text-ink-muted">
       <th class="pb-s2 pr-s3 font-normal">Directory</th><th class="pb-s2 pr-s3 font-normal">API</th><th class="pb-s2 pr-s3 font-normal">URL</th><th class="pb-s2 pr-s3 font-normal">Last run</th><th class="pb-s2 pr-s3 font-normal"></th></tr></thead>
       <tbody>${dirs.map((d) => `<tr class="border-b border-rule"><td class="py-s2 pr-s3 text-caveat align-top">${esc(d.display_name)}</td><td class="py-s2 pr-s3 text-caveat align-top">${esc(d.api_kind)}</td>
-        <td class="py-s2 pr-s3 text-caveat align-top font-mono text-provenance">${esc(d.base_url)}</td><td class="py-s2 pr-s3 text-caveat align-top text-ink-muted">${d.last_run_at ? esc(ago(d.last_run_at)) : 'never run'}</td>
+        <td class="py-s2 pr-s3 text-caveat align-top font-mono text-provenance">${esc(d.base_url)}</td><td class="py-s2 pr-s3 text-caveat align-top text-ink-muted">${d.last_run_at ? esc(ago(d.last_run_at)) : 'not yet run'}</td>
         <td class="py-s2 pr-s3 text-caveat align-top"><button type="button" data-od-run="${esc(d.slug)}" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent">Run</button></td></tr>`).join('')}</tbody></table>`
       : '<p data-od-empty class="text-answer text-ink">No directories registered yet.</p>'}
     <div data-od-pane class="mt-s4"></div>`;

@@ -41,7 +41,7 @@ test('2 By-analysis header: run time only when the card has its own result; the 
   // and the card never says "run <when>" beside the not-run body
   const html = app.byAnalysisCardHtml('s', 'activity_signals', 'Activity Signals', '',
     { status: 'done', board: { id: 'activity_signals', has_results: false, result_state: 'not_requested', analyses: [], last_surveyed_at: surveyed } }, new Set(), true);
-  assert.ok(!html.includes('Not run yet.'), '"Not run yet." is only for a resource never surveyed');
+  assert.ok(!html.includes('Not yet run.'), '"Not yet run." is only for a resource never surveyed');
   assert.ok(!/>\s*run \d/.test(html) && !html.includes('run 8d'), 'no "run <when>" next to the not-run cue');
   assert.ok(html.replace(/&#39;|&#x27;|&apos;/g, "'").includes("its step wasn't requested"));
 });

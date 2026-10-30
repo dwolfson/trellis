@@ -190,7 +190,7 @@ def _resurvey_plan(registry: ProjectRegistry, slug: str) -> tuple[list[str] | No
     never_run = sorted(known_ids - set(history))
     never_run_clause = (
         f" · {len(never_run)} analys{'is' if len(never_run) == 1 else 'es'} "
-        f"never run here and not started"
+        f"not yet run here and not started"
         if never_run else ""
     )
 

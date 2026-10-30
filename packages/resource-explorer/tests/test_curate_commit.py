@@ -106,7 +106,7 @@ class TestResurveyPlan:
 
         assert steps == []
         assert "never_run_step" not in steps
-        assert "1 analysis never run here and not started" in note
+        assert "1 analysis not yet run here and not started" in note
 
     def test_all_fresh_returns_empty_step_list(self, registry, monkeypatch):
         monkeypatch.setattr(

@@ -1395,7 +1395,7 @@ def _quality_checks_headline(registry, slug: str) -> dict | None:
         results = " · ".join(concluded) + "."
         status = "warning" if statuses.get("fail") or statuses.get("warning") else "info"
     else:
-        results = "No check has run: " + (f"{to_run} accepted, not run yet." if to_run else "none accepted yet.")
+        results = "No check has run: " + (f"{to_run} accepted, not yet run." if to_run else "none accepted yet.")
         status = "info"
     by_question = {_QUALITY_RESULTS_QUESTION: results}
     if proposals:

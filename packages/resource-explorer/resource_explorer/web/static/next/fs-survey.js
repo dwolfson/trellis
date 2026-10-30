@@ -92,7 +92,7 @@ export const FOLDER_SURVEY_WORDS = {
   derivedHeading: 'Derived from the walk',
   derivePress: 'Derive',
   deriving: 'Deriving…',
-  notRun: 'not run yet',
+  notRun: 'not yet run',
   derivedAt: (date) => `derived${date ? ` · ${date}` : ''}`,
   notPriced: 'not priced',
   derivedKept: "kept here · sent to Egeria in the walk's own survey report when that walk is published",

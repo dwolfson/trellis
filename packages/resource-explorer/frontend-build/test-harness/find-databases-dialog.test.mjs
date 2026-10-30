@@ -126,7 +126,7 @@ test('Find on databases opens a three-tab dialog: Saved sources, Discover on a s
   const rows = [...dlg.querySelectorAll('[data-source]')];
   assert.equal(rows.length, 2);
   assert.ok(rows.every((r) => r.querySelector('[data-run]')), 'every saved source has a Run');
-  assert.match(text(rows[0]), /never run/, 'a source that never ran says so');
+  assert.match(text(rows[0]), /not yet run/, 'a source that never ran says so');
   assert.doesNotMatch(text(dlg), /file share/i, 'the kind is "file system", never "file share"');
 });
 

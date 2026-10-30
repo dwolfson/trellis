@@ -46,10 +46,10 @@ test('a library step with no run says so on its own line and offers Run', async 
     fact('statistics_freshness', { library: true, state: 'never_run', is_known: false, last_run_at: '' })]));
   const line = /<div data-step-line="statistics_freshness"[\s\S]*?<\/div>/.exec(html)[0];
   const said = line.replace(/<[^>]*>/g, '');
-  assert.match(said, /not run yet/);
-  // F23: the absence is said once -- not "not run yet · never run".
-  assert.ok(!/never run/.test(said), said);
-  assert.equal(said.match(/not run yet/g).length, 1, said);
+  assert.match(said, /not yet run/);
+  // F23: the absence is said once, in the owner's words.
+  assert.ok(!/never run|not run yet/.test(said), said);
+  assert.equal(said.match(/not yet run/g).length, 1, said);
   assert.ok(!line.includes('data-numbers-step'), 'nothing to show the numbers of');
 });
 
@@ -106,7 +106,7 @@ test('F23: a step that ran with no recorded time says so, never "never run"', as
     fact('statistics_freshness', { library: true, headline: 'measured · 4 tables', last_run_at: '' })]));
   const line = /<div data-step-line="statistics_freshness"[\s\S]*?<\/div>/.exec(html)[0].replace(/<[^>]*>/g, '');
   assert.match(line, /run time not recorded/);
-  assert.ok(!/never run|not run yet/.test(line), line);
+  assert.ok(!/never run|not run yet|not yet run/.test(line), line);
 });
 
 test('Q-0073: a note shared by the lead and a step is said once, and the step line gives the state, not the note', async () => {

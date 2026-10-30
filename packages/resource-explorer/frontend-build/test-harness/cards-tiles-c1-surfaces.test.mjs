@@ -59,7 +59,7 @@ test('Survey & analyses: "13 of 30", need you, and the last survey, each a tile 
   const run = tileOf(content, 'analyses_run');
   assert.equal(text(run.querySelector('[data-tile-figure]')), '● 13 of 30');
   // the same two figures the label above the list shows
-  assert.match(text(content.querySelector('#analyses-index-section')), /Analyses · 30 · 17 never run/);
+  assert.match(text(content.querySelector('#analyses-index-section')), /Analyses · 30 · 17 not yet run/);
   const need = tileOf(content, 'need_you');
   assert.equal(need.dataset.tileState, 'count');
   assert.equal(text(need.querySelector('[data-tile-figure]')), '2');
@@ -100,7 +100,7 @@ test('Survey & analyses: nothing run yet is "○ not measured · never run", and
   const last = tileOf(content, 'last_survey');
   assert.equal(last.dataset.tileState, 'not_measured');
   assert.match(text(last), /not measured/);
-  assert.match(text(last.querySelector('[data-tile-sub]')), /never run/);
+  assert.match(text(last.querySelector('[data-tile-sub]')), /not yet run/);
   assert.equal(text(tileOf(content, 'analyses_run').querySelector('[data-tile-figure]')), '● 0 of 1', 'a real 0 of 1, measured');
   assert.equal(tileOf(content, 'need_you').dataset.tileState, 'zero');
 });

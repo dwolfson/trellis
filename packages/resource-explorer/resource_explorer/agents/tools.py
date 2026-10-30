@@ -1344,13 +1344,13 @@ def coverage_sweep_raw(analysis: str, resource_type: str = "", only_gaps: bool =
 @tool(
     description=(
         "Sweep EVERY registered resource for one analysis and group them by what is known: has a result, "
-        "ran and found nothing, never run, or cannot be established. Use for 'which repos have no license "
+        "ran and found nothing, not yet run, or cannot be established. Use for 'which repos have no license "
         "classification?', 'which databases have never been checked for X?'. The analysis word ('license', "
         "'security', 'cve') names an ANALYSIS, never a repository that happens to have that name. analysis is an analysis id "
         "(license_classification, security_scan, cve_scan, secret_scan, documentation_coverage, "
         "dependency_analysis, ci_quality, database_owner, schema_inventory, ...) or a plain word such as "
         "'license' or 'security'. resource_type is 'repo', 'database' or 'filesystem' (optional). "
-        "only_gaps=true lists just the resources with nothing known. 'Never run' is not a pass."
+        "only_gaps=true lists just the resources with nothing known. 'Not yet run' is not a pass."
     )
 )
 def coverage_sweep(analysis: str, resource_type: str = "", only_gaps: bool = False) -> str:

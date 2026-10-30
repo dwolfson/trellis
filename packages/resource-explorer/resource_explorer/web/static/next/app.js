@@ -3721,7 +3721,7 @@ async function renderDepthOffer(p, host, { afterVerdict = false } = {}) {
   host.innerHTML = `
     <div data-depth-offer class="mt-s3 border-t border-rule pt-s2">
       <div class="text-caveat text-ink">This verdict does not schedule anything. <span class="tnum">${rows.length}</span>
-        ${rows.length === 1 ? 'analysis' : 'analyses'} at the analysis and assessment tiers ${rows.length === 1 ? 'has' : 'have'} never run on
+        ${rows.length === 1 ? 'analysis' : 'analyses'} at the analysis and assessment tiers ${rows.length === 1 ? 'has' : 'have'} not yet run on
         <span class="font-mono">${esc(p.slug)}</span>:</div>
       <table class="mt-s1 w-full border-collapse text-provenance">
         ${rows.map((a) => `<tr class="border-b border-rule">
@@ -5135,7 +5135,7 @@ export function runNeedsYou(c) {
 
 export function lastRunHtml(c) {
   const when = c.last_run_at || '';
-  if (!when) return '<span class="text-ink-muted">never run</span>';
+  if (!when) return '<span class="text-ink-muted">not yet run</span>';
   const days = (Date.now() - Date.parse(when)) / 86400000;
   const stale = Number.isFinite(days) && days >= SURVEY_STALE_DAYS;
   const ok = (c.last_run_status || '') === 'ok';
@@ -6074,7 +6074,7 @@ export function analysisIndexRowHtml(row) {
           ? `<button type="button" data-analysis-questions="${esc(row.analysis_id)}"
                class="cursor-pointer bg-transparent p-0 text-accent-ink underline">${qn} question${qn === 1 ? '' : 's'} ›</button>`
           : row.serves === 'chat-only' ? 'chat-only — no question asks' : 'nothing-yet — no question asks, no reader either'}
-        · ${row.last_run_at ? `<span class="tnum">${esc(ago(row.last_run_at))}</span>${row.last_run_via ? ` · via ${esc(row.last_run_via.replace(/_/g, ' '))}` : ''}` : 'never run'}
+        · ${row.last_run_at ? `<span class="tnum">${esc(ago(row.last_run_at))}</span>${row.last_run_via ? ` · via ${esc(row.last_run_via.replace(/_/g, ' '))}` : ''}` : 'not yet run'}
         · ${analysisRowPrice(row.cost)}
         ${row.last_publish_proof ? `· ${publishProofHtml(row.last_publish_proof)}` : ''}
         ${analysisRanAsHtml(row)}
@@ -6167,10 +6167,10 @@ export function surveyTilesHtml(slug, defs, analyses) {
       const neverRun = analyses.counts && analyses.counts.never_run;
       // "13 of 30": the list's own total less its own "never run" count, the two figures the label above the list shows.
       tiles.push(typeof neverRun !== 'number'
-        ? tileHtml({ key: 'analyses_run', label: 'analyses run', opens: 'analyses', state: 'not_measured', title: 'The server did not say how many analyses have never run.' })
+        ? tileHtml({ key: 'analyses_run', label: 'analyses run', opens: 'analyses', state: 'not_measured', title: 'The server did not say how many analyses have not yet run.' })
         : tileHtml({
           key: 'analyses_run', label: 'analyses run', opens: 'analyses', state: rows.length === 0 ? 'zero' : 'measured',
-          figure: `${rows.length - neverRun} of ${rows.length}`, title: `${rows.length - neverRun} of ${rows.length} analyses have run; ${neverRun} never run.`,
+          figure: `${rows.length - neverRun} of ${rows.length}`, title: `${rows.length - neverRun} of ${rows.length} analyses have run; ${neverRun} not yet run.`,
         }));
       const need = rows.filter((r) => analysisNeedsYou(slug, r)).length;
       tiles.push(tileHtml({
@@ -6187,7 +6187,7 @@ export function surveyTilesHtml(slug, defs, analyses) {
         key: 'last_survey', label: 'last survey', opens: `def:${ran[0].qualified_name}`, state: 'measured', figure: esc(ago(ran[0].last_run_at)),
         sub: esc(ran[0].display_name || ran[0].qualified_name), title: esc(ran[0].last_run_at),
       })
-      : tileHtml({ key: 'last_survey', label: 'last survey', opens: `def:${defs[0].qualified_name}`, state: 'not_measured', sub: 'never run', title: 'No survey definition here has run.' }));
+      : tileHtml({ key: 'last_survey', label: 'last survey', opens: `def:${defs[0].qualified_name}`, state: 'not_measured', sub: 'not yet run', title: 'No survey definition here has run.' }));
   }
   return tileRowHtml(tiles);
 }
@@ -6230,7 +6230,7 @@ async function renderAnalysesIndexSection(slug, stage) {
   const here = sorted.filter((r) => r.tier === stage);
   const elsewhere = sorted.filter((r) => r.tier !== stage);
 
-  const sortChips = [['name', 'by name'], ['never_run', 'never run first'], ['cost', 'by what it costs']].map(([k, label]) => `
+  const sortChips = [['name', 'by name'], ['never_run', 'not yet run first'], ['cost', 'by what it costs']].map(([k, label]) => `
           <button type="button" data-analyses-sort="${k}" aria-pressed="${sort === k}"
             class="wl-chartchip cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[1px] text-caveat">${esc(label)}</button>`).join('');
   // The label names the group and sits above; the list of analyses is ONE card (never a card per row), its sort
@@ -6238,7 +6238,7 @@ async function renderAnalysesIndexSection(slug, stage) {
   host.innerHTML = `
     <div class="mb-s3 text-caps uppercase tracking-caps text-ink-muted">Analyses ·
         <span class="tnum">${rows.length}</span> ·
-        <span class="tnum">${data.counts?.never_run ?? 0}</span> never run ·
+        <span class="tnum">${data.counts?.never_run ?? 0}</span> not yet run ·
         <span class="tnum">${data.counts?.no_question ?? 0}</span> no question asks</div>
     ${cardHtml({
     attrs: 'data-analyses-card',
@@ -6426,7 +6426,7 @@ export function planSurveyRun(c, slug) {
             ? `last ran ${esc(ago(c.last_run_at))}${
                 c.last_run_status ? ` · ${esc(c.last_run_status)}` : ''} —
                <strong>everything it covers will be measured again</strong>`
-            : 'it has never run on this resource'}</li>
+            : 'it has not yet run on this resource'}</li>
       ${(c.analysis_ids || []).length
         ? `<li>writes: <span class="font-mono">${esc((c.analysis_ids || []).join(', '))}</span></li>` : ''}
       ${c.auto_publishes ? '<li>publishes its results to Egeria when it finishes</li>' : ''}
@@ -7832,12 +7832,12 @@ export function boardStateKey(entry) {
 }
 
 /** The words for each result state a board can be in (`result_state` from the server, derived from proof rows).
- *  "Not run yet." is only ever the never_surveyed state, so the header and the body cannot contradict each other. */
+ *  "Not yet run." is only ever the never_surveyed state, so the header and the body cannot contradict each other. */
 export const RESULT_STATE_WORDS = {
   not_requested: "not in the last survey · its step wasn't requested",
   ran_no_rows: 'ran in the last survey · produced no rows',
   predates_storage: 'the last survey predates stored results for this analysis',
-  never_surveyed: 'not run yet',
+  never_surveyed: 'not yet run',
   no_results_view: 'runs as a step · no results view yet',
   survey_unattributed: "the last survey recorded no step list · can't say whether this ran",
 };
@@ -7870,7 +7870,7 @@ export function boardStateWords(board) {
  *  so the parts sum to the total. Still-loading boards are their own part, so the sum holds while reading too. */
 const COUNT_LABELS = [
   ['not_requested', 'not in the last survey'], ['ran_no_rows', 'ran, no rows'],
-  ['predates_storage', 'predate stored results'], ['never_surveyed', 'not run yet'],
+  ['predates_storage', 'predate stored results'], ['never_surveyed', 'not yet run'],
   ['no_results_view', 'no results view yet'], ['survey_unattributed', "survey didn't record its steps"],
   ['error', 'could not be read'], ['timeout', 'slow to read'], ['loading', 'still reading'],
 ];
@@ -9681,7 +9681,7 @@ function bodyLines(entry, i, st, env) {
   if (st === 'unrun') {
     // NO answer line. Not a zero, not an empty string — the absence of the
     // line is the statement.
-    const why = (env && env.blocked_reason) || 'Not run yet.';
+    const why = (env && env.blocked_reason) || 'Not yet run.';
     const lines = readEnvelope(entry, env, esc, tnum);
     return autoRanNoteHtml(entry, indent)
       + `<div class="ml-[22px] mt-[6px] text-answer text-ink">${tnum(esc(why))}</div>`
@@ -9824,8 +9824,8 @@ function provenanceLine(entry, i, lines, st) {
   // statements, never folded together:
   //   a recorded timestamp        -> "run 19d ago"
   //   measured, but no timestamp  -> "run time not recorded"
-  //   nothing measured            -> "never run"
-  // The middle one is a gap in the record. Rendering it as "never run" —
+  //   nothing measured            -> "not yet run"
+  // The middle one is a gap in the record. Rendering it as "not yet run" —
   // which this row did until it was checked against the API — puts a tick
   // beside a claim that nothing ever ran, and both halves cannot be true.
   if (lines.lastRun) {
@@ -9836,9 +9836,12 @@ function provenanceLine(entry, i, lines, st) {
     bits.push(`as of <span class="tnum">${esc(String(lines.asOf).slice(0, 16).replace('T', ' '))}</span>`);
   } else if (lines.runTimeUnrecorded) {
     bits.push('run time not recorded');
-  } else if (st !== 'running') {
-    bits.push('never run');
+  } else if (st !== 'running' && !(st === 'unrun' && lines.allNeverRun)) {
+    // An unrun row whose analyses all never ran already says "Not yet run." as its answer line: not again here (F23).
+    bits.push('not yet run');
   }
+  // When the row says "not yet run" (here or as its answer), a step that never ran does not say it a second time.
+  const rowSaysNotYetRun = !lines.lastRun && !lines.asOf && !lines.runTimeUnrecorded && st !== 'running';
 
   // How it was known, when it was not a survey. A direct field and a survey
   // result are different kinds of claim and must not read alike.
@@ -9904,8 +9907,9 @@ function provenanceLine(entry, i, lines, st) {
     // it is not said twice (F23); one that ran with no timestamp is a gap in the record, not "never run".
     const when = s.lastRun ? `run ${rel ? `<span class="tnum">${esc(rel)}</span>` : esc(s.lastRun)}`
       : (s.neverRun ? '' : 'run time not recorded');
-    return `<div data-step-line="${esc(s.id)}" class="ml-[22px] mt-[5px] text-provenance text-ink-muted">${esc(s.id)} · ${tnum(esc(s.sentence))}${
-      when ? ` · ${when}` : ''}${
+    const said = s.neverRun && rowSaysNotYetRun ? '' : s.sentence;
+    return `<div data-step-line="${esc(s.id)}" class="ml-[22px] mt-[5px] text-provenance text-ink-muted">${esc(s.id)}${
+      said ? ` · ${tnum(esc(said))}` : ''}${when ? ` · ${when}` : ''}${
       s.known ? ` · <button data-numbers-step="${i}" data-numbers-for="${esc(s.id)}" data-numbers-level="${esc(primaryQuestionLevel(entry))}"
         class="cursor-pointer bg-transparent text-accent-ink underline">the numbers behind this ›</button>` : ''} · <button data-rerun-for="${esc(s.id)}" data-rerun-row="${i}" ${
       blocked ? `disabled title="${esc(s.runnableReason)}"` : ''} class="${blocked ? 'cursor-not-allowed text-ink-muted' : 'cursor-pointer text-accent-ink'} bg-transparent underline">${
@@ -10662,7 +10666,7 @@ function rowAnswerParts(entry) {
   if (lines && lines.lastRun) bits.push(`run ${String(lines.lastRun).slice(0, 10)}`);
   else if (lines && lines.asOf) bits.push(`as of ${String(lines.asOf).slice(0, 10)}`);
   else if (lines && lines.runTimeUnrecorded) bits.push('run time not recorded');
-  else bits.push('never run');
+  else bits.push('not yet run');
   bits.push(env && env.answerable
     ? 'answered from survey metadata, no retrieval'
     : `state: ${STATE_LABEL[st] || st}`);
@@ -10733,14 +10737,14 @@ async function askQuestionInChat(entry, i) {
 // every call site went with it.
 
 const STATE_LABEL = {
-  answered: 'answered', automatic: 'automatic', nothing: 'nothing found', unrun: 'not run',
+  answered: 'answered', automatic: 'automatic', nothing: 'nothing found', unrun: 'not yet run',
   partial: 'ran, but not at this level',
   human: 'needs human input', 'needs-lens': 'needs a person: declare a lens',
   'no-surveyor': 'no reader yet',
   unclassified: 'unclassified',
 };
 const STATE_SENTENCE = {
-  unrun: 'Not run yet.',
+  unrun: 'Not yet run.',
   human: 'Answered by a person, not by a survey.',
   'no-surveyor': 'No reader yet for this question.',
   unclassified: 'The catalog does not state how this would be answered.',
@@ -10863,7 +10867,7 @@ function showEvidence(entry) {
       <div class="text-chip text-accent-on-dark">${esc(f.analysis_id)}</div>
       <div class="text-caps text-chrome-muted">${stateWord}${provenanceWord} · ${
         f.last_run_at ? `run ${esc(ago(f.last_run_at))}`
-          : f.is_known ? 'run time not recorded' : 'never run'}</div>
+          : f.is_known ? 'run time not recorded' : 'not yet run'}</div>
       ${f.headline ? `<div class="mt-[4px] text-subtab">${tnum(esc(f.headline))}</div>` : ''}
       ${f.note ? `<div class="mt-[4px] text-chip text-accent-on-dark">${tnum(esc(f.note))}</div>` : ''}
       ${value}

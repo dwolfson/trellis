@@ -141,7 +141,7 @@ class ConversationAgent(BaseExplorerAgent):
             "doesn't cover it."
             "\n\nWhen you report a tool result, keep its exact labels and counts: use the status "
             "word the tool printed (open, deferred, ...), report every group a coverage result lists "
-            "(including 'never run' and 'cannot be established'), and give a survey date only as the "
+            "(including 'not yet run' and 'cannot be established'), and give a survey date only as the "
             "tool labels it ('Latest survey' is the newer date). A result of 'not found' or an error "
             "is not 'no data': say the lookup failed."
             # Restored 2026-09-09 after experiment run 3: pointing this at a

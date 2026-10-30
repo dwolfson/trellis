@@ -238,7 +238,7 @@ async function renderSchedules() {
     const key = `${s.entity_type}|${s.entity_slug}|${s.analysis_id}`;
     // An error is a control, not a glyph: pressing it reads the activity row the failed run wrote.
     const status = !s.last_run_status
-      ? '<span class="text-ink-muted">— not run yet</span>'
+      ? '<span class="text-ink-muted">— not yet run</span>'
       : s.last_run_status === 'error'
         ? `<button type="button" data-sched-error="${esc(key)}" data-activity-id="${esc(s.last_run_activity_id || '')}"
              aria-expanded="false" title="Why did the last run fail?"

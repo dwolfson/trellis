@@ -36,7 +36,7 @@ _STATE_LABEL = {
     "measured": "has a result",
     "partial": "partial result",
     "nothing_found": "ran, found nothing",
-    "never_run": "never run",
+    "never_run": "not yet run",
     "not_established": "cannot be established",
 }
 
@@ -124,6 +124,6 @@ def coverage_sweep(
         )
     if "never_run" in groups or "not_established" in groups:
         lines.append(
-            "`never run` and `cannot be established` mean nothing is known either way; they are not passes."
+            "`not yet run` and `cannot be established` mean nothing is known either way; they are not passes."
         )
     return "\n".join(lines)
