@@ -153,7 +153,8 @@ def test_one_batch_is_one_queued_definition_run_per_database_watched_as_a_run_se
     assert sorted(r["target"]["slug"] for r in queued) == [WORKS, PHARMA]
     for r in queued:
         assert r["target"]["entity_type"] == "database"
-        assert r["target"]["params"]["survey_definition_ref"] == QUALITY_DEFINITION
+        # Queued under the definition's qualified name: the bare name does not resolve in Egeria (2026-10-30).
+        assert r["target"]["params"]["survey_definition_ref"] == f"GovActionProcess::{QUALITY_DEFINITION}"
         assert r["result_ref"]                           # each run has its own activity row, as a press does
     assert all(m["outcome"] == "queued" and m["words"].startswith("queued · 2 tables") for m in out["members"])
     progress = client.get(f"/api/work-lists/runs/sets/{out['set_id']}").json()

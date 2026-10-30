@@ -1986,8 +1986,10 @@ class SurveyDefinitionExecutor:
                         f"Could not look up the Survey Definition '{survey_definition_ref}' in Egeria "
                         f"({len(errors)} call(s) failed: {errors[0]}). This is not a finding that it does not exist."
                     )
+                from resource_explorer.surveyors.survey_definition_reader import qualified_process_name
+
                 raise SurveyDefinitionExecutorError(
-                    f"No Survey Definition found matching '{survey_definition_ref}'"
+                    f"no survey definition named {qualified_process_name(survey_definition_ref)} in Egeria"
                 )
             self.registry.set_survey_definition_guid(
                 entity_type, slug, technology_type, guid, survey_definition_ref
