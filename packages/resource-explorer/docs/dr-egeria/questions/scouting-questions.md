@@ -6160,7 +6160,7 @@ User Questions
 Is this database maintained and healthy — vacuum recency, dead-tuple ratio and unused indexes?
 
 ### Description
-Scores the activity signals against thresholds: how long since the last vacuum or analyse, the ratio of dead to live tuples, and indexes that have never been scanned. Remember design §5.1's absence rule — statistics that were never collected must not read as a healthy zero.
+Scores the activity signals against thresholds: how long since the last vacuum or analyze, the ratio of dead to live tuples, and indexes that have never been scanned. Remember design §5.1's absence rule — statistics that were never collected must not read as a healthy zero.
 
 ### Summary
 Operational neglect shows up in the statistics long before it shows up as an outage.
