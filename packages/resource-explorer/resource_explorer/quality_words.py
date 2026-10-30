@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import re
 
+from resource_explorer.surveyors.database.quality.catalogue import catalogue_ref
+
 #: Parameters that are not a setting of the check (the profile the proposal was made from has its own column).
 _NOT_A_SETTING = frozenset({"profile_surveyed_at"})
 #: Parameters the catalogue's `default_parm_columns` does not list but every proposal carries.
@@ -133,3 +135,33 @@ def reason_in_words(reason: str) -> str:
 
 
 _TYPE_TAIL = re.compile(r" · (?:undetermined|statements unresolved: [^·;]+?)(?=$| · |;)")
+
+
+#: `catalogue_ref`'s shape: `vendored-catalog@<commit>:<type>:<kind>:sha256:<hash>`.
+_REF = re.compile(r"^vendored-catalog@(?P<commit>[0-9a-f]+):[^:]+:[a-z_]+:sha256:[0-9a-f]{64}$")
+
+
+def attribution_of(entry, origin: str, ref: str) -> str:
+    """The one sentence a DETAILED description carries about where a check comes from (owner, 2026-10-30: measures may
+    be said to be inspired by, or to implement, measures TestGen defines; headlines, row words and rule names do not
+    say it). Decided from what is on the proposal: its `origin` and `catalogue_ref`.
+
+    - `vendored` and the proposal's statement pin equals the vendored catalogue's: "Implements ...";
+    - `re` (a check RE proposes itself), or a vendored one whose pin no longer matches: "Inspired by ...", with what differs;
+    - anything else (an imported TestGen-only check, a type with no TestGen id, an unreadable pin): "", never a guess."""
+    if entry is None or not getattr(entry, "id", ""):
+        return ""
+    ident = f"TestGen's test type {entry.id}"
+    if origin == "re":
+        what = ("Resource Explorer proposes it for every table that has rows; TestGen has no selection rule for it"
+                if entry.selection_criteria is None else "Resource Explorer applies its own selection rule")
+        return f"Inspired by {ident}; {what}"
+    if origin != "vendored":
+        return ""
+    found = _REF.match(ref or "")
+    if not found:
+        return ""
+    if ref == catalogue_ref(entry):
+        return f"Implements TestGen test type {entry.id} (catalog commit {found.group('commit')[:8]})"
+    return (f"Inspired by {ident}; this proposal's statement pin (catalog commit {found.group('commit')[:8]}) no longer "
+            "matches the vendored catalog, so it is not described as TestGen's implementation")

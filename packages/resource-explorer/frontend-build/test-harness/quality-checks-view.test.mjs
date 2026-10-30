@@ -19,7 +19,7 @@ function check(over) {
   };
 }
 
-function fakeApi(rows, { post = null, failRead = false } = {}) {
+function fakeApi(rows, { post = null, failRead = false, rules = null, publish = null } = {}) {
   const calls = { gets: [], posts: [] };
   const counts = () => {
     const c = { total: rows.length, proposed: 0, accepted: 0, rejected: 0, retired: 0, not_established: 0 };
@@ -28,6 +28,8 @@ function fakeApi(rows, { post = null, failRead = false } = {}) {
   };
   const api = {
     calls,
+    ...(rules ? { async getRules(slug) { calls.rulesReads = (calls.rulesReads || 0) + 1; return rules(calls.rulesReads); } } : {}),
+    ...(publish ? { async postPublish(slug) { calls.publishes = (calls.publishes || 0) + 1; return publish(slug); } } : {}),
     async getProposals(slug, params = {}) {
       calls.gets.push(params);
       if (failRead) throw new Error('registry down');
@@ -76,7 +78,7 @@ async function setUp(rows, { me = 'steward', ...opts } = {}) {
   const slot = document.createElement('div');
   document.body.appendChild(slot);
   const api = fakeApi(rows, opts);
-  const view = mod.mountQualityChecks(slot, 'coco', { api, me });
+  const view = mod.mountQualityChecks(slot, 'coco', { api, me, openContents: () => { api.calls.contents = (api.calls.contents || 0) + 1; } });
   await tick(5);
   return { document, slot, api, view, mod };
 }
@@ -387,4 +389,112 @@ test('QS-3: a not-established row carries no type-inference tail ("undetermined"
   assert.equal(text(r), "the column's type could not be worked out");
   assert.doesNotMatch(text(g), /undetermined|statements unresolved/);
   assert.match(r.getAttribute('title'), /statements unresolved/, 'the stored sentence stays behind the title');
+});
+
+test('where a check comes from is said in the detailed title only, never in the visible words', async () => {
+  const t = await setUp([check({ test_type: 'Unique', test_name: 'Percent Unique', test_description: 'Tests for duplicates.',
+    attribution: 'Implements TestGen test type 1034 (catalogue commit 3606859c)' })]);
+  const g = await open(t, 'sales.orders');
+  const row = g.querySelector('[data-qc-row]');
+  assert.doesNotMatch(text(row), /TestGen/, 'no visible word says it');
+  assert.match(row.querySelector('[title*="Implements TestGen"]').getAttribute('title'), /Tests for duplicates\..*Implements TestGen test type 1034/);
+});
+
+// ── Publish ───────────────────────────────────────────────────────────────────────────────────────────────────
+const KEY_A = 'sales.orders.placed::Required';
+const KEY_B = 'sales.orders.order_id::Unique';
+const preview = (over = {}) => ({ accepted: 3, to_publish: 2, to_retire: 0, waiting: 0, unchanged: 1, edited: 0, retry: 0,
+  words: '2 to publish · 1 unchanged', ...over });
+const rulesPayload = (over = {}) => ({ rules: {}, preview: preview(), in_egeria: true, ...over });
+const clickEl = (t, el) => el.dispatchEvent(new t.document.defaultView.MouseEvent('click', { bubbles: true }));
+const btn = (t) => t.slot.querySelector('[data-qc-act="publish"]');
+
+test('Publish: the before line says what a press would do, a press runs once, the after words come from the server', async () => {
+  let reads = 0;
+  const t = await setUp(ROWS(), {
+    rules: () => { reads += 1; return reads === 1 ? rulesPayload() : rulesPayload({ preview: preview({ to_publish: 0, unchanged: 3, words: '3 unchanged' }),
+      rules: { [KEY_B]: { state: 'created', words: 'in Egeria · DataQualityRule · read back' } } }); },
+    publish: async () => { await tick(5); return { state: 'published', state_words: 'published', line: 'quality rules: 2 new',
+      outcomes: { [KEY_A]: { state: 'created', words: 'published · created in Egeria' }, [KEY_B]: { state: 'unchanged', words: 'published · unchanged' } } }; },
+  });
+  assert.match(text(t.slot.querySelector('[data-qc-publish-line]')), /^2 to publish · 1 unchanged$/);
+  assert.equal(btn(t).disabled, false);
+  const g = await open(t, 'sales.orders');
+  clickEl(t, btn(t)); clickEl(t, btn(t));                       // a double press
+  assert.equal(btn(t).disabled, true, 'disabled while it runs');
+  assert.match(text(t.slot.querySelector('[data-qc-publish-why]')), /a press runs once/);
+  await tick(30);
+  assert.equal(t.api.calls.publishes, 1, 'one press runs once');
+  assert.equal(t.api.calls.rulesReads, 2, 'the preview is read again after the write');
+  assert.match(text(t.slot.querySelector('[data-qc-publish-after]')), /^\S+ published$/, 'a glyph, then the state words');
+  assert.match(text(t.slot.querySelector('[data-qc-publish-line]')), /3 unchanged/);
+  const cues = [...g.querySelectorAll('[data-qc-rule]')].map((e) => text(e));
+  assert.ok(cues.some((c) => /Egeria data quality rule · published · created in Egeria/.test(c)));
+  assert.ok(cues.some((c) => /Egeria data quality rule · published · unchanged/.test(c)));
+});
+
+test('Publish: the coco_pharma shape (3 waiting, nothing written) says "nothing published", not "published", and links to Contents', async () => {
+  const waiting = { state: 'not_in_egeria', words: 'not in Egeria · commit its schema in Contents' };
+  const t = await setUp(ROWS(), {
+    rules: () => rulesPayload({ preview: preview({ accepted: 3, to_publish: 3, unchanged: 0, words: '3 to publish' }) }),
+    publish: async () => ({ state: 'nothing_published', state_words: 'nothing published · 3 waiting for Contents', line: 'quality rules: nothing to write; 3 not in Egeria',
+      outcomes: { [KEY_A]: waiting, [KEY_B]: waiting } }),
+  });
+  const g = await open(t, 'sales.orders');
+  clickEl(t, btn(t));
+  await tick(30);
+  const after = text(t.slot.querySelector('[data-qc-publish-after]'));
+  assert.match(after, /^\S+ nothing published · 3 waiting for Contents$/);
+  assert.doesNotMatch(after, /^\S+ published/, 'a press that wrote nothing is not "published"');
+  const row = [...g.querySelectorAll('[data-qc-rule="not_in_egeria"]')];
+  assert.equal(row.length, 2);
+  assert.match(text(row[0]), /not in Egeria · commit its schema in Contents/);
+  clickEl(t, row[0].querySelector('[data-qc-act="contents"]'));
+  assert.equal(t.api.calls.contents, 1, 'the row links to Contents');
+});
+
+test('Publish: a refused check shows Egeria\'s own sentence on its row', async () => {
+  const t = await setUp(ROWS(), {
+    rules: () => rulesPayload(),
+    publish: async () => ({ state: 'nothing_published', state_words: 'nothing published · 1 could not be published', line: 'x',
+      outcomes: { [KEY_B]: { state: 'refused', words: 'refused by Egeria · the type DataQualityRule is not known here' } } }),
+  });
+  const g = await open(t, 'sales.orders');
+  clickEl(t, btn(t));
+  await tick(30);
+  assert.match(text(g.querySelector('[data-qc-rule="refused"]')), /refused by Egeria · the type DataQualityRule is not known here/);
+});
+
+test('Publish: disabled, with a sentence, when nobody is signed in, nothing is accepted, or the database is not in Egeria', async () => {
+  const noOne = await setUp(ROWS(), { me: '', rules: () => rulesPayload(), publish: async () => ({}) });
+  assert.equal(btn(noOne).disabled, true);
+  assert.match(text(noOne.slot.querySelector('[data-qc-publish-why]')), /sign in to publish/);
+  const nothing = await setUp(ROWS(), { rules: () => rulesPayload({ preview: preview({ accepted: 0, to_publish: 0, unchanged: 0, words: 'nothing is accepted yet' }) }),
+    publish: async () => ({}) });
+  assert.equal(btn(nothing).disabled, true);
+  assert.match(text(nothing.slot.querySelector('[data-qc-publish-why]')), /nothing is accepted yet: accept a check first/);
+  const notIn = await setUp(ROWS(), { rules: () => rulesPayload({ in_egeria: false }), publish: async () => ({}) });
+  assert.match(text(notIn.slot.querySelector('[data-qc-publish-why]')), /not in Egeria yet: commit it first/);
+  clickEl(noOne, btn(noOne));
+  assert.equal(noOne.api.calls.publishes, undefined, 'a disabled press does nothing');
+});
+
+test('Publish: a rules read that fails is said, never shown as "nothing to publish"; the button stays off', async () => {
+  const t = await setUp(ROWS(), { rules: () => { throw new Error('registry down'); }, publish: async () => ({}) });
+  assert.match(text(t.slot.querySelector('[data-qc-publish-line]')), /could not read what a publish would do: registry down/);
+  assert.doesNotMatch(text(t.slot.querySelector('[data-qc-publish]')), /nothing to publish/);
+  assert.equal(btn(t).disabled, true);
+});
+
+test('Publish: a failed press says so on the band and publishes nothing it cannot read back', async () => {
+  const t = await setUp(ROWS(), { rules: () => rulesPayload(), publish: async () => { throw new Error('Egeria could not be reached'); } });
+  clickEl(t, btn(t));
+  await tick(30);
+  assert.match(text(t.slot.querySelector('[data-qc-publish-after]')), /not published · Egeria could not be reached/);
+  assert.equal(btn(t).disabled, false, 'it can be pressed again');
+});
+
+test('a server without the publish routes draws no Publish band (the module still loads with just proposals)', async () => {
+  const t = await setUp(ROWS());
+  assert.equal(t.slot.querySelector('[data-qc-publish]'), null);
 });

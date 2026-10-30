@@ -288,7 +288,7 @@ def test_a_check_whose_column_egeria_does_not_hold_gets_no_rule(registry, entity
     gw = FakeGateway({})
     out = _publish(registry, entity, gw)
     assert out["counts"] == {"not_in_egeria": 1} and not gw.made("create")
-    assert "not added to Egeria" in out["line"]
+    assert "not in Egeria · commit its schema in Contents" in out["line"]
 
 
 def test_a_table_check_governs_the_table(registry, entity):

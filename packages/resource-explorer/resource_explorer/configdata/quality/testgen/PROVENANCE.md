@@ -3,7 +3,9 @@
 Data only. No TestGen code is vendored and TestGen is never run: Resource Explorer reads these files
 and executes the checks with its own steps (`surveyors/database/quality/`). The engine and analysis names
 Resource Explorer shows are its own ("value profile", "quality checks"); Apache-2.0 grants no trademark,
-so the upstream product name appears only here, in `NOTICE` and in the developer docs.
+so the upstream product name appears only here, in `NOTICE`, in the developer docs and, since 2026-10-30 (owner's ruling), in
+detailed descriptions: a proposal row's title and a published rule's `description` may say that a check implements, or is
+inspired by, a TestGen test type. Never in a headline, a row's words or a rule's name.
 
 - **Upstream repository:** https://github.com/DataKitchen/dataops-testgen
 - **Copied from:** the owner's fork, https://github.com/dwolfson/dataops-testgen (checkout

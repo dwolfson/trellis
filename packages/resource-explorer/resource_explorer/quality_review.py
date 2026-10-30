@@ -19,7 +19,12 @@ Each table group also says whether the table is opted into Table Comparison (the
 """
 from __future__ import annotations
 
-from resource_explorer.quality_words import parameter_items, reason_in_words, name_of_test_type
+from resource_explorer.quality_words import (
+    name_of_test_type,
+    parameter_items,
+    reason_in_words,
+    attribution_of,
+)
 from resource_explorer.surveyors.database.quality import table_comparison
 from resource_explorer.surveyors.database.quality.catalogue import (
     PORTED_TEST_TYPES,
@@ -83,6 +88,9 @@ def _row(proposal: dict, verdict: dict | None, catalogue: dict) -> dict:
         # TestGen's own short name and description; "" when the catalogue has no such type (the identifier is shown)
         "test_name": name_of_test_type(catalogue.get(proposal["test_type"])),
         "test_description": getattr(catalogue.get(proposal["test_type"]), "description", "") or "",
+        # where the check comes from, said only in this detailed description (never a headline or a row word)
+        "attribution": attribution_of(catalogue.get(proposal["test_type"]), proposal.get("origin") or "",
+                                           proposal.get("catalogue_ref") or ""),
         "dimension": _dimension_of(proposal["test_type"], catalogue),
         "origin": proposal.get("origin") or "",
         "general_type": proposal.get("general_type") or "",

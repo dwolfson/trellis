@@ -100,9 +100,24 @@ Row_Ct_Pct is the one check RE proposes on its own initiative. Its proposals car
   in a `trellis-analytics` library step, because library steps cannot open a connection or
   emit anything other than `ResourceMeasureAnnotation`.
 - **Naming.** The engine and analysis names are RE's own: "value profile" and "quality
-  checks". **"TestGen" is never used as a product name** in the UI or in Egeria, because
-  Apache-2.0 grants no trademark. `PROVENANCE.md` and the docs say where the catalogue came
-  from.
+  checks". **"TestGen" is never used as a product name** in a headline, a row's words or a rule's
+  name, in the UI or in Egeria, because Apache-2.0 grants no trademark. `PROVENANCE.md` and the
+  docs say where the catalogue came from.
+
+  **Decision (project owner, 2026-10-30):** "I think at this point we can mention some measures
+  as inspired by or implementing measures defined by Testgen in a detailed description."
+  This narrows the 2026-10-19 rule above: **a detailed description may say where a check comes
+  from; nothing else may.** The two places are the proposal row's title on Curate › Structure and
+  the `description` of the published `DataQualityRule`. The wording is decided from what is on the
+  proposal (`origin`, `catalogue_ref`), in `resource_explorer/quality_words.py`:
+  - a vendored check whose statement pin matches the vendored catalogue's: "Implements TestGen
+    test type <id> (catalog commit <sha>)";
+  - a check RE proposes itself (`origin=re`), or a vendored one whose pin no longer matches:
+    "Inspired by TestGen's test type <id>; <what Resource Explorer does differently>";
+  - an imported TestGen-only check, a type with no TestGen id, or a pin that cannot be read: no
+    line (nothing is claimed without the data to claim it).
+  A republish of an already published rule updates its `description` (the proof hash covers it);
+  it is not reported as "edited in Egeria", which compares only operator, threshold and severity.
 - **Sync.** `scripts/sync_quality_catalog.py --check` reads a TestGen checkout given by
   `--upstream`. It diffs each vendored YAML's `selection_criteria`, `default_parm_values`,
   `default_parm_columns` and Postgres `cat_test_conditions`, and the profile SQL subset, and
