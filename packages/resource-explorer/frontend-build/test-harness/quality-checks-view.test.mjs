@@ -346,3 +346,45 @@ test('the default column widths fit the 800 px pane', async () => {
   const { QC_COLS } = await import('/static/next/stages/quality-checks.js');
   assert.ok(QC_COLS.columns.reduce((n, c) => n + c.def, 0) + QC_COLS.chrome <= 800);
 });
+
+// ── quality-screen wording, round 2 (read §C, 2026-10-30). jsdom has no layout, so "fits at 1440" is pinned as the
+// visible line's length: the cell must not carry a 24-name list or JSON, which is what wrapped to ~25 lines at 1440.
+const DUPE_NAMES = Array.from({ length: 24 }, (_, i) => `column_${i}`);
+const visible = (el) => { const c = el.cloneNode(true); c.querySelectorAll('details > :not(summary)').forEach((n) => n.remove()); return text(c); };
+
+test('QS-1: Duplicate Rows says "24 columns compared (all but rowguid)", the names behind a disclosure, the why in a title', async () => {
+  const t = await setUp([check({ column_name: '', test_type: 'Dupe_Rows', check_key: 'sales.orders::Dupe_Rows', dimension: '',
+    params: { groupby_names: DUPE_NAMES, skip_errors: 0, excluded_columns: [{ column: 'rowguid', general_type: 'X' }], severity: 'error' },
+    param_items: [{ key: 'groupby_names', label: 'columns compared', list: DUPE_NAMES, summary: '24 columns compared (all but rowguid)',
+      title: 'rowguid is left out: its type has no equality (identifiers, binary, arrays and the like), so it cannot be compared' },
+    { key: 'skip_errors', label: 'threshold failure count', text: '0' }, { key: 'severity', label: 'severity', text: 'error' }] })]);
+  t.document.defaultView.innerWidth = 1440;
+  const g = await open(t, 'sales.orders');
+  const row = g.querySelector('[data-qc-row]');
+  const d = row.querySelector('[data-qc-param-list]');
+  assert.equal(text(d.querySelector('summary')), '24 columns compared (all but rowguid)');
+  assert.ok(!d.open, 'the 24 names stay closed until asked for');
+  assert.match(d.querySelector('summary').getAttribute('title'), /rowguid is left out: its type has no equality/);
+  const params = visible(row);
+  assert.ok(!params.includes('column_3,'), 'no name list on the visible line');
+  assert.match(params, /24 columns compared \(all but rowguid\) · threshold failure count 0 · severity error/);
+});
+
+test('QS-2: no parameter reads as JSON, even from a server that sends no param_items', async () => {
+  const t = await setUp([check({ column_name: '', test_type: 'Dupe_Rows', check_key: 'sales.orders::Dupe_Rows',
+    params: { groupby_names: ['a', 'b'], excluded_columns: [{ column: 'rowguid', general_type: 'X' }], severity: 'error' } })]);
+  const g = await open(t, 'sales.orders');
+  const said = text(g.querySelector('[data-qc-row]'));
+  assert.doesNotMatch(said, /[[\]{}"]|general_type/, said);
+  assert.match(said, /excluded columns rowguid/);
+});
+
+test('QS-3: a not-established row carries no type-inference tail ("undetermined", "statements unresolved")', async () => {
+  const t = await setUp([check({ status: 'not_established', selectable: false, proposal_state: 'not_established',
+    reason: 'type not inferred · statements unresolved: Constant', reason_words: "the column's type could not be worked out" })]);
+  const g = await open(t, 'sales.orders');
+  const r = g.querySelector('[data-qc-reason]');
+  assert.equal(text(r), "the column's type could not be worked out");
+  assert.doesNotMatch(text(g), /undetermined|statements unresolved/);
+  assert.match(r.getAttribute('title'), /statements unresolved/, 'the stored sentence stays behind the title');
+});

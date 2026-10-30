@@ -98,12 +98,17 @@ export function paramsHtml(row) {
   // A server that sends no `param_items` still gets words: the raw parameters, nulls left out, keys spaced.
   const items = row.param_items || Object.entries(row.params || {})
     .filter(([k, v]) => k !== 'profile_surveyed_at' && v !== null && v !== undefined && v !== '')
-    .map(([k, v]) => ({ label: k.replace(/_/g, ' '), text: typeof v === 'object' ? JSON.stringify(v) : String(v) }));
+    // No JSON on screen: a list reads as its names (a record by its column), anything else as itself.
+    .map(([k, v]) => ({ label: k.replace(/_/g, ' '), text: Array.isArray(v)
+      ? v.map((x) => (x && typeof x === 'object' ? (x.column || x.name || Object.values(x).join(' ')) : String(x))).join(', ')
+      : (v && typeof v === 'object' ? Object.entries(v).map(([a, b]) => `${a.replace(/_/g, ' ')} ${b}`).join(', ') : String(v)) }));
   if (!items.length) return '<span class="text-ink-muted">none set</span>';
+  // `title` says why, where the server gives one (a column Duplicate Rows leaves out, and why it cannot be compared).
+  const tip = (i) => (i.title ? ` title="${esc(i.title)}"` : '');
   return items.map((i) => (i.list
-    ? `<details data-qc-param-list class="inline"><summary class="cursor-pointer">${esc(i.summary)}</summary>`
+    ? `<details data-qc-param-list class="inline"><summary class="cursor-pointer"${tip(i)}>${esc(i.summary)}</summary>`
       + `<span class="font-mono">${esc(i.list.join(', '))}</span></details>`
-    : `${esc(i.label)} <span class="text-ink">${esc(i.text)}</span>`)).join(' · ');
+    : `<span${tip(i)}>${esc(i.label)} <span class="text-ink">${esc(i.text)}</span></span>`)).join(' · ');
 }
 
 /** One check as a grid row. `ui` = { pending:Set, failed:Map, me }. */

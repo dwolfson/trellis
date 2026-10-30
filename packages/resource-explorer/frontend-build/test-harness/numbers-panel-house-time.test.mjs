@@ -32,3 +32,10 @@ test("a raw-measures answer line shows a stored time in the house format (data_c
   assert.equal(line, 'from surveyed at 2026-10-13 13:59 · to surveyed at 2026-10-20 21:07 · column count 1236');
   assert.ok(!/T\d\d:|\.\d{6}/.test(line), line);
 });
+
+test('QS-4: a number of days reads as days to one place, not "interval days 7.2976"', async () => {
+  await load();
+  const { scalarMeasures } = await import('/static/next/envelope.js');
+  const line = scalarMeasures({ interval_days: 7.2976, table_count: 68 });
+  assert.equal(line, 'interval 7.3 days · table count 68');
+});
