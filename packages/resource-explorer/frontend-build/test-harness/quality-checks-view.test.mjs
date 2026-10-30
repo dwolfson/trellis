@@ -119,7 +119,7 @@ test('opening a group reads that table only and draws a resizable grid with a se
   assert.equal(req.querySelectorAll('[data-qc-act="verdict"]').length, 2);
   assert.deepEqual([...req.querySelectorAll('[data-qc-act="verdict"]')].map((b) => text(b)), ['Accept', 'Reject']);
   assert.match(text(req), /completeness/);
-  assert.match(text(req), /threshold_value=0/);
+  assert.match(text(req), /threshold value 0/);
   assert.doesNotMatch(text(req), /profile_surveyed_at/, 'the profile date has its own column');
   assert.ok(g.querySelector('[data-rc-handle], .rc-handle, [data-grid-host]'), 'colresize grid');
   assert.equal(g.querySelectorAll('[role="columnheader"]').length, 6);
@@ -291,4 +291,58 @@ test('the grid never lets a long value push the page wide: cells break and the h
   const host = g.querySelector('[data-grid-host]');
   assert.match(host.className, /overflow-x-auto/);
   assert.match(host.className, /max-w-full/);
+});
+
+test('a test type is named in words, with the identifier and description behind a title; an unknown type shows its identifier', async () => {
+  const t = await setUp([check({ test_type: 'Alpha_Trunc', test_name: 'Alpha Truncation', test_description: 'Tests that maximum length has not dropped.' }),
+    check({ id: 2, check_key: 'sales.orders.b::X', column_name: 'b', test_type: 'Mystery_Type' })]);
+  const g = await open(t, 'sales.orders');
+  const cells = [...g.querySelectorAll('[data-qc-row]')].map((r) => text(r));
+  assert.match(cells[0], /Alpha Truncation/);
+  assert.doesNotMatch(cells[0], /Alpha_Trunc/);
+  assert.match(g.querySelector('[title*="Alpha_Trunc"]').getAttribute('title'), /Tests that maximum length/);
+  assert.match(cells[1], /Mystery_Type/);
+});
+
+test('parameters show only what is set, in words: a null is not a parameter', async () => {
+  const t = await setUp([check({ params: { baseline_ct: null, baseline_value: null, threshold_value: 0, severity: 'error' },
+    param_items: [{ key: 'threshold_value', label: 'threshold missing value count', text: '0' }, { key: 'severity', label: 'severity', text: 'error' }] }),
+  check({ id: 2, check_key: 'sales.orders.c::Y', column_name: 'c', params: { baseline_ct: null, threshold_value: 5, severity: 'warning' } })]);
+  const g = await open(t, 'sales.orders');
+  const [a, b] = [...g.querySelectorAll('[data-qc-row]')].map((r) => text(r));
+  assert.match(a, /threshold missing value count 0 · severity error/);
+  assert.doesNotMatch(a + b, /null|=/);
+  assert.match(b, /threshold value 5 · severity warning/, 'a server without param_items still gets words');
+});
+
+test('a long list of values is one summary with the list behind a disclosure', async () => {
+  const list = Array.from({ length: 60 }, (_, i) => `v${i}`);
+  const t = await setUp([check({ param_items: [{ key: 'baseline_value', label: 'list of placeholder values', list,
+    summary: 'standard list of placeholder values · 60 values' }] })]);
+  const g = await open(t, 'sales.orders');
+  const d = g.querySelector('[data-qc-param-list]');
+  assert.match(text(d.querySelector('summary')), /standard list of placeholder values · 60 values/);
+  assert.ok(d.querySelector('summary') && !d.open, 'closed until opened');
+});
+
+test('a whole-table check shows a muted dash with a title, not "none named"', async () => {
+  const t = await setUp([check({ dimension: '', column_name: '' })]);
+  const g = await open(t, 'sales.orders');
+  assert.doesNotMatch(text(g), /none named/);
+  const dash = g.querySelector('[data-qc-row] [title*="no data-quality dimension"]');
+  assert.equal(dash.textContent, '—');
+});
+
+test('a not-established row says it in the server\'s person words and keeps the stored sentence as a title', async () => {
+  const t = await setUp([check({ status: 'not_established', selectable: false, reason: 'its selection rule reads frequent_patterns, which the profile did not measure',
+    reason_words: 'needs the common text patterns, which this profile did not collect' })]);
+  const g = await open(t, 'sales.orders');
+  const r = g.querySelector('[data-qc-reason]');
+  assert.match(text(r), /needs the common text patterns/);
+  assert.match(r.getAttribute('title'), /selection rule/);
+});
+
+test('the default column widths fit the 800 px pane', async () => {
+  const { QC_COLS } = await import('/static/next/stages/quality-checks.js');
+  assert.ok(QC_COLS.columns.reduce((n, c) => n + c.def, 0) + QC_COLS.chrome <= 800);
 });

@@ -19,6 +19,7 @@ Each table group also says whether the table is opted into Table Comparison (the
 """
 from __future__ import annotations
 
+from resource_explorer.quality_words import parameter_items, reason_in_words, name_of_test_type
 from resource_explorer.surveyors.database.quality import table_comparison
 from resource_explorer.surveyors.database.quality.catalogue import (
     PORTED_TEST_TYPES,
@@ -79,13 +80,20 @@ def _row(proposal: dict, verdict: dict | None, catalogue: dict) -> dict:
         "table_name": proposal["table_name"],
         "column_name": proposal.get("column_name") or "",
         "test_type": proposal["test_type"],
+        # TestGen's own short name and description; "" when the catalogue has no such type (the identifier is shown)
+        "test_name": name_of_test_type(catalogue.get(proposal["test_type"])),
+        "test_description": getattr(catalogue.get(proposal["test_type"]), "description", "") or "",
         "dimension": _dimension_of(proposal["test_type"], catalogue),
         "origin": proposal.get("origin") or "",
         "general_type": proposal.get("general_type") or "",
         "params": proposal.get("params_json") if isinstance(proposal.get("params_json"), dict) else {},
+        # the parameters that have a value, in words (None is "not measured", so it is not listed)
+        "param_items": parameter_items(catalogue.get(proposal["test_type"]),
+                                       proposal.get("params_json") if isinstance(proposal.get("params_json"), dict) else {}),
         "profile_surveyed_at": proposal.get("profile_surveyed_at") or "",
         "proposal_state": proposal.get("state") or "",
         "reason": proposal.get("reason") or "",
+        "reason_words": reason_in_words(proposal.get("reason") or ""),
         "status": status,
         # a not-established check has no selector; every other one can be decided (again)
         "selectable": status != "not_established",
@@ -161,7 +169,8 @@ def build_review(registry, slug: str, *, test_type: str = "", dimension: str = "
         "counts": overall,
         "shown": shown,
         "filters": {
-            "test_types": [{"value": k, "count": v} for k, v in sorted(test_types.items())],
+            "test_types": [{"value": k, "count": v, "label": name_of_test_type(catalogue.get(k)) or k}
+                           for k, v in sorted(test_types.items())],
             "dimensions": [{"value": k, "count": v} for k, v in sorted(dimensions.items())],
             "states": [{"value": s, "count": overall[s]} for s in STATES],
         },

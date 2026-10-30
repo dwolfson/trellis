@@ -18,12 +18,13 @@ import { selectorHtml } from '/static/next/stages/curate-scope.js';
 export const QC_COLS = {
   id: 'db-quality-checks', chrome: 60,
   columns: [
-    { key: 'decision', label: 'Decision', def: 210, min: 150, align: 'left' },
-    { key: 'column', label: 'Column', def: 160, min: 90, align: 'left', breakLong: true },
-    { key: 'test', label: 'Test type', def: 130, min: 90, align: 'left', breakLong: true },
-    { key: 'dimension', label: 'Dimension', def: 110, min: 90, align: 'left' },
-    { key: 'params', label: 'Parameters', def: 260, min: 120, align: 'left', breakLong: true },
-    { key: 'profile', label: 'Profile of', def: 130, min: 100 },
+    // The defaults sum to 740 px beside 60 of chrome, so the table fits the 800 px pane without a wrapped Parameters column.
+    { key: 'decision', label: 'Decision', def: 160, min: 130, align: 'left' },
+    { key: 'column', label: 'Column', def: 120, min: 80, align: 'left', breakLong: true },
+    { key: 'test', label: 'Test type', def: 110, min: 80, align: 'left', breakLong: true },
+    { key: 'dimension', label: 'Dimension', def: 80, min: 60, align: 'left' },
+    { key: 'params', label: 'Parameters', def: 180, min: 110, align: 'left', breakLong: true },
+    { key: 'profile', label: 'Profile of', def: 90, min: 80 },
   ],
 };
 
@@ -51,7 +52,7 @@ export function rowCueHtml(row, { pending = false, failure = '', me = '' } = {})
   if (failure) return cueHtml('failed', `not recorded · ${failure}`, failure);
   const v = row.verdict;
   if (row.status === 'not_established') {
-    return cueHtml('not_established', 'not established', row.reason || 'no reason recorded');
+    return cueHtml('not_established', 'not established', row.reason_words || row.reason || 'no reason recorded');
   }
   if (v && (row.status === 'accepted' || row.status === 'rejected' || row.status === 'retired')) {
     const who = v.decided_by && v.decided_by === me ? 'you' : (v.decided_by || 'unknown');
@@ -79,8 +80,31 @@ export function verdictSelectorHtml(row, { me = '', pending = false } = {}) {
   });
 }
 
-const paramsText = (params) => Object.entries(params || {}).filter(([k]) => k !== 'profile_surveyed_at')
-  .map(([k, v]) => `${k}=${typeof v === 'object' && v !== null ? JSON.stringify(v) : v}`).join(' · ');
+/** The test type in words (TestGen's own short name), the identifier and description behind a title. A type the catalogue
+ *  does not know is shown by its identifier: the absence of a name is not made up. */
+export function testCellHtml(row) {
+  const name = row.test_name || row.test_type;
+  const title = [row.test_description, row.test_name ? row.test_type : ''].filter(Boolean).join(' · ');
+  return `<span title="${esc(title || row.test_type)}">${esc(name)}</span>`;
+}
+
+/** The dimension, or a muted dash when TestGen names none for this test (a title says so). */
+export const dimensionCellHtml = (row) => (row.dimension ? esc(row.dimension)
+  : '<span class="text-ink-muted" title="TestGen names no data-quality dimension for this test">—</span>');
+
+/** The parameters that have a value, in words: "threshold missing value count 0 · severity error". A long list of values
+ *  (the placeholder list) is one summary with the list behind a disclosure. A parameter with no value is not listed. */
+export function paramsHtml(row) {
+  // A server that sends no `param_items` still gets words: the raw parameters, nulls left out, keys spaced.
+  const items = row.param_items || Object.entries(row.params || {})
+    .filter(([k, v]) => k !== 'profile_surveyed_at' && v !== null && v !== undefined && v !== '')
+    .map(([k, v]) => ({ label: k.replace(/_/g, ' '), text: typeof v === 'object' ? JSON.stringify(v) : String(v) }));
+  if (!items.length) return '<span class="text-ink-muted">none set</span>';
+  return items.map((i) => (i.list
+    ? `<details data-qc-param-list class="inline"><summary class="cursor-pointer">${esc(i.summary)}</summary>`
+      + `<span class="font-mono">${esc(i.list.join(', '))}</span></details>`
+    : `${esc(i.label)} <span class="text-ink">${esc(i.text)}</span>`)).join(' · ');
+}
 
 /** One check as a grid row. `ui` = { pending:Set, failed:Map, me }. */
 export function checkRow(row, ui) {
@@ -92,13 +116,13 @@ export function checkRow(row, ui) {
     cells: {
       decision: `${verdictSelectorHtml(row, { me: ui.me, pending })}${rowCueHtml(row, { pending, failure, me: ui.me })}`,
       column: row.column_name ? esc(row.column_name) : '<span class="text-ink-muted">whole table</span>',
-      test: esc(row.test_type),
-      dimension: row.dimension ? esc(row.dimension) : '<span class="text-ink-muted">none named</span>',
-      params: `<span class="font-mono text-provenance">${esc(paramsText(row.params)) || '<span class="text-ink-muted">none</span>'}</span>`,
+      test: testCellHtml(row),
+      dimension: dimensionCellHtml(row),
+      params: `<span class="text-provenance">${paramsHtml(row)}</span>`,
       profile: esc(stamp(row.profile_surveyed_at)),
     },
     after: row.status === 'not_established' && row.reason
-      ? `<div data-qc-reason class="pb-[2px] pl-s2 text-provenance text-ink-muted">${esc(row.reason)}</div>`
+      ? `<div data-qc-reason title="${esc(row.reason)}" class="pb-[2px] pl-s2 text-provenance text-ink-muted">${esc(row.reason_words || row.reason)}</div>`
       : (row.accept_blocked
         ? `<div data-qc-reason data-qc-accept-blocked class="pb-[2px] pl-s2 text-provenance text-ink-muted">${esc(row.accept_blocked)}</div>` : ''),
   };
@@ -146,7 +170,7 @@ function filterSelect(name, label, options, value) {
   return `<label class="text-provenance text-ink-muted">${esc(label)}
     <select data-qc-filter="${name}" class="ml-[2px] border border-rule-strong bg-transparent text-ink">
       <option value="">all</option>${options.map((o) =>
-    `<option value="${esc(o.value)}"${o.value === value ? ' selected' : ''}>${esc(o.label || o.value || 'none named')} (${o.count})</option>`).join('')}
+    `<option value="${esc(o.value)}"${o.value === value ? ' selected' : ''}>${esc(o.label || o.value || 'no dimension')} (${o.count})</option>`).join('')}
     </select></label>`;
 }
 

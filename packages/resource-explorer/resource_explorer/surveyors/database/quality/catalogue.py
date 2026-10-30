@@ -190,6 +190,8 @@ class TestType:
     #: How upstream runs it: CAT (the default), QUERY (Dupe_Rows) or METADATA (the drift checks). Only a CAT type has
     #: a `cat_test_conditions` entry, so `measure`, `test_operator` and `test_condition` are empty for the others.
     run_type: str = RUN_CAT
+    #: Upstream's `default_parm_prompts`: the words for each default parameter, in `default_parm_columns` order.
+    default_parm_prompts: str = ""
 
     @property
     def severity(self) -> str:
@@ -271,6 +273,7 @@ def parse_test_type(raw: dict) -> TestType:
         generation_template=raw.get("generation_template"),
         null_measure_fails=bool(raw.get("null_measure_fails")),
         run_type=raw.get("run_type") or RUN_CAT,
+        default_parm_prompts=raw.get("default_parm_prompts") or "",
     )
 
 
