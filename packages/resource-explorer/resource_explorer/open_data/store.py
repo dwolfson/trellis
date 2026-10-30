@@ -134,6 +134,24 @@ class OpenDataStore:
                  json.dumps(row["record"]), retrieved_at, json.dumps(datacite) if datacite else "",
                  imported_by, now(), work_list_slug))
 
+    def datasets_in_work_list(self, work_list_slug: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute("SELECT * FROM open_data WHERE work_list_slug = ? ORDER BY imported_at, slug",
+                                (work_list_slug,)).fetchall()
+        return [self._dataset(r) for r in rows]
+
+    def update_scouted(self, slug: str, row: dict, retrieved_at: str) -> None:
+        """A scout re-read: the same columns an import fills, refreshed. Identity, portals and work list stay."""
+        flags = row["licence"]
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE open_data SET title = ?, publisher = ?, licence_id = ?, attribution = ?, share_alike = ?,"
+                " commercial = ?, modified = ?, formats_json = ?, size_bytes = ?, record_json = ?, retrieved_at = ?"
+                " WHERE slug = ?",
+                (_enc(row["title"]), _enc(row["publisher"]), _enc(row["licence_id"]), _enc(flags["attribution"]),
+                 _enc(flags["share_alike"]), _enc(flags["commercial"]), _enc(row["modified"]),
+                 json.dumps(row["formats"]), _enc(row["size"]), json.dumps(row["record"]), retrieved_at, slug))
+
     @staticmethod
     def _dataset(row) -> dict:
         d = dict(row)

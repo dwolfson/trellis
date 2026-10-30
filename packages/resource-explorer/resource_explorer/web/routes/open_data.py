@@ -226,6 +226,39 @@ def get_dataset(slug: str) -> dict:
 
 # ── directories ──────────────────────────────────────────────────────────────
 
+class FitRequest(BaseModel):
+    request: dict = {}
+
+
+@router.get("/work-lists/{slug}/scout-price")
+def scout_price(slug: str) -> dict:
+    """The scout's price line for a work list of open data, before the press."""
+    n = len(_store().datasets_in_work_list(slug))
+    if not n:
+        raise HTTPException(status_code=404, detail=f"No open data in work list '{slug}'.")
+    return service.scout_price(n)
+
+
+@router.post("/work-lists/{slug}/scout")
+def scout(slug: str, request: Request) -> dict:
+    """ExternalDataScout: re-read every dataset of the work list from its portal (one call each)."""
+    _signed_in_user(request)
+    try:
+        return service.scout_work_list(_store(), slug, transport=_transport())
+    except service.OpenDataError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/work-lists/{slug}/fit")
+def fit(slug: str, req: FitRequest, request: Request) -> dict:
+    """The fit row and winnow over the stored columns. No outbound call."""
+    _signed_in_user(request)
+    try:
+        return service.fit_work_list(_store(), slug, req.request)
+    except service.OpenDataError as exc:
+        raise _http(exc) from exc
+
+
 @router.get("/directories")
 def list_directories() -> list[dict]:
     return _store().list_directories()
