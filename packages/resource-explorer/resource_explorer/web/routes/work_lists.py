@@ -304,6 +304,9 @@ def run_set_step_route(slug: str, step: str) -> dict:
     dispatch of set steps is out of scope; this runs in RE and stores in RE's registry."""
     from resource_explorer.surveyors.survey_step_host import discover_set_steps, run_set_step, set_members
 
+    who = _requested_by()
+    if not who:
+        raise HTTPException(status_code=401, detail="sign in to run a set step: it runs as you")
     wls = WorkLists()
     wl = wls.get(slug)
     if not wl:
@@ -316,7 +319,7 @@ def run_set_step_route(slug: str, step: str) -> dict:
     if manifest is None:
         raise HTTPException(status_code=404, detail=f"no set step {step!r} is installed for this list's members")
     try:
-        return run_set_step(manifest, wls.registry, slug, members)
+        return {**run_set_step(manifest, wls.registry, slug, members), "requested_by": who}
     except Exception as exc:  # noqa: BLE001 - the step's refusal is the answer, in its words
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

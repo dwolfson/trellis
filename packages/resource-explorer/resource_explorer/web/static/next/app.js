@@ -1130,6 +1130,7 @@ function workListHost() {
     currentInvestigation: () => state.investigation,
     investigations: () => state.investigations,
     investigationName,
+    signedIn: () => !!signedInUser(),
     chooseInvestigationThen,
     makeCurrent: (slug) => setInvestigation(slug),
     refreshScope: async () => { await loadWorkingSet(); await refreshOpenInvestigation(state.investigation); renderSidebar(); },

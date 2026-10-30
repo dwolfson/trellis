@@ -97,13 +97,17 @@ def test_the_work_lists_page_offers_the_set_step_priced_and_runs_it(registry, mo
             return wl if slug == SET else None
 
     monkeypatch.setattr(routes, "WorkLists", FakeLists)
+    monkeypatch.setattr(routes, "_requested_by", lambda: "")
     monkeypatch.setattr("trellis_analytics.discovery.discover", lambda: {"set_probe": m})
     app = FastAPI()
     app.include_router(routes.router, prefix="/api/work-lists")
     client = TestClient(app)
     offers = client.get(f"/api/work-lists/{SET}/set-steps").json()
     assert offers["members"] == 3 and offers["offers"][0]["price"]["words"].startswith("3 member(s)")
+    assert client.post(f"/api/work-lists/{SET}/set-steps/set_probe/run").status_code == 401       # nobody signed in
+    monkeypatch.setattr(routes, "_requested_by", lambda: "erinoverview")
     ran = client.post(f"/api/work-lists/{SET}/set-steps/set_probe/run").json()
+    assert ran["requested_by"] == "erinoverview"
     assert ran["per_member"] == 3 and ran["rollups"] == 1
     assert client.post(f"/api/work-lists/{SET}/set-steps/nope/run").status_code == 404
     assert client.get("/api/work-lists/missing/set-steps").status_code == 404
