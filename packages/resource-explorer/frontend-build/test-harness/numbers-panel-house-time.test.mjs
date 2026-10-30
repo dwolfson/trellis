@@ -23,3 +23,12 @@ test('everything else reads as before', async () => {
   assert.equal(fmtScalar('2026-10-30', 'date'), '2026-10-30');
   assert.equal(fmtScalar(true), 'yes');
 });
+
+test("a raw-measures answer line shows a stored time in the house format (data_class_match, change_rates)", async () => {
+  await load();
+  const { scalarMeasures } = await import('/static/next/envelope.js');
+  const line = scalarMeasures({ from_surveyed_at: '2026-10-13T13:59:00.394550', to_surveyed_at: '2026-10-20T21:07:32.063533',
+    column_count: 1236 });
+  assert.equal(line, 'from surveyed at 2026-10-13 13:59 · to surveyed at 2026-10-20 21:07 · column count 1236');
+  assert.ok(!/T\d\d:|\.\d{6}/.test(line), line);
+});
