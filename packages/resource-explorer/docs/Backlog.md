@@ -10,6 +10,15 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ---
 
+## Test `TestThreadCap.test_exhaustion_rejects_and_worker_releases` flakes under pytest-xdist (found 2026-10-30)
+
+**Observed (coordinator, 2026-10-30):** `tests/test_api_reference_r3.py::TestThreadCap::test_exhaustion_rejects_and_worker_releases` failed under `-n 4` in gate b203, and again in a baseline run on the pyegeria 6.2.15 release. It got 8 "no answer in time" where it expects 6. It passed 3 of 3 times alone on the same merge, and b204 (the same tree) was green.
+
+**Likely cause:** the cap counts slots that an earlier test on the same xdist worker still holds. The fetch-slot drain added with the test speedup (#927) does not cover `live.fetch_openapi`'s thread cap.
+
+**Fix:** reset or drain that semaphore in a fixture, or assert the cap relative to the slots free at the start of the test.
+**Status:** small; not scheduled.
+
 ## Repositories added by scouting or the bulk add are never first-indexed for chat; the Analysis `rag_ingestion` step cannot do it (found 2026-10-18)
 
 **Observed (coordinator, laz, 2026-10-18):** 42 of 73 repositories have no pgvector collections: 34 with a 0-chunk `rag_ingestion` row and 8 with none. docling, marquez and amundsen have `collections = []` and `last_indexed_at = ''`, were created 2026-08-21 by the bulk add, and show no index, ingest or register operation in their activity log at all. For these repositories nothing about the code or documentation is searchable, so chat answers from documents are empty. Per-repo chunk counts for indexed repositories are correct (they include the shared `web_docs_*` collection, so a cross-repo sum double-counts it).

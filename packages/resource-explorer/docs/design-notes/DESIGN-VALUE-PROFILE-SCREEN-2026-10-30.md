@@ -171,3 +171,36 @@ ISO timestamp.
 
 Not in this brief: hashes and text-shape measures on screen (Admin-gated families; a later slice), comparing two
 batches, publishing from this tab, and the Curate "Profile of" link.
+
+## Addendum (2026-10-30, after #930/#931 shipped) — two statements of this note that the build made stale
+
+
+**A1 — §1 "value_profile has no container reader".** True on main 16fa5676 when the note was read; #930 added one.
+`DATABASE_ANALYSIS_CONTAINER_RESULTS_MAP["value_profile"]` now returns one row per table at level `field`
+(`/api/projects/<slug>/analyses/value_profile/measurements?entity_type=database&level=field`), and Q-0079's step line
+carries its own "the numbers behind this N ›" (`data-numbers-for=value_profile data-numbers-level=field`), so §5's
+two halves (the reader and the per-analysis button) are both built. §1 should read: "value_profile's container reader
+returns one row per table; before #930 every level fell through to the four scalars."
+
+**A2 — §4.3 "frequency_state NULL = 'not asked for · off in Admin'".** Too narrow. In
+`surveyors/database/quality/frequent_values.py` a NULL `frequency_state` means either (a) the column was not eligible —
+eligibility is TestGen's rule: a measured text column with 2 to 70 distinct values of at most 70 characters — or (b) the
+row predates the analysis. The screen (`value_profile_screen.py`) therefore reads a NULL in two ways, deciding
+eligibility from the column's own measured counts:
+
+| frequency_state | eligible? | cell | title |
+|---|---|---|---|
+| NULL | yes | "not asked for" | most common values were not collected on this run |
+| NULL | no | "not collected" | read only for text columns with 2 to 70 distinct values of at most 70 characters |
+| not_measured | — | "not read" | asked for, but could not be read inside its time budget |
+| read, no child rows | — | "only blank values" | the read found no value other than blanks |
+| non-text column | — | "—" (muted) | most common values are read for text columns only |
+
+So §4's four cell cases hold, but case 3 ("applies but not taken") splits into "not asked for" (eligible, run did
+not ask) and "not read" (asked, budget), and the ineligible column is a case-2 sibling ("not collected": the measure
+does not apply to this column's shape) rather than a case-3 absence. The "off in Admin" words were a guess at the
+cause and are not on screen; the cause of a NULL on an eligible column is not recorded, so "not asked for" is the
+honest extent. If the run summary later records why frequent values were skipped, the title can say it.
+
+Live read of both on adventureworks production.product (2026-10-30): "not collected" on name, productnumber
+(all distinct, so > 70) and sizeunitmeasurecode (one value, so < 2); no "not asked for" case exists on that database.
