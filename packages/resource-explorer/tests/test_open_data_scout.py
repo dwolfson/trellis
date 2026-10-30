@@ -167,3 +167,13 @@ def test_the_re3data_fixture_is_the_recorded_shape():
 
     text = (FIX / "re3data_repositories.xml").read_text()
     assert text.count("<repository>") == 40 and "<id>r3d100000001</id>" in text
+
+
+def test_the_scout_is_declared_in_the_analysis_catalog_once():
+    from resource_explorer.surveyors import analysis_catalog_reader as reader
+
+    entries = reader.get_analyses("open_data", include_egeria_live=False)
+    assert [e["id"] for e in entries] == ["external_data_scout"]
+    e = entries[0]
+    assert e["resource_types"] == ["open_data"] and e["availability"] == "inline" and e["action"] == "survey"
+    assert not [x for x in reader.get_analyses("repo", include_egeria_live=False) if x["id"] == "external_data_scout"]

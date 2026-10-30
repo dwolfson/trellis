@@ -3613,3 +3613,51 @@ filesystem_analyses:
       scope: resource
   # END GENERATED user steps (filesystem)
 
+
+# Open data (OD2, project owner approved 2026-10-30: "declare it"). The scout is a batch over a work list of
+# open_data members: definition × work list, one `describe` call per dataset, priced before the press
+# (open_data/service.py scout_price / scout_work_list; POST /api/open-data/work-lists/{slug}/scout). It runs inline
+# in that request, not through the queue, so availability says inline. It answers no catalog question yet.
+open_data_analyses:
+  - id: external_data_scout
+    name: "External Data Scout"
+    description: "Re-reads every dataset of a work list of open data from its portal (one call each, priced first) and refreshes what the portal states: license and its flags, publisher, modified date, formats, size, and the coverage and update cadence it gives. A portal that does not answer leaves the dataset's earlier values in place and says so; a field the portal does not state is reported as not reported by that source, never as empty."
+    resource_types: ["open_data"]
+    intent: scouting
+    perspectives: ["all", "Steward"]
+    annotation_types: []
+    source: local
+    run_time: minutes
+    availability: inline
+    action: survey
+    target_shape: whole_resource_only
+    recommended: true
+    answers_questions: false
+    egeria_registration:
+      candidate: false
+      native_process_ref: null
+    declaration:
+      result_kind: table
+      result_kind_note: "One row per dataset of the work list with its outcome (scouted, or could not be scouted and why); none of the other kinds fits a per-dataset outcome list."
+      measures:
+      - name: datasets_scouted
+        unit: datasets
+        as_of: retrieved_at
+        value_field: scouted
+      - name: datasets_not_scouted
+        unit: datasets
+        as_of: retrieved_at
+        value_field: could_not_scout
+      absence:
+        not_measured: 'Not scouted: the portal did not answer, so the dataset keeps the values it had.'
+        not_permitted: 'Not permitted: the portal refused the read.'
+        not_applicable: 'Not applicable: the dataset is not on a portal RE can read yet.'
+        measured_nothing: 'Scouted: the portal states nothing the dataset did not already hold.'
+      extents:
+      - name: rows
+        fields: [title, outcome, words]
+        rows: 25
+        order: datasets that could not be scouted first
+        truncation: '{shown} of {total} datasets shown, those not scouted first'
+        token_cost: 600
+        citation: '{analysis} · {scope} · as of {as_of}'
