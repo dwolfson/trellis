@@ -230,6 +230,18 @@ def test_the_stored_request_feeds_lens_terms_and_the_winnow(reg, store, monkeypa
     wl = service.import_datasets(store, _chosen(portal["slug"], *NAMES), work_list_name="r", transport=SaFake(),
                                  egeria_lookup=NO_EGERIA)["work_list"]
     got = c.post(f"/api/open-data/work-lists/{wl}/fit", json={"request": {}, "investigation": "inv-1"}).json()
-    assert got["request_source"] == "the data request on inv-1" and got["dropped"] == 3          # two share-alike rows, and the one that states "Global" against Texas
+    assert got["request_source"] == "the data request on inv-1" and got["dropped"] == 2          # the two share-alike rows; "Global" covers Texas
     plain = c.post(f"/api/open-data/work-lists/{wl}/fit", json={"request": {}, "investigation": "inv-none"}).json()
     assert plain["request_source"] == "no data request stated" and plain["dropped"] == 0
+
+
+def test_a_global_coverage_statement_covers_any_place_and_a_stated_other_place_still_drops(store, imported):
+    got = service.fit_work_list(store, imported, {"places": ["Texas"]})
+    stated = next(r for r in got["rows"] if r["coverage"]["places"] != NOT_REPORTED)       # states "Global"
+    assert stated["cells"]["place"] == {"status": "fits", "words": "covers Texas (global)"}
+    assert got["dropped"] == 0
+    ds = {"slug": "x", "title": "t", "identifier": "i", "licence": {}, "formats": [], "size": NOT_REPORTED, "licence_id": NOT_REPORTED,
+          "record": {"extras": [{"key": "spatial_coverage", "value": "France"}]}}
+    assert fit.fit_row(ds, fit.DataRequest(places=["Texas"]))["cells"]["place"]["status"] == "does_not_fit"
+    ds["record"]["extras"][0]["value"] = "Worldwide"
+    assert fit.fit_row(ds, fit.DataRequest(places=["Texas"]))["cells"]["place"]["words"] == "covers Texas (global)"

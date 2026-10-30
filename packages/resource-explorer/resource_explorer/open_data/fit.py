@@ -21,6 +21,9 @@ from resource_explorer.open_data.absence import NOT_REPORTED
 FITS, DOES_NOT_FIT, COULD_NOT_CHECK, NOT_STATED = "fits", "does_not_fit", "could_not_check", "not_stated"
 PASSES, DROPPED, OPEN = "passes", "dropped", "open"       # row verdicts: OPEN = nothing rules it out, not all cells fit
 
+#: Coverage statements that mean "everywhere".
+GLOBAL_WORDS = ("global", "worldwide", "world-wide", "whole world", "entire world", "all countries")
+
 _YEAR = re.compile(r"(?<!\d)(1[89]\d\d|20\d\d)(?!\d)")
 
 
@@ -142,6 +145,9 @@ def _place_cell(cov: dict, req: DataRequest) -> dict:
     if cov["places"] == NOT_REPORTED:
         return _cell(COULD_NOT_CHECK, "the portal states no coverage place")
     text = str(cov["places"]).lower()
+    # A worldwide statement covers any place (project owner, 2026-10-30): a row is dropped only on a stated mismatch.
+    if any(w in text for w in GLOBAL_WORDS):
+        return _cell(FITS, f"covers {', '.join(req.places)} (global)")
     hit = [p for p in req.places if p.lower() in text]
     return _cell(FITS, f"states {cov['places']}") if hit else _cell(DOES_NOT_FIT, f"states {cov['places']}, not {', '.join(req.places)}")
 
