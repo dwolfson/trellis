@@ -4347,8 +4347,33 @@ async function loadValueProfilePane() {
     api: { getValueProfile, getValueProfileTable },
     table: state.profileTable,
     onTable: (key) => { if (slug === state.selectedSlug && state.subTab === 'value_profile') { state.profileTable = key; writeUrl(); } },
-    openChecks: () => { state.stage = 'curate'; state.subTab = 'curate_structure'; writeUrl(); renderIntentNav(); loadPane(); },
+    openChecks: (key) => openChecksForTable(key),
   });
+}
+
+/** The Value profile's Checks door: Curate › Structure, landed on that table's group of proposed checks (opened, and
+ *  scrolled to) rather than at the top of the page. The groups are drawn by quality-checks.js after its own read, so
+ *  the door waits for the group to appear, up to `waitMs`; a table with no group (no proposal matches) leaves the page
+ *  where Curate opened it. Returns the group element, or null. */
+export async function openChecksForTable(key, { waitMs = 8000 } = {}) {
+  await openCurate({ tab: 'curate_structure' });
+  if (!key) return null;
+  const find = () => [...document.querySelectorAll('[data-qc-group]')].find((e) => e.dataset.qcGroup === key) || null;
+  const started = Date.now();
+  let group = find();
+  while (!group && Date.now() - started < waitMs) {
+    await new Promise((r) => setTimeout(r, 100));
+    if (state.stage !== 'curate') return null;          // the person went elsewhere meanwhile
+    group = find();
+  }
+  if (!group) return null;
+  if (!group.open) {
+    group.open = true;
+    // Opening by script fires `toggle` in a browser but not everywhere; quality-checks.js ignores a second read.
+    group.dispatchEvent(new group.ownerDocument.defaultView.Event('toggle'));
+  }
+  group.scrollIntoView?.({ block: 'start' });
+  return group;
 }
 
 /** Open the Value profile tab on one table ("schema.table"): the doors' one way in. */

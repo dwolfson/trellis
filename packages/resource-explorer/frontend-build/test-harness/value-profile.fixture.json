@@ -66,6 +66,8 @@
      "text": 1
     },
     "line": "sales.empty_t · 0 rows · empty table · 2 columns measured · profiled 11:12",
+    "kind": "table",
+    "rows_words": "0 rows · empty table",
     "openable": true
    },
    {
@@ -87,6 +89,8 @@
      "date": 1
     },
     "line": "sales.orders · 4 rows · 5 columns measured · profiled 11:12",
+    "kind": "table",
+    "rows_words": "4 rows",
     "openable": true
    },
    {
@@ -103,6 +107,8 @@
     },
     "type_counts": {},
     "line": "sales.big · not measured · profile incomplete · exceeded 5 min · counts not measured",
+    "kind": "table",
+    "rows_words": "rows not counted",
     "openable": false
    },
    {
@@ -119,6 +125,8 @@
     },
     "type_counts": {},
     "line": "sales.v_orders · not applicable · a view, not a table: only tables are read",
+    "kind": "view",
+    "rows_words": "rows not counted",
     "openable": false
    }
   ]
@@ -139,7 +147,7 @@
      "cells": {
       "type": {
        "text": "text",
-       "title": "general type A",
+       "title": "text: character values",
        "muted": false
       },
       "filled": {
@@ -206,7 +214,7 @@
      "cells": {
       "type": {
        "text": "number",
-       "title": "general type N",
+       "title": "number: integer and decimal values",
        "muted": false
       },
       "filled": {
@@ -249,7 +257,7 @@
      "cells": {
       "type": {
        "text": "boolean",
-       "title": "general type B",
+       "title": "boolean: true or false",
        "muted": false
       },
       "filled": {
@@ -292,7 +300,7 @@
      "cells": {
       "type": {
        "text": "date",
-       "title": "general type D",
+       "title": "date: dates and timestamps",
        "muted": false
       },
       "filled": {
@@ -335,7 +343,7 @@
      "cells": {
       "type": {
        "text": "text",
-       "title": "general type A",
+       "title": "text: character values",
        "muted": false
       },
       "filled": {
@@ -387,7 +395,7 @@
      "cells": {
       "type": {
        "text": "number",
-       "title": "general type N",
+       "title": "number: integer and decimal values",
        "muted": false
       },
       "filled": {
@@ -430,7 +438,7 @@
      "cells": {
       "type": {
        "text": "text",
-       "title": "general type A",
+       "title": "text: character values",
        "muted": false
       },
       "filled": {

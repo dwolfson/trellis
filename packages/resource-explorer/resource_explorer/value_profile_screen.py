@@ -28,6 +28,16 @@ STATE_WORDS = {"measured": "measured", "not_measured": "not measured", "not_perm
 #: Header order, and the order not-measured tables are listed in after the measured ones.
 STATE_ORDER = ("measured", "not_measured", "not_permitted", "not_applicable")
 TOP_VALUES = 3
+#: "a <type> column" with its article, for titles ("not a measure of a number column").
+TYPE_PHRASE = {"A": "a text column", "N": "a number column", "D": "a date column", "B": "a boolean column",
+               "T": "a time column", "X": "a column of another type"}
+#: What each general type holds, in words: the Type cell's title (never TestGen's letter).
+TYPE_MEANING = {"A": "text: character values", "N": "number: integer and decimal values",
+                "D": "date: dates and timestamps", "B": "boolean: true or false", "T": "time: times of day",
+                "X": "other: identifiers, binary, arrays and other types the profile does not measure by kind"}
+#: Why a column was not read, by the opening of its reason: what the table is (the not-a-table reasons).
+KIND_BY_REASON = (("a view,", "view"), ("a materialized view,", "materialized view"),
+                  ("a foreign table,", "foreign table"))
 
 
 def plural(n: int, one: str, many: str | None = None) -> str:
@@ -52,7 +62,7 @@ def _cell(text: str, title: str = "", muted: bool = False) -> dict:
 
 
 def _not_a_measure(gt: str | None) -> dict:
-    return _cell("—", f"not a measure of a {type_word(gt)} column", muted=True)
+    return _cell("—", f"not a measure of {TYPE_PHRASE.get(gt or 'X', TYPE_PHRASE['X'])}", muted=True)
 
 
 def _number(v: Any) -> str:
@@ -227,6 +237,16 @@ def _table_reason(t: dict) -> str:
     return max(t["reasons"], key=lambda r: t["reasons"][r]) if t["reasons"] else ""
 
 
+def table_kind(t: dict) -> str:
+    """"table", or what else it is (view, materialized view, foreign table) when that is why it was not read."""
+    reason = _table_reason(t)
+    return next((kind for lead, kind in KIND_BY_REASON if reason.startswith(lead)), "table")
+
+
+def rows_words(rec: int | None) -> str:
+    return "rows not counted" if rec is None else ("0 rows · empty table" if rec == 0 else plural(rec, "row"))
+
+
 def table_line(t: dict, surveyed_at: str) -> str:
     """The card's line after the table's name."""
     name = f"{t['schema_name']}.{t['table_name']}"
@@ -235,16 +255,14 @@ def table_line(t: dict, surveyed_at: str) -> str:
         reason = _table_reason(t)
         return f"{name} · {state_word(state)}" + (f" · {reason}" if reason else "")
     measured, total = t["state_counts"]["measured"], t["column_count"]
-    rec = t["record_ct"]
-    rows = "rows not counted" if rec is None else ("0 rows · empty table" if rec == 0 else plural(rec, "row"))
+    rows = rows_words(t["record_ct"])
     cols = plural(measured, "column") + " measured" if measured == total else f"{measured:,} of {plural(total, 'column')} measured"
     return f"{name} · {rows} · {cols} · profiled {when_words(surveyed_at)[11:]}"
 
 
 def _reason_phrase(reason: str, tables: int) -> str:
     """A not-measured reason as a short header phrase about tables."""
-    for lead, one in (("a view,", "view"), ("a materialized view,", "materialized view"),
-                      ("a foreign table,", "foreign table")):
+    for lead, one in KIND_BY_REASON:
         if reason.startswith(lead):
             return plural(tables, one)
     if reason.startswith("profile incomplete · exceeded "):
@@ -305,7 +323,8 @@ def build_summary(registry, slug: str) -> dict:
              "state_words": state_word(_table_state(t)), "reason": _table_reason(t), "record_ct": t["record_ct"],
              "column_count": t["column_count"], "measured_count": t["state_counts"].get("measured", 0),
              "state_counts": t["state_counts"], "type_counts": t["type_counts"],
-             "line": table_line(t, value["surveyed_at"]),
+             "line": table_line(t, value["surveyed_at"]), "kind": table_kind(t),
+             "rows_words": rows_words(t["record_ct"]),
              "openable": _table_state(t) == "measured"}
             for t in ordered
         ],
@@ -346,7 +365,7 @@ def build_table(registry, slug: str, schema: str, table: str) -> dict | None:
             continue
         values = sorted(freq.get(c["column_name"], []), key=lambda v: v.get("value_rank") or 0)
         row["cells"] = {
-            "type": _cell(type_word(c.get("general_type")), f"general type {c.get('general_type') or 'X'}"),
+            "type": _cell(type_word(c.get("general_type")), TYPE_MEANING.get(c.get("general_type") or "X", "")),
             "filled": filled_cell(c),
             "distinct": distinct_cell(c),
             "range": range_cell(c),
@@ -369,9 +388,7 @@ def container_rows(registry, slug: str) -> list[dict] | None:
     for t in summary["tables"]:
         name = f"{t['schema_name']}.{t['table_name']}"
         if t["state"] == "measured":
-            rec = t["record_ct"]
-            rows = "rows not counted" if rec is None else ("0 rows · empty table" if rec == 0 else plural(rec, "row"))
-            value = f"{rows} · {t['measured_count']:,} of {plural(t['column_count'], 'column')} measured"
+            value = f"{t['rows_words']} · {t['measured_count']:,} of {plural(t['column_count'], 'column')} measured"
             note = ""
         else:
             value, note = t["state_words"], t["reason"]
