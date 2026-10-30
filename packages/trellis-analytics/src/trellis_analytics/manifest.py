@@ -144,6 +144,10 @@ def tier_refusal(tier: str) -> str:
 class StepManifest(_TrellisManifest):
     """Level 2's declaration (brief 2c'): what the wrapper needs to run a user's code as a survey step."""
     kind: Literal["step"] = "step"
+    #: What one run is about. `resource` (the default): one resource. `set`: a set of resources (a work list's members) as
+    #: one subject; the host runs it once, stores a result per member (scope = the member's slug) and one roll-up for the set
+    #: (scope = the set's slug), and the price is the sum of the members'.
+    subject: Literal["resource", "set"] = "resource"
     annotation_type: str = "ResourceMeasureAnnotation"
     credential_tier: str = "none"
     inputs: list[str] = Field(default_factory=lambda: ["ods"])
@@ -243,6 +247,13 @@ class StepManifest(_TrellisManifest):
             raise ValueError(f"input {', '.join(repr(u) for u in unknown)} is not one the wrapper hands a step "
                              f"(known: {', '.join(STEP_INPUTS)})")
         return v
+
+    @model_validator(mode="after")
+    def _a_set_has_no_single_connection(self) -> "StepManifest":
+        if self.subject == "set" and "connection" in self.inputs:
+            raise ValueError("a step whose subject is a set declares the 'connection' input: one connection cannot serve "
+                             "every member, so read the members through 'ods'")
+        return self
 
     @model_validator(mode="after")
     def _connection_needs_a_tier(self) -> "StepManifest":
