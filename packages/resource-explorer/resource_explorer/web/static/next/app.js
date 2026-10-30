@@ -9908,8 +9908,9 @@ function provenanceLine(entry, i, lines, st) {
     const when = s.lastRun ? `run ${rel ? `<span class="tnum">${esc(rel)}</span>` : esc(s.lastRun)}`
       : (s.neverRun ? '' : 'run time not recorded');
     const said = s.neverRun && rowSaysNotYetRun ? '' : s.sentence;
+    const cappedTitle = s.capped ? 'a lower bound: the read was cut off' : '';
     return `<div data-step-line="${esc(s.id)}" class="ml-[22px] mt-[5px] text-provenance text-ink-muted">${esc(s.id)}${
-      said ? ` · ${tnum(esc(said))}` : ''}${when ? ` · ${when}` : ''}${
+      said ? ` · <span ${cappedTitle ? `data-capped="true" title="${esc(cappedTitle)}"` : ''}>${tnum(esc(said))}</span>` : ''}${when ? ` · ${when}` : ''}${
       s.known ? ` · <button data-numbers-step="${i}" data-numbers-for="${esc(s.id)}" data-numbers-level="${esc(primaryQuestionLevel(entry))}"
         class="cursor-pointer bg-transparent text-accent-ink underline">the numbers behind this ›</button>` : ''} · <button data-rerun-for="${esc(s.id)}" data-rerun-row="${i}" ${
       blocked ? `disabled title="${esc(s.runnableReason)}"` : ''} class="${blocked ? 'cursor-not-allowed text-ink-muted' : 'cursor-pointer text-accent-ink'} bg-transparent underline">${
