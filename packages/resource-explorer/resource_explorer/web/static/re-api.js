@@ -224,6 +224,7 @@ export const openDataLensTerms = (lens, investigation = '') =>
   post(od(`/lens-terms${investigation ? `?investigation=${encodeURIComponent(investigation)}` : ''}`), lens);
 export const listPortalDirectories = () => get(od('/directories'));
 export const registerPortalDirectory = (body) => post(od('/directories'), body);
+export const openDataDirectoryPrice = (slug, pages) => get(od(`/directories/${encodeURIComponent(slug)}/price?pages=${pages}`));
 export const runPortalDirectory = (slug, body) => post(od(`/directories/${encodeURIComponent(slug)}/run`), body);
 export const importDirectoryPortals = (slug, body) => post(od(`/directories/${encodeURIComponent(slug)}/import`), body);
 export const listOpenData = () => get(od('/datasets'));

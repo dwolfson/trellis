@@ -306,6 +306,20 @@ def _directory_row_state(store: OpenDataStore, row: dict) -> dict:
     return {**row, "already_registered": bool(held), "adapter": cls.manifest.name if cls else "", "status": status}
 
 
+def directory_price(store: OpenDataStore, directory_slug: str, pages: int) -> dict:
+    """The price line of a directory run, from the adapter's manifest (the same `price` the run uses)."""
+    d = store.get_directory(directory_slug)
+    if not d:
+        raise NotFound(f"No directory '{directory_slug}'.")
+    cls = adapter_for_api_kind(d["api_kind"], "directory")
+    if cls is None:
+        raise OpenDataError(f"No directory adapter for {d['api_kind']} yet.")
+    if not 1 <= pages <= MAX_SEARCH_PAGES:
+        raise OpenDataError(f"A directory run is 1 to {MAX_SEARCH_PAGES} pages.")
+    priced = price(cls.manifest, pages)
+    return {"pages": pages, "calls": priced.calls, "line": priced.line}
+
+
 def run_directory(store: OpenDataStore, directory_slug: str, *, pages: int = 1, terms: str = "", transport) -> dict:
     d = store.get_directory(directory_slug)
     if not d:

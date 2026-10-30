@@ -220,7 +220,7 @@ def get_dataset(slug: str) -> dict:
     if not d:
         raise HTTPException(status_code=404, detail=f"No open data '{slug}'.")
     d["stated_by"] = d["portals"]
-    d["survey"] = "no survey yet · scout arrives with OD2"
+    d["survey"] = "Nothing has been measured for this yet · never run"
     return d
 
 
@@ -238,6 +238,15 @@ def register_directory(reg: DirectoryRegistration, request: Request) -> dict:
         return service.register_directory(
             _store(), display_name=reg.display_name, api_kind=reg.api_kind,
             base_url=reg.base_url or "https://dataportals.org/api/data.json", registered_by=who)
+    except service.OpenDataError as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/directories/{slug}/price")
+def directory_price(slug: str, pages: int = 8) -> dict:
+    """A directory run's price line, before the press (one source for every price line)."""
+    try:
+        return service.directory_price(_store(), slug, pages)
     except service.OpenDataError as exc:
         raise _http(exc) from exc
 
