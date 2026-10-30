@@ -49,9 +49,11 @@ MEASURED_KINDS = ("measure", "series", "distribution", "graph")
 #: The kinds that declare how their categories add up (`CategoriesDeclaration`).
 CATEGORY_KINDS = ("graph", "distribution")
 
-#: Egeria annotation types a person confirms in Curate before they become a fact (owner's channel rule: facts only
-#: through Curate). A proposal may be decided `automatic` only where its annotation type is one of these.
-CURATE_CONFIRMED_TYPES = ("ClassificationAnnotation",)
+#: Why a proposal is never decided automatically (owner's rule, 2026-10-15): a proposal becomes a fact only through a
+#: person's decision in Curate. `decided_by` keeps "automatic" in its vocabulary so a later ruling can admit it without a
+#: model change; until then every annotation type refuses it.
+AUTOMATIC_REFUSAL = ("proposals are decided by a person in Curate (ruling 2026-10-15); no automatic path exists, so "
+                     "declare decided_by 'curator'")
 
 #: The words a lower bound travels with wherever a figure would be derived from it.
 LOWER_BOUND_WORDS = "not derived: the count is a lower bound"

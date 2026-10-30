@@ -25,7 +25,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pyegeria.view.analytic_registry import AnalyticFunctionSpec
 
-from trellis_analytics.declaration import CURATE_CONFIRMED_TYPES, AnnotationDeclaration, Declaration
+from trellis_analytics.declaration import AUTOMATIC_REFUSAL, AnnotationDeclaration, Declaration
 
 Source = Literal["ods", "egeria", "resource"]
 
@@ -307,11 +307,7 @@ class StepManifest(_TrellisManifest):
                              f"({', '.join(names)})")
         self._one_type_declaration(d)
         if d.proposal is not None and d.proposal.decided_by == "automatic":
-            types = self.annotation_types()
-            if not any(t in CURATE_CONFIRMED_TYPES for t in types):
-                raise ValueError("declaration.proposal decides 'automatic', and the step writes "
-                                 f"{', '.join(types)}, none of which Curate confirms ({', '.join(CURATE_CONFIRMED_TYPES)}): "
-                                 "a proposal becomes a fact only through Curate, so declare decided_by 'curator'")
+            raise ValueError(f"declaration.proposal decides 'automatic': {AUTOMATIC_REFUSAL}")
         if d.answers is None:
             d.answers = list(self.questions)
         elif sorted(d.answers) != sorted(self.questions):

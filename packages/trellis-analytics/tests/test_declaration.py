@@ -358,14 +358,17 @@ def _load_step(name):
         mp.undo()
 
 
-def test_a_proposal_deciding_automatic_is_refused_unless_the_manifests_type_is_one_curate_confirms():
+def test_automatic_is_refused_for_a_proposal_whatever_the_annotation_type():
     hub = _load_step("hub_tables")
+    for atype in ("ClassificationAnnotation", "ResourceMeasureAnnotation"):
+        body = hub.model_dump()
+        body["declaration"]["proposal"]["decided_by"] = "automatic"
+        if atype != "ClassificationAnnotation":
+            body["annotation_type"] = atype
+            body["measure_annotation_types"] = {}
+            body["declaration"]["measures"][1]["annotation"] = None
+        with pytest.raises(ValidationError) as exc:
+            StepManifest.model_validate(body)
+        assert "proposals are decided by a person in Curate (ruling 2026-10-15); no automatic path exists" in refusal(exc.value)
     body = hub.model_dump()
-    body["declaration"]["proposal"]["decided_by"] = "automatic"
-    StepManifest.model_validate(body)       # the hub step writes a ClassificationAnnotation, which Curate confirms
-    body["annotation_type"] = "ResourceMeasureAnnotation"
-    body["measure_annotation_types"] = {}
-    body["declaration"]["measures"][1]["annotation"] = None
-    with pytest.raises(ValidationError) as exc:
-        StepManifest.model_validate(body)
-    assert "none of which Curate confirms" in refusal(exc.value)
+    assert body["declaration"]["proposal"]["decided_by"] == "curator" and StepManifest.model_validate(body)
