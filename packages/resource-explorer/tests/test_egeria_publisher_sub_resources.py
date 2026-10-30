@@ -42,10 +42,7 @@ def _publisher(registry):
     # Nothing pre-exists in Egeria by default.
     pub._automated_curation.get_guid_for_name.return_value = "No elements found"   # pyegeria's real miss
 
-    async def _fake_async_template(type_name):
-        return f"template-{type_name}"
-
-    pub._automated_curation._async_get_template_guid_for_technology_type = _fake_async_template
+    pub._automated_curation.get_template_guid_for_technology_type.side_effect = lambda type_name: f"template-{type_name}"
     counter = {"n": 0}
 
     def _create(body):

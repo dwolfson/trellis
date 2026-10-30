@@ -485,7 +485,7 @@ def _sub_resource_publisher(tmp_path, lookup):
     pub = EgeriaPublisher(platform_url="https://localhost:9443", view_server="qs-view-server", registry=reg)
     pub._automated_curation = _fake(AutomatedCuration)
     pub._metadata_expert = wire_unique_name(_fake(MetadataExpert), lookup)
-    pub._automated_curation._async_get_template_guid_for_technology_type.return_value = GUID
+    pub._automated_curation.get_template_guid_for_technology_type.return_value = GUID
     pub._automated_curation.create_elem_from_template.return_value = GUID
     pub._connect = lambda *a, **k: None                    # the clients are the doubles above
     return pub, reg
