@@ -682,10 +682,11 @@ class EgeriaPublisher:
                 f"start_time={start_time.isoformat()} requested but the native-survey fallback path "
                 f"has no start_time parameter — firing immediately."
             )
-        import asyncio
+        # pyegeria has no public initiate method that takes a qualifiedName; its run_sync (6.2.16) is
+        # what the public ones use, and is safe on a loopless worker thread or inside a running loop.
+        from pyegeria.core.async_runner import run_sync
 
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(
+        return run_sync(
             self._automated_curation._async_initiate_survey(native.qualified_name, target_guid)
         )
 
@@ -2114,12 +2115,10 @@ class EgeriaPublisher:
             log.warning("Could not rename %s to %r (left as it was): %s", guid, display_name, exc)
 
     def _resolve_template_guid(self, technology_type: str) -> str:
-        import asyncio
-
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(
-            self._automated_curation._async_get_template_guid_for_technology_type(technology_type)
-        )
+        # The sync method, not get_event_loop().run_until_complete(the coroutine): without nest_asyncio
+        # (pyegeria 6.2.16) get_event_loop() raises on any thread that has run asyncio.run, and
+        # publish_sub_resources then quietly created nothing (tests/test_pyegeria_6216_sync_bridge.py).
+        return self._automated_curation.get_template_guid_for_technology_type(technology_type)
 
     def _find_element_guid(self, qualified_name: str) -> str:
         """Return the GUID of an existing Egeria element by qualified name,

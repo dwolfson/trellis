@@ -1294,16 +1294,13 @@ class PyegeriaCatalogueGateway:
 
     def _initiate_action_type(self, qualified_name: str, action_targets: list[dict],
                               request_parameters: dict[str, str]) -> str:
-        import asyncio
         ac = self._client("AutomatedCuration")
         body = {"class": "InitiateGovernanceActionTypeRequestBody",
                 "governanceActionTypeQualifiedName": qualified_name,
                 "actionTargets": action_targets, "requestParameters": dict(request_parameters)}
         url = f"{ac.ref_curation_command_base}/governance-action-types/initiate"
         try:
-            loop = asyncio.get_event_loop()
-            response = loop.run_until_complete(ac._async_make_request("POST", url, body))
-            res = response.json()
+            res = ac.make_request("POST", url, body).json()
         except Exception as exc:
             raise GatewayError(_short(exc)) from exc
         return parse_initiate_answer(res)

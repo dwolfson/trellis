@@ -148,12 +148,10 @@ def test_the_gateway_initiates_the_action_type_with_new_asset_and_the_template_p
     resp = MagicMock()
     resp.json.return_value = live.LIVE_INITIATE_RESPONSE
 
-    async def make(method, url, body):
+    def make(method, url, body):
         make.seen = (method, url, body)
         return resp
-    ac._async_make_request = make
-    import asyncio
-    asyncio.set_event_loop(asyncio.new_event_loop())
+    ac.make_request = make
     params = gw.schema_placeholders(ent, "sales")
     guid = g.initiate_catalog_action("schema-guid", params)
     method, url, body = make.seen

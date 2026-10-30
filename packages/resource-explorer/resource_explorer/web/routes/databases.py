@@ -1023,12 +1023,8 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
     submitted_by = requested_by()      # read HERE, in the request; threads get it passed
 
     def _do_publish() -> dict[str, Any]:
-        import asyncio as _aio
         import json as _json
         from resource_explorer.surveyors.database.egeria_database_surveyor import EgeriaDatabaseSurveyor
-        # pyegeria sync wrappers call asyncio.get_event_loop() — set one for this thread
-        loop = _aio.new_event_loop()
-        _aio.set_event_loop(loop)
 
         # Resolve: request overrides > stored values > env vars (inside EgeriaDatabaseSurveyor)
         resolved_db_user = req.db_user or database.db_user
@@ -1055,23 +1051,19 @@ async def publish_database_survey(slug: str, req: PublishRequest = PublishReques
         schema_info = survey_data.get("schema_info", {})
         statistics  = survey_data.get("statistics", {})
 
-        try:
-            result = surveyor.publish_local_survey(
-                db_entity=database,
-                schema_info=schema_info,
-                schema_count=latest.get("schema_count", 0),
-                table_count=latest.get("table_count", 0),
-                column_count=latest.get("column_count", 0),
-                surveyed_at=latest.get("surveyed_at", ""),
-                registry=registry,
-                db_user=resolved_db_user,
-                db_pwd=resolved_db_pwd,
-                statistics=statistics,
-                submitted_by=submitted_by,
-            )
-        finally:
-            loop.close()
-            _aio.set_event_loop(None)
+        result = surveyor.publish_local_survey(
+            db_entity=database,
+            schema_info=schema_info,
+            schema_count=latest.get("schema_count", 0),
+            table_count=latest.get("table_count", 0),
+            column_count=latest.get("column_count", 0),
+            surveyed_at=latest.get("surveyed_at", ""),
+            registry=registry,
+            db_user=resolved_db_user,
+            db_pwd=resolved_db_pwd,
+            statistics=statistics,
+            submitted_by=submitted_by,
+        )
         return result
 
     try:

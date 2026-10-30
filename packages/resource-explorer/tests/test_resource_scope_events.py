@@ -292,9 +292,7 @@ def _publisher_with_egeria(registry):
     exists: dict[str, str] = {}
     pub._find_element_guid = lambda qn: exists.get(qn, "")
 
-    async def _tmpl(type_name):
-        return f"template-{type_name}"
-    pub._automated_curation._async_get_template_guid_for_technology_type = _tmpl
+    pub._automated_curation.get_template_guid_for_technology_type.side_effect = lambda type_name: f"template-{type_name}"
     created = []
 
     def _create(body):

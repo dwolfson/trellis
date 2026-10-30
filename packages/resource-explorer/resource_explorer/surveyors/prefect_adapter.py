@@ -203,12 +203,11 @@ def log_prefect_reachability_at_startup() -> None:
 # 1. It is not what makes this module work. Every sync/async bridge in RE now
 #    hands the coroutine to a thread with its own fresh loop
 #    (resource_explorer/concurrency.py), which needs no loop re-entrancy at all.
-# 2. It was redundant regardless. pyegeria declares nest-asyncio as its own
-#    dependency and applies it at package import
-#    (pyegeria/view/mermaid_utilities.py:20, reached from pyegeria/__init__.py),
-#    so the global patch is in effect for any process that touches pyegeria
-#    whether or not this module is imported — meaning RE's copy never changed
-#    the outcome, only who appeared to be responsible for it.
+# 2. It was redundant regardless. pyegeria then declared nest-asyncio as its own
+#    dependency and applied it at package import, so the global patch was in
+#    effect for any process that touched pyegeria whether or not this module
+#    was imported. Since pyegeria 6.2.16 (egeria-python #513) pyegeria neither
+#    declares nor applies it, and nothing in RE's process is patched.
 #
 # The cross-loop hazard behind the 2026-09-03/04 incident lives in pyegeria's
 # async-client construction and is NOT claimed fixed by this (see

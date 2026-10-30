@@ -306,9 +306,9 @@ def absent_answers() -> frozenset[str]:
     or by-GUID miss answers NO_ELEMENTS_FOUND ("No elements found", plural); NO_ELEMENT_FOUND (singular)
     is its docstring's spelling. Both are accepted, exactly (case-insensitive, trailing period stripped).
 
-    LAZY on purpose: importing pyegeria runs `pyegeria.view`'s `nest_asyncio.apply()`, which raises
-    "Can't patch loop of type uvloop.Loop" when the import happens under uvicorn's running uvloop.
-    Nothing reachable from `resource_explorer.web.app` may import pyegeria at module load."""
+    LAZY: before 6.2.16, importing pyegeria ran `nest_asyncio.apply()`, which raised "Can't patch loop
+    of type uvloop.Loop" under uvicorn's running uvloop. pyegeria 6.2.16 (#513) no longer does; the
+    import stays lazy because pyegeria is a heavy import for module load."""
     from pyegeria.core._globals import NO_ELEMENT_FOUND, NO_ELEMENTS_FOUND
 
     return frozenset(_normalise_answer(c) for c in (NO_ELEMENTS_FOUND, NO_ELEMENT_FOUND))
@@ -340,9 +340,11 @@ class PyegeriaSurveyPort:
     """The real port. Clients are built lazily, once per instance, with the same
     env-driven connection RE's other Egeria writers use.
 
-    **One event loop per instance, not per call.** pyegeria's sync wrappers call
-    `asyncio.get_event_loop()`, which a worker thread does not have, so this
-    gives the thread one -- the same shape the publish routes use. But a pyegeria
+    **One event loop per instance, not per call.** Before pyegeria 6.2.16 its sync
+    wrappers called `asyncio.get_event_loop()`, which a worker thread does not have,
+    so this gives the thread one. Since 6.2.16 (#513) they go through pyegeria's
+    `run_sync`, which keeps its own per-thread loop and ignores this one; the loop
+    is now inert and is kept only until the port is simplified. But a pyegeria
     client caches an HTTP client bound to the loop it first ran on, so a loop
     created and closed around each call makes the SECOND call on the same client
     fail with "Event loop is closed" (found live, 2026-09-30, the first time a

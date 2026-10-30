@@ -53,7 +53,6 @@ _FS = SimpleNamespace(slug="lake", display_name="Lake", local_mount_point="/User
 def _real_folder_surveyor(sent):
     """The REAL pyegeria 6.2.8 create_folder_element_from_template, with only the HTTP layer faked: the template look-up
     and the POST (`_async_create_elem_from_template`) record what reaches the wire."""
-    import asyncio
 
     from pyegeria import AutomatedCuration
 
@@ -68,13 +67,12 @@ def _real_folder_surveyor(sent):
         sent["body"] = body
         return GUID
 
-    ac._async_get_template_guid_for_technology_type = _tmpl
+    ac._async_get_template_guid_for_technology_type = _tmpl  # under pyegeria's own async create, and its sync lookup
     ac._async_create_elem_from_template = _post
     s._metadata_expert.get_metadata_element_by_unique_name.side_effect = (
         lambda name=None, property_name="qualifiedName", body=None, **k:
         sent.setdefault("lookups", []).append((name, property_name)) or "No elements found")
     s._automated_curation = ac
-    asyncio.set_event_loop(asyncio.new_event_loop())
     return s
 
 

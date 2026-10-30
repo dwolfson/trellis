@@ -898,13 +898,11 @@ def test_gateway_survey_passes_include_schema_names_as_a_request_parameter(real)
     resp = MagicMock()
     resp.json.return_value = {"guid": "act-1"}
 
-    async def make(method, url, body):
+    def make(method, url, body):
         make.seen = (method, url, body)
         return resp
-    ac._async_make_request = make
+    ac.make_request = make
     from resource_explorer.run_queue import requested_by  # noqa: F401 (import path sanity)
-    import asyncio
-    asyncio.set_event_loop(asyncio.new_event_loop())
     guid, qn = g.initiate_survey("db-guid", {"includeSchemaNames": "sales,archive"})
     method, url, body = make.seen
     assert guid == "act-1" and qn == PROCESS_QN

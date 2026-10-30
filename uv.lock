@@ -7294,7 +7294,7 @@ wheels = [
 
 [[package]]
 name = "pyegeria"
-version = "6.2.13"
+version = "6.2.16"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "altair" },
@@ -7307,7 +7307,6 @@ dependencies = [
     { name = "loguru" },
     { name = "markers" },
     { name = "mcp" },
-    { name = "nest-asyncio" },
     { name = "optional" },
     { name = "psycopg2-binary" },
     { name = "pydantic" },
@@ -7327,9 +7326,9 @@ dependencies = [
     { name = "validators" },
     { name = "wcwidth" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ee/3d/1cd99a05a1e0aadb19a05f4f870ad6f4ad57fb9a93e1f82cd053ca4dd8d7/pyegeria-6.2.13.tar.gz", hash = "sha256:6818aee7c24293b5b39dafedb1fd0feb6069d09a923adc691a56fabc3616f8eb", size = 2083455, upload-time = "2026-10-27T15:50:17.107Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/48/1f/2e5a7decf147803cdd62cc07eb1791e36af4a16f5a2f52ed1b52055d02b6/pyegeria-6.2.16.tar.gz", hash = "sha256:75296f5ad7f48da8febbe2427637d9e6d795f2b7f064e458857bbd00407bab9e", size = 2109488, upload-time = "2026-10-30T16:02:53.217Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d9/87/ea7e95da8f0b00dc478572104da59066bd07caa9750d3c926c24437870de/pyegeria-6.2.13-py3-none-any.whl", hash = "sha256:f9eaafc8749d8d355ed4d999d23cad6635e3d4263d4444f91c6466e16ec8715b", size = 1896170, upload-time = "2026-10-27T15:50:15.232Z" },
+    { url = "https://files.pythonhosted.org/packages/d6/83/8228ef0c720fe7773f9be088ff2c1a0b9e2aef1841b9f551a86c376ccad9/pyegeria-6.2.16-py3-none-any.whl", hash = "sha256:f59149e78a6480dd4484372bab8494645e6004a8016123e6d1f397492e629fd6", size = 1914997, upload-time = "2026-10-30T16:02:51.215Z" },
 ]
 
 [[package]]
@@ -8405,7 +8404,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=23.0.1" },
     { name = "pydantic", specifier = ">=2.10.0" },
     { name = "pydantic-settings", specifier = ">=2.7.0" },
-    { name = "pyegeria", specifier = ">=6.2.13" },
+    { name = "pyegeria", specifier = ">=6.2.16" },
     { name = "pygithub", specifier = ">=2.5.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },

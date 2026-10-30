@@ -60,7 +60,9 @@ _CANDIDATES_CACHE_TTL_SECONDS = 300
 # doesn't bound this path either. That deeper cross-loop issue is NOT fixed
 # here — it needs its own investigation, likely in how pyegeria's async
 # client is constructed/reused across threads, out of scope for tonight's
-# instrumentation pass. What IS fixed: the call is now wrapped in its own
+# instrumentation pass. (Since pyegeria 6.2.16, #513, there is no nest_asyncio
+# and pyegeria keeps one loop and one httpx session per thread itself; the
+# timeout below stays as containment.) What IS fixed: the call is now wrapped in its own
 # single-purpose thread with a hard join timeout, so a hang like this
 # degrades to resolve_question_guid's existing "not found" contract (already
 # every other failure mode's behavior) instead of blocking the calling
@@ -346,8 +348,9 @@ class SurveyDefinitionReader:
         # pyegeria ISSUE-96 (docs/qguid-flake report, 2026-09-12): a
         # ClassificationExplorer's httpx.AsyncClient binds its connection
         # pool's asyncio primitives to whichever event loop first drives it,
-        # and pyegeria's import-time nest_asyncio.apply() means every calling
-        # thread gets its own loop — so sharing ONE client across the shared
+        # and every calling thread drove it on its own loop (pyegeria applied
+        # nest_asyncio then; since 6.2.16 its run_sync gives each thread one
+        # persistent loop and session, which has the same effect) — so sharing ONE client across the shared
         # run_sync pool's worker threads fails deterministically (measured:
         # 52/52 names, 2 runs, 100% CLIENT_ERROR_400) while a client built
         # AND always called from the same single thread never fails (0/104).

@@ -720,9 +720,15 @@ def test_a_slow_origin_read_never_holds_the_start_beyond_the_bound(monkeypatch):
     import time
     from resource_explorer.web import app as web_app
     monkeypatch.setattr(gw, "read_platform_origin", lambda *a, **k: (time.sleep(1.5), "late origin")[1])
-    t0 = time.monotonic()
-    line = asyncio.run(web_app.start_line_within(0.2))
-    assert time.monotonic() - t0 < 1.2, "the start did not wait for the slow read"
+
+    async def timed():
+        # Timed inside the loop, as the lifespan awaits it: asyncio.run itself waits for the default
+        # executor on exit, so it would wait out the 1.5 s read the start line has already left behind.
+        t0 = time.monotonic()
+        out = await web_app.start_line_within(0.2)
+        return out, time.monotonic() - t0
+    line, took = asyncio.run(timed())
+    assert took < 1.2, "the start did not wait for the slow read"
     assert line == f"{OFF_LINE} · platform: unreachable at start"
     assert "5" in str(web_app.START_LINE_SECONDS) and web_app.START_LINE_SECONDS == 5
 

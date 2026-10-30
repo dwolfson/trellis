@@ -222,10 +222,7 @@ def _publisher(registry_rows, existing=None):
     existing = existing or {}
     pub._automated_curation.get_guid_for_name.side_effect = lambda qn: existing.get(qn, "No elements found")
 
-    async def _tmpl(name):
-        return f"template-{name}"
-
-    pub._automated_curation._async_get_template_guid_for_technology_type = _tmpl
+    pub._automated_curation.get_template_guid_for_technology_type.side_effect = lambda name: f"template-{name}"
     n = {"n": 0}
 
     def _create(body):

@@ -206,24 +206,7 @@ def publish_chosen(registry, slug: str, *, github_url: str, asset_guid: str, cur
         registry.catalog_sub_resource(RESOURCE_TYPE, slug, loc, want[loc], source_finding=SURVEY_KIND,
                                       detail=(cands.get(loc) or {}).get("detail") or None)
     publisher = publisher or EgeriaPublisher(registry=registry)
-    # The publisher drives async pyegeria calls through `asyncio.get_event_loop()`, which raises in a thread
-    # with no loop (brief 1's publish step leaves its thread that way). Give the call a loop only when the
-    # thread has no usable one, close only what we made, and put the thread back exactly as it was.
-    import asyncio
-    prior, made = None, None
-    try:
-        prior = asyncio.get_event_loop()
-        if prior.is_closed():
-            raise RuntimeError("closed")
-    except RuntimeError:
-        made = asyncio.new_event_loop()
-        asyncio.set_event_loop(made)
-    try:
-        guids = publisher.publish_sub_resources(slug, github_url, asset_guid, sorted(want))
-    finally:
-        if made is not None:
-            made.close()
-            asyncio.set_event_loop(prior)          # None when the thread had none; the old loop otherwise
+    guids = publisher.publish_sub_resources(slug, github_url, asset_guid, sorted(want))
     counts = repo_publish.record_sub_resource_proofs(
         registry, slug, curation_id, author, want, list(locators), guids,
         reader=lambda g: publisher._asset_maker.get_asset_by_guid(g, output_format="JSON"),
