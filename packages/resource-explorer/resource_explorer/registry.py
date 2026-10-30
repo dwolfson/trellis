@@ -1161,11 +1161,60 @@ _DB_FS_DETAIL_TABLE_DDL: tuple[str, ...] = (
         percentile_25     DOUBLE PRECISION DEFAULT NULL,
         percentile_50     DOUBLE PRECISION DEFAULT NULL,
         percentile_75     DOUBLE PRECISION DEFAULT NULL,
+        distinct_std_value_ct BIGINT DEFAULT NULL,
+        min_text              TEXT DEFAULT NULL,
+        max_text              TEXT DEFAULT NULL,
+        sample_value_ct       BIGINT DEFAULT NULL,
+        sample_pattern_value_ct BIGINT DEFAULT NULL,
+        lead_space_ct         BIGINT DEFAULT NULL,
+        quoted_value_ct       BIGINT DEFAULT NULL,
+        includes_digit_ct     BIGINT DEFAULT NULL,
+        upper_case_ct         BIGINT DEFAULT NULL,
+        lower_case_ct         BIGINT DEFAULT NULL,
+        non_alpha_ct          BIGINT DEFAULT NULL,
+        non_printing_ct       BIGINT DEFAULT NULL,
+        numeric_ct            BIGINT DEFAULT NULL,
+        date_ct               BIGINT DEFAULT NULL,
+        embedded_space_ct     BIGINT DEFAULT NULL,
+        avg_embedded_spaces   DOUBLE PRECISION DEFAULT NULL,
+        std_pattern_match     TEXT DEFAULT NULL,
+        distinct_pattern_ct   BIGINT DEFAULT NULL,
+        frequent_patterns     TEXT DEFAULT NULL,
+        multiset_hash         TEXT DEFAULT NULL,
+        epoch_sum             TEXT DEFAULT NULL,
+        keyed_hash            TEXT DEFAULT NULL,
+        key_column_name       TEXT DEFAULT NULL,
+        hash_state            TEXT DEFAULT NULL,
+        distinct_value_hash   TEXT DEFAULT NULL,
+        frequency_state       TEXT DEFAULT NULL,
         sample_ratio      REAL DEFAULT NULL,
         ran_as            TEXT DEFAULT '',
         state             TEXT NOT NULL DEFAULT 'measured',
         reason            TEXT DEFAULT '',
         UNIQUE(database_slug, surveyed_at, source, schema_name, table_name, column_name),
+        FOREIGN KEY (database_slug) REFERENCES databases(slug)
+    )
+    """,
+    # Port step 8b (DESIGN-QUALITY-STEP-8-HASHES-AND-FREQUENT-VALUES.md; DDL record docs/ddl-value-profile-step8.md): a text
+    # column's most frequent values, one row per value, beside the profile batch with the same surveyed_at. `value` NULL is
+    # the "other" row: every value past the tenth, with `other_distinct_ct` how many distinct values it covers. Counts are
+    # lifted to the table's scale when the column was read on a sample (the profile row's `sample_ratio`).
+    """
+    CREATE TABLE IF NOT EXISTS database_value_profile_frequent_values (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_slug     TEXT NOT NULL,
+        surveyed_at       TEXT NOT NULL,
+        source            TEXT NOT NULL DEFAULT 'local',
+        schema_name       TEXT NOT NULL,
+        table_name        TEXT NOT NULL,
+        column_name       TEXT NOT NULL,
+        value_rank        INTEGER NOT NULL,
+        value             TEXT DEFAULT NULL,
+        value_ct          BIGINT DEFAULT NULL,
+        other_distinct_ct BIGINT DEFAULT NULL,
+        state             TEXT NOT NULL DEFAULT 'measured',
+        reason            TEXT DEFAULT '',
+        UNIQUE(database_slug, surveyed_at, source, schema_name, table_name, column_name, value_rank),
         FOREIGN KEY (database_slug) REFERENCES databases(slug)
     )
     """,
@@ -1500,6 +1549,7 @@ _DB_FS_DETAIL_TABLE_INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_db_columns_table ON database_columns(database_slug, schema_name, table_name)",
     "CREATE INDEX IF NOT EXISTS idx_db_col_profiles_slug ON database_column_profiles(database_slug, surveyed_at)",
     "CREATE INDEX IF NOT EXISTS idx_db_value_profiles_slug ON database_value_profiles(database_slug, surveyed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_db_value_freq_slug ON database_value_profile_frequent_values(database_slug, surveyed_at)",
     "CREATE INDEX IF NOT EXISTS idx_db_quality_proposals_slug ON database_quality_proposals(database_slug, surveyed_at)",
     "CREATE INDEX IF NOT EXISTS idx_db_quality_results_slug ON database_quality_results(database_slug, surveyed_at)",
     "CREATE INDEX IF NOT EXISTS idx_db_table_activity_slug ON database_table_activity(database_slug, surveyed_at)",
@@ -1627,6 +1677,7 @@ _DETAIL_TABLE_ORDER: dict[str, str] = {
     "database_column_profiles": "schema_name, table_name, column_name",
     "database_column_matches": "schema_name, table_name, column_name, question",
     "database_value_profiles": "schema_name, table_name, column_name",
+    "database_value_profile_frequent_values": "schema_name, table_name, column_name, value_rank",
     "database_quality_proposals": "schema_name, table_name, column_name, test_type",
     "database_quality_results": "schema_name, table_name, column_name, test_type",
     "database_table_activity": "schema_name, table_name",
@@ -5168,6 +5219,40 @@ class ProjectRegistry:
         ("database_value_profiles", "percentile_25", "DOUBLE PRECISION"),
         ("database_value_profiles", "percentile_50", "DOUBLE PRECISION"),
         ("database_value_profiles", "percentile_75", "DOUBLE PRECISION"),
+        # Q4 port order step 7 (DESIGN-QUALITY-STEP-7-SAMPLED-TEXT-SHAPE.md; DDL record docs/ddl-value-profile-step7.md):
+        # a text column's four whole-table measures and its sampled text-shape measures (text_shape.py). NULL = not
+        # measured (a row profiled before the columns existed, or a column whose statement did not run), never 0; a
+        # column read on a sample also carries `sample_ratio`.
+        ("database_value_profiles", "distinct_std_value_ct", "BIGINT"),
+        ("database_value_profiles", "min_text", "TEXT"),
+        ("database_value_profiles", "max_text", "TEXT"),
+        ("database_value_profiles", "sample_value_ct", "BIGINT"),
+        ("database_value_profiles", "sample_pattern_value_ct", "BIGINT"),
+        ("database_value_profiles", "lead_space_ct", "BIGINT"),
+        ("database_value_profiles", "quoted_value_ct", "BIGINT"),
+        ("database_value_profiles", "includes_digit_ct", "BIGINT"),
+        ("database_value_profiles", "upper_case_ct", "BIGINT"),
+        ("database_value_profiles", "lower_case_ct", "BIGINT"),
+        ("database_value_profiles", "non_alpha_ct", "BIGINT"),
+        ("database_value_profiles", "non_printing_ct", "BIGINT"),
+        ("database_value_profiles", "numeric_ct", "BIGINT"),
+        ("database_value_profiles", "date_ct", "BIGINT"),
+        ("database_value_profiles", "embedded_space_ct", "BIGINT"),
+        ("database_value_profiles", "avg_embedded_spaces", "DOUBLE PRECISION"),
+        ("database_value_profiles", "std_pattern_match", "TEXT"),
+        ("database_value_profiles", "distinct_pattern_ct", "BIGINT"),
+        ("database_value_profiles", "frequent_patterns", "TEXT"),
+        # Q4 port order step 8 (DESIGN-QUALITY-STEP-8-HASHES-AND-FREQUENT-VALUES.md; DDL record docs/ddl-value-profile-step8.md): value hashes,
+        # taken only when asked (off by default). Exact decimal text, NULL = not taken or not measured, never 0.
+        ("database_value_profiles", "multiset_hash", "TEXT"),
+        ("database_value_profiles", "epoch_sum", "TEXT"),
+        ("database_value_profiles", "keyed_hash", "TEXT"),
+        ("database_value_profiles", "key_column_name", "TEXT"),
+        ("database_value_profiles", "hash_state", "TEXT"),
+        # Port step 8b: frequency analysis (frequent_values.py); the values themselves are in the child table
+        # database_value_profile_frequent_values. NULL = not eligible, not asked, or a row from before.
+        ("database_value_profiles", "distinct_value_hash", "TEXT"),
+        ("database_value_profiles", "frequency_state", "TEXT"),
         ("database_quality_results", "measure_text", "TEXT"),
     )
 

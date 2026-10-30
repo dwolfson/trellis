@@ -118,6 +118,8 @@ def compare_sql(upstream: Path) -> list[str]:
     diffs += compare_functional_type(upstream)
     diffs += compare_whole_profiling_files(upstream)
     diffs += compare_percentiles(upstream)
+    diffs += compare_text_shape(upstream)
+    diffs += compare_step_8_sources(upstream)
     diffs += compare_generation_templates(upstream)
     return diffs
 
@@ -168,6 +170,42 @@ def compare_percentiles(upstream: Path) -> list[str]:
     text = _squash(path.read_text(encoding="utf-8"))
     return [f"percentiles.sql: {line.strip()!r} is no longer verbatim upstream"
             for line in vendored_lines() if _squash(line).rstrip(",") not in text]
+
+
+def compare_text_shape(upstream: Path) -> list[str]:
+    """Step 7's `postgresql/text_shape.sql`: each block still appears verbatim upstream, and still matches its pin."""
+    from resource_explorer.surveyors.database.quality.text_shape import pins_match, vendored_blocks
+
+    path = upstream / UPSTREAM_PROFILE_SQL
+    if not path.exists():
+        return [f"upstream {UPSTREAM_PROFILE_SQL} is gone"]
+    text = _squash(path.read_text(encoding="utf-8"))
+    return ([f"text_shape.sql block {name}: no longer verbatim upstream"
+             for name, block in vendored_blocks().items() if _squash(block) not in text]
+            + [f"text_shape.sql block {name}: differs from its pin in text_shape.TEXT_SHAPE_SHA256"
+               for name in pins_match()])
+
+
+def compare_step_8_sources(upstream: Path) -> list[str]:
+    """Port step 8: the secondary profiling query is vendored unchanged (byte-identical upstream), and the five upstream
+    files the value-hash SQL was written from still hash to the pins in `value_hashes.UPSTREAM_SHA256`."""
+    import hashlib
+
+    from resource_explorer.surveyors.database.quality import frequent_values, value_hashes
+
+    diffs = []
+    theirs = upstream / "testgen/template/flavors/postgresql/profiling/project_secondary_profiling_query.sql"
+    if not theirs.exists():
+        diffs.append("upstream project_secondary_profiling_query.sql is gone")
+    elif theirs.read_bytes() != frequent_values.SECONDARY_SQL.read_bytes():
+        diffs.append("project_secondary_profiling_query.sql: differs from upstream (re-read frequent_values.py)")
+    for path, pinned in value_hashes.UPSTREAM_SHA256.items():
+        source = upstream / "testgen" / path
+        if not source.exists():
+            diffs.append(f"upstream {path} is gone (value_hashes.py was written from it)")
+        elif hashlib.sha256(source.read_bytes()).hexdigest() != pinned:
+            diffs.append(f"upstream {path} changed since value_hashes.py was written from it: re-read it")
+    return diffs
 
 
 def vendored_statements() -> list[str]:

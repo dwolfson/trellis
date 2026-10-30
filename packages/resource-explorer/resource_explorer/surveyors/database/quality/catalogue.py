@@ -79,9 +79,21 @@ STEP_6_TEST_TYPES = ("Alpha_Trunc", "Avg_Shift", "Dec_Trunc", "Distinct_Date_Ct"
                      "LOV_Match", "Min_Val", "Monthly_Rec_Ct", "Outlier_Pct_Above", "Outlier_Pct_Below", "Pattern_Match",
                      "Unique_Pct", "Valid_Month", "Valid_US_Zip", "Valid_US_Zip3", "Variability_Decrease",
                      "Variability_Increase", "Weekly_Rec_Ct")
+#: Q4 port order step 7 (DESIGN-QUALITY-STEP-7-SAMPLED-TEXT-SHAPE.md): the types that read a text column's sampled
+#: text-shape measures (`text_shape.py`), families D and B1c. All CAT.
+STEP_7_TEST_TYPES = ("Email_Format", "Street_Addr_Pattern", "US_State", "Valid_Characters", "Match_Lead_Space_Ct",
+                     "Match_Upper_Case_Ct", "Match_Non_Printing_Ct")
+#: Q4 port order step 8 (DESIGN-QUALITY-STEP-8-HASHES-AND-FREQUENT-VALUES.md): the Table Comparison types that read a column's value hashes
+#: (`value_hashes.py`), which are taken only when the profile is asked for them. All CAT. Match_Frequent_Values,
+#: Match_Frequent_Patterns and Match_Distinct_Hash are QUERY types and are not ported here (the note says why).
+STEP_8_TEST_TYPES = ("Match_Hash_Text", "Match_Hash_Num", "Match_Hash_Date", "Match_Keyed_Hash_Text",
+                     "Match_Keyed_Hash_Num", "Match_Keyed_Hash_Date", "Match_Epoch_Sum")
+#: Port step 8b: the three Table Comparison QUERY types that compare a column's baseline text (`query_types.py`).
+STEP_8B_TEST_TYPES = ("Match_Frequent_Values", "Match_Frequent_Patterns", "Match_Distinct_Hash")
 #: Every test type RE has ported, in the order proposals are considered.
 PORTED_TEST_TYPES = (SLICE_1_TEST_TYPES + Q6_TEST_TYPES + B1A_TEST_TYPES + B1B_TEST_TYPES + STEP_4_TEST_TYPES
-                     + STEP_5_TEST_TYPES + STEP_6_TEST_TYPES)
+                     + STEP_5_TEST_TYPES + STEP_6_TEST_TYPES + STEP_7_TEST_TYPES + STEP_8_TEST_TYPES
+                     + STEP_8B_TEST_TYPES)
 
 #: TestGen's `run_type` values: CAT is an aggregate in the per-table SELECT, QUERY is a statement of its own, METADATA
 #: reads TestGen's own metadata tables (RE: its stored surveys).
@@ -539,6 +551,109 @@ def _not_geo(row: dict) -> bool | None:
     return "latitude" not in name and "longitude" not in name
 
 
+def _text_shape_read(row: dict) -> bool | None:
+    """None when this row's sampled text-shape measures cannot be read: the column was not profiled (`state`), or it is a
+    text column with values whose `sample_value_ct` (the witness: the text-shape statement always returns it) is NULL,
+    because the row predates step 7 or that column's read did not finish. Else True. A rule that reads a text-shape
+    measure ANDs this in, so it reads `not_established`, never a silent no. A column that is not text, or holds no value,
+    has no text shape upstream either: True, and the measure it reads is NULL there, which upstream reads as no."""
+    if (row.get("state") or "measured") != "measured":
+        return None
+    if row.get("general_type") != "A" or row.get("value_ct") == 0:
+        return True
+    if row.get("value_ct") is None:
+        return None
+    return None if row.get("sample_value_ct") is None else True
+
+
+def _std_pattern(row: dict, name: str) -> bool | None:
+    """`std_pattern_match = name`: NULL there is upstream's "no standard pattern", so FALSE once the text shape was read
+    for the row, and "not measured" before it."""
+    read = _text_shape_read(row)
+    if read is None:
+        return None
+    return row.get("std_pattern_match") == name
+
+
+def _street_address(row: dict) -> bool | None:
+    avg = row.get("avg_length")
+    return _and(
+        _std_pattern(row, "STREET_ADDR"),
+        _cmp(avg, "<>", None if avg is None else round(avg)),
+        None if row.get("avg_embedded_spaces") is None else 2 <= row["avg_embedded_spaces"] <= 6,
+        _cmp(avg, "<", 35),
+    )
+
+
+def _hash_rule(row: dict, general_type: str, measure: str) -> bool | None:
+    """`general_type = <t> AND <measure> IS NOT NULL` for a value-hash measure (port step 8). Hashes are off by default, so a
+    NULL is not a "no" until the profile says it asked: `hash_state` NULL is "not taken", `not_measured` is "could not be
+    read", both `not_established`. After a successful read a NULL hash means nothing was hashable (a "no"), and for a keyed
+    hash that the table has no key, or the key is this column."""
+    if row.get("general_type") != general_type:
+        return False if (row.get("state") or "measured") == "measured" else None
+    if (row.get("state") or "measured") != "measured":
+        return None
+    if row.get("value_ct") == 0:
+        return False
+    state = row.get("hash_state")
+    if state not in ("taken", "keyed_not_measured"):
+        return None
+    if measure == "keyed_hash" and state == "keyed_not_measured" and row.get("key_column_name") not in (None, row.get("column_name")):
+        return None
+    return row.get(measure) is not None
+
+
+def _text_measure_present(row: dict, measure: str, *, frequency: bool) -> bool | None:
+    """`<measure> IS NOT NULL` for a text-shape or frequency measure (port step 8b), three-valued. NULL upstream means the
+    column has no such measure; here that is a "no" only once the column was read: an unread one (profiled before the
+    analysis existed, or its read did not finish) is `not_established`. A column that is not text, or that is not
+    eligible for the frequency analysis (2 to 70 distinct values of at most 70 characters), has none: a "no"."""
+    if (row.get("state") or "measured") != "measured":
+        return None
+    if row.get("general_type") != "A" or row.get("value_ct") == 0:
+        return False
+    if frequency:
+        from resource_explorer.surveyors.database.quality import frequent_values
+
+        if not frequent_values.eligible(row):
+            return False if row.get("distinct_value_ct") is not None and row.get("max_length") is not None else None
+        state = row.get("frequency_state")
+        if state != frequent_values.READ:
+            return None
+    elif _text_shape_read(row) is None:
+        return None
+    value = row.get(measure)
+    return bool(value) if not isinstance(value, dict) else bool(value.get("values"))
+
+
+def _frequent_values_rule(row: dict) -> bool | None:
+    """general_type = 'A' AND frequent_values IS NOT NULL AND LENGTH(<the baseline text>) <= 1000 AND sample_ratio IS NULL."""
+    present = _text_measure_present(row, "frequent_values", frequency=True)
+    from resource_explorer.surveyors.database.quality import frequent_values
+
+    text = frequent_values.baseline_text(row.get("frequent_values"))
+    return _and(_cmp(row.get("general_type"), "=", "A"), present, None if present is None else (
+        len(text) <= 1000 if text is not None else False), row.get("sample_ratio") is None)
+
+
+def _frequent_patterns_rule(row: dict) -> bool | None:
+    return _and(_cmp(row.get("general_type"), "=", "A"),
+                _text_measure_present(row, "frequent_patterns", frequency=False), row.get("sample_ratio") is None)
+
+
+def _distinct_hash_rule(row: dict) -> bool | None:
+    return _and(_cmp(row.get("general_type"), "=", "A"),
+                _text_measure_present(row, "distinct_value_hash", frequency=True), row.get("sample_ratio") is None)
+
+
+def _text_baseline(row: dict) -> bool | None:
+    """`general_type = 'A' AND value_ct > 0 AND sample_ratio IS NULL`, and the text shape was read: a sampled estimate is
+    never an accepted baseline (upstream's rule), and an unread one is not_established."""
+    return _and(_cmp(_p(row, "general_type"), "=", "A"), _cmp(_p(row, "value_ct"), ">", 0),
+                _p(row, "sample_ratio") is None, _text_shape_read(row))
+
+
 def _fractional_positive(row: dict) -> bool | None:
     """`fractional_sum > 0`: NULL there means "not a decimal column" (so FALSE) once profile 1b has taken the row, and
     "not measured" before it."""
@@ -982,6 +1097,64 @@ PREDICATES: dict[str, Predicate] = {
                        _table_like(p, "cumulative"), _unrelated(_p(p, "date_weeks_present")),
                        _cmp(None if not _p(p, "value_ct") or _p(p, "future_date_ct") is None
                             else _p(p, "future_date_ct") / _p(p, "value_ct"), "<=", 0.75))),
+    # std_pattern_match='EMAIL'
+    "Email_Format": Predicate(
+        "ef044052518d6eed7c8ad94a2eeb3a465bc21e05d1944eb56413849b9c522664", ("sample_value_ct", "std_pattern_match"),
+        lambda p: _std_pattern(p, "EMAIL")),
+    # (std_pattern_match='STREET_ADDR') AND (avg_length <> round(avg_length)) AND (avg_embedded_spaces BETWEEN 2 AND 6)
+    #   AND (avg_length < 35)
+    "Street_Addr_Pattern": Predicate(
+        "aaf41b66925f84286e603d426370cc88eb89dc4f829c8cd86eea85ea2cd19a27",
+        ("sample_value_ct", "std_pattern_match", "avg_length", "avg_embedded_spaces"), _street_address),
+    # general_type= 'A' AND column_name ILIKE '%state%' AND distinct_value_ct < 70 AND max_length = 2
+    "US_State": Predicate(
+        "c1deae601c98bd5392d1e8756d32de9f43aaa39745860c7fe5792b61498e01f2",
+        ("general_type", "column_name", "distinct_value_ct", "max_length"),
+        lambda p: _and(_cmp(_p(p, "general_type"), "=", "A"), "state" in (_p(p, "column_name") or "").lower(),
+                       _cmp(_p(p, "distinct_value_ct"), "<", 70), _cmp(_p(p, "max_length"), "=", 2),
+                       _profiled_by_1b(p))),
+    # general_type = 'A'
+    "Valid_Characters": Predicate(
+        "607214ad6b295cebd42ca3c0cb4e34093527ace61a9552253c1ec77991f05450", ("general_type",),
+        # upstream's rule reads no measure; a column that was not profiled is not proposed on its type alone
+        lambda p: _and(_cmp(_p(p, "general_type"), "=", "A"),
+                       None if (_p(p, "state") or "measured") != "measured" else True)),
+    # general_type = 'A' AND value_ct > 0\nAND sample_ratio IS NULL
+    "Match_Lead_Space_Ct": Predicate(
+        "359e71c7c48e6d6e625aefc828c381cbdae63f00a62fa74b6097fd0728f47e78",
+        ("general_type", "value_ct", "sample_ratio", "sample_value_ct"), _text_baseline),
+    "Match_Upper_Case_Ct": Predicate(
+        "359e71c7c48e6d6e625aefc828c381cbdae63f00a62fa74b6097fd0728f47e78",
+        ("general_type", "value_ct", "sample_ratio", "sample_value_ct"), _text_baseline),
+    "Match_Non_Printing_Ct": Predicate(
+        "359e71c7c48e6d6e625aefc828c381cbdae63f00a62fa74b6097fd0728f47e78",
+        ("general_type", "value_ct", "sample_ratio", "sample_value_ct"), _text_baseline),
+    # general_type = 'A' | 'N' | 'D' AND multiset_hash IS NOT NULL
+    "Match_Hash_Text": Predicate("ae4a317c644ee093fa382d0658ca658008d4e20836cdc6a93249117b124f62c8",
+                                 ("general_type", "hash_state"), lambda p: _hash_rule(p, "A", "multiset_hash")),
+    "Match_Hash_Num": Predicate("4161e2ea636bebde49c8a0e6a522ae3b5c2f1da6745c231f6f18e4bdaa0a9d0f",
+                                ("general_type", "hash_state"), lambda p: _hash_rule(p, "N", "multiset_hash")),
+    "Match_Hash_Date": Predicate("95d8ca0468621fb9d5e4ca78722ce5ce76c4e571c1fe1330a638b3a3c90600b1",
+                                 ("general_type", "hash_state"), lambda p: _hash_rule(p, "D", "multiset_hash")),
+    # general_type = 'A' | 'N' | 'D' AND keyed_hash IS NOT NULL
+    "Match_Keyed_Hash_Text": Predicate("ea485c759bf74b1395c167413d69e9cf2ea582b2f54483af2b8a761f0e01e925",
+                                       ("general_type", "hash_state"), lambda p: _hash_rule(p, "A", "keyed_hash")),
+    "Match_Keyed_Hash_Num": Predicate("c0d80d37fe32a62790b8542b50a36a5916989f0c3adb9f4d326b48c1c78b7d5c",
+                                      ("general_type", "hash_state"), lambda p: _hash_rule(p, "N", "keyed_hash")),
+    "Match_Keyed_Hash_Date": Predicate("ffb309d799216e3ef26f2e4841f148407d71236df998df7e3cfa239c6eb1ab35",
+                                       ("general_type", "hash_state"), lambda p: _hash_rule(p, "D", "keyed_hash")),
+    # general_type = 'A' AND frequent_values IS NOT NULL AND LENGTH(<baseline text>) <= 1000 AND sample_ratio IS NULL
+    "Match_Frequent_Values": Predicate("20e556e1a55314f9ae3e31312f60063b8f39aa067803f59029576ba708a3062b",
+                                       ("general_type", "frequency_state", "sample_ratio"), _frequent_values_rule),
+    # general_type = 'A' AND frequent_patterns IS NOT NULL AND sample_ratio IS NULL
+    "Match_Frequent_Patterns": Predicate("330cc4d10e72c6af8358963f4915ef64a95af0b9c05894c2e749751fa96f9abc",
+                                         ("general_type", "sample_value_ct", "sample_ratio"), _frequent_patterns_rule),
+    # general_type = 'A' AND distinct_value_hash IS NOT NULL AND sample_ratio IS NULL
+    "Match_Distinct_Hash": Predicate("ca914aba2841b2930cf62e7cad7cb1e000568171e847a8b9306961df7b269c21",
+                                     ("general_type", "frequency_state", "sample_ratio"), _distinct_hash_rule),
+    # general_type = 'D' AND epoch_sum IS NOT NULL
+    "Match_Epoch_Sum": Predicate("4bb0f8c3059d06b0201a1fcd4d6a6871b2ed9c2e8b58bf0a0978a226056d3519",
+                                 ("general_type", "hash_state"), lambda p: _hash_rule(p, "D", "epoch_sum")),
 }
 
 #: Inputs whose NULL is a real value rather than a missing measure: min_date is read by IS NOT NULL. Recency's
@@ -990,6 +1163,8 @@ PREDICATES: dict[str, Predicate] = {
 #: own measure with IS NOT NULL (NULL is "not applicable" there: no exact sum on a float column, no stdev of one
 #: value); a missing measure is named through the profile 1b witness instead.
 _NULL_IS_A_VALUE = {"Min_Date": {"min_date"},
+                    "Email_Format": {"std_pattern_match"},
+                    "Street_Addr_Pattern": {"std_pattern_match"},
                     "Recency": {"zero_length_ct", "filled_value_ct", "min_date"},
                     "Match_Sum": {"sum_value"},
                     "Match_Stdev": {"stdev_value"},
@@ -1053,11 +1228,12 @@ _PARAM_KEYS = {
     "baseline_ct": "baseline_ct", "baseline_value_ct": "baseline_value_ct", "baseline_unique_ct": "baseline_unique_ct",
     "baseline_value": "baseline_value", "threshold_value": "threshold_value",
     "baseline_sum": "baseline_sum", "baseline_sd": "baseline_sd", "upper_tolerance": "upper_tolerance",
-    "baseline_avg": "baseline_avg",
+    "baseline_avg": "baseline_avg", "groupby_names": "key_column_name",
 }
 #: Parameter keys a type carries only when its catalogue entry names them (so an earlier type's params_json keeps the
 #: shape it was accepted with).
-_OPTIONAL_PARAM_KEYS = ("baseline_unique_ct", "baseline_sum", "baseline_sd", "upper_tolerance", "baseline_avg")
+_OPTIONAL_PARAM_KEYS = ("baseline_unique_ct", "baseline_sum", "baseline_sd", "upper_tolerance", "baseline_avg",
+                       "key_column_name")
 
 
 def _recency_threshold(profile: dict):
@@ -1161,9 +1337,27 @@ def _round_half_up(text):
     return int(Decimal(str(text)).quantize(Decimal(1), rounding=ROUND_HALF_UP))
 
 
+def _stored_patterns(stored):
+    if isinstance(stored, str):
+        import json
+
+        try:
+            return json.loads(stored)
+        except ValueError:
+            return None
+    return stored
+
+
+def _frequent_baseline(frequent):
+    from resource_explorer.surveyors.database.quality import frequent_values
+
+    return frequent_values.baseline_text(frequent)
+
+
 def _needs(test_type: str, measure: str):
-    raise ParameterError(f"{test_type}'s default parameter reads {measure}, which the value profile does not take yet "
-                         f"(profile slice 2, port step 7)")
+    when = ("port step 8" if measure == "frequent_values"
+            else "profiled since port step 7, but this default is not ported over it yet")
+    raise ParameterError(f"{test_type}'s default parameter reads {measure}, which this port cannot evaluate yet ({when})")
 
 
 #: Defaults that are an expression over the profile rather than a list of columns and literals: the SHA-256 of
@@ -1204,6 +1398,15 @@ DEFAULT_PORTS: dict[str, tuple[str, str | tuple[str, ...], Callable[[dict], Any]
                       ("baseline_value", "threshold_value"), lambda profile: _needs("Pattern_Match", "frequent_patterns")),
     "Valid_Month": ("860b9139ef54da1331d851ac3a93e5ed0db594aeefeddc7910faec57cb62ab2f",
                     ("threshold_value", "baseline_value"), lambda profile: _needs("Valid_Month", "min_text")),
+    # (SELECT STRING_AGG((entry ->> 'value') || ' (' || (entry ->> 'ct') || ')', ', ' ORDER BY rank) FROM ...frequent_values...)
+    "Match_Frequent_Values": ("c28227a0555c78d0befe0649b8dca4aae7a8ca67e854bf549c41a585660f6777", "baseline_value",
+                              lambda profile: _frequent_baseline(profile.get("frequent_values"))),
+    # the same over frequent_patterns
+    "Match_Frequent_Patterns": ("b01655e0980182f29779acefa36f3909ab8a4108517020f4b6bccef3bef14b13", "baseline_value",
+                                lambda profile: _frequent_baseline(_stored_patterns(profile.get("frequent_patterns")))),
+    # distinct_value_hash
+    "Match_Distinct_Hash": ("c70dff059bc0da3dba9c30c3f43ac9254916af21daa5841dd37060c5fc5f5f9a", "baseline_value",
+                            lambda profile: profile.get("distinct_value_hash")),
     # CAST(ROUND(COALESCE(avg_length, 0) * (value_ct - COALESCE(zero_length_ct, 0))) AS BIGINT)
     "Match_Total_Length": ("764c27fe862246b3e311ea6030ec1212802f99d752fd4f04b2575c469207bd6a", "baseline_sum",
                            _total_length_default),
@@ -1264,6 +1467,21 @@ _PLACEHOLDER_PARAM = {
     "BASELINE_AVG": "baseline_avg",
 }
 _RE_FILLED = {"COLUMN_NAME", "COLUMN_NUM", "RUN_DATE"}
+_HASH_TERMS = {"MULTISET_HASH_TERM", "EPOCH_SUM_TERM", "KEYED_HASH_TERM"}
+
+
+def _hash_term(placeholder: str, test_type: TestType, column, key) -> str:
+    from resource_explorer.surveyors.database.quality import value_hashes
+
+    if column is None:
+        raise ParameterError(f"{test_type.test_type} hashes the column, and the column's type was not given")
+    if placeholder == "MULTISET_HASH_TERM":
+        return value_hashes.multiset_hash_term(column)
+    if placeholder == "EPOCH_SUM_TERM":
+        return value_hashes.epoch_sum_term(column)
+    if key is None:
+        raise ParameterError(f"{test_type.test_type} needs the table's key column, and it was not given")
+    return value_hashes.keyed_hash_term(key, column)
 
 
 def _required_params(test_type: TestType) -> list[str]:
@@ -1344,18 +1562,24 @@ def _sql_number(number: float) -> str:
 
 
 def render_measure(test_type: TestType, column_name: str, params: dict, run_date: str, *,
-                   is_money: bool = False) -> str:
+                   is_money: bool = False, hash_column=None, key_column=None) -> str:
     """The test type's vendored Postgres measure with every placeholder filled from validated values.
 
     `params` is the check's parameters as accepted (or as Egeria holds them); each is validated by type here
     (numbers parse as numbers, the Min_Date baseline as an ISO date, the placeholder list item by item as string
     literals). Raises ParameterError, quoting the bad value, for anything that does not validate, and for any
     placeholder this port does not know: an unknown placeholder means the vendored SQL changed under us.
-    `{COLUMN_NUM}` is the column read as a number (`column_num`; `is_money` for a money column)."""
+    `{COLUMN_NUM}` is the column read as a number (`column_num`; `is_money` for a money column). The hash terms
+    (`{MULTISET_HASH_TERM}`, `{EPOCH_SUM_TERM}`, `{KEYED_HASH_TERM}`; port step 8) are built by `value_hashes` from
+    `hash_column` (a `HashColumn`) and, for the keyed term, `key_column`; a type that needs one it was not given is a
+    ParameterError, never a guess."""
     fills: dict[str, str] = {"COLUMN_NAME": quote_identifier(column_name), "RUN_DATE": run_date,
                              "COLUMN_NUM": column_num(column_name, is_money)}
     measure = expand_templated_functions(test_type.measure)
     for placeholder in set(_PLACEHOLDER.findall(measure)):
+        if placeholder in _HASH_TERMS:
+            fills[placeholder] = _hash_term(placeholder, test_type, hash_column, key_column)
+            continue
         if placeholder in _RE_FILLED:
             continue
         key = _PLACEHOLDER_PARAM.get(placeholder)
@@ -1450,6 +1674,14 @@ class SumTolerance:
         return f"{self.baseline} within tolerance {self.tolerance}"
 
 
+def _whole(name: str, value) -> Decimal:
+    """A value hash or epoch sum baseline: an exact whole number (its text is `NUMERIC(38,0)`), never a float."""
+    number = as_decimal(name, value)
+    if number != number.to_integral_value():
+        raise ParameterError(f"{name} must be a whole number, got {value!r}")
+    return number
+
+
 def _match_sum_condition(params: dict) -> SumTolerance:
     return SumTolerance(as_decimal("baseline_sum", params.get("baseline_sum")),
                         as_decimal("upper_tolerance", params.get("upper_tolerance")))
@@ -1481,16 +1713,25 @@ CONDITION_PORTS: dict[str, tuple[str, Callable[[dict], Any]]] = {
     "Match_Fractional_Sum": ("8404752672096b49e556cad30e0a0c0252e0e4220f3fe47c295d8038803507ec",
                              lambda params: _numeric(as_decimal("baseline_sum", params.get("baseline_sum")),
                                                      _FIVE_PLACES)),
+    # CAST('{BASELINE_VALUE}' AS NUMERIC(38,0)) : a hash is a whole number, compared exactly
+    **{name: ("504c839492645711c45a4cc6fd54401b7b51b132925cc86c7aba7abed4c8ec09",
+              lambda params: _whole("baseline_value", params.get("baseline_value")))
+       for name in STEP_8_TEST_TYPES if name != "Match_Epoch_Sum"},
+    # CAST('{BASELINE_SUM}' AS NUMERIC(38,0))
+    "Match_Epoch_Sum": ("2f6fca3a9b6a0c09398fbe6015cbbaacca8650eb631eb320f97bf9b55371f237",
+                        lambda params: _whole("baseline_sum", params.get("baseline_sum"))),
 }
 #: Types whose measure is an exact NUMERIC: SUM(CAST(... AS NUMERIC(38,8))) and the fractional sum at NUMERIC(38,5).
-EXACT_TEST_TYPES = frozenset({"Match_Sum", "Match_Fractional_Sum"})
+EXACT_TEST_TYPES = frozenset({"Match_Sum", "Match_Fractional_Sum"}) | frozenset(STEP_8_TEST_TYPES)
 #: Run-time aggregates a condition reads beyond the measure, as vendored text (Match_Sum's tolerance counts values).
 CONDITION_AGGREGATES = {"Match_Sum": "COUNT({COLUMN_NAME})"}
 
 
 #: The parameter each ported expression condition is built around: where a threshold edited in Egeria goes back in.
 _CONDITION_PORT_KEYS = {"Match_Min_Val": "baseline_value", "Match_Max_Val": "baseline_value",
-                        "Match_Sum": "baseline_sum", "Match_Stdev": "baseline_sd", "Match_Fractional_Sum": "baseline_sum"}
+                        "Match_Sum": "baseline_sum", "Match_Stdev": "baseline_sd", "Match_Fractional_Sum": "baseline_sum",
+                        **{n: "baseline_value" for n in STEP_8_TEST_TYPES if n != "Match_Epoch_Sum"},
+                        "Match_Epoch_Sum": "baseline_sum"}
 
 
 def threshold_key(test_type: TestType) -> str:

@@ -118,10 +118,9 @@ def test_a_measurement_that_might_be_a_spike_is_not_called_a_measurement():
 def test_a_text_column_the_text_shape_measures_cannot_settle_says_why_and_gets_no_default_type():
     name = _one(_row("description", "A", catalog_type="text", min_length=3, max_length=200, avg_length=40.0,
                      distinct_value_ct=800))
-    assert name.label is None and "Code" in name.possible and "Description" in name.possible
+    assert name.label is None and "ID-Secondary" in name.possible and "Description" in name.possible
     assert "UNKNOWN" not in name.possible or name.label is None
-    assert "a text column" in name.why and "profile slice 2" in name.why
-    assert "min_text" in name.why or "avg_embedded_spaces" in name.why
+    assert "a text column" in name.why and "sampled text shape was not measured" in name.why
 
 
 def test_names_decide_before_any_measure_is_read():

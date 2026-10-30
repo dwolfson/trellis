@@ -53,7 +53,7 @@ from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from resource_explorer.surveyors.database.quality import dupe_rows, schema_drift
+from resource_explorer.surveyors.database.quality import dupe_rows, query_types, schema_drift
 from resource_explorer.surveyors.database.quality.catalogue import (
     CONDITION_AGGREGATES,
     MUST_BE,
@@ -198,12 +198,15 @@ def run_quality_checks(
     money = {(c["schema_name"], c["table_name"], c["column_name"]) for c in columns
              if is_money_type(c.get("base_type") or c.get("data_type"))}
     table_set = {(c["schema_name"], c["table_name"]) for c in columns}
+    catalog_types = {(c["schema_name"], c["table_name"], c["column_name"]): c.get("base_type") or c.get("data_type")
+                     for c in columns}
     tables = {(t["schema_name"], t["table_name"]): t for t in registry.query_detail_rows("database_tables", slug)}
     run_date = run_date_text(surveyed_at)
 
     results: list[dict] = []
     runnable: dict[tuple[str, str], list[dict]] = {}
     dupe_runnable: dict[tuple[str, str], list[dict]] = {}
+    query_runnable: dict[tuple[str, str], list[dict]] = {}
     drift_checks: list[tuple[dict, object, dict]] = []
 
     for key, verdict in sorted(accepted.items()):
@@ -240,6 +243,20 @@ def run_quality_checks(
             continue
         if (schema, table) not in table_set:
             row["reason"] = "table no longer in inventory"
+            continue
+        if test_type.run_type == RUN_QUERY and type_name in query_types.TYPES:
+            severity = params.get("severity")
+            if severity not in FAIL_STATUS:
+                row["reason"] = f"severity must be one of {sorted(FAIL_STATUS)}, got {severity!r}"
+                continue
+            if (schema, table, column) not in column_set:
+                row["reason"] = "column no longer in inventory"
+                continue
+            baseline = params.get("baseline_value")
+            row.update(severity=severity, comparison_operator=MUST_BE["<>"])
+            query_runnable.setdefault((schema, table), []).append(
+                {"row": row, "type": test_type, "column": column, "db_type": catalog_types.get((schema, table, column)),
+                 "baseline": baseline if isinstance(baseline, str) else None, "fail_status": FAIL_STATUS[severity]})
             continue
         if test_type.run_type == RUN_QUERY:
             severity = params.get("severity")
@@ -282,7 +299,9 @@ def run_quality_checks(
                 row["reason"] = f"{UNDEFINED}: baseline_ct is 0"
                 continue
             is_money = (schema, table, column) in money
-            sql = render_measure(test_type, column, params, run_date, is_money=is_money)
+            hash_column, key_column = _hash_columns(test_type, schema, table, column, params, catalog_types)
+            sql = render_measure(test_type, column, params, run_date, is_money=is_money, hash_column=hash_column,
+                                 key_column=key_column)
             # A run-time aggregate the condition reads (Match_Sum's COUNT), from the vendored text, filled the same way.
             extra = CONDITION_AGGREGATES.get(type_name)
             extra_sql = extra.replace("{COLUMN_NAME}", quote_identifier(column)) if extra else None
@@ -297,7 +316,7 @@ def run_quality_checks(
         for row, test_type, params in drift_checks:
             schema_drift.evaluate(drift, row, test_type, params, FAIL_STATUS)
 
-    if runnable or dupe_runnable:
+    if runnable or dupe_runnable or query_runnable:
         with connect() as conn:
             facts = read_table_facts(conn)
             for (schema, table), checks in sorted(runnable.items()):
@@ -308,6 +327,14 @@ def run_quality_checks(
                         check["row"].update(status=_REFUSED_STATUS[refused[0]], reason=refused[1])
                     continue
                 _run_table(conn, schema, table, checks, bounds)
+            for (schema, table), checks in sorted(query_runnable.items()):
+                refused = refusal(tables.get((schema, table)) or {}, (facts or {}).get((schema, table)),
+                                  facts is not None)
+                for check in checks:
+                    if refused:
+                        check["row"].update(status=_REFUSED_STATUS[refused[0]], reason=refused[1])
+                    else:
+                        query_types.run_table(conn, schema, table, check, bounds, clock, run_date=run_date)
             for (schema, table), checks in sorted(dupe_runnable.items()):
                 refused = refusal(tables.get((schema, table)) or {}, (facts or {}).get((schema, table)),
                                   facts is not None)
@@ -440,6 +467,25 @@ def build_quality_annotations(results: list[dict], catalogue: dict | None = None
             additional_properties={k: v for k, v in detail.items() if v not in (None, "")},
         ))
     return out
+
+
+def _hash_columns(test_type, schema: str, table: str, column: str, params: dict, catalog_types: dict):
+    """(the column, the key) as `HashColumn`s for a value-hash type (port step 8), else (None, None). The general type is
+    derived from the stored catalog type exactly as the profile derived it, so the run hashes what the profile hashed."""
+    if not any(p in test_type.measure for p in ("{MULTISET_HASH_TERM}", "{EPOCH_SUM_TERM}", "{KEYED_HASH_TERM}")):
+        return None, None
+    from resource_explorer.surveyors.database.quality import value_hashes
+    from resource_explorer.surveyors.database.quality.general_type import general_type as derive_general_type
+
+    def hash_column(name: str):
+        declared = catalog_types.get((schema, table, name))
+        return value_hashes.HashColumn(name, derive_general_type(declared, None), declared or "")
+
+    key_name = params.get("key_column_name")
+    if "{KEYED_HASH_TERM}" in test_type.measure and (not isinstance(key_name, str) or
+                                                     (schema, table, key_name) not in catalog_types):
+        raise ParameterError(f"the keyed hash needs the table's key column, got {key_name!r}")
+    return hash_column(column), hash_column(key_name) if "{KEYED_HASH_TERM}" in test_type.measure else None
 
 
 def _select(schema: str, table: str, checks: list[dict | str]) -> str:

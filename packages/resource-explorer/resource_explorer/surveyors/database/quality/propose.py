@@ -69,6 +69,18 @@ BASELINE_KEYS = ("baseline_ct", "baseline_value_ct", "baseline_unique_ct", "base
 THRESHOLD_IS_BASELINE = frozenset({"Match_Row_Ct", "Match_Column_Ct"})
 
 
+#: The words for a text column whose sampled text shape is not in the profile row (port step 7): a row profiled before
+#: the measures existed, or a column whose read did not finish (the run summary's `text_shape_not_measured` says which).
+TEXT_SHAPE_NOT_READ = ("its sampled text shape was not measured (profiled before text shape was taken, or this "
+                       "column's read did not finish): run the value profile again")
+
+
+#: The words for a column whose value hashes are not in the profile row (port step 8): they are off by default.
+HASHES_NOT_READ = ("value hashes were not taken (they are off by default: set VALUE_PROFILE_HASHES=true and run the "
+                   "value profile again) or this column's hash read did not finish (the run summary's "
+                   "hashes_not_measured says which)")
+
+
 def _not_established_reason(test_type: str, profile: dict) -> str:
     state = profile.get("state") or "measured"
     if state != "measured":
@@ -77,7 +89,9 @@ def _not_established_reason(test_type: str, profile: dict) -> str:
     missing = not_established_inputs(test_type, profile)
     # The functional-type inputs say why in their own words ("type not inferred · ..."), not as a bare NULL.
     words = [profile.get("fdt_why") or "type not inferred" if m == "functional_data_type"
-             else profile.get("ftt_why") or "table type not inferred" if m == "functional_table_type" else m
+             else profile.get("ftt_why") or "table type not inferred" if m == "functional_table_type"
+             else TEXT_SHAPE_NOT_READ if m == "sample_value_ct"
+             else HASHES_NOT_READ if m == "hash_state" else m
              for m in missing]
     if len(words) != len(missing) or words != missing:
         plain = [w for w, m in zip(words, missing, strict=True) if w == m]
@@ -192,6 +206,19 @@ def run_propose(registry, slug: str, *, row_ct_pct_threshold: float, surveyed_at
             "reason": "no value profile stored: run the value profile first; nothing was proposed",
         }}
     profile_surveyed_at = profile[0]["surveyed_at"]
+    # The most frequent values of the batch's eligible text columns (port step 8b), from the child table of the same
+    # batch, as TestGen's `frequent_values` JSON ({"values": [{"value", "ct"}], "other": {...}}).
+    frequent: dict[tuple, dict] = {}
+    for fv in registry.query_detail_rows("database_value_profile_frequent_values", slug):
+        if fv["surveyed_at"] != profile_surveyed_at:
+            continue
+        entry = frequent.setdefault((fv["schema_name"], fv["table_name"], fv["column_name"]), {"values": []})
+        if fv.get("value") is None:
+            entry["other"] = {"distinct_ct": fv.get("other_distinct_ct"), "ct": fv.get("value_ct")}
+        else:
+            entry["values"].append({"value": fv["value"], "ct": fv["value_ct"]})
+    profile = [{**r, "frequent_values": frequent.get((r["schema_name"], r["table_name"], r["column_name"]))}
+               for r in profile]
     catalogue = load_catalogue()
     verdicts = registry.get_quality_verdicts(slug)
     batches = _Batches(registry, slug)
@@ -209,7 +236,9 @@ def run_propose(registry, slug: str, *, row_ct_pct_threshold: float, surveyed_at
     # and the table periods; a stored label is used as it is.
     catalog_types = {(c["schema_name"], c["table_name"], c["column_name"]): c.get("base_type") or c.get("data_type")
                      for c in registry.query_detail_rows("database_columns", slug)}
-    inferred = functional_infer.infer_batch(functional_infer._inference_rows(profile, catalog_types, None))
+    positions = {(c["schema_name"], c["table_name"], c["column_name"]): c.get("ordinal_position")
+                 for c in registry.query_detail_rows("database_columns", slug) if c.get("ordinal_position") is not None}
+    inferred = functional_infer.infer_batch(functional_infer._inference_rows(profile, catalog_types, None, positions))
     record_series = registry.value_profile_record_counts(slug)
 
     def with_inference(prow: dict) -> dict:

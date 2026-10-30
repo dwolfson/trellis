@@ -244,7 +244,8 @@ class TestTableRoundTrip:
         # Eleven: database_column_matches (2026-10-20), the column-profile step's verdicts.
         # Fourteen: database_value_profiles, database_quality_proposals and
         # database_quality_results (2026-10-20, value profile and quality checks).
-        assert len(_DETAIL_TABLE_SPECS) == 14, sorted(_DETAIL_TABLE_SPECS)
+        # Fifteen: database_value_profile_frequent_values (port step 8, a child of the profile).
+        assert len(_DETAIL_TABLE_SPECS) == 15, sorted(_DETAIL_TABLE_SPECS)
         required = _required_columns_by_table()
         for table, spec in _DETAIL_TABLE_SPECS.items():
             slug = "coco_ods" if spec.resource_type == "database" else "drop_zone"

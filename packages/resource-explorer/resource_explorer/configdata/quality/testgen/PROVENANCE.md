@@ -1,4 +1,4 @@
-# Vendored catalogue: DataKitchen DataOps TestGen test types (Postgres, slice 1, Q6, B1a, profile 1b, Dupe_Rows and the schema-drift checks)
+# Vendored catalogue: DataKitchen DataOps TestGen test types (Postgres, slice 1, Q6, B1a, profile 1b, Dupe_Rows, the schema-drift checks, steps 6, 7 and 8)
 
 Data only. No TestGen code is vendored and TestGen is never run: Resource Explorer reads these files
 and executes the checks with its own steps (`surveyors/database/quality/`). The engine and analysis names
@@ -21,6 +21,10 @@ so the upstream product name appears only here, in `NOTICE` and in the developer
   2026-10-29 (Q4 steps 4 and 5: Dupe_Rows, Match_Column_Ct, Match_Column_Type, Schema_Conformance and Schema_Drift,
   and the three generation templates they use), from the same clone and commit, `testgen/` again identical to
   `3606859c` (`git diff --stat 3606859c HEAD -- testgen/` is empty).
+  2026-10-29 (Q4 step 7: the sampled text-shape measures and the seven types that read them), from the same clone and
+  commit, `testgen/` again identical to `3606859c`.
+  2026-10-29 (Q4 step 8: the value-hash and frequent-value types and the frequency analysis), from the same clone and
+  commit, `testgen/` again identical to `3606859c`.
 - **License:** Apache-2.0 (`LICENSE`, verbatim). `NOTICE` is DataKitchen's, verbatim.
 
 ## Files
@@ -63,13 +67,18 @@ so the upstream product name appears only here, in `NOTICE` and in the developer
 | `gen_query_tests/gen_Dupe_Rows.sql` | `testgen/template/gen_query_tests/gen_Dupe_Rows.sql` | unchanged (steps 4 and 5): Dupe_Rows' selection is this template; its port is pinned to the file's hash |
 | `gen_query_tests/gen_Match_Column_Ct.sql` | `testgen/template/gen_query_tests/gen_Match_Column_Ct.sql` | unchanged (steps 4 and 5): same |
 | `gen_query_tests/gen_Schema_Drift.sql` | `testgen/template/gen_query_tests/gen_Schema_Drift.sql` | unchanged (steps 4 and 5): same |
-| `postgresql/profile_measures.sql` | `testgen/template/flavors/postgresql/profiling/project_profiling_query.sql` | subset: the measure lines for `record_ct`, `value_ct`, `distinct_value_ct`, `null_value_ct`, `zero_length_ct`, `filled_value_ct`, `min_date`, `max_date`, `future_date_ct`, (Q6) `before_20yr_date_ct` and (profile 1b) `min_length`, `max_length`, `avg_length`, `before_5yr_date_ct`, `date_days_present`, `zero_value_ct`, `min_value`, `max_value`, `avg_value`, `stdev_value`, `fractional_sum`, `sum_value` and `boolean_true_ct`, each verbatim, under upstream's `TG-IF` flag names; a header comment added |
+| `postgresql/profile_measures.sql` | `testgen/template/flavors/postgresql/profiling/project_profiling_query.sql` | subset: the measure lines for `record_ct`, `value_ct`, `distinct_value_ct`, `null_value_ct`, `zero_length_ct`, `filled_value_ct`, `min_date`, `max_date`, `future_date_ct`, (Q6) `before_20yr_date_ct` and (profile 1b) `min_length`, `max_length`, `avg_length`, `before_5yr_date_ct`, `date_days_present`, `zero_value_ct`, `min_value`, `max_value`, `avg_value`, `stdev_value`, `fractional_sum`, `sum_value` and `boolean_true_ct`, and (step 7, flag `is_A_text`) `zero_value_ct` as a text column's regex form, `distinct_std_value_ct`, `min_text` and `max_text`, each verbatim, under upstream's `TG-IF` flag names; a header comment added |
 | `postgresql/numeric_chars.sql` | `testgen/template/flavors/postgresql/data_chars/get_schema_ddf.sql` | subset (profile 1b): the `logical_type` CASE (upstream lines 28-49) and the `is_decimal` CASE (67-71), verbatim, each headed by its line range; a header comment added |
-| `postgresql/templated_functions.yaml` | `testgen/template/flavors/postgresql/profiling/templated_functions.yaml` | subset (Q6): `DATEDIFF_DAY` and `DATEDIFF_MONTH`, verbatim; a header comment added |
+| `postgresql/templated_functions.yaml` | `testgen/template/flavors/postgresql/profiling/templated_functions.yaml` | subset (Q6, step 6, step 7): `DATEDIFF_DAY`, `DATEDIFF_MONTH`, `DATEDIFF_WEEK`, and (step 7) `IS_NUM` and `IS_DATE`, verbatim; a header comment added |
 | `profiling/functional_datatype_date.sql` | `testgen/template/profiling/functional_datatype.sql` | subset (Q6): the eight statements that can label a date column (upstream lines 18-25, 28-36, 39-43, 45-49, 72-116, 136-142, 228-262, 356-366), verbatim and in upstream order, each headed by its line range; a header comment added |
 | `profiling/functional_datatype.sql` | `testgen/template/profiling/functional_datatype.sql` | unchanged (step 6): the whole 629-line file, which `quality/functional_infer.py` ports in upstream order; pinned by SHA-256 |
 | `profiling/functional_tabletype_stage.sql` | `testgen/template/profiling/functional_tabletype_stage.sql` | unchanged (step 6): the table period (cumulative or window) and table type; ported in `functional_infer.table_period` and `table_kind`; pinned by SHA-256 |
 | `test_types/{Alpha_Trunc,Avg_Shift,Dec_Trunc,Distinct_Date_Ct,Distinct_Value_Ct,Incr_Avg_Shift,LOV_Match,Min_Val,Monthly_Rec_Ct,Outlier_Pct_Above,Outlier_Pct_Below,Pattern_Match,Unique_Pct,Valid_Month,Valid_US_Zip,Valid_US_Zip3,Variability_Decrease,Variability_Increase,Weekly_Rec_Ct}.yaml` | `testgen/template/dbsetup_test_types/test_types_<Name>.yaml` | unchanged (step 6) |
+| `test_types/{Email_Format,Street_Addr_Pattern,US_State,Valid_Characters,Match_Lead_Space_Ct,Match_Upper_Case_Ct,Match_Non_Printing_Ct}.yaml` | `testgen/template/dbsetup_test_types/test_types_<Name>.yaml` | unchanged (step 7) |
+| `postgresql/text_shape.sql` | `testgen/template/flavors/postgresql/profiling/project_profiling_query.sql` | subset (step 7): four blocks, each verbatim under an `-- upstream lines A-B` header: the sampled and unsampled `sampleable_rows`/`pattern_rows` CTEs (lines 26-33, 36-43), `sampleable_measures` (46-100) and the pattern CTEs (101-142). Assembled into one statement per text column (`quality/text_shape.py`); pinned block by block by SHA-256 |
+| `test_types/{Match_Hash_Text,Match_Hash_Num,Match_Hash_Date,Match_Keyed_Hash_Text,Match_Keyed_Hash_Num,Match_Keyed_Hash_Date,Match_Epoch_Sum}.yaml` | `testgen/template/dbsetup_test_types/test_types_<Name>.yaml` | unchanged (step 8): CAT, Table Comparison; their measure is `SUM({MULTISET_HASH_TERM})`, `SUM({KEYED_HASH_TERM})` or `SUM({EPOCH_SUM_TERM})`, which RE builds in `quality/value_hashes.py` |
+| `test_types/{Match_Frequent_Values,Match_Frequent_Patterns,Match_Distinct_Hash}.yaml` | `testgen/template/dbsetup_test_types/test_types_<Name>.yaml` | unchanged (step 8): QUERY, Table Comparison; the Postgres `test_templates` entry is what `quality/query_types.py` runs |
+| `postgresql/project_secondary_profiling_query.sql` | `testgen/template/flavors/postgresql/profiling/project_secondary_profiling_query.sql` | unchanged (step 8): the frequency analysis of a text column; byte-identical, pinned by SHA-256 (`quality/frequent_values.py`) |
 | `postgresql/percentiles.sql` | `testgen/template/flavors/postgresql/profiling/project_profiling_query.sql` | subset (step 6): the three PERCENTILE_CONT lines of the `is_N_exact_pctile` block (upstream lines 242-244), verbatim; a header comment added. Run as a statement of their own per table (`quality/percentiles.py`) |
 | `postgresql/general_type.sql` | `testgen/template/flavors/postgresql/data_chars/get_schema_ddf.sql` | subset: the `general_type` CASE, verbatim; a header comment added |
 | `LICENSE`, `NOTICE` | `LICENSE`, `NOTICE` | unchanged |
@@ -92,6 +101,17 @@ Step 6 adds the nineteen types of family C (`docs/design-notes/DESIGN-QUALITY-ST
 and the whole functional-type inference. Distinct_Value_Ct also names `gen_Distinct_Value_Ct.sql` (upstream
 `gen_funny_cat_tests/`, the constants-that-change generator); it is not vendored, because RE selects by the type's
 `selection_criteria` and the generator is a different upstream mechanism.
+
+Step 7 adds the sampled text-shape measures and seven types that read them: the four Standard-set types whose
+selection reads `std_pattern_match`, a text column's average length and spaces, or its general type
+(Email_Format, Street_Addr_Pattern, US_State, Valid_Characters), and the three Table Comparison types of B1c
+(`docs/design-notes/DESIGN-QUALITY-STEP-7-SAMPLED-TEXT-SHAPE.md`).
+
+Step 8 adds the value hashes (written in RE's own `quality/value_hashes.py` from TestGen's `value_hash.py` reference and its
+flavor services, which are Python code, not data: the four source files and `infer_key_columns.sql` are pinned by SHA-256 in
+`value_hashes.UPSTREAM_SHA256` and compared with the clone by `scripts/sync_quality_catalog.py`), the seven CAT hash types,
+the frequency analysis and the three QUERY types that compare a column's baseline text
+(`docs/design-notes/DESIGN-QUALITY-STEP-8-HASHES-AND-FREQUENT-VALUES.md`).
 
 ## How the catalogue is used
 
