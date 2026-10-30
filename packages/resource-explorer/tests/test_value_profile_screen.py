@@ -198,3 +198,17 @@ def test_q0079_field_level_numbers_read_the_container_rows(registry):
 
     out = build_measurements(registry, SLUG, "value_profile", entity_type="database", level="field")
     assert [m["name"] for m in out["measurements"]] == ["sales.empty_t", "sales.orders", "sales.big", "sales.v_orders"]
+
+
+def test_q0079_facts_say_which_analysis_has_numbers_at_the_field_level(registry):
+    """§5: the row's own button opens Q-0079's first analysis (data_class_match); the value profile's per-table numbers
+    are reachable because its fact says it has numbers at the question's level, and only at a sub-resource level."""
+    from resource_explorer.facts import FactLayer
+
+    layer = FactLayer(registry, resource_type="database")
+    at_field = {f.analysis_id: f for f in layer.facts(SLUG, ["data_class_match", "value_profile"], "field")}
+    assert at_field["value_profile"].numbers_at_level is True
+    assert at_field["value_profile"].as_dict()["numbers_at_level"] is True
+    assert at_field["data_class_match"].numbers_at_level is False
+    at_resource = layer.facts(SLUG, ["value_profile"], "resource")
+    assert at_resource[0].numbers_at_level is False

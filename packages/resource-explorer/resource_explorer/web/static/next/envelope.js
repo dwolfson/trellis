@@ -213,6 +213,9 @@ export function readEnvelope(entry, env, esc, tnum) {
     // headline_reader on that analysis and nobody can act on "somewhere".
     unwritten: [],
     stepLines: [],
+    // RE's own other analyses whose numbers exist at the question's level (`numbers_at_level`): one "the numbers
+    // behind this" each, since the row's own button opens only the question's first analysis.
+    numbersLines: [],
     rerun: { runnable: undefined, reason: '' },
     // True when at least one fact is known but no fact recorded WHEN it ran.
     // Missing timestamp is a gap in the record, NOT evidence that nothing
@@ -382,6 +385,13 @@ export function readEnvelope(entry, env, esc, tnum) {
       : (f.state === NEVER_RUN ? 'not run yet' : (f.note || (f.state || '').replace(/_/g, ' '))),
     known: !!f.is_known, neverRun: f.state === NEVER_RUN, lastRun: f.last_run_at || '', runnable: f.runnable, runnableReason: f.runnable_reason || '',
   }));
+  // The row's own "the numbers behind this" opens the question's FIRST analysis. When another of RE's own analyses has
+  // numbers at the question's level (a container reader: the value profile's one row per table behind Q-0079, whose
+  // first analysis is data_class_match), it gets a line of its own so its numbers are reachable too
+  // (DESIGN-VALUE-PROFILE-SCREEN-2026-10-30 §5). Library steps already have theirs in stepLines.
+  const buttonId = ((entry && entry.analysis_ids) || [])[0];
+  lines.numbersLines = facts.filter((f) => f.is_known && !f.library && f.numbers_at_level && f.analysis_id !== buttonId)
+    .map((f) => ({ id: f.analysis_id, sentence: f.headline || '' }));
   // The Re-run on the row runs the question's first analysis: its own gate, the one the Survey & analyses list uses.
   const first = facts.find((f) => entry && entry.analysis_ids && f.analysis_id === entry.analysis_ids[0]);
   lines.rerun = first ? { runnable: first.runnable, reason: first.runnable_reason || '' } : { runnable: undefined, reason: '' };

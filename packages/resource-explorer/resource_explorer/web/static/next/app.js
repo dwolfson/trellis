@@ -9889,8 +9889,13 @@ function provenanceLine(entry, i, lines, st) {
       blocked ? `disabled title="${esc(s.runnableReason)}"` : ''} class="${blocked ? 'cursor-not-allowed text-ink-muted' : 'cursor-pointer text-accent-ink'} bg-transparent underline">${
       s.known ? 're-run' : 'run'}</button></div>`;
   }).join('');
+  // One line per other analysis of RE's own whose numbers exist at this question's level (envelope.js numbersLines):
+  // its sentence and its own "the numbers behind this", opened in the same slot as the row's.
+  const numbersRows = (lines.numbersLines || []).map((n) => `<div data-numbers-line="${esc(n.id)}" class="ml-[22px] mt-[5px] text-provenance text-ink-muted">${
+    esc(n.id)}${n.sentence ? ` · ${tnum(esc(n.sentence))}` : ''} · <button data-numbers-step="${i}" data-numbers-for="${esc(n.id)}"
+      data-numbers-level="${esc(primaryQuestionLevel(entry))}" class="cursor-pointer bg-transparent text-accent-ink underline">the numbers behind this ›</button></div>`).join('');
   return `<div class="ml-[22px] mt-[7px] text-provenance text-ink-muted">${
-    [bits.join(' · '), actions.join(' · ')].filter(Boolean).join(' · ')}</div>${stepRows}
+    [bits.join(' · '), actions.join(' · ')].filter(Boolean).join(' · ')}</div>${stepRows}${numbersRows}
     <div id="qm-${i}" hidden></div>`;
 }
 
@@ -9942,7 +9947,7 @@ function replaceRow(entry, i, env) {
   bindRowActions(el, entry, i);
 }
 
-function bindRowActions(el, entry, i) {
+export function bindRowActions(el, entry, i) {
   el.querySelector(`[data-retry="${i}"]`)?.addEventListener('click', () => {
     replaceRow(entry, i, 'loading');
     loadAnswer(entry, i, state.selectedSlug);
@@ -10223,9 +10228,11 @@ async function openNotifyDialog(entry) {
 async function toggleMeasurementsInPlace(i, analysisId, btn, level) {
   const slot = $(`qm-${i}`);
   if (!slot) return;
-  if (!slot.hidden) { slot.hidden = true; slot.innerHTML = ''; return; }
+  // One slot per row: a second press of the same analysis closes it; another analysis's button switches it.
+  if (!slot.hidden && slot.dataset.numbersShown === analysisId) { slot.hidden = true; slot.innerHTML = ''; delete slot.dataset.numbersShown; return; }
   const slug = state.selectedSlug;
   slot.hidden = false;
+  slot.dataset.numbersShown = analysisId;
   slot.innerHTML = `<div class="ml-[22px] mt-s2 text-caveat text-ink-muted">Reading the measurements…</div>`;
   let data;
   try {
