@@ -72,6 +72,10 @@ class HostContext:
     store: Callable[[list["StepAnnotation"]], int] | None = None
     #: The previous process step's report, as plain data, when the host has one (`source_report` input).
     source_report: Any = None
+    #: A set step's subject (`StepManifest.subject == "set"`): the members as (resource_type, slug), and the set's own slug
+    #: (a work list's). Empty for a step about one resource.
+    members: tuple[tuple[str, str], ...] = ()
+    set_slug: str = ""
 
 
 @dataclass(frozen=True)
@@ -84,6 +88,10 @@ class StepInputs:
     source_report: Any = None
     #: The manifest's declared `parameters`, a copy: what the declaration publishes is what the code reads.
     parameters: dict = field(default_factory=dict)
+    #: A set step is handed the members its `resource_types` admit (the wrapper has already said why it skipped the rest) and
+    #: the set's slug; the typed ods reads take a list of slugs. Empty for a step about one resource.
+    members: tuple[tuple[str, str], ...] = ()
+    set_slug: str = ""
 
 
 class StepAnnotation(BaseModel):
@@ -156,7 +164,15 @@ class SurveyStep:
         return StepInputs(resource_type=host.resource_type, slug=host.slug,
                           ods=host.ods if "ods" in declared else None, connection=connection,
                           source_report=host.source_report if "source_report" in declared else None,
-                          parameters=dict(getattr(self.manifest, "parameters", None) or {}))
+                          parameters=dict(getattr(self.manifest, "parameters", None) or {}),
+                          members=self._eligible(host)[0], set_slug=host.set_slug)
+
+    def _eligible(self, host: HostContext) -> tuple[tuple[tuple[str, str], ...], list[tuple[str, str]]]:
+        """(the members the step measures, the members it does not) for a set step; ((), []) for any other."""
+        if getattr(self.manifest, "subject", "resource") != "set":
+            return (), []
+        ok = tuple(m for m in host.members if m[0] in self.manifest.resource_types)
+        return ok, [m for m in host.members if m[0] not in self.manifest.resource_types]
 
     def _annotate(self, result: Any, host: HostContext, measured_at: str) -> StepAnnotation:
         name = self.manifest.name
@@ -214,13 +230,50 @@ class SurveyStep:
 
     def run(self, host: HostContext) -> list[StepAnnotation]:
         """Run the code once for one resource; return (and store, when the host gives a store) its annotations.
-        Raises StepRefused when the results cannot all be kept; nothing is stored then."""
+        Raises StepRefused when the results cannot all be kept; nothing is stored then. A set step is run once for the whole
+        set: see `_run_set`."""
+        if getattr(self.manifest, "subject", "resource") == "set":
+            return self._run_set(host)
         if host.resource_type not in self.manifest.resource_types:
             raise StepRefused(f"step '{self.manifest.name}' measures {', '.join(self.manifest.resource_types)}, "
                               f"not {host.resource_type}")
         results = self.code(self.inputs_for(host))
         measured_at = _now()
         annotations = [self._typed(self._annotate(r, host, measured_at), r) for r in (results or [])]
+        if host.store is not None:
+            host.store(annotations)
+        return annotations
+
+    def _run_set(self, host: HostContext) -> list[StepAnnotation]:
+        """Run a set step once for the set. The host's members the step does not measure are not run and not dropped: each
+        gets a `not_applicable` result naming why, so a member that is missing from the answer is said, never silent. The
+        code returns a result per member it measured (scope = the member's slug) and exactly one roll-up (scope = the set's
+        slug); a result about anything else, or no roll-up, or two, is refused and nothing is stored."""
+        name = self.manifest.name
+        if not host.set_slug:
+            raise StepRefused(f"step '{name}' is about a set and the host gave no set slug: say which set this run is for")
+        eligible, skipped = self._eligible(host)
+        types = ", ".join(self.manifest.resource_types)
+        results: list[dict] = [{"scope": slug, "state": "not_applicable",
+                                "reason": f"{slug} is a {rtype}; step '{name}' measures {types}"} for rtype, slug in skipped]
+        if eligible:
+            returned = list(self.code(self.inputs_for(host)) or [])
+            allowed = {slug for _, slug in eligible} | {host.set_slug}
+            stray = sorted({str(r.get("scope") or "") for r in returned if isinstance(r, dict)
+                            and str(r.get("scope") or "") not in allowed})
+            if stray:
+                raise StepRefused(f"step '{name}' returned results for {', '.join(repr(s) for s in stray)}, which are "
+                                  f"neither members of the set nor the set '{host.set_slug}' itself")
+            rollups = [r for r in returned if isinstance(r, dict) and str(r.get("scope") or "") == host.set_slug]
+            if len(rollups) != 1:
+                raise StepRefused(f"step '{name}' returned {len(rollups)} roll-ups for the set '{host.set_slug}': a set "
+                                  "step returns exactly one result whose scope is the set's slug")
+            results.extend(returned)
+        else:
+            results.append({"scope": host.set_slug, "state": "not_established",
+                            "reason": f"no member of '{host.set_slug}' is a {types}, so there was nothing to measure"})
+        measured_at = _now()
+        annotations = [self._typed(self._annotate(r, host, measured_at), r) for r in results]
         if host.store is not None:
             host.store(annotations)
         return annotations

@@ -285,6 +285,42 @@ async def batch_progress(set_id: str) -> dict:
     return progress
 
 
+@router.get("/{slug}/set-steps")
+def list_set_steps(slug: str) -> dict:
+    """The steps this list's page offers that take the whole list as their subject, each with its priced line (the sum of
+    the members'). Reads RE's own stored rows only: nothing is run and nothing touches the resources."""
+    from resource_explorer.surveyors.survey_step_host import set_step_offers
+
+    wls = WorkLists()
+    wl = wls.get(slug)
+    if not wl:
+        raise HTTPException(status_code=404, detail=f"work list {slug!r} not found")
+    return {"work_list": slug, "members": len(wl["members"]), "offers": set_step_offers(wls.registry, wl)}
+
+
+@router.post("/{slug}/set-steps/{step}/run")
+def run_set_step_route(slug: str, step: str) -> dict:
+    """Run one set step over the list's members as they are now: one producing run, a result per member, one roll-up. Egeria
+    dispatch of set steps is out of scope; this runs in RE and stores in RE's registry."""
+    from resource_explorer.surveyors.survey_step_host import discover_set_steps, run_set_step, set_members
+
+    wls = WorkLists()
+    wl = wls.get(slug)
+    if not wl:
+        raise HTTPException(status_code=404, detail=f"work list {slug!r} not found")
+    members = set_members(wl)
+    if not members:
+        raise HTTPException(status_code=400, detail="nothing to run — the list has no members")
+    manifest = next((m for n, m in {k: v for t, _ in members for k, v in discover_set_steps(t).items()}.items()
+                     if n == step), None)
+    if manifest is None:
+        raise HTTPException(status_code=404, detail=f"no set step {step!r} is installed for this list's members")
+    try:
+        return run_set_step(manifest, wls.registry, slug, members)
+    except Exception as exc:  # noqa: BLE001 - the step's refusal is the answer, in its words
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.get("/{slug}")
 async def get_work_list(slug: str) -> dict:
     wl = WorkLists().get(slug)

@@ -445,9 +445,9 @@ class StepOds:
     stack): this narrows what a step is handed, it is not a sandbox."""
     __slots__ = STEP_ODS_METHODS
 
-    def __init__(self, requests):
+    def __init__(self, requests, allow_slug_lists: bool = False):
         for name in STEP_ODS_METHODS:
-            object.__setattr__(self, name, _remote(requests, name))
+            object.__setattr__(self, name, _remote(requests, name, allow_slug_lists))
 
     def __setattr__(self, name, value):
         raise AttributeError("a step's ODS reader is read-only")
@@ -456,12 +456,37 @@ class StepOds:
         return "<read-only ODS>"
 
 
-def _remote(requests, name):
+def _slug_first(name: str) -> bool:
+    """Is the first parameter of this typed read a resource's slug (so a set step may pass a list of them)?"""
+    import inspect
+
+    from trellis_analytics.readers.ods import OdsReader
+
+    params = list(inspect.signature(getattr(OdsReader, name)).parameters)
+    return len(params) > 1 and params[1] == "slug"
+
+
+#: The most members one list-of-slugs read may name.
+MAX_SET_SLUGS = 500
+
+
+def _remote(requests, name, allow_slug_lists: bool = False):
     import queue
 
     from trellis_analytics.readers.ods import OdsReader, OdsUnreadable
 
+    slug_first = allow_slug_lists and _slug_first(name)
+
     def call(*args, **kwargs):
+        if slug_first and args and isinstance(args[0], (list, tuple)):
+            # A SET step's read for every member (the only shape that is not a plain value): a bounded list of plain slug
+            # strings, one plain read per slug, answered as {slug: rows}. The reader thread still sees only strings and
+            # integers. Any other list, and any list for a step about one resource, is a TypeError as before.
+            if len(args[0]) > MAX_SET_SLUGS:
+                raise TypeError(f"a set step's read takes at most {MAX_SET_SLUGS} slugs, not {len(args[0])}")
+            if not all(type(x) is str for x in args[0]):
+                raise TypeError("a set step's list of members is plain slug strings")
+            return {_plain(slug): call(slug, *args[1:], **kwargs) for slug in args[0]}
         args = tuple(_plain(a) for a in args)
         kwargs = {str(k): _plain(v) for k, v in kwargs.items()}
         reply: queue.Queue = queue.Queue(maxsize=1)
@@ -498,7 +523,7 @@ class _Requests:
 
 
 @contextmanager
-def step_reader(database_url: str):
+def step_reader(database_url: str, *, allow_slug_lists: bool = False):
     """A step's read-only ODS (`StepOds`) for the duration of the block. The connection is opened and used only in
     the reader's own thread; the block's end stops the thread and closes it, and the reader refuses after that."""
     import queue
@@ -515,7 +540,7 @@ def step_reader(database_url: str):
             from trellis_analytics.readers.ods import OdsUnreadable
 
             raise OdsUnreadable(problem)
-        yield StepOds(requests)
+        yield StepOds(requests, allow_slug_lists)
     finally:
         requests.closed = True
         requests.put(None)
@@ -550,6 +575,9 @@ class SurveyStepHost:
         from trellis_analytics.step import HostContext, SurveyStep
 
         step = self.manifest.name
+        if getattr(self.manifest, "subject", "resource") == "set":
+            raise StepNotInstalled(f"step '{step}' is about a set of resources: run it from a work list, not on one "
+                                   f"{self.entity_type}")
         # The run's own time when the executor stamped one (a database scan's), so the annotations name the run.
         run = runner_kwargs.get("scan_surveyed_at") or datetime.utcnow().isoformat()
 
@@ -646,7 +674,23 @@ def discover_steps(entity_type: str) -> dict:
         return {}
     LOAD_ERRORS.pop(entity_type, None)
     return {n: m for n, m in found.items()
-            if getattr(m, "kind", "") == "step" and entity_type in (m.resource_types or [])}
+            if getattr(m, "kind", "") == "step" and entity_type in (m.resource_types or [])
+            and getattr(m, "subject", "resource") != "set"}
+
+
+def discover_set_steps(entity_type: str) -> dict:
+    """name -> StepManifest for every installed step whose subject is a set of `entity_type` resources (a work list's
+    members). They are not per-resource analyses, so `discover_steps` does not return them and the catalogue does not list
+    them: the work list's page offers them (`set_step_offers`)."""
+    try:
+        from trellis_analytics.discovery import discover
+        found = discover()
+    except Exception as exc:  # noqa: BLE001 - one broken package must not stop RE from starting
+        log.error("set steps not loaded for %s: %s", entity_type, exc)
+        return {}
+    return {n: m for n, m in found.items()
+            if getattr(m, "kind", "") == "step" and getattr(m, "subject", "resource") == "set"
+            and entity_type in (m.resource_types or [])}
 
 
 def catalog_entry(manifest, origin: dict) -> dict:
@@ -800,3 +844,111 @@ def refresh(entity_type: str = "database") -> list[str]:
                       fs.FILESYSTEM_ANALYSIS_RESULTS_MAP, fs.FILESYSTEM_ANALYSIS_KINDS,
                       fs.FILESYSTEM_ANALYSIS_HEADLINE_MAP)
     raise ValueError(f"user steps attach to databases and file systems only so far, not {entity_type}")
+
+
+# ── A set as the subject (brief 2026-10-30, Part C) ─────────────────────────────────────────────────────────────
+
+#: The entity type the roll-up of a set run is stored under (its slug is the work list's).
+SET_ENTITY = "work_list"
+
+
+def run_set_step(manifest, registry, work_list_slug: str, members: list[tuple[str, str]], *,
+                 provided_by: dict | None = None) -> dict:
+    """Run a set step once for a work list's members: ONE producing run, a stored result per member (under the member's
+    own type and slug, as a run of the step on that member would be read) and one roll-up (under `work_list`/<the list's
+    slug>). A member of a type the step does not measure is stored as a reason row and counted, never dropped.
+
+    The price of the run is the sum of its members' (`set_price`); it is returned beside the outcome so the page that
+    started the run can say what it cost to ask."""
+    from trellis_analytics.step import HostContext, SurveyStep
+
+    step = manifest.name
+    provided_by = dict(provided_by or {})
+    run = datetime.utcnow().isoformat()
+    where = {slug: etype for etype, slug in members}
+    stored: dict[tuple[str, str, str], int] = {}
+
+    def store(annotations) -> int:
+        measured_at = annotations[0].envelope.measured_at if annotations else run
+        groups: dict[tuple[str, str, str], list] = {}
+        for a in annotations:
+            etype = SET_ENTITY if a.scope == work_list_slug else where[a.scope]
+            groups.setdefault((etype, a.scope, measure_step_key(step, getattr(a, "measure", ""))), []).append(a)
+        for (etype, slug, key), group in groups.items():
+            stored[(etype, slug, key)] = registry.record_step_annotations(
+                etype, slug, key, run=run, measured_at=measured_at, annotations=[a.to_record() for a in group],
+                package=provided_by.get("package", ""), producer_version=manifest.version)
+        return sum(len(g) for g in groups.values())
+
+    with contextlib.ExitStack() as stack:
+        ods = stack.enter_context(step_reader(registry.database_url, allow_slug_lists=True))
+        host = HostContext(resource_type=SET_ENTITY, slug=work_list_slug, producing_run=run, ods=ods, store=store,
+                           members=tuple(members), set_slug=work_list_slug)
+        code = SurveyStep(manifest).code
+        annotations = SurveyStep(manifest, code=_without_identity(code, stack.close)).run(host)
+    counts: dict[str, int] = {}
+    for a in annotations:
+        counts[a.envelope.result_state.value] = counts.get(a.envelope.result_state.value, 0) + 1
+    return {"run": run, "step": step, "set": work_list_slug, "annotation_count": len(annotations),
+            "per_member": sum(1 for a in annotations if a.scope != work_list_slug),
+            "rollups": sum(1 for a in annotations if a.scope == work_list_slug),
+            "state_counts": counts, "step_annotations": [a.to_record() for a in annotations],
+            "price": set_price(registry, manifest, members)}
+
+
+def set_price(registry, manifest, members: list[tuple[str, str]]) -> dict:
+    """The priced line of a set run: one row per member (tables and size from RE's stored inventory, the time from this step's
+    earlier runs), and a total that is the SUM of the members'. A member the step does not measure is a row that says so and
+    adds nothing; a member with no measured time is counted, and with any such member there is no total time, only the words
+    saying how many are not measured yet (an absence is never a zero)."""
+    from resource_explorer import quality_batch
+
+    rows, measured, unmeasured, skipped = [], [], 0, 0
+    for etype, slug in members:
+        if etype not in manifest.resource_types:
+            skipped += 1
+            rows.append({"entity_slug": slug, "entity_type": etype, "can_run": False, "time": None,
+                         "words": f"skipped · {slug} is a {etype}; this step measures {', '.join(manifest.resource_types)}"})
+            continue
+        row = quality_batch.price_row(registry, slug, definition=manifest.name)
+        rows.append({**row, "entity_type": etype})
+        secs = (row.get("time") or {}).get("seconds")
+        if secs is None:
+            unmeasured += 1
+        else:
+            measured.append(secs)
+    priced = len(rows) - skipped
+    total_tables = sum((r.get("tables") or {}).get("count") or 0 for r in rows)
+    if priced and not unmeasured:
+        total = {"seconds": sum(measured), "words": f"about {quality_batch._duration_words(sum(measured))} in all · "
+                                                    "the sum of its members' measured times"}
+    elif measured:
+        total = {"seconds": None, "words": f"{unmeasured} of {priced} members not measured yet · no total until each has "
+                                           "run once"}
+    else:
+        total = {"seconds": None, "words": "not measured yet · the first run sets the price" if priced else
+                 "no member this step measures"}
+    return {"step": manifest.name, "members": len(members), "priced": priced, "skipped": skipped,
+            "tables": total_tables, "rows": rows, "total": total,
+            "words": f"{priced} member(s) · {total['words']}" + (f" · {skipped} skipped" if skipped else "")}
+
+
+def set_members(work_list: dict) -> list[tuple[str, str]]:
+    """A work list's members as (resource_type, slug): each member's own kind, else the list's."""
+    return [(m.get("entity_type") or work_list.get("entity_type") or "", m["entity_slug"])
+            for m in work_list.get("members") or []]
+
+
+def set_step_offers(registry, work_list: dict) -> list[dict]:
+    """The set steps the work list's page offers, each with its priced line (`set_price`) for THIS list's members. A step
+    that measures none of the members' kinds is not offered: there is nothing for it to run on."""
+    members = set_members(work_list)
+    kinds = {t for t, _ in members}
+    offers = []
+    for etype in sorted(kinds):
+        for name, manifest in discover_set_steps(etype).items():
+            if any(o["step"] == name for o in offers):
+                continue
+            offers.append({"step": name, "display_name": manifest.display_name or name.replace("_", " ").title(),
+                           "description": manifest.description, "price": set_price(registry, manifest, members)})
+    return offers
