@@ -762,7 +762,10 @@ def rule_states(registry, slug: str) -> dict:
         out[key] = {"state": state or "unpublished", "words": words,
                     "rule_guid": (proof or {}).get("rule_guid", ""), "read_at": (proof or {}).get("read_at", "")}
     entity = registry.get_database(slug)
-    return {"rules": out, "preview": {**tally, "words": preview_words(tally)},
+    pressed = [p for p in proofs.values() if p.get("outcome") in PUBLISHED_OUTCOMES and p.get("read_at")]
+    newest = max(pressed, key=lambda p: p["read_at"], default=None)
+    last = {"at": newest["read_at"], "by": newest.get("recorded_by") or ""} if newest else None
+    return {"rules": out, "preview": {**tally, "words": preview_words(tally)}, "last_published": last,
             "in_egeria": bool(getattr(entity, "egeria_asset_guid", "") or "")}
 
 

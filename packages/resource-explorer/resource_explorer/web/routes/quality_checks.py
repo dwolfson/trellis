@@ -154,6 +154,7 @@ def _publish_rules(registry, slug: str, author: str) -> dict:
 
     db_entity = registry.get_database(slug)
     result = publish_database_rules(registry, db_entity, egeria_gateway(), recorded_by=author)
+    result["read_at"] = datetime.now(UTC).isoformat()
     registry.write_activity(ActivityEntry(
         id=str(uuid.uuid4()), ts=datetime.now(UTC).isoformat(),
         operation="quality_rules_published", intent="curate", entity_type="database", entity_slug=slug,

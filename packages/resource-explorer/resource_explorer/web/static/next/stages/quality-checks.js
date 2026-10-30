@@ -133,11 +133,23 @@ export function ruleCueHtml(row, { outcomes = new Map(), rules = new Map(), canG
 export function publishDisabledReason(pub, me) {
   if (pub.pending) return 'publishing… (a press runs once)';
   if (!me) return 'sign in to publish · it needs a person to record';
-  if (pub.readError) return `what a publish would do could not be read, so it cannot be pressed (${pub.readError})`;
-  if (!pub.preview) return 'reading what a publish would do…';
-  if (!pub.inEgeria) return 'this database is not in Egeria yet: commit it first in Contents';
-  if (!pub.preview.accepted) return 'nothing is accepted yet: accept a check first';
+  // A press is never refused for what the preview expects ("2 already in Egeria", "nothing accepted", a database with no
+  // asset recorded): the server answers each of those in words, and re-confirming is a legitimate publish.
   return '';
+}
+
+/** The words before a press. "N unchanged" alone says nothing to a person who wonders what a press does: say it. */
+export function publishPreviewWords(preview) {
+  const t = preview || {};
+  if (t.to_publish || t.to_retire || t.waiting || t.edited || t.retry || !t.unchanged) return t.words || '';
+  return `${t.unchanged} data quality rule${t.unchanged === 1 ? '' : 's'} already in Egeria · a press changes nothing`;
+}
+
+/** The words after a press, from the server's own response: its state words, the counts it acted on, and when it read back. */
+export function publishResultWords(r) {
+  const counts = Object.entries(r.counts || {}).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${k.replace(/_/g, ' ')}`);
+  const base = r.state_words || 'no words returned';
+  return [base, ...counts.filter((c) => !base.includes(c)), r.read_at ? `read back ${stamp(r.read_at)}` : ''].filter(Boolean).join(' · ');
 }
 
 /** The Publish band: the button, what a press would do (or the sentence for why it cannot be pressed), and after a press
@@ -145,10 +157,13 @@ export function publishDisabledReason(pub, me) {
 export function publishBandHtml(pub, { me = '', canGoContents = false } = {}) {
   const why = publishDisabledReason(pub, me);
   const before = pub.readError ? `could not read what a publish would do: ${pub.readError}`
-    : pub.preview ? pub.preview.words : 'reading what a publish would do…';
-  const after = pub.failure ? cueHtml('failed', `not published · ${pub.failure}`, pub.failure)
-    : pub.result ? cueHtml(pub.result.state === 'published' || pub.result.state === 'retired' ? 'accepted' : 'not_established',
-      pub.result.state_words || 'no words returned', pub.result.line || '') : '';
+    : pub.preview ? publishPreviewWords(pub.preview) : 'reading what a publish would do…';
+  const last = pub.last && pub.last.at ? `last published ${stamp(pub.last.at)}${pub.last.by ? ` by ${pub.last.by}` : ''} · read back` : '';
+  const after = pub.pending ? cueHtml('pending', 'publishing…', 'the press is running')
+    : pub.failure ? cueHtml('failed', `not published · ${pub.failure}`, pub.failure)
+      : pub.result ? cueHtml(pub.result.state === 'published' || pub.result.state === 'retired' ? 'accepted' : 'not_established',
+        publishResultWords(pub.result), pub.result.line || '')
+        : last ? `<div data-qc-publish-last class="text-provenance text-ink-muted">${esc(last)}</div>` : '';
   const goto = canGoContents && pub.preview && pub.preview.waiting
     ? ' <button type="button" data-qc-act="contents" class="cursor-pointer bg-transparent p-0 text-accent-ink underline">Contents ›</button>' : '';
   return `<div data-qc-publish class="mb-s1">
@@ -207,7 +222,7 @@ export function watchLineHtml(g, { me = '', pending = false, failure = '' } = {}
 
 export function groupBodyHtml(rows, ui) {
   if (!rows.length) return '<div class="text-caveat text-ink-muted">No checks in this table match the filters.</div>';
-  return gridHtml(QC_COLS, 'Proposed quality checks', rows.map((r) => checkRow(r, ui)));
+  return gridHtml(QC_COLS, 'Proposed quality checks', rows.map((r) => checkRow(r, ui)), `data-rc-id="${QC_COLS.id}"`);
 }
 
 const countWords = (c) => [
@@ -254,8 +269,9 @@ export function summaryHtml(d) {
 export function mountQualityChecks(slot, slug, deps) {
   const doc = slot.ownerDocument;
   const canGoContents = typeof deps.openContents === 'function';
-  const ui = { pending: new Set(), failed: new Map(), me: deps.me || '', outcomes: new Map(), rules: new Map(), canGoContents };
-  const pub = { preview: null, inEgeria: false, readError: '', pending: false, result: null, failure: '' };
+  const meNow = () => (typeof deps.me === 'function' ? deps.me() : deps.me) || '';
+  const ui = { pending: new Set(), failed: new Map(), me: meNow(), outcomes: new Map(), rules: new Map(), canGoContents };
+  const pub = { preview: null, inEgeria: false, readError: '', pending: false, result: null, failure: '', last: null };
   const filters = { test_type: '', dimension: '', state: '' };
   const open = new Set();                         // "schema.table" keys of groups the person has opened
   const rowsOf = new Map();                       // key -> rows as last read
@@ -320,7 +336,7 @@ export function mountQualityChecks(slot, slug, deps) {
 
   const paintPublish = () => {
     const host = slot.querySelector('[data-qc-publish-slot]');
-    if (host && deps.api.getRules && deps.api.postPublish) host.innerHTML = publishBandHtml(pub, { me: ui.me, canGoContents });
+    if (host && deps.api.getRules && deps.api.postPublish) { ui.me = meNow(); host.innerHTML = publishBandHtml(pub, { me: ui.me, canGoContents }); };
   };
   const repaintOpenRows = () => open.forEach((k) => { if (rowsOf.has(k)) paintRows(k); });
 
@@ -332,6 +348,7 @@ export function mountQualityChecks(slot, slug, deps) {
       ui.rules = new Map(Object.entries(d.rules || {}));
       pub.preview = d.preview || null;
       pub.inEgeria = !!d.in_egeria;
+      pub.last = d.last_published || null;
       pub.readError = d.preview ? '' : 'the server sent no preview';
     } catch (err) {
       pub.readError = err.message || 'the read failed';
@@ -341,13 +358,14 @@ export function mountQualityChecks(slot, slug, deps) {
   }
 
   async function pressPublish() {
+    ui.me = meNow();
     if (pub.pending || publishDisabledReason(pub, ui.me)) return;
     pub.pending = true;                         // set before anything is awaited: a second press does nothing
     pub.failure = '';
     paintPublish();
     try {
       const out = await deps.api.postPublish(slug);
-      pub.result = { state: out.state || '', state_words: out.state_words || '', line: out.line || '' };
+      pub.result = { state: out.state || '', state_words: out.state_words || '', line: out.line || '', counts: out.counts || {}, read_at: out.read_at || '' };
       ui.outcomes = new Map(Object.entries(out.outcomes || {}));
     } catch (err) {
       pub.result = null;
