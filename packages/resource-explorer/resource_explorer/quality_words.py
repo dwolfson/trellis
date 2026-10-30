@@ -47,17 +47,52 @@ def _words(key: str) -> str:
     return key.replace("_", " ")
 
 
+#: Why a column is left out of a duplicate-rows comparison (general_type X, dupe_rows.NO_EQUALITY), in words.
+_NOT_COMPARABLE = "its type has no equality (identifiers, binary, arrays and the like), so it cannot be compared"
+
+
+def _names(value) -> list[str]:
+    """Column names from a list of names or of `{"column": ...}` records."""
+    return [str(v.get("column") or v.get("name") or "") if isinstance(v, dict) else str(v) for v in value or []]
+
+
+def _compared(value: list, left_out: list[str]) -> dict:
+    """Duplicate Rows' column list as one line: "24 columns compared (all but rowguid)", the names behind it."""
+    names = _names(value)
+    n = len(names)
+    summary = f"{n} column{'' if n == 1 else 's'} compared"
+    if left_out:
+        summary += f" (all but {', '.join(left_out)})"
+    title = "; ".join(f"{c} is left out: {_NOT_COMPARABLE}" for c in left_out)
+    return {"key": "groupby_names", "label": "columns compared", "list": names, "summary": summary, "title": title}
+
+
 def parameter_items(entry, params: dict) -> list[dict]:
     """The parameters a check carries that have a value, each `{key, label, text}` or, for a long list of values,
-    `{key, label, list, summary}`. A parameter whose value is None is left out: it was not measured."""
+    `{key, label, list, summary}`. A parameter whose value is None is left out: it was not measured.
+
+    No value is shown as JSON. Duplicate Rows' compared columns are a count with the names behind a disclosure, and the
+    columns it leaves out are named in that same line ("24 columns compared (all but rowguid)"), not as records."""
     labels = _prompts(entry) if entry is not None else dict(_EXTRA_LABELS)
     standard = (entry.default_parm_values or "") if entry is not None else ""
+    params = params or {}
+    left_out = [n for n in _names(params.get("excluded_columns")) if n]
     out = []
-    for key, value in (params or {}).items():
+    for key, value in params.items():
         if key in _NOT_A_SETTING or value is None or value == "":
             continue
         label = labels.get(key) or _words(key)
-        if isinstance(value, str) and value.count(",") >= _LIST_AT_LEAST:
+        if key == "groupby_names" and isinstance(value, list):
+            out.append(_compared(value, left_out))
+        elif key == "excluded_columns" and isinstance(value, list):
+            if "groupby_names" not in params and left_out:     # said with the compared columns when they are there
+                out.append({"key": key, "label": "left out", "text": ", ".join(left_out),
+                            "title": "; ".join(f"{c} is left out: {_NOT_COMPARABLE}" for c in left_out)})
+        elif isinstance(value, list):
+            names = [n for n in _names(value) if n]
+            out.append({"key": key, "label": label, "list": names, "summary": f"{label} · {len(names)} values"}
+                       if len(names) >= _LIST_AT_LEAST else {"key": key, "label": label, "text": ", ".join(names)})
+        elif isinstance(value, str) and value.count(",") >= _LIST_AT_LEAST:
             items = [i.strip() for i in value.split(",")]
             origin = "standard " if value in standard else ""
             out.append({"key": key, "label": label, "list": items, "summary": f"{origin}{label} · {len(items)} values"})
@@ -90,5 +125,11 @@ def reason_in_words(reason: str) -> str:
     out = _READS.sub(_reads, reason)
     out = _NEEDS.sub(lambda m: f"needs {_input_names(m.group('names'))}, which this profile does not collect", out)
     out = out.replace("so its selection rule could not be evaluated", "so this check could not be evaluated")
-    return out.replace("table type not inferred", "the table's type could not be worked out").replace(
+    out = out.replace("table type not inferred", "the table's type could not be worked out").replace(
         "type not inferred", "the column's type could not be worked out")
+    # The type inference's own tails ("undetermined", "statements unresolved: Constant") say nothing more to a person
+    # than "could not be worked out" already does; the stored reason keeps them (the row's title).
+    return _TYPE_TAIL.sub("", out)
+
+
+_TYPE_TAIL = re.compile(r" · (?:undetermined|statements unresolved: [^·;]+?)(?=$| · |;)")

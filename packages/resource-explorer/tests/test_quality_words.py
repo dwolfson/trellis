@@ -44,3 +44,29 @@ def test_an_unnamed_input_says_the_rule_did_not_name_it():
 def test_a_reason_it_does_not_know_comes_back_unchanged():
     assert reason_in_words("something new") == "something new"
     assert reason_in_words("") == ""
+
+
+def test_duplicate_rows_columns_are_a_count_and_the_left_out_ones_are_named_not_json():
+    """QS-1/QS-2 (read §C, 2026-10-30): "columns to compare [...24 names...]" and `excluded columns [{...}]` were raw."""
+    from resource_explorer.surveyors.database.quality.catalogue import load_catalogue
+
+    names = [f"c{i}" for i in range(24)]
+    items = parameter_items(load_catalogue()["Dupe_Rows"], {
+        "groupby_names": names, "skip_errors": 0, "excluded_columns": [{"column": "rowguid", "general_type": "X"}],
+        "severity": "error"})
+    [compared] = [i for i in items if i["key"] == "groupby_names"]
+    assert compared["summary"] == "24 columns compared (all but rowguid)" and compared["list"] == names
+    assert "rowguid is left out" in compared["title"]
+    assert [i["key"] for i in items] == ["groupby_names", "skip_errors", "severity"]   # the left-out ones said once
+    assert not any("{" in str(i.get("text", "")) or "[" in str(i.get("text", "")) for i in items)
+    one = parameter_items(None, {"groupby_names": ["only"]})
+    assert one[0]["summary"] == "1 column compared"
+
+
+def test_type_inference_tails_are_dropped_from_the_person_words():
+    """QS-3: "undetermined" and "statements unresolved: Constant" say nothing more than "could not be worked out"."""
+    assert reason_in_words("type not inferred · undetermined") == "the column's type could not be worked out"
+    assert reason_in_words("type not inferred · statements unresolved: Constant") == "the column's type could not be worked out"
+    said = reason_in_words("type not inferred · statements unresolved: Constant · needs date_months_present, which the "
+                           "profile does not take")
+    assert said == "the column's type could not be worked out · needs the months that hold dates, which this profile does not collect"
