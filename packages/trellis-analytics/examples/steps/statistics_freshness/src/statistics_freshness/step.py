@@ -5,12 +5,12 @@ Per table, from the newest `database_table_activity` snapshot RE stored (`inputs
 - the last ANALYZE and VACUUM (manual and automatic), stated as Postgres gave them; Postgres's NULL is the finding
   "never", never an empty value;
 - days since each, relative to the snapshot's as-of, never to the moment this runs;
-- a status: ``never analyzed`` (both analyse times NULL), ``stale`` (changes since the last analyse past autovacuum's
+- a status: ``never analyzed`` (both analyze times NULL), ``stale`` (changes since the last analyze past autovacuum's
   own trigger, ``50 + 0.1 * live rows``, PostgreSQL's defaults, since no survey stores this database's settings),
-  ``current``, or ``analysed; changes since not read``.
+  ``current``, or ``analyzed; changes since not read``.
 
 A table whose statistics were not read (no live-row count; a native survey's row) is ``not_established``, never
-"never analysed". One summary result for the database counts the statuses, and leads with the tables that need attention (never analysed or stale). Every result carries its as-of and the
+"never analyzed". One summary result for the database counts the statuses, and leads with the tables that need attention (never analyzed or stale). Every result carries its as-of and the
 caveat; every state carries a sentence.
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ from datetime import datetime
 #: The database summary, the second declared measure.
 SUMMARY = "statistics_freshness_summary"
 
-#: PostgreSQL's defaults for autovacuum's analyse trigger (no survey stores this database's own settings).
+#: PostgreSQL's defaults for autovacuum's analyze trigger (no survey stores this database's own settings).
 ANALYZE_THRESHOLD = 50
 ANALYZE_SCALE_FACTOR = 0.1
 CAVEAT = ("ages are relative to the snapshot's as-of, not to now; 'stale' uses PostgreSQL's default autovacuum "
@@ -28,7 +28,7 @@ CAVEAT = ("ages are relative to the snapshot's as-of, not to now; 'stale' uses P
 
 NEVER = "never"
 NEVER_ANALYZED, STALE, CURRENT, CHANGES_NOT_READ = ("never analyzed", "stale", "current",
-                                                     "analysed; changes since not read")
+                                                     "analyzed; changes since not read")
 STATUSES = (NEVER_ANALYZED, STALE, CURRENT, CHANGES_NOT_READ)
 
 #: Published keys: Egeria's resource-measure convention is the metric's display name (RE's table_statistics_metrics).
@@ -92,14 +92,14 @@ def _table(t: dict, source: str, as_of: str) -> dict:
              RESET: t.get("stats_reset") or None, "asOf": as_of, "basis": CAVEAT}
     vac = "never vacuumed" if not vacuumed else f"vacuumed {_ago(days_vacuum, vacuumed)}"
     if status == NEVER_ANALYZED:
-        words = f"never analysed; {vac}"
+        words = f"never analyzed; {vac}"
     elif status == STALE:
-        words = (f"stale · {int(changes):,} rows changed since the last analyse {_ago(days_analyse, analysed)}, "
+        words = (f"stale · {int(changes):,} rows changed since the last analyze {_ago(days_analyse, analysed)}, "
                  f"past autovacuum's {threshold:,.0f}; {vac}")
     elif status == CURRENT:
-        words = f"current · analysed {_ago(days_analyse, analysed)}, {int(changes):,} rows changed since; {vac}"
+        words = f"current · analyzed {_ago(days_analyse, analysed)}, {int(changes):,} rows changed since; {vac}"
     else:
-        words = f"analysed {_ago(days_analyse, analysed)}; rows changed since not read; {vac}"
+        words = f"analyzed {_ago(days_analyse, analysed)}; rows changed since not read; {vac}"
     return {"scope": scope, "state": "measured", "value": value, "summary": f"{words} (as of {as_of})"}
 
 
@@ -112,15 +112,15 @@ def _summary(slug: str, results: list[dict], as_of: str) -> dict:
     counts = {s: sum(1 for r in read if r["value"]["Statistics Status"] == s) for s in STATUSES}
     unread = len(results) - len(read)
     needs = counts[NEVER_ANALYZED] + counts[STALE]
-    parts = [f"{needs} need attention", f"{counts[NEVER_ANALYZED]} never analysed", f"{counts[STALE]} stale",
+    parts = [f"{needs} need attention", f"{counts[NEVER_ANALYZED]} never analyzed", f"{counts[STALE]} stale",
              f"{counts[CURRENT]} current"]
     if counts[CHANGES_NOT_READ]:
         parts.append(f"{counts[CHANGES_NOT_READ]} with changes since not read")
     if unread:
         parts.append(f"{unread} not read")
     ages = [r["value"]["Days Since Analyze"] for r in read if r["value"]["Days Since Analyze"] is not None]
-    # The headline count is "needs attention" = never analysed + stale. "Stale" alone reads 0 for a database no table of
-    # which was ever analysed, which reads as all current (F17).
+    # The headline count is "needs attention" = never analyzed + stale. "Stale" alone reads 0 for a database no table of
+    # which was ever analyzed, which reads as all current (F17).
     value = {"Tables": len(results), "Needs Attention": counts[NEVER_ANALYZED] + counts[STALE],
              "Never Analyzed": counts[NEVER_ANALYZED], "Stale": counts[STALE],
              "Current": counts[CURRENT], "Changes Since Analyze Not Read": counts[CHANGES_NOT_READ],

@@ -733,7 +733,7 @@ def test_a_resource_scoped_summary_of_a_member_scoped_step_is_read_by_its_own_ke
     registry.record_step_annotations(
         "database", SLUG, measure_step_key("per_table", "per_table_summary"), run="2026-10-29T10:00:00.1",
         measured_at="2026-10-29T10:00:00", annotations=[{
-            "annotation_type": "ResourceMeasureAnnotation", "scope": "", "summary": "of 4 tables: 4 never analysed",
+            "annotation_type": "ResourceMeasureAnnotation", "scope": "", "summary": "of 4 tables: 4 never analyzed",
             "resourceProperties": {"Stale": 0, "asOf": "2026-10-25T01:36:00"},
             "additionalProperties": {"resultState": "measured"}}])
     rows = _rows(registry)

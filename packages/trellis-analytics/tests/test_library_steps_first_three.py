@@ -90,9 +90,9 @@ def test_freshness_measured_from_the_newest_activity_snapshot(freshness, make_re
              last_autoanalyze="2026-10-10T00:00:00", last_autovacuum="2026-10-12T00:00:00"),
         # current
         _act("customers", live_tuples=500, pending_changes=3, last_autoanalyze="2026-10-14T12:00:00"),
-        # never analysed: Postgres NULL for both
+        # never analyzed: Postgres NULL for both
         _act("staging", live_tuples=40, pending_changes=40),
-        # analysed, changes since not read
+        # analyzed, changes since not read
         _act("archive", live_tuples=9, last_analyze="2026-09-15T00:00:00"),
         # not read: no live-row count
         _act("ghost", rows_inserted=5),
@@ -113,7 +113,7 @@ def test_freshness_measured_from_the_newest_activity_snapshot(freshness, make_re
     assert staging.resource_properties["Last Analyze"] == "never" and "Days Since Analyze" not in \
         staging.resource_properties                                     # never is a finding, never a 0
     assert anns[("", "public.archive")].resource_properties["Statistics Status"] == \
-        "analysed; changes since not read"
+        "analyzed; changes since not read"
     ghost = anns[("", "public.ghost")]
     assert _state(ghost) == "not_established" and ghost.resource_properties == {}
     assert ghost.summary == "not measured · statistics not read for this table"

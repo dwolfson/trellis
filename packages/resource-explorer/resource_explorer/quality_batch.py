@@ -9,7 +9,7 @@ of its own: every result, verdict and proof row stays per database.
 Three things are Q3's own:
 
 * **The price line** (§2.3), one row per database, before anything is queued: tables and bytes from RE's latest
-  stored inventory (a table with no size reads "size unknown · never analysed", never 0), the time from the measured
+  stored inventory (a table with no size reads "size unknown · never analyzed", never 0), the time from the measured
   wall time of this database's earlier quality runs ("not measured yet" when there are none, never a guess), and
   whether the run can start at all (a stored credential).
 * **Skip-unchanged** (§2.2 point 3), for the scheduled batch only: a database whose inventory did not change since its
@@ -269,9 +269,9 @@ def price_row(registry, slug: str, *, definition: str = QUALITY_DEFINITION) -> d
                   "words": f"{len(latest.tables)} tables · as of {_day(latest.surveyed_at)}"}
         parts = [_bytes_words(sum(known))] if known else []
         if unknown_n:
-            parts.append(f"{unknown_n} table(s) size unknown · never analysed")
+            parts.append(f"{unknown_n} table(s) size unknown · never analyzed")
         size = {"bytes": sum(known) if known else None, "unknown_tables": unknown_n,
-                "words": " · ".join(parts) if parts else "size unknown · never analysed"}
+                "words": " · ".join(parts) if parts else "size unknown · never analyzed"}
     secs = measured_seconds(registry, slug, definition)
     if secs:
         ordered = sorted(secs)
