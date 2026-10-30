@@ -30,6 +30,8 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from resource_explorer.surveyors.survey_definition_reader import qualified_process_name
+
 log = logging.getLogger(__name__)
 
 #: The definition Q3 batches (Q2's, authored in Dr.Egeria and committed).
@@ -227,7 +229,9 @@ def measured_seconds(registry, slug: str, definition: str = QUALITY_DEFINITION) 
             target = json.loads(row.get("target") or "{}")
         except ValueError:
             continue
-        if target.get("slug") != slug or (target.get("params") or {}).get("survey_definition_ref") != definition:
+        # A run is recorded under the reference it was queued with: the bare name (before 2026-10-30) or the qualified one.
+        if target.get("slug") != slug or (target.get("params") or {}).get("survey_definition_ref") not in (
+                definition, qualified_process_name(definition)):
             continue
         t0, t1 = _instant(row.get("started_at")), _instant(row.get("finished_at"))
         if t0 and t1 and t1 >= t0:
@@ -380,7 +384,9 @@ def enqueue_quality_batch(registry, slugs, *, work_list_slug: str = "", requeste
         if why:
             outcomes.append({**base, "outcome": NOT_PERMITTED, "words": why})
             continue
-        params = SurveyDefinitionRunParams(survey_definition_ref=definition, started_by=STARTED_BY_RE,
+        # Resolved by the definition's qualified name, through the shared resolver (the bare name does not resolve in
+        # Egeria; a display name is never used).
+        params = SurveyDefinitionRunParams(survey_definition_ref=qualified_process_name(definition), started_by=STARTED_BY_RE,
                                            started_by_person=started_by_person)
         started = enqueue_definition_run(registry, "database", slug, params, pressed=pressed,
                                          requested_by_user=requested_by, as_presser=pressed is not None)

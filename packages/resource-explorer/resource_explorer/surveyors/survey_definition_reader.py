@@ -200,6 +200,23 @@ def _split_perspectives(raw) -> list:
     return seen
 
 
+def qualified_process_name(reference: str) -> str:
+    """The qualifiedName of a Survey Definition from a reference that may be its bare name."""
+    from resource_explorer.surveyors.survey_definition_docs import _PROCESS_PREFIX
+
+    return reference if "::" in reference else f"{_PROCESS_PREFIX}{reference}"
+
+
+@dataclass
+class ProcessLookup:
+    """What `SurveyDefinitionReader.lookup_process` found: the GUID (None when it did not resolve), the names tried, and
+    the calls that raised. `guid is None and errors` means "could not look up", not "no such definition"."""
+
+    guid: str | None
+    tried: list[str]
+    errors: list[str]
+
+
 class SurveyDefinitionReaderError(RuntimeError):
     """Raised when a Survey Definition can't be read, or is missing required data."""
 
@@ -1106,39 +1123,39 @@ class SurveyDefinitionReader:
         _candidates_cache[cache_key] = (now, candidates)
         return candidates
 
-    def find_process_guid_by_name(self, name_or_qualified_name: str) -> str | None:
-        """Resolve an explicit Survey Definition reference (name or qualifiedName) to a GUID."""
-        self.connect()
-        try:
-            results = self._governance_officer.get_governance_definitions_by_name(
-                name=name_or_qualified_name, output_format="JSON"
-            )
-            if isinstance(results, str):
-                import json as _json
-                results = _json.loads(results)
-            if isinstance(results, list):
-                for el in results:
-                    header = el.get("elementHeader", {})
-                    if header.get("type", {}).get("typeName") == "GovernanceActionProcess":
-                        return header.get("guid")
-        except Exception as exc:
-            log.debug("get_governance_definitions_by_name failed: %s", exc)
+    def lookup_process(self, name_or_qualified_name: str) -> ProcessLookup:
+        """Resolve a Survey Definition to a GUID by its qualified name, and say what happened when it does not resolve.
 
+        One shared resolver, as the Files and database hosts use: `egeria_lookup.guid_by_qualified_name`, Egeria's
+        unique-name read (typed `GovernanceActionProcess`). Never by display name, and not through
+        `get_governance_definitions_by_name`: an exact-name read hydrates the whole candidate set and times out on a
+        grown repository (see `egeria_lookup`'s module docstring).
+
+        A reference without `::` is the definition's bare name; its qualified name is `GovActionProcess::<name>`
+        (`qualified_process_name`). The bare name does not resolve in Egeria (verified live 2026-10-30).
+
+        Absent is only Egeria's explicit "No elements found". A read that raised, or answered with an element of
+        another type, is recorded in `errors`, never only logged: "could not look up" is a different answer from
+        "no such definition", and the caller words them apart."""
+        from resource_explorer.egeria_lookup import guid_by_qualified_name
+
+        qualified = qualified_process_name(name_or_qualified_name)
+        errors: list[str] = []
         try:
-            results = self._governance_officer.find_governance_definitions(
-                search_string=name_or_qualified_name,
-                starts_with=True,
-                output_format="JSON",
-            )
-            if isinstance(results, str):
-                import json as _json
-                results = _json.loads(results)
-            if isinstance(results, list) and results:
-                header = results[0].get("elementHeader", {})
-                return header.get("guid")
-        except Exception as exc:
-            log.debug("find_governance_definitions failed: %s", exc)
-        return None
+            guid = guid_by_qualified_name(
+                self._thread_local_question_lookup_client(), qualified, type_name="GovernanceActionProcess")
+        except Exception as exc:  # noqa: BLE001 - recorded and reported to the caller, not swallowed
+            errors.append(f"{qualified!r}: {exc}")
+            guid = None
+        return ProcessLookup(guid, [qualified], errors)
+
+    def find_process_guid_by_name(self, name_or_qualified_name: str) -> str | None:
+        """Resolve an explicit Survey Definition reference (bare name or qualifiedName) to a GUID. None when it does
+        not resolve; `last_lookup_errors` then holds a read that raised, so a caller can tell "could not look up" from
+        "not found" (`lookup_process` returns both together)."""
+        found = self.lookup_process(name_or_qualified_name)
+        self.last_lookup_errors = found.errors
+        return found.guid
 
     # ── fetch + parse the step graph ────────────────────────────────────────────
 
