@@ -1305,10 +1305,13 @@ def _value_profile_headline(registry, slug: str) -> dict | None:
     value = _value_profile_results(registry, slug)
     if not value:
         return None
+    from resource_explorer.value_profile_screen import plural, state_word
+
     measured, total = value["measured_count"], value["column_count"]
-    rest = {k: n for k, n in value["state_counts"].items() if k != "measured"}
-    tail = "".join(f" · {n} {k.replace('_', ' ')}" for k, n in sorted(rest.items()))
-    return {"label": f"{measured} of {total} column(s) profiled{tail}.", "status": "info"}
+    rest = {k: n for k, n in value["state_counts"].items() if k != "measured" and n}
+    tail = "".join(f" · {n:,} {state_word(k)}" for k, n in sorted(rest.items()))
+    # "456 of 1,236 columns profiled": the noun agrees with the total it counts, thousands grouped, states in words.
+    return {"label": f"{measured:,} of {plural(total, 'column')} profiled{tail}.", "status": "info"}
 
 
 def _quality_checks_results(registry, slug: str) -> dict:

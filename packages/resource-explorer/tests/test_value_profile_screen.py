@@ -212,3 +212,36 @@ def test_q0079_facts_say_which_analysis_has_numbers_at_the_field_level(registry)
     assert at_field["data_class_match"].numbers_at_level is False
     at_resource = layer.facts(SLUG, ["value_profile"], "resource")
     assert at_resource[0].numbers_at_level is False
+
+
+def test_titles_say_the_type_in_words(client):
+    """VP-4: never "a other column", never TestGen's letter."""
+    cols = _cells(client, "orders")
+    assert cols["id"]["cells"]["type"]["title"] == "number: integer and decimal values"
+    from resource_explorer.value_profile_screen import range_cell, distinct_cell
+
+    other = {"general_type": "X", "value_ct": 4, "distinct_value_ct": None}
+    assert range_cell(other)["title"] == "not a measure of a column of another type"
+    assert distinct_cell(other)["title"] == "not a measure of a column of another type"
+    assert range_cell({"general_type": "T", "value_ct": 2})["title"] == "not a measure of a time column"
+    for c in cols.values():
+        for cell in c["cells"].values():
+            assert not re.search(r"\b[ANDBTX]\b", cell["title"]), cell["title"]
+
+
+def test_tables_carry_what_they_are_and_their_rows_in_words(client):
+    """VP-5: the list counts views apart from tables; a filtered card line needs the rows in words."""
+    d = client.get(BASE).json()
+    assert [(t["table_name"], t["kind"], t["rows_words"]) for t in d["tables"]] == [
+        ("empty_t", "table", "0 rows · empty table"), ("orders", "table", "4 rows"),
+        ("big", "table", "rows not counted"), ("v_orders", "view", "rows not counted")]
+
+
+def test_the_q0079_headline_counts_in_words(registry):
+    from resource_explorer.surveyors.database.survey_definition_adapter import _value_profile_headline
+
+    assert _value_profile_headline(registry, SLUG)["label"] == \
+        "7 of 10 columns profiled · 1 not applicable · 2 not measured."
+    rows = [dict(PROFILE[0], table_name=f"t{i}", column_name="id") for i in range(1236)]
+    registry.write_detail_rows("database_value_profiles", SLUG, "2026-10-31T00:00:00", rows=rows)
+    assert _value_profile_headline(registry, SLUG)["label"] == "1,236 of 1,236 columns profiled."

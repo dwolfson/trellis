@@ -81,7 +81,8 @@ test('the header sentence, the filters with counts, and one card per table, the 
   assert.deepEqual(opts('type'), ['all', 'text (3)', 'number (2)', 'date (1)', 'boolean (1)']);
   assert.deepEqual([...host.querySelectorAll('[data-vp-table]')].map((e) => e.dataset.vpTable),
     ['sales.empty_t', 'sales.orders', 'sales.big', 'sales.v_orders']);
-  assert.equal(text(host.querySelector('[data-vp-match]')), '4 tables');
+  // A view is not counted as a table (VP-5).
+  assert.equal(text(host.querySelector('[data-vp-match]')), '3 tables · 1 view');
   assert.equal(card(host, 'sales.orders').open, true, 'the table= card opens');
   assert.equal(card(host, 'sales.empty_t').open, false, 'every other card is collapsed');
   assert.equal(ctx.window.__scrolledTo, 'sales.orders');
@@ -110,8 +111,10 @@ test('a card reads its columns when it opens; cells are words with their absence
   await tick();
   assert.ok(ctx.calls.some((c) => c.url.endsWith('/value-profile/sales/orders')));
   assert.match(ctx.window.location.search, /table=sales\.orders/);
-  assert.deepEqual([...el.querySelectorAll('[role="columnheader"]')].map(text),
+  assert.deepEqual([...el.querySelectorAll('table[data-vp-grid] thead th')].map(text),
     ['Column', 'Type', 'Filled', 'Distinct', 'Range', 'Most common', 'Flags', 'Checks']);
+  // The type's title is words, never TestGen's letter (VP-4).
+  assert.equal(cell(host, 'sales.orders', 'id', 'type').title, 'number: integer and decimal values');
   assert.equal(text(cell(host, 'sales.orders', 'id', 'filled')), '4 of 4 · 100%');
   assert.equal(text(cell(host, 'sales.orders', 'id', 'distinct')), '4 · all distinct');
   // case 2: not a measure of this type -- a muted dash with the type in its title
@@ -173,16 +176,22 @@ test('filters narrow the cards from the counts and the rows inside an open card'
   await tick();
   assert.deepEqual([...host.querySelectorAll('[data-vp-table]')].map((e) => e.dataset.vpTable), ['sales.orders']);
   assert.deepEqual([...card(host, 'sales.orders').querySelectorAll('[data-vp-column]')].map((e) => e.dataset.vpColumn), ['paid']);
-  assert.equal(text(host.querySelector('[data-vp-match]')), '1 of 4 tables match');
+  assert.equal(text(host.querySelector('[data-vp-match]')), '1 of 3 tables · 0 of 1 view match');
+  // The open card stays open, and its line says what the filter shows, not "5 columns measured" (VP-5).
+  assert.equal(card(host, 'sales.orders').open, true);
+  assert.equal(text(card(host, 'sales.orders').querySelector('summary')), 'sales.orders · 4 rows · 1 boolean column of 5 shown');
   pick('type', '');
+  assert.equal(text(card(host, 'sales.orders').querySelector('summary')), 'sales.orders · 4 rows · 5 columns measured · profiled 11:12');
   pick('state', 'not_applicable');
   assert.deepEqual([...host.querySelectorAll('[data-vp-table]')].map((e) => e.dataset.vpTable), ['sales.v_orders']);
+  assert.equal(text(host.querySelector('[data-vp-match]')), '0 of 3 tables · 1 of 1 view match', 'the count stays under a filter');
   pick('state', '');
   const input = host.querySelector('input[data-vp-filter="text"]');
   input.value = 'EMPTY'; input.dispatchEvent(new ctx.window.Event('input'));
   assert.deepEqual([...host.querySelectorAll('[data-vp-table]')].map((e) => e.dataset.vpTable), ['sales.empty_t']);
   input.value = 'nothing'; input.dispatchEvent(new ctx.window.Event('input'));
   assert.equal(text(host.querySelector('[data-vp-no-match]')), 'No tables match these filters.');
+  assert.equal(text(host.querySelector('[data-vp-match]')), '0 of 3 tables · 0 of 1 view match');
 });
 
 test('a failed column read says so on the card', async () => {
@@ -229,17 +238,53 @@ test('Schema Inventory: "profile ›" opens the tab on that table; a table with 
 });
 
 for (const width of [800, 1440]) {
-  test(`at ${width} px the column table scrolls inside its own box, the page never sideways, and columns resize`, async () => {
+  test(`at ${width} px the column table fits its panel: a real table, laid out to the width, resizable, names whole`, async () => {
     const ctx = await setUp({ width });
     const host = await openTab(ctx, 'sales.orders');
-    const grid = card(host, 'sales.orders').querySelector('[data-grid-host]');
-    for (const c of ['overflow-x-auto', 'min-w-0', 'max-w-full']) assert.ok(grid.classList.contains(c), `the grid has ${c}`);
-    assert.ok(card(host, 'sales.orders').querySelector('[data-vp-body]').classList.contains('min-w-0'));
-    assert.equal(grid.querySelectorAll('.rc-handle, [data-rc-handle]').length > 0, true, 'each header carries a resize handle');
-    for (const h of grid.querySelectorAll('[role="columnheader"]')) {
-      assert.match(h.getAttribute('style'), /white-space:nowrap/, `${text(h)}: a header stays on one line`);
+    const body = card(host, 'sales.orders').querySelector('[data-vp-body]');
+    const table = body.querySelector('table[data-vp-grid]');
+    assert.ok(table, 'a real <table> (VP-3), not a grid of divs');
+    assert.ok(table.classList.contains('w-full'), 'laid out to the panel width');
+    // No fixed widths until a person drags: no inner horizontal scroll at 1440 (VP-1). The wrapper only scrolls
+    // once a drag has made the table wider than its panel.
+    assert.equal(table.style.width, '', 'no drawn width on the table');
+    assert.equal(table.style.tableLayout, '', 'auto layout: cells wrap to fit');
+    assert.equal(table.style.minWidth, '');
+    assert.ok(![...table.querySelectorAll('th, td')].some((c) => c.style.width || c.style.minWidth), 'no cell carries a width');
+    assert.ok(!body.querySelector('[data-grid-host], [role="table"]'), 'not the flex grid');
+    assert.equal(body.querySelector('[data-vp-scroll]').scrollWidth <= body.querySelector('[data-vp-scroll]').clientWidth, true);
+    // colresize.js like every other table (VP-3): one handle per header.
+    assert.equal(table.querySelectorAll('thead th [data-rc-handle]').length, 8);
+    assert.ok(table.hasAttribute('data-rc-auto'));
+    // A column name never breaks inside a word (VP-2), nor do the short counts; the long cells wrap at their spaces.
+    for (const tr of table.querySelectorAll('tbody tr[data-vp-state="measured"]')) {
+      const nowrap = [...tr.cells].map((c) => c.classList.contains('whitespace-nowrap'));
+      assert.deepEqual(nowrap, [true, true, true, true, false, false, false, false]);
     }
+    assert.ok(!/break-all|break-words|overflow-wrap/.test(table.outerHTML), 'nothing breaks mid-word');
     assert.ok(!/\bnull\b|undefined|NaN/.test(text(host)), 'no null, undefined or NaN on screen');
     assert.ok(!/\d{4}-\d\d-\d\dT\d/.test(text(host)), 'no raw ISO timestamp');
   });
 }
+
+test('the Checks door lands on that table\'s group in Curate › Structure, opened, not at the top of the page', async () => {
+  const ctx = await setUp();
+  const host = await openTab(ctx, 'sales.orders');
+  const scrolled = [];
+  ctx.window.HTMLElement.prototype.scrollIntoView = function scrollIntoView() { scrolled.push(this.dataset.qcGroup || ''); };
+  // Curate's Structure tab is quality-checks.js's; here it is stood in for by the group it draws, after its read.
+  assert.ok(row(host, 'sales.orders', 'id').querySelector('[data-vp-checks]'), 'the door is a button on the row');
+  setTimeout(() => {
+    const g = ctx.document.createElement('details');
+    g.dataset.qcGroup = 'sales.orders';
+    g.addEventListener('toggle', () => { g.dataset.toggled = String(g.open); });
+    ctx.document.getElementById('content').appendChild(g);
+  }, 300);
+  const landed = ctx.app.openChecksForTable('sales.orders', { waitMs: 2000 });
+  const g = await landed;
+  assert.equal(ctx.app.state.stage, 'curate');
+  assert.ok(g, 'the group was found');
+  assert.equal(g.open, true);
+  assert.equal(g.dataset.toggled, 'true', 'its rows are read (toggle fired)');
+  assert.deepEqual(scrolled.slice(-1), ['sales.orders']);
+});

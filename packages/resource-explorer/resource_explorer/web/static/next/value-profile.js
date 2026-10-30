@@ -11,23 +11,27 @@
  *   - a muted cell keeps its title, which says which absence it is (not a measure of this type, not asked for, ...).
  *
  *  The module takes its API and callbacks as arguments, so it loads without the rest of the app and a test can drive it
- *  with a stub. Column tables use colresize (report-tables.js). */
-import { esc, gridHtml, attachGrids } from '/static/next/stages/report-tables.js';
+ *  with a stub.
+ *
+ *  The column table is a real <table> laid out by the browser to the panel's width (cells wrap at spaces, a column
+ *  name never breaks inside a word), made resizable by colresize.js's enhanceTable like every other /next data table:
+ *  a drag fixes the widths from what was drawn, and only then can the table outgrow its panel and scroll. */
+import { esc } from '/static/next/stages/report-tables.js';
+import { enhanceTable } from '/static/next/colresize.js';
 import { stateEntry } from '/static/next/glyphs.js';
 
-export const VP_COLS = {
-  id: 'db-value-profile', chrome: 70,
-  columns: [
-    { key: 'column', label: 'Column', def: 190, min: 90, align: 'left', breakLong: true },
-    { key: 'type', label: 'Type', def: 70, min: 60 },
-    { key: 'filled', label: 'Filled', def: 140, min: 100 },
-    { key: 'distinct', label: 'Distinct', def: 110, min: 80 },
-    { key: 'range', label: 'Range', def: 230, min: 110, breakLong: true },
-    { key: 'common', label: 'Most common', def: 240, min: 120, align: 'left', breakLong: true },
-    { key: 'flags', label: 'Flags', def: 110, min: 80, breakLong: true },
-    { key: 'checks', label: 'Checks', def: 220, min: 90, breakLong: true },
-  ],
-};
+/** The column table's columns, in order. `nowrap` keeps a column name whole (a name has no spaces to wrap at) and the
+ *  short counts on one line; Range, Most common, Flags and Checks wrap at their spaces to fit the panel. */
+export const VP_COLUMNS = [
+  { key: 'column', label: 'Column', left: true, nowrap: true },
+  { key: 'type', label: 'Type', nowrap: true },
+  { key: 'filled', label: 'Filled', nowrap: true },
+  { key: 'distinct', label: 'Distinct', nowrap: true },
+  { key: 'range', label: 'Range' },
+  { key: 'common', label: 'Most common', left: true },
+  { key: 'flags', label: 'Flags' },
+  { key: 'checks', label: 'Checks' },
+];
 
 /** The glyph a not-profiled column's cue carries (the glyph table's): ◌ not measured, ⊘ not permitted, — not applicable. */
 const CUE_OF = { not_measured: '◌', not_permitted: '⊘', not_applicable: '—' };
@@ -59,18 +63,16 @@ export function cellHtml(cell, key) {
   return `<span data-vp-cell="${key}" class="${cell.muted ? 'text-ink-muted' : 'text-ink'}"${title}>${esc(cell.text)}</span>`;
 }
 
-/** One column row: a measured column's cells, or a not-profiled column's name, cue and reason. */
+/** One column row: a measured column's cells, or a not-profiled column's name, cue and reason across the rest. */
 export function columnRow(c) {
-  const name = `<span class="font-mono text-ink">${esc(c.column_name)}</span>`;
+  const name = `<td class="py-[3px] pr-s2 align-top text-left whitespace-nowrap"><span class="font-mono text-ink">${esc(c.column_name)}</span></td>`;
   if (!c.cells) {
     const glyph = CUE_OF[c.state] || stateEntry('unknown').glyph;
-    return { attrs: `data-vp-column="${esc(c.column_name)}" data-vp-state="${esc(c.state)}"`, tone: 'lowered',
-      cells: { column: name },
-      after: `<div data-vp-sentence class="pl-s3 text-provenance text-ink-muted"><span class="font-glyph" aria-hidden="true">${glyph}</span> ${esc(c.state_words)} · ${esc(c.sentence)}</div>` };
+    return `<tr data-vp-column="${esc(c.column_name)}" data-vp-state="${esc(c.state)}" class="border-t border-rule opacity-60">${name}
+      <td colspan="${VP_COLUMNS.length - 1}" data-vp-sentence class="py-[3px] text-left text-provenance text-ink-muted"><span class="font-glyph" aria-hidden="true">${glyph}</span> ${esc(c.state_words)} · ${esc(c.sentence)}</td></tr>`;
   }
-  const cells = { column: name };
-  for (const k of ['type', 'filled', 'distinct', 'range', 'common', 'flags', 'checks']) cells[k] = cellHtml(c.cells[k], k);
-  return { attrs: `data-vp-column="${esc(c.column_name)}" data-vp-state="measured"`, cells };
+  const cells = VP_COLUMNS.slice(1).map((col) => `<td class="py-[3px] pr-s2 align-top ${col.left ? 'text-left' : 'text-center'} ${col.nowrap ? 'whitespace-nowrap' : ''}">${cellHtml(c.cells[col.key], col.key)}</td>`).join('');
+  return `<tr data-vp-column="${esc(c.column_name)}" data-vp-state="measured" class="border-t border-rule">${name}${cells}</tr>`;
 }
 
 /** The rows a card shows under the filters: a state filter keeps columns in that state, a type filter measured
@@ -82,7 +84,11 @@ export function filterColumns(columns, { state = '', type = '' } = {}) {
 export function bodyHtml(table, filters) {
   const rows = filterColumns(table.columns, filters);
   if (!rows.length) return '<div class="text-caveat text-ink-muted">No columns in this table match the filters.</div>';
-  return gridHtml(VP_COLS, `Value profile of ${tableKey(table)}`, rows.map(columnRow));
+  const head = VP_COLUMNS.map((col) => `<th class="py-[3px] pr-s2 font-normal ${col.left ? 'text-left' : 'text-center'}">${esc(col.label)}</th>`).join('');
+  return `<div data-vp-scroll class="min-w-0 max-w-full overflow-x-auto">
+    <table data-vp-grid data-rc-id="db-value-profile" aria-label="Value profile of ${esc(tableKey(table))}" class="tnum w-full border-collapse text-caveat text-ink">
+      <thead><tr class="text-provenance text-ink-muted">${head}</tr></thead>
+      <tbody>${rows.map(columnRow).join('')}</tbody></table></div>`;
 }
 
 /** The tables the filters keep, from the summary's per-table counts (no column read needed). */
@@ -92,11 +98,24 @@ export function filterTables(tables, { state = '', type = '', text = '' } = {}) 
     && (!type || (t.type_counts || {})[type]) && (!q || tableKey(t).toLowerCase().includes(q)));
 }
 
+/** What a card's line says after the name. Under a State or Type filter a measured table says how many of its
+ *  columns the filter shows, not how many were measured (which the unfiltered line says). */
+export function cardRest(t, filters = {}) {
+  const key = tableKey(t);
+  const rest = String(t.line || '').slice(key.length);
+  if (!t.openable || !(filters.state || filters.type)) return rest;
+  const n = filters.type ? ((t.type_counts || {})[filters.type] || 0)
+    : ((t.state_counts || {})[filters.state] || 0);
+  const what = filters.type ? `${filters.type} column` : `${filters.state.replace(/_/g, ' ')} column`;
+  const plural = n === 1 ? what : `${what}s`;
+  return ` · ${t.rows_words || ''} · ${n.toLocaleString('en-US')} ${plural} of ${Number(t.column_count).toLocaleString('en-US')} shown`;
+}
+
 /** A card. A measured table opens; any other is one line with its reason and nothing to open. */
-export function cardHtml(t, isOpen) {
+export function cardHtml(t, isOpen, filters = {}) {
   const key = tableKey(t);
   // The line starts with the table's own name; the name is drawn in monospace, the rest in muted words.
-  const rest = String(t.line || '').slice(key.length);
+  const rest = cardRest(t, filters);
   const head = `<span class="font-mono text-ink">${esc(key)}</span><span data-vp-line class="text-provenance text-ink-muted">${esc(rest)}</span>`;
   if (!t.openable) {
     return `<div data-vp-table="${esc(key)}" data-vp-table-state="${esc(t.state)}" class="border-t border-rule py-[3px] pl-[14px]">${head}</div>`;
@@ -114,11 +133,18 @@ function filterSelect(name, label, options, value) {
     </select></label>`;
 }
 
-/** "68 of 157 tables match" when filtered, "157 tables" otherwise. */
-export function matchLine(shown, total, filtered) {
-  const noun = (n) => (n === 1 ? 'table' : 'tables');
-  return filtered ? `${shown.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} ${noun(total)} match`
-    : `${total.toLocaleString('en-US')} ${noun(total)}`;
+const KIND_ORDER = ['table', 'view', 'materialized view', 'foreign table'];
+const kindWords = (n, kind) => `${n.toLocaleString('en-US')} ${kind === 'table' ? (n === 1 ? 'table' : 'tables') : (n === 1 ? kind : `${kind}s`)}`;
+
+/** The list's count, by what each entry is: "68 tables · 87 views · 2 materialized views"; under a filter
+ *  "4 of 68 tables · 0 of 87 views match". A view is never counted as a table. */
+export function matchLine(shown, all, filtered) {
+  const count = (list) => list.reduce((m, t) => m.set(t.kind || 'table', (m.get(t.kind || 'table') || 0) + 1), new Map());
+  const total = count(all);
+  const seen = count(shown);
+  const kinds = KIND_ORDER.filter((k) => total.get(k)).concat([...total.keys()].filter((k) => !KIND_ORDER.includes(k)));
+  if (!filtered) return kinds.map((k) => kindWords(total.get(k), k)).join(' · ');
+  return `${kinds.map((k) => `${(seen.get(k) || 0).toLocaleString('en-US')} of ${kindWords(total.get(k), k)}`).join(' · ')} match`;
 }
 
 export function summaryHtml(d, filters) {
@@ -134,7 +160,7 @@ export function summaryHtml(d, filters) {
 
 /** Draw the tab into `slot` and wire it. `deps` = { api: { getValueProfile(slug), getValueProfileTable(slug, s, t) },
  *  table: "schema.table" to open first ('' for none), onTable(key): the open card changed (the URL keeps it),
- *  openChecks(): go to Curate › Structure }. Returns { reload(), destroy() }. */
+ *  openChecks(key): go to that table's checks on Curate › Structure }. Returns { reload(), destroy() }. */
 export function mountValueProfile(slot, slug, deps) {
   const filters = { state: '', type: '', text: '' };
   const open = new Set(deps.table ? [deps.table] : []);
@@ -151,7 +177,7 @@ export function mountValueProfile(slot, slug, deps) {
     const t = columnsOf.get(key);
     if (!host || !t) return;
     host.innerHTML = bodyHtml(t, filters);
-    attachGrids(host, () => VP_COLS);
+    host.querySelectorAll('table[data-vp-grid]').forEach((tb) => enhanceTable(tb));
   };
 
   async function loadColumns(t) {
@@ -179,8 +205,8 @@ export function mountValueProfile(slot, slug, deps) {
     const shown = filterTables(summary.tables, filters);
     const filtered = Boolean(filters.state || filters.type || filters.text.trim());
     const match = slot.querySelector('[data-vp-match]');
-    if (match) match.textContent = matchLine(shown.length, summary.tables.length, filtered);
-    host.innerHTML = shown.length ? shown.map((t) => cardHtml(t, open.has(tableKey(t)))).join('')
+    if (match) match.textContent = matchLine(shown, summary.tables, filtered);
+    host.innerHTML = shown.length ? shown.map((t) => cardHtml(t, open.has(tableKey(t)), filters)).join('')
       : '<div data-vp-no-match class="text-caveat text-ink-muted">No tables match these filters.</div>';
     host.querySelectorAll('details[data-vp-table]').forEach((el) => {
       const t = summary.tables.find((x) => tableKey(x) === el.dataset.vpTable);
@@ -234,7 +260,7 @@ export function mountValueProfile(slot, slug, deps) {
       return;
     }
     const checks = ev.target.closest && ev.target.closest('[data-vp-checks]');
-    if (checks && slot.contains(checks) && deps.openChecks) deps.openChecks();
+    if (checks && slot.contains(checks) && deps.openChecks) deps.openChecks(checks.closest('[data-vp-table]')?.dataset.vpTable || '');
   };
   slot.addEventListener('click', onClick);
   reload();
