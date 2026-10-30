@@ -16,6 +16,8 @@ its sentence from here, so no reader writes an "of", an "at least" or a "lower b
 """
 from __future__ import annotations
 
+import re
+
 from trellis_analytics.declaration import LOWER_BOUND_WORDS
 
 from resource_explorer.publish_table import _MISSING, resolve
@@ -26,6 +28,19 @@ OVERLAP_WORDS = "overlapping categories (not summable)"
 OVERLAP_NOTE = "categories overlap"
 #: Prefix for a lower bound.
 AT_LEAST = "at least"
+
+
+#: Words stored before the US-spelling pass (a step run on 2026-10-29 or earlier wrote "never analysed" into its summary).
+#: Person-facing text is US spelling everywhere, so stored prose is read through this map; a new run writes US already.
+_UK = re.compile(r"\b([Aa])nalys(ed|ing|e)\b")
+
+
+def us_spelling(text):
+    """`text` with the known British spellings of stored step prose in US spelling (whole words only: the plural noun
+    "analyses" is already US); anything else unchanged."""
+    if not isinstance(text, str) or "nalys" not in text:
+        return text
+    return _UK.sub(lambda m: f"{m.group(1)}nalyz{m.group(2)}", text)
 
 
 def truthy(v) -> bool:
@@ -131,6 +146,22 @@ def stated_total(dec, value: dict, run: dict | None = None):
         return None
     got = resolve(value, cats.sums_to, run or {})
     return None if got is _MISSING else got
+
+
+def categories_legend(dec, value: dict, run: dict | None = None) -> str:
+    """The legend a step line shows for a declaration's categories, in the words a person reads, or "" where it declares
+    none. The declaration names no field per category, so the legend says how the categories relate (and the stated total, if
+    one is declared and the result holds it); it draws no bar."""
+    cats = getattr(dec, "categories", None)
+    if cats is None:
+        return ""
+    if not cats.exclusive:
+        return f"{OVERLAP_NOTE} · not stacked or added up"
+    total = stated_total(dec, value, run)
+    n = number(total) if total is not None else None
+    if n is not None:
+        return f"each item is in one category · stated total {count_words(n)}"
+    return "each item is in one category"
 
 
 def categories_line(dec, value: dict, run: dict | None = None) -> str:

@@ -123,6 +123,9 @@ _MISSING = object()
 
 #: A member- or field-scoped measure with no resource-level value: its values are its extents' rows, one per member.
 PER_MEMBER = "per_member"
+#: A step ran and stored this measure's record, but the record does not hold the declared field (a version of the step
+#: that did not write it yet). Neither "measured nothing" nor "never run": the run has to be repeated to measure it.
+NOT_RECORDED = "not_recorded"
 
 
 def resolve(value: dict, path: str, run: dict) -> object:
@@ -225,6 +228,19 @@ def kind_route(dec) -> dict | None:
                 "words": "a ClassificationAnnotation in DRAFT, never a fact until Curate confirms it",
                 "decided_by": dec.proposal.decided_by}
     return None
+
+
+def _declared_value_words(measure, dec, source: dict, run: dict) -> str:
+    """The value in the declared words (basis, cap, share) for a numeric measure, or "" where the plain words stand. A lower
+    bound's derived share is withheld by `declared_words`, so a capped row never shows one."""
+    from resource_explorer import declared_words
+
+    if not (getattr(measure, "basis", None) or getattr(measure, "capped_field", "")):
+        return ""
+    w = declared_words.measure_words(measure, source, run, allow_of=declared_words.allows_of(dec))
+    if w is None or w["value"] is None or isinstance(w["value"], str):
+        return ""
+    return w["text"] + (f" ({w['share']})" if w["share"] else "")
 
 
 def _is_capped(measure, source: dict, run: dict) -> bool:
@@ -396,6 +412,11 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
                     reason = f" · {record['reason']}" if record["reason"] else ""
                     row.update(value=None, value_words="—", absence=absence,
                                absence_words=dec.absence.sentence(absence) + reason)
+                elif v is _MISSING and known and record and record["state"] == "measured":
+                    # The step stored this measure and the stored record has no such field: never "found nothing".
+                    row.update(value=None, value_words="—", absence=NOT_RECORDED,
+                               absence_words=f"The stored result of this run does not record '{m.value_field}' (a version "
+                                             "of the step that did not write it stored it): run the step again to measure it.")
                 elif v is _MISSING and known and per_member:
                     # One value per member, not one for the resource: it ran, and its values are its rows.
                     names = ", ".join(e.name for e in dec.extents)
@@ -407,9 +428,15 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
                                absence_words=dec.absence.sentence(absence))
                 else:
                     row.update(value=v, value_words=_value_words(v, m.unit) if _scalar(v) else f"a {type(v).__name__}")
+                    words = _declared_value_words(m, dec, source, run) if _scalar(v) and not isinstance(v, bool) else None
+                    if words:
+                        # The same words as every other surface (declared_words): "226 of 266 tables (85%)", "at least ...".
+                        row.update(value_words=words)
                     if _is_capped(m, source, run):
-                        # A lower bound publishes as one: the words and the flag travel with the number.
-                        row.update(capped=True, value_words=f"{CAPPED_WORDS} {row['value_words']}")
+                        # A lower bound publishes as one: the flag travels with the number, the words say so.
+                        row.update(capped=True)
+                        if not words:
+                            row.update(value_words=f"{CAPPED_WORDS} {row['value_words']}")
                 elsewhere = published_elsewhere(entry, m.name, engine_reports)
                 row["elsewhere"] = elsewhere
                 why = ""

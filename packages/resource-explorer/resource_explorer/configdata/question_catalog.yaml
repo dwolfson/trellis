@@ -2897,7 +2897,7 @@ database_questions:
     note: db_activity_signals (design §5.2, §5.7 — vacuum recency and dead-tuple ratios read from the
       same stored pg_stat_user_tables figures as the activity-signals roll-up above)
   answering_mechanism: Database Catalog Query
-  rationale: 'Scores the activity signals against thresholds: how long since the last vacuum or analyse,
+  rationale: 'Scores the activity signals against thresholds: how long since the last vacuum or analyze,
     the ratio of dead to live tuples, and indexes that have never been scanned. Remember design §5.1''s
     absence rule — statistics that were never collected must not read as a healthy zero.'
   catalog_history: ''
