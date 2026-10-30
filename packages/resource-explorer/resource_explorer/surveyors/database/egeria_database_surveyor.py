@@ -992,13 +992,17 @@ class EgeriaDatabaseSurveyor:
         ("PostgreSQLSurvey:survey-postgres-database") that does not match the real
         double-colon qualifiedName Egeria actually registers
         ("PostgreSQLSurvey::survey-postgres-database"), causing
-        OMAG-GENERIC-HANDLERS-400-013 "name is not recognized". This is a pyegeria
-        bug — remove this workaround once it's fixed upstream.
-        """
-        import asyncio
+        OMAG-GENERIC-HANDLERS-400-013 "name is not recognized". pyegeria 6.2.16 fixed
+        those two names, but `survey_qualified_name` comes from technology_type_processes.yaml
+        and pyegeria has no public method that takes one, so this stays.
 
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(
+        pyegeria's run_sync (6.2.16, #513) drives the coroutine: it is safe on a worker thread
+        with no loop and from inside a running loop, which get_event_loop().run_until_complete
+        was not once nest_asyncio went.
+        """
+        from pyegeria.core.async_runner import run_sync
+
+        return run_sync(
             self._automated_curation._async_initiate_survey(survey_qualified_name, target_guid)
         )
 
