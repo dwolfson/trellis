@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 from resource_explorer.registry import ProjectRegistry
 
 LOGGER = "resource_explorer.registry"
@@ -15,6 +17,7 @@ def _lines(caplog):
             if r.name == LOGGER and r.getMessage().startswith(_PREFIXES)]
 
 
+@pytest.mark.fresh_registry_schema   # about what setup does to an EMPTY file
 def test_fresh_database_reports_created_tables(tmp_path, caplog):
     with caplog.at_level(logging.INFO, logger=LOGGER):
         ProjectRegistry(db_path=str(tmp_path / "a.db"))

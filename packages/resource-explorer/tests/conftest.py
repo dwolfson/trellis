@@ -20,15 +20,30 @@ import sys
 
 import pytest
 
+# Under pytest-xdist each worker gets its own registry schema,
+# resource_explorer_xdist_<controller pid>_<worker>, wherever the URL settings
+# point at `resource_explorer` (CI's service container), so concurrent workers
+# and concurrent runs never share one. Created here and dropped at the worker's
+# session teardown (fixture `xdist_worker_registry_schema`), only where tests
+# really use it; see tests/xdist_registry_schema.py. Done before the imports
+# below, because importing the app may build the first registry.
+from tests import xdist_registry_schema  # noqa: E402
+
+_XDIST_SCHEMA = xdist_registry_schema.apply(
+    os.environ, os.environ.get("PYTEST_XDIST_WORKER", ""), xdist_registry_schema.run_id())
+
 # Fail-closed guard against tests reaching the SHARED registry (incident
 # 2026-10-02; see tests/shared_registry_guard.py and
 # docs/design-notes/implemented/TEST-SHARED-REGISTRY-GUARD-IMPLEMENTED.md).
 # Installed at import, before any probe below opens a connection, at the
 # SQLAlchemy/psycopg2 connect choke point so a cached config cannot defeat it.
 # Opt-in for a deliberate run: RE_TESTS_ALLOW_SHARED_REGISTRY=1.
-from tests import live_egeria_tier, shared_registry_guard, tracked_tree_guard
+from tests import live_egeria_tier, registry_template, shared_registry_guard, tracked_tree_guard
 
 shared_registry_guard.install()
+# A fresh SQLite registry file starts as a copy of one schema built per process
+# (~170 ms of DDL per fresh registry otherwise); see tests/registry_template.py.
+registry_template.install()
 
 # Per-process, NOT a single shared name. The fixture below drops this schema
 # CASCADE at session start and teardown, so a fixed name meant any two
@@ -308,6 +323,12 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers",
+        "fresh_registry_schema: build this test's SQLite registries from an empty "
+        "file, not from the per-process template (for tests about what "
+        "_init_schema does to an empty database; see tests/registry_template.py)",
+    )
+    config.addinivalue_line(
+        "markers",
         "corpus: asserts over whatever the LIVE shared registry happens to "
         "contain (skipped by default; --corpus to run)",
     )
@@ -517,6 +538,62 @@ os.environ.setdefault("RE_JWT_SECRET", "resource-explorer-test-secret")
 import resource_explorer.web.app  # noqa: E402,F401
 
 
+@pytest.fixture(scope="session", autouse=True)
+def xdist_worker_registry_schema():
+    """Drop this worker's registry schema at session teardown (see the top of this file)."""
+    yield _XDIST_SCHEMA
+    xdist_registry_schema.teardown(_XDIST_SCHEMA)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def registry_schema_template(tmp_path_factory):
+    """Build the per-process registry template before the first test (per xdist worker)."""
+    return registry_template.build(tmp_path_factory.mktemp("registry-template"))
+
+
+@pytest.fixture(autouse=True)
+def fresh_registry_schema_marker(request, registry_schema_template):
+    """`@pytest.mark.fresh_registry_schema` tests get the original empty-file schema setup."""
+    fresh = request.node.get_closest_marker("fresh_registry_schema") is not None
+    registry_template.suspended(fresh)
+    yield
+    registry_template.suspended(False)
+
+
+@pytest.fixture(autouse=True)
+def api_reference_fetch_workers_finish():
+    """After each test, wait for API-reference fetch workers it left running.
+
+    `api_reference.live.fetch_openapi` stops waiting at its deadline but its
+    worker thread lives on, holding one of `_FETCH_SLOTS` (a process-wide cap of
+    MAX_FETCH_THREADS) until its blocked read or resolver returns. Several tests
+    exist to provoke exactly that (test_api_reference_hostile's resolver sleeps
+    5 s). The NEXT test in the same process then started with slots held, and
+    `TestThreadCap`'s exact counts, or a route answering TOO_BUSY, failed.
+
+    Serially, enough other tests ran in between that the workers had always
+    ended; under pytest-xdist (2026-10-29) a worker reached test_api_reference_r3
+    seconds after the hostile tests and five tests failed. Each test now leaves
+    every slot free, as it found it. Costs nothing when no slot is held.
+    """
+    yield
+    live = sys.modules.get("resource_explorer.api_reference.live")
+    if live is None:
+        return
+    import time
+
+    deadline = time.monotonic() + 15
+    while True:
+        taken = 0
+        while taken < live.MAX_FETCH_THREADS and live._FETCH_SLOTS.acquire(blocking=False):
+            taken += 1
+        for _ in range(taken):
+            live._FETCH_SLOTS.release()
+        if taken == live.MAX_FETCH_THREADS or time.monotonic() > deadline:
+            return
+        time.sleep(0.05)
+
+
 @pytest.fixture(autouse=True)
 def issue_117_block_off_for_legacy_delete_path_tests(request, monkeypatch):
     """The ISSUE-117 hard block (RE_ISSUE_117_BLOCK_OFF) stops every archive and delete RE could
@@ -535,6 +612,9 @@ def issue_117_block_off_for_legacy_delete_path_tests(request, monkeypatch):
     from resource_explorer import catalogue_gateway as _gw
     monkeypatch.setattr(_gw, "_shipped_issue_117_blocked", _gw.issue_117_blocked, raising=False)   # for tests that need the real rules
     monkeypatch.setattr(_gw, "issue_117_blocked", lambda slug="", *, scope="": not (os.environ.get(_gw.ISSUE_117_ENV) or "").strip())
+
+
+_ephemeral_prefect_settings: dict = {}
 
 
 @pytest.fixture(autouse=True)
@@ -582,7 +662,6 @@ def ephemeral_prefect(monkeypatch):
     from prefect.settings import (
         PREFECT_API_URL,
         PREFECT_SERVER_EPHEMERAL_ENABLED,
-        temporary_settings,
     )
 
     for var in ("PREFECT_API_URL", "PREFECT_API_KEY"):
@@ -611,10 +690,25 @@ def ephemeral_prefect(monkeypatch):
     # re-reading `os.environ` for the rest — so an env var set after Prefect's
     # first import cannot reach this field at all; only passing it in
     # `updates` (as done below) can.
-    with temporary_settings({
-        PREFECT_API_URL: None,
-        PREFECT_SERVER_EPHEMERAL_ENABLED: True,
-    }):
+    #
+    # The derived Settings object is built once and reused: `copy_with_update`
+    # is a full pydantic validation (~16 ms, measured 2026-10-29), paid by
+    # every one of ~14,000 tests for an identical result. It is a pure
+    # function of the base settings (model_validate, no env read), so it is
+    # rebuilt whenever the base context is a different object. Entering it is
+    # exactly what `temporary_settings` does after building it.
+    import prefect.context
+
+    context = prefect.context.get_settings_context()
+    cached = _ephemeral_prefect_settings.get("entry")
+    if cached is None or cached[0] is not context.settings:
+        new_settings = context.settings.copy_with_update(updates={
+            PREFECT_API_URL: None,
+            PREFECT_SERVER_EPHEMERAL_ENABLED: True,
+        })
+        cached = (context.settings, new_settings)
+        _ephemeral_prefect_settings["entry"] = cached
+    with prefect.context.SettingsContext(profile=context.profile, settings=cached[1]):
         yield
 
 
