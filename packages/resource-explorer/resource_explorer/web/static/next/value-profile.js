@@ -1,6 +1,6 @@
 /** Value profile (database-only): what the latest value-profile batch measured, one card per table, one row per column.
  *
- *  Design: ~/.re-gate/DESIGN-VALUE-PROFILE-SCREEN-2026-10-30.md. The words are the server's
+ *  Design: docs/design-notes/DESIGN-VALUE-PROFILE-SCREEN-2026-10-30.md. The words are the server's
  *  (resource_explorer/value_profile_screen.py), so the screen, the "numbers behind this" rows and the tests share one
  *  vocabulary; this file draws them and wires the filters and cards.
  *

@@ -1,6 +1,6 @@
 """Value profile routes: a database's latest value-profile batch, as the Value profile sub-tab reads it.
 
-Design: ~/.re-gate/DESIGN-VALUE-PROFILE-SCREEN-2026-10-30.md §6. Both are reads of RE's own tables (no database
+Design: docs/design-notes/DESIGN-VALUE-PROFILE-SCREEN-2026-10-30.md §6. Both are reads of RE's own tables (no database
 credential, no Egeria call), over `_value_profile_results` as the one source; `resource_explorer/value_profile_screen.py`
 holds everything that is not HTTP.
 

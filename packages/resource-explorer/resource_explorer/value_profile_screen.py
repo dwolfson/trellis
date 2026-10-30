@@ -1,6 +1,6 @@
 """The database Value profile screen: what the latest value-profile batch measured, per table and per column, in words.
 
-Design: ~/.re-gate/DESIGN-VALUE-PROFILE-SCREEN-2026-10-30.md. Everything here reads `_value_profile_results` (the one
+Design: docs/design-notes/DESIGN-VALUE-PROFILE-SCREEN-2026-10-30.md. Everything here reads `_value_profile_results` (the one
 source; it is the latest batch only), plus the frequent values of that same batch and the latest proposals. Nothing is
 written.
 
