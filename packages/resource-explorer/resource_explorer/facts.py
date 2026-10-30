@@ -256,6 +256,21 @@ class Envelope:
         }
 
 
+#: The engine-neutral levels (design §18.3) in each resource type's own words, for sentences a person reads. A type or
+#: level not named here falls back to plain words rather than to the level's identifier.
+_LEVEL_WORDS = {
+    "database": {"resource": "database", "container": "schema", "member": "table", "field": "column"},
+    "filesystem": {"resource": "file system", "container": "directory", "member": "file", "field": "field"},
+    "repo": {"resource": "repository", "container": "directory", "member": "file", "field": "symbol"},
+}
+
+
+def _level_words(resource_type: str, level: str) -> tuple[str, str]:
+    """(the whole resource, one of its parts at `level`), in words: ("database", "table") for a member."""
+    words = _LEVEL_WORDS.get(resource_type, {})
+    return words.get("resource", "resource"), words.get(level, "part")
+
+
 @functools.lru_cache(maxsize=8)
 def _analysis_target_shapes(resource_type: str) -> dict:
     """{analysis_id: target_shape} for one resource type, read straight from
@@ -1893,13 +1908,11 @@ class FactLayer:
                 + f", but no reader shows them yet."
             )
         else:
-            env.level_note = (
-                "Answered only as a whole-resource rollup — this question is "
-                f"asked at {'/'.join(sub_levels)} level and "
-                + (f"{known_ids[0]} names no {sub_levels[0]}."
-                   if len(known_ids) == 1
-                   else f"none of {', '.join(known_ids)} name one.")
-            )
+            # Shown on the person's row: the resource and level in that person's words, not "rollup", "member/field
+            # level" or analysis ids (quality-screens read, item 6, 2026-10-30). Which analyses stand behind the row
+            # is on the row already.
+            whole, per = _level_words(self.resource_type, sub_levels[0])
+            env.level_note = f"Answered for the {whole} as a whole, not {per} by {per}."
 
     # ── internals ───────────────────────────────────────────────────────────
     def _resource_state_fact(self, slug: str, resolver, subject: str) -> Fact:
