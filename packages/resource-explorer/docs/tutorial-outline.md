@@ -857,7 +857,7 @@ from the merged walks are listed where one may be reused, after a check that the
 | S26 | 8 · 2–3 | Chat answer | The answer and the "From N stored results" line | new |
 | S27 | 8 · 5 | what would answer this? | Analyses with and without results, **Run** | new |
 | S28 | 9 · 2 | Contents, the chips | Three chips | new on the reader's database |
-| S29 | 9 · 3 | Include / Leave out | One of each | new |
+| S29 | 9 · 3 | Include / Leave out | One of each | Keep both: the explainer `tutorial-media/curate-decisions.png` and this capture of the real screen (owner, 2026-10-29). Start from the blog's `curate-decision-table-v2.png`; replace it with a newer capture when one is taken. |
 | S30 | 9 · 4–6 | Findable and What people say | Tag, group, rating, "saved · will publish" | new |
 | S31 | 9 · 7 | Repository Curate page | Its three tabs, labelled with the shared parts | new |
 | S32 | 9 · 7 | File-system Curate page | Tags, group, "attaches the root folder only" | `05-curate-file-system.webp` if unchanged |
@@ -881,7 +881,7 @@ carry words the tutorial avoids, so each needs a check, and some a redrawn label
 | S1 (part 1) and S12 (part 4), the funnel | part 1, `resource-explorer-funnel-v5.png` | **Redrawn for the tutorial, 2026-10-29:** [`tutorial-media/funnel.svg`](tutorial-media/funnel.svg), rendered at 1920 × 1080 as `funnel.png`. Same palette; plain words (no "graduate" or "outbox"); stages described for every kind of data source; chat added; the funnel shown as a guide, not a rule. For the owner's review. |
 | Part 1, the screen in use | part 1, `Portal-6.1-overview_2.png` (Assessment question cards) | Shows questions tagged by perspective, each answer naming its analysis. |
 | Not for the Core tutorial: what a question is | part 2, `anatomy-of-a-question.png` | Advanced tutorial (owner, 2026-10-29). |
-| Part 9, Include / Leave out | part 3, `curate-decision-table-v2.png` | A database's schemas with a decision each. Needed in the Core tutorial (owner, 2026-10-29). **Redrawn as an explainer, 2026-10-29:** [`tutorial-media/curate-decisions.svg`](tutorial-media/curate-decisions.svg), rendered as `curate-decisions.png`: five rows (included and cataloged, left out, a suggestion, undecided and not known) with numbered callouts. It explains the idea; S29 is still captured from the real screen, which may have changed since the blog. For the owner's review. |
+| Part 9, Include / Leave out | part 3, `curate-decision-table-v2.png` | A database's schemas with a decision each. Needed in the Core tutorial (owner, 2026-10-29). **Redrawn as an explainer, 2026-10-29:** [`tutorial-media/curate-decisions.svg`](tutorial-media/curate-decisions.svg), rendered as `curate-decisions.png`: five rows (included and cataloged, left out, a suggestion, undecided and not known) with numbered callouts. It explains the idea; S29 shows the real screen, and both are kept (owner, 2026-10-29). The schema names match `coco_pharma` in the Quickstart (owner, 2026-10-29). |
 | Part 10, before Publish | part 3, `curate-commit-summary.png` | "What this commit does". Check it is still the screen; "commit" needs explaining or avoiding. |
 | Part 10 · 7, checking in Egeria | part 3, `question-in-egeria-1600.jpg` (a question viewed in Egeria Explorer); Workspaces 6.1, `Portal-6.1.png` (the Quickstart portal home) | Egeria Explorer is the place to look (owner, 2026-10-29); the portal home shows where to open it. |
 | Part 8, an answer and its sources | part 4, `p4-fig2a-docling-answer.png` | The answer with its stored results listed above it. |
