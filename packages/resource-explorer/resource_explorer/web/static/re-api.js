@@ -210,6 +210,11 @@ export const listDatabases = () => get('/api/databases/');
  *  docstring (survey_definition_adapter.py) for the shape. */
 export const getSchemaInventoryTree = (slug) =>
   get(`/api/databases/${encodeURIComponent(slug)}/schema-inventory-tree`);
+/** The Value profile tab: the header and one line per table; then one table's column rows when its card opens. */
+export const getValueProfile = (slug) =>
+  get(`/api/databases/${encodeURIComponent(slug)}/value-profile`);
+export const getValueProfileTable = (slug, schema, table) =>
+  get(`/api/databases/${encodeURIComponent(slug)}/value-profile/${encodeURIComponent(schema)}/${encodeURIComponent(table)}`);
 export const listFilesystems = () => get('/api/filesystems/');
 
 // ── Open data (OD1): portals, directories, search, import, the dataset page ──

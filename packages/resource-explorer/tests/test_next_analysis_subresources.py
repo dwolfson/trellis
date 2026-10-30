@@ -82,7 +82,8 @@ class TestNoFifthTabIsAdded:
         start = app.index("const SUB_TABS = [")
         end = app.index("];", start)
         block = app[start:end]
-        ids = ["context", "questions", "survey", "by_analysis", "disposition", "schema_inventory", "table_preview"]
+        ids = ["context", "questions", "survey", "by_analysis", "disposition", "schema_inventory", "value_profile",
+               "table_preview"]
         for i in ids:
             assert f"id: '{i}'" in block
         assert block.count("id: '") == len(ids)

@@ -91,6 +91,11 @@ class Fact:
     runnable_reason: str = ""
     #: An installed Analytic Library step's analysis (not one of RE's own): the Questions row gives it a line of its own.
     library: bool = False
+    #: The adapter registers a reader for this analysis's numbers AT the question's level (a sub-resource level with an
+    #: entry in `analysis_container_results_map`): its "numbers behind this" are rows at that level, not the resource
+    #: scalars. The Questions row offers them per analysis, so a question's second analysis is reachable too
+    #: (DESIGN-VALUE-PROFILE-SCREEN-2026-10-30 §5: Q-0079's value profile behind its data_class_match).
+    numbers_at_level: bool = False
     #: Why the state is what it is, in words, when there is something to say.
     note: str = ""
     #: The analysis's OWN one-sentence summary, from its headline_reader.
@@ -163,6 +168,7 @@ class Fact:
             "value": value, "provenance": self.provenance,
             "last_run_at": self.last_run_at, "as_of": self.as_of, "can_run": self.can_run,
             "runnable": self.runnable, "runnable_reason": self.runnable_reason, "library": self.library,
+            "numbers_at_level": self.numbers_at_level,
             "note": self.note, "is_known": self.is_known,
             "evidence_only": self.evidence_only,
             "destination": destination, "destination_basis": destination_basis,
@@ -1334,6 +1340,9 @@ class FactLayer:
 
         fact.runnable, fact.runnable_reason = runnable_and_reason(analysis_id, self.resource_type)
         fact.library = analysis_id in attached_user_steps(self.resource_type)
+        if level != "resource":
+            container_map = self._map("analysis_container_results_map") or {}
+            fact.numbers_at_level = analysis_id in container_map
         return fact
 
     def _fact(self, slug: str, analysis_id: str, level: str = "resource") -> Fact:

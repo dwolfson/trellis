@@ -76,9 +76,9 @@ afterEach(async () => {
 const MAIN_IDS = (stage, kind) => [
   ...(stage === 'enrichment' ? ['context'] : []),
   'questions', 'survey', 'by_analysis', 'disposition',
-  ...(kind === 'db' ? ['schema_inventory', 'table_preview'] : []),
+  ...(kind === 'db' ? ['schema_inventory', 'value_profile', 'table_preview'] : []),
 ];
-const MAIN_LABEL = { context: 'Context', questions: 'Questions', survey: 'Survey & analyses', by_analysis: 'By analysis', disposition: 'Disposition', schema_inventory: 'Schema Inventory', table_preview: 'Table preview' };
+const MAIN_LABEL = { context: 'Context', questions: 'Questions', survey: 'Survey & analyses', by_analysis: 'By analysis', disposition: 'Disposition', schema_inventory: 'Schema Inventory', value_profile: 'Value profile', table_preview: 'Table preview' };
 
 for (const kind of ['repo', 'db', 'filesystem']) {
   for (const stage of ['scouting', 'discovery', 'assessment', 'analysis', 'curate', 'enrichment', 'understanding']) {
