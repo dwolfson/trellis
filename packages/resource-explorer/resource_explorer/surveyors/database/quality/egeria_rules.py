@@ -80,9 +80,26 @@ OUTCOME_WORDS = {
     DUPLICATE: "not published · two rules hold this name in Egeria",
     NAME_TAKEN: "not published · another element holds this name in Egeria",
     MISSING_IN_EGERIA: "no longer in Egeria · will be re-created on the next publish",
-    NOT_IN_EGERIA: "not added to Egeria · its schema is not committed",
+    NOT_IN_EGERIA: "not in Egeria · commit its schema in Contents",
     UNREADABLE: "not published · Egeria could not be read",
 }
+
+
+def outcome_words(outcome: str, detail: dict | None = None) -> str:
+    """What one check's press did, in words: created / unchanged / not in Egeria / refused with Egeria's own sentence.
+    A press that left a check unverified or unreadable says that, with the reason where there is one."""
+    detail = detail or {}
+    said = {CREATED: "published · created in Egeria", ADOPTED: "published · adopted the rule already in Egeria",
+            UPDATED: "published · updated in Egeria", UNCHANGED: "published · unchanged",
+            REACTIVATED: "published · reactivated in Egeria"}.get(outcome)
+    if said:
+        return said
+    why = str(detail.get("error") or detail.get("why") or "")[:200]
+    if outcome == REFUSED:
+        return f"refused by Egeria · {why}" if why else "refused by Egeria"
+    if outcome in (UNVERIFIED, UNREADABLE) and why:
+        return f"{OUTCOME_WORDS[outcome]} · {why}"
+    return OUTCOME_WORDS.get(outcome, outcome)
 
 
 # ── names and properties (pure) ──────────────────────────────────────────────
@@ -676,7 +693,9 @@ def publish_database_rules(registry, db_entity, gateway: RuleGateway, *, recorde
                          recorded_by=recorded_by)
     registry.record_quality_rule_proofs(rows)
     summary = summarize(rows)
-    return {**publish_state(summary["counts"]), **summary, "rows": rows}
+    outcomes = {r["check_key"]: {"state": r["outcome"], "words": outcome_words(r["outcome"], r.get("detail_json"))}
+                for r in rows}
+    return {**publish_state(summary["counts"]), **summary, "outcomes": outcomes, "rows": rows}
 
 
 def read_rules_for_run(registry, slug: str, gateway_factory=egeria_gateway) -> dict | None:
@@ -699,31 +718,66 @@ def read_rules_for_run(registry, slug: str, gateway_factory=egeria_gateway) -> d
 def rule_states(registry, slug: str) -> dict:
     """The Curate state line per check with a verdict: {check_key: {state, words, rule_guid, read_at}}, from the
     verdict and RE's latest proof row. An accepted check with no row is "local · not published"; one whose
-    parameters changed since the row is "in Egeria · changed here · publish to update"."""
+    parameters changed since the row is "in Egeria · changed here · publish to update".
+
+    Also `preview` (what a press would do, from RE's own rows only: whether a check's schema is in Egeria is known
+    only from the last press, never guessed) and `in_egeria` (the database has an asset to publish under)."""
     verdicts = registry.get_quality_verdicts(slug)
     proofs = registry.latest_quality_rule_proofs(slug)
     out: dict[str, dict] = {}
+    tally = {"accepted": 0, "to_publish": 0, "to_retire": 0, "waiting": 0, "unchanged": 0, "edited": 0, "retry": 0}
     for key, verdict in sorted(verdicts.items()):
         proof = proofs.get(key)
         state = (proof or {}).get("outcome") or ""
-        if verdict.get("verdict") != "accepted" and state not in PUBLISHED_OUTCOMES | {RETIRED}:
+        accepted = verdict.get("verdict") == "accepted"
+        if not accepted and state not in PUBLISHED_OUTCOMES | {RETIRED}:
             continue
+        tally["accepted"] += accepted
         if not proof:
             words = "local · not published"
-        elif verdict.get("verdict") == "accepted" and state in PUBLISHED_OUTCOMES and state != EDITED_IN_EGERIA \
-                and _accepted_after(verdict, proof):
+            tally["to_publish"] += 1
+        elif accepted and state in PUBLISHED_OUTCOMES and state != EDITED_IN_EGERIA and _accepted_after(verdict, proof):
             words = "in Egeria · changed here · publish to update"
-        elif verdict.get("verdict") != "accepted" and state in PUBLISHED_OUTCOMES:
+            tally["to_publish"] += 1
+        elif not accepted and state in PUBLISHED_OUTCOMES:
             words = "in Egeria · rejected here · publish to retire"
+            tally["to_retire"] += 1
         else:
             words = OUTCOME_WORDS.get(state, state)
             detail = proof.get("detail_json") or {}
             if state == EDITED_IN_EGERIA and detail.get("updated_by"):
                 words = f"edited in Egeria · {detail['updated_by']} · {detail.get('update_time', '')[:16]}" \
                         " · Egeria's threshold is used"
+            if accepted:
+                if state == NOT_IN_EGERIA:
+                    tally["waiting"] += 1
+                elif state == EDITED_IN_EGERIA:
+                    tally["edited"] += 1
+                elif state in PUBLISHED_OUTCOMES:
+                    tally["unchanged"] += 1
+                elif state == MISSING_IN_EGERIA:
+                    tally["to_publish"] += 1
+                elif state != RETIRED:
+                    tally["retry"] += 1
         out[key] = {"state": state or "unpublished", "words": words,
                     "rule_guid": (proof or {}).get("rule_guid", ""), "read_at": (proof or {}).get("read_at", "")}
-    return {"rules": out}
+    entity = registry.get_database(slug)
+    return {"rules": out, "preview": {**tally, "words": preview_words(tally)},
+            "in_egeria": bool(getattr(entity, "egeria_asset_guid", "") or "")}
+
+
+def preview_words(tally: dict) -> str:
+    """What a press would do, before it: "2 to publish · 3 waiting for Contents (schema not committed) · 1 unchanged".
+    Nothing accepted says so. A check whose schema Egeria might not hold is counted as waiting only once a press found
+    that out."""
+    parts = [(tally["to_publish"], "to publish"), (tally["to_retire"], "to retire"),
+             (tally["waiting"], "waiting for Contents (schema not committed)"), (tally["unchanged"], "unchanged"),
+             (tally["edited"], "edited in Egeria, left as Egeria has it"),
+             (tally["retry"], "not published last time, will be tried again")]
+    said = " · ".join(f"{n} {w}" for n, w in parts if n)
+    if not tally["accepted"] and not said:
+        return "nothing is accepted yet"
+    return said or "nothing to publish"
 
 
 def _accepted_after(verdict: dict, proof: dict) -> bool:

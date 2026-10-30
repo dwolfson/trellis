@@ -39,7 +39,7 @@ test('no screen string in the Next scripts says a bare "rule" (every one carries
   walk(root);
   const offenders = [];
   // a rule that is not preceded by one of its kinds (or a code-ish context), outside comments
-  const allowed = /(data-class|scope|retention|built-in|inclusion) rules?|rule \d|rule-strong|border-rule|bg-rule|text-rule|rule\)|\brules\b\s*[=:(\[]|const rules|, rules|\(rules|rules\)|'rule'|\.rule|rule:|rulesBodyHtml|rules\.|rules\b\s*$/i;
+  const allowed = /(data-class|scope|retention|built-in|inclusion|quality) rules?|rule \d|rule-strong|border-rule|bg-rule|text-rule|rule\)|\brules\b\s*[=:(\[]|const rules|, rules|\(rules|rules\)|'rule'|\.rule|rule:|rulesBodyHtml|rules\.|rules\b\s*$/i;
   for (const f of files) {
     readFileSync(f, 'utf8').split('\n').forEach((line, i) => {
       const t = line.trim();
