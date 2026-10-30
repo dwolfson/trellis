@@ -214,12 +214,13 @@ class TestAnOrphanAnalysisWarns:
         orphans = [w for w in said if "named by no question" in w]
         assert len(orphans) == 1 and "left_alone" in orphans[0]
 
-    def test_the_shipped_catalogue_declares_its_eleven_infrastructure_entries(self):
+    def test_the_shipped_catalogue_declares_its_twelve_infrastructure_entries(self):
         cat = yaml.safe_load((ROOT / "resource_explorer" / "configdata" / "analysis_catalog.yaml").read_text())
         declared = {e["id"] for k, s in cat.items() if k.endswith("_analyses") for e in s if e.get("answers_questions") is False}
         assert declared == {"repo_profile_refresh", "rag_ingestion", "website_ingestion", "sub_resource_survey",
                             "code_symbol_extraction", "manifest_parse", "egeria_publish", "egeria_db_survey",
-                            "doc_source_ingestion", "external_data_scout", "external_data_profile"}   # + OD2, OD3 (open data has no questions yet)
+                            "doc_source_ingestion", "external_data_scout", "external_data_profile",
+                            "external_data_refresh"}   # + OD2, OD3, OD4 (open data has no questions yet)
 
     def test_the_committed_csv_leaves_only_known_orphans(self, gen):
         with open(CSV, newline="", encoding="utf-8") as f:

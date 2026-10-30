@@ -9,6 +9,7 @@ import { openDataScoutPrice, scoutOpenData, fitOpenData } from '/static/re-api.j
 import { esc, state as appState } from '/static/next/app.js';
 import { watchTables } from '/static/next/colresize.js';
 import { mountProfile } from '/static/next/open-data-profile.js';
+import { mountRefresh } from '/static/next/open-data-publish.js';
 
 const errText = (e) => esc((e && (e.detail || e.message)) || String(e));
 const CUE = { fits: '✓', does_not_fit: '✗', could_not_check: '?', not_stated: '–' };
@@ -57,7 +58,8 @@ export async function mountShortlist(host, workList) {
       <button type="submit" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent">Winnow</button>
     </form>
     <div data-od-fit-result></div>
-    <div data-od-profile></div>`;
+    <div data-od-profile></div>
+    <div data-od-refresh></div>`;
   const line = host.querySelector('[data-od-scout-line]');
   const state = host.querySelector('[data-od-scout-state]');
   try { const p = await openDataScoutPrice(workList); line.textContent = `Scout: ${p.line}`; }
@@ -70,6 +72,7 @@ export async function mountShortlist(host, workList) {
     } catch (e) { state.innerHTML = errText(e); }
   });
   mountProfile(host.querySelector('[data-od-profile]'), workList);
+  mountRefresh(host.querySelector('[data-od-refresh]'), workList);
   const form = host.querySelector('[data-od-request]');
   form.addEventListener('submit', async (ev) => {
     ev.preventDefault();

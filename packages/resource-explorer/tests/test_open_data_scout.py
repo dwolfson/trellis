@@ -173,7 +173,7 @@ def test_the_scout_is_declared_in_the_analysis_catalog_once():
     from resource_explorer.surveyors import analysis_catalog_reader as reader
 
     entries = reader.get_analyses("open_data", include_egeria_live=False)
-    assert [e["id"] for e in entries] == ["external_data_scout", "external_data_profile"]   # + OD3
+    assert [e["id"] for e in entries] == ["external_data_scout", "external_data_profile", "external_data_refresh"]   # + OD3, OD4
     e = entries[0]
     assert e["resource_types"] == ["open_data"] and e["availability"] == "inline" and e["action"] == "survey"
     assert not [x for x in reader.get_analyses("repo", include_egeria_live=False) if x["id"] == "external_data_scout"]
