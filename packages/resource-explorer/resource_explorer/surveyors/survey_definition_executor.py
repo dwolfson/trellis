@@ -176,6 +176,43 @@ class ResourceTypeAdapter:
 
 
 
+#: How each step status reads in a run's one-line summary. A status not named here reads as its own words.
+_STEP_STATUS_WORDS = {
+    result_status.SKIPPED_BY_DESIGN: "skipped by design",
+    "error": "failed",
+    "cancelled": "cancelled",
+    "not_executed_no_egeria_handler": "not run: no Egeria handler",
+    "unknown_step": "not run: unknown step",
+    "unrecognized_engine": "not run: unrecognized engine",
+}
+
+
+def steps_summary(steps_report: list[dict], errors: list) -> str:
+    """'3 steps: 2 ran, 1 skipped by design' — every step counted under what happened to it, by its stored status, so
+    a step declined by design is not left as an unexplained gap in "2 of 3 ran". Plurals by number."""
+    total = len(steps_report)
+    if not total:
+        head = "no steps"
+    else:
+        ran = sum(1 for r in steps_report if r.get("status") in ("ok", "triggered"))
+        others: dict[str, int] = {}
+        for r in steps_report:
+            st = r.get("status") or ""
+            if st not in ("ok", "triggered"):
+                word = _STEP_STATUS_WORDS.get(st) or (st.replace("_", " ") or "status not recorded")
+                others[word] = others.get(word, 0) + 1
+        if total == 1:
+            head = f"1 step: {next(iter(others), 'ran')}"
+        elif not others:
+            head = f"{total} steps: all ran"
+        else:
+            parts = ([f"{ran} ran"] if ran else []) + [f"{n} {word}" for word, n in others.items()]
+            head = f"{total} step{'' if total == 1 else 's'}: {', '.join(parts)}"
+    if errors:
+        head += f", {len(errors)} error{'' if len(errors) == 1 else 's'}"
+    return head
+
+
 def _redactable(password, credential_scope: str) -> str:
     """The password to keep out of stored and logged text, or "".
 
@@ -1382,7 +1419,6 @@ class SurveyDefinitionExecutor:
         #
         # The ref is what makes the row attributable to THIS definition rather
         # than to the repo generally.
-        ran = sum(1 for r in steps_report if r.get("status") in ("ok", "triggered"))
         try:
             survey_entry = log_survey(
                 self.registry, entity_type, slug,
@@ -1390,8 +1426,7 @@ class SurveyDefinitionExecutor:
                 getattr(entity, "github_url", "") or "",
                 intent="discovery",
                 status="error" if errors else "ok",
-                summary=(f"{survey_def.display_name}: {ran} of {len(steps_report)} step(s) ran"
-                         + (f", {len(errors)} error(s)" if errors else "")),
+                summary=f"{survey_def.display_name}: {steps_summary(steps_report, errors)}",
                 detail=json.dumps({
                     "survey_definition_ref": process_qn,
                     "process_guid": process_guid,
