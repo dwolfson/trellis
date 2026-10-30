@@ -72,6 +72,12 @@ class FakeTransport:
             return self.directory
         raise AssertionError(f"unexpected outbound call: {url}")
 
+    def get_text(self, url, params=None, headers=None):
+        self.calls.append(url)
+        if urlparse(url).hostname == "www.re3data.org":
+            return (FIX / "re3data_repositories.xml").read_text()
+        raise AssertionError(f"unexpected outbound call: {url}")
+
 
 NO_EGERIA = lambda identifier: None          # noqa: E731 - Egeria answered: not held
 
@@ -96,6 +102,7 @@ def _register_demo(store, host="demo.ckan.org", name="CKAN demo"):
 def test_the_fake_transport_binds_the_real_signature():
     shape = lambda f: [(p.name, p.kind, p.default) for p in inspect.signature(f).parameters.values()]   # noqa: E731
     assert shape(FakeTransport.get_json) == shape(HttpTransport.get_json)
+    assert shape(FakeTransport.get_text) == shape(HttpTransport.get_text)
     # every adapter and the resolver calls the transport only as get_json(url, params=, headers=)
     assert shape(HttpTransport.get_json)[1:] == [("url", inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect._empty),
                                                  ("params", inspect.Parameter.POSITIONAL_OR_KEYWORD, None),

@@ -130,3 +130,40 @@ def test_scout_and_fit_routes(reg, monkeypatch):
     assert c.post(f"/api/open-data/work-lists/{wl}/fit", json={"request": {"formats": ["CSV"]}}).json()["passes"] == 0
     assert c.get("/api/open-data/work-lists/nope/scout-price").status_code == 404
     assert c.post("/api/open-data/work-lists/nope/fit", json={}).status_code == 404
+
+
+# ── re3data (recorded 2026-10-30 01:19Z, GET https://www.re3data.org/api/v1/repositories, first 40 of 3540) ──────
+
+def test_re3data_lists_repositories_with_only_what_the_listing_states(store):
+    from tests.test_open_data import FakeTransport as Fake
+
+    d = service.register_directory(store, display_name="re3data", api_kind="re3data",
+                                   base_url="https://www.re3data.org/api/v1/repositories", registered_by="t")
+    t = Fake()
+    out = service.run_directory(store, d["slug"], pages=1, terms="", transport=t)
+    assert out["total"] == 40 and len(out["rows"]) == 40 and t.calls == ["https://www.re3data.org/api/v1/repositories"]
+    assert out["price"]["line"] == "1 page × 1 call = 1 call"
+    first = out["rows"][0]
+    assert first["name"] == "Odum Institute Archive Dataverse"
+    assert first["country"] == first["domain"] == first["api_kind"] == first["url"] == NOT_REPORTED   # not in the listing
+    assert "no adapter" in first["status"] or "not reported" in first["status"] or first["status"]
+
+
+def test_re3data_refuses_a_listing_with_a_dtd_and_a_non_xml_answer():
+    from resource_explorer.open_data.re3data import Re3dataDirectory
+    from resource_explorer.open_data.transport import TransportError
+
+    class T:
+        def __init__(self, text): self.text = text
+        def get_text(self, url, params=None, headers=None): return self.text
+
+    for bad in ('<!DOCTYPE x [<!ENTITY a "b">]><list/>', "not xml"):
+        with pytest.raises(TransportError):
+            Re3dataDirectory(transport=T(bad)).list_portals(1)
+
+
+def test_the_re3data_fixture_is_the_recorded_shape():
+    from tests.test_open_data import FIX
+
+    text = (FIX / "re3data_repositories.xml").read_text()
+    assert text.count("<repository>") == 40 and "<id>r3d100000001</id>" in text

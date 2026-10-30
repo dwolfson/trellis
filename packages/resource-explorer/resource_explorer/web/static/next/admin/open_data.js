@@ -246,7 +246,7 @@ export async function renderPortalDirectories(host) {
     </div>
     <form data-od-register class="mb-s3 hidden flex-wrap items-end gap-[6px]">
       <label class="text-caveat text-ink-muted">Name <input name="display_name" required class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink" value="dataportals.org"></label>
-      <label class="text-caveat text-ink-muted">API <select name="api_kind" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink"><option>dataportals.org</option></select></label>
+      <label class="text-caveat text-ink-muted">API <select name="api_kind" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink"><option>dataportals.org</option><option>re3data</option></select></label>
       <label class="text-caveat text-ink-muted">Listing URL <input name="base_url" placeholder="https://dataportals.org/api/data.json" class="rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink" style="width:300px"></label>
       <button type="submit" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[2px] text-caveat text-ink hover:border-accent">Register</button><span data-od-register-state class="text-provenance text-ink-muted"></span>
     </form>

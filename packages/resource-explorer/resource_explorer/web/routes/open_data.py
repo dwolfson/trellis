@@ -270,7 +270,7 @@ def register_directory(reg: DirectoryRegistration, request: Request) -> dict:
     try:
         return service.register_directory(
             _store(), display_name=reg.display_name, api_kind=reg.api_kind,
-            base_url=reg.base_url or "https://dataportals.org/api/data.json", registered_by=who)
+            base_url=reg.base_url or ("https://www.re3data.org/api/v1/repositories" if reg.api_kind.lower() == "re3data" else "https://dataportals.org/api/data.json"), registered_by=who)
     except service.OpenDataError as exc:
         raise _http(exc) from exc
 

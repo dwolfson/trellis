@@ -103,8 +103,9 @@ def _builtins() -> list[type[Adapter]]:
     from resource_explorer.open_data.ckan import CkanAdapter
     from resource_explorer.open_data.datacite import DataCiteResolver
     from resource_explorer.open_data.dataportals import DataPortalsDirectory
+    from resource_explorer.open_data.re3data import Re3dataDirectory
 
-    return [CkanAdapter, DataPortalsDirectory, DataCiteResolver]
+    return [CkanAdapter, DataPortalsDirectory, DataCiteResolver, Re3dataDirectory]
 
 
 def _entry_points():
