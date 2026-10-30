@@ -158,16 +158,21 @@ dependencies = [
     # get_platform_organization reads /api/public/app/info; #492/#493 SecurityOfficer statements of applicability;
     # delete_annotation's body is now optional. Audit: RE calls none of the rerouted methods, nor
     # get_platform_organization (tests/test_pyegeria_6212_rerouted_methods.py). No shared client code changed.
-    "pyegeria>=6.2.13",
+    # Raised to 6.2.16 (2026-10-30) for egeria-python #513: pyegeria no longer depends on or applies nest_asyncio;
+    # its sync methods go through run_sync (safe from a running loop or a loopless worker thread) and its httpx
+    # session is per thread and per loop. RE's four get_event_loop().run_until_complete() sites relied on the
+    # nest_asyncio patch and now call the sync method instead; the loop-feeding wrappers around them are gone.
+    # Without this, sub-resource publishing quietly created nothing on any thread that had run asyncio.run
+    # (tests/test_pyegeria_6216_sync_bridge.py).
+    "pyegeria>=6.2.16",
     "mcp>=2.0.0",
     # nest-asyncio removed 2026-09-04 with the shared-pool refactor: RE no
     # longer imports it anywhere. Its one site, surveyors/prefect_adapter.py's
     # module-level nest_asyncio.apply(), was both unnecessary (every sync/async
     # bridge now hands the coroutine to a thread with a fresh loop — see
-    # resource_explorer/concurrency.py) and redundant (pyegeria declares
-    # nest-asyncio itself and applies it at package import, in
-    # pyegeria/view/mermaid_utilities.py). It therefore stays installed as a
-    # pyegeria transitive dependency; what is gone is RE claiming it directly.
+    # resource_explorer/concurrency.py) and redundant (pyegeria then applied it
+    # at package import). Since pyegeria 6.2.16 (#513) pyegeria neither declares
+    # nor applies it, so nothing in RE's process is patched any more.
     # Database surveying
     "psycopg2-binary>=2.9.0",
     "prefect>=3.0.0",
