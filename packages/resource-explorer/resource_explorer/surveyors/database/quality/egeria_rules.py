@@ -254,6 +254,7 @@ class RuleRead:
 class RuleGateway(Protocol):
     def find_by_name(self, qualified_name: str) -> list[RuleRead]: ...
     def element_guid(self, qualified_name: str, type_name: str) -> str: ...
+    # optional (D1-a): def endpoint_resolution(self, db_entity) -> dict -- other families at the database's endpoint
     def qualified_name_of(self, guid: str) -> str: ...
     def create(self, properties: dict) -> str: ...
     def read(self, guid: str) -> RuleRead | None: ...
@@ -507,6 +508,14 @@ class PyegeriaRuleGateway:
         except Exception as exc:
             raise RuleGatewayError(f"could not look up {qualified_name!r}: {exc}"[:400]) from exc
 
+    def endpoint_resolution(self, db_entity) -> dict:
+        """D1-a: every family Egeria holds at `db_entity`'s endpoint (`endpoint_identity.resolve`, cached a minute),
+        read as the person pressing (`current_principal`)."""
+        from resource_explorer import endpoint_identity
+        from resource_explorer.catalogue_commit import make_gateway
+
+        return endpoint_identity.cached_resolve(make_gateway(db_entity), db_entity)
+
     def qualified_name_of(self, guid: str) -> str:
         from resource_explorer.catalogue_gateway import _qn_of
 
@@ -577,14 +586,25 @@ def egeria_gateway(identity=None) -> PyegeriaRuleGateway:
 
 # ── Publish, end to end ──────────────────────────────────────────────────────
 
-def element_qualified_name(db_entity, path: str) -> str:
+def element_qualified_name(db_entity, path: str, schema_qn: str = "") -> str:
     """The JDBC cataloguer's name for the table or column `path` names: `<schema QN>::<table>[::<column>]` (the
-    column form confirmed live 2026-10-20; `_link_annotations_to_elements` uses the same)."""
+    column form confirmed live 2026-10-20; `_link_annotations_to_elements` uses the same). `schema_qn` is the schema
+    element's own name when another family holds it (D1-a; the content pack's tables follow the same form, read live
+    2026-10-30); RE's own template name otherwise."""
     from resource_explorer.catalogue_gateway import schema_qualified_name, server_name_for
 
     schema, table, column = (path.split(".", 2) + ["", "", ""])[:3]
-    name = f"{schema_qualified_name(server_name_for(db_entity), db_entity.database_name, schema)}::{table}"
+    name = f"{schema_qn or schema_qualified_name(server_name_for(db_entity), db_entity.database_name, schema)}::{table}"
     return f"{name}::{column}" if column else name
+
+
+def _other_schema_names(db_entity, schema: str, resolution) -> list[str]:
+    """The schema qualifiedNames OTHER than RE's own that Egeria holds for `schema` at this database's endpoint."""
+    from resource_explorer import endpoint_identity
+    from resource_explorer.catalogue_gateway import schema_qualified_name, server_name_for
+
+    own = schema_qualified_name(server_name_for(db_entity), db_entity.database_name, schema)
+    return [q for q in endpoint_identity.element_qualified_name_prefixes(resolution, schema) if q != own]
 
 
 def summarize(rows: list[dict]) -> dict:
@@ -641,7 +661,12 @@ def publish_state(counts: dict[str, int]) -> dict:
 def publish_database_rules(registry, db_entity, gateway: RuleGateway, *, recorded_by: str) -> dict:
     """Publish, for one database: every accepted check to a DataQualityRule, every rejected or retired one that was
     published to DEPRECATED. Writes one proof row per check acted on (`database_quality_rule_proofs`) and returns
-    {state, line, counts, rows}. A database not in Egeria, or whose asset cannot be read, writes nothing."""
+    {state, line, counts, rows}. A database not in Egeria, or whose asset cannot be read, writes nothing.
+
+    D1-a: a table or column not found under RE's own schema name is looked up under every other family's schema
+    element for the same endpoint (the gateway's `endpoint_resolution`, read once, only on a miss), so a check on a
+    content pack's schema finds the pack's element. A resolution that cannot be read makes those checks UNREADABLE,
+    never "not in Egeria". A gateway without the method looks under RE's own name only."""
     from resource_explorer.surveyors.database.quality.catalogue import load_catalogue
     from resource_explorer.surveyors.database.quality.run_checks import _resolve
 
@@ -680,10 +705,26 @@ def publish_database_rules(registry, db_entity, gateway: RuleGateway, *, recorde
     wanted = {check_path(k) for k in properties} | {
         check_path(k) for k, v in verdicts.items()
         if v.get("verdict") in ("rejected", "retired") and (proofs.get(k) or {}).get("outcome") in PUBLISHED_OUTCOMES}
+    resolution: dict | None = None
     for path in sorted(wanted):
         type_name = "RelationalColumn" if path.count(".") == 2 else "RelationalTable"
         try:
             elements[path] = gateway.element_guid(element_qualified_name(db_entity, path), type_name)
+            resolve = getattr(gateway, "endpoint_resolution", None)
+            if not elements[path] and resolve is not None:
+                if resolution is None:
+                    try:
+                        resolution = resolve(db_entity)
+                    except Exception as exc:  # noqa: BLE001 - no client or no read: said as unreadable, never absent
+                        resolution = {"error": str(exc)[:300]}
+                if resolution.get("error"):
+                    raise RuleGatewayError("could not read which Egeria elements describe this database's endpoint: "
+                                           f"{resolution['error']}"[:400])
+                for schema_qn in _other_schema_names(db_entity, path.split(".")[0], resolution):
+                    elements[path] = gateway.element_guid(element_qualified_name(db_entity, path, schema_qn),
+                                                          type_name)
+                    if elements[path]:
+                        break
         except RuleGatewayError as exc:
             for key in [k for k in properties if check_path(k) == path]:
                 skipped[key] = (UNREADABLE, str(exc))

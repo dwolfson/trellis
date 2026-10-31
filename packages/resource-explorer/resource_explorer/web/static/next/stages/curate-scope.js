@@ -393,16 +393,55 @@ const EGERIA_GLYPH = {
   catalogued: 'catalogued', attached_waiting: 'attached_waiting', queued: 'queued', sent: 'queued',
   failed: 'catalogue_failed', archived: 'archived',
 };
+/** D1-a: what Egeria holds for this schema at the database's endpoint beyond RE's own element (another family's
+ *  element, or a duplicate link), drawn BESIDE RE's own state, never in its place. A confirmed duplicate or another
+ *  family's element reads in Egeria; a proposed duplicate link reads "possible duplicate · not confirmed", muted. */
+const ENDPOINT_IN_EGERIA = ['in_egeria_other', 'in_egeria_duplicate'];
+export function endpointStateHtml(ep) {
+  if (!ep || !ep.words) return '';
+  const inEgeria = ENDPOINT_IN_EGERIA.includes(ep.state);
+  const glyph = inEgeria ? `${glyphSpan('catalogued')} ` : '';
+  const second = ep.second ? `<div data-scope-endpoint-second class="text-provenance text-ink-muted">${esc(ep.second)}</div>` : '';
+  return `<div data-scope-endpoint-state data-scope-endpoint-word="${esc(ep.state)}" class="${inEgeria ? 'text-ink' : 'text-ink-muted'}">${glyph}${esc(ep.words)}</div>${second}`;
+}
 export function egeriaStateHtml(node, commit) {
   if (!commit) return '<div data-scope-egeria-state class="text-ink-muted">not read yet</div>';
   const st = node.kind === 'schema' ? (commit.schemas || {})[node.name] : (commit.tables || {})[`${node.schema}.${node.name}`];
+  const ep = st && st.endpoint ? endpointStateHtml(st.endpoint) : '';
   if (!st || st.state === 'none' || !st.words) {
-    return '<div data-scope-egeria-state data-scope-egeria-word="none" class="text-ink-muted">—</div>';
+    return ep || '<div data-scope-egeria-state data-scope-egeria-word="none" class="text-ink-muted">—</div>';
   }
   const glyph = EGERIA_GLYPH[st.state] ? `${glyphSpan(EGERIA_GLYPH[st.state])} ` : '';
   const isMuted = ['uncommitted', 'left_out', 'follows_schema', 'not_read_back'].includes(st.state);
   const second = st.second ? `<div data-scope-egeria-second class="text-provenance text-ink-muted">${esc(st.second)}</div>` : '';
-  return `<div data-scope-egeria-state data-scope-egeria-word="${esc(st.state)}" class="${isMuted ? 'text-ink-muted' : 'text-ink'}">${glyph}${esc(st.words)}${detailsHtml(st.details, 'data-scope-egeria-details')}</div>${second}`;
+  return `<div data-scope-egeria-state data-scope-egeria-word="${esc(st.state)}" class="${isMuted ? 'text-ink-muted' : 'text-ink'}">${glyph}${esc(st.words)}${detailsHtml(st.details, 'data-scope-egeria-details')}</div>${second}${ep}`;
+}
+
+/** D1-a, §8 step 1: the re-anchor PLAN for a database another family also describes at its endpoint, from the
+ *  newest read-back's `endpoint_resolved` row (`view.commit.endpoint`). One row per RE schema: RE's element, the
+ *  other family's element of the same name (or that there is none), and what hangs off RE's copy. Plan only: the
+ *  page offers no press for it. A unique endpoint draws nothing; a failed endpoint read says so. */
+export function reanchorPlanHtml(endpoint) {
+  if (!endpoint) return '';
+  if (endpoint.error) return `<div data-scope-endpoint-plan="unread" class="mb-s1 text-caveat text-ink-muted">this endpoint: ${esc(endpoint.words)}</div>`;
+  const plan = endpoint.plan;
+  if (!plan) return '';
+  const short = (g) => (g ? `<span class="font-mono">${esc(String(g).slice(0, 8))}</span>` : '—');
+  const hangs = (h) => {
+    const a = h.annotations === null || h.annotations === undefined ? 'annotations not read' : `${h.annotations} annotation${h.annotations === 1 ? '' : 's'} naming it`;
+    return `${a} · ${h.rules} published rule${h.rules === 1 ? '' : 's'} · catalog target ${h.catalog_target ? short(h.catalog_target) : 'none'}`;
+  };
+  const rows = (plan.rows || []).map((r) => `<li data-scope-plan-row="${esc(r.schema)}" data-re-guid="${esc(r.re_guid)}" data-pack-guid="${esc(r.pack_guid || '')}" class="text-provenance">
+      <span class="text-ink">${esc(r.schema)}</span> · RE ${short(r.re_guid)} → ${r.pack_guid ? `${short(r.pack_guid)} under '${esc(r.pack_family)}'` : 'none'}
+      <div class="text-ink-muted">${esc(r.words)} · on RE's copy: ${hangs(r.hangs_off || {})}</div></li>`).join('');
+  const link = plan.database_link_type ? ` · database link read from Egeria: ${esc(plan.database_link_type)}` : '';
+  const db = plan.database_row;
+  const dbRow = db ? `<li data-scope-plan-database data-re-guid="${esc(db.re_guid)}" data-link-type="${esc(db.link_type)}" data-to-add="${esc(String((db.to_add || []).length))}" class="text-provenance">
+      <span class="text-ink">the database</span> · RE ${short(db.re_guid)}<div class="text-ink-muted">${esc(db.words)}</div></li>` : '';
+  const neither = endpoint.neither ? `<li data-scope-plan-neither class="text-provenance text-ink-muted">${esc(endpoint.neither.words)}</li>` : '';
+  return `<div data-scope-endpoint-plan data-pairs="${esc(String(plan.pairs))}" class="mb-s1 text-caveat text-ink-muted">
+    <div data-scope-endpoint-words>${esc(plan.words)}${link}</div>
+    ${dbRow || rows || neither ? `<ul class="m-0 list-none p-0">${dbRow}${rows}${neither}</ul>` : ''}</div>`;
 }
 
 function collisionLines(node, commit) {
@@ -681,6 +720,7 @@ export function scopeSectionHtml(view, me, status = '', open = scopeStartsOpen(v
   // the "not yet cataloged" words exist only server-side, and only while no commit has left a row.
   return `<div data-scope-saved-marker data-scope-commit-header data-scope-commit-header-state="${esc(((view.commit || {}).header || {}).state || 'unknown')}" class="mb-s1 text-provenance text-ink-muted">${esc(commitHeaderText(view))}</div>
     <div data-read-back-host>${readBackChipsHtml((view.commit || {}).read_back)}</div>
+    <div data-endpoint-plan-host>${reanchorPlanHtml((view.commit || {}).endpoint)}</div>
     <div class="mb-s1 text-answer text-ink"><button type="button" data-scope-collapse aria-expanded="${open ? 'true' : 'false'}"
       aria-controls="scope-section-body" title="${open ? 'Collapse to one line' : 'Show the whole scope'}"
       class="cursor-pointer bg-transparent p-0 text-left text-answer text-ink"><span aria-hidden="true" class="text-ink-muted">${open ? '▾' : '▸'}</span> <span data-scope-header><span data-scope-header-line>${esc(line)}</span></span></button></div>
@@ -853,6 +893,8 @@ export function commitPanelHtml(preview, me, ui, declared = true, view = null) {
   const collisions = (preview.all_refused ? [] : preview.collisions || []).map((c) => `<div data-scope-collision-line class="text-right text-ink">${esc(c.text)}</div>`).join('');
   // Brief Z2: a part the person may not change is a cue and a short word; the reason is on demand (hover).
   const notPermitted = (preview.not_permitted || []).map((r) => `<div data-scope-not-permitted="${esc(r.schema)}" data-write="${esc(r.write || '')}" class="text-ink">${cue('no_access', 'not permitted', r.reason)} ${esc(r.schema)}</div>`).join('');
+  // D1-a: a chosen schema another family already holds at this endpoint: said, with what a commit does about it.
+  const held = (preview.held_elsewhere || []).map((r) => `<div data-scope-held-elsewhere="${esc(r.schema)}" class="text-ink-muted">${esc(r.schema)}: ${esc(r.words)}</div>`).join('');
   const leave = (preview.leave_out || []).filter((r) => r.form !== 'not_permitted').map((r) => `<div data-scope-leave-out="${esc(r.schema)}" data-form="${esc(r.form)}" class="${r.blocked ? 'text-ink' : 'text-ink-muted'}">${r.blocked ? `${glyphSpan('human')} ` : ''}${esc(r.text)}</div>`).join('');
   // Round 2: refused whole, the other blockers stay visible, each a cue and a short word (reason on hover).
   const alsoBlocked = preview.all_refused
@@ -865,7 +907,7 @@ export function commitPanelHtml(preview, me, ui, declared = true, view = null) {
     <div class="text-answer text-ink">What this commit does</div>
     <div class="mb-s1"><button type="button" data-rc-reset-commit disabled class="opacity-60 text-ink-muted bg-transparent p-0 text-caveat" title="Put every column back to its default width">reset widths</button></div>
     <div class="flex flex-wrap items-start justify-between gap-s3">
-      <div class="min-w-0 flex-1">${manifestTableHtml(preview, view, reinclude + refused + notPermitted + leave)}</div>
+      <div class="min-w-0 flex-1">${manifestTableHtml(preview, view, reinclude + refused + notPermitted + held + leave)}</div>
       <div data-scope-commit-row class="flex shrink-0 flex-col items-end gap-s1" style="width:260px">
         <button type="button" data-scope-commit-btn ${off ? dis(reason) : ''} class="rounded-sm border border-accent bg-accent px-s3 py-[6px] text-resource font-semibold text-chrome ${off ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}">${esc(preview.button || 'Publish')}</button>
         ${off ? `<span data-scope-commit-why class="text-right text-caveat text-ink">⚠ ${esc(reason)}</span>` : ''}
@@ -1194,6 +1236,8 @@ function paintScope(el, slug, status, view) {
     if (mk) { mk.textContent = commitHeaderText(v); mk.dataset.scopeCommitHeaderState = ((v.commit || {}).header || {}).state || 'unknown'; }
     const rbHost = el.querySelector('[data-read-back-host]');
     if (rbHost) rbHost.innerHTML = readBackChipsHtml((v.commit || {}).read_back);
+    const planHost = el.querySelector('[data-endpoint-plan-host]');
+    if (planHost) planHost.innerHTML = reanchorPlanHtml((v.commit || {}).endpoint);
   };
   const startCommitPanel = () => loadCommitPanel(el, slug, me, (msg) => { previewChanged(slug, false); return renderCatalogueScope(el, slug, msg); },
     !!(view.declared && view.declared.declared), refreshScope, () => view);

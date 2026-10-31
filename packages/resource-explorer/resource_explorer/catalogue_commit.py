@@ -56,6 +56,7 @@ from resource_explorer.catalogue_gateway import (
     ARCHIVE, CATALOG_SCHEMA_ACTION_TYPE, FAILED_ACTION_STATUSES, RUNNING_ACTION_STATUSES, SOFT_DELETE, CatalogueGateway, GatewayError, like_matches,
     schema_qualified_name, server_name_for)
 from resource_explorer import catalogue_gateway as gw
+from resource_explorer import endpoint_identity
 from resource_explorer.catalogue_scope import CATALOGUE, LEAVE_OUT, current_schema_choice, md
 from resource_explorer.curate_plan import NEEDS_READ_BACK
 
@@ -165,6 +166,8 @@ P_ADOPTED = "create_error_adopted"
 #: what was once in Egeria and proves nothing about now; the screen says so, from this row, and counts 0 in
 #: Egeria until a later proof says otherwise. `detail` carries `text` ("Egeria reset <when> · old → new").
 P_EGERIA_RESET = "egeria_reset"
+#: D1-a: what Egeria holds for this database's endpoint (every family) and the re-anchor plan; a read, never a write.
+P_ENDPOINT = endpoint_identity.PROOF_KIND
 #: The status value an Egeria project context (entity_egeria_project_context.status, investigations.
 #: egeria_project_status) takes after a reset, when the Egeria project it named is gone. A status VALUE, never
 #: the words: the words are display text only. It is "not answered" exactly as `unset` is, so a publish is
@@ -854,13 +857,24 @@ def derive_commit_state(registry, slug: str, view: dict, now: datetime | None = 
             blocked_names.append(s["name"])
             schemas[s["name"]] = {**schemas[s["name"]], "blocked_117": True,
                                   "second": f"{KEPT_NOT_SENT} · {_stamp(bl['read_at'])}"}
+    # D1-a: the endpoint's other families and Egeria's duplicate links, from the newest `endpoint_resolved` row (a
+    # read-back's). Carried BESIDE RE's own state (`endpoint`), never in place of it: RE's state machine, the header
+    # counts and the press read RE's own rows only, and the IN EGERIA cell shows both.
+    ep_row = _latest(db_rows, (P_ENDPOINT,))
+    resolution = ((ep_row or {}).get("detail") or {}).get("resolution")
+    for s in view.get("schemas") or []:
+        over = endpoint_identity.schema_state_overlay(resolution, s["name"])
+        if over is not None:
+            schemas[s["name"]] = {**schemas[s["name"]], "endpoint": over}
     counts: dict[str, int] = {}
     for s in view.get("schemas") or []:
         if s.get("effective") == CATALOGUE:
             k = schemas[s["name"]]["state"]
             counts[k] = counts.get(k, 0) + 1
     n_gone = sum(1 for st in schemas.values() if st.get("state") in ("archived", "deleted"))
-    header = _header(published, counts, conn_d, failed_read, view, bool(proofs_all or ob_by_schema), zones_text, blocked_names, n_gone,
+    # An `endpoint_resolved` row is a read of what OTHERS hold at the endpoint: it never makes RE's commit exist.
+    anything = bool([p for p in proofs_all if p["proof"] != P_ENDPOINT] or ob_by_schema)
+    header = _header(published, counts, conn_d, failed_read, view, anything, zones_text, blocked_names, n_gone,
                      reset=reset, published_earlier=_latest(earlier, (P_DATABASE, P_RESTORED)))
     zr = _latest(db_rows, (P_ZONES_READ,))
     chosen_states = {s["name"]: schemas[s["name"]] for s in view.get("schemas") or [] if s.get("effective") == CATALOGUE}
@@ -879,8 +893,18 @@ def derive_commit_state(registry, slug: str, view: dict, now: datetime | None = 
             pre = {"reset_at": reset["read_at"], "published": pre_pub, "attached": pre_att, "built": pre_built}
     read_back = (read_back_chips(published, chosen_states, last_read, now, pre_reset=pre)
                  if published is not None or any_schema_proof or pre is not None else {"chips": []})
+    endpoint = None
+    if ep_row is not None:
+        d = ep_row.get("detail") or {}
+        res = d.get("resolution") or {}
+        endpoint = {"at": ep_row["read_at"], "error": res.get("error", ""), "endpoint": res.get("endpoint", ""),
+                    "families": res.get("families") or [], "plan": d.get("plan"),
+                    "neither": (endpoint_identity.neither_line(res, [x["name"] for x in view.get("schemas") or []])
+                                if d.get("plan") else None),
+                    "words": (f"{endpoint_identity.NOT_READ} · {res.get('error')}" if res.get("error")
+                              else (d.get("plan") or {}).get("words") or "this endpoint: only RE's elements")}
     return {"schemas": schemas, "tables": tables, "header": header, "collisions": collisions,
-            "read_back": read_back,
+            "read_back": read_back, "endpoint": endpoint,
             "database": ({"guid": published["element_guid"], "short": published["element_guid"][:8],
                           "at": published["read_at"], "owner": (_latest(db_rows, (P_OWNER,)) or {}).get("detail"),
                           "zones": list((zr or {}).get("detail", {}).get("zones") or []),
@@ -1257,7 +1281,8 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
     # Every schema the press would attach is read, whatever its proof rows say: Egeria may have archived (and renamed)
     # it since. `reinclude_check` reads the live element first, so one that is there costs one read and asks nothing.
     lap("derive")
-    checks = reinclude_checks(gateway, db_entity, [] if colliding or gateway is None else chosen + kept, confirms)
+    checks = reinclude_checks(gateway, db_entity, [] if colliding or gateway is None else chosen + kept, confirms,
+                              held=states)
     lap("reinclude")
     for name in chosen + kept:
         st = states.get(name, {})
@@ -1547,6 +1572,7 @@ def build_preview(registry, slug: str, view: dict, gateway: CatalogueGateway | N
         # S19: rows the person confirms with Re-include (each names the archived GUID it re-submits), the
         # confirmations that no longer match the newest archived copy, and the confirmed ones this press re-includes.
         "needs_confirmation": needs_confirmation,
+        "held_elsewhere": held_elsewhere_rows(states, chosen + kept),
         "confirmation_changed": changed,
         "reinclude": list(reincluded.values()),
         "not_permitted": not_permitted,
@@ -1599,7 +1625,22 @@ def _cannot_check(exc: Exception) -> dict:
             "error": egeria_first_sentence(str(exc))[0]}
 
 
-def reinclude_checks(gateway: CatalogueGateway, db_entity, names: list[str], confirms: list[dict] | None) -> dict:
+#: D1-a: a schema another family holds at this endpoint. The check reads both families: it says so, and a create still
+#: makes RE's own element beside it until adoption at first publish (D1-c) is built; nothing of the pack's is changed.
+HELD_ELSEWHERE_WORDS = "in Egeria under '{family}' · a commit adds RE's own element beside it · the pack's is not changed"
+
+
+def held_elsewhere_rows(states: dict, names: list[str]) -> list[dict]:
+    """The preview's rows for chosen schemas another family already holds at this endpoint (from the derived states,
+    which come from the newest `endpoint_resolved` row: no extra Egeria read)."""
+    return [{"schema": n, "family": states[n]["endpoint"].get("family", ""),
+             "element_guid": states[n]["endpoint"].get("element_guid", ""),
+             "words": HELD_ELSEWHERE_WORDS.format(family=states[n]["endpoint"].get("family", ""))}
+            for n in names if ((states.get(n) or {}).get("endpoint") or {}).get("state") == "in_egeria_other"]
+
+
+def reinclude_checks(gateway: CatalogueGateway, db_entity, names: list[str], confirms: list[dict] | None,
+                     held: dict | None = None) -> dict:
     """`reinclude_check` for many schemas of one database from ONE paged find (review round 1): every
     DeployedDatabaseSchema under `<db schema prefix>`, live and archived, read once; each schema's answer is built
     from it with the same decision (`gw.decide_reinclude`). A failed read makes every answer `cannot_check`."""
@@ -1620,6 +1661,10 @@ def reinclude_checks(gateway: CatalogueGateway, db_entity, names: list[str], con
                                                     archived_at=e.archived_at, archived=e.archived)
                                  for e in els if e.qualified_name.startswith(qn + gw.ARCHIVED_ON)])
         out[n] = gw.decide_reinclude(live, sibs, confirmed_guid_for(confirms, "schema", n))
+        other = ((held or {}).get(n) or {}).get("endpoint") or {}
+        if other.get("state") == "in_egeria_other":
+            out[n]["held_by"] = {"family": other.get("family", ""), "element_guid": other.get("element_guid", ""),
+                                 "words": HELD_ELSEWHERE_WORDS.format(family=other.get("family", ""))}
     return out
 
 
@@ -2267,6 +2312,13 @@ def read_back(registry, gateway: CatalogueGateway, slug: str, schemas: list[str]
         # Refresh only (the route): a commit's own read-back step leaves its leave-out's rows as the apply left them.
         reread_archives(registry, gateway, slug, summary, by=by)
     _read_database_facts(registry, gateway, slug, curation_id, summary)
+    if hasattr(gateway, "find_endpoints"):
+        # D1-a: every family Egeria holds at this endpoint, and the re-anchor plan (logged). Its own row; a failed
+        # endpoint read is said on that row and never makes a schema's own read-back fail.
+        ep = endpoint_identity.record_resolution(registry, gateway, e, curation_id=curation_id, by=by)
+        summary["endpoint"] = {"error": (ep["resolution"] or {}).get("error", ""),
+                               "families": (ep["resolution"] or {}).get("families") or [],
+                               "pairs": (ep["plan"] or {}).get("pairs")}
     log.info("read_back_timing slug=%s schemas=%d total_ms=%.0f cataloged=%d attached_waiting=%d read_failed=%d",
              slug, len(schemas), (time.perf_counter() - started) * 1000, summary["catalogued"],
              summary["attached_waiting"], summary["read_failed"])
