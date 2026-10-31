@@ -362,6 +362,11 @@ FILESYSTEM_ANALYSIS_STEP_MAP: dict[str, list[str]] = {
 # no new domain logic, same as database's schema_inventory/row_count_
 # snapshot readers.
 def _filesystem_inventory_results(registry, slug: str) -> dict:
+    # Where Egeria's Folder Survey leads, it answers and RE reads back (Files brief): RE's own walk rows are never made
+    # on that branch, so reading only them said "not measured" over a file system Egeria had walked (F39/F41).
+    egeria = _egeria_led_inventory(registry, slug)
+    if egeria:
+        return egeria
     entries = registry.query_detail_rows("filesystem_entries", slug)
     if not entries:
         return {}
@@ -386,13 +391,97 @@ def _filesystem_inventory_results(registry, slug: str) -> dict:
     }
 
 
+def _egeria_leads(registry, slug: str) -> bool:
+    """Does the fork, as the stored probe rows prove it, name Egeria's Folder Survey as this file system's surveyor?"""
+    from resource_explorer import file_reach
+
+    get = getattr(registry, "get_filesystem", None)   # a registry that holds no file systems has no fork to read
+    fs = get(slug) if get else None
+    return bool(fs) and file_reach.fork_for(registry, fs).surveyor == file_reach.SURVEYOR_EGERIA
+
+
+def _egeria_led_inventory(registry, slug: str) -> dict:
+    """The inventory as Egeria's Folder Survey measured it, read back, when the fork says Egeria leads and a completed
+    folder survey is stored; {} otherwise. The surveyor is named on the result (`surveyed_by`, `report_sentence`) and
+    `detail.source` is "egeria", so every surface says who measured it. A count Egeria's report does not carry stays
+    None ("not measured"), never 0: Egeria's survey does not single out data files, so `data_file_count` is None."""
+    from resource_explorer import file_reach
+    from resource_explorer.folder_survey_view import _egeria_candidate, extensions_view
+    from resource_explorer.surveyors.filesystem.folder_survey_annotations import read_folder_survey
+
+    if not _egeria_leads(registry, slug):
+        return {}
+    run = _egeria_candidate(registry, slug)
+    if not run or run.get("none"):
+        return {}
+    read = read_folder_survey(run["annotations"])
+    if not read["measured"]:
+        return {}
+    c = read["counts"]
+    files, dirs = c["files"], c["subdirectories"]
+    out = {
+        "entry_count": files + dirs if files is not None and dirs is not None else None,
+        "file_count": files,
+        "directory_count": dirs,
+        "data_file_count": None,
+        "total_size_bytes": c["total_size_bytes"],
+        "hidden_count": c["hidden"],
+        "symlink_count": c["symlinks"],
+        "unclassified_count": c["unclassified"],
+        "inaccessible_count": c["inaccessible"],
+        "file_types": read["file_types"],
+        "extensions": read["extensions"],
+        "surveyed_by": file_reach.SURVEYOR_EGERIA,
+        "report_sentence": file_reach.EGERIA_REPORT_SENTENCE,
+        "surveyed_at": run["at"],
+        "_run": {"surveyed_at": run["at"]},
+        "_not_measured": {"data_file_count": "Egeria's Folder Survey counts files by type, not data files apart"},
+        "detail": {"source": "egeria", "report_guid": run["report_guid"], "surveyor": file_reach.SURVEYOR_EGERIA},
+    }
+    # The shape (how deep, where the bulk sits) is RE's walk beside Egeria's survey, named as such where it ran.
+    ext = extensions_view(registry, slug) or {}
+    folders = ext.get("folders") or {}
+    if folders:
+        out["walk_beside"] = {"surveyed_by": file_reach.SURVEYOR_RE, "surveyed_at": ext.get("surveyed_at", ""),
+                              "deepest_folder_depth": folders.get("deepest_folder_depth"),
+                              "largest_folders": folders.get("largest_folders") or []}
+    return out
+
+
+def _fmt_size(n: int) -> str:
+    v = float(n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if v < 1024 or unit == "TB":
+            return f"{int(v)} {unit}" if unit == "B" else f"{v:.1f} {unit}"
+        v /= 1024
+    return f"{n} B"
+
+
+def _filesystem_inventory_headline(registry, slug: str) -> dict | None:
+    """One sentence that names who surveyed: "134 files in 17 folders · 57.3 MB · surveyed by Egeria's Folder Survey".
+    Only for the Egeria-led read-back; RE's own walk keeps its board as before. A count not measured is not said."""
+    value = _egeria_led_inventory(registry, slug)
+    if not value:
+        return None
+    bits = []
+    if value["file_count"] is not None:
+        n = value["file_count"]
+        folders = value["directory_count"]
+        bits.append(f"{n:,} file{'' if n == 1 else 's'}"
+                    + (f" in {folders:,} folder{'' if folders == 1 else 's'}" if folders is not None else ""))
+    if value["total_size_bytes"] is not None:
+        bits.append(_fmt_size(value["total_size_bytes"]))
+    bits.append(value["report_sentence"])
+    return {"label": " · ".join(bits), "status": "measured"}
+
+
 FILESYSTEM_ANALYSIS_RESULTS_MAP: dict[str, tuple] = {
     "filesystem_inventory": (_filesystem_inventory_results, None),
 }
 
 #: See DATABASE_ANALYSIS_HEADLINE_MAP's docstring — same "not built yet,
 #: doesn't block the map" gap, kept explicit rather than silently absent.
-FILESYSTEM_ANALYSIS_HEADLINE_MAP: dict = {}
+FILESYSTEM_ANALYSIS_HEADLINE_MAP: dict = {"filesystem_inventory": _filesystem_inventory_headline}
 
 
 # ── user steps (extensibility brief 2c; Files build step 6) ─────────────────
@@ -403,8 +492,16 @@ FILESYSTEM_ANALYSIS_HEADLINE_MAP: dict = {}
 # A file system has no built-in step registry of its own yet; these two start empty and hold only what attach adds.
 from resource_explorer.surveyors.repo_survey_definition_adapter import AnalysisKind, StepInfo  # noqa: E402
 
+from resource_explorer.surveyors.repo_survey_definition_adapter import AnalysisKindResults  # noqa: E402
+
 FILESYSTEM_STEP_REGISTRY: dict[str, StepInfo] = {}
-FILESYSTEM_ANALYSIS_KINDS: dict[str, AnalysisKind] = {}
+#: filesystem_inventory is a live read only where Egeria's Folder Survey leads: the fact layer asks the reader before its
+#: run gate there, because an Egeria-led survey records no RE run of this analysis (F41). Where RE walks, its run gate stays.
+FILESYSTEM_ANALYSIS_KINDS: dict[str, AnalysisKind] = {
+    "filesystem_inventory": AnalysisKind("filesystem_inventory", ["filesystem_inventory"], results=AnalysisKindResults(
+        _filesystem_inventory_results, None, render="metrics", headline_reader=_filesystem_inventory_headline,
+        live_read=_egeria_leads)),
+}
 
 from resource_explorer.surveyors import survey_step_host as _survey_step_host  # noqa: E402
 

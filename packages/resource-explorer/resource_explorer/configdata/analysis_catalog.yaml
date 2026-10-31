@@ -3393,13 +3393,13 @@ filesystem_analyses:
       result_kind: distribution
       measures:
       - name: fs_activity
-        unit: files not modified for more than Cold Days days (cold)
+        unit: files not modified for more than {Cold Days} days (cold)
         as_of: asOf
         value_field: Cold Files
         annotation:
           type: ResourceProfileAnnotation
       - name: fs_access_activity
-        unit: files not read for more than Cold Days days (cold)
+        unit: files not read for more than {Cold Days} days (cold)
         as_of: asOf
         value_field: Cold Files
         annotation:

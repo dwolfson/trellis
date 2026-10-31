@@ -205,6 +205,18 @@ function publishWordsRe(v) {
   return p.published ? W.published(v.report_guid, p.landed_words) : W.notPublishedWhy(p.not_published_why || 'unknown');
 }
 
+/** The stored report sentence, minus what the line already says (W19): "surveyed by Egeria's Folder Survey · <date>" is
+ *  not followed by "surveyed by Egeria's Folder Survey" again. Returns '' when the sentence adds nothing. */
+export function sentenceBeyond(line, sentence) {
+  const said = new Set(String(line || '').split(' · ').map((p) => p.trim()));
+  return String(sentence || '').split(' · ').map((p) => p.trim()).filter((p) => p && !said.has(p)).join(' · ');
+}
+
+const tailHtml = (line, sentence) => {
+  const more = sentenceBeyond(line, sentence);
+  return more ? `<span class="text-ink-muted"> · ${esc(more)}</span>` : '';
+};
+
 /** The results, one shape for both leads. */
 export function folderResultsHtml(view) {
   const v = view || {};
@@ -215,8 +227,8 @@ export function folderResultsHtml(view) {
   const c = r.counts || {};
   const t = r.times || {};
   return `<div data-fs-results data-fs-state="measured" data-fs-surveyor="${esc(v.surveyor)}" class="mt-s2">
-    <div data-fs-surveyed-by class="text-caveat text-ink">${esc(FOLDER_SURVEY_WORDS.surveyedBy(v.surveyor, day(v.surveyed_at)))}
-      <span class="text-ink-muted"> · ${esc(v.report_sentence || '')}</span></div>
+    <div data-fs-surveyed-by class="text-caveat text-ink">${esc(FOLDER_SURVEY_WORDS.surveyedBy(v.surveyor, day(v.surveyed_at)))}${
+  tailHtml(FOLDER_SURVEY_WORDS.surveyedBy(v.surveyor, day(v.surveyed_at)), v.report_sentence)}</div>
     <div class="text-provenance text-ink-muted" data-fs-published>${publishWords(v)}</div>
     ${(v.detail_lines || []).map((l) => `<div class="text-provenance text-ink-muted" data-fs-detail>${esc(l)}</div>`).join('')}
     ${limitsHtml(v.limits)}
@@ -278,8 +290,8 @@ export function walkMeasuresHtml(ext) {
   const ns = ext.narratives_summary || {};
   return `<div data-fs-measures data-fs-measures-state="measured" data-fs-measures-led="${esc(ext.led_by)}" class="mt-s3">
     <div class="text-caps uppercase tracking-caps text-ink-muted">${esc(W.measuresHeading)}</div>
-    <div class="text-caveat text-ink" data-fs-measures-by>${esc(W.measuresBy(day(ext.surveyed_at), ext.led_by))}
-      <span class="text-ink-muted"> · ${esc(ext.report_sentence || '')}</span></div>
+    <div class="text-caveat text-ink" data-fs-measures-by>${esc(W.measuresBy(day(ext.surveyed_at), ext.led_by))}${
+  tailHtml(W.measuresBy(day(ext.surveyed_at), ext.led_by), ext.report_sentence)}</div>
     ${capped}
     <div class="text-provenance ${rows.kept ? 'text-ink-muted' : 'text-state-warn'}" data-fs-measures-rows data-fs-rows-kept="${rows.kept ? 'yes' : 'no'}">${esc(rows.kept ? W.rowsKept(rows.files, rows.runs_kept) : W.rowsNotKept(rows.error))}</div>
     <div class="text-provenance text-ink-muted" data-fs-measures-published>${pub}</div>

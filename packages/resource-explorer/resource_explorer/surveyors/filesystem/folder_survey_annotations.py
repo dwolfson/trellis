@@ -264,11 +264,21 @@ def _int(v) -> int | None:
         return None
 
 
+#: Egeria's Folder Survey counts the files it could not classify under a key it writes as the word "null" (W20).
+UNCLASSIFIED_WORDS = "unclassified"
+_UNNAMED_KEYS = ("null", "none", "")
+
+
 def _counts(a: dict | None) -> list[dict]:
     if not a:
         return []
     vc = _pick(a, "value_count", {}) or {}
-    return [{"name": k, "count": _int(v)} for k, v in sorted(vc.items(), key=lambda kv: (-(_int(kv[1]) or 0), kv[0]))]
+    merged: dict[str, int | None] = {}
+    for k, v in vc.items():
+        name = UNCLASSIFIED_WORDS if k is None or str(k).strip().lower() in _UNNAMED_KEYS else k
+        n = _int(v)
+        merged[name] = n if name not in merged else (None if n is None or merged[name] is None else merged[name] + n)
+    return [{"name": k, "count": v} for k, v in sorted(merged.items(), key=lambda kv: (-(kv[1] or 0), kv[0]))]
 
 
 def read_folder_survey(annotations: list[dict]) -> dict:
