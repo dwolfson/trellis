@@ -706,9 +706,13 @@ investigation: the sidebar shows "WORK LISTS FOR <NAME>" and "OTHER WORK LISTS" 
 **Content (no steps).**
 
 - **The Advanced tutorial** (not written yet): Automate (schedules and "notify me"), adding your own analyses,
-  questions, purposes and survey definitions, Admin and its settings, and other topics still to be listed.
+  questions, purposes and survey definitions, Admin and its settings, and other topics still to be listed. When it
+  covers adding your own analyses, it says: installing the package registers it, and a report spec names the
+  analysis by its registered name. No environment variable to edit and no Python path in a report spec
+  (Q2(b), project owner, 2026-10-31).
 - **The Getting Started tutorial** (not written yet): installing and configuring Trellis and Resource Explorer with
-  the Egeria Quickstart.
+  the Egeria Quickstart. Installing the Analytic Library is what makes its analyses available; there is no list of
+  modules to configure.
 - The [user guide](user-guide.md) for every screen in detail.
 - The [admin guide](admin-guide.md) for running Resource Explorer.
 - The command line (user guide, section 9).
