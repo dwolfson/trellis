@@ -1391,7 +1391,10 @@ class FactLayer:
         # first version of this fix did nothing at all. Read it from the
         # registry that actually carries it.
         _kind = (self._map("analysis_kinds") or {}).get(analysis_id)
-        live = bool(getattr(getattr(_kind, "results", None), "live_read", False))
+        live = getattr(getattr(_kind, "results", None), "live_read", False)
+        # A per-resource answer: live for one resource, run-gated for another (a file system Egeria's Folder Survey
+        # leads is read back from Egeria's report; one RE walks keeps its run gate).
+        live = bool(live(self._registry, slug)) if callable(live) else bool(live)
         if live and not run.get("last_run_at"):
             try:
                 value = self._read_results(slug, analysis_id, entry)
@@ -1422,9 +1425,12 @@ class FactLayer:
                     headline=str(head.get("label") or ""), headline_by_question=head.get("by_question") or {},
                     headline_capped=bool(head.get("capped")), headline_categories=str(head.get("categories") or ""),
                     provenance=self._provenance_for(value), can_run=can_run,
-                    note="Read live from data refreshed at ingestion, not from a "
-                         "recorded survey run — current regardless of when a survey "
-                         "last ran.",
+                    note=(f"Read back from Egeria's own survey report ({value['report_sentence']}), not from a run "
+                          "of Resource Explorer's."
+                          if self._provenance_for(value) == PROVENANCE_EGERIA and value.get("report_sentence") else
+                          "Read live from data refreshed at ingestion, not from a "
+                          "recorded survey run — current regardless of when a survey "
+                          "last ran."),
                 )
 
         if not run.get("last_run_at"):

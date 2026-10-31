@@ -31,6 +31,7 @@ from resource_explorer.publish_table import (
     _ABSENCE_OF,
     _MISSING,
     confidence_words,
+    filled_unit,
     resolve,
     run_fields,
 )
@@ -276,7 +277,7 @@ def _measure_lines(dec, value: dict, run: dict, records: dict | None = None) -> 
             lines.append(f"- {m.name}: {_STATE_WORDS[record['state']]}{reason}{when}")
         elif v is _MISSING and dec.scope_of(m) in ("member", "field") and dec.extents:
             # A member-scoped measure has one value per member, not one for the resource: its values are the rows.
-            lines.append(f"- {m.name}: one value per {dec.scope_of(m)}, in {m.unit}, in the rows below")
+            lines.append(f"- {m.name}: one value per {dec.scope_of(m)}, in {filled_unit(m.unit, source)}, in the rows below")
         elif v is _MISSING:
             lines.append(f"- {m.name}: not in the stored result{when}")
         else:
@@ -284,7 +285,7 @@ def _measure_lines(dec, value: dict, run: dict, records: dict | None = None) -> 
             # 500 rows · not derived: the count is a lower bound" (declared_words), never a bare number.
             said = (declared_words.measure_sentence(m, source, run, allow_of=declared_words.allows_of(dec))[0]
                     if (m.basis or m.capped_field) else "")
-            lines.append(f"- {m.name}: {said or f'{_cell(v)} {m.unit}'}{when}{own}")
+            lines.append(f"- {m.name}: {said or f'{_cell(v)} {filled_unit(m.unit, source)}'}{when}{own}")
     return lines
 
 

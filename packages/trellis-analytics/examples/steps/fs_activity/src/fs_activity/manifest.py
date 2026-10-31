@@ -36,10 +36,10 @@ MANIFEST = StepManifest(
     declaration=Declaration(
         result_kind="distribution",
         measures=[
-            MeasureDeclaration(name="fs_activity", unit="files not modified for more than Cold Days days (cold)",
+            MeasureDeclaration(name="fs_activity", unit="files not modified for more than {Cold Days} days (cold)",
                                as_of="asOf", value_field="Cold Files",
                                annotation=AnnotationDeclaration(type="ResourceProfileAnnotation")),
-            MeasureDeclaration(name="fs_access_activity", unit="files not read for more than Cold Days days (cold)",
+            MeasureDeclaration(name="fs_access_activity", unit="files not read for more than {Cold Days} days (cold)",
                                as_of="asOf", value_field="Cold Files",
                                annotation=AnnotationDeclaration(type="ResourceProfileAnnotation"))],
         absence=AbsenceSentences(

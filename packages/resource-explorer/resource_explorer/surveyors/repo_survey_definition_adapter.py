@@ -4497,7 +4497,10 @@ class AnalysisKindResults:
     #: `not_established` ("cannot be determined") for egeria_python_git while
     #: its reader returned 8,654 symbols from project_code_symbols — data
     #: that was current, sitting in the table, and reported as unknowable.
-    live_read: bool = False
+    #:
+    #: Or a callable `(registry, slug) -> bool` when it depends on the resource: filesystem_inventory is read back from
+    #: Egeria's Folder Survey where Egeria leads (no RE run records it) and stays run-gated where RE walks (F41).
+    live_read: bool | Callable = False
 
 
 @dataclass

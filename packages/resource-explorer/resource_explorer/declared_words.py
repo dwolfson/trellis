@@ -20,7 +20,7 @@ import re
 
 from trellis_analytics.declaration import LOWER_BOUND_WORDS
 
-from resource_explorer.publish_table import _MISSING, resolve
+from resource_explorer.publish_table import _MISSING, filled_unit, resolve
 
 #: The words a categories declaration that overlaps says wherever its categories would be summed or stacked.
 OVERLAP_WORDS = "overlapping categories (not summable)"
@@ -95,10 +95,11 @@ def measure_words(m, source: dict, run: dict | None = None, *, allow_of: bool = 
     v = resolve(source, m.value_field, run)
     if v is _MISSING:
         return None
+    unit = filled_unit(m.unit, source)
     n = number(v)
     capped = bool(getattr(m, "capped_field", "")) and truthy(resolve(source, m.capped_field, run))
     if n is None:
-        text = f"{v} {m.unit}".strip()
+        text = f"{v} {unit}".strip()
         return {"text": f"{AT_LEAST} {text}" if capped else text, "value": v, "denominator": None, "capped": capped,
                 "share": None, "derived_note": LOWER_BOUND_WORDS if capped else ""}
     basis = getattr(m, "basis", None)
@@ -109,7 +110,7 @@ def measure_words(m, source: dict, run: dict | None = None, *, allow_of: bool = 
     if denominator is not None:
         text = f"{count_words(n)} of {count_words(denominator)} {plural_by(denominator, basis.denominator_label)}"
     else:
-        text = f"{count_words(n)} {plural_by(n, m.unit)}"
+        text = f"{count_words(n)} {plural_by(n, unit)}"
     share = None
     if denominator and not capped:
         share = f"{round(100 * n / denominator):d}%"

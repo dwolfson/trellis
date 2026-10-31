@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import UTC, datetime
 
 log = logging.getLogger(__name__)
@@ -169,6 +170,43 @@ def resolve(value: dict, path: str, run: dict) -> object:
     if count:
         return len(got) if isinstance(got, (list, tuple)) else _MISSING
     return _MISSING if got is None else got
+
+
+#: A field of the result named inside a declared unit: "files not modified for more than {Cold Days} days (cold)".
+_UNIT_FIELD = re.compile(r"\{([^{}]+)\}")
+
+
+def filled_unit(unit: str, *sources) -> str:
+    """The declared unit with each "{Field}" read from the first result that holds it ("... more than 365 days"), so a
+    parameter the step ran with is said as its value (F40). Where no result holds it (nothing measured yet) it reads
+    "a set number of", never the field's name ("Cold Days days") and never a guessed value."""
+    def fill(match):
+        for src in sources:
+            got = resolve(src, match.group(1), {}) if isinstance(src, dict) else _MISSING
+            if got is not _MISSING and not isinstance(got, (dict, list)):
+                return f"{got:,}" if isinstance(got, int) and not isinstance(got, bool) else str(got)
+        return "a set number of"
+
+    return _UNIT_FIELD.sub(fill, str(unit or ""))
+
+
+def held_unmeasured(value: dict, path: str) -> tuple[bool, str]:
+    """(True, why) when a known result HOLDS the declared field and holds None there: the reader says it did not measure
+    it (absence is never 0), which is not "measured nothing". `why` is the reader's own reason under `_not_measured`
+    (keyed by the field), or ''. (False, '') for a field the result does not hold at all, or a `run.` path."""
+    path = str(path or "").strip()
+    if not path or path.startswith("run.") or path.endswith("[]") or not isinstance(value, dict):
+        return False, ""
+    if path in value:
+        held = value[path] is None
+    else:
+        got = value
+        for part in path.split("."):
+            if not isinstance(got, dict) or part not in got:
+                return False, ""
+            got = got[part]
+        held = got is None
+    return held, str(((value.get("_not_measured") or {}) if held else {}).get(path) or "")
 
 
 def run_fields(fact: dict) -> dict:
@@ -365,6 +403,19 @@ def published_elsewhere(entry, measure: str, engine_reports: dict[str, dict]) ->
     return None
 
 
+def read_back_from_egeria(value: dict) -> dict | None:
+    """A result RE read back from Egeria's own survey report (`detail.source` "egeria", e.g. an Egeria-led Folder
+    Survey's counts): the number is already in Egeria, so it is never written a second time (the owner's answer 1)."""
+    detail = (value or {}).get("detail") if isinstance(value, dict) else None
+    if not isinstance(detail, dict) or detail.get("source") != "egeria":
+        return None
+    who = detail.get("surveyor") or "Egeria's own survey"
+    guid = str(detail.get("report_guid") or "")
+    return {"route": "egeria_survey", "report_guid": guid,
+            "words": f"surveyed by {who} · already in Egeria via its own survey report"
+                     + (f" {guid[:8]}" if guid else "")}
+
+
 def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: list | None = None) -> dict:
     """The table for one resource. Read-only: nothing here calls Egeria. `entries` overrides the catalogue (tests,
     and a step declared but not yet in the generated catalogue)."""
@@ -416,9 +467,11 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
                 measured_at = ((record or {}).get("measured_at")
                                or (run.get("read_snapshot") if "read_snapshot" in run else run.get("surveyed_at"))
                                or "")
+                # Any record of the step can carry the parameter (an unmeasured access row still ran with Cold Days).
+                unit = filled_unit(m.unit, source, *(r.get("value") for r in records.values()), raw)
                 w = writes_as(m, conf["form"])
                 row = {"capped": False, "kind_route": kind_route(dec), "analysis_id": entry.id, "analysis": entry.name, "measure": m.name, "locator": loc,
-                       "unit": m.unit, "value_field": m.value_field, "as_of_field": m.as_of,
+                       "unit": unit, "value_field": m.value_field, "as_of_field": m.as_of,
                        "state": fact.get("state", ""), "as_of": as_of, "confidence": conf,
                        "scope": scope, "writes_as": w, "result_kind": dec.result_kind,
                        "measured_at": str(measured_at) if known else "",
@@ -446,18 +499,23 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
                                absence_words=f"one value per {scope}, not one for the resource · see {names}")
                 elif v is _MISSING:
                     absence = _ABSENCE_OF.get(fact.get("state", ""), "not_measured") if not known else "measured_nothing"
-                    reason = ""
+                    reason = why_none = ""
                     if known:
                         # The result's own check says whether the missing count is a measured zero or was never
                         # measured; the row says the same (F42).
                         own, why_own = sibling_state(source, m.value_field)
+                        held, held_why = held_unmeasured(source, m.value_field)
                         if own and own != "measured":
                             absence = _ABSENCE_OF.get(own, "not_measured")
                             reason = f" · {why_own}" if why_own else ""
-                    row.update(value=None, value_words="—", absence=absence,
-                               absence_words=dec.absence.sentence(absence) + reason)
+                        elif held and not own:
+                            # The reader holds the field as None: not measured by this surveyor, never "measured
+                            # nothing" (an Egeria-led survey's count Egeria does not make, F39).
+                            absence, why_none = "not_measured", held_why
+                    words = f"Not measured: {why_none}." if why_none else dec.absence.sentence(absence) + reason
+                    row.update(value=None, value_words="—", absence=absence, absence_words=words)
                 else:
-                    row.update(value=v, value_words=_value_words(v, m.unit) if _scalar(v) else f"a {type(v).__name__}")
+                    row.update(value=v, value_words=_value_words(v, unit) if _scalar(v) else f"a {type(v).__name__}")
                     words = _declared_value_words(m, dec, source, run) if _scalar(v) and not isinstance(v, bool) else None
                     if words:
                         # The same words as every other surface (declared_words): "226 of 266 tables (85%)", "at least ...".
@@ -467,7 +525,7 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
                         row.update(capped=True)
                         if not words:
                             row.update(value_words=f"{CAPPED_WORDS} {row['value_words']}")
-                elsewhere = published_elsewhere(entry, m.name, engine_reports)
+                elsewhere = published_elsewhere(entry, m.name, engine_reports) or read_back_from_egeria(raw)
                 row["elsewhere"] = elsewhere
                 why = ""
                 if entity_type not in PRESS_KINDS:

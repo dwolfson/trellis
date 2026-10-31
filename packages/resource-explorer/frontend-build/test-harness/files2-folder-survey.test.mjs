@@ -129,7 +129,7 @@ test('results name the surveyor and the report sentence; no survey is "no folder
   host.innerHTML = fs.folderSurveyCardHtml(MEASURED(REACH.re_only));
   const by = text(host.querySelector('[data-fs-surveyed-by]'));
   assert.match(by, /surveyed by Resource Explorer · 2026-10-20/);
-  assert.match(by, /surveyed by Resource Explorer · Egeria could not reach the path/);
+  assert.match(by, /surveyed by Resource Explorer · 2026-10-20 · Egeria could not reach the path/);
   assert.match(text(host.querySelector('[data-fs-published]')), /kept here · not published to Egeria/);
   const all = text(host.querySelector('[data-fs-results]'));
   assert.match(all, /Files\s?4,200/);
@@ -232,7 +232,7 @@ test('Egeria\'s Folder Survey row on the native-survey list names its surveyor',
 
 test('Understanding reads a file system\'s folder survey the same way whoever led it, naming the surveyor', async () => {
   for (const [label, view, expect] of [
-    ['re-led', MEASURED(REACH.re_only), /surveyed by Resource Explorer · Egeria could not reach the path/],
+    ['re-led', MEASURED(REACH.re_only), /surveyed by Resource Explorer · 2026-10-20 · Egeria could not reach the path/],
     ['egeria-led', MEASURED(REACH.egeria, {
       surveyor: "Egeria's Folder Survey", published: true, report_guid: 'abcdef12345', limits: null,
       report_sentence: "surveyed by Egeria's Folder Survey",
