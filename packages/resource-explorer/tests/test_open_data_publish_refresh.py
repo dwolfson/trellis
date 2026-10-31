@@ -139,7 +139,7 @@ def test_a_licence_egeria_has_no_type_for_is_kept_as_a_property_and_said(store, 
     _, ds = one
     proof = publish.publish_dataset(store, ds, FakeEgeria(licence_types=()))
     lic = next(s for s in proof["steps"] if s["step"] == "licence")
-    assert lic["outcome"] == "kept_as_property" and "Egeria holds no licence type" in lic["words"]
+    assert lic["outcome"] == "kept_as_property" and "Egeria holds no license type" in lic["words"]
 
 
 def test_no_licence_reported_links_nothing_and_says_so(store, one):

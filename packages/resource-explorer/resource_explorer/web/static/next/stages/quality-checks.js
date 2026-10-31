@@ -158,7 +158,7 @@ export function publishBandHtml(pub, { me = '', canGoContents = false } = {}) {
   const why = publishDisabledReason(pub, me);
   const before = pub.readError ? `could not read what a publish would do: ${pub.readError}`
     : pub.preview ? publishPreviewWords(pub.preview) : 'reading what a publish would do…';
-  const last = pub.last && pub.last.at ? `last published ${stamp(pub.last.at)}${pub.last.by ? ` by ${pub.last.by}` : ''} · read back` : '';
+  const last = pub.last && pub.last.at ? `last published${pub.last.by ? ` by ${pub.last.by}` : ''} · read back ${stamp(pub.last.at)}` : '';
   const after = pub.pending ? cueHtml('pending', 'publishing…', 'the press is running')
     : pub.failure ? cueHtml('failed', `not published · ${pub.failure}`, pub.failure)
       : pub.result ? cueHtml(pub.result.state === 'published' || pub.result.state === 'retired' ? 'accepted' : 'not_established',

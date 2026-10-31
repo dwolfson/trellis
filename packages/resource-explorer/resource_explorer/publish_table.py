@@ -128,6 +128,23 @@ PER_MEMBER = "per_member"
 NOT_RECORDED = "not_recorded"
 
 
+def sibling_state(value: dict, path: str) -> tuple[str, str]:
+    """(state, explanation) the result's own check records beside a missing `value_field`, or ("", ""). A check
+    object such as `checks.tables_without_comment` carries its `count` next to its `state`: a count that is absent
+    while its state says "not_measured" is an unverified check, not a measured nothing (F42)."""
+    parent, _, _leaf = str(path or "").strip().rpartition(".")
+    if not parent or parent.startswith("run.") or not isinstance(value, dict):
+        return "", ""
+    got = value
+    for part in parent.split("."):
+        if not isinstance(got, dict) or part not in got:
+            return "", ""
+        got = got[part]
+    if not isinstance(got, dict):
+        return "", ""
+    return str(got.get("state") or ""), str(got.get("explanation") or "")
+
+
 def resolve(value: dict, path: str, run: dict) -> object:
     """A declared `value_field` or `as_of` path against a result (`MeasureDeclaration`'s rules): `run.<field>` reads
     the run that produced the result, a dotted path a nested field, a trailing `[]` the length of a list. A key that
@@ -289,12 +306,17 @@ def _published_word(proof: dict | None, value, as_of) -> dict:
     if proof["proof"] == P_MEASURE_NOT_READ_BACK:
         return {"state": "not_read_back", "words": f"sent · not read back {when}".rstrip(),
                 "why": d.get("why", ""), "read_at": proof.get("read_at", "")}
-    changed = str(d.get("value")) != str(value) or str(d.get("as_of") or "") != str(as_of or "")
+    # A value this run does not hold is not a different value: nothing was compared (F43).
+    remeasured = value is not None
+    changed = remeasured and (str(d.get("value")) != str(value) or str(d.get("as_of") or "") != str(as_of or ""))
     out = {"state": "published", "words": f"published · read back {when}".rstrip(), "read_at": proof.get("read_at", ""),
            "guid": proof.get("element_guid", ""), "type": d.get("type", ""), "route": d.get("route", ""),
            "value": d.get("value"), "as_of": d.get("as_of", "")}
     if changed:
         out.update(state="changed", words=f"changed since published · read back {when}".rstrip())
+    elif not remeasured:
+        out.update(words=f"published {when} · not re-measured since".replace("published  ·", "published ·"),
+                   not_remeasured=True)
     return out
 
 
@@ -424,8 +446,16 @@ def build_rows(registry, entity_type: str, slug: str, *, layer=None, entries: li
                                absence_words=f"one value per {scope}, not one for the resource · see {names}")
                 elif v is _MISSING:
                     absence = _ABSENCE_OF.get(fact.get("state", ""), "not_measured") if not known else "measured_nothing"
+                    reason = ""
+                    if known:
+                        # The result's own check says whether the missing count is a measured zero or was never
+                        # measured; the row says the same (F42).
+                        own, why_own = sibling_state(source, m.value_field)
+                        if own and own != "measured":
+                            absence = _ABSENCE_OF.get(own, "not_measured")
+                            reason = f" · {why_own}" if why_own else ""
                     row.update(value=None, value_words="—", absence=absence,
-                               absence_words=dec.absence.sentence(absence))
+                               absence_words=dec.absence.sentence(absence) + reason)
                 else:
                     row.update(value=v, value_words=_value_words(v, m.unit) if _scalar(v) else f"a {type(v).__name__}")
                     words = _declared_value_words(m, dec, source, run) if _scalar(v) and not isinstance(v, bool) else None
