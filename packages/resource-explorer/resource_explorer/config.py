@@ -328,6 +328,11 @@ class EgeriaConfig(BaseSettings):
     #: The integration daemon a catalogue commit may ask to refresh the JDBC
     #: cataloguer (never to restart it). The scratch tests ran against this one.
     integration_daemon_server: str = Field(default="qs-integration-daemon", alias="EGERIA_INTEGRATION_DAEMON")
+    #: The host names that all mean THIS machine, comma separated (D1-2, owner "Agree", 2026-10-30): a database's
+    #: identity in Egeria is its endpoint (host, port, database), and an endpoint written under one of these names is
+    #: the same endpoint under any other. Declared here only; `endpoint_identity.host_aliases` is its one reader.
+    #: Configured, never guessed: a host not listed compares as itself.
+    host_aliases: str = Field(default="localhost,127.0.0.1,host.docker.internal,laz", alias="EGERIA_HOST_ALIASES")
     #: RE's own service account. NO default: a code default here was once a person's persona ("erinoverview"), so a
     #: missing EGERIA_USER_ID silently made RE act as that person. Unset now means every path that needs the
     #: service account refuses (egeria_clients.NoServiceAccount).

@@ -278,6 +278,14 @@ class ElementRead:
 
 
 @dataclass
+class EndpointRead:
+    """An Endpoint element: its GUID, qualifiedName and `networkAddress` (D1-a, the endpoint resolver)."""
+    guid: str
+    qualified_name: str
+    network_address: str = ""
+
+
+@dataclass
 class Relationship:
     type_name: str
     other_guid: str = ""
@@ -293,6 +301,8 @@ class Relationship:
     other_name: str = ""
     #: The engine action's `requestType` (e.g. `survey-postgres-database`, `catalog-postgres-schema`).
     action_kind: str = ""
+    #: The relationship's own properties as strings (a PeerDuplicateLink's `statusIdentifier`, `steward`, ...).
+    properties: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -453,7 +463,7 @@ def parse_archived_siblings(res: Any, qualified_name: str) -> list[ArchivedSibli
 
 
 def find_all_starting_with(client: Any, prefix: str, *, type_name: str = "",
-                           page_size: int = FIND_PAGE_SIZE) -> list[dict]:
+                           page_size: int = FIND_PAGE_SIZE, starts_with: bool = True) -> list[dict]:
     """Every raw element a starts-with, forLineage find for `prefix` answers, read page by page to the end.
     The body is the one `elements_under` sends (captured 6.2 returning a Memento) plus the page and, given, the
     element type. Anything that is not an answer, a page, the end or a filtered page raises
@@ -462,14 +472,14 @@ def find_all_starting_with(client: Any, prefix: str, *, type_name: str = "",
     found: list[dict] = []
     start, filtered_run = 0, 0
     for _ in range(MAX_FIND_PAGES):
-        body = {"class": "SearchStringRequestBody", "searchString": prefix, "startsWith": True, "ignoreCase": False,
+        body = {"class": "SearchStringRequestBody", "searchString": prefix, "startsWith": starts_with, "ignoreCase": False,
                 "forLineage": True, "forDuplicateProcessing": True, "graphQueryDepth": 0,
                 "startFrom": start, "pageSize": page_size}
         if type_name:
             body["metadataElementTypeName"] = type_name
         try:
             res = client.find_metadata_elements_with_string(
-                search_string=prefix, starts_with=True, start_from=start, page_size=page_size,
+                search_string=prefix, starts_with=starts_with, start_from=start, page_size=page_size,
                 metadata_element_type=type_name or None, body=body)
         except Exception as exc:
             if lookup_exception_is_absent(exc):
@@ -617,6 +627,7 @@ class CatalogueGateway(Protocol):
     def archived_siblings(self, qualified_name: str, *, type_name: str = "") -> list[ArchivedSibling]: ...
     def schema_elements(self, prefix: str) -> list[ElementRead]: ...
     def relationships(self, guid: str) -> list[Relationship]: ...
+    def find_endpoints(self, search: str) -> list[EndpointRead]: ...
     def delete_element(self, guid: str, form: str, *, slug: str, scope: str = "") -> None: ...
     def initiate_survey(self, database_guid: str, request_parameters: dict[str, str]) -> tuple[str, str]: ...
     def connector_status(self) -> ConnectorStatus | None: ...
@@ -941,7 +952,8 @@ def parse_related_answer(res: Any) -> list[Relationship]:
                                     if rel_type == "ActionTarget" else ""),
                 action_kind=(str(_strings_of(other).get("requestType") or "") if rel_type == "ActionTarget" else ""),
                 other_qualified_name=_qn_of(other),
-                other_name=str(_strings_of(other).get("displayName") or "")))
+                other_name=str(_strings_of(other).get("displayName") or ""),
+                properties={str(k): str(v) for k, v in rps.items()} if isinstance(rps, dict) else {}))
         return out
     if isinstance(res, dict) and not res:
         return []
@@ -1388,6 +1400,17 @@ class PyegeriaCatalogueGateway:
                 return []
             raise GatewayError(_short(exc)) from exc
         return parse_related_answer(res)
+
+    def find_endpoints(self, search: str) -> list[EndpointRead]:
+        """Every Endpoint element whose strings contain `search` (D1-a: `:<port>/<database>`), every page read.
+        The caller parses each `networkAddress` and keeps only its own endpoint: the find is a net, not the answer.
+        A read that cannot be made raises `GatewayError`, never "no endpoint"."""
+        try:
+            raw = find_all_starting_with(self._client("MetadataExpert"), search, type_name="Endpoint",
+                                         starts_with=False)
+        except Exception as exc:
+            raise GatewayError(_short(exc)) from exc
+        return [EndpointRead(_guid_of(x), _qn_of(x), str(_strings_of(x).get("networkAddress") or "")) for x in raw]
 
     def delete_element(self, guid: str, form: str, *, slug: str, scope: str = "") -> None:
         """One element, never a cascade. `slug` is the database the delete acts for and `scope` the path it is on:
