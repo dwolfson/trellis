@@ -10,6 +10,26 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ---
 
+## TestGen deployment as a data channel (deferred 2026-10-30)
+
+**Decision (project owner, 2026-10-30):** TestGen deployment as a data channel (`DESIGN-TESTGEN-DEPLOYMENT-AS-DATA-CHANNEL`, slices TG1–TG3, owner rulings §9): deferred to the backlog by the owner 2026-10-30.
+
+**What it is:** reading an existing TestGen installation's profiles and results, read-only, instead of measuring the same database again. The design is in `docs/design-notes/DESIGN-TESTGEN-DEPLOYMENT-AS-DATA-CHANNEL-2026-10-30.md`.
+**Today:** RE vendors TestGen's catalog and runs its own checks. It can import a TestGen export file as proposals (`quality-import-testgen`). It reads no TestGen database. The TestGen guide says so.
+**Status:** not scheduled.
+
+## Docs debts (logged 2026-10-30, from the docs reconcile)
+
+Four known gaps in the docs that were not fixed in the reconcile because each is outside docs or needs an owner's call:
+
+1. **How a user step is installed persistently into the shared venv.** No route is documented. `uv pip install -e` may be undone by the next `uv sync`. The tutorial says so; the lifecycle note (`DESIGN-ANALYTIC-LIFECYCLE-2026-10-30.md`) names it as open.
+2. **The Value Profile's "5,000,000-row ceiling"** appears in the Value Profile card text in `analysis_catalog.yaml` and in an early design note. No such ceiling exists. The 5-minute per-table budget is the only bound. The card text is code, so it was not changed.
+3. **`INVENTORY-TESTGEN-TEST-TYPES-MAPPED.md`** says "Validity maps to Conformity". The owner ruled on 2026-10-20 that Validity is published as `accuracy`. The note is the Architect's, so it was flagged in the design-notes index, not edited.
+4. **`trellis-analytics/README.md` has drifted from the code.** Its input list omits `source_report`, and it says the engine host takes only ResourceMeasureAnnotation, though it also takes ClassificationAnnotation. The extending guide follows the code.
+
+Fixed in the same pass: `scripts/regen_docs_index.py` filed a status reading "not yet built" under "Shipped". It now files it under "Open".
+**Status:** not scheduled.
+
 ## Test `TestThreadCap.test_exhaustion_rejects_and_worker_releases` flakes under pytest-xdist (found 2026-10-30)
 
 **Observed (coordinator, 2026-10-30):** `tests/test_api_reference_r3.py::TestThreadCap::test_exhaustion_rejects_and_worker_releases` failed under `-n 4` in gate b203, and again in a baseline run on the pyegeria 6.2.15 release. It got 8 "no answer in time" where it expects 6. It passed 3 of 3 times alone on the same merge, and b204 (the same tree) was green.

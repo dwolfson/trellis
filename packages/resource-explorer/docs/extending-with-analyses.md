@@ -1,18 +1,29 @@
-# Adding your own analysis to Resource Explorer
+# Reference: what a library step declares, and what Resource Explorer does with it
 
-**Status:** live guide, written 2026-10-28 against `origin/main` (`a1cf1925`). Sections marked
-**(arriving)** describe work on a branch in today's gate, not yet merged; each names its branch.
+**Status:** live reference. Written 2026-10-28, brought up to date 2026-10-30 against `origin/main` at `aacdfaff`.
 
-This guide is for people who want Resource Explorer (RE) to run an analysis it does not ship with.
-You write a small Python package, declare what its results are, and install it. RE then runs your
-analysis, shows its results, and lets a curator publish them to Egeria. Later, Chat will also be able
-to quote them.
+**Want to add a step? Start with the tutorial:**
+[Your first analysis: adding a measurement to Resource Explorer](../../trellis-analytics/docs/TUTORIAL-ADD-AN-ANALYTIC-STEP-2026-10-30.md).
+It takes about an hour. It walks you through one working step, from a copy of an example to a result on screen.
+This page is **not** a second tutorial. It is the reference you come back to for the details: every field a
+step can declare, what a curator sees, and how Chat uses a step's results.
 
-It covers **library steps**, the declared, installable route. Changing RE's own built-in analyses
-(`STEP_REGISTRY`, `ANALYSIS_KINDS`) is a different job, covered in
+A **library step** is a small Python package that adds a measurement to Resource Explorer (RE) without
+changing RE. Changing RE's own built-in analyses is a different job, covered in
 [extending-resource-explorer.md](extending-resource-explorer.md). The library's own reference for
-authors is [`trellis-analytics/README.md`](../../trellis-analytics/README.md). Where this guide and
-that README differ, this guide was checked against the code.
+authors is [`trellis-analytics/README.md`](../../trellis-analytics/README.md). Where this page and that
+README differ, this page was checked against the code. How steps are installed, versioned and retired is in
+[`DESIGN-ANALYTIC-LIFECYCLE-2026-10-30.md`](design-notes/DESIGN-ANALYTIC-LIFECYCLE-2026-10-30.md).
+
+**The same states, under different names.** The tutorial teaches five states in plain words. This page
+uses the names the code uses.
+
+| In the tutorial | In the code |
+|---|---|
+| measured | `measured` |
+| nothing found | `nothing_found` |
+| not measured, or not permitted | `not_established` (the `reason` says which) |
+| not applicable | `not_applicable` |
 
 ---
 
@@ -33,8 +44,8 @@ What RE does with a declared step today:
 | Analysis card on a database | runs through the run queue; results stored with their envelope | on main |
 | Results in Understanding | shown through the generic annotation reader | on main |
 | Curate's publish table | each declared measure is a row a curator can **Publish** or **Keep in RE** | on main (PR #886) |
-| "already in Egeria via …", native SchemaAnalysisAnnotation | | **(arriving)** on branch `claude/re-ext-publish-table-answers` |
-| Chat compiles your results into its context | | **(arriving)** on branch `claude/re-ext-slice2-chat-compile` |
+| "already in Egeria via …", native SchemaAnalysisAnnotation | the publish table checks Egeria before it offers Publish | on main |
+| Chat compiles your results into its context | answers to the questions your manifest names | on main |
 | Egeria starts your step (engine host) | an Egeria governance action runs it in RE | on main, after the owner runs the generated declaration |
 
 **Limits on main today:**
@@ -51,9 +62,9 @@ What RE does with a declared step today:
 
 ## 1. The package
 
-Start from the worked example in §6: copy
+To build one, follow the tutorial: it copies
 [`examples/steps/database_staleness/`](../../trellis-analytics/examples/steps/database_staleness/)
-and rename it. A step package has three files that matter:
+and renames it. A step package has three files that matter:
 
 ```
 my_step/
@@ -149,7 +160,7 @@ ignored:** every declaration model forbids extra keys.
 | `display_name`, `description`, `returns` | the card's name and text. Say in the description what "not measured" means for this step |
 | `stage` | RE's stage for the card, default `analysis` |
 | `perspectives`, `purposes`, `family`, `tags` | how the card is filtered and grouped |
-| `questions` | question **ids** from RE's question catalogue (`Q-0041`), never their wording. An unknown id warns and is kept |
+| `questions` | question **ids** from RE's question catalog (`Q-0041`), never their wording. An unknown id warns and is kept |
 | `request_type` | the engine-host request type. Default `re-<name>`. It may not take a built-in step's |
 | `nothing_to_derive_guard` | what an Egeria run completes with when there is nothing to derive. Use `survey-completed` when an honest absence is a complete answer |
 | `declaration` | see below. A manifest without one still loads and runs, but gets no publish table and no Chat |
@@ -209,8 +220,7 @@ person reads in place of a value, everywhere RE shows one:
 - `inferred` must say `calibrated`: `true` if its score is a probability, `false` if it is a rule count.
 - A `generated` result is never published, so it may not declare an `annotation`.
 
-**(arriving) Confidence per measure.** Branch `claude/re-ext-slice2-chat-compile` adds a `confidence`
-to each `MeasureDeclaration`. The declaration's own confidence must then be the **weakest** of its
+**Confidence per measure.** A `MeasureDeclaration` may carry its own `confidence`. The declaration's own confidence must then be the **weakest** of its
 measures', in the order measured, judged, estimated, inferred, generated (owner ruling 2026-10-28).
 
 **Extents: the shapes Chat may quote, and no other.** Each `ExtentDeclaration` names a list the
@@ -221,31 +231,29 @@ step's results can be read as:
 | `name` | the extent's name |
 | `fields` | which result fields to show, in order |
 | `rows` | how many rows to show at full detail |
-| `order` | on main: the order, in words, for example `"by rows changed, largest change first"` |
+| `order` | the order, in words, for example `"by rows changed, largest change first"` |
 | `truncation` | must contain `{shown}` and `{total}`, for example `"{shown} of {total} tables shown"` |
 | `token_cost` | the extent's estimated cost in a Chat context |
 | `citation` | for example `"{analysis} · {scope} · as of {as_of}"` |
 
-**(arriving) `sort`.** On branch `claude/re-ext-slice2-chat-compile`, an extent says its order as sort
-keys: `sort=["rowsChanged desc"]`, each key `"<field> asc"` or `"<field> desc"` on one of its
+**`sort`.** An extent can say its order as sort keys: `sort=["rowsChanged desc"]`, each key `"<field> asc"` or `"<field> desc"` on one of its
 `fields`. RE derives the words from the keys and sorts before it leaves rows out. Declare `sort` or
 `order`, never both. Keep `order` for an order no key can express, such as "PUBLIC grantees first,
 then by table". The owner chose this on 2026-10-28.
 
 **`answers`: one list of questions, not two.** For a library step, leave `answers` out. It is filled
 from the manifest's `questions`, and an `answers` list that differs from `questions` is refused.
-**(arriving)** For RE's own built-in analyses, branch `claude/re-ext-slice2-chat-compile` generates
-`answers` from the question catalogue's `analysis_ids`. That changes nothing for a library step.
+For RE's own built-in analyses, `answers` is generated from the question catalog's `analysis_ids`. That
+changes nothing for a library step.
 
-**(arriving) Not built yet.** The same branch adds `built: false` for an analysis that is declared but
-has no runner yet. Chat then says "Planned, not built yet: not measured." It is applied to three of
+**Not built yet.** `built: false` marks an analysis that is declared but has no runner yet. Chat then says "Planned, not built yet: not measured." It is applied to three of
 RE's own entries, and a library step with code has no use for it.
 
 ---
 
-## 3. The catalogue entry: merged for you, no commit in RE
+## 3. The catalog entry: merged for you, no commit in RE
 
-RE shows an analysis card only for an analysis in its catalogue. For library steps **you do not write or commit that
+RE shows an analysis card only for an analysis in its catalog. For library steps **you do not write or commit that
 entry any more.** When RE reads `analysis_catalog.yaml` it also reads every installed `trellis.analytics` manifest and
 merges it in, so installing the package is enough: the card, the run, the declaration, Chat's compile and the publish
 table all see the step after RE restarts. The reasoning is in
@@ -269,14 +277,14 @@ Name every library step package, one `--with-editable` each, or the block is reg
 It checks the committed fallback block against the generator, and each entry against its manifest. It guards the
 fallback, not the card: a stale fallback no longer changes what an installed step shows.
 
-**A question your step declares.** Name a question the catalogue already holds by its id in `questions`, and Chat
+**A question your step declares.** Name a question the catalog already holds by its id in `questions`, and Chat
 routes by it with no configdata row. A **new** question goes in the manifest's `question_defs`, each with its text and an id under
 your step's own prefix (`my_step:Q1`): `question_defs=[QuestionDeclaration(id="my_step:Q1", question="…")]`. RE merges it into
-its question catalogue while the package is installed (owner, 2026-10-29), with no central id and no configdata row; the id
+its question catalog while the package is installed (owner, 2026-10-29), with no central id and no configdata row; the id
 is added to your `questions` for you. An id outside your prefix, or repeated, makes the manifest fail to load, with that sentence.
 
 **On the Questions tab.** Every question your manifest names (`questions`, or `question_defs`) lists your step among the
-analyses that answer it, after RE's own, in catalogue order: a question RE's analysis and your step both answer shows both.
+analyses that answer it, after RE's own, in catalog order: a question RE's analysis and your step both answer shows both.
 The row's line for your step is your step's own sentence, the same `state · summary` the Survey tab shows for the same
 stored rows (a step with one result says it; one with a resource-scoped summary measure says that; only several plain
 results are counted). "The numbers behind this" lists each stored result, and each further declared measure on its own row
@@ -289,20 +297,20 @@ Ways to check that RE sees the step. RE has no admin page or CLI verb that lists
 - `python -c "from trellis_analytics.discovery import discover; print(sorted(discover()))"` lists
   every installed manifest. A broken entry point raises here, naming itself.
 - Your step's card appears on a database, under the stage its manifest names. A card that fails with
-  "step not installed here" means the catalogue has the entry but this environment lacks the package.
+  "step not installed here" means the catalog has the entry but this environment lacks the package.
 - If the engine host runs, its start-up log names every installed step per host, with a missing list for each:
   `library steps · Egeria host: change_rates, hub_tables, … (none missing) · Files host: fs_activity, fs_permissions, … (none missing)`.
   Database steps are the Egeria host's; file-system steps run under the Files host. A step the engine host
   cannot publish logs `not offered to Egeria: <why>`, listing everything the step emits and which of those types block
   the offer. The types we want Egeria to support are tracked in
   [`EGERIA-ANNOTATION-TYPES-WANTED.md`](design-notes/EGERIA-ANNOTATION-TYPES-WANTED.md).
-- An installed step with no catalogue entry (its manifest was refused, for instance a built-in's id) logs a warning.
+- An installed step with no catalog entry (its manifest was refused, for instance a built-in's id) logs a warning.
   It can run from a Survey Definition, but has no card.
-- Once a survey has run, the step's declared measures appear as rows in Curate's publish table (§5).
+- Once a survey has run, the step's declared measures appear as rows in Curate's publish table (§4).
 
 ---
 
-## 5. What a curator sees: Curate's publish table
+## 4. What a curator sees: Curate's publish table
 
 > **Two reports after a database Contents commit.** A commit publishes RE's measures into RE's own survey report (the
 > step names it: *RE's measures are in report fb6d96f4*), and also starts an Egeria survey, whose engine action writes a
@@ -336,7 +344,7 @@ As of, Confidence, Scope, Writes as, Choice and State. The As of column names bo
   - the declared type is not one RE writes yet.
 - **`proposal` results are not on this table.** They are judged on Structure with the verdict selector.
 
-**(arriving) Branch `claude/re-ext-publish-table-answers`, from the owner's answers of 2026-10-28:**
+**Also on the table, from the owner's answers of 2026-10-28:**
 
 - **No number written twice.** A measure already in Egeria shows
   `already in Egeria via Resource Explorer's survey report (the commit on Contents)`,
@@ -369,11 +377,9 @@ measures wait for a survey report of RE's own for file systems; the Files steps 
 
 ---
 
-## 6. (arriving) How Chat uses the declaration
+## 5. How Chat uses the declaration
 
-**On main, Chat does not read declarations.** A declared step reaches Chat only the generic way,
-through its findings. Branch `claude/re-ext-slice2-chat-compile` (slice 2) compiles declared results
-into Chat's context:
+Chat compiles a step's declared results into its context:
 
 - **Routed by question.** An analysis enters a Chat answer only if its `answers` include the question
   being asked. `answers=[]` means it runs and renders but never enters a Chat answer.
@@ -391,179 +397,19 @@ into Chat's context:
 - **What was left out is named.** Sections dropped for space are listed with their declared
   `token_cost`. The compile's manifest records the weakest confidence the answer rests on.
 
-That branch's note records its known gaps (it was checked with a stubbed fact layer, and some
-analyses have no results reader): `DECLARED-EXTENSIBILITY-SLICE2-CHAT-COMPILE.md`, on the branch.
+The design note records the known gaps (it was checked with a stubbed fact layer, and some
+analyses have no results reader): `DECLARED-EXTENSIBILITY-SLICE2-CHAT-COMPILE.md`.
 
 ---
 
-## 7. Worked example: `database_staleness`
+## 6. The worked example, and the other example steps
 
-`packages/trellis-analytics/examples/steps/database_staleness/` is a real, installable step:
-**rows changed per table since the last survey.** It reads only RE's stored row-count snapshots and
-opens no connection. It answers question Q-0041, "How much has changed since the last time this was
-surveyed — is it worth re-running now?"
-
-### pyproject.toml
-
-```toml
-[project]
-name = "trellis-step-database-staleness"
-dynamic = ["version"]
-requires-python = ">=3.12,<4.0"
-dependencies = ["trellis-analytics>=0.1.0"]
-
-# Installation is registration: Resource Explorer finds the step through this entry point.
-[project.entry-points."trellis.analytics"]
-database_staleness = "database_staleness.manifest:MANIFEST"
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.version]
-path = "src/database_staleness/__init__.py"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/database_staleness"]
-```
-
-### The step (`step.py`, its core)
-
-```python
-def staleness(inputs) -> list[dict]:
-    """The step's own measure, from the stored row-count snapshots only."""
-    snaps = inputs.ods.row_count_snapshots(inputs.slug, limit=2)
-    if not snaps:                                    # never surveyed: say so, once, for the database
-        return [{"scope": inputs.slug, "state": "not_established",
-                 "reason": "no survey has measured row counts for this database yet",
-                 "summary": "not measured · no survey has counted rows yet"}]
-    latest = snaps[0]
-    previous = {_key(t): t for t in snaps[1]["tables"]} if len(snaps) > 1 else None
-    out = []
-    for t in latest["tables"]:
-        scope = _key(t)                              # "schema.table"
-        if _is_view(t):
-            out.append({"scope": scope, "state": "not_applicable", "reason": "a view holds no rows of its own",
-                        "summary": "not applicable · a view holds no rows"}); continue
-        if previous is None:                         # one snapshot: a change needs two
-            out.append({"scope": scope, "state": "not_established",
-                        "reason": f"not measured · one snapshot only: only one survey has measured row counts "
-                                  f"({latest['surveyed_at']}); a change needs two",
-                        "summary": "not measured · one snapshot only"}); continue
-        # ... a table missing from the previous survey, or a count missing, is also not_established
-        b, a = int(before["row_count"]), int(t["row_count"])
-        value = {"rowsBefore": b, "rowsAfter": a, "rowsChanged": a - b,
-                 "previousSurvey": snaps[1]["surveyed_at"], "latestSurvey": latest["surveyed_at"]}
-        if a == b:
-            out.append({"scope": scope, "state": "nothing_found", "value": value,
-                        "summary": f"no rows changed since {snaps[1]['surveyed_at']} ({a:,} rows)"})
-        else:
-            out.append({"scope": scope, "state": "measured", "value": value,
-                        "summary": f"{a - b:+,} rows since {snaps[1]['surveyed_at']} ({b:,} → {a:,})"})
-    return out
-```
-
-`run()` returns `staleness(inputs)`. It adds a second measure, `writes_since_statistics_reset`, when
-an Egeria process hands it the previous step's survey report as `source_report`. Without one it adds
-an honest `not_established`: "no survey report in this run". The full file is in the package.
-
-Four things to copy from it:
-
-- **Every path returns a result**, including "never surveyed". The step never returns an empty list.
-- **Each case picks its state on purpose.** A view is `not_applicable`. One snapshot is
-  `not_established`, with the reason. No change is `nothing_found`, with the value still attached.
-- **The `value` keys** (`rowsChanged`, `latestSurvey`, …) are exactly the names the declaration's
-  `value_field`, `as_of` and extent `fields` use.
-- **The second measure is tagged** with `"measure": "writes_since_statistics_reset"` and declared in
-  the manifest. An undeclared measure would drop the run.
-
-### The manifest (`manifest.py`)
-
-```python
-MANIFEST = StepManifest(
-    name="database_staleness",
-    display_name="Database Staleness",
-    function="database_staleness.step.run",
-    description=("Rows changed per table since the last survey: compares the latest two row-count snapshots "
-                 "Resource Explorer stored for the database. Reads only what RE already stored; opens no "
-                 "connection to the database. Shown as \"not measured\", never as zero, when fewer than two "
-                 "row-count snapshots exist, or a table or its count is missing from one."),
-    returns="one ResourceMeasureAnnotation per table, each with its envelope",
-    source="ods",
-    version=__version__,
-    resource_types=["database"],
-    annotation_type="ResourceMeasureAnnotation",
-    credential_tier="none",
-    inputs=["ods", "source_report"],
-    measures=["database_staleness", "writes_since_statistics_reset"],
-    stage="analysis",
-    perspectives=["Steward", "Data Expert"],
-    questions=["Q-0041"],                 # answers is filled from this: one list, not two
-    purposes=["Maintain"],
-    family="Freshness",
-    tags=["staleness", "row counts"],
-    request_type="re-database-staleness",
-    nothing_to_derive_guard="survey-completed",   # an honest absence is a completed survey
-    declaration=Declaration(
-        result_kind="distribution",
-        measures=[MeasureDeclaration(name="database_staleness", unit="rows changed since the previous survey",
-                                     as_of="latestSurvey", value_field="rowsChanged"),
-                  MeasureDeclaration(name="writes_since_statistics_reset",
-                                     unit="rows inserted, updated or deleted since the statistics reset",
-                                     as_of="asOf", value_field="writesSinceStatisticsReset")],
-        absence=AbsenceSentences(
-            not_measured=("Not measured: fewer than two row-count snapshots are stored, or the table or its count is "
-                          "missing from one; a change needs two — never shown as zero."),
-            not_permitted=("Not permitted: the survey that stored the row counts could not count this table's rows, "
-                           "so no change is held for it."),
-            not_applicable="Not applicable: a view holds no rows of its own.",
-            measured_nothing="Measured: no rows changed between the two latest surveys."),
-        extents=[ExtentDeclaration(
-            name="tables_by_change", fields=["scope", "rowsChanged", "rowsBefore", "rowsAfter", "previousSurvey",
-                                             "latestSurvey"],
-            rows=20, order="by rows changed, largest change first",      # (arriving: sort=["rowsChanged desc"])
-            truncation="{shown} of {total} tables shown, by rows changed", token_cost=1000,
-            citation="{analysis} · {scope} · as of {as_of}")],
-        confidence=ConfidenceDeclaration(
-            form="estimated",
-            method="the change between two of PostgreSQL's row-count estimates, not a count of the rows"),
-        scope="member",
-    ),
-)
-```
-
-What the declaration choices say:
-
-- **The confidence is `estimated`, not `measured`.** Both counts are PostgreSQL's statistics-collector
-  estimates, not a `count(*)`, and the `method` says so in words.
-- **`scope="member"`**, because each result is about one table within the database.
-- **Neither measure declares an `annotation`.** Each writes as a generic ResourceMeasureAnnotation, so
-  the publish table shows `generic measure · no native type declared`.
-
-### Its tests
-
-The step's tests live in the library, not in the example package:
-`packages/trellis-analytics/tests/test_database_staleness_step.py`. They install the example the way
-pip would, so the entry point under test is the declared one. They survey a scratch SQLite registry,
-never the shared one, and run the step through the same wrapper RE uses:
-
-```python
-def test_measured_two_snapshots_with_counts_present(staleness_installed, make_registry):
-    reg, url = make_registry("shop")
-    _survey(reg, "shop", "2026-10-01T00:00:00", [("public", "orders", "BASE TABLE", 100)])
-    _survey(reg, "shop", "2026-10-08T00:00:00", [("public", "orders", "BASE TABLE", 130)])
-    a = _run_step(url)["public.orders"]
-    assert a.envelope.result_state.value == "measured"
-    assert a.resource_properties["rowsChanged"] == "30"
-```
-
-There is one test per state: measured, nothing found, one snapshot only, a count missing, a view,
-and never surveyed. Further tests cover the second measure and an undeclared measure being refused,
-and an end-to-end run read back by RE's analysis pane. Run them from the library:
-
-```bash
-cd packages/trellis-analytics && uv run pytest tests/test_database_staleness_step.py tests/test_declaration.py
-```
+`packages/trellis-analytics/examples/steps/database_staleness/` is a real, installable step: rows changed per
+table since the last survey. It reads only RE's stored row-count snapshots and opens no connection. The
+[tutorial](../../trellis-analytics/docs/TUTORIAL-ADD-AN-ANALYTIC-STEP-2026-10-30.md) copies it and walks
+through its code, its manifest and its tests, so they are not repeated here. Its manifest is the best
+example of a declaration made in full: one measure with a unit and an as-of, the four absence sentences, a
+written confidence method, one extent and a question named by id.
 
 ### The other example steps
 
@@ -575,14 +421,14 @@ cd packages/trellis-analytics && uv run pytest tests/test_database_staleness_ste
 
 ---
 
-## Checklist
+## Checklist (the tutorial has the steps in full)
 
 1. Write the package: `pyproject.toml` with the `trellis.analytics` entry point, `run()`, and `MANIFEST`.
 2. Make every path return a result with a state, and every absence carry a reason.
 3. Declare in full: units, as-ofs, value fields, four absence sentences, confidence with a written
    method, extents, scope, and `questions` by id.
 4. Test the four states against a scratch registry, never the shared one.
-5. Nothing to commit in RE for the card: installed manifests merge into the catalogue. Optionally run
+5. Nothing to commit in RE for the card: installed manifests merge into the catalog. Optionally run
    `generate_external_step_entries.py` to refresh the fallback entry, and the engine-host generator if Egeria
    should start the step.
 6. Install the package where RE and any Prefect worker run, then restart RE.
@@ -591,6 +437,8 @@ cd packages/trellis-analytics && uv run pytest tests/test_database_staleness_ste
 ## See also
 
 - [`trellis-analytics/README.md`](../../trellis-analytics/README.md): the library's reference for authors
+- [The tutorial](../../trellis-analytics/docs/TUTORIAL-ADD-AN-ANALYTIC-STEP-2026-10-30.md): build your first step, start to finish
+- [`DESIGN-ANALYTIC-LIFECYCLE-2026-10-30.md`](design-notes/DESIGN-ANALYTIC-LIFECYCLE-2026-10-30.md): where steps live, how they are installed, versioned and retired
 - [user-guide.md](user-guide.md), "The Analytic Library": what users see
 - [extending-resource-explorer.md](extending-resource-explorer.md): changing RE's own built-in analyses
 - Design notes, for the reasoning: `DESIGN-DECLARED-EXTENSIBILITY-RENDERING-CHAT-CONFIDENCE.md`,
