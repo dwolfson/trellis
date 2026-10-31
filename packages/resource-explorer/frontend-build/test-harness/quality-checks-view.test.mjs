@@ -500,7 +500,7 @@ test('Publish (F25): "publishing…" at once, then the state, counts and read-ba
     publish: () => new Promise((res) => { release = () => res({ state: 'published', state_words: 'published', line: 'x', counts: { unchanged: 2 },
       read_at: '2026-10-30T12:51:15+00:00' }); }),
   });
-  assert.match(text(t.slot.querySelector('[data-qc-publish-last]')), /^last published 2026-10-30 12:50 by erinoverview · read back$/);
+  assert.match(text(t.slot.querySelector('[data-qc-publish-last]')), /^last published by erinoverview · read back 2026-10-30 12:50$/);
   clickEl(t, btn(t));
   assert.match(text(t.slot.querySelector('[data-qc-publish-after]')), /publishing…/);
   release();

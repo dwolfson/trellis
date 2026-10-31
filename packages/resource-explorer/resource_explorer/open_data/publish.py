@@ -160,16 +160,16 @@ def publish_dataset(store: OpenDataStore, ds: dict, port: EgeriaPort, *, registr
             step(name, "failed", f"{exc}"[:240])
     lic = licence_body(ds)
     if lic is None:
-        step("licence", "not_written", f"licence {NOT_REPORTED_WORDS} · nothing linked")
+        step("licence", "not_written", f"license {NOT_REPORTED_WORDS} · nothing linked")
     else:
         lt = port.find_guid(f"{LICENSE_TYPE_QN_PREFIX}{ds['licence_id']}", "LicenseType")
         if not lt:
-            step("licence", "kept_as_property", f"Egeria holds no licence type for {ds['licence_id']} · the licence is a "
+            step("licence", "kept_as_property", f"Egeria holds no license type for {ds['licence_id']} · the license is a "
                  "property of the asset, not a link")
         else:
             try:
                 port.link_license(lt, guid, lic)
-                step("licence", "linked", f"linked to the licence type for {ds['licence_id']}")
+                step("licence", "linked", f"linked to the license type for {ds['licence_id']}")
             except Exception as exc:
                 step("licence", "failed", f"{exc}"[:240])
     back = port.read_back(guid)
@@ -184,7 +184,7 @@ def publish_dataset(store: OpenDataStore, ds: dict, port: EgeriaPort, *, registr
 
 def publish_price(n: int) -> dict:
     return {"datasets": n, "line": (f"{n} dataset{'s' if n != 1 else ''} → {n} asset{'s' if n != 1 else ''} in Egeria "
-                                    "(one DataSet each, with its origin, coverage and licence); written as you, "
+                                    "(one DataSet each, with its origin, coverage and license); written as you, "
                                     "read back by GUID")}
 
 
