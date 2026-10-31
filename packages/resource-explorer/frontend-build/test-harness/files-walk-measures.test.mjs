@@ -157,7 +157,7 @@ test('narratives are proposals with their file and modified date as evidence', a
   const { host, fs } = await setUp();
   host.innerHTML = fs.folderSurveyCardHtml(VIEW(REACH.re_only, EXT()));
   const n = text(host.querySelector('[data-fs-narrative]'));
-  assert.match(n, /\(root\) · described by README\.md · modified 2026-10-14 · licence MIT/);
+  assert.match(n, /\(root\) · described by README\.md · modified 2026-10-14 · license MIT/);
   assert.match(n, /Walk Me · Payroll extracts for 2026\. · a proposal · confirm it on Curate/);
   host.innerHTML = fs.folderSurveyCardHtml(VIEW(REACH.re_only, EXT({ narratives: [] })));
   assert.match(text(host.querySelector('[data-fs-narratives]')), /no README-type file found/);
