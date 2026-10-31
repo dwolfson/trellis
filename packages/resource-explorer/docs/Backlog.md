@@ -10,6 +10,14 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ---
 
+## TestGen deployment as a data channel (deferred 2026-10-30)
+
+**Decision (project owner, 2026-10-30):** TestGen deployment as a data channel (`DESIGN-TESTGEN-DEPLOYMENT-AS-DATA-CHANNEL`, slices TG1–TG3, owner rulings §9): deferred to the backlog by the owner 2026-10-30.
+
+**What it is:** reading an existing TestGen installation's profiles and results, read-only, instead of measuring the same database again. The design is in `docs/design-notes/DESIGN-TESTGEN-DEPLOYMENT-AS-DATA-CHANNEL-2026-10-30.md`.
+**Today:** RE vendors TestGen's catalog and runs its own checks. It can import a TestGen export file as proposals (`quality-import-testgen`). It reads no TestGen database. The TestGen guide says so.
+**Status:** not scheduled.
+
 ## Test `TestThreadCap.test_exhaustion_rejects_and_worker_releases` flakes under pytest-xdist (found 2026-10-30)
 
 **Observed (coordinator, 2026-10-30):** `tests/test_api_reference_r3.py::TestThreadCap::test_exhaustion_rejects_and_worker_releases` failed under `-n 4` in gate b203, and again in a baseline run on the pyegeria 6.2.15 release. It got 8 "no answer in time" where it expects 6. It passed 3 of 3 times alone on the same merge, and b204 (the same tree) was green.
