@@ -435,3 +435,133 @@ def record_resolution(registry, gateway, db_entity, *, curation_id: str = "", by
             _cache[(db_entity.slug, getattr(gateway, "platform_url", ""), getattr(gateway, "view_server", ""))] = (
                 time.monotonic(), res)
     return detail
+
+
+# ── D1-b: the database-level press (design §13) ─────────────────────────────
+# One press on the plan's database row adds the relationship the row names (read from Egeria: today DataSetContent,
+# the database at end 2, as the JDBC cataloguer links schemas) from RE's database element to every schema in the row's
+# `to_add`. Nothing else: no element is created, no pack element changes, no RE schema is touched.
+
+APPLIED_KIND = "reanchor_applied"
+ADDED, ALREADY_LINKED, FAILED = "added", "already_linked", "failed"
+READ_AGAIN = "read Egeria again first"
+UNDO_CALL = "AssetMaker.detach_data_set_content_relationship"
+UNDO_NOTE = (f"to undo, remove each relationship listed as added by its own GUID with {UNDO_CALL}(<relationship "
+             "GUID>): it detaches that one link and nothing else (docs/design-notes/D1B-DATABASE-LINK-PRESS-UNDO.md)")
+
+
+class ReanchorRefused(Exception):
+    """The press cannot go ahead; nothing was written. `status` is the HTTP status the route answers with."""
+
+    def __init__(self, message: str, status: int = 409):
+        super().__init__(message)
+        self.message, self.status = message, status
+
+
+_pressing: set[str] = set()
+_pressing_lock = threading.Lock()
+
+
+def _newest(registry, slug: str, kind: str) -> dict | None:
+    rows = [p for p in registry.list_catalogue_commit_proofs(slug) if p["proof"] == kind]
+    return rows[-1] if rows else None
+
+
+def _link_guids(gateway, schema_guid: str, link_type: str, database_guid: str, schema_end: int) -> list[str]:
+    """The `link_type` relationships between a schema and RE's database, read from the SCHEMA's side, with the
+    database at the end the plan read (the schema at end 1 means the database is end 2)."""
+    db_at_end1 = schema_end == 2
+    return [r.guid for r in gateway.relationships(schema_guid)
+            if r.type_name == link_type and r.other_guid == database_guid and r.other_at_end1 is db_at_end1]
+
+
+def apply_words(counts: dict, outcomes: list[dict], members: int | None, read_at: str) -> str:
+    """Acknowledge + validate (§13): "26 members · 22 added · read back <time>", with the schemas not linked."""
+    at = str(read_at or "")[:16].replace("T", " ")
+    parts = [f"{members} members" if members is not None else "members not read back", f"{counts[ADDED]} added"]
+    if counts[ALREADY_LINKED]:
+        parts.append(f"{counts[ALREADY_LINKED]} already linked")
+    failed = [o for o in outcomes if o["outcome"] == FAILED]
+    if failed:
+        parts.append(f"{len(failed)} not linked: " + "; ".join(f"{o['schema']} ({o['error']})" for o in failed))
+    return " · ".join(parts) + (f" · read back {at}" if at else "")
+
+
+def apply_reanchor(registry, gateway, db_entity, *, by: str, now=None) -> dict:
+    """The press. Source of truth: the newest `endpoint_resolved` row's `plan.database_row` (no second derivation of
+    the list); refused, writing nothing, when that row is missing, older than the read-back staleness
+    (`catalogue_commit.READ_BACK_NOT_CHECKED_AFTER_S`), from a failed read, or its row proposes nothing.
+
+    For each `to_add` schema: read its relationships first and skip a `link_type` link to RE's database that already
+    exists (`already_linked`); else ONE Egeria call creates it, and the schema is read again for the new link's GUID
+    (`added` only when seen; pyegeria's wrapper returns no GUID). One `reanchor_applied` proof row with every outcome,
+    then `record_resolution` again so the plan re-derives. One press per database at a time."""
+    slug = db_entity.slug
+    with _pressing_lock:
+        if slug in _pressing:
+            raise ReanchorRefused("a press for this database is already running · wait for it, then read Egeria again")
+        _pressing.add(slug)
+    try:
+        return _apply(registry, gateway, db_entity, by=by, now=now)
+    finally:
+        with _pressing_lock:
+            _pressing.discard(slug)
+
+
+def _apply(registry, gateway, db_entity, *, by: str, now=None) -> dict:
+    from resource_explorer.catalogue_commit import READ_BACK_NOT_CHECKED_AFTER_S, _age_s
+
+    slug = db_entity.slug
+    started = time.perf_counter()
+    row = _newest(registry, slug, PROOF_KIND)
+    if row is None:
+        raise ReanchorRefused(f"no plan has been read for this database · {READ_AGAIN} · nothing written")
+    age = _age_s(row["read_at"], now)
+    if age is None or age > READ_BACK_NOT_CHECKED_AFTER_S:
+        raise ReanchorRefused(f"the plan was read {str(row['read_at'])[:16].replace('T', ' ')}, more than "
+                              f"{READ_BACK_NOT_CHECKED_AFTER_S} s ago · {READ_AGAIN} · nothing written")
+    detail = row.get("detail") or {}
+    if (detail.get("resolution") or {}).get("error"):
+        raise ReanchorRefused(f"the last read of this endpoint failed · {READ_AGAIN} · nothing written")
+    db = (detail.get("plan") or {}).get("database_row")
+    if not db:
+        raise ReanchorRefused("no database-level row in the plan · nothing to press · nothing written")
+    link_type, schema_end, database_guid = db.get("link_type"), db.get("schema_end"), db.get("re_guid", "")
+    if link_type in (None, "", NOT_READ) or schema_end not in (1, 2) or db.get("members_after") is None:
+        raise ReanchorRefused(f"{db.get('words', '')} · nothing written")
+    outcomes: list[dict] = []
+    for x in db.get("to_add") or []:
+        out = {"schema": x["schema"], "guid": x["guid"], "family": x.get("family", ""), "outcome": "", "error": "",
+               "relationship_guid": ""}
+        try:
+            before = _link_guids(gateway, x["guid"], link_type, database_guid, schema_end)
+            if before:
+                out.update(outcome=ALREADY_LINKED, relationship_guid=before[0])
+            else:
+                data_set, content = (x["guid"], database_guid) if schema_end == 1 else (database_guid, x["guid"])
+                gateway.link_data_set_content(data_set, content)
+                seen = _link_guids(gateway, x["guid"], link_type, database_guid, schema_end)
+                if seen:
+                    out.update(outcome=ADDED, relationship_guid=seen[0])
+                else:
+                    out.update(outcome=FAILED, error="sent, but the link is not on the read-back")
+        except GatewayError as exc:
+            out.update(outcome=FAILED, error=str(exc)[:300])
+        outcomes.append(out)
+    counts = {k: sum(1 for o in outcomes if o["outcome"] == k) for k in (ADDED, ALREADY_LINKED, FAILED)}
+    fresh = record_resolution(registry, gateway, db_entity, by=by)
+    fresh_db = (fresh.get("plan") or {}).get("database_row") or {}
+    members = fresh_db.get("members_now")
+    words = apply_words(counts, outcomes, members, fresh["resolution"].get("read_at", ""))
+    applied = {"database_guid": database_guid, "link_type": link_type, "schema_end": schema_end,
+               "plan_read_at": row["read_at"], "outcomes": outcomes, "counts": counts, "members_after": members,
+               "to_add_after": len(fresh_db.get("to_add") or []), "words": words, "undo": UNDO_NOTE}
+    registry.append_catalogue_commit_proof(slug, proof=APPLIED_KIND, node_kind="database", element_guid=database_guid,
+                                           recorded_by=by, detail=applied)
+    for o in outcomes:
+        if o["outcome"] == ADDED:
+            log.info("reanchor_applied slug=%s added relationship=%s schema=%s (%s) · undo: %s(%s)", slug,
+                     o["relationship_guid"], o["guid"], o["schema"], UNDO_CALL, o["relationship_guid"])
+    log.info("reanchor_timing slug=%s to_add=%d added=%d already=%d failed=%d total_ms=%.0f", slug, len(outcomes),
+             counts[ADDED], counts[ALREADY_LINKED], counts[FAILED], (time.perf_counter() - started) * 1000)
+    return {**applied, "plan": fresh.get("plan")}

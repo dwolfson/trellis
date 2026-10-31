@@ -5,7 +5,7 @@ author from the session first and answers 401 when nobody is signed in (the
 same posture as the Curate author routes); the request bodies have no author
 field. The scope routes write nothing to Egeria; the commit is slice B, below (`/commit-preview`, `/commit`,
 `/commits`, `/read-back`; see `resource_explorer.catalogue_commit`) and the D1-b database-level press (`/reanchor`,
-`resource_explorer.reanchor_press`). The scope routes still only edit RE's record; only `/commit`, `/read-back` and
+`endpoint_identity.apply_reanchor`). The scope routes still only edit RE's record; only `/commit`, `/read-back` and
 `/reanchor` reach Egeria.
 """
 from __future__ import annotations
@@ -274,14 +274,14 @@ async def post_read_back(slug: str, request: Request) -> dict:
 
 @router.post("/{slug}/reanchor")
 async def post_reanchor(slug: str, request: Request) -> dict:
-    """D1-b, the database-level press (design §10, §12): add DataSetContent from RE's database element to each
-    schema another family holds at the same endpoint that is not yet its member. Signed in, with the publish check
-    the commit uses. The plan is re-read immediately before writing (a schema already a member is skipped, so a
-    second press adds nothing); one press per database at a time; every relationship added is listed, by GUID, in a
-    proof row with its undo. Nothing is written when the plan has no database-level row or nothing to add."""
-    from resource_explorer import reanchor_press
+    """D1-b, the database-level press (design §13): add the relationship the plan's database row names (read from
+    Egeria: DataSetContent, the database at end 2) from RE's database element to each schema in its `to_add`. Signed
+    in, with the commit's publish check. The list is the newest `endpoint_resolved` row's, never derived again; a
+    missing or stale row is refused ("read Egeria again first"). Each schema is read first and an existing link is
+    skipped, so a second press adds nothing. One `reanchor_applied` proof row; then the plan is read again."""
+    from resource_explorer import endpoint_identity
 
-    author = _require_author(request, "add the pack's schemas to this database")
+    author = _require_author(request, "link the pack's schemas to this database")
     registry = _registry_for(slug)
     await _authorize(registry, slug, publish=True)
     entity = registry.get_database(slug, allow_unreadable=True)
@@ -291,8 +291,8 @@ async def post_reanchor(slug: str, request: Request) -> dict:
         if gateway is None:
             raise scope.ScopeError(503, "Egeria could not be reached: no client could be built · nothing written")
         try:
-            return reanchor_press.press(registry, gateway, entity, by=author)
-        except reanchor_press.PressRefused as exc:
+            return endpoint_identity.apply_reanchor(registry, gateway, entity, by=author)
+        except endpoint_identity.ReanchorRefused as exc:
             raise scope.ScopeError(exc.status, exc.message) from exc
 
     return await _run(commit.run_with_loop, go)

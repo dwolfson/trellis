@@ -1,13 +1,17 @@
-"""D1-b: the database-level press adds DataSetContent from RE's database element to the pack's schemas.
+"""D1-b (design §13): the database-level press links the pack's schemas to RE's database element (DataSetContent).
 
-DESIGN-ADOPT-BY-ENDPOINT-D1-2026-10-30.md §10, §12; docs/design-notes/D1B-DATABASE-LINK-PRESS-UNDO.md. Over the D1-a
-fake gateway (the live shape: the schema at end 1, the database at end 2), plus a fake `link_data_set_content` that
-can refuse a schema or drop a link. Temp SQLite; no Egeria.
+DESIGN-ADOPT-BY-ENDPOINT-D1-2026-10-30.md §10, §13; docs/design-notes/D1B-DATABASE-LINK-PRESS-UNDO.md. The list is the
+newest `endpoint_resolved` row's `plan.database_row`; each schema is read first and an existing link skipped; one
+Egeria call per missing link; one `reanchor_applied` proof row; the plan is read again after. Over the D1-a fake
+gateway (the live shape: the schema at end 1, the database at end 2), whose methods bind the real gateway's
+signatures (asserted below). Temp SQLite; no Egeria.
 """
 from __future__ import annotations
 
+import inspect
 import sys
 import threading
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -21,37 +25,51 @@ from test_catalogue_commit import (  # noqa: F401  (fixtures and helpers re-used
     registry,
     world,
 )
-from test_d1a_endpoint_resolver import PACK, RE_SERVER, FakeGateway, _coco, _coco_entity
+from test_d1a_endpoint_resolver import PACK, RE_SERVER, FakeGateway, _coco_entity
 
 from resource_explorer import catalogue_commit as cc
 from resource_explorer import endpoint_identity as ei
-from resource_explorer import reanchor_press as rp
-from resource_explorer.catalogue_gateway import GatewayError
+from resource_explorer.catalogue_gateway import GatewayError, PyegeriaCatalogueGateway
 from resource_explorer.registry import ProjectRegistry
 
 ME = "peterprofile"
+SLUG = "localhost_docker_coco_pharma"
+PACK_22 = ["aus_inventory", "austin_haz_mat", "ca_payroll", "coco_expenses", "coco_haz_mat", "coco_hrim",
+           "coco_inventory", "coco_ledgers", "coco_products", "cocopages", "ed_mfg_control", "eddepot01", "global_crm",
+           "kcdepot01", "manufacturing_planning", "mfctrl9482", "nl_payroll", "procurement01", "sec_admin",
+           "uk_payroll", "winch_mfg_control", "winchdepot01"]
 
 
 class PressGateway(FakeGateway):
-    """The resolver's reads, and the one write: a link appears on the next read unless the schema is refused
-    (Egeria's words) or `silent` (accepted but never seen on the read-back)."""
+    """The resolver's reads and the one write, with the real gateway's signature. A link appears on the next read
+    unless Egeria refuses the schema (its words) or drops it (`silent`: accepted, never on the read-back)."""
 
     def __init__(self):
         super().__init__()
         self.refuse: dict[str, str] = {}
         self.silent: set[str] = set()
-        self.linked: list[tuple[str, str]] = []
 
-    def link_data_set_content(self, data_set_guid, content_guid):
+    def link_data_set_content(self, data_set_guid: str, content_guid: str) -> None:
         self.calls.append(("link_data_set_content", data_set_guid, content_guid))
         if data_set_guid in self.refuse:
             raise GatewayError(self.refuse[data_set_guid])
-        self.linked.append((data_set_guid, content_guid))
         if data_set_guid not in self.silent:
-            self.member(content_guid, data_set_guid, guid=f"new-{len(self.linked)}")
+            self.member(content_guid, data_set_guid, guid=f"new-{len(self.writes())}")
 
     def writes(self):
         return [c for c in self.calls if c[0] == "link_data_set_content"]
+
+
+def coco_live() -> PressGateway:
+    """coco_pharma as read 2026-10-30/31: c990f349 with RE's 4 schemas, the pack's 22 with no database element."""
+    gw = PressGateway()
+    gw.database("c990f349", RE_SERVER)
+    for name in ("coco_ods", "coco_sus", "target_sales", "us_sales"):
+        gw.schema(f"re-{name}", RE_SERVER, name)
+        gw.member("c990f349", f"re-{name}")
+    for name in PACK_22:
+        gw.schema(f"pack-{name}", PACK, name, host="localhost")
+    return gw
 
 
 @pytest.fixture
@@ -62,150 +80,175 @@ def reg(tmp_path):
     return r
 
 
-@pytest.fixture
-def coco():
-    gw = PressGateway()
-    _coco(gw)                     # RE's db with 4 schemas; the pack's aus_inventory, coco_ods, cocopages
-    return gw
+def _read(reg, gw, slug=SLUG):
+    """"Read Egeria again": the endpoint_resolved row the press takes its list from."""
+    return ei.record_resolution(reg, gw, reg.get_database(slug), by=ME)
 
 
-def _press(reg, gw, slug="localhost_docker_coco_pharma"):
-    return rp.press(reg, gw, reg.get_database(slug), by=ME)
+def _press(reg, gw, slug=SLUG, now=None):
+    return ei.apply_reanchor(reg, gw, reg.get_database(slug), by=ME, now=now)
 
 
-def _press_rows(reg, slug="localhost_docker_coco_pharma"):
-    return [p for p in reg.list_catalogue_commit_proofs(slug) if p["proof"] == rp.PROOF_KIND]
+def _applied(reg, slug=SLUG):
+    return [p for p in reg.list_catalogue_commit_proofs(slug) if p["proof"] == ei.APPLIED_KIND]
 
 
-def _view(names):
-    return {"schemas": [{"name": n, "effective": None, "tables": []} for n in names]}
+def _db_row(reg, slug=SLUG):
+    d = cc.derive_commit_state(reg, slug, {"schemas": []})
+    return d["endpoint"]["plan"]["database_row"], d["endpoint"]
 
 
-def test_the_happy_path_adds_each_pack_schema_once_with_the_schema_at_the_end_read(reg, coco):
-    out = _press(reg, coco)
-    assert out["state"] == rp.ADDED
-    assert coco.writes() == [("link_data_set_content", f"pack-{s}", "re-db")
-                             for s in ("aus_inventory", "coco_ods", "cocopages")]      # schema = data set, end 1
-    assert [a["relationship_guid"] for a in out["added"]] == ["new-1", "new-2", "new-3"]
-    assert (out["members_before"], out["members_after"]) == (4, 7)
-    assert out["words"] == "added 3 of 3 schemas to re-db (DataSetContent) · read back: 7 members"
-    rows = _press_rows(reg)
-    assert len(rows) == 1 and rows[0]["element_guid"] == "re-db" and rows[0]["recorded_by"] == ME
-    d = rows[0]["detail"]
-    assert [(a["guid"], a["relationship_guid"]) for a in d["added"]] == [
-        ("pack-aus_inventory", "new-1"), ("pack-coco_ods", "new-2"), ("pack-cocopages", "new-3")]
-    assert rp.UNDO_CALL in d["undo"] and d["failed"] == [] and d["unverified"] == []
-    # The page reads the result back: the plan's database row now has nothing to add and 7 members.
-    derived = cc.derive_commit_state(reg, "localhost_docker_coco_pharma", _view(["aus_inventory"]))
-    db = derived["endpoint"]["plan"]["database_row"]
-    assert (db["members_now"], db["to_add"]) == (7, [])
-    assert derived["endpoint"]["press"]["added"] == 3 and derived["endpoint"]["press"]["words"] == out["words"]
+def test_the_fake_binds_the_real_gateway_signatures():
+    for name in ("find_endpoints", "relationships", "link_data_set_content"):
+        real = list(inspect.signature(getattr(PyegeriaCatalogueGateway, name)).parameters)
+        fake = list(inspect.signature(getattr(PressGateway, name)).parameters)
+        assert fake == real, name
 
 
-def test_a_second_press_adds_nothing_and_writes_nothing(reg, coco):
-    _press(reg, coco)
-    n = len(coco.writes())
-    again = _press(reg, coco)
-    assert again["state"] == rp.NOTHING_TO_ADD and len(coco.writes()) == n
-    assert again["words"].startswith("nothing to add") and "7 members" in again["words"]
-    assert len(_press_rows(reg)) == 1                          # a press that wrote nothing leaves no press row
+# (1) all added
+def test_all_22_are_added_with_the_database_at_end_2_and_the_plan_reads_26_and_0(reg):
+    gw = coco_live()
+    _read(reg, gw)
+    out = _press(reg, gw)
+    assert out["counts"] == {"added": 22, "already_linked": 0, "failed": 0}
+    assert gw.writes() == [("link_data_set_content", f"pack-{s}", "c990f349") for s in PACK_22]   # one call each
+    assert all(o["relationship_guid"].startswith("new-") for o in out["outcomes"])
+    assert (out["members_after"], out["to_add_after"]) == (26, 0)
+    assert out["words"].startswith("26 members · 22 added · read back ")
+    rows = _applied(reg)
+    assert len(rows) == 1 and rows[0]["element_guid"] == "c990f349" and rows[0]["recorded_by"] == ME
+    assert [o["outcome"] for o in rows[0]["detail"]["outcomes"]] == ["added"] * 22
+    assert ei.UNDO_CALL in rows[0]["detail"]["undo"]
+    db, endpoint = _db_row(reg)                                     # re-derived from the read after the press
+    assert (db["members_now"], db["to_add"]) == (26, [])
+    assert "after the press" not in db["words"]
+    assert endpoint["press"]["counts"]["added"] == 22 and endpoint["press"]["words"] == out["words"]
 
 
-def test_a_link_made_since_the_plan_was_read_is_skipped(reg, coco, monkeypatch):
-    """The plan the person saw is not trusted: the links are read again just before writing."""
-    real = rp._links_to
-
-    def race(gateway, database_guid, link_type, schema_end):
-        if not coco.writes() and "dsc-pack-cocopages" not in str(coco.rels.get("re-db")):
-            coco.member("re-db", "pack-cocopages")              # someone else linked it after the plan was read
-        return real(gateway, database_guid, link_type, schema_end)
-
-    monkeypatch.setattr(rp, "_links_to", race)
-    out = _press(reg, coco)
-    assert [w[1] for w in coco.writes()] == ["pack-aus_inventory", "pack-coco_ods"]
-    assert [x["guid"] for x in out["skipped_present"]] == ["pack-cocopages"]
-
-
-def test_partial_failure_names_the_schemas_that_failed_and_never_says_failed_for_all(reg, coco):
-    coco.refuse["pack-coco_ods"] = "user peterprofile is not authorized to update pack-coco_ods"
-    out = _press(reg, coco)
-    assert out["state"] == rp.PARTLY
-    assert [a["guid"] for a in out["added"]] == ["pack-aus_inventory", "pack-cocopages"]
-    assert out["failed"][0]["schema"] == "coco_ods" and "not authorized" in out["failed"][0]["error"]
-    assert out["words"].startswith("added 2 of 3 schemas")
-    assert "1 not added: coco_ods (user peterprofile is not authorized" in out["words"]
-    assert not out["words"].startswith("nothing added")
-    assert out["members_after"] == 6
-    # The press row lists exactly what was added, so the undo removes exactly that.
-    assert [a["relationship_guid"] for a in _press_rows(reg)[0]["detail"]["added"]] == ["new-1", "new-2"]
+# (2) idempotence
+def test_a_second_press_finds_22_already_linked_and_adds_nothing(reg):
+    gw = coco_live()
+    _read(reg, gw)
+    _press(reg, gw)
+    n = len(gw.writes())
+    # The plan read after the first press has nothing to add; a press on the OLD plan's list is what a stale tab or a
+    # retry would send, so press with the first plan's row put back as the newest: every schema is read first.
+    first = next(p for p in reg.list_catalogue_commit_proofs(SLUG) if p["proof"] == ei.PROOF_KIND)
+    reg.append_catalogue_commit_proof(SLUG, proof=ei.PROOF_KIND, node_kind="database", detail=first["detail"])
+    again = _press(reg, gw)
+    assert len(gw.writes()) == n
+    assert again["counts"] == {"added": 0, "already_linked": 22, "failed": 0}
+    assert again["words"].startswith("26 members · 0 added · 22 already linked")
 
 
-def test_every_schema_refused_is_nothing_added_with_each_reason(reg, coco):
-    for s in ("aus_inventory", "coco_ods", "cocopages"):
-        coco.refuse[f"pack-{s}"] = "refused"
-    out = _press(reg, coco)
-    assert out["state"] == rp.NOTHING_ADDED and out["added"] == []
-    assert out["words"].startswith("nothing added · 3 not added: aus_inventory (refused)")
+def test_a_press_on_a_plan_with_nothing_to_add_writes_nothing(reg):
+    gw = coco_live()
+    _read(reg, gw)
+    _press(reg, gw)
+    n = len(gw.writes())
+    out = _press(reg, gw)                 # the newest plan: to_add empty
+    assert len(gw.writes()) == n and out["counts"] == {"added": 0, "already_linked": 0, "failed": 0}
 
 
-def test_a_link_sent_but_not_read_back_is_never_called_added(reg, coco):
-    coco.silent.add("pack-cocopages")
-    out = _press(reg, coco)
-    assert out["state"] == rp.PARTLY and [u["schema"] for u in out["unverified"]] == ["cocopages"]
-    assert "1 sent but not seen on the read-back: cocopages" in out["words"]
+# (3) one failure mid-list
+def test_one_failure_mid_list_still_adds_the_others_and_the_plan_shows_25_and_1(reg):
+    gw = coco_live()
+    gw.refuse["pack-sec_admin"] = "user peterprofile is not authorized to update pack-sec_admin"
+    _read(reg, gw)
+    out = _press(reg, gw)
+    assert out["counts"] == {"added": 21, "already_linked": 0, "failed": 1}
+    failed = [o for o in out["outcomes"] if o["outcome"] == "failed"]
+    assert [(o["schema"], "not authorized" in o["error"]) for o in failed] == [("sec_admin", True)]
+    sent = [w[1] for w in gw.writes()]
+    assert len(sent) == 22 and sent.index("pack-sec_admin") == 18     # mid-list: the 3 after it were still sent
+    assert out["words"].startswith("25 members · 21 added · 1 not linked: sec_admin (user peterprofile is not")
+    db, endpoint = _db_row(reg)
+    assert db["members_now"] == 25 and [x["schema"] for x in db["to_add"]] == ["sec_admin"]
+    assert endpoint["press"]["failed"][0]["schema"] == "sec_admin"
 
 
-def test_an_empty_plan_writes_nothing(reg):
+def test_a_link_sent_but_not_read_back_is_failed_never_added(reg):
+    gw = coco_live()
+    gw.silent.add("pack-cocopages")
+    _read(reg, gw)
+    out = _press(reg, gw)
+    o = next(o for o in out["outcomes"] if o["schema"] == "cocopages")
+    assert o["outcome"] == "failed" and "not on the read-back" in o["error"]
+
+
+# (4) refusals: nothing is written
+def test_refused_without_a_plan_row(reg):
+    gw = coco_live()
+    with pytest.raises(ei.ReanchorRefused) as exc:
+        _press(reg, gw)
+    assert ei.READ_AGAIN in exc.value.message and gw.writes() == [] and _applied(reg) == []
+
+
+def test_refused_when_the_plan_row_is_stale(reg):
+    gw = coco_live()
+    _read(reg, gw)
+    later = datetime.now(UTC) + timedelta(seconds=cc.READ_BACK_NOT_CHECKED_AFTER_S + 5)
+    with pytest.raises(ei.ReanchorRefused) as exc:
+        _press(reg, gw, now=later)
+    assert ei.READ_AGAIN in exc.value.message and gw.writes() == []
+
+
+def test_refused_when_the_last_endpoint_read_failed(reg):
+    gw = coco_live()
+    gw.fail = "Egeria answered 503"
+    _read(reg, gw)
+    with pytest.raises(ei.ReanchorRefused) as exc:
+        _press(reg, gw)
+    assert "failed" in exc.value.message and ei.READ_AGAIN in exc.value.message and gw.writes() == []
+
+
+def test_refused_with_no_database_row(reg):
     gw = PressGateway()
     gw.database("t-db", RE_SERVER, db="throwaway")
     gw.schema("t-s", RE_SERVER, "sales", db="throwaway")
     gw.member("t-db", "t-s")
-    with pytest.raises(rp.PressRefused) as exc:
+    _read(reg, gw, "throwaway")
+    with pytest.raises(ei.ReanchorRefused) as exc:
         _press(reg, gw, "throwaway")
     assert "no database-level row" in exc.value.message and gw.writes() == []
-    assert _press_rows(reg, "throwaway") == []
 
 
-def test_ends_or_type_not_read_writes_nothing(reg):
-    gw = PressGateway()
-    _coco(gw)
-    for rels in gw.rels.values():                     # Egeria did not say which end: no end is proposed
+def test_refused_when_the_ends_were_not_read(reg):
+    gw = coco_live()
+    for rels in gw.rels.values():
         for r in rels:
             r.other_at_end1 = None
-    with pytest.raises(rp.PressRefused) as exc:
+    _read(reg, gw)
+    with pytest.raises(ei.ReanchorRefused) as exc:
         _press(reg, gw)
     assert "nothing proposed" in exc.value.message and gw.writes() == []
 
 
-def test_a_failed_endpoint_read_writes_nothing(reg, coco):
-    coco.fail = "Egeria answered 503"
-    with pytest.raises(rp.PressRefused) as exc:
-        _press(reg, coco)
-    assert exc.value.status == 503 and coco.writes() == []
-
-
-def test_one_press_per_database_at_a_time(reg, coco, monkeypatch):
+def test_one_press_per_database_at_a_time(reg, monkeypatch):
+    gw = coco_live()
+    _read(reg, gw)
     entered, release = threading.Event(), threading.Event()
-    real = rp._press
+    real = ei._apply
 
     def slow(*a, **k):
         entered.set()
         release.wait(5)
         return real(*a, **k)
 
-    monkeypatch.setattr(rp, "_press", slow)
-    t = threading.Thread(target=_press, args=(reg, coco))
+    monkeypatch.setattr(ei, "_apply", slow)
+    t = threading.Thread(target=_press, args=(reg, gw))
     t.start()
     assert entered.wait(5)
-    with pytest.raises(rp.PressBusy):
-        _press(reg, coco)
+    with pytest.raises(ei.ReanchorRefused) as exc:
+        _press(reg, gw)
+    assert "already running" in exc.value.message
     release.set()
     t.join(5)
-    assert len(coco.writes()) == 3                    # the first press ran once; the second wrote nothing
+    assert len(gw.writes()) == 22
 
 
 def test_the_proof_kind_is_the_one_contents_reads():
-    assert cc.P_REANCHOR == rp.PROOF_KIND
+    assert cc.P_REANCHOR == ei.APPLIED_KIND == "reanchor_applied"
 
 
 # ── the route ────────────────────────────────────────────────────────────────
@@ -229,25 +272,18 @@ def test_the_route_refuses_a_signed_out_press_and_writes_nothing(client, fake):
     assert r.status_code == 401 and fake.writes() == []
 
 
-def test_the_route_presses_for_a_signed_in_person_and_the_scope_reads_the_result(client, fake, registry):
+def test_the_route_refuses_before_any_read_of_the_plan(client, fake):
+    r = client.post("/api/catalogue-scope/db/reanchor", headers=as_user(ME))
+    assert r.status_code == 409 and ei.READ_AGAIN in r.json()["detail"] and fake.writes() == []
+
+
+def test_the_route_presses_after_a_read_and_the_scope_reads_the_result(client, fake, registry):
+    ei.record_resolution(registry, fake, registry.get_database("db"), by=ME)     # what "Read Egeria again" appends
     r = client.post("/api/catalogue-scope/db/reanchor", headers=as_user(ME))
     assert r.status_code == 200, r.text
     j = r.json()
-    assert j["state"] == rp.ADDED and len(j["added"]) == 2 and j["members_after"] == 3
+    assert j["counts"] == {"added": 2, "already_linked": 0, "failed": 0} and j["members_after"] == 3
     assert [w[1:] for w in fake.writes()] == [("pack-hr", "shop-db"), ("pack-ops", "shop-db")]
-    plan = client.get("/api/catalogue-scope/db").json()["commit"]["endpoint"]["plan"]
-    assert (plan["database_row"]["members_now"], plan["database_row"]["to_add"]) == (3, [])
-    again = client.post("/api/catalogue-scope/db/reanchor", headers=as_user(ME)).json()
-    assert again["state"] == rp.NOTHING_TO_ADD and len(fake.writes()) == 2
-
-
-def test_the_route_says_why_when_there_is_nothing_to_press(client, fake):
-    fake.endpoints = [e for e in fake.endpoints if "pack-" not in e.guid]      # a unique endpoint
-    r = client.post("/api/catalogue-scope/db/reanchor", headers=as_user(ME))
-    assert r.status_code == 409 and "no database-level row" in r.json()["detail"] and fake.writes() == []
-
-
-def test_the_undo_note_names_the_one_relationship_call():
-    note = (Path(rp.__file__).parent.parent / "docs/design-notes/D1B-DATABASE-LINK-PRESS-UNDO.md").read_text()
-    assert "detach_data_set_content_relationship" in note and rp.UNDO_CALL.split(".")[1] in rp.UNDO_NOTE
-    assert ei.SCHEMA_TYPE == "DeployedDatabaseSchema"
+    ep = client.get("/api/catalogue-scope/db").json()["commit"]["endpoint"]
+    assert (ep["plan"]["database_row"]["members_now"], ep["plan"]["database_row"]["to_add"]) == (3, [])
+    assert ep["press"]["words"].startswith("3 members · 2 added")

@@ -422,25 +422,30 @@ export function egeriaStateHtml(node, commit) {
  *  newest read-back's `endpoint_resolved` row (`view.commit.endpoint`). One row per RE schema: RE's element, the
  *  other family's element of the same name (or that there is none), and what hangs off RE's copy. Plan only: the
  *  page offers no press for it. A unique endpoint draws nothing; a failed endpoint read says so. */
-/** The newest press, from its proof row: what it said, when and by whom. A partial press names the schemas that were
- *  not added; it is never "failed" when some were. */
+/** The newest press, from its `reanchor_applied` row: acknowledge + validate ("26 members · 22 added · read back
+ *  <time>"), when and by whom, and the schemas it could not link, muted, one per line (§13). */
 function pressHtml(p) {
   if (!p) return '';
-  const tone = (p.failed && p.failed.length) || (p.unverified && p.unverified.length) ? 'text-state-warn' : 'text-ink-muted';
-  return `<div data-scope-reanchor-result data-added="${esc(String(p.added))}" class="text-provenance ${tone}">last press ${esc(md(p.at))}${p.by ? ` · ${esc(p.by)}` : ''}: ${esc(p.words)}</div>`;
+  const failed = p.failed || [];
+  const list = failed.map((f) => `<div data-scope-reanchor-failed="${esc(f.schema)}" class="text-provenance text-ink-muted">${esc(f.schema)}: not linked · ${esc(f.error)}</div>`).join('');
+  return `<div data-scope-reanchor-result data-added="${esc(String((p.counts || {}).added ?? ''))}" class="text-provenance text-ink">${esc(p.words)}<span class="text-ink-muted"> · pressed ${esc(md(p.at))}${p.by ? ` · ${esc(p.by)}` : ''}</span></div>${list}`;
 }
 
-/** D1-b: the database row's one press. Shown only when the row proposes something (a type and ends read, schemas to
- *  add); off, with the reason, when nobody is signed in. Its label names the count; the confirm repeats it. */
-export function reanchorButtonHtml(db, me) {
-  const n = (db && db.to_add ? db.to_add.length : 0);
-  if (!db || !n || db.members_after === null || db.members_after === undefined) return '';
-  const label = `Add the pack's ${n} schema${n === 1 ? '' : 's'} to this database`;
-  const why = me ? '' : `disabled title="${esc(signInReason)}"`;
-  return `<button type="button" data-scope-reanchor-btn data-to-add="${n}" data-members-after="${esc(String(db.members_after))}" data-link-type="${esc(db.link_type)}" data-re-guid="${esc(db.re_guid)}" ${why} class="${me ? 'cursor-pointer text-accent-ink underline' : 'opacity-60 text-ink-muted'} bg-transparent p-0 text-caveat">${esc(label)}</button>`;
+/** D1-b (§13): the database row's one press, "Link the pack's N schemas". Always drawn on a database row; off, with
+ *  the reason, when there is nothing to add, the endpoint read failed, the type or ends were not read, or nobody is
+ *  signed in to publish. */
+export function reanchorButtonHtml(db, me, endpoint = {}) {
+  if (!db) return '';
+  const n = db.to_add ? db.to_add.length : 0;
+  const why = !me ? signInReason
+    : endpoint.error ? 'the read of this endpoint failed · read Egeria again first'
+      : db.members_after === null || db.members_after === undefined ? db.words
+        : !n ? 'nothing to add' : '';
+  const label = `Link the pack's ${n} schema${n === 1 ? '' : 's'}`;
+  return `<button type="button" data-scope-reanchor-btn data-to-add="${n}" data-members-after="${esc(String(db.members_after ?? ''))}" data-link-type="${esc(db.link_type)}" data-re-guid="${esc(db.re_guid)}" ${why ? `disabled title="${esc(why)}"` : ''} class="${why ? 'opacity-60 text-ink-muted' : 'cursor-pointer text-accent-ink underline'} bg-transparent p-0 text-caveat">${esc(label)}</button>${why && me ? ` <span data-scope-reanchor-why class="text-provenance text-ink-muted">${esc(why)}</span>` : ''}`;
 }
 
-/** The confirm's words, from the button's own data: the count, the type read from Egeria, the result, the undo. */
+/** The confirm's words, from the button's own data: the count, the type read, the result, the undo. */
 export function reanchorConfirmText(btn) {
   const d = btn.dataset;
   return `Add ${d.linkType} from ${String(d.reGuid).slice(0, 8)} to each of the pack's ${d.toAdd} schemas.\n`
@@ -466,7 +471,7 @@ export function reanchorPlanHtml(endpoint, me = '') {
   const db = plan.database_row;
   const dbRow = db ? `<li data-scope-plan-database data-re-guid="${esc(db.re_guid)}" data-link-type="${esc(db.link_type)}" data-to-add="${esc(String((db.to_add || []).length))}" class="text-provenance">
       <span class="text-ink">the database</span> · RE ${short(db.re_guid)}<div class="text-ink-muted">${esc(db.words)}</div>
-      ${reanchorButtonHtml(db, me)}${pressHtml(endpoint.press)}</li>` : '';
+      ${reanchorButtonHtml(db, me, endpoint)}${pressHtml(endpoint.press)}</li>` : '';
   const neither = endpoint.neither ? `<li data-scope-plan-neither class="text-provenance text-ink-muted">${esc(endpoint.neither.words)}</li>` : '';
   return `<div data-scope-endpoint-plan data-pairs="${esc(String(plan.pairs))}" class="mb-s1 text-caveat text-ink-muted">
     <div data-scope-endpoint-words>${esc(plan.words)}${link}</div>
@@ -1286,11 +1291,15 @@ function paintScope(el, slug, status, view) {
     const label = b.textContent.trim();
     if (!await inPageConfirm({ title: label, message: reanchorConfirmText(b), confirmLabel: label })) return;
     b.disabled = true;
-    say("Adding the pack's schemas to this database…");
+    b.setAttribute('aria-busy', 'true');
+    b.textContent = 'linking…';
     let r;
-    try { r = await postCatalogueReanchor(slug); } catch (err) { b.disabled = false; say(failure(err, 'The press'), true); return; }
-    say(r.words || r.state, r.state !== 'added' && r.state !== 'nothing_to_add');
-    await refreshScope();
+    try { r = await postCatalogueReanchor(slug); } catch (err) {
+      b.disabled = false; b.removeAttribute('aria-busy'); b.textContent = label;
+      say(failure(err, 'The press'), true); return;
+    }
+    say(r.words || '', !!(r.counts && r.counts.failed));
+    await refreshScope();          // the row re-renders from the new rows: members, added, read back <time>
   });
 
   const rowEl = (k) => [...el.querySelectorAll('[data-scope-row]')].find((r) => r.dataset.scopeRow === k);
