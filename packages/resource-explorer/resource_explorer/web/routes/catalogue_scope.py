@@ -4,8 +4,9 @@ A declared, signed, dated choice stored in RE. Every write route resolves the
 author from the session first and answers 401 when nobody is signed in (the
 same posture as the Curate author routes); the request bodies have no author
 field. The scope routes write nothing to Egeria; the commit is slice B, below (`/commit-preview`, `/commit`,
-`/commits`, `/read-back`; see `resource_explorer.catalogue_commit`). The scope
-routes still only edit RE's record; only `/commit` and `/read-back` reach Egeria.
+`/commits`, `/read-back`; see `resource_explorer.catalogue_commit`) and the D1-b database-level press (`/reanchor`,
+`endpoint_identity.apply_reanchor`). The scope routes still only edit RE's record; only `/commit`, `/read-back` and
+`/reanchor` reach Egeria.
 """
 from __future__ import annotations
 
@@ -267,6 +268,32 @@ async def post_read_back(slug: str, request: Request) -> dict:
         out["chips_words"] = commit.read_back_words(commit.read_back_chips_for(registry, slug, schemas))
         out["line"] = commit.read_back_line(out, out["chips_words"])     # F28: a failed read says so, never "0"
         return out
+
+    return await _run(commit.run_with_loop, go)
+
+
+@router.post("/{slug}/reanchor")
+async def post_reanchor(slug: str, request: Request) -> dict:
+    """D1-b, the database-level press (design §13): add the relationship the plan's database row names (read from
+    Egeria: DataSetContent, the database at end 2) from RE's database element to each schema in its `to_add`. Signed
+    in, with the commit's publish check. The list is the newest `endpoint_resolved` row's, never derived again; a
+    missing or stale row is refused ("read Egeria again first"). Each schema is read first and an existing link is
+    skipped, so a second press adds nothing. One `reanchor_applied` proof row; then the plan is read again."""
+    from resource_explorer import endpoint_identity
+
+    author = _require_author(request, "link the pack's schemas to this database")
+    registry = _registry_for(slug)
+    await _authorize(registry, slug, publish=True)
+    entity = registry.get_database(slug, allow_unreadable=True)
+
+    def go() -> dict:
+        gateway = _gateway_or_none(entity)
+        if gateway is None:
+            raise scope.ScopeError(503, "Egeria could not be reached: no client could be built · nothing written")
+        try:
+            return endpoint_identity.apply_reanchor(registry, gateway, entity, by=author)
+        except endpoint_identity.ReanchorRefused as exc:
+            raise scope.ScopeError(exc.status, exc.message) from exc
 
     return await _run(commit.run_with_loop, go)
 

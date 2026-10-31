@@ -66,7 +66,9 @@ test('the plan lists one row per RE schema with both GUIDs, or that the pack has
   assert.match(rows[0].textContent, /12 annotations naming it/);
   assert.match(rows[1].textContent, /annotations not read/, 'a count not read is never 0');
   assert.match(d.textContent, /database link read from Egeria: DataSetContent/);
-  assert.equal(d.querySelectorAll('button').length, 0, 'a plan only: no press');
+  assert.equal(d.querySelectorAll('[data-scope-plan-row] button').length, 0, 'the schema rows are a plan only: no press');
+  assert.equal(d.querySelectorAll('button').length, 1, 'the one press is the database row (D1-b)');
+  assert.ok(d.querySelector('[data-scope-plan-database] [data-scope-reanchor-btn]').disabled, 'signed out here: off');
 });
 
 test('a unique endpoint draws no plan; a failed endpoint read says so', () => {

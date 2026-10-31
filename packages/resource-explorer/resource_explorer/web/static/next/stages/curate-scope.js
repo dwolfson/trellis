@@ -26,8 +26,9 @@ import {
   getCatalogueScope, setCatalogueDepth, setCatalogueNode, confirmCatalogueNode,
   overrideCatalogueNode, clearCatalogueNode, redeclareCatalogueScope,
   setCatalogueNodes, getCatalogueCommitPreview,
-  postCatalogueCommit, getCatalogueCommitRecord, getCatalogueLatestCommit, postCatalogueReadBack,
+  postCatalogueCommit, getCatalogueCommitRecord, getCatalogueLatestCommit, postCatalogueReadBack, postCatalogueReanchor,
 } from '/static/re-api.js';
+import { inPageConfirm } from '/static/next/confirm-dialog.js';
 import { state, esc } from '/static/next/app.js';
 import { contentsChosen, contentsUndecided } from '/static/next/stages/curate-counts.js';
 import { setCommitLine, commitLineFromRecord } from '/static/next/stages/curate-tabs.js';
@@ -421,7 +422,39 @@ export function egeriaStateHtml(node, commit) {
  *  newest read-back's `endpoint_resolved` row (`view.commit.endpoint`). One row per RE schema: RE's element, the
  *  other family's element of the same name (or that there is none), and what hangs off RE's copy. Plan only: the
  *  page offers no press for it. A unique endpoint draws nothing; a failed endpoint read says so. */
-export function reanchorPlanHtml(endpoint) {
+/** The newest press, from its `reanchor_applied` row: acknowledge + validate ("26 members · 22 added · read back
+ *  <time>"), when and by whom, and the schemas it could not link, muted, one per line (§13). */
+function pressHtml(p) {
+  if (!p) return '';
+  const failed = p.failed || [];
+  const list = failed.map((f) => `<div data-scope-reanchor-failed="${esc(f.schema)}" class="text-provenance text-ink-muted">${esc(f.schema)}: not linked · ${esc(f.error)}</div>`).join('');
+  return `<div data-scope-reanchor-result data-added="${esc(String((p.counts || {}).added ?? ''))}" class="text-provenance text-ink">${esc(p.words)}<span class="text-ink-muted"> · pressed ${esc(md(p.at))}${p.by ? ` · ${esc(p.by)}` : ''}</span></div>${list}`;
+}
+
+/** D1-b (§13): the database row's one press, "Link the pack's N schemas". Always drawn on a database row; off, with
+ *  the reason, when there is nothing to add, the endpoint read failed, the type or ends were not read, or nobody is
+ *  signed in to publish. */
+export function reanchorButtonHtml(db, me, endpoint = {}) {
+  if (!db) return '';
+  const n = db.to_add ? db.to_add.length : 0;
+  const why = !me ? signInReason
+    : endpoint.error ? 'the read of this endpoint failed · read Egeria again first'
+      : db.members_after === null || db.members_after === undefined ? db.words
+        : !n ? 'nothing to add' : '';
+  const label = `Link the pack's ${n} schema${n === 1 ? '' : 's'}`;
+  return `<button type="button" data-scope-reanchor-btn data-to-add="${n}" data-members-after="${esc(String(db.members_after ?? ''))}" data-link-type="${esc(db.link_type)}" data-re-guid="${esc(db.re_guid)}" ${why ? `disabled title="${esc(why)}"` : ''} class="${why ? 'opacity-60 text-ink-muted' : 'cursor-pointer text-accent-ink underline'} bg-transparent p-0 text-caveat">${esc(label)}</button>${why && me ? ` <span data-scope-reanchor-why class="text-provenance text-ink-muted">${esc(why)}</span>` : ''}`;
+}
+
+/** The confirm's words, from the button's own data: the count, the type read, the result, the undo. */
+export function reanchorConfirmText(btn) {
+  const d = btn.dataset;
+  return `Add ${d.linkType} from ${String(d.reGuid).slice(0, 8)} to each of the pack's ${d.toAdd} schemas.\n`
+    + `Only adding: the pack's elements are not changed and nothing is deleted.\n`
+    + `After the press: ${d.membersAfter} members.\n`
+    + 'Every relationship added is listed by its GUID, so each can be removed on its own.';
+}
+
+export function reanchorPlanHtml(endpoint, me = '') {
   if (!endpoint) return '';
   if (endpoint.error) return `<div data-scope-endpoint-plan="unread" class="mb-s1 text-caveat text-ink-muted">this endpoint: ${esc(endpoint.words)}</div>`;
   const plan = endpoint.plan;
@@ -437,7 +470,8 @@ export function reanchorPlanHtml(endpoint) {
   const link = plan.database_link_type ? ` · database link read from Egeria: ${esc(plan.database_link_type)}` : '';
   const db = plan.database_row;
   const dbRow = db ? `<li data-scope-plan-database data-re-guid="${esc(db.re_guid)}" data-link-type="${esc(db.link_type)}" data-to-add="${esc(String((db.to_add || []).length))}" class="text-provenance">
-      <span class="text-ink">the database</span> · RE ${short(db.re_guid)}<div class="text-ink-muted">${esc(db.words)}</div></li>` : '';
+      <span class="text-ink">the database</span> · RE ${short(db.re_guid)}<div class="text-ink-muted">${esc(db.words)}</div>
+      ${reanchorButtonHtml(db, me, endpoint)}${pressHtml(endpoint.press)}</li>` : '';
   const neither = endpoint.neither ? `<li data-scope-plan-neither class="text-provenance text-ink-muted">${esc(endpoint.neither.words)}</li>` : '';
   return `<div data-scope-endpoint-plan data-pairs="${esc(String(plan.pairs))}" class="mb-s1 text-caveat text-ink-muted">
     <div data-scope-endpoint-words>${esc(plan.words)}${link}</div>
@@ -720,7 +754,7 @@ export function scopeSectionHtml(view, me, status = '', open = scopeStartsOpen(v
   // the "not yet cataloged" words exist only server-side, and only while no commit has left a row.
   return `<div data-scope-saved-marker data-scope-commit-header data-scope-commit-header-state="${esc(((view.commit || {}).header || {}).state || 'unknown')}" class="mb-s1 text-provenance text-ink-muted">${esc(commitHeaderText(view))}</div>
     <div data-read-back-host>${readBackChipsHtml((view.commit || {}).read_back)}</div>
-    <div data-endpoint-plan-host>${reanchorPlanHtml((view.commit || {}).endpoint)}</div>
+    <div data-endpoint-plan-host>${reanchorPlanHtml((view.commit || {}).endpoint, me)}</div>
     <div class="mb-s1 text-answer text-ink"><button type="button" data-scope-collapse aria-expanded="${open ? 'true' : 'false'}"
       aria-controls="scope-section-body" title="${open ? 'Collapse to one line' : 'Show the whole scope'}"
       class="cursor-pointer bg-transparent p-0 text-left text-answer text-ink"><span aria-hidden="true" class="text-ink-muted">${open ? '▾' : '▸'}</span> <span data-scope-header><span data-scope-header-line>${esc(line)}</span></span></button></div>
@@ -1237,7 +1271,7 @@ function paintScope(el, slug, status, view) {
     const rbHost = el.querySelector('[data-read-back-host]');
     if (rbHost) rbHost.innerHTML = readBackChipsHtml((v.commit || {}).read_back);
     const planHost = el.querySelector('[data-endpoint-plan-host]');
-    if (planHost) planHost.innerHTML = reanchorPlanHtml((v.commit || {}).endpoint);
+    if (planHost) planHost.innerHTML = reanchorPlanHtml((v.commit || {}).endpoint, me);
   };
   const startCommitPanel = () => loadCommitPanel(el, slug, me, (msg) => { previewChanged(slug, false); return renderCatalogueScope(el, slug, msg); },
     !!(view.declared && view.declared.declared), refreshScope, () => view);
@@ -1248,6 +1282,25 @@ function paintScope(el, slug, status, view) {
     s.className = `mt-s1 text-provenance ${warn ? 'text-state-warn' : 'text-ink-muted'}`;
   };
   const failure = (err, what) => (err.status === 401 ? signInReason : `${what} failed: ${err.message}`);
+  // D1-b: the plan's one press (delegated on the host, which survives refreshScope's redraw of the plan). A confirm
+  // that names the count; then the scope is read again, so the database row shows what Egeria now holds.
+  const planHostEl = el.querySelector('[data-endpoint-plan-host]');
+  if (planHostEl) planHostEl.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-scope-reanchor-btn]');
+    if (!b || b.disabled) return;
+    const label = b.textContent.trim();
+    if (!await inPageConfirm({ title: label, message: reanchorConfirmText(b), confirmLabel: label })) return;
+    b.disabled = true;
+    b.setAttribute('aria-busy', 'true');
+    b.textContent = 'linking…';
+    let r;
+    try { r = await postCatalogueReanchor(slug); } catch (err) {
+      b.disabled = false; b.removeAttribute('aria-busy'); b.textContent = label;
+      say(failure(err, 'The press'), true); return;
+    }
+    say(r.words || '', !!(r.counts && r.counts.failed));
+    await refreshScope();          // the row re-renders from the new rows: members, added, read back <time>
+  });
 
   const rowEl = (k) => [...el.querySelectorAll('[data-scope-row]')].find((r) => r.dataset.scopeRow === k);
   const nodeFor = (k) => {
