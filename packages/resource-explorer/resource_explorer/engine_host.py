@@ -2391,6 +2391,10 @@ class EngineHostLoop:
         """The start-up line about library steps; never lets a failure to compute it stop the host starting."""
         try:
             line = library_steps_line()
+            from resource_explorer.surveyors.survey_step_host import LOAD_MS
+
+            if LOAD_MS.get("database") is not None:
+                line += f" · loaded in {LOAD_MS['database']:g} ms"
             missing = missing_library_steps()
         except Exception as exc:  # noqa: BLE001
             return f"library steps: could not be listed ({type(exc).__name__}: {exc})"

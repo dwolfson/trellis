@@ -1027,6 +1027,9 @@ NOT_IN_ANY_DEFINITION = {
     "postgres_value_profile": "the Postgres quality Survey Definition is authored with Egeria publishing",
     "propose_quality_checks": "the Postgres quality Survey Definition is authored with Egeria publishing",
     "run_quality_checks": "the Postgres quality Survey Definition is authored with Egeria publishing",
+    # LS5 spike twins of native analyses, read behind RE_SPIKE_LIBRARY_TWINS; no Survey Definition runs them.
+    "re_statistics_freshness": "LS5 spike twin of db_statistics_freshness, not part of any definition",
+    "re_value_profile": "LS5 spike twin of the value_profile reader, not part of any definition",
 }
 
 

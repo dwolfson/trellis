@@ -266,6 +266,24 @@ class OdsReader:
         return {"registered": registered, "surveyed_at": at, "source": source,
                 "tables": [tables[k] for k in sorted(tables)]}
 
+    # ── the value profile, as RE stores it (re_value_profile, LS5 spike) ──
+
+    def value_profile_columns(self, slug: str) -> dict:
+        """The latest value-profile batch for a database: `{"surveyed_at", "ran_as", "columns": [{schema_name,
+        table_name, column_name, state, reason, general_type, record_ct, value_ct, distinct_value_ct, null_value_ct,
+        zero_length_ct, filled_value_ct, min_date, max_date, ...}]}`; `surveyed_at` is None and `columns` empty when
+        no profile is stored. Two parameterised statements: the batch's newest `surveyed_at`, then its rows (the same
+        two RE's own `query_detail_rows` issues)."""
+        s = normalize_slug(slug)
+        latest = self.query("SELECT MAX(surveyed_at) AS latest FROM database_value_profiles WHERE database_slug = ?",
+                            (s,))
+        at = (latest[0].get("latest") if latest else None) or None
+        if at is None:
+            return {"surveyed_at": None, "ran_as": "", "columns": []}
+        rows = self.query("SELECT * FROM database_value_profiles WHERE database_slug = ? AND surveyed_at = ? "
+                          "ORDER BY schema_name, table_name, column_name", (s, at))
+        return {"surveyed_at": at, "ran_as": (rows[0].get("ran_as") or "") if rows else "", "columns": rows}
+
     # ── a file system's walk rows (Files build step 1), as RE stores them ──
 
     #: RE keeps the newest five walk runs per file system (`walk_extensions.WALK_RUNS_KEPT`); a step reads at most that.

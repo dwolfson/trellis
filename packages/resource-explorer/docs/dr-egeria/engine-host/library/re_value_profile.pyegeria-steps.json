@@ -1,0 +1,27 @@
+{
+  "$comment": [
+    "GENERATED with re_value_profile.md by packages/resource-explorer/scripts/generate_engine_host_declaration.py from the manifest of 're_value_profile'. Do not hand-edit; regenerate.",
+    "resource_explorer.dr_egeria_runner runs these find-or-create pyegeria steps, in this order, before the document (docs/dr-egeria-engine-host-gaps.md)."
+  ],
+  "steps": [
+    {
+      "command": "Create Survey Action Engine",
+      "qualified_name": "ResourceExplorerSurvey",
+      "display_name": "Resource Explorer Survey Engine",
+      "description": "Resource Explorer's survey engine. It is hosted by Resource Explorer's worker, outside any Egeria engine host (Q-M4): no Java engine host configuration may list it, or a JVM host races Resource Explorer for every claim."
+    },
+    {
+      "command": "Create Survey Action Service",
+      "qualified_name": "SurveyActionService::ResourceExplorerSurvey::re_value_profile",
+      "display_name": "Resource Explorer Survey Service — re_value_profile",
+      "description": "What the columns of each table contain, from the latest value-profile batch Resource Explorer's quality survey stored: per table its state, row count and columns measured, and per column the value, distinct, null and filled counts. Opens no connection. A table or column that was not profiled is shown as \"not measured\" with the reason, never as having no values."
+    },
+    {
+      "command": "Link Supported Governance Service",
+      "governance_engine": "ResourceExplorerSurvey",
+      "governance_service": "SurveyActionService::ResourceExplorerSurvey::re_value_profile",
+      "request_type": "re-spike-value-profile",
+      "service_request_type": "re-spike-value-profile"
+    }
+  ]
+}

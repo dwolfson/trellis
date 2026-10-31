@@ -3138,6 +3138,200 @@ database_analyses:
       proposal:
         candidate_field: candidate_classifications
         decided_by: curator
+  - id: re_statistics_freshness
+    name: Table Statistics Freshness (RE spike twin)
+    description: 'How old each table''s planner statistics are: the age of the last ANALYZE and VACUUM,
+      tables never analyzed, and tables changed past autovacuum''s analyze trigger, as of the newest table
+      activity snapshot Resource Explorer stored. Opens no connection to the database. A table whose statistics
+      were not read, or a database with none stored, is shown as "not measured", never as fresh.'
+    resource_types:
+    - database
+    intent: analysis
+    perspectives:
+    - Steward
+    - Data Expert
+    annotation_types:
+    - ResourceMeasureAnnotation
+    source: local
+    run_time: fast
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: true
+      native_process_ref: null
+    provided_by:
+      package: trellis-step-re-statistics-freshness
+      entry_point: re_statistics_freshness
+      step: re_statistics_freshness
+      version: 0.1.0
+      kind: step
+      source: ods
+      credential_tier: none
+      questions:
+      - Q-0073
+      - Q-0062
+      purposes:
+      - Maintain
+    declaration:
+      result_kind: list
+      measures:
+      - name: re_statistics_freshness
+        unit: days since the last ANALYZE
+        as_of: asOf
+        value_field: Days Since Analyze
+        annotation:
+          type: ResourceMeasureAnnotation
+      - name: re_statistics_freshness_summary
+        unit: tables never analyzed or stale
+        as_of: asOf
+        value_field: Needs Attention
+        annotation:
+          type: ResourceMeasureAnnotation
+        scope: resource
+        basis:
+          denominator_field: Tables
+          denominator_label: tables
+      absence:
+        not_measured: 'Not measured: no table statistics are stored for this database, or this table''s
+          were not read — never shown as fresh.'
+        not_permitted: 'Not permitted: the survey that stored the table activity could not read this table''s
+          statistics from pg_stat_user_tables.'
+        not_applicable: 'Not applicable: a view has no planner statistics of its own.'
+        measured_nothing: 'Measured: no table whose statistics were read is stale or has never been analyzed
+          (a table not read, or with changes since not read, is counted separately).'
+      extents:
+      - name: tables_by_staleness
+        fields:
+        - scope
+        - Statistics Status
+        - Days Since Analyze
+        - Number Of Rows Changed Since Analyze
+        - Analyze Threshold
+        rows: 20
+        order: stale first, then never analyzed, then oldest ANALYZE first
+        truncation: '{shown} of {total} tables shown, stale first'
+        token_cost: 840
+        citation: '{analysis} · {scope} · as of {as_of}'
+      - name: summary
+        fields:
+        - Tables
+        - Needs Attention
+        - Never Analyzed
+        - Stale
+        - Current
+        - Not Read
+        - Oldest Analyze Days
+        rows: 1
+        order: the database as a whole
+        truncation: '{shown} of {total} summaries shown'
+        token_cost: 88
+        citation: '{analysis} · {scope} · as of {as_of}'
+      confidence:
+        form: measured
+      answers:
+      - Q-0073
+      - Q-0062
+      scope: member
+      listing:
+        item_fields:
+        - scope
+        - Statistics Status
+        - Days Since Analyze
+        order: stale first, then never analyzed, then oldest ANALYZE first
+        key_field: scope
+        item_label: tables
+  - id: re_value_profile
+    name: Value Profile (RE spike twin)
+    description: 'What the columns of each table contain, from the latest value-profile batch Resource Explorer''s
+      quality survey stored: per table its state, row count and columns measured, and per column the value,
+      distinct, null and filled counts. Opens no connection. A table or column that was not profiled is
+      shown as "not measured" with the reason, never as having no values.'
+    resource_types:
+    - database
+    intent: analysis
+    perspectives:
+    - Steward
+    - Data Expert
+    annotation_types:
+    - ResourceMeasureAnnotation
+    source: local
+    run_time: fast
+    availability: queued
+    action: survey
+    target_shape: whole_resource_only
+    recommended: false
+    egeria_registration:
+      candidate: true
+      native_process_ref: null
+    provided_by:
+      package: trellis-step-re-value-profile
+      entry_point: re_value_profile
+      step: re_value_profile
+      version: 0.1.0
+      kind: step
+      source: ods
+      credential_tier: none
+      questions:
+      - Q-0079
+      purposes:
+      - Assess
+      - Learn
+    declaration:
+      result_kind: list
+      measures:
+      - name: re_value_profile
+        unit: columns measured
+        as_of: asOf
+        value_field: Columns Measured
+        annotation:
+          type: ResourceMeasureAnnotation
+        basis:
+          denominator_field: Columns
+          denominator_label: columns
+      - name: re_value_profile_summary
+        unit: columns profiled
+        as_of: asOf
+        value_field: Columns Measured
+        annotation:
+          type: ResourceMeasureAnnotation
+        scope: resource
+        basis:
+          denominator_field: Columns
+          denominator_label: columns
+      absence:
+        not_measured: 'Not measured: no value profile is stored for this database, or this table was not
+          profiled (see its reason) — never shown as having no values.'
+        not_permitted: 'Not permitted: the quality survey''s account could not read this table.'
+        not_applicable: 'Not applicable: a view or foreign table is not profiled.'
+        measured_nothing: 'Measured: every profiled column is empty.'
+      extents:
+      - name: tables
+        fields:
+        - scope
+        - Table State
+        - Record Count
+        - Columns
+        - Columns Measured
+        rows: 20
+        order: measured tables first, then tables not measured
+        truncation: '{shown} of {total} tables shown'
+        token_cost: 600
+        citation: '{analysis} · {scope} · as of {as_of}'
+      confidence:
+        form: measured
+      answers:
+      - Q-0079
+      scope: container
+      listing:
+        item_fields:
+        - scope
+        - Table State
+        - Columns Measured
+        order: measured tables first, then tables not measured
+        key_field: scope
+        item_label: tables
   - id: statistics_freshness
     name: Table Statistics Freshness
     description: 'How old each table''s planner statistics are: the age of the last ANALYZE and VACUUM,

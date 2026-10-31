@@ -321,7 +321,8 @@ def test_the_catalog_entries_in_analysis_catalog_yaml_are_the_generated_ones(rea
     steps = {n: m for n, m in discover().items() if m.kind == "step" and "database" in m.resource_types
              and m.subject != "set"}
     assert "schema_comparison" in discover() and "schema_comparison" not in cards
-    assert set(cards) == set(steps) == {"database_staleness", "statistics_freshness", "hub_tables", "change_rates"}
+    assert set(cards) == set(steps) == {"database_staleness", "statistics_freshness", "hub_tables", "change_rates",
+                                         "re_statistics_freshness", "re_value_profile"}
 
     for name, m in steps.items():
         entry = cards[name]

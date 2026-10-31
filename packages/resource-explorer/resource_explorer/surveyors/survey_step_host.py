@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -98,6 +99,12 @@ _ATTACHED_IDS: dict[str, set[str]] = {}
 #: {entity type: {step key: provided_by}} for catalogued steps whose package is NOT installed (they attach as
 #: `NotInstalledStep`). Set by `attach`, so the engine host and the cards ask one place.
 _MISSING: dict[str, dict[str, dict]] = {}
+
+#: LS5 spike timing hooks. Milliseconds `attach` spent discovering the installed steps' manifests, per resource type
+#: (the "loaded in N ms" of the engine host's start-up line); and per step key the milliseconds its code took to import
+#: on its first run in this process (`first_load_ms`; later runs find it already imported and report 0).
+LOAD_MS: dict[str, float] = {}
+FIRST_LOAD_MS: dict[str, float] = {}
 
 
 @dataclass(frozen=True)
@@ -291,7 +298,9 @@ STEP_ODS_METHODS = ("row_count_snapshots", "commit_proofs", "catalogue_scope_eve
                     # the noise directories a walk did not enter, by name (Files build step 7: fs_layout_signals)
                     "filesystem_walk_not_walked",
                     # the tables and columns of the latest column survey, with types (schema_comparison, CMP1)
-                    "schema_inventory")
+                    "schema_inventory",
+                    # the latest value-profile batch's column rows (re_value_profile, the LS5 spike)
+                    "value_profile_columns")
 
 #: How long a step's read may wait for its answer.
 READ_TIMEOUT_SECONDS = 120
@@ -604,8 +613,14 @@ class SurveyStepHost:
                                source_report=runner_kwargs.get("source_report"))
             # The step's code runs with no Egeria identity, and its reader is closed when the code returns; the
             # store and anything after it run as the host does.
+            loading = time.perf_counter()
             code = SurveyStep(self.manifest).code
+            first_load_ms = 0.0
+            if step not in FIRST_LOAD_MS:
+                FIRST_LOAD_MS[step] = first_load_ms = round((time.perf_counter() - loading) * 1000, 1)
+            running = time.perf_counter()
             annotations = SurveyStep(self.manifest, code=_without_identity(code, stack.close)).run(host)
+            run_ms = round((time.perf_counter() - running) * 1000, 1)
         counts: dict[str, int] = {}
         for a in annotations:
             counts[a.envelope.result_state.value] = counts.get(a.envelope.result_state.value, 0) + 1
@@ -615,6 +630,8 @@ class SurveyStepHost:
             "state_counts": counts,
             "producer": {"step": step, "version": self.manifest.version,
                          "package": self.provided_by.get("package", "")},
+            # LS5 spike: the activity row carries what the step cost, from the first import to the stored result.
+            "timing": {"first_load_ms": first_load_ms, "run_ms": run_ms},
         }
 
 
@@ -751,7 +768,9 @@ def attach(entity_type: str, adapter, step_registry: dict, step_map: dict, resul
     from resource_explorer.surveyors.repo_survey_definition_adapter import AnalysisKind, AnalysisKindResults
 
     builtin = _BUILTIN.setdefault(entity_type, frozenset(step_registry) | frozenset(adapter.re_analysis_steps))
+    started = time.perf_counter()
     found = discover_steps(entity_type)
+    LOAD_MS[entity_type] = round((time.perf_counter() - started) * 1000, 1)
     origins = {}
     attached: list[str] = []
     analysis_ids: set[str] = set()

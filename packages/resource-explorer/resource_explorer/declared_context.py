@@ -61,7 +61,10 @@ def declarations(resource_type: str) -> dict:
     """{analysis id: Declaration} for every catalogue entry of this type that declares one."""
     from resource_explorer.surveyors.analysis_catalog_reader import _load
 
-    return {e.id: e.declaration for e in _load().get(resource_type, []) if e.declaration is not None}
+    from resource_explorer import spike_twins
+
+    return {e.id: e.declaration for e in spike_twins.declared_entries(_load().get(resource_type, []))
+            if e.declaration is not None}
 
 
 def absence_key(state: str) -> str:

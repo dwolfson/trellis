@@ -1333,6 +1333,14 @@ class FactLayer:
 
     # ── one analysis ────────────────────────────────────────────────────────
     def fact(self, slug: str, analysis_id: str, level: str = "resource") -> Fact:
+        from resource_explorer import spike_twins
+
+        twin = spike_twins.twin_for(analysis_id) if self.resource_type == "database" else ""
+        if twin:
+            # LS5 spike: the library twin's stored result, answered under the native id the caller asked for.
+            fact = self.fact_of_twin(slug, twin, level)
+            fact.analysis_id = analysis_id
+            return fact
         # One scope per fact: the results reader and the headline reader of an analysis often run the
         # same expensive read; `read_memo` lets the second reuse the first's (copied) answer and
         # nothing longer-lived (see that module's docstring).
@@ -1349,6 +1357,18 @@ class FactLayer:
         if level != "resource":
             container_map = self._map("analysis_container_results_map") or {}
             fact.numbers_at_level = analysis_id in container_map
+        return fact
+
+    def fact_of_twin(self, slug: str, twin: str, level: str = "resource") -> Fact:
+        """The fact of a library step read by its own id, with the library flag and run route set as `fact` sets them."""
+        from resource_explorer import read_memo
+        from resource_explorer.surveyors.survey_step_host import attached_user_steps
+        from resource_explorer.workflows.stage_page import runnable_and_reason
+
+        with read_memo.scope():
+            fact = self._fact(slug, twin, level)
+        fact.runnable, fact.runnable_reason = runnable_and_reason(twin, self.resource_type)
+        fact.library = twin in attached_user_steps(self.resource_type)
         return fact
 
     def _fact(self, slug: str, analysis_id: str, level: str = "resource") -> Fact:

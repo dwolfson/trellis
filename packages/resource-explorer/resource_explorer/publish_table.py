@@ -250,7 +250,9 @@ def confidence_words(conf) -> dict:
 def _entries(entity_type: str) -> list:
     from resource_explorer.surveyors.analysis_catalog_reader import _load
 
-    return [e for e in _load().get(entity_type, []) if e.declaration is not None]
+    from resource_explorer import spike_twins
+
+    return [e for e in spike_twins.declared_entries(_load().get(entity_type, [])) if e.declaration is not None]
 
 
 def _fact(layer, slug: str, analysis_id: str) -> dict:

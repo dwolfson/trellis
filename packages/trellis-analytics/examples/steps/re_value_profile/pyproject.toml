@@ -1,0 +1,23 @@
+[project]
+name = "trellis-step-re-value-profile"
+dynamic = ["version"]
+description = "Analytic Library step (LS5 spike): the latest value-profile batch per table, from the rows RE's quality survey stored. Twin of RE's native value_profile results reader."
+requires-python = ">=3.12,<4.0"
+dependencies = ["trellis-analytics>=0.1.0"]
+
+# Installation is registration: Resource Explorer finds the step through this entry point.
+[project.entry-points."trellis.analytics"]
+re_value_profile = "re_value_profile.manifest:MANIFEST"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/re_value_profile/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/re_value_profile"]
+
+[tool.uv.sources]
+trellis-analytics = { path = "../../..", editable = true }

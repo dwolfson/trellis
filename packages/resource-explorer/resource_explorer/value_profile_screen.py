@@ -202,8 +202,11 @@ def checks_cell(counts: dict[str, int]) -> dict:
 
 
 def _profile(registry, slug: str) -> dict:
+    from resource_explorer import spike_twins
     from resource_explorer.surveyors.database.survey_definition_adapter import _value_profile_results
 
+    if spike_twins.twin_for("value_profile"):
+        return spike_twins.value_profile_from_twin(registry, slug)    # LS5 spike, flag on
     return _value_profile_results(registry, slug)
 
 
