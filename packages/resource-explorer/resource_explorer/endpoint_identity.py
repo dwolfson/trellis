@@ -325,7 +325,12 @@ def database_row(own_db, db_rels, link_type: str, seen_types: set, read_error: s
     when it cannot be read (no RE database element, a failed read, none or several types) nothing is proposed."""
     if own_db is None:
         return None
-    members = {r.other_guid for r in db_rels if r.other_type == SCHEMA_TYPE and r.type_name == link_type}
+    links = [r for r in db_rels if r.other_type == SCHEMA_TYPE and r.type_name == link_type]
+    members = {r.other_guid for r in links}
+    # Which end the schema is at, read off the same links (live 2026-10-31: the schema is end 1, the data set; the
+    # database is end 2, its content). All must agree, else no end is proposed and a press refuses.
+    ends = {r.other_at_end1 for r in links}
+    schema_end = 1 if ends == {True} else 2 if ends == {False} else None
     others = [e for es in (resolution.get("schemas") or {}).values() for e in es
               if not e["own"] and e["guid"] not in members]
     others.sort(key=lambda e: (e["family"], e["schema"]))
@@ -335,15 +340,19 @@ def database_row(own_db, db_rels, link_type: str, seen_types: set, read_error: s
         why = read_error or (f"several types seen ({', '.join(sorted(seen_types))})" if seen_types
                              else "RE's database links none of its schemas")
         words = f"relationship type {NOT_READ} · {why} · nothing proposed"
+    elif schema_end is None:
+        words = f"which end of {link_type} the schema takes is {NOT_READ} (the existing links disagree or do not say) · " \
+                "nothing proposed"
     elif not others:
         words = f"every other-family schema is already a {link_type} member of {own_db['guid'][:8]} · nothing to add"
     else:
         words = (f"add {link_type} from {own_db['guid'][:8]} to the pack's {len(others)} schema"
                  f"{'s' if len(others) != 1 else ''} under {whose} · after the press: {len(members) + len(others)} "
-                 f"members · only adding, the pack's elements are not changed · plan only, nothing is written")
+                 f"members · only adding, the pack's elements are not changed · nothing is written until the press")
     return {"re_guid": own_db["guid"], "re_qualified_name": own_db["qualified_name"], "link_type": link_type or NOT_READ,
+            "schema_end": schema_end,
             "members_now": len(members) if link_type else None,
-            "members_after": len(members) + len(others) if link_type and not read_error else None,
+            "members_after": len(members) + len(others) if link_type and not read_error and schema_end else None,
             "to_add": [{"guid": e["guid"], "schema": e["schema"], "family": e["family"]} for e in others],
             "words": words}
 

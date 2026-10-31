@@ -303,6 +303,8 @@ class Relationship:
     action_kind: str = ""
     #: The relationship's own properties as strings (a PeerDuplicateLink's `statusIdentifier`, `steward`, ...).
     properties: dict = field(default_factory=dict)
+    #: Whether the far end (`other_guid`) is the relationship's end 1 (`elementAtEnd1`); None when Egeria did not say.
+    other_at_end1: bool | None = None
 
 
 @dataclass
@@ -628,6 +630,7 @@ class CatalogueGateway(Protocol):
     def schema_elements(self, prefix: str) -> list[ElementRead]: ...
     def relationships(self, guid: str) -> list[Relationship]: ...
     def find_endpoints(self, search: str) -> list[EndpointRead]: ...
+    def link_data_set_content(self, data_set_guid: str, content_guid: str) -> None: ...
     def delete_element(self, guid: str, form: str, *, slug: str, scope: str = "") -> None: ...
     def initiate_survey(self, database_guid: str, request_parameters: dict[str, str]) -> tuple[str, str]: ...
     def connector_status(self) -> ConnectorStatus | None: ...
@@ -953,7 +956,8 @@ def parse_related_answer(res: Any) -> list[Relationship]:
                 action_kind=(str(_strings_of(other).get("requestType") or "") if rel_type == "ActionTarget" else ""),
                 other_qualified_name=_qn_of(other),
                 other_name=str(_strings_of(other).get("displayName") or ""),
-                properties={str(k): str(v) for k, v in rps.items()} if isinstance(rps, dict) else {}))
+                properties={str(k): str(v) for k, v in rps.items()} if isinstance(rps, dict) else {},
+                other_at_end1=item.get("elementAtEnd1") if isinstance(item.get("elementAtEnd1"), bool) else None))
         return out
     if isinstance(res, dict) and not res:
         return []
@@ -1411,6 +1415,22 @@ class PyegeriaCatalogueGateway:
         except Exception as exc:
             raise GatewayError(_short(exc)) from exc
         return [EndpointRead(_guid_of(x), _qn_of(x), str(_strings_of(x).get("networkAddress") or "")) for x in raw]
+
+    def link_data_set_content(self, data_set_guid: str, content_guid: str) -> None:
+        """D1-b: ONE DataSetContent relationship, end 1 the data set and end 2 its content (Egeria's type def and
+        AssetMaker's `data-sets/{dataSetGUID}/data-set-content/{dataContentAssetGUID}/attach`). pyegeria's wrapper
+        returns None, not the new relationship's GUID: the caller reads the relationship back to learn it. A refusal
+        raises `GatewayError` with Egeria's words; nothing is retried here."""
+        log.info("egeria write BEFORE: link_data_set_content data_set=%s content=%s type=DataSetContent",
+                 data_set_guid, content_guid)
+        try:
+            self._client("AssetMaker").link_data_set_content(data_set_guid, content_guid, None)
+        except Exception as exc:
+            log.warning("egeria write AFTER: link_data_set_content data_set=%s content=%s outcome=failed: %s",
+                        data_set_guid, content_guid, _short(exc))
+            raise GatewayError(_short(exc)) from exc
+        log.info("egeria write AFTER: link_data_set_content data_set=%s content=%s outcome=ok", data_set_guid,
+                 content_guid)
 
     def delete_element(self, guid: str, form: str, *, slug: str, scope: str = "") -> None:
         """One element, never a cascade. `slug` is the database the delete acts for and `scope` the path it is on:

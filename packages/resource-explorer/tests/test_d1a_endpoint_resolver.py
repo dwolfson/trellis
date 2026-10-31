@@ -35,10 +35,11 @@ class FakeGateway:
         self.calls: list[tuple] = []
         self.fail = ""
 
-    def _link(self, a: str, b: str, type_name: str, b_type: str, b_qn: str, guid: str = "", props=None):
+    def _link(self, a: str, b: str, type_name: str, b_type: str, b_qn: str, guid: str = "", props=None,
+              b_at_end1: bool | None = None):
         self.rels.setdefault(a, []).append(Relationship(type_name=type_name, other_guid=b, other_type=b_type,
                                                         other_qualified_name=b_qn, guid=guid,
-                                                        properties=dict(props or {})))
+                                                        properties=dict(props or {}), other_at_end1=b_at_end1))
 
     def add_asset(self, guid: str, qn: str, type_name: str, address: str, *, target: str = "") -> str:
         ep, conn = f"ep-{guid}", f"conn-{guid}"
@@ -60,9 +61,11 @@ class FakeGateway:
         return self.add_asset(guid, f"PostgreSQL Relational Database::{server}::{db}", "RelationalDatabase",
                               f"jdbc:postgresql://{host}:5442/{db}")
 
-    def member(self, db_guid: str, schema_guid: str, type_name: str = "DataSetContent") -> None:
-        self._link(db_guid, schema_guid, type_name, "DeployedDatabaseSchema", "")
-        self._link(schema_guid, db_guid, type_name, "RelationalDatabase", "")
+    def member(self, db_guid: str, schema_guid: str, type_name: str = "DataSetContent", guid: str = "") -> None:
+        """As the cataloguer links them (live 2026-10-31): the schema at end 1, the database at end 2."""
+        guid = guid or f"dsc-{schema_guid}"
+        self._link(db_guid, schema_guid, type_name, "DeployedDatabaseSchema", "", guid=guid, b_at_end1=True)
+        self._link(schema_guid, db_guid, type_name, "RelationalDatabase", "", guid=guid, b_at_end1=False)
 
     def duplicate(self, a: str, b: str, b_qn: str, status) -> None:
         self._link(a, b, "PeerDuplicateLink", "DeployedDatabaseSchema", b_qn, guid=f"dup-{a}-{b}",
@@ -257,10 +260,11 @@ def test_the_plan_pairs_re_schemas_with_the_packs_by_name_and_reads_the_link_typ
     assert "plan only, nothing is written" in plan["words"]
     db = plan["database_row"]          # §8 step 2: the level where the two families meet
     assert (db["re_guid"], db["link_type"], db["members_now"], db["members_after"]) == ("re-db", "DataSetContent", 4, 7)
+    assert db["schema_end"] == 1                                  # read off the existing links, never assumed
     assert [x["guid"] for x in db["to_add"]] == ["pack-aus_inventory", "pack-coco_ods", "pack-cocopages"]
     assert db["words"].startswith(f"add DataSetContent from re-db to the pack's 3 schemas under '{PACK}' · "
                                   "after the press: 7 members")
-    assert "plan only, nothing is written" in db["words"]
+    assert "nothing is written until the press" in db["words"]
     assert gw.writes() == []
 
 

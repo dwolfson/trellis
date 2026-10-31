@@ -333,6 +333,8 @@ export const getCatalogueCommitRecord = (slug, id) =>
 /** The newest commit for the database, read from the registry (a reload and a second tab see the same). Read-only. */
 export const getCatalogueLatestCommit = (slug) => get(scopeUrl(slug, '/commits/latest'));
 export const postCatalogueReadBack = (slug) => post(scopeUrl(slug, '/read-back'));
+/** D1-b: the database-level press (writes DataSetContent links to Egeria; signed in). */
+export const postCatalogueReanchor = (slug) => post(scopeUrl(slug, '/reanchor'));
 
 /* ── Curate's publish table (web/routes/publish_table.py) ───────────────
  * A row per declared measure; a signed Publish | Keep in RE choice per row. Reads and writes RE only: the press is

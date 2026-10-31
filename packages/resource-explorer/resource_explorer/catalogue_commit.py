@@ -168,6 +168,19 @@ P_ADOPTED = "create_error_adopted"
 P_EGERIA_RESET = "egeria_reset"
 #: D1-a: what Egeria holds for this database's endpoint (every family) and the re-anchor plan; a read, never a write.
 P_ENDPOINT = endpoint_identity.PROOF_KIND
+#: D1-b: the database-level press (RE's database element + the pack's schemas); lists every relationship it added.
+P_REANCHOR = "reanchor_database_link"
+
+
+def _press_summary(row: dict | None) -> dict | None:
+    """The newest D1-b press, as Contents shows it beside the plan: its words, time, who, and what it added."""
+    if row is None:
+        return None
+    d = row.get("detail") or {}
+    return {"at": row["read_at"], "by": row.get("recorded_by") or "", "words": d.get("words", ""),
+            "added": len(d.get("added") or []), "failed": [f.get("schema", "") for f in d.get("failed") or []],
+            "unverified": [u.get("schema", "") for u in d.get("unverified") or []],
+            "members_after": d.get("members_after"), "undo": d.get("undo", "")}
 #: The status value an Egeria project context (entity_egeria_project_context.status, investigations.
 #: egeria_project_status) takes after a reset, when the Egeria project it named is gone. A status VALUE, never
 #: the words: the words are display text only. It is "not answered" exactly as `unset` is, so a publish is
@@ -901,6 +914,7 @@ def derive_commit_state(registry, slug: str, view: dict, now: datetime | None = 
                     "families": res.get("families") or [], "plan": d.get("plan"),
                     "neither": (endpoint_identity.neither_line(res, [x["name"] for x in view.get("schemas") or []])
                                 if d.get("plan") else None),
+                    "press": _press_summary(_latest(db_rows, (P_REANCHOR,))),
                     "words": (f"{endpoint_identity.NOT_READ} · {res.get('error')}" if res.get("error")
                               else (d.get("plan") or {}).get("words") or "this endpoint: only RE's elements")}
     return {"schemas": schemas, "tables": tables, "header": header, "collisions": collisions,
