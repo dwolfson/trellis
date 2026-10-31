@@ -7496,3 +7496,245 @@ Asked At
 
 ___
 
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Is the schema of database 1 the same as the schema of database 2?
+
+### Description
+Answered as a relation with a degree, never yes or no: identical, superset, subset, overlapping or disjoint, with N of M tables matching by name, N of M columns matching by name and type, and every differing table and column named, from the schema inventories RE stored. A database with no inventory is not established, never different.
+
+### Summary
+Two databases can share a name, a server or an origin and still not hold the same schema; a person choosing which copy to use, or retiring one, needs to know how alike they are and where they differ.
+
+### Usage
+Typically asked and answerable during Assessment.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0110 |
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Is the schema of database 1 the same as the schema of database 2?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+Is the schema of database 1 the same as the schema of database 2?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Owner
+
+### Question Name
+Is the schema of database 1 the same as the schema of database 2?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Consumer
+
+### Question Name
+Is the schema of database 1 the same as the schema of database 2?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Architecture
+
+### Question Name
+Is the schema of database 1 the same as the schema of database 2?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Is the schema of database 1 the same as the schema of database 2?
+
+### Scope Reference
+Assessment
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Is database 1 the same as database 2?
+
+### Description
+The same data, not just the same shape: row counts per matching table, value-profile agreement and fingerprints, estimated (no row-by-row diff, owner ruling 3), as a relation with a degree.
+
+### Summary
+The same schema does not mean the same data: a copy can drift row by row while its shape stays identical.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0111 |
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Is database 1 the same as database 2?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+Is database 1 the same as database 2?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Owner
+
+### Question Name
+Is database 1 the same as database 2?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Consumer
+
+### Question Name
+Is database 1 the same as database 2?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Expert
+
+### Question Name
+Is database 1 the same as database 2?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Is database 1 the same as database 2?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+
+## Create Glossary Term
+
+### Glossary Name
+User Questions
+
+### Display Name
+Is database 1 a subset or superset of database 2?
+
+### Description
+By schema: tables (and columns within them) contained, from the schema inventories RE stored; by data: rows contained where keys allow, estimated (CMP2). Read together, each with its degree.
+
+### Summary
+A smaller copy contained in a larger one is a different decision from two databases that each hold what the other lacks.
+
+### Usage
+Typically asked and answerable during Analysis.
+
+### Additional Properties
+| Parameter Name | Parameter Value |
+|---|---|
+| question_id | Q-0112 |
+
+___
+
+## Classify Term as Question
+
+### Term Name
+Is database 1 a subset or superset of database 2?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Steward
+
+### Question Name
+Is database 1 a subset or superset of database 2?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Data Owner
+
+### Question Name
+Is database 1 a subset or superset of database 2?
+
+___
+
+## Link Perspective to Question
+
+### Perspective Name
+Perspective::Architecture
+
+### Question Name
+Is database 1 a subset or superset of database 2?
+
+___
+
+## Link Element To Scope
+
+### Target Element
+Is database 1 a subset or superset of database 2?
+
+### Scope Reference
+Analysis
+
+### Scope Category
+Asked At
+
+___
+

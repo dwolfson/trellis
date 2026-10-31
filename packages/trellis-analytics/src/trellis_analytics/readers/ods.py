@@ -226,6 +226,46 @@ class OdsReader:
                                           "to_column": fk.get("foreign_column") or ""})
         return {"surveyed_at": rows[0]["surveyed_at"], "source": rows[0]["source"], "tables": list(tables.values())}
 
+    # ── the schema inventory, as RE stores it (schema_comparison, CMP1) ──
+
+    def schema_inventory(self, slug: str) -> dict:
+        """The tables and columns the latest column survey stored for a database:
+        `{"registered", "surveyed_at", "source", "tables": [{schema_name, table_name, table_type,
+        columns: [{column_name, ordinal_position, data_type, column_size, is_nullable, is_primary_key}]}]}`.
+
+        `registered` is whether RE knows the database at all; `surveyed_at` is None (and `tables` empty) when no
+        survey stored its columns, so "not surveyed" and "surveyed, no tables" are never the same answer. The snapshot
+        is the newest (surveyed_at, source) of `database_columns` not marked invalid, as `table_keys` reads it; a table
+        that run stored in `database_tables` with no column row is listed with no columns. `is_nullable` and
+        `is_primary_key` are None where the survey left them unstated."""
+        s = normalize_slug(slug)
+        registered = bool(self.query("SELECT 1 AS one FROM databases WHERE slug = ?", (s,)))
+        runs = self.query(
+            "SELECT x.surveyed_at AS surveyed_at, x.source AS source FROM database_columns x "
+            "WHERE x.database_slug = ? "
+            "AND NOT EXISTS (SELECT 1 FROM database_surveys d WHERE d.database_slug = x.database_slug "
+            "  AND d.surveyed_at = x.surveyed_at AND d.source = x.source AND d.invalid_at IS NOT NULL) "
+            "GROUP BY x.surveyed_at, x.source ORDER BY x.surveyed_at DESC, x.source LIMIT 1", (s,))
+        if not runs:
+            return {"registered": registered, "surveyed_at": None, "source": None, "tables": []}
+        at, source = runs[0]["surveyed_at"], runs[0]["source"]
+        tables: dict[tuple[str, str], dict] = {}
+        for t in self.query(
+                "SELECT schema_name, table_name, table_type FROM database_tables "
+                "WHERE database_slug = ? AND surveyed_at = ? AND source = ? ORDER BY schema_name, table_name",
+                (s, at, source)):
+            tables[(t["schema_name"], t["table_name"])] = {**t, "table_type": t.get("table_type") or "",
+                                                            "columns": []}
+        for c in self.query(
+                "SELECT schema_name, table_name, column_name, ordinal_position, data_type, column_size, is_nullable, "
+                "is_primary_key FROM database_columns WHERE database_slug = ? AND surveyed_at = ? AND source = ? "
+                "ORDER BY schema_name, table_name, ordinal_position, column_name", (s, at, source)):
+            key = (c.pop("schema_name"), c.pop("table_name"))
+            t = tables.setdefault(key, {"schema_name": key[0], "table_name": key[1], "table_type": "", "columns": []})
+            t["columns"].append(c)
+        return {"registered": registered, "surveyed_at": at, "source": source,
+                "tables": [tables[k] for k in sorted(tables)]}
+
     # ── a file system's walk rows (Files build step 1), as RE stores them ──
 
     #: RE keeps the newest five walk runs per file system (`walk_extensions.WALK_RUNS_KEPT`); a step reads at most that.

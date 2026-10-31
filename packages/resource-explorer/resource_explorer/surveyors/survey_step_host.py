@@ -289,7 +289,9 @@ STEP_ODS_METHODS = ("row_count_snapshots", "commit_proofs", "catalogue_scope_eve
                     # fs_permissions): names, sizes, times, owner, mode and hash, never content
                     "filesystem_walk_runs", "filesystem_walk_files", "filesystem_hash_matches",
                     # the noise directories a walk did not enter, by name (Files build step 7: fs_layout_signals)
-                    "filesystem_walk_not_walked")
+                    "filesystem_walk_not_walked",
+                    # the tables and columns of the latest column survey, with types (schema_comparison, CMP1)
+                    "schema_inventory")
 
 #: How long a step's read may wait for its answer.
 READ_TIMEOUT_SECONDS = 120

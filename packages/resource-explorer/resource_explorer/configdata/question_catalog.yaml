@@ -3043,6 +3043,85 @@ database_questions:
     columns read not_permitted on 2026-10-21.
   catalog_history: '2026-10-22: added: credential_capability answered no question (review §1.2, §4).'
   retired: false
+- id: Q-0110
+  question: Is the schema of database 1 the same as the schema of database 2?
+  stage: Assessment
+  perspectives:
+  - Steward
+  - Data Owner
+  - Consumer
+  - Architecture
+  purposes:
+  - Assess
+  - Select
+  - Integrate
+  levels:
+  - resource
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: asked of a set of two databases, not of one database, so nothing on a single database
+      answers it; the set step schema_comparison (CMP1) answers it on a work list of two, and the set
+      page row is CMP4'
+  answering_mechanism: Local Registry Query
+  rationale: 'Answered as a relation with a degree, never yes or no: identical, superset, subset, overlapping
+    or disjoint, with N of M tables matching by name, N of M columns matching by name and type, and every
+    differing table and column named, from the schema inventories RE stored. A database with no inventory
+    is not established, never different.'
+  catalog_history: '2026-10-30: added: DESIGN-RESOURCE-COMPARISON-QUESTIONS-2026-10-30 §1 (owner ruling
+    1, "agree"); ids follow Q-0109, which was already taken'
+  retired: false
+- id: Q-0111
+  question: Is database 1 the same as database 2?
+  stage: Analysis
+  perspectives:
+  - Steward
+  - Data Owner
+  - Consumer
+  - Data Expert
+  purposes:
+  - Assess
+  - Select
+  levels:
+  - resource
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: the data comparison over stored row counts, value profiles and fingerprints (CMP2) is
+      not built'
+  answering_mechanism: Local Registry Query
+  rationale: 'The same data, not just the same shape: row counts per matching table, value-profile agreement
+    and fingerprints, estimated (no row-by-row diff, owner ruling 3), as a relation with a degree.'
+  catalog_history: '2026-10-30: added: DESIGN-RESOURCE-COMPARISON-QUESTIONS-2026-10-30 §1 (owner ruling
+    1, "agree"); ids follow Q-0109, which was already taken'
+  retired: false
+- id: Q-0112
+  question: Is database 1 a subset or superset of database 2?
+  stage: Analysis
+  perspectives:
+  - Steward
+  - Data Owner
+  - Architecture
+  purposes:
+  - Assess
+  - Select
+  - Integrate
+  levels:
+  - resource
+  answering:
+    kind: gap
+    analysis_ids: []
+    checks: []
+    note: 'GAP: asked of a set of two databases, not of one database; the set step schema_comparison (CMP1)
+      answers the schema half on a work list of two, and the data half (CMP2) is not built'
+  answering_mechanism: Local Registry Query
+  rationale: 'By schema: tables (and columns within them) contained, from the schema inventories RE stored;
+    by data: rows contained where keys allow, estimated (CMP2). Read together, each with its degree.'
+  catalog_history: '2026-10-30: added: DESIGN-RESOURCE-COMPARISON-QUESTIONS-2026-10-30 §1 (owner ruling
+    1, "agree"); ids follow Q-0109, which was already taken'
+  retired: false
 filesystem_questions:
 - id: Q-0002
   question: What is this resource, and what is it for?
