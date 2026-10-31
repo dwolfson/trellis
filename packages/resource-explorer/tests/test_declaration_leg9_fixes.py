@@ -152,3 +152,28 @@ def test_us_spelling_only_changes_the_known_words():
     assert us_spelling("226 never analysed, 0 stale") == "226 never analyzed, 0 stale"
     assert us_spelling("Analysing the analyses") == "Analyzing the analyses"      # the plural noun is already US
     assert us_spelling("colour") == "colour" and us_spelling(None) is None
+
+
+# ── leg 10 (READ-74AE485F): a missing count says whether it was measured; a missing value is not a change ───────────
+
+def test_sibling_state_reads_the_checks_own_state_beside_a_missing_count():
+    value = {"checks": {"tables_without_comment": {"state": "not_measured", "count": None, "total": 4,
+                                                   "explanation": "Not one table carries a description."}}}
+    assert pt.sibling_state(value, "checks.tables_without_comment.count") == (
+        "not_measured", "Not one table carries a description.")
+    assert pt.sibling_state(value, "checks.missing.count") == ("", "")
+    assert pt.sibling_state(value, "count") == ("", "")
+    assert pt.sibling_state(value, "run.surveyed_at") == ("", "")
+
+
+def test_a_missing_value_is_not_a_change_from_the_published_one():
+    proof = {"proof": pt.P_MEASURE_READ_BACK, "read_at": "2026-10-29T23:59:10",
+             "detail": {"value": "226", "as_of": "2026-10-24"}, "element_guid": "g", "node_kind": "database"}
+    missing = pt._published_word(proof, None, "")
+    assert missing["state"] == "published"
+    assert missing["words"] == "published 2026-10-29 23:59 · not re-measured since"
+    assert "changed" not in missing["words"]
+    # a real different value is still a change
+    assert pt._published_word(proof, "300", "2026-10-24")["state"] == "changed"
+    # and the same value is still plain published
+    assert pt._published_word(proof, "226", "2026-10-24")["words"] == "published · read back 2026-10-29 23:59"

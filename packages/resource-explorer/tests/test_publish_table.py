@@ -129,6 +129,20 @@ def test_a_measured_result_without_the_field_is_measured_nothing_not_never_run(r
     assert row["absence"] == "measured_nothing" and row["absence_words"] == ABSENCE["measured_nothing"]
 
 
+def test_a_count_its_own_check_did_not_measure_is_not_measured_nothing(registry, declared):
+    """F42: `checks.<x>.count` is None because the check's own state says so; the row says that, not 'found nothing'."""
+    dec = declared["entries"][0].declaration
+    dec.measures[1].value_field = "checks.docs.count"
+    declared["facts"]["example_step_x"].value = {"asOf": "2026-10-27T08:30:00", "buckets": [],
+        "checks": {"docs": {"state": "not_measured", "count": None, "total": 4,
+                            "explanation": "Not one table carries a description."}}}
+    row = _rows(registry)["rows_sampled"]
+    assert row["absence"] == "not_measured"
+    assert row["absence_words"].endswith("Not one table carries a description.")
+    declared["facts"]["example_step_x"].value["checks"]["docs"].update(state="measured", explanation="")
+    assert _rows(registry)["rows_sampled"]["absence"] == "measured_nothing"
+
+
 def test_a_number_without_its_as_of_does_not_publish(registry, declared):
     declared["facts"]["example_step_x"].value = {"rows_sampled": 5, "buckets": []}
     row = _rows(registry)["rows_sampled"]
