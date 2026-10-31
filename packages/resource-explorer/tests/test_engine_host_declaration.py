@@ -175,8 +175,9 @@ def test_the_committed_library_declaration_is_what_the_generator_writes(library_
 
     want = _script().render_library()
     # The engine host declares database steps only (Files build step 6's file-system steps are run by RE, not
-    # offered to Egeria yet).
-    database = [n for n in EXAMPLE_STEPS if "database" in discover()[n].resource_types]
+    # offered to Egeria yet). A set step (schema_comparison) runs from a work list, not as an Egeria survey step.
+    database = [n for n in EXAMPLE_STEPS if "database" in discover()[n].resource_types
+                and discover()[n].subject != "set"]
     assert set(want) == {LIBRARY / f"{n}{ext}" for n in database for ext in (".md", ".pyegeria-steps.json")}
     assert set(LIBRARY.glob("*")) == set(want), "a library declaration nothing generates, or one never committed"
     for path, text in want.items():

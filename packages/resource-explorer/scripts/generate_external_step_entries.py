@@ -32,8 +32,11 @@ END = "  # END GENERATED user steps ({type})"
 
 def _step_manifests(entity_type: str) -> list:
     from trellis_analytics.discovery import discover
+    # A step whose subject is a set (a work list's members) is not a per-resource analysis: the work list's page offers
+    # it (`survey_step_host.set_step_offers`), so it gets no card in the resource type's section.
     return sorted((m for m in discover().values()
-                   if m.kind == "step" and entity_type in m.resource_types), key=lambda m: m.name)
+                   if m.kind == "step" and entity_type in m.resource_types
+                   and getattr(m, "subject", "resource") != "set"), key=lambda m: m.name)
 
 
 def render_catalog_block(entity_type: str) -> str:

@@ -111,3 +111,48 @@ def test_the_work_lists_page_offers_the_set_step_priced_and_runs_it(registry, mo
     assert ran["per_member"] == 3 and ran["rollups"] == 1
     assert client.post(f"/api/work-lists/{SET}/set-steps/nope/run").status_code == 404
     assert client.get("/api/work-lists/missing/set-steps").status_code == 404
+
+
+# ── schema_comparison (CMP1): the first set step the library ships ──
+
+from tests.library_step_install import install_steps  # noqa: E402,F401 - the fixture
+
+
+def _columns(registry, slug, tables, at):
+    registry.record_database_survey(slug, 1, len(tables), 0, {}, surveyed_at=at)
+    registry.write_detail_rows("database_columns", slug, at, rows=[
+        {"schema_name": "public", "table_name": t, "column_name": c, "data_type": ty, "is_primary_key": 0}
+        for t, cols in tables.items() for c, ty in cols])
+
+
+def test_schema_comparison_runs_on_a_work_list_of_two_through_the_step_reader(registry, install_steps):
+    install_steps("schema_comparison")
+    manifest = host.discover_set_steps("database")["schema_comparison"]
+    assert "schema_comparison" not in host.discover_steps("database")
+    _columns(registry, "a", {"orders": [("id", "integer"), ("amount", "numeric")], "store": [("id", "integer")]},
+             "2026-10-24T00:00:00")
+    _columns(registry, "b", {"orders": [("id", "integer"), ("amount", "text")]}, "2026-10-30T00:00:00")
+    out = host.run_set_step(manifest, registry, SET, [("database", "a"), ("database", "b")])
+    assert out["state_counts"] == {"measured": 3}
+    run, rows = registry.query_step_annotations(host.SET_ENTITY, SET, "schema_comparison")
+    assert rows[0]["summary"].startswith("a is a superset of b: 1 of 2 tables match (50%); a adds 1 table · columns: "
+                                         "1 of 2 columns match by name and type (50%) in the 1 table both hold · "
+                                         "differ: public.orders.amount: numeric → text")
+    # One side never surveyed: not established, said for that side, and no number on any row.
+    out = host.run_set_step(manifest, registry, SET, [("database", "a"), ("database", "c")])
+    assert out["state_counts"] == {"not_established": 3}
+    run, rows = registry.query_step_annotations(host.SET_ENTITY, SET, "schema_comparison")
+    assert rows[0]["summary"] == "Not established: c has no schema inventory in RE yet — survey it, then compare."
+
+
+def test_a_set_step_gets_no_card_in_the_analysis_catalog(monkeypatch):
+    """The generator writes per-resource analyses only: a set step is offered by the work list's page instead."""
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "gen_external_steps_set", Path(__file__).resolve().parents[1] / "scripts" / "generate_external_step_entries.py")
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    monkeypatch.setattr("trellis_analytics.discovery.discover", lambda: {"set_probe": _manifest()})
+    assert gen._step_manifests("database") == []
