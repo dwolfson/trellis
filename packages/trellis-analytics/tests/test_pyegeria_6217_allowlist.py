@@ -50,12 +50,12 @@ def test_every_report_spec_the_library_ships_names_a_registered_function():
 
 
 def test_a_report_spec_naming_a_dotted_path_is_warned_a_registered_name_is_not():
-    """pyegeria ISSUE-173 (after 6.2.17): a report spec's dotted path still resolves but warns, naming the registered
+    """pyegeria 6.2.18 (ISSUE-173): a report spec's dotted path still resolves but warns, naming the registered
     name to use; a registered name resolves silently. pyegeria decides this; the test holds trellis's names to it."""
     import warnings
     resolve = getattr(fse, "resolve_report_spec_function", None)
     if resolve is None:
-        pytest.skip("this pyegeria does not warn on dotted paths yet (ISSUE-173 is after 6.2.17)")
+        pytest.skip("this pyegeria does not warn on dotted paths yet (from 6.2.18, ISSUE-173)")
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         resolve(TILE_FUNCTION)

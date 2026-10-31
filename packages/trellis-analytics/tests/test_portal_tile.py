@@ -29,7 +29,7 @@ def tile(monkeypatch):
     from pyegeria.view import base_report_formats as brf
     from trellis_analytics.portal import report_specs
     monkeypatch.setattr(fse, "EgeriaTech", NoEgeria)
-    if LABEL not in brf.get_report_registry():     # from pyegeria ISSUE-173 the installed entry point registered it
+    if LABEL not in brf.get_report_registry():     # from pyegeria 6.2.18 the installed entry point registered it
         brf.register_report_specs(report_specs(), source="test")
     yield lambda url, fmt="DICT", **p: fse.exec_report_spec(
         LABEL, output_format=fmt, params={"slug": SLUG, "ods_url": url, **p})
@@ -114,7 +114,7 @@ def test_nothing_found_is_its_own_word(tile, make_ods):
     assert data["Published"] == 0 and data["Not yet published"] == 2
 
 
-@pytest.mark.filterwarnings("ignore::DeprecationWarning")    # deprecated from pyegeria ISSUE-173; still the 6.2.17 route
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")    # deprecated in pyegeria 6.2.18, removed in 6.2.19
 def test_the_spec_loads_through_pyegeria_report_spec_modules(monkeypatch):
     from pyegeria.view import base_report_formats as brf
     monkeypatch.setenv("PYEGERIA_REPORT_SPEC_MODULES", "trellis_analytics.portal:report_specs")
@@ -132,11 +132,11 @@ def test_installing_the_package_registers_the_spec(monkeypatch):
     puts the tile in the Portal's report registry, and its spec names the function by registered name."""
     from pyegeria.view import base_report_formats as brf
     if not hasattr(brf, "REPORT_SPEC_ENTRY_POINT_GROUP"):
-        pytest.skip("this pyegeria reads no report-spec entry points (ISSUE-173 is after 6.2.17)")
+        pytest.skip("this pyegeria reads no report-spec entry points (from 6.2.18, ISSUE-173)")
     monkeypatch.delenv("PYEGERIA_REPORT_SPEC_MODULES", raising=False)
     try:
         skipped = brf.refresh_report_specs()
-        assert [s for s in skipped if "trellis_analytics" in s[0] or "curation_coverage_tile" in s[0]] == []
+        assert [s for s in skipped if "trellis" in s[0]] == []
         assert brf.get_report_registry()[LABEL].action.analytic_function == "curation_coverage_tile"
     finally:
         brf.refresh_report_specs()

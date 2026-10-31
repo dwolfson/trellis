@@ -4,8 +4,8 @@
 hand an analytic function JSON parameters and only chart a flat {category: number} dict. It reshapes the routine's
 `CoverageResult` and computes nothing of its own: every number, id, word, version and time below is read off the
 result. `report_specs()` is the FormatSet for the tile. Installing the package registers it through the
-`pyegeria.report_specs` entry point (read by pyegeria from ISSUE-173); with pyegeria 6.2.17 it is loaded through the
-deprecated `PYEGERIA_REPORT_SPEC_MODULES` ("trellis_analytics.portal:report_specs"). The spec names the tile's
+`pyegeria.report_specs` entry point (read by pyegeria from 6.2.18, ISSUE-173); with pyegeria 6.2.17 it is loaded
+through `PYEGERIA_REPORT_SPEC_MODULES`, deprecated in 6.2.18 and removed in 6.2.19 ("trellis_analytics.portal:report_specs"). The spec names the tile's
 function by its registered name, `curation_coverage_tile` (Q2(b)).
 
 When the state is `not_established` or `not_applicable` the dict carries no number at the top level, so a BAR
