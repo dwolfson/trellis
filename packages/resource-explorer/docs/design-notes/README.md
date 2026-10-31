@@ -114,6 +114,7 @@ These are designs, reviews and evidence from 2026-10-29 and 2026-10-30. Most are
 - [DESIGN-ADOPT-BY-ENDPOINT-D1-2026-10-30.md](DESIGN-ADOPT-BY-ENDPOINT-D1-2026-10-30.md): D1, adopting an existing database element in Egeria by its endpoint, and reading Egeria's duplicate links
 - [DESIGN-ANALYTIC-LIBRARY-SPLIT-2026-10-30.md](DESIGN-ANALYTIC-LIBRARY-SPLIT-2026-10-30.md): what would move if the Analytic Library were split out of trellis, and how versions and loading would work
 - [REVIEW-FILES-STATE-2026-10-30.md](REVIEW-FILES-STATE-2026-10-30.md): a read-only review of Files in the running Explorer
+- LS5 spike, in [`evidence/`](evidence/): [two RE analyses as Analytic Library steps, 2026-10-31](evidence/SPIKE-RESULT-RE-ANALYSES-AS-LIBRARY-STEPS-2026-10-31.md): timings and equivalence of the library twins against the native analyses. Closed by the project owner; recommendation "convert as touched"; twins not merged
 - Calibration reports, in [`evidence/`](evidence/): [adventureworks, 2026-10-29](evidence/calibration-adventureworks-2026-10-29.md) and [coco_pharma, 2026-10-30](evidence/calibration-coco_pharma-2026-10-30.md): RE's quality results compared with TestGen's on the same data
 
 ## Proposals: designed, not built
