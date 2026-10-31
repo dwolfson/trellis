@@ -306,11 +306,11 @@ Ways to check that RE sees the step. RE has no admin page or CLI verb that lists
   [`EGERIA-ANNOTATION-TYPES-WANTED.md`](design-notes/EGERIA-ANNOTATION-TYPES-WANTED.md).
 - An installed step with no catalog entry (its manifest was refused, for instance a built-in's id) logs a warning.
   It can run from a Survey Definition, but has no card.
-- Once a survey has run, the step's declared measures appear as rows in Curate's publish table (§5).
+- Once a survey has run, the step's declared measures appear as rows in Curate's publish table (§4).
 
 ---
 
-## 5. What a curator sees: Curate's publish table
+## 4. What a curator sees: Curate's publish table
 
 > **Two reports after a database Contents commit.** A commit publishes RE's measures into RE's own survey report (the
 > step names it: *RE's measures are in report fb6d96f4*), and also starts an Egeria survey, whose engine action writes a
@@ -377,7 +377,7 @@ measures wait for a survey report of RE's own for file systems; the Files steps 
 
 ---
 
-## 6. How Chat uses the declaration
+## 5. How Chat uses the declaration
 
 Chat compiles a step's declared results into its context:
 
@@ -402,7 +402,7 @@ analyses have no results reader): `DECLARED-EXTENSIBILITY-SLICE2-CHAT-COMPILE.md
 
 ---
 
-## 7. The worked example, and the other example steps
+## 6. The worked example, and the other example steps
 
 `packages/trellis-analytics/examples/steps/database_staleness/` is a real, installable step: rows changed per
 table since the last survey. It reads only RE's stored row-count snapshots and opens no connection. The
