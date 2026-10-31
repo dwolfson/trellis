@@ -1,5 +1,7 @@
 # Design — an existing TestGen deployment as a data channel (2026-10-30)
 
+> Superseded in part by Q2(b), 2026-10-31: analytics are found through the `pyegeria.analytics` entry point (`trellis.analytics` is only an alias), installing the package registers it, and report specs name functions by registered name, not dotted path or `PYEGERIA_REPORT_SPEC_MODULES`. See `packages/trellis-analytics/README.md`, "How analytics are found".
+
 Owner's words (architect chat, 2026-10-30): "I think at some point (not urgently) we should plan on integrating with
 existing TestGen deployments so that we can gain access to its existing data rather than resurveying - it is another
 way to expand our reach by using what other tools have learned."

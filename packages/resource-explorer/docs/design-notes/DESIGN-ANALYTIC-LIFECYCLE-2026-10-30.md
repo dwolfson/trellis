@@ -1,5 +1,7 @@
 # Design — the lifecycle of analytic routines and survey steps: where they live, how they are managed (2026-10-30)
 
+> Superseded in part by Q2(b), 2026-10-31: analytics are found through the `pyegeria.analytics` entry point (`trellis.analytics` is only an alias), installing the package registers it, and report specs name functions by registered name, not dotted path or `PYEGERIA_REPORT_SPEC_MODULES`. See `packages/trellis-analytics/README.md`, "How analytics are found".
+
 Owner's words (architect chat, 2026-10-30): "We also need to architect the lifecycle for analytic routines (and survey
 steps), where they live and how they are managed."
 

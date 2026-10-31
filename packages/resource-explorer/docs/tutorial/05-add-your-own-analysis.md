@@ -6,7 +6,7 @@ This walk follows two steps that were added without changing Resource Explorer's
 
 ## 1. What you add
 
-A library step is a package with a step manifest and a declaration: a result kind, measures (each with a unit and an as-of), absence sentences, chat extents, a confidence form and, optionally, an Egeria type. Installing the package registers it as a `trellis.analytics` entry point. The guide's section 7 has the whole table of what can be added.
+A library step is a package with a step manifest and a declaration: a result kind, measures (each with a unit and an as-of), absence sentences, chat extents, a confidence form and, optionally, an Egeria type. Installing the package registers it: the package declares a `pyegeria.analytics` entry point, and Resource Explorer and the Egeria Portal both read it, with nothing to configure. A report spec names the analysis by its registered name (`fs_permissions`), never by its Python path. (Steps built before 2026-10-31 declare `trellis.analytics`, which is still read as an alias.) The guide's section 7 has the whole table of what can be added.
 
 What the gate found about "no code change" (the architect's reading of `origin/main` at `7b50ba89` on 2026-10-28): no Resource Explorer code names either step. Two pieces of configuration do: a generated entry in `configdata/analysis_catalog.yaml` and a hand-written question row in `configdata/question_catalog.yaml` (Q-0107 and Q-0108). So "no code change" holds for code, and not yet for configuration. The fix, reading installed steps' manifests at read time so the generated entry is no longer committed (finding F1), is merged on `main` (#915). The Explorer these screens were read on was still running `afdac240`, so no screen in this walk shows it.
 
