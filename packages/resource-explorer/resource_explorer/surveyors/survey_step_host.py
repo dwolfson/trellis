@@ -2,7 +2,7 @@
 
 A user step is an installable package outside RE: a plain `run(inputs) -> results` (level 1) and a
 `StepManifest` that the Analytic Library's `SurveyStep` wrapper runs (level 2), found through the
-`trellis.analytics` entry point. A Survey Definition (level 3) names it by `re_analysis_step`, like any built-in.
+`pyegeria.analytics` entry point. A Survey Definition (level 3) names it by `re_analysis_step`, like any built-in.
 
 This module puts such steps BESIDE a resource type's step registry, never in it by hand:
 
@@ -49,7 +49,7 @@ annotations land in `step_annotations` as for any run, then puts them on the Sur
 
 Adding a step that Egeria can dispatch, as its author:
   1. write `run(inputs)` and a `StepManifest` (with `request_type`, `nothing_to_derive_guard`) in its own package,
-     exposed through the `trellis.analytics` entry point;
+     exposed through the `pyegeria.analytics` entry point;
   2. install it where RE's worker runs, and run `scripts/generate_external_step_entries.py` (the catalog card) and
      `scripts/generate_engine_host_declaration.py` (its Egeria declaration, `docs/dr-egeria/engine-host/library/`);
   3. have the owner run that declaration (`resource-explorer dr-egeria run engine-host/library/<step>.md`).

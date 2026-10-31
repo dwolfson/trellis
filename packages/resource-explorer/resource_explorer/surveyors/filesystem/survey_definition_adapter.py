@@ -486,7 +486,7 @@ FILESYSTEM_ANALYSIS_HEADLINE_MAP: dict = {"filesystem_inventory": _filesystem_in
 
 # ── user steps (extensibility brief 2c; Files build step 6) ─────────────────
 #
-# Installable steps found through the `trellis.analytics` entry point (fs_change_rates, fs_duplicates, fs_activity,
+# Installable steps found through the `pyegeria.analytics` entry point (fs_change_rates, fs_duplicates, fs_activity,
 # fs_permissions, and Files build step 7's fs_layout_signals: zero-fetch derivations over the walk's kept per-file
 # rows), attached BESIDE filesystem_inventory by `survey_step_host`, from the catalog entries the generator writes from their manifests, exactly as for databases.
 # A file system has no built-in step registry of its own yet; these two start empty and hold only what attach adds.

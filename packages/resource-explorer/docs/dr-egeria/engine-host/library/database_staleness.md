@@ -55,7 +55,7 @@ ACTIVE
 | family | Freshness |
 | function | database_staleness.step.run |
 | package | trellis-step-database-staleness |
-| entry_point | trellis.analytics:database_staleness |
+| entry_point | pyegeria.analytics:database_staleness |
 
 ___
 

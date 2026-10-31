@@ -3,8 +3,10 @@
 `curation_coverage_tile` is a thin adapter between the routine and pyegeria's `exec_report_spec`, which can only
 hand an analytic function JSON parameters and only chart a flat {category: number} dict. It reshapes the routine's
 `CoverageResult` and computes nothing of its own: every number, id, word, version and time below is read off the
-result. `report_specs()` is the FormatSet for the tile, loadable through `PYEGERIA_REPORT_SPEC_MODULES`
-("trellis_analytics.portal:report_specs").
+result. `report_specs()` is the FormatSet for the tile. Installing the package registers it through the
+`pyegeria.report_specs` entry point (read by pyegeria from ISSUE-173); with pyegeria 6.2.17 it is loaded through the
+deprecated `PYEGERIA_REPORT_SPEC_MODULES` ("trellis_analytics.portal:report_specs"). The spec names the tile's
+function by its registered name, `curation_coverage_tile` (Q2(b)).
 
 When the state is `not_established` or `not_applicable` the dict carries no number at the top level, so a BAR
 request cannot draw a chart of zeros. Since pyegeria 6.2.17 (#518) the executor returns kind "absent" for those
@@ -18,7 +20,9 @@ from trellis_analytics.readers.ods import OdsReader
 from trellis_analytics.routines import curation_coverage
 
 TILE_LABEL = "Trellis - Curation Coverage"
-TILE_FUNCTION = "trellis_analytics.portal.curation_coverage_tile"
+#: The tile function's registered name (manifests.CURATION_COVERAGE_TILE, installed through the pyegeria.analytics entry
+#: point). A report spec names it by this, never by its Python path (Q2(b), project owner 2026-10-31).
+TILE_FUNCTION = "curation_coverage_tile"
 _CHARTED = ("measured", "nothing_found")     # the states that have counts to chart
 
 
@@ -49,7 +53,7 @@ def curation_coverage_tile(slug: str, ods_url: str = "", resource_type: str = "d
 
 
 def report_specs():
-    """The tile's FormatSet, keyed by its label: the loader callable `PYEGERIA_REPORT_SPEC_MODULES` names."""
+    """The tile's FormatSet, keyed by its label: the loader the `pyegeria.report_specs` entry point names."""
     from pyegeria.view._output_format_models import ActionParameter, Format, FormatSet, FormatSetDict
     return FormatSetDict({TILE_LABEL: FormatSet(
         heading="Curation Coverage",

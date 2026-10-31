@@ -1,7 +1,7 @@
 [project]
 name = "trellis-analytics"
 version = "0.1.0"
-description = "Analytic Library: routines and steps with an honest result envelope (measured / nothing found / not established / not applicable), discovered by the trellis.analytics entry point. See docs/extensibility-walking-skeleton-brief.md."
+description = "Analytic Library: routines and steps with an honest result envelope (measured / nothing found / not established / not applicable), discovered by the pyegeria.analytics entry point. See docs/extensibility-walking-skeleton-brief.md."
 readme = "README.md"
 authors = [{ name = "Dan Wolfson" }]
 requires-python = ">=3.12,<4.0"
@@ -13,6 +13,8 @@ dependencies = [
     # subtitle (ISSUE-139); manifest.py relies on both. 6.2.17 (2026-10-30): #516's resolver allowlist accepts the
     # trellis_analytics prefix, #518's kind "absent" carries not_established / not_applicable, and #519 reads the
     # trellis.analytics entry-point group as an alias of pyegeria.analytics (discovery.register() now redundant).
+    # Q2(b) (project owner, 2026-10-31): this package declares pyegeria.analytics only; trellis.analytics is read as an
+    # alias (here and in pyegeria) during the split, so nothing in trellis declares it.
     "pyegeria>=6.2.17",
 ]
 
@@ -23,10 +25,17 @@ dotenv = ["python-dotenv"]
 re = ["resource-explorer"]
 dev = ["pytest>=8.3.0", "papermill", "ipykernel", "nbformat"]   # the notebook host's test runs the notebook with papermill
 
-# Installation is registration: every manifest the library ships is an entry point.
-[project.entry-points."trellis.analytics"]
+# Installation is registration: every manifest the library ships is an entry point, and a report spec names it by its
+# registered name.
+[project.entry-points."pyegeria.analytics"]
 curation_coverage = "trellis_analytics.manifests:CURATION_COVERAGE"
 context_pack = "trellis_analytics.manifests:CONTEXT_PACK"
+curation_coverage_tile = "trellis_analytics.manifests:CURATION_COVERAGE_TILE"
+
+# The Portal tile's report spec. pyegeria reads this group from ISSUE-173 (the release after 6.2.17), which deprecates
+# PYEGERIA_REPORT_SPEC_MODULES; 6.2.17 ignores it, so until then the tile's spec is still loaded through that variable.
+[project.entry-points."pyegeria.report_specs"]
+curation_coverage_tile = "trellis_analytics.portal:report_specs"
 
 [tool.uv.sources]
 resource-explorer = { workspace = true }

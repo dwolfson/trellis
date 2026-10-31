@@ -55,7 +55,7 @@ ACTIVE
 | family | Freshness |
 | function | change_rates.step.run |
 | package | trellis-step-change-rates |
-| entry_point | trellis.analytics:change_rates |
+| entry_point | pyegeria.analytics:change_rates |
 
 ___
 

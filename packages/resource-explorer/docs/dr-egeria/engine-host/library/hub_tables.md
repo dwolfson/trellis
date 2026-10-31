@@ -55,7 +55,7 @@ ACTIVE
 | family | Structure |
 | function | hub_tables.step.run |
 | package | trellis-step-hub-tables |
-| entry_point | trellis.analytics:hub_tables |
+| entry_point | pyegeria.analytics:hub_tables |
 | parameters | hub_min_referencing=3 |
 | measure_annotation_types | hub_table_proposal: ClassificationAnnotation |
 

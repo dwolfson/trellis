@@ -3284,7 +3284,7 @@ DATABASE_ANALYSIS_KINDS: dict[str, AnalysisKind] = {
 
 # ── user steps (extensibility brief 2c) ─────────────────────────────────────
 #
-# Installable steps found through the `trellis.analytics` entry point, attached
+# Installable steps found through the `pyegeria.analytics` entry point, attached
 # BESIDE the registry above by `survey_step_host`, from the catalog entries the
 # generator writes from their manifests. Last, so every map it fills exists.
 from resource_explorer.surveyors import survey_step_host as _survey_step_host  # noqa: E402

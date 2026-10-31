@@ -6,7 +6,7 @@ requires-python = ">=3.12,<4.0"
 dependencies = ["trellis-analytics>=0.1.0"]
 
 # Installation is registration: Resource Explorer finds the step through this entry point.
-[project.entry-points."trellis.analytics"]
+[project.entry-points."pyegeria.analytics"]
 fs_layout_signals = "fs_layout_signals.manifest:MANIFEST"
 
 [build-system]
