@@ -25,8 +25,8 @@ def layout_installed(tmp_path, monkeypatch):
     d = tmp_path / "site" / f"{project['name'].replace('-', '_')}-{version}.dist-info"
     d.mkdir(parents=True)
     (d / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {project['name']}\nVersion: {version}\n")
-    (d / "entry_points.txt").write_text("[trellis.analytics]\n" + "".join(
-        f"{k} = {v}\n" for k, v in project["entry-points"]["trellis.analytics"].items()))
+    (d / "entry_points.txt").write_text("[pyegeria.analytics]\n" + "".join(
+        f"{k} = {v}\n" for k, v in project["entry-points"]["pyegeria.analytics"].items()))
     monkeypatch.syspath_prepend(str(PKG / "src"))
     monkeypatch.syspath_prepend(str(tmp_path / "site"))
 

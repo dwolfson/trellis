@@ -31,6 +31,43 @@ def test_discovery_through_entry_point(entry_point_dist):
     assert found["curation_coverage"].function.endswith("curation_coverage")
 
 
+def test_the_library_declares_the_pyegeria_group_only():
+    """Q2(b), project owner 2026-10-31: pyegeria.analytics is the group; trellis.analytics is only read, as an alias."""
+    import tomllib
+    from pathlib import Path
+    ROOT = Path(__file__).resolve().parents[1]
+    eps = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["entry-points"]
+    assert "pyegeria.analytics" in eps and not any(g.startswith("trellis.") for g in eps)
+    steps = sorted((ROOT / "examples" / "steps").glob("*/pyproject.toml"))
+    assert steps and all(set(tomllib.loads(p.read_text())["project"]["entry-points"]) == {"pyegeria.analytics"}
+                         for p in steps)
+
+
+def _fake_step(tmp_path, monkeypatch, group: str, name: str = "alias_probe"):
+    (tmp_path / f"{name}.py").write_text(
+        "from trellis_analytics.manifest import StepManifest\n"
+        f"MANIFEST = StepManifest(name={name!r}, function={name + '.run'!r}, source='ods', version='1',\n"
+        "    resource_types=['database'])\n")
+    d = tmp_path / f"{name}-1.dist-info"
+    d.mkdir()
+    (d / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name.replace('_', '-')}\nVersion: 1\n")
+    (d / "entry_points.txt").write_text(f"[{group}]\n{name} = {name}:MANIFEST\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+
+@pytest.mark.parametrize("group", ["pyegeria.analytics", "trellis.analytics"])
+def test_a_step_is_found_under_the_group_or_its_alias(tmp_path, monkeypatch, group):
+    """A package built before Q2(b) declares trellis.analytics; during the split it is still found, and origin()
+    says which group it came through (the engine-host declaration records it)."""
+    from trellis_analytics.declare import manifest_properties
+    from trellis_analytics.discovery import origin
+    _fake_step(tmp_path, monkeypatch, group)
+    m = discover(check=False)["alias_probe"]
+    o = origin("alias_probe")
+    assert o == {"package": "alias-probe", "entry_point": "alias_probe", "group": group}
+    assert ("entry_point", f"{group}:alias_probe") in manifest_properties(m, o)
+
+
 def test_manifest_purposes_are_checked_at_load_and_warn_never_reject(caplog):
     """Owner ruling 2026-10-13, "warn only - suggestive everywhere": a manifest's `purpose` qualifier is checked
     against the investigation-purposes list when manifests load; an unknown value is named in a warning and the
@@ -59,14 +96,16 @@ def test_manifest_purposes_default_to_resource_explorer_s_list():
 
 def test_register_is_redundant_since_pyegeria_reads_the_entry_points(entry_point_dist):
     """pyegeria 6.2.17 (#519) reads the pyegeria.analytics entry-point group and trellis.analytics as its alias, so the
-    library's manifests are registered before register() runs; register() adds nothing and stays harmless. Its removal
-    is a separate follow-up."""
+    library's manifests are registered before register() runs; register() adds nothing and stays harmless, and says
+    it is redundant (Q2(b)). Its removal goes with the alias."""
     from pyegeria.view.analytic_registry import clear_runtime_analytic_functions, get_analytic_registry
     clear_runtime_analytic_functions()
     try:
-        assert {"context_pack", "curation_coverage"} <= set(get_analytic_registry())
-        assert register() == []
-        assert register() == []          # idempotent
+        assert {"context_pack", "curation_coverage", "curation_coverage_tile"} <= set(get_analytic_registry())
+        with pytest.warns(DeprecationWarning, match="redundant"):
+            assert register() == []
+        with pytest.warns(DeprecationWarning):
+            assert register() == []      # idempotent
         assert get_analytic_registry()["curation_coverage"].kind == "routine"
     finally:
         clear_runtime_analytic_functions()

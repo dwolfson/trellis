@@ -17,7 +17,7 @@ Curation
 DICT, JSON, BAR
 
 ### Analytic Function
-trellis_analytics.portal.curation_coverage_tile
+curation_coverage_tile
 
 ### Analytic Spec Params
 resource_type=database

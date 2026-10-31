@@ -1,12 +1,22 @@
-"""Find manifests through the `trellis.analytics` entry-point group, and register them in pyegeria's registry."""
+"""Find manifests through the `pyegeria.analytics` entry-point group (`trellis.analytics` read as its alias).
+
+Q2(b), project owner 2026-10-31: installing a package is what registers its analytics, and a report spec names a
+function by its registered name. pyegeria (6.2.17, #519) reads the same groups into its own registry, so this module
+is how trellis reads them for itself (Resource Explorer's catalogue, the engine-host declaration), not how pyegeria
+learns of them.
+"""
 from __future__ import annotations
 
 import logging
+import warnings
 from importlib.metadata import entry_points
 
 from trellis_analytics.manifest import _TrellisManifest, purpose_warnings, question_warnings
 
-GROUP = "trellis.analytics"
+GROUP = "pyegeria.analytics"
+#: Read during the library split so a step package built before Q2(b) is still found; nothing in trellis declares it.
+ALIASES = ("trellis.analytics",)
+GROUPS = (GROUP, *ALIASES)
 log = logging.getLogger(__name__)
 
 
@@ -76,7 +86,7 @@ def discover(known_purposes: list[str] | None = None, registry=None, *, check: b
     (Resource Explorer's question catalogue, which merges these manifests and so cannot ask itself whether they
     are known)."""
     found: dict[str, _TrellisManifest] = {}
-    for ep in entry_points(group=GROUP):
+    for group, ep in _entry_points():
         try:
             obj = ep.load()
             if callable(obj) and not isinstance(obj, _TrellisManifest):
@@ -87,18 +97,26 @@ def discover(known_purposes: list[str] | None = None, registry=None, *, check: b
                     raise TypeError(f"{type(m).__name__} is not a RoutineManifest or StepManifest")
                 found[m.name] = m
         except Exception as exc:  # noqa: BLE001 - re-raised with the entry point named
-            raise RuntimeError(f"entry point {GROUP}:{ep.name} ({ep.value}) failed to load: {exc}") from exc
+            raise RuntimeError(f"entry point {group}:{ep.name} ({ep.value}) failed to load: {exc}") from exc
     if check:
         check_purposes(found, known_purposes, registry)
         check_questions(found)
     return found
 
 
+def _entry_points():
+    """(group, entry point) for every entry point in the primary group, then in each alias."""
+    for group in GROUPS:
+        for ep in entry_points(group=group):
+            yield group, ep
+
+
 def origin(name: str) -> dict[str, str]:
     """Which installed package provides the manifest named `name`, and under which entry point:
-    {"package": <distribution name>, "entry_point": <entry point name>}. Raises LookupError when no installed
-    entry point provides it (the sentence names it), since a declaration must name a real package."""
-    for ep in entry_points(group=GROUP):
+    {"package": <distribution name>, "entry_point": <entry point name>, "group": <entry-point group>}. Raises
+    LookupError when no installed entry point provides it (the sentence names it), since a declaration must name a
+    real package."""
+    for group, ep in _entry_points():
         try:
             obj = ep.load()
             if callable(obj) and not isinstance(obj, _TrellisManifest):
@@ -107,13 +125,19 @@ def origin(name: str) -> dict[str, str]:
             continue
         items = obj if isinstance(obj, (list, tuple)) else [obj]
         if any(getattr(m, "name", None) == name for m in items):
-            return {"package": ep.dist.name if ep.dist else "", "entry_point": ep.name}
+            return {"package": ep.dist.name if ep.dist else "", "entry_point": ep.name, "group": group}
     raise LookupError(f"no installed package provides '{name}' through the {GROUP} entry point")
 
 
 def register() -> list[str]:
     """Register discovered manifests into pyegeria's analytic registry; names already present are skipped
-    (so calling it twice is harmless) and returned names are the ones added."""
+    (so calling it twice is harmless) and returned names are the ones added.
+
+    Redundant since pyegeria 6.2.17 (#519): pyegeria reads these entry-point groups itself, so every manifest is
+    already registered and this adds nothing. Kept, with a DeprecationWarning, so a caller is told rather than
+    broken; to be removed with the `trellis.analytics` alias."""
+    warnings.warn("trellis_analytics.discovery.register() is redundant: installing the package registers its "
+                  "analytics (pyegeria reads the pyegeria.analytics entry points)", DeprecationWarning, stacklevel=2)
     from pyegeria.view.analytic_registry import get_analytic_registry, register_analytic_functions
     existing = set(get_analytic_registry().keys())
     new = {n: m for n, m in discover().items() if n not in existing}

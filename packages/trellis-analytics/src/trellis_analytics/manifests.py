@@ -1,4 +1,5 @@
-"""The manifests this package ships; each is an entry point in group `trellis.analytics`."""
+"""The manifests this package ships; each is an entry point in group `pyegeria.analytics`, so installing
+the package registers it and a report spec names it by its `name`."""
 from trellis_analytics import __version__
 from trellis_analytics.manifest import RoutineManifest
 
@@ -26,4 +27,20 @@ CONTEXT_PACK = RoutineManifest(
     resource_types=["database"],
     family="Context",
     tags=["context", "pack"],
+)
+
+# The Portal tile's function (`portal.curation_coverage_tile`), registered so its report spec names it
+# `curation_coverage_tile` rather than by a Python path (Q2(b), project owner 2026-10-31).
+CURATION_COVERAGE_TILE = RoutineManifest(
+    name="curation_coverage_tile",
+    function="trellis_analytics.portal.curation_coverage_tile",
+    description="The Portal tile for curation_coverage: its counts reshaped as KPI rows and two bar values, with the "
+                "result's state as the subtitle. Computes nothing of its own.",
+    returns="dict (tile: state, subtitle, provenance, kpis, and Published / Not yet published when there are counts)",
+    source="ods",
+    version=__version__,
+    envelope=False,
+    resource_types=["database"],
+    family="Curation",
+    tags=["curation", "coverage", "portal"],
 )
