@@ -10,8 +10,10 @@ dependencies = [
     # action function (ISSUE-141) and exec_report_spec builds no Egeria client for a routine with no client
     # parameter (ISSUE-137); the Portal tile relies on both. 6.2.3 (ISSUE-149): the spec carries kind, source,
     # version, envelope, annotation_type, resource_types, family and tags itself, and a chart gets the envelope as its
-    # subtitle (ISSUE-139); manifest.py relies on both.
-    "pyegeria>=6.2.3",
+    # subtitle (ISSUE-139); manifest.py relies on both. 6.2.17 (2026-10-30): #516's resolver allowlist accepts the
+    # trellis_analytics prefix, #518's kind "absent" carries not_established / not_applicable, and #519 reads the
+    # trellis.analytics entry-point group as an alias of pyegeria.analytics (discovery.register() now redundant).
+    "pyegeria>=6.2.17",
 ]
 
 [project.optional-dependencies]

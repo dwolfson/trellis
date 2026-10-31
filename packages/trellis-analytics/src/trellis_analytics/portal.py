@@ -7,7 +7,8 @@ result. `report_specs()` is the FormatSet for the tile, loadable through `PYEGER
 ("trellis_analytics.portal:report_specs").
 
 When the state is `not_established` or `not_applicable` the dict carries no number at the top level, so a BAR
-request cannot draw a chart of zeros: pyegeria's executor falls back to returning the dict, which says the state word.
+request cannot draw a chart of zeros. Since pyegeria 6.2.17 (#518) the executor returns kind "absent" for those
+states: a sentence in `content`, no `data`, and this dict under `detail`.
 """
 from __future__ import annotations
 

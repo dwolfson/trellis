@@ -203,7 +203,10 @@ class ReportSpecAgent:
                 execution_output = "*No results returned.*"
             elif isinstance(raw, dict):
                 kind = raw.get("kind")
-                if kind == "json":
+                if kind == "absent":
+                    # pyegeria 6.2.17 (#518): the sentence, never `detail`'s partial numbers as a table
+                    execution_output = raw.get("content") or "Not established."
+                elif kind == "json":
                     execution_output = pipeline._format_output(raw.get("data"), output_format, spec.heading, spec=spec)
                 elif kind == "text":
                     execution_output = raw.get("content", "")
