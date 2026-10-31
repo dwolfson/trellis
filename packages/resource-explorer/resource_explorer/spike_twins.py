@@ -34,7 +34,9 @@ def declared_entries(entries: list) -> list:
     stands under its native id (its declaration, its words), so the consumer asks the fact layer for the native id and
     is answered from the twin's stored result."""
     if enabled():
-        return [dataclasses.replace(e, id=_NATIVE_OF[e.id]) if e.id in _NATIVE_OF else e for e in entries]
+        # The native entry of an id that has a twin gives way to the twin's, so the id is declared once.
+        return [dataclasses.replace(e, id=_NATIVE_OF[e.id]) if e.id in _NATIVE_OF else e
+                for e in entries if e.id not in TWINS]
     return [e for e in entries if e.id not in _NATIVE_OF]
 
 
@@ -50,10 +52,11 @@ def value_profile_from_twin(registry, slug: str) -> dict:
     if not rows:
         return {}
     columns: list[dict] = []
-    as_of = ""
+    as_of = ran_as = ""
     for r in rows:
         props = (r.get("detail") or {}).get("resourceProperties") or {}
         as_of = as_of or props.get("asOf", "")
+        ran_as = ran_as or props.get("Ran As", "")
         schema, _, table = str(r.get("scope") or "").partition(".")
         for f in json.loads(props.get("Fields") or "[]"):
             columns.append({"column_path": f"{schema}.{table}.{f['column']}", "schema_name": schema,
@@ -66,4 +69,4 @@ def value_profile_from_twin(registry, slug: str) -> dict:
     for c in columns:
         states[c["state"]] = states.get(c["state"], 0) + 1
     return {"surveyed_at": as_of, "column_count": len(columns), "measured_count": states.get("measured", 0),
-            "state_counts": states, "ran_as": "", "columns": columns}
+            "state_counts": states, "ran_as": ran_as, "columns": columns}

@@ -199,3 +199,20 @@ def test_the_start_up_line_says_how_long_the_steps_took_to_load(monkeypatch):
 
     monkeypatch.setitem(survey_step_host.LOAD_MS, "database", 12.5)
     assert EngineHostLoop._library_line().count(" · loaded in 12.5 ms") == 1
+
+
+def test_flag_on_declares_a_twinned_id_once_the_twins_entry_replacing_the_natives(monkeypatch):
+    import dataclasses
+
+    @dataclasses.dataclass(frozen=True)
+    class Entry:
+        id: str
+        tag: str
+
+    entries = [Entry("value_profile", "native"), Entry("re_value_profile", "twin"), Entry("schema_inventory", "x")]
+    monkeypatch.setenv(spike_twins.FLAG, "1")
+    on = spike_twins.declared_entries(entries)
+    assert [(e.id, e.tag) for e in on] == [("value_profile", "twin"), ("schema_inventory", "x")]
+    monkeypatch.delenv(spike_twins.FLAG)
+    assert [(e.id, e.tag) for e in spike_twins.declared_entries(entries)] == [("value_profile", "native"),
+                                                                              ("schema_inventory", "x")]

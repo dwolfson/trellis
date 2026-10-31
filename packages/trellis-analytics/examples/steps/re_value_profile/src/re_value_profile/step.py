@@ -33,7 +33,7 @@ def _field(c: dict) -> dict:
     return out
 
 
-def _table(schema: str, table: str, columns: list[dict], as_of: str) -> dict:
+def _table(schema: str, table: str, columns: list[dict], as_of: str, ran_as: str = "") -> dict:
     scope = f"{schema}.{table}"
     counts: dict[str, int] = {}
     reasons: dict[str, int] = {}
@@ -53,7 +53,8 @@ def _table(schema: str, table: str, columns: list[dict], as_of: str) -> dict:
         why = reason or f"no column of this table was profiled ({state.replace('_', ' ') or 'state not recorded'})"
         # The columns' states and reasons travel too: a table that was not profiled is listed with why, per column.
         value = {"Table State": state, "Record Count": None, "Columns": len(columns), "Columns Measured": 0,
-                 "Fields": json.dumps([_field(c) for c in columns], separators=(",", ":")), "asOf": as_of}
+                 "Fields": json.dumps([_field(c) for c in columns], separators=(",", ":")), "asOf": as_of,
+                 "Ran As": ran_as}
         return {"scope": scope, "state": "not_established", "reason": why, "value": value,
                 "summary": f"{scope} · {state.replace('_', ' ') or 'state not recorded'}"
                            + (f" · {reason}" if reason else "")}
@@ -61,7 +62,8 @@ def _table(schema: str, table: str, columns: list[dict], as_of: str) -> dict:
     cols = (_plural(measured, "column") + " measured" if measured == total
             else f"{measured:,} of {_plural(total, 'column')} measured")
     value = {"Table State": "measured", "Record Count": record, "Columns": total, "Columns Measured": measured,
-             "Fields": json.dumps([_field(c) for c in columns], separators=(",", ":")), "asOf": as_of}
+             "Fields": json.dumps([_field(c) for c in columns], separators=(",", ":")), "asOf": as_of,
+                 "Ran As": ran_as}
     return {"scope": scope, "state": "measured", "value": value,
             "summary": f"{scope} · {_rows_words(record)} · {cols}"}
 
@@ -77,7 +79,7 @@ def run(inputs) -> list[dict]:
     grouped: dict[tuple[str, str], list[dict]] = {}
     for c in columns:
         grouped.setdefault((c["schema_name"], c["table_name"]), []).append(c)
-    results = [_table(s, t, grouped[(s, t)], as_of) for s, t in sorted(grouped)]
+    results = [_table(s, t, grouped[(s, t)], as_of, str(batch.get("ran_as") or "")) for s, t in sorted(grouped)]
     states: dict[str, int] = {}
     for c in columns:
         states[c.get("state") or ""] = states.get(c.get("state") or "", 0) + 1
