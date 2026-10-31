@@ -1,6 +1,6 @@
 # Open data adapters (slice OD1)
 
-Plugin point: entry-point group `trellis.open_data` (the shape of `trellis.analytics`). An adapter is a class with a
+Plugin point: entry-point group `trellis.open_data` (the shape of the Analytic Library's `pyegeria.analytics`). An adapter is a class with a
 class-level `manifest` (`resource_explorer.open_data.adapters.AdapterManifest`) and the methods of its role:
 
 | Role | Methods | Built-in |

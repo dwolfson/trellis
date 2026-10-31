@@ -498,7 +498,7 @@ You can add or change a lot **without touching Resource Explorer's code**. Each 
 
 | You add or change | How | Where it appears |
 |---|---|---|
-| An analysis (library step) | a package with a StepManifest and a declaration (result kind, measures with unit and as-of, absence sentences, chat extents, confidence form, optional Egeria type), installed as a `trellis.analytics` entry point | the resource's Survey & analyses tab; its questions' headlines; Chat answers citing its rows; the Curate publish table row with "writes as" |
+| An analysis (library step) | a package with a StepManifest and a declaration (result kind, measures with unit and as-of, absence sentences, chat extents, confidence form, optional Egeria type), installed as a `pyegeria.analytics` entry point: installing it registers it, and a report spec names it by its registered name | the resource's Survey & analyses tab; its questions' headlines; Chat answers citing its rows; the Curate publish table row with "writes as" |
 | A question | a row in resource_questions.csv (or Admin › Question Catalog's add) naming its stage, kinds, purposes, perspectives and answering analysis; the generator refuses a bare step name or a kind with no adapter | the stage's Questions tab, ordered by purpose |
 | A perspective or a purpose | Dr.Egeria valid-value lists (purposes suggestive, free text kept) | the sidebar perspective filter; Investigation purposes; "NOT AMONG THIS INVESTIGATION'S PURPOSES" |
 | A survey definition | a Dr.Egeria document naming steps and scoped-by questions | the Survey & analyses tab's definitions |
