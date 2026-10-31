@@ -57,11 +57,15 @@ def test_manifest_purposes_default_to_resource_explorer_s_list():
     assert check_purposes({"s": m}) == []
 
 
-def test_register_adds_to_pyegeria_registry_once(entry_point_dist):
+def test_register_is_redundant_since_pyegeria_reads_the_entry_points(entry_point_dist):
+    """pyegeria 6.2.17 (#519) reads the pyegeria.analytics entry-point group and trellis.analytics as its alias, so the
+    library's manifests are registered before register() runs; register() adds nothing and stays harmless. Its removal
+    is a separate follow-up."""
     from pyegeria.view.analytic_registry import clear_runtime_analytic_functions, get_analytic_registry
     clear_runtime_analytic_functions()
     try:
-        assert register() == ["context_pack", "curation_coverage"]
+        assert {"context_pack", "curation_coverage"} <= set(get_analytic_registry())
+        assert register() == []
         assert register() == []          # idempotent
         assert get_analytic_registry()["curation_coverage"].kind == "routine"
     finally:

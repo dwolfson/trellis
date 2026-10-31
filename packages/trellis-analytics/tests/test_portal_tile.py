@@ -83,23 +83,27 @@ def test_dict_output_carries_the_envelope_beside_the_tile(tile, measured_url):
                                "subtitle": out["data"]["subtitle"]}
 
 
+# pyegeria 6.2.17 (#518, ISSUE-171): not_established / not_applicable come back as kind "absent" -- the sentence in
+# `content`, no top-level `data` for a chart or table to draw, the tile itself only under `detail`.
 @pytest.mark.parametrize("fmt", ["DICT", "BAR"])
 def test_not_established_shows_its_word_never_a_zero_chart(tile, tmp_path, fmt):
     out = tile(f"sqlite:///{tmp_path}/missing.sqlite", fmt=fmt)
-    assert out["kind"] == "json"
-    data = out["data"]
-    assert "$schema" not in data                               # not a chart
-    assert data["subtitle"].startswith("not established") and "could not open" in data["subtitle"]
-    assert data["state"] == "not_established"
-    assert "Published" not in data and data["kpis"] == []
+    assert out["kind"] == "absent" and "data" not in out        # not a chart, nothing to draw as an answer
+    assert out["content"].startswith("Not measured") and "could not open" in out["content"]
+    assert out["envelope"]["state"] == "not_established"
+    detail = out["detail"]
+    assert detail["subtitle"].startswith("not established") and detail["state"] == "not_established"
+    assert "Published" not in detail and detail["kpis"] == []
 
 
 @pytest.mark.parametrize("fmt", ["DICT", "BAR"])
 def test_not_applicable_shows_its_word_never_a_zero_chart(tile, measured_url, fmt):
     out = tile(measured_url, fmt=fmt, resource_type="file_system")
-    data = out["data"]
-    assert "$schema" not in data and data["state"] == "not_applicable"
-    assert data["subtitle"].startswith("not applicable") and data["kpis"] == []
+    assert out["kind"] == "absent" and "data" not in out
+    assert out["content"].startswith("Does not apply") and out["envelope"]["state"] == "not_applicable"
+    detail = out["detail"]
+    assert detail["state"] == "not_applicable" and detail["subtitle"].startswith("not applicable")
+    assert "Published" not in detail and detail["kpis"] == []
 
 
 def test_nothing_found_is_its_own_word(tile, make_ods):

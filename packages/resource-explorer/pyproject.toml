@@ -164,7 +164,14 @@ dependencies = [
     # nest_asyncio patch and now call the sync method instead; the loop-feeding wrappers around them are gone.
     # Without this, sub-resource publishing quietly created nothing on any thread that had run asyncio.run
     # (tests/test_pyegeria_6216_sync_bridge.py).
-    "pyegeria>=6.2.16",
+    # Raised to 6.2.17 (2026-10-30): #516 refuses an unregistered analytic_function outside the pyegeria /
+    # trellis_analytics prefixes; #518 returns kind "absent" (a sentence in content, no data) for not_established /
+    # not_applicable; #519 reads the pyegeria.analytics entry-point group (trellis.analytics as an alias), so
+    # trellis_analytics' discovery.register() is now redundant but left in place. Audit: RE runs its steps through
+    # trellis_analytics.step, not pyegeria's resolver, and reads no exec_report_spec output; every analytic_function
+    # trellis names resolves (trellis-analytics tests/test_pyegeria_6217_allowlist.py), and the advisor's two readers
+    # of exec_report_spec show "absent" as its sentence (egeria-advisor tests/unit/test_report_absent_kind.py).
+    "pyegeria>=6.2.17",
     "mcp>=2.0.0",
     # nest-asyncio removed 2026-09-04 with the shared-pool refactor: RE no
     # longer imports it anywhere. Its one site, surveyors/prefect_adapter.py's
